@@ -1520,18 +1520,18 @@ export interface RunPendingApproval {
 
 async function fetchRunOrTaskStatus(
   env: AgentsEnv, tenantId: string, sessionId: string, spaceId: string, runId: string
-): Promise<{ status: number; body: { id: string; status: string; final_answer?: string; partial_answer?: string; error?: string; react_steps?: unknown[]; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval; deferred_approvals?: RunPendingApproval[] } }> {
+): Promise<{ status: number; body: { id: string; status: string; final_answer?: string; partial_answer?: string; error?: string; error_code?: string; react_steps?: unknown[]; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval; deferred_approvals?: RunPendingApproval[] } }> {
   const stub = await getAgentDO(env, tenantId, sessionId);
   const doResponse = await stub.fetch(new Request(`http://agent-do/runs/${runId}`, { method: "GET" }));
   if (doResponse.ok) {
-    const doBody = await doResponse.json<{ id: string; status: string; final_answer?: string; partial_answer?: string; error?: string; react_steps?: unknown[]; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval; deferred_approvals?: RunPendingApproval[] }>();
+    const doBody = await doResponse.json<{ id: string; status: string; final_answer?: string; partial_answer?: string; error?: string; error_code?: string; react_steps?: unknown[]; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval; deferred_approvals?: RunPendingApproval[] }>();
     return { status: 200, body: doBody };
   }
   if (!env.TASK_DO) return { status: doResponse.status, body: { id: runId, status: "failed", error: "run not found" } };
   const taskStub = getTaskDO(env, spaceId);
   const taskResponse = await taskStub.fetch(`http://task-do/tasks/${runId}`);
   if (!taskResponse.ok) return { status: 404, body: { id: runId, status: "failed", error: "run not found" } };
-  const task = await taskResponse.json<{ task_id: string; status: string; result: { final_answer?: string; pending_approval?: RunPendingApproval; deferred_approvals?: RunPendingApproval[] } | null; error: string | null }>();
+  const task = await taskResponse.json<{ task_id: string; status: string; result: { final_answer?: string; error_code?: string; pending_approval?: RunPendingApproval; deferred_approvals?: RunPendingApproval[] } | null; error: string | null }>();
   return {
     status: 200,
     body: {
@@ -1545,6 +1545,11 @@ async function fetchRunOrTaskStatus(
       // task itself is recorded as failed.
       ...(task.result?.deferred_approvals?.length ? { deferred_approvals: task.result.deferred_approvals } : {}),
       ...(task.error ? { error: task.error } : {}),
+      // Live-reported bug: a billing-gate 402 (insufficient_credits/subscription_inactive/
+      // quota_exceeded/...) reached this endpoint as bare error TEXT, with no machine-readable
+      // way for a client to distinguish "you need to pay" from any other failure and render an
+      // upgrade dialog instead of a plain error banner — see AgentTaskWorkflow's own comment.
+      ...(task.result?.error_code ? { error_code: task.result.error_code } : {}),
     },
   };
 }
@@ -1824,6 +1829,9 @@ app.get(
           ) {
             await sendEvent({
               type: "done", run_id: runId, status: run.status, final_answer: run.final_answer, error: run.error,
+              // Live-reported bug: a billing-gate 402 reached the client as bare error TEXT with
+              // no machine-readable code — see fetchRunOrTaskStatus's own comment.
+              ...(run.error_code ? { error_code: run.error_code } : {}),
               ...(run.pending_approval ? { pending_approval: run.pending_approval } : {}),
               // Live-reported bug: a run that parked an approval and continued (rather than fully
               // suspending) never carried this to the client at all — the approval genuinely

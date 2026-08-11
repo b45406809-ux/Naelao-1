@@ -65,6 +65,37 @@ describe("fetchRunOrTaskStatus — pending_approval surfaces through TaskDO poll
   });
 });
 
+// Live-reported bug (2026-08-11): a billing-gate 402 (insufficient_credits / subscription_inactive
+// / quota_exceeded / ...) reached this endpoint as bare error TEXT with no machine-readable way
+// for a client to render an upgrade dialog instead of a plain error banner — see
+// AgentTaskWorkflow's own comment for where error_code is captured and carried into the stored
+// result.
+describe("fetchRunOrTaskStatus — error_code surfaces through TaskDO polling", () => {
+  it("carries error_code through on a failed billing-gate task", async () => {
+    const env = makeEnv({
+      status: "failed",
+      result: { error_code: "insufficient_credits" },
+      error: "insufficient credits — top up or subscribe to keep chatting",
+    });
+    const { body } = await fetchRunOrTaskStatus(env, "tenant-1", "session-1", "space-1", "task-1");
+    expect(body.status).toBe("failed");
+    expect(body.error_code).toBe("insufficient_credits");
+    expect(body.error).toContain("insufficient credits");
+  });
+
+  it("is absent for a plain non-billing failure", async () => {
+    const env = makeEnv({ status: "failed", result: null, error: "some other failure" });
+    const { body } = await fetchRunOrTaskStatus(env, "tenant-1", "session-1", "space-1", "task-1");
+    expect(body.error_code).toBeUndefined();
+  });
+
+  it("is absent for a completed task — never fabricated", async () => {
+    const env = makeEnv({ status: "complete", result: { final_answer: "done" }, error: null });
+    const { body } = await fetchRunOrTaskStatus(env, "tenant-1", "session-1", "space-1", "task-1");
+    expect(body.error_code).toBeUndefined();
+  });
+});
+
 // Live-reported bug (2026-07-29): a run that PARKED a real, still-open approval and continued
 // (rather than fully suspending — see loop.ts's `deferred_approvals`) had that approval silently
 // dropped by this exact function's TaskDO branch, which only ever read `pending_approval`. The

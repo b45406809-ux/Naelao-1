@@ -145,7 +145,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
     // "processing" run and hangs again identically. Wrapping the step call itself is the fix:
     // whatever the failure, it becomes a normal `runResult.error` value and step 3 always runs.
     let runResult: {
-      final_answer: string | undefined; error: string | undefined; status: string | undefined;
+      final_answer: string | undefined; error: string | undefined; error_code: string | undefined; status: string | undefined;
       pending_approval_json: string | undefined; deferred_approvals_json: string | undefined;
     };
     try {
@@ -205,16 +205,24 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
           // this expects (e.g. a plain-text 500 from an upstream outage).
           const text = await resp.text();
           let parsedError: string | undefined;
+          let errorCode: string | undefined;
           let pendingApprovalJson: string | undefined;
           let deferredApprovalsJson: string | undefined;
           try {
             const errBody = JSON.parse(text) as {
               error?: string;
               message?: string;
+              // Live-reported bug: a caller hitting a billing gate (insufficient_credits,
+              // subscription_inactive, quota_exceeded, ...) saw only the raw human-readable
+              // `error` string — this machine-readable code was parsed here and then silently
+              // dropped, so the client had no reliable way to distinguish "you need to pay" from
+              // any other failure and render an upgrade path instead of a bare error banner.
+              error_code?: string;
               pending_approval?: { approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number };
               deferred_approvals?: Array<{ approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number }>;
             };
             parsedError = errBody.error ?? errBody.message;
+            errorCode = errBody.error_code;
             pendingApprovalJson = errBody.pending_approval ? JSON.stringify(errBody.pending_approval) : undefined;
             deferredApprovalsJson = errBody.deferred_approvals?.length ? JSON.stringify(errBody.deferred_approvals) : undefined;
           } catch {
@@ -223,6 +231,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
           return {
             final_answer: undefined,
             error: parsedError ?? `Agent run failed (${resp.status}): ${text}`,
+            error_code: errorCode,
             status: undefined,
             pending_approval_json: pendingApprovalJson,
             deferred_approvals_json: deferredApprovalsJson,
@@ -251,6 +260,9 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
         return {
           final_answer: body.finalAnswer ?? body.final_answer,
           error: body.error,
+          // A 2xx response never carries error_code (that's exclusively the shape of the !resp.ok
+          // branch above) — declared here only so both branches return the same object shape.
+          error_code: undefined,
           status: body.status,
           // CF Workflow step results must be Serializable<T>, which a bare Record<string, unknown>
           // (the params object's own type) doesn't satisfy — pre-stringified here, parsed back only
@@ -264,6 +276,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
       runResult = {
         final_answer: undefined,
         error: err instanceof Error ? err.message : String(err),
+        error_code: undefined,
         status: undefined,
         pending_approval_json: undefined,
         deferred_approvals_json: undefined,
@@ -298,10 +311,15 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
           // though it genuinely exists and is still waiting on a human. deferred_approvals is now
           // carried through unconditionally; final_answer/pending_approval stay null on a genuine
           // error (there is no real answer to show), matching every other error's behavior.
-          result: (hasError && !runResult.deferred_approvals_json) ? null : JSON.stringify({
+          // Live-reported bug (2026-08-11): a caller hitting a billing gate (insufficient_credits/
+          // subscription_inactive/quota_exceeded) got only the raw error TEXT, with no reliable
+          // way to render an "upgrade" path instead of a bare error banner — error_code carries
+          // through even on a hard error now, for exactly the same reason deferred_approvals does.
+          result: (hasError && !runResult.deferred_approvals_json && !runResult.error_code) ? null : JSON.stringify({
             ...(hasError ? {} : { final_answer: runResult.final_answer }),
             // Re-parsed here (a plain step-3 callback, not the run-agent step itself, so the
             // Serializable<T> constraint that made the pre-stringify necessary doesn't apply).
+            ...(runResult.error_code ? { error_code: runResult.error_code } : {}),
             ...(runResult.pending_approval_json ? { pending_approval: JSON.parse(runResult.pending_approval_json) } : {}),
             ...(runResult.deferred_approvals_json ? { deferred_approvals: JSON.parse(runResult.deferred_approvals_json) } : {}),
           }),
@@ -324,7 +342,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
   private async recordedResult(
     p: AgentTaskParams
   ): Promise<{
-    final_answer: string | undefined; error: string | undefined; status: string | undefined;
+    final_answer: string | undefined; error: string | undefined; error_code: string | undefined; status: string | undefined;
     pending_approval_json: string | undefined; deferred_approvals_json: string | undefined;
   } | null> {
     try {
@@ -339,12 +357,15 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
       // nothing this method needs to protect against re-running.
       if (task.status !== "complete" && task.status !== "failed") return null;
       let answer: string | undefined;
+      let errorCode: string | undefined;
       if (task.result) {
         try {
-          answer = (JSON.parse(task.result) as { final_answer?: string }).final_answer;
+          const parsed = JSON.parse(task.result) as { final_answer?: string; error_code?: string };
+          answer = parsed.final_answer;
+          errorCode = parsed.error_code;
         } catch { /* a result we can't parse is still proof the run happened */ }
       }
-      return { final_answer: answer, error: task.error ?? undefined, status: task.status, pending_approval_json: undefined, deferred_approvals_json: undefined };
+      return { final_answer: answer, error: task.error ?? undefined, error_code: errorCode, status: task.status, pending_approval_json: undefined, deferred_approvals_json: undefined };
     } catch {
       return null;
     }

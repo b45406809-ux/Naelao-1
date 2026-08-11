@@ -98,8 +98,12 @@ async function apiFetch<T>(
       let message = `API error ${res.status}`;
       let errorCode: string | undefined;
       try {
-        const body = (await res.json()) as { message?: string; error_code?: string };
-        message = body.message ?? body.error_code ?? message;
+        // Most routes send `{message}`; the billing-gate 402s (insufficient_credits,
+        // subscription_inactive, ...) send `{error}` instead — falling straight through to
+        // error_code as the DISPLAYED text (e.g. the literal string "insufficient_credits")
+        // when `error` carries the real human-readable sentence was a real bug.
+        const body = (await res.json()) as { message?: string; error?: string; error_code?: string };
+        message = body.message ?? body.error ?? body.error_code ?? message;
         errorCode = body.error_code;
       } catch {
         // use default message
@@ -389,6 +393,10 @@ export interface AgentRun {
    *  never treat it as the run having finished. */
   partial_answer?: string;
   error?: string;
+  /** Machine-readable classification of `error` when it's a billing gate (insufficient_credits,
+   *  subscription_inactive, quota_exceeded, infra_quota_exceeded, ...) — lets a client render an
+   *  upgrade dialog instead of a bare error banner. Absent for any non-billing failure. */
+  error_code?: string;
   /** New steps recorded since the run started, present only while status is "running" — see
    *  LiveRunStep's own doc. */
   live_steps?: LiveRunStep[];
@@ -618,7 +626,7 @@ export async function pollRun(
   session: SessionCredentials,
   onRetry?: (attempt: number, max: number) => void
 ): Promise<AgentRun> {
-  const res = await apiFetch<{ id: string; status: string; final_answer?: string; partial_answer?: string; error?: string; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval; deferred_approvals?: RunPendingApproval[] }>(
+  const res = await apiFetch<{ id: string; status: string; final_answer?: string; partial_answer?: string; error?: string; error_code?: string; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval; deferred_approvals?: RunPendingApproval[] }>(
     `/v1/spaces/${spaceId}/sessions/${sessionId}/agent/runs/${runId}`,
     { session, ...(onRetry ? { onRetry } : {}) }
   );
@@ -628,6 +636,7 @@ export async function pollRun(
     ...(res.final_answer !== undefined ? { final_answer: res.final_answer } : {}),
     ...(res.partial_answer !== undefined ? { partial_answer: res.partial_answer } : {}),
     ...(res.error !== undefined ? { error: res.error } : {}),
+    ...(res.error_code !== undefined ? { error_code: res.error_code } : {}),
     ...(res.live_steps ? { live_steps: res.live_steps } : {}),
     ...(res.pending_approval ? { pending_approval: res.pending_approval } : {}),
     ...(res.deferred_approvals?.length ? { deferred_approvals: res.deferred_approvals } : {}),

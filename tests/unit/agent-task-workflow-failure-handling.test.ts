@@ -164,6 +164,47 @@ describe("AgentTaskWorkflow — a failure always reaches a terminal TaskDO statu
     expect(JSON.parse(final.result!).deferred_approvals[0].approval_id).toBe("appr-1");
   });
 
+  it("a billing-gate 402 (insufficient_credits) carries error_code through into TaskDO's result, not just the raw error text", async () => {
+    // Live-reported bug (2026-08-11): a caller hitting a billing gate got only the bare error
+    // sentence — error_code was parsed here and then silently dropped, so a polling client had no
+    // reliable way to render an upgrade dialog instead of a plain error banner. Before the fix,
+    // `result` was `null` here (hasError && no deferred_approvals), so error_code had nowhere to
+    // land even if it HAD been captured.
+    const { tasks, stub } = makeFakeTaskDO();
+    const env = makeEnv({
+      taskDoStub: stub,
+      agentsWorkerFetch: async () =>
+        new Response(
+          JSON.stringify({ error: "insufficient credits — top up or subscribe to keep chatting", error_code: "insufficient_credits" }),
+          { status: 402 }
+        ),
+    });
+    const wf = new AgentTaskWorkflow({} as never, env);
+    const step = makeFakeStep();
+    await wf.run({ payload: baseParams, instanceId: "wf-credits" } as never, step as never);
+
+    const final = tasks.get("task-1")!;
+    expect(final.status).toBe("failed");
+    expect(final.error).toContain("insufficient credits");
+    expect(final.result).not.toBeNull();
+    expect(JSON.parse(final.result!).error_code).toBe("insufficient_credits");
+  });
+
+  it("a plain non-billing failure still carries no error_code at all (result stays null)", async () => {
+    const { tasks, stub } = makeFakeTaskDO();
+    const env = makeEnv({
+      taskDoStub: stub,
+      agentsWorkerFetch: async () => new Response(JSON.stringify({ error: "some other failure" }), { status: 500 }),
+    });
+    const wf = new AgentTaskWorkflow({} as never, env);
+    const step = makeFakeStep();
+    await wf.run({ payload: baseParams, instanceId: "wf-plain" } as never, step as never);
+
+    const final = tasks.get("task-1")!;
+    expect(final.status).toBe("failed");
+    expect(final.result).toBeNull();
+  });
+
   it("even if TaskDO itself is unreachable throughout, run() resolves rather than throwing uncaught", async () => {
     const stub = {
       async fetch() {

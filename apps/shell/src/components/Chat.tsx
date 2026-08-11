@@ -61,12 +61,17 @@ import { ActivitySequence, RevealText } from "./ActivityFeed";
 import { InterruptedRunCard } from "./InterruptedRunCard";
 import { InlineApprovalCard } from "./InlineApprovalCard";
 import { InlineConnectorCard } from "./InlineConnectorCard";
+import { UpgradeDialog } from "./UpgradeDialog";
 import { ComposerDock } from "./ComposerDock";
 import { useActiveSpace } from "@/lib/active-space-context";
 import type { ThreadSummary, ConsultedThread } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 1500;
 const MAX_POLL_DURATION_MS = 60_000;
+// A run that failed on one of these is not just "an error" — there's something real to DO about
+// it (buy credits, resubscribe, wait for a quota reset), so it gets the UpgradeDialog instead of
+// a bare red banner. See UpgradeDialog's own doc for what each code offers.
+const BILLING_ERROR_CODES = new Set(["insufficient_credits", "subscription_inactive", "quota_exceeded", "infra_quota_exceeded"]);
 
 type ThreadPanelTab = "stats" | "assistant" | SidePanelTab | "artifacts";
 
@@ -207,6 +212,10 @@ export function Chat({
   const [stopping, setStopping] = React.useState(false);
   const [streamingContent, setStreamingContent] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
+  // A billing-gate failure (insufficient_credits / subscription_inactive / quota_exceeded /
+  // infra_quota_exceeded) — rendered as UpgradeDialog instead of `error`'s bare banner, since
+  // there's a real purchase/upgrade action to offer rather than just something to read.
+  const [billingWall, setBillingWall] = React.useState<{ code: string; message: string } | null>(null);
   // A transient network/gateway hiccup being retried, live — Claude Code CLI's own "retrying…
   // (attempt x/10)" style, so a blip that clears itself a second later never has to read as an
   // outright failure the user must retype their message over. Cleared the moment a call succeeds
@@ -405,6 +414,7 @@ export function Chat({
         setSelfHealStatus(null);
         if (res.run_id) {
           setError(null);
+          setBillingWall(null);
           setIsLoading(true);
           storeActiveRunId(spaceId, sessionKey, res.run_id);
           attachToRunRef.current(sid, res.run_id);
@@ -599,6 +609,7 @@ export function Chat({
     async function init() {
       setInitializing(true);
       setError(null);
+      setBillingWall(null);
       try {
         const sid = sessionId ?? getChatSessionId(spaceId, sessionKey);
         if (!sid) {
@@ -769,7 +780,13 @@ export function Chat({
           if ((run.status === "completed" || run.status === "awaiting_approval") && run.final_answer) {
             finalizeAnswer(runId, run.final_answer, latestActivity, run.pending_approval, run.deferred_approvals);
           } else if (run.status === "failed" || run.status === "cancelled") {
-            if (!isUserStoppedError(run.error)) setError(run.error ?? "The agent run failed");
+            if (!isUserStoppedError(run.error)) {
+              if (run.error_code && BILLING_ERROR_CODES.has(run.error_code)) {
+                setBillingWall({ code: run.error_code, message: run.error ?? "You need to top up or subscribe to keep chatting." });
+              } else {
+                setError(run.error ?? "The agent run failed");
+              }
+            }
             // The run left a checkpoint; show the offer to continue it rather than only an error
             // the user can do nothing with except retype their request. This is a LIVE failure
             // this tab just watched happen — the full self-heal chain applies (unlike a mount).
@@ -836,7 +853,7 @@ export function Chat({
         try {
           const data = JSON.parse(evt.data) as {
             type: string; content?: string; offset?: number; run_id?: string; message?: string; steps?: LiveRunStep[];
-            status?: AgentRun["status"]; final_answer?: string; error?: string;
+            status?: AgentRun["status"]; final_answer?: string; error?: string; error_code?: string;
             pending_approval?: AgentRun["pending_approval"];
             deferred_approvals?: AgentRun["deferred_approvals"];
           };
@@ -875,7 +892,13 @@ export function Chat({
             if ((status === "completed" || status === "awaiting_approval") && answerText) {
               finalizeAnswer(data.run_id ?? runId, answerText, activitySteps, data.pending_approval, data.deferred_approvals);
             } else if (status === "failed" || status === "cancelled") {
-              if (!isUserStoppedError(data.error)) setError(data.error ?? "The agent run failed");
+              if (!isUserStoppedError(data.error)) {
+                if (data.error_code && BILLING_ERROR_CODES.has(data.error_code)) {
+                  setBillingWall({ code: data.error_code, message: data.error ?? "You need to top up or subscribe to keep chatting." });
+                } else {
+                  setError(data.error ?? "The agent run failed");
+                }
+              }
               void handleLiveFailure(sid);
               // Same "a real, still-open approval must not vanish along with an unrelated
               // failure" rule as the plain-polling fallback below.
@@ -1089,6 +1112,7 @@ export function Chat({
     const trimmed = text.trim();
     if ((!trimmed && pendingUploads.length === 0) || isLoading) return;
     setError(null);
+    setBillingWall(null);
     setRetryStatus(null);
     setIsLoading(true);
     setStreamingContent("");
@@ -1134,7 +1158,14 @@ export function Chat({
       setIsLoading(false);
       setRetryStatus(null);
       setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
-      setError(err instanceof Error ? err.message : "Failed to send message");
+      // The dispatch POST itself failing on a billing gate (rare — apps/shell doesn't send
+      // Prefer: respond-sync, so this normally surfaces later via the async run's own error_code
+      // above, not here) still deserves the same dialog rather than a bare banner.
+      if (err instanceof ApiError && err.errorCode && BILLING_ERROR_CODES.has(err.errorCode)) {
+        setBillingWall({ code: err.errorCode, message: err.message });
+      } else {
+        setError(err instanceof Error ? err.message : "Failed to send message");
+      }
     }
   }, [isLoading, pendingUploads, ensureSessionId, spaceId, sessionKey, session, attachToRun, selectedModel, selectedEffort, selectedReasoningLevel, selectedAgentId, sessionId, projectId]);
 
@@ -1489,6 +1520,7 @@ export function Chat({
                   setInterrupted(null);
                   resetSelfHealBudget();
                   setError(null);
+                  setBillingWall(null);
                   setIsLoading(true);
                   storeActiveRunId(spaceId, sessionKey, newRunId);
                   attachToRun(chatSessionId, newRunId);
@@ -1513,6 +1545,16 @@ export function Chat({
                 )}
               </div>
             </div>
+          )}
+          {billingWall && (
+            <UpgradeDialog
+              spaceId={spaceId}
+              session={session}
+              errorCode={billingWall.code}
+              message={billingWall.message}
+              supportContact={supportContact}
+              onClose={() => setBillingWall(null)}
+            />
           )}
           {unattachedApprovals.length > 0 && (
             <div className="msg-row">

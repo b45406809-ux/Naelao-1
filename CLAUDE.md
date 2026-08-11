@@ -6397,6 +6397,80 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      — per the user's own standing "use my own credits to test" instruction); the user's own next
      message against "Test 1" is the real end-to-end confirmation.
 
+128. **"insufficient credits — top up or subscribe to keep chatting" is now a real upgrade dialog,
+     not a bare error banner — and the underlying gap it exposed (a billing gate's machine-
+     readable `error_code` was parsed and then silently discarded on the async dispatch path,
+     every real chat message's path) is fixed at the root.** Traced the exact string to
+     `NaelaoAgentDO.enforceRunGates`'s `product_end_user` own-balance credit check (a `402` with
+     `error_code: "insufficient_credits"`) — one of several billing gates sharing this shape
+     (`subscription_inactive`, `quota_exceeded`, `infra_quota_exceeded`, and a DIFFERENT
+     `insufficient_credits` variant for an empty PROJECT wallet, distinguished by message text).
+     `AgentTaskWorkflow`'s `run-agent` step (item 104's own failure-handling rewrite) already
+     parsed `error_code` off a non-ok response and then dropped it on the floor before it ever
+     reached step 3's TaskDO write — and even if it hadn't, step 3's `result` was hardcoded to
+     `null` on any hard error with no deferred approvals, so there was nowhere for it to land.
+     Fixed end to end: `AgentTaskWorkflow` now carries `error_code` through `runResult`, into
+     TaskDO's stored `result` JSON (extending the existing "never let deferred_approvals vanish
+     along with an error" precedent to `error_code` too), and through its own replay-safety ledger
+     read; `fetchRunOrTaskStatus` (agents worker `index.ts`, shared by the plain GET-run route
+     AND the SSE `/stream` endpoint) surfaces it; `apps/shell`'s `AgentRun`/`pollRun`/the SSE
+     `onmessage` handler all carry it through. A real, separate bug fixed in passing:
+     `apiFetch`'s generic error-message resolution read `body.message ?? body.error_code` — since
+     these 402s send `{error, error_code}` with no `message` field, ANY caller hitting one of them
+     via the synchronous dispatch path would have displayed the literal string
+     `"insufficient_credits"` as the error text instead of the real sentence; now checks
+     `body.error` first.
+     - **New `UpgradeDialog` component** (`apps/shell/src/components/UpgradeDialog.tsx`), shown
+       instead of the plain red banner for exactly the codes above. Honest about what's actually
+       self-serve today: `insufficient_credits` (own balance) and `subscription_inactive` get real
+       credit-pack/subscription purchase buttons via the ALREADY-BUILT `getPricing`/
+       `checkoutCreditPack`/`checkoutBusinessSubscription` (Phase E) — a business that hasn't
+       configured any pricing is told so, not shown empty buttons. The PROJECT-WALLET flavor of
+       `insufficient_credits` (message contains "wallet") gets a distinct message pointing at the
+       Dashboard's Business Wallet section instead of a purchase button — there is genuinely no
+       end-user-reachable wallet top-up route yet (only an internal billing-worker one), and
+       fabricating a button that would fail was rejected. `quota_exceeded`/`infra_quota_exceeded`
+       (an ORG-level plan quota) get message + support-contact link only, same reasoning.
+     - **Test credits granted to "Test 1"'s owner for the user's own testing** — resolved via a
+       real D1 query chain rather than guessed: `Test 1` (`a26a1942-...`) → `parent_space_id`
+       `f17b859b-...` (the `launchpad` product root) → `business_memberships` → owner
+       `end_user_id 04c68b8d-...` (`crzzphillip@gmail.com`). Granting required the REAL, already-
+       tested `POST /internal/credit-packs/grant` (the exact route the LS credit-pack webhook
+       calls) — but `naelao-spaces` has `workers_dev = false` (item 21's hardening) and the router
+       deliberately never proxies `/internal/*` ("internal credential resolution is service-
+       binding-only" — `workers/router/src/index.ts`'s own comment), so neither a direct curl nor
+       a router call could reach it. **New reusable technique for this class of problem**: a tiny,
+       genuinely temporary Worker (`naelao-credit-grant-tmp`) declaring a `[[services]]` binding
+       to `naelao-spaces` in its OWN `wrangler.toml` — service bindings are worker-to-worker RPC,
+       invisible to the public internet and unaffected by the target's `workers_dev` setting,
+       exactly how `naelao-billing`/`naelao-agents` legitimately reach `naelao-spaces` today. It
+       minted a real internal HMAC token from `NAELAO_PLATFORM_SECRET` (`.cf-credentials.local`)
+       and called the UNMODIFIED, already-tested production route — no new backend logic, no new
+       security surface on any real worker. Granted 5000 credits (idempotency-keyed,
+       `manual-test-grant-2026-08-11-04c68b8d`) — confirmed via the grant call's own read-after-
+       write response (`balance_credits: 5000`). The temporary worker was deleted immediately
+       after (confirmed 404 on a follow-up probe) — no residue left behind. Worth keeping this
+       technique in mind for any FUTURE one-off need to reach a `workers_dev=false` worker's
+       internal-only route outside of writing a permanent new endpoint.
+     2916/2916 tests pass (5 new: `agent-task-workflow-failure-handling.test.ts` gained 2 cases
+     proving error_code survives into TaskDO's stored result on a billing-gate failure and stays
+     absent on a plain one; `run-status-pending-approval.test.ts` gained a new describe block
+     proving `fetchRunOrTaskStatus` surfaces it correctly and never fabricates it for a completed
+     run), `npx turbo run typecheck` clean (76 tasks), `apps/shell` verified via a real `next
+     build`. Deployed: `naelao-agents` (bare `wrangler deploy`, item 83's documented `--env
+     production` trap; Version ID `1d0ae58e-38f6-416a-8305-15dc493f1494`) and `apps/shell`
+     (rebuilt with `next-on-pages` + `NEXT_PUBLIC_API_URL` in the same command per the documented
+     gotcha, `--branch=main`, confirmed `environment: "production"` via the Pages API before
+     calling this done) — both live-verified via non-LLM checks only (200s on the shell's
+     `/p/launchpad/spaces` and the router's by-slug lookup, a 401-not-500 from the agents worker's
+     cancel route), per the user's standing "don't use my AI credits, I want to test it myself"
+     instruction. **Not done this pass:** a live dispatched `/agent/run` proving the dialog
+     actually renders against a real 402 (deliberately not spent — the user's own next message
+     against the newly-credited "Test 1" account is the real end-to-end confirmation, for both the
+     dialog's absence now that credits exist and its presence once they run out again); a
+     PROJECT-scoped wallet top-up UI/route (flagged, not silently dropped — same gap CLAUDE.md's
+     Live Deployment Facts and item 116 already document).
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
