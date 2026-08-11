@@ -106,11 +106,12 @@ function mergeSteps(raw: LiveRunStep[]): { step: LiveRunStep; active: boolean }[
       s.duration_ms !== undefined;
     if (completesPrev) {
       // Carry forward text the in-flight row had accumulated but the completed one didn't report.
-      // A model that streamed a mid-run reply and then failed to repeat it on the final chunk
-      // should not have its own words disappear the instant the step finishes.
+      // A model that streamed a status or a message and then failed to repeat it on the final
+      // chunk should not have its own words disappear the instant the step finishes.
       const narration = s.narration ?? prev.step.narration;
+      const message = s.message ?? prev.step.message;
       merged[merged.length - 1] = {
-        step: narration ? { ...s, narration } : s,
+        step: { ...s, ...(narration ? { narration } : {}), ...(message ? { message } : {}) },
         active: false,
       };
     } else {
@@ -122,35 +123,43 @@ function mergeSteps(raw: LiveRunStep[]): { step: LiveRunStep; active: boolean }[
 }
 
 /**
- * One item in the grouped rendering: either a standalone loop-bookkeeping row (observe/find/gate
- * — not a tool call, no narration) or a SEGMENT of consecutive reason/run activity.
+ * One item in the grouped rendering: a standalone loop-bookkeeping row (observe/find/gate), a real
+ * MESSAGE the model wrote to the person, or a SEGMENT of consecutive tool-call activity.
  *
- * A segment is Claude Code's own "the agent talks to me, then runs a tool, then runs another"
- * pattern. Every reasoning turn inside the segment can carry its OWN `say` — a real message the
- * model wrote at that moment, not filler — and each one is kept and rendered in order as a small
- * progress trail, not just the most recent overriding the rest. Discarding everything but the
- * last narration was the actual bug: a long tool-call chain read as silent "tool call after tool
- * call" with nothing telling you what was happening in between, even though the model had been
- * talking the whole time — the messages existed in the trace, they were just being thrown away
- * on the way to the screen. The most recent one is still the visually prominent line (it's what's
- * happening RIGHT NOW); earlier ones render smaller/dimmer above it, like a running log. Every
- * tool call the model has made without yet replying to the user collapses into ONE running
- * summary below the trail. A segment ends the moment the model actually answers (or gives up) —
- * that reply is the message's own bubble, rendered outside this component, not a row here — so
- * the NEXT tool call after an answer starts a genuinely new, separate segment.
+ * This is Claude Code's own shape, and it depends on the model writing two different things per
+ * action (see reasoner.ts's DOING_PARAM / SAY_PARAM):
+ *
+ *   message ("I'll check whether p1 already has a thread")
+ *   ├─ 3 tools · 1 thought        ← one collapsible; inside it the per-action status line
+ *   message ("There was no thread, so I'm creating one and greeting the agent")
+ *   └─ 2 tools
+ *   …then the final answer, rendered as the message bubble by the caller.
+ *
+ * A `message` is permanent and breaks the segment — it is the model deciding this is a moment
+ * worth telling the person about. A `narration` is the per-action STATUS and is overridden by the
+ * next action's own within the same segment, because fifteen "let me check…" lines stacked up is
+ * exactly the wall of noise this replaced: nobody scrolls back to read a status.
  */
 type ToolRow = { step: LiveRunStep; active: boolean; idx: number };
 type ThoughtRow = { step: LiveRunStep; idx: number };
-type NarrationEntry = { text: string; active: boolean; idx: number };
 type Grouped =
   | { kind: "plain"; step: LiveRunStep; active: boolean; idx: number }
-  | { kind: "segment"; narrations: NarrationEntry[]; tools: ToolRow[]; thoughts: ThoughtRow[]; anyActive: boolean; startIdx: number };
+  | { kind: "message"; text: string; active: boolean; idx: number }
+  | {
+      kind: "segment";
+      narration?: string;
+      narrationActive: boolean;
+      tools: ToolRow[];
+      thoughts: ThoughtRow[];
+      anyActive: boolean;
+      startIdx: number;
+    };
 
 function groupSteps(merged: { step: LiveRunStep; active: boolean }[]): Grouped[] {
   const out: Grouped[] = [];
   let current: Extract<Grouped, { kind: "segment" }> | null = null;
   const closeSegment = () => {
-    if (current && (current.tools.length > 0 || current.thoughts.length > 0 || current.narrations.length > 0)) out.push(current);
+    if (current && (current.tools.length > 0 || current.thoughts.length > 0 || current.narration)) out.push(current);
     current = null;
   };
   merged.forEach(({ step, active }, idx) => {
@@ -165,8 +174,18 @@ function groupSteps(merged: { step: LiveRunStep; active: boolean }[]): Grouped[]
       closeSegment();
       return;
     }
-    if (!current) current = { kind: "segment", narrations: [], tools: [], thoughts: [], anyActive: false, startIdx: idx };
-    if (step.narration) current.narrations.push({ text: step.narration, active, idx });
+    // A real message comes BEFORE the action it introduces: the model writes both on the same
+    // turn, and the message is its orientation for what it is about to do. So it closes whatever
+    // run of tool calls preceded it and the following action starts a fresh one.
+    if (step.message) {
+      closeSegment();
+      out.push({ kind: "message", text: step.message, active, idx });
+    }
+    if (!current) current = { kind: "segment", narrationActive: false, tools: [], thoughts: [], anyActive: false, startIdx: idx };
+    if (step.narration) {
+      current.narration = step.narration; // latest wins — a status, not a log
+      current.narrationActive = active;
+    }
     if (step.phase === "reason" && step.thinking) current.thoughts.push({ step, idx });
     if (step.phase === "run") current.tools.push({ step, active, idx });
     if (active) current.anyActive = true;
@@ -302,7 +321,7 @@ export function ActivitySequence({ steps, animate, live }: { steps: LiveRunStep[
   const toolCount = grouped.reduce((n, g) => (g.kind === "segment" ? n + g.tools.filter((t) => !t.active).length : n), 0);
   const thoughtCount = grouped.reduce((n, g) => (g.kind === "segment" ? n + g.thoughts.length : n), 0);
   const anyActive = merged.some((m) => m.active);
-  const anyNarration = grouped.some((g) => g.kind === "segment" && g.narrations.length > 0);
+  const anyNarration = grouped.some((g) => g.kind === "message" || (g.kind === "segment" && !!g.narration));
 
   if (grouped.length === 0) return null;
   // A live run shows SOMETHING for every step it takes — even a lone "Observed current state"
@@ -323,31 +342,31 @@ export function ActivitySequence({ steps, animate, live }: { steps: LiveRunStep[
               </div>
             );
           }
+          // A real message the model wrote to the person, mid-run. Rendered at full weight, in
+          // normal prose — this is the agent talking, and it should read exactly like the final
+          // answer does, not like the dim status lines around it.
+          if (g.kind === "message") {
+            return (
+              <div
+                key={`msg-${g.idx}`}
+                style={{ fontSize: 14, color: "var(--text1)", lineHeight: 1.6, whiteSpace: "pre-wrap", padding: "4px 0 2px" }}
+              >
+                <RevealText text={g.text} animate={animate && g.active} />
+              </div>
+            );
+          }
           const rows = [...g.tools.map((t) => ({ type: "tool" as const, idx: t.idx, row: t })), ...g.thoughts.map((t) => ({ type: "thought" as const, idx: t.idx, row: t }))]
             .sort((a, b) => a.idx - b.idx);
           const isOpen = !closedLiveSegments.has(gi) && (g.anyActive || openSegments.has(gi));
           return (
             <div key={`seg-${g.startIdx}`}>
-              {/* The full progress trail for this segment — every message the model actually
-                  wrote while working, in the order it wrote them, not just the last one. Earlier
-                  entries render smaller and dimmer (already-happened context, never animated —
-                  they've already been read); the most recent one keeps the original prominent
-                  style and is what reveals live, since it's what's happening right now. */}
-              {g.narrations.length > 0 && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 2, padding: "0 0 4px" }}>
-                  {g.narrations.slice(0, -1).map((n) => (
-                    <div key={n.idx} style={{ fontSize: 11.5, color: "var(--text3)", fontStyle: "italic", lineHeight: 1.5 }}>
-                      {n.text}
-                    </div>
-                  ))}
-                  {(() => {
-                    const last = g.narrations[g.narrations.length - 1]!;
-                    return (
-                      <div style={{ fontSize: 13, color: "var(--text1)", fontStyle: "italic", lineHeight: 1.5 }}>
-                        <RevealText text={last.text} animate={animate && last.active} />
-                      </div>
-                    );
-                  })()}
+              {/* The status for whatever action is happening RIGHT NOW — overridden by the next
+                  one rather than stacked, because it describes a moment, not the conversation.
+                  Italic and dim so it reads as a status line and never competes with a real
+                  message above it. */}
+              {g.narration && (
+                <div style={{ fontSize: 12, color: "var(--text3)", fontStyle: "italic", padding: "0 0 4px", lineHeight: 1.5 }}>
+                  <RevealText text={g.narration} animate={animate && g.narrationActive} />
                 </div>
               )}
               {rows.length > 0 && (

@@ -312,9 +312,14 @@ export interface LiveRunStep {
   /** A reasoning-capable model's own chain-of-thought for a "reason" step, when the model
    *  returned one. Rendered as a separate collapsed "Thoughts" block, not folded into `detail`. */
   thinking?: string;
-  /** Prose the model wrote alongside a non-terminal tool call — a real mid-run reply, shown
-   *  inline (not collapsed) at the point it happened. See TraceStep's own doc header. */
+  /** The live STATUS for this step's action ("Checking your existing projects") — shown beside it
+   *  while it runs and REPLACED by the next action's own, so a run of tool calls shows one status
+   *  line rather than one per call. See TraceStep's own doc header. */
   narration?: string;
+  /** A real MESSAGE the model chose to write to the person on this step. Unlike `narration` it is
+   *  never replaced: it renders as its own line in order, so a run reads as message → tool calls →
+   *  message → tool calls. Present only on the turns where the model judged one was warranted. */
+  message?: string;
   /** For a "run" phase step: the exact arguments the tool was called with — the real command,
    *  not just a duration (Claude Code's own cmd-tool view). Set on both the "begin" and
    *  "complete" checkpoints for the same step. */

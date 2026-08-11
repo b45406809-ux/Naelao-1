@@ -1493,8 +1493,10 @@ export interface LiveRunStep {
    *  field (and the DO's own checkpoint objects that carry it) already existed — only THIS local
    *  interface was missing it, so it was passing through untyped rather than actually dropped. */
   thinking?: string;
-  /** Prose the model wrote alongside a non-terminal tool call — see loop.ts's TraceStep doc. */
+  /** The live status for this step's action, replaced by the next one — TraceStep's own doc. */
   narration?: string;
+  /** A real message the model wrote to the person, kept rather than replaced — TraceStep's doc. */
+  message?: string;
   /** For a "run" phase step: the exact tool arguments — see loop.ts's TraceStep doc. */
   params?: unknown;
   /** For a "run" phase step that succeeded: a size-capped stringified return value. */

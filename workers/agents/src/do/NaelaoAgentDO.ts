@@ -1038,6 +1038,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     try { this.ctx.storage.sql.exec(`ALTER TABLE run_traces ADD COLUMN thinking TEXT`); } catch { /* exists */ }
     try { this.ctx.storage.sql.exec(`ALTER TABLE run_traces ADD COLUMN params TEXT`); } catch { /* exists */ }
     try { this.ctx.storage.sql.exec(`ALTER TABLE run_traces ADD COLUMN output TEXT`); } catch { /* exists */ }
+    // A real message the model wrote to the person (its optional `say`), as opposed to `narration`
+    // — the per-action status that the next action replaces. Kept separately because they render
+    // in different places and have different lifetimes; see TraceStep's own doc.
+    try { this.ctx.storage.sql.exec(`ALTER TABLE run_traces ADD COLUMN message TEXT`); } catch { /* exists */ }
 
     // The durable stream: a run's live progress and its answer AS IT IS BEING WRITTEN.
     //
@@ -3757,8 +3761,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     try {
       for (const step of trace) {
         this.ctx.storage.sql.exec(
-          `INSERT OR REPLACE INTO run_traces (run_id, seq, phase, name, tier, duration_ms, tokens, ok, detail, ts, narration, thinking, params, output)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT OR REPLACE INTO run_traces (run_id, seq, phase, name, tier, duration_ms, tokens, ok, detail, ts, narration, thinking, params, output, message)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           runId,
           step.seq,
           step.phase,
@@ -3772,7 +3776,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           step.narration ?? null,
           step.thinking ?? null,
           step.params === undefined ? null : (() => { try { return JSON.stringify(step.params); } catch { return null; } })(),
-          step.output ?? null
+          step.output ?? null,
+          step.message ?? null
         );
       }
     } catch {
@@ -3806,7 +3811,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   private readRunTrace(runId: string): TraceStep[] {
     const rows = this.ctx.storage.sql
       .exec(
-        `SELECT seq, phase, name, tier, duration_ms, tokens, ok, detail, ts, narration, thinking, params, output FROM run_traces WHERE run_id = ? ORDER BY seq ASC`,
+        `SELECT seq, phase, name, tier, duration_ms, tokens, ok, detail, ts, narration, thinking, params, output, message FROM run_traces WHERE run_id = ? ORDER BY seq ASC`,
         runId
       )
       .toArray() as Array<{
@@ -3823,6 +3828,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       thinking: string | null;
       params: string | null;
       output: string | null;
+      message: string | null;
     }>;
     return rows.map((r) => ({
       seq: r.seq,
@@ -3838,6 +3844,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       thinking: r.thinking ?? undefined,
       params: r.params === null ? undefined : (() => { try { return JSON.parse(r.params!); } catch { return r.params; } })(),
       output: r.output ?? undefined,
+      message: r.message ?? undefined,
     }));
   }
 

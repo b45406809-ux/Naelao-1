@@ -6136,6 +6136,41 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      "don't use my AI credits, I want to test it myself" instruction carried forward from the
      previous pass.
 
+124. **Item 123 got the fix backwards and a screenshot proved it: keeping every narration produced
+     a wall of fifteen near-identical italic lines above one collapsible. The real problem was
+     that ONE field was doing two jobs — now split into `doing` (a per-action status) and `say`
+     (a real message), which is what the Claude Code shape the user compared against actually
+     requires.** The original ask was override-within-a-group; item 123 read the symptom
+     ("tool call after tool call, not enough") as "show more" and stacked them instead. Both
+     framings were wrong, because a per-tool-call line can only ever be a status — a message
+     before every action is noise whether you stack it or overwrite it.
+     - **`doing`** (`DOING_PARAM`, REQUIRED on `run`/`distill`/`patch`): a few words naming what
+       THAT action does. Replaced by the next action's own — nobody scrolls back to read a status.
+       Renders as one dim italic line above the segment's collapsible.
+     - **`say`** (`SAY_PARAM`, now OPTIONAL): a real message that stays in the conversation and
+       renders at full weight in normal prose, exactly like the final answer. It BREAKS the tool
+       group, so a run reads message → tool calls → message → tool calls → answer. The instruction
+       is explicit about when: before the first action, and again when what was just learned
+       changes what happens next — never one per action, since each now describes itself.
+     - Wired end to end: `Reasoner.lastMessage` alongside `lastNarration` (both reset per turn —
+       without the reset every later step re-renders the same message, which a test now pins);
+       `TraceStep.message`; a `message` column on `run_traces` so it survives reload; both fields
+       streamed via `partialJsonString` so they arrive as written; `groupSteps` reverted to
+       latest-wins narration plus a new `message` grouped item.
+     - The ~20,000-char protocol budget (items 108/118/123) bit twice more — the new paragraph
+       had to be trimmed to fit rather than the bound relaxed, and the `say` guidance that
+       wouldn't fit lives in `SAY_PARAM`'s own description, which isn't counted by that test.
+     - 6 new tests across `reasoner-tool-calling.test.ts` (routing, status-only turns, `doing`
+       preferred over incidental prose, no message carried across turns) and
+       `reasoner-streaming.test.ts` (both fields streaming separately). **The cross-turn one was
+       verified to genuinely catch a regression** — temporarily removing the `lastMessage` reset
+       fails it, exactly as intended.
+     2866/2866 tests pass (6 new), `npx turbo run typecheck` clean (76 tasks), `apps/shell`
+     verified via a real `next build`. `naelao-agents` (bare `wrangler deploy`) and `apps/shell`
+     (`--branch=main`, production confirmed via the Pages API) both deployed. Verified via non-LLM
+     liveness checks only — no `/agent/run` dispatched, per the user's standing "don't use my AI
+     credits, I want to test it myself" instruction.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

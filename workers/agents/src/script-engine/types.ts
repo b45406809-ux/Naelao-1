@@ -242,12 +242,18 @@ export interface TraceStep {
    *  applies to. Rendered as a collapsed "Thoughts" block a user can expand, distinct from
    *  `detail` (which stays a short label like the chosen action). */
   thinking?: string | undefined;
-  /** Prose the model wrote ALONGSIDE a non-terminal tool call (e.g. "I'll check the order list
-   *  first" right before calling `run`) — see GatewayReasoner.lastNarration's own doc. Rendered
-   *  as a plain, always-visible reply line at the point it happened (Claude Code's own "the agent
-   *  talks to me, then runs a tool" pattern), distinct from `thinking` (which stays collapsed —
-   *  internal reasoning, not something written to be read). */
+  /** The live STATUS for this step's action — the model's own `doing` parameter, e.g. "Checking
+   *  what's already in your store". Rendered beside the action while it runs and REPLACED by the
+   *  next action's own, so a run of tool calls shows one status line rather than one per call.
+   *  See GatewayReasoner.lastNarration. Distinct from `thinking` (collapsed internal reasoning)
+   *  and from `message` (a real, permanent message — see below). */
   narration?: string | undefined;
+  /** A real MESSAGE the model chose to write to the person on this step — its optional `say`
+   *  parameter. Unlike `narration` this is never replaced: it renders as its own line in the
+   *  conversation, in order, and a run reads as message → tool calls → message → tool calls
+   *  (Claude Code's own shape). Present only on turns where the model judged one was warranted,
+   *  which is what keeps a long run readable. See GatewayReasoner.lastMessage. */
+  message?: string | undefined;
   /** For a "run" phase step: the exact arguments the tool was called with — what lets an
    *  expanded tool call show the real command, not just a duration. Attached at both the "begin"
    *  checkpoint (before the call resolves) and the "complete" one (unchanged). */

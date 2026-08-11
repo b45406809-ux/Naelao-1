@@ -254,27 +254,52 @@ describe("GatewayReasoner — streaming is opt-in per call", () => {
     expect(decision).toEqual({ action: "answer", text: "You sell websites." });
   });
 
-  it("reports a mid-run `say` as it is written, and keeps it as the turn's narration", async () => {
+  it("streams `doing` as the turn's status, kept separate from a real `say` message", async () => {
     captureBody(() => sseResponse([
       JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "run", arguments: "" } }] } }] }),
-      argFrame('{"say":"Let me check '),
-      argFrame('your store first","name":"commerce.list_products","params":{}}'),
+      argFrame('{"doing":"Checking your '),
+      argFrame('store","say":"Let me see what you already sell.","name":"commerce.list_products","params":{}}'),
     ]));
     const reasoner = new GatewayReasoner({
       apiKey: "k",
       gateway: { accountId: "a", gatewayId: "g" },
       ctx: { tenantId: "t", model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast" } as never,
     });
+    const doings: string[] = [];
     const says: string[] = [];
     const decision = await reasoner.decide({
       ...baseInput,
-      onDelta: (p) => { if (p.say !== undefined) says.push(p.say); },
+      onDelta: (p) => {
+        if (p.doing !== undefined) doings.push(p.doing);
+        if (p.say !== undefined) says.push(p.say);
+      },
     });
-    expect(says).toContain("Let me check ");
+    // Both are declared parameters, so both stream as they are written rather than arriving whole.
+    expect(doings).toContain("Checking your ");
+    expect(says).toContain("Let me see what you already sell.");
     expect(decision).toEqual({ action: "run", name: "commerce.list_products", params: {} });
-    // `say` is the declared parameter, so it survives as the narration rendered in the thread —
-    // it is not merely a transient streaming artifact.
-    expect(reasoner.lastNarration).toBe("Let me check your store first");
+    // And they survive the turn on SEPARATE fields — the whole point of the split. `doing` is the
+    // status the next action replaces; `say` is a message that stays in the conversation. Merging
+    // them is what produced a wall of near-identical lines on a multi-step run.
+    expect(reasoner.lastNarration).toBe("Checking your store");
+    expect(reasoner.lastMessage).toBe("Let me see what you already sell.");
+  });
+
+  it("leaves `lastMessage` unset on a turn where the model wrote only a status", async () => {
+    captureBody(() => sseResponse([
+      JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "run", arguments: "" } }] } }] }),
+      argFrame('{"doing":"Reading the order list","name":"commerce.list_orders","params":{}}'),
+    ]));
+    const reasoner = new GatewayReasoner({
+      apiKey: "k",
+      gateway: { accountId: "a", gatewayId: "g" },
+      ctx: { tenantId: "t", model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast" } as never,
+    });
+    await reasoner.decide({ ...baseInput, onDelta: () => {} });
+    expect(reasoner.lastNarration).toBe("Reading the order list");
+    // `say` is optional by design: most actions describe themselves and warrant no message. A
+    // model that skips it must not leave the PREVIOUS turn's message behind to be re-rendered.
+    expect(reasoner.lastMessage).toBeUndefined();
   });
 });
 

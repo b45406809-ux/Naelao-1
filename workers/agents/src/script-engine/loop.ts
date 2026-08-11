@@ -244,7 +244,7 @@ export interface Reasoner {
      * for the duration of the call, and there is no point paying it for a run whose output nobody
      * will see until it is finished anyway.
      */
-    onDelta?: (partial: { say?: string | undefined; answer?: string | undefined }) => void;
+    onDelta?: (partial: { doing?: string | undefined; say?: string | undefined; answer?: string | undefined }) => void;
   }): Promise<ReasonDecision>;
   /** Token usage from the most recently completed decide() call, when the backing LLM
    *  client reports it. Optional — reasoners that can't report it (e.g. test fakes) leave
@@ -254,10 +254,14 @@ export interface Reasoner {
    *  model/provider returned one (a reasoning-capable model with a reasoning level chosen — see
    *  billing-core's MODEL_CAPABILITIES). Optional — most reasoners/models never set this. */
   lastThinking?: string | undefined;
-  /** Prose the model wrote alongside a non-terminal (run/distill/patch) tool call — see
-   *  GatewayReasoner.lastNarration's own doc for why this is captured separately from
-   *  lastThinking. Optional — most reasoners/models never set this. */
+  /** The live status for the action the most recent decide() chose ("Checking your existing
+   *  projects") — replaced by the next action's own, never accumulated. See
+   *  GatewayReasoner.lastNarration. Optional — most reasoners/models never set this. */
   lastNarration?: string | undefined;
+  /** A real message the model chose to write to the person on the most recent decide(), kept
+   *  permanently rather than replaced. See GatewayReasoner.lastMessage for why this is captured
+   *  separately from lastNarration. Optional — set only on the turns that warrant one. */
+  lastMessage?: string | undefined;
 }
 
 /** Escalation thresholds (spec §11.1 agents.md "Escalation Rules"). Overridable per agent. */
@@ -422,14 +426,17 @@ async function reportProgress(opts: RunLoopOptions, checkpoint: LiveCheckpoint):
  * updating the in-flight reason step, or undefined when nobody is watching — which is also the
  * signal the reasoner uses to skip streaming entirely and take the cheaper path.
  */
-function deltaReporter(opts: RunLoopOptions): ((p: { say?: string | undefined; answer?: string | undefined }) => void) | undefined {
+function deltaReporter(
+  opts: RunLoopOptions
+): ((p: { doing?: string | undefined; say?: string | undefined; answer?: string | undefined }) => void) | undefined {
   if (!opts.onProgress) return undefined;
   return (p) => {
     void reportProgress(opts, {
       phase: "reason",
       detail: "Thinking",
       partial: true,
-      ...(p.say ? { narration: p.say } : {}),
+      ...(p.doing ? { narration: p.doing } : {}),
+      ...(p.say ? { message: p.say } : {}),
       ...(p.answer ? { answer_preview: p.answer } : {}),
     });
   };
@@ -652,6 +659,7 @@ export async function runScriptLoop(
         duration_ms: Date.now() - reasonStart,
         ...(thinkingOf(reasoner) ? { thinking: thinkingOf(reasoner) } : {}),
         ...(narrationOf(reasoner) ? { narration: narrationOf(reasoner) } : {}),
+        ...(messageOf(reasoner) ? { message: messageOf(reasoner) } : {}),
       });
       if (decision.action === "patch") {
         await tools.update(decision.name, { code: decision.code }, decision.reason);
@@ -845,6 +853,7 @@ export async function runScriptLoop(
           duration_ms: Date.now() - reasonStart,
           ...(thinkingOf(reasoner) ? { thinking: thinkingOf(reasoner) } : {}),
           ...(narrationOf(reasoner) ? { narration: narrationOf(reasoner) } : {}),
+        ...(messageOf(reasoner) ? { message: messageOf(reasoner) } : {}),
         });
 
         if (decision.action === "run") {
@@ -1108,9 +1117,14 @@ function thinkingOf(reasoner: Reasoner): string | undefined {
   return reasoner.lastThinking;
 }
 
-/** Reads the reasoner's most recently reported mid-run narration, when it wrote one. */
+/** Reads the reasoner's most recent live status line for the action it just chose. */
 function narrationOf(reasoner: Reasoner): string | undefined {
   return reasoner.lastNarration;
+}
+
+/** Reads the real message the reasoner chose to write to the person, on the turns it wrote one. */
+function messageOf(reasoner: Reasoner): string | undefined {
+  return reasoner.lastMessage;
 }
 
 /**

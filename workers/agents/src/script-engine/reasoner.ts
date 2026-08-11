@@ -200,7 +200,7 @@ const DECISION_INSTRUCTIONS = `You are the reasoning core of a script-first agen
 {"action":"patch","name":"<existing_script>","code":"<ts source>","reason":"..."}  // repair a drifted script
 {"action":"answer","text":"<final answer to the goal>"}                    // answer directly, no tool needed
 {"action":"give_up","reason":"..."}                                        // cannot proceed safely
-TALK TO THE PERSON WHILE YOU WORK. "run", "distill" and "patch" each take a "say" — one short line, written to them, saying what you are about to do and why. They see it the moment you decide it, BEFORE that thing has run, so they are never left watching silence. Write it as you would speak: "Let me look at what's already in your store", "Right, I have the numbers — now I'll draft the three emails", "That returned nothing, so I'll try searching by customer instead". Make it reflect what you ACTUALLY just learned and are ACTUALLY about to do, never a stock phrase repeated every step.
+TALK TO THE PERSON WHILE YOU WORK, via two fields on "run", "distill" and "patch". "doing" is REQUIRED: a few words naming what THAT action does ("Checking your existing projects"), replaced by the next action's own — a status, not a message. "say" is OPTIONAL, a real message that stays in the conversation: send one before your FIRST action, and again when what you just learned changes what you do next ("There was no thread in p1, so I'm creating one and greeting the agent"). Do NOT write one for every action — each already describes itself, and a line per call is noise nobody reads.
 
 Everything in this section is MACHINERY — how to format a reply — not your job description. When the user asks who you are, what business this is, or what you can do for them, answer from your own instructions ABOVE and from the "who_you_are" field in the payload, in their terms. Never describe yourself as "an assistant that can run scripts, distill and patch them": that is plumbing the user did not ask about and does not care about.
 
@@ -349,21 +349,36 @@ function extractJson(text: string): unknown {
  * can't express. The tools carry the SHAPE.
  */
 /**
- * The `say` parameter — the agent talking to the person WHILE it works, not only at the end.
+ * Two different things the model writes for the person, deliberately split — they have different
+ * lifetimes and different places on screen, and collapsing them into one field is what made a
+ * multi-step run read as a wall of near-identical lines.
  *
- * This is declared as a real tool parameter rather than left to prose the model might attach
- * beside its tool call, for the same reason the actions themselves became tools (see
- * DECISION_TOOLS' own header): with `tool_choice:"required"` many providers suppress free text
- * entirely, so narration that depends on a text block arriving alongside a forced tool call is
- * unreliable exactly where reliability matters most — the small open-weight models a free-tier
- * business runs on. As a declared parameter it comes back through the provider's own constrained
- * decoding every time, and it streams (see partialJsonString), so the user watches the sentence
- * appear before the tool it describes has even started.
+ * `doing` (required, every action) is a live STATUS: what THIS action is doing, shown beside it
+ * while it runs and replaced by the next action's own. Nobody scrolls back to read a status.
+ *
+ * `say` (optional) is a real MESSAGE, kept in the conversation permanently and rendered in order
+ * alongside the tool groups — Claude Code's own shape: a sentence of orientation, a run of tool
+ * calls, another sentence once that run taught it something, another run of calls. Because every
+ * action now describes itself via `doing`, a message before each one is pure noise; a message
+ * earns its place at a genuine boundary.
+ *
+ * Both are declared tool parameters rather than prose the model might attach beside its call, for
+ * the same reason the actions themselves became tools (see DECISION_TOOLS' own header): with
+ * `tool_choice:"required"` many providers suppress free text entirely, so anything depending on a
+ * text block arriving alongside a forced tool call is unreliable exactly where reliability matters
+ * most — the small open-weight models a free-tier business runs on. As declared parameters they
+ * come back through the provider's own constrained decoding, and they stream (partialJsonString).
  */
+const DOING_PARAM = {
+  type: "string",
+  description:
+    "REQUIRED. A few words naming what THIS action is doing, in the person's language, e.g. \"Checking what's already in your store\". Shown beside the action while it runs and replaced by the next one — a live status line, not a message they will scroll back to. Never mention operation names, scripts or tiers.",
+};
+
 const SAY_PARAM = {
   type: "string",
   description:
-    "One short line to the person you are helping, in their words, saying what you are about to do and why. Shown to them immediately, before this runs — so write it as an update they will read while they wait, e.g. \"Let me check what's already in your store first.\" Report what you learn too, not just the next step — these stay visible in order. Never mention operation names, scripts or tiers.",
+    "OPTIONAL. A real message to the person that stays in the conversation. Send one before your FIRST action, and again when what you just learned changes what you do next, e.g. \"There was no thread in p1, so I'm creating one and greeting the agent there.\" Do NOT send one with every action — they already describe themselves. Never mention operation names, scripts or tiers.",
 };
 
 const DECISION_TOOLS: ToolSpec[] = [
@@ -375,9 +390,10 @@ const DECISION_TOOLS: ToolSpec[] = [
       properties: {
         name: { type: "string", description: "The prebuilt op or library script name to run." },
         params: { type: "object", description: "Arguments for that op/script." },
+        doing: DOING_PARAM,
         say: SAY_PARAM,
       },
-      required: ["name", "say"],
+      required: ["name", "doing"],
     },
   },
   {
@@ -398,9 +414,10 @@ const DECISION_TOOLS: ToolSpec[] = [
           required: ["description"],
         },
         params: { type: "object", description: "Arguments to run it with immediately." },
+        doing: DOING_PARAM,
         say: SAY_PARAM,
       },
-      required: ["name", "code", "say"],
+      required: ["name", "code", "doing"],
     },
   },
   {
@@ -412,9 +429,10 @@ const DECISION_TOOLS: ToolSpec[] = [
         name: { type: "string", description: "The existing script to repair." },
         code: { type: "string", description: "The corrected TypeScript source." },
         reason: { type: "string", description: "What was wrong and what this fixes." },
+        doing: DOING_PARAM,
         say: SAY_PARAM,
       },
-      required: ["name", "code", "say"],
+      required: ["name", "code", "doing"],
     },
   },
   {
@@ -495,22 +513,26 @@ export class GatewayReasoner implements Reasoner {
    *  model/provider returned one (see ReasoningRequest's doc) — undefined for every model that
    *  doesn't report one. Mirrors lastUsage's "read immediately after each awaited decide()" contract. */
   lastThinking: string | undefined;
-  /** What the model said to the PERSON alongside a non-terminal tool call (run/distill/patch) —
-   *  e.g. "Let me check what's already in your store first" right before calling `run`. This is
-   *  the mid-run reply Claude Code's own UI shows between tool calls, and it is what turns a
-   *  silent tool runner into something you can follow.
+  /** The live STATUS for the action this turn chose — the declared `doing` parameter
+   *  (DOING_PARAM), e.g. "Checking what's already in your store". Shown beside that action while
+   *  it runs and replaced by the next action's own, so it is never scrolled back to.
    *
-   *  Read from the declared `say` parameter first (SAY_PARAM — constrained decoding, so it
-   *  actually arrives), falling back to any prose the model attached beside its tool call, which
-   *  is the older and far less reliable source: under `tool_choice:"required"` many providers
-   *  suppress free text entirely, which is exactly why `say` was made a real parameter.
+   *  Falls back to any prose the model attached beside its tool call, which is the older and far
+   *  less reliable source: under `tool_choice:"required"` many providers suppress free text
+   *  entirely, which is exactly why this was made a real parameter.
    *
    *  Deliberately NOT captured for a terminal `answer`/`give_up` decision — the answer text (or
-   *  the give_up reason) already covers that turn, and a narration line beside it would just
+   *  the give_up reason) already covers that turn, and a status line beside it would just
    *  duplicate the reply. Mirrors lastThinking's "read immediately after each awaited decide()"
    *  contract; a thinking model's real chain-of-thought and this are different things and both
    *  can be present on the same turn. */
   lastNarration: string | undefined;
+  /** A real MESSAGE to the person — the optional `say` parameter (SAY_PARAM) — kept in the
+   *  conversation permanently rather than replaced by the next action. Present only on the turns
+   *  where the model judged one was warranted (its first action, or a point where what it just
+   *  learned changed the plan), which is what keeps a long run readable instead of one
+   *  near-identical line per tool call. Same read-immediately-after-decide() contract. */
+  lastMessage: string | undefined;
 
   constructor(private readonly deps: ReasonerDeps) {}
 
@@ -521,6 +543,23 @@ export class GatewayReasoner implements Reasoner {
    * only the streaming path ever calls this. Returns null on a retry that is itself unusable, so
    * the caller reports the original honest failure instead of a second layer of confusion.
    */
+  /**
+   * Pulls both of the model's user-facing fields off a non-terminal tool call.
+   *
+   * `doing` is the live status for this one action; `say`, when the model chose to write one, is a
+   * real message that stays in the conversation. A model that ignores the schema and writes prose
+   * beside the call instead falls back to that prose as the status — the older, incidental source,
+   * kept because providers that DO emit free text under tool_choice:"required" shouldn't lose it.
+   */
+  private captureSpokenText(toolCall: ToolCall, text: string): void {
+    const arg = (key: string): string =>
+      typeof toolCall.arguments[key] === "string" ? (toolCall.arguments[key] as string).trim() : "";
+    const status = arg("doing") || text.trim();
+    if (status) this.lastNarration = status;
+    const message = arg("say");
+    if (message) this.lastMessage = message;
+  }
+
   private async decideWithoutStreaming(input: Parameters<Reasoner["decide"]>[0]): Promise<ReasonDecision | null> {
     const { onDelta: _dropped, ...withoutStreaming } = input;
     try {
@@ -535,6 +574,7 @@ export class GatewayReasoner implements Reasoner {
     this.lastUsage = undefined;
     this.lastThinking = undefined;
     this.lastNarration = undefined;
+    this.lastMessage = undefined;
     const userContent = JSON.stringify({
       // Who this agent is, repeated into the payload the model is answering about.
       //
@@ -679,12 +719,15 @@ export class GatewayReasoner implements Reasoner {
             progress.toolName === "answer"
               ? { answer: partialJsonString(progress.toolArguments, "text") }
               : progress.toolName
-                ? { say: partialJsonString(progress.toolArguments, "say") }
+                ? {
+                    doing: partialJsonString(progress.toolArguments, "doing"),
+                    say: partialJsonString(progress.toolArguments, "say"),
+                  }
                 : // No tool named yet: some models emit prose first (and some ignore
                   // tool_choice:"required" entirely and only ever answer in prose — a real,
                   // observed degradation), so plain streamed text is treated as answer text.
                   { answer: progress.text || undefined };
-          if (partial.say || partial.answer) input.onDelta?.(partial);
+          if (partial.doing || partial.say || partial.answer) input.onDelta?.(partial);
         })
       : normalizeUniversalResponse(await resp.json());
     const { text, usage, toolCall, thinking, error: streamError } = parsed;
@@ -709,12 +752,7 @@ export class GatewayReasoner implements Reasoner {
       const decision = decisionFromToolCall(toolCall);
       if (decision) {
         if (decision.action !== "answer" && decision.action !== "give_up") {
-          // `say` is the declared parameter (see SAY_PARAM) and is what a model reliably returns
-          // under tool_choice:"required"; a text block alongside the call is the older, incidental
-          // source and stays as the fallback for providers that do emit one.
-          const said = typeof toolCall.arguments["say"] === "string" ? (toolCall.arguments["say"] as string).trim() : "";
-          const narration = said || text.trim();
-          if (narration) this.lastNarration = narration;
+          this.captureSpokenText(toolCall, text);
         }
         return decision;
       }
@@ -730,9 +768,7 @@ export class GatewayReasoner implements Reasoner {
       // in this platform uses, so a genuinely unrecognisable name still falls through.
       const asOperation = coerceOperationToolCall(toolCall);
       if (asOperation) {
-        const said = typeof toolCall.arguments["say"] === "string" ? (toolCall.arguments["say"] as string).trim() : "";
-        const narration = said || text.trim();
-        if (narration) this.lastNarration = narration;
+        this.captureSpokenText(toolCall, text);
         return asOperation;
       }
       // A tool call we can't use (unknown action, or missing a required field) is a genuine

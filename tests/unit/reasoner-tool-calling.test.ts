@@ -437,6 +437,82 @@ describe("GatewayReasoner — lastNarration capture (mid-run reply alongside a t
   });
 });
 
+// The `doing` / `say` split. These are two different things with different lifetimes: `doing` is a
+// per-action STATUS the next action replaces, `say` is a real MESSAGE that stays in the
+// conversation. Conflating them into one field is what produced the reported wall of fifteen
+// near-identical italic lines on a single multi-step run — every action contributed one, and none
+// of them was a message anyone wanted to keep.
+describe("GatewayReasoner — `doing` is a status, `say` is a message, and they stay separate", () => {
+  const runWith = async (input: Record<string, unknown>) => {
+    const reasoner = new GatewayReasoner({ apiKey: "k", gateway: GATEWAY, ctx: CTX });
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      content: [{ type: "tool_use", name: "run", input: { name: "commerce.list_orders", ...input } }],
+    }), { status: 200 })) as typeof fetch;
+    try {
+      await reasoner.decide({ goal: "g", level: 2, snapshot: {}, candidates: [], availableOperations: [] } as never);
+      return reasoner;
+    } finally {
+      globalThis.fetch = original;
+    }
+  };
+
+  it("routes each field to its own slot", async () => {
+    const r = await runWith({ doing: "Reading your orders", say: "Let me look at what's sold so far." });
+    expect(r.lastNarration).toBe("Reading your orders");
+    expect(r.lastMessage).toBe("Let me look at what's sold so far.");
+  });
+
+  it("leaves lastMessage unset when the model wrote only a status — the common case", async () => {
+    const r = await runWith({ doing: "Reading your orders" });
+    expect(r.lastNarration).toBe("Reading your orders");
+    expect(r.lastMessage).toBeUndefined();
+  });
+
+  it("prefers the declared `doing` over prose the model attached beside the call", async () => {
+    const reasoner = new GatewayReasoner({ apiKey: "k", gateway: GATEWAY, ctx: CTX });
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      content: [
+        { type: "text", text: "some incidental prose" },
+        { type: "tool_use", name: "run", input: { name: "x", doing: "Reading your orders" } },
+      ],
+    }), { status: 200 })) as typeof fetch;
+    try {
+      await reasoner.decide({ goal: "g", level: 2, snapshot: {}, candidates: [], availableOperations: [] } as never);
+      // The declared parameter is schema-constrained and therefore reliable; loose prose is only
+      // the fallback for providers that emit it at all under tool_choice:"required".
+      expect(reasoner.lastNarration).toBe("Reading your orders");
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it("does not carry a message across turns — a later status-only turn must not re-show it", async () => {
+    const reasoner = new GatewayReasoner({ apiKey: "k", gateway: GATEWAY, ctx: CTX });
+    const original = globalThis.fetch;
+    let call = 0;
+    globalThis.fetch = (async () => {
+      call++;
+      const input = call === 1
+        ? { name: "x", doing: "Checking", say: "Here's what I'm starting with." }
+        : { name: "y", doing: "Creating it" };
+      return new Response(JSON.stringify({ content: [{ type: "tool_use", name: "run", input }] }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      await reasoner.decide({ goal: "g", level: 2, snapshot: {}, candidates: [], availableOperations: [] } as never);
+      expect(reasoner.lastMessage).toBe("Here's what I'm starting with.");
+      await reasoner.decide({ goal: "g", level: 2, snapshot: {}, candidates: [], availableOperations: [] } as never);
+      // Without the reset, every subsequent step would re-render the same message — the exact
+      // duplication this split exists to remove.
+      expect(reasoner.lastMessage).toBeUndefined();
+      expect(reasoner.lastNarration).toBe("Creating it");
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});
+
 describe("Workers AI as a selectable model — pricing and context are real, not defaults", () => {
   const M = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
