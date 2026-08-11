@@ -223,4 +223,53 @@ describe("SpaceDO — threads (spec-canonical, sub-agent/channel subthreads)", (
       expect(created.status).toBe(201);
     });
   });
+
+  // PATCH /threads/:id — rename and/or archive. There is no hard delete for a thread (same
+  // convention `projects` already established): "delete" is `status: 'archived'`.
+  describe("PATCH /threads/:id — rename and/or archive (no hard delete)", () => {
+    it("renames a thread", async () => {
+      const thread = await call(spaceDO, "/threads", "POST", { space_id: "space1", title: "Old title" });
+      const updated = await call(spaceDO, `/threads/${thread.json.id}`, "PATCH", { title: "New title" });
+      expect(updated.status).toBe(200);
+      expect(updated.json.title).toBe("New title");
+      expect(updated.json.status).toBe("active");
+
+      const got = await call(spaceDO, `/threads/${thread.json.id}`, "GET");
+      expect(got.json.title).toBe("New title");
+    });
+
+    it("archives a thread — the platform's equivalent of 'delete'", async () => {
+      const thread = await call(spaceDO, "/threads", "POST", { space_id: "space1", title: "To archive" });
+      const updated = await call(spaceDO, `/threads/${thread.json.id}`, "PATCH", { status: "archived" });
+      expect(updated.status).toBe(200);
+      expect(updated.json.status).toBe("archived");
+      // The row still exists — real conversation history is never destroyed by this route.
+      const got = await call(spaceDO, `/threads/${thread.json.id}`, "GET");
+      expect(got.json.status).toBe("archived");
+    });
+
+    it("can rename and archive in the same call", async () => {
+      const thread = await call(spaceDO, "/threads", "POST", { space_id: "space1", title: "Both" });
+      const updated = await call(spaceDO, `/threads/${thread.json.id}`, "PATCH", { title: "Renamed and archived", status: "archived" });
+      expect(updated.json.title).toBe("Renamed and archived");
+      expect(updated.json.status).toBe("archived");
+    });
+
+    it("rejects an invalid status", async () => {
+      const thread = await call(spaceDO, "/threads", "POST", { space_id: "space1", title: "x" });
+      const bad = await call(spaceDO, `/threads/${thread.json.id}`, "PATCH", { status: "deleted" });
+      expect(bad.status).toBe(400);
+    });
+
+    it("404s for a thread that doesn't exist", async () => {
+      const res = await call(spaceDO, "/threads/does-not-exist", "PATCH", { title: "x" });
+      expect(res.status).toBe(404);
+    });
+
+    it("400s when nothing to update was provided", async () => {
+      const thread = await call(spaceDO, "/threads", "POST", { space_id: "space1", title: "x" });
+      const res = await call(spaceDO, `/threads/${thread.json.id}`, "PATCH", {});
+      expect(res.status).toBe(400);
+    });
+  });
 });

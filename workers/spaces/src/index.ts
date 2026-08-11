@@ -2196,6 +2196,21 @@ app.get("/spaces/:spaceId/threads/:threadId", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
+// PATCH /spaces/:spaceId/threads/:threadId — rename and/or archive. There is no hard-delete
+// route: `requireBusinessMembership({ GET: "member" })` above already defaults PATCH to
+// "admin" for a product_end_user caller (same convention /projects/:projectId's own PATCH
+// relies on), so archiving someone else's thread out from under them needs the same privilege
+// a rename does.
+app.patch("/spaces/:spaceId/threads/:threadId", async (c) => {
+  const { spaceId, threadId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const body = await c.req.text();
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/threads/${encodeURIComponent(threadId)}`, "PATCH", body);
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
 // GET /spaces/:spaceId/sub-spaces — list the product's space registry (root + departments).
 app.get("/spaces/:spaceId/sub-spaces", async (c) => {
   const spaceId = c.req.param("spaceId");

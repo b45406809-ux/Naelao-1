@@ -420,6 +420,25 @@ export interface OrchestrationHooks {
     reply?: string;
     error?: string;
   }>;
+  /**
+   * The other half of the §A1.18 thread model: post a message into an EXISTING, visible thread
+   * (never a private sub_agent thread) and, unless `respond:false`, dispatch the named agent to
+   * reply IN THAT SAME thread — what "chat with an ai inside the thread" looks like from the
+   * assistant's side, as opposed to consultAgent's private, hidden coordination channel.
+   */
+  sendToThread?(params: {
+    threadId: string;
+    message: string;
+    spaceId: string;
+    agentId?: string;
+    respond?: boolean;
+  }): Promise<{
+    ok: boolean;
+    session_id?: string;
+    reply?: string;
+    dispatched: boolean;
+    error?: string;
+  }>;
 }
 
 /**

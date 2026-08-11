@@ -1,26 +1,31 @@
 /**
  * project-coordination (§A1.18 thread model) — lets a Space Assistant coordinate with a named
- * project agent without mixing that exchange into the visible user<->agent transcript, and gives
- * it a narrow way to look at a project's OTHER threads on demand.
+ * project agent without mixing that exchange into the visible user<->agent transcript, gives it
+ * a narrow way to look at a project's OTHER threads on demand, and — as of this pass — the same
+ * everyday thread operations a human has: open one, rename or archive it, find one by name, and
+ * actually chat inside an existing thread rather than only through a hidden side channel.
  *
  * Design (see CLAUDE.md item 75 for the full reasoning): a project thread is the person and
  * whichever agent is working — two visible parties, no addressing ambiguity. When the assistant
- * needs to talk TO that agent (a handoff, a status check, an instruction), that's a real, separate
- * conversation — `agent.consult` runs it in its own subthread (thread_kind='sub_agent',
- * parent_thread_id), hidden by default and expandable in the shell, never appended to the visible
- * thread where nobody could tell who the assistant was actually addressing. "Context is not lost"
- * is mostly already solved without shared transcripts — Memory OS L3/L4/L6 (project-shared) and
- * the Project Journal carry the DISTILLED state across every thread in a project — this script is
- * for the rarer case of needing the RAW exchange itself: consulting an agent directly, or auditing
- * exactly what was said in a specific thread.
+ * needs to talk TO that agent (a handoff, a status check, an instruction) WITHOUT it appearing in
+ * the visible thread, that's `agent.consult` — a real, separate conversation in its own subthread
+ * (thread_kind='sub_agent', parent_thread_id), hidden by default and expandable in the shell.
+ * `thread.send_message` is the other half: when the point IS for the message (and, unless
+ * respond:false, the target agent's reply) to actually show up in a real, visible thread — the
+ * assistant participating the way a person types into a thread and gets an answer. "Context is
+ * not lost" is mostly already solved without shared transcripts — Memory OS L3/L4/L6
+ * (project-shared) and the Project Journal carry the DISTILLED state across every thread in a
+ * project — this script is for the rarer cases of needing the RAW exchange itself: consulting an
+ * agent privately, chatting in a visible thread, or auditing exactly what was said in one.
  *
- * `thread.list`/`thread.read` are read-only and never gated (same precedent as workspace-admin's
- * `project.list`/`agent.list`). `agent.consult` is left ungated by default too — it dispatches the
- * assistant's own normal operating cost (one run), same posture as @mention dispatch; whatever the
- * consulted agent decides to DO is still gated by its own agent_policy_overrides/assistant_policy
- * exactly as if a human had asked it directly. `thread.create` IS gated by default — it's a
- * structural write, and the guided policy's job is to let the owner see structure appear on
- * purpose rather than accumulate.
+ * `thread.list`/`thread.read`/`thread.search` are read-only and never gated (same precedent as
+ * workspace-admin's `project.list`/`agent.list`). `agent.consult` is left ungated by default too —
+ * it dispatches the assistant's own normal operating cost (one run), same posture as @mention
+ * dispatch; whatever the consulted agent decides to DO is still gated by its own
+ * agent_policy_overrides/assistant_policy exactly as if a human had asked it directly.
+ * `thread.create`/`thread.rename`/`thread.delete`/`thread.send_message` ARE gated by default —
+ * each is either a structural write or a real dispatched run, and the guided policy's job is to
+ * let the owner see structure and cost appear on purpose rather than accumulate.
  */
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
@@ -51,11 +56,15 @@ async function spacesCall(ctx: PrebuiltOpContext, method: string, path: string, 
 export const projectCoordination: PrebuiltScript = {
   name: "project-coordination",
   description:
-    "Work with a project's threads and its agents: open a new thread, list a project's threads, " +
-    "read exactly what was said in one, and consult a named project agent directly (a private, " +
-    "separate exchange — not the visible thread the person is in). Use the consult when you need " +
-    "to hand off to, check status with, or instruct a specific agent; use thread.read when you " +
-    "need the raw exchange rather than the Project Journal's distilled summary.",
+    "Work with a project's threads and its agents — everything a person can do with a thread, " +
+    "not just read one: open a new thread, rename or archive one, find one by name, list a " +
+    "project's threads, read exactly what was said in one, send a real message INTO an existing " +
+    "thread (with the target agent replying there, visibly, the way a person chatting in it " +
+    "would), and consult a named project agent PRIVATELY (a separate exchange, not the visible " +
+    "thread). Use send_message when the point is for the person to see the exchange; use consult " +
+    "when it's a private handoff/check-in/instruction that shouldn't appear in the visible thread; " +
+    "use thread.read when you need the raw exchange rather than the Project Journal's distilled " +
+    "summary.",
   domain: "orchestration",
   requires_tier: 1,
   operations: {
@@ -76,6 +85,28 @@ export const projectCoordination: PrebuiltScript = {
         ...(projectId ? { projectId } : {}),
         ...(parentThreadId ? { parentThreadId } : {}),
         ...(threadId ? { threadId } : {}),
+      });
+    },
+    // Post a real message into an EXISTING, visible thread — and, unless respond:false, dispatch
+    // the named agent to reply THERE, the way a person chatting in that thread would see happen.
+    // Distinct from agent.consult (above): that one is private and hidden; this one is exactly
+    // what shows up when someone opens the thread. `agent_id` is required to get a reply — there
+    // is no attempt to guess "the project's default agent"; name who you're addressing.
+    "thread.send_message": async (a, c) => {
+      if (!c.env.orchestration?.sendToThread) {
+        return { ok: false, error: "thread.send_message not available in this environment" };
+      }
+      const threadId = String(a["thread_id"] ?? "");
+      const message = String(a["message"] ?? "");
+      if (!threadId || !message) throw new Error("thread.send_message requires thread_id and message");
+      const agentId = a["agent_id"] ? String(a["agent_id"]) : undefined;
+      const respond = a["respond"] !== false;
+      return c.env.orchestration.sendToThread({
+        threadId,
+        message,
+        spaceId: c.env.spaceId,
+        ...(agentId ? { agentId } : {}),
+        respond,
       });
     },
     // Open a real, visible thread — what "new thread" in the shell does. Deliberately creates a
@@ -109,6 +140,39 @@ export const projectCoordination: PrebuiltScript = {
       if (!thread.session_id) return { thread, messages: [] };
       const messages = await spacesCall(c, "GET", `/spaces/${c.env.spaceId}/sessions/${thread.session_id}/messages`);
       return { thread, messages };
+    },
+    "thread.rename": async (a, c) => {
+      const threadId = String(a["thread_id"] ?? "");
+      const title = String(a["title"] ?? "");
+      if (!threadId || !title) throw new Error("thread.rename requires thread_id and title");
+      return spacesCall(c, "PATCH", `/spaces/${c.env.spaceId}/threads/${encodeURIComponent(threadId)}`, { title });
+    },
+    // There is no hard delete for a thread — its messages are real conversation history, and this
+    // archives it (status:'archived'), same convention `project.configure({status:'archived'})`
+    // already uses. isThreadLimitReached (SpaceDO) already excludes archived threads from a
+    // project's max_threads count, so this frees up room the same way a real delete would.
+    "thread.delete": async (a, c) => {
+      const threadId = String(a["thread_id"] ?? "");
+      if (!threadId) throw new Error("thread.delete requires thread_id");
+      return spacesCall(c, "PATCH", `/spaces/${c.env.spaceId}/threads/${encodeURIComponent(threadId)}`, { status: "archived" });
+    },
+    // A real, honest search — matches thread TITLES only (same precedent as the shell's own
+    // Sessions-page search, which is instant client-side title filtering; a genuine full-text
+    // search over message CONTENT was explicitly scoped out there too and stays out here for the
+    // same reason: no backend route for it exists yet, and pretending otherwise would silently
+    // under-deliver on what "search" means).
+    "thread.search": async (a, c) => {
+      const query = String(a["query"] ?? "").trim().toLowerCase();
+      if (!query) throw new Error("thread.search requires query");
+      const projectId = a["project_id"] ? String(a["project_id"]) : c.env.projectId;
+      const qs = new URLSearchParams({ space_id: c.env.spaceId });
+      if (projectId) qs.set("project_id", projectId);
+      if (a["include_sub_threads"]) qs.set("include_sub_threads", "true");
+      const listed = (await spacesCall(c, "GET", `/spaces/${c.env.spaceId}/threads?${qs.toString()}`)) as {
+        data?: Array<{ id: string; title?: string | null; [key: string]: unknown }>;
+      };
+      const matches = (listed.data ?? []).filter((t) => (t.title ?? "").toLowerCase().includes(query));
+      return { query, matches, matched_count: matches.length };
     },
   },
 };

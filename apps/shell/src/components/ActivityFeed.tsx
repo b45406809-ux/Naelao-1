@@ -163,7 +163,19 @@ function groupSteps(merged: { step: LiveRunStep; active: boolean }[]): Grouped[]
     current = null;
   };
   merged.forEach(({ step, active }, idx) => {
-    if (step.phase === "observe" || step.phase === "find" || step.phase === "gate") {
+    if (step.phase === "observe" || step.phase === "find") {
+      closeSegment();
+      out.push({ kind: "plain", step, active, idx });
+      return;
+    }
+    // Two different things share the "gate" phase. The once-per-run "chose an approach" gate
+    // (e.g. "Chose approach: L3") has no `name` — it's a standalone line before any segment
+    // starts. A per-ACTION gate (`name` set: the run was parked pending approval, or skipped
+    // because the step budget ran out) is treated below as a row INSIDE the current segment,
+    // not here — closing the segment on it, as this used to, orphaned the narration that
+    // described that exact action ("Reading the report…") with no table underneath it at all,
+    // since the action never got a "run" trace entry to sit in one.
+    if (step.phase === "gate" && !step.name) {
       closeSegment();
       out.push({ kind: "plain", step, active, idx });
       return;
@@ -187,7 +199,9 @@ function groupSteps(merged: { step: LiveRunStep; active: boolean }[]): Grouped[]
       current.narrationActive = active;
     }
     if (step.phase === "reason" && step.thinking) current.thoughts.push({ step, idx });
-    if (step.phase === "run") current.tools.push({ step, active, idx });
+    // A per-action gate row (parked / skipped) goes in the table alongside real tool calls — the
+    // model committed to this action and it was recorded, it just didn't get to run.
+    if (step.phase === "run" || (step.phase === "gate" && step.name)) current.tools.push({ step, active, idx });
     if (active) current.anyActive = true;
   });
   closeSegment();
@@ -195,9 +209,11 @@ function groupSteps(merged: { step: LiveRunStep; active: boolean }[]): Grouped[]
 }
 
 function segmentHeader(seg: Extract<Grouped, { kind: "segment" }>): string {
-  const activeTools = seg.tools.filter((t) => t.active).length;
-  const doneTools = seg.tools.length - activeTools;
-  const totalTools = seg.tools.length;
+  const runRows = seg.tools.filter((t) => t.step.phase !== "gate");
+  const gateRows = seg.tools.filter((t) => t.step.phase === "gate");
+  const activeTools = runRows.filter((t) => t.active).length;
+  const doneTools = runRows.length - activeTools;
+  const totalTools = runRows.length;
   let toolPart: string | null = null;
   if (activeTools > 0 && doneTools === 0) {
     toolPart = `${activeTools} tool${activeTools === 1 ? "" : "s"} running`;
@@ -205,14 +221,33 @@ function segmentHeader(seg: Extract<Grouped, { kind: "segment" }>): string {
     toolPart = `${totalTools} tool${totalTools === 1 ? "" : "s"}`;
   }
   const thoughtPart = seg.thoughts.length > 0 ? `${seg.thoughts.length} thought${seg.thoughts.length === 1 ? "" : "s"}` : null;
-  return [toolPart, thoughtPart].filter(Boolean).join(" · ") || (seg.anyActive ? "Thinking" : "Working");
+  // Parked/skipped actions (see groupSteps) count separately — nothing actually ran for them,
+  // so folding them into "N tools" would overstate what happened.
+  const gatePart = gateRows.length > 0 ? `${gateRows.length} waiting` : null;
+  return [toolPart, thoughtPart, gatePart].filter(Boolean).join(" · ") || (seg.anyActive ? "Thinking" : "Working");
+}
+
+function pendingRowLabel(detail: string | undefined): string {
+  switch (detail) {
+    case "deferred_pending_approval":
+    case "awaiting_approval":
+      return "waiting for approval";
+    case "skipped_final_step":
+      return "skipped — ran out of time";
+    default:
+      return "paused";
+  }
 }
 
 function ToolRowView({
   row, isOpen, onToggle,
 }: { row: ToolRow; isOpen: boolean; onToggle: () => void }) {
   const { step, active } = row;
-  const failed = step.ok === false;
+  // A parked/skipped action (see groupSteps) — the model committed to it and it was recorded,
+  // it just never actually ran. Rendered distinctly (amber "waiting"/"skipped", never the red
+  // "failed" a genuinely-attempted-and-errored tool call gets) so this doesn't read as a bug.
+  const pending = step.phase === "gate";
+  const failed = !pending && step.ok === false;
   let paramsText: string | null = null;
   if (step.params !== undefined) {
     try {
@@ -237,7 +272,8 @@ function ToolRowView({
           {step.name ?? "tool"}
           {active && <span className="activity-ellipsis">…</span>}
         </span>
-        {step.duration_ms !== undefined && <span style={{ fontSize: 10.5 }}>{step.duration_ms}ms</span>}
+        {!pending && step.duration_ms !== undefined && <span style={{ fontSize: 10.5 }}>{step.duration_ms}ms</span>}
+        {pending && <span style={{ color: "#b45309", fontSize: 11 }}>{pendingRowLabel(step.detail)}</span>}
         {failed && <span style={{ color: "#dc2626", fontSize: 11 }}>failed</span>}
         {expandable && <span style={{ color: "var(--text3)", fontSize: 10 }}>{isOpen ? "▲" : "▼"}</span>}
       </button>

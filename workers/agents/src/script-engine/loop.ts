@@ -548,7 +548,7 @@ export async function runScriptLoop(
     params: Record<string, unknown>,
     stepsCompleted: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>
   ): LoopResult => {
-    pushTrace({ phase: "gate", name: actionName, detail: "awaiting_approval" });
+    pushTrace({ phase: "gate", name: actionName, detail: "awaiting_approval", params });
     return finish({
       level,
       script_name: actionName,
@@ -863,6 +863,12 @@ export async function runScriptLoop(
           // into the summary path below with whatever already succeeded.
           if (isFinalStep) {
             notes.push(`${level} chose ${decision.name} on the final step (${assessment.reason}); not run — summarising instead`);
+            // Without this, the "reason" step just pushed above (carrying the model's own status
+            // for THIS action, e.g. "Reading the report") is left as the segment's narration with
+            // no row ever recorded for it — the closing-summary decide() call below doesn't push
+            // its own trace step, so the segment closes on the eventual answer with a description
+            // attached to nothing. This row is what keeps the two together.
+            pushTrace({ phase: "gate", name: decision.name, detail: "skipped_final_step", params: decision.params });
             break;
           }
 
@@ -935,7 +941,7 @@ export async function runScriptLoop(
               steps_completed: [...priorSteps],
             });
             notes.push(`${level} parked '${decision.name}' pending approval and continued`);
-            pushTrace({ phase: "gate", name: decision.name, detail: "deferred_pending_approval" });
+            pushTrace({ phase: "gate", name: decision.name, detail: "deferred_pending_approval", params: decision.params });
             priorSteps.push({
               name: decision.name,
               params: decision.params,

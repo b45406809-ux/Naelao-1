@@ -211,4 +211,123 @@ describe("project-coordination prebuilt", () => {
     const env = { scriptsBucket: {} as never, spaceId: "space-1", tenantId: "tenant-1", platformSecret: PLATFORM_SECRET } as unknown as ScriptEngineEnv;
     await expect(projectCoordination.operations["thread.list"]!({}, { env, run: noopRun })).rejects.toThrow(/spaces worker binding/);
   });
+
+  // Parity ask: the assistant should be able to do what a person managing a thread can — rename
+  // it, archive it (there's no hard delete — see SpaceDO.updateThread's own comment), and find one
+  // by name.
+  describe("thread.rename", () => {
+    it("requires thread_id and title", async () => {
+      const env = makeEnv([]);
+      await expect(projectCoordination.operations["thread.rename"]!({ thread_id: "t1" }, { env, run: noopRun })).rejects.toThrow(/thread_id and title/);
+      await expect(projectCoordination.operations["thread.rename"]!({ title: "x" }, { env, run: noopRun })).rejects.toThrow(/thread_id and title/);
+    });
+
+    it("PATCHes the thread's title", async () => {
+      const calls: Call[] = [];
+      const env = makeEnv(calls, () => ({ id: "t1", title: "New name" }));
+      const result = await projectCoordination.operations["thread.rename"]!({ thread_id: "t1", title: "New name" }, { env, run: noopRun });
+      expect(result).toEqual({ id: "t1", title: "New name" });
+      expect(calls[0]!.method).toBe("PATCH");
+      expect(calls[0]!.url).toContain("/spaces/space-1/threads/t1");
+      expect(calls[0]!.body).toEqual({ title: "New name" });
+    });
+  });
+
+  describe("thread.delete", () => {
+    it("requires thread_id", async () => {
+      const env = makeEnv([]);
+      await expect(projectCoordination.operations["thread.delete"]!({}, { env, run: noopRun })).rejects.toThrow(/thread_id/);
+    });
+
+    it("archives the thread — never a hard delete", async () => {
+      const calls: Call[] = [];
+      const env = makeEnv(calls, () => ({ id: "t1", status: "archived" }));
+      const result = await projectCoordination.operations["thread.delete"]!({ thread_id: "t1" }, { env, run: noopRun });
+      expect(result).toEqual({ id: "t1", status: "archived" });
+      expect(calls[0]!.method).toBe("PATCH");
+      expect(calls[0]!.body).toEqual({ status: "archived" });
+    });
+  });
+
+  describe("thread.search", () => {
+    it("requires a query", async () => {
+      const env = makeEnv([]);
+      await expect(projectCoordination.operations["thread.search"]!({}, { env, run: noopRun })).rejects.toThrow(/query/);
+    });
+
+    it("filters the project's own threads by title, case-insensitively", async () => {
+      const calls: Call[] = [];
+      const env = { ...makeEnv(calls, () => ({
+        data: [
+          { id: "t1", title: "Q3 Pricing Review" },
+          { id: "t2", title: "Support: refund request" },
+          { id: "t3", title: null },
+        ],
+        count: 3,
+      })), projectId: "proj-1" } as ScriptEngineEnv;
+      const result = await projectCoordination.operations["thread.search"]!({ query: "pricing" }, { env, run: noopRun });
+      expect(result).toEqual({
+        query: "pricing",
+        matches: [{ id: "t1", title: "Q3 Pricing Review" }],
+        matched_count: 1,
+      });
+      expect(calls[0]!.url).toContain("project_id=proj-1");
+    });
+
+    it("returns no matches, not an error, when nothing matches", async () => {
+      const calls: Call[] = [];
+      const env = makeEnv(calls, () => ({ data: [{ id: "t1", title: "Something else" }], count: 1 }));
+      const result = await projectCoordination.operations["thread.search"]!({ query: "nonexistent" }, { env, run: noopRun });
+      expect(result).toEqual({ query: "nonexistent", matches: [], matched_count: 0 });
+    });
+  });
+
+  // The other half of the thread model: actually chatting in a VISIBLE thread, as opposed to
+  // agent.consult's private, hidden subthread.
+  describe("thread.send_message", () => {
+    it("requires thread_id and message", async () => {
+      const orchestration: OrchestrationHooks = { sendToThread: async () => ({ ok: true, dispatched: false }) };
+      const env = makeEnv([], undefined, orchestration);
+      await expect(
+        projectCoordination.operations["thread.send_message"]!({ thread_id: "t1" }, { env, run: noopRun })
+      ).rejects.toThrow(/thread_id and message/);
+      await expect(
+        projectCoordination.operations["thread.send_message"]!({ message: "hi" }, { env, run: noopRun })
+      ).rejects.toThrow(/thread_id and message/);
+    });
+
+    it("reports unavailable, not a throw, when no orchestration hook is wired", async () => {
+      const env = makeEnv([]); // no orchestration
+      const result = await projectCoordination.operations["thread.send_message"]!(
+        { thread_id: "t1", message: "hi" },
+        { env, run: noopRun }
+      );
+      expect(result).toEqual({ ok: false, error: "thread.send_message not available in this environment" });
+    });
+
+    it("delegates to orchestration.sendToThread, defaulting respond to true", async () => {
+      let seen: unknown;
+      const orchestration: OrchestrationHooks = {
+        sendToThread: async (params) => { seen = params; return { ok: true, session_id: "sess-1", dispatched: true, reply: "on it" }; },
+      };
+      const env = makeEnv([], undefined, orchestration);
+      const result = await projectCoordination.operations["thread.send_message"]!(
+        { thread_id: "t1", message: "please check the invoice" },
+        { env, run: noopRun }
+      );
+      expect(result).toEqual({ ok: true, session_id: "sess-1", dispatched: true, reply: "on it" });
+      expect(seen).toEqual({ threadId: "t1", message: "please check the invoice", spaceId: "space-1", respond: true });
+    });
+
+    it("passes through agent_id and an explicit respond:false", async () => {
+      let seen: unknown;
+      const orchestration: OrchestrationHooks = { sendToThread: async (params) => { seen = params; return { ok: true, dispatched: false }; } };
+      const env = makeEnv([], undefined, orchestration);
+      await projectCoordination.operations["thread.send_message"]!(
+        { thread_id: "t1", message: "note for the record", agent_id: "support-agent", respond: false },
+        { env, run: noopRun }
+      );
+      expect(seen).toEqual({ threadId: "t1", message: "note for the record", spaceId: "space-1", agentId: "support-agent", respond: false });
+    });
+  });
 });

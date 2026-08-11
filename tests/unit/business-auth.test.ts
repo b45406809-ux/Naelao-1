@@ -125,6 +125,41 @@ describe("requireBusinessMembership — threads", () => {
     const getRes = await spacesWorker.fetch(req(`/spaces/prod-1/threads/${threadId}`, headers), env as never, execCtx);
     expect(getRes.status).toBe(200);
   });
+
+  it("a product_end_user can GET a thread but NOT PATCH it (admin floor — same convention as projects)", async () => {
+    const env = makeEnv();
+    const headers = await internalHeaders("tenant-1", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "eu-1" });
+    const created = await spacesWorker.fetch(
+      req("/spaces/prod-1/threads", headers, { method: "POST", body: JSON.stringify({ title: "Hi" }) }),
+      env as never, execCtx
+    );
+    const { id: threadId } = await created.json() as { id: string };
+
+    const patchRes = await spacesWorker.fetch(
+      req(`/spaces/prod-1/threads/${threadId}`, headers, { method: "PATCH", body: JSON.stringify({ title: "Renamed" }) }),
+      env as never, execCtx
+    );
+    expect(patchRes.status).toBe(403);
+  });
+
+  it("a builder role (owner) can rename and archive a thread via PATCH", async () => {
+    const env = makeEnv();
+    const builderHeaders = await internalHeaders("tenant-1", { "x-naelao-role": "owner", "x-naelao-user-id": "builder-1" });
+    const created = await spacesWorker.fetch(
+      req("/spaces/prod-1/threads", builderHeaders, { method: "POST", body: JSON.stringify({ title: "Hi" }) }),
+      env as never, execCtx
+    );
+    const { id: threadId } = await created.json() as { id: string };
+
+    const patchRes = await spacesWorker.fetch(
+      req(`/spaces/prod-1/threads/${threadId}`, builderHeaders, { method: "PATCH", body: JSON.stringify({ title: "Renamed", status: "archived" }) }),
+      env as never, execCtx
+    );
+    expect(patchRes.status).toBe(200);
+    const body = await patchRes.json() as { title: string; status: string };
+    expect(body.title).toBe("Renamed");
+    expect(body.status).toBe("archived");
+  });
 });
 
 describe("requireBusinessMembership — agent-definitions (read-only for product_end_user)", () => {

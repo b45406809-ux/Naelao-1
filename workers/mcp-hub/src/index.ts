@@ -136,6 +136,15 @@ interface ProviderToolCallResult {
   error?: string;
 }
 
+// Composio moved its tool-execution/listing API from v2 (`/api/v2/actions/...`) to v3
+// (`/api/v3/tools/...`) — the connect-flow code in connectors/composio.ts was already updated to
+// v3 for the OAuth handshake (see its own header), but these two functions, which is what every
+// ACTUAL agent tool call goes through, were left on the dead v2 shape. Confirmed against
+// Composio's real, live OpenAPI spec (`GET https://backend.composio.dev/api/v3/openapi.json`,
+// fetched directly rather than assumed) — this is not a guess at a plausible shape the way some
+// of this file's other defensive parsing is; the exact field names below are the schema's own.
+const COMPOSIO_API_BASE = "https://backend.composio.dev/api/v3";
+
 async function composioToolCall(
   connectionId: string,
   toolName: string,
@@ -143,11 +152,11 @@ async function composioToolCall(
   apiKey: string
 ): Promise<ProviderToolCallResult> {
   const resp = await fetch(
-    `https://backend.composio.dev/api/v2/actions/${encodeURIComponent(toolName)}/execute`,
+    `${COMPOSIO_API_BASE}/tools/execute/${encodeURIComponent(toolName)}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-api-key": apiKey },
-      body: JSON.stringify({ connectedAccountId: connectionId, input }),
+      body: JSON.stringify({ connected_account_id: connectionId, arguments: input }),
       signal: AbortSignal.timeout(30_000),
     }
   );
@@ -155,8 +164,13 @@ async function composioToolCall(
     const text = await resp.text().catch(() => "");
     return { error: `Composio returned ${resp.status}: ${text.slice(0, 200)}` };
   }
-  const data = await resp.json<{ data?: unknown; error?: string }>();
+  const data = await resp.json<{ data?: unknown; error?: string | null; successful?: boolean }>();
   if (data.error) return { error: data.error };
+  // The v3 response envelope reports success via a dedicated `successful` boolean rather than
+  // relying solely on `error` being absent — a call whose HTTP status was 200 but whose
+  // `successful` field is `false` is still a failure (e.g. the upstream app itself rejected the
+  // action), and reporting it as a result would hide that from the agent.
+  if (data.successful === false) return { error: "Composio reported the tool call as unsuccessful" };
   return { result: data.data };
 }
 
@@ -164,12 +178,20 @@ async function composioListTools(
   connectionId: string,
   apiKey: string
 ): Promise<{ tools: unknown[] }> {
+  // v3 lists tools by TOOLKIT (`?toolkit_slug=`), not by connected account — there is no
+  // "list tools for this connection" filter anymore, confirmed against the real spec. A
+  // connected account always belongs to exactly one toolkit, so resolve that first.
+  const acctResp = await fetch(
+    `${COMPOSIO_API_BASE}/connected_accounts/${encodeURIComponent(connectionId)}`,
+    { headers: { "x-api-key": apiKey }, signal: AbortSignal.timeout(15_000) }
+  );
+  if (!acctResp.ok) return { tools: [] };
+  const acct = await acctResp.json<{ toolkit?: { slug?: string } }>().catch(() => ({}) as { toolkit?: { slug?: string } });
+  const toolkitSlug = acct.toolkit?.slug;
+  if (!toolkitSlug) return { tools: [] };
   const resp = await fetch(
-    `https://backend.composio.dev/api/v2/actions?connectedAccountId=${encodeURIComponent(connectionId)}&limit=100`,
-    {
-      headers: { "x-api-key": apiKey },
-      signal: AbortSignal.timeout(15_000),
-    }
+    `${COMPOSIO_API_BASE}/tools?toolkit_slug=${encodeURIComponent(toolkitSlug)}&limit=100`,
+    { headers: { "x-api-key": apiKey }, signal: AbortSignal.timeout(15_000) }
   );
   if (!resp.ok) return { tools: [] };
   const data = await resp.json<{ items?: unknown[] }>();

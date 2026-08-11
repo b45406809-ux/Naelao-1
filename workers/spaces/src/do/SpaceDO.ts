@@ -1588,6 +1588,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "GET" && threadIdMatch?.[1]) {
         return this.getThread(threadIdMatch[1]);
       }
+      // PATCH /threads/:id — rename and/or archive (there is no hard delete — see updateThread).
+      if (method === "PATCH" && threadIdMatch?.[1]) {
+        return this.updateThread(threadIdMatch[1], request);
+      }
 
       // ── cross-space access grants (spec §49 checkPermission path) ─────────────
       // POST /cross-space-grants
@@ -4524,6 +4528,44 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private getThread(threadId: string): Response {
     const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM threads WHERE id = ?", threadId);
     if (!row) return Response.json({ error_code: "not_found", message: "Thread not found" }, { status: 404 });
+    return Response.json(row);
+  }
+
+  /**
+   * PATCH /threads/:id — rename and/or archive a thread. There is no hard DELETE for a thread,
+   * same convention `projects` already established (see updateProject): a thread's messages are
+   * real conversation history, and destroying them because someone clicked "delete" is a worse
+   * failure mode than leaving an inert archived row behind. `status: 'archived'` is what a
+   * "delete this thread" action in the UI (or the assistant's own thread.delete op) actually
+   * does — `isThreadLimitReached` already treats an archived thread as not counting toward a
+   * project's max_threads, so archiving genuinely frees up room the same way a real delete would.
+   */
+  private async updateThread(threadId: string, request: Request): Promise<Response> {
+    const body = await request.json<{ title?: string; status?: "active" | "archived" }>().catch(() => ({}) as Record<string, never>);
+    if (body.status !== undefined && body.status !== "active" && body.status !== "archived") {
+      return Response.json({ error_code: "bad_request", message: "status must be 'active' or 'archived'" }, { status: 400 });
+    }
+    const existing = queryOne<{ id: string }>(this.ctx.storage.sql as never, "SELECT id FROM threads WHERE id = ?", threadId);
+    if (!existing) return Response.json({ error_code: "not_found", message: "Thread not found" }, { status: 404 });
+
+    const sets: string[] = [];
+    const args: unknown[] = [];
+    if (body.title !== undefined) {
+      sets.push("title = ?");
+      args.push(body.title);
+    }
+    if (body.status !== undefined) {
+      sets.push("status = ?");
+      args.push(body.status);
+    }
+    if (sets.length === 0) {
+      return Response.json({ error_code: "bad_request", message: "nothing to update — provide title and/or status" }, { status: 400 });
+    }
+    sets.push("updated_at = ?");
+    args.push(new Date().toISOString());
+    args.push(threadId);
+    execute(this.ctx.storage.sql as never, `UPDATE threads SET ${sets.join(", ")} WHERE id = ?`, ...args);
+    const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM threads WHERE id = ?", threadId);
     return Response.json(row);
   }
 

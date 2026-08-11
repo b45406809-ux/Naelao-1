@@ -501,6 +501,15 @@ export interface RunModelOptions {
    *  this run — the project thread agent switcher's own selection. Omitted for an assistant
    *  session (no second agent to pick) or when the default binding is fine. */
   agentDefinitionId?: string;
+  /** The project this run's thread lives in, when there is one — see workspacePrefix() on the
+   *  agents worker. Without this the backend can't tell a project thread's run apart from the
+   *  Space Assistant's, so EVERY tool a project agent calls (r2-workspace, file-manager, KB,
+   *  Memory OS, the project journal, lock) silently falls back to the space-wide scope instead
+   *  of this thread's own project — a file the AI creates lands in the wrong workspace, and a
+   *  file the person already uploaded (which the upload route DOES scope correctly) becomes
+   *  unreadable to the AI, which is looking in the wrong place. Omitted for an assistant session,
+   *  which is deliberately space-wide. */
+  projectId?: string;
 }
 
 /** Persists the user's message, then kicks off an agent run.
@@ -535,6 +544,7 @@ export async function sendMessage(
         ...(modelOptions?.reasoningEffort ? { reasoning_effort: modelOptions.reasoningEffort } : {}),
         ...(modelOptions?.effort ? { effort: modelOptions.effort } : {}),
         ...(modelOptions?.agentDefinitionId ? { agent_definition_id: modelOptions.agentDefinitionId } : {}),
+        ...(modelOptions?.projectId ? { project_id: modelOptions.projectId } : {}),
       }),
       session,
       ...(onRetry ? { onRetry } : {}),

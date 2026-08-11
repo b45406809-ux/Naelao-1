@@ -1118,6 +1118,12 @@ export function Chat({
           effort: selectedEffort,
           ...(selectedReasoningLevel ? { reasoningEffort: selectedReasoningLevel } : {}),
           ...(selectedAgentId ? { agentDefinitionId: selectedAgentId } : {}),
+          // Root cause of "files land in the assistant workspace instead of the project
+          // workspace": every run dispatched from here used to omit project_id entirely, even
+          // though this component already knows it (the `projectId` prop, set for every project
+          // thread). Without it the backend can't scope R2/KB/Memory-OS/journal to this thread's
+          // project, so every one of them silently fell back to space-wide.
+          ...(projectId ? { projectId } : {}),
         },
         (attempt, max) => setRetryStatus({ attempt, max })
       );
@@ -1130,7 +1136,7 @@ export function Chat({
       setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
       setError(err instanceof Error ? err.message : "Failed to send message");
     }
-  }, [isLoading, pendingUploads, ensureSessionId, spaceId, sessionKey, session, attachToRun, selectedModel, selectedEffort, selectedReasoningLevel, selectedAgentId, sessionId]);
+  }, [isLoading, pendingUploads, ensureSessionId, spaceId, sessionKey, session, attachToRun, selectedModel, selectedEffort, selectedReasoningLevel, selectedAgentId, sessionId, projectId]);
 
   /**
    * A message typed while the agent is still working.

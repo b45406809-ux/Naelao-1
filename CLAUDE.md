@@ -6171,6 +6171,96 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      liveness checks only — no `/agent/run` dispatched, per the user's standing "don't use my AI
      credits, I want to test it myself" instruction.
 
+125. **Project-thread workspace scoping was silently broken (a one-line frontend gap that defeated
+     R2/KB/Memory-OS/journal scoping all at once), the intermittent missing tool-call table is
+     root-caused and fixed, Composio tool calls were hitting a dead v2 API, and the assistant
+     gained real thread CRUD/chat parity with what a human user can do.**
+     - **Workspace scoping.** `workspacePrefix()` (script-engine/types.ts) has always correctly
+       resolved a project-scoped vs. space-wide R2 path from `ScriptEngineEnv.projectId` — and
+       every project-scoped primitive keys off the SAME field (Memory OS's `buildScriptEngineEnv`
+       wiring, the Project Journal's `requireProject`). The backend has ALSO always correctly
+       forwarded `project_id` on both dispatch paths (`/agent/run`'s sync + async Workflow
+       branches) since it was introduced. The single, real bug: `apps/shell`'s `sendMessage()`
+       (the function every chat send in the product goes through) never included `project_id` in
+       its request body at all — confirmed by reading the function, not assumed — so EVERY tool
+       call a project-thread's agent made (file read/write, KB search, memory recall, journal
+       read/write) silently fell back to the Space Assistant's space-wide scope. Uploads
+       themselves were never affected (`uploadChatFiles`/`ComposerDock` already threaded
+       `projectId` correctly) — the bug meant the AI's OWN tool calls, including reading a file
+       the person had just correctly uploaded, ran in the wrong place. Fixed with one field
+       (`RunModelOptions.projectId`) threaded from `Chat.tsx`'s existing `projectId` prop (already
+       passed down from the project-thread page — confirmed via `ProjectThreadPage`) through
+       `sendMessage` into the `/agent/run` body. No backend change needed — the whole chain was
+       already correct once the client actually sent the field.
+     - **Intermittent missing tool-call table, root-caused.** Reported as "shows the description
+       ('Reading the cf-naelao.md.txt file.') but no table underneath, sometimes." Traced to
+       `loop.ts`: whenever an action is parked pending approval
+       (`pushTrace({phase:"gate", name, detail:"deferred_pending_approval"})`) or skipped because
+       the run hit its final step, the "gate" trace step has NO corresponding "run" entry — and
+       `ActivityFeed.tsx`'s `groupSteps` treated ANY `phase:"gate"` step (both this per-action kind
+       and the once-per-run "Chose approach: L3" kind) as a segment-closer, discarding the pending
+       segment's tool rows and leaving the narration ("Reading the X file") orphaned with nothing
+       in the table. Fixed on both ends: `loop.ts` now (a) attaches `params` to the
+       `awaiting_approval`/`deferred_pending_approval` gate pushes (previously bare), and (b) adds
+       a NEW `skipped_final_step` gate push for the "chose a tool on the deadline, not run"
+       case (previously silent — the closing-summary reasoner call that follows never pushes its
+       own trace step, so nothing else could have caught this). `groupSteps` now only treats an
+       UNNAMED gate step (the once-per-run kind, no `name` field) as a segment-closer; a NAMED
+       one (a specific parked/skipped action) becomes an in-segment row instead, rendered by
+       `ToolRowView` with a distinct amber "waiting for approval"/"skipped — ran out of time"
+       badge (never the red "failed" a genuinely-attempted-and-errored call gets) and its own
+       `segmentHeader` count (e.g. "2 tools · 1 waiting").
+     - **Composio tool calls were dead — hitting a v2 API Composio has moved off.**
+       `mcp-hub/src/index.ts`'s `composioToolCall`/`composioListTools` still posted to
+       `backend.composio.dev/api/v2/actions/...` (`connectedAccountId`/`input` body shape) while
+       `connectors/composio.ts`'s own CONNECT flow was already correctly updated to v3 for the
+       OAuth handshake — so a connection could succeed and every actual tool call/list against it
+       would still fail. Confirmed against Composio's real, LIVE OpenAPI spec (`GET
+       https://backend.composio.dev/api/v3/openapi.json`, fetched directly — not assumed): the
+       real endpoint is `POST /api/v3/tools/execute/{tool_slug}` with body
+       `{connected_account_id, arguments}` (not `connectedAccountId`/`input`), returning
+       `{data, error, successful}` — a 200 with `successful:false` is still a failure and is now
+       treated as one. Listing moved from "list by connection" (no longer exists in v3) to "list
+       by toolkit" (`GET /api/v3/tools?toolkit_slug=`) — `composioListTools` now resolves the
+       connected account's own toolkit slug via `GET /api/v3/connected_accounts/{id}` first (one
+       extra call, degrades to an empty list rather than crashing if either call fails).
+     - **Assistant thread parity — everything a human can do with a thread, not just read one.**
+       `project-coordination.ts` gained `thread.rename`/`thread.delete` (there is no hard delete —
+       matches `project.configure({status:'archived'})`'s own convention; a new SpaceDO
+       `PATCH /threads/:id` route was needed, since none existed at all before this — `threads`
+       already had a `status` column with no CRUD ever built for it) and `thread.search` (a real,
+       honest TITLE-only match — the same level of "search" the shell's own Sessions page has;
+       full message-content search stays a documented, not-yet-built gap, matching that page's own
+       precedent, rather than silently overclaiming). The bigger gap: `agent.consult` only ever
+       posts into a NEW, hidden `thread_kind='sub_agent'` subthread — there was no way for the
+       assistant to just chat inside an EXISTING, visible thread the way a person does. New
+       `thread.send_message` (+ a new `OrchestrationHooks.sendToThread` hook and
+       `NaelaoAgentDO.sendToThreadImpl`, mirroring `consultAgentImpl`'s DO-to-DO dispatch pattern
+       but writing into the GIVEN thread's own session instead of minting a subthread) posts the
+       assistant's message into a real thread and — unless `respond:false` — dispatches the named
+       agent to reply there, visibly, exactly as `@mention` dispatch already does when a human
+       types it. `agent_id` is required to get a reply (no attempt to guess "the project's default
+       agent" — same contract `agent.consult` already has). Both assistant profiles updated to
+       explain when to use which (visible chat vs. private coordination). PATCH's business-role
+       gate defaults to admin for a `product_end_user` caller (same convention `/projects/:id`'s
+       own PATCH already established, verified directly against the real gate).
+     2898/2898 tests pass (32 new: PATCH-thread coverage at both the raw SpaceDO level and the full
+     HTTP/business-auth level; `composio-tool-execution.test.ts` pins the exact v3 request/response
+     shape against a mocked fetch layer; new `project-coordination-prebuilt.test.ts` cases for all
+     four new ops; a new `send-to-thread-orchestration-hook.test.ts` drives the REAL
+     `sendToThreadImpl` via `buildOrchestrationHooks`, not a hand-rolled substitute — caught a real
+     bug before it shipped: `thread.rename`/`thread.delete` were non-`async` arrows that threw
+     synchronously, the same `PrebuiltOp` contract violation item 78 already documented once),
+     `npx turbo run typecheck` clean (76 tasks), `apps/shell` verified via a real `next build`.
+     `naelao-agents` (bare `wrangler deploy`), `naelao-spaces`, `naelao-mcp-hub`, and `apps/shell`
+     (`--branch=main`, production confirmed via the Pages API) all deployed and verified via
+     non-LLM liveness checks (dry-run bundle check before deploying, health-check curls after) —
+     no `/agent/run` dispatched, per the user's standing "don't use my AI credits" instruction.
+     **Not done this pass:** a live click-through of the fixed activity-table rendering or a real
+     Composio connect+call round trip against a live account (both would need either a real agent
+     dispatch or a builder JWT session this pass didn't have on hand) — verified instead via the
+     unit tests above, which drive the real request/response contracts directly.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

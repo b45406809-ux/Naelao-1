@@ -126,6 +126,17 @@ describe("a pending approval never fails the run", () => {
     expect(result.deferred_approvals![0]!.approval_id).toBe("appr-1");
     expect(result.result?.ok).toBe(true);
     expect(String(result.result?.output)).toContain("waiting on you");
+
+    // A live UI bug: a parked action's "gate" trace step used to close the activity feed's
+    // running segment with no row for the action it described (no `params` carried, and the
+    // renderer treated any "gate" step as a segment-closer) — the person saw the model's own
+    // "doing" status for write_file with no table underneath it. The trace itself is what the
+    // frontend renders from, so pin it here: the gate step names the parked action AND carries
+    // its params, which is what lets the UI render it as a row instead of orphaning it.
+    const gateStep = result.trace.find((s) => s.phase === "gate" && s.name === "write_file");
+    expect(gateStep).toBeDefined();
+    expect(gateStep!.detail).toBe("deferred_pending_approval");
+    expect(gateStep!.params).toEqual({ path: "a.txt", content: "x" });
   });
 
   it("opens exactly one request even if the model asks for the same action again", async () => {

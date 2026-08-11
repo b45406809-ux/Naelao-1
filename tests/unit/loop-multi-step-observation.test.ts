@@ -234,11 +234,18 @@ describe("the last step is a real deadline, not a cliff", () => {
       },
     };
 
-    await runScriptLoop(env, tools, reasoner, ["r2-workspace"], { ...LOOP_OPTS, maxSteps: 3 });
+    const result = await runScriptLoop(env, tools, reasoner, ["r2-workspace"], { ...LOOP_OPTS, maxSteps: 3 });
 
     // Three steps were reasoned about, but only the first two were allowed to run — the third
     // landed on the deadline turn and was refused.
     expect(putCount).toBe(2);
+    // A live UI bug: the "reason" trace step for that un-run third call carries the model's own
+    // status text ("doing"), but nothing recorded that the call itself never happened — so the
+    // activity feed showed that status with no row underneath it. A dedicated "gate" trace step
+    // is what gives the frontend something concrete to render instead of an orphaned status.
+    const skipped = result.trace.filter((s) => s.phase === "gate" && s.detail === "skipped_final_step");
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]!.name).toBe("write_file");
   });
 
   it("reports work that succeeded instead of failing, when the model can still summarise it", async () => {

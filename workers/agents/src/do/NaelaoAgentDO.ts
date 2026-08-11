@@ -2086,6 +2086,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         }
         return result;
       };
+      hooks.sendToThread = (params) => this.sendToThreadImpl(params, tenantId, apiKey, agentDO);
     }
 
     // §A1.17 Phase J: the dynamic-workflow prebuilt's ops. A "workflow" here is not a second
@@ -2440,6 +2441,92 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return { ok: true, thread_id: threadId, session_id: sessionId, reply };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  /**
+   * Post a real message into an EXISTING, visible thread — not a private consult subthread.
+   * Mirrors consultAgentImpl above (same direct-DO addressing, same internal auth) with one
+   * deliberate difference: it never creates a `thread_kind='sub_agent'` thread, it writes into
+   * the GIVEN thread's own session, so the message and (when `respond` isn't false) the target
+   * agent's reply land exactly where a person reading that thread would see them. This is what
+   * lets the assistant participate in a thread the way a person can — per the explicit "give the
+   * assistant everything the user can do" ask — distinct from agent.consult, which stays the
+   * private, hidden coordination channel.
+   *
+   * `agentId` is required whenever a reply is wanted (respond !== false), same contract
+   * agent.consult already has — there's no attempt here to infer "the project's default agent"
+   * from scratch; the caller (the assistant, or the project-coordination op it calls this
+   * through) names who it's addressing.
+   */
+  private async sendToThreadImpl(
+    params: { threadId: string; message: string; spaceId: string; agentId?: string; respond?: boolean },
+    tenantId: string,
+    apiKey: string,
+    agentDO: DurableObjectNamespace<NaelaoAgentDO>
+  ): Promise<{ ok: boolean; session_id?: string; reply?: string; dispatched: boolean; error?: string }> {
+    const { threadId, message, spaceId } = params;
+    if (!threadId || !message) return { ok: false, dispatched: false, error: "thread_id and message are required" };
+    if (!this.env.SPACES_WORKER) return { ok: false, dispatched: false, error: "spaces worker binding not configured" };
+    const respond = params.respond !== false;
+    if (respond && !params.agentId) return { ok: false, dispatched: false, error: "agent_id is required to get a reply (or pass respond:false to only post)" };
+    const headers = await this.internalHeaders(tenantId, { "content-type": "application/json" });
+
+    try {
+      const threadResp = await this.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/spaces/${spaceId}/threads/${encodeURIComponent(threadId)}`,
+        { headers }
+      ));
+      if (!threadResp.ok) return { ok: false, dispatched: false, error: `thread ${threadId} not found` };
+      const thread = await threadResp.json<{ session_id?: string | null; project_id?: string | null }>();
+
+      let sessionId = thread.session_id ?? undefined;
+      if (!sessionId) {
+        const sessionResp = await this.env.SPACES_WORKER.fetch(new Request(
+          `http://spaces-worker/spaces/${spaceId}/sessions`,
+          { method: "POST", headers, body: JSON.stringify({ thread_id: threadId }) }
+        ));
+        if (!sessionResp.ok) return { ok: false, dispatched: false, error: `failed to create a session for thread ${threadId}: HTTP ${sessionResp.status}` };
+        const session = await sessionResp.json<{ id: string }>();
+        sessionId = session.id;
+      }
+
+      // The assistant's own turn, attributed to it (author_type resolves to 'assistant' for
+      // agent_id 'naelao-agent') — visible in the real thread, unlike consultAgentImpl's write
+      // into a hidden sub_agent thread.
+      await this.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/spaces/${spaceId}/sessions/${sessionId}/messages`,
+        { method: "POST", headers, body: JSON.stringify({ role: "assistant", content: message, agent_id: "naelao-agent" }) }
+      ));
+
+      if (!respond) return { ok: true, session_id: sessionId, dispatched: false };
+
+      const doName = await getDOName("agent", `${sessionId}:${params.agentId}`, tenantId, this.env.PLATFORM_SECRET);
+      const stub = agentDO.get(agentDO.idFromName(doName));
+      const resp = await stub.fetch(new Request("http://agent-do/script/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          goal: message, spaceId, agentId: params.agentId, tenantId, sessionId, apiKey,
+          ...(thread.project_id ? { projectId: thread.project_id } : {}),
+        }),
+      }));
+      const runBody = await resp.json<{
+        result?: { ok?: boolean; output?: unknown; error?: unknown };
+        pending_approval?: { action_name: string };
+      }>().catch(() => ({}) as Record<string, never>);
+      if (runBody.pending_approval) {
+        return { ok: true, session_id: sessionId, dispatched: true, reply: `${params.agentId} needs approval before it can act on this: ${runBody.pending_approval.action_name}` };
+      }
+      const ok = resp.ok && runBody.result?.ok !== false;
+      if (!ok) {
+        const errMsg = typeof runBody.result?.error === "string" ? runBody.result.error : `HTTP ${resp.status}`;
+        return { ok: false, session_id: sessionId, dispatched: true, error: errMsg };
+      }
+      const reply = typeof runBody.result?.output === "string" ? runBody.result.output : JSON.stringify(runBody.result?.output ?? "");
+      return { ok: true, session_id: sessionId, dispatched: true, reply };
+    } catch (err) {
+      return { ok: false, dispatched: false, error: err instanceof Error ? err.message : String(err) };
     }
   }
 
