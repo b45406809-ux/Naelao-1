@@ -54,6 +54,29 @@ export class ScriptToolSurface {
   }
 
   /**
+   * Live-reported bug: `available_operations` reached the reasoner as a bare flat list of op
+   * NAMES with no description or grouping (e.g. "thread.create", "thread.send_message" sitting
+   * unexplained among 60+ other names). A model asked to "communicate with an agent directly in
+   * a thread" reasonably concluded no such capability existed — it never had enough context to
+   * recognize those two names as the answer, and had no parameter schema to call them correctly
+   * even if it guessed right. Grouped by owning prebuilt SCRIPT with that script's own
+   * (already-written) description gives the model the same "what is this for" context
+   * `candidate_scripts` already carries for the skill library, without writing a new description
+   * per individual operation — one line of real, already-maintained prose per group is enough to
+   * make "thread.send_message" legible as "the thing that lets me chat inside an existing
+   * thread" instead of an opaque string.
+   */
+  availableOperationsGrouped(): Array<{ script: string; description: string; operations: string[] }> {
+    const byScript = new Map<string, { description: string; operations: string[] }>();
+    for (const [opName, { prebuilt }] of this.ops) {
+      const existing = byScript.get(prebuilt.name);
+      if (existing) existing.operations.push(opName);
+      else byScript.set(prebuilt.name, { description: prebuilt.description, operations: [opName] });
+    }
+    return [...byScript.entries()].map(([script, v]) => ({ script, description: v.description, operations: v.operations }));
+  }
+
+  /**
    * Restricted-project execution ceiling (e.g. a customer-bot project capped at Tier 2) —
    * fail closed on any tier above it, for both authoring (script.create/update) and running
    * (script.run). Structural, not a prompt instruction: a compromised or over-eager reasoner

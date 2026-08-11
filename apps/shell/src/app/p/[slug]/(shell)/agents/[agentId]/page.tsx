@@ -27,10 +27,12 @@ import {
   getAssistantPolicy,
   listAgentDefinitions,
   listMyBusinesses,
+  getAssistantCapabilities,
   type AgentPolicy,
   type AssistantPolicy,
   type AgentDefinitionSummary,
   type Business,
+  type AssistantCapabilities,
 } from "@/lib/api";
 import { ApprovedActionsEditor } from "@/components/ApprovedActionsEditor";
 import { SettingsSection, SettingsRow } from "@/components/SettingsSection";
@@ -47,6 +49,7 @@ export default function AgentDetailPage() {
   const [policy, setPolicy] = React.useState<AgentPolicy | null>(null);
   const [spacePolicy, setSpacePolicy] = React.useState<AssistantPolicy | null>(null);
   const [business, setBusiness] = React.useState<Business | null>(null);
+  const [capabilities, setCapabilities] = React.useState<AssistantCapabilities | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -63,6 +66,7 @@ export default function AgentDetailPage() {
       settle(getAgentPolicy(activeSpaceId, agentId, creds), setPolicy),
       settle(getAssistantPolicy(activeSpaceId, creds), setSpacePolicy),
       settle(listAgentDefinitions(activeSpaceId, creds).then((list) => list.find((a) => a.id === agentId) ?? null), setAgent),
+      settle(getAssistantCapabilities(activeSpaceId, creds), setCapabilities),
     ];
     if (isBusinessSpace) {
       calls.push(
@@ -178,6 +182,7 @@ export default function AgentDetailPage() {
           actions={policy?.auto_approved_actions ?? []}
           canEdit={canEdit}
           busy={saving}
+          catalogue={capabilities?.prebuilts.map((p) => ({ script: p.name, description: p.description, operations: p.operations }))}
           onAdd={(a) => void save({ auto_approved_actions: [...(policy?.auto_approved_actions ?? []), a] }, `Added ${a}`)}
           onRemove={(a) => void save({ auto_approved_actions: (policy?.auto_approved_actions ?? []).filter((x) => x !== a) }, `Removed ${a}`)}
         />

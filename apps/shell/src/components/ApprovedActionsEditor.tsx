@@ -4,8 +4,22 @@
 // Dashboard's space-wide Configuration panel and the per-agent policy editor (AgentPolicyPanel),
 // so "which tools never need to ask" is editable in both places rather than only a read-only list
 // with no way to change it short of clicking "Always allow" on a live approval card.
+//
+// Live-reported gap: this used to be a free-text field with a single example placeholder, so the
+// only way to discover what could BE approved was to guess a name or wait for a real approval card
+// to teach you one. `catalogue` (built from GET .../assistant/capabilities, the same data the
+// Skills tab already reads) makes every operation the agent could ever call browsable here —
+// grouped by the prebuilt script that owns it, with that script's own description, so a bare name
+// like "thread.send_message" reads as "the thing that lets me chat inside an existing thread"
+// rather than an opaque string you'd have to already know to type.
 
 import * as React from "react";
+
+export interface OperationGroup {
+  script: string;
+  description: string;
+  operations: string[];
+}
 
 export function ApprovedActionsEditor({
   actions,
@@ -13,14 +27,20 @@ export function ApprovedActionsEditor({
   busy,
   onAdd,
   onRemove,
+  catalogue,
 }: {
   actions: string[];
   canEdit: boolean;
   busy: boolean;
   onAdd: (action: string) => void;
   onRemove: (action: string) => void;
+  /** Every operation the agent could call, grouped by owning script — lets someone browse and
+   *  add rather than only type a name they already know. Omitted/undefined where no capabilities
+   *  fetch is wired, or while it's still loading (falls back to the plain free-text field only). */
+  catalogue?: OperationGroup[] | undefined;
 }) {
   const [draft, setDraft] = React.useState("");
+  const [browsing, setBrowsing] = React.useState(false);
 
   function submit() {
     const trimmed = draft.trim();
@@ -28,6 +48,9 @@ export function ApprovedActionsEditor({
     onAdd(trimmed);
     setDraft("");
   }
+
+  const approvedSet = React.useMemo(() => new Set(actions), [actions]);
+  const totalOps = React.useMemo(() => (catalogue ?? []).reduce((n, g) => n + g.operations.length, 0), [catalogue]);
 
   return (
     <div>
@@ -82,6 +105,53 @@ export function ApprovedActionsEditor({
           <button type="button" className="btn btn-ghost btn-sm" onClick={submit} disabled={busy || !draft.trim()}>
             Add
           </button>
+        </div>
+      )}
+      {canEdit && catalogue && catalogue.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          <button
+            type="button"
+            onClick={() => setBrowsing((v) => !v)}
+            style={{
+              background: "transparent", border: "none", color: "var(--accent)", cursor: "pointer",
+              fontSize: 11.5, padding: 0,
+            }}
+          >
+            {browsing ? "Hide" : `Browse all ${totalOps} available tools`}
+          </button>
+          {browsing && (
+            <div style={{ marginTop: 6, maxHeight: 260, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 8 }}>
+              {catalogue.map((group) => (
+                <div key={group.script} style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
+                  <div style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text)" }}>{group.script}</div>
+                  <div style={{ fontSize: 10.5, color: "var(--text3)", lineHeight: 1.4, marginBottom: 4 }}>{group.description}</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                    {group.operations.map((op) => {
+                      const already = approvedSet.has(op);
+                      return (
+                        <button
+                          key={op}
+                          type="button"
+                          disabled={busy || already}
+                          onClick={() => onAdd(op)}
+                          title={already ? "Already pre-approved" : `Pre-approve ${op}`}
+                          style={{
+                            fontSize: 10.5, fontFamily: "monospace", padding: "2px 7px", borderRadius: 999,
+                            border: "1px solid var(--border)",
+                            background: already ? "var(--surface2)" : "transparent",
+                            color: already ? "var(--text3)" : "var(--text2)",
+                            cursor: already ? "default" : "pointer",
+                          }}
+                        >
+                          {already ? "✓ " : "+ "}{op}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

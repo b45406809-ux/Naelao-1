@@ -6261,6 +6261,92 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      dispatch or a builder JWT session this pass didn't have on hand) — verified instead via the
      unit tests above, which drive the real request/response contracts directly.
 
+126. **Three more live-reported bugs, all root-caused to the SAME underlying gap: the reasoner's
+     "available_operations" field was a bare flat list of 60+ op names with no description or
+     grouping — plus two silent trace-persistence holes that hid real repeat/parked tool calls
+     from the activity table.**
+     - **The real root cause of "our API doesn't support programmatic thread creation or direct
+       in-thread chat messaging"** (item 125 shipped exactly that capability the same session).
+       `project-coordination` WAS wired into the assistant's prebuilt list and `tools.
+       availableOperations()` DID include `thread.create`/`thread.send_message` in the payload —
+       but only as bare strings among dozens of others, with zero indication of what any of them
+       do or what parameters they take (unlike `candidate_scripts`, which carries a real
+       description/parameters/health per entry). A model asked to "communicate with an agent
+       directly in a thread" had no way to recognize an opaque name like `thread.send_message` as
+       the answer. New `ScriptToolSurface.availableOperationsGrouped()` groups the same ops by
+       their owning prebuilt SCRIPT, reusing that script's own (already-written) description —
+       `reasoner.ts` now sends this grouped structure as `available_operations` instead of the
+       flat list (falls back to the flat list when a caller/test doesn't supply groups), and
+       `DECISION_INSTRUCTIONS` gained one sentence telling the model to read every group's
+       description before concluding a capability doesn't exist. Zero new prose was written per
+       operation — the fix is structural (grouping + reuse), not a bigger prompt.
+     - **The intermittent "narration with no tool-call table underneath it," and the "it's sort of
+       repeating the same task many times" observation — the SAME bug, now fixed.** `loop.ts`'s
+       within-run repeat-call guard (an already-attempted `name+params` combo, or an action still
+       sitting in `deferred` awaiting approval) correctly served the model a cached outcome and
+       `continue`d — but neither branch ever called `pushTrace`, even though the "reason" step
+       immediately before it (carrying that turn's own `narration`/`doing` text, e.g. "Checking
+       Instagram MCP tools") always does. Every REPEAT attempt therefore showed a real status line
+       with nothing in the table beneath it — exactly the reported screenshot, and exactly why it
+       looked like repetition: the model genuinely was re-asking, each attempt just left no visible
+       trace. Both branches now push a real trace row (`phase:"gate"` reusing the existing
+       `deferred_pending_approval` label for a still-parked repeat; `phase:"run"` with `duration_ms:
+       0` and a "repeated — served the earlier result"/"repeated — already failed this task" detail
+       for an attemptedCalls repeat), so a repeat now renders as a real, clearly-labeled row instead
+       of vanishing.
+     - **"I only see pre-approved tools, what about the others" — the Config tab's
+       `ApprovedActionsEditor` was a bare free-text field with one example placeholder and no way to
+       discover what could even be typed.** New `catalogue` prop (an array of `{script, description,
+       operations}` groups, built from the SAME `GET .../assistant/capabilities` data the Skills tab
+       already reads) renders a "Browse all N available tools" expandable list — one section per
+       prebuilt script with its real description, each operation a small chip with a one-click add
+       (or a checkmark when already pre-approved). Wired into all four places this editor is used:
+       the shared side-panel `ConfigPanel` (own independent capabilities fetch), the Dashboard
+       overview panel and the dedicated `dashboard/assistant` page (both already fetched
+       capabilities for the Skills counts, just never passed them through), the per-agent
+       `/agents/:id` page (added a capabilities fetch alongside its existing policy/definition
+       loaders), and `AgentPolicyPanel` (the inline "Configure" expander — fetches capabilities
+       lazily alongside the policy, on first expand, same discipline as the policy fetch itself).
+     - **Four Cloudflare product announcements the user asked to log for a later look, not acted on
+       this pass:** `@cloudflare/computer` (an open-source npm package unifying isolate/container
+       execution behind one virtual filesystem — genuinely overlaps our own hand-built execution
+       ladder/R2-workspace-sync/container-marketplace primitives; early preview/beta, no published
+       pricing, and its isolate backend almost certainly still routes through `worker_loaders` —
+       the same $5/mo-plan gate we're already blocked on, so it doesn't remove that blocker, only
+       potentially simplifies the code once GA and once we're past the paid-plan gate); Cloudflare
+       Wallets (lets an agent autonomously pay for third-party APIs/content via stablecoins + the
+       x402 protocol — relevant to the "assistant signs itself up for a paid service" idea item 85
+       deferred, but announcement-stage only, no binding shape or pricing published yet, nothing to
+       build against); MCP v2 (MCP moved to a stateless HTTP model, GA now — informational only,
+       since we consume MCP via Composio/Pipedream's hosted connect rather than hosting our own MCP
+       server; the real future angle is exposing a Naelao business's own tools AS an MCP server to
+       external clients like Claude Desktop, a real, separate, unbuilt feature idea); Radar
+       Researcher (Cloudflare's own "Code Mode" reference app — search/execute/docs tools over an
+       OpenAPI spec, DO+SQLite+Workers AI — not a reusable product, just validates our own
+       script-native/`script.find` design direction; no action needed).
+     5 new tests (`loop-multi-step-observation.test.ts` — repeat/deferred branches now push a real
+     trace row, each proven to fail without the fix before being fixed; `script-engine.test.ts` —
+     `availableOperationsGrouped()` covers every op with no loss/duplication;
+     `reasoner-tool-calling.test.ts` — the real request body carries the grouped shape when
+     supplied and the flat-list fallback otherwise). A first draft of the fix pushed the composed
+     system prompt's own char budget from ~19,984 to 20,419 against the file's existing
+     `< 20,000` test — moved the guidance out of `DECISION_INSTRUCTIONS` (the system prompt,
+     counted by that budget) into the "run" tool's own `name` parameter description (a tool-schema
+     field, not counted by it — same precedent items 118/123/124 already established), which also
+     reads more directly since it's attached to the exact field the model is filling in.
+     2903/2903 tests pass, `npx turbo run typecheck` clean (76 tasks), `apps/shell` verified via a
+     real `next build`. Deployed: `naelao-agents` (bare `wrangler deploy`, item 83's documented
+     `--env production` trap; Version ID `48136a50-acbd-471b-917a-9bbd5b4356fe`) and `apps/shell`
+     (rebuilt with `next-on-pages`, `--branch=main`, confirmed `environment:"production"` via the
+     Pages API before calling this done) — both live-verified via non-LLM checks only (200s on the
+     shell's `/p/launchpad/spaces` and `/p/launchpad/new`, the router's by-slug lookup, and a
+     401-not-500 from the agents worker's cancel route). **Not done this pass:** a live
+     click-through of the new "Browse all tools" UI, or a live dispatched run proving the
+     grouped-operations fix changes real model behavior on the exact reported goal (either would
+     need a real `/agent/run` dispatch — deliberately not spent this pass per the user's own "I
+     want to use my own credits to test" instruction; verified instead via unit tests against the
+     real request/response contracts, which were confirmed to genuinely fail without the fix).
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

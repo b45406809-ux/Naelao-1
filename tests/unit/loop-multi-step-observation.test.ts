@@ -143,6 +143,72 @@ describe("the loop cannot be made to spin on one repeated call", () => {
     }
   });
 
+  it("records a real trace row for a repeat call — not just a silently-served result", async () => {
+    // Live-reported: a repeat attempt's own "reason" step (narration/doing) rendered in the shell
+    // with no tool-call table underneath it — this branch used to `continue` with no pushTrace at
+    // all, so a genuine repeat left no visible trace even though a real reasoning turn was spent
+    // on it. Assert the trace itself, not just priorSteps (which the earlier test already covers).
+    const env = makeEnv();
+    const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    const { reasoner } = scriptedReasoner([
+      { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } },
+    ]);
+
+    const result = await runScriptLoop(env, tools, reasoner, ["r2-workspace"], { ...LOOP_OPTS, maxSteps: 3 });
+
+    const runRows = result.trace.filter((t) => t.phase === "run" && t.name === "write_file");
+    // First attempt is a real execution; every attempt after it is a repeat, served from cache.
+    expect(runRows.length).toBeGreaterThan(1);
+    const repeats = runRows.slice(1);
+    for (const row of repeats) {
+      expect(row.ok).toBe(true);
+      expect(row.duration_ms).toBe(0);
+      expect(row.detail).toBe("repeated — served the earlier result");
+      expect(row.params).toEqual({ path: "a.txt", content: "x" });
+    }
+  });
+
+  it("records a real trace row for a repeat of an action still parked pending approval", async () => {
+    // Same live-reported gap as the attemptedCalls repeat above, one branch over: a model that
+    // re-asks about an action ALREADY parked (deferred.some(...)) used to `continue` with no
+    // pushTrace at all, so a second (or third) "Checking on that…" narration also rendered with
+    // nothing beneath it.
+    const env = makeEnv();
+    const asked: string[] = [];
+    env.hitlGateway = {
+      async requestApproval(params) {
+        asked.push(params.actionName);
+        return { approvalId: "appr-1", approved: false, pending: true, expiresAt: 1_800_000_000_000 };
+      },
+    };
+    const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    let step = 0;
+    const reasoner: Reasoner = {
+      async decide(): Promise<ReasonDecision> {
+        // Re-asks for the SAME gated action twice before giving up on it.
+        step++;
+        if (step <= 2) return { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } };
+        return { action: "answer", text: "Still waiting on that write." };
+      },
+    };
+
+    const result = await runScriptLoop(env, tools, reasoner, ["r2-workspace"], {
+      goal: "write a file",
+      startupObserve: "observe_filesystem",
+      requiresApprovalFor: [],
+      approvalMode: "gate_unless_listed",
+    });
+
+    // Only the FIRST attempt actually opens a real approval request — a repeat must not spam a
+    // second one for the same action.
+    expect(asked).toEqual(["write_file"]);
+    const gateRows = result.trace.filter((t) => t.phase === "gate" && t.name === "write_file");
+    // One park (the first decision) plus one "still waiting" repeat trace row.
+    expect(gateRows.length).toBeGreaterThanOrEqual(2);
+    expect(gateRows.every((r) => r.detail === "deferred_pending_approval")).toBe(true);
+    expect(gateRows.every((r) => r.params && (r.params as Record<string, unknown>)["path"] === "a.txt")).toBe(true);
+  });
+
   it("still allows the SAME op with DIFFERENT params — that is ordinary work, not a loop", async () => {
     const env = makeEnv();
     const tools = new ScriptToolSurface(env, ["r2-workspace"]);

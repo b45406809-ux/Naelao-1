@@ -246,6 +246,7 @@ export default function AssistantSettingsPage() {
           actions={policy?.auto_approved_actions ?? []}
           canEdit={canEdit}
           busy={saving}
+          catalogue={capabilities?.prebuilts.map((p) => ({ script: p.name, description: p.description, operations: p.operations }))}
           onAdd={(a) => void savePolicy({ auto_approved_actions: [...(policy?.auto_approved_actions ?? []), a] }, `Added ${a}`)}
           onRemove={(a) => void savePolicy({ auto_approved_actions: (policy?.auto_approved_actions ?? []).filter((x) => x !== a) }, `Removed ${a}`)}
         />

@@ -388,7 +388,14 @@ const DECISION_TOOLS: ToolSpec[] = [
     parameters: {
       type: "object",
       properties: {
-        name: { type: "string", description: "The prebuilt op or library script name to run." },
+        name: {
+          type: "string",
+          description:
+            "The exact op/script name to run — from candidate_scripts, or from available_operations' " +
+            "\"operations\" lists. available_operations is grouped by capability area with a description " +
+            "per group: read a group's description before concluding no capability exists — a bare name " +
+            "like \"thread.send_message\" won't explain itself, but its group's description will.",
+        },
         params: { type: "object", description: "Arguments for that op/script." },
         doing: DOING_PARAM,
         say: SAY_PARAM,
@@ -617,7 +624,15 @@ export class GatewayReasoner implements Reasoner {
             }
           : {}),
       })),
-      available_operations: input.availableOperations,
+      // Grouped by owning script with that script's own description, when the caller has it
+      // (loop.ts always does; a test/caller that doesn't falls back to a bare flat name list —
+      // still usable, just without the "what is this for" context). Live-reported: a flat list of
+      // 60+ bare op names ("thread.create", "thread.send_message" among dozens of others with no
+      // explanation) left the model unable to recognize them as the answer to "let me chat inside
+      // a thread" and it reported no such capability existed. See availableOperationsGrouped's doc.
+      available_operations: input.operationGroups?.length
+        ? input.operationGroups.map((g) => ({ script: g.script, description: g.description, operations: g.operations }))
+        : input.availableOperations,
       repair_target: input.repairTarget ?? null,
       // What has already been tried in THIS run and what came back. Without it the model
       // re-decides from scratch every step — it would happily call the same operation again

@@ -125,6 +125,30 @@ describe("ScriptToolSurface — the 6-op surface (spec §3)", () => {
     expect(ops).toContain("read_file");
     expect(ops).toContain("notify.email");
   });
+
+  it("groups operations by owning script with that script's description — live-reported gap: a bare flat name list left real capabilities undiscoverable", () => {
+    const env = makeEnv();
+    const tools = new ScriptToolSurface(env, ["r2-workspace", "notifications", "project-coordination"]);
+    const groups = tools.availableOperationsGrouped();
+
+    const coordination = groups.find((g) => g.script === "project-coordination");
+    expect(coordination).toBeDefined();
+    expect(coordination!.description.length).toBeGreaterThan(0);
+    // thread.create / thread.send_message must be discoverable somewhere in the grouped shape —
+    // the exact bug this exists to fix: a model that couldn't see these named as "the answer" to
+    // "chat inside an existing thread" claimed the capability didn't exist.
+    expect(coordination!.operations).toContain("thread.create");
+    expect(coordination!.operations).toContain("thread.send_message");
+
+    const notify = groups.find((g) => g.script === "notifications");
+    expect(notify!.operations).toContain("notify.email");
+
+    // Every op from availableOperations() appears exactly once across the grouped shape — no op
+    // lost, none duplicated across groups.
+    const flat = tools.availableOperations();
+    const grouped = groups.flatMap((g) => g.operations);
+    expect(grouped.sort()).toEqual(flat.sort());
+  });
 });
 
 describe("script.find — degraded text scan when no Vectorize (spec §16)", () => {

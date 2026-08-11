@@ -279,6 +279,55 @@ describe("GatewayReasoner.decide — tool call preferred, text kept as fallback"
   });
 });
 
+// Live-reported: "our API doesn't support programmatic thread creation or direct in-thread chat
+// messaging" — the capability existed (project-coordination's thread.create/thread.send_message)
+// and was in `available_operations`, but only as a bare name among 60+ others with zero
+// description, so the model had no way to recognize it as the answer. Pin the request body itself
+// — the exact thing the model reads — not just that the reasoner accepts the new field.
+describe("GatewayReasoner — grouped available_operations reach the actual request body", () => {
+  async function decideCapturingBody(input: unknown): Promise<Record<string, unknown>> {
+    let capturedBody: string | undefined;
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      capturedBody = init?.body as string;
+      return new Response(JSON.stringify({ content: [{ type: "tool_use", name: "answer", input: { text: "ok" } }] }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const reasoner = new GatewayReasoner({ apiKey: "k", gateway: GATEWAY, ctx: CTX });
+      await reasoner.decide(input as never);
+      const body = JSON.parse(capturedBody!) as { messages: Array<{ role: string; content: string }> };
+      const userMsg = body.messages.find((m) => m.role === "user")!;
+      return JSON.parse(userMsg.content) as Record<string, unknown>;
+    } finally {
+      globalThis.fetch = original;
+    }
+  }
+
+  it("sends the grouped shape, with descriptions, when the loop supplies operationGroups", async () => {
+    const payload = await decideCapturingBody({
+      goal: "g", level: 2, snapshot: {}, candidates: [],
+      availableOperations: ["thread.create", "thread.send_message", "notify.email"],
+      operationGroups: [
+        { script: "project-coordination", description: "Work with a project's threads and its agents.", operations: ["thread.create", "thread.send_message"] },
+        { script: "notifications", description: "Send outbound notifications.", operations: ["notify.email"] },
+      ],
+    });
+    const ops = payload["available_operations"] as Array<{ script: string; description: string; operations: string[] }>;
+    expect(Array.isArray(ops)).toBe(true);
+    const coordination = ops.find((g) => g.script === "project-coordination");
+    expect(coordination).toBeDefined();
+    expect(coordination!.description).toContain("threads and its agents");
+    expect(coordination!.operations).toContain("thread.send_message");
+  });
+
+  it("falls back to the bare flat list when no operationGroups are supplied", async () => {
+    const payload = await decideCapturingBody({
+      goal: "g", level: 2, snapshot: {}, candidates: [], availableOperations: ["read_file", "notify.email"],
+    });
+    expect(payload["available_operations"]).toEqual(["read_file", "notify.email"]);
+  });
+});
+
 describe("GatewayReasoner — reasoning-effort request + lastThinking capture", () => {
   it("forwards a configured reasoning option into the actual gateway request body", async () => {
     let capturedBody: string | undefined;

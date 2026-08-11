@@ -48,7 +48,7 @@ import {
 } from "@/lib/api";
 import { useProduct } from "@/lib/product-context";
 import { canManageSpaceSettings } from "@/lib/roles";
-import { ApprovedActionsEditor } from "./ApprovedActionsEditor";
+import { ApprovedActionsEditor, type OperationGroup } from "./ApprovedActionsEditor";
 
 export type SidePanelTab =
   | "config"
@@ -121,8 +121,23 @@ function ConfigPanel({
   const [agentPolicy, setAgentPolicy] = React.useState<AgentPolicy | null>(null);
   const [saving, setSaving] = React.useState(false);
   const [loadError, setLoadError] = React.useState<string | null>(null);
+  // Every operation the agent could call, for the "browse all tools" list under the pre-approved
+  // editor — same data the Skills tab reads, fetched independently here since a person configuring
+  // policy shouldn't have to first visit a different tab to know what's even callable.
+  const [catalogue, setCatalogue] = React.useState<OperationGroup[] | undefined>(undefined);
 
   const scoped = Boolean(agentId);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    getAssistantCapabilities(spaceId, session)
+      .then((caps) => {
+        if (cancelled) return;
+        setCatalogue(caps.prebuilts.map((p) => ({ script: p.name, description: p.description, operations: p.operations })));
+      })
+      .catch(() => { if (!cancelled) setCatalogue([]); });
+    return () => { cancelled = true; };
+  }, [spaceId, session]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -199,6 +214,7 @@ function ConfigPanel({
           actions={actions}
           canEdit={canEdit}
           busy={saving}
+          catalogue={catalogue}
           onAdd={(a) =>
             void (scoped
               ? updateAgentPolicy(spaceId, agentId!, session, { auto_approved_actions: [...actions, a] }).then(setAgentPolicy)

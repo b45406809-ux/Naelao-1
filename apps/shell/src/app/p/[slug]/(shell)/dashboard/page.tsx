@@ -814,6 +814,7 @@ export default function DashboardPage() {
             actions={policy?.auto_approved_actions ?? []}
             canEdit={canManageAssistant}
             busy={savingPolicy}
+            catalogue={capabilities?.prebuilts.map((p) => ({ script: p.name, description: p.description, operations: p.operations }))}
             onAdd={(a) => void addApprovedAction(a)}
             onRemove={(a) => void removeApprovedAction(a)}
           />

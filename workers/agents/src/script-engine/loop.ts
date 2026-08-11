@@ -164,6 +164,14 @@ export interface Reasoner {
     snapshot: ObserveSnapshot;
     candidates: FindCandidate[];
     availableOperations: string[];
+    /**
+     * The same operations as `availableOperations`, grouped by owning prebuilt script with that
+     * script's own description — see ScriptToolSurface.availableOperationsGrouped's doc for why
+     * a flat name list alone left real capabilities (e.g. thread.send_message) undiscoverable.
+     * Optional so a caller/test that only has the flat list still works; reasoner.ts prefers this
+     * when present.
+     */
+    operationGroups?: Array<{ script: string; description: string; operations: string[] }>;
     /** Set on L2/L3 — the script being repaired and why it drifted. */
     repairTarget?: { name: string; failureReason: string };
     /**
@@ -646,6 +654,7 @@ export async function runScriptLoop(
         snapshot,
         candidates,
         availableOperations: tools.availableOperations(),
+          operationGroups: tools.availableOperationsGrouped(),
         ...(opts.conversation ? { conversation: opts.conversation } : {}),
         repairTarget: { name: top!.name, failureReason: repairReason ?? "fingerprint drift (partial match)" },
         ...(deltaReporter(opts) ? { onDelta: deltaReporter(opts)! } : {}),
@@ -809,6 +818,7 @@ export async function runScriptLoop(
           snapshot,
           candidates,
           availableOperations: tools.availableOperations(),
+          operationGroups: tools.availableOperationsGrouped(),
           ...(opts.conversation ? { conversation: opts.conversation } : {}),
           ...(level === "L3" && top
             ? { repairTarget: { name: top.name, failureReason: repairReason ?? "stale / re-derive" } }
@@ -884,6 +894,13 @@ export async function runScriptLoop(
           // in this task" — telling the model a gated action succeeded when it is still sitting
           // unapproved. That is the worst possible thing to be wrong about here.
           if (deferred.some((d) => d.action_name === decision.name)) {
+            // A live-reported bug: the "reason" step just pushed above (its own narration/doing
+            // text, e.g. "Checking on that payout") had nothing recorded under it when the model
+            // re-asked about an action still parked pending approval — this branch `continue`d
+            // with no trace push at all, so the UI showed a status line with no table row beneath
+            // it. Same `detail` the FIRST park uses, so it renders identically ("waiting for
+            // approval") rather than needing a second label the client has to know about.
+            pushTrace({ phase: "gate", name: decision.name, detail: "deferred_pending_approval", params: decision.params });
             priorSteps.push({
               name: decision.name,
               params: decision.params,
@@ -906,6 +923,17 @@ export async function runScriptLoop(
           const attempted = attemptedCalls.get(callKey);
           if (attempted) {
             notes.push(`${level} skipped repeat call ${decision.name} (already ${attempted.ok ? "ran" : "failed"} this task)`);
+            // Same live-reported gap as the deferred branch above: this used to `continue` with
+            // no trace push, leaving the "reason" step's own narration ("Checking Instagram
+            // tools…") rendered with no tool-call table beneath it — every REPEAT of an already-
+            // attempted call was invisible in the UI even though a new reasoning turn (and its own
+            // narration line) was genuinely spent on it. duration_ms: 0 and no tokens, since
+            // nothing actually ran — this is the cached outcome, not a new attempt.
+            pushTrace({
+              phase: "run", name: decision.name, ok: attempted.ok, duration_ms: 0, params: decision.params,
+              detail: attempted.ok ? "repeated — served the earlier result" : "repeated — already failed this task",
+              ...(attempted.ok && attempted.output !== undefined ? { output: formatToolOutput(attempted.output) } : {}),
+            });
             priorSteps.push({
               name: decision.name,
               params: decision.params,
@@ -1050,6 +1078,7 @@ export async function runScriptLoop(
             snapshot,
             candidates,
             availableOperations: tools.availableOperations(),
+          operationGroups: tools.availableOperationsGrouped(),
             ...(opts.conversation ? { conversation: opts.conversation } : {}),
             priorSteps: closing.recent,
             ...(closing.digest.length > 0 ? { earlierSteps: closing.digest } : {}),

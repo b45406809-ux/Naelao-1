@@ -7,7 +7,7 @@
 // agent's own settings," not a duplicate of the space-wide Configuration panel.
 
 import * as React from "react";
-import { getAgentPolicy, updateAgentPolicy, type AgentPolicy } from "@/lib/api";
+import { getAgentPolicy, updateAgentPolicy, getAssistantCapabilities, type AgentPolicy, type AssistantCapabilities } from "@/lib/api";
 import type { SessionCredentials } from "@/lib/api";
 import { ApprovedActionsEditor } from "./ApprovedActionsEditor";
 
@@ -27,6 +27,7 @@ export function AgentPolicyPanel({
 }) {
   const [expanded, setExpanded] = React.useState(false);
   const [policy, setPolicy] = React.useState<AgentPolicy | null>(null);
+  const [capabilities, setCapabilities] = React.useState<AssistantCapabilities | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -42,6 +43,9 @@ export function AgentPolicyPanel({
     } finally {
       setLoading(false);
     }
+    // Best-effort, independent of the policy load above — a capabilities-fetch failure must not
+    // block seeing/editing the policy itself, just fall back to the plain free-text field.
+    getAssistantCapabilities(spaceId, session).then(setCapabilities).catch(() => undefined);
   }
 
   function toggle() {
@@ -132,6 +136,7 @@ export function AgentPolicyPanel({
                 actions={policy.auto_approved_actions}
                 canEdit={canEdit}
                 busy={saving}
+                catalogue={capabilities?.prebuilts.map((p) => ({ script: p.name, description: p.description, operations: p.operations }))}
                 onAdd={(a) => void addAction(a)}
                 onRemove={(a) => void removeAction(a)}
               />
