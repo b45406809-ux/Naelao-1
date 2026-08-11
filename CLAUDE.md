@@ -6099,6 +6099,43 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      of the new grouped activity UI (same standing Playwright/TLS-handshake limitation as every
      prior UI pass in this session).
 
+123. **Two real gaps in item 122's own activity feed, both found by the user comparing it directly
+     against Claude Code's own UI: reload still hid the sequence behind a click, and every
+     narration message but the LAST one in a tool-call chain was silently discarded rather than
+     shown as a progress trail.**
+     - **Reload no longer hides the trace behind "Show activity".** `PersistedActivitySequence`
+       required a manual click before fetching a completed run's trace — so a reload visibly
+       regressed a message from "the full sequence, right there" to "click to maybe see it again,"
+       backwards from how a message read while it was actually streaming. Now auto-fetches on
+       mount and renders in the exact same grouped shape (narration trail + collapsed tool table)
+       the live view used. Cost accepted deliberately: a long conversation now fires one trace
+       request per past assistant message on mount, not hidden as a tradeoff.
+     - **The real bug behind "it's just tool call after tool call, not enough":** `groupSteps` kept
+       only the MOST RECENT `say` per segment (`current.narration = step.narration` — later wins,
+       earlier silently dropped), even though the reasoning loop can attach a real `say` to every
+       single reasoning turn in a multi-tool-call chain (`loop.ts`'s two `pushTrace({phase:
+       "reason", narration: ...})` sites, one per turn). So on any chain longer than one tool call,
+       every message the model wrote along the way except the last was thrown away before it ever
+       reached the screen — reading exactly as "tool call after tool call" with nothing telling you
+       what was found in between, even though the model HAD been talking the whole time. Fixed by
+       keeping the full ordered list (`NarrationEntry[]`, not a single overwritten field): every
+       prior narration renders as a small dimmed trail line, the current one keeps the original
+       prominent italic style and is what animates live. `DECISION_INSTRUCTIONS`' own ~20,000-char
+       protocol budget (items 108/118) had zero headroom left for new prose in the main paragraph
+       — confirmed empirically (a small addition there pushed `composed.length` to 20,402 against
+       the hard 20,000 cap) — so the "report what you learn, not just what runs next" instruction
+       was moved to `SAY_PARAM`'s own per-call description instead, which is NOT counted by that
+       budget test (it's a tool-schema field, not part of the composed system-prompt string) and is
+       arguably the more directly-consulted text anyway, since it's what the model reads at the
+       exact moment it's filling in that specific field.
+     2861/2861 tests pass (no regressions — this was a rendering-layer + prompt-text change with
+     no new backend surface), `npx turbo run typecheck` clean (76 tasks), `apps/shell` verified via
+     a real `next build`. `naelao-agents` (bare `wrangler deploy`) and `apps/shell` (rebuilt +
+     `--branch=main`, confirmed `environment: "production"` via the Pages API) both deployed and
+     verified via non-LLM liveness checks only — no `/agent/run` dispatched, per the user's own
+     "don't use my AI credits, I want to test it myself" instruction carried forward from the
+     previous pass.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

@@ -126,25 +126,31 @@ function mergeSteps(raw: LiveRunStep[]): { step: LiveRunStep; active: boolean }[
  * — not a tool call, no narration) or a SEGMENT of consecutive reason/run activity.
  *
  * A segment is Claude Code's own "the agent talks to me, then runs a tool, then runs another"
- * pattern: the model's mandatory narration for whichever tool call is CURRENT is the always-
- * visible headline (an EARLIER narration in the same segment is overridden, never stacked — the
- * headline always shows what's happening now), and every tool call the model has made without
- * yet replying to the user collapses into ONE running summary below it. A segment ends the moment
- * the model actually answers (or gives up) — that reply is the message's own bubble, rendered
- * outside this component, not a row here — so the NEXT tool call after an answer starts a
- * genuinely new, separate segment.
+ * pattern. Every reasoning turn inside the segment can carry its OWN `say` — a real message the
+ * model wrote at that moment, not filler — and each one is kept and rendered in order as a small
+ * progress trail, not just the most recent overriding the rest. Discarding everything but the
+ * last narration was the actual bug: a long tool-call chain read as silent "tool call after tool
+ * call" with nothing telling you what was happening in between, even though the model had been
+ * talking the whole time — the messages existed in the trace, they were just being thrown away
+ * on the way to the screen. The most recent one is still the visually prominent line (it's what's
+ * happening RIGHT NOW); earlier ones render smaller/dimmer above it, like a running log. Every
+ * tool call the model has made without yet replying to the user collapses into ONE running
+ * summary below the trail. A segment ends the moment the model actually answers (or gives up) —
+ * that reply is the message's own bubble, rendered outside this component, not a row here — so
+ * the NEXT tool call after an answer starts a genuinely new, separate segment.
  */
 type ToolRow = { step: LiveRunStep; active: boolean; idx: number };
 type ThoughtRow = { step: LiveRunStep; idx: number };
+type NarrationEntry = { text: string; active: boolean; idx: number };
 type Grouped =
   | { kind: "plain"; step: LiveRunStep; active: boolean; idx: number }
-  | { kind: "segment"; narration?: string; narrationActive: boolean; tools: ToolRow[]; thoughts: ThoughtRow[]; anyActive: boolean; startIdx: number };
+  | { kind: "segment"; narrations: NarrationEntry[]; tools: ToolRow[]; thoughts: ThoughtRow[]; anyActive: boolean; startIdx: number };
 
 function groupSteps(merged: { step: LiveRunStep; active: boolean }[]): Grouped[] {
   const out: Grouped[] = [];
   let current: Extract<Grouped, { kind: "segment" }> | null = null;
   const closeSegment = () => {
-    if (current && (current.tools.length > 0 || current.thoughts.length > 0 || current.narration)) out.push(current);
+    if (current && (current.tools.length > 0 || current.thoughts.length > 0 || current.narrations.length > 0)) out.push(current);
     current = null;
   };
   merged.forEach(({ step, active }, idx) => {
@@ -159,11 +165,8 @@ function groupSteps(merged: { step: LiveRunStep; active: boolean }[]): Grouped[]
       closeSegment();
       return;
     }
-    if (!current) current = { kind: "segment", narrationActive: false, tools: [], thoughts: [], anyActive: false, startIdx: idx };
-    if (step.narration) {
-      current.narration = step.narration; // latest wins — never stack prior narration
-      current.narrationActive = active;
-    }
+    if (!current) current = { kind: "segment", narrations: [], tools: [], thoughts: [], anyActive: false, startIdx: idx };
+    if (step.narration) current.narrations.push({ text: step.narration, active, idx });
     if (step.phase === "reason" && step.thinking) current.thoughts.push({ step, idx });
     if (step.phase === "run") current.tools.push({ step, active, idx });
     if (active) current.anyActive = true;
@@ -299,7 +302,7 @@ export function ActivitySequence({ steps, animate, live }: { steps: LiveRunStep[
   const toolCount = grouped.reduce((n, g) => (g.kind === "segment" ? n + g.tools.filter((t) => !t.active).length : n), 0);
   const thoughtCount = grouped.reduce((n, g) => (g.kind === "segment" ? n + g.thoughts.length : n), 0);
   const anyActive = merged.some((m) => m.active);
-  const anyNarration = grouped.some((g) => g.kind === "segment" && !!g.narration);
+  const anyNarration = grouped.some((g) => g.kind === "segment" && g.narrations.length > 0);
 
   if (grouped.length === 0) return null;
   // A live run shows SOMETHING for every step it takes — even a lone "Observed current state"
@@ -325,12 +328,26 @@ export function ActivitySequence({ steps, animate, live }: { steps: LiveRunStep[
           const isOpen = !closedLiveSegments.has(gi) && (g.anyActive || openSegments.has(gi));
           return (
             <div key={`seg-${g.startIdx}`}>
-              {/* The model's own narration for whatever it's doing RIGHT NOW — always visible,
-                  never collapsed (it was written to be read), in italics to read as speech rather
-                  than a status label. */}
-              {g.narration && (
-                <div style={{ fontSize: 13, color: "var(--text1)", fontStyle: "italic", padding: "0 0 4px", lineHeight: 1.5 }}>
-                  <RevealText text={g.narration} animate={animate && g.narrationActive} />
+              {/* The full progress trail for this segment — every message the model actually
+                  wrote while working, in the order it wrote them, not just the last one. Earlier
+                  entries render smaller and dimmer (already-happened context, never animated —
+                  they've already been read); the most recent one keeps the original prominent
+                  style and is what reveals live, since it's what's happening right now. */}
+              {g.narrations.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 2, padding: "0 0 4px" }}>
+                  {g.narrations.slice(0, -1).map((n) => (
+                    <div key={n.idx} style={{ fontSize: 11.5, color: "var(--text3)", fontStyle: "italic", lineHeight: 1.5 }}>
+                      {n.text}
+                    </div>
+                  ))}
+                  {(() => {
+                    const last = g.narrations[g.narrations.length - 1]!;
+                    return (
+                      <div style={{ fontSize: 13, color: "var(--text1)", fontStyle: "italic", lineHeight: 1.5 }}>
+                        <RevealText text={last.text} animate={animate && last.active} />
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
               {rows.length > 0 && (

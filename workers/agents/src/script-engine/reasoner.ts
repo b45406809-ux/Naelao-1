@@ -363,7 +363,7 @@ function extractJson(text: string): unknown {
 const SAY_PARAM = {
   type: "string",
   description:
-    "One short line to the person you are helping, in their words, saying what you are about to do and why. Shown to them immediately, before this runs — so write it as an update they will read while they wait, e.g. \"Let me check what's already in your store first.\" Never mention operation names, scripts or tiers.",
+    "One short line to the person you are helping, in their words, saying what you are about to do and why. Shown to them immediately, before this runs — so write it as an update they will read while they wait, e.g. \"Let me check what's already in your store first.\" Report what you learn too, not just the next step — these stay visible in order. Never mention operation names, scripts or tiers.",
 };
 
 const DECISION_TOOLS: ToolSpec[] = [
