@@ -6550,6 +6550,48 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      Next.js build and the exact git-history restoration for the composer button, not a live
      screenshot).
 
+130. **The "snap" when a streaming reply finalizes is fixed — the plan's last open item
+     (Workstream A.4), root-caused to one line rather than the state-machine refactor originally
+     scoped for it.** `RevealText` (`apps/shell/src/components/ActivityFeed.tsx`) initialised its
+     `shown` state to `""` whenever `animate` was true. The in-flight run and the finalized message
+     are two different render branches in `Chat.tsx` (`isLoading && streamingContent` vs. the
+     `messages.map()` row), so React unmounts one and mounts the other — and that fresh mount
+     restarted the reveal from empty, **re-typing text the viewer had just finished reading**. Its
+     own "growing text extends the reveal instead of restarting it" logic only ever worked within
+     one mounted instance, which is exactly what a remount destroys. Fixed with an optional
+     `revealFrom` seed: `finalizeAnswer` now receives what was genuinely on screen (`accumulated`
+     on the SSE path — it already tracked this; a new `lastStreamed` local on the polling path,
+     which previously only pushed partials into state without keeping the last value) and stores it
+     as a new client-only `Message.revealedPrefix`. The finalized bubble picks up exactly where the
+     live one left off: instantly when the answer was fully streamed (the effect's own
+     `i >= text.length` early-return fires, so no interval is ever started), continuing only the
+     remainder when the stream was cut short, and animating fresh when nothing streamed at all
+     (byte-identical to prior behaviour). A final answer that ISN'T an extension of the partial
+     falls back to a fresh reveal rather than rendering a mismatched prefix. The
+     resume-continuation branch seeds with the existing bubble's content plus the `\n\n` separator
+     that branch adds — without that the seed wouldn't be a prefix of the merged text and the
+     whole message would re-reveal, which is the same bug one level up. Also stopped re-animating
+     `m.activity` (now `animate={false}`): it is only ever set by `finalizeAnswer`, i.e. from steps
+     the viewer just watched appear in the live block, so replaying that reveal is the same
+     artifact as re-typing the answer — the reload path is untouched, since
+     `PersistedActivitySequence` fetches a trace nobody watched live.
+     **Deliberately NOT done — the full provisional-message refactor the plan originally
+     prescribed** (render the in-flight run as a `pending: true` entry in the `messages` array so
+     the live and finalized views are literally the same DOM node). That would restructure a
+     1795-line file's polling/SSE/self-heal/resume/cancel/billing-wall state machine, and this
+     file's own history (items 83, 104, 122 all fixed duplicate-or-missing-message bugs in exactly
+     this code) says that class of change needs a live end-to-end run to trust — which the standing
+     "don't spend my AI credits" instruction rules out. The residual after this fix is only that a
+     tool row expanded during the run collapses when it finalizes; the text no longer flashes,
+     which was the whole visible symptom. Real, scoped, honestly still open.
+     2916/2916 tests pass (no new tests — this is a render-layer change with no new backend
+     surface; the existing suite covers `finalizeAnswer`'s callers), `npx turbo run typecheck` clean
+     (76 tasks), `apps/shell` verified via a real `next build` AND by grepping the compiled
+     `next-on-pages` output for `revealedPrefix` before deploying. Deployed to
+     `naelao-shell.pages.dev` (`--branch=main`, `environment: "production"` confirmed via the Pages
+     API, 200s on `/p/launchpad/{new,spaces,dashboard}`). **Not verified against a live model run**,
+     per the standing instruction to leave inference credits for the user's own testing.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
