@@ -681,7 +681,10 @@ export function Chat({
       answerText: string,
       activitySteps: LiveRunStep[],
       pendingApproval?: AgentRun["pending_approval"],
-      deferredApprovals?: AgentRun["deferred_approvals"]
+      deferredApprovals?: AgentRun["deferred_approvals"],
+      // What the viewer already watched stream in, so the finalized bubble picks up where the
+      // live one left off instead of re-typing it (see Message.revealedPrefix).
+      alreadyShown?: string
     ) => {
       const continuationOf = resumeOriginRef.current.get(runId);
       if (continuationOf) {
@@ -693,6 +696,12 @@ export function Chat({
               ...m,
               content: m.content ? `${m.content}\n\n${answerText}` : answerText,
               ...(activitySteps.length > 0 ? { activity: [...(m.activity ?? []), ...activitySteps] } : {}),
+              // A continuation appends to an existing bubble, so what's "already shown" is that
+              // whole bubble plus the separator this branch adds — otherwise the seed wouldn't be
+              // a prefix of the new text and the reveal would restart the entire message.
+              ...(alreadyShown
+                ? { revealedPrefix: m.content ? `${m.content}\n\n${alreadyShown}` : alreadyShown }
+                : {}),
               ...(pendingApproval ? { pendingApproval } : {}),
               ...(deferredApprovals?.length ? { deferredApprovals: [...(m.deferredApprovals ?? []), ...deferredApprovals] } : {}),
             };
@@ -706,6 +715,7 @@ export function Chat({
           id: `msg_${Date.now()}`, role: "assistant", content: answerText,
           created_at: new Date().toISOString(),
           justArrived: true,
+          ...(alreadyShown ? { revealedPrefix: alreadyShown } : {}),
           ...(activitySteps.length > 0 ? { activity: activitySteps } : {}),
           ...(pendingApproval ? { pendingApproval } : {}),
           ...(deferredApprovals?.length ? { deferredApprovals } : {}),
@@ -722,6 +732,9 @@ export function Chat({
       // local copy with whatever's current, and the last one read is what gets attached to the
       // completed message below.
       let latestActivity: LiveRunStep[] = [];
+      // The last partial answer actually rendered on screen, so the finalized bubble can pick up
+      // the reveal where the live one left off rather than re-typing it (Message.revealedPrefix).
+      let lastStreamed = "";
       // Bug fix: setInterval does NOT wait for a previous async callback to finish before firing
       // the next one. If a single pollRun round-trip ever takes longer than POLL_INTERVAL_MS (a
       // slow network tick, a GC pause, a burst of load), two or more overlapping callbacks each
@@ -763,7 +776,10 @@ export function Chat({
             // partial_answer is the reply as the model is writing it; final_answer only exists
             // once the run has finished, so on a live tick the partial is the real signal.
             const growing = run.partial_answer ?? run.final_answer;
-            if (growing) setStreamingContent(growing);
+            if (growing) {
+              lastStreamed = growing;
+              setStreamingContent(growing);
+            }
             return;
           }
           settled = true;
@@ -778,7 +794,7 @@ export function Chat({
           // the user saw the spinner stop and nothing appear, with no way to know the agent was
           // waiting on them.
           if ((run.status === "completed" || run.status === "awaiting_approval") && run.final_answer) {
-            finalizeAnswer(runId, run.final_answer, latestActivity, run.pending_approval, run.deferred_approvals);
+            finalizeAnswer(runId, run.final_answer, latestActivity, run.pending_approval, run.deferred_approvals, lastStreamed);
           } else if (run.status === "failed" || run.status === "cancelled") {
             if (!isUserStoppedError(run.error)) {
               if (run.error_code && BILLING_ERROR_CODES.has(run.error_code)) {
@@ -890,7 +906,7 @@ export function Chat({
             setLastRun({ id: data.run_id ?? runId, status, final_answer: data.final_answer ?? accumulated });
             const answerText = data.final_answer ?? accumulated;
             if ((status === "completed" || status === "awaiting_approval") && answerText) {
-              finalizeAnswer(data.run_id ?? runId, answerText, activitySteps, data.pending_approval, data.deferred_approvals);
+              finalizeAnswer(data.run_id ?? runId, answerText, activitySteps, data.pending_approval, data.deferred_approvals, accumulated);
             } else if (status === "failed" || status === "cancelled") {
               if (!isUserStoppedError(data.error)) {
                 if (data.error_code && BILLING_ERROR_CODES.has(data.error_code)) {
@@ -1341,7 +1357,12 @@ export function Chat({
                       THIS browser session); after a reload it's gone, but the run's own id
                       survives in metadata.run_id and the trace itself is durable server-side —
                       PersistedActivitySequence re-fetches it on demand instead of it disappearing. */}
-                  {m.role !== "user" && m.activity && <ActivitySequence steps={m.activity} animate={m.justArrived} />}
+                  {/* animate={false}: `activity` is only ever set by finalizeAnswer, i.e. from a run
+                      whose steps the viewer just watched appear in the live block above. Re-playing
+                      that reveal on the finalized bubble is the same "snap" as re-typing the answer
+                      text — the sequence is already read. (The reload path below is a different
+                      branch: PersistedActivitySequence fetches a trace nobody watched live.) */}
+                  {m.role !== "user" && m.activity && <ActivitySequence steps={m.activity} animate={false} />}
                   {m.role !== "user" && !m.activity && m.metadata?.run_id && chatSessionId && (
                     <PersistedActivitySequence spaceId={spaceId} sessionId={chatSessionId} runId={m.metadata.run_id} session={session} />
                   )}
@@ -1368,7 +1389,7 @@ export function Chat({
                     </div>
                   ) : (
                     <div className={["bubble", m.role === "user" ? "user" : ""].filter(Boolean).join(" ")}>
-                      {m.role === "user" ? m.content : <RevealText text={m.content} animate={m.justArrived} />}
+                      {m.role === "user" ? m.content : <RevealText text={m.content} animate={m.justArrived} revealFrom={m.revealedPrefix} />}
                     </div>
                   )}
                   {/* Edit and re-ask. Only the LAST thing you said — editing something further back

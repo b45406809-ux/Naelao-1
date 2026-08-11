@@ -58,8 +58,27 @@ function stepLabel(step: LiveRunStep, active: boolean): string {
  * with what's already shown) extends the reveal instead of restarting it; a text that ISN'T an
  * extension of what's shown (a genuinely different message) resets and reveals fresh.
  */
-function RevealText({ text, animate }: { text: string; animate?: boolean | undefined }) {
-  const [shown, setShown] = React.useState(animate ? "" : text);
+function RevealText({
+  text,
+  animate,
+  revealFrom,
+}: {
+  text: string;
+  animate?: boolean | undefined;
+  /** Text the viewer has ALREADY watched appear, in a different component instance. The growing-
+   *  text logic below only extends a reveal within one mounted instance — across a remount the
+   *  state is gone, so a bubble that re-mounts with the same text restarts it from empty and
+   *  re-types something the viewer just finished reading. That remount is exactly what happens
+   *  when a streaming run finalizes (the live block unmounts, the persisted message mounts), and
+   *  it is the visible "snap". Seeding `shown` with what was already on screen makes the
+   *  finalized bubble pick up where the live one left off — instantly if it was fully revealed,
+   *  or continuing the remainder if the stream was cut short. */
+  revealFrom?: string | undefined;
+}) {
+  const [shown, setShown] = React.useState(() => {
+    if (!animate) return text;
+    return revealFrom && text.startsWith(revealFrom) ? revealFrom : "";
+  });
 
   React.useEffect(() => {
     if (!animate) {

@@ -291,6 +291,12 @@ export interface Message {
    *  set on a message loaded from history). Tells RevealText to animate this bubble's text in
    *  rather than show it instantly — a reload must never re-animate a message it already showed. */
   justArrived?: boolean;
+  /** CLIENT-ONLY: how much of this message's text the viewer had ALREADY watched stream in, in the
+   *  live in-flight block, before this bubble replaced it. The live block and the finalized
+   *  message are two different render branches, so React unmounts one and mounts the other — the
+   *  reveal animation would otherwise restart from empty and re-type text that was just read (the
+   *  visible "snap" at stream completion). RevealText seeds itself with this instead. */
+  revealedPrefix?: string;
 }
 
 export interface ConsultedThread {
