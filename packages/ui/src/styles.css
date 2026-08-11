@@ -620,6 +620,18 @@
 }
 
 @media (max-width:900px){
+  /* Live-reported bug, root-caused via computed-style diagnostics (not guessed from a
+     screenshot): #app is `display:flex` with the default ROW direction — correct on desktop,
+     where its only in-flow children are #sidebar and #main side by side. On mobile, #sidebar
+     drops out of flow (position:fixed, below) but .mobile-topbar becomes visible as a THIRD
+     in-flow child in that same row — so the header bar and the page body ended up sitting
+     SIDE BY SIDE (each squeezed to ~half the viewport) instead of stacked, and neither the
+     hamburger's own sidebar toggle nor the page underneath it were usable: the composer/
+     messages rendered in a ~190px sliver on the right with the topbar cut in half on the left.
+     Column direction here stacks .mobile-topbar above #main exactly as intended — #sidebar/
+     .mobile-backdrop/.thread-panel/.toast are all position:fixed regardless, so this doesn't
+     affect them. */
+  #app{flex-direction:column}
   #sidebar{position:fixed;top:0;left:0;height:100%;width:264px!important;max-width:86vw;z-index:200;
            padding-top:env(safe-area-inset-top);
            transform:translateX(-100%);transition:transform 0.24s cubic-bezier(.4,0,.2,1);box-shadow:var(--shadow-lg)}

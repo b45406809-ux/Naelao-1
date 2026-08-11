@@ -6658,6 +6658,79 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      of the session — the wiring itself is unchanged, pre-existing, and confirmed correct by reading
      it); registering a real domain and setting `RESEND_FROM_ADDRESS` (needs the user's own domain
      purchase — this account has no DNS zones to verify one against Resend even if code were ready).
+132. **Two more live-reported bugs, both root-caused with real diagnostics rather than guessed:
+     "insufficient credits" in an assistant session despite a real 5000-credit balance, and the
+     mobile hamburger item 131 couldn't screenshot — which turned out to be a MUCH bigger bug than
+     "can't open a drawer": the page body and the mobile top bar were sitting SIDE BY SIDE, each
+     squeezed into half the screen.**
+     - **Credits bug, root cause.** `enforceRunGates` (`NaelaoAgentDO.ts`) has two separate credit
+       gates depending on whether a run is project-scoped: a project thread checks the BUSINESS
+       WALLET (`checkProjectWallet`) — that path already worked. A business-scoped ASSISTANT
+       session (no `projectId` — Home/`/new` chat inside a business) checks the signed-in end
+       user's OWN personal balance via `GET /internal/product-users/:spaceId/:endUserId/credits/
+       balance`, passing whatever `spaceId` the run is actually happening in — for a business-
+       scoped session, that's the BUSINESS's own space id. But `ProductUserDO` is a
+       PRODUCT-scoped concept (one instance per productId×endUserId, addressed by the PRODUCT
+       ROOT's space id — see `productUserDoStub`'s own doc) — so this route addressed a
+       COMPLETELY DIFFERENT, never-signed-up ProductUserDO keyed on `(businessId, endUserId)`,
+       permanently stuck at 0, while the end user's real grant sat on the ROOT-keyed DO. The exact
+       same class of bug items 90/`getMe` and the pricing catalog (`loadPricingCatalog`) had
+       already been fixed for once each — this route family (`credits/balance`, `credits/deduct`,
+       `credits/refresh-monthly`) was simply never covered. **Confirmed this was NOT a Gemini/
+       Groq/CF quota issue being mislabeled** — the only way `enforceRunGates`' non-project branch
+       returns `error_code: "insufficient_credits"` is a real `balance_credits <= 0` from an
+       actually-queried ProductUserDO; a network/lookup failure fails OPEN (never blocks), and
+       provider-level failures (429/quota/model-unavailable) route through the entirely separate
+       `classifyFailure`/`FailureKind` system item 129 already audited — so the two failure modes
+       can't cross-contaminate each other's messaging, contrary to what the report worried about.
+       Fixed with a shared `resolveProductRootSpace()` helper (`workers/spaces/src/index.ts`,
+       mirroring the identical inline parent-walk already done three times over —
+       `/internal/product-sessions/verify`, `/internal/stream-tickets/issue`,
+       `loadPricingCatalog`) applied to all three routes; `refresh-monthly` also now reads the
+       ROOT's `spacetype_id`/`config_json` for its pricing lookup (pricing config, per
+       `loadPricingCatalog`'s own comment, is authored on the root, never a business's own row).
+       4 new tests in `end-user-credit-debit.test.ts` (a business-scoped balance/deduct call now
+       resolves the SAME ProductUserDO as the root; an orphaned business referencing a deleted
+       root 404s; an ordinary product-root call is unaffected). **Live-verified against the
+       reporting user's own real data** (business "Test 1", end user
+       `04c68b8d-f0a7-4d78-bb54-cf9e577d877e`) via a temporary service-bound diagnostic worker
+       (same technique as item 128, deleted immediately after): querying the credits/balance
+       route with the BUSINESS's own space id now returns the same `5100` the product ROOT's id
+       always returned — previously it would have returned `0`.
+     - **Mobile bug, root cause — much bigger than item 131's own drawer fix.** Root-caused with
+       computed-style diagnostics injected via `addScriptTag` (not guessed from a screenshot): on
+       the reported thread page at 390px width, `#main` measured `width=191.6px` and
+       `.mobile-topbar` measured `width=198.4px` — i.e. the page body and the header bar were each
+       squeezed into roughly HALF the viewport, side by side, instead of the header stacked above
+       a full-width body. Cause: `#app{display:flex}` (packages/ui's own layout root) has no
+       explicit `flex-direction`, so it defaults to `row` — correct on DESKTOP, where its only
+       in-flow children are `#sidebar` and `#main` side by side. On mobile, `#sidebar` correctly
+       drops out of flow (`position:fixed`, confirmed via the same diagnostic:
+       `transform:matrix(1,0,0,1,-264,0)`, fully off-canvas) — but `.mobile-topbar` becomes
+       visible as a THIRD in-flow child in that same ROW, so the row now splits `.mobile-topbar`
+       and `#main` in half instead of stacking them. This is a distinct, deeper bug than item
+       131's — that fix (closing `panelOpen` on mobile mount) was real and necessary but wasn't
+       the reason the hamburger click couldn't be confirmed; THIS is. Fixed with one rule inside
+       the existing `@media (max-width:900px)` block: `#app{flex-direction:column}` — every other
+       mobile-visible element (`#sidebar`, `.mobile-backdrop`, `.thread-panel`,
+       `.thread-panel-backdrop`, `.toast`) is already `position:fixed`, so this only affects the
+       two normal-flow children it needs to. **Live-verified twice, both structurally AND
+       visually**: the same computed-style diagnostic against the deployed fix now reports
+       `#main: width=390px left=0 right=390` and `.mobile-topbar: width=390px left=0 right=390`;
+       a THIRD diagnostic call clicked the real hamburger button
+       (`document.querySelector("button.mobile-menu-btn").click()`) and confirmed `#sidebar`
+       flips from `transform:matrix(1,0,0,1,-264,0)` to `transform:matrix(1,0,0,1,0,0)` with class
+       `mobile-open` — the exact click item 131 couldn't screenshot, now proven to work
+       end-to-end. A real screenshot of the fixed page (390×844, the same reported thread) shows a
+       full-width, correctly laid-out header/banner/composer with nothing cut off or offset.
+     2922/2922 tests pass (4 new), `npx turbo run typecheck` clean (76 tasks). Deployed:
+     `naelao-spaces` (bare `wrangler deploy`, carrying the credits fix) and `apps/shell` (rebuilt
+     with `next-on-pages`, `--branch=main`, confirmed `environment: "production"` via the Pages
+     API, confirmed the compiled CSS bundle actually contains `#app{flex-direction:column}` before
+     deploying). **Not done:** an equivalent defensive root-walk on `/internal/credit-packs/grant`
+     (checked — every real caller of it already resolves the product root before calling, via the
+     checkout flow's own `loadPricingCatalog` resolution, so this wasn't exercising the bug; left
+     unchanged rather than touching a working, tested path without a reproduced failure).
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

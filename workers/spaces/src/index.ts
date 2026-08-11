@@ -621,6 +621,33 @@ async function productUserDoStub(env: Env, productId: string, endUserId: string,
   return env.PRODUCT_USER_DO.get(doId);
 }
 
+/** Resolve `spaceId` to the PRODUCT ROOT space it belongs to (walking one `parent_space_id` hop —
+ *  spec §49's own invariant: a business is never more than one hop below its product root).
+ *  ProductUserDO is a PRODUCT-scoped concept (one instance per productId×endUserId — see
+ *  productUserDoStub's own doc), so a signed-in end user's session/credits/preferences all live
+ *  under the product root's id, never a business's own space id, even while they're actively
+ *  inside a business. Mirrors the identical inline walk already done at
+ *  /internal/product-sessions/verify, /internal/stream-tickets/issue, and loadPricingCatalog —
+ *  extracted here because the credit routes below were found NOT doing this walk: a
+ *  business-scoped assistant session (no projectId) called .../credits/balance with the
+ *  business's own space id, addressing a DIFFERENT, never-signed-up ProductUserDO with a
+ *  permanent 0 balance, even though the end user's real (product-root-keyed) balance was well
+ *  above zero — the live-reported "insufficient credits" bug despite a real 5000-credit grant. */
+async function resolveProductRootSpace(
+  env: Env,
+  spaceId: string
+): Promise<{ id: string; tenant_id: string } | null> {
+  const space = await env.PLATFORM_DB.prepare(
+    "SELECT tenant_id, parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'"
+  ).bind(spaceId).first<{ tenant_id: string; parent_space_id: string | null }>();
+  if (!space) return null;
+  if (!space.parent_space_id) return { id: spaceId, tenant_id: space.tenant_id };
+  const root = await env.PLATFORM_DB.prepare(
+    "SELECT id, tenant_id FROM spaces WHERE id = ? AND status != 'deleted'"
+  ).bind(space.parent_space_id).first<{ id: string; tenant_id: string }>();
+  return root ?? null;
+}
+
 /** Forward a request to a path on the SpaceDO, preserving method/headers/body. Spec-compliant
  *  fetch implementations (Node's undici, used by this repo's own tests) require `duplex: "half"`
  *  whenever a streaming body is attached — the same fix already applied to the session proxy
@@ -3107,11 +3134,10 @@ app.use("/internal/product-users/:spaceId/:endUserId/credits/balance", requireIn
 app.get("/internal/product-users/:spaceId/:endUserId/credits/balance", async (c) => {
   const spaceId = c.req.param("spaceId");
   const endUserId = c.req.param("endUserId");
-  const product = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ? AND status != 'deleted'")
-    .bind(spaceId).first<{ tenant_id: string }>();
-  if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+  const root = await resolveProductRootSpace(c.env, spaceId);
+  if (!root) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
 
-  const stub = await productUserDoStub(c.env, spaceId, endUserId, product.tenant_id);
+  const stub = await productUserDoStub(c.env, root.id, endUserId, root.tenant_id);
   const balRes = await stub.fetch(new Request("http://do/credits/balance"));
   const result = await balRes.json<{ balance_credits: number }>();
   return c.json(result);
@@ -3131,11 +3157,10 @@ app.post("/internal/product-users/:spaceId/:endUserId/credits/deduct", async (c)
   if (!Number.isFinite(body.credits) || body.credits <= 0) {
     return c.json({ error_code: "bad_request", message: "credits must be a positive number" }, 400);
   }
-  const product = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ? AND status != 'deleted'")
-    .bind(spaceId).first<{ tenant_id: string }>();
-  if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+  const root = await resolveProductRootSpace(c.env, spaceId);
+  if (!root) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
 
-  const stub = await productUserDoStub(c.env, spaceId, endUserId, product.tenant_id);
+  const stub = await productUserDoStub(c.env, root.id, endUserId, root.tenant_id);
   const deductRes = await stub.fetch(new Request("http://do/credits/deduct", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -3161,12 +3186,17 @@ app.use("/internal/product-users/:spaceId/:endUserId/credits/refresh-monthly", r
 app.post("/internal/product-users/:spaceId/:endUserId/credits/refresh-monthly", async (c) => {
   const spaceId = c.req.param("spaceId");
   const endUserId = c.req.param("endUserId");
-  const product = await c.env.PLATFORM_DB.prepare(
-    "SELECT tenant_id, spacetype_id, config_json FROM spaces WHERE id = ? AND status != 'deleted'"
-  ).bind(spaceId).first<{ tenant_id: string; spacetype_id: string; config_json: string | null }>();
-  if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+  const root = await resolveProductRootSpace(c.env, spaceId);
+  if (!root) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+  // Pricing (like the plan/credit-pack catalog — see loadPricingCatalog's own comment) is
+  // authored on the product ROOT, never on a business's own row — read the root's config, not
+  // whatever spaceId was passed in.
+  const rootRow = await c.env.PLATFORM_DB.prepare(
+    "SELECT spacetype_id, config_json FROM spaces WHERE id = ? AND status != 'deleted'"
+  ).bind(root.id).first<{ spacetype_id: string; config_json: string | null }>();
+  if (!rootRow) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
 
-  const pc = await loadEffectiveProductConfig(c.env, product.spacetype_id, product.config_json);
+  const pc = await loadEffectiveProductConfig(c.env, rootRow.spacetype_id, rootRow.config_json);
   const pricingConfig = pc?.pricingConfig;
   const isFreeOrUnconfigured = !pricingConfig || pricingConfig.model === "free";
   const monthlyCredits = pricingConfig?.creditsIncludedPerMonth
@@ -3174,7 +3204,7 @@ app.post("/internal/product-users/:spaceId/:endUserId/credits/refresh-monthly", 
   if (monthlyCredits <= 0) return c.json({ granted: false, reason: "no_monthly_allowance" });
 
   const monthKey = new Date().toISOString().slice(0, 7); // "2026-07" — one grant per calendar month
-  const stub = await productUserDoStub(c.env, spaceId, endUserId, product.tenant_id);
+  const stub = await productUserDoStub(c.env, root.id, endUserId, root.tenant_id);
   const grantRes = await stub.fetch(new Request("http://do/credits/grant", {
     method: "POST",
     headers: { "content-type": "application/json" },
