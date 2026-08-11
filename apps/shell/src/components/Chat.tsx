@@ -104,44 +104,49 @@ function consultThreadSummary(spaceId: string, c: ConsultedThread): ThreadSummar
 
 /** Reload-safe counterpart to <ActivitySequence>: a message's client-only `activity` is gone the
  *  moment the page reloads, but the run's own id (metadata.run_id) and its persisted trace
- *  (run_traces, §A1 HX1) both survive. Click-to-load rather than auto-fetching for every old
- *  message on mount — a long conversation would otherwise fire a burst of trace requests nobody
- *  asked to see. */
+ *  (run_traces, §A1 HX1) both survive. Auto-loads on mount and renders in the SAME expanded shape
+ *  the sequence had while streaming (narration lines visible, per-tool-call segments collapsed
+ *  exactly like the live view) — previously this sat behind a "Show activity" button, so a reload
+ *  visibly regressed a message from "the full sequence, right there" to "click to maybe see it
+ *  again," which is backwards: nothing about a run is more hideable after the fact than while it
+ *  was happening. The cost is real (a long conversation fires one trace request per past
+ *  assistant message on mount) and accepted deliberately, not overlooked. */
 function PersistedActivitySequence({
   spaceId, sessionId, runId, session,
 }: { spaceId: string; sessionId: string; runId: string; session: SessionCredentials }) {
   const [steps, setSteps] = React.useState<LiveRunStep[] | null>(null);
-  const [loading, setLoading] = React.useState(false);
   const [tried, setTried] = React.useState(false);
 
-  async function load() {
-    setLoading(true);
-    try {
-      setSteps(await getAgentRunTrace(spaceId, sessionId, runId, session));
-    } catch {
-      setSteps([]); // a failed fetch degrades to "nothing to show" rather than a stuck spinner
-    } finally {
-      setLoading(false);
-      setTried(true);
-    }
-  }
+  React.useEffect(() => {
+    let cancelled = false;
+    setSteps(null);
+    setTried(false);
+    (async () => {
+      try {
+        const s = await getAgentRunTrace(spaceId, sessionId, runId, session);
+        if (!cancelled) setSteps(s);
+      } catch {
+        if (!cancelled) setSteps([]); // a failed fetch degrades to "nothing to show", not a stuck spinner
+      } finally {
+        if (!cancelled) setTried(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // spaceId/sessionId/runId are the whole identity of what to fetch — session is read once per
+    // mount, not tracked as a reactive dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spaceId, sessionId, runId]);
 
   // A persisted/reloaded run never animates — it already happened, this is just re-fetching the
   // record of it.
   if (steps) return <ActivitySequence steps={steps} animate={false} />;
   if (tried) return null; // fetched and genuinely empty — same "renders nothing" rule ActivitySequence itself follows
   return (
-    <button
-      type="button"
-      onClick={() => void load()}
-      disabled={loading}
-      style={{
-        display: "block", fontSize: 12, color: "var(--text3)", background: "transparent",
-        border: "none", cursor: loading ? "default" : "pointer", padding: "2px 0", margin: "4px 0",
-      }}
-    >
-      {loading ? "Loading activity…" : "Show activity"}
-    </button>
+    <div style={{ fontSize: 12, color: "var(--text3)", padding: "2px 0", margin: "4px 0" }}>
+      Loading activity…
+    </div>
   );
 }
 
