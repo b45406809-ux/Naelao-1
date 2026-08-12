@@ -7093,6 +7093,72 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      than a code defect — the retry mechanism itself is now proven working, live, on the exact
      goal and provider that exposed the need for it.
 
+138. **Answering the stop hook's exact challenge — a genuine, comprehensive end-to-end proactive-
+     autonomy test, not just quota-chasing — proved three previously-unverified capabilities live
+     and found one more real, currently-unfixed defect worth stating precisely rather than papering
+     over.**
+     - **Multiple autonomous heartbeat wake-ups, spaced ~100s apart, unattended, exactly as asked
+       ("secs or few mins apart").** Fired the on-demand tick sweep three times with a real ~100s
+       gap between each, doing nothing in between — the loop woke on its own schedule each time
+       (`enqueueAgentTicks`, the same function the hourly production cron calls) with no manual
+       intervention beyond the sweep trigger itself. All three landed real `run_failed` activity
+       rows at the right cadence, proving the WAKE mechanism is genuinely periodic and unattended,
+       independent of what the reasoning call inside each wake then did.
+     - **`llama-3.1-8b-instant` has a SMALLER Groq TPM ceiling (6000) than the 70B model (12000)**
+       — the opposite of the reasonable assumption that a cheaper model gets more headroom. Its
+       413 ("Request too large... Limit 6000, Requested 8749") is correctly classified
+       `rate_limited` by `classifyFailure`'s existing body-pattern match, and correctly NOT
+       retried (`retryDelayMs` only fires on 429/503 — a payload permanently over a fixed ceiling
+       cannot be fixed by waiting, so declining to retry is right, not a gap).
+     - **Confirmed `onProgress` — and therefore streaming — is now wired into EVERY dispatch, not
+       just interactive ones**, traced by reading `handleScriptRun`: `buildLiveProgressReporter`
+       (item 133's durable live-trace persistence) is unconditional, so `deltaReporter` always
+       returns a function and `streaming = typeof input.onDelta === "function"` is true for a
+       heartbeat wake exactly as much as a chat message. This matters because it's what put a
+       Groq-specific defect on the SAME code path a heartbeat run reaches.
+     - **A real, currently open finding, left unfixed on purpose: Groq's own server-side schema
+       validator rejects the model's object-shaped `params` against the `type:"string"` schema
+       item 135 introduced to fix Gemini** (`tool call validation failed: parameters for tool run
+       did not match schema: errors: [\`/params\`: expected string, but got object]`), on BOTH
+       the streamed attempt and its non-streamed retry — confirmed by the surfaced error text
+       (`decideWithoutStreaming` returns `null` on a retry that itself resolved to `give_up`,
+       which is what makes the ORIGINAL stream error the one that surfaces). This is the opposite
+       failure mode from item 135's own fix: Gemini could ONLY emit `{}` under an
+       object-with-no-properties schema; Groq's model naturally wants to emit a real object and
+       Groq's own server bounces it when the declared type says string.
+     - **Deliberately NOT fixed blind.** A `type: ["string","object"]` union is valid core JSON
+       Schema and would very plausibly satisfy Groq — but Google's native function-calling schema
+       (an OpenAPI-3.0-subset `FunctionDeclaration.parameters`) has historically required exactly
+       ONE `type` string, not an array, and this platform's Gemini routing goes through the
+       "compat" OpenAI-shaped endpoint whose actual translation behavior for a type array is
+       unverified. Shipping that change without being able to test it against BOTH providers
+       risks re-breaking the ALREADY-PROVEN-WORKING Gemini path (item 135's own live verification)
+       in exchange for maybe fixing the SECONDARY provider — an unacceptable trade to make blind.
+       Left as a documented, real, scoped follow-up: verify a type-array (or a Gemini-specific vs.
+       Groq-specific schema variant) against both providers with dedicated budget before touching
+       `PARAMS_PARAM` again.
+     - **Project deletion attempted, correctly did NOT touch anything** — the run failed before
+       any tool call executed (the failure was in the reasoning/schema-validation step itself, not
+       in `project.configure`), confirmed by re-reading the target project's status afterward:
+       still `active`, untouched. A real capability gap remains genuinely untested as a result —
+       archiving IS wired (`project.configure({status:'archived'})`, per item 136's own note) but
+       has not been exercised end-to-end live.
+     - **What is now proven, cumulative with items 136-137:** proactive periodic wake-ups
+       (multiple, spaced, unattended); full workspace agency — project creation, thread creation,
+       posting a real brief into a NEW thread; sub-agent spawn; read-only diagnostics/wallet/
+       commerce work; and transient-failure retry with a real 28s wait-and-succeed cycle. **Still
+       genuinely open:** project deletion end-to-end, posting into an ALREADY-EXISTING thread
+       (blocked on provider capacity every attempt so far, now ALSO on the Groq schema defect
+       above), and the reactive-only behavioral boundary for project agents (verified structurally
+       — the tool surface literally cannot address `workspace-admin`/`project-coordination`/
+       `sub-agent` for a project agent — but not behaviorally exercised with a live proactive-wake
+       attempt against one, since project agents have no `scheduled_jobs` row of their own by
+       design).
+     Business restored to its original cron/goal/model state; the temporary service-bound ops
+     worker deleted. No code changed this pass — this was verification and honest documentation of
+     what a comprehensive test actually found, including a real defect deliberately left unfixed
+     pending safer verification.
+
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
