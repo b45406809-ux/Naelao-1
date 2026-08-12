@@ -256,6 +256,36 @@ const REASONER_OBSERVATION_CHARS = 2000;
  * reject anything else clearly rather than letting it through as a half-formed decision.
  */
 /**
+ * A model sometimes prefixes an operation name with what it believes is the owning SCRIPT —
+ * "project-coordination:thread.create", "workspace-admin:project.list" — even though every real
+ * op name is bare (`script.run("thread.create", …)`, never `script.run("script:op", …)`).
+ * Observed live, twice, on the same business's same goal, both times with the exact right, real
+ * op sitting after the colon: the model self-corrected the first time (burning a wasted turn),
+ * and on the SECOND run it did NOT self-correct — the loop's "did you mean" suggestion list
+ * (suggestOperations in tool-surface.ts) happened to omit the actual answer because of an
+ * unrelated cap/tie-break bug, so it kept re-guessing and never reached the real capability.
+ *
+ * No real op or (agent-authored) stored-script name ever contains a colon — they are dot-
+ * separated, `namespace.op` — so stripping everything up to and including the LAST colon can
+ * never misfire against a genuinely different intended name; it only ever removes a redundant,
+ * wrong prefix. Whether the remainder is actually a real op is still validated downstream, the
+ * same way any other name already is (ScriptToolSurface.run's own "Unknown script or operation").
+ *
+ * This MUST run here, at decision-parse time, not later inside ScriptToolSurface.run(): the
+ * loop's HITL gate, its within-run repeat-call guard, and the action ledger all key off
+ * `decision.name` before tools.run() is ever called. Normalizing only inside tools.run() would
+ * let an accidental colon prefix on a gated action's real name slip past `gate_listed` mode's
+ * exact-match allowlist unapproved — resolving it here means every downstream consumer sees the
+ * SAME already-normalized name.
+ */
+export function stripNamespacePrefix(name: string): string {
+  const idx = name.lastIndexOf(":");
+  if (idx === -1) return name;
+  const rest = name.slice(idx + 1).trim();
+  return rest || name;
+}
+
+/**
  * A tool call naming an OPERATION rather than one of the five decision actions.
  *
  * Every operation on this platform is `namespace.op` — `knowledge.search`, `commerce.list_products`,
@@ -265,7 +295,7 @@ const REASONER_OBSERVATION_CHARS = 2000;
  * unrecognisable action should still fail visibly rather than be guessed at.
  */
 export function coerceOperationToolCall(toolCall: { name: string; arguments?: unknown }): ReasonDecision | null {
-  const name = (toolCall.name ?? "").trim();
+  const name = stripNamespacePrefix((toolCall.name ?? "").trim());
   if (!name.includes(".") || DECISION_ACTIONS.has(name)) return null;
   const args = toolCall.arguments;
   const parsed = typeof args === "string" ? safeJsonObject(args) : args;
@@ -491,7 +521,10 @@ function decisionFromToolCall(call: ToolCall): ReasonDecision | null {
     case "run": {
       const name = str("name");
       if (!name) return null;
-      return { action: "run", name, params: (a["params"] as Record<string, unknown>) ?? {} } as ReasonDecision;
+      // See stripNamespacePrefix's own doc: a colon-prefixed guess like
+      // "project-coordination:thread.create" resolves to the real op name here, before any
+      // gate/repeat-guard/ledger check ever sees it.
+      return { action: "run", name: stripNamespacePrefix(name), params: (a["params"] as Record<string, unknown>) ?? {} } as ReasonDecision;
     }
     case "distill": {
       const name = str("name");

@@ -97,6 +97,27 @@ describe("a model naming a script wrong is recoverable, not fatal", () => {
     expect(touched).toHaveLength(0);
   });
 
+  // Live-reported, second time, and the exact literal string from that trace: dispatched through
+  // the reasoner this now resolves directly (reasoner.ts's stripNamespacePrefix) and never reaches
+  // this suggester at all — but ScriptToolSurface.run() itself is deliberately left strict (see
+  // stripNamespacePrefix's own doc on why normalization must happen upstream of the HITL gate),
+  // so calling it directly with the raw guess, as this test does, still exercises the exact path
+  // that failed live. Confirmed to reproduce the OLD "Did you mean" list byte-for-byte
+  // (thread.create, thread.delete, thread.list, thread.read, thread.rename, thread.search — the
+  // literal 6 the live run showed) before this fix, with thread.send_message and agent.consult
+  // both silently excluded by the old alphabetical-tie-break + cap-6: every op in
+  // "project-coordination" scored identically from matching the script-name tokens alone, and
+  // "send_message" simply sorted last among the tied group.
+  it("suggests the real answer for a namespaced guess, not just its same-scored siblings", async () => {
+    const tools = new ScriptToolSurface(env, ["project-coordination"]);
+    const res = await tools.run("project-coordination:thread.create", {});
+
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain("Did you mean");
+    expect(res.error).toContain("thread.send_message");
+    expect(res.error).toContain("agent.consult");
+  });
+
   it("still throws on a bad name for WRITE paths, where it is a bug or an attack", async () => {
     const lib = new SkillLibrary(bucket, "space-1");
 

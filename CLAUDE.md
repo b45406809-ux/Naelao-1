@@ -6797,6 +6797,66 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      typecheck` clean (76 tasks), `naelao-agents` deployed (bare `wrangler deploy`, item 83's
      documented `--env production` trap) and confirmed live via a 401-not-500 on a known
      auth-gated route.
+134. **The user re-ran item 133's exact goal after that fix and hit the SAME dead end — the
+     param-shape fix was real but incomplete: the model never got as far as calling
+     `thread.create` with the right params, because it kept guessing a NAMESPACED name
+     (`project-coordination:thread.create`, `workspace-admin:project.list` in the first
+     transcript) that isn't a real op name at all, and the resulting error-recovery path had its
+     own bug that silently hid the actual answer from the model's own correction attempt.**
+     - **Root cause #1: no resolver for a namespaced guess.** A model reaching for
+       `script.run("project-coordination:thread.create", …)` fails outright — every real op name
+       is bare (`thread.create`, never `script:op`) — and until now the ONLY recovery was the
+       "did you mean" suggestion list, hoping the model reads it and retries correctly next turn.
+       It usually did (burning a wasted turn each time, as seen in item 133's own first
+       transcript), but on this run it did not — see root cause #2.
+     - **Root cause #2, the one that actually stalled the run: `suggestOperations()`'s cap and
+       tie-break systematically excluded the real answer.** A namespaced guess tokenizes to
+       include the SCRIPT's own name ("project", "coordination"), which every op in that one
+       script matches identically — so all 8 `project-coordination` ops score within 1 point of
+       each other, and the old tie-break (alphabetical) plus a hard cap of 6 meant
+       `thread.send_message` (alphabetically last) and `agent.consult` were cut from the
+       suggestion list EVERY time, regardless of guess. Confirmed against the exact literal string
+       from the live trace (`project-coordination:thread.create`): the old code reproduces the
+       observed "Did you mean one of: thread.create, thread.delete, thread.list, thread.read,
+       thread.rename, thread.search" byte-for-byte — `thread.send_message`, the one op that
+       mattered, silently missing every single time this shape of guess occurred.
+     - **Fixed at the root, not by improving the error message further.** New
+       `stripNamespacePrefix()` (`reasoner.ts`) strips everything up to and including the LAST
+       colon in a decision's `name` — safe unconditionally, since no real op or stored-script name
+       ever contains a colon (they are dot-separated, `namespace.op`) — applied at BOTH places a
+       `run` decision's name is first constructed: `decisionFromToolCall`'s `"run"` case (the
+       native tool-call path) and `coerceOperationToolCall` (the "model called the op directly"
+       near-miss path, item 108). This runs BEFORE the loop's HITL gate, repeat-call guard, and
+       action ledger ever see the name — deliberately not resolved only inside
+       `ScriptToolSurface.run()`, where a colon-prefixed alias of a GATED action's real name could
+       otherwise slip past `gate_listed` mode's exact-match allowlist unapproved. A colon-guess
+       whose remainder is a genuine, valid op (both observed live cases) now resolves directly,
+       with zero wasted turn and no dependence on the model reading a suggestion list at all.
+     - **`suggestOperations()` hardened too, as defense-in-depth for guesses that DON'T resolve
+       cleanly** (a genuinely wrong op name, not just a namespaced-but-correct one): tokenizes
+       against the part after a colon (the model's actual guess at the op) separately from the
+       namespace part (the model's guess at the script), instead of conflating both into one bag
+       of tokens that inflated every sibling op equally; ties are now broken by edit distance to
+       the actual guess (new local `levenshtein()`) instead of alphabetical order, which had zero
+       relationship to relevance; and the cap rose from 6 to 8 (project-coordination's own full op
+       count), so this exact script's full option set fits without needing the tie-break to do all
+       the work.
+     - **Not attempted:** teaching the model to stop reaching for colon-namespaced names in the
+       first place via more DECISION_INSTRUCTIONS prose — the resolver fix makes the guess work
+       regardless of whether the model keeps making it, which is more robust than hoping a prompt
+       change reliably changes a weak model's habit (same "structure over prompts" reasoning as
+       item 133's own paramHints fix). No live model call was dispatched to re-verify the exact
+       reported conversation a third time, for the same cost reason as item 133; verification here
+       is unit tests, including one that reproduces the OLD code's exact "Did you mean" string
+       from the live trace and confirms it fails without the fix (verified by temporarily
+       reverting `tool-surface.ts` and re-running it).
+     2930/2930 tests pass (7 new: `stripNamespacePrefix` cases, `coerceOperationToolCall`/
+     `coerceDecision` resolving a colon-namespaced `run` decision to the real op, and
+     `suggestOperations` surfacing `thread.send_message`/`agent.consult` for the exact literal
+     namespaced guess from the live trace — confirmed to fail against the pre-fix code before
+     passing against the fix), `npx turbo run typecheck` clean (76 tasks), `naelao-agents`
+     deployed (bare `wrangler deploy`) and confirmed live via a 401-not-500 on a known auth-gated
+     route.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

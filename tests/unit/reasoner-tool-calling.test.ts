@@ -704,3 +704,50 @@ describe("a tool call naming an operation instead of an action", () => {
     expect(coerceOperationToolCall({ name: "frobnicate", arguments: {} })).toBeNull();
   });
 });
+
+// Live-reported: on the SAME business, across two separate runs of the same goal, the model
+// guessed a namespaced op name — "workspace-admin:project.list", then "project-coordination:
+// thread.create" — always with the exact right, real op name after the colon. The first time it
+// self-corrected on the next turn (a wasted step); the second time it never self-corrected at
+// all, because the resulting "did you mean" suggestion list happened to omit the real answer.
+// Both are now resolved at the source: a colon-prefixed guess resolves directly, before the loop's
+// gate/repeat-guard/ledger or ScriptToolSurface ever see the raw, wrong-shaped name.
+describe("stripNamespacePrefix — a colon-namespaced op guess resolves to the real op", () => {
+  it("strips everything up to and including the LAST colon", async () => {
+    const { stripNamespacePrefix } = await import("../../workers/agents/src/script-engine/reasoner.js");
+    expect(stripNamespacePrefix("project-coordination:thread.create")).toBe("thread.create");
+    expect(stripNamespacePrefix("workspace-admin:project.list")).toBe("project.list");
+  });
+
+  it("leaves a bare name (no colon) untouched", async () => {
+    const { stripNamespacePrefix } = await import("../../workers/agents/src/script-engine/reasoner.js");
+    expect(stripNamespacePrefix("thread.create")).toBe("thread.create");
+  });
+
+  it("falls back to the original string when nothing survives the colon", async () => {
+    const { stripNamespacePrefix } = await import("../../workers/agents/src/script-engine/reasoner.js");
+    // An edge case a real model would be unlikely to produce, but the function must never return
+    // an empty op name — that would just move the "Unknown script or operation" failure to a
+    // worse, less legible name.
+    expect(stripNamespacePrefix("project-coordination:")).toBe("project-coordination:");
+  });
+
+  it("coerceOperationToolCall resolves a colon-namespaced direct tool call to the real op", async () => {
+    const { coerceOperationToolCall } = await import("../../workers/agents/src/script-engine/reasoner.js");
+    const d = coerceOperationToolCall({
+      name: "project-coordination:thread.create",
+      arguments: { project_id: "p1" },
+    });
+    expect(d).toEqual({ action: "run", name: "thread.create", params: { project_id: "p1" } });
+  });
+
+  it("coerceDecision resolves a colon-namespaced name inside a real run action call", async () => {
+    const { coerceDecision } = await import("../../workers/agents/src/script-engine/reasoner.js");
+    const d = coerceDecision({
+      action: "run",
+      name: "project-coordination:thread.create",
+      params: { project_id: "p1" },
+    });
+    expect(d).toEqual({ action: "run", name: "thread.create", params: { project_id: "p1" } });
+  });
+});

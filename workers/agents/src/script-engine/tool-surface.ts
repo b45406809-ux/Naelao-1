@@ -31,6 +31,28 @@ import { buildOperationMap, type PrebuiltOp, type PrebuiltScript } from "./prebu
 import { assertNoReservedViolation } from "./reserved-capabilities.js";
 import { isReadSafeOperation } from "./assistant-access.js";
 
+/** Plain edit distance — used only to rank "did you mean" suggestions by how close a guess
+ *  actually is, never for anything security-relevant. Op names are short (well under 40 chars),
+ *  so the O(n*m) table is trivial here. */
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  const prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    let diagonal = prev[0]!;
+    prev[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const temp = prev[j]!;
+      prev[j] = a[i - 1] === b[j - 1]
+        ? diagonal
+        : 1 + Math.min(diagonal, prev[j]!, prev[j - 1]!);
+      diagonal = temp;
+    }
+  }
+  return prev[b.length]!;
+}
+
 export class ScriptToolSurface {
   private readonly library: SkillLibrary;
   private readonly ops: Map<string, { op: PrebuiltOp; prebuilt: PrebuiltScript }>;
@@ -222,25 +244,46 @@ export class ScriptToolSurface {
    * name, which shares a token with the answer it wanted. Prebuilt ops only: they're already in
    * memory, so a miss costs nothing, whereas listing the R2 skill library would turn every
    * mistyped name into a bucket listing.
+   *
+   * Live-reported: a namespaced guess like "project-coordination:thread.create" tokenizes to
+   * include the PREBUILT's own name ("project", "coordination"), which gives every single op in
+   * that one script the same inflated hit count purely from matching the prefix the model added —
+   * and the old alphabetical tie-break then arbitrarily excluded whichever op sorted last among
+   * the tied group once the top-6 cap was hit. In the observed case that was
+   * "thread.send_message", the one op that was actually the answer, cut from a list of 7 tied
+   * siblings by nothing more than its name coming last alphabetically. Most of THIS specific
+   * failure mode is now resolved upstream (reasoner.ts's stripNamespacePrefix runs a colon-guess
+   * directly rather than ever reaching this error path) — this fixes the suggestion quality for
+   * every OTHER wrong-name guess, which still reaches here.
    */
   private suggestOperations(name: string): string {
     const tokenize = (s: string) => s.toLowerCase().split(/[^a-z0-9]+/i).filter(Boolean);
-    const wanted = tokenize(name);
+    // Prefer the part after a colon, if there is one — that is the model's actual guess at the
+    // OP name; the prefix before it (if any) is its guess at the owning script, already captured
+    // separately below. Tokenizing the whole raw string here is what inflated every op in one
+    // script to the same score in the first place.
+    const hasNamespace = name.includes(":");
+    const opPart = hasNamespace ? name.slice(name.lastIndexOf(":") + 1).trim() || name : name;
+    const wanted = tokenize(opPart);
     if (wanted.length === 0) return "";
-    // Match against the owning PREBUILT's name as well as the op name. Several prebuilts expose
-    // ops under a different prefix than the prebuilt they belong to (`notifications` owns
-    // `notify.email`, `notify.slack`, ...), and the prebuilt name is what a model sees listed in
-    // its own profile — so the name it reaches for is often the one that shares no token with any
-    // op. Matching op names alone would have returned nothing for the real observed failure.
-    const scored: Array<{ op: string; hits: number }> = [];
+    // Match against the owning PREBUILT's name as well as the op name — but only from the
+    // NAMESPACE part of a colon-guess (already captured separately, not re-added into `wanted`),
+    // so a genuine descriptive-phrase miss ("notifications prebuilt", no colon — covered by
+    // `wanted` already equalling the whole name) still benefits from this without a colon-guess
+    // getting its script-name tokens counted twice.
+    const namespaceTokens = hasNamespace ? tokenize(name.slice(0, name.lastIndexOf(":"))) : [];
+    const scored: Array<{ op: string; hits: number; distance: number }> = [];
     for (const [op, entry] of this.ops) {
       const tokens = new Set([...tokenize(op), ...tokenize(entry.prebuilt.name)]);
-      const hits = wanted.filter((w) => tokens.has(w)).length;
-      if (hits > 0) scored.push({ op, hits });
+      const hits = wanted.filter((w) => tokens.has(w)).length + namespaceTokens.filter((w) => tokens.has(w)).length;
+      if (hits > 0) scored.push({ op, hits, distance: levenshtein(opPart.toLowerCase(), op.toLowerCase()) });
     }
     if (scored.length === 0) return "";
-    scored.sort((a, b) => b.hits - a.hits || a.op.localeCompare(b.op));
-    const names = scored.slice(0, 6).map((s) => s.op);
+    // Ties broken on edit distance to the actual guess — closer string wins — instead of
+    // alphabetical order, which had no relationship to relevance and is what silently dropped the
+    // real answer from the live-reported case above.
+    scored.sort((a, b) => b.hits - a.hits || a.distance - b.distance || a.op.localeCompare(b.op));
+    const names = scored.slice(0, 8).map((s) => s.op);
     return ` Did you mean one of: ${names.join(", ")}? Use the exact operation name.`;
   }
 
