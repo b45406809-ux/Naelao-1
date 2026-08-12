@@ -6857,6 +6857,62 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      passing against the fix), `npx turbo run typecheck` clean (76 tasks), `naelao-agents`
      deployed (bare `wrangler deploy`) and confirmed live via a 401-not-500 on a known auth-gated
      route.
+135. **THE reason the assistant looked incapable of basic autonomous work: it could not put an
+     argument in a tool call. Not a reasoning failure — the JSON schema gave the model nowhere to
+     put one.** Reported live for the third time on the same goal ("create a thread in project p1
+     and say hello to the ai in the thread"), and the trace is unambiguous once read literally:
+     `project.list_members` called with `{}` → "requires project_id"; `agent.list` with `{}` →
+     works, by luck, since it takes none; `thread.create` with `{}` → "succeeds" and returns
+     `project_id: null`, silently the wrong thing; then that identical argument-less
+     `thread.create` re-issued **five more times** until the step budget ran out. The closing
+     answer then quoted the project id — `9d67a69a-981a-4c3e-b50d-83c3f51c679c` — that it had
+     looked up a step earlier. **It knew the value. It said the value. It could never pass the
+     value.** Across two full transcripts, spanning both the item 133 and item 134 fixes, not one
+     tool call in either run carried a non-empty `params` — a model that was merely reasoning
+     badly would have guessed a field at least once.
+     - **Root cause:** `DECISION_TOOLS`' `run.params` was declared `{type:"object"}` with no
+       `properties` — the natural way to say "arbitrary arguments," since the real fields differ
+       per operation and cannot be enumerated statically. But a schema-constrained decoder reads
+       that as an object with **zero permitted keys**, so the only value it can legally emit is
+       `{}`. Gemini's function-calling schema is an OpenAPI subset with exactly that behaviour, and
+       `toolsWire` (`shared/ai-client.ts`) passes `parameters` through to the provider verbatim.
+       The model wasn't ignoring the paramHints item 133 added — it was reading them and then being
+       forbidden by the grammar from acting on them. That also explains the repeat loop item 134's
+       fix couldn't stop: the one action the decoder allowed it to express was the wrong one, so
+       it kept re-expressing it.
+     - **Fixed by declaring `params` as a JSON STRING** (new `PARAMS_PARAM`, carrying a concrete
+       worked example) — a string has no per-key grammar restriction on any provider, so the model
+       can always say what it means. Added to `required` deliberately: a decoder must then emit the
+       field, forcing the model to decide what belongs in it rather than silently omitting it; an
+       operation that genuinely takes no arguments costs two characters. `distill.params` given the
+       same treatment (not required — the code is the point there). New `readParams()` accepts
+       **either** shape, so providers that handle a bare object schema fine (Anthropic, OpenAI,
+       most Workers AI models) and any model that ignores the declaration and sends a real object
+       both keep working — this can only add reliability, never remove it. Anything unusable (a
+       bare array, a string that isn't JSON) degrades to no arguments rather than throwing mid-run.
+       Wired into all four parse paths: `decisionFromToolCall`'s `run` and `distill` cases, both
+       envelope branches in `coerceDecision` (a model taught that `params` is a string sometimes
+       applies that to the whole argument envelope too, which used to parse as `{}` and reject the
+       decision), and `coerceOperationToolCall` — whose wrapper detection changed from
+       "is the nested value an object" to "is a wrapper key present," preserving its existing
+       semantics for a direct-operation call while adding string support.
+     - **The regression guard asserts the WIRE SHAPE, not the constant** — it captures the real
+       request body the provider receives and fails on an object schema with neither `properties`
+       nor `additionalProperties`, which is the precise defect rather than a proxy for it.
+       Verified to genuinely catch it: reverting `PARAMS_PARAM` to `{type:"object"}` and dropping
+       `params` from `required` fails exactly 2 of the 6 new tests, and both pass with the fix.
+     2936/2936 tests pass (6 new), `npx turbo run typecheck` clean (76 tasks), `naelao-agents`
+     deployed (bare `wrangler deploy`, item 83's documented `--env production` trap; Version ID
+     `f5df1950-5060-4395-b47c-5249428dabeb`) and confirmed live via a 401-not-500 on a known
+     auth-gated route. **Not done this pass:** no live `/agent/run` was dispatched to re-run the
+     reported goal end to end — the account's inference budget is reserved for the user's own
+     testing per their standing instruction, so verification here is the wire-shape guard plus the
+     parse-path coverage above. **Worth remembering generally:** when a model looks stupid in a
+     way that is *perfectly consistent* — the same wrong shape every single time, never once a
+     near-miss — suspect the grammar it is decoding under before suspecting its judgment. Two
+     prior passes (133, 134) both correctly diagnosed real defects on this same goal and neither
+     could fix it, because both assumed the model had a choice it did not have.
+
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

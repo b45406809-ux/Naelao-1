@@ -751,3 +751,101 @@ describe("stripNamespacePrefix — a colon-namespaced op guess resolves to the r
     expect(d).toEqual({ action: "run", name: "thread.create", params: { project_id: "p1" } });
   });
 });
+
+/**
+ * The `params` argument reaches the model as a JSON STRING, not a property-less object.
+ *
+ * This is the fix for the failure that made the assistant look incapable of basic multi-step
+ * work. `{type:"object"}` with no `properties` gives a schema-constrained decoder no permitted
+ * keys, so the only value it can emit is `{}` — which is exactly what two full live traces show,
+ * on every single tool call, without one exception, including calls where the model demonstrably
+ * held the value it needed (its own closing answer quoted a project id it had looked up a step
+ * earlier and could never pass in). It then repeated the same argument-less call five more times,
+ * because the one action the grammar let it express was the wrong one.
+ *
+ * The wire-shape assertion below is the real regression guard: reverting PARAMS_PARAM to an
+ * object schema fails it immediately, at the point the schema is actually sent.
+ */
+describe("run.params is expressible by a constrained decoder", () => {
+  const GATEWAY = { accountId: "acct", gatewayId: "gw" };
+  const CTX = { spaceId: "s", agentId: "a" };
+
+  async function capturedTools(): Promise<Array<Record<string, any>>> {
+    let body: string | undefined;
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      body = init?.body as string;
+      return new Response(
+        JSON.stringify({ content: [{ type: "tool_use", name: "answer", input: { text: "ok" } }] }),
+        { status: 200 }
+      );
+    }) as typeof fetch;
+    try {
+      const reasoner = new GatewayReasoner({ apiKey: "k", gateway: GATEWAY, ctx: CTX });
+      await reasoner.decide({ goal: "g", level: 2, snapshot: {}, candidates: [] } as never);
+      return (JSON.parse(body!) as { tools: Array<Record<string, any>> }).tools;
+    } finally {
+      globalThis.fetch = original;
+    }
+  }
+
+  it("does not send an object schema with no properties — the shape that can only produce {}", async () => {
+    const tools = await capturedTools();
+    const run = tools.find((t) => t.function?.name === "run");
+    expect(run).toBeDefined();
+    const params = run!.function.parameters.properties.params;
+
+    // The precise defect: an object type whose keys are unenumerable to the decoder.
+    const unenumerableObject =
+      params.type === "object" && !params.properties && params.additionalProperties === undefined;
+    expect(unenumerableObject).toBe(false);
+    expect(params.type).toBe("string");
+  });
+
+  it("requires params, so the decoder must emit it rather than silently skipping it", async () => {
+    const tools = await capturedTools();
+    const run = tools.find((t) => t.function?.name === "run");
+    expect(run!.function.parameters.required).toContain("params");
+  });
+
+  it("parses a JSON-string params into the real arguments the loop will act on", async () => {
+    const { coerceDecision } = await import("../../workers/agents/src/script-engine/reasoner.js");
+    const d = coerceDecision({
+      action: "run",
+      name: "thread.create",
+      params: '{"project_id":"9d67a69a-981a-4c3e-b50d-83c3f51c679c","title":"Kickoff"}',
+    });
+    expect(d).toEqual({
+      action: "run",
+      name: "thread.create",
+      params: { project_id: "9d67a69a-981a-4c3e-b50d-83c3f51c679c", title: "Kickoff" },
+    });
+  });
+
+  it("still accepts a real object, so providers that send one do not regress", async () => {
+    const { coerceDecision } = await import("../../workers/agents/src/script-engine/reasoner.js");
+    const d = coerceDecision({ action: "run", name: "thread.create", params: { project_id: "p1" } });
+    expect(d).toEqual({ action: "run", name: "thread.create", params: { project_id: "p1" } });
+  });
+
+  it("degrades to no arguments for an unusable params rather than throwing mid-run", async () => {
+    const { coerceDecision } = await import("../../workers/agents/src/script-engine/reasoner.js");
+    for (const bad of ['{"unclosed', "[1,2,3]", '"just a string"', ""]) {
+      const d = coerceDecision({ action: "run", name: "agent.list", params: bad });
+      expect(d).toEqual({ action: "run", name: "agent.list", params: {} });
+    }
+  });
+
+  it("reads a JSON-string params from a direct operation tool call too", async () => {
+    const { coerceOperationToolCall } = await import("../../workers/agents/src/script-engine/reasoner.js");
+    const d = coerceOperationToolCall({
+      name: "thread.send_message",
+      arguments: { params: '{"thread_id":"t1","message":"hello"}' },
+    });
+    expect(d).toEqual({
+      action: "run",
+      name: "thread.send_message",
+      params: { thread_id: "t1", message: "hello" },
+    });
+  });
+});

@@ -300,10 +300,31 @@ export function coerceOperationToolCall(toolCall: { name: string; arguments?: un
   const args = toolCall.arguments;
   const parsed = typeof args === "string" ? safeJsonObject(args) : args;
   const obj = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
-  // Some models nest the real arguments one level down under the wrapper key they were taught.
-  const inner = obj["params"] ?? obj["arguments"] ?? obj["input"];
-  const params = inner && typeof inner === "object" ? (inner as Record<string, unknown>) : obj;
+  // Some models nest the real arguments one level down under the wrapper key they were taught —
+  // and, now that `params` is declared as a JSON string (PARAMS_PARAM), that nested value may
+  // itself be a string. Only treat it as the arguments when a wrapper key is actually present;
+  // otherwise the outer object IS the argument list (the direct-operation-call shape).
+  const wrapper = ["params", "arguments", "input"].find((k) => k in obj);
+  const params = wrapper ? readParams(obj[wrapper]) : obj;
   return { action: "run", name, params };
+}
+
+/**
+ * Read a tool call's `params` argument, accepting either shape a provider can hand back.
+ *
+ * See PARAMS_PARAM for why it is declared as a string. Some providers will still send a real
+ * object, and a model that ignores the declaration and does the same is right about the intent —
+ * both are honoured. Anything unusable (a bare array, a string that isn't JSON, a missing field)
+ * degrades to no arguments, which is exactly what the caller would have seen before.
+ */
+function readParams(value: unknown): Record<string, unknown> {
+  const usable = (v: unknown): v is Record<string, unknown> =>
+    !!v && typeof v === "object" && !Array.isArray(v);
+  if (typeof value === "string") {
+    const parsed = safeJsonObject(value);
+    return usable(parsed) ? parsed : {};
+  }
+  return usable(value) ? value : {};
 }
 
 function safeJsonObject(raw: string): unknown {
@@ -327,8 +348,9 @@ export function coerceDecision(parsed: unknown): ReasonDecision | null {
   // OpenAI-style tool-call envelope emitted as prose: {type:"function", name, parameters|arguments}
   const name = typeof o["name"] === "string" ? o["name"] : undefined;
   if (name && DECISION_ACTIONS.has(name)) {
-    const inner = (o["parameters"] ?? o["arguments"] ?? o["input"] ?? {}) as Record<string, unknown>;
-    return decisionFromToolCall({ name, arguments: typeof inner === "object" && inner ? inner : {} });
+    // readParams, not a bare cast: a model taught that `params` is a JSON string sometimes
+    // applies that to the whole argument envelope too, and a string here used to parse as {}.
+    return decisionFromToolCall({ name, arguments: readParams(o["parameters"] ?? o["arguments"] ?? o["input"]) });
   }
 
   // {tool: "...", ...} and {function: {name, arguments}} both show up occasionally.
@@ -336,8 +358,7 @@ export function coerceDecision(parsed: unknown): ReasonDecision | null {
   if (fn && typeof fn === "object") return coerceDecision(fn);
   const tool = typeof o["tool"] === "string" ? o["tool"] : undefined;
   if (tool && DECISION_ACTIONS.has(tool)) {
-    const inner = (o["parameters"] ?? o["arguments"] ?? o["params"] ?? {}) as Record<string, unknown>;
-    return decisionFromToolCall({ name: tool, arguments: typeof inner === "object" && inner ? inner : {} });
+    return decisionFromToolCall({ name: tool, arguments: readParams(o["parameters"] ?? o["arguments"] ?? o["params"]) });
   }
 
   return null;
@@ -411,6 +432,43 @@ const SAY_PARAM = {
     "OPTIONAL. A real message to the person that stays in the conversation. Send one before your FIRST action, and again when what you just learned changes what you do next, e.g. \"There was no thread in p1, so I'm creating one and greeting the agent there.\" Do NOT send one with every action — they already describe themselves. Never mention operation names, scripts or tiers.",
 };
 
+/**
+ * The arguments for a chosen operation — declared as a JSON *string*, not an object.
+ *
+ * This is not a stylistic choice; it is the fix for a production failure that made the agent look
+ * incapable of the most basic multi-step work. Declared the obvious way — `{type:"object"}` with
+ * no `properties`, because the real fields differ per operation and cannot be enumerated
+ * statically — a schema-constrained decoder has NO permitted keys to emit, so the only value it
+ * can produce is `{}`. Gemini's function-calling schema is an OpenAPI subset with exactly that
+ * behaviour, and two full live traces show the signature unmistakably: EVERY tool call came back
+ * with `params: {}`, without a single exception, including calls the model plainly had the value
+ * for — its own closing answer quoted the project id it had looked up a step earlier and could
+ * never pass in. It then re-issued the same argument-less call five more times, because the one
+ * action the grammar allowed it to express was the wrong one. None of that is a reasoning
+ * failure. There was no slot to put the argument in.
+ *
+ * A string has no such restriction on any provider, so the model can always say what it means.
+ * Providers that handle a bare object schema fine (Anthropic, OpenAI, most Workers AI models) may
+ * still send a real object, and readParams accepts both — so this can only add reliability.
+ *
+ * Required, deliberately: a decoder must then emit the field, which forces the model to decide
+ * what belongs in it rather than silently skipping it. An operation that genuinely takes no
+ * arguments costs two characters.
+ */
+const PARAMS_PARAM = {
+  type: "string",
+  description:
+    "REQUIRED. Arguments for that op/script as a JSON object STRING — e.g. " +
+    "{\"project_id\":\"9d67a69a-981a-4c3e-b50d-83c3f51c679c\",\"title\":\"Kickoff\"}. Use {} only " +
+    "when the operation genuinely takes no arguments. Many groups carry \"param_hints\", keyed by " +
+    "exact operation name, naming each field and which are required: READ the hint for the " +
+    "operation you chose before writing this. A field left out is often not an error — it " +
+    "silently does the WRONG thing instead, e.g. creating a thread with no project attached " +
+    "because project_id was omitted, rather than failing loudly. Fill it from what you already " +
+    "have: an id you looked up a step ago, the text you were asked to send. When no hint exists, " +
+    "infer the fields from the operation's name.",
+};
+
 const DECISION_TOOLS: ToolSpec[] = [
   {
     name: "run",
@@ -426,22 +484,11 @@ const DECISION_TOOLS: ToolSpec[] = [
             "per group: read a group's description before concluding no capability exists — a bare name " +
             "like \"thread.send_message\" won't explain itself, but its group's description will.",
         },
-        params: {
-          type: "object",
-          description:
-            "Arguments for that op/script. Some groups also carry \"param_hints\" — an object keyed " +
-            "by the exact operation name, one line each naming its real fields and which are " +
-            "required. When your chosen operation has one, READ IT before filling this in: a field " +
-            "left out is often not an error, it silently does the WRONG thing instead — e.g. " +
-            "creating a thread with no project attached because project_id was left blank, rather " +
-            "than failing loudly. When no hint exists for an operation, infer its fields from its " +
-            "name and the values you already have from earlier steps (an id you just looked up, " +
-            "the text you were asked to send).",
-        },
+        params: PARAMS_PARAM,
         doing: DOING_PARAM,
         say: SAY_PARAM,
       },
-      required: ["name", "doing"],
+      required: ["name", "doing", "params"],
     },
   },
   {
@@ -461,7 +508,7 @@ const DECISION_TOOLS: ToolSpec[] = [
           },
           required: ["description"],
         },
-        params: { type: "object", description: "Arguments to run it with immediately." },
+        params: { type: "string", description: "Arguments to run it with immediately, as a JSON object string, e.g. {\"limit\":5}. Use {} for none." },
         doing: DOING_PARAM,
         say: SAY_PARAM,
       },
@@ -524,7 +571,7 @@ function decisionFromToolCall(call: ToolCall): ReasonDecision | null {
       // See stripNamespacePrefix's own doc: a colon-prefixed guess like
       // "project-coordination:thread.create" resolves to the real op name here, before any
       // gate/repeat-guard/ledger check ever sees it.
-      return { action: "run", name: stripNamespacePrefix(name), params: (a["params"] as Record<string, unknown>) ?? {} } as ReasonDecision;
+      return { action: "run", name: stripNamespacePrefix(name), params: readParams(a["params"]) } as ReasonDecision;
     }
     case "distill": {
       const name = str("name");
@@ -533,7 +580,7 @@ function decisionFromToolCall(call: ToolCall): ReasonDecision | null {
       return {
         action: "distill", name, code,
         metadata: (a["metadata"] as Record<string, unknown>) ?? {},
-        params: (a["params"] as Record<string, unknown>) ?? {},
+        params: readParams(a["params"]),
       } as ReasonDecision;
     }
     case "patch": {
