@@ -59,4 +59,9 @@ export const fabric: PrebuiltScript = {
       return ctx.env.memoryStore.briefFabric(userId, typeof args["limit"] === "number" ? (args["limit"] as number) : 5);
     },
   },
+  paramHints: {
+    "fabric.record": "summary (string, REQUIRED — the field is `summary`, NOT `content`/`text`/`note`). tags (string[], optional).",
+    "fabric.recall": "query (string, REQUIRED — the field is `query`, not `text`). limit (number, optional).",
+    "fabric.brief": "limit (number, optional) — no required fields.",
+  },
 };

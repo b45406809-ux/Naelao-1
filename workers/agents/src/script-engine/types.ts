@@ -190,6 +190,21 @@ export interface ScriptRunResult {
   needs_connector?: boolean;
   connector_id?: string;
   connector_name?: string;
+  /**
+   * Who authored `error`: the MODEL (its own `give_up` reason, in its own words) or the
+   * infrastructure around it (a gateway 429, a thrown exception, a budget gate).
+   *
+   * Load-bearing for the proactive loop, and found the hard way. A model that stops and explains
+   * itself is describing a situation; it is not itself evidence that the situation is real. When
+   * its prose was fed to classifyFailure like any other error string, a give_up that merely
+   * MENTIONED running out of allowance was classified `quota_exhausted` — a kind whose whole
+   * meaning is "this clears on its own, do not retry." The next wake-up's brief then told the
+   * assistant its quota was spent, so it gave up again, and that give_up was classified the same
+   * way. One genuine outage poisoned every future wake-up, permanently, long after capacity
+   * returned — observed live: an assistant running fine on a completely different provider
+   * refused to work because of a Workers AI failure from the previous day.
+   */
+  failure_origin?: "model" | "infrastructure";
 }
 
 /** A candidate returned by script.find. */

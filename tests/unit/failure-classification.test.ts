@@ -99,3 +99,66 @@ describe("classifyFailure", () => {
     expect(c.agent_actionable).toBe(false);
   });
 });
+
+/**
+ * A model's own give_up reason is a description of a situation, not evidence of one.
+ *
+ * Observed live and this is the exact loop it produced: a Space Assistant running on Gemini —
+ * a provider with plenty of capacity — read a wake-up brief mentioning the previous day's
+ * Workers AI outage, gave up with "The daily free neuron allocation is exhausted...", and that
+ * give_up was classified `quota_exhausted` ("clears on its own — do not retry"). The next
+ * wake-up's brief relayed that back as its present state, so it gave up again. One real outage
+ * froze the business permanently, on infrastructure that had never run out of anything.
+ */
+describe("classifyFailure — a model's own words are never infrastructure evidence", () => {
+  const LIVE_GIVE_UP =
+    "The daily free neuron allocation (quota_exhausted) is exhausted, preventing further " +
+    "reasoning/execution until the quota resets, and setup is still unfinished.";
+
+  it("does NOT call the live give_up text a self-clearing quota failure", () => {
+    const c = classifyFailure(LIVE_GIVE_UP, undefined, "model");
+    expect(c.kind).not.toBe("quota_exhausted");
+    expect(c.clears_on_its_own).toBe(false);
+    expect(c.agent_actionable).toBe(true);
+  });
+
+  it("still classifies the SAME text as a quota failure when infrastructure said it", () => {
+    // The real gateway error must keep working exactly as before — this fix narrows what counts
+    // as evidence, it does not stop recognising a genuine outage.
+    expect(classifyFailure(LIVE_GIVE_UP).kind).toBe("quota_exhausted");
+    expect(classifyFailure(LIVE_GIVE_UP, undefined, "infrastructure").kind).toBe("quota_exhausted");
+  });
+
+  it("keeps honouring structural facts the loop stamps, even on a model-origin failure", () => {
+    // "the user pressed Stop" is a fact about the run, not the model's read on the world.
+    expect(classifyFailure("Stopped by you before finishing.", undefined, "model").kind)
+      .toBe("user_cancelled");
+  });
+
+  it("round-trips a stored kind name regardless of origin", () => {
+    expect(classifyFailure("budget_ceiling", undefined, "model").kind).toBe("budget_ceiling");
+  });
+});
+
+/**
+ * The counterpart, and the reason this pair exists at all: the reasoner reports its OWN failures
+ * — a gateway 429, an unparseable reply, a dead stream — through the same `give_up` channel the
+ * model uses. Marking every give_up as model-origin swallowed a real Gemini 429 into `unknown`,
+ * caught live one run after the fix that introduced it. Absent origin therefore means
+ * infrastructure, so any path not explicitly marked keeps classifying exactly as it always has.
+ */
+describe("classifyFailure — a real gateway failure keeps its classification", () => {
+  const LIVE_GEMINI_429 =
+    'reasoner gateway error 429: [{ "error": { "code": 429, "message": "You exceeded your ' +
+    'current quota, please check your plan and billing details." } }]';
+
+  it("classifies the live Gemini 429 as self-clearing, not unknown", () => {
+    const c = classifyFailure(LIVE_GEMINI_429);
+    expect(c.kind).toBe("rate_limited");
+    expect(c.clears_on_its_own).toBe(true);
+  });
+
+  it("classifies it the same way with an explicit infrastructure origin", () => {
+    expect(classifyFailure(LIVE_GEMINI_429, undefined, "infrastructure").kind).toBe("rate_limited");
+  });
+});

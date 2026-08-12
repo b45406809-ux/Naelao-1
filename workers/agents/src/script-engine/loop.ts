@@ -143,7 +143,22 @@ export type ReasonDecision =
   | { action: "patch"; name: string; code: string; reason: string }
   | { action: "distill"; name: string; code: string; metadata: Partial<ScriptMetadata>; params: Record<string, unknown> }
   | { action: "answer"; text: string }
-  | { action: "give_up"; reason: string };
+  | {
+      action: "give_up";
+      reason: string;
+      /**
+       * Whose failure this is. Only set to "model" when the MODEL itself chose to stop and these
+       * are its own words — see ScriptRunResult.failure_origin for why that must never be
+       * pattern-matched as infrastructure evidence.
+       *
+       * Absent means infrastructure, deliberately: the reasoner reports its own failures
+       * (a gateway 429, an unparseable reply, a stream that died) through this same give_up
+       * channel, and those must keep classifying exactly as they always have. Defaulting the
+       * other way silently swallowed a real Gemini 429 into `unknown` — caught live, one run
+       * after the fix that introduced it.
+       */
+      origin?: "model" | "infrastructure";
+    };
 
 /** Real LLM token usage from one decide() call (spec: per-token accounting, not a step-count
  *  proxy). Read from `Reasoner.lastUsage` immediately after each awaited decide() — safe
@@ -862,6 +877,16 @@ export async function runScriptLoop(
           pushTrace({ phase: "reason", detail: "context overflow → compacting harder", ok: false });
           continue;
         }
+        // Normalize a script-qualified operation name BEFORE anything authorizes or records it —
+        // the gate, the repeat guard and the action ledger all key on decision.name, so an alias
+        // resolved any later would be a different action to every one of them. See
+        // ScriptToolSurface.resolveOperationAlias for what it will and will not resolve.
+        if (decision.action === "run") {
+          const resolved = tools.resolveOperationAlias(decision.name, decision.params);
+          decision.name = resolved.name;
+          decision.params = resolved.params;
+        }
+
         lastDecision = decision;
         pushTrace({
           phase: "reason",
@@ -1262,6 +1287,12 @@ async function applyTerminalDecision(
       tier: 1,
       duration_ms: 0,
       tokens_used: 0,
+      // The model chose to stop and these are its own words — see ScriptRunResult.failure_origin
+      // for why that must never be pattern-matched as an infrastructure failure. "no terminal
+      // action" is the loop's own wording, so it stays classifiable as usual.
+      ...(decision.action === "give_up" && decision.origin === "model"
+        ? { failure_origin: "model" as const }
+        : {}),
     },
     notes,
   };

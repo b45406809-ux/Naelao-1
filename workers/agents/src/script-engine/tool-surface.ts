@@ -291,6 +291,63 @@ export class ScriptToolSurface {
    * Run a prebuilt operation or a stored script. Records success/failure health on stored
    * scripts so stability_score stays accurate.
    */
+  /**
+   * Resolve the two ways a model addresses an operation THROUGH the script that owns it.
+   *
+   * `available_operations` is grouped by script, so a model reading it sees both names and
+   * reaches for the pair. Observed live in a single unattended run, twice, each costing two
+   * steps: `workspace-admin.project.list` (owning script, dot, real op) and `business-diagnostics`
+   * with `params.operation = "diagnostics.overview"` (owning script alone, operation moved into
+   * the arguments). Both name a real script AND a real operation of it — the intent is not in
+   * doubt, only the spelling — so failing them wastes a reasoning turn on a self-correction the
+   * platform can just do.
+   *
+   * Deliberately narrow: a prefix is only stripped when it matches a script that actually exists
+   * AND the remainder is an operation that script actually owns. That is what makes this
+   * incapable of inventing an action — it can only ever map onto something already callable. It
+   * must also run UPSTREAM of the HITL gate (see the loop's call site and stripNamespacePrefix's
+   * own doc): resolving here rather than inside run() is what stops an alias of a gated action
+   * slipping past a `gate_listed` allowlist unapproved.
+   */
+  resolveOperationAlias(
+    name: string,
+    params: Record<string, unknown>
+  ): { name: string; params: Record<string, unknown> } {
+    if (this.ops.has(name)) return { name, params };
+
+    // "<script>.<op>" / "<script>:<op>" — a real op cannot be found by splitting on the last dot
+    // (op names are themselves dotted: project.list, notify.email), so match the script instead.
+    for (const [opName, { prebuilt }] of this.ops) {
+      for (const sep of [".", ":"]) {
+        if (name === `${prebuilt.name}${sep}${opName}`) return { name: opName, params };
+      }
+    }
+
+    // The bare script name, with the operation named in the arguments.
+    for (const key of ["operation", "op", "action", "name"]) {
+      const candidate = params[key];
+      if (typeof candidate !== "string") continue;
+      const entry = this.ops.get(candidate);
+      if (!entry || entry.prebuilt.name !== name) continue;
+      const { [key]: _moved, ...rest } = params;
+      return { name: candidate, params: rest };
+    }
+
+    // The bare script name, with the operation used as a KEY whose value is the real argument
+    // object: `workspace-admin` + `{"project.create": {name: "..."}}`. Seen live, and the most
+    // expensive of the three spellings — the model had assembled correct arguments, lost them
+    // when the call was refused, and then retried the right operation with nothing in it.
+    const opKeys = Object.keys(params).filter(
+      (k) => this.ops.get(k)?.prebuilt.name === name && params[k] !== null && typeof params[k] === "object"
+    );
+    if (opKeys.length === 1) {
+      const key = opKeys[0]!;
+      return { name: key, params: params[key] as Record<string, unknown> };
+    }
+
+    return { name, params };
+  }
+
   async run(name: string, params: Record<string, unknown> = {}): Promise<ScriptRunResult> {
     const started = Date.now();
 

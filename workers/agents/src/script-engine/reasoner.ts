@@ -595,7 +595,9 @@ function decisionFromToolCall(call: ToolCall): ReasonDecision | null {
       return { action: "answer", text } as ReasonDecision;
     }
     case "give_up":
-      return { action: "give_up", reason: str("reason") ?? "no reason given" } as ReasonDecision;
+      // The model itself chose to stop, in its own words — the ONE give_up that is not the
+      // reasoner reporting its own failure. See ReasonDecision.origin.
+      return { action: "give_up", reason: str("reason") ?? "no reason given", origin: "model" } as ReasonDecision;
     default:
       return null;
   }

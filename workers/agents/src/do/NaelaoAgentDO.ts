@@ -3383,7 +3383,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         sessionId,
         runId,
         triggerSource,
-        ...(failed ? { failureKind: classifyFailure(failureText).kind } : {}),
+        // origin matters: see ScriptRunResult.failure_origin. A model give_up misclassified as
+        // a self-clearing capacity failure freezes every future wake-up.
+        ...(failed ? { failureKind: classifyFailure(failureText, undefined, result.result?.failure_origin).kind } : {}),
         summary: result.result?.ok
           ? (typeof result.result.output === "string" ? result.result.output.slice(0, 500) : `Goal: ${body.goal.slice(0, 200)}`)
           : (failureText ? failureText.slice(0, 500) : "Run did not complete successfully"),

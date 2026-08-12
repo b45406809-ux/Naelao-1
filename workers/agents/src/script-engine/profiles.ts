@@ -283,7 +283,20 @@ ${BASE_AGENTS_MD}`,
         "lock",
         "workspace",
         "business-wallet",
+        // Full workspace agency: a Space Assistant must be able to do anything the person whose
+        // space it is could do unaided. project-coordination alone gave it threads but not the
+        // projects those threads live in — it could create a thread inside a project it had no
+        // way to create. workspace-admin's ops are plain project CRUD over the spaces worker with
+        // nothing Launchpad-specific about them (its own header notes only who first needed it),
+        // and every mutating one is already a gate-worthy action name, so the approval policy —
+        // not the tool list — is what decides how much it may do without asking.
+        "workspace-admin",
         "project-coordination",
+        // Instructed throughout the prose above ("call project_journal.read BEFORE starting real
+        // work") and, until this was noticed in a live trace, absent from every tool list on the
+        // platform. The assistant reached for fabric.record instead — Memory OS, a different
+        // thing — so a project's own state and standing instructions had nowhere to live.
+        "project-journal",
         "business-diagnostics",
       ],
       agent_scripts: "auto",
@@ -644,6 +657,8 @@ ${BASE_AGENTS_MD}`,
         // assistant is told about it in the Business Email section above, so it must be able to
         // actually call email.provision/send/status.
         "business-email",
+        // Same gap as the generic profile's entry: instructed everywhere, listed nowhere.
+        "project-journal",
         // Situational awareness on every wake-up — see the Knowing What Happened section above.
         "business-diagnostics",
       ],

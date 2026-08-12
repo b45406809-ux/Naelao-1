@@ -9,7 +9,40 @@
  * through the notifications worker service binding when configured.
  */
 
+import { mintInternalToken } from "@naelao/http";
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
+
+/**
+ * The owner's own email, resolved server-side, for a notify.email that named no recipient.
+ *
+ * Both assistant profiles instruct the agent to email the owner when something genuinely needs
+ * them — and nothing ever tells it what the owner's address is. Observed live on an unattended
+ * wake-up: the assistant correctly decided the owner had to be told setup was unfinished, called
+ * notify.email with a real subject and body and no `to`, and the notifications worker rejected it
+ * with a 400. The one path the assistant has for reaching a human failed by construction, on the
+ * exact class of message that path exists for.
+ *
+ * Resolving it here rather than handing the address to the model is also the better shape: the
+ * owner's email never enters a reasoning payload, a run trace, or a params log — the model asks
+ * for "the owner" and the platform knows who that is. An explicit `to` (a customer, a supplier)
+ * still wins, so nothing about the existing behaviour changes.
+ */
+async function resolveOwnerEmail(ctx: PrebuiltOpContext): Promise<string | undefined> {
+  if (!ctx.env.spacesWorker || !ctx.env.spaceId) return undefined;
+  try {
+    const token = await mintInternalToken(ctx.env.platformSecret ?? "", ctx.env.tenantId);
+    const resp = await ctx.env.spacesWorker.fetch(
+      new Request(`http://spaces-worker/internal/spaces/${ctx.env.spaceId}/owner-contact`, {
+        headers: { "x-naelao-tenant-id": ctx.env.tenantId, "x-naelao-internal-token": token },
+      })
+    );
+    if (!resp.ok) return undefined;
+    const body = await resp.json<{ found?: boolean; email?: string }>();
+    return body?.found && body.email ? body.email : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 async function dispatch(
   ctx: PrebuiltOpContext,
@@ -36,8 +69,19 @@ export const notifications: PrebuiltScript = {
   domain: "comms",
   requires_tier: 2,
   operations: {
-    "notify.email": (a, c) =>
-      dispatch(c, "email", { to: a["to"], subject: a["subject"], body: a["body"] }),
+    "notify.email": async (a, c) => {
+      const to = typeof a["to"] === "string" && a["to"].trim() ? (a["to"] as string) : await resolveOwnerEmail(c);
+      if (!to) {
+        // Honest degradation rather than a bare 400: name the real reason so the agent can say
+        // something useful instead of retrying a call that cannot succeed.
+        return {
+          delivered: false,
+          channel: "email",
+          reason: "no recipient: none was given and this space has no owner email on record",
+        };
+      }
+      return dispatch(c, "email", { to, subject: a["subject"], body: a["body"] });
+    },
     "notify.slack": (a, c) => dispatch(c, "slack", { channel: a["channel"], message: a["message"] }),
     "notify.discord": (a, c) => dispatch(c, "discord", { channel: a["channel"], message: a["message"] }),
     "notify.whatsapp": (a, c) => dispatch(c, "whatsapp", { to: a["to"], message: a["message"] }),

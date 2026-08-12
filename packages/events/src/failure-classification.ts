@@ -169,6 +169,13 @@ const RULES: Rule[] = [
 const BY_KIND = new Map<FailureKind, Rule>(RULES.map((r) => [r.kind, r]));
 
 /**
+ * The only kinds that stay trustworthy when the text came from the model itself: each is a fact
+ * about THIS run that the loop stamps in its own wording (the user pressed Stop; the run is
+ * parked on a human decision), not the model's read on external conditions.
+ */
+const MODEL_ORIGIN_STRUCTURAL_KINDS: FailureKind[] = ["user_cancelled", "approval_pending"];
+
+/**
  * Classify a failure from whatever text was surfaced, plus an HTTP status when there is one.
  *
  * Deliberately conservative: anything unrecognised is `unknown` with `agent_actionable: true`,
@@ -176,8 +183,33 @@ const BY_KIND = new Map<FailureKind, Rule>(RULES.map((r) => [r.kind, r]));
  * is powerless. Never guesses `quota_exhausted` — telling an agent to "just wait" for something
  * that will never clear on its own is the one wrong answer that costs real time.
  */
-export function classifyFailure(error: string | null | undefined, status?: number): FailureClassification {
+export function classifyFailure(
+  error: string | null | undefined,
+  status?: number,
+  origin?: "model" | "infrastructure"
+): FailureClassification {
   const text = String(error ?? "");
+
+  // A model's own give_up reason is a DESCRIPTION of a situation, never evidence of one. Pattern
+  // matching it produced a self-reinforcing paralysis loop, observed live: a give_up that merely
+  // mentioned running out of allowance was classified `quota_exhausted` ("clears on its own, do
+  // not retry"), the next wake-up's brief relayed that as the agent's present state, so it gave
+  // up again — and that give_up classified the same way. The business stayed frozen on a
+  // provider that had never run out of anything. Whatever the model says, the fact it reached
+  // this point at all means the reasoning call SUCCEEDED, so no self-clearing capacity failure
+  // can be in effect right now. Classify as actionable and let it be investigated.
+  //
+  // Structural markers the loop itself writes (cancellation, an approval it is parked on) are
+  // still honoured — those are facts about the run, not the model's opinion about the world.
+  if (origin === "model") {
+    const trimmedModelText = text.trim();
+    if (isFailureKind(trimmedModelText)) return toClassification(BY_KIND.get(trimmedModelText)!);
+    for (const kind of MODEL_ORIGIN_STRUCTURAL_KINDS) {
+      const rule = BY_KIND.get(kind)!;
+      if (rule.patterns.some((p) => p.test(text))) return toClassification(rule);
+    }
+    return toClassification(BY_KIND.get("unknown")!);
+  }
 
   // Already a kind name. The diagnostics rollup stores the classification and later re-reads it
   // to answer "can the agent do anything about this?" — without this, a stored 'quota_exhausted'

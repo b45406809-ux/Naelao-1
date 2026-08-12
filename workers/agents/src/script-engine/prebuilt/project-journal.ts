@@ -225,4 +225,12 @@ export const projectJournal: PrebuiltScript = {
       };
     },
   },
+  paramHints: {
+    "project_journal.read": "no required fields — the project comes from the run itself, never an argument.",
+    "project_journal.log": "summary (string, REQUIRED — ONE factual line about what you actually DID and what resulted, e.g. \"created the Lead Tracking project and briefed the dev agent\"; the field is `summary`, not `content`/`text`).",
+    "project_journal.set": "at least one of goal / instructions / status / name (all strings).",
+    "project_journal.add_todo": "text (string, REQUIRED).",
+    "project_journal.complete_todo": "text (string, REQUIRED — matching an existing todo).",
+    "project_journal.compact": "no arguments.",
+  },
 };

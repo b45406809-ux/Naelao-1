@@ -1183,7 +1183,19 @@ async function buildWakeUpBrief(env: AgentsEnv, spaceId: string, tenantId: strin
       );
       if (top) {
         const c = classifyFailure(top.kind);
-        lines.push(`  ${c.summary}`);
+        // A self-clearing failure (spent allowance, rate limit) is HISTORY by the time it is read
+        // here, and saying so is not a nicety — the assistant is only reading this because a
+        // reasoning call just succeeded, which is direct proof that capacity is available right
+        // now. Relaying the bare "it resets on its own — work can resume then" summary read as a
+        // present blocker: observed live, an assistant on a provider with plenty of quota
+        // reported itself frozen and stopped, purely on the strength of the previous day's
+        // Workers AI outage. State the fact, then close the door on it.
+        lines.push(
+          c.clears_on_its_own
+            ? `  ${c.summary} That already happened — you are running now, so it is not blocking ` +
+              `you. Do not report yourself as blocked by it; get on with the work.`
+            : `  ${c.summary}`
+        );
       }
     }
     if (d.approvals.outstanding > 0) {
@@ -1391,6 +1403,26 @@ async function wakeAgentGoal(
     })
   );
 }
+
+// ── POST /internal/agent-ticks/run — fire the proactive sweep on demand ───────
+// The heartbeat sweep is normally driven by this worker's own hourly cron (see [triggers] in
+// wrangler.toml), which is the right production cadence but makes the proactive loop
+// effectively untestable: you cannot observe a wake-up, fix something, and observe it again
+// inside one working session, and `wrangler` has no way to invoke a deployed worker's cron.
+//
+// This runs the SAME enqueueAgentTicks the scheduled handler runs — same rosters, same queue
+// fan-out, same per-space dispatch — so what it exercises is the real path, not a test double.
+// Internal-only, gated exactly like /internal/triggers/fire: it dispatches real reasoning runs
+// against the platform's own LLM budget, so it must never be reachable from outside.
+app.post("/internal/agent-ticks/run", async (c) => {
+  const headerTenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const validToken = await verifyInternalToken(c.req.header("x-naelao-internal-token"), headerTenantId, c.env.PLATFORM_SECRET);
+  if (!headerTenantId || !validToken) {
+    return c.json({ error_code: "forbidden", message: "internal only" }, 403);
+  }
+  await enqueueAgentTicks(c.env);
+  return c.json({ ok: true, swept: true });
+});
 
 // ── POST /internal/triggers/fire — @naelao/events dispatch target ─────────────
 // SpaceDO calls this after evaluating an event_triggers match (thread.created,
@@ -1717,6 +1749,31 @@ app.get(
     const stub = await getAgentDO(c.env, tenantId, sessionId, c.get("requestId"));
     const doResponse = await stub.fetch(new Request(`http://agent-do/runs/${runId}/trace`));
     const doBody = await doResponse.json<unknown>();
+
+    // A run dispatched by a heartbeat/cron wake lives in a DIFFERENT DO than an interactive one:
+    // wakeAgentGoal addresses the space-wide assistant (`{spaceId}:{agentId}`) while this route
+    // can only address by session. Its trace was therefore written somewhere this read could
+    // never reach, and an unattended run — precisely the kind nobody watched happen and most
+    // needs inspecting afterwards — always came back with an empty trace and no error to explain
+    // why. Fall back to the assistant DO when the session-addressed one has nothing, mirroring
+    // how fetchRunOrTaskStatus already falls back between this DO's own rows and TaskDO.
+    const empty =
+      doResponse.ok &&
+      Array.isArray((doBody as { trace?: unknown[] } | null)?.trace) &&
+      (doBody as { trace: unknown[] }).trace.length === 0;
+    if (empty) {
+      try {
+        // "naelao-agent" — the id every dispatcher in this file hardcodes for the Space Assistant.
+        const assistantStub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
+        const alt = await assistantStub.fetch(new Request(`http://agent-do/runs/${runId}/trace`));
+        if (alt.ok) {
+          const altBody = await alt.json<{ trace?: unknown[] }>();
+          if (Array.isArray(altBody?.trace) && altBody.trace.length > 0) return c.json(altBody, 200);
+        }
+      } catch {
+        // Observability must never turn a readable-but-empty trace into an error.
+      }
+    }
     return c.json(doBody, doResponse.status as 200 | 404 | 500);
   }
 );

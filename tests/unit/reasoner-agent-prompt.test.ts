@@ -80,8 +80,11 @@ describe("a reply that isn't one of the five actions", () => {
     expect(coerceDecision({ function: { name: "answer", arguments: { text: "done" } } })).toEqual({
       action: "answer", text: "done",
     });
+    // origin:"model" because this IS the model choosing to stop, in its own words — which is
+    // what keeps its prose from being pattern-matched as an infrastructure failure and freezing
+    // every later wake-up. See ReasonDecision.origin.
     expect(coerceDecision({ tool: "give_up", parameters: { reason: "no data" } })).toEqual({
-      action: "give_up", reason: "no data",
+      action: "give_up", reason: "no data", origin: "model",
     });
   });
 

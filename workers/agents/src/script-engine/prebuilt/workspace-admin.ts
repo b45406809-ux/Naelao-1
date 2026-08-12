@@ -114,10 +114,18 @@ export const workspaceAdmin: PrebuiltScript = {
     "project.create": async (a, c) => {
       const name = String(a["name"] ?? "").trim();
       if (!name) throw new Error("project.create requires name");
+      // A project created on a SYSTEM run (a cron wake, a channel drain) has no acting user, so
+      // SpaceDO skips its "the creator is an implicit project_members owner" insert — and the
+      // default `private` visibility then hides it from every business member except an
+      // owner/admin. Observed live: an unattended wake-up built a real project, posted a real
+      // brief into it, and produced something ordinary members could not see, belonging to
+      // nobody. When the assistant acts for the business rather than for a person, the business
+      // is the audience. An explicit visibility from the caller still wins.
+      const systemRun = !c.env.userId;
       return spacesCall(c, "POST", `/spaces/${c.env.spaceId}/projects`, {
         name,
         ...(a["description"] ? { description: String(a["description"]) } : {}),
-        ...(a["visibility"] ? { visibility: String(a["visibility"]) } : {}),
+        ...(a["visibility"] ? { visibility: String(a["visibility"]) } : systemRun ? { visibility: "public" } : {}),
         ...(a["default_agent_id"] ? { default_agent_id: String(a["default_agent_id"]) } : {}),
         ...(Array.isArray(a["allowed_agent_ids"]) ? { allowed_agent_ids: a["allowed_agent_ids"] } : {}),
       });

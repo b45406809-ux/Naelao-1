@@ -132,3 +132,109 @@ describe("a model naming a script wrong is recoverable, not fatal", () => {
     await expect(lib.delete("../escape")).rejects.toThrow(/Invalid script name/);
   });
 });
+
+/**
+ * A model addressing an operation THROUGH its owning script — both spellings seen live in one
+ * unattended run, each costing a wasted reasoning turn on a self-correction the platform can do.
+ *
+ * The narrowness is the safety property: a prefix is only stripped when the script exists AND the
+ * remainder is an operation that script owns, so this can never conjure an action that wasn't
+ * already callable.
+ */
+describe("script-qualified operation names resolve to the real op", () => {
+  it("resolves '<script>.<op>' — the exact live failure", () => {
+    const tools = new ScriptToolSurface(makeEnv(makeR2()), ["workspace-admin"]);
+    expect(tools.resolveOperationAlias("workspace-admin.project.list", {}))
+      .toEqual({ name: "project.list", params: {} });
+  });
+
+  it("resolves '<script>:<op>' the same way", () => {
+    const tools = new ScriptToolSurface(makeEnv(makeR2()), ["workspace-admin"]);
+    expect(tools.resolveOperationAlias("workspace-admin:project.list", {}).name).toBe("project.list");
+  });
+
+  it("resolves a bare script name whose operation was moved into params", () => {
+    // Live: business-diagnostics with params {operation: "diagnostics.overview"}.
+    const tools = new ScriptToolSurface(makeEnv(makeR2()), ["business-diagnostics"]);
+    expect(tools.resolveOperationAlias("business-diagnostics", { operation: "diagnostics.overview", window_hours: 24 }))
+      .toEqual({ name: "diagnostics.overview", params: { window_hours: 24 } });
+  });
+
+  it("leaves a real operation name completely alone", () => {
+    const tools = new ScriptToolSurface(makeEnv(makeR2()), ["workspace-admin"]);
+    expect(tools.resolveOperationAlias("project.list", { a: 1 })).toEqual({ name: "project.list", params: { a: 1 } });
+  });
+
+  it("never invents an action: an unknown script prefix is passed through untouched", () => {
+    const tools = new ScriptToolSurface(makeEnv(makeR2()), ["workspace-admin"]);
+    expect(tools.resolveOperationAlias("totally-made-up.project.list", {}).name)
+      .toBe("totally-made-up.project.list");
+    // A real script + an operation it does NOT own must not resolve either.
+    expect(tools.resolveOperationAlias("workspace-admin", { operation: "notify.email" }).name)
+      .toBe("workspace-admin");
+  });
+
+  it("does not cross scripts: an op from another script is not reachable via this one's name", () => {
+    const tools = new ScriptToolSurface(makeEnv(makeR2()), ["workspace-admin", "notifications"]);
+    expect(tools.resolveOperationAlias("workspace-admin.notify.email", {}).name)
+      .toBe("workspace-admin.notify.email");
+  });
+});
+
+/**
+ * The third spelling, and the most expensive one: the operation used as a KEY whose value is the
+ * real argument object. Live, the model had assembled correct arguments for project.create, was
+ * refused, LOST them, and retried the right operation with an empty params — three wasted steps
+ * for a call that was fully formed the first time.
+ */
+describe("operation-as-params-key resolves too", () => {
+  it("resolves '<script>' + {'<op>': {args}} and keeps the arguments", () => {
+    const tools = new ScriptToolSurface(makeEnv(makeR2()), ["workspace-admin"]);
+    expect(
+      tools.resolveOperationAlias("workspace-admin", { "project.create": { name: "Lead Tracking" } })
+    ).toEqual({ name: "project.create", params: { name: "Lead Tracking" } });
+  });
+
+  it("does not fire when the key names an operation the script does not own", () => {
+    const tools = new ScriptToolSurface(makeEnv(makeR2()), ["workspace-admin", "notifications"]);
+    expect(tools.resolveOperationAlias("workspace-admin", { "notify.email": { to: "x@y.z" } }).name)
+      .toBe("workspace-admin");
+  });
+
+  it("does not guess when two operation-shaped keys are present", () => {
+    const tools = new ScriptToolSurface(makeEnv(makeR2()), ["workspace-admin"]);
+    expect(
+      tools.resolveOperationAlias("workspace-admin", {
+        "project.create": { name: "A" },
+        "project.list": {},
+      }).name
+    ).toBe("workspace-admin");
+  });
+});
+
+/**
+ * Every script the assistant is INSTRUCTED to use must actually be in its tool list. The
+ * project journal was told about eleven times across the two profiles and listed in neither —
+ * the assistant reached for Memory OS instead, so a project's own state had nowhere to live.
+ */
+describe("assistant profiles can call every script their prose instructs", () => {
+  it("both assistant profiles carry the scripts their own instructions name", async () => {
+    const { DEFAULT_NAELAO_AGENT, LAUNCHPAD_ASSISTANT_PROFILE } = await import(
+      "../../workers/agents/src/script-engine/profiles.js"
+    );
+    for (const profile of [DEFAULT_NAELAO_AGENT, LAUNCHPAD_ASSISTANT_PROFILE]) {
+      const listed = profile.config.scripts.prebuilt;
+      const prose = `${profile.config.agentsMd}\n${profile.config.systemPrompt ?? ""}`;
+      // Instructed by op name in the prose → the owning script must be listed.
+      for (const [op, script] of [
+        ["project_journal.read", "project-journal"],
+        ["thread.send_message", "project-coordination"],
+        ["project.create", "workspace-admin"],
+      ] as const) {
+        if (prose.includes(op)) {
+          expect(listed, `${profile.agentId} instructs ${op} but does not list ${script}`).toContain(script);
+        }
+      }
+    }
+  });
+});

@@ -6913,6 +6913,114 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      prior passes (133, 134) both correctly diagnosed real defects on this same goal and neither
      could fix it, because both assumed the model had a choice it did not have.
 
+136. **Drove the autonomous Space Assistant end-to-end on production against a real business and
+     found SIX real defects, all fixed — including a self-reinforcing paralysis loop in which one
+     genuine outage froze a business permanently, on infrastructure that had never run out of
+     anything.** Prompted by the direction to actually prove the proactive/agency model works
+     rather than assume it. Testing it needed one new affordance first: the heartbeat sweep is
+     driven by this worker's own hourly cron and `wrangler` cannot invoke a deployed cron, so the
+     proactive loop was effectively unobservable — you could not watch a wake-up, fix something,
+     and watch it again inside one session. New `POST /internal/agent-ticks/run` (HMAC-gated
+     exactly like `/internal/triggers/fire`, since it dispatches real reasoning runs against the
+     platform's LLM budget) fires the SAME `enqueueAgentTicks` the scheduled handler runs — same
+     rosters, same queue fan-out, so what it exercises is the real path.
+     - **The paralysis loop (worst of the six).** A model's own `give_up` reason was fed to
+       `classifyFailure` like any other error string. A give_up that merely MENTIONED running out
+       of allowance was therefore classified `quota_exhausted` — a kind whose entire meaning is
+       "this clears on its own, do not retry" — and the next wake-up's brief relayed that back as
+       the agent's PRESENT state, so it gave up again, and that give_up classified the same way.
+       Observed live and unmistakable: an assistant running on Gemini, with plenty of capacity,
+       read the previous day's Workers AI outage out of its own brief and refused to work.
+       Fixed in three places: `ScriptRunResult.failure_origin` marks whether `error` was the
+       model's words or the infrastructure's; `classifyFailure` gained an `origin` parameter that,
+       for model-origin text, refuses to return any self-clearing kind (whatever the model says,
+       the fact it reached that point at all proves the reasoning call SUCCEEDED, so no capacity
+       failure can be in effect) while still honouring structural markers the loop itself stamps;
+       and `buildWakeUpBrief` now states a self-clearing failure as history and closes the door on
+       it explicitly rather than relaying "it resets on its own — work can resume then" as a
+       present blocker. **Verified by leaving the poisoned history in the database and re-firing:
+       the same business went from `run_failed` to `run_completed`, 11 real tool calls.**
+     - **A regression I introduced doing that, caught one run later by live testing rather than
+       by review.** The reasoner reports its OWN failures (a gateway 429, an unparseable reply, a
+       dead stream) through the same `give_up` channel the model uses — so marking every give_up
+       as model-origin swallowed a real Gemini 429 into `unknown`. Narrowed to the single
+       `decisionFromToolCall` path where the model genuinely chose to stop, via an explicit
+       `ReasonDecision.origin`, with absent deliberately meaning infrastructure so any path not
+       marked keeps classifying exactly as before. Confirmed live afterwards: a real Groq TPM 429
+       came back `rate_limited`, not `unknown`.
+     - **`notify.email` could not reach the owner — by construction.** Both profiles instruct the
+       agent to email the owner when something genuinely needs them, and nothing ever tells it the
+       owner's address. Live, the assistant correctly decided the owner had to be told setup was
+       unfinished, called `notify.email` with a real subject and body and no `to`, and got a 400.
+       The one path to a human failed on exactly the class of message it exists for. `notify.email`
+       now resolves the owner server-side via the already-built `/internal/spaces/:id/owner-contact`
+       when no recipient is named — which is also the better shape, since the address never enters
+       a reasoning payload, a trace, or a params log. An explicit `to` still wins.
+     - **`project-journal` was instructed eleven times across the two profiles and listed in
+       neither's tool list.** The prebuilt has existed since the journal was built; no agent could
+       ever call it. Live, the assistant reached for `fabric.record` (Memory OS — a different
+       thing) instead, so a project's own state and standing instructions had nowhere to live.
+       Wired into both profiles, plus a test that reads each profile's own prose and asserts that
+       every operation it names is backed by a listed script — verified to reproduce the exact
+       gap when the fix is reverted.
+     - **Three spellings of "address an operation through its owning script", all seen in one
+       unattended run, each costing wasted reasoning turns:** `workspace-admin.project.list`
+       (dot), `business-diagnostics` + `params.operation`, and — the expensive one —
+       `workspace-admin` + `{"project.create": {…}}`, where the model had assembled correct
+       arguments, was refused, LOST them, and retried the right operation with an empty params.
+       New `ScriptToolSurface.resolveOperationAlias` resolves all three, applied in the loop
+       BEFORE the gate/repeat-guard/ledger (all three key on `decision.name`, so an alias resolved
+       any later is a different action to every one of them — and resolving upstream is what stops
+       an alias of a gated action slipping past a `gate_listed` allowlist). Deliberately narrow: a
+       prefix is stripped only when the script exists AND the remainder is an operation that
+       script owns, so it cannot invent an action that was not already callable.
+     - **A project the assistant created on an unattended wake was invisible to the business.** A
+       system run has no acting user, so SpaceDO skips its "creator is an implicit project member"
+       insert, and the default `private` visibility then hides it from every member but an
+       owner/admin. Live, a wake-up built a real project, posted a real brief into it, and
+       produced something belonging to nobody. `project.create` now defaults to `public` when
+       there is no acting user — when the assistant acts for the business, the business is the
+       audience. An explicit visibility still wins.
+     - **A heartbeat run's trace was unreadable — exactly the runs nobody watched.** `wakeAgentGoal`
+       addresses the space-wide assistant DO (`{spaceId}:{agentId}`) while the trace route can only
+       address by session, so an unattended run's trace was written somewhere the read could never
+       reach and always came back empty with no error explaining why. The route now falls back to
+       the assistant DO, mirroring how `fetchRunOrTaskStatus` already falls back to TaskDO.
+     - **Also fixed, found by reading rather than by failure:** the generic `DEFAULT_NAELAO_AGENT`
+       had `project-coordination` (threads) but not `workspace-admin` (projects) — it could create
+       a thread inside a project it had no way to create. Added; the ops are plain project CRUD
+       with nothing Launchpad-specific about them, and every mutating one is already a gate-worthy
+       action name, so the approval policy rather than the tool list decides how much it may do
+       unasked. Param hints added for `fabric` and `project-journal` (the model guessed `content`
+       where the field is `summary`, live).
+     - **What was proven live, verified against the datastore rather than taken from the model's
+       own summary** (item 108's rule): a heartbeat fired with no human involved; the assistant
+       ran 29 trace steps and 11 real tool calls (diagnostics, wallet balance and history, project
+       list, commerce orders and products) and reported honestly on a business that has not sold
+       anything yet; and on a second wake it created a real project, created a real thread inside
+       it, and posted a real substantive brief into that thread attributed to
+       `assistant/naelao-agent` — all three confirmed by querying projects, threads and messages
+       directly. The brief correctly cited the business's real price tiers, so the business
+       context of item 105 is genuinely reaching the model.
+     - **The assistant-vs-project-agent boundary is structural, not prompt-level, and needed no
+       change:** `ScriptToolSurface` builds its op map ONLY from the profile's prebuilt list, so an
+       op that is not listed is uncallable. Project agents get `r2-workspace`/`notifications`/
+       `memory`/`fabric`/`wiki`/`lock`/`workspace` plus skill-derived scripts, and never
+       `workspace-admin`, `project-coordination` or `sub-agent` — so they genuinely cannot create
+       projects, reach another project's threads, or spawn sub-agents. Verified by reading
+       `launchpadAgentToProfile`/`agentTemplateToConfig` end to end.
+     2957/2957 tests pass (18 new), `npx turbo run typecheck` clean (76 tasks), `naelao-agents`
+     deployed six times across the session (bare `wrangler deploy`, item 83's documented `--env
+     production` trap), each fix re-verified by re-firing the sweep rather than assuming the deploy
+     landed. **Not proven this pass:** sub-agent spawn and posting into an ALREADY-EXISTING project
+     thread — the capability is wired (`sub-agent`/`project-coordination` are in both assistant
+     profiles and `agent.spawn`/`thread.send_message` resolve) but every provider with remaining
+     budget hit a limit before that run finished: Workers AI's daily neurons were already spent,
+     Gemini Flash Lite hit its free-tier daily request cap, and Groq's 12k tokens-per-minute ceiling
+     is below this agent's ~9k-token payload, so a multi-step run cannot complete there. Tier 2-5
+     execution (`worker_loaders`) also remains disabled, so any seeded skill still fails closed —
+     both unblock on the CF Workers Paid plan.
+
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

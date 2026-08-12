@@ -120,8 +120,28 @@ describe("workspace-admin prebuilt", () => {
       expect(calls).toHaveLength(1);
       expect(calls[0]!.method).toBe("POST");
       expect(calls[0]!.url).toContain("/spaces/space-1/projects");
-      expect(calls[0]!.body).toEqual({ name: "Q3 Marketing", description: "campaign planning" });
+      // makeEnv has no acting user, i.e. a SYSTEM run (a cron wake). Such a project gets no
+      // implicit project_members owner, so the default `private` would hide it from every
+      // business member but an owner/admin — observed live on an unattended wake-up that built a
+      // real project nobody could see. When the assistant acts for the business, the business is
+      // the audience.
+      expect(calls[0]!.body).toEqual({ name: "Q3 Marketing", description: "campaign planning", visibility: "public" });
       expect(await verifyInternalToken(calls[0]!.headers["x-naelao-internal-token"], "tenant-1", PLATFORM_SECRET)).toBe(true);
+    });
+
+    it("does NOT force visibility when a real person is the acting user", async () => {
+      const calls: Call[] = [];
+      const env = { ...makeEnv(calls, () => ({ id: "p" })), userId: "user-9" };
+      await workspaceAdmin.operations["project.create"]!({ name: "Mine" }, { env, run: noopRun });
+      // They become an implicit project member, so SpaceDO's own default applies as before.
+      expect(calls[0]!.body).toEqual({ name: "Mine" });
+    });
+
+    it("an explicit visibility always wins over the system-run default", async () => {
+      const calls: Call[] = [];
+      const env = makeEnv(calls, () => ({ id: "p" }));
+      await workspaceAdmin.operations["project.create"]!({ name: "Quiet", visibility: "private" }, { env, run: noopRun });
+      expect(calls[0]!.body).toEqual({ name: "Quiet", visibility: "private" });
     });
 
     it("requires a non-blank name", async () => {
