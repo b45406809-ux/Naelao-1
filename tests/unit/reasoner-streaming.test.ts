@@ -445,7 +445,9 @@ describe("a provider that fails part way through a 200 stream", () => {
     expect(decision.action).toBe("give_up");
     // The person deserves the real reason, not a generic parse complaint about a fragment.
     expect(JSON.stringify(decision)).toContain("RESOURCE_EXHAUSTED");
-  });
+    // The non-streamed retry hits a 503, which is transient, so it is itself retried before the
+    // run gives up — hence the longer budget. See retryDelayMs.
+  }, 20_000);
 });
 
 describe("an empty stream is a turn that never happened, not an answer", () => {

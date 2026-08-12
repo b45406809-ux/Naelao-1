@@ -205,8 +205,16 @@ describe("GatewayReasoner — AI REST API endpoint", () => {
     expect(reasoner.lastUsage).toEqual({ input_tokens: 50, output_tokens: 20 });
   });
 
-  it("gives up when the gateway returns a non-2xx (all providers failed in gateway)", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("upstream unavailable", { status: 503 }));
+  // 503 is transient, so the reasoner now waits and retries before giving up (see retryDelayMs) —
+  // this asserts BOTH halves: that it really does retry, and that a persistent failure still
+  // surfaces the provider's own words rather than looping forever.
+  it("retries a persistent 503, then gives up with the gateway's own explanation", async () => {
+    // A fresh Response per call: mockResolvedValue would return the SAME instance every time,
+    // and a Response body can only be read once — the retry's own .text() read would find it
+    // already consumed by the first attempt's read, which real fetch() never does.
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () => new Response("upstream unavailable", { status: 503 })
+    );
     const reasoner = new GatewayReasoner({
       apiKey: "key",
       gateway: { accountId: "acc", gatewayId: "gw" },
@@ -217,7 +225,8 @@ describe("GatewayReasoner — AI REST API endpoint", () => {
     expect(decision).toMatchObject({ action: "give_up" });
     expect((decision as { reason: string }).reason).toContain("503");
     expect((decision as { reason: string }).reason).toContain("upstream unavailable");
-  });
+    expect(spy).toHaveBeenCalledTimes(3); // the original call plus MAX_TRANSIENT_RETRIES
+  }, 20_000);
 
   it("gives up on a network error to the gateway", async () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("gateway unreachable"));

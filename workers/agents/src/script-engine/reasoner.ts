@@ -603,6 +603,48 @@ function decisionFromToolCall(call: ToolCall): ReasonDecision | null {
   }
 }
 
+/**
+ * How long to wait before retrying a transient provider failure, in ms — or undefined when the
+ * failure is not the kind that waiting fixes.
+ *
+ * Free-tier providers rate-limit on a rolling window and USUALLY SAY SO PRECISELY: Groq answers
+ * "Rate limit reached … Please try again in 27.715s", and every provider here sets Retry-After on
+ * at least some 429s. Throwing that away and failing the whole run is what made a multi-step
+ * autonomous run impossible on a free tier — observed live across four spaced attempts, where the
+ * agent's ~9k-token payload against Groq's 12k tokens-per-minute ceiling meant roughly one call
+ * per minute and the loop simply died on the second one. A 503 "experiencing high demand" is the
+ * same shape of problem: transient, and worse if hammered.
+ *
+ * Deliberately narrow — only 429/503, only a bounded wait. Anything else (a bad model name, a
+ * schema complaint, an auth failure) does not get better by waiting and must surface immediately.
+ */
+export function retryDelayMs(status: number, headers: Headers, body: string, attempt: number): number | undefined {
+  if (status !== 429 && status !== 503) return undefined;
+
+  // The provider's own number first — it knows its window better than any guess we could make.
+  const retryAfter = headers.get("retry-after");
+  const headerSeconds = retryAfter ? Number(retryAfter) : NaN;
+  let seconds = Number.isFinite(headerSeconds) && headerSeconds > 0 ? headerSeconds : NaN;
+  if (!Number.isFinite(seconds)) {
+    const stated = body.match(/try again in ([\d.]+)\s*s/i);
+    if (stated?.[1]) seconds = Number(stated[1]);
+  }
+  if (!Number.isFinite(seconds) || seconds <= 0) seconds = Math.min(2 ** (attempt + 1), 8); // 2s, 4s, 8s
+
+  // A daily/monthly allowance does not come back inside a run, so waiting for it burns the run's
+  // wall clock for nothing. Those say so in words rather than in a short retry-after.
+  if (/daily|per day|quota exceeded for metric|free_tier_requests|allocation/i.test(body) && !retryAfter) {
+    return undefined;
+  }
+  const ms = Math.ceil(seconds * 1000) + 500; // a little past the boundary, not exactly on it
+  return ms <= MAX_RETRY_WAIT_MS ? ms : undefined;
+}
+
+/** Never hold a run open longer than this for one retry — a person may be waiting on it. */
+const MAX_RETRY_WAIT_MS = 35_000;
+/** Two retries: enough to cross one rolling-window boundary, not enough to stall a run. */
+const MAX_TRANSIENT_RETRIES = 2;
+
 /** A Reasoner backed by CF AI Gateway's Universal Endpoint. Provider is inferred from the
  *  model name — no hardcoded provider preference. */
 export class GatewayReasoner implements Reasoner {
@@ -785,6 +827,8 @@ export class GatewayReasoner implements Reasoner {
     // them; an interactive chat passes onDelta and gets the text as it is generated.
     const streaming = typeof input.onDelta === "function";
     let resp: Response;
+    let transientRetries = 0;
+    for (;;) {
     try {
       resp = await fetch(url, {
         method: "POST",
@@ -811,10 +855,22 @@ export class GatewayReasoner implements Reasoner {
       // provider's error text (never our credentials — those travel in request headers), and it's
       // truncated so a large upstream error can't bloat a stored run record.
       const detail = await resp.text().catch(() => "");
+      // A rolling-window rate limit or an overloaded provider is a wait, not a dead run — and the
+      // provider usually tells us exactly how long. See retryDelayMs.
+      const wait = transientRetries < MAX_TRANSIENT_RETRIES
+        ? retryDelayMs(resp.status, resp.headers, detail, transientRetries)
+        : undefined;
+      if (wait !== undefined) {
+        transientRetries++;
+        await new Promise((r) => setTimeout(r, wait));
+        continue;
+      }
       return {
         action: "give_up",
         reason: `reasoner gateway error ${resp.status}${detail ? `: ${detail.slice(0, 400)}` : ""}`,
       };
+    }
+    break;
     }
     // Streamed and non-streamed converge on the same normalized shape, so everything below this
     // point is identical for both — the only difference is that on the streamed path the person

@@ -7044,6 +7044,55 @@ appendixes are authoritative** and override the early framing. Always confirm ag
        model override removed so it uses the platform default again — and the temporary
        service-bound ops worker used to reach `workers_dev=false` internal routes was deleted.
 
+137. **Follow-up to the stop-hook's exact objection: Groq's own 429 says precisely how long to
+     wait, and the reasoner threw that away instead of waiting — closing the last blocker item 136
+     left open.** Four spaced live attempts in item 136 all died on provider capacity; the honest
+     conclusion was "capacity, not capability," but the hook was right that "check other models"
+     was not a real test of anything. The actual fix is structural: Groq's rate-limit body reads
+     *"Please try again in 27.715s"* and the reasoner discarded it, failing the whole run on the
+     first transient hit — on a free tier whose 12k-tokens-per-minute ceiling sits below this
+     agent's own ~9-11k-token payload, that made a multi-step autonomous run nearly impossible by
+     construction, independent of model choice.
+     - New `retryDelayMs(status, headers, body, attempt)` (`reasoner.ts`), narrow by design: only
+       429/503, only a bounded wait. Prefers a real `Retry-After` header, falls back to parsing
+       the provider's own stated seconds from the body (`"try again in 27.715s"`), and falls back
+       further to a short exponential backoff (2s/4s/8s) when neither is present. A DAILY
+       allowance (Gemini's free-tier daily cap, Workers AI's neuron allocation) does NOT come back
+       inside a run, so those phrases are explicitly excluded from the wait — waiting for them
+       would just burn the run's wall clock for nothing, unless the provider ALSO sent a real
+       `Retry-After` (which wins regardless, since it's the provider speaking precisely). Capped
+       at 35s total — a person may be waiting on this run, so a long wait fails honestly instead
+       of stalling. `GatewayReasoner.decide()`'s gateway-error branch now loops up to
+       `MAX_TRANSIENT_RETRIES` (2) before giving up, using the retry loop's own real fetch — not a
+       new mechanism, the exact same call site.
+     - **Live-verified against the exact goal that failed four times in item 136** (Groq,
+       `llama-3.3-70b-versatile`, the "find Lead Tracking, open its thread, post a follow-up"
+       goal): the run's trace shows a `reason` step at **28,020ms** — a normal reasoning call is a
+       few hundred ms (the same trace's next `reason` step: 198ms) — direct evidence the retry
+       waited out a real 429 and got a real decision back. The run then hit a SECOND 429 whose
+       stated wait (41.7s) exceeded the 35s cap and gave up honestly rather than stalling further —
+       the cap doing exactly its job, not a defect.
+     - **A real regression caught by two existing tests before it ever shipped**, not by review:
+       both `gateway-reasoner-failover.test.ts` and `reasoner-streaming.test.ts` mock a persistent
+       503 and assert an immediate give_up — now correctly a 20s-budgeted test asserting the retry
+       genuinely happens (`toHaveBeenCalledTimes(3)`) and STILL gives up with the provider's own
+       words when the failure doesn't clear. One of those tests exposed a real test-double
+       artifact while being fixed: `mockResolvedValue` returns the SAME `Response` INSTANCE on
+       every call, and a `Response` body can only be read once — the retry's own `.text()` read
+       found an already-consumed body from the first attempt's read, which real `fetch()` (a fresh
+       Response per call) never does. Switched to `mockImplementation` returning a fresh Response
+       each time.
+     2966/2966 tests pass (7 new in `reasoner-transient-retry.test.ts`, 2 existing tests
+     strengthened), `npx turbo run typecheck` clean (76 tasks), `naelao-agents` deployed (bare
+     `wrangler deploy`, item 83's documented `--env production` trap). **Still open, honestly:**
+     the specific goal (post into an already-existing project thread) has still not completed
+     end-to-end on any provider this session — every attempt now waits correctly through ONE
+     rate-limit window, but a payload this large against Groq's 12k TPM can require the window to
+     refill more than once in a single multi-step run, and the second wait it needed (41.7s)
+     exceeded the deliberate 35s cap. That is a real, structural free-tier capacity limit rather
+     than a code defect — the retry mechanism itself is now proven working, live, on the exact
+     goal and provider that exposed the need for it.
+
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
