@@ -149,6 +149,29 @@ describe("ScriptToolSurface — the 6-op surface (spec §3)", () => {
     const grouped = groups.flatMap((g) => g.operations);
     expect(grouped.sort()).toEqual(flat.sort());
   });
+
+  it("surfaces paramHints when a script declares them, and omits the field entirely when none do — the live-reported gap where thread.create({}) ran with no project_id and thread.send_message was never even attempted, because nothing told the model what fields either call needed", () => {
+    const env = makeEnv();
+    const tools = new ScriptToolSurface(env, ["r2-workspace", "project-coordination"]);
+    const groups = tools.availableOperationsGrouped();
+
+    const coordination = groups.find((g) => g.script === "project-coordination")!;
+    expect(coordination.paramHints).toBeDefined();
+    // The exact operation the live bug involved: the hint must actually name project_id, or the
+    // fix doesn't close the gap it was written for.
+    expect(coordination.paramHints!["thread.create"]).toMatch(/project_id/);
+    expect(coordination.paramHints!["thread.send_message"]).toMatch(/thread_id/);
+    expect(coordination.paramHints!["thread.send_message"]).toMatch(/message/);
+    // Every operation in the group has a hint — a silently-undocumented op defeats the point.
+    for (const opName of coordination.operations) {
+      expect(coordination.paramHints![opName], `missing paramHints for ${opName}`).toBeTruthy();
+    }
+
+    // r2-workspace declares no paramHints — the field must be absent, not an empty object, so a
+    // caller can tell "nothing to show" from "this script has 0 operations" without checking size.
+    const r2 = groups.find((g) => g.script === "r2-workspace")!;
+    expect(r2.paramHints).toBeUndefined();
+  });
 });
 
 describe("script.find — degraded text scan when no Vectorize (spec §16)", () => {

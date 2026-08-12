@@ -326,6 +326,39 @@ describe("GatewayReasoner — grouped available_operations reach the actual requ
     });
     expect(payload["available_operations"]).toEqual(["read_file", "notify.email"]);
   });
+
+  // Live-reported: with only a bare op name and a script-level description, the model called
+  // thread.create({}) — no project_id, since nothing said that field existed — and never attempted
+  // thread.send_message at all. Pin that param_hints actually reaches the request body the model
+  // reads, and that a group with no hints omits the field rather than sending an empty one.
+  it("forwards param_hints as param_hints (snake_case) in the request body, only for a group that has them", async () => {
+    const payload = await decideCapturingBody({
+      goal: "g", level: 2, snapshot: {}, candidates: [],
+      availableOperations: ["thread.create", "thread.send_message", "notify.email"],
+      operationGroups: [
+        {
+          script: "project-coordination",
+          description: "Work with a project's threads and its agents.",
+          operations: ["thread.create", "thread.send_message"],
+          paramHints: {
+            "thread.create": "project_id (optional but almost always wanted), title (optional).",
+            "thread.send_message": "thread_id (REQUIRED), message (REQUIRED), agent_id (optional).",
+          },
+        },
+        { script: "notifications", description: "Send outbound notifications.", operations: ["notify.email"] },
+      ],
+    });
+    const ops = payload["available_operations"] as Array<{
+      script: string; param_hints?: Record<string, string>;
+    }>;
+    const coordination = ops.find((g) => g.script === "project-coordination")!;
+    expect(coordination.param_hints).toBeDefined();
+    expect(coordination.param_hints!["thread.create"]).toMatch(/project_id/);
+    expect(coordination.param_hints!["thread.send_message"]).toMatch(/thread_id/);
+
+    const notify = ops.find((g) => g.script === "notifications")!;
+    expect(notify.param_hints).toBeUndefined();
+  });
 });
 
 describe("GatewayReasoner — reasoning-effort request + lastThinking capture", () => {

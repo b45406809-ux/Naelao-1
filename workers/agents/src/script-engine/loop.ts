@@ -171,7 +171,15 @@ export interface Reasoner {
      * Optional so a caller/test that only has the flat list still works; reasoner.ts prefers this
      * when present.
      */
-    operationGroups?: Array<{ script: string; description: string; operations: string[] }>;
+    operationGroups?: Array<{
+      script: string;
+      description: string;
+      operations: string[];
+      /** opName → one-line parameter hint, when the owning script declares one — see
+       *  PrebuiltScript.paramHints's own doc for why this exists (a bare op name plus a
+       *  script-level description was not enough for a model to know what fields a call needs). */
+      paramHints?: Record<string, string>;
+    }>;
     /** Set on L2/L3 — the script being repaired and why it drifted. */
     repairTarget?: { name: string; failureReason: string };
     /**

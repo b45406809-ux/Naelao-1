@@ -212,7 +212,7 @@ Prefer "run" with an existing operation when one fits. Only "distill" when the c
 
 NEVER report an action as done unless "steps_so_far" shows it ran and returned ok. This is the most damaging mistake you can make — an owner told "your product is live at shop-x.naelao.com" when nothing was created believes they are selling something they are not. Same for "I've connected/set up/activated X". If an operation does not exist or returned an error, say exactly that and stop: "I can't create a product, I don't have an operation for it" is a useful answer; an invented success is worse than any failure. Never invent an id, URL, number or status you did not receive.
 
-"steps_so_far" lists what you have ALREADY run in this task and what each returned. Read it before deciding: do not repeat a call that already succeeded, use its result to inform the next step, and when you have enough to respond, finish with "answer" — a task is only complete once you have answered, not once a tool has run. If a tool failed twice, do not try it a third time; either take a different approach or "give_up" with the real reason.
+"steps_so_far" lists what you have ALREADY run in this task and what each returned. Read it before deciding: do not repeat a call that already succeeded, use its result to inform the next step, and when you have enough to respond, finish with "answer" — a task is only complete once you have answered, not once a tool has run. If a tool failed twice, do not try it a third time; either take a different approach or "give_up" with the real reason. The reverse of fabricating success is just as damaging: never say you "didn't get to" something, or ask to do it now, when an entry here already shows ok:true — it happened, however many turns ago, and denying it gets it redone or reads to the owner as nothing happened.
 
 On a long task the older half of "steps_so_far" is folded into "earlier_steps" — one line per step recording what ran, with what arguments, and how it went. Those steps ARE DONE. Their full results are gone from your context, but the fact that they happened is not in doubt: never run one again to remind yourself what it returned. Re-run something from "earlier_steps" only when the goal genuinely needs a fresh value.
 
@@ -220,7 +220,7 @@ You are not on a short leash, and you are having a conversation rather than fili
 
 When "final_step" is true this is your LAST turn — there is no step after this one. You MUST reply with "answer" (or "give_up" if you truly cannot). Do not choose "run": it will not be executed. If work already succeeded in "steps_so_far", answer by telling the user plainly what was done. Reporting completed work is always better than saying nothing.
 
-"progress" reports where you genuinely stand in this task right now: how many steps you have taken against the ceiling, how many of your actions have actually succeeded versus failed, and your current stall streak against the limit that stops the run. This is not a countdown to race against and "max_steps" is not a target — it is a runaway ceiling, far above what real work needs. Use it to judge whether you are actually converging. If "failed_actions" is climbing relative to "successful_actions", or "stall_steps" is nearing "max_stall_steps" with nothing to show for it, change your approach — or, if you have genuinely tried what is reasonable, call "give_up" now on your OWN initiative, naming what you tried and what blocked it. Do not wait for "final_step": a person can act on "I tried X, Y and Z, here is what's blocking it" and cannot act on being cut off by a budget.
+"progress" is where you genuinely stand: steps taken against the ceiling, actions succeeded vs failed, and your stall streak. "max_steps" is a runaway ceiling, not a target — use it to judge whether you are converging. If "failed_actions" climbs relative to "successful_actions", or "stall_steps" nears "max_stall_steps" with nothing to show, change approach or "give_up" now on your OWN initiative, naming what you tried and what blocked it. Do not wait for "final_step": a person can act on "I tried X, Y, Z — here's what's blocking it" and cannot act on being cut off by a budget.
 
 Each candidate script carries a "health" record: how it has actually been going lately, and what it said the last time it failed. Trust it over the description. If a candidate is "broken" or "degrading", do NOT run it unchanged — running something that just failed three times will fail a fourth. Either "patch" it, aiming the fix at its "last_error", or pick a different approach. A "proven" skill can be run as-is; an "unproven" one can be run, but check what it returns rather than assuming it worked. When you patch a skill, fix the cause named in "last_error" — do not rewrite it wholesale on a guess.
 
@@ -396,7 +396,18 @@ const DECISION_TOOLS: ToolSpec[] = [
             "per group: read a group's description before concluding no capability exists — a bare name " +
             "like \"thread.send_message\" won't explain itself, but its group's description will.",
         },
-        params: { type: "object", description: "Arguments for that op/script." },
+        params: {
+          type: "object",
+          description:
+            "Arguments for that op/script. Some groups also carry \"param_hints\" — an object keyed " +
+            "by the exact operation name, one line each naming its real fields and which are " +
+            "required. When your chosen operation has one, READ IT before filling this in: a field " +
+            "left out is often not an error, it silently does the WRONG thing instead — e.g. " +
+            "creating a thread with no project attached because project_id was left blank, rather " +
+            "than failing loudly. When no hint exists for an operation, infer its fields from its " +
+            "name and the values you already have from earlier steps (an id you just looked up, " +
+            "the text you were asked to send).",
+        },
         doing: DOING_PARAM,
         say: SAY_PARAM,
       },
@@ -631,7 +642,16 @@ export class GatewayReasoner implements Reasoner {
       // explanation) left the model unable to recognize them as the answer to "let me chat inside
       // a thread" and it reported no such capability existed. See availableOperationsGrouped's doc.
       available_operations: input.operationGroups?.length
-        ? input.operationGroups.map((g) => ({ script: g.script, description: g.description, operations: g.operations }))
+        ? input.operationGroups.map((g) => ({
+            script: g.script,
+            description: g.description,
+            operations: g.operations,
+            // Live-reported: a bare op name with no parameter shape led a model to call
+            // thread.create({}) — no project_id, since nothing said that field existed — and to
+            // never attempt thread.send_message at all, since it had no idea what fields that call
+            // needed. Only present when the owning script has declared hints (most don't yet).
+            ...(g.paramHints && Object.keys(g.paramHints).length ? { param_hints: g.paramHints } : {}),
+          }))
         : input.availableOperations,
       repair_target: input.repairTarget ?? null,
       // What has already been tried in THIS run and what came back. Without it the model

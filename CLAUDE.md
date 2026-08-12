@@ -6731,6 +6731,72 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      (checked — every real caller of it already resolves the product root before calling, via the
      checkout flow's own `loadPricingCatalog` resolution, so this wasn't exercising the bug; left
      unchanged rather than touching a working, tested path without a reproduced failure).
+133. **A live Gemini Flash Lite transcript ("create a thread in project p1 and say hello to the
+     AI in the thread") showed the loop working exactly as designed and still failing the task —
+     traced to the real, structural gap behind it: an operation's NAME reached the model with no
+     PARAMETER SHAPE at all.** The trace showed `workspace-admin:project.list` tried and rejected
+     (a namespaced guess, fine — the fuzzy "did you mean" then correctly steered it to the real
+     `project.list`), then `thread.create` called with **empty params** (`{}`) — no `project_id`,
+     even though the model had just looked one up via `project.list` — landing a real thread with
+     **no project attached at all** (confirmed: the tool result's own `"project_id":null`). The
+     model then re-issued the identical `thread.create({})` call **five more times** across
+     separate reasoning turns, each correctly short-circuited by the within-run repeat guard
+     (item 89) to the SAME cached thread — so no duplicate side effect happened, that part worked
+     — but it never once attempted `thread.send_message` (the actual "say hello" op), and the
+     eventual closing summary claimed it hadn't created the thread at all ("reached the final
+     step limit before creating the thread"), directly contradicting its own trace.
+     - **Root cause, confirmed by reading the actual payload the model receives:**
+       `ScriptToolSurface.availableOperationsGrouped()` (item 126) grouped operations by owning
+       script with a script-level description, but each operation itself was still a bare NAME —
+       `thread.create`, `thread.send_message` — with zero indication of what fields `script.
+       run(name, params)` needs for THAT specific operation. `DECISION_TOOLS`' own `params` field
+       was declared with nothing more than `"Arguments for that op/script."` A model has no way to
+       pass `project_id` it never knew existed, and no way to attempt a call (`thread.
+       send_message`) whose required fields (`thread_id`, `message`) it has to guess blind — so it
+       stuck to the one shape it already knew worked (`thread.create({})`) rather than risk a call
+       it couldn't construct.
+     - **Fixed structurally, not by asking the model to try harder** (matches the "structure over
+       prompts" lesson item 108 already established for this model tier). New optional
+       `PrebuiltScript.paramHints?: Record<string, string>` — a one-line hint per operation name,
+       populated incrementally, script by script (an operation with no entry works exactly as
+       before). `availableOperationsGrouped()` merges each enabled op's hint into its group;
+       `reasoner.ts` forwards it as `param_hints` on `available_operations` (present only when a
+       group actually has one — an empty object is never sent) and the `run` tool's own `params`
+       field description now tells the model explicitly: a hinted operation's missing field often
+       does the WRONG thing silently rather than erroring, name the exact failure mode
+       (`thread.create` with no `project_id`) as the concrete example. Populated for
+       `project-coordination.ts` (all 7 ops — `thread.create` now says `project_id` is "optional
+       but almost always what you want"; `thread.send_message` spells out `thread_id`/`message`/
+       `agent_id` and that omitting `agent_id` posts with nobody addressed to reply) and
+       `workspace-admin.ts` (all 8 ops, the other script this exact trace exercised) — every other
+       prebuilt script (~20+) still has none, a real, scoped, incremental follow-up rather than
+       attempted wholesale in one pass.
+     - **A second, symmetric instruction added to `DECISION_INSTRUCTIONS`**: the existing
+       anti-fabrication paragraph only guarded against claiming SUCCESS that never happened
+       (item 108). This model did the opposite — denied work that DID happen, visible in its own
+       `steps_so_far`. Folded into the same paragraph as a reverse case (kept net-neutral on the
+       protocol's own tight char budget by tightening the "progress" paragraph alongside it, per
+       the established "trim, don't relax" precedent — items 108/118/123/124/126 all hit this same
+       ~20,000-char `composeSystemPrompt` ceiling, which turned out to have only ~16 chars of
+       margin left before this pass, confirmed by a failing `reasoner-agent-prompt.test.ts`
+       assertion before the trim).
+     - **Deliberately NOT attempted:** trying to eliminate the closing-summary hallucination itself
+       (the false "I didn't create the thread yet" claim) beyond the reverse-fabrication
+       instruction above — that specific failure is the model correctly being shown its own
+       history and still misreading it, which item 105/106 already documented as a limit of this
+       model tier ("a prompt rule is a nudge, not a guarantee"), not something further prompt
+       engineering reliably fixes. The param-shape fix is the structurally fixable half of this
+       bug and the half most likely to have actually caused the observed behavior (empty params,
+       the operation never attempted at all) — no live model call was dispatched to re-verify the
+       exact reported conversation, since doing so costs real inference on a quota-constrained
+       account; verification here is unit tests pinning the real payload shape the model receives.
+     2924/2924 tests pass (4 new: `availableOperationsGrouped()` surfaces `paramHints` only for a
+     script that declares them and omits the field entirely for one that doesn't, checked against
+     the exact operations the live bug involved; the reasoner's real request body carries
+     `param_hints` in snake_case when supplied and omits it when a group has none), `npx turbo run
+     typecheck` clean (76 tasks), `naelao-agents` deployed (bare `wrangler deploy`, item 83's
+     documented `--env production` trap) and confirmed live via a 401-not-500 on a known
+     auth-gated route.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

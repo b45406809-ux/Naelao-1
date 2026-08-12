@@ -66,14 +66,38 @@ export class ScriptToolSurface {
    * make "thread.send_message" legible as "the thing that lets me chat inside an existing
    * thread" instead of an opaque string.
    */
-  availableOperationsGrouped(): Array<{ script: string; description: string; operations: string[] }> {
-    const byScript = new Map<string, { description: string; operations: string[] }>();
+  availableOperationsGrouped(): Array<{
+    script: string;
+    description: string;
+    operations: string[];
+    /** opName → one-line parameter hint, only for ops this agent actually has enabled AND whose
+     *  owning script declares one — see PrebuiltScript.paramHints's own doc for why this exists. */
+    paramHints?: Record<string, string>;
+  }> {
+    const byScript = new Map<
+      string,
+      { description: string; operations: string[]; paramHints: Record<string, string> }
+    >();
     for (const [opName, { prebuilt }] of this.ops) {
       const existing = byScript.get(prebuilt.name);
-      if (existing) existing.operations.push(opName);
-      else byScript.set(prebuilt.name, { description: prebuilt.description, operations: [opName] });
+      const hint = prebuilt.paramHints?.[opName];
+      if (existing) {
+        existing.operations.push(opName);
+        if (hint) existing.paramHints[opName] = hint;
+      } else {
+        byScript.set(prebuilt.name, {
+          description: prebuilt.description,
+          operations: [opName],
+          paramHints: hint ? { [opName]: hint } : {},
+        });
+      }
     }
-    return [...byScript.entries()].map(([script, v]) => ({ script, description: v.description, operations: v.operations }));
+    return [...byScript.entries()].map(([script, v]) => ({
+      script,
+      description: v.description,
+      operations: v.operations,
+      ...(Object.keys(v.paramHints).length > 0 ? { paramHints: v.paramHints } : {}),
+    }));
   }
 
   /**

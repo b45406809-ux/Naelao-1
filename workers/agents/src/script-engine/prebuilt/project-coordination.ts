@@ -175,4 +175,30 @@ export const projectCoordination: PrebuiltScript = {
       return { query, matches, matched_count: matches.length };
     },
   },
+  // Live-reported bug this closes: a model asked to "create a thread in project p1 and say hello"
+  // called thread.create({}) — no project_id, since nothing told it that field existed — landing
+  // the thread with no project attached, then never attempted thread.send_message at all because
+  // it had no idea what fields that call needed. See PrebuiltScript.paramHints's own doc.
+  paramHints: {
+    "thread.create": "project_id (string, OPTIONAL but almost always what you want — the project's " +
+      "own id, e.g. from project.list/project.create's result; pass it to attach the new thread to " +
+      "THAT project, otherwise omitting it silently creates a space-wide thread with no project at " +
+      "all). title (string, optional).",
+    "thread.send_message": "thread_id (string, REQUIRED — the id from thread.create/thread.list, " +
+      "NOT the project id). message (string, REQUIRED — the real text to post, e.g. \"hello\"). " +
+      "agent_id (string, optional but needed to get a reply — without it the message posts with " +
+      "nobody addressed to answer it). respond (boolean, optional, default true — set false to " +
+      "post without dispatching a reply).",
+    "agent.consult": "agent_id (string, REQUIRED — who to consult). message (string, REQUIRED). " +
+      "project_id/thread_id (string, optional — defaults to this run's own project/a fresh " +
+      "subthread). This is PRIVATE (hidden from the visible thread) — use thread.send_message " +
+      "instead when the point is for the person to see the exchange.",
+    "thread.list": "project_id (string, optional — defaults to this run's own project; omit for " +
+      "every thread in the space).",
+    "thread.read": "thread_id (string, REQUIRED).",
+    "thread.rename": "thread_id (string, REQUIRED). title (string, REQUIRED — the new title).",
+    "thread.delete": "thread_id (string, REQUIRED) — archives it; there is no hard delete.",
+    "thread.search": "query (string, REQUIRED — matched against thread TITLES only, not message " +
+      "content). project_id (string, optional).",
+  },
 };

@@ -157,4 +157,20 @@ export const workspaceAdmin: PrebuiltScript = {
     },
     "agent.list": (_a, c) => spacesCall(c, "GET", `/spaces/${c.env.spaceId}/agent-definitions?space_id=${encodeURIComponent(c.env.spaceId)}`),
   },
+  // See PrebuiltScript.paramHints's own doc (project-coordination.ts has the fuller story).
+  paramHints: {
+    "project.create": "name (string, REQUIRED). description (string, optional). visibility " +
+      "(\"private\"|\"public\", optional). default_agent_id/allowed_agent_ids (optional).",
+    "project.create_from_template": "template_id (string, REQUIRED — from the project-templates " +
+      "catalogue). name (string, optional — a custom name instead of the template's default).",
+    "project.list": "no parameters.",
+    "project.configure": "project_id (string, REQUIRED — the project to change). Every other field " +
+      "is a partial patch (e.g. name, description, status:\"archived\", visibility).",
+    "project.list_members": "project_id (string, optional — defaults to this run's own project).",
+    "project.add_member": "project_id (string, optional — defaults to this run's own project). " +
+      "user_id (string, REQUIRED). role (string, optional).",
+    "project.remove_member": "project_id (string, optional — defaults to this run's own project). " +
+      "user_id (string, REQUIRED).",
+    "agent.list": "no parameters.",
+  },
 };

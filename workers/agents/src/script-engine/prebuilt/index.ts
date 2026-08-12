@@ -62,6 +62,21 @@ export interface PrebuiltScript {
   requires_tier: ExecutionTier;
   /** Operation name → handler. Operation names are what the agent passes to script.run. */
   operations: Record<string, PrebuiltOp>;
+  /**
+   * Optional one-line parameter hint per operation name — what `script.run(name, params)` actually
+   * needs for THAT operation, surfaced to the reasoner via `availableOperationsGrouped()`.
+   *
+   * Live-reported bug this exists to close: `available_operations` told the model an operation's
+   * NAME and its owning script's one-line description, but never its parameter shape — so a model
+   * asked to "create a thread in project p1" called `thread.create({})` with no `project_id` at
+   * all (the op silently falls back to the run's own ambient project, which is absent for a
+   * Space Assistant run — so the thread landed with no project attached), and never even attempted
+   * `thread.send_message` because it had no idea what fields that call needed. Optional so this can
+   * be populated incrementally, script by script — an operation with no entry here works exactly
+   * as it did before, just without the extra hint. See `project-coordination.ts` for the first
+   * populated example.
+   */
+  paramHints?: Record<string, string>;
 }
 
 /** The full catalogue shipped in this build, keyed by prebuilt script name. */
