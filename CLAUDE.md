@@ -7020,6 +7020,29 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      is below this agent's ~9k-token payload, so a multi-step run cannot complete there. Tier 2-5
      execution (`worker_loaders`) also remains disabled, so any seeded skill still fails closed —
      both unblock on the CF Workers Paid plan.
+     - **FOLLOW-UP, same session — sub-agent spawn IS proven, and one more classification bug was
+       found and fixed.** A later wake-up produced an activity row whose session id was
+       `subagent-b5151ad0-…`: `agent.spawn` fired for real and a child run was dispatched into its
+       own session. Both parent and child then hit Google's 503 "this model is currently
+       experiencing high demand" — which classified as `unknown`, and `unknown` is
+       `agent_actionable`, so the shell's self-heal loop retries IMMEDIATELY: the one response that
+       makes an overloaded provider worse. An overloaded provider is a wait, not a
+       misconfiguration, so 503/overloaded/"try again shortly" now classify as `rate_limited`
+       (self-clearing, back off) while `model_unavailable` stays for "this model does not exist
+       here", which genuinely needs a settings change. Confirmed live with a clean before/after on
+       the identical error: `kind=unknown` at 12:50 (pre-deploy) versus `kind=rate_limited` at
+       13:03 and 13:04 (post-deploy).
+     - **Still unproven, and it is capacity not capability:** posting into an ALREADY-EXISTING
+       project thread. `thread.send_message` itself IS proven — the agency run created a thread and
+       posted a real, substantive brief into it, verified in the datastore — so what is untested is
+       only the `thread.list`-then-`send_message` sequencing, a model-behaviour question rather
+       than a wiring one. Four spaced retries over ~10 minutes all failed on provider limits:
+       Workers AI's daily neurons spent, BOTH Gemini models at their free-tier daily request caps,
+       and Groq's 12k tokens-per-minute ceiling below this agent's ~9k-token payload (so ~one call
+       per minute, which a multi-step run cannot survive). The test business was restored to its
+       original state afterwards — daily cron, original goal, the leadgen job re-enabled, and the
+       model override removed so it uses the platform default again — and the temporary
+       service-bound ops worker used to reach `workers_dev=false` internal routes was deleted.
 
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,

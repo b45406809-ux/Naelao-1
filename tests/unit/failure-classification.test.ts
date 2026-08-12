@@ -162,3 +162,27 @@ describe("classifyFailure — a real gateway failure keeps its classification", 
     expect(classifyFailure(LIVE_GEMINI_429, undefined, "infrastructure").kind).toBe("rate_limited");
   });
 });
+
+/**
+ * An overloaded provider is a wait, not a misconfiguration. Live: Gemini's 503 "This model is
+ * currently experiencing high demand" classified as `unknown`, and `unknown` is agent_actionable,
+ * which sends the shell's self-heal loop into an immediate retry — the one response that makes an
+ * overloaded provider worse.
+ */
+describe("classifyFailure — an overloaded provider is self-clearing, not a bad model", () => {
+  const LIVE_503 =
+    'reasoner gateway error 503: [{ "error": { "code": 503, "message": "This model is currently ' +
+    'experiencing high demand. Spikes in demand are usually short-lived." } }]';
+
+  it("treats the live 503 as self-clearing so the client backs off instead of hammering", () => {
+    const c = classifyFailure(LIVE_503);
+    expect(c.kind).toBe("rate_limited");
+    expect(c.clears_on_its_own).toBe(true);
+  });
+
+  it("still calls a genuinely missing model unavailable, which does NOT clear on its own", () => {
+    const c = classifyFailure("reasoner gateway error 404: Model not found: claude-sonnet-4-6");
+    expect(c.kind).toBe("model_unavailable");
+    expect(c.clears_on_its_own).toBe(false);
+  });
+});

@@ -107,7 +107,22 @@ const RULES: Rule[] = [
     clears_on_its_own: true,
     agent_actionable: false,
     summary: "Too many requests in a short window. This clears by itself within minutes.",
-    patterns: [/rate[_ ]?limit/i, /too many requests/i, /\b429\b/],
+    // 503/overloaded belongs here, not in model_unavailable: an overloaded provider is a wait,
+    // not a misconfiguration. Observed live — Gemini returned 503 "This model is currently
+    // experiencing high demand" and it classified as `unknown`, whose agent_actionable:true sends
+    // the self-heal loop into an IMMEDIATE retry, which is the one response that makes an
+    // overloaded provider worse. model_unavailable stays for "this model does not exist here",
+    // which genuinely does not clear on its own and needs a settings change.
+    patterns: [
+      /rate[_ ]?limit/i,
+      /too many requests/i,
+      /\b429\b/,
+      /\b503\b/,
+      /overloaded/i,
+      /high demand/i,
+      /temporarily unavailable/i,
+      /try again (?:shortly|later|in a moment)/i,
+    ],
   },
   {
     kind: "context_overflow",
