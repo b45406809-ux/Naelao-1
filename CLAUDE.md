@@ -7204,6 +7204,94 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      it had been deployed to production but left UNCOMMITTED across a session boundary, one container
      re-clone away from being lost; commit deployed work in the same pass that deploys it.
 
+140. **A ~62-item batch of live-use asks was planned and phased; Phase 1 (bug sweep + chat
+     fidelity) is BUILT and deployed. Three of the reported "missing features" turned out to be
+     DEAD CSS waiting for a component, and writing the test for one bug exposed a second, worse
+     one underneath it.** Full plan (all 6 phases, decisions, deferred items):
+     `/root/.claude/plans/gleaming-scribbling-pelican.md`; the user's own answers set the
+     sequencing (bug sweep first), the billing model (hybrid personal-plan + business-subscription),
+     channel scoping (both scopes, kind-gated UI) and project automations (build on
+     `scheduled_jobs`/`event_triggers`, don't fork a second engine).
+     - **Markdown never existed anywhere in chat.** Every bubble rendered its content as a raw
+       React text child, so an assistant reply arrived with its `**bold**`, `- bullets` and ```
+       fences intact as literal characters — while `packages/ui/src/styles.css` had been carrying
+       finished styles for `.bubble p/ul/strong/em/pre/code` the whole time with nothing ever
+       emitting those elements. New `apps/shell/src/components/Markdown.tsx` uses `react-markdown`
+       + `remark-gfm`, chosen over `marked`/`showdown` for one reason that matters here: it builds
+       React elements and never touches `dangerouslySetInnerHTML`, and an agent in this product
+       renders web-fetched pages, customer email and connector output into these bubbles.
+       `rehype-raw` is deliberately NOT installed, so inline HTML in markdown stays inert text.
+       Wired through `RevealText`'s revealed substring (new opt-in `markdown` prop) so the reveal
+       animation is untouched; an unclosed construct mid-reveal reads as literal text for a frame.
+       The USER's own message stays literal — they typed it — and `.bubble.user` gained
+       `white-space:pre-wrap`, which it never had, so their line breaks survive at all.
+     - **`.msg-actions`/`.msg-action`/`.msg-action .tooltip` + `.msg-row:hover` were ALSO already
+       styled and used by no component.** The only affordance was a permanently-visible text
+       "Edit" button on one message. New `MessageActions.tsx` wires the existing styles: copy on
+       every bubble, edit only on the last user message, both icons. `:hover` never fires on a
+       tap, so a `.revealed` class set on tap reveals the row on touch rather than making it
+       always-visible there (which would put two buttons under every message in a long thread).
+       Clipboard falls back to a hidden textarea + `execCommand` — `navigator.clipboard` needs a
+       secure context and can be refused outright, and a copy button that silently does nothing
+       is worse than one that looks plain.
+     - **Edit + resend + reload showed the message twice.** `submitEdit` sliced the CLIENT array
+       and then sent a new message; the server transcript kept the original pair, so a reload
+       rendered the old question, the old answer, the edited question and the new answer — four
+       bubbles for what the user experienced as one correction. New `DELETE /sessions/:id/
+       messages?from=<messageId>` on SpaceDO (+ the spaces-worker proxy now derives `end_user_id`
+       from verified claims on DELETE as well as GET, since this one WRITES). Best-effort from the
+       client: a failed cleanup must never cost the user their re-ask.
+     - **The test for that fix caught a real, pre-existing, WORSE bug.** Both the new truncate and
+       the long-standing `getMessages` ordered on `(created_at, id)`. `created_at` is a millisecond
+       ISO string (explicitly passed by `appendMessage`, not the schema's `datetime('now')`
+       default) and `id` is a random UUID — so a question and the answer written to it in the same
+       millisecond order ARBITRARILY. A reply could render ABOVE the question it answers, and
+       could survive a truncate that removed the question, leaving an orphan. Both now order on
+       SQLite's implicit `rowid` — insertion order. G-D01's original comment ("id as tie-breaker
+       ensures stable ordering") was right that it was stable and wrong that stable was enough.
+       **Verified the regression test genuinely catches it**: reverting to `(created_at, id)` fails
+       3 of the 8 new cases. A first draft of that test did NOT catch it — real UUIDs sort either
+       way, so the collision has to be forced with ids chosen to sort the wrong direction, not
+       hoped for.
+     - **The Sub-agents tab was always empty.** It queried `?parent_run_id=<lastRunId>` only, so
+       every earlier run's sub-agents were invisible and a reload (which loses the run id) reported
+       "No run yet in this conversation" — and a fetch failure degraded to the identical empty
+       state. `handleListSubAgents`' `parent_run_id` is now optional: omitted, it lists the DO's
+       recent sub-agents across every run, which is already scoped to one conversation since a DO
+       is addressed per space:project:thread. A failed load now says so rather than reporting none.
+     - **The same agent template could be added to a project repeatedly.** `applyAgentTemplate`
+       minted `${template.id}-${uuid8}` on every call with no dedupe, so a switcher listed
+       "Customer Support" once per click, indistinguishable, each with its own separate approval
+       policy. Now idempotent per space (new `findExistingTemplateInstance`, reading the
+       `template_id` already stamped into each definition's config — no new table), while still
+       binding an existing agent to a project it isn't in yet, which is a real request the dedupe
+       must not swallow. The project-binding block was extracted to `bindAgentToProject` so both
+       paths share one implementation.
+     - Also: 12 side-panel tabs `flex-wrap`ped into a four-row wall inside a 260px panel, and the
+       composer dock's icon row had no `overflow-x` and no rule at all in the `max-width:900px`
+       block (every control is `flex-shrink:0`, so it simply overflowed unreachably on a phone) —
+       both are now single scrollable rows, matching `.spaces-sidebar`'s existing treatment.
+       Thinking renders italic. The user bubble takes the toolcall table header's own colour
+       (`--surface2`) as asked, WITH a border, because in light mode `--surface2` (#f9f8f5) and
+       `--bg` (#f5f4f0) are four hex points apart and an unbordered bubble in that colour would
+       read as plain text on the page. Recents raised (5→15 sidebar, 8→20 Home). The product root
+       is no longer listed in the business switcher in business-first mode — selecting it only
+       ever routed to the hub, so it was an entry that led nowhere.
+     2979/2979 tests pass (22 new: `message-truncate-on-edit.test.ts` + a dedupe block in
+     `agent-templates.test.ts` whose fake spaces worker actually REMEMBERS registrations, since a
+     stateless fake cannot exercise the contract the fix depends on), `npx turbo run typecheck`
+     clean (76 tasks), `apps/shell` verified via a real `next build`. Deployed: `naelao-spaces`,
+     `naelao-agents` (bare `wrangler deploy`), `apps/shell` (`--branch=main`, `environment:
+     "production"` confirmed via the Pages API, and the new strings confirmed present in the built
+     bundle BEFORE uploading). **Not done in this phase** (tracked in the plan file, not dropped):
+     the "Session not found" bug on assistant-created threads, automatic memory recording (nothing
+     in `loop.ts` writes memory — the `memory` prebuilt is tool-call-only, which is the real root
+     cause of "the AI isn't recording anything"), the per-model context meter + manual compact
+     button, the project-thread thread-list sidebar, multi-run navigation, and the dead
+     `checkout.naelao.com` / wallet "not provisioned" pair. Phases 2-6 (agent honesty + tool
+     disclosure, background work + wake-ups, money, workspace/plugins/artifacts, collaboration +
+     channels) are planned and unstarted.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
