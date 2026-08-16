@@ -273,6 +273,7 @@ ${BASE_AGENTS_MD}`,
         "file-manager",
         "knowledge-base",
         "artifacts",
+        "approvals",
         "notifications",
         "sub-agent",
         "dynamic-workflow",
@@ -657,6 +658,7 @@ ${BASE_AGENTS_MD}`,
         "file-manager",
         "knowledge-base",
         "artifacts",
+        "approvals",
         "notifications",
         "sub-agent",
         "dynamic-workflow",
@@ -791,6 +793,10 @@ export const LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED: string[] = [
   // knowledge.index/knowledge.delete's own precedent (a write with visible, external effect).
   "artifacts.list",
   "artifacts.get",
+  // Seeing what's waiting is orientation, not action — same "read is safe, the mutation stays
+  // gated" split as diagnostics/business_wallet above. approvals.approve/decline stay gated: an
+  // approval it clears on the owner's behalf may itself move money or reach outside the business.
+  "approvals.list",
 ];
 
 /** Map a Launchpad allowed_skill id → prebuilt scripts available in this build. */

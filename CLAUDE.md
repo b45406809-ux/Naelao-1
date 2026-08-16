@@ -8111,6 +8111,101 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      backed reason recorded above. Phase 6 (multi-agent + collaboration + channels) remains
      planned and unstarted.
 
+148. **Phase 6 (multi-agent + collaboration + channels) is now BUILT — investigated item by item
+     against the real code first, since the plan text turned out to be substantially stale
+     relative to several much earlier phases (T1-T3, Phase O, item 130) that had already shipped
+     the bulk of what it asked for. Three genuinely missing, real gaps were found and built; six
+     items were confirmed already complete and are documented here rather than re-built; one item
+     was investigated and found to be already correct BY DESIGN, not a gap at all.**
+     - **Already built, verified not re-done (documented so a future session doesn't redo this
+       investigation):**
+       - `agent.consult` vs `thread.send_message` staying SEPARATE (the plan's item 43 literally
+         asked to merge them) is a deliberate, already-shipped, better design — `agent.consult` is
+         a private coordination lane (a hidden subthread), `thread.send_message` is a visible reply
+         in an EXISTING thread; merging them would reintroduce the exact addressing ambiguity item
+         75/76 were built specifically to avoid. Left as-is on purpose.
+       - Assistant-in-thread messages already render as a collapsible card (`SubthreadEntry ...
+         inline` under the assistant's own bubble, item 79) — item 44 already shipped.
+       - Project visibility (`private`/`public`), the `project_members` ACL, and exclusive-mode
+         one-active-thread locking all already exist in `SpaceDO`'s own migrations (Phase T,
+         confirmed by reading the schema directly) — items 45/48 already shipped.
+       - @mention multi-agent dispatch (`parseMentions`/`POST .../agent/mention-run`) already
+         exists and already posts each mentioned agent's reply into the shared transcript — item
+         46 (the @tag half) and the concurrency-cap half of item 49 (`ConcurrencyDO`, §A1.14) were
+         both already shipped.
+       - Thread-agent tool-surface restriction (item 51: project agents cannot reach
+         `workspace-admin`/`project-coordination`/`sub-agent`) was verified structurally already
+         correct — `ScriptToolSurface` builds its op map ONLY from a profile's own prebuilt list,
+         so an unlisted op is uncallable, confirmed by reading `launchpadAgentToProfile`/
+         `agentTemplateToConfig` directly (item 130, a prior pass).
+       - `channel_links.project_id` (the plan's item 54 claimed this column doesn't exist) has
+         existed since migration `0039_channel_links_project.sql` — the plan text was simply stale.
+       - `customer_bot` kind already has real dedicated UI on the project detail page (kind picker,
+         editable execution ceiling) and every `PROJECT_TEMPLATES` entry already enforces
+         `execution_ceiling < 5` (a pre-existing catalogue invariant, `project-templates.test.ts`)
+         — item 55's "dashboard-style UI + low execution ceiling" was already shipped.
+     - **Investigated and found already correct by design, not a gap:** "model routing between
+       assistant ↔ sub-agent ↔ thread-agent" (item 50). Traced `mention-run`'s dispatch: a
+       mentioned/consulted agent is a NAMED, pre-configured identity with its OWN stored model
+       default (from the business's `productConfig.modelConfig` or its own template) — there is no
+       "which model should this be" ambiguity to route, unlike an EPHEMERAL sub-agent
+       (`agent.spawn`), which has no identity of its own and genuinely needs the escalation-ceiling
+       logic `resolveEscalationModel` already provides (item 100). The two cases are different
+       problems and only one of them needed a solution; both already have one.
+     - **Real gap #1 — the assistant could not act on another agent's pending approval.** No
+       prebuilt exposed the approvals system at all; only a human clicking through `apps/shell`'s
+       dedicated Approvals inbox page could ever approve or decline anything, even a routine one an
+       autonomous business's owner would reasonably expect their assistant to clear on their
+       behalf (the same judgment call `assistant_policy` already makes for the assistant's OWN
+       actions, extended to another project agent's). New `approvals` prebuilt
+       (`approvals.list`/`.approve`/`.decline`) reuses the EXACT HTTP routes `apps/shell`'s own
+       Approvals page already calls (`GET/PUT .../sessions/inbox/approvals[...]`, confirmed by
+       reading `HITLApprovalDO`'s own `GET /requests` handler: it ignores `session_id` and lists
+       every pending approval for the whole space whenever no `run_id` is given — the literal
+       string `"inbox"` in the URL is not a real session, it's a no-op placeholder the existing
+       route pattern happens to accept) via the agents worker's own `agentsWorker` self-binding
+       (the same self-call pattern `business-email.ts` already established) — one gate
+       (`requireOwnedSpace`), not a second one that could drift from the human-facing path.
+       `approvals.list` is read-only and auto-approved in guided mode (seeing what's waiting is
+       orientation, not action); `approve`/`decline` stay gated, since the approved action itself
+       may move money or reach outside the business. Added to both assistant profiles' prebuilt
+       lists. 6 new tests drive the real ops against a fake Fetcher that only answers the REAL
+       routes (any other path 404s, exactly like the real worker would for a wrong guess).
+     - **Real gap #2 — "list all channels incl. unconnected" + a connect dialog.** The side panel's
+       `ChannelsPanel` (built in item 129) only ever listed CONNECTED `channel_links` rows with no
+       way to add one — but a fully-built, catalog-driven connect component
+       (`ChannelConnect.tsx`, all 5 channel types incl. unconnected state, QR-pairing-first with a
+       BYO-app fallback) already existed and was wired into the dedicated `dashboard/assistant`
+       page. The real gap was narrower than "build a channel catalog UI" — it was "surface the
+       already-built one from the narrower side-panel context too." `ChannelsPanel` gained a
+       `+ Connect` affordance (space-wide/assistant-view only — connecting is inherently space-wide
+       by construction, `POST /assistant/channels` has no per-project connect variant, matching how
+       the full dashboard page is scoped) that expands the SAME `ChannelConnect` component inline,
+       gated by the same `listMyBusinesses`+`canManageSpaceSettings` admin check every other
+       editable side-panel section already uses (CronsPanel, LocalMachinePanel).
+     - **Real gap #3 (minor, visual) — "other users' bubbles with avatars."** Investigated first:
+       genuine live multi-human co-chat in one thread does not exist as a concept on this platform
+       (`messages.author_type` only distinguishes `user`/`agent`/`assistant`/`tool`, never WHICH
+       human — a session/thread is fundamentally one end-user's own conversation), so building
+       real-time multi-user presence + per-human message attribution would be a substantial, novel
+       architecture change with no existing primitive to build on, unlike everything else in this
+       plan. Read in context alongside the adjacent "@tag multi-agent threads" plan line, the
+       intent was almost certainly about MULTIPLE NAMED AGENTS speaking in one thread (already
+       solved via `authorLabel`'s text label, item 79) — so this is scoped down to a real, bounded
+       visual enhancement: a small accent-colored initial circle next to the existing text label on
+       any agent-authored bubble, matching the `app-card-initial` pattern already established
+       elsewhere in this session's UI work. Explicitly NOT a new multi-human collaboration system.
+     3182/3182 tests pass (6 new: `approvals-prebuilt.test.ts`), `npx turbo run typecheck --force`
+     clean (76 tasks), `apps/shell` verified via a real `next build`. Deployed: `naelao-agents`
+     (bare `wrangler deploy`), `apps/shell` (`next-on-pages` + `NEXT_PUBLIC_API_URL` in the same
+     command, `wrangler pages deploy --branch=main`, confirmed `environment: "production"` via the
+     Pages API, the new "+ Connect" string confirmed present in the compiled bundle before
+     deploying) — all live-verified via non-LLM checks only (200s on the shell's
+     `/p/launchpad/spaces` and the router's by-slug lookup; 401s from the agents worker's cancel
+     route AND the new `/skills/directory` route with no credentials), per the standing "use your
+     own credits to test" instruction — no `/agent/run` was dispatched. **With this, all 6 phases
+     of `/root/.claude/plans/gleaming-scribbling-pelican.md` are now fully shipped.**
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

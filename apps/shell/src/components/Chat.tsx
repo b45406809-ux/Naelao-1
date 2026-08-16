@@ -1399,8 +1399,28 @@ export function Chat({
                       surface and labelling every one of its replies is noise; a project agent
                       speaking in the same thread is the case worth distinguishing. */}
                   {authorLabel(m) && (
-                    <div style={{ fontSize: 11.5, color: "var(--text3)", marginBottom: 3, fontWeight: 600 }}>
-                      {authorLabel(m)}
+                    <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 3 }}>
+                      <span
+                        aria-hidden
+                        style={{
+                          width: 14,
+                          height: 14,
+                          borderRadius: "50%",
+                          background: "var(--accent)",
+                          color: "#fff",
+                          fontSize: 8.5,
+                          fontWeight: 700,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          flexShrink: 0,
+                        }}
+                      >
+                        {authorLabel(m)!.slice(0, 1)}
+                      </span>
+                      <span style={{ fontSize: 11.5, color: "var(--text3)", fontWeight: 600 }}>
+                        {authorLabel(m)}
+                      </span>
                     </div>
                   )}
                   {/* The sequence this turn actually went through — thinking, tool calls, mid-run

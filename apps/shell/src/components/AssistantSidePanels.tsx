@@ -20,6 +20,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { detectRuntimeAnomaly, isJobOverdue } from "@naelao/events";
+import { ChannelConnect } from "./ChannelConnect";
 import {
   getAssistantPolicy,
   updateAssistantPolicy,
@@ -641,20 +642,53 @@ function CronsPanel({
   );
 }
 
-function ChannelsPanel({ spaceId, session, projectId }: { spaceId: string; session: SessionCredentials; projectId?: string | null | undefined }) {
+function ChannelsPanel({
+  spaceId,
+  session,
+  projectId,
+  isBusinessSpace,
+}: {
+  spaceId: string;
+  session: SessionCredentials;
+  projectId?: string | null | undefined;
+  isBusinessSpace: boolean;
+}) {
+  const product = useProduct();
   const [channels, setChannels] = React.useState<ChannelLink[] | null>(null);
+  const [canManage, setCanManage] = React.useState(false);
+  const [showConnect, setShowConnect] = React.useState(false);
+
+  const load = React.useCallback(() => {
+    listAssistantChannels(spaceId, session, { projectId: projectId ?? null }).then(setChannels).catch(() => setChannels([]));
+  }, [spaceId, session, projectId]);
+  React.useEffect(() => { setChannels(null); load(); }, [load]);
+
+  // Connecting is space-wide by construction (POST /assistant/channels has no per-project connect
+  // variant — see the route's own header) — only offered from the assistant-wide view, matching
+  // how the full dashboard/assistant page's own ChannelConnect is scoped.
   React.useEffect(() => {
     let cancelled = false;
-    setChannels(null);
-    listAssistantChannels(spaceId, session, { projectId: projectId ?? null }).then((c) => { if (!cancelled) setChannels(c); }).catch(() => { if (!cancelled) setChannels([]); });
+    if (!isBusinessSpace || projectId) { setCanManage(false); return; }
+    listMyBusinesses(product.space_id, session)
+      .then((list) => list.find((b) => b.id === spaceId) ?? null)
+      .then((b) => { if (!cancelled) setCanManage(canManageSpaceSettings(true, b?.role)); })
+      .catch(() => { if (!cancelled) setCanManage(false); });
     return () => { cancelled = true; };
-  }, [spaceId, session, projectId]);
+  }, [spaceId, session, isBusinessSpace, projectId, product.space_id]);
+
   return (
     <>
-      <div className="tp-section">{projectId ? "This Project's Channels" : "Assistant's Channels"}</div>
+      <div className="tp-section" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span>{projectId ? "This Project's Channels" : "Assistant's Channels"}</span>
+        {canManage && !showConnect && (
+          <button type="button" className="btn btn-ghost btn-sm" style={{ fontSize: 10.5, padding: "2px 7px" }} onClick={() => setShowConnect(true)}>
+            + Connect
+          </button>
+        )}
+      </div>
       {channels === null ? (
         <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>Loading…</div>
-      ) : channels.length === 0 ? (
+      ) : channels.length === 0 && !showConnect ? (
         <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>No channels configured.</div>
       ) : (
         channels.map((c) => (
@@ -663,6 +697,17 @@ function ChannelsPanel({ spaceId, session, projectId }: { spaceId: string; sessi
             <div className="tp-tool-badge" style={!c.enabled ? { color: "var(--text3)" } : undefined}>{c.enabled ? "Connected" : "Off"}</div>
           </div>
         ))
+      )}
+      {showConnect && (
+        <div style={{ padding: "8px 10px" }}>
+          <ChannelConnect
+            spaceId={spaceId}
+            session={session}
+            channels={channels ?? []}
+            canManage={canManage}
+            onChanged={load}
+          />
+        </div>
       )}
     </>
   );
@@ -1385,7 +1430,7 @@ export function AssistantSidePanelBody({
     case "crons":
       return <CronsPanel spaceId={spaceId} session={session} projectId={projectId} isBusinessSpace={isBusinessSpace} />;
     case "channels":
-      return <ChannelsPanel spaceId={spaceId} session={session} projectId={projectId} />;
+      return <ChannelsPanel spaceId={spaceId} session={session} projectId={projectId} isBusinessSpace={isBusinessSpace} />;
     case "heartbeats":
       return <HeartbeatsPanel spaceId={spaceId} session={session} />;
     case "sub-agents":

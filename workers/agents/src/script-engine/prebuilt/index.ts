@@ -19,6 +19,7 @@ import { fileManager } from "./file-manager.js";
 import { webSearch } from "./web-search.js";
 import { knowledgeBase } from "./knowledge-base.js";
 import { artifacts } from "./artifacts.js";
+import { approvals } from "./approvals.js";
 import { notifications } from "./notifications.js";
 import { subAgent } from "./sub-agent.js";
 import { dynamicWorkflow } from "./dynamic-workflow.js";
@@ -87,6 +88,7 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   [webSearch.name]: webSearch,
   [knowledgeBase.name]: knowledgeBase,
   [artifacts.name]: artifacts,
+  [approvals.name]: approvals,
   [notifications.name]: notifications,
   [subAgent.name]: subAgent,
   [dynamicWorkflow.name]: dynamicWorkflow,
@@ -169,6 +171,7 @@ export {
   webSearch,
   knowledgeBase,
   artifacts,
+  approvals,
   notifications,
   subAgent,
   dynamicWorkflow,
