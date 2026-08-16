@@ -35,6 +35,11 @@ import {
 // "Dashboard" (formerly "Assistant") is a merged business dashboard + assistant dashboard for
 // whichever space is currently active — it's the first thing worth seeing, so it leads the list,
 // ahead of Discover.
+/** How many recent conversations the left sidebar keeps. The sidebar collapses past its own
+ *  "show more" threshold anyway, so this is the pool that list draws from — five was small enough
+ *  that a couple of days' work pushed a conversation out of reach without ever going to /sessions. */
+const SIDEBAR_RECENT_SESSIONS = 15;
+
 const DEFAULT_PRIMARY_NAV: SidebarNavEntry[] = [
   { key: "dashboard", icon: "assistant", label: "Dashboard" },
   { key: "spaces", icon: "spaces", label: "Discover" },
@@ -145,7 +150,7 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
     listProjects(activeSpaceId, creds).then(setProjects).catch(() => {});
     // The sidebar's recent list is assistant SESSIONS (what Home starts), not structural project
     // threads — those belong to a project and are reached through /projects/:id.
-    listSessions(activeSpaceId, creds, 5).then(setSessions).catch(() => {});
+    listSessions(activeSpaceId, creds, SIDEBAR_RECENT_SESSIONS).then(setSessions).catch(() => {});
     // The switcher's own entry list is always the product-root's businesses, regardless of which
     // one is currently active — deliberately NOT activeSpaceId.
     listMyBusinesses(product.space_id, creds)
@@ -303,11 +308,14 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
         spaceSwitcher={{
           current: currentEntry,
           entries: [
-            // In business-first (hybrid/tenant) mode, "Launchpad" here is the product/platform
-            // itself, not a workspace — its meta says so, and selecting it below routes to the
-            // business hub rather than activating an empty, permanently-childless chat. In "team"
-            // mode this IS the one and only workspace, so it keeps behaving as a normal entry.
-            { id: product.space_id, name: product.product_name, meta: requiresBusiness ? "Switch businesses" : "Product" },
+            // In business-first (hybrid/tenant) mode the product itself is NOT a workspace — it
+            // has no chat, no projects and no threads of its own — so listing it among the
+            // businesses only offered a way to land somewhere with nothing in it. Reaching the
+            // business hub is what "+ New business" and the Discover page are for. In "team" mode
+            // this IS the one and only workspace, so there it remains a normal entry.
+            ...(requiresBusiness
+              ? []
+              : [{ id: product.space_id, name: product.product_name, meta: "Product" }]),
             ...businesses.map((b) => ({ id: b.id, name: b.name, meta: `${b.role} · ${b.space_status}` })),
           ],
           open: switcherOpen,

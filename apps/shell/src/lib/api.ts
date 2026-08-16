@@ -500,6 +500,27 @@ export async function getMessages(spaceId: string, sessionId: string, session: S
   return res.data ?? res.messages ?? [];
 }
 
+/**
+ * Truncate a session's transcript from `fromMessageId` onward (that message included).
+ *
+ * Editing your last message is a re-ask, and a re-ask should REPLACE the exchange it corrects.
+ * Without this the client dropped the old pair from its own array while the server kept it, so
+ * the correction looked clean until a reload re-read the transcript and rendered both versions.
+ * Best-effort by design: the caller re-asks either way, since losing the new question to a failed
+ * cleanup would be worse than briefly showing a stale one.
+ */
+export async function truncateMessagesFrom(
+  spaceId: string,
+  sessionId: string,
+  fromMessageId: string,
+  session: SessionCredentials
+): Promise<{ deleted: number }> {
+  return apiFetch<{ deleted: number }>(
+    `/v1/spaces/${spaceId}/sessions/${sessionId}/messages?from=${encodeURIComponent(fromMessageId)}`,
+    { method: "DELETE", session }
+  );
+}
+
 /** Model switcher options for one send — both optional, both already validated server-side
  *  against billing-core's ALLOWED_MODELS/MODEL_CAPABILITIES; an invalid pairing 400s rather than
  *  silently running a different config than the user chose. */

@@ -3353,6 +3353,70 @@ app.get("/agent-templates", async (c) => {
  * allowed_agent_ids so it shows up as a real choice in the project's own agent switcher.
  * Mirrors applyProjectTemplate's own shape/sequencing exactly.
  */
+function agentTemplateHeaders(internalToken: string, tenantId: string, callerUserId?: string): Record<string, string> {
+  return {
+    "content-type": "application/json",
+    "x-naelao-tenant-id": tenantId,
+    "x-naelao-internal-token": internalToken,
+    ...(callerUserId ? { "x-naelao-user-id": callerUserId } : {}),
+  };
+}
+
+/**
+ * Has this template already been instantiated in this space? Registration stamps `template_id`
+ * into the definition's own config, so the roster is the record — no extra table needed.
+ * Best-effort: if the lookup fails we fall through to creating one, which is the prior behaviour.
+ */
+async function findExistingTemplateInstance(
+  env: AgentsEnv,
+  spaceId: string,
+  tenantId: string,
+  templateId: string,
+  callerUserId?: string
+): Promise<{ agentId: string; agentDefinitionId: string } | null> {
+  try {
+    const token = await mintInternalToken(env.PLATFORM_SECRET, tenantId);
+    const resp = await env.SPACES_WORKER.fetch(
+      new Request(`http://spaces-worker/spaces/${spaceId}/agent-definitions?space_id=${encodeURIComponent(spaceId)}`, {
+        headers: agentTemplateHeaders(token, tenantId, callerUserId),
+      })
+    );
+    if (!resp.ok) return null;
+    const body = await resp.json<{ data?: Array<{ id: string; config?: { agent_id?: string; template_id?: string } }> }>();
+    const hit = (body.data ?? []).find((d) => d.config?.template_id === templateId && d.config?.agent_id);
+    return hit ? { agentId: hit.config!.agent_id!, agentDefinitionId: hit.id } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Add an agent to a project's allowed roster. Convenience, never load-bearing — the agent exists
+ *  either way, so a failure here is swallowed exactly as it always was. */
+async function bindAgentToProject(
+  env: AgentsEnv,
+  spaceId: string,
+  tenantId: string,
+  projectId: string,
+  agentId: string,
+  callerUserId?: string
+): Promise<void> {
+  try {
+    const token = await mintInternalToken(env.PLATFORM_SECRET, tenantId);
+    const headers = agentTemplateHeaders(token, tenantId, callerUserId);
+    const projResp = await env.SPACES_WORKER.fetch(
+      new Request(`http://spaces-worker/spaces/${spaceId}/projects/${projectId}`, { headers })
+    );
+    if (!projResp.ok) return;
+    const proj = await projResp.json<{ allowed_agent_ids?: string[] | null; default_agent_id?: string | null }>();
+    const allowed = new Set(proj.allowed_agent_ids ?? []);
+    allowed.add(agentId);
+    if (proj.default_agent_id) allowed.add(proj.default_agent_id);
+    await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${projectId}`, {
+      method: "PATCH", headers, body: JSON.stringify({ allowed_agent_ids: [...allowed] }),
+    }));
+  } catch { /* binding to a project is a convenience, not load-bearing */ }
+}
+
 async function applyAgentTemplate(
   env: AgentsEnv,
   spaceId: string,
@@ -3365,6 +3429,19 @@ async function applyAgentTemplate(
   const template = findAgentTemplate(templateId);
   if (!template) return { error: "unknown agent template", status: 404 };
   if (!env.SCRIPTS_R2) return { error: "Agent config storage is not bound", status: 503 };
+
+  // Adding the same template twice used to mint a second agent with a fresh random id, an
+  // identical name, and its own separate policy — so a project's agent switcher would list
+  // "Customer Support" three times with no way to tell them apart, and picking the wrong one got
+  // whichever policy that copy happened to carry. Instantiating a template is meant to be
+  // idempotent per space, so return the one that already exists instead.
+  const existing = await findExistingTemplateInstance(env, spaceId, tenantId, template.id, callerUserId);
+  if (existing) {
+    // Still (re)bind it to the project — the same template can legitimately be added to a project
+    // it isn't in yet, which is a real request even when the agent itself already exists.
+    if (projectId) await bindAgentToProject(env, spaceId, tenantId, projectId, existing.agentId, callerUserId);
+    return existing;
+  }
 
   const agentId = `${template.id}-${crypto.randomUUID().slice(0, 8)}`;
   await writeAgentConfig(env.SCRIPTS_R2, spaceId, agentId, agentTemplateToConfig(template));
@@ -3399,20 +3476,7 @@ async function applyAgentTemplate(
     body: JSON.stringify({ approval_mode: template.approval_mode, auto_approved_actions: template.auto_approved_actions }),
   })).catch(() => {});
 
-  if (projectId) {
-    try {
-      const projResp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${projectId}`, { headers }));
-      if (projResp.ok) {
-        const proj = await projResp.json<{ allowed_agent_ids?: string[] | null; default_agent_id?: string | null }>();
-        const allowed = new Set(proj.allowed_agent_ids ?? []);
-        allowed.add(agentId);
-        if (proj.default_agent_id) allowed.add(proj.default_agent_id);
-        await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${projectId}`, {
-          method: "PATCH", headers, body: JSON.stringify({ allowed_agent_ids: [...allowed] }),
-        }));
-      }
-    } catch { /* binding to a project is a convenience, not load-bearing — the agent still exists either way */ }
-  }
+  if (projectId) await bindAgentToProject(env, spaceId, tenantId, projectId, agentId, callerUserId);
 
   return { agentId, agentDefinitionId: `${spaceId}:${agentId}` };
 }

@@ -1172,6 +1172,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "GET" && msgMatch?.[1]) {
         return this.getMessages(msgMatch[1], url.searchParams);
       }
+      // DELETE /sessions/:id/messages?from=<messageId> — truncate the transcript from that
+      // message onward, so editing-and-resending REPLACES the old exchange instead of leaving
+      // the original question and answer behind for the next reload to render as duplicates.
+      if (method === "DELETE" && msgMatch?.[1]) {
+        return this.truncateMessages(msgMatch[1], url.searchParams);
+      }
       // PATCH /sessions/:id — update status
       if (method === "PATCH" && sessionMatch?.[1]) {
         return this.updateSession(request, sessionMatch[1]);
@@ -1944,6 +1950,74 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     );
   }
 
+  /**
+   * Truncate a session's transcript from one message onward (that message included).
+   *
+   * This is what makes "edit your last message and re-ask" honest. The client used to slice its
+   * OWN array and then send a fresh message, which looked right until a reload re-read the server
+   * transcript and rendered the original question, the original answer, the edited question and
+   * the new answer — four bubbles for what the user experienced as one correction.
+   *
+   * "Everything after" is resolved by SQLite's implicit `rowid` — insertion order — NOT by
+   * `created_at`. Two messages CAN share a timestamp (it is a millisecond ISO string, and an
+   * agent's write-back can land in the same millisecond as the message it answers), and `id` is a
+   * random UUID, so the `created_at`/`id` tie-break getMessages uses for stable *display* order is
+   * arbitrary as a *deletion* boundary: the assistant's reply could sort before the user message
+   * being replaced and survive, leaving an answer to a question that no longer exists. `rowid` is
+   * monotonic per insert and has no such tie.
+   *
+   * `end_user_id`, when present, is the caller's own verified id (the proxy derives it from
+   * claims and never from the query string) — an end user may only truncate their own session.
+   */
+  private truncateMessages(sessionId: string, params: URLSearchParams): Response {
+    const fromId = params.get("from");
+    if (!fromId) {
+      return Response.json(
+        { error_code: "invalid_request", message: "from (a message id) is required" },
+        { status: 400 }
+      );
+    }
+    const endUserId = params.get("end_user_id");
+
+    const session = queryOne<SessionRow>(
+      this.ctx.storage.sql as never,
+      "SELECT end_user_id FROM sessions WHERE id = ?",
+      sessionId
+    );
+    // Same 404-on-mismatch shape as getMessages: an end user must never be able to tell the
+    // difference between "that session does not exist" and "it exists but is someone else's".
+    if (!session || (endUserId && session.end_user_id !== endUserId)) {
+      return Response.json(
+        { error_code: "not_found", message: "Session not found" },
+        { status: 404 }
+      );
+    }
+
+    const anchor = queryOne<{ rid: number }>(
+      this.ctx.storage.sql as never,
+      "SELECT rowid AS rid FROM messages WHERE id = ? AND session_id = ?",
+      fromId,
+      sessionId
+    );
+    // Already gone (a double-submit, or a retry after a partial failure) is a no-op success, not
+    // an error — the caller's intent, "these messages should not be here", already holds.
+    if (!anchor) return Response.json({ deleted: 0 });
+
+    const doomed = queryAll<{ id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT id FROM messages WHERE session_id = ? AND rowid >= ?",
+      sessionId,
+      anchor.rid
+    );
+    this.ctx.storage.sql.exec(
+      "DELETE FROM messages WHERE session_id = ? AND rowid >= ?",
+      sessionId,
+      anchor.rid
+    );
+
+    return Response.json({ deleted: doomed.length });
+  }
+
   private getMessages(sessionId: string, params: URLSearchParams): Response {
     const limit = Math.min(parseInt(params.get("limit") ?? "50"), 200);
     const before = params.get("before");
@@ -1965,19 +2039,26 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
     }
 
-    // G-D01: id as tie-breaker ensures stable ordering when messages share a timestamp
+    // G-D01 wanted a STABLE order when messages share a timestamp, and `id` delivered that — the
+    // same input always came back the same way. But `id` is a random UUID, so stable is not the
+    // same as CORRECT: two messages written in the same millisecond (a question and the answer
+    // written straight back to it) came out in whichever order their UUIDs happened to sort,
+    // which is how a reply could render above the question it answers. `rowid` is insertion
+    // order, so it is both stable and right. `created_at` stays the primary key of the sort for
+    // the `before` cursor's sake (it is a timestamp the client sends back to us); rowid only
+    // replaces the arbitrary tie-break.
     const rows = before
       ? queryAll<MessageRow>(
           this.ctx.storage.sql as never,
           `SELECT * FROM messages WHERE session_id = ? AND created_at < ?
-           ORDER BY created_at DESC, id DESC LIMIT ?`,
+           ORDER BY created_at DESC, rowid DESC LIMIT ?`,
           sessionId,
           before,
           limit
         )
       : queryAll<MessageRow>(
           this.ctx.storage.sql as never,
-          `SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC, id ASC LIMIT ?`,
+          `SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC, rowid ASC LIMIT ?`,
           sessionId,
           limit
         );

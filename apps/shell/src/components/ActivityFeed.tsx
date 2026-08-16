@@ -23,6 +23,7 @@
 
 import * as React from "react";
 import type { LiveRunStep } from "@/lib/api";
+import { Markdown } from "./Markdown";
 
 function stepLabel(step: LiveRunStep, active: boolean): string {
   switch (step.phase) {
@@ -62,9 +63,16 @@ function RevealText({
   text,
   animate,
   revealFrom,
+  markdown,
 }: {
   text: string;
   animate?: boolean | undefined;
+  /** Render the revealed portion as markdown rather than as a raw text child. Off by default so
+   *  the activity feed's own short status lines stay plain. While a reveal is mid-way an unclosed
+   *  construct (`**bold`, an open ``` fence) simply reads as literal text for a frame or two and
+   *  resolves as soon as its closing marker is revealed — acceptable, and far simpler than
+   *  block-level buffering. */
+  markdown?: boolean | undefined;
   /** Text the viewer has ALREADY watched appear, in a different component instance. The growing-
    *  text logic below only extends a reveal within one mounted instance — across a remount the
    *  state is gone, so a bubble that re-mounts with the same text restarts it from empty and
@@ -102,7 +110,7 @@ function RevealText({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [text, animate]);
 
-  return <>{shown}</>;
+  return markdown ? <Markdown text={shown} /> : <>{shown}</>;
 }
 
 /** One live-progress checkpoint fires TWICE for a "reason"/"run" step — once right before it
@@ -340,7 +348,9 @@ function ThoughtRowView({ row, isOpen, onToggle }: { row: ThoughtRow; isOpen: bo
       </button>
       {isOpen && (
         <div style={{ padding: "0 8px 8px" }}>
-          <div style={{ padding: 8, background: "var(--surface2)", borderRadius: 8, whiteSpace: "pre-wrap", fontSize: 11.5, color: "var(--text3)", lineHeight: 1.6 }}>
+          {/* Italic, in the same dim --text3 the toolcall descriptions use: this is the model
+              reasoning to itself, not talking to anyone, and it should never read like a reply. */}
+          <div style={{ padding: 8, background: "var(--surface2)", borderRadius: 8, whiteSpace: "pre-wrap", fontStyle: "italic", fontSize: 11.5, color: "var(--text3)", lineHeight: 1.6 }}>
             {row.step.thinking}
           </div>
         </div>
@@ -402,11 +412,11 @@ export function ActivitySequence({ steps, animate, live }: { steps: LiveRunStep[
           // answer does, not like the dim status lines around it.
           if (g.kind === "message") {
             return (
-              <div
-                key={`msg-${g.idx}`}
-                style={{ fontSize: 14, color: "var(--text1)", lineHeight: 1.6, whiteSpace: "pre-wrap", padding: "4px 0 2px" }}
-              >
-                <RevealText text={g.text} animate={animate && g.active} />
+              // `.bubble` for the markdown element styles (p/ul/strong/em/pre/code) — this is the
+              // agent talking, so it gets the same typography as the final answer. No pre-wrap:
+              // markdown owns the block layout now, and keeping it would double every blank line.
+              <div key={`msg-${g.idx}`} className="bubble" style={{ padding: "4px 0 2px" }}>
+                <RevealText text={g.text} animate={animate && g.active} markdown />
               </div>
             );
           }

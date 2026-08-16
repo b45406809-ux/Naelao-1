@@ -186,3 +186,80 @@ describe("POST /agent-templates/instantiate", () => {
     expect(res.status).toBe(401);
   });
 });
+
+// Instantiating the SAME template twice used to mint a second agent with a fresh random id and an
+// identical name, so a project's switcher listed "Customer Support" as many times as anyone had
+// clicked Add — with no way to tell the copies apart, and each carrying its own separate approval
+// policy. Adding a template is meant to be idempotent per space.
+describe("Agent template instantiation is idempotent per space", () => {
+  /** Like makeEnv, but the fake spaces worker REMEMBERS what has been registered, so the
+   *  agent-definitions list route answers truthfully — the contract findExistingTemplateInstance
+   *  actually depends on. */
+  function makeStatefulEnv() {
+    const registered: Array<{ id: string; config: Record<string, unknown> }> = [];
+    const projectPatches: Array<string[]> = [];
+    const r2 = makeFakeR2();
+    const spacesFetch = vi.fn(async (input: RequestInfo) => {
+      const req = input as Request;
+      const url = new URL(req.url);
+      const body = req.method === "GET" ? undefined : await req.json().catch(() => undefined);
+      if (url.pathname.endsWith("/agent-definitions") && req.method === "GET") {
+        return Response.json({ data: registered });
+      }
+      if (url.pathname.endsWith("/agent-definitions") && req.method === "POST") {
+        const b = body as { id: string; config: Record<string, unknown> };
+        registered.push({ id: b.id, config: b.config });
+        return Response.json({ id: b.id }, { status: 201 });
+      }
+      if (url.pathname.match(/\/agents\/[^/]+\/policy$/) && req.method === "PATCH") {
+        return Response.json({ ok: true });
+      }
+      if (url.pathname === `/spaces/${SPACE_ID}/projects/proj-1` && req.method === "GET") {
+        return Response.json({ id: "proj-1", allowed_agent_ids: ["naelao-agent"], default_agent_id: "naelao-agent" });
+      }
+      if (url.pathname === `/spaces/${SPACE_ID}/projects/proj-1` && req.method === "PATCH") {
+        projectPatches.push((body as { allowed_agent_ids: string[] }).allowed_agent_ids);
+        return Response.json({ id: "proj-1" });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    const env = {
+      PLATFORM_SECRET: SECRET,
+      SPACES_WORKER: { fetch: spacesFetch },
+      SCRIPTS_R2: r2,
+    } as unknown as AgentsEnv;
+    return { env, registered, projectPatches };
+  }
+
+  it("returns the existing agent instead of minting a duplicate", async () => {
+    const { env, registered } = makeStatefulEnv();
+    const first = await (await app.fetch(await instantiateReq({ space_id: SPACE_ID, template_id: "general" }), env)).json() as { agent_id: string };
+    const second = await (await app.fetch(await instantiateReq({ space_id: SPACE_ID, template_id: "general" }), env)).json() as { agent_id: string };
+
+    expect(second.agent_id).toBe(first.agent_id);
+    expect(registered).toHaveLength(1);
+  });
+
+  it("still creates a genuinely different template alongside it", async () => {
+    const { env, registered } = makeStatefulEnv();
+    const other = AGENT_TEMPLATES.find((t) => t.id !== "general");
+    expect(other).toBeDefined();
+
+    await app.fetch(await instantiateReq({ space_id: SPACE_ID, template_id: "general" }), env);
+    await app.fetch(await instantiateReq({ space_id: SPACE_ID, template_id: other!.id }), env);
+
+    expect(registered).toHaveLength(2);
+  });
+
+  it("binds an already-existing agent to a project it isn't in yet", async () => {
+    // Re-adding a template to a DIFFERENT project is a real request even when the agent exists —
+    // the dedupe must not swallow the binding along with the duplicate.
+    const { env, projectPatches } = makeStatefulEnv();
+    const first = await (await app.fetch(await instantiateReq({ space_id: SPACE_ID, template_id: "general" }), env)).json() as { agent_id: string };
+    expect(projectPatches).toHaveLength(0);
+
+    await app.fetch(await instantiateReq({ space_id: SPACE_ID, template_id: "general", project_id: "proj-1" }), env);
+    expect(projectPatches).toHaveLength(1);
+    expect(projectPatches[0]).toContain(first.agent_id);
+  });
+});

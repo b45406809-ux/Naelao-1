@@ -179,15 +179,36 @@
    assistant/agent reply renders as plain text on the page background — no box around it — same
    as claude.ai's own thread. .bubble alone (no .user) is now just a text-metrics wrapper. */
 .bubble{max-width:100%;font-size:14px;line-height:1.68;color:var(--ai-text)}
-.bubble.user{padding:10px 14px;border-radius:14px 14px 4px 14px;background:var(--user-bubble);color:var(--user-text)}
+/* The toolcall table header's own colour (--surface2), as asked. It needs the border that the
+   table header gets for free from its container: in light mode --surface2 (#f9f8f5) and --bg
+   (#f5f4f0) are four hex points apart, so an unbordered bubble in that colour would read as
+   plain text on the page rather than as a message. pre-wrap because the user's own text is
+   rendered literally (never markdown — they typed it), so their line breaks have to survive. */
+.bubble.user{padding:10px 14px;border-radius:14px 14px 4px 14px;background:var(--surface2);color:var(--text);border:1px solid var(--border);white-space:pre-wrap}
 .bubble p{margin-bottom:8px}.bubble p:last-child{margin-bottom:0}
-.bubble ul{padding-left:18px;margin-bottom:8px}.bubble ul li{margin-bottom:3px}
+.bubble ul,.bubble ol{padding-left:18px;margin-bottom:8px}
+.bubble ul li,.bubble ol li{margin-bottom:3px}
+.bubble li>p{margin-bottom:0}
 .bubble strong{font-weight:500}.bubble em{font-style:italic;opacity:0.85}
+.bubble h1,.bubble h2,.bubble h3,.bubble h4,.bubble h5,.bubble h6{font-weight:600;line-height:1.35;margin:14px 0 6px}
+.bubble h1:first-child,.bubble h2:first-child,.bubble h3:first-child{margin-top:0}
+.bubble h1{font-size:18px}.bubble h2{font-size:16px}.bubble h3{font-size:15px}
+.bubble h4,.bubble h5,.bubble h6{font-size:14px}
+.bubble a{color:var(--accent);text-decoration:underline;text-underline-offset:2px}
+.bubble a:hover{text-decoration-thickness:2px}
+.bubble blockquote{border-left:2px solid var(--border2);padding-left:10px;margin:8px 0;color:var(--text2)}
+.bubble hr{border:none;border-top:1px solid var(--border);margin:12px 0}
+/* Wide tables scroll inside the bubble rather than pushing the whole thread sideways. */
+.bubble table{display:block;width:max-content;max-width:100%;overflow-x:auto;border-collapse:collapse;margin:8px 0;font-size:13px}
+.bubble th,.bubble td{border:1px solid var(--border);padding:5px 9px;text-align:left}
+.bubble th{background:var(--surface2);font-weight:600}
 .bubble pre{background:var(--surface3);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin:8px 0;overflow-x:auto;font-family:'Courier New',monospace;font-size:12.5px;line-height:1.5}
 .bubble code{background:var(--surface3);border:1px solid var(--border);border-radius:4px;padding:1px 5px;font-family:'Courier New',monospace;font-size:12.5px}
 .bubble pre code{background:none;border:none;padding:0}
 .msg-actions{display:flex;align-items:center;gap:4px;margin-top:6px;opacity:0;transition:opacity var(--transition)}
-.msg-row:hover .msg-actions{opacity:1}
+/* focus-within keeps the row reachable by keyboard; .revealed is set on tap, since :hover never
+   fires on touch and the row would otherwise be permanently invisible on a phone. */
+.msg-row:hover .msg-actions,.msg-row:focus-within .msg-actions,.msg-row.revealed .msg-actions{opacity:1}
 .msg-action{background:none;border:none;cursor:pointer;color:var(--text3);padding:4px;border-radius:6px;display:flex;transition:color var(--transition),background var(--transition);position:relative}
 .msg-action:hover{color:var(--text);background:var(--surface2)}
 .msg-action svg{width:13px;height:13px;stroke:currentColor}
@@ -222,8 +243,13 @@
 .thread-panel.hidden{width:0;border-left:none}
 .tp-header{padding:12px 14px 8px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
 .tp-header-title{font-size:12px;font-weight:500;color:var(--text);letter-spacing:0.01em}
-.tp-tabs{display:flex;gap:1px;padding:8px 10px 4px;flex-shrink:0;flex-wrap:wrap}
-.tp-tab{background:none;border:none;font-family:'DM Sans',sans-serif;font-size:11.5px;color:var(--text3);cursor:pointer;padding:4px 8px;border-radius:6px;transition:all var(--transition);white-space:nowrap}
+/* One scrollable row, not a wrapping block. There are a dozen tabs and the panel is 260px wide
+   (min(86vw,340px) as a mobile drawer), so flex-wrap turned the header into a four-row wall that
+   ate the panel it was supposed to be labelling. Same treatment .spaces-sidebar/.settings-nav
+   already get on mobile: horizontal scroll with the scrollbar itself hidden. */
+.tp-tabs{display:flex;gap:1px;padding:8px 10px 4px;flex-shrink:0;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}
+.tp-tabs::-webkit-scrollbar{display:none}
+.tp-tab{flex-shrink:0;background:none;border:none;font-family:'DM Sans',sans-serif;font-size:11.5px;color:var(--text3);cursor:pointer;padding:4px 8px;border-radius:6px;transition:all var(--transition);white-space:nowrap}
 .tp-tab.active{background:var(--accent-dim);color:var(--accent)}
 .tp-tab:hover:not(.active){background:var(--surface2);color:var(--text)}
 .tp-body{flex:1;overflow-y:auto;padding:4px 0;scrollbar-width:thin;scrollbar-color:var(--border2) transparent}
@@ -663,6 +689,14 @@
            border-bottom:1px solid var(--border);padding:8px 10px;gap:4px;scrollbar-width:none}
   .spaces-sidebar::-webkit-scrollbar,.settings-nav::-webkit-scrollbar{display:none}
   .space-tree-item,.settings-nav-item{flex-shrink:0;white-space:nowrap}
+  /* Every dock control is flex-shrink:0 by design (a 36px icon button that squashes is unusable),
+     so on a narrow viewport the row simply overflowed its container and the trailing buttons were
+     unreachable. Scroll it instead. The member avatar stack is pushed right by .dock-spacer, which
+     has nothing to distribute once the row is wider than the screen — margin-left:auto is what
+     keeps it at the far end in that case. */
+  .dock-bar{overflow-x:auto;scrollbar-width:none}
+  .dock-bar::-webkit-scrollbar{display:none}
+  .dock-stack{margin-left:auto}
   .space-tree-indent,.space-tree-indent2{display:none}
   .spaces-content,.settings-content{padding:18px 16px}
 

@@ -2883,14 +2883,26 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     return Response.json({ ok: true });
   }
 
+  /**
+   * `parentRunId` is OPTIONAL. With one, this is the live poll for a single run's fan-out. Without
+   * one, it lists this DO's recent sub-agents across every run.
+   *
+   * That second mode is what the Sub-agents panel needed: a DO is addressed per
+   * space:project:thread (or space:agentId for the Space Assistant), so "everything in this DO" is
+   * already scoped to this one conversation — no cross-thread leak. Scoping the panel to the
+   * CURRENT run instead meant every earlier run's sub-agents were invisible, and a conversation
+   * whose latest turn happened to spawn nothing reported "no sub-agent activity" however much had
+   * really run. Newest first, bounded, since this is a panel and not an export.
+   */
   private handleListSubAgents(parentRunId: string): Response {
-    const rows = this.ctx.storage.sql
-      .exec(
-        `SELECT id, parent_run_id, goal, status, budget_tokens, tokens_used, progress_note, created_at, updated_at
-         FROM sub_agents WHERE parent_run_id = ? ORDER BY created_at ASC`,
-        parentRunId
-      )
-      .toArray();
+    const cols = `id, parent_run_id, goal, status, budget_tokens, tokens_used, progress_note, created_at, updated_at`;
+    const rows = parentRunId
+      ? this.ctx.storage.sql
+          .exec(`SELECT ${cols} FROM sub_agents WHERE parent_run_id = ? ORDER BY created_at ASC`, parentRunId)
+          .toArray()
+      : this.ctx.storage.sql
+          .exec(`SELECT ${cols} FROM sub_agents ORDER BY created_at DESC LIMIT 50`)
+          .toArray();
     return Response.json({ data: rows, count: rows.length });
   }
 

@@ -21,6 +21,7 @@ import {
   mergeActivitySteps,
   sendMessage,
   startSession,
+  truncateMessagesFrom,
   type AgentRun,
   type Message,
   type LiveRunStep,
@@ -59,6 +60,7 @@ import { AssistantSidePanelBody, sidePanelTabs, type SidePanelTab } from "./Assi
 import { SubthreadPanel, SubthreadEntry } from "./SubthreadPanel";
 import { ActivitySequence, RevealText } from "./ActivityFeed";
 import { InterruptedRunCard } from "./InterruptedRunCard";
+import { MessageActions } from "./MessageActions";
 import { InlineApprovalCard } from "./InlineApprovalCard";
 import { InlineConnectorCard } from "./InlineConnectorCard";
 import { UpgradeDialog } from "./UpgradeDialog";
@@ -1265,6 +1267,8 @@ export function Chat({
   // rewrite of the conversation is not what someone fixing a typo is asking for.
   const [editingId, setEditingId] = React.useState<string | null>(null);
   const [editDraft, setEditDraft] = React.useState("");
+  /** Which message last received a tap — the touch equivalent of :hover for the action row. */
+  const [revealedActionsId, setRevealedActionsId] = React.useState<string | null>(null);
   const lastUserMessageId = React.useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) if (messages[i]!.role === "user") return messages[i]!.id;
     return null;
@@ -1275,16 +1279,25 @@ export function Chat({
       const text = editDraft.trim();
       if (!text) return;
       setEditingId(null);
-      // Drop the edited message and everything after it from the view, then ask again. The server
-      // transcript still holds the original — this is a re-ask, not a rewrite of history, and
-      // saying so honestly is better than pretending the first attempt never happened.
+      // Drop the edited message and everything after it, then ask again — on the SERVER as well as
+      // in the view. Truncating only locally used to leave the original question and answer in the
+      // transcript, so the next reload rendered the old pair and the new pair: four bubbles for
+      // what the user experienced as one correction.
       setMessages((prev) => {
         const idx = prev.findIndex((m) => m.id === messageId);
         return idx === -1 ? prev : prev.slice(0, idx);
       });
+      // Best-effort: a failed cleanup must not cost the user their re-ask. Worst case the stale
+      // pair reappears on reload — exactly the old behaviour, never worse. A client-minted id
+      // (`optimistic_`/`msg_`) has no server row to truncate from, so skip the pointless round trip.
+      const sid = chatSessionId;
+      const clientMinted = messageId.startsWith("optimistic_") || messageId.startsWith("msg_");
+      if (sid && !clientMinted) {
+        await truncateMessagesFrom(spaceId, sid, messageId, session).catch(() => {});
+      }
       await send(text);
     },
-    [editDraft, send]
+    [editDraft, send, chatSessionId, spaceId, session]
   );
 
   const initialSentRef = React.useRef(false);
@@ -1346,7 +1359,13 @@ export function Chat({
           {messages
             .filter((m) => m.role !== "system" && m.role !== "tool")
             .map((m) => (
-              <div key={m.id} className={["msg-row", m.role === "user" ? "user" : ""].filter(Boolean).join(" ")}>
+              <div
+                key={m.id}
+                className={["msg-row", m.role === "user" ? "user" : "", revealedActionsId === m.id ? "revealed" : ""].filter(Boolean).join(" ")}
+                // Tap-to-reveal for touch, where :hover never fires. Harmless on a mouse — the
+                // row is already revealed by hover before any click lands.
+                onClick={() => setRevealedActionsId(m.id)}
+              >
                 {m.role !== "user" && (
                   <div className="ai-icon">
                     <svg viewBox="0 0 14 14">
@@ -1402,23 +1421,29 @@ export function Chat({
                     </div>
                   ) : (
                     <div className={["bubble", m.role === "user" ? "user" : ""].filter(Boolean).join(" ")}>
-                      {m.role === "user" ? m.content : <RevealText text={m.content} animate={m.justArrived} revealFrom={m.revealedPrefix} />}
+                      {/* The user's own message stays literal — they typed it, and rendering their
+                          text as markdown would silently restyle whatever they wrote. `.bubble.user`
+                          carries white-space:pre-wrap so their line breaks survive. An assistant or
+                          agent reply IS markdown: it arrives with **bold**, bullets and ``` fences
+                          that were previously shown as raw characters. */}
+                      {m.role === "user"
+                        ? m.content
+                        : <RevealText text={m.content} animate={m.justArrived} revealFrom={m.revealedPrefix} markdown />}
                     </div>
                   )}
-                  {/* Edit and re-ask. Only the LAST thing you said — editing something further back
-                      would silently discard every exchange after it, which is a destructive act
-                      dressed up as a typo fix. */}
-                  {m.role === "user" && m.id === lastUserMessageId && editingId !== m.id && !isLoading && (
-                    <div style={{ textAlign: "right", marginTop: 2 }}>
-                      <button
-                        type="button"
-                        className="btn btn-ghost btn-sm"
-                        onClick={() => { setEditingId(m.id); setEditDraft(m.content); }}
-                        title="Edit this message and ask again"
-                      >
-                        Edit
-                      </button>
-                    </div>
+                  {/* Copy on every message; edit only on the LAST thing you said — editing
+                      something further back would silently discard every exchange after it, which
+                      is a destructive act dressed up as a typo fix. Icons rather than labels, and
+                      revealed on hover (or on tap, see revealedActionsId) so a quiet thread stays
+                      quiet. */}
+                  {editingId !== m.id && (
+                    <MessageActions
+                      content={m.content}
+                      align={m.role === "user" ? "right" : "left"}
+                      {...(m.role === "user" && m.id === lastUserMessageId && !isLoading
+                        ? { onEdit: () => { setEditingId(m.id); setEditDraft(m.content); } }
+                        : {})}
+                    />
                   )}
                   {/* In-chat approval card, at the exact turn the run stopped waiting on a
                       person — see InlineApprovalCard's own header for why this doesn't need to
@@ -1499,7 +1524,7 @@ export function Chat({
               </div>
               <div style={{ minWidth: 0 }}>
                 {liveActivity.length > 0 && <ActivitySequence steps={liveActivity} animate live />}
-                <div className="bubble"><RevealText text={streamingContent} animate /></div>
+                <div className="bubble"><RevealText text={streamingContent} animate markdown /></div>
               </div>
             </div>
           )}

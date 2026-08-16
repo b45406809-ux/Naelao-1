@@ -24,6 +24,10 @@ import { DEFAULT_WORKING_MODEL, nativeReasoningForEffort, isValidEffortLevel, ty
 
 /** Openers that reflect what this assistant is actually for — running the business — rather than
  *  generic "ask me anything" filler. Every one is answerable from what it can already see. */
+/** Recent conversations shown on Home. This is the landing page, so the list is the main way back
+ *  into yesterday's work — eight was short enough to hide a conversation from one busy morning. */
+const HOME_RECENT_SESSIONS = 20;
+
 const STARTERS = [
   "How is my business doing right now?",
   "What should I work on first this week?",
@@ -97,7 +101,7 @@ export default function HomePage() {
 
   React.useEffect(() => {
     if (!creds) return;
-    listSessions(activeSpaceId, creds, 8).then(setSessions).catch(() => setSessions([]));
+    listSessions(activeSpaceId, creds, HOME_RECENT_SESSIONS).then(setSessions).catch(() => setSessions([]));
     // Unfinished setup is worth surfacing here rather than only on the business page: this is
     // where someone lands, and an assistant that hasn't been connected to anything yet will give
     // disappointing answers for reasons the user can't see.

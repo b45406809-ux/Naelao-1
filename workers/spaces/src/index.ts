@@ -538,9 +538,15 @@ app.all("/spaces/:spaceId/sessions*", async (c) => {
     const kind = url.searchParams.get("kind");
     if (kind === "heartbeat") qs.set("kind", kind);
     search = `?${qs.toString()}`;
-  } else if (c.req.method === "GET" && /^\/sessions\/([^/]+)(\/messages)?$/.test(doPath) && isProductEndUser) {
+  } else if (
+    (c.req.method === "GET" || c.req.method === "DELETE") &&
+    /^\/sessions\/([^/]+)(\/messages)?$/.test(doPath) &&
+    isProductEndUser
+  ) {
     // For GET /sessions/:id and GET /sessions/:id/messages, pass end_user_id so SpaceDO can verify
-    // the caller owns this session before returning it.
+    // the caller owns this session before returning it. DELETE /sessions/:id/messages (the
+    // edit-and-re-ask truncate) needs the same check for the stronger reason — it WRITES — so it
+    // rides the same derived-from-claims id rather than anything the client sent.
     const qs = new URLSearchParams(url.searchParams);
     qs.set("end_user_id", callerId);
     search = `?${qs.toString()}`;

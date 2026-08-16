@@ -336,9 +336,17 @@ function ChannelsPanel({ spaceId, session, projectId }: { spaceId: string; sessi
 
 function SubAgentsPanel({ spaceId, session, lastRunId }: { spaceId: string; session: SessionCredentials; lastRunId: string }) {
   const [subAgents, setSubAgents] = React.useState<SubAgentSummary[] | null>(null);
+  const [failed, setFailed] = React.useState(false);
   React.useEffect(() => {
     let cancelled = false;
-    listSubAgents(spaceId, session, lastRunId).then((s) => { if (!cancelled) setSubAgents(s); }).catch(() => { if (!cancelled) setSubAgents([]); });
+    setFailed(false);
+    // No run id is no longer a dead end: the agent DO is addressed per conversation, so an empty
+    // parent_run_id lists this conversation's whole fan-out rather than nothing. Previously a
+    // reload (which loses lastRunId) or a latest turn that spawned nothing reported "no sub-agent
+    // activity" no matter how much had really run.
+    listSubAgents(spaceId, session, lastRunId)
+      .then((s) => { if (!cancelled) setSubAgents(s); })
+      .catch(() => { if (!cancelled) { setSubAgents([]); setFailed(true); } });
     return () => { cancelled = true; };
   }, [spaceId, session, lastRunId]);
   return (
@@ -346,9 +354,15 @@ function SubAgentsPanel({ spaceId, session, lastRunId }: { spaceId: string; sess
       <div className="tp-section">Sub-agents</div>
       {subAgents === null ? (
         <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>Loading…</div>
+      ) : failed ? (
+        // Never report "none" for a request that failed — telling someone no agent ran when the
+        // list merely didn't load is the kind of wrong answer that gets acted on.
+        <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>
+          Couldn&apos;t load sub-agent activity.
+        </div>
       ) : subAgents.length === 0 ? (
         <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>
-          {lastRunId ? "No sub-agent activity for the current run." : "No run yet in this conversation."}
+          No sub-agents have run in this conversation.
         </div>
       ) : (
         <div style={{ padding: "0 10px 8px" }}>
