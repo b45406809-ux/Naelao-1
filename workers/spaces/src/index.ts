@@ -5,7 +5,7 @@ import type { SpaceDO } from "./do/SpaceDO.js";
 import type { SpaceTypeRegistryDO, SpaceTypeProductConfig, NaelaoSpaceTypeManifestV2 } from "./do/SpaceTypeRegistryDO.js";
 import { LAUNCHPAD_MANIFEST } from "./launchpad-manifest.js";
 import { cfSaasConfig, createCustomHostname, getCustomHostname } from "./cf-saas.js";
-import { validateCronExpression } from "@naelao/events";
+import { validateCronExpression, computeNextRun } from "@naelao/events";
 import { registerBuilderRoutes } from "./builder-routes.js";
 import { registerProductEndUserRoutes, FREE_TIER_DEFAULT_SIGNUP_CREDITS } from "./product-end-user-routes.js";
 import { createSpaceRecord, SpaceCreationError, provisionBusinessWallet } from "./create-space.js";
@@ -688,12 +688,15 @@ app.post("/spaces/:spaceId/registry", async (c) => {
 // SpaceDO (e.g. the agents worker's scheduled-jobs auto-disable, A1.16.13) run an arbitrary
 // event through the same event_triggers matching every structural mutation already uses, so a
 // builder can wire a no-code trigger to react to it the same way as thread.created etc.
+// tenant_id rides the query string, not a header — forwardToSpaceDO doesn't forward client
+// headers (see fireExternalEvent's own comment for the real bug this fixed: this route 400'd on
+// every real call until tenant_id had a way to actually reach the DO).
 app.use("/internal/spaces/:spaceId/events/fire", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.post("/internal/spaces/:spaceId/events/fire", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
-  const res = await forwardToSpaceDO(stub, "/internal/events/fire", "POST", c.req.raw.body);
+  const res = await forwardToSpaceDO(stub, `/internal/events/fire?tenant_id=${encodeURIComponent(tenantId)}`, "POST", c.req.raw.body);
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
@@ -1679,16 +1682,71 @@ app.delete("/spaces/:spaceId/event-triggers/:triggerId", async (c) => {
 // (or their business's) assistant's Crons panel — loadOwnedSpace is tenant-match-only (no
 // per-caller floor), exactly the footgun the router's PRODUCT_END_USER_PATH_PATTERNS comment
 // warns about, so this adds the same resolveEndUserBusinessRole floor every other end-user-
-// reachable route in this file already has. POST/PATCH/DELETE stay un-allowlisted (never
-// reachable by a product_end_user regardless of this check, per the router's allowlist).
+// reachable route in this file already has. POST/PATCH/DELETE were originally un-allowlisted
+// entirely — Phase 3 item 27/28's Crons editing UI (below) added requireBusinessMembership's
+// admin floor to all three and allowlisted the router for exactly that reason.
+/** computeNextRun throws on a malformed cron_expression — create/update already reject one via
+ *  validateCronExpression, but a row could in principle predate that check, and a next-run
+ *  display bug must never take down the whole Crons list. */
+function safeComputeNextRun(cronExpression: string, fromMs: number): number | null {
+  try {
+    return computeNextRun(cronExpression, fromMs);
+  } catch {
+    return null;
+  }
+}
+
+/** Phase 3 item 29: a cron/heartbeat CONFIG change (created/updated/enabled/paused/deleted) is
+ *  itself an event worth an agent noticing, exactly like the existing scheduled_job.disabled
+ *  auto-disable event (agents worker, recordScheduledJobFailure) already is — a business owner
+ *  reconfiguring their own assistant's schedule is real, structural state a no-code trigger
+ *  should be able to react to (e.g. "when a cron is paused, tell the assistant why"), the same
+ *  precedent thread.created/project.created already set for every other structural mutation.
+ *  Reuses the SAME fireMatchingTriggers path via the DO directly (we're already inside this
+ *  worker, so no need for the internal-HTTP round trip the agents worker's own caller needs).
+ *  Best-effort: never throws, never blocks an already-successful CRUD response on a firing
+ *  failure — matches this file's own standing "never fail a successful mutation over a side
+ *  effect" convention everywhere else. */
+async function fireScheduledJobEvent(
+  env: Env,
+  spaceId: string,
+  tenantId: string,
+  type: "scheduled_job.created" | "scheduled_job.updated" | "scheduled_job.enabled" | "scheduled_job.paused" | "scheduled_job.deleted",
+  jobId: string,
+  projectId: string | null | undefined,
+  extra?: Record<string, unknown>
+): Promise<void> {
+  try {
+    const stub = await spaceDoStub(env, spaceId, tenantId);
+    await forwardToSpaceDO(
+      stub,
+      `/internal/events/fire?tenant_id=${encodeURIComponent(tenantId)}`,
+      "POST",
+      JSON.stringify({
+        type,
+        space_id: spaceId,
+        ...(projectId ? { project_id: projectId } : {}),
+        occurred_at: Date.now(),
+        payload: { scheduled_job_id: jobId, ...(extra ?? {}) },
+      })
+    );
+  } catch (err) {
+    console.error(`[scheduled-jobs] failed to fire ${type} for job=${jobId} space=${spaceId}:`, (err as Error).message);
+  }
+}
+
+// Phase 3 item 27/28's own Crons editing UI needed real write access for a business's own
+// admin/owner end user — POST used to forbid every product_end_user outright (WS-2's original
+// note below), which left every end-user-created business with no self-serve way to create a
+// job at all, only a JWT builder. requireBusinessMembership's admin floor is what makes this
+// safe (same precedent as model-config/assistant-policy PATCH): a plain member still can't
+// create/edit one, and a caller who isn't a member of THIS business at all is refused before
+// reaching the handler. GET keeps its existing member floor, just expressed as middleware
+// instead of an inline check so PATCH/DELETE below can share the same convention.
+app.use("/spaces/:spaceId/scheduled-jobs", requireBusinessMembership({ GET: "member", POST: "admin" }));
 app.get("/spaces/:spaceId/scheduled-jobs", async (c) => {
   const owned = await loadOwnedSpace(c, c.req.param("spaceId"));
   if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
-  const callerIdentity = getCallerIdentity(c);
-  if (callerIdentity.role === "product_end_user") {
-    const role = await resolveEndUserBusinessRole(c.env.PLATFORM_DB, c.req.param("spaceId"), callerIdentity.userId);
-    if (!role) return c.json({ error_code: "forbidden", message: "Not a member of this business" }, 403);
-  }
   // Scoping for the Crons side-panel: the assistant/Home view wants its OWN (space-wide,
   // project_id IS NULL) jobs — not a mix with every project's — while a project thread wants
   // only that project's own. Neither query param given = unfiltered (the Dashboard overview and
@@ -1713,20 +1771,22 @@ app.get("/spaces/:spaceId/scheduled-jobs", async (c) => {
                 consecutive_failures, last_error, created_at, updated_at
            FROM scheduled_jobs WHERE space_id = ? ORDER BY created_at DESC`
       ).bind(spaceId).all();
-  return c.json({ data: results, count: results.length });
+  // Phase 3 item 27/28: when does this job fire next, for the Crons editing UI. Computed here
+  // (not stored) so it's always accurate against the CURRENT time and never drifts — a disabled
+  // job or a malformed cron_expression (shouldn't exist given create/update validation, but a
+  // row could predate it) reports null rather than throwing and losing the whole list.
+  const now = Date.now();
+  const withNextRun = (results as Array<Record<string, unknown>>).map((row) => ({
+    ...row,
+    next_run_at: row["enabled"] ? safeComputeNextRun(String(row["cron_expression"]), now) : null,
+  }));
+  return c.json({ data: withNextRun, count: withNextRun.length });
 });
 
 app.post("/spaces/:spaceId/scheduled-jobs", async (c) => {
   const spaceId = c.req.param("spaceId");
   const owned = await loadOwnedSpace(c, spaceId);
   if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
-  // WS-2: the router allowlist for this path (GET+POST share one path with no jobId segment)
-  // only proves a product_end_user's identity, never that write access is safe here — this
-  // route creates cron jobs, so (unlike the GET list) a product_end_user must never reach it,
-  // mirroring agent-definitions' "GET only for product_end_user" precedent.
-  if (getCallerIdentity(c).role === "product_end_user") {
-    return c.json({ error_code: "forbidden", message: "product_end_user callers may only read scheduled jobs" }, 403);
-  }
 
   const body = await c.req.json<{
     name: string;
@@ -1757,6 +1817,11 @@ app.post("/spaces/:spaceId/scheduled-jobs", async (c) => {
     body.script_name ?? "", JSON.stringify(body.params ?? {}), body.agent_id ?? null, body.goal ?? null, now, now
   ).run();
 
+  await fireScheduledJobEvent(c.env, spaceId, owned.tenantId, "scheduled_job.created", id, body.project_id ?? null, {
+    name: body.name,
+    cron_expression: body.cron_expression,
+  });
+
   return c.json({
     id, name: body.name, cron_expression: body.cron_expression, script_name: body.script_name ?? "",
     project_id: body.project_id ?? null, agent_id: body.agent_id ?? null, goal: body.goal ?? null,
@@ -1764,6 +1829,12 @@ app.post("/spaces/:spaceId/scheduled-jobs", async (c) => {
   }, 201);
 });
 
+// Same admin floor as POST above — a plain business member can view crons but not edit or
+// remove one; a business admin/owner end user genuinely can, mirroring model-config/
+// assistant-policy PATCH's own precedent for "an end-user-created business's own admin IS its
+// owner." No GET is registered on this path (single-job reads don't exist, only the list), so
+// only PATCH/DELETE need a floor here.
+app.use("/spaces/:spaceId/scheduled-jobs/:jobId", requireBusinessMembership({ PATCH: "admin", DELETE: "admin" }));
 app.patch("/spaces/:spaceId/scheduled-jobs/:jobId", async (c) => {
   const spaceId = c.req.param("spaceId");
   const jobId = c.req.param("jobId");
@@ -1784,6 +1855,13 @@ app.patch("/spaces/:spaceId/scheduled-jobs/:jobId", async (c) => {
     const cronError = validateCronExpression(body.cron_expression);
     if (cronError) return c.json({ error_code: "bad_request", message: `Invalid cron_expression: ${cronError}` }, 400);
   }
+
+  // Needed only for the fired event's project scoping — the UPDATE below can't change project_id
+  // (there's no such field on this route), so a plain read-before-write is fine for an
+  // admin-only, low-frequency write, unlike a hot path that would want this folded into one query.
+  const existing = await c.env.PLATFORM_DB.prepare(
+    "SELECT project_id FROM scheduled_jobs WHERE id = ? AND space_id = ? AND tenant_id = ?"
+  ).bind(jobId, spaceId, owned.tenantId).first<{ project_id: string | null }>();
 
   const now = new Date().toISOString();
   const res = await c.env.PLATFORM_DB.prepare(
@@ -1806,6 +1884,13 @@ app.patch("/spaces/:spaceId/scheduled-jobs/:jobId", async (c) => {
   ).run();
 
   if (res.meta.changes === 0) return c.json({ error_code: "not_found", message: "Scheduled job not found" }, 404);
+
+  // A pure enable/pause toggle (the shell's own toggleScheduledJob helper sends ONLY {enabled})
+  // gets its own, more specific event than a content edit — a no-code trigger reacting to "this
+  // was paused" shouldn't also have to distinguish that from "the goal text changed".
+  const eventType = body.enabled !== undefined ? (body.enabled ? "scheduled_job.enabled" : "scheduled_job.paused") : "scheduled_job.updated";
+  await fireScheduledJobEvent(c.env, spaceId, owned.tenantId, eventType, jobId, existing?.project_id ?? null);
+
   return c.json({ id: jobId, updated_at: now });
 });
 
@@ -1814,11 +1899,45 @@ app.delete("/spaces/:spaceId/scheduled-jobs/:jobId", async (c) => {
   const jobId = c.req.param("jobId");
   const owned = await loadOwnedSpace(c, spaceId);
   if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+  // Needed for the fired event's project scoping — read before delete, since the row (and its
+  // project_id) is gone the moment the DELETE below succeeds.
+  const existing = await c.env.PLATFORM_DB.prepare(
+    "SELECT project_id FROM scheduled_jobs WHERE id = ? AND space_id = ? AND tenant_id = ?"
+  ).bind(jobId, spaceId, owned.tenantId).first<{ project_id: string | null }>();
   const res = await c.env.PLATFORM_DB.prepare(
     "DELETE FROM scheduled_jobs WHERE id = ? AND space_id = ? AND tenant_id = ?"
   ).bind(jobId, spaceId, owned.tenantId).run();
   if (res.meta.changes === 0) return c.json({ error_code: "not_found", message: "Scheduled job not found" }, 404);
+  await fireScheduledJobEvent(c.env, spaceId, owned.tenantId, "scheduled_job.deleted", jobId, existing?.project_id ?? null);
   return c.json({ deleted: true, id: jobId });
+});
+
+// GET /spaces/:spaceId/scheduled-job-runs?job_id=X — recent fires for a scheduled job (migration
+// 0071). Deliberately a FLAT sibling of /scheduled-jobs, `job_id` in the query string, not
+// nested under the existing dynamic /scheduled-jobs/:jobId route — a dynamic segment followed by
+// a static suffix (":jobId/runs") is exactly the shape that has repeatedly corrupted this
+// codebase's Hono route tables (items 40/52/60), and this file already carries one dynamic
+// segment there (PATCH/DELETE above); a second static suffix under it is not worth that risk for
+// a read endpoint. Same auth floor as GET /scheduled-jobs directly above it — a
+// product_end_user viewing their own business's Crons panel needs to see its history too.
+app.get("/spaces/:spaceId/scheduled-job-runs", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const owned = await loadOwnedSpace(c, spaceId);
+  if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+  const callerIdentity = getCallerIdentity(c);
+  if (callerIdentity.role === "product_end_user") {
+    const role = await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, callerIdentity.userId);
+    if (!role) return c.json({ error_code: "forbidden", message: "Not a member of this business" }, 403);
+  }
+  const jobId = c.req.query("job_id");
+  if (!jobId) return c.json({ error_code: "bad_request", message: "job_id is required" }, 400);
+  const limitParam = Number.parseInt(c.req.query("limit") ?? "", 10);
+  const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 100) : 20;
+  const { results } = await c.env.PLATFORM_DB.prepare(
+    `SELECT id, fired_at, ok, error, duration_ms, skipped_busy FROM scheduled_job_runs
+       WHERE job_id = ? AND space_id = ? ORDER BY fired_at DESC LIMIT ?`
+  ).bind(jobId, spaceId, limit).all();
+  return c.json({ data: results, count: results.length });
 });
 
 // Space Assistant approval policy — "same access as the owning user, ask first unless the

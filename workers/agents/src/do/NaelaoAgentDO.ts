@@ -1511,9 +1511,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // A new tab has no memory of a run it was never open for, so this cannot be answered from
       // the client. Answering it here is what lets someone close the laptop, come back, and find
       // the work still going rather than a silent transcript.
+      //
+      // GET /active-run (no session_id) — "is this DO instance running ANYTHING right now?" —
+      // the scheduled-job dispatcher's own pending-run check (see handleAgentTick's scheduled_job
+      // case in index.ts): every wake for a space addresses the SAME `{spaceId}:naelao-agent`
+      // instance, so this is what lets it skip firing a second, overlapping run into a still-busy
+      // assistant instead of finding out the hard way.
       if (method === "GET" && url.pathname === "/active-run") {
         const sessionId = url.searchParams.get("session_id") ?? "";
-        const active = sessionId ? this.findActiveRunForSession(sessionId) : null;
+        const active = sessionId ? this.findActiveRunForSession(sessionId) : this.findAnyActiveRun();
         if (!active) return Response.json({ active: false });
         const durable = this.readDurableRun(active.run_id);
         return Response.json({
@@ -2741,6 +2747,31 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           sessionId
         )
         .toArray() as unknown as Array<{ run_id: string; status: string; updated_at: number }>)[0];
+      if (!row) return null;
+      if (Date.now() - row.updated_at > 5 * 60 * 1000) return null;
+      return row;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Phase 3 item 23/24 — "pending background run awareness" for a scheduled/cron wake, not a
+   * person's own tab. This DO instance is addressed once per space (`{spaceId}:naelao-agent`
+   * for every heartbeat/scheduled_job wake alike — see wakeAgentGoal), so a run still going when
+   * the NEXT hourly tick fires would otherwise get a SECOND, overlapping `/script/run` dispatched
+   * into the exact same instance. Same staleness rule as findActiveRunForSession (a `run_state`
+   * row that stopped updating 5+ minutes ago is treated as dead, not active — a crashed run must
+   * never permanently block every future tick).
+   */
+  private findAnyActiveRun(): { run_id: string; session_id: string; status: string; updated_at: number } | null {
+    try {
+      const row = (this.ctx.storage.sql
+        .exec(
+          `SELECT run_id, session_id, status, updated_at FROM run_state
+           WHERE terminal_json IS NULL ORDER BY started_at DESC LIMIT 1`
+        )
+        .toArray() as unknown as Array<{ run_id: string; session_id: string; status: string; updated_at: number }>)[0];
       if (!row) return null;
       if (Date.now() - row.updated_at > 5 * 60 * 1000) return null;
       return row;

@@ -1381,6 +1381,29 @@ async function wakeAgentGoal(
 ): Promise<Response> {
   const agentId = params.agentId ?? "naelao-agent";
   const stub = await getAgentDOForSpace(env, params.tenantId, params.spaceId, agentId, reqId);
+
+  // Phase 3 item 23/24 — pending-run awareness. Every wake for a space addresses the SAME
+  // `{spaceId}:agentId` instance (hourly ticks, a channel drain, an @mention run — all of it),
+  // so a prior wake that's still going when this one fires would otherwise dispatch a SECOND,
+  // overlapping reasoning run into that instance. Skipped, not failed: `last_run_at` is left
+  // untouched by the caller so the next due tick retries — a run that's simply still working is
+  // not a failure to record against the job.
+  try {
+    const busyResp = await stub.fetch("http://agent-do/active-run");
+    if (busyResp.ok) {
+      const busy = await busyResp.json<{ active: boolean; run_id?: string }>();
+      if (busy.active) {
+        return Response.json(
+          { skipped: true, reason: "assistant_busy", active_run_id: busy.run_id ?? null },
+          { status: 409 }
+        );
+      }
+    }
+  } catch {
+    // A failed busy-check must never block a wake that would otherwise have run fine — fail open
+    // into dispatching normally, same posture as every other best-effort read in this file.
+  }
+
   const brief = await buildWakeUpBrief(env, params.spaceId, params.tenantId);
   const heartbeatSessionId = await createHeartbeatSession(
     env, params.spaceId, params.tenantId,
@@ -5052,6 +5075,47 @@ interface ScheduledJobRow {
   goal: string | null;
 }
 
+// Phase 3 item 27/28 — the max recent fires kept per job in scheduled_job_runs (migration 0071).
+// An hourly-or-more-frequent job would otherwise grow this table unbounded; a run-history UI
+// only ever needs "recently," not "forever."
+const SCHEDULED_JOB_RUN_HISTORY_LIMIT = 50;
+
+/**
+ * Append one fire to a job's history (migration 0071) and cap retention to the most recent
+ * SCHEDULED_JOB_RUN_HISTORY_LIMIT rows for that job. Best-effort — a history-recording failure
+ * must never be what breaks the actual dispatch it's recording, same posture as
+ * recordScheduledJobFailure below.
+ */
+async function recordScheduledJobRun(
+  env: AgentsEnv,
+  row: { id: string; space_id: string; tenant_id: string },
+  opts: { ok: boolean; error?: string; durationMs?: number; skippedBusy?: boolean; firedAt: number }
+): Promise<void> {
+  try {
+    await env.PLATFORM_DB.prepare(
+      `INSERT INTO scheduled_job_runs (id, job_id, space_id, tenant_id, fired_at, ok, error, duration_ms, skipped_busy)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      crypto.randomUUID(),
+      row.id,
+      row.space_id,
+      row.tenant_id,
+      opts.firedAt,
+      opts.ok ? 1 : 0,
+      opts.error ? opts.error.slice(0, 2000) : null,
+      opts.durationMs ?? null,
+      opts.skippedBusy ? 1 : 0
+    ).run();
+    await env.PLATFORM_DB.prepare(
+      `DELETE FROM scheduled_job_runs WHERE job_id = ? AND id NOT IN (
+         SELECT id FROM scheduled_job_runs WHERE job_id = ? ORDER BY fired_at DESC LIMIT ?
+       )`
+    ).bind(row.id, row.id, SCHEDULED_JOB_RUN_HISTORY_LIMIT).run();
+  } catch (err) {
+    console.error(`[scheduled-jobs] failed to record run history for job=${row.id}:`, (err as Error).message);
+  }
+}
+
 // On a failed fire (or a thrown error, e.g. a malformed cron_expression): the due minute was
 // still consumed, so last_run_at advances too — otherwise a permanently-broken job (bad
 // script name, malformed cron) refires every single hourly sweep forever. Auto-disables after
@@ -5486,6 +5550,7 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
       void sweepUndeliveredNotifications(env, row.space_id, row.tenant_id);
 
       const now = Date.now();
+      const dispatchStarted = Date.now();
       try {
         // A goal-based row (migration 0043) wakes the full reasoning loop against the named
         // agent's own DO; everything else keeps the pre-existing direct-script-fire behavior.
@@ -5505,19 +5570,30 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
               scriptName: row.script_name,
               params: JSON.parse(row.params || "{}") as Record<string, unknown>,
             });
-        if (doResp.ok) {
+        if (doResp.status === 409) {
+          // wakeAgentGoal's own pending-run check — the assistant is still working a prior wake.
+          // Deliberately not a success OR a failure: last_run_at/consecutive_failures are left
+          // exactly as they were so the next due tick retries against a (hopefully) free instance.
+          // Still recorded in the run-history log (migration 0071) — a builder looking at recent
+          // fires should be able to see "skipped, still busy" rather than an unexplained gap.
+          console.log(`[scheduled-jobs] skipped job=${row.id} space=${row.space_id}: assistant still running a prior wake`);
+          await recordScheduledJobRun(env, row, { ok: false, skippedBusy: true, firedAt: now });
+        } else if (doResp.ok) {
           await env.PLATFORM_DB.prepare(
             "UPDATE scheduled_jobs SET last_run_at = ?, consecutive_failures = 0, last_error = NULL WHERE id = ?"
           ).bind(now, row.id).run();
+          await recordScheduledJobRun(env, row, { ok: true, durationMs: Date.now() - dispatchStarted, firedAt: now });
         } else {
           const errText = await doResp.text().catch(() => `HTTP ${doResp.status}`);
           console.error(`[scheduled-jobs] fire failed job=${row.id} space=${row.space_id}: ${doResp.status}`);
           await recordScheduledJobFailure(env, row, now, errText);
+          await recordScheduledJobRun(env, row, { ok: false, error: errText, durationMs: Date.now() - dispatchStarted, firedAt: now });
         }
       } catch (err) {
         const message = (err as Error).message;
         console.error(`[scheduled-jobs] job failed id=${row.id} space=${row.space_id}:`, message);
         await recordScheduledJobFailure(env, row, now, message);
+        await recordScheduledJobRun(env, row, { ok: false, error: message, durationMs: Date.now() - dispatchStarted, firedAt: now });
       }
       return;
     }
@@ -5539,7 +5615,7 @@ async function handleAgentTicksQueue(batch: MessageBatch<AgentTickMessage>, env:
 
 // Exported for end-to-end tests that drive the assembled app the way the router does, and for
 // the agent-ticks fan-out unit tests (enqueue planning + consumer dispatch).
-export { app, enqueueAgentTicks, handleAgentTick, handleAgentTicksQueue, resolveRunGoal, fetchRunOrTaskStatus, resolveMentionRoster };
+export { app, enqueueAgentTicks, handleAgentTick, handleAgentTicksQueue, resolveRunGoal, fetchRunOrTaskStatus, resolveMentionRoster, recordScheduledJobRun, SCHEDULED_JOB_RUN_HISTORY_LIMIT };
 export type { AgentTickMessage };
 
 export default {

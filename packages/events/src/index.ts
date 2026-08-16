@@ -59,6 +59,19 @@ export type NaelaoEventType =
   //
   // Payload: { path, operation: "write" | "delete", agent_id }.
   | "workspace.file_changed"
+  // Phase 3 item 27/28 — a cron/scheduled-job's own CONFIG changed, not just what it produced
+  // when it fired. .disabled already existed (agents worker's recordScheduledJobFailure,
+  // auto-disable after too many consecutive failures); .created/.updated/.enabled/.paused/
+  // .deleted are the CRUD counterpart, fired from the spaces worker's own /scheduled-jobs
+  // routes the moment a business's own admin creates/edits/toggles/removes one — so a no-code
+  // trigger can react to a schedule change exactly like it already reacts to thread.created.
+  // Payload: { scheduled_job_id, ...op-specific extras (e.g. name/cron_expression on .created) }.
+  | "scheduled_job.created"
+  | "scheduled_job.updated"
+  | "scheduled_job.enabled"
+  | "scheduled_job.paused"
+  | "scheduled_job.deleted"
+  | "scheduled_job.disabled"
   | (string & {});
 
 export interface EventEnvelope {
@@ -482,6 +495,37 @@ export function isCronDue(
     if (cronMatchesDate(cron, new Date(m * 60_000))) return true;
   }
   return false;
+}
+
+/** Bound for computeNextRun's forward scan — mirrors CRON_DUE_MAX_LOOKBACK_MS's own bound but
+ *  looking forward instead of back. A cron combination that can never match (e.g. "day 31" of a
+ *  month field restricted to 30-day months) must not hang the scan forever. */
+export const CRON_NEXT_RUN_MAX_LOOKAHEAD_MS = 366 * 24 * 60 * 60 * 1000; // a bit over a year
+
+/**
+ * Phase 3 item 27/28 — the next UTC minute (epoch ms) at or after `fromMs` that a job with this
+ * cron expression would fire, for a Crons editing UI's "next run" display. Mirrors isCronDue's
+ * own minute-scan approach and its "strictly AFTER fromMs" rule (so passing the job's own
+ * last_run_at, or "now", never reports a match on that exact minute as still upcoming) — the two
+ * functions are deliberately kept in sync rather than sharing one generic scanner, since isCronDue
+ * scans backward from a bounded window and this scans forward from one; forcing them through a
+ * single abstraction would obscure both directions for no real benefit.
+ *
+ * Returns null if no match is found within the lookahead bound — a genuinely unsatisfiable
+ * expression (Feb 30) rather than a bug in the scan itself.
+ */
+export function computeNextRun(
+  cronExpression: string,
+  fromMs: number,
+  lookaheadMs: number = CRON_NEXT_RUN_MAX_LOOKAHEAD_MS
+): number | null {
+  const cron = parseCronExpression(cronExpression);
+  const startMinute = Math.floor(fromMs / 60_000) + 1;
+  const endMinute = Math.floor((fromMs + lookaheadMs) / 60_000);
+  for (let m = startMinute; m <= endMinute; m++) {
+    if (cronMatchesDate(cron, new Date(m * 60_000))) return m * 60_000;
+  }
+  return null;
 }
 
 // ── Business Feature Projects registry (F-34/F-41) ──────────────────────────────

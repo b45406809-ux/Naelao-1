@@ -126,3 +126,44 @@ describe("a run survives the tab being closed", () => {
     expect((await (await makeDO(sql)).get("/active-run?session_id=unknown-session"))["active"]).toBe(false);
   });
 });
+
+// Phase 3 item 23/24 — GET /active-run with NO session_id answers "is this DO instance running
+// ANYTHING right now?" (as opposed to the session-scoped question above). This is the scheduled
+// job dispatcher's own pending-run check: every wake for a space addresses the SAME
+// `{spaceId}:agentId` instance, so it's what lets a busy tick be skipped instead of overlapping.
+describe("GET /active-run with no session_id — is this DO instance busy at all", () => {
+  it("reports active for a run in flight regardless of which session started it", async () => {
+    const sql = createDOSqlStorage();
+    const first = await makeDO(sql);
+    first.report("run-f", "sess-any")({ phase: "reason", detail: "Thinking…" });
+
+    const revived = await makeDO(sql);
+    const active = await revived.get("/active-run");
+    expect(active["active"]).toBe(true);
+    expect(active["run_id"]).toBe("run-f");
+  });
+
+  it("reports inactive once the run has finished", async () => {
+    const sql = createDOSqlStorage();
+    const first = await makeDO(sql);
+    first.report("run-g", "sess-any")({ phase: "reason", detail: "Thinking…" });
+    first.finish("run-g", { status: "completed", final_answer: "done" });
+
+    const revived = await makeDO(sql);
+    expect((await revived.get("/active-run"))["active"]).toBe(false);
+  });
+
+  it("treats a run whose DO died mid-flight as no longer active (same staleness rule as the session-scoped check)", async () => {
+    const sql = createDOSqlStorage();
+    (await makeDO(sql)).report("run-h", "sess-any")({ phase: "reason", detail: "Thinking…" });
+    sql.exec(`UPDATE run_state SET updated_at = ? WHERE run_id = 'run-h'`, Date.now() - 10 * 60 * 1000);
+
+    const revived = await makeDO(sql);
+    expect((await revived.get("/active-run"))["active"]).toBe(false);
+  });
+
+  it("reports inactive for an instance that has never run anything", async () => {
+    const sql = createDOSqlStorage();
+    expect((await (await makeDO(sql)).get("/active-run"))["active"]).toBe(false);
+  });
+});

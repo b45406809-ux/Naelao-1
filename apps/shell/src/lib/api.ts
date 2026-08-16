@@ -1106,10 +1106,19 @@ export interface ScheduledJob {
   id: string;
   name: string;
   cron_expression: string;
+  script_name?: string;
+  goal?: string | null;
+  params?: string;
   enabled: number;
   last_run_at: string | null;
   consecutive_failures: number;
+  last_error?: string | null;
   project_id?: string | null;
+  agent_id?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  /** Phase 3 item 27/28 — computed fresh on every read, never stored. Null for a disabled job. */
+  next_run_at: number | null;
 }
 
 /** scope: pass {projectId: "<id>"} to see only that project's own jobs, {projectId: null} to see
@@ -1122,6 +1131,85 @@ export async function listScheduledJobs(
 ): Promise<ScheduledJob[]> {
   const qs = scope ? (scope.projectId ? `?project_id=${encodeURIComponent(scope.projectId)}` : "?scope=assistant") : "";
   const res = await apiFetch<{ data: ScheduledJob[] }>(`/v1/spaces/${spaceId}/scheduled-jobs${qs}`, { session });
+  return res.data;
+}
+
+// Phase 3 item 27/28 — the backend CRUD routes (POST/PATCH/DELETE
+// /spaces/:spaceId/scheduled-jobs[/:jobId]) have existed since scheduled jobs shipped; only a
+// read wrapper existed here, so the Crons panel could show a job but never create, edit, or
+// remove one.
+export async function createScheduledJob(
+  spaceId: string,
+  session: SessionCredentials,
+  input: {
+    name: string;
+    cron_expression: string;
+    script_name?: string;
+    goal?: string;
+    params?: Record<string, unknown>;
+    project_id?: string;
+    agent_id?: string;
+  }
+): Promise<ScheduledJob> {
+  return apiFetch(`/v1/spaces/${spaceId}/scheduled-jobs`, { method: "POST", body: JSON.stringify(input), session });
+}
+
+export async function updateScheduledJob(
+  spaceId: string,
+  jobId: string,
+  session: SessionCredentials,
+  patch: Partial<{
+    name: string;
+    cron_expression: string;
+    script_name: string;
+    goal: string;
+    params: Record<string, unknown>;
+    agent_id: string;
+    enabled: boolean;
+  }>
+): Promise<{ id: string; updated_at: string }> {
+  return apiFetch(`/v1/spaces/${spaceId}/scheduled-jobs/${encodeURIComponent(jobId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+    session,
+  });
+}
+
+/** A dedicated enable/disable helper — the common case, without needing to remember the shape
+ *  of a full PATCH body just to flip one field. */
+export async function toggleScheduledJob(
+  spaceId: string,
+  jobId: string,
+  session: SessionCredentials,
+  enabled: boolean
+): Promise<{ id: string; updated_at: string }> {
+  return updateScheduledJob(spaceId, jobId, session, { enabled });
+}
+
+export async function deleteScheduledJob(spaceId: string, jobId: string, session: SessionCredentials): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/scheduled-jobs/${encodeURIComponent(jobId)}`, { method: "DELETE", session });
+}
+
+export interface ScheduledJobRun {
+  id: string;
+  fired_at: number;
+  ok: number;
+  error: string | null;
+  duration_ms: number | null;
+  skipped_busy: number;
+}
+
+/** Recent fires for one job (migration 0071), newest first. */
+export async function listScheduledJobRuns(
+  spaceId: string,
+  jobId: string,
+  session: SessionCredentials,
+  limit = 20
+): Promise<ScheduledJobRun[]> {
+  const res = await apiFetch<{ data: ScheduledJobRun[] }>(
+    `/v1/spaces/${spaceId}/scheduled-job-runs?job_id=${encodeURIComponent(jobId)}&limit=${limit}`,
+    { session }
+  );
   return res.data;
 }
 

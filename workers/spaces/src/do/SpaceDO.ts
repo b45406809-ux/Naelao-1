@@ -4733,9 +4733,20 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
    * for fireMatchingTriggers to evaluate. tenantId comes from the caller's own verified
    * internal token (requireInternalHmac already checked it matches x-naelao-tenant-id before
    * this request reached the DO), same trust boundary as every other internal-only route.
+   *
+   * Read from the QUERY STRING, not a header — forwardToSpaceDO (workers/spaces/src/index.ts)
+   * builds a fresh Request carrying only content-type, the same reason /projects/:projectId's
+   * own PATCH route already rides tenant_id on the query string (see that route's own comment).
+   * A previous version of this method read x-naelao-tenant-id off request.headers, which
+   * forwardToSpaceDO never actually sets — every real call (including the agents worker's
+   * scheduled_job.disabled auto-disable event) would 400 here and never fire, undetected by
+   * space-fire-external-event.test.ts because that suite calls doInstance.fetch() directly with
+   * a hand-set header, never exercising the real HTTP round trip through the worker. Falls back
+   * to the header too, in case some future caller reaches this DO directly with one set.
    */
   private async fireExternalEvent(request: Request): Promise<Response> {
-    const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+    const url = new URL(request.url);
+    const tenantId = request.headers.get("x-naelao-tenant-id") || url.searchParams.get("tenant_id") || "";
     const body = await request.json<{
       type: string;
       space_id: string;

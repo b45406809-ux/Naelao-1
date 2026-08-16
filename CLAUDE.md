@@ -7566,6 +7566,131 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      test driving the real classes/routes directly. **With this, all 8 items of Phase 2 are shipped.**
      Phases 3-6 (background work + wake-ups, money, workspace/plugins/artifacts, collaboration +
      channels) remain planned in `/root/.claude/plans/gleaming-scribbling-pelican.md` and unstarted.
+144. **Phase 3 of the 62-item plan (background work + wake-ups) is now BUILT — pending-run
+     awareness, a real cron/heartbeat run-history table, next-run display, a genuine editing UI
+     (not just a read-only list), and config-change events — plus a real, previously-undetected
+     production bug found and fixed along the way: the event-firing mechanism the LAST pass
+     (`scheduled_job.disabled`, A1.16.13) relied on had never actually worked.**
+     - **Pending-run awareness (items 23/24).** `wakeAgentGoal` (the goal-based cron/heartbeat
+       dispatcher) now checks the target `NaelaoAgentDO`'s own `GET /active-run` BEFORE dispatching
+       — a new `findAnyActiveRun()` (mirrors the existing per-session `findActiveRunForSession`, no
+       session filter, same 5-minute staleness rule so a genuinely-crashed run doesn't wedge the
+       space forever) lets `/active-run` answer "is anything running in THIS conversation" (unchanged)
+       or "is this DO instance busy AT ALL" (new, when no `session_id` is given). On a busy DO,
+       `handleAgentTick`'s `scheduled_job` case now distinguishes a real 409-skip (no D1 update, no
+       failure recorded — it's not a failure, just deferred to the next tick) from a genuine success
+       or failure. Fails OPEN on any check error (dispatches normally) — never lets a broken
+       busy-check silently stop a business's own proactive cycle from running at all.
+     - **Run-history (items 27/28).** New `scheduled_job_runs` table (migration 0071: id, job_id,
+       space_id, tenant_id, fired_at, ok, error, duration_ms, skipped_busy), written by a new
+       `recordScheduledJobRun()` from all three `handleAgentTick` outcomes (success/failure/skipped-
+       busy) — capped at 50 rows per job via a delete-oldest-beyond-limit query run right after each
+       insert, so the table can't grow unbounded for a job that's been firing for months. New
+       `GET /spaces/:spaceId/scheduled-job-runs?job_id=X` (spaces worker) reads it back, capped at
+       100/request (default 20) — deliberately a FLAT sibling route with `job_id` in the query
+       string, not nested under the existing dynamic `/scheduled-jobs/:jobId`, per this file's own
+       repeatedly-documented Hono RegExpRouter route-table-corruption risk (a dynamic segment
+       followed by a static suffix, items 40/52/60) — a second static suffix under an ALREADY-dynamic
+       segment on this exact file wasn't worth that risk for a read endpoint.
+     - **Next-run display (item 27/28).** New `computeNextRun(cronExpression, fromMs, lookaheadMs?)`
+       in `@naelao/events` — mirrors `isCronDue`'s own minute-scan approach in the forward direction,
+       bounded by a max lookahead (default large enough for any real schedule, explicit param for
+       tests to keep an unsatisfiable-expression case fast) so a malformed or genuinely-impossible
+       cron expression (e.g. Feb 31st) returns `null` rather than scanning forever. `GET
+       /scheduled-jobs`'s existing response now carries `next_run_at` per row, computed fresh on
+       every read (never stored, so it can't drift) and wrapped in a `safeComputeNextRun` that
+       degrades to `null` on any throw — a next-run display bug must never take down the whole Crons
+       list. `null` for a disabled job (nothing to compute toward).
+     - **A REAL editing UI, not just the read-only list this side panel has had since item 124.**
+       `apps/shell`'s Crons tab (`AssistantSidePanels.tsx`) gained create/edit/pause-resume/delete,
+       an inline expandable per-job "History" view (`CronRunHistory`, reads the new run-history
+       route), and the new `next_run_at` display. A two-click "Confirm delete?" pattern (matches
+       this codebase's own `apps/dashboard/clients` precedent, mentioned but never actually reused
+       until now) rather than `window.confirm`, which nothing in this shell had used before. New
+       `createScheduledJob`/`updateScheduledJob`/`toggleScheduledJob`/`deleteScheduledJob`/
+       `listScheduledJobRuns` wrappers in `api.ts`. Deliberately GOAL-ONLY on create (no
+       `script_name` field in the form) — a direct-script-fire job is what the ASSISTANT sets up via
+       `dynamic-workflow.workflow.schedule` (script.find/distill first), not something a person
+       hand-types a raw internal script name for in a narrow side panel; goal-based dispatch (the
+       same shape the seeded revenue-review/leadgen crons already use) is the one a human writes in
+       plain language.
+     - **A real, previously-undetected security gap found and fixed while building this: the CRUD
+       write routes forbade EVERY `product_end_user` outright, so an end-user-created business had
+       NO self-serve way to create/edit/toggle/delete its own cron at all** (only a JWT platform
+       builder could, via the dashboard, which most Launchpad businesses never have — they're
+       created through the shell). Fixed with `requireBusinessMembership`'s admin floor
+       (`POST: "admin"` on `/scheduled-jobs`, `PATCH/DELETE: "admin"` on `/scheduled-jobs/:jobId`),
+       the exact same "an end-user-created business's own admin genuinely IS its owner" precedent
+       `model-config`/`assistant-policy` PATCH already established (items 79/93) — a plain member
+       still can't write, a non-member is refused before reaching the handler, and a builder JWT
+       caller is completely unaffected (the middleware is additive-only for `product_end_user`,
+       per `business-auth.ts`'s own standing contract). Router allowlist widened from an exact
+       `/scheduled-jobs$` match to `/scheduled-jobs(\/[^/]+)?$` — a single dynamic LEAF segment
+       (no static suffix after it), the same safe shape `/projects(\/[^/]+)?` already uses a few
+       entries up, not the corrupting shape.
+     - **The actual worst finding of this pass, found while wiring config-change events: the
+       EXISTING `scheduled_job.disabled` auto-disable event (built a prior session, A1.16.13) had
+       never actually been able to fire in production.** `POST /internal/spaces/:spaceId/
+       events/fire`'s handler forwards to `SpaceDO`'s own `/internal/events/fire` via
+       `forwardToSpaceDO` — which (per this file's own standing comment on `/projects/:projectId`'s
+       PATCH route) builds a FRESH `Request` carrying only `content-type`, never the caller's other
+       headers. `SpaceDO.fireExternalEvent` read `tenantId` off `request.headers.get(
+       "x-naelao-tenant-id")` — a header that could never actually reach it through that call path
+       — so the DO's own required-field check (`if (!tenantId ...) return 400`) rejected EVERY real
+       call, silently, and `scheduled_job.disabled` has (as best this pass could determine) never
+       once fired in this platform's history. Undetected by the pre-existing `space-fire-external-
+       event.test.ts` because that suite calls `doInstance.fetch()` directly with a hand-set header,
+       bypassing the real HTTP round trip through the worker entirely — exactly the "test double
+       diverges from the real contract" class this file has documented repeatedly for other bugs
+       (`config_schema`/`schema_json`, the credentials-worker stub, etc.), except here the "double"
+       was the test's own request construction, not a fake dependency. Fixed at the root:
+       `fireExternalEvent` now reads `tenant_id` from the QUERY STRING first (falling back to the
+       header, in case a future direct caller sets one), matching the exact convention
+       `/projects/:projectId`'s own PATCH route already established for this identical constraint;
+       both the pre-existing external route and this pass's own new `fireScheduledJobEvent` helper
+       now append `?tenant_id=` when calling `forwardToSpaceDO`. Proven with a genuine regression
+       test, not assumed: reverting the query-string read fails exactly the new tests that exercise
+       the real worker→DO round trip (5 of 6 cases in `scheduled-jobs-fires-events.test.ts`), while
+       the OLD DO-only test (hand-set header) keeps passing either way — precisely demonstrating why
+       the old coverage never caught it.
+     - **Five new event types fired from the CRUD routes themselves** (new `fireScheduledJobEvent`
+       helper in `workers/spaces/src/index.ts`, reusing `spaceDoStub`/`forwardToSpaceDO` directly
+       since these routes already run inside the spaces worker — no internal HTTP self-call needed):
+       `scheduled_job.created` (POST), `scheduled_job.updated` (a PATCH touching ordinary fields),
+       `scheduled_job.enabled`/`scheduled_job.paused` (a PATCH whose body is `{enabled: true|false}`
+       — the shell's own `toggleScheduledJob` sends exactly that shape, so a pure toggle gets its
+       own more-specific event than a content edit does), and `scheduled_job.deleted`. Added to
+       `NaelaoEventType`'s union in `@naelao/events` alongside `scheduled_job.disabled` (which
+       existed and fired inline before this pass but was never actually in the documented union).
+       Best-effort throughout — a firing failure is logged and never turns a successful CRUD
+       response into an error, matching this file's own standing "never fail an already-successful
+       mutation over a side effect" convention. PATCH/DELETE need the job's `project_id` for the
+       event's own scoping but can't get it from the request body (PATCH has no such field, and
+       DELETE has no body) — both do one cheap `SELECT project_id` first (PATCH: for the fired
+       event only; DELETE: also because the row is gone the instant the DELETE succeeds).
+     3057/3057 tests pass (42 new: `scheduled-job-timestamp.test.ts`/`scheduled-job-run-history.test.ts`
+     from earlier in this same pass, `cron-next-run.test.ts`'s 7 pure-function cases,
+     `scheduled-jobs-business-membership.test.ts`'s 9 cases proving the admin floor with real
+     `business_memberships` fixtures (admin/member/non-member/product-root/builder-JWT), and
+     `scheduled-jobs-fires-events.test.ts`'s 6 cases driving the REAL spacesWorker Hono app through a
+     real stateful `SpaceDO` instance end to end — the harness that actually caught the
+     `fireExternalEvent` bug — plus a hardened `space-fire-external-event.test.ts` with the
+     query-string case added), `npx turbo run typecheck` clean (76 tasks, force-verified not just
+     cache-replayed). `apps/shell` verified via a real `next build` and `next-on-pages` compile with
+     the new UI strings confirmed present in the compiled bundle before deploying. Deployed:
+     `naelao-agents` (bare `wrangler deploy`), `naelao-spaces`, `naelao-router` (allowlist change),
+     and `apps/shell` (`next-on-pages` + `wrangler pages deploy --branch=main`, confirmed
+     `environment: "production"` via the Pages API) — all four live-verified via non-LLM checks
+     (200s on the shell's `/p/launchpad/{spaces,new}` and the router's by-slug lookup, a
+     401-not-500 from the agents worker's cancel route, and a 404-not-500 from `naelao-spaces`'s own
+     hardened `.workers.dev` URL — expected and healthy per item 21's `workers_dev=false` posture,
+     not a live end-to-end exercise of the new admin-gated routes through a real JWT/session). No
+     `/agent/run` was dispatched, per the standing "use your own credits to test" instruction — every
+     behavioral claim above is backed by a unit test driving the real request/response contracts
+     directly, several of them proven-live-regression-catching by reverting the fix and re-running.
+     **With this, Phase 3 of the 62-item plan is fully shipped.** Phases 4-6 (money, workspace/
+     plugins/artifacts, collaboration + channels) remain planned in
+     `/root/.claude/plans/gleaming-scribbling-pelican.md` and unstarted.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

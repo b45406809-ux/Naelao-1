@@ -23,6 +23,11 @@ import {
   updateAgentPolicy,
   getAssistantMemory,
   listScheduledJobs,
+  createScheduledJob,
+  updateScheduledJob,
+  toggleScheduledJob,
+  deleteScheduledJob,
+  listScheduledJobRuns,
   listAssistantChannels,
   listSubAgents,
   listAssistantFiles,
@@ -38,6 +43,7 @@ import {
   type AgentPolicy,
   type MemoryFact,
   type ScheduledJob,
+  type ScheduledJobRun,
   type ChannelLink,
   type SubAgentSummary,
   type WorkspaceFile,
@@ -267,40 +273,314 @@ function MemoryPanel({ spaceId, session }: { spaceId: string; session: SessionCr
   );
 }
 
-function CronsPanel({ spaceId, session, projectId }: { spaceId: string; session: SessionCredentials; projectId?: string | null | undefined }) {
-  const [crons, setCrons] = React.useState<ScheduledJob[] | null>(null);
+// Phase 3 item 27/28 — a REAL editing UI, not just a read-only list: create/edit/pause-resume/
+// delete, next-run display, and per-job recent-fire history. Deliberately goal-only for creation
+// (no script_name field) — a script-direct-fire job is what the assistant itself sets up via the
+// dynamic-workflow prebuilt (script.find/distill first), not something a person hand-types a raw
+// script name for in a narrow side panel; goal-based dispatch (the same shape the default
+// revenue-review/leadgen crons already use) is the one a human writes in plain language.
+function CronForm({
+  spaceId,
+  session,
+  projectId,
+  initial,
+  onSaved,
+  onCancel,
+}: {
+  spaceId: string;
+  session: SessionCredentials;
+  projectId?: string | null | undefined;
+  initial?: ScheduledJob;
+  onSaved: () => void;
+  onCancel: () => void;
+}) {
+  const isEdit = Boolean(initial);
+  const [name, setName] = React.useState(initial?.name ?? "");
+  const [cronExpr, setCronExpr] = React.useState(initial?.cron_expression ?? "0 9 * * 1");
+  const [goal, setGoal] = React.useState(initial?.goal ?? "");
+  const [saving, setSaving] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+
+  async function submit() {
+    if (!name.trim() || !cronExpr.trim() || !goal.trim()) {
+      setError("Name, schedule, and goal are all required.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      if (isEdit && initial) {
+        await updateScheduledJob(spaceId, initial.id, session, { name, cron_expression: cronExpr, goal });
+      } else {
+        await createScheduledJob(spaceId, session, { name, cron_expression: cronExpr, goal, ...(projectId ? { project_id: projectId } : {}) });
+      }
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't save that");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="cron-item" style={{ borderStyle: "dashed" }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <input
+          className="form-input"
+          placeholder="Name (e.g. Weekly revenue review)"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          style={{ fontSize: 12, padding: "5px 8px" }}
+        />
+        <input
+          className="form-input"
+          placeholder="Cron expression (e.g. 0 9 * * 1)"
+          value={cronExpr}
+          onChange={(e) => setCronExpr(e.target.value)}
+          style={{ fontSize: 12, padding: "5px 8px", fontFamily: "monospace" }}
+        />
+        <textarea
+          className="form-input"
+          placeholder="What should the assistant do when this fires?"
+          value={goal}
+          onChange={(e) => setGoal(e.target.value)}
+          rows={3}
+          style={{ fontSize: 12, padding: "5px 8px", resize: "vertical" }}
+        />
+        {error && <div style={{ fontSize: 11, color: "#dc2626" }}>{error}</div>}
+        <div style={{ display: "flex", gap: 6 }}>
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            disabled={saving}
+            onClick={() => void submit()}
+            style={{ fontSize: 11 }}
+          >
+            {saving ? "Saving…" : isEdit ? "Save" : "Create"}
+          </button>
+          <button type="button" className="btn btn-ghost btn-sm" disabled={saving} onClick={onCancel} style={{ fontSize: 11 }}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CronRunHistory({ spaceId, jobId, session }: { spaceId: string; jobId: string; session: SessionCredentials }) {
+  const [runs, setRuns] = React.useState<ScheduledJobRun[] | null>(null);
   React.useEffect(() => {
     let cancelled = false;
-    setCrons(null);
-    listScheduledJobs(spaceId, session, { projectId: projectId ?? null }).then((c) => { if (!cancelled) setCrons(c); }).catch(() => { if (!cancelled) setCrons([]); });
+    listScheduledJobRuns(spaceId, jobId, session, 10)
+      .then((r) => { if (!cancelled) setRuns(r); })
+      .catch(() => { if (!cancelled) setRuns([]); });
     return () => { cancelled = true; };
+  }, [spaceId, jobId, session]);
+  if (runs === null) return <div style={{ fontSize: 11, color: "var(--text3)", padding: "4px 0" }}>Loading…</div>;
+  if (runs.length === 0) return <div style={{ fontSize: 11, color: "var(--text3)", padding: "4px 0" }}>No fires recorded yet.</div>;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 3, padding: "6px 0 0", borderTop: "1px solid var(--border)", marginTop: 6 }}>
+      {runs.map((r) => (
+        <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10.5 }}>
+          <span style={{ color: r.skipped_busy ? "var(--text3)" : r.ok ? "#16a34a" : "#dc2626", fontWeight: 500, flexShrink: 0 }}>
+            {r.skipped_busy ? "Skipped (busy)" : r.ok ? "OK" : "Failed"}
+          </span>
+          <span style={{ color: "var(--text3)", flexShrink: 0 }}>{new Date(r.fired_at).toLocaleString()}</span>
+          {r.duration_ms != null && <span style={{ color: "var(--text3)", flexShrink: 0 }}>{r.duration_ms}ms</span>}
+          {r.error && (
+            <span
+              style={{ color: "#dc2626", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+              title={r.error}
+            >
+              {r.error}
+            </span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CronsPanel({
+  spaceId,
+  session,
+  projectId,
+  isBusinessSpace,
+}: {
+  spaceId: string;
+  session: SessionCredentials;
+  projectId?: string | null | undefined;
+  isBusinessSpace: boolean;
+}) {
+  const product = useProduct();
+  const [crons, setCrons] = React.useState<ScheduledJob[] | null>(null);
+  const [canEdit, setCanEdit] = React.useState(false);
+  const [creating, setCreating] = React.useState(false);
+  const [editingId, setEditingId] = React.useState<string | null>(null);
+  const [historyId, setHistoryId] = React.useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = React.useState<string | null>(null);
+  const [busyId, setBusyId] = React.useState<string | null>(null);
+
+  const load = React.useCallback(() => {
+    listScheduledJobs(spaceId, session, { projectId: projectId ?? null })
+      .then(setCrons)
+      .catch(() => setCrons([]));
   }, [spaceId, session, projectId]);
+  React.useEffect(() => {
+    setCrons(null);
+    load();
+  }, [load]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    if (!isBusinessSpace) {
+      setCanEdit(false);
+      return;
+    }
+    listMyBusinesses(product.space_id, session)
+      .then((list) => list.find((b) => b.id === spaceId) ?? null)
+      .then((b) => { if (!cancelled) setCanEdit(canManageSpaceSettings(true, b?.role)); })
+      .catch(() => { if (!cancelled) setCanEdit(false); });
+    return () => { cancelled = true; };
+  }, [spaceId, session, isBusinessSpace, product.space_id]);
+
+  async function toggle(job: ScheduledJob) {
+    setBusyId(job.id);
+    try {
+      await toggleScheduledJob(spaceId, job.id, session, !job.enabled);
+      load();
+    } catch {
+      // Best-effort — the list reload below will show the real (unchanged) state either way.
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function doDelete(job: ScheduledJob) {
+    if (confirmDeleteId !== job.id) {
+      setConfirmDeleteId(job.id);
+      setTimeout(() => setConfirmDeleteId((cur) => (cur === job.id ? null : cur)), 4000);
+      return;
+    }
+    setConfirmDeleteId(null);
+    setBusyId(job.id);
+    try {
+      await deleteScheduledJob(spaceId, job.id, session);
+      load();
+    } catch {
+      // Best-effort — a failed delete just leaves the row in place.
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   return (
     <>
-      <div className="tp-section">{projectId ? "This Project's Scheduled Jobs" : "Assistant's Scheduled Jobs"}</div>
+      <div className="tp-section" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span>{projectId ? "This Project's Scheduled Jobs" : "Assistant's Scheduled Jobs"}</span>
+        {canEdit && !creating && (
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            style={{ fontSize: 10.5, padding: "2px 7px" }}
+            onClick={() => setCreating(true)}
+          >
+            + New
+          </button>
+        )}
+      </div>
       <div style={{ padding: "0 10px 8px" }}>
+        {creating && (
+          <CronForm
+            spaceId={spaceId}
+            session={session}
+            projectId={projectId}
+            onCancel={() => setCreating(false)}
+            onSaved={() => { setCreating(false); load(); }}
+          />
+        )}
         {crons === null ? (
           <div style={{ fontSize: 12, color: "var(--text3)", padding: "4px 4px" }}>Loading…</div>
-        ) : crons.length === 0 ? (
+        ) : crons.length === 0 && !creating ? (
           <div style={{ fontSize: 12, color: "var(--text3)", padding: "4px 4px" }}>No scheduled jobs.</div>
         ) : (
-          crons.map((job) => (
-            <div className="cron-item" key={job.id}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 2 }}>
-                <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text)" }}>{job.name}</div>
-                <span className={`badge ${job.enabled ? "badge-green" : "badge-amber"}`} style={{ fontSize: 9 }}>
-                  {job.enabled ? "Active" : "Paused"}
-                </span>
+          crons.map((job) =>
+            editingId === job.id ? (
+              <CronForm
+                key={job.id}
+                spaceId={spaceId}
+                session={session}
+                projectId={projectId}
+                initial={job}
+                onCancel={() => setEditingId(null)}
+                onSaved={() => { setEditingId(null); load(); }}
+              />
+            ) : (
+              <div className="cron-item" key={job.id}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 2 }}>
+                  <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text)" }}>{job.name}</div>
+                  <span className={`badge ${job.enabled ? "badge-green" : "badge-amber"}`} style={{ fontSize: 9 }}>
+                    {job.enabled ? "Active" : "Paused"}
+                  </span>
+                </div>
+                <div className="cron-expr">{job.cron_expression}</div>
+                {job.enabled && job.next_run_at != null && (
+                  <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 2 }}>
+                    Next: {new Date(job.next_run_at).toLocaleString()}
+                  </div>
+                )}
+                {job.last_run_at && (
+                  <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 2 }}>
+                    Last run: {new Date(job.last_run_at).toLocaleString()}
+                  </div>
+                )}
+                {job.consecutive_failures > 0 && (
+                  <div style={{ fontSize: 11, color: "#d97706", marginTop: 2 }}>{job.consecutive_failures} consecutive failure(s)</div>
+                )}
+                <div style={{ display: "flex", gap: 5, marginTop: 6, flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    style={{ fontSize: 10.5, padding: "2px 7px" }}
+                    onClick={() => setHistoryId((cur) => (cur === job.id ? null : job.id))}
+                  >
+                    {historyId === job.id ? "Hide history" : "History"}
+                  </button>
+                  {canEdit && (
+                    <>
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        style={{ fontSize: 10.5, padding: "2px 7px" }}
+                        disabled={busyId === job.id}
+                        onClick={() => void toggle(job)}
+                      >
+                        {job.enabled ? "Pause" : "Resume"}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        style={{ fontSize: 10.5, padding: "2px 7px" }}
+                        onClick={() => setEditingId(job.id)}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-danger btn-sm"
+                        style={{ fontSize: 10.5, padding: "2px 7px" }}
+                        disabled={busyId === job.id}
+                        onClick={() => void doDelete(job)}
+                      >
+                        {confirmDeleteId === job.id ? "Confirm delete?" : "Delete"}
+                      </button>
+                    </>
+                  )}
+                </div>
+                {historyId === job.id && <CronRunHistory spaceId={spaceId} jobId={job.id} session={session} />}
               </div>
-              <div className="cron-expr">{job.cron_expression}</div>
-              {job.last_run_at && (
-                <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 2 }}>Last run: {new Date(job.last_run_at).toLocaleString()}</div>
-              )}
-              {job.consecutive_failures > 0 && (
-                <div style={{ fontSize: 11, color: "#d97706", marginTop: 2 }}>{job.consecutive_failures} consecutive failure(s)</div>
-              )}
-            </div>
-          ))
+            )
+          )
         )}
       </div>
     </>
@@ -628,7 +908,7 @@ export function AssistantSidePanelBody({
     case "memory":
       return <MemoryPanel spaceId={spaceId} session={session} />;
     case "crons":
-      return <CronsPanel spaceId={spaceId} session={session} projectId={projectId} />;
+      return <CronsPanel spaceId={spaceId} session={session} projectId={projectId} isBusinessSpace={isBusinessSpace} />;
     case "channels":
       return <ChannelsPanel spaceId={spaceId} session={session} projectId={projectId} />;
     case "heartbeats":

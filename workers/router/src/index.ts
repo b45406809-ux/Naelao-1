@@ -507,11 +507,12 @@ app.get("/v1/spaces/:spaceId/shell/manifest", async (c) => {
 // write); projects/threads allow GET+POST but NOT the admin-only sub-paths (rules, spend,
 // per-project PATCH config) — those stay off this allowlist entirely, so no product_end_user
 // request can reach them regardless of what the spaces worker's gate would otherwise allow.
-// `/scheduled-jobs` is still deliberately excluded — nothing in the shell needs it yet, and its
-// own gate (`loadOwnedSpace`) is tenant-match-only with no per-caller floor at all, exactly the
-// footgun this comment originally warned about (claims.tid is the space's OWNING tenant, so a
-// tenant-match-only gate would silently accept end-user traffic the moment it's allowlisted).
-// Do not add it without first giving it the same treatment projects/threads got here.
+// `/scheduled-jobs` (and its Phase 3 sibling `/scheduled-job-runs`) WAS deliberately excluded
+// here for the reason this paragraph used to give — `loadOwnedSpace` alone is tenant-match-only,
+// exactly the footgun warned about above (claims.tid is the space's OWNING tenant, so that gate
+// would silently accept end-user traffic the moment it's allowlisted). It was given the same
+// treatment projects/threads got before being added (see WS-2/the GET route's own comment):
+// resolveEndUserBusinessRole on the spaces worker now does the real per-caller authorization.
 //
 // Phase C (§A1.17) added the business/invite routes. /businesses and /my-businesses are always
 // called with a PRODUCT ROOT :spaceId (no parent_space_id) — safe under the same reasoning as
@@ -614,7 +615,17 @@ const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // Which model this business's assistant/agents run on — admin-gated by requireBusinessMembership
   // on the spaces worker, same identity-here-authorization-there split as every route above.
   /^\/spaces\/([^/]+)\/model-config$/,
-  /^\/spaces\/([^/]+)\/scheduled-jobs$/,
+  // Phase 3 item 27/28: a self-serve Crons editing UI needs write access too, not just the list
+  // — the trailing `(\/[^/]+)?` also allows the single-job PATCH/DELETE path (`:jobId`), gated
+  // by requireBusinessMembership's admin floor on the spaces worker exactly like model-config
+  // above (identity here, authorization there). This is a single dynamic LEAF segment (no static
+  // suffix after it), the same safe shape as /projects(\/[^/]+)? a few entries up — not the
+  // dynamic-then-static-suffix shape that has repeatedly corrupted this codebase's Hono route
+  // tables (that risk lives in the spaces worker's own route table, not this plain regex list).
+  /^\/spaces\/([^/]+)\/scheduled-jobs(\/[^/]+)?$/,
+  // Phase 3 item 27/28: recent-fires history for a scheduled job — same auth floor as
+  // scheduled-jobs itself (resolveEndUserBusinessRole on the spaces worker).
+  /^\/spaces\/([^/]+)\/scheduled-job-runs$/,
   // The Memory/Channels/Sub-agents/Files panels — additionally gated by
   // requireEndUserBusinessMembership on the agents worker (same floor, different worker since
   // these routes live there).

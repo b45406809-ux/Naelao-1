@@ -25,6 +25,10 @@ const SCHEDULED_JOBS_AGENT_GOAL_MIGRATION = readFileSync(
   join(__dirname, "../../infra/migrations/0043_scheduled_jobs_agent_goal.sql"),
   "utf8"
 );
+const SCHEDULED_JOB_RUNS_MIGRATION = readFileSync(
+  join(__dirname, "../../infra/migrations/0071_scheduled_job_runs.sql"),
+  "utf8"
+);
 const SPACES_TABLE_SQL = `
   CREATE TABLE spaces (
     id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
@@ -34,7 +38,7 @@ const SPACES_TABLE_SQL = `
 `;
 
 function makeSpacesEnv(spaceId: string, tenantId: string): Record<string, unknown> {
-  const fakeDb = createFakeD1([SPACES_TABLE_SQL, SCHEDULED_JOBS_MIGRATION, SCHEDULED_JOBS_FAILURES_MIGRATION, SCHEDULED_JOBS_AGENT_GOAL_MIGRATION]);
+  const fakeDb = createFakeD1([SPACES_TABLE_SQL, SCHEDULED_JOBS_MIGRATION, SCHEDULED_JOBS_FAILURES_MIGRATION, SCHEDULED_JOBS_AGENT_GOAL_MIGRATION, SCHEDULED_JOB_RUNS_MIGRATION]);
   fakeDb.db.exec(`INSERT INTO spaces (id, tenant_id, status, name) VALUES ('${spaceId}', '${tenantId}', 'active', 'Test Space')`);
   return { PLATFORM_SECRET: "s", ENVIRONMENT: "test", PLATFORM_DB: fakeDb };
 }
@@ -85,6 +89,31 @@ describe("scheduled-jobs CRUD (spaces worker)", () => {
       env as never, execCtx
     );
     expect(res.status).toBe(400);
+  });
+
+  // Phase 3 item 27/28 — "next run" computed fresh on every list, not stored.
+  it("reports a real next_run_at for an enabled job, and null for a disabled one", async () => {
+    const env = makeSpacesEnv("space-1", "tenant-1");
+    await spacesWorker.fetch(
+      req("/spaces/space-1/scheduled-jobs", { method: "POST", body: { name: "Enabled job", cron_expression: "0 9 * * *", script_name: "s1" } }),
+      env as never, execCtx
+    );
+    const created = await (await spacesWorker.fetch(
+      req("/spaces/space-1/scheduled-jobs", { method: "POST", body: { name: "Disabled job", cron_expression: "0 9 * * *", script_name: "s2" } }),
+      env as never, execCtx
+    )).json() as { id: string };
+    await spacesWorker.fetch(
+      req(`/spaces/space-1/scheduled-jobs/${created.id}`, { method: "PATCH", body: { enabled: false } }),
+      env as never, execCtx
+    );
+
+    const res = await spacesWorker.fetch(req("/spaces/space-1/scheduled-jobs"), env as never, execCtx);
+    const json = await res.json() as { data: Array<{ name: string; enabled: number; next_run_at: number | null }> };
+    const enabledJob = json.data.find((j) => j.name === "Enabled job")!;
+    const disabledJob = json.data.find((j) => j.name === "Disabled job")!;
+    expect(typeof enabledJob.next_run_at).toBe("number");
+    expect(enabledJob.next_run_at).toBeGreaterThan(Date.now());
+    expect(disabledJob.next_run_at).toBeNull();
   });
 
   it("lists jobs for a space, including the new failure-tracking fields", async () => {
@@ -212,10 +241,66 @@ describe("scheduled-jobs CRUD (spaces worker)", () => {
   });
 });
 
+// Phase 3 item 27/28 — GET /scheduled-job-runs (migration 0071). Deliberately a flat sibling
+// route (job_id in the query string) rather than nested under the existing dynamic
+// /scheduled-jobs/:jobId route — see that route's own header comment for why.
+describe("scheduled-job-runs (spaces worker) — run-history read side", () => {
+  it("requires job_id", async () => {
+    const env = makeSpacesEnv("space-1", "tenant-1");
+    const res = await spacesWorker.fetch(req("/spaces/space-1/scheduled-job-runs"), env as never, execCtx);
+    expect(res.status).toBe(400);
+  });
+
+  it("returns the real fires recorded for a job, newest first", async () => {
+    const env = makeSpacesEnv("space-1", "tenant-1");
+    const db = (env as unknown as { PLATFORM_DB: { db: { exec(sql: string): void } } }).PLATFORM_DB.db;
+    db.exec(
+      `INSERT INTO scheduled_job_runs (id, job_id, space_id, tenant_id, fired_at, ok, error, duration_ms, skipped_busy) VALUES
+       ('r1', 'job-1', 'space-1', 'tenant-1', 1000, 1, NULL, 50, 0),
+       ('r2', 'job-1', 'space-1', 'tenant-1', 2000, 0, 'boom', 10, 0),
+       ('r3', 'job-1', 'space-1', 'tenant-1', 3000, 0, NULL, NULL, 1),
+       ('r4', 'job-OTHER', 'space-1', 'tenant-1', 4000, 1, NULL, 5, 0)`
+    );
+    const res = await spacesWorker.fetch(req("/spaces/space-1/scheduled-job-runs?job_id=job-1"), env as never, execCtx);
+    expect(res.status).toBe(200);
+    const json = await res.json() as { data: Array<{ id: string; ok: number; error: string | null; skipped_busy: number }>; count: number };
+    expect(json.count).toBe(3);
+    // newest first, and job-OTHER's row never leaks in
+    expect(json.data.map((r) => r.id)).toEqual(["r3", "r2", "r1"]);
+    expect(json.data[1]!.error).toBe("boom");
+    expect(json.data[0]!.skipped_busy).toBe(1);
+  });
+
+  it("respects a limit param, capped at 100", async () => {
+    const env = makeSpacesEnv("space-1", "tenant-1");
+    const db = (env as unknown as { PLATFORM_DB: { db: { exec(sql: string): void } } }).PLATFORM_DB.db;
+    for (let i = 0; i < 5; i++) {
+      db.exec(`INSERT INTO scheduled_job_runs (id, job_id, space_id, tenant_id, fired_at, ok) VALUES ('r${i}', 'job-1', 'space-1', 'tenant-1', ${i}, 1)`);
+    }
+    const res = await spacesWorker.fetch(req("/spaces/space-1/scheduled-job-runs?job_id=job-1&limit=2"), env as never, execCtx);
+    const json = await res.json() as { count: number };
+    expect(json.count).toBe(2);
+  });
+
+  it("404s for a space the calling tenant does not own", async () => {
+    const env = makeSpacesEnv("space-1", "tenant-1");
+    const res = await spacesWorker.fetch(
+      req("/spaces/space-1/scheduled-job-runs?job_id=job-1", { tenant: "tenant-evil" }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(404);
+  });
+});
+
 // WS-2 (Space Assistant surface, Crons panel): GET is now reachable by a signed-in product end
 // user reading their own product's (or business's) scheduled jobs — resolveEndUserBusinessRole
 // treats the product root (no parent_space_id) as an implicit member, matching every other
-// end-user floor's precedent. POST must never be reachable by a product_end_user regardless.
+// end-user floor's precedent. POST/PATCH/DELETE are now admin-gated by requireBusinessMembership
+// (Phase 3 item 27/28's Crons editing UI) rather than forbidding every product_end_user outright
+// — a business's own admin/owner end user CAN write; a plain product-root "member" (the only role
+// the root ever implies) cannot, which is what this file's own POST case below still proves.
+// See scheduled-jobs-business-membership.test.ts for the full admin/member/non-member matrix on
+// a real business (child) space.
 describe("scheduled-jobs — product_end_user floor (WS-2)", () => {
   function productEndUserReq(path: string, opts: { method?: string; body?: unknown } = {}): Request {
     const headers = new Headers({
@@ -237,7 +322,7 @@ describe("scheduled-jobs — product_end_user floor (WS-2)", () => {
     expect(res.status).toBe(200);
   });
 
-  it("a product_end_user CANNOT POST a new scheduled job", async () => {
+  it("a product_end_user on the PRODUCT ROOT cannot POST (implicit 'member' role is below the admin floor)", async () => {
     const env = makeSpacesEnv("space-1", "tenant-1");
     const res = await spacesWorker.fetch(
       productEndUserReq("/spaces/space-1/scheduled-jobs", {
