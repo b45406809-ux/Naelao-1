@@ -46,6 +46,8 @@ export default function KnowledgePage() {
   const [content, setContent] = React.useState("");
   const [saving, setSaving] = React.useState(false);
   const [busyId, setBusyId] = React.useState<string | null>(null);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const [fileError, setFileError] = React.useState<string | null>(null);
 
   const [query, setQuery] = React.useState("");
   const [searching, setSearching] = React.useState(false);
@@ -84,6 +86,27 @@ export default function KnowledgePage() {
     } finally {
       setSaving(false);
     }
+  }
+
+  // Real file-browse, alongside the manual paste — reads a selected file's TEXT client-side and
+  // pre-fills title (from the filename) + content, rather than making a person retype/copy-paste
+  // a document they already have as a file. Same text-only, 2MB guard the prior (deliberately
+  // removed, see this file's own header comment) input-bar uploader had — real binary/PDF parsing
+  // stays a separate, larger KB-pipeline feature.
+  function handleFilePick(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-selecting the same file next time
+    if (!file) return;
+    const looksText = /^text\//.test(file.type) || file.type === "" || /\.(md|txt|csv|json|ts|tsx|js|jsx|py|yaml|yml|log)$/i.test(file.name);
+    if (!looksText || file.size > 2_000_000) {
+      setFileError(`Can't read "${file.name}" — only text files up to 2MB are supported here.`);
+      return;
+    }
+    setFileError(null);
+    file.text().then((text) => {
+      setTitle((t) => t || file.name);
+      setContent(text);
+    }).catch(() => setFileError(`Couldn't read "${file.name}".`));
   }
 
   async function handleDelete(doc: KbDocument) {
@@ -168,10 +191,13 @@ export default function KnowledgePage() {
               rows={8}
               style={{ resize: "vertical" }}
             />
-            <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <Button onClick={() => void handleAdd()} disabled={saving || !title.trim() || !content.trim()}>
                 {saving ? "Adding…" : "Add"}
               </Button>
+              <input ref={fileInputRef} type="file" style={{ display: "none" }} onChange={handleFilePick} />
+              <Button variant="ghost" onClick={() => fileInputRef.current?.click()}>Upload a file instead</Button>
+              {fileError && <span style={{ fontSize: 12, color: "var(--danger)" }}>{fileError}</span>}
             </div>
           </div>
         </Card>

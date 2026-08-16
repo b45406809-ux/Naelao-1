@@ -190,6 +190,9 @@ export interface AgentsEnv {
   MCP_HUB?: Fetcher;
   /** Credentials vault — stores a connector's API key (only the name is referenced elsewhere). */
   CREDENTIALS_WORKER?: Fetcher;
+  /** Phase 5: artifact worker — agent-authored deliverables (a rendered HTML page, a report),
+   *  space-scoped R2 storage. Optional: the artifacts panel/prebuilt degrade honestly when unbound. */
+  ARTIFACT_WORKER?: Fetcher;
   /** "Connect with Whop" OAuth2+PKCE app — self-serve via Whop's Developer Dashboard, no invite
    *  needed (a completely separate mechanism from the invite-gated Platforms API the
    *  business-wallet rail uses). Optional: the OAuth start/callback routes degrade to an honest
@@ -4351,6 +4354,102 @@ app.get("/spaces/:spaceId/assistant/files", async (c) => {
     .filter((o) => !o.key.endsWith("/.keep"))
     .map((o) => ({ path: o.key.slice(prefix.length), size: o.size, uploaded: o.uploaded.toISOString() }));
   return c.json({ data: files, count: files.length });
+});
+
+// GET /spaces/:spaceId/assistant/files/* — the per-file read that the listing route above never
+// had (its own doc comment used to say "never file contents"). Mirrors the project-scoped
+// equivalent (workers/spaces/src/index.ts, /projects/:projectId/workspace/files/*) byte for byte:
+// server-side ..-traversal collapse, a 2MB inline-view cap, too_large beyond it, 404 for missing.
+const ASSISTANT_FILE_MAX_BYTES = 2 * 1024 * 1024;
+app.get("/spaces/:spaceId/assistant/files/*", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  await requireVerifiedTenant(c);
+  if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
+  if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Workspace storage not bound" }, 503);
+  const prefix = `spaces/${spaceId}/workspace/`;
+  const rest = c.req.path.split("/assistant/files/")[1] ?? "";
+  const relative = decodeURIComponent(rest).split("/").filter((seg) => seg && seg !== "." && seg !== "..").join("/");
+  if (!relative) return c.json({ error_code: "bad_request", message: "file path required" }, 400);
+  const obj = await c.env.SCRIPTS_R2.get(prefix + relative);
+  if (!obj) return c.json({ error_code: "not_found", message: "File not found" }, 404);
+  if (obj.size > ASSISTANT_FILE_MAX_BYTES) {
+    return c.json({ path: relative, size: obj.size, too_large: true, message: "File exceeds the 2MB inline view limit" });
+  }
+  const content = await obj.text();
+  return c.json({ path: relative, size: obj.size, content });
+});
+
+// GET /spaces/:spaceId/assistant/artifacts[/*] — Phase 5: agent-authored deliverables (a
+// rendered HTML page, a report) the shell's Artifacts tab lists/previews. Proxies to the artifact
+// worker's own hardened routes via a direct service binding, minting the internal token that
+// worker's requireInternalHmac gate requires — the SAME auth boundary as every other worker this
+// file proxies to (assistant/files above, kb/*, etc.), just one hop further since artifacts are a
+// separate storage worker rather than SCRIPTS_R2 read directly.
+app.get("/spaces/:spaceId/assistant/artifacts", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  await requireVerifiedTenant(c);
+  if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
+  if (!c.env.ARTIFACT_WORKER) return c.json({ error_code: "unavailable", message: "Artifact storage not bound" }, 503);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const resp = await c.env.ARTIFACT_WORKER.fetch(
+    new Request(`http://artifact-worker/spaces/${spaceId}/artifacts`, {
+      headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+    })
+  );
+  return new Response(resp.body, { status: resp.status, headers: { "content-type": "application/json" } });
+});
+
+// JSON-wrapped, matching /assistant/files/*'s own contract exactly ({path/content} there,
+// {artifact_id/filename/content_type/content} here) — apiFetch (apps/shell's HTTP client) always
+// calls res.json(), so a raw-bytes-with-real-content-type response (what the artifact worker's
+// own GET route sends, useful for a future direct-download link) would break the shell's fetch
+// helper. Text content types are inlined (capped, matching the Files viewer's 2MB rule);
+// anything else reports metadata only with binary:true rather than corrupting binary bytes
+// through a JSON string.
+const ARTIFACT_INLINE_MAX_BYTES = 2 * 1024 * 1024;
+app.get("/spaces/:spaceId/assistant/artifacts/:artifactId", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const artifactId = c.req.param("artifactId");
+  await requireVerifiedTenant(c);
+  if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
+  if (!c.env.ARTIFACT_WORKER) return c.json({ error_code: "unavailable", message: "Artifact storage not bound" }, 503);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const resp = await c.env.ARTIFACT_WORKER.fetch(
+    new Request(`http://artifact-worker/spaces/${spaceId}/artifacts/${encodeURIComponent(artifactId)}`, {
+      headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+    })
+  );
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => "");
+    return c.json({ error_code: resp.status === 404 ? "not_found" : "upstream_error", message: body || `artifact worker returned ${resp.status}` }, resp.status as 404 | 500);
+  }
+  const contentType = resp.headers.get("content-type") ?? "application/octet-stream";
+  const filename = resp.headers.get("x-artifact-filename") ?? "";
+  const isText = /^text\/|json|xml/.test(contentType);
+  if (!isText) {
+    return c.json({ artifact_id: artifactId, filename, content_type: contentType, binary: true });
+  }
+  const buf = await resp.arrayBuffer();
+  if (buf.byteLength > ARTIFACT_INLINE_MAX_BYTES) {
+    return c.json({ artifact_id: artifactId, filename, content_type: contentType, too_large: true, message: "Artifact exceeds the 2MB inline view limit" });
+  }
+  return c.json({ artifact_id: artifactId, filename, content_type: contentType, content: new TextDecoder().decode(buf) });
+});
+
+app.delete("/spaces/:spaceId/assistant/artifacts/:artifactId", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const artifactId = c.req.param("artifactId");
+  await requireVerifiedTenant(c);
+  if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
+  if (!c.env.ARTIFACT_WORKER) return c.json({ error_code: "unavailable", message: "Artifact storage not bound" }, 503);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const resp = await c.env.ARTIFACT_WORKER.fetch(
+    new Request(`http://artifact-worker/spaces/${spaceId}/artifacts/${encodeURIComponent(artifactId)}`, {
+      method: "DELETE",
+      headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+    })
+  );
+  return new Response(resp.body, { status: resp.status, headers: { "content-type": "application/json" } });
 });
 
 // GET /spaces/:spaceId/assistant/capabilities — what this assistant can actually do: the

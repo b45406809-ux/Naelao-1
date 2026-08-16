@@ -903,6 +903,11 @@ export interface AgentDOEnv {
   /** Credentials worker — used by the wallet prebuilt's check_bypass op to detect whether a
    *  business has its own credential for a known third-party payment provider. */
   CREDENTIALS_WORKER?: Fetcher;
+  /** Phase 5: artifact worker — agent-authored deliverables (a rendered HTML page, a report),
+   *  distinct from r2-workspace's own scratch storage. Optional: the `artifacts` prebuilt
+   *  degrades honestly ("artifacts unavailable") when unbound, same posture as every other
+   *  optional service binding here. */
+  ARTIFACT_WORKER?: Fetcher;
   /** AI Gateway identity (spec §15). */
   NAELAO_ACCOUNT_ID?: string;
   NAELAO_GATEWAY_ID?: string;
@@ -1779,6 +1784,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (this.env.BILLING_WORKER) env.billingWorker = this.env.BILLING_WORKER;
     if (this.env.MCP_HUB) env.mcpHubWorker = this.env.MCP_HUB;
     if (this.env.CREDENTIALS_WORKER) env.credentialsWorker = this.env.CREDENTIALS_WORKER;
+    if (this.env.ARTIFACT_WORKER) env.artifactWorker = this.env.ARTIFACT_WORKER;
 
     // Execution ladder Tiers 2-5 (code-runner.ts) — degrades tier-by-tier when a binding
     // (LOADER / BROWSER_WORKER / TOOL_SANDBOX) is absent; Tier 1 (R2) never needs this.

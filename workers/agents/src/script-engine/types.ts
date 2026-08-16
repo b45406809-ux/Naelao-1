@@ -711,6 +711,10 @@ export interface ScriptEngineEnv {
   /** Credentials worker — the wallet prebuilt's check_bypass op reads a business's own
    *  credential list to detect a connected third-party payment provider. */
   credentialsWorker?: Fetcher;
+  /** Artifact worker — agent-authored deliverables (rendered HTML, a report), space-scoped R2
+   *  storage distinct from r2-workspace's own scratch files. The `artifacts` prebuilt degrades
+   *  honestly when unbound. */
+  artifactWorker?: Fetcher;
   /** Host-provided primitives for sub-agent / workflow prebuilt scripts. */
   orchestration?: OrchestrationHooks;
   /** HITL approval gateway — present when HITLApprovalDO is wired up. */

@@ -75,7 +75,7 @@ const MAX_POLL_DURATION_MS = 60_000;
 // a bare red banner. See UpgradeDialog's own doc for what each code offers.
 const BILLING_ERROR_CODES = new Set(["insufficient_credits", "subscription_inactive", "quota_exceeded", "infra_quota_exceeded"]);
 
-type ThreadPanelTab = "stats" | "assistant" | SidePanelTab | "artifacts";
+type ThreadPanelTab = "stats" | "assistant" | SidePanelTab;
 
 /** A display name for whoever produced a message, or null when it needs no label.
  *
@@ -1816,9 +1816,9 @@ export function Chat({
                 { key: "stats" as ThreadPanelTab, label: "Stats" },
                 ...(threadId ? [{ key: "assistant" as ThreadPanelTab, label: "Assistant" }] : []),
                 // A project thread hides tabs that only make sense whole-business-wide (e.g.
-                // Heartbeats) — see sidePanelTabs' own header for why.
+                // Heartbeats) — see sidePanelTabs' own header for why. Phase 5: Artifacts is now a
+                // real SidePanelTab (was a separate hardcoded "Coming soon." entry here before).
                 ...sidePanelTabs(Boolean(threadId)).map((t) => ({ key: t.key as ThreadPanelTab, label: t.label })),
-                { key: "artifacts" as ThreadPanelTab, label: "Artifacts" },
               ]
             ).map((t) => (
               <button
@@ -1860,7 +1860,7 @@ export function Chat({
                 />
               </>
             )}
-            {panelTab !== "stats" && panelTab !== "assistant" && panelTab !== "artifacts" && (
+            {panelTab !== "stats" && panelTab !== "assistant" && (
               <AssistantSidePanelBody
                 spaceId={spaceId}
                 session={session}
@@ -1878,11 +1878,6 @@ export function Chat({
                 lastRunId={lastRun?.id ?? latestPersistedRunId}
                 isBusinessSpace={dockIsBusinessSpace}
               />
-            )}
-            {panelTab === "artifacts" && (
-              <div className="tp-section" style={{ textTransform: "none", color: "var(--text3)" }}>
-                Coming soon.
-              </div>
             )}
           </div>
         </div>

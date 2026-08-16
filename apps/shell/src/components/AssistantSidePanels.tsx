@@ -32,6 +32,11 @@ import {
   listSubAgents,
   listAssistantFiles,
   listWorkspaceFiles,
+  readAssistantFile,
+  readWorkspaceFile,
+  listArtifacts,
+  getArtifact,
+  deleteArtifact,
   getAssistantCapabilities,
   listNotifications,
   markNotificationRead,
@@ -47,6 +52,8 @@ import {
   type ChannelLink,
   type SubAgentSummary,
   type WorkspaceFile,
+  type ArtifactSummary,
+  type ArtifactContent,
   type AssistantCapabilities,
   type AppNotification,
   type BusinessAnalytics,
@@ -64,6 +71,7 @@ export type SidePanelTab =
   | "heartbeats"
   | "sub-agents"
   | "files"
+  | "artifacts"
   | "skills"
   | "notifications";
 
@@ -78,6 +86,11 @@ const ALL_SIDE_PANEL_TABS: { key: SidePanelTab; label: string; assistantOnly?: b
   { key: "heartbeats", label: "Heartbeats", assistantOnly: true },
   { key: "sub-agents", label: "Sub-agents" },
   { key: "files", label: "Files" },
+  // Phase 5: agent-authored deliverables, distinct from Files (the agent's own scratch
+  // workspace) — replaces Chat.tsx's old hardcoded "Coming soon." placeholder tab. Space-wide
+  // only for now (the backend has no per-project artifact scoping yet, matching Memory/Skills'
+  // own precedent), so this renders identically whether opened from a project thread or Home.
+  { key: "artifacts", label: "Artifacts" },
   { key: "skills", label: "Skills" },
   { key: "notifications", label: "Notifications" },
 ];
@@ -661,14 +674,37 @@ function SubAgentsPanel({ spaceId, session, lastRunId }: { spaceId: string; sess
   );
 }
 
+// Phase 5: click-to-open/preview, reusing the exact iframe(.html)/pre(text) pattern already
+// proven working in ProjectKindPanel.tsx's WorkspaceFilesPanel — same behavior, adapted to this
+// panel's compact tp-* styling rather than settings-block/settings-row. Project-scoped reads go
+// through readWorkspaceFile (pre-existing); the space-wide assistant workspace now has a matching
+// per-file read route too (previously list-only — see the new /assistant/files/* backend route).
 function FilesPanel({ spaceId, projectId, session }: { spaceId: string; projectId?: string | null | undefined; session: SessionCredentials }) {
   const [files, setFiles] = React.useState<WorkspaceFile[] | null>(null);
+  const [open, setOpen] = React.useState<{ path: string; content?: string; too_large?: boolean } | null>(null);
+  const [opening, setOpening] = React.useState<string | null>(null);
   React.useEffect(() => {
     let cancelled = false;
+    setOpen(null);
     const load = projectId ? listWorkspaceFiles(spaceId, projectId, session) : listAssistantFiles(spaceId, session);
     load.then((f) => { if (!cancelled) setFiles(f); }).catch(() => { if (!cancelled) setFiles([]); });
     return () => { cancelled = true; };
   }, [spaceId, projectId, session]);
+
+  async function openFile(path: string) {
+    setOpening(path);
+    try {
+      const result = projectId
+        ? await readWorkspaceFile(spaceId, projectId, path, session)
+        : await readAssistantFile(spaceId, path, session);
+      setOpen(result);
+    } catch {
+      setOpen({ path, content: "(could not read file)" });
+    } finally {
+      setOpening(null);
+    }
+  }
+
   return (
     <>
       <div className="tp-section">{projectId ? "Project Workspace" : "Workspace"}</div>
@@ -678,11 +714,149 @@ function FilesPanel({ spaceId, projectId, session }: { spaceId: string; projectI
         <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>No files yet.</div>
       ) : (
         files.map((f) => (
-          <div key={f.path} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 14px", fontSize: 11.5 }}>
+          <div
+            key={f.path}
+            onClick={() => openFile(f.path)}
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 14px", fontSize: 11.5, cursor: "pointer" }}
+          >
             <span style={{ color: "var(--text2)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.path}</span>
-            <span style={{ color: "var(--text3)", fontSize: 10 }}>{formatBytes(f.size)}</span>
+            <span style={{ color: "var(--text3)", fontSize: 10 }}>{opening === f.path ? "…" : formatBytes(f.size)}</span>
           </div>
         ))
+      )}
+      {open && (
+        <div style={{ margin: "8px 14px", padding: 10, border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface2)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+            <strong style={{ fontSize: 11.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{open.path}</strong>
+            <button
+              type="button"
+              onClick={() => setOpen(null)}
+              style={{ border: "none", background: "none", color: "var(--text3)", cursor: "pointer", fontSize: 11 }}
+            >
+              Close
+            </button>
+          </div>
+          {open.too_large ? (
+            <p style={{ color: "var(--text3)", fontSize: 11.5, margin: 0 }}>Too large to preview inline.</p>
+          ) : open.path.endsWith(".html") ? (
+            <iframe
+              title={open.path}
+              sandbox=""
+              srcDoc={open.content ?? ""}
+              style={{ width: "100%", height: 260, border: "1px solid var(--border)", borderRadius: 6, background: "#fff" }}
+            />
+          ) : (
+            <pre style={{ whiteSpace: "pre-wrap", fontSize: 11, maxHeight: 260, overflow: "auto", margin: 0 }}>{open.content ?? ""}</pre>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+// Phase 5: agent-authored deliverables — a finished thing meant to be SHOWN (a rendered page, a
+// report), distinct from FilesPanel above (the agent's own scratch workspace). Same open/preview
+// pattern (iframe for .html, pre for text) plus a Delete affordance the read-only Files tab
+// doesn't have, since an artifact is something the person is actively managing, not just browsing.
+function ArtifactsPanel({ spaceId, session }: { spaceId: string; session: SessionCredentials }) {
+  const [items, setItems] = React.useState<ArtifactSummary[] | null>(null);
+  const [open, setOpen] = React.useState<ArtifactContent | null>(null);
+  const [opening, setOpening] = React.useState<string | null>(null);
+  const [deletingId, setDeletingId] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    setOpen(null);
+    listArtifacts(spaceId, session).then((r) => { if (!cancelled) setItems(r); }).catch(() => { if (!cancelled) setItems([]); });
+    return () => { cancelled = true; };
+  }, [spaceId, session]);
+
+  function load() {
+    listArtifacts(spaceId, session).then(setItems).catch(() => setItems([]));
+  }
+
+  async function openArtifact(id: string) {
+    setOpening(id);
+    try {
+      setOpen(await getArtifact(spaceId, id, session));
+    } catch {
+      setOpen(null);
+    } finally {
+      setOpening(null);
+    }
+  }
+
+  async function handleDelete(id: string) {
+    setDeletingId(id);
+    try {
+      await deleteArtifact(spaceId, id, session);
+      if (open?.artifact_id === id) setOpen(null);
+      load();
+    } catch {
+      /* stays actionable — the list just won't have shrunk */
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  return (
+    <>
+      <div className="tp-section">Artifacts</div>
+      {items === null ? (
+        <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>Loading…</div>
+      ) : items.length === 0 ? (
+        <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>
+          None yet — a finished deliverable your agent publishes (a report, a rendered page) will show up here.
+        </div>
+      ) : (
+        items.map((a) => (
+          <div key={a.artifact_id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 14px", fontSize: 11.5 }}>
+            <span
+              onClick={() => openArtifact(a.artifact_id)}
+              style={{ color: "var(--text2)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "pointer" }}
+            >
+              {opening === a.artifact_id ? "…" : a.filename}
+            </span>
+            <span style={{ color: "var(--text3)", fontSize: 10 }}>{formatBytes(a.size)}</span>
+            <button
+              type="button"
+              onClick={() => handleDelete(a.artifact_id)}
+              disabled={deletingId === a.artifact_id}
+              style={{ border: "none", background: "none", color: "var(--text3)", cursor: "pointer", fontSize: 11, padding: 0 }}
+              title="Delete this artifact"
+            >
+              {deletingId === a.artifact_id ? "…" : "✕"}
+            </button>
+          </div>
+        ))
+      )}
+      {open && (
+        <div style={{ margin: "8px 14px", padding: 10, border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface2)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+            <strong style={{ fontSize: 11.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{open.filename}</strong>
+            <button
+              type="button"
+              onClick={() => setOpen(null)}
+              style={{ border: "none", background: "none", color: "var(--text3)", cursor: "pointer", fontSize: 11 }}
+            >
+              Close
+            </button>
+          </div>
+          {open.too_large ? (
+            <p style={{ color: "var(--text3)", fontSize: 11.5, margin: 0 }}>Too large to preview inline.</p>
+          ) : open.binary ? (
+            <p style={{ color: "var(--text3)", fontSize: 11.5, margin: 0 }}>Binary content ({open.content_type}) — preview isn't supported here yet.</p>
+          ) : open.content_type === "text/html" ? (
+            <iframe
+              title={open.filename}
+              sandbox=""
+              srcDoc={open.content ?? ""}
+              style={{ width: "100%", height: 260, border: "1px solid var(--border)", borderRadius: 6, background: "#fff" }}
+            />
+          ) : (
+            <pre style={{ whiteSpace: "pre-wrap", fontSize: 11, maxHeight: 260, overflow: "auto", margin: 0 }}>{open.content ?? ""}</pre>
+          )}
+        </div>
       )}
     </>
   );
@@ -917,6 +1091,8 @@ export function AssistantSidePanelBody({
       return <SubAgentsPanel spaceId={spaceId} session={session} lastRunId={lastRunId ?? ""} />;
     case "files":
       return <FilesPanel spaceId={spaceId} projectId={projectId} session={session} />;
+    case "artifacts":
+      return <ArtifactsPanel spaceId={spaceId} session={session} />;
     case "skills":
       return <SkillsPanel spaceId={spaceId} session={session} />;
     case "notifications":

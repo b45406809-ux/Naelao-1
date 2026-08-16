@@ -272,6 +272,7 @@ ${BASE_AGENTS_MD}`,
         "web-search",
         "file-manager",
         "knowledge-base",
+        "artifacts",
         "notifications",
         "sub-agent",
         "dynamic-workflow",
@@ -655,6 +656,7 @@ ${BASE_AGENTS_MD}`,
         "web-search",
         "file-manager",
         "knowledge-base",
+        "artifacts",
         "notifications",
         "sub-agent",
         "dynamic-workflow",
@@ -784,6 +786,11 @@ export const LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED: string[] = [
   // would mean asking permission before being allowed to find out what capabilities exist.
   "tools.search",
   "tools.describe",
+  // Phase 5: reading what's already been published — same "orient itself, no side effect" class
+  // as list_directory/diagnostics.overview above. artifacts.create/delete stay gated, matching
+  // knowledge.index/knowledge.delete's own precedent (a write with visible, external effect).
+  "artifacts.list",
+  "artifacts.get",
 ];
 
 /** Map a Launchpad allowed_skill id → prebuilt scripts available in this build. */

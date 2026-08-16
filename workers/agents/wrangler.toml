@@ -192,6 +192,13 @@ service = "naelao-mcp-hub"
 binding = "CREDENTIALS_WORKER"
 service = "naelao-credentials"
 
+# Phase 5: agent-authored deliverables (a rendered HTML page, a report) — space-scoped R2 storage
+# distinct from r2-workspace's own scratch files. See workers/artifact's own header for why this
+# binding + its requireInternalHmac gate replaced the worker's prior, unauthenticated shape.
+[[services]]
+binding = "ARTIFACT_WORKER"
+service = "naelao-artifact"
+
 # CF Browser Rendering proxy — Tier 4 of the execution ladder (code-runner.ts). Agents never
 # get raw CDP; all browser ops are mediated by this Worker's SSRF guard + rate controls.
 [[services]]

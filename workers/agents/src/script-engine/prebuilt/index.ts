@@ -18,6 +18,7 @@ import { r2Workspace } from "./r2-workspace.js";
 import { fileManager } from "./file-manager.js";
 import { webSearch } from "./web-search.js";
 import { knowledgeBase } from "./knowledge-base.js";
+import { artifacts } from "./artifacts.js";
 import { notifications } from "./notifications.js";
 import { subAgent } from "./sub-agent.js";
 import { dynamicWorkflow } from "./dynamic-workflow.js";
@@ -85,6 +86,7 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   [fileManager.name]: fileManager,
   [webSearch.name]: webSearch,
   [knowledgeBase.name]: knowledgeBase,
+  [artifacts.name]: artifacts,
   [notifications.name]: notifications,
   [subAgent.name]: subAgent,
   [dynamicWorkflow.name]: dynamicWorkflow,
@@ -166,6 +168,7 @@ export {
   fileManager,
   webSearch,
   knowledgeBase,
+  artifacts,
   notifications,
   subAgent,
   dynamicWorkflow,

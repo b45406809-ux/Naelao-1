@@ -7871,6 +7871,134 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      channels) remain planned in `/root/.claude/plans/gleaming-scribbling-pelican.md` and
      unstarted.
 
+146. **Phase 5 of the 62-item plan (workspace: Files/Artifacts/Knowledge Base) is now BUILT —
+     scoped to the three items a fresh investigation confirmed were real, bounded work; the
+     fourth (plugins/skills directory) was investigated and found to be a genuinely undefined,
+     net-new feature with no backend primitive to build on anywhere in the codebase, so it's a
+     real, stated deferral rather than a fabricated stub.**
+     - **Files tab: open/preview, previously list-only.** `FilesPanel` (the side-panel Files tab)
+       showed names+sizes with no click handler; `readWorkspaceFile` (the content-read function)
+       already existed but its ONLY caller anywhere was `ProjectKindPanel.tsx`'s own separate,
+       already-complete `WorkspaceFilesPanel` (iframe preview for `.html`, `<pre>` for text). The
+       project-scoped backend (list + per-file GET, 2MB inline cap, `..`-traversal collapse) was
+       already real and complete. The SPACE-WIDE (assistant) side had a real, confirmed gap: its
+       own doc comment literally said "Read-only: names + sizes, never file contents" — there was
+       no per-file GET route at all. Added `GET /spaces/:spaceId/assistant/files/*` on the agents
+       worker, mirroring the project-scoped route's contract byte-for-byte (same 2MB cap,
+       traversal collapse, 404/too_large shapes) — no new router allowlist entry needed, since
+       `/spaces/:spaceId/assistant/*` already wildcard-proxies to `AGENTS_WORKER`. `FilesPanel`
+       now supports click-to-open with the same iframe/`<pre>` pattern already proven in
+       `ProjectKindPanel.tsx`, for both the project-scoped and space-wide cases via the matching
+       `readWorkspaceFile`/`readAssistantFile` pair. 6 new tests.
+     - **Knowledge-base agent write access — a real, previously-undetected bug fixed, plus a
+       confirmed-dead component removed rather than resurrected.** `knowledge.index`/
+       `knowledge.delete` (the `knowledge-base` prebuilt's write ops) called routes that have
+       **never existed** on the real knowledge worker — `POST /kb/index` and `DELETE /kb/{id}`;
+       the real routes are `POST /kb/documents` (requiring `{title, content, content_type?,
+       source_url?, project_id?}`, not the `{text, metadata}` shape the op sent) and `DELETE
+       /kb/documents/:docId`. Every real call from an agent has always 404'd — this prebuilt had
+       **zero test coverage** before this pass, which is exactly why the bug survived. Fixed both
+       ops to the real contract, with real validation (non-empty `title`/`content` before ever
+       calling the worker) and project-scoping (`ctx.env.projectId`, when the run is
+       project-scoped — never inferred for the space-wide assistant). New `paramHints` (item
+       133's own convention) name the real required fields, since the op names alone don't say
+       "title and content are both required." **Separately**: the orphaned `InputBarExtras.tsx`
+       (`UploadButton`/`ConnectorsButton`) the plan's own investigation flagged as dead code
+       turned out to be DELIBERATELY superseded, not accidentally orphaned — the shell's
+       dedicated Knowledge Base page (`knowledge/page.tsx`) carries its own doc comment stating
+       exactly this: "This page used to be reachable only through a since-removed 'Attach a
+       file' button buried in the input bar, which silently capped every entry at 2MB of plain
+       text — genuine document management belongs here instead" (matches the already-completed
+       task list item "#64 Input bar: remove KB-upload button"). Reintroducing the input-bar
+       button would have directly contradicted a deliberate, already-documented decision. Instead
+       found the REAL remaining gap: the KB page's own "Add a document" form had no file-browse
+       option, only a manual title+textarea paste. Added a real "Upload a file instead" button
+       (same text-only/2MB client-side guard `UploadButton` had) that pre-fills title (from the
+       filename) + content from a picked file's real text — the file-browse convenience without
+       resurrecting the superseded input-bar mechanism. `InputBarExtras.tsx` itself deleted
+       (confirmed zero importers anywhere — both its components were independently and more
+       thoroughly reimplemented inside `ComposerDock.tsx`'s own uploads/connectors panels). 11
+       new tests for the prebuilt fix.
+     - **Artifacts — a real feature built where the investigation found a genuinely reusable but
+       completely unwired, security-hole-shaped piece: `workers/artifact`, a standalone R2-backed
+       service that existed, was even deployed, and was reachable by NOTHING.** Confirmed via
+       grep: no router route, no service binding from any caller anywhere, and
+       `apps/shell/src/lib/api.ts` had zero `/v1/artifacts` calls. Its own routes had two
+       independent, real defects that would have made it non-functional even if wired naively:
+       registered under `/v1/artifacts` (the router's `proxyTo` strips `/v1` before forwarding,
+       so this could never have matched), and `spaceId` was read from a raw `x-naelao-space-id`
+       HEADER rather than the URL path — the exact class of caller-spoofable identity the
+       platform's own item-21 hardening pass closed everywhere else. There was also **no auth
+       gate of any kind** — every identity header trusted as-is. Rebuilt from the ground up to
+       match this codebase's real convention: `spaceId` in the URL path
+       (`/spaces/:spaceId/artifacts[/:artifactId]`, matching every other worker), `requireInternalHmac`
+       gating every route (the same backstop convention every other "internal-only" worker in
+       this platform carries), and a genuinely new LIST route (there wasn't one before — only
+       get-by-id and delete-by-id). New `artifacts` prebuilt script
+       (`workers/agents/src/script-engine/prebuilt/artifacts.ts`, `artifacts.create/list/get/
+       delete`) reaches it via a new direct `ARTIFACT_WORKER` service binding on the agents
+       worker (mirroring `knowledge-base.ts`'s own `reqWorker`/`internalHeaders` pattern exactly)
+       — distinct from `r2-workspace`'s own scratch-file writes, since an artifact is a FINISHED
+       deliverable meant to be shown/downloaded, not working storage. `artifacts.list`/
+       `artifacts.get` added to the guided-mode auto-approved allowlist (pure reads of already-
+       published content, same "orient itself, no side effect" class as `list_directory`); create/
+       delete stay gated, matching `knowledge.index`/`knowledge.delete`'s own precedent. New GET/
+       DELETE wrapper routes on the agents worker
+       (`/spaces/:spaceId/assistant/artifacts[/:artifactId]`, same wildcard-proxy convention as
+       Files above — no new router entry needed) proxy to the artifact worker with a minted
+       internal token; the per-artifact GET route JSON-wraps text content (matching the Files
+       viewer's own `{content}` contract, since `apps/shell`'s `apiFetch` always calls
+       `res.json()` and can't consume the artifact worker's own raw-bytes-with-real-content-type
+       response directly) and reports `binary:true` for non-text content rather than corrupting
+       binary bytes through a JSON string. `apps/shell`: `"artifacts"` is now a real
+       `SidePanelTab` (was a hardcoded, separate `Chat.tsx` special case rendering a literal
+       "Coming soon." — that entire special-case branch, including the now-redundant `"artifacts"`
+       union member on `ThreadPanelTab`, is removed) with a real `ArtifactsPanel` (open/preview via
+       the same iframe/`<pre>` pattern as Files, plus a Delete affordance Files doesn't have,
+       since an artifact is actively managed content, not just browsed). Space-wide only for
+       now — no per-project artifact scoping in the backend yet, matching Memory/Skills' own
+       existing precedent, a real and stated scope line rather than an unstated gap. 12 new tests
+       for the rewritten artifact worker (auth gate, create/list/get/delete, size cap, base64
+       binary, and a CRITICAL cross-tenant isolation pair proving tenant B cannot read or even
+       see tenant A's artifacts by guessing the same space/artifact id), 10 new tests for the
+       prebuilt, 6 new tests for the agents-worker wrapper routes.
+     - **Plugins/skills directory — investigated and deliberately NOT built, stated honestly.**
+       Grepped case-insensitively for "plugin" across every `src/` directory in `workers/`,
+       `packages/`, and both frontend apps: exactly one hit, and it's a false positive
+       (`remarkPlugins={[remarkGfm]}`, a markdown-library option unrelated to any platform
+       concept). No "plugin" table, no R2 prefix convention, no prebuilt script op — nothing.
+       What exists is "project kind" (`workspace`/`customer_bot`/`wallet`/etc.), a related but
+       distinct concept (which purpose-built PANEL a project gets, not a browsable/installable
+       registry). Unlike Artifacts, where a disconnected-but-real storage worker already existed
+       to build on, there is genuinely nothing here — building this would mean inventing a data
+       model, storage, and a UI comparable to the existing Skills tab from a blank slate. Left
+       unbuilt on purpose rather than fabricated as a hollow stub; a real, separately-scoped
+       follow-up.
+     3149/3149 tests pass (45 new: `space-assistant-surface.test.ts`'s +6 file-content-route
+     cases and +6 new Artifacts-wrapper-route cases, `knowledge-base-prebuilt.test.ts`'s 11
+     (regression-proven by temporarily reverting to the old routes and confirming 8 of 11 fail),
+     the new `artifact-worker.test.ts`'s 12, and the new `artifacts-prebuilt.test.ts`'s 10),
+     `npx turbo run typecheck --force` clean (76 tasks, non-cached), `apps/shell` verified via a
+     real `next build`. Deployed via bare `wrangler deploy` (never `--env production` — both
+     `workers/artifact` and `workers/agents` carry the documented no-`name`-override
+     `[env.production]` trap): `naelao-artifact` (its FIRST real, correctly-wired production
+     deploy despite having been deployed once before in an orphaned, unreachable state) and
+     `naelao-agents` (carrying the new `ARTIFACT_WORKER` binding, confirmed present in the deploy
+     output's own binding list); `apps/shell` rebuilt with `next-on-pages` +
+     `NEXT_PUBLIC_API_URL` in the same command, deployed `--branch=main`, confirmed
+     `environment: "production"` via the Pages API. Live-verified via five non-LLM checks (no
+     `/agent/run` dispatched, per the standing "use your own credits to test" instruction): the
+     shell's production domain and the router's public by-slug lookup both return 200; the
+     agents worker's cancel route AND the new `/assistant/artifacts` route both return 401 with
+     no credentials (correctly gated, not a 500 crash or a 404 "route doesn't exist"); the
+     artifact worker's own direct `.workers.dev` URL returns 404 (expected and healthy —
+     `workers_dev = false` is set, confirming the security posture holds); the deployed shell
+     bundle was grepped and confirmed to contain the new Artifacts UI strings before calling this
+     done. **With this, Phase 5's three real, bounded items are shipped; the plugins/skills
+     directory item is a stated, investigated deferral, not a silent drop.** Phase 6 (multi-agent
+     + collaboration + channels) remains planned in
+     `/root/.claude/plans/gleaming-scribbling-pelican.md` and unstarted.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

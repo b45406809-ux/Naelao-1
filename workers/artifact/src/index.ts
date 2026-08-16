@@ -1,5 +1,16 @@
-// G-A01: Artifact worker — agent-generated file storage in R2
-import { badRequest, errorResponse, notFound, requestId } from "@naelao/http";
+// G-A01: Artifact worker — agent-authored deliverable storage in R2.
+//
+// Phase 5: this worker existed but was never actually wired into anything — no router route,
+// no service binding from any caller, and its own routes/auth were built for a shape that could
+// never have worked once wired: routes were registered under /v1/artifacts with spaceId read from
+// an `x-naelao-space-id` HEADER (proxyTo strips /v1 before forwarding, and the router only ever
+// resets/verifies tenant-id/user-id/role headers — a raw space-id header would have been fully
+// caller-spoofable), and there was NO auth gate of any kind, trusting every identity header as-is.
+// Rebuilt to match this codebase's real convention: spaceId in the URL PATH (like every other
+// worker's /spaces/:spaceId/... routes), requireInternalHmac gating every route (this worker is
+// workers_dev=false and reached only via a direct service binding or the router's proxyTo, never
+// directly), and a real LIST route (there wasn't one — a per-space artifact browser needs it).
+import { badRequest, errorResponse, notFound, requestId, requireInternalHmac } from "@naelao/http";
 import { Hono } from "hono";
 
 // ── Env ───────────────────────────────────────────────────────────────────────
@@ -16,12 +27,22 @@ function validateEnv(env: ArtifactEnv): void {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+// Keyed {tenantId}/{spaceId}/{artifactId}/{filename} — one artifact is exactly one R2 object (no
+// chunking, unlike KB documents), so a list-by-prefix at the artifact-id level always returns
+// either zero or one real object.
 function buildR2Key(tenantId: string, spaceId: string, artifactId: string, filename: string): string {
   return `${tenantId}/${spaceId}/${artifactId}/${filename}`;
 }
+function buildR2Prefix(tenantId: string, spaceId: string, artifactId?: string): string {
+  return artifactId ? `${tenantId}/${spaceId}/${artifactId}/` : `${tenantId}/${spaceId}/`;
+}
 
-function buildR2Prefix(tenantId: string, spaceId: string, artifactId: string): string {
-  return `${tenantId}/${spaceId}/${artifactId}/`;
+const MAX_ARTIFACT_BYTES = 5 * 1024 * 1024;
+
+function requireTenant(c: { req: { header: (h: string) => string | undefined } }): string {
+  const tenantId = c.req.header("x-naelao-tenant-id");
+  if (!tenantId) throw badRequest("x-naelao-tenant-id header is required");
+  return tenantId;
 }
 
 // ── Hono app ──────────────────────────────────────────────────────────────────
@@ -34,14 +55,15 @@ app.use("*", async (c, next) => {
   await next();
 });
 
-// POST /v1/artifacts — upload artifact
-app.post("/v1/artifacts", async (c) => {
-  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
-  const spaceId = c.req.header("x-naelao-space-id") ?? "";
+app.use("/spaces/:spaceId/artifacts", requireInternalHmac((c) => (c as unknown as { env: ArtifactEnv }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/artifacts/*", requireInternalHmac((c) => (c as unknown as { env: ArtifactEnv }).env.PLATFORM_SECRET));
 
-  if (!tenantId) throw badRequest("x-naelao-tenant-id header is required");
-  if (!spaceId) throw badRequest("x-naelao-space-id header is required");
-
+// POST /spaces/:spaceId/artifacts — create an artifact. Accepts multipart/form-data (a 'file'
+// field) OR a JSON body — either {filename, content, content_type?} for plain text (the common
+// agent-authored case: HTML/markdown/code) or {filename, content_type, data_base64} for binary.
+app.post("/spaces/:spaceId/artifacts", async (c) => {
+  const tenantId = requireTenant(c);
+  const spaceId = c.req.param("spaceId");
   const artifactId = crypto.randomUUID();
   const contentType = c.req.header("content-type") ?? "";
 
@@ -50,122 +72,118 @@ app.post("/v1/artifacts", async (c) => {
   let mimeType: string;
 
   if (contentType.includes("multipart/form-data")) {
-    // Handle multipart/form-data upload
     const formData = await c.req.formData();
     const fileField = formData.get("file");
-
     if (!fileField || typeof fileField === "string") {
       throw badRequest("multipart body must contain a 'file' field");
     }
-
-    // fileField is a File — cast through Blob which is the common ancestor
     const fileBlob = fileField as unknown as Blob & { name: string; type: string };
     filename = fileBlob.name || `artifact-${artifactId}`;
     mimeType = fileBlob.type || "application/octet-stream";
-    const arrayBuffer = await fileBlob.arrayBuffer();
-    fileBytes = new Uint8Array(arrayBuffer);
+    fileBytes = new Uint8Array(await fileBlob.arrayBuffer());
   } else {
-    // Handle JSON body: { content_type, data_base64, filename }
-    let body: { content_type: string; data_base64: string; filename: string };
+    let body: { content_type?: string; content?: string; data_base64?: string; filename?: string };
     try {
-      body = await c.req.json<{ content_type: string; data_base64: string; filename: string }>();
+      body = await c.req.json();
     } catch {
       throw badRequest("Invalid JSON body or unsupported content type");
     }
-
-    if (!body.content_type) throw badRequest("content_type is required");
-    if (!body.data_base64) throw badRequest("data_base64 is required");
     if (!body.filename) throw badRequest("filename is required");
-
     filename = body.filename;
-    mimeType = body.content_type;
-
-    // Decode base64
-    const binaryStr = atob(body.data_base64);
-    fileBytes = new Uint8Array(binaryStr.length);
-    for (let i = 0; i < binaryStr.length; i++) {
-      fileBytes[i] = binaryStr.charCodeAt(i);
+    mimeType = body.content_type || "text/plain";
+    if (typeof body.content === "string") {
+      fileBytes = new TextEncoder().encode(body.content);
+    } else if (body.data_base64) {
+      const binaryStr = atob(body.data_base64);
+      fileBytes = new Uint8Array(binaryStr.length);
+      for (let i = 0; i < binaryStr.length; i++) {
+        fileBytes[i] = binaryStr.charCodeAt(i);
+      }
+    } else {
+      throw badRequest("content or data_base64 is required");
     }
   }
 
-  const r2Key = buildR2Key(tenantId, spaceId, artifactId, filename);
+  if (fileBytes.byteLength > MAX_ARTIFACT_BYTES) {
+    throw badRequest(`Artifact exceeds the maximum size of 5MB`);
+  }
 
+  const r2Key = buildR2Key(tenantId, spaceId, artifactId, filename);
   await c.env.ARTIFACT_BUCKET.put(r2Key, fileBytes, {
     httpMetadata: { contentType: mimeType },
     customMetadata: { tenantId, spaceId, filename, content_type: mimeType },
   });
 
-  const downloadUrl = `/v1/artifacts/${artifactId}`;
-
   return c.json(
-    {
-      artifact_id: artifactId,
-      key: r2Key,
-      download_url: downloadUrl,
-    },
+    { artifact_id: artifactId, filename, content_type: mimeType, size: fileBytes.byteLength },
     201
   );
 });
 
-// GET /v1/artifacts/:artifactId — download artifact
-app.get("/v1/artifacts/:artifactId", async (c) => {
-  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
-  const spaceId = c.req.header("x-naelao-space-id") ?? "";
+// GET /spaces/:spaceId/artifacts — list every artifact in this space.
+app.get("/spaces/:spaceId/artifacts", async (c) => {
+  const tenantId = requireTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const prefix = buildR2Prefix(tenantId, spaceId);
+  const items: Array<{ artifact_id: string; filename: string; content_type: string; size: number; uploaded: string }> = [];
+  let cursor: string | undefined;
+  do {
+    const listed = await c.env.ARTIFACT_BUCKET.list({ prefix, ...(cursor ? { cursor } : {}), limit: 200 });
+    for (const o of listed.objects) {
+      const rest = o.key.slice(prefix.length); // {artifactId}/{filename}
+      const slash = rest.indexOf("/");
+      const artifactId = slash === -1 ? rest : rest.slice(0, slash);
+      const filename = slash === -1 ? "" : rest.slice(slash + 1);
+      items.push({
+        artifact_id: artifactId,
+        filename,
+        content_type: o.customMetadata?.["content_type"] ?? o.httpMetadata?.contentType ?? "application/octet-stream",
+        size: o.size,
+        uploaded: o.uploaded.toISOString(),
+      });
+    }
+    cursor = listed.truncated ? listed.cursor : undefined;
+  } while (cursor && items.length < 500);
+  return c.json({ data: items, count: items.length });
+});
+
+// GET /spaces/:spaceId/artifacts/:artifactId — download/preview one artifact.
+app.get("/spaces/:spaceId/artifacts/:artifactId", async (c) => {
+  const tenantId = requireTenant(c);
+  const spaceId = c.req.param("spaceId");
   const artifactId = c.req.param("artifactId");
 
-  if (!tenantId) throw badRequest("x-naelao-tenant-id header is required");
-  if (!spaceId) throw badRequest("x-naelao-space-id header is required");
-
   const prefix = buildR2Prefix(tenantId, spaceId, artifactId);
-
-  // List objects with this prefix to find the key
   const listed = await c.env.ARTIFACT_BUCKET.list({ prefix });
-
   const firstObject = listed.objects[0];
-  if (!firstObject) {
-    throw notFound("Artifact");
-  }
+  if (!firstObject) throw notFound("Artifact");
 
-  const r2Key = firstObject.key;
-  const object = await c.env.ARTIFACT_BUCKET.get(r2Key);
-
-  if (!object) {
-    throw notFound("Artifact");
-  }
+  const object = await c.env.ARTIFACT_BUCKET.get(firstObject.key);
+  if (!object) throw notFound("Artifact");
 
   const mimeType =
-    object.customMetadata?.["content_type"] ??
-    object.httpMetadata?.contentType ??
-    "application/octet-stream";
+    object.customMetadata?.["content_type"] ?? object.httpMetadata?.contentType ?? "application/octet-stream";
 
   return new Response(object.body, {
     headers: {
       "Content-Type": mimeType,
       "Cache-Control": "private, max-age=3600",
       "X-Artifact-Id": artifactId,
+      "X-Artifact-Filename": firstObject.key.slice(prefix.length),
     },
   });
 });
 
-// DELETE /v1/artifacts/:artifactId — delete artifact
-app.delete("/v1/artifacts/:artifactId", async (c) => {
-  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
-  const spaceId = c.req.header("x-naelao-space-id") ?? "";
+// DELETE /spaces/:spaceId/artifacts/:artifactId — delete an artifact.
+app.delete("/spaces/:spaceId/artifacts/:artifactId", async (c) => {
+  const tenantId = requireTenant(c);
+  const spaceId = c.req.param("spaceId");
   const artifactId = c.req.param("artifactId");
 
-  if (!tenantId) throw badRequest("x-naelao-tenant-id header is required");
-  if (!spaceId) throw badRequest("x-naelao-space-id header is required");
-
   const prefix = buildR2Prefix(tenantId, spaceId, artifactId);
-
-  // List all objects with this prefix
   const listed = await c.env.ARTIFACT_BUCKET.list({ prefix });
+  if (listed.objects.length === 0) throw notFound("Artifact");
 
-  if (listed.objects.length === 0) {
-    throw notFound("Artifact");
-  }
-
-  // Delete all objects under this prefix
   const deleteKeys = listed.objects.map((obj) => obj.key);
   await Promise.all(deleteKeys.map((key) => c.env.ARTIFACT_BUCKET.delete(key)));
 

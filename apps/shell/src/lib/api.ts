@@ -1304,6 +1304,37 @@ export async function listAssistantFiles(spaceId: string, session: SessionCreden
   return res.data;
 }
 
+export async function readAssistantFile(spaceId: string, path: string, session: SessionCredentials): Promise<{ path: string; size: number; content?: string; too_large?: boolean }> {
+  return apiFetch(`/v1/spaces/${spaceId}/assistant/files/${path.split("/").map(encodeURIComponent).join("/")}`, { session });
+}
+
+// Phase 5: agent-authored deliverables — distinct from the workspace files above.
+export interface ArtifactSummary {
+  artifact_id: string;
+  filename: string;
+  content_type: string;
+  size: number;
+  uploaded: string;
+}
+export interface ArtifactContent {
+  artifact_id: string;
+  filename: string;
+  content_type: string;
+  content?: string;
+  too_large?: boolean;
+  binary?: boolean;
+}
+export async function listArtifacts(spaceId: string, session: SessionCredentials): Promise<ArtifactSummary[]> {
+  const res = await apiFetch<{ data: ArtifactSummary[] }>(`/v1/spaces/${spaceId}/assistant/artifacts`, { session });
+  return res.data;
+}
+export async function getArtifact(spaceId: string, artifactId: string, session: SessionCredentials): Promise<ArtifactContent> {
+  return apiFetch(`/v1/spaces/${spaceId}/assistant/artifacts/${encodeURIComponent(artifactId)}`, { session });
+}
+export async function deleteArtifact(spaceId: string, artifactId: string, session: SessionCredentials): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/assistant/artifacts/${encodeURIComponent(artifactId)}`, { method: "DELETE", session });
+}
+
 export interface PrebuiltCapability {
   name: string;
   description: string;
