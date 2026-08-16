@@ -1506,7 +1506,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
       // ── Local-machine-as-container permission grants (§A1.17 Phase M) ─────────
       if (method === "GET" && url.pathname === "/local-grants") {
-        return this.listLocalGrants(url.searchParams.get("space_id") ?? "", url.searchParams.get("user_id") ?? undefined);
+        return this.listLocalGrants(
+          url.searchParams.get("space_id") ?? "",
+          url.searchParams.get("user_id") ?? undefined,
+          url.searchParams.get("project_id") ?? undefined
+        );
       }
       if (method === "POST" && url.pathname === "/local-grants") {
         return this.createLocalGrant(url.searchParams.get("space_id") ?? "", request);
@@ -4251,24 +4255,29 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // member), never a client-supplied field, so one member can't browse another's local-machine
   // grants (directory paths are sensitive). A builder/owner JWT caller sees the whole space's
   // grants unfiltered, unchanged from before this pass.
-  private listLocalGrants(spaceId: string, filterUserId?: string): Response {
-    const rows = filterUserId
-      ? queryAll<{
-          id: string; space_id: string; project_id: string | null; user_id: string;
-          grant_type: string; directory: string | null; commands_json: string; created_at: string;
-        }>(
-          this.ctx.storage.sql as never,
-          "SELECT * FROM local_grants WHERE space_id = ? AND user_id = ? ORDER BY created_at",
-          spaceId, filterUserId
-        )
-      : queryAll<{
-          id: string; space_id: string; project_id: string | null; user_id: string;
-          grant_type: string; directory: string | null; commands_json: string; created_at: string;
-        }>(
-          this.ctx.storage.sql as never,
-          "SELECT * FROM local_grants WHERE space_id = ? ORDER BY created_at",
-          spaceId
-        );
+  // filterProjectId mirrors local-machine.ts's own grant-resolution rule exactly (a grant with
+  // project_id NULL applies space-wide/to any project; one with project_id set applies only to
+  // that project) — so a project-scoped panel sees the grants that would actually apply to a run
+  // in that project, not a naive exact-match that would hide the space-wide ones.
+  private listLocalGrants(spaceId: string, filterUserId?: string, filterProjectId?: string): Response {
+    const conditions = ["space_id = ?"];
+    const params: unknown[] = [spaceId];
+    if (filterUserId) {
+      conditions.push("user_id = ?");
+      params.push(filterUserId);
+    }
+    if (filterProjectId) {
+      conditions.push("(project_id IS NULL OR project_id = ?)");
+      params.push(filterProjectId);
+    }
+    const rows = queryAll<{
+      id: string; space_id: string; project_id: string | null; user_id: string;
+      grant_type: string; directory: string | null; commands_json: string; created_at: string;
+    }>(
+      this.ctx.storage.sql as never,
+      `SELECT * FROM local_grants WHERE ${conditions.join(" AND ")} ORDER BY created_at`,
+      ...params
+    );
     const data = rows.map((r) => ({ ...r, commands: JSON.parse(r.commands_json || "[]") as string[] }));
     return Response.json({ data, count: data.length });
   }

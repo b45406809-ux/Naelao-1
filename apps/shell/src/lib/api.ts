@@ -877,12 +877,38 @@ export async function listProjects(spaceId: string, session: SessionCredentials)
   return res.data;
 }
 
-export async function createProject(spaceId: string, session: SessionCredentials, name: string, description?: string): Promise<Project> {
+/** kind, when given, creates a Business Feature project (Wallet, CRM, Business Email, …) instead
+ *  of a plain workspace project — SpaceDO validates it against BUSINESS_FEATURE_KIND_REGISTRY and
+ *  role-gates/singleton-gates it server-side; a rejection here is real, not just UI-hidden. */
+export async function createProject(
+  spaceId: string,
+  session: SessionCredentials,
+  name: string,
+  description?: string,
+  kind?: string
+): Promise<Project> {
   return apiFetch(`/v1/spaces/${spaceId}/projects`, {
     method: "POST",
-    body: JSON.stringify({ name, ...(description ? { description } : {}) }),
+    body: JSON.stringify({ name, ...(description ? { description } : {}), ...(kind ? { kind } : {}) }),
     session,
   });
+}
+
+// ── Plugins directory (BUSINESS_FEATURE_KIND_REGISTRY, browsable+role-filtered) ────────────────
+
+export interface FeatureKind {
+  kind: string;
+  label: string;
+  description: string;
+  singleton: boolean;
+  minCreationRole: "owner" | "admin" | "editor";
+  autoProvisionable: boolean;
+  uiPanel?: string;
+}
+
+export async function getFeatureKinds(spaceId: string, session: SessionCredentials): Promise<FeatureKind[]> {
+  const res = await apiFetch<{ feature_kinds: FeatureKind[] }>(`/v1/spaces/${spaceId}/feature-kinds`, { session });
+  return res.feature_kinds;
 }
 
 /** One call, fully configured — the project row (kind, execution ceiling, spend cap, agent
@@ -1365,6 +1391,51 @@ export async function getAssistantCapabilities(
   return apiFetch<AssistantCapabilities>(`/v1/spaces/${spaceId}/assistant/capabilities`, { session });
 }
 
+// ── Skills directory (the shared, fleet-learned template library a business can browse and pull
+// individual skills from — distinct from Learned Skills above, which is what a space already has;
+// see workers/agents/src/index.ts's /skills/directory and /skills/inherit) ────────────────────
+
+export interface DirectorySkill {
+  name: string;
+  description: string;
+  domain: string;
+  version: number;
+  requires_tier: number;
+  installed: boolean;
+}
+
+/** Resolves the business's own template server-side — the caller never needs to know its id. A
+ *  template-less space (none was picked, or no template ships a shared library) is a real,
+ *  distinct 409, not an error the caller should surface as broken. */
+export async function getSkillsDirectory(
+  spaceId: string,
+  session: SessionCredentials
+): Promise<{ template_id: string; skills: DirectorySkill[] } | null> {
+  try {
+    return await apiFetch<{ template_id: string; skills: DirectorySkill[] }>(
+      `/v1/skills/directory?space_id=${encodeURIComponent(spaceId)}`,
+      { session }
+    );
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 409) return null;
+    throw e;
+  }
+}
+
+/** names omitted = pull in everything the space is missing; a specific list = the directory's
+ *  per-skill Add button. */
+export async function inheritSkills(
+  spaceId: string,
+  session: SessionCredentials,
+  names?: string[]
+): Promise<{ inherited: string[]; skipped: string[] }> {
+  return apiFetch(`/v1/skills/inherit`, {
+    method: "POST",
+    body: JSON.stringify({ space_id: spaceId, ...(names ? { names } : {}) }),
+    session,
+  });
+}
+
 // ── Businesses (Phase C — reseller-mode end users create/switch/invite into their own
 // businesses) ─────────────────────────────────────────────────────────────────
 
@@ -1636,15 +1707,20 @@ export interface LocalGrant {
   created_at: string;
 }
 
-export async function listLocalGrants(spaceId: string, session: SessionCredentials): Promise<LocalGrant[]> {
-  const res = await apiFetch<{ data: LocalGrant[] }>(`/v1/spaces/${spaceId}/local-grants`, { session });
+export async function listLocalGrants(
+  spaceId: string,
+  session: SessionCredentials,
+  opts?: { projectId?: string }
+): Promise<LocalGrant[]> {
+  const qs = opts?.projectId ? `?project_id=${encodeURIComponent(opts.projectId)}` : "";
+  const res = await apiFetch<{ data: LocalGrant[] }>(`/v1/spaces/${spaceId}/local-grants${qs}`, { session });
   return res.data;
 }
 
 export async function createLocalGrant(
   spaceId: string,
   session: SessionCredentials,
-  input: { grant_type: "read" | "write" | "readwrite" | "exec"; directory?: string; commands?: string[] }
+  input: { grant_type: "read" | "write" | "readwrite" | "exec"; directory?: string; commands?: string[]; project_id?: string }
 ): Promise<LocalGrant> {
   return apiFetch(`/v1/spaces/${spaceId}/local-grants`, { method: "POST", body: JSON.stringify(input), session });
 }

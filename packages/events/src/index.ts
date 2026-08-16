@@ -528,6 +528,73 @@ export function computeNextRun(
   return null;
 }
 
+// ── Project automations: expected-runtime watchdog (Phase 5 plugins/skills batch) ───
+// scheduled_job_runs (migration 0071) already records duration_ms per fire — this reads that
+// existing history to flag two distinct, real operational signals a builder/assistant should
+// notice, rather than inventing new tracking infrastructure: a job that fired but took far
+// longer than its own history says it usually does, and a job that's enabled but simply hasn't
+// fired when it should have (the sweep isn't reaching it — the exact class of bug item 117's own
+// NaN-timestamp fix addressed once already; this is the general-purpose signal for the same
+// failure mode recurring in a different shape).
+
+/** Minimum number of prior successful runs before a runtime average means anything — one or two
+ *  data points is noise, not a baseline. */
+const RUNTIME_WATCHDOG_MIN_SAMPLES = 3;
+
+/** A run is "anomalously slow" once it takes at least this many times the rolling average of the
+ *  prior successful runs. 3x is deliberately generous — this flags a real outlier, not ordinary
+ *  jitter between fast/slow tool calls within a normal range. */
+const RUNTIME_WATCHDOG_SLOW_RATIO = 3;
+
+export interface RuntimeAnomaly {
+  latest_ms: number;
+  average_ms: number;
+  ratio: number;
+}
+
+/** runs must be ordered newest-first (the shape listScheduledJobRuns/scheduled_job_runs already
+ *  returns). Returns null when there isn't enough history to judge, the latest run didn't
+ *  actually complete (skipped/failed runs carry no meaningful duration to compare), or it wasn't
+ *  actually anomalous — never a false "everything's fine" for a run that IS slow, since a caller
+ *  only needs to render something when this returns non-null. */
+export function detectRuntimeAnomaly(
+  // ok/skipped_busy accept the raw SQLite 0/1 shape (ScheduledJobRun's own wire type) as well as
+  // a real boolean — both are checked by plain truthiness below, never a strict `=== true`.
+  runs: readonly { duration_ms?: number | null; ok?: boolean | number; skipped_busy?: boolean | number }[]
+): RuntimeAnomaly | null {
+  const completed = runs.filter((r) => r.ok && !r.skipped_busy && typeof r.duration_ms === "number" && r.duration_ms > 0);
+  if (completed.length < RUNTIME_WATCHDOG_MIN_SAMPLES + 1) return null;
+  const [latest, ...history] = completed;
+  const latestMs = latest!.duration_ms!;
+  const sample = history.slice(0, 10); // recent history only — an old baseline shouldn't outvote what it does today
+  const averageMs = sample.reduce((sum, r) => sum + r.duration_ms!, 0) / sample.length;
+  if (averageMs <= 0) return null;
+  const ratio = latestMs / averageMs;
+  if (ratio < RUNTIME_WATCHDOG_SLOW_RATIO) return null;
+  return { latest_ms: latestMs, average_ms: Math.round(averageMs), ratio };
+}
+
+/** How far past its own expected fire a job may sit before it's flagged overdue rather than just
+ *  "the sweep hasn't gotten to it yet" — generous relative to the hourly sweep cadence
+ *  (enqueueAgentTicks) so this never fires on ordinary scheduling slack. */
+export const OVERDUE_GRACE_MS = 90 * 60_000; // 90 minutes
+
+/**
+ * A job's own `next_run_at` is computed forward from "now" on every read (see computeNextRun's
+ * caller) — it can never be in the past, so comparing it against now can never detect a stall.
+ * The real question is "what should have fired right after the LAST recorded run, and has that
+ * come and gone by more than the grace window" — answered by scanning forward from the last run
+ * instead of from now, reusing computeNextRun rather than a second cron-scanning implementation.
+ * lastRunAtMs === null (never fired) is deliberately not flagged here — a job that's simply new
+ * hasn't missed anything yet; that's a different, honest "no history" state, not a stall.
+ */
+export function isJobOverdue(enabled: boolean, cronExpression: string, lastRunAtMs: number | null, nowMs: number): boolean {
+  if (!enabled || lastRunAtMs === null) return false;
+  const expectedAfterLastRun = computeNextRun(cronExpression, lastRunAtMs, CRON_NEXT_RUN_MAX_LOOKAHEAD_MS);
+  if (expectedAfterLastRun === null) return false;
+  return nowMs - expectedAfterLastRun > OVERDUE_GRACE_MS;
+}
+
 // ── Business Feature Projects registry (F-34/F-41) ──────────────────────────────
 export * from "./business-feature-kinds.js";
 

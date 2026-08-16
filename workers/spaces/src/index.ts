@@ -1302,7 +1302,11 @@ app.get("/spaces/:spaceId/local-grants", async (c) => {
   // A business member sees only their OWN grants (directory paths are sensitive); a builder/
   // owner JWT caller keeps seeing the whole space's grants, unchanged from before this pass.
   const userFilter = identity.role === "product_end_user" && identity.userId ? `&user_id=${encodeURIComponent(identity.userId)}` : "";
-  const res = await forwardToSpaceDO(stub, `/local-grants?space_id=${encodeURIComponent(spaceId)}${userFilter}`, "GET");
+  // Optional ?project_id= narrows to grants that would actually apply within one project (its
+  // own scoped grants plus every space-wide one) — what a project-scoped panel wants to show.
+  const projectId = c.req.query("project_id");
+  const projectFilter = projectId ? `&project_id=${encodeURIComponent(projectId)}` : "";
+  const res = await forwardToSpaceDO(stub, `/local-grants?space_id=${encodeURIComponent(spaceId)}${userFilter}${projectFilter}`, "GET");
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
@@ -1552,6 +1556,43 @@ app.get("/spaces/:spaceId/connectors/directory", async (c) => {
   if (sort) params.set("sort", sort);
   const qs = params.toString();
   return proxyToAgentsWorker(c, `/connectors/directory${qs ? `?${qs}` : ""}`, "GET");
+});
+
+// The "plugins directory" (BUSINESS_FEATURE_KIND_REGISTRY) — which native business-feature
+// projects (Wallet, CRM, Support Inbox, Business Email, …) this business could add, role-filtered
+// server-side by the caller's real business role, same pattern as the connect route's own
+// x-naelao-business-role forwarding just above (a builder JWT caller has no business role — the
+// agents worker's own creatableFeatureKindsForRole treats an absent role as the lowest, "editor").
+// A static leaf, same corruption-avoidance discipline as connectors/directory beside it.
+app.use("/spaces/:spaceId/feature-kinds", requireBusinessMembership({ GET: "member" }));
+// business_memberships uses BusinessRole ("viewer"|"member"|"admin"|"owner") — a DIFFERENT
+// vocabulary from the feature-kind registry's FeatureKindRole ("editor"|"admin"|"owner", the
+// space-level Team-collaborator tiers creatableFeatureKindsForRole/ROLE_RANK compare against).
+// Passing a raw "member" straight through would match nothing in ROLE_RANK and silently show
+// every ordinary business member zero feature kinds — including the "editor"-tier ones (CRM,
+// Support Inbox) the registry clearly means for more than just admins to create. "member" is the
+// ordinary-contributor role in both vocabularies, so it maps onto "editor"; "viewer" has no
+// creation-capable analog and is deliberately left unmapped (falls through to undefined, which
+// correctly excludes everything — a viewer isn't meant to create anything).
+function businessRoleToFeatureKindRole(role: string): string {
+  return role === "member" ? "editor" : role;
+}
+
+app.get("/spaces/:spaceId/feature-kinds", async (c) => {
+  const identity = getCallerIdentity(c);
+  let businessRole: string | undefined;
+  if (identity.role === "product_end_user" && identity.userId) {
+    const resolved = await resolveEndUserBusinessRole(c.env.PLATFORM_DB, c.req.param("spaceId"), identity.userId);
+    businessRole = resolved ? businessRoleToFeatureKindRole(resolved) : undefined;
+  }
+  const qs = businessRole ? `?role=${encodeURIComponent(businessRole)}` : "";
+  const resp = await proxyToAgentsWorker(c, `/project-templates${qs}`, "GET");
+  // /project-templates also returns the unrelated no-code project-template catalogue — this
+  // route's whole point is to expose ONLY the feature-kinds half of that response, so a caller
+  // never has to know about (or accidentally depend on) the other catalogue living behind it.
+  if (!resp.ok) return resp;
+  const data = await resp.json<{ feature_kinds: unknown; feature_kinds_count: number }>();
+  return c.json({ feature_kinds: data.feature_kinds, count: data.feature_kinds_count });
 });
 
 app.post("/spaces/:spaceId/connectors/connect", async (c) => {

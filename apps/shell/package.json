@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@naelao/billing-core": "workspace:*",
+    "@naelao/events": "workspace:*",
     "@naelao/types": "workspace:*",
     "@naelao/ui": "workspace:*",
     "next": "14.2.18",

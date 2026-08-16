@@ -86,4 +86,42 @@ describe("federated template learning (A1.9)", () => {
     expect((await s2.read("whop-welcome-dm"))?.code).toBe("v-from-s2"); // own version preserved
     expect(await s2.exists("whop-faq")).toBe(true);
   });
+
+  it("names[] narrows inherit to a specific subset — the skills directory's per-skill Add button", async () => {
+    const bucket = fakeBucket();
+    const template = SkillLibrary.forTemplate(bucket, "whop-seller");
+    await template.import(meta("skill-a", { origin: "authored" }), "code-a", "seed");
+    await template.import(meta("skill-b", { origin: "authored" }), "code-b", "seed");
+    const space = new SkillLibrary(bucket, "space-3");
+
+    const res = await inheritTemplateSkills(template, space, { names: ["skill-a"] });
+    expect(res.inherited).toEqual(["skill-a"]);
+    expect(res.skipped).toEqual([]); // skill-b was never a candidate — not requested, not skipped
+    expect(await space.exists("skill-a")).toBe(true);
+    expect(await space.exists("skill-b")).toBe(false);
+  });
+
+  it("names[] naming an already-inherited skill correctly reports it skipped, not re-inherited", async () => {
+    const bucket = fakeBucket();
+    const template = SkillLibrary.forTemplate(bucket, "whop-seller");
+    await template.import(meta("skill-a", { origin: "authored" }), "code-a", "seed");
+    const space = new SkillLibrary(bucket, "space-4");
+    await space.create({ name: "skill-a", code: "already-here", metadata: meta("skill-a") });
+
+    const res = await inheritTemplateSkills(template, space, { names: ["skill-a"] });
+    expect(res.inherited).toEqual([]);
+    expect(res.skipped).toEqual(["skill-a"]);
+    expect((await space.read("skill-a"))?.code).toBe("already-here"); // never clobbered
+  });
+
+  it("omitting names still inherits everything the space lacks (unchanged provisioning-time behavior)", async () => {
+    const bucket = fakeBucket();
+    const template = SkillLibrary.forTemplate(bucket, "whop-seller");
+    await template.import(meta("skill-a", { origin: "authored" }), "code-a", "seed");
+    await template.import(meta("skill-b", { origin: "authored" }), "code-b", "seed");
+    const space = new SkillLibrary(bucket, "space-5");
+
+    const res = await inheritTemplateSkills(template, space);
+    expect(res.inherited.sort()).toEqual(["skill-a", "skill-b"]);
+  });
 });

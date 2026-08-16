@@ -12,10 +12,14 @@
 // and Files reads that PROJECT's own R2 workspace rather than the space-wide assistant one.
 // Memory/Crons/Channels/Sub-agents/Skills/Notifications stay space-wide in both contexts —
 // there's no per-project memory/cron/channel/notification concept, and the skill library
-// (R2 scripts) is shared platform-wide within a space, not siloed per project.
+// (R2 scripts) is shared platform-wide within a space, not siloed per project. Local Machine is
+// the one tab scoped the OTHER way — project-only, since local_grants.project_id already lets a
+// grant be scoped to one project and the space-wide business detail page already owns the
+// whole-space view.
 
 import * as React from "react";
 import Link from "next/link";
+import { detectRuntimeAnomaly, isJobOverdue } from "@naelao/events";
 import {
   getAssistantPolicy,
   updateAssistantPolicy,
@@ -38,8 +42,13 @@ import {
   getArtifact,
   deleteArtifact,
   getAssistantCapabilities,
+  getSkillsDirectory,
+  inheritSkills,
   listNotifications,
   markNotificationRead,
+  listLocalGrants,
+  createLocalGrant,
+  deleteLocalGrant,
   listMyBusinesses,
   getBusinessAnalytics,
   listSessions,
@@ -58,6 +67,8 @@ import {
   type AppNotification,
   type BusinessAnalytics,
   type SessionSummary,
+  type LocalGrant,
+  type DirectorySkill,
 } from "@/lib/api";
 import { useProduct } from "@/lib/product-context";
 import { canManageSpaceSettings } from "@/lib/roles";
@@ -73,9 +84,10 @@ export type SidePanelTab =
   | "files"
   | "artifacts"
   | "skills"
-  | "notifications";
+  | "notifications"
+  | "local-machine";
 
-const ALL_SIDE_PANEL_TABS: { key: SidePanelTab; label: string; assistantOnly?: boolean }[] = [
+const ALL_SIDE_PANEL_TABS: { key: SidePanelTab; label: string; assistantOnly?: boolean; projectOnly?: boolean }[] = [
   { key: "config", label: "Config" },
   { key: "memory", label: "Memory" },
   { key: "crons", label: "Crons" },
@@ -93,12 +105,22 @@ const ALL_SIDE_PANEL_TABS: { key: SidePanelTab; label: string; assistantOnly?: b
   { key: "artifacts", label: "Artifacts" },
   { key: "skills", label: "Skills" },
   { key: "notifications", label: "Notifications" },
+  // The business detail page (spaces/[businessId]) already has a full space-wide grants CRUD UI —
+  // duplicating that here would be redundant. This tab is deliberately the OPPOSITE scoping: it
+  // exists ONLY inside a project thread, showing the grants that would actually apply to a run in
+  // THAT project (its own scoped grants plus every space-wide one, mirroring local-machine.ts's
+  // own resolution rule) with the ability to add a grant scoped to just this project.
+  { key: "local-machine", label: "Local Machine", projectOnly: true },
 ];
 
 /** isProjectContext = true (a project thread) hides tabs that only make sense for the
- *  space-wide Space Assistant (currently just Heartbeats). */
+ *  space-wide Space Assistant (currently just Heartbeats); false (Home/assistant session) hides
+ *  the reverse — tabs that only make sense scoped to one project (currently just Local Machine). */
 export function sidePanelTabs(isProjectContext: boolean): { key: SidePanelTab; label: string }[] {
-  return ALL_SIDE_PANEL_TABS.filter((t) => !t.assistantOnly || !isProjectContext).map((t) => ({ key: t.key, label: t.label }));
+  return ALL_SIDE_PANEL_TABS
+    .filter((t) => !t.assistantOnly || !isProjectContext)
+    .filter((t) => !t.projectOnly || isProjectContext)
+    .map((t) => ({ key: t.key, label: t.label }));
 }
 
 /** @deprecated use sidePanelTabs(isProjectContext) — kept so any stale import doesn't hard-break. */
@@ -391,8 +413,17 @@ function CronRunHistory({ spaceId, jobId, session }: { spaceId: string; jobId: s
   }, [spaceId, jobId, session]);
   if (runs === null) return <div style={{ fontSize: 11, color: "var(--text3)", padding: "4px 0" }}>Loading…</div>;
   if (runs.length === 0) return <div style={{ fontSize: 11, color: "var(--text3)", padding: "4px 0" }}>No fires recorded yet.</div>;
+  // Watchdog: is the MOST RECENT run anomalously slow against this job's own recent history?
+  // Only ever flags the newest row, never every slow-looking one, so it reads as "something
+  // changed" rather than a permanent warning on a job that's simply always been this slow.
+  const anomaly = detectRuntimeAnomaly(runs);
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 3, padding: "6px 0 0", borderTop: "1px solid var(--border)", marginTop: 6 }}>
+      {anomaly && (
+        <div style={{ fontSize: 10.5, color: "#d97706", padding: "0 0 4px" }}>
+          ⚠ Last run took {anomaly.latest_ms}ms — {anomaly.ratio.toFixed(1)}x its recent average ({anomaly.average_ms}ms).
+        </div>
+      )}
       {runs.map((r) => (
         <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10.5 }}>
           <span style={{ color: r.skipped_busy ? "var(--text3)" : r.ok ? "#16a34a" : "#dc2626", fontWeight: 500, flexShrink: 0 }}>
@@ -530,11 +561,21 @@ function CronsPanel({
               />
             ) : (
               <div className="cron-item" key={job.id}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 2 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 2, gap: 6 }}>
                   <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text)" }}>{job.name}</div>
-                  <span className={`badge ${job.enabled ? "badge-green" : "badge-amber"}`} style={{ fontSize: 9 }}>
-                    {job.enabled ? "Active" : "Paused"}
-                  </span>
+                  <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                    {/* Watchdog: it fired before and the fire that should have followed is well
+                        past due — the sweep genuinely isn't reaching this job, not just "not yet
+                        due" (next_run_at can never itself be in the past — see isJobOverdue). */}
+                    {isJobOverdue(Boolean(job.enabled), job.cron_expression, job.last_run_at ? new Date(job.last_run_at).getTime() : null, Date.now()) && (
+                      <span className="badge badge-red" style={{ fontSize: 9 }} title="Enabled, but the sweep hasn't reached this job in longer than expected">
+                        Overdue
+                      </span>
+                    )}
+                    <span className={`badge ${job.enabled ? "badge-green" : "badge-amber"}`} style={{ fontSize: 9 }}>
+                      {job.enabled ? "Active" : "Paused"}
+                    </span>
+                  </div>
                 </div>
                 <div className="cron-expr">{job.cron_expression}</div>
                 {job.enabled && job.next_run_at != null && (
@@ -623,6 +664,184 @@ function ChannelsPanel({ spaceId, session, projectId }: { spaceId: string; sessi
           </div>
         ))
       )}
+    </>
+  );
+}
+
+const LOCAL_GRANT_TYPES = ["read", "write", "readwrite", "exec"] as const;
+
+/** Project-only (see ALL_SIDE_PANEL_TABS): what would apply to a run in THIS project — its own
+ *  scoped grants plus every space-wide one — with the ability to add a grant scoped to just this
+ *  project. The business detail page owns the full, space-wide grants view; this is deliberately
+ *  narrower, matching how Files/Config already scope down inside a project thread. */
+function LocalMachinePanel({
+  spaceId,
+  session,
+  projectId,
+  isBusinessSpace,
+}: {
+  spaceId: string;
+  session: SessionCredentials;
+  projectId: string;
+  isBusinessSpace: boolean;
+}) {
+  const product = useProduct();
+  const [grants, setGrants] = React.useState<LocalGrant[] | null>(null);
+  const [canEdit, setCanEdit] = React.useState(false);
+  const [creating, setCreating] = React.useState(false);
+  const [grantType, setGrantType] = React.useState<(typeof LOCAL_GRANT_TYPES)[number]>("read");
+  const [directory, setDirectory] = React.useState("");
+  const [commandsText, setCommandsText] = React.useState("");
+  const [saving, setSaving] = React.useState(false);
+  const [formError, setFormError] = React.useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = React.useState<string | null>(null);
+  const [busyId, setBusyId] = React.useState<string | null>(null);
+
+  const load = React.useCallback(() => {
+    listLocalGrants(spaceId, session, { projectId }).then(setGrants).catch(() => setGrants([]));
+  }, [spaceId, session, projectId]);
+  React.useEffect(() => { setGrants(null); load(); }, [load]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    if (!isBusinessSpace) { setCanEdit(false); return; }
+    listMyBusinesses(product.space_id, session)
+      .then((list) => list.find((b) => b.id === spaceId) ?? null)
+      .then((b) => { if (!cancelled) setCanEdit(canManageSpaceSettings(true, b?.role)); })
+      .catch(() => { if (!cancelled) setCanEdit(false); });
+    return () => { cancelled = true; };
+  }, [spaceId, session, isBusinessSpace, product.space_id]);
+
+  async function handleCreate() {
+    setFormError(null);
+    try {
+      if (grantType === "exec") {
+        const list = commandsText.split(",").map((s) => s.trim()).filter(Boolean);
+        if (list.length === 0) throw new Error("List at least one command");
+        setSaving(true);
+        await createLocalGrant(spaceId, session, { grant_type: "exec", commands: list, project_id: projectId });
+      } else {
+        if (!directory.trim()) throw new Error("Enter a directory");
+        setSaving(true);
+        await createLocalGrant(spaceId, session, { grant_type: grantType, directory: directory.trim(), project_id: projectId });
+      }
+      setCreating(false);
+      setDirectory("");
+      setCommandsText("");
+      setGrantType("read");
+      load();
+    } catch (e) {
+      setFormError(e instanceof Error ? e.message : "Couldn't create grant");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDelete(grant: LocalGrant) {
+    if (confirmDeleteId !== grant.id) {
+      setConfirmDeleteId(grant.id);
+      setTimeout(() => setConfirmDeleteId((cur) => (cur === grant.id ? null : cur)), 4000);
+      return;
+    }
+    setConfirmDeleteId(null);
+    setBusyId(grant.id);
+    try {
+      await deleteLocalGrant(spaceId, grant.id, session);
+      load();
+    } catch {
+      // Best-effort — a failed delete just leaves the row in place.
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <>
+      <div className="tp-section" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span>Local Machine — This Project</span>
+        {canEdit && !creating && (
+          <button type="button" className="btn btn-ghost btn-sm" style={{ fontSize: 10.5, padding: "2px 7px" }} onClick={() => setCreating(true)}>
+            + New
+          </button>
+        )}
+      </div>
+      <div style={{ padding: "0 10px 8px" }}>
+        <div style={{ fontSize: 11, color: "var(--text3)", padding: "2px 4px 8px", lineHeight: 1.5 }}>
+          What an agent in THIS project may read, write, or run on a connected local machine —
+          this project&apos;s own grants plus any space-wide ones. Nothing is granted by default.
+        </div>
+        {creating && (
+          <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 8, marginBottom: 8 }}>
+            <select
+              value={grantType}
+              onChange={(e) => setGrantType(e.target.value as (typeof LOCAL_GRANT_TYPES)[number])}
+              style={{ width: "100%", marginBottom: 6, fontSize: 12 }}
+            >
+              {LOCAL_GRANT_TYPES.map((t) => (
+                <option key={t} value={t}>{t}</option>
+              ))}
+            </select>
+            {grantType === "exec" ? (
+              <input
+                type="text"
+                placeholder="npm test, git status (comma-separated)"
+                value={commandsText}
+                onChange={(e) => setCommandsText(e.target.value)}
+                style={{ width: "100%", marginBottom: 6, fontSize: 12 }}
+              />
+            ) : (
+              <input
+                type="text"
+                placeholder="/Users/you/projects/my-repo"
+                value={directory}
+                onChange={(e) => setDirectory(e.target.value)}
+                style={{ width: "100%", marginBottom: 6, fontSize: 12 }}
+              />
+            )}
+            {formError && <div style={{ fontSize: 11, color: "#dc2626", marginBottom: 6 }}>{formError}</div>}
+            <div style={{ display: "flex", gap: 6 }}>
+              <button type="button" className="btn btn-primary btn-sm" style={{ fontSize: 11 }} disabled={saving} onClick={() => void handleCreate()}>
+                {saving ? "Adding…" : "Add grant"}
+              </button>
+              <button type="button" className="btn btn-ghost btn-sm" style={{ fontSize: 11 }} onClick={() => { setCreating(false); setFormError(null); }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+        {grants === null ? (
+          <div style={{ fontSize: 12, color: "var(--text3)", padding: "4px 4px" }}>Loading…</div>
+        ) : grants.length === 0 && !creating ? (
+          <div style={{ fontSize: 12, color: "var(--text3)", padding: "4px 4px" }}>No grants apply to this project yet.</div>
+        ) : (
+          grants.map((g) => (
+            <div className="cron-item" key={g.id}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 2 }}>
+                <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text)", textTransform: "capitalize" }}>{g.grant_type}</div>
+                <span className="badge badge-blue" style={{ fontSize: 9 }}>
+                  {g.project_id ? "This project" : "Space-wide"}
+                </span>
+              </div>
+              <div style={{ fontSize: 11.5, color: "var(--text3)", fontFamily: "monospace", wordBreak: "break-all" }}>
+                {g.grant_type === "exec" ? g.commands.join(", ") : g.directory}
+              </div>
+              {canEdit && (
+                <div style={{ marginTop: 6 }}>
+                  <button
+                    type="button"
+                    className="btn btn-danger btn-sm"
+                    style={{ fontSize: 10.5, padding: "2px 7px" }}
+                    disabled={busyId === g.id}
+                    onClick={() => void handleDelete(g)}
+                  >
+                    {confirmDeleteId === g.id ? "Confirm delete?" : "Delete"}
+                  </button>
+                </div>
+              )}
+            </div>
+          ))
+        )}
+      </div>
     </>
   );
 }
@@ -865,13 +1084,47 @@ function ArtifactsPanel({ spaceId, session }: { spaceId: string; session: Sessio
 function SkillsPanel({ spaceId, session }: { spaceId: string; session: SessionCredentials }) {
   const [caps, setCaps] = React.useState<AssistantCapabilities | null>(null);
   const [showAllPrebuilts, setShowAllPrebuilts] = React.useState(false);
+  // The shared, fleet-learned template library — what OTHER spaces on the same template have
+  // already proven out, browsable and addable one skill at a time. undefined = still loading;
+  // null = genuinely nothing to show (no template, or the directory itself failed to load —
+  // dirFailed distinguishes those two so a load failure never silently reads as "nothing here").
+  const [dir, setDir] = React.useState<{ template_id: string; skills: DirectorySkill[] } | null | undefined>(undefined);
+  const [dirFailed, setDirFailed] = React.useState(false);
+  const [showAllDirectory, setShowAllDirectory] = React.useState(false);
+  const [addingName, setAddingName] = React.useState<string | null>(null);
+
+  const loadDirectory = React.useCallback(() => {
+    getSkillsDirectory(spaceId, session)
+      .then((d) => { setDir(d); setDirFailed(false); })
+      .catch(() => { setDir(null); setDirFailed(true); });
+  }, [spaceId, session]);
+
   React.useEffect(() => {
     let cancelled = false;
     getAssistantCapabilities(spaceId, session).then((c) => { if (!cancelled) setCaps(c); }).catch(() => { if (!cancelled) setCaps({ prebuilts: [], skills: [], prebuilt_count: 0, skill_count: 0 }); });
     return () => { cancelled = true; };
   }, [spaceId, session]);
+
+  React.useEffect(() => { loadDirectory(); }, [loadDirectory]);
+
+  async function addSkill(name: string) {
+    setAddingName(name);
+    try {
+      await inheritSkills(spaceId, session, [name]);
+      loadDirectory(); // reflects the new installed:true badge
+      getAssistantCapabilities(spaceId, session).then(setCaps).catch(() => {}); // learned-skill count too
+    } catch {
+      // Best-effort — the directory reload above will show the real (unchanged) installed state.
+    } finally {
+      setAddingName(null);
+    }
+  }
+
   if (!caps) return <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>Loading…</div>;
   const prebuilts = showAllPrebuilts ? caps.prebuilts : caps.prebuilts.slice(0, 6);
+  const notInstalled = dir?.skills.filter((s) => !s.installed) ?? [];
+  const directoryShown = showAllDirectory ? notInstalled : notInstalled.slice(0, 6);
+
   return (
     <>
       <div className="tp-section">Learned Skills ({caps.skill_count})</div>
@@ -885,6 +1138,54 @@ function SkillsPanel({ spaceId, session }: { spaceId: string; session: SessionCr
             <div className="tp-tool-name" style={{ fontFamily: "monospace", fontSize: 11.5 }}>{s.name}</div>
           </div>
         ))
+      )}
+      <div className="tp-section">Skill Directory</div>
+      <div style={{ fontSize: 11, color: "var(--text3)", padding: "2px 14px 6px", lineHeight: 1.5 }}>
+        Proven skills other businesses on the same template have already learned — add one instead
+        of waiting for this business to rediscover it.
+      </div>
+      {dir === undefined ? (
+        <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>Loading…</div>
+      ) : dirFailed ? (
+        <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>Couldn&apos;t load the directory.</div>
+      ) : dir === null ? (
+        <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>
+          No shared directory for this business&apos;s template yet.
+        </div>
+      ) : notInstalled.length === 0 ? (
+        <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>
+          Already has everything the directory offers.
+        </div>
+      ) : (
+        <>
+          {directoryShown.map((s) => (
+            <div className="tp-tool-row" key={s.name} style={{ alignItems: "flex-start" }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="tp-tool-name" style={{ fontFamily: "monospace", fontSize: 11.5 }}>{s.name}</div>
+                <div style={{ fontSize: 11, color: "var(--text3)", lineHeight: 1.5 }}>{s.description}</div>
+              </div>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                style={{ fontSize: 10.5, padding: "2px 7px", flexShrink: 0 }}
+                disabled={addingName === s.name}
+                onClick={() => void addSkill(s.name)}
+              >
+                {addingName === s.name ? "Adding…" : "Add"}
+              </button>
+            </div>
+          ))}
+          {!showAllDirectory && notInstalled.length > 6 && (
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              style={{ margin: "4px 14px", fontSize: 11 }}
+              onClick={() => setShowAllDirectory(true)}
+            >
+              Show all {notInstalled.length}
+            </button>
+          )}
+        </>
       )}
       <div className="tp-section">Built-in Scripts ({caps.prebuilt_count})</div>
       {prebuilts.map((p) => (
@@ -1097,5 +1398,9 @@ export function AssistantSidePanelBody({
       return <SkillsPanel spaceId={spaceId} session={session} />;
     case "notifications":
       return <NotificationsPanel spaceId={spaceId} session={session} projectId={projectId} />;
+    case "local-machine":
+      // projectOnly in ALL_SIDE_PANEL_TABS guarantees this tab is only ever selectable when
+      // projectId is set — the fallback empty string is just to satisfy the required prop type.
+      return <LocalMachinePanel spaceId={spaceId} session={session} projectId={projectId ?? ""} isBusinessSpace={isBusinessSpace} />;
   }
 }

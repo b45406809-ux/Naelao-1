@@ -7999,6 +7999,118 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      + collaboration + channels) remains planned in
      `/root/.claude/plans/gleaming-scribbling-pelican.md` and unstarted.
 
+147. **Phase 5 is now FULLY complete — the plugins/skills directory item 146 deferred is built for
+     real, plus the two remaining plan items (project automations, VFS) are resolved (one built,
+     one a reasoned deferral), per explicit user direction not to leave anything out.**
+     - **Local Machine grants: project scoping.** `local_grants.project_id` (Phase M) and the
+       per-op resolution rule in `local-machine.ts` (a grant with `project_id NULL` applies
+       space-wide; one with it set applies only to that project) already existed server-side, but
+       there was no way to SEE it that way — only the space-wide business detail page's full CRUD
+       UI. `SpaceDO.listLocalGrants` gained an optional `filterProjectId` (builds the WHERE clause
+       dynamically alongside the existing `filterUserId`, mirroring the exact grant-resolution
+       rule: `project_id IS NULL OR project_id = ?`), the spaces-worker GET route forwards a new
+       `?project_id=`, and a new project-ONLY side-panel tab — "Local Machine" — was added to
+       `AssistantSidePanels.tsx` (a new `projectOnly` flag on `ALL_SIDE_PANEL_TABS`, the mirror
+       image of the pre-existing `assistantOnly` flag Heartbeats already used) showing exactly
+       what would apply to a run in that project, with the ability to add a grant scoped to just
+       it. The business detail page's own whole-space view is untouched and deliberately not
+       duplicated.
+     - **Skills directory + add dialog.** The backend for this already existed and was completely
+       unconsumed: `GET /templates/:templateId/skills` (the shared, fleet-learned template
+       library) and `POST /skills/inherit` (pull it into a space) — both top-level agents-worker
+       routes, already router-allowlisted, from the federated-template-learning system (A1.9). The
+       real gap was that the CALLER had to already know its own `template_id`, and there was no
+       per-skill install, only "inherit everything missing." New `GET /skills/directory?space_id=`
+       resolves the space's template server-side (reusing `resolveSpaceTemplate`, the same helper
+       `/skills/inherit` already used) and cross-references against the space's OWN library so the
+       response carries a real `installed: boolean` per skill in one round trip. `POST
+       /skills/inherit` gained an optional `names[]` (and `inheritTemplateSkills()` itself gained
+       a matching `opts.names` filter, additive — omitted behaves byte-identically to the
+       provisioning-time bulk-inherit call's own existing usage) for the directory's per-skill Add
+       button. `SkillsPanel` (the Skills side-panel tab) gained a "Skill Directory" section between
+       Learned Skills and Built-in Scripts, listing not-yet-installed template skills with a
+       per-skill Add button and a show-all-N expander matching the existing prebuilts pattern.
+     - **Plugins directory (BUSINESS_FEATURE_KIND_REGISTRY).** Investigated first rather than
+       assumed a new concept was needed: `GET /project-templates` (agents worker) ALREADY returned
+       a role-filtered `feature_kinds` field (via `creatableFeatureKindsForRole`) alongside the
+       no-code project-template catalogue — built for "the project-template picker," per its own
+       header comment, but genuinely never consumed by any frontend anywhere (confirmed by
+       grepping `apps/shell`/`apps/dashboard` for `feature_kinds`/`FeatureKind` — zero hits). New
+       `GET /spaces/:spaceId/feature-kinds` wrapper on the spaces worker (same
+       `requireBusinessMembership`/`proxyToAgentsWorker` pattern `connectors/directory` already
+       established, a static leaf — no new dynamic-segment shape, so no Hono route-table-corruption
+       risk) projects ONLY the `feature_kinds` half of that response. **A real, previously-latent
+       bug found and fixed while wiring the caller's business role through**: `business_memberships
+       .role` uses `BusinessRole = "viewer"|"member"|"admin"|"owner"`, but the registry's own
+       `minCreationRole`/`ROLE_RANK` uses a DIFFERENT vocabulary (`"editor"|"admin"|"owner"`) — a
+       raw pass-through of a resolved `"member"` role would match nothing in `ROLE_RANK` and
+       silently show every ordinary business member ZERO feature kinds, including the
+       editor-tier ones (CRM, Support Inbox) the registry's own 3-tier design clearly means for
+       more than just admins to see. New `businessRoleToFeatureKindRole()` maps `"member"` →
+       `"editor"` (the ordinary-contributor tier in both vocabularies) and leaves owner/admin
+       unchanged; `"viewer"` is deliberately left unmapped (falls through to nothing creatable —
+       correct, since a viewer isn't a "member" per this same route's own membership-gate floor
+       and can't even reach the handler). Regression-proven: reverting the mapping to a raw
+       pass-through was confirmed to fail the exact "member sees CRM, not Wallet" test case before
+       being restored. Frontend: `apps/shell`'s project-creation dialog
+       (`projects/all/page.tsx`) gained a "Plugins" section below the existing template grid —
+       role-filtered feature kinds a business could add, with singleton kinds already present as
+       an ACTIVE project filtered out client-side too (not just left to the server's own 409, so
+       the grid never offers a doomed create attempt); picking one reuses the existing "name it"
+       naming step already built for Blank projects (`createProject` gained an optional `kind`
+       param, validated server-side by `SpaceDO` against the real registry regardless of what the
+       UI shows).
+     - **Project automations: expected-runtime watchdog.** Built on the EXISTING primitive per the
+       plan's own explicit decision (don't fork a second engine) — `scheduled_job_runs` (migration
+       0071, Phase 3) already records `duration_ms`/`ok`/`skipped_busy` per fire; nothing read it
+       for anomaly detection. New pure functions in `@naelao/events`: `detectRuntimeAnomaly(runs)`
+       flags the LATEST completed run when it's ≥3x its own recent rolling average (never an older
+       buried outlier — the point is "did something change just now," not "was this ever slow"),
+       requiring at least 3 prior samples before judging at all (noise floor); `isJobOverdue(...)`
+       answers the "sweep genuinely isn't reaching this job" question. **A real design bug caught
+       before shipping**: the first draft compared `job.next_run_at` (computed FORWARD from "now"
+       on every read, per its own doc comment — "computed fresh... never stored") against "now" —
+       which can never be in the past by construction, making the whole check dead logic. Fixed by
+       scanning forward from the LAST RUN instead (reusing `computeNextRun`, no second cron-scan
+       implementation) to answer "what should have fired right after the last one, and has that
+       been overdue by more than the 90-minute grace window" — the actually-correct question.
+       Wired into the existing Crons tab: `CronRunHistory` shows an inline "⚠ Last run took Xms —
+       Yx its recent average" banner; `CronsPanel`'s per-job row gained an "Overdue" badge.
+       `apps/shell` gained `@naelao/events` as a new workspace dependency (previously unused there)
+       to consume both functions directly.
+     - **`@cloudflare/computer` (the plan's proposed VFS adoption) — investigated for real, NOT
+       adopted, a reasoned deferral not a silent drop.** Confirmed the real npm package exists
+       (`@cloudflare/computer@0.2.0`, pulled and read its actual README) — but its own header
+       states, verbatim: *"PREVIEW ONLY. This package is provided as a preview for feedback only.
+       APIs are unstable... NOT suitable for production use at this time."* Beyond the explicit
+       warning, `withWorkspace` requires WRAPPING the Durable Object's own class hierarchy
+       (`class extends withWorkspace(DurableObject, ...)`) — a structural, invasive change to
+       `NaelaoAgentDO` with high blast radius regardless of the preview status, for a package
+       Cloudflare itself says not to run in production. Left unadopted; the existing R2-based
+       workspace sync (Phase R) stays the real, working mechanism. Worth revisiting once the
+       package leaves preview.
+     3176/3176 tests pass (27 new: `federation.test.ts` gained 3 cases for `inheritTemplateSkills`'
+     `names[]` filter; `local-grants-business-membership.test.ts` gained 2 real-`SpaceDO`-driven
+     project-scoping cases; the new `runtime-watchdog.test.ts` (12 cases, including "only judges
+     the latest run, never a buried older outlier"); the new `skills-directory-route.test.ts` (5
+     cases driving the real agents-worker `app` end to end); the new `feature-kinds-route.test.ts`
+     (5 cases driving the REAL `spacesWorker` through a REAL stateful `SpaceDO` AND the REAL
+     `agentsWorker` app wired as its own `AGENTS_WORKER` binding — the harness that actually caught
+     the role-vocabulary bug above, confirmed by reverting the fix and watching it fail), `npx
+     turbo run typecheck --force` clean (76 tasks), `apps/shell` verified via a real `next build`.
+     Deployed: `naelao-agents`, `naelao-spaces` (both bare `wrangler deploy`), `apps/shell`
+     (`next-on-pages` + `NEXT_PUBLIC_API_URL` in the same command, `wrangler pages deploy
+     --branch=main`, confirmed `environment: "production"` via the Pages API) — all live-verified
+     via non-LLM checks only (200s on the shell's `/p/launchpad/{spaces,new}` and the router's
+     by-slug lookup; 401s from the agents worker's cancel route AND the new `/skills/directory`
+     route with no credentials; a 404 from `naelao-spaces`'s own direct `.workers.dev` URL,
+     expected and healthy per its `workers_dev = false` hardening), per the standing "use your own
+     credits to test" instruction — no `/agent/run` was dispatched. **With this, all 6 items of
+     Phase 5 (`/root/.claude/plans/gleaming-scribbling-pelican.md`) are now fully shipped, with
+     zero silent deferrals** — the one item not literally built (the VFS) has a real, evidence-
+     backed reason recorded above. Phase 6 (multi-agent + collaboration + channels) remains
+     planned and unstarted.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

@@ -5132,12 +5132,47 @@ app.get("/templates/:templateId/skills", async (c) => {
   return c.json({ template_id: templateId, skills, count: skills.length });
 });
 
-// POST /skills/inherit { space_id, template_id? } — pull the shared template library into a space
-// (adds only skills the space lacks; never clobbers a space's own learned version).
+// GET /skills/directory?space_id=X — the "skills directory" a business can browse and add from,
+// resolving the space's own template server-side (mirrors /skills/inherit's own resolution) so
+// the frontend never needs to know its template_id. Cross-references against the space's OWN
+// library so the caller can render an accurate installed/not-installed badge in one round trip
+// rather than diffing two separate lists itself.
+app.get("/skills/directory", async (c) => {
+  const tenantId = await requireVerifiedTenant(c);
+  if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Skill library not bound" }, 503);
+  const spaceId = c.req.query("space_id") ?? "";
+  if (!spaceId) throw badRequest("space_id is required");
+
+  const templateId = c.req.query("template_id") || (await resolveSpaceTemplate(c.env, spaceId, tenantId));
+  if (!templateId) return c.json({ error_code: "no_template", message: "Space has no template with a skill directory" }, 409);
+
+  const templateLib = SkillLibrary.forTemplate(c.env.SCRIPTS_R2, templateId);
+  const spaceLib = new SkillLibrary(c.env.SCRIPTS_R2, spaceId);
+  const names = await templateLib.list();
+  const skills = [];
+  for (const name of names) {
+    const meta = await templateLib.readMetadata(name);
+    if (!meta) continue;
+    skills.push({
+      name: meta.name,
+      description: meta.description,
+      domain: meta.domain,
+      version: meta.version,
+      requires_tier: meta.requires_tier,
+      installed: await spaceLib.exists(name),
+    });
+  }
+  return c.json({ template_id: templateId, skills, count: skills.length });
+});
+
+// POST /skills/inherit { space_id, template_id?, names? } — pull the shared template library into
+// a space (adds only skills the space lacks; never clobbers a space's own learned version). An
+// explicit names[] narrows to that subset (the directory's per-skill "Add" button); omitted adds
+// everything the space is missing (the provisioning-time bulk-inherit call's own usage).
 app.post("/skills/inherit", async (c) => {
   const tenantId = await requireVerifiedTenant(c);
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Skill library not bound" }, 503);
-  const body = await c.req.json<{ space_id: string; template_id?: string }>().catch(() => ({ space_id: "" } as { space_id: string; template_id?: string }));
+  const body = await c.req.json<{ space_id: string; template_id?: string; names?: string[] }>().catch(() => ({ space_id: "" } as { space_id: string; template_id?: string; names?: string[] }));
   if (!body.space_id) throw badRequest("space_id is required");
 
   const templateId = body.template_id ?? (await resolveSpaceTemplate(c.env, body.space_id, tenantId));
@@ -5145,7 +5180,7 @@ app.post("/skills/inherit", async (c) => {
 
   const spaceLib = new SkillLibrary(c.env.SCRIPTS_R2, body.space_id);
   const templateLib = SkillLibrary.forTemplate(c.env.SCRIPTS_R2, templateId);
-  const result = await inheritTemplateSkills(templateLib, spaceLib);
+  const result = await inheritTemplateSkills(templateLib, spaceLib, body.names ? { names: body.names } : {});
   return c.json({ ...result, template_id: templateId });
 });
 
