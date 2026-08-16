@@ -48,6 +48,7 @@ export const READ_SAFE_PREBUILT_OPS: ReadonlySet<string> = new Set([
   // r2-workspace (bare op names)
   "read_file",
   "list_directory",
+  "stat_file",
   // file-manager (diff/history are reads; append/patch mutate)
   "file.diff",
   "file.history",

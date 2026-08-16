@@ -1695,6 +1695,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             mintInternalToken,
           }))
         : localMemoryStore;
+      // Makes the SAME Memory OS maintenance pass the client-driven POST .../compact HTTP route
+      // (see that route's own comment) callable AS A TOOL, from inside a run — a model that
+      // notices its own conversation growing shouldn't need the shell UI to trigger this on its
+      // behalf. Bound to this specific spaceId/DO instance, matching runMemoryMaintenanceForSpace's
+      // own scoping (memory maintenance is per-space, not per-session).
+      env.compactMemory = () => this.runMemoryMaintenanceForSpace(spaceId);
     }
     // §A1.25: lets web-search's grounded_answer op make its own direct LLM call (native
     // web-search tool) — degrades to unavailable (never a silent no-op) when neither credential
@@ -3485,7 +3491,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const body = await request.json<{ spaceId?: string }>().catch(() => ({}) as { spaceId?: string });
     const spaceId = body.spaceId ?? request.headers.get("x-naelao-space-id") ?? "";
     if (!spaceId) return Response.json({ error: "spaceId is required" }, { status: 400 });
-    const result = await runMemoryMaintenance({
+    const result = await this.runMemoryMaintenanceForSpace(spaceId);
+    return Response.json(result);
+  }
+
+  /** Shared by the client-driven HTTP route above and env.compactMemory (script-engine/types.ts)
+   *  — the SAME maintenance pass, whether triggered by the shell UI crossing a context-usage
+   *  threshold or by the model itself calling memory.compact mid-run. */
+  private async runMemoryMaintenanceForSpace(spaceId: string): Promise<Awaited<ReturnType<typeof runMemoryMaintenance>>> {
+    this.ensureInit();
+    return runMemoryMaintenance({
       sql: this.ctx.storage.sql,
       spaceId,
       ...(this.env.MEMORY_VECTORIZE
@@ -3493,7 +3508,6 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         : {}),
       ...(this.env.AI ? { embedder: new WorkersAIEmbedder(this.env.AI) } : {}),
     });
-    return Response.json(result);
   }
 
   // ── Multi-channel gateway (spec @4211129/@3190360/@3245389) ─────────────────────────────

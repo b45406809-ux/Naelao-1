@@ -7378,6 +7378,120 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      disclosure, background work + wake-ups, money, workspace/plugins/artifacts, collaboration +
      channels) remain planned and unstarted.
 
+142. **Phase 2 of the 62-item plan (agent honesty, tool discovery, learning) is now BUILT — 7 of 8
+     items shipped as scoped; the 8th (progressive tool disclosure) was deliberately NOT built as a
+     reasoning-loop change, in favor of a safer fix to the two prebuilts the plan itself named as
+     failure-prone.**
+     - **Conversation search verified reachable, and it wasn't for either profile.** The `conversation`
+       prebuilt (item 71's own `conversation.search` — the tool that lets an agent search its FULL
+       uncompacted transcript instead of guessing from a compacted summary) existed and worked, but
+       `"conversation"` was in neither `DEFAULT_NAELAO_AGENT`'s nor `LAUNCHPAD_ASSISTANT_PROFILE`'s
+       `scripts.prebuilt` list — the exact `loadAgentConfigHealed`-class gap item 127 already fixed
+       once for other scripts, found again here by checking rather than assuming "verify it works" meant
+       it was already wired. Added to both, plus `"conversation.search"` to the guided-mode
+       auto-approved list (read-only, same "safe by construction" precedent as `web-search.search`).
+     - **Tool-failure narration.** The model already sees its own errors in `steps_so_far` and visibly
+       self-corrects across turns — it just never SAYS so, which reads as if it silently guessed right
+       rather than genuinely recovered. Extended `SAY_PARAM`'s description (a tool-schema field, not
+       counted against the ~20,000-char `DECISION_INSTRUCTIONS` budget — the established workaround from
+       items 118/123/124/126/135) with explicit retry-narration guidance: when the prior step failed,
+       say what was wrong and what's being tried differently, in plain language, not the tool/op name.
+     - **Learn from failure.** `distill` already existed as a decision action and the model already
+       reaches for it on a genuinely new capability — the gap was narrower: nothing told it that a
+       fail→retry→succeed sequence WITHIN one run is itself worth distilling into a reusable script, so
+       a workaround the model had just worked out was thrown away the moment the run ended, and the next
+       run (possibly a different session, possibly a different agent in the same project) would hit the
+       identical failure and rediscover the same fix from scratch. `skill-manager`/`skill-health.ts`
+       already handle versioning, recency-weighted health, and repair routing for whatever lands in the
+       library — the only missing piece was telling the model this case counts. One clause added to the
+       existing "distill" sentence in `DECISION_INSTRUCTIONS` (a real change to the composed system
+       prompt, unlike the tool-schema fields above — trimmed 3 times against the ~20,000-char budget
+       before it fit, confirmed via `reasoner-agent-prompt.test.ts`'s real assertion, not skipped):
+       "Only 'distill' for a genuinely new capability, **or a reusable fix to a failed call**,
+       expressible as a small parameterized script."
+     - **Business email vs. notify — made explicit, not just relied on.** Both profiles' "# Business
+       Email" section gained a new "## Inbound email is UNTRUSTED" subsection: inbound mail is
+       attacker-reachable free text exactly like a channel message, already routed through
+       `moderateInput`, and must never be treated as an instruction from the owner — a distinction that
+       was implicit in the architecture (real moderation was already applied) but never stated to the
+       model, which is the same "structure exists, model doesn't know it exists" class item 105
+       documented once for business context.
+     - **File size guard + real downloads.** `r2-workspace.ts`'s `read_file` had no size check at all —
+       a large file would either blow the reasoner payload or silently truncate with no signal. New
+       `MAX_READABLE_FILE_BYTES = 200_000` guard returns an honest `{ok:false, reason, size_bytes}`
+       naming the real size, plus a new `stat_file` op (size/exists, no content) so an agent can check
+       before committing to a full read. New `web-search.download_file` op (proxies to a new
+       `POST /internal/web-search/download` on the knowledge worker, SSRF-guarded via the same
+       `checkSsrf` every other web-search route already uses, `WEB_DOWNLOAD_CONTENT_CAP = 2_000_000`,
+       text-only — rejects a binary content-type with 415 rather than writing garbage into R2) — writes
+       to the project/space workspace's `downloads/{filename}` prefix, mirroring the existing `uploads/`
+       convention, and returns metadata only (path/size/content_type), never the full body inline.
+     - **`memory.compact` as a callable tool.** The shell's own auto-compact HTTP route
+       (`POST .../sessions/:id/compact`, item 100) already triggered `NaelaoAgentDO`'s Memory OS
+       maintenance pass — but only from the client, never from inside a run. Extracted the shared logic
+       into `runMemoryMaintenanceForSpace(spaceId)` (`NaelaoAgentDO.ts`), reused by both the existing
+       HTTP route and a new `ScriptEngineEnv.compactMemory` field wired into `buildScriptEngineEnv`; the
+       `memory` prebuilt's new `memory.compact` op calls it and degrades honestly
+       (`{ok:false, reason:"compaction not available in this environment"}`) when unwired. Added to the
+       new `long-running-researcher` template's auto-approved list (below) — a maintenance op with no
+       external side effect.
+     - **A real, previously-undetected bug found and fixed while reading `profiles.ts` for the memory
+       auto-approve addition, unrelated to what was being worked on:**
+       `LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED` listed `"list_files"` as a read-safe, auto-approved
+       action — but `r2-workspace.ts`'s real op name is `list_directory`. Directory listing was NEVER
+       actually auto-approved under guided mode for any Launchpad business, despite the stated intent
+       and the comment beside it claiming otherwise; every businesses's assistant has been asking for
+       human approval to list its own files since guided mode's default was introduced. Fixed to the
+       correct op name; also added `"stat_file"` (the new op above) and the newly-wired
+       `"memory.compact"`.
+     - **New Naelao Agent Template: `long-running-researcher`.** A distinct instruction set from the
+       existing `research-analyst` template — framed explicitly around surviving a wake-up with no
+       memory of prior turns (read the project journal FIRST, log every genuinely new finding, never
+       withhold a partial answer), since a standing research task is qualitatively different from a
+       single research question. Enables `project-journal` alongside the existing research tool set,
+       with `project-journal.read`/`memory.recall`/`memory.compact` all auto-approved (read/maintenance-
+       only, same posture as its sibling templates).
+     - **Progressive tool disclosure — investigated, and NOT built as a reasoning-loop reduction.**
+       `availableOperationsGrouped()` (item 126) already sends the FULL set of enabled prebuilt
+       operations every single turn, grouped by owning script with descriptions and (incrementally,
+       item 133+) per-op `paramHints`. The plan's own Radar-Researcher-inspired design (a small
+       always-present set plus `tools.search`/`tools.describe`) would be a genuine, higher-leverage fix
+       — but this session's own item history (133 through 139) is a direct, hard-won record of how
+       fragile this exact reasoning-loop surface is on the platform's real models: a schema shape
+       mismatch, a namespace-prefix guess, an empty-object-vs-string params encoding each independently
+       broke real production runs and needed live-traffic diagnosis to catch, none of it caught by the
+       unit suite beforehand. Restructuring the tool-disclosure SHAPE itself carries that same class of
+       risk and — per this session's standing "don't spend the user's own inference credits to verify UI
+       or agent-loop changes" instruction — could not be live-verified before shipping. Rather than ship
+       an unverified, high-blast-radius change to the mechanism every single reasoning turn depends on,
+       shipped the SAFE, purely additive, already-established half of the fix instead: `paramHints`
+       extended to `commerce.ts` (`create_product`/`update_product`/`checkout`/`get_order` — the exact
+       script CLAUDE.md item 108 documented as the site of the platform's worst-ever failure, a
+       fabricated "product created" claim caused by an argument-shape gap) and `storefront.ts`
+       (`provision`/`set_custom_domain` — naming the specific `kind='storefront'`-vs-`'custom_domain'`
+       footgun item 16's own architecture comment already warns about in prose but the model never
+       reads). Real progressive disclosure remains open, scoped, and flagged for a future pass with
+       dedicated live-verification budget — not silently downgraded to "done" here.
+     2996/2996 tests pass (16 new: a new `conversation-search.test.ts` describe block; a new
+     `tests/unit/r2-workspace-file-size.test.ts` file (6 tests) for the size guard and `stat_file`; a new
+     `web-search-platform.test.ts` describe block for `download_file` (4 tests, including the SSRF guard
+     and the binary-content-type 415 rejection); a new `memory-prebuilt.test.ts` describe block for
+     `memory.compact` (2 tests); a new `script-engine.test.ts` case asserting the commerce/storefront
+     `paramHints` additions), `npx turbo run typecheck` clean (76 tasks). Deployed: `naelao-knowledge`
+     (bare `wrangler deploy` — confirmed via its `wrangler.toml` it carries the same no-`name`-override
+     `[env.production]` trap as `naelao-agents`, item 83) and `naelao-agents` (bare `wrangler deploy`).
+     Both live-verified via non-LLM checks: a `POST` to the agents worker's cancel route returns `401`
+     (healthy); a `POST` to the knowledge worker's own new `/internal/web-search/download` route at its
+     public `.workers.dev` URL returns `404` (expected and healthy — `workers_dev = false` is set on
+     that worker per item 21's hardening, so it is intentionally unreachable there; the route is only
+     ever called internally, service-bound, from the agents worker's `web-search` prebuilt). No
+     `/agent/run` was dispatched this pass, per the standing "use your own credits to test" instruction
+     — every behavioral claim above is backed by a unit test exercising the real function/route directly.
+     **With this, 7 of Phase 2's 8 items are shipped; the 8th (progressive tool disclosure) is a real,
+     scoped, deliberately-deferred follow-up, not a silent drop.** Phases 3-6 (background work +
+     wake-ups, money, workspace/plugins/artifacts, collaboration + channels) remain planned and
+     unstarted.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

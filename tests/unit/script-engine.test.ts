@@ -172,6 +172,24 @@ describe("ScriptToolSurface — the 6-op surface (spec §3)", () => {
     const r2 = groups.find((g) => g.script === "r2-workspace")!;
     expect(r2.paramHints).toBeUndefined();
   });
+
+  // commerce.create_product/update_product were the exact ops item 108's live trace found
+  // fabricated (the model claimed a product was live when it never called them at all, and
+  // once it could, the risk shifted to a wrong or missing product_id/status). storefront's two
+  // ops share a real footgun of their own (posting kind='storefront' where 'custom_domain' was
+  // meant silently drops the domain — see that script's own header) — both get explicit hints.
+  it("surfaces the commerce and storefront paramHints added to close known footguns", () => {
+    const env = makeEnv();
+    const tools = new ScriptToolSurface(env, ["commerce", "storefront"]);
+    const groups = tools.availableOperationsGrouped();
+
+    const commerce = groups.find((g) => g.script === "commerce")!;
+    expect(commerce.paramHints!["commerce.create_product"]).toMatch(/name/);
+    expect(commerce.paramHints!["commerce.update_product"]).toMatch(/product_id/);
+
+    const storefront = groups.find((g) => g.script === "storefront")!;
+    expect(storefront.paramHints!["storefront.set_custom_domain"]).toMatch(/domain/);
+  });
 });
 
 describe("script.find — degraded text scan when no Vectorize (spec §16)", () => {

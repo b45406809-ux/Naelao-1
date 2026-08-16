@@ -133,3 +133,24 @@ describe("conversation.search — scoring", () => {
     expect(scoreMessage({ role: "user", content: "the a and it was" }, ["the", "and", "was"])).toBe(0);
   });
 });
+
+// The op itself is real and well-tested (above) — the actual gap, found while verifying this end
+// to end, was that neither Space Assistant profile ever listed "conversation" as a callable
+// script, so conversation-context.ts's own pre-compaction notice ("run conversation.search to
+// look it up") instructed the model to call something it structurally could not reach.
+describe("conversation is reachable by both Space Assistant profiles", () => {
+  it("DEFAULT_NAELAO_AGENT lists the conversation script", async () => {
+    const { DEFAULT_NAELAO_AGENT } = await import("../../workers/agents/src/script-engine/profiles.js");
+    expect(DEFAULT_NAELAO_AGENT.config.scripts.prebuilt).toContain("conversation");
+  });
+
+  it("LAUNCHPAD_ASSISTANT_PROFILE lists the conversation script", async () => {
+    const { LAUNCHPAD_ASSISTANT_PROFILE } = await import("../../workers/agents/src/script-engine/profiles.js");
+    expect(LAUNCHPAD_ASSISTANT_PROFILE.config.scripts.prebuilt).toContain("conversation");
+  });
+
+  it("conversation.search is auto-approved under guided mode — a read of the agent's own already-stored transcript", async () => {
+    const { LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED } = await import("../../workers/agents/src/script-engine/profiles.js");
+    expect(LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED).toContain("conversation.search");
+  });
+});

@@ -58,6 +58,10 @@ export const storefront: PrebuiltScript = {
     "and optionally attach the owner's custom domain via Cloudflare for SaaS.",
   domain: "api",
   requires_tier: 2,
+  paramHints: {
+    "storefront.provision": "slug (or name, slugified automatically) is optional — defaults to 'shop'. This is the {slug}.naelao.com handle, not a domain.",
+    "storefront.set_custom_domain": "domain is required, e.g. 'shop.example.com'. A SEPARATE operation from storefront.provision — calling provision again after this would drop the custom domain, never re-provision to change a domain.",
+  },
   operations: {
     "storefront.provision": (a, c) =>
       bizService(c, "POST", { kind: "storefront", slug: toSlug(String(a["slug"] ?? a["name"] ?? "shop")) }),

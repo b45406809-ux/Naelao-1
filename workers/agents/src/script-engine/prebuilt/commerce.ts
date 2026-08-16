@@ -89,6 +89,12 @@ export const commerce: PrebuiltScript = {
     "money-in path — platform fee applied automatically), list products, and read orders.",
   domain: "api",
   requires_tier: 2,
+  paramHints: {
+    "commerce.create_product": "name is required. description, price_cents (a whole number of cents, e.g. 2000 for $20), and kind are optional. Creates a DRAFT — it is not for sale until commerce.update_product sets status to 'published'.",
+    "commerce.update_product": "product_id is required — the id commerce.create_product or commerce.list_products returned, never guessed. status is the field that actually publishes it (e.g. status: 'published').",
+    "commerce.checkout": "product_id is required — from commerce.list_products. customer_email is optional.",
+    "commerce.get_order": "order_id is required — from commerce.list_orders. There is no way to look up an order by anything else.",
+  },
   operations: {
     // Money-in: returns a Naelao-store Lemon Squeezy checkout URL for the product.
     "commerce.checkout": (a, c) =>

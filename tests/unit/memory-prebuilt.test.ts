@@ -65,3 +65,29 @@ describe("memory prebuilt — the Hermes-pattern self-managed memory tool", () =
     expect(result).toMatchObject({ ok: false });
   });
 });
+
+// memory.compact — the same maintenance pass the shell UI's auto-compact HTTP route triggers,
+// exposed as a tool a model can call mid-run instead of only ever being triggered client-side.
+describe("memory.compact", () => {
+  it("calls env.compactMemory and reports its result", async () => {
+    const compactMemory = vi.fn().mockResolvedValue({ decayed: 3, promoted: 1 });
+    const env = {
+      spaceId: "space1", agentId: "agent1", tenantId: "tenant1", scriptsBucket: {} as R2Bucket,
+      compactMemory,
+    } as ScriptEngineEnv;
+    const ctx = { env, run: vi.fn() };
+
+    const result = await memory.operations["memory.compact"]!({}, ctx);
+
+    expect(compactMemory).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ ok: true, result: { decayed: 3, promoted: 1 } });
+  });
+
+  it("degrades honestly when the host hasn't wired compaction", async () => {
+    const env = { spaceId: "space1", agentId: "agent1", tenantId: "tenant1", scriptsBucket: {} as R2Bucket } as ScriptEngineEnv;
+    const ctx = { env, run: vi.fn() };
+
+    const result = await memory.operations["memory.compact"]!({}, ctx);
+    expect(result).toEqual({ ok: false, reason: "compaction not available in this environment" });
+  });
+});

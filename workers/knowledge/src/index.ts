@@ -936,12 +936,14 @@ app.delete("/internal/semantic-cache", async (c) => {
 // (which is only for a builder's OWN external accounts). The key never leaves this worker — the
 // calling isolate only ever sees normalized results.
 //
-//   POST /internal/web-search/search   { query, max_results? }  → { configured, results[], answer? }
-//   POST /internal/web-search/fetch    { url }                  → { url, status, content }
-//   POST /internal/web-search/extract  { url, schema? }         → { configured, url, content }
+//   POST /internal/web-search/search    { query, max_results? }  → { configured, results[], answer? }
+//   POST /internal/web-search/fetch     { url }                  → { url, status, content }
+//   POST /internal/web-search/extract   { url, schema? }         → { configured, url, content }
+//   POST /internal/web-search/download  { url }                  → { url, status, content, size, truncated }
 //
 // `search`/`extract` need the provider key and report `configured:false` when it is unset rather
-// than faking empty results. `fetch` is a keyless SSRF-guarded GET and works out of the box.
+// than faking empty results. `fetch`/`download` are keyless SSRF-guarded GETs and work out of the
+// box — `download` is the higher-cap, save-don't-read variant (see its own comment).
 
 const TAVILY_SEARCH_URL = "https://api.tavily.com/search";
 const TAVILY_EXTRACT_URL = "https://api.tavily.com/extract";
@@ -1051,6 +1053,44 @@ app.post("/internal/web-search/extract", async (c) => {
     return c.json({ configured: Boolean(c.env.TAVILY_API_KEY), url: rawUrl, content: text });
   } catch (err) {
     return c.json({ configured: Boolean(c.env.TAVILY_API_KEY), url: rawUrl, content: "", error: String(err) }, 502);
+  }
+});
+
+// A DIFFERENT shape from /fetch and /extract on purpose: those two are meant to be read directly
+// (small, capped at WEB_SEARCH_CONTENT_CAP, returned straight into the reasoning payload). This
+// one is meant to be SAVED — a real download the agent's own downloads/ prebuilt op writes to R2
+// rather than reading into context, so a much larger cap is safe here. Text-only, matching this
+// platform's existing R2-workspace convention (item 34's own "bounded... text-only" note) — a
+// binary download (PDF/image) is out of scope; a real `.text()` decode of binary bytes would
+// produce garbage, and a mojibake'd "download" is worse than an honest refusal.
+const WEB_DOWNLOAD_CONTENT_CAP = 2_000_000;
+
+app.post("/internal/web-search/download", async (c) => {
+  const body = await c.req.json<{ url?: string }>().catch(() => ({} as { url?: string }));
+  const rawUrl = (body.url ?? "").trim();
+  if (!rawUrl) return c.json({ error_code: "bad_request", message: "url required" }, 400);
+
+  const ssrf = await checkSsrf(rawUrl);
+  if (ssrf.blocked) return c.json({ error_code: "forbidden", message: ssrf.reason ?? "url failed SSRF validation" }, 403);
+
+  try {
+    const resp = await fetch(rawUrl, { headers: { "user-agent": "naelao-agent/1.0" }, redirect: "follow" });
+    const contentType = resp.headers.get("content-type") ?? "";
+    if (/^(image|video|audio|application\/(pdf|zip|octet-stream|vnd\.))/i.test(contentType)) {
+      return c.json({
+        url: rawUrl, status: resp.status, content: null,
+        error: `content-type "${contentType}" looks binary — this download endpoint only handles text (csv, json, markdown, plain text, html).`,
+      }, 415);
+    }
+    const full = await resp.text();
+    const truncated = full.length > WEB_DOWNLOAD_CONTENT_CAP;
+    return c.json({
+      url: rawUrl, status: resp.status,
+      content: full.slice(0, WEB_DOWNLOAD_CONTENT_CAP),
+      size: full.length, truncated,
+    });
+  } catch (err) {
+    return c.json({ url: rawUrl, status: 0, content: null, error: String(err) }, 502);
   }
 });
 

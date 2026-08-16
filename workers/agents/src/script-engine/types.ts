@@ -732,6 +732,12 @@ export interface ScriptEngineEnv {
    * a listener failing must never turn it into a failure. Absent when the host wires no events.
    */
   onWorkspaceChange?: (change: { path: string; operation: "write" | "delete" }) => void;
+  /** Runs the SAME Memory OS maintenance pass (decay/promote/prune) the client-driven
+   *  POST .../sessions/:id/compact HTTP route triggers — as a tool the model itself can call mid-
+   *  run (see the `memory` prebuilt's `memory.compact` op), not only from the shell UI. Present
+   *  whenever the host DO wires it (always, in practice — see NaelaoAgentDO.buildScriptEngineEnv);
+   *  the op degrades honestly rather than throwing when it isn't. */
+  compactMemory?: () => Promise<unknown>;
   /** Generic named-lock primitive — present when CONCURRENCY_DO is wired up (the `lock`
    *  prebuilt reports itself degraded, not unavailable, when absent — see LockGateway). */
   lockGateway?: LockGateway;
