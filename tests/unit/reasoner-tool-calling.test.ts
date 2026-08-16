@@ -770,7 +770,7 @@ describe("run.params is expressible by a constrained decoder", () => {
   const GATEWAY = { accountId: "acct", gatewayId: "gw" };
   const CTX = { spaceId: "s", agentId: "a" };
 
-  async function capturedTools(): Promise<Array<Record<string, any>>> {
+  async function capturedTools(model?: string): Promise<Array<Record<string, any>>> {
     let body: string | undefined;
     const original = globalThis.fetch;
     globalThis.fetch = (async (_url: string, init?: RequestInit) => {
@@ -781,7 +781,13 @@ describe("run.params is expressible by a constrained decoder", () => {
       );
     }) as typeof fetch;
     try {
-      const reasoner = new GatewayReasoner({ apiKey: "k", gateway: GATEWAY, ctx: CTX });
+      // A BYOK model (Gemini/Groq) needs its own key present in gateway or canAuthenticateLlm
+      // refuses before ever calling fetch — see byokKeyFieldForModel.
+      const gateway =
+        model?.startsWith("google-ai-studio/") ? { ...GATEWAY, googleAiStudioApiKey: "g-key" }
+        : model?.startsWith("groq/") ? { ...GATEWAY, groqApiKey: "grok-key" }
+        : GATEWAY;
+      const reasoner = new GatewayReasoner({ apiKey: "k", gateway, ctx: CTX, ...(model ? { model } : {}) });
       await reasoner.decide({ goal: "g", level: 2, snapshot: {}, candidates: [] } as never);
       return (JSON.parse(body!) as { tools: Array<Record<string, any>> }).tools;
     } finally {
@@ -789,23 +795,52 @@ describe("run.params is expressible by a constrained decoder", () => {
     }
   }
 
-  it("does not send an object schema with no properties — the shape that can only produce {}", async () => {
-    const tools = await capturedTools();
+  // The precise defect this whole describe block guards against: an object type whose keys are
+  // unenumerable to a schema-constrained decoder — neither declared `properties` nor
+  // `additionalProperties`, so the only value it can legally emit is `{}`.
+  const isUnenumerableObject = (params: Record<string, any>) =>
+    params.type === "object" && !params.properties && params.additionalProperties === undefined;
+
+  it("Gemini gets the JSON-string schema — the one shape its own decoder is proven to accept", async () => {
+    const tools = await capturedTools("google-ai-studio/gemini-flash-lite-latest");
     const run = tools.find((t) => t.function?.name === "run");
     expect(run).toBeDefined();
     const params = run!.function.parameters.properties.params;
-
-    // The precise defect: an object type whose keys are unenumerable to the decoder.
-    const unenumerableObject =
-      params.type === "object" && !params.properties && params.additionalProperties === undefined;
-    expect(unenumerableObject).toBe(false);
+    expect(isUnenumerableObject(params)).toBe(false);
     expect(params.type).toBe("string");
   });
 
-  it("requires params, so the decoder must emit it rather than silently skipping it", async () => {
+  // Groq's own server validates a model's tool-call output against the DECLARED schema and
+  // REJECTS the call outright when they mismatch — observed live, on a real heartbeat wake:
+  // "tool call validation failed: parameters for tool run did not match schema: errors:
+  // [`/params`: expected string, but got object]", on both the streamed attempt and its
+  // non-streamed retry. Groq's own model naturally wants to emit a real object; the string
+  // schema that fixed Gemini is precisely what a Groq-dispatched run must NOT declare.
+  it("Groq (and every non-Gemini provider) gets a real object schema, not a string", async () => {
+    const tools = await capturedTools("groq/llama-3.3-70b-versatile");
+    const run = tools.find((t) => t.function?.name === "run");
+    const params = run!.function.parameters.properties.params;
+    expect(params.type).toBe("object");
+    // additionalProperties:true is what keeps this SAFE despite having no properties — the same
+    // enumerability defect the Gemini fix exists to avoid, closed a different, more portable way.
+    expect(params.additionalProperties).toBe(true);
+    expect(isUnenumerableObject(params)).toBe(false);
+  });
+
+  it("an unset model defaults to the object schema (every non-Gemini caller today)", async () => {
     const tools = await capturedTools();
     const run = tools.find((t) => t.function?.name === "run");
-    expect(run!.function.parameters.required).toContain("params");
+    const params = run!.function.parameters.properties.params;
+    expect(params.type).toBe("object");
+    expect(isUnenumerableObject(params)).toBe(false);
+  });
+
+  it("requires params on both schema variants, so the decoder must emit it either way", async () => {
+    for (const model of [undefined, "google-ai-studio/gemini-flash-lite-latest", "groq/llama-3.3-70b-versatile"]) {
+      const tools = await capturedTools(model);
+      const run = tools.find((t) => t.function?.name === "run");
+      expect(run!.function.parameters.required).toContain("params");
+    }
   });
 
   it("parses a JSON-string params into the real arguments the loop will act on", async () => {

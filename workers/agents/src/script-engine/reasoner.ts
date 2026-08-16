@@ -301,8 +301,9 @@ export function coerceOperationToolCall(toolCall: { name: string; arguments?: un
   const parsed = typeof args === "string" ? safeJsonObject(args) : args;
   const obj = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
   // Some models nest the real arguments one level down under the wrapper key they were taught —
-  // and, now that `params` is declared as a JSON string (PARAMS_PARAM), that nested value may
-  // itself be a string. Only treat it as the arguments when a wrapper key is actually present;
+  // and, since `params` is declared either as a JSON string (Gemini) or a real object with
+  // additionalProperties (everyone else — see decisionTools' own header), that nested value may
+  // be either shape. Only treat it as the arguments when a wrapper key is actually present;
   // otherwise the outer object IS the argument list (the direct-operation-call shape).
   const wrapper = ["params", "arguments", "input"].find((k) => k in obj);
   const params = wrapper ? readParams(obj[wrapper]) : obj;
@@ -310,12 +311,14 @@ export function coerceOperationToolCall(toolCall: { name: string; arguments?: un
 }
 
 /**
- * Read a tool call's `params` argument, accepting either shape a provider can hand back.
+ * Read a tool call's `params` argument, accepting either shape any provider can hand back.
  *
- * See PARAMS_PARAM for why it is declared as a string. Some providers will still send a real
- * object, and a model that ignores the declaration and does the same is right about the intent —
- * both are honoured. Anything unusable (a bare array, a string that isn't JSON, a missing field)
- * degrades to no arguments, which is exactly what the caller would have seen before.
+ * See decisionTools/PARAMS_PARAM_STRING/PARAMS_PARAM_OBJECT for why the DECLARED schema differs
+ * by provider. A model that sends the other shape anyway is still honoured — a real object when
+ * a string was declared, or vice versa — so this stays correct regardless of which schema a
+ * given call was actually made under. Anything unusable (a bare array, a string that isn't JSON,
+ * a missing field) degrades to no arguments, which is exactly what the caller would have seen
+ * before.
  */
 function readParams(value: unknown): Record<string, unknown> {
   const usable = (v: unknown): v is Record<string, unknown> =>
@@ -414,7 +417,7 @@ function extractJson(text: string): unknown {
  * earns its place at a genuine boundary.
  *
  * Both are declared tool parameters rather than prose the model might attach beside its call, for
- * the same reason the actions themselves became tools (see DECISION_TOOLS' own header): with
+ * the same reason the actions themselves became tools (see decisionTools' own header): with
  * `tool_choice:"required"` many providers suppress free text entirely, so anything depending on a
  * text block arriving alongside a forced tool call is unreliable exactly where reliability matters
  * most — the small open-weight models a free-tier business runs on. As declared parameters they
@@ -455,102 +458,154 @@ const SAY_PARAM = {
  * what belongs in it rather than silently skipping it. An operation that genuinely takes no
  * arguments costs two characters.
  */
-const PARAMS_PARAM = {
+const PARAMS_HINT_TEXT =
+  "Many groups carry \"param_hints\", keyed by exact operation name, naming each field and which " +
+  "are required: READ the hint for the operation you chose before writing this. A field left out " +
+  "is often not an error — it silently does the WRONG thing instead, e.g. creating a thread with " +
+  "no project attached because project_id was omitted, rather than failing loudly. Fill it from " +
+  "what you already have: an id you looked up a step ago, the text you were asked to send. When " +
+  "no hint exists, infer the fields from the operation's name.";
+
+/**
+ * `params` as a JSON object STRING — the shape that fixed the Gemini/Workers-AI failure above.
+ * Used ONLY for Google AI Studio models, whose native function-calling schema is an OpenAPI-3.0
+ * subset requiring exactly one `type` string (not an array) — this is the one declared shape this
+ * provider is proven, live, to accept and act on correctly (see PARAMS_PARAM_STRING's own header
+ * and the two live traces it cites).
+ */
+const PARAMS_PARAM_STRING = {
   type: "string",
   description:
     "REQUIRED. Arguments for that op/script as a JSON object STRING — e.g. " +
     "{\"project_id\":\"9d67a69a-981a-4c3e-b50d-83c3f51c679c\",\"title\":\"Kickoff\"}. Use {} only " +
-    "when the operation genuinely takes no arguments. Many groups carry \"param_hints\", keyed by " +
-    "exact operation name, naming each field and which are required: READ the hint for the " +
-    "operation you chose before writing this. A field left out is often not an error — it " +
-    "silently does the WRONG thing instead, e.g. creating a thread with no project attached " +
-    "because project_id was omitted, rather than failing loudly. Fill it from what you already " +
-    "have: an id you looked up a step ago, the text you were asked to send. When no hint exists, " +
-    "infer the fields from the operation's name.",
+    `when the operation genuinely takes no arguments. ${PARAMS_HINT_TEXT}`,
 };
 
-const DECISION_TOOLS: ToolSpec[] = [
-  {
-    name: "run",
-    description: "Run an existing prebuilt operation or library script. Prefer this whenever one fits the goal.",
-    parameters: {
-      type: "object",
-      properties: {
-        name: {
-          type: "string",
-          description:
-            "The exact op/script name to run — from candidate_scripts, or from available_operations' " +
-            "\"operations\" lists. available_operations is grouped by capability area with a description " +
-            "per group: read a group's description before concluding no capability exists — a bare name " +
-            "like \"thread.send_message\" won't explain itself, but its group's description will.",
-        },
-        params: PARAMS_PARAM,
-        doing: DOING_PARAM,
-        say: SAY_PARAM,
-      },
-      required: ["name", "doing", "params"],
-    },
-  },
-  {
-    name: "distill",
-    description: "Save a NEW reusable script then run it. Only when the capability is genuinely new and expressible as a small parameterized script.",
-    parameters: {
-      type: "object",
-      properties: {
-        name: { type: "string", description: "Name for the new script." },
-        code: { type: "string", description: "TypeScript source for the new script." },
-        metadata: {
-          type: "object",
-          properties: {
-            description: { type: "string" },
-            domain: { type: "string" },
-            requires_tier: { type: "number", description: "Execution ladder tier 1-5." },
-          },
-          required: ["description"],
-        },
-        params: { type: "string", description: "Arguments to run it with immediately, as a JSON object string, e.g. {\"limit\":5}. Use {} for none." },
-        doing: DOING_PARAM,
-        say: SAY_PARAM,
-      },
-      required: ["name", "code", "doing"],
-    },
-  },
-  {
-    name: "patch",
-    description: "Repair an existing library script that has drifted or failed.",
-    parameters: {
-      type: "object",
-      properties: {
-        name: { type: "string", description: "The existing script to repair." },
-        code: { type: "string", description: "The corrected TypeScript source." },
-        reason: { type: "string", description: "What was wrong and what this fixes." },
-        doing: DOING_PARAM,
-        say: SAY_PARAM,
-      },
-      required: ["name", "code", "doing"],
-    },
-  },
-  {
-    name: "answer",
-    description: "Answer the goal directly, when no tool or script is needed.",
-    parameters: {
-      type: "object",
-      properties: { text: { type: "string", description: "The final answer." } },
-      required: ["text"],
-    },
-  },
-  {
-    name: "give_up",
-    description: "Stop honestly, when the goal cannot be progressed safely. Never guess instead of using this.",
-    parameters: {
-      type: "object",
-      properties: { reason: { type: "string", description: "Why this cannot proceed." } },
-      required: ["reason"],
-    },
-  },
-];
+/**
+ * `params` as a real JSON OBJECT — for every provider that isn't Google AI Studio (Groq,
+ * Anthropic, OpenAI, Workers AI's more capable models).
+ *
+ * A second, real, previously-unfixed failure — found live, on a Groq-dispatched heartbeat wake —
+ * is why this exists as its own schema rather than sharing PARAMS_PARAM_STRING for every
+ * non-Gemini provider too. Groq's own server validates a model's tool-call output against the
+ * DECLARED schema and REJECTS the call outright when they don't match
+ * ("tool call validation failed: parameters for tool run did not match schema: errors:
+ * [`/params`: expected string, but got object]") — on both the streamed attempt and its
+ * non-streamed retry, confirmed live. The model's own natural instinct on this provider is to
+ * emit a real object, and Groq's own validator will not let a string-typed field through that.
+ *
+ * `additionalProperties: true` is what makes this SAFE to declare with no enumerable
+ * `properties` — the exact defect PARAMS_PARAM_STRING's own header documents (a bare
+ * `{type:"object"}` with neither `properties` nor `additionalProperties` gives a
+ * schema-constrained decoder no permitted keys, so the only value it can emit is `{}`). This is
+ * a DIFFERENT, more portable fix for that same underlying problem — explicitly allowing arbitrary
+ * keys — which Google's OWN function-calling schema has historically not accepted (its
+ * OpenAPI-3.0-subset `FunctionDeclaration.parameters` wants exactly one declared `type`, and this
+ * platform's Gemini routing has not been verified against that shape) — which is why Gemini keeps
+ * its own separately-declared string schema rather than sharing this one. readParams() already
+ * accepts either shape from either provider, so this only widens what a valid decision can be.
+ */
+const PARAMS_PARAM_OBJECT = {
+  type: "object",
+  additionalProperties: true,
+  description:
+    "REQUIRED. Arguments for that op/script, as a plain JSON object — e.g. " +
+    `{"project_id":"9d67a69a-981a-4c3e-b50d-83c3f51c679c","title":"Kickoff"}. Use {} only when ` +
+    `the operation genuinely takes no arguments. ${PARAMS_HINT_TEXT}`,
+};
 
-const DECISION_ACTIONS = new Set(DECISION_TOOLS.map((t) => t.name));
+/**
+ * The declared action space, built per-model so `run`/`distill`'s `params` field gets whichever
+ * of PARAMS_PARAM_STRING/PARAMS_PARAM_OBJECT that model's provider actually accepts — see both
+ * schemas' own headers for why this can't be one shared shape. `answer`/`give_up` never touch
+ * `params`, so they're identical either way.
+ */
+function decisionTools(model: string | undefined): ToolSpec[] {
+  const paramsSchema = model && isGoogleAiStudioModel(model) ? PARAMS_PARAM_STRING : PARAMS_PARAM_OBJECT;
+  return [
+    {
+      name: "run",
+      description: "Run an existing prebuilt operation or library script. Prefer this whenever one fits the goal.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: {
+            type: "string",
+            description:
+              "The exact op/script name to run — from candidate_scripts, or from available_operations' " +
+              "\"operations\" lists. available_operations is grouped by capability area with a description " +
+              "per group: read a group's description before concluding no capability exists — a bare name " +
+              "like \"thread.send_message\" won't explain itself, but its group's description will.",
+          },
+          params: paramsSchema,
+          doing: DOING_PARAM,
+          say: SAY_PARAM,
+        },
+        required: ["name", "doing", "params"],
+      },
+    },
+    {
+      name: "distill",
+      description: "Save a NEW reusable script then run it. Only when the capability is genuinely new and expressible as a small parameterized script.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Name for the new script." },
+          code: { type: "string", description: "TypeScript source for the new script." },
+          metadata: {
+            type: "object",
+            properties: {
+              description: { type: "string" },
+              domain: { type: "string" },
+              requires_tier: { type: "number", description: "Execution ladder tier 1-5." },
+            },
+            required: ["description"],
+          },
+          params: paramsSchema,
+          doing: DOING_PARAM,
+          say: SAY_PARAM,
+        },
+        required: ["name", "code", "doing"],
+      },
+    },
+    {
+      name: "patch",
+      description: "Repair an existing library script that has drifted or failed.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "The existing script to repair." },
+          code: { type: "string", description: "The corrected TypeScript source." },
+          reason: { type: "string", description: "What was wrong and what this fixes." },
+          doing: DOING_PARAM,
+          say: SAY_PARAM,
+        },
+        required: ["name", "code", "doing"],
+      },
+    },
+    {
+      name: "answer",
+      description: "Answer the goal directly, when no tool or script is needed.",
+      parameters: {
+        type: "object",
+        properties: { text: { type: "string", description: "The final answer." } },
+        required: ["text"],
+      },
+    },
+    {
+      name: "give_up",
+      description: "Stop honestly, when the goal cannot be progressed safely. Never guess instead of using this.",
+      parameters: {
+        type: "object",
+        properties: { reason: { type: "string", description: "Why this cannot proceed." } },
+        required: ["reason"],
+      },
+    },
+  ];
+}
+
+/** Action names are identical across both schema variants — build once from either. */
+const DECISION_ACTIONS = new Set(decisionTools(undefined).map((t) => t.name));
 
 /**
  * Turn a provider tool call into a ReasonDecision, validating that the action is one we declared
@@ -839,7 +894,7 @@ export class GatewayReasoner implements Reasoner {
           gatewayOpts: this.deps.gateway,
           ctx: { ...this.deps.ctx, skipCache: true },
           query,
-          tools: DECISION_TOOLS,
+          tools: decisionTools(query.model),
           ...(this.deps.fallbacks && this.deps.fallbacks.length > 0 ? { fallbacks: this.deps.fallbacks } : {}),
           ...(this.deps.reasoning ? { reasoning: this.deps.reasoning } : {}),
           ...(streaming ? { stream: true } : {}),
