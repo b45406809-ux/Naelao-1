@@ -614,6 +614,54 @@ async function grantCreditPackPurchase(
 }
 
 /**
+ * Phase 4 (money): an end user buying/renewing their OWN personal-plan tier. Fires on
+ * payment.success (a one-time LS variant is the simplest real thing to provision here, matching
+ * credit_pack's own precedent — a true recurring-subscription tier would need its own
+ * subscription-lifecycle handling like recordBusinessSubscription's, deferred as a real, scoped
+ * follow-up rather than half-built here) with checkout metadata kind="personal_plan". Grants via
+ * /internal/personal-plan/grant — plan_tier/set is naturally idempotent (setting the same tier
+ * twice is a no-op effect), so unlike credit-pack's additive ledger this needs no idempotency key
+ * of its own to stay safe under a webhook retry.
+ */
+async function grantPersonalPlanPurchase(
+  event: NormalizedBillingEvent,
+  env: LemonSqueezyEnv
+): Promise<boolean> {
+  if (event.type !== "payment.success") return false;
+  const custom = (event.metadata ?? {}) as Record<string, unknown>;
+  if (custom["kind"] !== "personal_plan" || !event.spaceId) return false;
+  const endUserId = custom["end_user_id"] ? String(custom["end_user_id"]) : null;
+  const productSpaceId = custom["product_space_id"] ? String(custom["product_space_id"]) : null;
+  const tier = custom["tier"] ? String(custom["tier"]) : null;
+  if (!endUserId || !productSpaceId || !tier) return false;
+  if (!env.SPACES_WORKER) return false;
+
+  const product = await env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
+    .bind(productSpaceId).first<{ tenant_id: string }>();
+  if (!product) return false;
+
+  try {
+    const resp = await env.SPACES_WORKER.fetch(new Request("http://spaces-worker/internal/personal-plan/grant", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": product.tenant_id,
+        "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, product.tenant_id),
+      },
+      body: JSON.stringify({ product_space_id: productSpaceId, end_user_id: endUserId, tier }),
+    }));
+    if (!resp.ok) {
+      throw new Error(`personal plan grant ${resp.status} for end_user=${endUserId}: ${await resp.text()}`);
+    }
+    console.log(`[billing/ls] Set personal plan tier=${tier} for end_user=${endUserId} product=${productSpaceId}`);
+    return true;
+  } catch (err) {
+    console.error("[billing/ls] Personal plan grant error:", (err as Error).message);
+    throw err;
+  }
+}
+
+/**
  * Launchpad Wallet (user-directed feature): a business topping up its OWN wallet_ledger balance
  * (a project flagged kind='wallet') — same shape as grantCreditPackPurchase above, but the
  * proceeds land on the BUSINESS's stored-value balance, not an individual end user's. Fires on
@@ -1156,6 +1204,7 @@ export async function handleLemonSqueezyWebhook(
   //     with the seat/product paths above (each event matches at most one of these four kinds).
   await runHandler("business subscription recording", () => recordBusinessSubscription(event, env));
   await runHandler("credit pack grant", () => grantCreditPackPurchase(event, env));
+  await runHandler("personal plan grant", () => grantPersonalPlanPurchase(event, env));
   await runHandler("wallet top-up grant", () => grantWalletTopupPurchase(event, env));
   await runHandler("order refund clawback", () => recordOrderRefund(event, env));
   await runHandler("non-order refund clawback", () => recordNonOrderRefundClawback(event, env));

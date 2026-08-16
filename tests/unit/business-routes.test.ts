@@ -64,9 +64,9 @@ function makeKv(): KVNamespace {
   } as unknown as KVNamespace;
 }
 
-function makeEnv() {
+function makeEnv(opts?: { productConfigExtra?: Record<string, unknown>; personalPlanTierByKey?: Record<string, string> }) {
   const fakeDb = createFakeD1(SCHEMA);
-  const productConfig = { membershipModel: "hybrid", allowPublicSignup: true, allowedChildSpaceTypes: ["launchpad"] };
+  const productConfig = { membershipModel: "hybrid", allowPublicSignup: true, allowedChildSpaceTypes: ["launchpad"], ...(opts?.productConfigExtra ?? {}) };
   fakeDb.db.exec(
     `INSERT INTO spaces (id, tenant_id, status, name, config_json) VALUES ('prod-1', 'builder-tenant', 'active', 'Acme', '${JSON.stringify({ productConfig }).replace(/'/g, "''")}')`
   );
@@ -77,7 +77,27 @@ function makeEnv() {
     SPACE_DO: makeStatefulDoNamespace(SpaceDO),
     SPACE_TYPE_REGISTRY_DO: make404RegistryDo(),
     NAELAO_CONFIG_KV: makeKv(),
+    ...(opts?.personalPlanTierByKey ? { PRODUCT_USER_DO: makeProductUserDoNamespace(opts.personalPlanTierByKey) } : {}),
   };
+}
+
+// Phase 4 (money): mirrors business-create.test.ts's own fake — /plan-tier reads a fixed tier
+// keyed by "productId:endUserId" (matched as a suffix of the real HMAC'd DO name).
+function makeProductUserDoNamespace(tierByKey: Record<string, string>): DurableObjectNamespace {
+  return {
+    idFromName: (name: string) => ({ toString: () => name }) as unknown as DurableObjectId,
+    get: (id: DurableObjectId) => ({
+      fetch: async (r: Request) => {
+        const url = new URL(r.url);
+        if (url.pathname === "/plan-tier") {
+          const idStr = id.toString();
+          const matchedKey = Object.keys(tierByKey).find((k) => idStr.endsWith(k));
+          return Response.json({ plan_tier: matchedKey ? tierByKey[matchedKey] : "free" });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    }) as unknown as DurableObjectStub,
+  } as unknown as DurableObjectNamespace;
 }
 
 async function internalHeaders(tenantId: string, extra: Record<string, string> = {}): Promise<Record<string, string>> {
@@ -354,6 +374,50 @@ describe("Business invites — create + accept round trip", () => {
     const carolHeaders = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "carol" });
     const res = await spacesWorker.fetch(req(`/spaces/${biz.space_id}/invites/${invite.token}/accept`, carolHeaders, { method: "POST" }), env as never, execCtx);
     expect(res.status).toBe(410);
+  });
+});
+
+// Phase 4 (money): the invite gate only ever activates when the product actually configures a
+// real personalPlans upgrade path — see business-routes.ts's own comment on why (gating on a
+// brand-new feature nobody has purchased would instantly break every existing invite flow).
+describe("Business invites — personal-plan gate (only active when the product has a real upgrade path)", () => {
+  const PRODUCT_CONFIG_WITH_PLANS = {
+    pricingConfig: { model: "credits", personalPlans: [{ id: "plus-monthly", name: "Plus", tier: "plus", priceCents: 500, interval: "month" }] },
+  };
+
+  it("a FREE-tier owner is refused when the product has a real personal-plan upgrade path", async () => {
+    const env = makeEnv({ productConfigExtra: PRODUCT_CONFIG_WITH_PLANS, personalPlanTierByKey: { "prod-1:alice": "free" } });
+    const biz = await createBusiness(env, "alice", "Alice's Shop");
+    const ownerHeaders = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "alice" });
+    const res = await spacesWorker.fetch(
+      req(`/spaces/${biz.space_id}/invites`, ownerHeaders, { method: "POST", body: JSON.stringify({ email: "carol@example.com" }) }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error_code: string };
+    expect(body.error_code).toBe("personal_plan_invite_not_allowed");
+  });
+
+  it("a PLUS-tier owner CAN invite when the product has a real personal-plan upgrade path", async () => {
+    const env = makeEnv({ productConfigExtra: PRODUCT_CONFIG_WITH_PLANS, personalPlanTierByKey: { "prod-1:alice": "plus" } });
+    const biz = await createBusiness(env, "alice", "Alice's Shop");
+    const ownerHeaders = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "alice" });
+    const res = await spacesWorker.fetch(
+      req(`/spaces/${biz.space_id}/invites`, ownerHeaders, { method: "POST", body: JSON.stringify({ email: "carol@example.com" }) }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(201);
+  });
+
+  it("a FREE-tier owner is NOT refused when the product has NO personalPlans configured (the default, backward-compatible with every live business today)", async () => {
+    const env = makeEnv({ personalPlanTierByKey: { "prod-1:alice": "free" } }); // no PRODUCT_CONFIG_WITH_PLANS
+    const biz = await createBusiness(env, "alice", "Alice's Shop");
+    const ownerHeaders = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "alice" });
+    const res = await spacesWorker.fetch(
+      req(`/spaces/${biz.space_id}/invites`, ownerHeaders, { method: "POST", body: JSON.stringify({ email: "carol@example.com" }) }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(201);
   });
 });
 

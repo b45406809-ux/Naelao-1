@@ -21,6 +21,17 @@ export interface PlanLimits {
    *  consumption counterpart to monthly_tokens, which only meters LLM usage. Same 1:20:200:2000
    *  tier ratio as monthly_tokens. */
   monthly_infra_credits: number;
+  /** Phase 4 (money): OPTIONAL daily/weekly ceilings on top of the monthly one — undefined means
+   *  "no extra throttling beyond the monthly cap" (every tier below defines them; a future custom
+   *  tier that omits them is not enforced on those windows). These exist to stop a single busy
+   *  day/week from burning an entire month's allowance in one sitting, not to reduce the total a
+   *  plan is entitled to — each is set generously relative to its own monthly figure. Initial
+   *  values; tune against real usage the same way infraTimeToCredits' own rates are documented as
+   *  needing tuning. Enforced by workers/billing/src/quota.ts's checkWindowedQuota, mirrored here
+   *  (not imported from there) for the same reason monthly_tokens/QuotaLimits.maxMonthlyTokens are
+   *  two independently-maintained copies today — see that file's own comment. */
+  daily_tokens?: number;
+  weekly_tokens?: number;
 }
 
 const PLAN_LIMITS: Record<PlanTier, PlanLimits> = {
@@ -39,6 +50,8 @@ const PLAN_LIMITS: Record<PlanTier, PlanLimits> = {
     sso: false,
     audit_log_retention_days: 7,
     monthly_infra_credits: 5_000,
+    daily_tokens: 20_000,
+    weekly_tokens: 50_000,
   },
   growth: {
     spaces: 25,
@@ -55,6 +68,8 @@ const PLAN_LIMITS: Record<PlanTier, PlanLimits> = {
     sso: false,
     audit_log_retention_days: 30,
     monthly_infra_credits: 100_000,
+    daily_tokens: 200_000,
+    weekly_tokens: 700_000,
   },
   business: {
     spaces: 100,
@@ -71,6 +86,8 @@ const PLAN_LIMITS: Record<PlanTier, PlanLimits> = {
     sso: true,
     audit_log_retention_days: 90,
     monthly_infra_credits: 1_000_000,
+    daily_tokens: 2_000_000,
+    weekly_tokens: 7_000_000,
   },
   enterprise: {
     spaces: 1_000,
@@ -87,6 +104,8 @@ const PLAN_LIMITS: Record<PlanTier, PlanLimits> = {
     sso: true,
     audit_log_retention_days: 365,
     monthly_infra_credits: 10_000_000,
+    daily_tokens: 20_000_000,
+    weekly_tokens: 70_000_000,
   },
 };
 

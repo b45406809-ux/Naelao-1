@@ -335,6 +335,22 @@ export interface SpaceTypeProductConfig {
       lsVariantId?: string;
     }>;
 
+    /** Phase 4 (money): a real checkout for the end user's OWN personal-plan tier (widens
+     *  maxBusinessesPerEndUser's per-user slice and unlocks inviting others — see
+     *  @naelao/billing-core's PERSONAL_PLAN_LIMITS/resolveEffectiveBusinessLimit). Recurring, one
+     *  LS variant per plan, same provision-on-save pattern as `plans` above — but sets the
+     *  caller's OWN ProductUserDO.plan_tier via /internal/personal-plan/grant rather than funding
+     *  a business. `tier` is which PersonalPlanTier this purchase grants (only "plus" makes sense
+     *  to sell — "free" is the default with no checkout). */
+    personalPlans?: Array<{
+      id: string;
+      name: string;
+      tier: "plus";
+      priceCents: number;
+      interval: "month" | "year";
+      lsVariantId?: string;
+    }>;
+
     /** Launchpad Wallet (user-directed feature): fixed-price top-up packs for a business's own
      *  wallet_ledger balance (SpaceDO, projects.kind='wallet') — same "checkout for a
      *  pre-configured LS variant, no arbitrary custom amount" shape as creditPacks, but the

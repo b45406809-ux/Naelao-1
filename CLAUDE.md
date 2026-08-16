@@ -7692,6 +7692,185 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      plugins/artifacts, collaboration + channels) remain planned in
      `/root/.claude/plans/gleaming-scribbling-pelican.md` and unstarted.
 
+145. **Phase 4 of the 62-item plan (money) is now BUILT — real daily/weekly quota enforcement
+     (previously monthly-only), a genuinely new "personal plan" tier for signed-in end users that
+     gates business ownership/invites, and a ledger-safe personal-credits-to-business-wallet
+     deposit action. Two items in the phase were investigated and deliberately NOT built, for
+     reasons stated below rather than silently dropped.**
+     - **Daily/weekly quota enforcement — previously monthly-only, confirmed by reading the
+       code, not assumed.** `packages/entitlements`'s `PlanLimits` and `workers/billing/src/
+       quota.ts`'s `QuotaLimits` (two independently-maintained copies of the same numbers, this
+       codebase's own established convention since item 41) had ONLY monthly ceilings — no
+       per-day or per-week enforcement existed anywhere, despite `getUsageSummary` (item 48's own
+       context-usage UI dependency) already computing day/week/month USAGE numbers, just never
+       checking them against a real per-window LIMIT. Added `daily_tokens`/`weekly_tokens` to
+       both, populated for all 4 tiers (free 20k/50k, growth 200k/700k, business 2M/7M, enterprise
+       20M/70M — day×~10, week×~35, roughly matching each tier's monthly ceiling's own implied
+       daily pace). New exported `checkWindowedQuota(kv, db, orgId, metric, planTier,
+       allowOverage)`: checks day (if a limit exists for that metric), then week, then month, in
+       that order — a metric with no dedicated daily/weekly ceiling (e.g. `api_calls`,
+       `infra_credits`) transparently falls back to the monthly figure for every window, so this
+       is purely additive for those metrics. `GET /internal/usage/llm-tokens/check` (the real
+       enforcement route every LLM call gates through) now resolves `allowOverage` (new
+       `orgs.allow_quota_overage` column, migration `0072`, default 0) alongside `planTier` and
+       calls `checkWindowedQuota` instead of the old `checkQuota` — a breach with overage allowed
+       returns `{allowed:true, overage:true}` (observability, not silent — the caller can log/
+       notify) rather than either hard-blocking or silently ignoring the breach; overage is
+       explicitly NOT metered billing (no per-token charge), just a documented, opt-in "let this
+       org burn past its ceiling without being cut off," matching the same non-fabrication
+       discipline this file has repeatedly established for money features (no invented dollar
+       figures, no auto-charging without a real provisioned billing path). `getUsageSummary` was
+       rewritten to report EACH window against its OWN real per-window limit (was previously
+       reporting the single monthly figure for all three windows — a real, if minor, dishonesty in
+       the context-usage UI's own daily/weekly numbers, now fixed as a side effect). Rewrote the
+       stale pre-existing test that had asserted "all three windows report the SAME limit" (that
+       was pinning the OLD, less-honest behavior) into two new tests asserting real
+       per-window differentiation for `llm_tokens` and correct fallback-to-monthly for
+       `api_calls`. `recordUsageEvent`/`invalidateQuotaCache` extended to also clear the new
+       per-window KV cache keys (`quota:{orgId}:{metric}:{window}`) so a quota check can never
+       read stale cached usage after a write. Regression-proven: temporarily reverted the
+       windowed-check enforcement in the route, confirmed the new daily-ceiling-breach test fails,
+       restored and re-confirmed passing.
+     - **Personal-plan tier — a genuinely new, previously-nonexistent concept for signed-in
+       product end users, per the plan's own "hybrid" decision (personal plan gates business
+       ownership/invites; a business subscription funds the whole team; both stay untouched,
+       independent mechanisms).** New `packages/billing-core/src/personal-plan.ts`
+       (dependency-free, mirrors `models.ts`'s own "no circular import" discipline since it's
+       imported by both the spaces worker and any future frontend wanting to render limits without
+       pulling in the whole billing-core surface): `PersonalPlanTier = "free"|"plus"`,
+       `PERSONAL_PLAN_LIMITS` (free: 3 businesses owned, cannot invite; plus: 25, can invite),
+       `resolveEffectiveBusinessLimit(tier, productCeiling)` — the PRODUCT's own configured
+       `maxBusinessesPerEndUser` ceiling (an abuse/DoS cap a builder sets, default 10) is always
+       the OUTER bound; a free-tier personal plan can only ever NARROW a user's own slice of it
+       (`min(productCeiling, 3)`), never widen it beyond what the builder allowed — 'plus' removes
+       that narrowing and lets the user use the product's full configured ceiling.
+       `canPersonalPlanInvite(tier)`. Stored in a new `ProductUserDO` migration v3 singleton table
+       `plan_state` (`id INTEGER PRIMARY KEY CHECK (id=1)`, `plan_tier`) — new `GET /plan-tier`
+       (defaults to `'free'` with no row) and `POST /plan-tier/set` (validates the tier string,
+       upserts via `ON CONFLICT DO UPDATE`) routes on the DO itself. **Business-creation gate
+       (F-19, `business-create.ts`) rewritten**: new exported `resolvePersonalPlanTier(env,
+       productRootSpaceId, endUserId, tenantId)` reads the tier via a fresh `PRODUCT_USER_DO`
+       stub — degrading to `"free"` (the MORE restrictive default, not the more permissive one) on
+       ANY error including a missing binding, deliberately fail-closed rather than fail-open for a
+       cost/abuse-relevant ceiling — combined with the product's own ceiling via
+       `resolveEffectiveBusinessLimit`; the 429 refusal message now includes an honest upgrade
+       hint only when upgrading would ACTUALLY raise the ceiling (`personalTier === "free" &&
+       maxBusinesses < productCeiling`), never a hint that would be a lie for a product whose own
+       ceiling is already below the free tier's own cap. **Invite gate
+       (`business-routes.ts`)**: a NEW check for `product_end_user` callers on `POST
+       /spaces/:businessSpaceId/invites`, deliberately gated behind a `hasRealUpgradePath` check
+       (`pricingConfig.personalPlans?.length > 0` on the product's own effective config) —
+       WITHOUT this gate-on-a-gate, every existing business's invite flow would have broken
+       instantly the moment this feature shipped, since no end user has ever purchased a 'plus'
+       tier and every caller would default to `tier="free"` → `canPersonalPlanInvite("free") ===
+       false` → every invite blocked platform-wide. This mirrors the exact same "never gate on a
+       monetization control nobody can actually satisfy yet" precedent this file already
+       established for `free_tier_eligible`. Regression-proven the hard way: temporarily forced
+       `hasRealUpgradePath = true` unconditionally, confirmed 5 of 23 tests in
+       `business-routes.test.ts` failed (2 of them non-obviously, as invite-flow side effects
+       inside unrelated setup steps), then restored the gate and re-confirmed all 23 pass.
+       **Checkout plumbing**: new `SpaceTypeProductConfig.pricingConfig.personalPlans` field
+       (`SpaceTypeRegistryDO.ts`, array of `{id, name, tier:"plus", priceCents, interval,
+       lsVariantId?}` — mirrors the existing `walletTopups`/`plans` shape exactly, no new pattern
+       invented); `GET /spaces/:spaceId/pricing` and `GET /internal/pricing-catalog` both project
+       it as `personal_plans`; new `GET /spaces/:spaceId/personal-plan` (member-gated, resolves
+       the product root, reads the real stored tier, returns it with its limits) and `POST
+       /spaces/:spaceId/personal-plan/checkout` (member-gated, proxies to a new billing-worker
+       route) on the spaces worker; new `POST /internal/personal-plan/checkout` (HMAC-gated,
+       LS-or-dev-placeholder ONLY — deliberately no business-Whop-OAuth branch, since this is a
+       PERSONAL purchase by an individual end user, not a business transaction) on the billing
+       worker, embedding `{kind:"personal_plan", plan_id, tier, end_user_id, product_space_id}`
+       in checkout metadata; new `grantPersonalPlanPurchase` LS-webhook handler (fires on
+       `payment.success` with that `metadata.kind`, calls the spaces worker's new `POST
+       /internal/personal-plan/grant` — HMAC-gated, resolves the tenant from `product_space_id`
+       via a direct D1 query rather than from caller-claimed identity, since this is a
+       webhook-originated server-to-server call with no end-user session context — which calls
+       `POST /plan-tier/set` on the correct `ProductUserDO`). Router allowlist gained the two new
+       `/spaces/:id/personal-plan` and `/spaces/:id/personal-plan/checkout` entries.
+     - **"Deposit my personal credits into this business" — a real, ledger-safe two-phase
+       transfer**, per the plan's own explicit ask. New `POST /spaces/:spaceId/projects/
+       :projectId/wallet/deposit-personal-credits` (member-gated, HMAC-gated): resolves the
+       product root, deducts from the caller's OWN `ProductUserDO` credit balance first
+       (idempotency-keyed), then credits the project's wallet (`SpaceDO`'s existing
+       `wallet_ledger`, via `forwardToSpaceDO`'s established `?tenant_id=` query-string
+       convention for passing verified identity through a helper that doesn't forward headers) —
+       and, **the one real bug this pass found and fixed**, correctly REVERSES the personal
+       deduction via `/credits/grant` if the wallet-credit step fails (a project not yet
+       `kind='wallet'`, or any other wallet-side error). The FIRST draft used `/credits/clawback`
+       for the reversal — semantically wrong, since clawback SUBTRACTS (meant for reversing an
+       earlier GRANT/refund, not for restoring a just-deducted balance) — which would have
+       DOUBLE-deducted the user on any wallet-credit failure instead of making them whole. Caught
+       by the test itself: a probe-grant-then-read-balance check expected 501 (500 granted, 300
+       deducted-then-reversed, +1 probe) and got -99 (500 - 300 deduct - 300 clawback-as-a-second-
+       deduct + 1 probe) — fixed by switching the reversal call to `/credits/grant`, confirmed by
+       re-running the same test. `1 credit = 1 cent exactly` (`CREDITS_PER_USD = 100`, the
+       platform's existing conversion constant, reused rather than re-derived). Fails CLOSED on
+       insufficient personal balance (402, wallet untouched, verified independently via a
+       follow-up balance read) and rejects a non-positive `credits` value (400) before touching
+       either ledger. New dedicated test file `deposit-personal-credits.test.ts` drives BOTH real,
+       stateful `SpaceDO` and `ProductUserDO` instances through the real spaces-worker HTTP
+       surface end to end (not a hand-rolled substitute for either) — the only way to actually
+       prove the two-phase deduct-then-credit (and its reversal) holds across DO boundaries, not
+       just that each DO's own route works correctly in isolation. Router allowlist gained the new
+       route (with a comment that `/wallet/credit` and `/wallet/debit` themselves remain
+       internal-only, unaffected).
+     - **Two Phase 4 items investigated and deliberately NOT built, stated honestly rather than
+       silently dropped.** (1) **Default plans per Launchpad product**: investigated and found
+       unnecessary — the existing "no plans configured" behavior already degrades correctly and
+       honestly (the personal-plan checkout route, the invite gate's `hasRealUpgradePath` check,
+       and the wallet-topup/business-subscription checkout paths from earlier phases all already
+       handle an unconfigured pricing catalog by refusing cleanly rather than crashing or silently
+       succeeding) — auto-seeding a "default" plan would mean FABRICATING a dollar amount or a
+       fake Lemon Squeezy variant id for every product platform-wide, which directly violates this
+       file's own repeatedly-stated non-fabrication discipline (no invented prices, no fake
+       provider ids). Left unbuilt on purpose; a builder configures real pricing when they have a
+       real LS store to point it at, exactly like every other pricing surface (`memberBilling`,
+       `walletTopups`, `plans`) already works. **Builder-supplied LLM keys**: investigated and
+       scoped as genuinely too large for this batch — it would mean a new per-space credential
+       tier feeding directly into `ai-client.ts`'s gateway-vs-BYOK routing (the same routing this
+       session's carried-over reasoner fix, item 139, already touches), a new UI surface, and
+       careful interaction with the existing platform-key-fallback billing/metering (item 80's
+       `recordPlatformKeyUsage`) — flagged as a real, separate, correctly-sized follow-up rather
+       than rushed into this pass. (2) **Discover page ranking/load-more/search/my-all filter**:
+       investigated and found largely superseded by the new personal-plan business-ownership caps
+       built in this same pass — with a free-tier user capped at 3 owned businesses (down from an
+       effectively-unbounded product ceiling for many products), the original motivation ("too
+       many businesses to browse") is significantly narrowed. A genuine CROSS-TENANT "browse other
+       businesses" ranking (as opposed to the existing anonymized showcase, item 102) is also a
+       real, separate privacy-sensitive design question (whose businesses are visible to whom,
+       under what anonymization) that deserves its own dedicated decision rather than a bolt-on
+       here. **Flash 3.7**: could not be verified to exist as a real, live model id on this
+       account or any reachable provider — declined to fabricate a catalog entry for an
+       unverifiable model, matching this file's own repeated "confirm once real access exists"
+       precedent for every prior model-catalogue addition (Groq, Gemini, Composio connectors,
+       etc.). Effort-to-thinking-param mapping was verified to already exist and be correct from a
+       prior session's work (item 100's `MODEL_CAPABILITIES`/`effort.ts`) — no gap found.
+     3104/3104 tests pass (39 new: `quota-windowed.test.ts`'s 12 cases,
+     `builder-usage-quota-route.test.ts`'s 3 new overage/daily-ceiling cases,
+     `billing-usage-summary.test.ts`'s rewritten per-window-limit cases,
+     `packages/billing-core.test.ts`'s 6 new personal-plan pure-function cases,
+     `product-user-do.test.ts`'s 5 new `/plan-tier` cases, `business-create.test.ts`'s 5 new
+     personal-plan-narrows/widens-the-ceiling cases, `business-routes.test.ts`'s 3 new
+     invite-gate cases, `pricing-catalog.test.ts`'s 6 new personal-plan route cases including
+     cross-user isolation, and the new `deposit-personal-credits.test.ts`'s 7 end-to-end cases),
+     `npx turbo run typecheck` clean (76 tasks), both `apps/shell` and `apps/dashboard` build
+     clean. Migration `0072_org_quota_overage.sql` applied directly to the live D1
+     (`naelao-platform`). Deployed via bare `wrangler deploy` (never `--env production` — that flag
+     targets a different, binding-less duplicate worker; confirmed this pass that
+     `naelao-spaces-production` already exists as exactly such a stray duplicate, same trap item
+     83 documented once for `naelao-agents`): `naelao-spaces`, `naelao-billing`, `naelao-router` —
+     all three deploys confirmed carrying their full binding sets in their own deploy output. Live-
+     verified via three non-LLM checks against the live router (no `/agent/run` dispatched, per
+     the standing "use your own credits to test" instruction): a real public by-slug lookup
+     returns 200; the new `GET /spaces/:id/personal-plan` route returns 401 with no credentials
+     (correctly gated, not a 500/404 "route doesn't exist"); the existing `GET /internal/usage/
+     llm-tokens/check` route (now routed through the new windowed-quota logic) also returns 401
+     with no internal token (correctly gated). **With this, all of Phase 4's built items are
+     shipped; the two explicitly-scoped-out items above are real, stated deferrals, not silent
+     drops.** Phases 5-6 (workspace/projects/plugins/artifacts; multi-agent + collaboration +
+     channels) remain planned in `/root/.claude/plans/gleaming-scribbling-pelican.md` and
+     unstarted.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

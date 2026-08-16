@@ -11,6 +11,8 @@
 
 import type { SpaceTypeProductConfig, NaelaoSpaceTypeManifestV2, SpaceTypeRegistryDO } from "./do/SpaceTypeRegistryDO.js";
 import { checkFreeTierTemplateEligibility } from "./template-catalog.js";
+import { resolveEffectiveBusinessLimit, isPersonalPlanTier, type PersonalPlanTier } from "@naelao/billing-core";
+import { getDOName } from "@naelao/crypto";
 
 export interface ProvisionMessage {
   type: "space_provision" | "space_deprovision";
@@ -34,6 +36,12 @@ export interface BusinessCreateEnv {
    *  the agents worker. Optional — absent (dev/test), the gate degrades open; see
    *  checkFreeTierTemplateEligibility. */
   AGENTS_WORKER?: Fetcher;
+  /** Phase 4 (money): resolves the CALLING end user's own personal-plan tier
+   *  (ProductUserDO's /plan-tier), which narrows or widens their slice of
+   *  productConfig.maxBusinessesPerEndUser — see resolveEffectiveBusinessLimit. Optional so
+   *  dev/test environments without this binding degrade to the pre-existing flat-ceiling-only
+   *  behavior (every existing caller/test that doesn't set this is unaffected). */
+  PRODUCT_USER_DO?: DurableObjectNamespace;
 }
 
 export interface CreateBusinessOptions {
@@ -69,6 +77,32 @@ function getRegistryDO(env: BusinessCreateEnv): DurableObjectStub<SpaceTypeRegis
   return env.SPACE_TYPE_REGISTRY_DO.get(env.SPACE_TYPE_REGISTRY_DO.idFromName("global-space-type-registry"));
 }
 
+/** Phase 4 (money): resolve the calling end user's own personal-plan tier from their
+ *  ProductUserDO (one instance per productId×endUserId — productId here is the PRODUCT ROOT,
+ *  which resellerProductSpaceId already is by this file's own established invariant, matching
+ *  productUserDoStub's addressing in workers/spaces/src/index.ts exactly, without importing that
+ *  file — this stays intentionally self-contained per this file's own "no circular import" rule).
+ *  Never throws; degrades to 'free' (the more restrictive tier, matching every other billing gate
+ *  in this codebase's fail-closed posture) on any binding/network/shape error. */
+export async function resolvePersonalPlanTier(
+  env: BusinessCreateEnv,
+  productRootSpaceId: string,
+  endUserId: string,
+  tenantId: string
+): Promise<PersonalPlanTier> {
+  if (!env.PRODUCT_USER_DO) return "free";
+  try {
+    const doName = await getDOName("produser", `${productRootSpaceId}:${endUserId}`, tenantId, env.PLATFORM_SECRET);
+    const stub = env.PRODUCT_USER_DO.get(env.PRODUCT_USER_DO.idFromName(doName));
+    const resp = await stub.fetch(new Request("http://produser/plan-tier"));
+    if (!resp.ok) return "free";
+    const body = await resp.json<{ plan_tier?: string }>();
+    return isPersonalPlanTier(body.plan_tier) ? body.plan_tier : "free";
+  } catch {
+    return "free";
+  }
+}
+
 async function loadManifest(env: BusinessCreateEnv, spaceTypeId: string): Promise<NaelaoSpaceTypeManifestV2 | null> {
   const cacheKey = `space-type-manifest:${spaceTypeId}`;
   const cached = (await env.NAELAO_CONFIG_KV.get(cacheKey, "json")) as NaelaoSpaceTypeManifestV2 | null;
@@ -81,7 +115,7 @@ async function loadManifest(env: BusinessCreateEnv, spaceTypeId: string): Promis
   return manifest;
 }
 
-async function loadEffectiveProductConfig(
+export async function loadEffectiveProductConfig(
   env: BusinessCreateEnv,
   spaceTypeId: string,
   spaceConfigJson: string | null
@@ -191,12 +225,31 @@ export async function createBusinessForEndUser(
   // unlimited spaces (SpaceDO init, agent installs, R2 writes, wallet seed each) — the rate limiter
   // only slows it, never caps it. Counts this user's OWN existing non-deleted businesses under this
   // product; a builder can tune the ceiling via productConfig.maxBusinessesPerEndUser (default 10).
-  const maxBusinesses = (pc as { maxBusinessesPerEndUser?: number }).maxBusinessesPerEndUser ?? 10;
+  //
+  // Phase 4 (money): combined with the caller's OWN personal-plan tier
+  // (resolveEffectiveBusinessLimit) — a free-tier user gets only a SLICE of the builder's own
+  // ceiling (never more than PERSONAL_PLAN_LIMITS.free.maxBusinessesOwned) unless they upgrade to
+  // 'plus', which then unlocks the full builder-configured ceiling. The builder's own ceiling is
+  // always the outer bound either way — a personal plan can never let a user exceed what the
+  // builder allowed. Fails open to the flat ceiling (tier "free") on any resolution error or a
+  // missing PRODUCT_USER_DO binding (dev/test) — never blocks MORE than the pre-existing behavior
+  // already did, only ever the same or less restrictive.
+  const productCeiling = (pc as { maxBusinessesPerEndUser?: number }).maxBusinessesPerEndUser ?? 10;
+  const personalTier = await resolvePersonalPlanTier(env, opts.resellerProductSpaceId, opts.userId, parentTenantId);
+  const maxBusinesses = resolveEffectiveBusinessLimit(personalTier, productCeiling);
   const existingCount = await env.PLATFORM_DB.prepare(
     "SELECT COUNT(*) AS cnt FROM spaces WHERE parent_space_id = ? AND created_by = ? AND status != 'deleted'"
   ).bind(opts.resellerProductSpaceId, opts.userId).first<{ cnt: number }>();
   if ((existingCount?.cnt ?? 0) >= maxBusinesses) {
-    return { ok: false, error_code: "business_limit_reached", message: `You have reached the maximum of ${maxBusinesses} businesses for this product`, status: 429 };
+    const upgradeHint = personalTier === "free" && maxBusinesses < productCeiling
+      ? ` Upgrade your personal plan to own up to ${productCeiling}.`
+      : "";
+    return {
+      ok: false,
+      error_code: "business_limit_reached",
+      message: `You have reached the maximum of ${maxBusinesses} businesses for this product.${upgradeHint}`,
+      status: 429,
+    };
   }
 
   // 4. Create the child business (space) under the child tenant.

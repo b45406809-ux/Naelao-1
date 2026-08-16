@@ -12,7 +12,7 @@ import {
 // checkout/portal (previously the last Stripe-backed path) now runs through the same LS store as
 // every other money path. stripe.ts is deleted; /webhooks/stripe removed.
 import { Hono } from "hono";
-import { checkQuota, recordUsageEvent, getUsageSummary } from "./quota.js";
+import { checkQuota, checkWindowedQuota, recordUsageEvent, getUsageSummary } from "./quota.js";
 import { handleLemonSqueezyWebhook, recordPlatformPlanSubscription } from "./lemon-squeezy.js";
 import { createLsProductVariant, lsProductsConfig } from "./ls-products.js";
 import { registerWhopWalletRoutes, handleWhopWebhook, renderPayoutApprovalPage, confirmPayoutApproval, routeWhopWalletCheckout, getSubMerchant } from "./whop-wallet.js";
@@ -449,20 +449,41 @@ async function resolvePlanTier(db: D1Database, orgId: string): Promise<string> {
   }
 }
 
+/** Phase 4 (money): `orgs.allow_quota_overage` — see migration 0072's own comment for what this
+ *  is and, just as importantly, what it deliberately is not (not metered billing). Fails to
+ *  `false` (the stricter, hard-gated default) on any read error, same posture as resolvePlanTier
+ *  falling to "free" — an outage must never silently grant overage. */
+async function resolveAllowOverage(db: D1Database, orgId: string): Promise<boolean> {
+  try {
+    const org = await db.prepare("SELECT allow_quota_overage FROM orgs WHERE id = ?").bind(orgId).first<{ allow_quota_overage: number }>();
+    return (org?.allow_quota_overage ?? 0) === 1;
+  } catch {
+    return false;
+  }
+}
+
 // ── GET /internal/usage/llm-tokens/check ─────────────────────────────────────
 // P0-3: NaelaoAgentDO's pre-run gate for a builder (owner/admin/editor/viewer) chatting with
 // their own Space Assistant (never a project-scoped run, never a signed-in product end user —
 // those have their own separate wallet/credit gates). Internal-only, HMAC-gated like every
 // sibling /internal/* route in this file; the org to check is the verified x-naelao-tenant-id
 // header, same posture as /billing/usage above.
+// Phase 4 (money): now checks day/week ceilings too (checkWindowedQuota), not just the monthly
+// one — and honors the org's own allow_quota_overage toggle, which turns a real breach into a
+// soft `overage: true` pass instead of a block. Response shape is additive (adds `window`/
+// `overage`) so this stays backward-compatible with the pre-existing {allowed, current, limit}
+// contract the caller already reads.
 app.use("/internal/usage/llm-tokens/check", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
 app.get("/internal/usage/llm-tokens/check", async (c) => {
   const orgId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!orgId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
 
-  const planTier = await resolvePlanTier(c.env.PLATFORM_DB, orgId);
+  const [planTier, allowOverage] = await Promise.all([
+    resolvePlanTier(c.env.PLATFORM_DB, orgId),
+    resolveAllowOverage(c.env.PLATFORM_DB, orgId),
+  ]);
 
-  const quota = await checkQuota(c.env.QUOTA_CACHE, c.env.PLATFORM_DB, orgId, "llm_tokens", planTier);
+  const quota = await checkWindowedQuota(c.env.QUOTA_CACHE, c.env.PLATFORM_DB, orgId, "llm_tokens", planTier, allowOverage);
   return c.json({ ...quota, plan_tier: planTier });
 });
 
@@ -866,6 +887,68 @@ app.post("/internal/credit-packs/checkout", async (c) => {
     checkout_url: url,
     pack: { id: pack.id, name: pack.name, credits: pack.credits, price_cents: pack.priceCents },
     fee_bps: feeBps,
+  });
+});
+
+// ── POST /internal/personal-plan/checkout ─────────────────────────────────────
+// Phase 4 (money): an end user upgrades their OWN personal-plan tier (widens their slice of
+// maxBusinessesPerEndUser + unlocks inviting others — see @naelao/billing-core's
+// resolveEffectiveBusinessLimit/canPersonalPlanInvite). Deliberately LS-or-dev-placeholder only,
+// NOT the business's-own-Whop-account branch credit-packs/wallet-topups above try first — this is
+// a purchase FOR the end user themselves, unrelated to any one business's own revenue rail.
+app.use("/internal/personal-plan/checkout", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
+app.post("/internal/personal-plan/checkout", async (c) => {
+  const body = await c.req.json<{ business_space_id: string; plan_id: string; end_user_id: string; customer_email?: string }>();
+  if (!body.business_space_id || !body.plan_id || !body.end_user_id) {
+    return c.json({ error_code: "bad_request", message: "business_space_id, plan_id, and end_user_id are required" }, 400);
+  }
+  if (!c.env.SPACES_WORKER) return c.json({ error_code: "unavailable", message: "spaces worker not bound" }, 503);
+
+  const spaceRow = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
+    .bind(body.business_space_id).first<{ tenant_id: string }>();
+  if (!spaceRow) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+
+  const catalogResp = await c.env.SPACES_WORKER.fetch(
+    new Request(`http://spaces-worker/internal/pricing-catalog?space_id=${encodeURIComponent(body.business_space_id)}`, {
+      headers: {
+        "x-naelao-tenant-id": spaceRow.tenant_id,
+        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, spaceRow.tenant_id),
+      },
+    })
+  );
+  if (!catalogResp.ok) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  const catalog = await catalogResp.json<{ product_space_id: string; personal_plans: Array<{ id: string; name: string; tier: string; priceCents: number; interval: string; lsVariantId?: string }> }>();
+  const plan = catalog.personal_plans.find((p) => p.id === body.plan_id);
+  if (!plan) return c.json({ error_code: "not_found", message: "Personal plan not found" }, 404);
+
+  if (!c.env.LEMON_SQUEEZY_API_KEY || !c.env.LEMON_SQUEEZY_STORE_ID || !plan.lsVariantId) {
+    return c.json({
+      checkout_url: `https://checkout.naelao.com/dev/personal-plan/${body.business_space_id}/${plan.id}`,
+      plan: { id: plan.id, name: plan.name, tier: plan.tier, price_cents: plan.priceCents, interval: plan.interval },
+      dev: true,
+    });
+  }
+
+  const { LemonSqueezyProvider } = await import("@naelao/billing-core");
+  const provider = new LemonSqueezyProvider({
+    LEMON_SQUEEZY_API_KEY: c.env.LEMON_SQUEEZY_API_KEY,
+    LEMON_SQUEEZY_STORE_ID: c.env.LEMON_SQUEEZY_STORE_ID,
+  });
+  const { url } = await provider.createCheckout({
+    spaceId: body.business_space_id,
+    variantOrPriceId: plan.lsVariantId,
+    ...(body.customer_email ? { customerEmail: body.customer_email } : {}),
+    metadata: {
+      kind: "personal_plan",
+      plan_id: plan.id,
+      tier: plan.tier,
+      end_user_id: body.end_user_id,
+      product_space_id: catalog.product_space_id,
+    },
+  });
+  return c.json({
+    checkout_url: url,
+    plan: { id: plan.id, name: plan.name, tier: plan.tier, price_cents: plan.priceCents, interval: plan.interval },
   });
 });
 

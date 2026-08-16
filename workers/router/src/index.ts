@@ -541,6 +541,11 @@ const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // /wallet/debit — money-moving, internal-only (billing worker webhook + the wallet prebuilt) —
   // never match this allowlist, matching /rules and /spend's existing precedent.
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/wallet\/(balance|history)$/,
+  // Phase 4 (money): "deposit my personal credits into this business" — the caller's OWN personal
+  // balance moving into a project wallet at their own request. Additionally gated by
+  // requireBusinessMembership (member) on the spaces worker exactly like balance/history above;
+  // still deliberately excludes /wallet/credit and /wallet/debit, which stay internal-only.
+  /^\/spaces\/([^/]+)\/projects\/([^/]+)\/wallet\/deposit-personal-credits$/,
   // F-39: read-only workspace file viewer — a project member browses/views the artifacts their
   // agent wrote to R2. Identity here, real per-project ACL (requireBusinessMembership) on the
   // spaces worker. Read-only GET only; the write side is the agent's, never end-user-reachable.
@@ -568,6 +573,12 @@ const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/pricing$/,
   /^\/spaces\/([^/]+)\/business-subscription\/checkout$/,
   /^\/spaces\/([^/]+)\/credit-packs\/checkout$/,
+  // Phase 4 (money): the end user's OWN personal-plan tier (gates how many businesses they may
+  // own + whether they may invite others) — same identity-here/authorization-there split as the
+  // pricing/checkout routes immediately above; a single dynamic leaf segment each, not the
+  // dynamic-then-static-suffix shape this file's own history warns against.
+  /^\/spaces\/([^/]+)\/personal-plan$/,
+  /^\/spaces\/([^/]+)\/personal-plan\/checkout$/,
   // Analytics page: pure aggregate rollups (see SpaceDO.computeBusinessAnalytics's own header) —
   // same member-floor gating pattern as pricing above (identity here, authorization there).
   /^\/spaces\/([^/]+)\/business-analytics$/,

@@ -47,7 +47,29 @@ function makeKv(): KVNamespace {
   } as unknown as KVNamespace;
 }
 
-function makeEnv(productConfig: Record<string, unknown>) {
+/** Phase 4 (money): a fake PRODUCT_USER_DO namespace whose /plan-tier reads a fixed tier per
+ *  (productId:endUserId) key — enough to exercise resolveEffectiveBusinessLimit's real wiring
+ *  through createBusinessForEndUser without a real DO. */
+function makeProductUserDoNamespace(tierByKey: Record<string, string>): DurableObjectNamespace {
+  return {
+    idFromName: (name: string) => ({ toString: () => name }) as unknown as DurableObjectId,
+    get: (id: DurableObjectId) => ({
+      fetch: async (req: Request) => {
+        const url = new URL(req.url);
+        if (url.pathname === "/plan-tier") {
+          // The real name is an HMAC of "produser:{productId}:{endUserId}" — the fake stashes
+          // the un-hashed key as the id string itself (idFromName above), so match on suffix.
+          const idStr = id.toString();
+          const matchedKey = Object.keys(tierByKey).find((k) => idStr.endsWith(k));
+          return Response.json({ plan_tier: matchedKey ? tierByKey[matchedKey] : "free" });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    }) as unknown as DurableObjectStub,
+  } as unknown as DurableObjectNamespace;
+}
+
+function makeEnv(productConfig: Record<string, unknown>, opts?: { personalPlanTierByKey?: Record<string, string> }) {
   const fakeDb = createFakeD1(SCHEMA);
   fakeDb.db.exec(
     `INSERT INTO spaces (id, tenant_id, status, name, config_json) VALUES ('prod-1', 'builder-tenant', 'active', 'Acme', '${JSON.stringify({ productConfig }).replace(/'/g, "''")}')`
@@ -60,6 +82,7 @@ function makeEnv(productConfig: Record<string, unknown>) {
       SPACE_TYPE_REGISTRY_DO: make404RegistryDo(),
       NAELAO_CONFIG_KV: makeKv(),
       PROVISION_QUEUE: { send: async (msg: unknown) => void sentMessages.push(msg) } as unknown as Queue<unknown>,
+      ...(opts?.personalPlanTierByKey ? { PRODUCT_USER_DO: makeProductUserDoNamespace(opts.personalPlanTierByKey) } : {}),
     },
     fakeDb,
     sentMessages,
@@ -173,5 +196,75 @@ describe("createBusinessForEndUser", () => {
     // A DIFFERENT user is unaffected by u1's cap.
     const other = await createBusinessForEndUser(env as never, { resellerProductSpaceId: "prod-1", userId: "u2", name: "Other", spacetypeId: "launchpad" });
     expect(other.ok).toBe(true);
+  });
+
+  // Phase 4 (money): the personal-plan tier combines with the product's own configured ceiling.
+  describe("personal-plan tier narrows/widens the F-19 ceiling (resolveEffectiveBusinessLimit)", () => {
+    it("a FREE-tier user is capped at 3 even though the product allows up to 10 (the default)", async () => {
+      const { env } = makeEnv(
+        { membershipModel: "hybrid", allowPublicSignup: true, allowedChildSpaceTypes: ["launchpad"] }, // default maxBusinessesPerEndUser = 10
+        { personalPlanTierByKey: { "prod-1:u-free": "free" } }
+      );
+      for (let i = 1; i <= 3; i++) {
+        const r = await createBusinessForEndUser(env as never, { resellerProductSpaceId: "prod-1", userId: "u-free", name: `Biz ${i}`, spacetypeId: "launchpad" });
+        expect(r.ok).toBe(true);
+      }
+      const fourth = await createBusinessForEndUser(env as never, { resellerProductSpaceId: "prod-1", userId: "u-free", name: "Biz 4", spacetypeId: "launchpad" });
+      expect(fourth.ok).toBe(false);
+      if (!fourth.ok) {
+        expect(fourth.error_code).toBe("business_limit_reached");
+        // A real, actionable hint since the product's own ceiling (10) is higher than what
+        // this free-tier user actually got (3) — they can genuinely unlock more by upgrading.
+        expect(fourth.message).toMatch(/upgrade/i);
+      }
+    });
+
+    it("a PLUS-tier user gets the FULL product ceiling (10), not squeezed to the free-tier number", async () => {
+      const { env } = makeEnv(
+        { membershipModel: "hybrid", allowPublicSignup: true, allowedChildSpaceTypes: ["launchpad"] },
+        { personalPlanTierByKey: { "prod-1:u-plus": "plus" } }
+      );
+      for (let i = 1; i <= 4; i++) {
+        // 4 > the free cap of 3 — proves this user is NOT on the free ceiling.
+        const r = await createBusinessForEndUser(env as never, { resellerProductSpaceId: "prod-1", userId: "u-plus", name: `Biz ${i}`, spacetypeId: "launchpad" });
+        expect(r.ok).toBe(true);
+      }
+    });
+
+    it("a personal plan NEVER widens past the product's own configured ceiling, even on 'plus'", async () => {
+      const { env } = makeEnv(
+        { membershipModel: "hybrid", allowPublicSignup: true, allowedChildSpaceTypes: ["launchpad"], maxBusinessesPerEndUser: 1 },
+        { personalPlanTierByKey: { "prod-1:u-plus": "plus" } }
+      );
+      const first = await createBusinessForEndUser(env as never, { resellerProductSpaceId: "prod-1", userId: "u-plus", name: "Biz 1", spacetypeId: "launchpad" });
+      expect(first.ok).toBe(true);
+      const second = await createBusinessForEndUser(env as never, { resellerProductSpaceId: "prod-1", userId: "u-plus", name: "Biz 2", spacetypeId: "launchpad" });
+      expect(second.ok).toBe(false); // the builder's own ceiling (1) is the hard outer bound
+    });
+
+    it("fails CLOSED to the free-tier cap (not the flat product ceiling) when PRODUCT_USER_DO isn't bound — a missing binding never grants MORE than intended", async () => {
+      // No personalPlanTierByKey passed — makeEnv omits PRODUCT_USER_DO entirely (every real
+      // deployment binds it; this exercises resolvePersonalPlanTier's own documented fail-closed
+      // default of 'free' rather than silently bypassing the whole gate).
+      const { env } = makeEnv({ membershipModel: "hybrid", allowPublicSignup: true, allowedChildSpaceTypes: ["launchpad"], maxBusinessesPerEndUser: 5 });
+      for (let i = 1; i <= 3; i++) {
+        const r = await createBusinessForEndUser(env as never, { resellerProductSpaceId: "prod-1", userId: "u-nodo", name: `Biz ${i}`, spacetypeId: "launchpad" });
+        expect(r.ok).toBe(true);
+      }
+      const fourth = await createBusinessForEndUser(env as never, { resellerProductSpaceId: "prod-1", userId: "u-nodo", name: "Biz 4", spacetypeId: "launchpad" });
+      expect(fourth.ok).toBe(false); // capped at 3 (free-tier default), NOT the product's own 5
+    });
+
+    it("a product ceiling AT OR BELOW the free-tier cap is completely unaffected by this whole feature (exact pre-Phase-4 behavior)", async () => {
+      // The pre-existing F-19 test above (maxBusinessesPerEndUser: 2, no PRODUCT_USER_DO) already
+      // covers this implicitly (min(2,3)=2 === the old flat 2) — this makes the invariant explicit.
+      const { env } = makeEnv({ membershipModel: "hybrid", allowPublicSignup: true, allowedChildSpaceTypes: ["launchpad"], maxBusinessesPerEndUser: 3 });
+      for (let i = 1; i <= 3; i++) {
+        const r = await createBusinessForEndUser(env as never, { resellerProductSpaceId: "prod-1", userId: "u-atcap", name: `Biz ${i}`, spacetypeId: "launchpad" });
+        expect(r.ok).toBe(true);
+      }
+      const fourth = await createBusinessForEndUser(env as never, { resellerProductSpaceId: "prod-1", userId: "u-atcap", name: "Biz 4", spacetypeId: "launchpad" });
+      expect(fourth.ok).toBe(false);
+    });
   });
 });

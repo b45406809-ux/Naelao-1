@@ -188,6 +188,52 @@ describe("ProductUserDO — GDPR Art. 20 export", () => {
   });
 });
 
+describe("ProductUserDO — /plan-tier (Phase 4, money: the end user's own personal-plan tier)", () => {
+  it("defaults to 'free' when nothing has ever been set", async () => {
+    const doInstance = makeDO();
+    const res = await call(doInstance, "/plan-tier");
+    const body = await res.json() as { plan_tier: string };
+    expect(body.plan_tier).toBe("free");
+  });
+
+  it("POST /plan-tier/set upgrades the tier, and GET reflects it", async () => {
+    const doInstance = makeDO();
+    const setRes = await call(doInstance, "/plan-tier/set", jsonPost({ plan_tier: "plus" }));
+    expect(setRes.status).toBe(200);
+    const set = await setRes.json() as { plan_tier: string };
+    expect(set.plan_tier).toBe("plus");
+
+    const getRes = await call(doInstance, "/plan-tier");
+    const got = await getRes.json() as { plan_tier: string };
+    expect(got.plan_tier).toBe("plus");
+  });
+
+  it("setting the tier twice (a webhook retry) is a no-op, not an error", async () => {
+    const doInstance = makeDO();
+    await call(doInstance, "/plan-tier/set", jsonPost({ plan_tier: "plus" }));
+    const second = await call(doInstance, "/plan-tier/set", jsonPost({ plan_tier: "plus" }));
+    expect(second.status).toBe(200);
+    const got = await (await call(doInstance, "/plan-tier")).json() as { plan_tier: string };
+    expect(got.plan_tier).toBe("plus");
+  });
+
+  it("can be downgraded back to 'free' (e.g. a cancelled subscription's own separate flow)", async () => {
+    const doInstance = makeDO();
+    await call(doInstance, "/plan-tier/set", jsonPost({ plan_tier: "plus" }));
+    await call(doInstance, "/plan-tier/set", jsonPost({ plan_tier: "free" }));
+    const got = await (await call(doInstance, "/plan-tier")).json() as { plan_tier: string };
+    expect(got.plan_tier).toBe("free");
+  });
+
+  it("rejects a nonsense tier value — no end-user-facing route exists that could send one, but the DO itself must not silently accept it", async () => {
+    const doInstance = makeDO();
+    const res = await call(doInstance, "/plan-tier/set", jsonPost({ plan_tier: "enterprise-forever" }));
+    expect(res.status).toBe(400);
+    const got = await (await call(doInstance, "/plan-tier")).json() as { plan_tier: string };
+    expect(got.plan_tier).toBe("free"); // untouched
+  });
+});
+
 describe("ProductUserDO — GDPR Art. 17 erasure (Tier 2/3 follow-up: export existed, deletion didn't)", () => {
   it("wipes sessions, conversation refs, and preferences — the exact inverse of /export", async () => {
     const doInstance = makeDO();

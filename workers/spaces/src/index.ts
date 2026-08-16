@@ -14,7 +14,7 @@ import { requireBusinessMembership, requireBusinessMembershipForWallet, resolveE
 import { createBusinessForEndUser } from "./business-create.js";
 import { loadTemplateCatalog, loadShellCatalog } from "./template-catalog.js";
 import { registerBusinessRoutes } from "./business-routes.js";
-import { ALLOWED_MODELS, isAllowedModel, isValidEffortLevel } from "@naelao/billing-core";
+import { ALLOWED_MODELS, isAllowedModel, isValidEffortLevel, isPersonalPlanTier, PERSONAL_PLAN_LIMITS, type PersonalPlanTier } from "@naelao/billing-core";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { LockDO } from "./do/LockDO.js";
@@ -1079,6 +1079,68 @@ app.post("/spaces/:spaceId/projects/:projectId/wallet/debit", async (c) => {
     stub, `/projects/${encodeURIComponent(projectId)}/wallet/debit?tenant_id=${encodeURIComponent(tenantId)}`, "POST", c.req.raw.body
   );
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+// POST /spaces/:spaceId/projects/:projectId/wallet/deposit-personal-credits — Phase 4 (money):
+// "optional 'deposit my personal credits into this business'" from the plan's own decision. A
+// real ledger-safe TRANSFER between two ALREADY-EXISTING ledgers (ProductUserDO's personal
+// credit_ledger and this project's own wallet_ledger) — never external money movement, so no new
+// payment-provider integration is needed. 1 credit = 1 cent exactly (CREDITS_PER_USD = 100, see
+// @naelao/billing-core), so the conversion is a straight pass-through.
+//
+// Member-level (not admin) — it's the CALLER's own personal balance moving, at their own request;
+// nothing here can move anyone ELSE's money. Two-phase with a real reversal on the second leg's
+// failure: deduct the caller's personal balance FIRST (idempotency-keyed), then credit the
+// project wallet; if the wallet credit fails, claw back the deduction so a transient DO/network
+// error never silently loses the user's credits into the void.
+app.use("/spaces/:spaceId/projects/:projectId/wallet/deposit-personal-credits", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/wallet/deposit-personal-credits", requireBusinessMembership({ POST: "member" }));
+app.post("/spaces/:spaceId/projects/:projectId/wallet/deposit-personal-credits", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const { tenantId, userId } = getCallerIdentity(c);
+  if (!userId) return c.json({ error_code: "unauthorized", message: "Missing end user identity" }, 401);
+  const body = await c.req.json<{ credits: number }>().catch(() => null);
+  if (!body || !Number.isFinite(body.credits) || body.credits <= 0) {
+    return c.json({ error_code: "bad_request", message: "credits must be a positive number" }, 400);
+  }
+  const credits = Math.floor(body.credits);
+
+  const root = await resolveProductRootSpace(c.env, spaceId);
+  if (!root) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  const produserStub = await productUserDoStub(c.env, root.id, userId, root.tenant_id);
+
+  const idempotencyKey = `deposit:${spaceId}:${projectId}:${userId}:${crypto.randomUUID()}`;
+  const deductRes = await produserStub.fetch(new Request("http://produser/credits/deduct", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ credits, reason: "deposit_to_business_wallet", idempotency_key: idempotencyKey }),
+  }));
+  if (!deductRes.ok) {
+    return new Response(deductRes.body, { status: deductRes.status, headers: { "content-type": "application/json" } });
+  }
+  const { balance_credits: personalBalanceAfter } = await deductRes.json<{ balance_credits: number }>();
+
+  const spaceStub = await spaceDoStub(c.env, spaceId, tenantId);
+  const creditRes = await forwardToSpaceDO(
+    spaceStub,
+    `/projects/${encodeURIComponent(projectId)}/wallet/credit?tenant_id=${encodeURIComponent(tenantId)}`,
+    "POST",
+    JSON.stringify({ cents: credits, idempotency_key: idempotencyKey })
+  );
+  if (!creditRes.ok) {
+    // Reverse the deduction — the user's credits must not vanish over a transient wallet failure.
+    // This is a GRANT (adding the credits back), not a clawback: /credits/clawback exists to
+    // reverse a GRANT (e.g. a refunded purchase) and SUBTRACTS — using it here would have
+    // deducted the credits a SECOND time instead of returning them.
+    await produserStub.fetch(new Request("http://produser/credits/grant", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ credits, reason: "deposit_to_business_wallet_reversal", idempotency_key: `${idempotencyKey}:reversal` }),
+    })).catch(() => { /* best-effort — a failed reversal is logged by the grant route itself if reachable */ });
+    return c.json({ error_code: "wallet_credit_failed", message: "Could not credit the business wallet — your personal balance was not charged." }, 502);
+  }
+  const walletBody = await creditRes.json<{ balance_cents: number }>();
+  return c.json({ deposited_credits: credits, personal_balance_credits: personalBalanceAfter, wallet_balance_cents: walletBody.balance_cents }, 201);
 });
 
 // GET /spaces/:spaceId/wallet-project — metering enforcement follow-up: internal-only (the agents
@@ -2991,15 +3053,16 @@ app.patch("/spaces/:spaceId/member-billing", async (c) => {
 type PlanDef = NonNullable<NonNullable<SpaceTypeProductConfig["pricingConfig"]>["plans"]>[number];
 type CreditPackDef = NonNullable<NonNullable<SpaceTypeProductConfig["pricingConfig"]>["creditPacks"]>[number];
 type WalletTopupDef = NonNullable<NonNullable<SpaceTypeProductConfig["pricingConfig"]>["walletTopups"]>[number];
+type PersonalPlanDef = NonNullable<NonNullable<SpaceTypeProductConfig["pricingConfig"]>["personalPlans"]>[number];
 type ExternalRevenueCutDef = NonNullable<SpaceTypeProductConfig["pricingConfig"]>["externalRevenueCut"];
 
-/** Resolve the effective plan/credit-pack/wallet-topup catalog for `spaceId` — walks to the
- *  product root if `spaceId` is a business (has a parent_space_id), since the catalog is
- *  authored on the root. */
+/** Resolve the effective plan/credit-pack/wallet-topup/personal-plan catalog for `spaceId` —
+ *  walks to the product root if `spaceId` is a business (has a parent_space_id), since the
+ *  catalog is authored on the root. */
 async function loadPricingCatalog(
   env: Env,
   spaceId: string
-): Promise<{ productSpaceId: string; productTenantId: string; plans: PlanDef[]; creditPacks: CreditPackDef[]; walletTopups: WalletTopupDef[]; externalRevenueCut: ExternalRevenueCutDef } | null> {
+): Promise<{ productSpaceId: string; productTenantId: string; plans: PlanDef[]; creditPacks: CreditPackDef[]; walletTopups: WalletTopupDef[]; personalPlans: PersonalPlanDef[]; externalRevenueCut: ExternalRevenueCutDef } | null> {
   const space = await env.PLATFORM_DB.prepare(
     "SELECT tenant_id, spacetype_id, config_json, parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'"
   ).bind(spaceId).first<{ tenant_id: string; spacetype_id: string; config_json: string | null; parent_space_id: string | null }>();
@@ -3027,6 +3090,7 @@ async function loadPricingCatalog(
     plans: pc?.pricingConfig?.plans ?? [],
     creditPacks: pc?.pricingConfig?.creditPacks ?? [],
     walletTopups: pc?.pricingConfig?.walletTopups ?? [],
+    personalPlans: pc?.pricingConfig?.personalPlans ?? [],
     externalRevenueCut: pc?.pricingConfig?.externalRevenueCut,
   };
 }
@@ -3043,6 +3107,7 @@ app.get("/spaces/:spaceId/pricing", async (c) => {
     plans: catalog.plans.map((p) => ({ id: p.id, name: p.name, price_cents: p.priceCents, interval: p.interval, credit_allowance: p.creditAllowance ?? null })),
     credit_packs: catalog.creditPacks.map((p) => ({ id: p.id, name: p.name, credits: p.credits, price_cents: p.priceCents })),
     wallet_topups: catalog.walletTopups.map((p) => ({ id: p.id, name: p.name, price_cents: p.priceCents })),
+    personal_plans: catalog.personalPlans.map((p) => ({ id: p.id, name: p.name, tier: p.tier, price_cents: p.priceCents, interval: p.interval })),
   });
 });
 
@@ -3105,6 +3170,80 @@ app.post("/spaces/:spaceId/credit-packs/checkout", async (c) => {
   return new Response(resp.body, { status: resp.status, headers: { "content-type": "application/json" } });
 });
 
+// GET /spaces/:spaceId/personal-plan — the caller's OWN personal-plan tier + its limits (Phase 4,
+// money). spaceId can be the product root or a business — resolveProductRootSpace walks to the
+// root either way, matching every other ProductUserDO-scoped route's own convention.
+app.use("/spaces/:spaceId/personal-plan", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/personal-plan", requireBusinessMembership({ GET: "member" }));
+app.get("/spaces/:spaceId/personal-plan", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const { userId } = getCallerIdentity(c);
+  if (!userId) return c.json({ error_code: "unauthorized", message: "Missing end user identity" }, 401);
+  const root = await resolveProductRootSpace(c.env, spaceId);
+  if (!root) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  const stub = await productUserDoStub(c.env, root.id, userId, root.tenant_id);
+  const resp = await stub.fetch(new Request("http://produser/plan-tier"));
+  const { plan_tier } = await resp.json<{ plan_tier: string }>();
+  const tier: PersonalPlanTier = isPersonalPlanTier(plan_tier) ? plan_tier : "free";
+  return c.json({ plan_tier: tier, limits: PERSONAL_PLAN_LIMITS[tier] });
+});
+
+// POST /spaces/:spaceId/personal-plan/checkout — an end user upgrades their OWN personal-plan
+// tier. Mirrors credit-packs/checkout's exact shape (proxy to the billing worker, which alone
+// holds Lemon Squeezy credentials) — the only difference is what the purchase ultimately grants.
+app.use("/spaces/:spaceId/personal-plan/checkout", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/personal-plan/checkout", requireBusinessMembership({ POST: "member" }));
+app.post("/spaces/:spaceId/personal-plan/checkout", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const { tenantId, userId } = getCallerIdentity(c);
+  if (!userId) return c.json({ error_code: "unauthorized", message: "Missing end user identity" }, 401);
+  if (!c.env.BILLING_WORKER) return c.json({ error_code: "unavailable", message: "Billing is not available" }, 503);
+  const body = await c.req.json<{ plan_id: string; customer_email?: string }>();
+  if (!body.plan_id) return c.json({ error_code: "bad_request", message: "plan_id is required" }, 400);
+
+  const resp = await c.env.BILLING_WORKER.fetch(
+    new Request("http://billing-worker/internal/personal-plan/checkout", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": tenantId,
+        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
+      },
+      body: JSON.stringify({
+        business_space_id: spaceId,
+        plan_id: body.plan_id,
+        end_user_id: userId,
+        ...(body.customer_email ? { customer_email: body.customer_email } : {}),
+      }),
+    })
+  );
+  return new Response(resp.body, { status: resp.status, headers: { "content-type": "application/json" } });
+});
+
+// POST /internal/personal-plan/grant — the billing worker's webhook handler calls this after a
+// real personal-plan checkout completes, mirroring /internal/credit-packs/grant's own addressing
+// (the PRODUCT's own tenant_id, resolved from product_space_id directly — same as ProductUserDO's
+// addressing convention everywhere else, NOT the calling worker's own verified tenant, which
+// needn't match) — it sets ProductUserDO.plan_tier instead of crediting a balance.
+app.use("/internal/personal-plan/grant", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.post("/internal/personal-plan/grant", async (c) => {
+  const body = await c.req.json<{ product_space_id: string; end_user_id: string; tier: string }>();
+  if (!body.product_space_id || !body.end_user_id || !isPersonalPlanTier(body.tier)) {
+    return c.json({ error_code: "bad_request", message: "product_space_id, end_user_id, and a valid tier are required" }, 400);
+  }
+  const product = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ? AND status != 'deleted'")
+    .bind(body.product_space_id).first<{ tenant_id: string }>();
+  if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+
+  const stub = await productUserDoStub(c.env, body.product_space_id, body.end_user_id, product.tenant_id);
+  const setRes = await stub.fetch(new Request("http://produser/plan-tier/set", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ plan_tier: body.tier }),
+  }));
+  return new Response(setRes.body, { status: setRes.status, headers: { "content-type": "application/json" } });
+});
+
 // GET /internal/pricing-catalog?space_id= — the billing worker's checkout routes resolve a
 // plan/pack's lsVariantId here (requireInternalHmac, not a builder/end-user-facing shape).
 app.use("/internal/pricing-catalog", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
@@ -3118,6 +3257,7 @@ app.get("/internal/pricing-catalog", async (c) => {
     plans: catalog.plans,
     credit_packs: catalog.creditPacks,
     wallet_topups: catalog.walletTopups,
+    personal_plans: catalog.personalPlans,
     external_revenue_cut: catalog.externalRevenueCut ?? null,
   });
 });

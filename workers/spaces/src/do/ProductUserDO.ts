@@ -115,6 +115,25 @@ const MIGRATIONS: Migration[] = [
         ON credit_ledger(idempotency_key) WHERE idempotency_key IS NOT NULL;
     `,
   },
+  {
+    // Phase 4 (money): the end user's own personal-plan tier — gates how many businesses THEY can
+    // own under this product (business-create.ts's maxBusinessesPerEndUser combines with this) and
+    // whether others may accept an invite into a business they own. Deliberately NOT stored in the
+    // general-purpose `preferences` key-value table: preferences is end-user-writable through an
+    // ordinary session-authenticated route, and plan_tier must only ever change via a real checkout
+    // (or the internal grant route a webhook calls) — a separate, protected table makes that
+    // impossible to conflate. Singleton row (id always 1, CHECK-enforced) — one tier per DO
+    // instance, which is already exactly one (productId, endUserId) pair.
+    version: 3,
+    description: "add plan_state for the end user's own personal-plan tier",
+    up: `
+      CREATE TABLE IF NOT EXISTS plan_state (
+        id         INTEGER PRIMARY KEY CHECK (id = 1),
+        plan_tier  TEXT NOT NULL DEFAULT 'free',
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `,
+  },
 ];
 
 export class ProductUserDO extends DurableObject {
@@ -205,6 +224,35 @@ export class ProductUserDO extends DurableObject {
     // GET /credits/balance
     if (method === "GET" && url.pathname === "/credits/balance") {
       return Response.json({ balance_credits: this.currentBalance() });
+    }
+
+    // GET /plan-tier — Phase 4 (money): the end user's own personal-plan tier. No auth inside the
+    // DO itself (matches this class's own established convention — every route here trusts its
+    // caller, and it's the wrapping workers/spaces/src/index.ts route that gates who can reach
+    // it). Defaults to 'free' when the singleton row hasn't been written yet (a brand-new DO).
+    if (method === "GET" && url.pathname === "/plan-tier") {
+      const row = this.ctx.storage.sql
+        .exec("SELECT plan_tier FROM plan_state WHERE id = 1")
+        .toArray() as unknown as { plan_tier: string }[];
+      return Response.json({ plan_tier: row[0]?.plan_tier ?? "free" });
+    }
+
+    // POST /plan-tier/set — internal-only settor. The ONLY caller that should ever reach this is
+    // the spaces worker's HMAC-gated /internal/personal-plan/grant route (after a real checkout,
+    // mirroring /credits/grant's own webhook-driven precedent) — there is deliberately no
+    // end-user-reachable "set my own tier" route anywhere, since that would let anyone grant
+    // themselves the paid tier for free.
+    if (method === "POST" && url.pathname === "/plan-tier/set") {
+      const body = await request.json<{ plan_tier: string }>();
+      if (body.plan_tier !== "free" && body.plan_tier !== "plus") {
+        return Response.json({ error: "plan_tier must be 'free' or 'plus'" }, { status: 400 });
+      }
+      this.ctx.storage.sql.exec(
+        `INSERT INTO plan_state (id, plan_tier, updated_at) VALUES (1, ?, datetime('now'))
+         ON CONFLICT(id) DO UPDATE SET plan_tier = excluded.plan_tier, updated_at = excluded.updated_at`,
+        body.plan_tier
+      );
+      return Response.json({ plan_tier: body.plan_tier });
     }
 
     // POST /credits/grant — top-up / initial allocation (positive delta). `idempotency_key` is

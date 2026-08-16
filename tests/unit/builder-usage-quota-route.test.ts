@@ -15,8 +15,8 @@ import { mintInternalToken } from "@naelao/http";
 const SECRET = "test-platform-secret";
 const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
 
-function makeEnv(opts: { planTier?: string; orgPlanTier?: string; monthlyTokensUsed?: number; usageRows?: Array<{ org_id: string; quantity: number }> } = {}) {
-  const { planTier = "free", orgPlanTier, monthlyTokensUsed = 0, usageRows } = opts;
+function makeEnv(opts: { planTier?: string; orgPlanTier?: string; monthlyTokensUsed?: number; usageRows?: Array<{ org_id: string; quantity: number }>; allowOverage?: boolean } = {}) {
+  const { planTier = "free", orgPlanTier, monthlyTokensUsed = 0, usageRows, allowOverage = false } = opts;
   const inserts: Array<{ org_id: string; event_type: string; quantity: number }> = [];
   const db = {
     prepare(sql: string) {
@@ -27,6 +27,7 @@ function makeEnv(opts: { planTier?: string; orgPlanTier?: string; monthlyTokensU
         },
         async first() {
           // Two different tier sources exist in this schema; the route must prefer orgs.
+          if (/allow_quota_overage FROM orgs/.test(sql)) return { allow_quota_overage: allowOverage ? 1 : 0 };
           if (/FROM orgs WHERE/.test(sql)) return orgPlanTier ? { plan_tier: orgPlanTier } : null;
           if (/FROM subscriptions WHERE/.test(sql)) return { plan_tier: planTier };
           if (/SUM\(quantity\).*usage_events/s.test(sql) || /FROM\s+usage_events/.test(sql)) {
@@ -175,6 +176,51 @@ describe("billing worker — GET /internal/usage/llm-tokens/check", () => {
     );
     const body = await res.json() as { allowed: boolean; current: number };
     expect(body).toMatchObject({ allowed: true, current: 0 });
+  });
+
+  // Phase 4 (money): checkQuota → checkWindowedQuota — a real breach now blocks on the FIRST
+  // window it crosses (day/week/month), not just month; allow_quota_overage turns that block
+  // into a soft pass instead.
+  it("blocks a free-tier org that breaches only the DAILY ceiling, even though monthly usage is still low", async () => {
+    // free daily ceiling is 20_000 — this fake DB returns the same figure for every window, so
+    // 25_000 breaches day (20_000) well before it would ever threaten month (100_000).
+    const { env } = makeEnv({ planTier: "free", monthlyTokensUsed: 25_000 });
+    const token = await mintInternalToken(SECRET, "tenant-1");
+    const res = await billingWorker.fetch(
+      new Request("https://billing.naelao.com/internal/usage/llm-tokens/check", {
+        headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
+      }),
+      env as never, execCtx
+    );
+    const body = await res.json() as { allowed: boolean; window: string };
+    expect(body).toMatchObject({ allowed: false, window: "day" });
+  });
+
+  it("allow_quota_overage=true turns a real breach into a soft pass with overage:true, not a block", async () => {
+    const { env } = makeEnv({ planTier: "free", monthlyTokensUsed: 150_000, allowOverage: true });
+    const token = await mintInternalToken(SECRET, "tenant-1");
+    const res = await billingWorker.fetch(
+      new Request("https://billing.naelao.com/internal/usage/llm-tokens/check", {
+        headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
+      }),
+      env as never, execCtx
+    );
+    const body = await res.json() as { allowed: boolean; overage?: boolean };
+    expect(body).toMatchObject({ allowed: true, overage: true });
+  });
+
+  it("allow_quota_overage=false (the default) still blocks exactly as before", async () => {
+    const { env } = makeEnv({ planTier: "free", monthlyTokensUsed: 150_000, allowOverage: false });
+    const token = await mintInternalToken(SECRET, "tenant-1");
+    const res = await billingWorker.fetch(
+      new Request("https://billing.naelao.com/internal/usage/llm-tokens/check", {
+        headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
+      }),
+      env as never, execCtx
+    );
+    const body = await res.json() as { allowed: boolean; overage?: boolean };
+    expect(body.allowed).toBe(false);
+    expect(body.overage).toBeUndefined();
   });
 });
 
