@@ -7160,6 +7160,50 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      pending safer verification.
 
 
+139. **The Groq schema defect item 138 documented-but-deliberately-left-unfixed is now FIXED — the
+     decision tool's `params` schema is chosen per provider.** Item 135 declared `params` as a JSON
+     object STRING because Gemini could otherwise only ever emit `{}` (a bare `{type:"object"}` with
+     no `properties` gives a schema-constrained decoder no permitted keys). That fix was correct for
+     Gemini and broke Groq: Groq validates a model's tool-call output against the DECLARED schema
+     **server-side** and rejects the call outright — `tool call validation failed: parameters for tool
+     run did not match schema: errors: [`/params`: expected string, but got object]` — on both the
+     streamed attempt and its non-streamed retry, confirmed live on a real heartbeat wake. Groq's
+     models naturally emit a real object and its own validator will not let a string-typed field
+     through.
+     - **Fix**: `DECISION_TOOLS` (a module-level const) became `decisionTools(model)`. Gemini keeps
+       the proven `PARAMS_PARAM_STRING`; every other provider gets `PARAMS_PARAM_OBJECT` —
+       `{type:"object", additionalProperties:true}`. That `additionalProperties` is what makes an
+       object schema safe to declare with no enumerable `properties`, i.e. a **more portable fix for
+       the same underlying problem** than routing around it with a string. Gemini keeps its own
+       declaration rather than sharing this one because Google's native function-calling schema is an
+       OpenAPI-3.0 subset wanting exactly one declared `type`, and this platform's Gemini routing has
+       never been verified against the `additionalProperties` shape — changing the one provider path
+       that is *proven live to work* in order to maybe fix a second one was the trade item 138
+       declined to make blind, and still is. `readParams()` already accepted either shape from either
+       provider, so this only widens what a valid decision can be.
+     - **The regression guard asserts the WIRE SHAPE, not the constant** — it captures the real
+       request body a provider receives and fails on an object schema carrying neither `properties`
+       nor `additionalProperties`, which is the precise defect rather than a proxy for it. Verified to
+       genuinely catch a regression: reverting the split fails exactly the two provider-specific
+       cases. A first draft of the test failed for an unrelated reason worth remembering —
+       `canAuthenticateLlm()` refuses before ever calling `fetch` when a BYOK model's own key field is
+       absent from `GatewayOpts`, so a test that passes a `groq/` or `google-ai-studio/` model must
+       also inject that provider's key or it captures nothing and every assertion reads `undefined`.
+     - **Live-verified after deploy**: the specific `expected string, but got object` rejection is
+       gone from real Groq traces, replaced by ordinary `429 rate_limited` (Groq's 12k TPM ceiling,
+       worn down by the retries themselves) and one distinct, separately-undiagnosed
+       `failed_generation` hiccup. **Full completion of the target goal was NOT reached** — at the
+       time of testing every available provider was simultaneously capacity-exhausted (Workers AI
+       daily neurons spent; BOTH Gemini models at their 20-request/day free-tier cap; Groq 70B's TPM
+       ceiling repeatedly re-exhausted; Groq 8B-instant's 6000 TPM ceiling structurally below this
+       agent's ~9-11k-token payload). That is a capacity fact, not a code defect, and is why this item
+       does not claim the end-to-end proof item 138 was pushing for. The target project was confirmed
+       untouched throughout (`status: active`), so no partial or incorrect mutation occurred.
+     62/62 tests in `reasoner-tool-calling.test.ts` pass, `naelao-agents` deployed (bare
+     `wrangler deploy`, item 83's documented `--env production` trap). Committed as `16ebcc5` — note
+     it had been deployed to production but left UNCOMMITTED across a session boundary, one container
+     re-clone away from being lost; commit deployed work in the same pass that deploys it.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
