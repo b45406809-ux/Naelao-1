@@ -437,23 +437,31 @@ function BillingTab({
   me: ProductUserMe | null;
 }) {
   const [busyId, setBusyId] = React.useState<string | null>(null);
+  const [checkoutNotice, setCheckoutNotice] = React.useState<string | null>(null);
 
   async function subscribe(planId: string) {
     if (!creds) return;
     setBusyId(planId);
+    setCheckoutNotice(null);
     try {
-      const { checkout_url } = await checkoutBusinessSubscription(spaceId, creds, planId);
-      if (checkout_url) window.location.href = checkout_url;
-    } catch { /* toast-less — the button re-enables and nothing changes */ } finally { setBusyId(null); }
+      const { checkout_url, dev } = await checkoutBusinessSubscription(spaceId, creds, planId);
+      // dev:true means no real Lemon Squeezy/Whop credentials are configured — checkout_url is a
+      // deterministic placeholder (checkout.naelao.com) that doesn't resolve to anything.
+      // Navigating there was the literal dead link; say so instead.
+      if (dev) setCheckoutNotice("Payments aren't configured for this business yet.");
+      else if (checkout_url) window.location.href = checkout_url;
+    } catch { setCheckoutNotice("Couldn't start checkout — try again in a moment."); } finally { setBusyId(null); }
   }
 
   async function buyPack(packId: string) {
     if (!creds) return;
     setBusyId(packId);
+    setCheckoutNotice(null);
     try {
-      const { checkout_url } = await checkoutCreditPack(spaceId, creds, packId);
-      if (checkout_url) window.location.href = checkout_url;
-    } catch { /* same as above */ } finally { setBusyId(null); }
+      const { checkout_url, dev } = await checkoutCreditPack(spaceId, creds, packId);
+      if (dev) setCheckoutNotice("Payments aren't configured for this business yet.");
+      else if (checkout_url) window.location.href = checkout_url;
+    } catch { setCheckoutNotice("Couldn't start checkout — try again in a moment."); } finally { setBusyId(null); }
   }
 
   return (
@@ -482,6 +490,10 @@ function BillingTab({
           </div>
         )}
       </div>
+
+      {checkoutNotice && (
+        <p style={{ fontSize: 12, color: "var(--warning, #f5a623)", padding: "0 2px 8px" }}>{checkoutNotice}</p>
+      )}
 
       {plans.length > 0 && (
         <div className="settings-block">

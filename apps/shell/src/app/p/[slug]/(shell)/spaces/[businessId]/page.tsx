@@ -817,6 +817,20 @@ export default function BusinessDetailPage() {
         at creation. Revenue from Whop&rsquo;s own storefront/checkout and any connected 3rd-party
         platform settles here automatically; Naelao never holds this money.
       </p>
+      {whopWallet?.status === "not_provisioned" && connectors.find((c) => c.id === "whop")?.connected && (
+        // The bare "not provisioned yet" badge below, seen right after connecting Whop, reads
+        // like the connection didn't take — it's a genuinely different, separate rail (this one
+        // needs Naelao's own invite-only Whop Platforms API access; connecting your OWN Whop
+        // account above doesn't grant that). Say so explicitly rather than leaving that only in a
+        // source comment nobody using the product can see.
+        <p style={{ fontSize: 12, color: "var(--text3)", marginBottom: 8, padding: "6px 10px", background: "var(--surface2)", borderRadius: "var(--radius-sm)" }}>
+          Your Whop account is connected (see &ldquo;Connect Your Whop Account&rdquo; above) — that&rsquo;s
+          the real, working path for this business today, and it&rsquo;s already what the
+          assistant reads for orders and revenue. This separate wallet below only activates once
+          Naelao&rsquo;s own Whop Platforms API access is approved; &ldquo;not provisioned yet&rdquo;
+          here does not mean anything is broken.
+        </p>
+      )}
       <div className="settings-block">
         <div className="settings-row">
           <div>

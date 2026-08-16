@@ -114,12 +114,31 @@ export const projectCoordination: PrebuiltScript = {
     // orchestration hook owns those), and 'channel' threads are minted by the channel gateway from
     // a verified inbound webhook. Letting an agent forge either kind by hand would put messages
     // somewhere the UI presents as having a provenance they didn't have.
-    "thread.create": (a, c) => {
+    //
+    // A thread with no linked session is unopenable in the shell ("Session not found") — the
+    // thread page renders <Chat> against thread.session_id and nothing else ever mints one for a
+    // thread created this way. So this also creates and links the real chat session immediately,
+    // the same way a human clicking "New thread" does (Chat.tsx's startSession(thread_id)) —
+    // generate the id ourselves so the thread exists BEFORE the session tries to link to it
+    // (POST /sessions' thread_id link is a best-effort UPDATE ... WHERE session_id IS NULL, a
+    // no-op against a thread that doesn't exist yet).
+    "thread.create": async (a, c) => {
       const projectId = a["project_id"] ? String(a["project_id"]) : c.env.projectId;
-      return spacesCall(c, "POST", `/spaces/${c.env.spaceId}/threads`, {
+      const id = crypto.randomUUID();
+      const thread = (await spacesCall(c, "POST", `/spaces/${c.env.spaceId}/threads`, {
+        id,
         ...(a["title"] ? { title: String(a["title"]) } : {}),
         ...(projectId ? { project_id: projectId } : {}),
-      });
+      })) as Record<string, unknown>;
+      try {
+        const session = (await spacesCall(c, "POST", `/spaces/${c.env.spaceId}/sessions`, { thread_id: id })) as { id?: string };
+        if (session?.id) thread["session_id"] = session.id;
+      } catch {
+        // The thread itself was created successfully; a missing session link is a real gap
+        // (the thread will still 404 as "Session not found" if opened) but not a reason to fail
+        // the whole call — the caller still gets a real thread id back to retry/inspect.
+      }
+      return thread;
     },
     "thread.list": (a, c) => {
       const qs = new URLSearchParams({ space_id: c.env.spaceId });

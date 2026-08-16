@@ -77,8 +77,15 @@ export function UpgradeDialog({
     setCheckoutBusyId(packId);
     setCheckoutError(null);
     try {
-      const { checkout_url } = await checkoutCreditPack(spaceId, session, packId);
-      window.location.href = checkout_url;
+      const { checkout_url, dev } = await checkoutCreditPack(spaceId, session, packId);
+      // dev:true is a real, deterministic placeholder — checkout.naelao.com doesn't resolve to
+      // anything. Navigating there is a dead end with no signal what went wrong; say so instead.
+      if (dev) {
+        setCheckoutError("Payments aren't configured for this business yet — ask the owner to finish billing setup.");
+        setCheckoutBusyId(null);
+      } else {
+        window.location.href = checkout_url;
+      }
     } catch (err) {
       setCheckoutError(err instanceof Error ? err.message : "Couldn't start checkout");
       setCheckoutBusyId(null);
@@ -89,8 +96,13 @@ export function UpgradeDialog({
     setCheckoutBusyId(planId);
     setCheckoutError(null);
     try {
-      const { checkout_url } = await checkoutBusinessSubscription(spaceId, session, planId);
-      window.location.href = checkout_url;
+      const { checkout_url, dev } = await checkoutBusinessSubscription(spaceId, session, planId);
+      if (dev) {
+        setCheckoutError("Payments aren't configured for this business yet — ask the owner to finish billing setup.");
+        setCheckoutBusyId(null);
+      } else {
+        window.location.href = checkout_url;
+      }
     } catch (err) {
       setCheckoutError(err instanceof Error ? err.message : "Couldn't start checkout");
       setCheckoutBusyId(null);

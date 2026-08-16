@@ -199,6 +199,15 @@ export function Chat({
 
   const [chatSessionId, setChatSessionId] = React.useState<string | null>(sessionId ?? null);
   const [messages, setMessages] = React.useState<Message[]>([]);
+  // Read at call time (not captured in a callback's own closure, which can be stale by the time a
+  // retry actually fires) by continueInterruptedRun / InterruptedRunCard's onContinued — see
+  // resumeOriginRef's own comment for why this matters: a retry that succeeds should fold its
+  // answer into the SAME bubble the earlier attempt for this exchange already produced, the way a
+  // few extra tool calls after an approval already do, instead of every retry starting a new one.
+  const messagesRef = React.useRef<Message[]>(messages);
+  React.useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
   // The last assistant message's own persisted run id, once messages have loaded — see the
   // Sub-agents panel's lastRunId prop for why this exists (lastRun itself is client-only state,
   // gone on reload).
@@ -419,6 +428,16 @@ export function Chat({
   // needs a human (see refreshInterrupted below) — everything else self-heals first.
   const [interrupted, setInterrupted] = React.useState<InterruptedRun | null>(null);
 
+  // The trailing message in this exchange, if it's an assistant reply this run's continuation
+  // should fold into — undefined when the exchange has produced no bubble yet (the failed run
+  // never reached finalizeAnswer) or when a NEWER user message already followed it (a stale
+  // exchange a late-arriving retry must not silently attach itself onto).
+  const originMessageIdForRetry = React.useCallback((): string | undefined => {
+    const list = messagesRef.current;
+    const last = list[list.length - 1];
+    return last?.role === "assistant" ? last.id : undefined;
+  }, []);
+
   // Re-enters the SAME run (its ledger key, so already-completed actions short-circuit rather
   // than repeat) — the shared machinery behind both the manual "Continue" button and every
   // self-heal attempt below.
@@ -431,6 +450,8 @@ export function Chat({
           setError(null);
           setBillingWall(null);
           setIsLoading(true);
+          const originId = originMessageIdForRetry();
+          if (originId) resumeOriginRef.current.set(res.run_id, originId);
           storeActiveRunId(spaceId, sessionKey, res.run_id);
           attachToRunRef.current(sid, res.run_id);
         }
@@ -1581,6 +1602,13 @@ export function Chat({
                   setError(null);
                   setBillingWall(null);
                   setIsLoading(true);
+                  // Same merge as the self-heal path (continueInterruptedRun) — a manual Continue
+                  // click is just this same continuation, dispatched by the person instead of
+                  // automatically. Without this, clicking Continue a second time on the same
+                  // exchange (a retry that itself hit a different failure) would fork the
+                  // conversation into two separate bubbles instead of one that kept going.
+                  const originId = originMessageIdForRetry();
+                  if (originId) resumeOriginRef.current.set(newRunId, originId);
                   storeActiveRunId(spaceId, sessionKey, newRunId);
                   attachToRun(chatSessionId, newRunId);
                 }}
@@ -1651,6 +1679,16 @@ export function Chat({
         </div>
 
         <div className="chat-input-area">
+          {chatSessionId && (
+            <ContextUsageMeter
+              spaceId={spaceId}
+              sessionId={chatSessionId}
+              session={session}
+              model={selectedModel}
+              refreshKey={messages.length}
+              compact
+            />
+          )}
           <ComposerDock
             spaceId={spaceId}
             {...(projectId ? { projectId } : {})}
@@ -1817,6 +1855,7 @@ export function Chat({
                   spaceId={spaceId}
                   sessionId={chatSessionId}
                   session={session}
+                  model={selectedModel}
                   refreshKey={messages.length}
                 />
               </>

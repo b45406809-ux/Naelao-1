@@ -152,24 +152,60 @@ describe("project-coordination prebuilt", () => {
     });
   });
 
-  // The assistant can open a real thread, the same as a person clicking "new thread".
+  // The assistant can open a real thread, the same as a person clicking "new thread". A thread
+  // with no linked session 404s as "Session not found" the moment anyone (including the person
+  // who asked for it) opens it — so thread.create must mint and link a real session too, the
+  // same thing Chat.tsx's own startSession(thread_id) does for a human-created thread.
   describe("thread.create", () => {
-    it("posts a thread with the title and the run's own project", async () => {
+    function threadPlusSessionResponder(calls: Call[]) {
+      return (call: Call) => {
+        if (call.url.includes("/sessions")) return { id: "sess-9", space_id: "space-1" };
+        return { id: "thread-9", title: (call.body as { title?: string } | null)?.title ?? null };
+      };
+    }
+
+    it("posts a thread with the title and the run's own project, then links a real session", async () => {
       const calls: Call[] = [];
-      const env = { ...makeEnv(calls, () => ({ id: "thread-9" })), projectId: "proj-1" } as ScriptEngineEnv;
+      const env = { ...makeEnv(calls, undefined, undefined), projectId: "proj-1" } as ScriptEngineEnv;
+      (env as unknown as { spacesWorker: { fetch: (r: Request) => Promise<Response> } }).spacesWorker = {
+        fetch: async (req: Request) => {
+          const headers: Record<string, string> = {};
+          req.headers.forEach((v, k) => { headers[k] = v; });
+          const body = await req.clone().json().catch(() => null);
+          calls.push({ method: req.method, url: req.url, headers, body });
+          return Response.json(threadPlusSessionResponder(calls)({ method: req.method, url: req.url, headers, body }));
+        },
+      } as unknown as Fetcher;
+
       const result = await projectCoordination.operations["thread.create"]!({ title: "Q3 pricing" }, { env, run: noopRun });
-      expect(result).toEqual({ id: "thread-9" });
-      expect(calls).toHaveLength(1);
+
+      expect(calls).toHaveLength(2);
       expect(calls[0]!.method).toBe("POST");
       expect(calls[0]!.url).toContain("/spaces/space-1/threads");
-      expect(calls[0]!.body).toEqual({ title: "Q3 pricing", project_id: "proj-1" });
+      expect(calls[0]!.body).toMatchObject({ title: "Q3 pricing", project_id: "proj-1" });
+      expect(typeof (calls[0]!.body as { id: string }).id).toBe("string"); // id minted client-side so it can be linked
+
+      expect(calls[1]!.url).toContain("/spaces/space-1/sessions");
+      expect(calls[1]!.body).toEqual({ thread_id: (calls[0]!.body as { id: string }).id });
+
+      expect(result).toMatchObject({ id: "thread-9", title: "Q3 pricing", session_id: "sess-9" });
+    });
+
+    it("still returns the thread when linking a session fails, rather than throwing", async () => {
+      const calls: Call[] = [];
+      const env = makeEnv(calls, (call) => {
+        if (call.url.includes("/sessions")) throw new Error("boom");
+        return { id: "thread-9" };
+      });
+      const result = await projectCoordination.operations["thread.create"]!({ title: "x" }, { env, run: noopRun });
+      expect(result).toEqual({ id: "thread-9" });
     });
 
     it("an explicit project_id overrides the run's own project", async () => {
       const calls: Call[] = [];
       const env = { ...makeEnv(calls, () => ({ id: "t" })), projectId: "proj-1" } as ScriptEngineEnv;
       await projectCoordination.operations["thread.create"]!({ project_id: "proj-2" }, { env, run: noopRun });
-      expect(calls[0]!.body).toEqual({ project_id: "proj-2" });
+      expect(calls[0]!.body).toMatchObject({ project_id: "proj-2" });
     });
 
     // thread_kind is deliberately NOT forwardable: 'sub_agent' is the private consult/fan-out lane
@@ -182,7 +218,10 @@ describe("project-coordination prebuilt", () => {
         { title: "x", thread_kind: "channel", parent_thread_id: "t-other", channel: "whatsapp" },
         { env, run: noopRun }
       );
-      expect(calls[0]!.body).toEqual({ title: "x" });
+      expect(calls[0]!.body).toMatchObject({ title: "x" });
+      expect(calls[0]!.body).not.toHaveProperty("thread_kind");
+      expect(calls[0]!.body).not.toHaveProperty("parent_thread_id");
+      expect(calls[0]!.body).not.toHaveProperty("channel");
     });
   });
 

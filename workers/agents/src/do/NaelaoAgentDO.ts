@@ -3375,6 +3375,25 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         } catch {
           /* best-effort — Fabric is a memory convenience, not run-critical */
         }
+        // Layer 5 (episodic) automatic write. Before this, the ONLY way anything ever landed in
+        // episodic_log was the model explicitly calling memory.remember — a tool call it rarely
+        // makes unprompted, which is the real, previously-undetected cause of "the AI isn't
+        // recording anything in memory": Fabric (above) consolidates PROJECT-shared facts, but a
+        // thread's own episodic trail — the raw "what happened" a later `memory.recall` in this
+        // same thread/user scope can actually retrieve — stayed empty unless the model remembered
+        // to ask for it. This mirrors that same explicit call, at low importance (0.3, below the
+        // promotion threshold `runMemoryMaintenance` uses to surface something into a wiki
+        // article) — a background trail the model can recall on demand, not something that forces
+        // itself into every future prompt. Best-effort, same posture as the Fabric write above.
+        try {
+          await engineEnv.memoryStore.remember({
+            ...(userId ? { userId } : {}),
+            text: `Goal: ${body.goal.slice(0, 300)}\nOutcome: ${result.result.output.slice(0, 500)}`,
+            importance: 0.3,
+          });
+        } catch {
+          /* best-effort — an automatic episodic note is a convenience, not run-critical */
+        }
       }
 
       // Security audit follow-up (observability gap): one row per completed run, independent of

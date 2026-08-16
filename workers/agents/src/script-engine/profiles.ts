@@ -683,6 +683,12 @@ export const LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED: string[] = [
   "mcp.list_servers",
   "mcp.list_tools",
   "memory.recall",
+  // A write, but a purely internal one — it lands in the agent's own private recall store
+  // (episodic_log/structured_facts), invisible to anyone unless the same agent explicitly recalls
+  // it later. Unlike write_file (a real, visible workspace artifact) or a commerce write (moves
+  // money), nothing outside the agent's own memory is affected — gating it means asking
+  // permission before being allowed to take a note, which is why it defaulted to unused.
+  "memory.remember",
   "project_journal.read",
   "business_wallet.balance",
   "business_wallet.history",

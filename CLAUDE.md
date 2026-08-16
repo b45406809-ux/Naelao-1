@@ -7292,6 +7292,92 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      disclosure, background work + wake-ups, money, workspace/plugins/artifacts, collaboration +
      channels) are planned and unstarted.
 
+141. **The six items item 140 explicitly left open are now BUILT — Phase 1 of the 62-item batch is
+     complete.** `thread.create` (the assistant's own `project-coordination` prebuilt) minted a
+     `threads` row with no `session_id` — the exact bug behind "Session not found" on any
+     assistant-created thread. It now also mints and links a real session (generating the thread's
+     own id client-side so the link can point at it, then `POST /sessions {thread_id}`), matching
+     the shape a human's own "New thread" already produces; degrades to returning the bare thread
+     (still real, still usable via a later open) rather than throwing if the session-link call
+     itself fails. The SAME gap existed on the flat `/threads` browse page's own "New Session"
+     button and its `/threads/:id` chat route — fixed identically, and that route now waits for the
+     thread to load (mirroring the project-scoped page) instead of always taking Chat's client-only
+     fallback.
+     - **Memory was never written automatically — confirmed, and closed.** Layer 4 (Fabric,
+       project-shared consolidation) already had a post-run write; Layer 5 (episodic, the layer
+       `memory.recall` actually searches) did not — nothing besides the model's own occasional
+       `memory.remember` tool call ever populated it, which is the real root cause of "the AI isn't
+       recording anything." `NaelaoAgentDO.handleScriptRun` now also writes a low-importance (0.3,
+       below the auto-promotion threshold — a background trail to recall on demand, not something
+       that forces itself into every future prompt) episodic note alongside the existing Fabric
+       write, same best-effort posture. `memory.remember` added to
+       `LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED` (`memory.recall` was already there) — it's a
+       write, but a purely internal one (lands only in the agent's own private recall store,
+       invisible to anyone unless recalled again), unlike `write_file` or a commerce write, which
+       stay gated.
+     - **Context meter now reflects the real selected model.** `ContextUsageMeter` hardcoded
+       `claude-haiku-4-5-20251001`; `Chat.tsx` had `selectedModel` in scope the whole time and
+       simply never passed it to the Stats-tab instance — fixed. Also gained a manual **Compact**
+       button (next to the percentage, calling the existing `/compact` route on demand rather than
+       only auto-firing at 85%) and a `compact` single-line rendering mode mounted directly above
+       the composer — visible whenever context is ≥40% full, without needing to open the side
+       panel. Only the always-mounted compact strip auto-fires the 85%-threshold compaction now
+       (gated via a new `compact` dependency on the effect); the full Stats-tab meter, which isn't
+       always mounted, no longer also fires it, closing a real double-fire risk two co-mounted
+       meter instances would otherwise have introduced.
+     - **A thread-list rail inside a project thread.** `projects/:id/threads/:id` rendered nothing
+       but a bare `<Chat>` — no way to move to a sibling thread without going back to the project
+       page. Added a collapsible left rail (reusing `.spaces-sidebar`/`space-tree-item`) listing the
+       project's other threads. Deliberately does NOT reuse `.spaces-content` for the chat side —
+       that class adds its own padding + `overflow-y:auto`, which would fight `Chat`'s own internal
+       `.chat-layout`/`.chat-area` scroll and sticky-composer sizing; `Chat` is mounted as a direct
+       flex sibling of the rail instead so its own `flex:1` sizing is unaffected.
+     - **Multi-run navigation, scoped down from a full run-switcher to a safer, proven mechanism.**
+       `resumeOriginRef` already correctly folds an approval-resume continuation into the
+       ORIGINATING bubble (`watchForResume`) — but neither a self-heal auto-retry
+       (`continueInterruptedRun`) nor a manual Continue click (`InterruptedRunCard`'s `onContinued`)
+       ever registered it, so a SECOND failure on an already-partially-answered exchange forked into
+       a new bubble instead of continuing the same one. Both now register
+       `resumeOriginRef.set(newRunId, originId)` before attaching, where `originId` is computed by
+       a new `originMessageIdForRetry()` — the trailing message's id, but ONLY when it's an
+       assistant reply (never when a newer user message has already superseded it, which correctly
+       leaves a late-arriving retry to start a fresh bubble rather than silently attaching to a
+       stale one). Read via a `messagesRef` kept in sync by effect so the check happens at retry
+       time, not at callback-definition time. Deliberately not the plan's originally-scoped literal
+       "run switcher" UI — reusing the already-proven merge mechanism gets the same practical
+       outcome (one continuous exchange instead of fragments) without a blind structural rewrite of
+       Chat.tsx's message model, which this file's own history (items 83/104/122) already flags as
+       needing live verification this session's standing "don't spend inference credits on UI
+       verification" instruction rules out.
+     - **The dead `checkout.naelao.com` link and the wallet "not provisioned" confusion, both
+       fixed.** Every billing-worker checkout route already returns an honest `dev: true` flag when
+       no real LS/Whop credentials are provisioned — the bug was purely client-side: 2 of 4
+       call sites (`UpgradeDialog.tsx`, `settings/page.tsx`'s `BillingTab`) navigated the browser
+       straight to the placeholder URL regardless, while the other 2 (the business detail page)
+       already checked it correctly. Both fixed to check `dev` and show an honest inline message
+       instead of navigating anywhere. Separately: the Business Wallet card (the Whop
+       Platforms/sub-merchant rail, still pending Naelao's own invite-only API access) already
+       explained the BYO-Whop-OAuth-vs-sub-merchant-wallet distinction — but only in a SOURCE
+       COMMENT, invisible to an actual user staring at a bare "not provisioned yet" badge right
+       after connecting their own Whop account. Added a visible note, shown exactly when the
+       business's own Whop OAuth connector is connected AND the wallet is still `not_provisioned`:
+       states plainly that the connected account is already the real, working revenue source today,
+       and that "not provisioned yet" here doesn't mean anything is broken.
+     2980/2980 tests pass, `npx turbo run typecheck` clean (76 tasks), `apps/shell` verified via a
+     real `next build` (confirms the new `/projects/[projectId]/threads/[threadId]` route compiles).
+     Deployed: `naelao-agents` (bare `wrangler deploy`, item 83's documented `--env production`
+     trap) and `apps/shell` (`next-on-pages` + `wrangler pages deploy --branch=main`, confirmed
+     `environment: "production"` via the Pages API) — both live-verified via non-LLM checks (200s on
+     the shell's `/p/launchpad/spaces` and `/p/launchpad/new`, a 401-not-500 from the agents
+     worker's cancel route) and by grepping the deployed bundle for the new strings ("Compact",
+     "Payments aren't configured", "Threads in this project",
+     "context-usage-meter-compact") before calling this done. No `/agent/run` was dispatched this
+     pass, per the standing "use your own credits to test" instruction. **With this, Phase 1 of the
+     62-item plan (`/root/.claude/plans/gleaming-scribbling-pelican.md`) is fully shipped — every
+     item in its bug table and chat-fidelity list is now built.** Phases 2-6 (agent honesty + tool
+     disclosure, background work + wake-ups, money, workspace/plugins/artifacts, collaboration +
+     channels) remain planned and unstarted.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
