@@ -808,6 +808,19 @@ export interface ScriptEngineEnv {
    * instruction.
    */
   effectiveRole?: "owner" | "editor" | "viewer";
+  /**
+   * Progressive tool disclosure (Phase 2 item 13) — when true, `available_operations` in the
+   * reasoner payload is REDUCED to a small always-visible core set plus `tools.search`/
+   * `tools.describe` for discovering the rest, instead of the full grouped dump every turn.
+   * Execution itself is UNCHANGED either way — script.run still accepts any enabled operation
+   * regardless of whether it was shown, so this can only ever shrink the payload, never block a
+   * valid call. Default false (absent) = today's full-disclosure behavior, byte-identical.
+   * Deliberately NOT default-on anywhere yet: this session's own history (items 133-139) is a
+   * record of how fragile this exact reasoning-loop surface is on the platform's small models,
+   * so this ships opt-in per space/run until proven live on a real business. See
+   * ScriptToolSurface.disclosureGroups' own doc for the automatic full-disclosure fallback.
+   */
+  progressiveToolDisclosure?: boolean;
 }
 
 /**

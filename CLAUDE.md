@@ -7492,6 +7492,81 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      wake-ups, money, workspace/plugins/artifacts, collaboration + channels) remain planned and
      unstarted.
 
+143. **Progressive tool disclosure (Phase 2's 8th, previously-deferred item) is now BUILT, gated
+     opt-in and default-off exactly as scoped when the deferral was documented — execution is
+     unrestricted either way, so this can only ever shrink what a model reads, never block a call.**
+     - **The mechanism.** `ScriptToolSurface.disclosureGroups()` replaces the 3 loop.ts call sites
+       that used to send `availableOperationsGrouped()` (the full dump) straight into the reasoner
+       payload every turn. In "full" mode (`ScriptEngineEnv.progressiveToolDisclosure` unset — the
+       default, and every run before this feature existed), it's byte-identical to the old call. In
+       "reduced" mode (opt-in), it returns only a small curated `CORE_OPERATIONS` set — the handful
+       of cross-cutting ops useful in nearly every run (`search`, `knowledge.search`, `memory.recall`,
+       `project_journal.read`, `notify.email`, `conversation.search`) — plus a synthetic "tools"
+       group naming how many other operations exist and pointing at two new meta-ops:
+       `tools.search(query)` (token-overlap ranking against every enabled op's name/script/
+       description/param-hint; **never returns empty** — falls back to the core set, then to the
+       first 8 ops overall, so a search can never dead-end the model) and `tools.describe(name)`
+       (full detail for one named op, reusing `run()`'s own "did you mean" suggestions on a miss so
+       the two can never disagree about what exists). Both are always registered in `this.ops`
+       regardless of mode — callable even in full disclosure, cost nothing, `requires_tier: 1`.
+     - **Execution was never restricted by disclosure mode, and that's the load-bearing safety
+       property.** `run()` accepts ANY enabled operation whether or not `disclosureGroups()` showed
+       it — reduced mode can only shrink the PAYLOAD, never block a valid call a model already knows
+       or finds via search. Verified explicitly: a non-core op withheld from the reduced payload
+       still executes correctly through `run()`.
+     - **Automatic full-disclosure fallback.** A run in reduced mode that racks up
+       `MISS_FALLBACK_THRESHOLD` (2) consecutive "unknown operation" misses permanently widens to
+       full disclosure for the rest of that run — since `disclosureGroups()` is called fresh every
+       reasoning turn, the very next call reflects it with no further plumbing. Reset to 0 on any
+       successfully-RESOLVED call (a real op existing, whether or not it then succeeds) — only a
+       genuinely-unresolvable name counts as a miss. Verified to genuinely catch a regression:
+       reverting the miss-increment line fails exactly the fallback test, nothing else.
+     - **A real, previously-shipped bug found and fixed while choosing `CORE_OPERATIONS`'s
+       entries.** `LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED` (profiles.ts) listed
+       `"web-search.search"`/`"web-search.fetch_page"`/`"web-search.extract_content"`/
+       `"web-search.grounded_answer"` — dot-prefixed with the SCRIPT name, matching the convention
+       most other prebuilt scripts use (`memory.recall`, `notify.email`). But `web-search.ts`'s real
+       operations-map keys are BARE (`search`, `fetch_page`, `extract_content`, `grounded_answer` —
+       `assistant-access.ts`'s own `READ_SAFE_PREBUILT_OPS` already had this right, with an explicit
+       "bare op names" comment). `isGated()` does an exact `.has(actionName)` check against
+       `decision.name` AFTER `resolveOperationAlias` has already stripped any script-name prefix —
+       so a dot-prefixed allowlist entry could never match anything a model actually calls. The
+       comment beside those four entries claimed a prior pass ("a user reported this gated web
+       search... fixed") had already solved this — it never actually took effect; web search has
+       been silently gated under guided mode this whole time despite that claim. Fixed to the real
+       bare names, same bug CLASS (not the same bug — commerce.ts, checked in the same pass, DOES
+       use dotted names correctly) as the pre-existing `"list_files"`/`"list_directory"` fix item
+       142 already documented once for the same list.
+     - **A minimal, real enablement path was wired — not just an internal flag with no way to turn
+       it on.** `POST /agent/run` accepts an optional `progressive_tool_disclosure` boolean
+       (ad-hoc, per-request — useful for verification without touching a business's stored config),
+       falling back to a new `productConfig.modelConfig.progressiveToolDisclosure` stored field
+       (same config_json-override convention `model`/`effort` already use) when absent; both default
+       to `false`. Threaded through BOTH dispatch paths identically to how `effort` was threaded in
+       item 91 — the synchronous `/script/run` call, and the async `AgentTaskWorkflow` →
+       `/internal/tasks/:taskId/run` → `/script/run` chain — so a durable/async run (the default for
+       every real chat message) is no less capable of being opted in than a synchronous one.
+       **Deliberately NOT built:** a `PATCH /model-config` extension or dashboard/shell UI toggle for
+       this field — that route currently REQUIRES `model` and fully replaces the whole
+       `modelConfig` object on every call (an existing, pre-dating convention, not something to
+       change here), so wiring persistent UI control is real, separate, bounded follow-up work, not
+       attempted in this pass. The field can be set today via a direct config_json write or an
+       ad-hoc `progressive_tool_disclosure: true` on a single `/agent/run` call — a real, reachable
+       mechanism, just not yet a checkbox anywhere.
+     3015/3015 tests pass (19 new: `progressive-tool-disclosure.test.ts`'s 15 cases covering full-vs-
+     reduced shape, `tools.search`'s never-empty guarantee and result cap, `tools.describe`'s known/
+     unknown-name paths, execution being unrestricted in reduced mode, and the miss-streak fallback
+     — verified live to catch a reverted fix, not just pass; plus 4 new wire-threading cases in
+     `agent-run-model-override.test.ts` proving the override/stored-config/default precedence
+     through the real synchronous dispatch route), `npx turbo run typecheck` clean (76 tasks).
+     `naelao-agents` deployed (bare `wrangler deploy`, item 83's documented `--env production` trap;
+     Version ID `ce91299e-46e0-4092-888a-47670c5b6bf8`), live-verified via a 401-not-500 on the
+     cancel route. No `/agent/run` was dispatched to exercise the feature live this pass, per the
+     standing "use your own credits to test" instruction — every claim above is backed by a unit
+     test driving the real classes/routes directly. **With this, all 8 items of Phase 2 are shipped.**
+     Phases 3-6 (background work + wake-ups, money, workspace/plugins/artifacts, collaboration +
+     channels) remain planned in `/root/.claude/plans/gleaming-scribbling-pelican.md` and unstarted.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

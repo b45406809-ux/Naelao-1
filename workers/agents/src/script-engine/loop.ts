@@ -185,6 +185,11 @@ export interface Reasoner {
      * a flat name list alone left real capabilities (e.g. thread.send_message) undiscoverable.
      * Optional so a caller/test that only has the flat list still works; reasoner.ts prefers this
      * when present.
+     *
+     * Callers pass ScriptToolSurface.disclosureGroups() here, not availableOperationsGrouped()
+     * directly — the two are identical unless progressive tool disclosure is opted in for this
+     * run (ScriptEngineEnv.progressiveToolDisclosure), in which case this is a REDUCED set plus
+     * tools.search/tools.describe for finding the rest. See disclosureGroups()'s own doc.
      */
     operationGroups?: Array<{
       script: string;
@@ -677,7 +682,7 @@ export async function runScriptLoop(
         snapshot,
         candidates,
         availableOperations: tools.availableOperations(),
-          operationGroups: tools.availableOperationsGrouped(),
+          operationGroups: tools.disclosureGroups(),
         ...(opts.conversation ? { conversation: opts.conversation } : {}),
         repairTarget: { name: top!.name, failureReason: repairReason ?? "fingerprint drift (partial match)" },
         ...(deltaReporter(opts) ? { onDelta: deltaReporter(opts)! } : {}),
@@ -841,7 +846,7 @@ export async function runScriptLoop(
           snapshot,
           candidates,
           availableOperations: tools.availableOperations(),
-          operationGroups: tools.availableOperationsGrouped(),
+          operationGroups: tools.disclosureGroups(),
           ...(opts.conversation ? { conversation: opts.conversation } : {}),
           ...(level === "L3" && top
             ? { repairTarget: { name: top.name, failureReason: repairReason ?? "stale / re-derive" } }
@@ -1111,7 +1116,7 @@ export async function runScriptLoop(
             snapshot,
             candidates,
             availableOperations: tools.availableOperations(),
-          operationGroups: tools.availableOperationsGrouped(),
+          operationGroups: tools.disclosureGroups(),
             ...(opts.conversation ? { conversation: opts.conversation } : {}),
             priorSteps: closing.recent,
             ...(closing.digest.length > 0 ? { earlierSteps: closing.digest } : {}),

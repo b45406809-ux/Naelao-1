@@ -460,7 +460,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
     ? await resolveCallerBusinessRole(c, spaceId)
     : undefined;
 
-  const rawBody = await c.req.json<{ goal?: string; agent_definition_id?: string; project_id?: string; model?: string; reasoning_effort?: string; effort?: string }>();
+  const rawBody = await c.req.json<{ goal?: string; agent_definition_id?: string; project_id?: string; model?: string; reasoning_effort?: string; effort?: string; progressive_tool_disclosure?: boolean }>();
   const resolvedGoal = await resolveRunGoal(c.env, tenantId, spaceId, sessionId, rawBody.goal);
   if (!resolvedGoal) {
     throw badRequest("goal is required and must be a string (or the session must already have a user message)");
@@ -554,7 +554,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
     throw badRequest(`model must be one of ${ALLOWED_MODELS.join(", ")}`);
   }
 
-  let modelConfig: { model?: string; effort?: string } = {};
+  let modelConfig: { model?: string; effort?: string; progressiveToolDisclosure?: boolean } = {};
   // §A1 Harness Excellence Phase HX2: same config_json-override read as modelConfig above —
   // resolved once here (spaceRow is already fetched) rather than a second cross-worker round
   // trip, and threaded into the DO call below so enforceRunGates can gate on it without needing
@@ -569,7 +569,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   let businessContext: BusinessContext | undefined;
   try {
     const cfg = JSON.parse(spaceRow.config_json || "{}") as {
-      productConfig?: { modelConfig?: { model?: string; effort?: string }; limits?: { sessionCreditCeiling?: number } };
+      productConfig?: { modelConfig?: { model?: string; effort?: string; progressiveToolDisclosure?: boolean }; limits?: { sessionCreditCeiling?: number } };
     };
     modelConfig = cfg.productConfig?.modelConfig ?? {};
     sessionCreditCeiling = cfg.productConfig?.limits?.sessionCreditCeiling;
@@ -611,6 +611,13 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
     (modelConfig.effort && isValidEffortLevel(effectiveModelForReasoning, modelConfig.effort)
       ? (modelConfig.effort as EffortLevel)
       : "low");
+
+  // Phase 2 item 13 — progressive tool disclosure (see ScriptEngineEnv's own doc). An explicit
+  // per-request override (useful for ad-hoc verification without touching a business's stored
+  // config) wins over the space's own stored default; both default to false, i.e. every existing
+  // run's exact current behavior.
+  const effectiveProgressiveToolDisclosure: boolean =
+    rawBody.progressive_tool_disclosure ?? modelConfig.progressiveToolDisclosure ?? false;
 
   // A-2 cutover: the script-native engine addresses agents by their R2-config `agentId`
   // ("naelao-agent" by default), not a SpaceType/D1 concept. `agent_definition_id` (used by
@@ -759,6 +766,8 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         reasoningEffort: rawBody.reasoning_effort,
         // Escalation-budget dial — see effectiveEffort's own comment above.
         effort: effectiveEffort,
+        // Phase 2 item 13 — see effectiveProgressiveToolDisclosure's own comment above.
+        progressiveToolDisclosure: effectiveProgressiveToolDisclosure,
       },
     });
 
@@ -821,6 +830,8 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         reasoningEffort: rawBody.reasoning_effort,
         // Escalation-budget dial — see effectiveEffort's own comment above.
         effort: effectiveEffort,
+        // Phase 2 item 13 — see effectiveProgressiveToolDisclosure's own comment above.
+        progressiveToolDisclosure: effectiveProgressiveToolDisclosure,
         // The id returned to the client below. Without sending it, the DO minted its own and
         // persisted the run trace under that instead — so GET .../runs/:runId/trace (HX1's
         // builder-facing observability) could never find a trace for any id a caller actually had.
@@ -2122,6 +2133,8 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
     businessContext?: BusinessContext;
     reasoningEffort?: string;
     effort?: string;
+    /** Phase 2 item 13 — carried from AgentTaskWorkflow's own params, resolved by /agent/run. */
+    progressiveToolDisclosure?: boolean;
   }>();
   if (body.tenantId !== headerTenantId) {
     return c.json({ error_code: "forbidden", message: "tenantId does not match the verified internal token" }, 403);
@@ -2154,6 +2167,7 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
           businessContext: body.businessContext,
           reasoningEffort: body.reasoningEffort,
           effort: body.effort,
+          progressiveToolDisclosure: body.progressiveToolDisclosure,
           // Root cause of the Stop button being a complete no-op on the default async dispatch
           // path (every real chat message, since apps/shell never sends `Prefer: respond-sync`):
           // without this, handleScriptRun's `body.runId ?? crypto.randomUUID()` always minted a

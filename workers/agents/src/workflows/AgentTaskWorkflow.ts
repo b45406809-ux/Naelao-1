@@ -61,6 +61,10 @@ export interface AgentTaskParams {
   /** The escalation-budget dial (billing-core's EffortLevel) — already validated/defaulted by
    *  the /agent/run route before this Workflow was created. */
   effort?: string;
+  /** Phase 2 item 13 — opt-in progressive tool disclosure, resolved by /agent/run from an
+   *  explicit override or the space's own stored config. Absent/false = every existing run's
+   *  behavior, unchanged. */
+  progressiveToolDisclosure?: boolean;
 }
 
 export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> {
@@ -186,6 +190,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
               businessContext: p.businessContext,
               reasoningEffort: p.reasoningEffort,
               effort: p.effort,
+              progressiveToolDisclosure: p.progressiveToolDisclosure,
             }),
           }
         );

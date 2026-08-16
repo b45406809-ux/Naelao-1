@@ -732,10 +732,20 @@ export const LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED: string[] = [
   // web search under guided mode's default, which is real friction for zero actual risk: a
   // search/fetch/extract/grounded-answer call can't move money, can't post anywhere, and never
   // exposes a credential the agent doesn't already have platform-wide access to.
-  "web-search.search",
-  "web-search.fetch_page",
-  "web-search.extract_content",
-  "web-search.grounded_answer",
+  //
+  // These four entries were dot-prefixed ("web-search.search" etc.) — but web-search.ts's real
+  // operations map keys are BARE ("search", "fetch_page", "extract_content", "grounded_answer",
+  // confirmed against assistant-access.ts's own READ_SAFE_PREBUILT_OPS list, which already had
+  // the correct bare names). isGated() compares against decision.name AFTER
+  // resolveOperationAlias has already stripped any script-name prefix, so a dot-prefixed entry
+  // here could never match anything a model actually calls — the fix this comment originally
+  // claimed had shipped never actually took effect; web search stayed gated the whole time.
+  // Same bug class as the "list_files"/"list_directory" fix a few lines below, found while
+  // reading this list end-to-end for the progressive-tool-disclosure core set.
+  "search",
+  "fetch_page",
+  "extract_content",
+  "grounded_answer",
   // Looking at the business's own workspace files. Caught on a live production run: the assistant
   // was asked to inspect a handful of files, and directory listing — a pure read of the
   // business's OWN storage — was gated, so it could not take a single step without a human. It
@@ -769,6 +779,11 @@ export const LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED: string[] = [
   // is exactly what an owner should see first.
   "skill.health",
   "skill.inspect",
+  // Progressive tool disclosure (ScriptToolSurface) — pure metadata lookups over whatever is
+  // already enabled, same "safe by construction" class as mcp.list_tools above. Gating them
+  // would mean asking permission before being allowed to find out what capabilities exist.
+  "tools.search",
+  "tools.describe",
 ];
 
 /** Map a Launchpad allowed_skill id → prebuilt scripts available in this build. */

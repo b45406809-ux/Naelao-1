@@ -144,3 +144,34 @@ describe("the shared model catalogue is internally consistent", () => {
     expect(ALLOWED_MODELS.filter((m) => m.startsWith("@cf/")).length).toBeGreaterThan(5);
   });
 });
+
+// Phase 2 item 13 — progressive tool disclosure's wire threading through the SYNCHRONOUS
+// dispatch path. Mirrors the model-override tests above exactly: same request shape, same
+// stored-config precedent (productConfig.modelConfig), same "explicit request wins" ordering.
+describe("POST /agent/run — progressive tool disclosure threading", () => {
+  it("defaults to false (byte-identical to every run before this feature existed)", async () => {
+    const { env, calls } = makeEnv();
+    await runReq(env, { goal: "hello" });
+    expect(calls[0]!.body["progressiveToolDisclosure"]).toBe(false);
+  });
+
+  it("an explicit per-request override reaches the DO", async () => {
+    const { env, calls } = makeEnv();
+    await runReq(env, { goal: "hello", progressive_tool_disclosure: true });
+    expect(calls[0]!.body["progressiveToolDisclosure"]).toBe(true);
+  });
+
+  it("falls back to the space's stored config when no override is sent", async () => {
+    const stored = JSON.stringify({ productConfig: { modelConfig: { progressiveToolDisclosure: true } } });
+    const { env, calls } = makeEnv(stored);
+    await runReq(env, { goal: "hello" });
+    expect(calls[0]!.body["progressiveToolDisclosure"]).toBe(true);
+  });
+
+  it("an explicit false override wins over a stored true", async () => {
+    const stored = JSON.stringify({ productConfig: { modelConfig: { progressiveToolDisclosure: true } } });
+    const { env, calls } = makeEnv(stored);
+    await runReq(env, { goal: "hello", progressive_tool_disclosure: false });
+    expect(calls[0]!.body["progressiveToolDisclosure"]).toBe(false);
+  });
+});

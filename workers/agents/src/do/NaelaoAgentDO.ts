@@ -3063,6 +3063,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       resumeSteps?: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>;
       /** The ORIGINAL run's id, so the action ledger recognises a resume as the same task. */
       ledgerKey?: string;
+      /** Phase 2 item 13 — opt-in progressive tool disclosure (see ScriptEngineEnv's own doc).
+       *  Resolved by the caller (index.ts) from an explicit per-request override or the space's
+       *  own stored productConfig.modelConfig.progressiveToolDisclosure; defaults to false/full
+       *  disclosure when neither is set, so every existing run is unaffected. */
+      progressiveToolDisclosure?: boolean;
     }>();
 
     // Also accept spaceId / agentId / tenantId from internal request headers (set by billing/triggers)
@@ -3154,6 +3159,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
     if (gate.maxTier !== undefined) {
       engineEnv.maxTier = gate.maxTier;
+    }
+    // Phase 2 item 13 — opt-in progressive tool disclosure. Absent/false is byte-identical to
+    // every run before this feature existed; the field only exists so a real business can be
+    // opted in (via productConfig.modelConfig, resolved by index.ts) once proven safe.
+    if (body.progressiveToolDisclosure) {
+      engineEnv.progressiveToolDisclosure = true;
     }
 
     // Load the agent's 4-file config; without it the agent is not provisioned.

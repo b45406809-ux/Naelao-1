@@ -81,6 +81,10 @@ export const READ_SAFE_PREBUILT_OPS: ReadonlySet<string> = new Set([
   "email.status",
   "storefront.status",
   "local.status",
+  // tools.search/tools.describe (ScriptToolSurface, progressive tool disclosure) — pure metadata
+  // lookups over whatever is already enabled, no side effect of any kind.
+  "tools.search",
+  "tools.describe",
 ]);
 
 export function isReadSafeOperation(name: string): boolean {

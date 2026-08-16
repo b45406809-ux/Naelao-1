@@ -53,9 +53,49 @@ function levenshtein(a: string, b: string): number {
   return prev[b.length]!;
 }
 
+/** Shape of one entry in the reasoner's `available_operations` — shared by both full and
+ *  reduced (progressive-disclosure) payloads so the two can never drift apart in shape. */
+export interface OperationGroup {
+  script: string;
+  description: string;
+  operations: string[];
+  /** opName → one-line parameter hint, only for ops this agent actually has enabled AND whose
+   *  owning script declares one — see PrebuiltScript.paramHints's own doc for why this exists. */
+  paramHints?: Record<string, string>;
+}
+
+/**
+ * Progressive tool disclosure's always-visible core set (see disclosureGroups()'s own doc).
+ * Deliberately small — the handful of cross-cutting operations useful in nearly every run.
+ * Every name here is verified against the OWNING SCRIPT's real `operations` map key, not
+ * assumed — this file's own history has a real, previously-shipped bug where an allowlist used
+ * a dot-prefixed guess ("web-search.search") instead of the actual bare key ("search"), which
+ * silently never matched anything a model could call. Get this list wrong and these operations
+ * simply vanish from the reduced payload with no error to signal it.
+ */
+const CORE_OPERATIONS = new Set<string>([
+  "search",               // web-search.ts (bare key)
+  "knowledge.search",     // knowledge-base.ts
+  "memory.recall",        // memory.ts
+  "project_journal.read", // project-journal.ts
+  "notify.email",         // notifications.ts
+  "conversation.search",  // conversation.ts
+]);
+
+/** Consecutive "unknown operation" misses in reduced-disclosure mode before this run
+ *  automatically falls back to showing every available operation (see disclosureGroups' doc). */
+const MISS_FALLBACK_THRESHOLD = 2;
+
 export class ScriptToolSurface {
   private readonly library: SkillLibrary;
   private readonly ops: Map<string, { op: PrebuiltOp; prebuilt: PrebuiltScript }>;
+  /** Progressive tool disclosure mode for THIS run — see disclosureGroups()'s own doc. Starts
+   *  "reduced" only when the caller opted in (env.progressiveToolDisclosure); can only ever
+   *  move toward "full" during a run (the automatic miss-streak fallback), never the reverse. */
+  private disclosureMode: "full" | "reduced";
+  /** Consecutive "unknown operation" errors since the last successfully-resolved call, tracked
+   *  only while disclosureMode is "reduced" — see the miss-streak comment in run(). */
+  private missStreak = 0;
 
   constructor(
     private readonly env: ScriptEngineEnv,
@@ -64,6 +104,73 @@ export class ScriptToolSurface {
   ) {
     this.library = new SkillLibrary(env.scriptsBucket, env.spaceId);
     this.ops = buildOperationMap(enabledPrebuilt);
+    this.disclosureMode = env.progressiveToolDisclosure ? "reduced" : "full";
+    // tools.search/tools.describe are meta-operations ABOUT whatever is already enabled — always
+    // registered (regardless of disclosureMode) so they're callable even in full-disclosure mode,
+    // and so a test/caller doesn't need to special-case their existence. They cost nothing and
+    // touch no external system; requires_tier 1 (the cheapest) reflects that honestly.
+    const toolsMeta: PrebuiltScript = {
+      name: "tools",
+      description:
+        "Search for an operation by what it does, or look up its exact parameters by name — " +
+        "for anything not already shown in available_operations.",
+      domain: "api",
+      requires_tier: 1,
+      operations: {},
+      paramHints: {
+        "tools.search": "query is required — what you're trying to do, in plain words (e.g. 'send an email', 'list projects'). Always returns at least a few results, never empty.",
+        "tools.describe": "name is required — the exact operation name (e.g. 'thread.send_message'), usually one tools.search already gave you.",
+      },
+    };
+    this.ops.set("tools.search", { prebuilt: toolsMeta, op: async (args) => this.searchOperations(String(args["query"] ?? "")) });
+    this.ops.set("tools.describe", { prebuilt: toolsMeta, op: async (args) => this.describeOperation(String(args["name"] ?? "")) });
+  }
+
+  /**
+   * Rank every enabled operation (INCLUDING ones not in CORE_OPERATIONS) against `query` by
+   * simple token overlap against its name, owning script, description, and param hint. Never
+   * returns empty: a zero-hit search falls back to the core set, and if that's somehow empty
+   * too, the first 8 operations overall — a search must always give the model somewhere to go
+   * next rather than a dead end.
+   */
+  private searchOperations(query: string): { query: string; results: Array<{ name: string; script: string; description: string; param_hint?: string }> } {
+    const tokenize = (s: string) => s.toLowerCase().split(/[^a-z0-9]+/i).filter(Boolean);
+    const wanted = tokenize(query);
+    const scored: Array<{ name: string; script: string; description: string; paramHint?: string; hits: number }> = [];
+    for (const [opName, { prebuilt }] of this.ops) {
+      const hint = prebuilt.paramHints?.[opName];
+      const haystack = new Set(tokenize(`${opName} ${prebuilt.name} ${prebuilt.description} ${hint ?? ""}`));
+      const hits = wanted.length === 0 ? 0 : wanted.filter((w) => haystack.has(w)).length;
+      scored.push({ name: opName, script: prebuilt.name, description: prebuilt.description, ...(hint ? { paramHint: hint } : {}), hits });
+    }
+    scored.sort((a, b) => b.hits - a.hits || a.name.localeCompare(b.name));
+    let top = scored.filter((s) => s.hits > 0).slice(0, 8);
+    if (top.length === 0) top = scored.filter((s) => CORE_OPERATIONS.has(s.name)).slice(0, 8);
+    if (top.length === 0) top = scored.slice(0, 8);
+    return {
+      query,
+      results: top.map(({ name, script, description, paramHint }) => ({
+        name,
+        script,
+        description,
+        ...(paramHint ? { param_hint: paramHint } : {}),
+      })),
+    };
+  }
+
+  /** Full detail for one named operation — its owning script, tier, and exact parameter hint
+   *  when one is declared. An unknown name reuses the same "did you mean" suggestion run() gives
+   *  a bad script.run call, so tools.describe and script.run never disagree about what exists. */
+  private describeOperation(name: string): unknown {
+    const entry = this.ops.get(name);
+    if (!entry) return { ok: false, error: `Unknown operation: ${name}.${this.suggestOperations(name)}` };
+    return {
+      name,
+      script: entry.prebuilt.name,
+      script_description: entry.prebuilt.description,
+      requires_tier: entry.prebuilt.requires_tier,
+      ...(entry.prebuilt.paramHints?.[name] ? { param_hint: entry.prebuilt.paramHints[name] } : {}),
+    };
   }
 
   get skillLibrary(): SkillLibrary {
@@ -88,14 +195,7 @@ export class ScriptToolSurface {
    * make "thread.send_message" legible as "the thing that lets me chat inside an existing
    * thread" instead of an opaque string.
    */
-  availableOperationsGrouped(): Array<{
-    script: string;
-    description: string;
-    operations: string[];
-    /** opName → one-line parameter hint, only for ops this agent actually has enabled AND whose
-     *  owning script declares one — see PrebuiltScript.paramHints's own doc for why this exists. */
-    paramHints?: Record<string, string>;
-  }> {
+  availableOperationsGrouped(): OperationGroup[] {
     const byScript = new Map<
       string,
       { description: string; operations: string[]; paramHints: Record<string, string> }
@@ -120,6 +220,52 @@ export class ScriptToolSurface {
       operations: v.operations,
       ...(Object.keys(v.paramHints).length > 0 ? { paramHints: v.paramHints } : {}),
     }));
+  }
+
+  /**
+   * What actually reaches the reasoner payload as `available_operations` — see
+   * ScriptEngineEnv.progressiveToolDisclosure's own doc for the design rationale.
+   *
+   * "full" mode (default): byte-identical to availableOperationsGrouped() — every enabled
+   * operation, every turn, unchanged from before this feature existed.
+   *
+   * "reduced" mode (opt-in): only CORE_OPERATIONS, plus a synthetic "tools" group describing
+   * tools.search/tools.describe for finding everything else. Execution is NOT restricted either
+   * way — script.run still accepts any enabled operation whether or not it was shown here, so
+   * this can only ever shrink what the model reads, never block a call it correctly guesses or
+   * finds via tools.search.
+   *
+   * Automatic fallback: once run() records MISS_FALLBACK_THRESHOLD consecutive "unknown
+   * operation" errors while in reduced mode, disclosureMode flips to "full" — since loop.ts
+   * calls this fresh every reasoning turn, the very next call returns the full dump with no
+   * further plumbing needed. A model that can't find what it needs through search is never
+   * permanently stuck; it falls back to the old, proven-reliable behavior for the rest of the run.
+   */
+  disclosureGroups(): OperationGroup[] {
+    const full = this.availableOperationsGrouped();
+    if (this.disclosureMode === "full") return full;
+
+    const core = full
+      .map((g) => {
+        const operations = g.operations.filter((op) => CORE_OPERATIONS.has(op));
+        const paramHints = g.paramHints
+          ? Object.fromEntries(Object.entries(g.paramHints).filter(([op]) => CORE_OPERATIONS.has(op)))
+          : undefined;
+        return { ...g, operations, ...(paramHints && Object.keys(paramHints).length ? { paramHints } : {}) };
+      })
+      .filter((g) => g.operations.length > 0);
+    const shownCount = core.reduce((n, g) => n + g.operations.length, 0);
+    const remaining = this.ops.size - shownCount - 2; // -2: tools.search/tools.describe themselves
+    core.push({
+      script: "tools",
+      description:
+        `${Math.max(remaining, 0)} more operation(s) exist across other scripts, not shown here to ` +
+        `keep this list short. Call tools.search({query}) to find one by what it does (never empty ` +
+        `— always returns the nearest matches), or tools.describe({name}) for its exact parameters ` +
+        `once you know the name.`,
+      operations: ["tools.search", "tools.describe"],
+    });
+    return core;
   }
 
   /**
@@ -372,6 +518,9 @@ export class ScriptToolSurface {
     // 1. Prebuilt operation?
     const prebuilt = this.ops.get(name);
     if (prebuilt) {
+      // A resolved name — whatever happens next, this was not a "guessed the wrong name" miss.
+      // See the miss-streak comment at the "Unknown script or operation" branch below.
+      this.missStreak = 0;
       if (this.env.maxTier !== undefined && prebuilt.prebuilt.requires_tier > this.env.maxTier) {
         return {
           ok: false,
@@ -430,14 +579,29 @@ export class ScriptToolSurface {
     // 2. Stored script in the skill library?
     const stored = await this.library.read(name);
     if (!stored) {
+      // Genuinely unresolvable name. In reduced-disclosure mode this is the one real risk of
+      // showing less up front — a model that can't find something through tools.search might
+      // otherwise just keep guessing. Track it, and once it happens MISS_FALLBACK_THRESHOLD
+      // times in a row (reset by any successfully-resolved call above), permanently widen this
+      // run to full disclosure — disclosureGroups() is called fresh every turn, so the very next
+      // reasoning call sees everything, no further plumbing required.
+      let fallbackNote = "";
+      if (this.disclosureMode === "reduced") {
+        this.missStreak++;
+        if (this.missStreak >= MISS_FALLBACK_THRESHOLD) {
+          this.disclosureMode = "full";
+          fallbackNote = " Switched to showing every available operation for the rest of this run.";
+        }
+      }
       return {
         ok: false,
-        error: `Unknown script or operation: ${name}.${this.suggestOperations(name)}`,
+        error: `Unknown script or operation: ${name}.${this.suggestOperations(name)}${fallbackNote}`,
         tier: 1,
         duration_ms: Date.now() - started,
         tokens_used: 0,
       };
     }
+    this.missStreak = 0;
     if (this.env.maxTier !== undefined && stored.metadata.requires_tier > this.env.maxTier) {
       return {
         ok: false,
