@@ -110,6 +110,20 @@ export const webSearch: PrebuiltScript = {
       if (!result.content) {
         return { ok: false, url, status: result.status, error: result.error ?? `download failed (status ${result.status})` };
       }
+      // A failing server still sends a BODY — an error page, a rate-limit notice, a JSON error.
+      // Only "was there content" was checked, so a 429/502 was written into the workspace as if it
+      // were the requested file and reported as a successful download. Seen live: a GitHub 502 was
+      // saved as a 16-byte `README.md` reading "error code: 502", and the agent told the user the
+      // file had downloaded. Anything outside 2xx is a failed download, whatever came back with it.
+      if (result.status < 200 || result.status >= 300) {
+        return {
+          ok: false,
+          url,
+          status: result.status,
+          error: `download failed (status ${result.status}) — the server returned an error page, not the file`,
+          body_preview: result.content.slice(0, 200),
+        };
+      }
       const explicitName = typeof args["filename"] === "string" && args["filename"] ? (args["filename"] as string) : undefined;
       // R2 keys are flat strings with no real directory-traversal semantics, but sanitized the
       // same defensive way r2-workspace.ts's own key() helper does for consistency: strip

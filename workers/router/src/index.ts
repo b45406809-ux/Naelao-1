@@ -523,7 +523,7 @@ app.get("/v1/spaces/:spaceId/shell/manifest", async (c) => {
 // per-business) but the spaces worker's own resolveEndUserBusinessRole is what actually enforces
 // "does this end user belong to THIS specific business" — the router's allowlist only proves
 // identity, never authorization, exactly as documented at the top of this list.
-const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
+export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/sessions(\/|$)/,
   /^\/spaces\/([^/]+)\/shell\/manifest$/,
   /^\/spaces\/([^/]+)\/kb\/(documents|search)(\/|$)/,
@@ -641,6 +641,14 @@ const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // requireEndUserBusinessMembership on the agents worker (same floor, different worker since
   // these routes live there).
   /^\/spaces\/([^/]+)\/assistant\/(memory|channels|sub-agents|files|capabilities)$/,
+  // The same panels' per-item routes. These were unreachable because the pattern above is anchored
+  // with `$`: the Files panel could LIST files but opening one 401'd, and the Artifacts panel was
+  // never reachable at all. `files` takes an arbitrary nested path; `artifacts` takes an id (and
+  // its own list route, which the pattern above never covered). Authorization is unchanged and
+  // still enforced on the agents worker by requireEndUserBusinessMembership — identity here,
+  // authorization there, exactly like the routes above.
+  /^\/spaces\/([^/]+)\/assistant\/files\/.+$/,
+  /^\/spaces\/([^/]+)\/assistant\/artifacts(\/[^/]+)?$/,
   // Notifications inbox — end-user-facing (a business admin reading their own business's
   // notifications), additionally gated by requireBusinessMembership on the spaces worker exactly
   // like the routes above (identity here, authorization there).

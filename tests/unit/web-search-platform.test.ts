@@ -179,6 +179,43 @@ describe("web-search prebuilt — download_file", () => {
     expect(store.size).toBe(0);
   });
 
+  // Live bug: a GitHub 502 was saved into the workspace as a 16-byte `README.md` whose entire
+  // content was "error code: 502", and the agent reported the download as successful. A failing
+  // server still sends a body, and only "was there content" was being checked.
+  it("does NOT save an error page: a non-2xx status is a failed download whatever body came with it", async () => {
+    const { bucket, store } = makeR2();
+    const capture: Capture = {};
+    const env = makeDownloadEnv(
+      capture,
+      () => ({ url: "https://x.com/f", status: 502, content: "error code: 502\n", size: 16, encoding: "text", content_type: "text/plain" }),
+      bucket
+    );
+
+    const out = (await webSearch.operations["download_file"]!({ url: "https://x.com/f" }, { env, run: noopRun })) as {
+      ok: boolean; status: number; error: string; body_preview: string;
+    };
+    expect(out.ok).toBe(false);
+    expect(out.status).toBe(502);
+    expect(out.error).toContain("502");
+    // The body is surfaced so the agent can say WHY, but never written to the workspace.
+    expect(out.body_preview).toContain("error code: 502");
+    expect(store.size).toBe(0);
+  });
+
+  it("a 404 page is likewise refused rather than stored as the file", async () => {
+    const { bucket, store } = makeR2();
+    const capture: Capture = {};
+    const env = makeDownloadEnv(
+      capture,
+      () => ({ url: "https://x.com/missing.pdf", status: 404, content: "<html>Not Found</html>", size: 22, encoding: "text" }),
+      bucket
+    );
+
+    const out = (await webSearch.operations["download_file"]!({ url: "https://x.com/missing.pdf" }, { env, run: noopRun })) as { ok: boolean };
+    expect(out.ok).toBe(false);
+    expect(store.size).toBe(0);
+  });
+
   it("requires url", async () => {
     const env = { tenantId: "t", platformSecret: PLATFORM_SECRET } as unknown as ScriptEngineEnv;
     await expect(webSearch.operations["download_file"]!({}, { env, run: noopRun })).rejects.toThrow(/url/);
