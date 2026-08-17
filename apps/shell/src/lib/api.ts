@@ -1311,9 +1311,24 @@ export interface SubAgentSummary {
   updated_at: string;
 }
 
-export async function listSubAgents(spaceId: string, session: SessionCredentials, parentRunId: string): Promise<SubAgentSummary[]> {
+/**
+ * Sub-agents for a conversation. `sessionId` is what makes this work at all: an agent DO is
+ * addressed per conversation, so without it the server falls back to the space-wide assistant DO
+ * — an instance that never ran this chat's spawns and therefore always answers "none".
+ * `agentId` mirrors /agent/run's own `{sessionId}:{agentId}` addressing for an explicitly bound
+ * project agent.
+ */
+export async function listSubAgents(
+  spaceId: string,
+  session: SessionCredentials,
+  parentRunId: string,
+  opts?: { sessionId?: string | null | undefined; agentId?: string | null | undefined }
+): Promise<SubAgentSummary[]> {
+  const qs = new URLSearchParams({ parent_run_id: parentRunId });
+  if (opts?.sessionId) qs.set("session_id", opts.sessionId);
+  if (opts?.agentId) qs.set("agent_id", opts.agentId);
   const res = await apiFetch<{ data?: SubAgentSummary[] } | SubAgentSummary[]>(
-    `/v1/spaces/${spaceId}/assistant/sub-agents?parent_run_id=${encodeURIComponent(parentRunId)}`,
+    `/v1/spaces/${spaceId}/assistant/sub-agents?${qs.toString()}`,
     { session }
   );
   return Array.isArray(res) ? res : res.data ?? [];

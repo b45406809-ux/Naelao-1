@@ -3536,11 +3536,76 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
   private async handleMemoryMaintenance(request: Request): Promise<Response> {
     this.ensureInit();
-    const body = await request.json<{ spaceId?: string }>().catch(() => ({}) as { spaceId?: string });
+    const body = await request.json<{ spaceId?: string; sessionId?: string; tenantId?: string }>()
+      .catch(() => ({}) as { spaceId?: string; sessionId?: string; tenantId?: string });
     const spaceId = body.spaceId ?? request.headers.get("x-naelao-space-id") ?? "";
     if (!spaceId) return Response.json({ error: "spaceId is required" }, { status: 400 });
+    const tenantId = body.tenantId ?? request.headers.get("x-naelao-tenant-id") ?? "";
     const result = await this.runMemoryMaintenanceForSpace(spaceId);
-    return Response.json(result);
+    // Memory OS maintenance (fact decay/prune/promote) does not shrink the CONTEXT WINDOW, which
+    // is what someone pressing "Compact" at 85% full is actually asking for. When a session is
+    // named, also fold its older messages into a stored summary — that summary is what
+    // loadConversationContext serves on the next turn IN PLACE of those messages, so the window
+    // genuinely gets smaller. Without this, Compact ran and visibly did nothing.
+    const conversation = body.sessionId && tenantId
+      ? await this.compactConversationForSession(spaceId, body.sessionId, tenantId)
+      : undefined;
+    return Response.json({ ...result, ...(conversation ? { conversation } : {}) });
+  }
+
+  /**
+   * Force the conversation-summary pass for one session, rather than waiting for the next run to
+   * do it lazily. Returns real counts so the caller can say what happened instead of claiming a
+   * result it didn't verify.
+   */
+  private async compactConversationForSession(
+    spaceId: string,
+    sessionId: string,
+    tenantId: string
+  ): Promise<{ summarized_messages: number; summary_chars: number; already_current: boolean } | undefined> {
+    try {
+      const messages = await this.fetchSessionMessages(spaceId, sessionId, tenantId);
+      if (!messages || messages.length === 0) return undefined;
+
+      const toSummarize = messagesToSummarize(messages);
+      if (toSummarize.length === 0) {
+        // Nothing has fallen outside the recent window yet — honest "nothing to do", not a
+        // fabricated success.
+        return { summarized_messages: 0, summary_chars: 0, already_current: true };
+      }
+
+      let existing = "";
+      let covered = 0;
+      try {
+        const row = this.ctx.storage.sql
+          .exec("SELECT summary, covered_messages FROM conversation_summaries WHERE session_id = ?", sessionId)
+          .toArray()[0] as { summary?: string; covered_messages?: number } | undefined;
+        if (row) {
+          existing = String(row.summary ?? "");
+          covered = Number(row.covered_messages ?? 0);
+        }
+      } catch {
+        /* no stored summary is a valid state */
+      }
+      if (toSummarize.length <= covered && existing) {
+        return { summarized_messages: covered, summary_chars: existing.length, already_current: true };
+      }
+
+      const regenerated = await this.summarizeConversation(toSummarize, existing);
+      if (!regenerated) return undefined; // summariser unavailable — never claim it compacted
+      try {
+        this.ctx.storage.sql.exec(
+          `INSERT OR REPLACE INTO conversation_summaries (session_id, summary, covered_messages, updated_at)
+           VALUES (?, ?, ?, ?)`,
+          sessionId, regenerated, toSummarize.length, new Date().toISOString()
+        );
+      } catch {
+        return undefined;
+      }
+      return { summarized_messages: toSummarize.length, summary_chars: regenerated.length, already_current: false };
+    } catch {
+      return undefined;
+    }
   }
 
   /** Shared by the client-driven HTTP route above and env.compactMemory (script-engine/types.ts)
@@ -5993,11 +6058,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    * history" (the previous behaviour) rather than failing the run — an agent that answers with
    * less context is worse; an agent that refuses to answer at all is broken.
    */
-  private async loadConversationContext(
+  /** The session's persisted transcript. Shared by the per-turn context build and the on-demand
+   *  compaction pass so both read the conversation the same way. */
+  private async fetchSessionMessages(
     spaceId: string,
     sessionId: string,
     tenantId: string
-  ): Promise<ConversationContext | undefined> {
+  ): Promise<ConversationMessage[] | undefined> {
     if (!sessionId || !this.env.SPACES_WORKER) return undefined;
     try {
       const headers = await this.internalHeaders(tenantId);
@@ -6009,8 +6076,21 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       );
       if (!resp.ok) return undefined;
       const body = (await resp.json()) as { data?: ConversationMessage[]; messages?: ConversationMessage[] };
-      const messages = body.data ?? body.messages ?? [];
-      if (messages.length === 0) return undefined;
+      return body.data ?? body.messages ?? [];
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async loadConversationContext(
+    spaceId: string,
+    sessionId: string,
+    tenantId: string
+  ): Promise<ConversationContext | undefined> {
+    if (!sessionId || !this.env.SPACES_WORKER) return undefined;
+    try {
+      const messages = await this.fetchSessionMessages(spaceId, sessionId, tenantId);
+      if (!messages || messages.length === 0) return undefined;
 
       // The stored summary covers the oldest `covered_messages`; reuse it unless the conversation
       // has grown enough that more messages now fall outside the recent window.

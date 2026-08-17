@@ -91,17 +91,26 @@ describe("web-search prebuilt — universal, platform-provided (no BYO key)", ()
 // extract_content: it writes to R2 and returns metadata only, never the content itself, so a
 // large download (up to 2MB) doesn't cost the reasoning payload anything.
 describe("web-search prebuilt — download_file", () => {
+  // Keeps the RAW value, never String(value). A fake that stringifies would turn a Uint8Array into
+  // "[object Uint8Array]" and silently pass a binary-write bug — which is precisely how a
+  // download that corrupted every PDF could look green here.
   function makeR2() {
-    const store = new Map<string, { content: string; meta: Record<string, string> | undefined }>();
+    const store = new Map<string, { content: string | Uint8Array; meta: Record<string, string> | undefined; contentType?: string }>();
     const bucket = {
-      async put(key: string, value: unknown, opts?: { customMetadata?: Record<string, string> }) {
-        store.set(key, { content: String(value), meta: opts?.customMetadata });
+      async put(
+        key: string,
+        value: unknown,
+        opts?: { customMetadata?: Record<string, string>; httpMetadata?: { contentType?: string } }
+      ) {
+        const raw = value instanceof Uint8Array ? value : String(value);
+        store.set(key, { content: raw, meta: opts?.customMetadata, contentType: opts?.httpMetadata?.contentType });
         return {} as R2Object;
       },
       async get(key: string) {
         const row = store.get(key);
         if (!row) return null;
-        return { size: row.content.length, uploaded: new Date(), async text() { return row.content; } } as unknown as R2ObjectBody;
+        const text = typeof row.content === "string" ? row.content : new TextDecoder().decode(row.content);
+        return { size: text.length, uploaded: new Date(), async text() { return text; } } as unknown as R2ObjectBody;
       },
     };
     return { bucket: bucket as unknown as R2Bucket, store };
@@ -173,5 +182,52 @@ describe("web-search prebuilt — download_file", () => {
   it("requires url", async () => {
     const env = { tenantId: "t", platformSecret: PLATFORM_SECRET } as unknown as ScriptEngineEnv;
     await expect(webSearch.operations["download_file"]!({}, { env, run: noopRun })).rejects.toThrow(/url/);
+  });
+
+  // The live bug this covers: downloading a PDF returned "415 ... only handles text". Downloading
+  // a paper or an image is the entire point of the op, so a base64 payload must round-trip to the
+  // REAL bytes in R2 — writing the base64 string itself would store a file that is neither the
+  // original nor readable as text.
+  it("decodes a base64 binary download back to real bytes and records its content type", async () => {
+    const { bucket, store } = makeR2();
+    const capture: Capture = {};
+    // A real (tiny) PDF header — bytes that are NOT valid UTF-8 text, so a stringified write is
+    // detectable rather than coincidentally equal.
+    const pdfBytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37, 0x0a, 0x80, 0xff, 0x00, 0x01]);
+    const b64 = btoa(String.fromCharCode(...pdfBytes));
+    const env = makeDownloadEnv(capture, () => ({
+      url: "https://arxiv.org/pdf/1706.03762.pdf", status: 200,
+      encoding: "base64", content_type: "application/pdf", content: b64, size: pdfBytes.byteLength, truncated: false,
+    }), bucket);
+
+    const out = (await webSearch.operations["download_file"]!(
+      { url: "https://arxiv.org/pdf/1706.03762.pdf", filename: "attention_is_all_you_need.pdf" },
+      { env, run: noopRun }
+    )) as { ok: boolean; path: string; size: number; binary: boolean; content_type: string | null };
+
+    expect(out.ok).toBe(true);
+    expect(out.binary).toBe(true);
+    expect(out.content_type).toBe("application/pdf");
+    expect(out.path).toBe("downloads/attention_is_all_you_need.pdf");
+
+    const written = [...store.entries()].find(([k]) => k.endsWith("downloads/attention_is_all_you_need.pdf"));
+    expect(written).toBeDefined();
+    const body = written![1].content;
+    expect(body).toBeInstanceOf(Uint8Array);
+    expect([...(body as Uint8Array)]).toEqual([...pdfBytes]);
+    expect(written![1].contentType).toBe("application/pdf");
+  });
+
+  it("still writes a text download as a plain string, unchanged", async () => {
+    const { bucket, store } = makeR2();
+    const capture: Capture = {};
+    const env = makeDownloadEnv(capture, () => ({
+      url: "https://x.com/a.csv", status: 200, encoding: "text", content_type: "text/csv", content: "a,b\n1,2", size: 7,
+    }), bucket);
+
+    const out = (await webSearch.operations["download_file"]!({ url: "https://x.com/a.csv" }, { env, run: noopRun })) as { binary: boolean };
+    expect(out.binary).toBe(false);
+    const written = [...store.entries()].find(([k]) => k.endsWith("downloads/a.csv"));
+    expect(written![1].content).toBe("a,b\n1,2");
   });
 });

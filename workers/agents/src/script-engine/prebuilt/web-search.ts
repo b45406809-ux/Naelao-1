@@ -55,7 +55,7 @@ export const webSearch: PrebuiltScript = {
   domain: "api",
   requires_tier: 2,
   paramHints: {
-    download_file: "url is required. filename is optional — defaults to the last path segment of the URL. Saves to downloads/<filename> in the workspace; does not return the content, use read_file/stat_file to inspect it afterward.",
+    download_file: "url is required. filename is optional — defaults to the last path segment of the URL. Handles BINARY files (PDF, images, zip) as well as text. Saves to downloads/<filename> in the workspace; does not return the content, use read_file/stat_file to inspect it afterward (read_file only works on text).",
   },
   operations: {
     async search(args, ctx) {
@@ -104,7 +104,8 @@ export const webSearch: PrebuiltScript = {
       const url = String(args["url"] ?? "").trim();
       if (!url) throw new Error("download_file requires 'url'");
       const result = (await proxy(ctx, "/internal/web-search/download", { url })) as {
-        url: string; status: number; content: string | null; size?: number; truncated?: boolean; error?: string;
+        url: string; status: number; content: string | null; size?: number; truncated?: boolean;
+        error?: string; encoding?: "text" | "base64"; content_type?: string;
       };
       if (!result.content) {
         return { ok: false, url, status: result.status, error: result.error ?? `download failed (status ${result.status})` };
@@ -122,11 +123,26 @@ export const webSearch: PrebuiltScript = {
       ) || "download";
       const bucket = ctx.env.workspaceBucket ?? ctx.env.scriptsBucket;
       const path = `downloads/${filename}`;
-      await bucket.put(`${workspacePrefix(ctx.env)}${path}`, result.content, {
+      // A base64 payload has to be decoded back to real bytes before it hits R2 — writing the
+      // base64 STRING would store a file that is neither the original nor readable as text.
+      const payload: string | Uint8Array =
+        result.encoding === "base64"
+          ? Uint8Array.from(atob(result.content), (ch) => ch.charCodeAt(0))
+          : result.content;
+      await bucket.put(`${workspacePrefix(ctx.env)}${path}`, payload, {
+        // Recording the real content type is what lets the Files viewer decide between an
+        // inline preview and a download, instead of guessing from the extension.
+        ...(result.content_type ? { httpMetadata: { contentType: result.content_type } } : {}),
         customMetadata: { updatedAt: Date.now().toString(), sourceUrl: url },
       });
       ctx.env.onWorkspaceChange?.({ path, operation: "write" });
-      return { ok: true, path, size: result.size ?? result.content.length, truncated: result.truncated ?? false };
+      return {
+        ok: true, path,
+        size: result.size ?? (payload instanceof Uint8Array ? payload.byteLength : payload.length),
+        content_type: result.content_type ?? null,
+        binary: result.encoding === "base64",
+        truncated: result.truncated ?? false,
+      };
     },
   },
 };

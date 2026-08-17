@@ -2048,11 +2048,18 @@ app.post("/spaces/:spaceId/sessions/:sessionId/compact", async (c) => {
   ).bind(spaceId, tenantId).first<{ id: string }>();
   if (!space) throw notFound("Space");
 
-  const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent");
+  // Address the SESSION's own DO, not the space-wide assistant one: `conversation_summaries` is
+  // written by whichever instance ran the chat, so compacting on the space-wide DO would leave the
+  // conversation that actually needs shrinking untouched. (The Memory OS half is per-space either
+  // way — the DO gets spaceId explicitly and doesn't care which instance runs it.)
+  const sessionId = c.req.param("sessionId");
+  const stub = await getAgentDO(c.env, tenantId, sessionId, c.get("requestId"));
   const resp = await stub.fetch(new Request("http://agent-do/memory/maintenance", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ spaceId }),
+    // sessionId was in the URL all along and never forwarded — which is why pressing Compact ran
+    // fact decay and visibly did nothing to the context window.
+    body: JSON.stringify({ spaceId, sessionId, tenantId }),
   }));
   if (!resp.ok) return c.json({ ok: false, message: "compaction pass failed" }, 502);
   const result = await resp.json();
@@ -4329,14 +4336,29 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
   }, 201);
 });
 
-// GET /spaces/:spaceId/assistant/sub-agents?parent_run_id= — poll a run's sub-agent fan-out
-// (the Sub-agents panel's "live" list). Forwards to NaelaoAgentDO's existing GET /sub-agents.
+// GET /spaces/:spaceId/assistant/sub-agents?session_id=&agent_id=&parent_run_id= — poll a run's
+// sub-agent fan-out (the Sub-agents panel's list). Forwards to NaelaoAgentDO's GET /sub-agents.
+//
+// The DO this addresses is load-bearing, and getting it wrong is exactly why this panel read
+// empty for every real chat spawn: `sub_agents` rows live in whichever DO instance actually ran
+// the spawn, and an agent DO is addressed PER CONVERSATION (`getAgentDO(sessionId)`, or
+// `{sessionId}:{agentId}` when an explicit agent is bound — see /agent/run's own doKey), not per
+// space. Addressing the space-wide assistant DO instead meant querying an instance that had
+// never seen the run, so the answer was always "no sub-agents have run", however many had.
+//
+// session_id is therefore how a chat surface asks about ITS OWN conversation. Without one we
+// still fall back to the space-wide assistant DO, which is the correct instance for the
+// heartbeat/cron wake-ups that genuinely run there.
 app.get("/spaces/:spaceId/assistant/sub-agents", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = await requireVerifiedTenant(c);
   if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
   const parentRunId = c.req.query("parent_run_id") ?? "";
-  const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
+  const sessionId = c.req.query("session_id") ?? "";
+  const agentId = c.req.query("agent_id") ?? "";
+  const stub = sessionId
+    ? await getAgentDO(c.env, tenantId, agentId ? `${sessionId}:${agentId}` : sessionId, c.get("requestId"))
+    : await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
   return stub.fetch(new Request(`http://agent-do/sub-agents?parent_run_id=${encodeURIComponent(parentRunId)}`));
 });
 

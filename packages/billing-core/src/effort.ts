@@ -51,20 +51,32 @@ const EFFORT_DESCRIPTIONS: Record<EffortLevel, string> = {
 const MAX_COST_RANK = Math.max(...ALLOWED_MODELS.map((m) => costRankForModel(m)));
 
 /**
- * Which effort levels a given model actually offers, and what each maps to. Every model gets
- * low + medium unconditionally; higher tiers appear only as deep as the model's own native
- * reasoning ladder goes (0 native levels -> 2 effort levels, 2 native levels -> 3, 3+ native
- * levels -> 4) — "based on the model," per the product ask, rather than a fixed set for every
- * model regardless of what it can actually do with a deeper setting.
+ * Which effort levels a given model offers. EVERY model offers all four.
+ *
+ * An earlier revision capped this by the model's own native reasoning depth (0 native levels -> 2
+ * effort levels, and so on). That was wrong, and it produced a real reported bug: on a model with
+ * no native reasoning at all (llama-3.3-70b, this platform's own default), picking "ultra" was
+ * rejected outright with `effort 'ultra' is not offered by model ...` — so the person could not
+ * lift the delegation ceiling on the very model most likely to need help.
+ *
+ * The mistake was conflating the two jobs this file's own header sets out. Native reasoning depth
+ * (job 1) genuinely depends on the model. The escalation budget (job 2) does not — "when you need
+ * help, use the best model available" is meaningful for every model, and MOST meaningful for a
+ * weak one. So the ladder is uniform, and `nativeReasoningForEffort` handles the model-specific
+ * half on its own by saturating at whatever native depth the model actually has (returning null
+ * when it has none), which needs no gate here.
  */
 export function effortLadderForModel(model: string): EffortOption[] {
   const cap = capabilityForModel(model);
-  const n = cap.reasoningLevels.length;
-  const count = n === 0 ? 2 : n === 1 ? 2 : n === 2 ? 3 : 4;
-  return EFFORT_LEVELS.slice(0, count).map((level) => ({
+  const hasNativeReasoning = cap.reasoningLevels.length > 0;
+  return EFFORT_LEVELS.map((level) => ({
     level,
     label: level[0]!.toUpperCase() + level.slice(1),
-    description: EFFORT_DESCRIPTIONS[level],
+    // A model with no thinking mode still escalates differently per level; saying so keeps the
+    // picker honest instead of implying a thinking depth that model does not have.
+    description: hasNativeReasoning
+      ? EFFORT_DESCRIPTIONS[level]
+      : `${EFFORT_DESCRIPTIONS[level]} (This model has no adjustable thinking depth, so Effort only changes what it may delegate to.)`,
   }));
 }
 

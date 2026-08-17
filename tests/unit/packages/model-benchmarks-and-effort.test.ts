@@ -52,9 +52,21 @@ describe("model-benchmarks — real data, no gaps", () => {
 });
 
 describe("effort — every model gets at least low + medium", () => {
-  it("a model with no native reasoning still offers exactly low+medium", () => {
+  // Regression: the ladder used to be capped by the model's own native reasoning depth, so on
+  // llama-3.3 (no thinking mode) picking "ultra" was rejected outright — the reported bug. Effort
+  // also sets the DELEGATION ceiling, which is meaningful for every model and most meaningful for
+  // a weak one, so every model now offers the full range.
+  it("a model with no native reasoning still offers the full low..ultra range", () => {
     const ladder = effortLadderForModel(DEFAULT_WORKING_MODEL); // llama-3.3, NO_REASONING
-    expect(ladder.map((o) => o.level)).toEqual(["low", "medium"]);
+    expect(ladder.map((o) => o.level)).toEqual(["low", "medium", "high", "ultra"]);
+  });
+
+  it("says plainly that a non-reasoning model's Effort only changes delegation", () => {
+    const ladder = effortLadderForModel(DEFAULT_WORKING_MODEL);
+    expect(ladder.every((o) => /no adjustable thinking depth/i.test(o.description))).toBe(true);
+    // A model that DOES think keeps the plain description, with no such caveat.
+    const thinking = effortLadderForModel("@cf/openai/gpt-oss-120b");
+    expect(thinking.some((o) => /no adjustable thinking depth/i.test(o.description))).toBe(false);
   });
 
   it("a model with a 3-level native reasoning ladder offers the full low..ultra range", () => {
@@ -62,11 +74,11 @@ describe("effort — every model gets at least low + medium", () => {
     expect(ladder.map((o) => o.level)).toEqual(["low", "medium", "high", "ultra"]);
   });
 
-  it("a model with a 2-level native reasoning ladder offers low..high but not ultra", () => {
+  it("a model with a 2-level native reasoning ladder also offers all four", () => {
     const glm = effortLadderForModel("@cf/zai-org/glm-5.2"); // high/max
-    expect(glm.map((o) => o.level)).toEqual(["low", "medium", "high"]);
+    expect(glm.map((o) => o.level)).toEqual(["low", "medium", "high", "ultra"]);
     const kimi = effortLadderForModel("@cf/moonshotai/kimi-k2.6"); // off/on
-    expect(kimi.map((o) => o.level)).toEqual(["low", "medium", "high"]);
+    expect(kimi.map((o) => o.level)).toEqual(["low", "medium", "high", "ultra"]);
   });
 
   it("every effort option carries a non-empty description", () => {
@@ -76,11 +88,24 @@ describe("effort — every model gets at least low + medium", () => {
     }
   });
 
-  it("isValidEffortLevel rejects a level the model's own ladder doesn't offer", () => {
+  it("isValidEffortLevel accepts every real level on every model, and still rejects nonsense", () => {
+    // "ultra on the default model" is the exact combination that used to 400 in production.
     expect(isValidEffortLevel(DEFAULT_WORKING_MODEL, "low")).toBe(true);
-    expect(isValidEffortLevel(DEFAULT_WORKING_MODEL, "high")).toBe(false);
-    expect(isValidEffortLevel(DEFAULT_WORKING_MODEL, "ultra")).toBe(false);
+    expect(isValidEffortLevel(DEFAULT_WORKING_MODEL, "high")).toBe(true);
+    expect(isValidEffortLevel(DEFAULT_WORKING_MODEL, "ultra")).toBe(true);
     expect(isValidEffortLevel("@cf/openai/gpt-oss-120b", "ultra")).toBe(true);
+    expect(isValidEffortLevel(DEFAULT_WORKING_MODEL, "turbo")).toBe(false);
+    expect(isValidEffortLevel(DEFAULT_WORKING_MODEL, "")).toBe(false);
+  });
+
+  // The whole point of lifting the cap: ultra must actually remove the delegation ceiling on a
+  // model that has no thinking mode of its own.
+  it("ultra on a non-reasoning model reaches the top delegation tier", () => {
+    const ceilingUltra = escalationCeiling(DEFAULT_WORKING_MODEL, "ultra");
+    const ceilingLow = escalationCeiling(DEFAULT_WORKING_MODEL, "low");
+    expect(ceilingUltra).toBeGreaterThan(ceilingLow);
+    // And it still reports no native reasoning param, because the model genuinely has none.
+    expect(nativeReasoningForEffort(DEFAULT_WORKING_MODEL, "ultra")).toBeNull();
   });
 
   it("nativeReasoningForEffort returns null for a non-reasoning model at any level", () => {

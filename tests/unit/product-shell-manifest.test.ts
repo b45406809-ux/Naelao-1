@@ -403,6 +403,66 @@ describe("GET /spaces/:spaceId/sessions (list)", () => {
     expect(messagesRes.status).toBe(200);
   });
 
+  it("a session the ASSISTANT creates on a user's behalf is readable by that user — regression test for thread.create still showing 'Session not found'", async () => {
+    // The fix above covers a session the CLIENT creates (role: product_end_user). It did not cover
+    // the one `thread.create` creates: the agents worker calls this route internally, proving
+    // itself with an internal token and naming the acting user via x-naelao-user-id, but with NO
+    // product_end_user role header. end_user_id was only ever derived for a product_end_user
+    // caller, so the assistant's session landed owned by NOBODY — and getSession's ownership check
+    // then rejected the very person who asked for the thread. The thread existed and was correctly
+    // linked to a real session; it was simply unreadable, which surfaced as "Session not found".
+    const env = makeEnv();
+    await seedSpace(env, "prod-1", "tenant-1");
+
+    // Exactly what prebuilt/project-coordination.ts's spacesCall sends: tenant + internal token +
+    // the acting user, and a body carrying only thread_id.
+    const agentHeaders = await internalHeaders("tenant-1", { "x-naelao-user-id": "user-a" });
+    const createRes = await spacesWorker.fetch(
+      new Request("https://spaces.naelao.com/spaces/prod-1/sessions", {
+        method: "POST",
+        headers: agentHeaders,
+        body: JSON.stringify({ thread_id: "thread-xyz" }),
+      }),
+      env as never, execCtx
+    );
+    expect(createRes.status).toBe(201);
+    const created = await createRes.json() as { id: string };
+
+    // Now the person opens it in the shell, as a real product_end_user — the step that used to
+    // 404. Asserted through the real read path rather than the create response, because that read
+    // IS the thing that was broken.
+    const userHeaders = await internalHeaders("tenant-1", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "user-a" });
+    const getRes = await spacesWorker.fetch(
+      new Request(`https://spaces.naelao.com/spaces/prod-1/sessions/${created.id}`, { headers: userHeaders }),
+      env as never, execCtx
+    );
+    expect(getRes.status).toBe(200); // was 404 "Session not found"
+    const session = await getRes.json() as { end_user_id: string | null };
+    expect(session.end_user_id).toBe("user-a"); // was null — the actual defect
+  });
+
+  it("still refuses a DIFFERENT end user access to an assistant-created session", async () => {
+    // Widening end_user_id derivation must not widen who can read it.
+    const env = makeEnv();
+    await seedSpace(env, "prod-1", "tenant-1");
+    const createRes = await spacesWorker.fetch(
+      new Request("https://spaces.naelao.com/spaces/prod-1/sessions", {
+        method: "POST",
+        headers: await internalHeaders("tenant-1", { "x-naelao-user-id": "user-a" }),
+        body: JSON.stringify({ thread_id: "thread-xyz" }),
+      }),
+      env as never, execCtx
+    );
+    const { id } = await createRes.json() as { id: string };
+
+    const intruder = await internalHeaders("tenant-1", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "user-b" });
+    const res = await spacesWorker.fetch(
+      new Request(`https://spaces.naelao.com/spaces/prod-1/sessions/${id}`, { headers: intruder }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(404);
+  });
+
   it("a product end user's list is filtered to their own sessions only", async () => {
     const env = makeEnv();
     await seedSpace(env, "prod-1", "tenant-1");

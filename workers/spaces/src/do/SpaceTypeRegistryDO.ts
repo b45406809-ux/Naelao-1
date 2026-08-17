@@ -348,6 +348,12 @@ export interface SpaceTypeProductConfig {
       tier: "plus";
       priceCents: number;
       interval: "month" | "year";
+      /** Naelao's own Whop plan id — the PRIMARY rail, tried before Lemon Squeezy, matching how
+       *  builder platform plans are already sold (whop-platform-plan.ts). A personal plan is a
+       *  purchase Naelao makes to an individual, so it belongs on Naelao's own seller account,
+       *  not on any one business's revenue rail. */
+      whopPlanId?: string;
+      /** Fallback rail, kept because a store may already be provisioned there. */
       lsVariantId?: string;
     }>;
 

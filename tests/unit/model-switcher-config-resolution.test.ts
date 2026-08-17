@@ -216,9 +216,19 @@ describe("POST /agent/run — resolves the configured model, not the dead spacet
   // The escalation-budget dial (billing-core/effort.ts) — a separate field from reasoning_effort,
   // validated the same way (against whichever model this run actually resolves to).
   describe("effort — the escalation-budget dial", () => {
-    it("rejects a level the resolved model doesn't offer", async () => {
-      const { env } = makeAgentsEnv("{}"); // DEFAULT_WORKING_MODEL only offers low/medium
+    // Regression: this used to 400. `effort` is the DELEGATION dial and applies to every model —
+    // unlike `reasoning_effort` above, which is the model's own native wire param and correctly
+    // stays model-specific.
+    it("accepts ultra even on a model with no native thinking mode", async () => {
+      const { env, calls } = makeAgentsEnv("{}"); // DEFAULT_WORKING_MODEL, NO_REASONING
       const res = await runReq(env, "hello", { effort: "ultra" });
+      expect(res.status).toBe(200);
+      expect((calls[0]!.body as { effort?: string }).effort).toBe("ultra");
+    });
+
+    it("still rejects an effort value that is not a real level", async () => {
+      const { env } = makeAgentsEnv("{}");
+      const res = await runReq(env, "hello", { effort: "turbo" });
       expect(res.status).toBe(400);
     });
 
@@ -253,7 +263,10 @@ describe("POST /agent/run — resolves the configured model, not the dead spacet
 });
 
 describe("PATCH /spaces/:spaceId/model-config — effort validated alongside model", () => {
-  it("rejects an effort level the chosen model doesn't offer", async () => {
+  // Regression: this pair used to 400 ("effort 'ultra' is not offered by model ..."), which is the
+  // reported bug — Effort's delegation ceiling applies to every model, including one with no
+  // thinking mode of its own, so ultra must be settable here.
+  it("accepts ultra on a model with no native thinking mode", async () => {
     const env = makeSpacesEnv();
     const created = await (await spacesWorker.fetch(
       req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
@@ -262,6 +275,21 @@ describe("PATCH /spaces/:spaceId/model-config — effort validated alongside mod
       req(`/spaces/${created.id}/model-config`, {
         method: "PATCH", tenant: "tenant-1",
         body: { model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", effort: "ultra" },
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("still rejects an effort value that is not a real level at all", async () => {
+    const env = makeSpacesEnv();
+    const created = await (await spacesWorker.fetch(
+      req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+    )).json() as { id: string };
+    const res = await spacesWorker.fetch(
+      req(`/spaces/${created.id}/model-config`, {
+        method: "PATCH", tenant: "tenant-1",
+        body: { model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", effort: "turbo" },
       }),
       env as never, execCtx
     );

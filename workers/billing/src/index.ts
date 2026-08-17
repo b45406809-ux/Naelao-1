@@ -13,7 +13,7 @@ import {
 // every other money path. stripe.ts is deleted; /webhooks/stripe removed.
 import { Hono } from "hono";
 import { checkQuota, checkWindowedQuota, recordUsageEvent, getUsageSummary } from "./quota.js";
-import { handleLemonSqueezyWebhook, recordPlatformPlanSubscription } from "./lemon-squeezy.js";
+import { handleLemonSqueezyWebhook, recordPlatformPlanSubscription, grantPersonalPlanPurchase } from "./lemon-squeezy.js";
 import { createLsProductVariant, lsProductsConfig } from "./ls-products.js";
 import { registerWhopWalletRoutes, handleWhopWebhook, renderPayoutApprovalPage, confirmPayoutApproval, routeWhopWalletCheckout, getSubMerchant } from "./whop-wallet.js";
 import { createBusinessWhopOAuthCheckout } from "./whop-oauth-billing.js";
@@ -893,9 +893,13 @@ app.post("/internal/credit-packs/checkout", async (c) => {
 // ── POST /internal/personal-plan/checkout ─────────────────────────────────────
 // Phase 4 (money): an end user upgrades their OWN personal-plan tier (widens their slice of
 // maxBusinessesPerEndUser + unlocks inviting others — see @naelao/billing-core's
-// resolveEffectiveBusinessLimit/canPersonalPlanInvite). Deliberately LS-or-dev-placeholder only,
-// NOT the business's-own-Whop-account branch credit-packs/wallet-topups above try first — this is
-// a purchase FOR the end user themselves, unrelated to any one business's own revenue rail.
+// resolveEffectiveBusinessLimit/canPersonalPlanInvite).
+//
+// Rail order: Naelao's OWN Whop seller account first, then Lemon Squeezy, then the dev
+// placeholder — the same order /billing/checkout already uses for builder platform plans. This
+// is deliberately NOT the business's-own-connected-Whop branch that credit-packs and
+// wallet-topups take: those are a business's revenue, whereas a personal plan is Naelao selling
+// to an individual, which is the platform-plan shape.
 app.use("/internal/personal-plan/checkout", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
 app.post("/internal/personal-plan/checkout", async (c) => {
   const body = await c.req.json<{ business_space_id: string; plan_id: string; end_user_id: string; customer_email?: string }>();
@@ -917,9 +921,37 @@ app.post("/internal/personal-plan/checkout", async (c) => {
     })
   );
   if (!catalogResp.ok) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
-  const catalog = await catalogResp.json<{ product_space_id: string; personal_plans: Array<{ id: string; name: string; tier: string; priceCents: number; interval: string; lsVariantId?: string }> }>();
+  const catalog = await catalogResp.json<{ product_space_id: string; personal_plans: Array<{ id: string; name: string; tier: string; priceCents: number; interval: string; whopPlanId?: string; lsVariantId?: string }> }>();
   const plan = catalog.personal_plans.find((p) => p.id === body.plan_id);
   if (!plan) return c.json({ error_code: "not_found", message: "Personal plan not found" }, 404);
+
+  // Whop first — Naelao's own seller account, same rail as builder platform plans. Falls through
+  // to LS (then the dev placeholder) when no Whop plan id is configured for this tier, so an
+  // existing LS-provisioned deployment keeps working unchanged.
+  if (c.env.WHOP_API_KEY && plan.whopPlanId) {
+    const { createWhopPlatformPlanCheckout } = await import("@naelao/billing-core");
+    try {
+      const { checkout_url } = await createWhopPlatformPlanCheckout(c.env.WHOP_API_KEY, {
+        planId: plan.whopPlanId,
+        ...(body.customer_email ? { customerEmail: body.customer_email } : {}),
+        // Same metadata contract the LS branch below uses, so one webhook handler serves both.
+        metadata: {
+          kind: "personal_plan",
+          plan_id: plan.id,
+          tier: plan.tier,
+          end_user_id: body.end_user_id,
+          product_space_id: catalog.product_space_id,
+        },
+      });
+      return c.json({
+        checkout_url,
+        plan: { id: plan.id, name: plan.name, tier: plan.tier, price_cents: plan.priceCents, interval: plan.interval },
+        provider: "whop",
+      });
+    } catch (err) {
+      console.warn(`[billing/personal-plan] Whop checkout failed, falling back to LS: ${(err as Error).message}`);
+    }
+  }
 
   if (!c.env.LEMON_SQUEEZY_API_KEY || !c.env.LEMON_SQUEEZY_STORE_ID || !plan.lsVariantId) {
     return c.json({
@@ -1185,6 +1217,20 @@ app.post("/webhooks/whop-platform-plan", async (c) => {
     console.warn(`[billing/whop-platform-plan] failed to parse event body: ${(err as Error).message}`);
     return c.json({ ok: true, skipped: true, reason: "unparseable body" });
   }
+  // Naelao's own Whop company now sells TWO things: builder platform plans (org-level) and end
+  // users' personal plans. Both arrive here, distinguished by checkout metadata.kind, so route on
+  // that rather than assuming every event on this endpoint is a platform plan.
+  const custom = (event.metadata ?? {}) as Record<string, unknown>;
+  if (custom["kind"] === "personal_plan") {
+    const handledPersonal = await grantPersonalPlanPurchase(event, {
+      PLATFORM_DB: c.env.PLATFORM_DB,
+      PLATFORM_SECRET: c.env.PLATFORM_SECRET,
+      AGENTS_WORKER: c.env.AGENTS_WORKER,
+      ...(c.env.SPACES_WORKER ? { SPACES_WORKER: c.env.SPACES_WORKER } : {}),
+    } as Parameters<typeof grantPersonalPlanPurchase>[1]);
+    return c.json({ ok: true, handled: handledPersonal });
+  }
+
   const handled = await recordPlatformPlanSubscription(event, {
     PLATFORM_DB: c.env.PLATFORM_DB,
     PLATFORM_SECRET: c.env.PLATFORM_SECRET,

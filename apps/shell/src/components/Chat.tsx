@@ -1896,6 +1896,10 @@ export function Chat({
                 // refresh even when the assistant genuinely ran a sub-agent last message. The
                 // last assistant message's own persisted run_id (metadata, durable) covers that.
                 lastRunId={lastRun?.id ?? latestPersistedRunId}
+                // The agent DO is addressed per conversation, so Sub-agents has to name THIS
+                // session or it reads the space-wide assistant DO — which never saw this chat's
+                // spawns and therefore always answered "none".
+                sessionId={chatSessionId}
                 isBusinessSpace={dockIsBusinessSpace}
               />
             )}

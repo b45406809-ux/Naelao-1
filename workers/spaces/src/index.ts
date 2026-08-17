@@ -572,7 +572,22 @@ app.all("/spaces/:spaceId/sessions*", async (c) => {
     // ("session.end_user_id !== endUserId") reject EVERY subsequent read as "Session not found"
     // — the space_id/tenant_id fix above stopped the 500 on create, but left every session
     // permanently unreadable by the very user who just created it.
-    const endUserId = isProductEndUser ? callerId : (parsedBody as { end_user_id?: string }).end_user_id;
+    // `callerId` is the verified acting user for BOTH shapes of caller, and using it for both is
+    // what fixes the assistant-created thread still reporting "Session not found":
+    //  • a product_end_user chatting directly — their own id, exactly as before;
+    //  • an internal caller acting on someone's behalf (thread.create, which mints a session for
+    //    the person who asked) — that person's id, forwarded as x-naelao-user-id by a caller that
+    //    already proved itself with an internal token.
+    // Before this, the second case fell through to the client-supplied body field, which the agent
+    // doesn't send — so the session landed with end_user_id NULL, owned by nobody, and getSession's
+    // ownership check (`session.end_user_id !== endUserId`) rejected the very user who asked for
+    // it. The thread existed and was correctly linked; it was simply unreadable.
+    // Still never client-trusted: callerId comes from a header only a verified internal caller can
+    // set, and the body field remains a last resort for internal callers that supply neither.
+    // Truthiness, not `??`: getCallerIdentity defaults userId to "" rather than undefined, so a
+    // nullish check would pin end_user_id to "" for a caller that sends no user header at all and
+    // silently stop honouring the body field.
+    const endUserId = callerId || (parsedBody as { end_user_id?: string }).end_user_id;
     doBody = JSON.stringify({ ...parsedBody, space_id: spaceId, tenant_id: tenantId, end_user_id: endUserId ?? null });
     duplexInit = {};
   }

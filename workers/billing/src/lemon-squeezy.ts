@@ -623,13 +623,17 @@ async function grantCreditPackPurchase(
  * twice is a no-op effect), so unlike credit-pack's additive ledger this needs no idempotency key
  * of its own to stay safe under a webhook retry.
  */
-async function grantPersonalPlanPurchase(
+export async function grantPersonalPlanPurchase(
   event: NormalizedBillingEvent,
   env: LemonSqueezyEnv
 ): Promise<boolean> {
   if (event.type !== "payment.success") return false;
   const custom = (event.metadata ?? {}) as Record<string, unknown>;
-  if (custom["kind"] !== "personal_plan" || !event.spaceId) return false;
+  // Deliberately NOT gated on event.spaceId: a Whop-originated personal-plan purchase is created
+  // against Naelao's own seller account (no per-space checkout), so it carries its scope entirely
+  // in metadata. The three fields actually needed are validated immediately below, which is the
+  // real requirement — spaceId was never used for anything here beyond this guard.
+  if (custom["kind"] !== "personal_plan") return false;
   const endUserId = custom["end_user_id"] ? String(custom["end_user_id"]) : null;
   const productSpaceId = custom["product_space_id"] ? String(custom["product_space_id"]) : null;
   const tier = custom["tier"] ? String(custom["tier"]) : null;

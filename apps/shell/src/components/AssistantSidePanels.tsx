@@ -891,21 +891,27 @@ function LocalMachinePanel({
   );
 }
 
-function SubAgentsPanel({ spaceId, session, lastRunId }: { spaceId: string; session: SessionCredentials; lastRunId: string }) {
+function SubAgentsPanel({
+  spaceId, session, lastRunId, sessionId, agentId,
+}: {
+  spaceId: string; session: SessionCredentials; lastRunId: string;
+  sessionId?: string | null | undefined; agentId?: string | null | undefined;
+}) {
   const [subAgents, setSubAgents] = React.useState<SubAgentSummary[] | null>(null);
   const [failed, setFailed] = React.useState(false);
   React.useEffect(() => {
     let cancelled = false;
     setFailed(false);
-    // No run id is no longer a dead end: the agent DO is addressed per conversation, so an empty
-    // parent_run_id lists this conversation's whole fan-out rather than nothing. Previously a
-    // reload (which loses lastRunId) or a latest turn that spawned nothing reported "no sub-agent
-    // activity" no matter how much had really run.
-    listSubAgents(spaceId, session, lastRunId)
+    // sessionId is what points this at the DO that actually ran the spawns — without it the
+    // server answers from the space-wide assistant DO, which never saw them (the reported
+    // "No sub-agents have run in this conversation" despite a real spawn). An empty
+    // parent_run_id then lists this conversation's whole fan-out rather than only the latest
+    // turn's, so a reload (which loses lastRunId) still shows everything.
+    listSubAgents(spaceId, session, lastRunId, { sessionId, agentId })
       .then((s) => { if (!cancelled) setSubAgents(s); })
       .catch(() => { if (!cancelled) { setSubAgents([]); setFailed(true); } });
     return () => { cancelled = true; };
-  }, [spaceId, session, lastRunId]);
+  }, [spaceId, session, lastRunId, sessionId, agentId]);
   return (
     <>
       <div className="tp-section">Sub-agents</div>
@@ -1409,6 +1415,7 @@ export function AssistantSidePanelBody({
   agentId,
   projectId,
   lastRunId,
+  sessionId,
   isBusinessSpace,
 }: {
   spaceId: string;
@@ -1420,6 +1427,9 @@ export function AssistantSidePanelBody({
   projectId?: string | null | undefined;
   /** Scopes the Sub-agents tab to the run that actually produced any — empty until a first send. */
   lastRunId?: string | null | undefined;
+  /** This conversation's own chat session. Required for Sub-agents to read the right DO — see
+   *  SubAgentsPanel's own note. */
+  sessionId?: string | null | undefined;
   isBusinessSpace: boolean;
 }) {
   switch (tab) {
@@ -1434,7 +1444,7 @@ export function AssistantSidePanelBody({
     case "heartbeats":
       return <HeartbeatsPanel spaceId={spaceId} session={session} />;
     case "sub-agents":
-      return <SubAgentsPanel spaceId={spaceId} session={session} lastRunId={lastRunId ?? ""} />;
+      return <SubAgentsPanel spaceId={spaceId} session={session} lastRunId={lastRunId ?? ""} sessionId={sessionId} agentId={agentId} />;
     case "files":
       return <FilesPanel spaceId={spaceId} projectId={projectId} session={session} />;
     case "artifacts":
