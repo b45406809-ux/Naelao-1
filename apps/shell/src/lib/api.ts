@@ -501,8 +501,11 @@ export async function listSessions(
 }
 
 export async function getMessages(spaceId: string, sessionId: string, session: SessionCredentials): Promise<Message[]> {
+  // Ask for a deep tail explicitly. The server returns the NEWEST `limit` messages, and this client
+  // has no "load older" affordance, so whatever is not in this one response is unreachable in the
+  // UI — 200 covers any realistic conversation, where the default of 50 visibly cut history off.
   const res = await apiFetch<{ data?: Message[]; messages?: Message[] } | Message[]>(
-    `/v1/spaces/${spaceId}/sessions/${sessionId}/messages`,
+    `/v1/spaces/${spaceId}/sessions/${sessionId}/messages?limit=200`,
     { session }
   );
   if (Array.isArray(res)) return res;

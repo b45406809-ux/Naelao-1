@@ -380,7 +380,7 @@ export async function run(args, ctx) {
       ].filter(Boolean).join("\\n\\n");
 
   try {
-    const res = await ctx.run("agent.consult", {
+    const res = await ctx.run("thread.consult", {
       agent_id: targetAgent,
       project_id: targetProject,
       message: summary,

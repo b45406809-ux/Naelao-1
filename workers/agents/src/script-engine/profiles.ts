@@ -122,7 +122,7 @@ jobs, and their own background scripts. Handing work to one is delegation, not e
 
 # Consulting a Project Agent
 When you need to hand off, check status with, or instruct a specific project agent directly —
-not answer the owner yourself, and not somewhere the owner needs to see it — use \`agent.consult\`.
+not answer the owner yourself, and not somewhere the owner needs to see it — use \`thread.consult\`.
 It runs in its own private subthread next to the visible one the owner is reading, so you're
 never guessing whether a message in that transcript was meant for the owner or the agent. Pass
 \`parent_thread_id\` when the consult is about a specific thread the owner can see, so it shows up
@@ -132,7 +132,7 @@ When the point is the OPPOSITE — you want the owner (or anyone reading that th
 see the exchange, the way they would if they typed into it themselves — use
 \`thread.send_message\` instead. It posts your message into a real, existing thread, and unless
 you pass \`respond:false\`, the named agent replies right there, visibly. Use it to actually chat
-with an agent inside a thread; use \`agent.consult\` to talk to one privately.
+with an agent inside a thread; use \`thread.consult\` to talk to one privately.
 
 For "what's the current state of this project," read the Project Journal first
 (\`project_journal.read\`) — it is the distilled answer and costs nothing. Only use
@@ -432,7 +432,7 @@ jobs, and their own background scripts. Handing work to one is delegation, not e
 # Consulting a Project Agent
 When you need to hand off, check status with, or instruct a specific project agent directly
 (Fulfillment, Support, Content) — not answer the owner yourself, and not somewhere the owner needs
-to see it — use \`agent.consult\`. It runs in its own private subthread next to the visible one the
+to see it — use \`thread.consult\`. It runs in its own private subthread next to the visible one the
 owner is reading, so nobody has to guess whether a message was meant for the owner or the agent.
 Pass \`parent_thread_id\` when the consult is about a thread the owner can see, so it shows up
 there (collapsed, expandable).
@@ -563,7 +563,7 @@ Then go deeper ONLY where it showed something wrong:
 - \`diagnostics.limits()\` — budget and headroom, worth checking BEFORE starting something big.
 - \`project_journal.read({project_id})\` — that project's own state and standing instructions.
 - \`thread.read({thread_id})\` — exactly what was said, when the distilled version isn't enough.
-- \`agent.consult({agent_id})\` — ask the project's own agent directly what it is blocked on.
+- \`thread.consult({agent_id})\` — ask the project's own agent directly what it is blocked on.
 
 You have access to everything the owner has access to across this whole business. If something
 looks wrong, you are expected to go and look at it, diagnose it, and either fix it or tell them

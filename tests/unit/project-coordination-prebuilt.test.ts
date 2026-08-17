@@ -38,25 +38,25 @@ function makeEnv(calls: Call[], responder?: (call: Call) => unknown, orchestrati
 const noopRun = async () => ({});
 
 describe("project-coordination prebuilt", () => {
-  describe("agent.consult", () => {
+  describe("thread.consult", () => {
     it("requires agent_id and message", async () => {
       const orchestration: OrchestrationHooks = { consultAgent: async () => ({ ok: true }) };
       const env = makeEnv([], undefined, orchestration);
       await expect(
-        projectCoordination.operations["agent.consult"]!({ agent_id: "agent1" }, { env, run: noopRun })
+        projectCoordination.operations["thread.consult"]!({ agent_id: "agent1" }, { env, run: noopRun })
       ).rejects.toThrow(/agent_id and message/);
       await expect(
-        projectCoordination.operations["agent.consult"]!({ message: "hi" }, { env, run: noopRun })
+        projectCoordination.operations["thread.consult"]!({ message: "hi" }, { env, run: noopRun })
       ).rejects.toThrow(/agent_id and message/);
     });
 
     it("reports unavailable, not a throw, when no orchestration hook is wired", async () => {
       const env = makeEnv([]); // no orchestration
-      const result = await projectCoordination.operations["agent.consult"]!(
+      const result = await projectCoordination.operations["thread.consult"]!(
         { agent_id: "agent1", message: "status?" },
         { env, run: noopRun }
       );
-      expect(result).toEqual({ ok: false, error: "agent.consult not available in this environment" });
+      expect(result).toEqual({ ok: false, error: "thread.consult not available in this environment" });
     });
 
     it("delegates to orchestration.consultAgent with the space id and only the params actually given", async () => {
@@ -68,7 +68,7 @@ describe("project-coordination prebuilt", () => {
         },
       };
       const env = makeEnv([], undefined, orchestration);
-      const result = await projectCoordination.operations["agent.consult"]!(
+      const result = await projectCoordination.operations["thread.consult"]!(
         { agent_id: "agent1", message: "please check the wallet" },
         { env, run: noopRun }
       );
@@ -82,7 +82,7 @@ describe("project-coordination prebuilt", () => {
         consultAgent: async (params) => { seen = params; return { ok: true }; },
       };
       const env = makeEnv([], undefined, orchestration);
-      await projectCoordination.operations["agent.consult"]!(
+      await projectCoordination.operations["thread.consult"]!(
         {
           agent_id: "agent1",
           message: "continue",

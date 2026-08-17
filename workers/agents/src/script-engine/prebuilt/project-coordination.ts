@@ -8,7 +8,7 @@
  * Design (see CLAUDE.md item 75 for the full reasoning): a project thread is the person and
  * whichever agent is working — two visible parties, no addressing ambiguity. When the assistant
  * needs to talk TO that agent (a handoff, a status check, an instruction) WITHOUT it appearing in
- * the visible thread, that's `agent.consult` — a real, separate conversation in its own subthread
+ * the visible thread, that's `thread.consult` — a real, separate conversation in its own subthread
  * (thread_kind='sub_agent', parent_thread_id), hidden by default and expandable in the shell.
  * `thread.send_message` is the other half: when the point IS for the message (and, unless
  * respond:false, the target agent's reply) to actually show up in a real, visible thread — the
@@ -19,7 +19,7 @@
  * agent privately, chatting in a visible thread, or auditing exactly what was said in one.
  *
  * `thread.list`/`thread.read`/`thread.search` are read-only and never gated (same precedent as
- * workspace-admin's `project.list`/`agent.list`). `agent.consult` is left ungated by default too —
+ * workspace-admin's `project.list`/`agent.list`). `thread.consult` is left ungated by default too —
  * it dispatches the assistant's own normal operating cost (one run), same posture as @mention
  * dispatch; whatever the consulted agent decides to DO is still gated by its own
  * agent_policy_overrides/assistant_policy exactly as if a human had asked it directly.
@@ -68,13 +68,13 @@ export const projectCoordination: PrebuiltScript = {
   domain: "orchestration",
   requires_tier: 1,
   operations: {
-    "agent.consult": async (a, c) => {
+    "thread.consult": async (a, c) => {
       if (!c.env.orchestration?.consultAgent) {
-        return { ok: false, error: "agent.consult not available in this environment" };
+        return { ok: false, error: "thread.consult not available in this environment" };
       }
       const agentId = String(a["agent_id"] ?? "");
       const message = String(a["message"] ?? "");
-      if (!agentId || !message) throw new Error("agent.consult requires agent_id and message");
+      if (!agentId || !message) throw new Error("thread.consult requires agent_id and message");
       const projectId = a["project_id"] ? String(a["project_id"]) : c.env.projectId;
       const parentThreadId = a["parent_thread_id"] ? String(a["parent_thread_id"]) : undefined;
       const threadId = a["thread_id"] ? String(a["thread_id"]) : undefined;
@@ -89,7 +89,7 @@ export const projectCoordination: PrebuiltScript = {
     },
     // Post a real message into an EXISTING, visible thread — and, unless respond:false, dispatch
     // the named agent to reply THERE, the way a person chatting in that thread would see happen.
-    // Distinct from agent.consult (above): that one is private and hidden; this one is exactly
+    // Distinct from thread.consult (above): that one is private and hidden; this one is exactly
     // what shows up when someone opens the thread. `agent_id` is required to get a reply — there
     // is no attempt to guess "the project's default agent"; name who you're addressing.
     "thread.send_message": async (a, c) => {
@@ -212,7 +212,7 @@ export const projectCoordination: PrebuiltScript = {
       "(boolean, optional, default true — set false to post without dispatching a reply). model " +
       "(string, optional — run the replying agent on a specific model for this one dispatch; ids " +
       "come from agent.list_models, and omitting it uses that agent's own configured default).",
-    "agent.consult": "agent_id (string, REQUIRED — who to consult). message (string, REQUIRED). " +
+    "thread.consult": "agent_id (string, REQUIRED — who to consult). message (string, REQUIRED). " +
       "project_id/thread_id (string, optional — defaults to this run's own project/a fresh " +
       "subthread). This is PRIVATE (hidden from the visible thread) — use thread.send_message " +
       "instead when the point is for the person to see the exchange.",

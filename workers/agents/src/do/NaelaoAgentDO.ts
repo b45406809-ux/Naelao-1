@@ -2045,7 +2045,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // so a clamped parent can't escape its per-user clamp by fanning work out to sub-agents
     // (the child's own handleScriptRun re-resolves the same clamp for the same user).
     userId?: string,
-    // item 79 (inline consult cards): when given, every agent.consult call this run makes is
+    // item 79 (inline consult cards): when given, every thread.consult call this run makes is
     // recorded here — thread_id/agent_id, regardless of whether the consult itself succeeded
     // (the subthread and the assistant's opening message were created either way, so it's still
     // worth a link). The caller attaches this to the run's own answer message as metadata so the
@@ -2474,11 +2474,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    * the GIVEN thread's own session, so the message and (when `respond` isn't false) the target
    * agent's reply land exactly where a person reading that thread would see them. This is what
    * lets the assistant participate in a thread the way a person can — per the explicit "give the
-   * assistant everything the user can do" ask — distinct from agent.consult, which stays the
+   * assistant everything the user can do" ask — distinct from thread.consult, which stays the
    * private, hidden coordination channel.
    *
    * `agentId` is required whenever a reply is wanted (respond !== false), same contract
-   * agent.consult already has — there's no attempt here to infer "the project's default agent"
+   * thread.consult already has — there's no attempt here to infer "the project's default agent"
    * from scratch; the caller (the assistant, or the project-coordination op it calls this
    * through) names who it's addressing.
    */

@@ -86,6 +86,20 @@ const CORE_OPERATIONS = new Set<string>([
  *  automatically falls back to showing every available operation (see disclosureGroups' doc). */
 const MISS_FALLBACK_THRESHOLD = 2;
 
+/**
+ * Old operation name → the name it was renamed to.
+ *
+ * Renaming an operation is not just an edit to this repo: learned skills are stored CODE in R2 that
+ * a deploy cannot rewrite, so any skill already written against the old spelling would start failing
+ * on businesses that were working fine before. Entries here keep those calls resolving. Deliberately
+ * NOT advertised in the operation listing — the old name works, it just isn't offered.
+ */
+const RENAMED_OPERATIONS: Record<string, string> = {
+  // Every thread-scoped operation is namespaced `thread.*`; consulting an agent privately is one of
+  // them, and being the lone `agent.*` member of that script made it read like a different subsystem.
+  "agent.consult": "thread.consult",
+};
+
 export class ScriptToolSurface {
   private readonly library: SkillLibrary;
   private readonly ops: Map<string, { op: PrebuiltOp; prebuilt: PrebuiltScript }>;
@@ -460,6 +474,13 @@ export class ScriptToolSurface {
     params: Record<string, unknown>
   ): { name: string; params: Record<string, unknown> } {
     if (this.ops.has(name)) return { name, params };
+
+    // An operation that has been RENAMED still answers to its old name. Learned skills live in R2
+    // as stored code that this deploy cannot rewrite, and an agent profile's wording is only ever
+    // advisory — so a rename that isn't aliased silently breaks every skill already written against
+    // the old spelling, on businesses that were working fine yesterday.
+    const renamed = RENAMED_OPERATIONS[name];
+    if (renamed && this.ops.has(renamed)) return { name: renamed, params };
 
     // "<script>.<op>" / "<script>:<op>" — a real op cannot be found by splitting on the last dot
     // (op names are themselves dotted: project.list, notify.email), so match the script instead.

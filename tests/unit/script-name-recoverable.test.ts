@@ -115,7 +115,7 @@ describe("a model naming a script wrong is recoverable, not fatal", () => {
     expect(res.ok).toBe(false);
     expect(res.error).toContain("Did you mean");
     expect(res.error).toContain("thread.send_message");
-    expect(res.error).toContain("agent.consult");
+    expect(res.error).toContain("thread.consult");
   });
 
   it("still throws on a bad name for WRITE paths, where it is a bug or an attack", async () => {
@@ -163,6 +163,22 @@ describe("script-qualified operation names resolve to the real op", () => {
   it("leaves a real operation name completely alone", () => {
     const tools = new ScriptToolSurface(makeEnv(makeR2()), ["workspace-admin"]);
     expect(tools.resolveOperationAlias("project.list", { a: 1 })).toEqual({ name: "project.list", params: { a: 1 } });
+  });
+
+  it("a RENAMED operation still answers to its old name, so stored R2 skills survive the rename", () => {
+    // `agent.consult` became `thread.consult` so every thread-scoped operation is namespaced the
+    // same way. Learned skills are stored code in R2 that a deploy cannot rewrite — without this
+    // alias, a business whose skill library already calls the old name breaks on next use.
+    const tools = new ScriptToolSurface(makeEnv(makeR2()), ["project-coordination"]);
+    expect(tools.resolveOperationAlias("agent.consult", { agent_id: "a1", message: "hi" }))
+      .toEqual({ name: "thread.consult", params: { agent_id: "a1", message: "hi" } });
+  });
+
+  it("the old name is NOT advertised — it resolves, it just isn't offered", () => {
+    const tools = new ScriptToolSurface(makeEnv(makeR2()), ["project-coordination"]);
+    const offered = tools.availableOperations();
+    expect(offered).toContain("thread.consult");
+    expect(offered).not.toContain("agent.consult");
   });
 
   it("never invents an action: an unknown script prefix is passed through untouched", () => {

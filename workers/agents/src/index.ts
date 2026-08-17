@@ -4504,8 +4504,13 @@ app.get("/spaces/:spaceId/assistant/capabilities", async (c) => {
       const names = new Set<string>();
       for (const o of listed.objects) {
         const rest = o.key.slice(prefix.length);
-        const name = rest.split("/")[0];
-        if (name) names.add(name);
+        // A skill is a DIRECTORY (`{name}/SCRIPT.md`). A bare object sitting at the prefix root is
+        // not one — R2 has no real directories, so an empty library is held open by a `.keep`
+        // placeholder, and splitting on "/" turned that placeholder into a skill named ".keep"
+        // that the user saw listed in their Skills panel.
+        const slash = rest.indexOf("/");
+        if (slash <= 0) continue;
+        names.add(rest.slice(0, slash));
       }
       skills = [...names].sort().map((name) => ({ name, source: "learned" as const }));
     } catch {

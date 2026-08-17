@@ -928,7 +928,7 @@ const MIGRATIONS: Migration[] = [
     // messages.metadata — same free-form JSON-override pattern sessions.metadata already used
     // (this table, migration 0001). Item 79 (inline consult cards): when the assistant's own
     // reply in a visible thread resulted from consulting a project agent in a hidden subthread
-    // (agent.consult), the ASSISTANT'S message here carries which subthread(s) it opened —
+    // (thread.consult), the ASSISTANT'S message here carries which subthread(s) it opened —
     // {consulted_threads: [{thread_id, agent_id, title}]} — so the client can render an inline,
     // expandable card at the exact point in the conversation where the delegation happened,
     // instead of only in a separate side panel with no correlation to any specific turn.
@@ -2070,8 +2070,18 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   private getMessages(sessionId: string, params: URLSearchParams): Response {
-    const limit = Math.min(parseInt(params.get("limit") ?? "50"), 200);
+    // Cap raised from 200 to 500 so the context-usage endpoint's own `?limit=500` is honoured
+    // instead of being silently clamped: that caller sums every message's length to report "% of
+    // context used", and clamping made it UNDER-report on exactly the long conversations where the
+    // number matters, which in turn suppressed the auto-compaction it drives.
+    const limit = Math.min(parseInt(params.get("limit") ?? "50"), 500);
     const before = params.get("before");
+    // `before` is a created_at timestamp, which is only millisecond-granular — several messages
+    // written in the same millisecond share one value, so `created_at < before` drops every one of
+    // them at once and a paging client silently loses messages. `before_id` names an exact message
+    // instead and pages by its rowid (insertion order), which cannot collide. Both are accepted:
+    // before_id wins when given, `before` stays supported for any caller already using it.
+    const beforeId = params.get("before_id");
     const endUserId = params.get("end_user_id");
 
     // S0.1: If end_user_id is provided (product_end_user call), verify the caller owns this session
@@ -2098,21 +2108,51 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     // order, so it is both stable and right. `created_at` stays the primary key of the sort for
     // the `before` cursor's sake (it is a timestamp the client sends back to us); rowid only
     // replaces the arbitrary tie-break.
-    const rows = before
-      ? queryAll<MessageRow>(
+    // A transcript loads from the END. Both branches select DESC (newest first) so LIMIT keeps the
+    // page nearest the cursor, then reverse back to chronological order for the response — the
+    // client renders the same ascending array either way.
+    //
+    // The no-cursor branch used to be `ORDER BY created_at ASC ... LIMIT 50`, i.e. the OLDEST page.
+    // Reproduced live: a 55-message session reloaded to messages 1-50 and every newer turn was
+    // invisible, so the conversation could never be continued from the UI. apps/shell sends neither
+    // `limit` nor `before`, so that branch is the only one any real client takes.
+    // Resolve before_id to its rowid up front; an id that isn't in this session is treated as no
+    // cursor at all rather than silently returning an empty page.
+    const beforeRowid = beforeId
+      ? queryOne<{ rid: number }>(
           this.ctx.storage.sql as never,
-          `SELECT * FROM messages WHERE session_id = ? AND created_at < ?
-           ORDER BY created_at DESC, rowid DESC LIMIT ?`,
-          sessionId,
-          before,
-          limit
-        )
-      : queryAll<MessageRow>(
-          this.ctx.storage.sql as never,
-          `SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC, rowid ASC LIMIT ?`,
-          sessionId,
-          limit
-        );
+          "SELECT rowid AS rid FROM messages WHERE id = ? AND session_id = ?",
+          beforeId,
+          sessionId
+        )?.rid
+      : undefined;
+
+    const rows = (
+      beforeRowid !== undefined
+        ? queryAll<MessageRow>(
+            this.ctx.storage.sql as never,
+            `SELECT * FROM messages WHERE session_id = ? AND rowid < ?
+             ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+            sessionId,
+            beforeRowid,
+            limit
+          )
+        : before
+          ? queryAll<MessageRow>(
+              this.ctx.storage.sql as never,
+              `SELECT * FROM messages WHERE session_id = ? AND created_at < ?
+               ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+              sessionId,
+              before,
+              limit
+            )
+          : queryAll<MessageRow>(
+              this.ctx.storage.sql as never,
+              `SELECT * FROM messages WHERE session_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+              sessionId,
+              limit
+            )
+    ).reverse();
 
     // metadata is stored as a raw JSON string column (matching sessions.metadata's own
     // convention) — parsed here so the client never has to double-decode it. A malformed value
