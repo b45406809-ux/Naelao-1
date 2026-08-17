@@ -8271,6 +8271,109 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      API). Live-verified against production: three identical POSTs leave ONE message, and a real
      agent run's reply is present in the transcript a reload re-reads.
 
+150. **An end-to-end verification pass against the user's own ~79-item todo list ("check each is
+     fully working, user-facing and backend"), driven by a real signed-up end user on production
+     rather than by reading code. Eight real bugs found and fixed, several of them long-standing
+     and invisible to the 3,224-test suite.** Method: signed up a disposable end user on the live
+     `launchpad` product, created a real `whop-webdev-agency` business, and drove the actual API +
+     the deployed shell (CF Browser Rendering screenshots at 390x844 and 1440x900). Every claim an
+     agent made was checked against the datastore, never taken from its own summary.
+     - **Long transcripts silently lost their newest messages — the user's "sessions with too much
+       messages ... those messages are gone, it's like the conversation will never continue".**
+       `GET /messages`'s no-cursor branch was `ORDER BY created_at ASC LIMIT 50`, i.e. the OLDEST
+       page. Reproduced live: a 55-message session reloaded to messages 1-50 and every newer turn
+       was invisible. Both branches now select DESC and reverse back to chronological order, so the
+       client renders the same ascending array — of the right messages. Two internal callers were
+       reading the wrong end for the same reason: `resolveRunGoal` scanned the oldest 20 messages
+       for "the user's latest message", and the context-usage meter summed the oldest page, which
+       under-reports % full on exactly the long conversations where it drives auto-compaction (its
+       own `?limit=500` was also being silently clamped to 200; cap raised). Added a `before_id`
+       cursor — `before` is a millisecond timestamp, so messages sharing a millisecond were dropped
+       as a group, the same class of bug latent until pagination gets built. `apps/shell` now asks
+       for `limit=200` since it has no "load older" affordance.
+     - **The assistant genuinely was not recording memory ("seems like the ai is not recording
+       anything in memory yet why") — two bugs stacked.** A chat `/agent/run` addresses its DO BY
+       SESSION, but a run with no `projectId` used `localMemoryStore` alone, so every fact learned
+       was sealed inside that one conversation's DO and nothing survived to the next session. Those
+       runs now share the space-level `_assistant` scope (the reserved id `workspacePrefix()` and
+       the Tier-5 sandbox already use), so the assistant's facts are one set across every
+       conversation; Layer 5 episodic stays local per-session by design. Separately the Memory panel
+       read `agent_memory` — the original key/value table, written only by this DO's own
+       `POST /memory`, which nothing in the script-native loop calls — so it showed an empty list
+       however much had been stored. It now also surfaces Memory OS (`structured_facts`,
+       `episodic_log`) and the shared facts, tagged by source. Live-verified: a fact written in one
+       session is now visible from a different DO.
+     - **The shell overrode the business's configured model on every single chat.** `Chat.tsx` sent
+       `model: selectedModel`, and `selectedModel` fell back to `DEFAULT_WORKING_MODEL` whenever the
+       browser had no stored preference — which is every user who has never touched the picker.
+       `/agent/run` treats an explicit model as an override, so a builder could configure their
+       product's model in the dashboard and the shell would still force the platform default. On a
+       deployment whose default model is out of quota that makes chat fail outright while an
+       identical request omitting the field succeeds. The field is now sent only on a real choice;
+       for display, Chat reads `shell/manifest.model` (which was already projected and consumed by
+       nothing). Live-verified: the context meter went from 24K (the default's window) to 1.0M.
+     - **Files and Artifacts panels were unreachable for the people they exist for.** The end-user
+       allowlist pattern is anchored with `$`, so only the LIST routes matched: a product end user
+       could list workspace files but got "Malformed JWT" opening one, and the Artifacts panel could
+       not load at all. Opening that file exposed the next bug: **`download_file` only checked
+       whether a body came back, never the status** — a failing server still sends one, so a GitHub
+       502 was written into the workspace as a 16-byte `README.md` reading "error code: 502" and
+       reported as a successful download. Anything outside 2xx is now a failed download whatever
+       body accompanied it, and nothing is written.
+     - **The Home heading was cut off on a phone with no way to scroll to it.** `.home-view` is a
+       scrollable flex container centred with `justify-content`, which overflows in BOTH directions
+       and the overflow past the start edge cannot be reached. The stylesheet fix appeared to do
+       nothing because the page ALSO set `justifyContent` inline, which beats any stylesheet rule —
+       only measuring computed style in the real browser showed it. Inline layout props removed;
+       `.home-view` centres via auto-margin pseudo-elements (identical while content fits,
+       start-aligned and scrollable once it doesn't). Verified at both viewports.
+     - **Sub-agents were routed onto a dead model.** With no explicit preference the child was
+       resolved purely by cost rank, tie-broken toward `DEFAULT_WORKING_MODEL` — so a parent running
+       happily on Gemini spawned every sub-agent onto Workers AI, whose daily allowance was
+       exhausted. Delegation failed 100% of the time while the parent kept working, for a
+       same-cost-tier swap that bought nothing. The parent's own model now wins within the top
+       affordable tier; escalation and downgrade are unchanged and covered by tests.
+     - **All four Groq models were unusable and are removed.** Re-probed live: the two llama ids
+       404 ("model does not exist" — confirmed against Groq's own docs, no longer production
+       models), and `gpt-oss-20b`/`qwen3.6-27b` return 413 because this account's Groq tier permits
+       fewer tokens per minute than one reasoning payload. Offering them meant a builder picked a
+       model and got a product that failed on its first message (the defect item 72 already fixed
+       once for the Claude ids). A business already storing one falls back to the default.
+     - **Smaller, user-visible fixes:** `agent.consult` renamed `thread.consult` so every
+       thread-scoped operation is namespaced the same way, with a new `RENAMED_OPERATIONS` alias so
+       learned skills already stored in R2 (code a deploy cannot rewrite) keep resolving; the Skills
+       panel listed a `.keep` R2 placeholder as a learned skill; the sidebar claimed "… more
+       sessions" whenever a handler was supplied, so an account with three sessions was told some
+       were hidden; the dashboard's "Connected apps" panel counted the whole catalogue, disagreeing
+       with both its own body and the KPI above it; and the Channels panel listed only connected
+       channels, so a business with none saw an empty list instead of what it could connect.
+     **Verified working, no change needed** (checked live, not assumed): message idempotency on
+     retry; one starter thread per template project; `thread.create` linking a real session (the
+     "Session not found" report); project-scoped Knowledge Base not mixing with space-wide;
+     Composio AND Pipedream both live in production through the connector directory (a transient
+     Composio 429 degraded honestly and recovered); effort `ultra` accepted on every model; markdown
+     rendering, copy/edit message actions, the scrollable right-panel tab row, the mobile drawer,
+     the per-model context meter with a Compact button, and daily/weekly/monthly limits all
+     rendering; real token/credit metering (a live dashboard showed 20 runs, 99 credits, 329.1k
+     tokens from this pass's own runs); and the product correctly excluded from the business
+     switcher in business-first mode.
+     **Deliberately NOT changed:** the user's ask to list *other users'* businesses on Discover
+     conflicts with the privacy boundary item 102 set on purpose (the leaderboard is the signed-in
+     user's own businesses; cross-tenant listing was refused as a real privacy violation). Flagged
+     rather than implemented.
+     **Blocked by account limits, not code** — both re-confirmed live this pass: the Workers AI
+     daily neuron allowance is exhausted (so KB embedding/ingestion fails and the default model
+     cannot answer), and Gemini's free tier is 20 requests/day per model, which is what capped how
+     many multi-step agent runs this pass could drive. `worker_loaders` remains disabled, so every
+     seeded skill still fails closed at Tier 2. All three clear with the CF Workers Paid plan / a
+     paid Gemini key.
+     3247/3247 tests pass (23 new across `message-list-tail`, `memory-panel-reads-memory-os`,
+     `router-assistant-panel-allowlist`, download error-page cases, escalation cases, and the
+     rename alias — several proven to fail against the pre-fix code by reverting it), `npx turbo run
+     typecheck` clean (76 tasks). Deployed: `naelao-spaces`, `naelao-agents`, `naelao-router`,
+     `naelao-knowledge` (bare `wrangler deploy`) and `apps/shell` (`--branch=main`,
+     `environment: "production"` confirmed via the Pages API).
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
