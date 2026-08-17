@@ -21,7 +21,7 @@ import { updateAssistantChannel, pairAssistantChannel } from "@/lib/api";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
 
-const CHANNELS: Array<{
+export const CHANNELS: Array<{
   id: ChannelId;
   name: string;
   /** Why an owner would pick this one, in their terms. */

@@ -20,7 +20,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { detectRuntimeAnomaly, isJobOverdue } from "@naelao/events";
-import { ChannelConnect } from "./ChannelConnect";
+import { ChannelConnect, CHANNELS } from "./ChannelConnect";
 import {
   getAssistantPolicy,
   updateAssistantPolicy,
@@ -688,15 +688,35 @@ function ChannelsPanel({
       </div>
       {channels === null ? (
         <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>Loading…</div>
-      ) : channels.length === 0 && !showConnect ? (
-        <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>No channels configured.</div>
       ) : (
-        channels.map((c) => (
-          <div className="tp-tool-row" key={c.channel}>
-            <div className="tp-tool-name" style={{ textTransform: "capitalize" }}>{c.channel}</div>
-            <div className="tp-tool-badge" style={!c.enabled ? { color: "var(--text3)" } : undefined}>{c.enabled ? "Connected" : "Off"}</div>
-          </div>
-        ))
+        // Every channel the platform supports, not only the ones already wired up — otherwise a
+        // business with none sees an empty list and no sense of what it could connect. An
+        // unconnected row opens the same connect flow the "+ Connect" button does.
+        CHANNELS.map((meta) => {
+          const link = channels.find((c) => c.channel === meta.id);
+          const state = !link ? "Not connected" : link.enabled ? "Connected" : "Off";
+          const connected = Boolean(link);
+          return (
+            <div
+              className="tp-tool-row"
+              key={meta.id}
+              {...(!connected && canManage
+                ? {
+                    role: "button" as const,
+                    tabIndex: 0,
+                    onClick: () => setShowConnect(true),
+                    style: { cursor: "pointer" },
+                    title: `Connect ${meta.name}`,
+                  }
+                : {})}
+            >
+              <div className="tp-tool-name">{meta.name}</div>
+              <div className="tp-tool-badge" style={connected && link?.enabled ? undefined : { color: "var(--text3)" }}>
+                {state}
+              </div>
+            </div>
+          );
+        })
       )}
       {showConnect && (
         <div style={{ padding: "8px 10px" }}>
