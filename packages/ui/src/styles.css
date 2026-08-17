@@ -293,12 +293,17 @@
 .scroll-down svg{width:12px;height:12px;stroke:currentColor}
 
 /* ── HOME VIEW ── */
-/* `justify-content:center` on a SCROLLABLE flex container overflows in both directions, and the
-   overflow above the start edge cannot be scrolled to — on a phone (and with the verify-email
-   banner taking a row) the page heading was cut off with no way to reach it. `safe center` centres
-   only while everything fits and falls back to start-aligned once it doesn't. The plain `center` is
-   kept first as the fallback for anything that doesn't understand the `safe` keyword. */
-.home-view{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;justify-content:safe center;padding:48px 24px 0;position:relative;overflow-y:auto}
+/* `justify-content:center` on a SCROLLABLE flex container overflows in BOTH directions, and the
+   overflow past the start edge cannot be scrolled to — on a phone (with the verify-email banner
+   taking a row, and once the recents list has loaded) the page heading was cut off with no way to
+   reach it. `safe center` is the purpose-built keyword for this but was measured live NOT applying
+   here (computed style came back plain `center`), so this uses the auto-margin technique instead:
+   two zero-size flex items whose auto margins absorb the free space. Identical centring while the
+   content fits, and once it doesn't the margins collapse to 0 and the content starts at the top,
+   fully scrollable. No dependency on `safe` support. */
+.home-view{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:48px 24px 0;position:relative;overflow-y:auto}
+.home-view::before{content:'';margin-top:auto}
+.home-view::after{content:'';margin-bottom:auto}
 .home-view h1{font-family:'Instrument Serif',serif;font-size:34px;font-weight:400;color:var(--text);text-align:center;margin-bottom:6px;letter-spacing:-0.02em;animation:fadeUp 0.4s ease both}
 .home-view p.sub{font-size:14px;color:var(--text2);text-align:center;margin-bottom:28px;animation:fadeUp 0.4s 0.07s ease both}
 

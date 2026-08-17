@@ -135,8 +135,15 @@ export default function HomePage() {
 
   const greeting = isBusinessSpace && activeSpaceName ? activeSpaceName : product.product_name;
 
+  // Layout comes from `.home-view` (packages/ui/src/styles.css), which centres via auto-margin
+  // pseudo-elements so the content starts at the TOP once it is taller than the viewport rather
+  // than overflowing past the start edge where it cannot be scrolled to. These properties used to
+  // be repeated inline — and an inline `justifyContent: "center"` beats any stylesheet rule, which
+  // is why the heading was cut off on a phone (measured live: computed justify-content stayed
+  // `center` even after the stylesheet said otherwise). The inline padding likewise overrode the
+  // mobile padding in the media query.
   return (
-    <div className="home-view" style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "48px 24px", gap: 0 }}>
+    <div className="home-view" style={{ gap: 0 }}>
       <div style={{ width: "100%", maxWidth: 680 }}>
         <h1 style={{ fontSize: 27, fontWeight: 650, margin: 0, textAlign: "center" }}>{greeting}</h1>
         <p style={{ fontSize: 14, color: "var(--text3)", marginTop: 8, textAlign: "center" }}>

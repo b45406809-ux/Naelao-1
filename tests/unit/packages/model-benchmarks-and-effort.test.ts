@@ -155,6 +155,30 @@ describe("escalation ceiling and resolveEscalationModel — the actual cost-cont
     expect(costRankForModel(res.model)).toBe(1);
   });
 
+  // Live: a parent running happily on Gemini spawned every sub-agent onto DEFAULT_WORKING_MODEL
+  // (Workers AI), whose daily neuron allowance was exhausted — so delegation failed 100% of the
+  // time while the parent itself kept working. Both are the same cost tier, so the swap bought
+  // nothing and cost everything. The parent's model is the one this run has evidence is reachable.
+  it("keeps the PARENT's own model when it is already in the top affordable tier", () => {
+    const parent = "google-ai-studio/gemini-3.6-flash";
+    const res = resolveEscalationModel(parent, "low");
+    expect(res.downgraded).toBe(false);
+    expect(res.model).toBe(parent);
+    expect(res.model).not.toBe(DEFAULT_WORKING_MODEL);
+  });
+
+  it("still ESCALATES when the parent is below the ceiling — preferring the parent must not disable escalation", () => {
+    // A cheap parent with a high Effort should move UP, not stay put.
+    const res = resolveEscalationModel(DEFAULT_WORKING_MODEL, "ultra");
+    expect(costRankForModel(res.model)).toBeGreaterThan(costRankForModel(DEFAULT_WORKING_MODEL));
+  });
+
+  it("still DOWNGRADES an expensive parent when Effort is low", () => {
+    const res = resolveEscalationModel("@cf/zai-org/glm-5.2" /* premium */, "low");
+    expect(costRankForModel(res.model)).toBe(1);
+    expect(res.model).not.toBe("@cf/zai-org/glm-5.2");
+  });
+
   it("a preferred model within budget is used unchanged, no downgrade", () => {
     const res = resolveEscalationModel(DEFAULT_WORKING_MODEL, "ultra", { preferModel: "@cf/zai-org/glm-5.2" });
     expect(res.downgraded).toBe(false);

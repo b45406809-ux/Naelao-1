@@ -171,7 +171,18 @@ export function resolveEscalationModel(
   // ties in general).
   const maxAffordableRank = affordable.length > 0 ? Math.max(...affordable.map((m) => costRankForModel(m))) : costRankForModel(currentModel);
   const topTier = affordable.filter((m) => costRankForModel(m) === maxAffordableRank);
-  const best: AllowedModel = topTier.includes(DEFAULT_WORKING_MODEL) ? DEFAULT_WORKING_MODEL : (topTier[0] ?? (currentModel as AllowedModel));
+  // Within the top affordable tier, the parent's OWN model wins. Escalation still works — a cheap
+  // parent with a high Effort is not in the top tier, so it moves up as intended — but a parent
+  // already running in that tier is not swapped for a same-cost sibling, because switching buys
+  // nothing and can cost everything: seen live, a parent running happily on Gemini spawned every
+  // sub-agent onto DEFAULT_WORKING_MODEL (Workers AI), whose daily allowance was exhausted, so
+  // delegation failed while the parent kept working. The parent's model is the one model this run
+  // has actual evidence is reachable.
+  const best: AllowedModel = topTier.includes(currentModel as AllowedModel)
+    ? (currentModel as AllowedModel)
+    : topTier.includes(DEFAULT_WORKING_MODEL)
+      ? DEFAULT_WORKING_MODEL
+      : (topTier[0] ?? (currentModel as AllowedModel));
 
   const prefer = opts?.preferModel;
   if (!prefer) {
