@@ -568,9 +568,16 @@ export async function sendMessage(
   modelOptions?: RunModelOptions,
   onRetry?: (attempt: number, max: number) => void
 ): Promise<{ userMessage: Message; agentRunId: string }> {
+  // Minted ONCE, outside the retry loop inside apiFetch, so every retry of this same send carries
+  // the same key. apiFetch retries a POST on a network-level throw or a 5xx/429 — and neither
+  // proves the server didn't already commit the row (a reset connection or a response lost on the
+  // way back both throw here while the write succeeded). Without this the retry wrote a second
+  // identical message: invisible live, since the client only renders the one response it finally
+  // got, and plainly visible the moment you reload. SpaceDO dedupes on (session_id, this).
+  const clientMessageId = crypto.randomUUID();
   const userMessage = await apiFetch<Message>(`/v1/spaces/${spaceId}/sessions/${sessionId}/messages`, {
     method: "POST",
-    body: JSON.stringify({ role: "user", content }),
+    body: JSON.stringify({ role: "user", content, client_message_id: clientMessageId }),
     session,
     ...(onRetry ? { onRetry } : {}),
   });

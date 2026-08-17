@@ -153,22 +153,8 @@ export default function ProjectThreadPage() {
         </div>
       )}
       {!railOpen && (
-        <button
-          type="button"
-          onClick={() => setRailOpen(true)}
-          title="Show thread list"
-          style={{
-            background: "transparent",
-            border: "none",
-            borderRight: "1px solid var(--border)",
-            color: "var(--text3)",
-            cursor: "pointer",
-            fontSize: 14,
-            padding: "0 6px",
-            flexShrink: 0,
-          }}
-        >
-          ›
+        <button type="button" className="rail-expander" onClick={() => setRailOpen(true)} title="Show thread list">
+          ›<span className="rail-expander-label">Threads in this project</span>
         </button>
       )}
       <div style={{ flex: 1, minWidth: 0, display: "flex" }}>

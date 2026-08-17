@@ -366,6 +366,14 @@
 .space-tree-item svg{width:14px;height:14px;stroke:currentColor;flex-shrink:0}
 .space-tree-indent{padding-left:22px}
 .space-tree-indent2{padding-left:44px}
+/* Reopen-tab for a collapsed .spaces-sidebar rail (project thread page). On desktop it's a narrow
+   vertical edge strip beside the chat. At <=900px .spaces-layout stacks to a column, so an
+   unstyled button stretched full-width into a ~14px tall mystery band carrying a stray right
+   border — see the mobile override below, which turns it into a labelled horizontal strip that
+   matches how .spaces-sidebar itself renders at that width. */
+.rail-expander{background:transparent;border:none;border-right:1px solid var(--border);color:var(--text3);cursor:pointer;font-family:'DM Sans',sans-serif;font-size:14px;padding:0 6px;flex-shrink:0;display:flex;align-items:center;gap:6px;transition:all var(--transition)}
+.rail-expander:hover{color:var(--text);background:var(--surface2)}
+.rail-expander-label{display:none;font-size:11.5px}
 .spaces-type-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:24px}
 
 /* ── GENERAL CARDS / GRID ── */
@@ -689,6 +697,8 @@
            border-bottom:1px solid var(--border);padding:8px 10px;gap:4px;scrollbar-width:none}
   .spaces-sidebar::-webkit-scrollbar,.settings-nav::-webkit-scrollbar{display:none}
   .space-tree-item,.settings-nav-item{flex-shrink:0;white-space:nowrap}
+  .rail-expander{border-right:none;border-bottom:1px solid var(--border);justify-content:flex-start;padding:7px 16px;width:100%}
+  .rail-expander-label{display:inline}
   /* Every dock control is flex-shrink:0 by design (a 36px icon button that squashes is unusable),
      so on a narrow viewport the row simply overflowed its container and the trailing buttons were
      unreachable. Scroll it instead. The member avatar stack is pushed right by .dock-spacer, which

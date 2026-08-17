@@ -3437,9 +3437,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         // lets the client find it again. Cheap: runId already resolved above for the interrupted-
         // run checkpoint and billing settlement.
         answerMetadata["run_id"] = runId;
-        void this.writeAgentAnswerToSession(
+        // AWAITED, not fire-and-forget. A promise still pending when a DO handler returns may
+        // never run — so this write raced the response and the reply would sometimes be on screen
+        // and then simply gone after a reload ("it's like it ended the conversation there").
+        // Awaiting is safe: writeAgentAnswerToSession swallows its own errors, so it can still
+        // never turn an already-successful run into a failed one.
+        await this.writeAgentAnswerToSession(
           sessionId, spaceId, tenantId, result.result.output, agentId,
-          Object.keys(answerMetadata).length > 0 ? answerMetadata : undefined
+          Object.keys(answerMetadata).length > 0 ? answerMetadata : undefined,
+          runId
         );
       }
 
@@ -6238,9 +6244,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    * client has already persisted the user's message before dispatching, so writing it again would
    * duplicate every question in the transcript.
    *
-   * Best-effort — the run itself already succeeded, and losing the transcript write must not turn
-   * a completed run into a failed one. It does mean a rare write failure loses that reply from
-   * history, which is the lesser of the two harms.
+   * Errors are swallowed — the run itself already succeeded, and losing the transcript write must
+   * not turn a completed run into a failed one. That makes this safe to AWAIT (and it must be
+   * awaited: a promise left dangling when a DO handler returns may never run, which is exactly why
+   * a reply would sometimes be on screen and then gone after a reload).
+   *
+   * `runId`, when given, is the idempotency key. One run produces one answer, so a replayed
+   * Workflow step or a retried dispatch resolves to the answer already written instead of
+   * appending a second copy of it.
    */
   private async writeAgentAnswerToSession(
     sessionId: string,
@@ -6250,7 +6261,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     agentId: string,
     // item 79: {consulted_threads:[...]} when this run consulted a project agent — see
     // buildOrchestrationHooks' consultLog param for what populates it.
-    metadata?: Record<string, unknown>
+    metadata?: Record<string, unknown>,
+    runId?: string
   ): Promise<void> {
     try {
       await this.env.SPACES_WORKER.fetch(new Request(
@@ -6258,7 +6270,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         {
           method: "POST",
           headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
-          body: JSON.stringify({ role: "assistant", content: answer, agent_id: agentId, ...(metadata ? { metadata } : {}) }),
+          body: JSON.stringify({
+            role: "assistant", content: answer, agent_id: agentId,
+            ...(metadata ? { metadata } : {}),
+            ...(runId ? { client_message_id: `run:${runId}` } : {}),
+          }),
         }
       ));
     } catch {

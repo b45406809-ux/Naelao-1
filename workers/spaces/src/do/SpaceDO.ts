@@ -1020,6 +1020,24 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE projects ADD COLUMN last_activity_at TEXT;
     `,
   },
+  {
+    // POST /messages was not idempotent, and the shell's apiFetch retries a POST on a network-level
+    // throw or a 5xx/429. A throw client-side does NOT mean the server didn't process it — a reset
+    // connection or a response lost in transit both throw while the row is already committed — so a
+    // retry wrote a SECOND identical message. Invisible in the live UI (the client only ever renders
+    // the one response it eventually got) and visible the moment you reload: the reported duplicate.
+    //
+    // A partial unique index rather than a plain one so the overwhelming majority of historical rows
+    // (client_message_id NULL) don't collide with each other. Dedupe is per session, since ids are
+    // minted client-side and only need to be unique within the conversation they belong to.
+    version: 38,
+    description: "messages.client_message_id — idempotency key so a retried POST can't duplicate",
+    up: `
+      ALTER TABLE messages ADD COLUMN client_message_id TEXT;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_client_id
+        ON messages(session_id, client_message_id) WHERE client_message_id IS NOT NULL;
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -1834,6 +1852,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // write-back only) — e.g. {consulted_threads:[{thread_id, agent_id, title}]} so the client
       // can render an inline card at the exact turn where the assistant consulted a project agent.
       metadata?: Record<string, unknown>;
+      // Migration v38: caller-minted idempotency key, unique per session. Lets a retried POST
+      // resolve to the message it already wrote instead of a duplicate. Client-supplied by design
+      // — it identifies the caller's own send attempt and grants no authority of any kind, so
+      // unlike agent_id/metadata it needs no trusted-caller check.
+      client_message_id?: string;
     }>();
 
     // G-D02: Reject oversized messages before writing to SQLite
@@ -1897,10 +1920,33 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       authorId = headerUserId ?? body.end_user_id ?? null;
     }
 
+    // Migration v38 idempotency. A retried POST (the shell's apiFetch retries on a network throw
+    // or a 5xx/429 — neither of which proves the server didn't already commit the row) must not
+    // write a second copy. Return the message that already exists instead, so the caller sees the
+    // same 2xx it would have seen had the first response reached it.
+    if (body.client_message_id) {
+      const existing = queryOne<{ id: string; role: string; author_type: string; author_id: string | null; created_at: string }>(
+        this.ctx.storage.sql as never,
+        "SELECT id, role, author_type, author_id, created_at FROM messages WHERE session_id = ? AND client_message_id = ?",
+        sessionId,
+        body.client_message_id
+      );
+      if (existing) {
+        return Response.json(
+          {
+            id: existing.id, session_id: sessionId, role: existing.role,
+            author_type: existing.author_type, author_id: existing.author_id,
+            created_at: existing.created_at, deduplicated: true,
+          },
+          { status: 200 }
+        );
+      }
+    }
+
     execute(
       this.ctx.storage.sql as never,
-      `INSERT INTO messages (id, session_id, role, content, tool_call_id, tool_name, token_count, created_at, author_type, author_id, metadata)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO messages (id, session_id, role, content, tool_call_id, tool_name, token_count, created_at, author_type, author_id, metadata, client_message_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       sessionId,
       body.role,
@@ -1911,7 +1957,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       now,
       authorType,
       authorId,
-      body.metadata ? JSON.stringify(body.metadata) : "{}"
+      body.metadata ? JSON.stringify(body.metadata) : "{}",
+      body.client_message_id ?? null
     );
 
     // Update session updated_at
