@@ -60,6 +60,11 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "google-ai-studio/gemini-pro-latest": 1_048_576,
   "google-ai-studio/gemini-flash-latest": 1_048_576,
   "google-ai-studio/gemini-flash-lite-latest": 1_048_576,
+  // Pinned free-tier generations — same 1M window as the aliases they sit beside.
+  "google-ai-studio/gemini-3.7-flash": 1_048_576,
+  "google-ai-studio/gemini-3.6-flash": 1_048_576,
+  "google-ai-studio/gemini-3.5-flash": 1_048_576,
+  "google-ai-studio/gemini-3.5-flash-lite": 1_048_576,
   // Groq — a THIRD, genuinely independent BYOK provider (same `{provider}/{model}` compat-route
   // convention as Gemini above; "groq/" confirmed as Cloudflare's own literal provider slug for
   // this route via Cloudflare's own AI Gateway docs, not assumed). The concrete reason to add it:
@@ -125,6 +130,18 @@ export const ALLOWED_MODELS = [
   "google-ai-studio/gemini-flash-lite-latest",
   "google-ai-studio/gemini-flash-latest",
   "google-ai-studio/gemini-pro-latest",
+  // Pinned free-tier generations, added alongside (not instead of) the aliases above. An alias
+  // silently moves generation, which is right for "give me the current Flash" but wrong when the
+  // point is a SPECIFIC generation — 3.7 Flash's controllable thinking is the reason to pick it,
+  // and an alias that later resolves elsewhere would quietly take that away. All four are listed
+  // free-of-charge on Google's own pricing page; 3.6/3.5 were additionally confirmed live to
+  // resolve on this account's real key. 3.7 is documented-but-not-yet-live-confirmed here, and
+  // degrades the same honest way any unreachable model does (a real 404 from the provider).
+  // The 2.x generation is deliberately absent: Google cut it off from new-user access.
+  "google-ai-studio/gemini-3.7-flash",
+  "google-ai-studio/gemini-3.6-flash",
+  "google-ai-studio/gemini-3.5-flash",
+  "google-ai-studio/gemini-3.5-flash-lite",
   // Groq — see MODEL_CONTEXT_WINDOWS' own comment above for why, and for why gpt-oss-120b is
   // excluded (the only one of the account's real candidates that didn't survive a LIVE dispatched
   // test through the real reasoning loop). The remaining four were each confirmed present and
@@ -246,6 +263,13 @@ export const MODEL_CAPABILITIES: Record<string, ModelCapability> = {
   "google-ai-studio/gemini-flash-lite-latest": { reasoningLevels: ["none", "low", "medium", "high"], reasoningParam: "reasoning_effort" },
   "google-ai-studio/gemini-flash-latest": { reasoningLevels: ["none", "low", "medium", "high"], reasoningParam: "reasoning_effort" },
   "google-ai-studio/gemini-pro-latest": { reasoningLevels: ["low", "medium", "high"], reasoningParam: "reasoning_effort" },
+  // 3.7 Flash's controllable thinking is the whole reason to pin it rather than ride an alias:
+  // plain Flash stalls on multi-step tool use, and a configurable thinking budget is what Effort
+  // maps onto (nativeReasoningForEffort). Same four-position ladder as the Flash alias.
+  "google-ai-studio/gemini-3.7-flash": { reasoningLevels: ["none", "low", "medium", "high"], reasoningParam: "reasoning_effort" },
+  "google-ai-studio/gemini-3.6-flash": { reasoningLevels: ["none", "low", "medium", "high"], reasoningParam: "reasoning_effort" },
+  "google-ai-studio/gemini-3.5-flash": { reasoningLevels: ["none", "low", "medium", "high"], reasoningParam: "reasoning_effort" },
+  "google-ai-studio/gemini-3.5-flash-lite": { reasoningLevels: ["none", "low", "medium", "high"], reasoningParam: "reasoning_effort" },
   // Groq. Confirmed via Groq's own docs (console.groq.com/docs/reasoning), not inferred from the
   // Workers AI entries above even though this is the SAME underlying model — Groq is a different
   // hosting provider and could in principle expose a different parameter surface; it happens to

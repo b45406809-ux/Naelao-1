@@ -447,6 +447,9 @@ export interface OrchestrationHooks {
     spaceId: string;
     agentId?: string;
     respond?: boolean;
+    /** Run the replying agent on a specific model for this one dispatch. Omit to use that
+     *  agent's own configured default. Valid ids come from sub-agent's agent.list_models. */
+    model?: string;
   }): Promise<{
     ok: boolean;
     session_id?: string;

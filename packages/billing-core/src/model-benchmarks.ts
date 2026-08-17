@@ -277,6 +277,34 @@ export const MODEL_BENCHMARKS: Record<AllowedModel, ModelBenchmark> = {
     ["Balanced Gemini tier", "1M-token context window", "Configurable thinking budget (none/low/medium/high)"],
     ["General agent work on a Gemini key", "Tasks needing a bigger context window than the platform default"]
   ),
+  // Pinned free-tier generations. costBasis "estimated" rather than "measured": these are listed
+  // free-of-charge on Google's own pricing page for free-tier keys, so there is no real per-token
+  // figure to quote — and quoting the paid rate for a model someone is using for nothing would be
+  // worse than saying so plainly.
+  "google-ai-studio/gemini-3.7-flash": M(
+    "google-ai-studio/gemini-3.7-flash", "Gemini", "economy", "estimated",
+    "Free of charge on a free-tier Gemini key (Google's own published pricing).",
+    ["Controllable thinking budget — the reason to pick this over plain Flash", "1M-token context window", "Holds up on multi-step tool use where plain Flash stalls"],
+    ["Agent work that needs real multi-step reasoning without paying for it", "Free-tier rate limits still apply — expect 429s under load"]
+  ),
+  "google-ai-studio/gemini-3.6-flash": M(
+    "google-ai-studio/gemini-3.6-flash", "Gemini", "economy", "estimated",
+    "Free of charge on a free-tier Gemini key (Google's own published pricing).",
+    ["Configurable thinking budget", "1M-token context window", "Confirmed live to resolve on a real key"],
+    ["General agent work on a free Gemini key", "Free-tier rate limits still apply"]
+  ),
+  "google-ai-studio/gemini-3.5-flash": M(
+    "google-ai-studio/gemini-3.5-flash", "Gemini", "economy", "estimated",
+    "Free of charge on a free-tier Gemini key (Google's own published pricing).",
+    ["Configurable thinking budget", "1M-token context window", "Confirmed live to resolve on a real key"],
+    ["Everyday tasks on a free Gemini key", "A generation behind 3.7 on multi-step tool use"]
+  ),
+  "google-ai-studio/gemini-3.5-flash-lite": M(
+    "google-ai-studio/gemini-3.5-flash-lite", "Gemini", "economy", "estimated",
+    "Free of charge on a free-tier Gemini key (Google's own published pricing).",
+    ["Cheapest/fastest Gemini tier", "1M-token context window", "Confirmed live to resolve on a real key"],
+    ["High-volume simple work", "Not a good fit for multi-step tool use — that is what 3.7 Flash is for"]
+  ),
   "google-ai-studio/gemini-pro-latest": M(
     "google-ai-studio/gemini-pro-latest", "Gemini", "premium", "measured",
     "$2.00 / $12.00 per 1M tokens in / out — Google's own published pricing for the Gemini 3.1 Pro generation this alias currently resolves to (standard, ≤200K-context tier).",

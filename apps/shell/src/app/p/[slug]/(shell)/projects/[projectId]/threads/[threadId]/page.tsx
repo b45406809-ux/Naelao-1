@@ -38,6 +38,20 @@ export default function ProjectThreadPage() {
   const [siblingThreads, setSiblingThreads] = React.useState<ThreadSummary[]>([]);
   const [railOpen, setRailOpen] = React.useState(true);
 
+  // Closed by default on a phone. Below 900px `.spaces-sidebar` becomes a full-width horizontal
+  // strip above the content — fine on Discover, wrong here: it steals vertical space from a chat
+  // surface that needs the full height for its message area and sticky composer, which is what
+  // made this page unusable on mobile once the rail was added. Reopening it is one tap.
+  //
+  // Done in an effect rather than a lazy useState initialiser on purpose: reading `window` during
+  // the first render would mismatch the server-rendered markup. Same pattern as the right-hand
+  // thread panel's own mobile default.
+  React.useEffect(() => {
+    if (typeof window !== "undefined" && window.matchMedia("(max-width: 900px)").matches) {
+      setRailOpen(false);
+    }
+  }, []);
+
   const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
 
   React.useEffect(() => {

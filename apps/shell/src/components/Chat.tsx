@@ -58,6 +58,7 @@ import { DEFAULT_WORKING_MODEL, nativeReasoningForEffort, isValidEffortLevel, ty
 import { ContextUsageMeter } from "./ContextUsageMeter";
 import { AssistantSidePanelBody, sidePanelTabs, type SidePanelTab } from "./AssistantSidePanels";
 import { SubthreadPanel, SubthreadEntry } from "./SubthreadPanel";
+import { AssistantDelegationCard, groupDelegations } from "./AssistantDelegationCard";
 import { ActivitySequence, RevealText } from "./ActivityFeed";
 import { InterruptedRunCard } from "./InterruptedRunCard";
 import { MessageActions } from "./MessageActions";
@@ -1359,6 +1360,19 @@ export function Chat({
   }
   const unattachedApprovals = sessionApprovals.filter((a) => !attachedApprovalIds.has(a.id));
 
+  // The business assistant speaking into this thread on the owner's behalf, and the reply it
+  // drew, belong together: rendered as two adjacent left-aligned bubbles they read as one speaker
+  // asking and then answering their own question. groupDelegations pairs them; `delegationReplyIds`
+  // is what stops the reply ALSO rendering as its own bubble below the card.
+  const visibleMessages = messages.filter((m) => m.role !== "system" && m.role !== "tool");
+  const delegationItems = groupDelegations(visibleMessages);
+  const delegationByRequestId = new Map(
+    delegationItems.filter((i) => i.kind === "delegation").map((i) => [i.request.id, i] as const)
+  );
+  const delegationReplyIds = new Set(
+    delegationItems.flatMap((i) => (i.kind === "delegation" && i.reply ? [i.reply.id] : []))
+  );
+
   return (
     <div className="chat-layout">
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
@@ -1377,9 +1391,17 @@ export function Chat({
         </div>
 
         <div className="chat-area">
-          {messages
-            .filter((m) => m.role !== "system" && m.role !== "tool")
-            .map((m) => (
+          {visibleMessages
+            // Already shown inside its delegation card above — never a second bubble.
+            .filter((m) => !delegationReplyIds.has(m.id))
+            .map((m) =>
+              delegationByRequestId.has(m.id) ? (
+                <AssistantDelegationCard
+                  key={m.id}
+                  request={m}
+                  reply={delegationByRequestId.get(m.id)!.reply}
+                />
+              ) : (
               <div
                 key={m.id}
                 className={["msg-row", m.role === "user" ? "user" : "", revealedActionsId === m.id ? "revealed" : ""].filter(Boolean).join(" ")}
@@ -1538,7 +1560,8 @@ export function Chat({
                   ))}
                 </div>
               </div>
-            ))}
+              )
+            )}
 
           {/* A transient network/gateway hiccup being retried automatically — shown INSTEAD of
               the ordinary typing/activity indicator (not alongside it) while it's happening, so

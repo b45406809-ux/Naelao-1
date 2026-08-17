@@ -101,11 +101,13 @@ export const projectCoordination: PrebuiltScript = {
       if (!threadId || !message) throw new Error("thread.send_message requires thread_id and message");
       const agentId = a["agent_id"] ? String(a["agent_id"]) : undefined;
       const respond = a["respond"] !== false;
+      const model = a["model"] ? String(a["model"]) : undefined;
       return c.env.orchestration.sendToThread({
         threadId,
         message,
         spaceId: c.env.spaceId,
         ...(agentId ? { agentId } : {}),
+        ...(model ? { model } : {}),
         respond,
       });
     },
@@ -206,8 +208,10 @@ export const projectCoordination: PrebuiltScript = {
     "thread.send_message": "thread_id (string, REQUIRED — the id from thread.create/thread.list, " +
       "NOT the project id). message (string, REQUIRED — the real text to post, e.g. \"hello\"). " +
       "agent_id (string, optional but needed to get a reply — without it the message posts with " +
-      "nobody addressed to answer it). respond (boolean, optional, default true — set false to " +
-      "post without dispatching a reply).",
+      "nobody addressed to answer it; use agent.list to see which agents exist). respond " +
+      "(boolean, optional, default true — set false to post without dispatching a reply). model " +
+      "(string, optional — run the replying agent on a specific model for this one dispatch; ids " +
+      "come from agent.list_models, and omitting it uses that agent's own configured default).",
     "agent.consult": "agent_id (string, REQUIRED — who to consult). message (string, REQUIRED). " +
       "project_id/thread_id (string, optional — defaults to this run's own project/a fresh " +
       "subthread). This is PRIVATE (hidden from the visible thread) — use thread.send_message " +

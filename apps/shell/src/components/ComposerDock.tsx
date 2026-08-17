@@ -15,7 +15,7 @@
 // plausible number.
 
 import * as React from "react";
-import { ALLOWED_MODELS, capabilityForModel, effortOptionsForModel, type EffortLevel } from "@naelao/billing-core";
+import { ALLOWED_MODELS, capabilityForModel, effortOptionsForModel, nativeReasoningForEffort, type EffortLevel } from "@naelao/billing-core";
 import {
   getConnectorStatus,
   getConnectorMode,
@@ -431,6 +431,34 @@ export function ComposerDock({
             <p style={{ fontSize: 12, color: "var(--text3)", lineHeight: 1.5, margin: 0 }}>
               {effortOptionsForModel(model).find((o) => o.level === effort)?.description}
             </p>
+            {/* Effort does two jobs at once (see effort.ts): it sets the delegation ceiling for
+                EVERY model, and — only on a model that has one — it also sets that model's own
+                thinking depth. Showing which of the two is in play stops "Ultra" reading as a
+                promise of deeper thinking on a model that simply cannot think harder. */}
+            {(() => {
+              const thinking = nativeReasoningForEffort(model, effort);
+              return (
+                <div
+                  style={{
+                    marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)",
+                    display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--text3)",
+                  }}
+                >
+                  <span
+                    aria-hidden
+                    style={{
+                      width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
+                      background: thinking ? "var(--accent)" : "var(--border)",
+                    }}
+                  />
+                  <span>
+                    {thinking
+                      ? <>Thinking: <strong style={{ color: "var(--text2)" }}>{thinking}</strong></>
+                      : "This model has no thinking mode — Effort only changes what it may delegate to."}
+                  </span>
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}

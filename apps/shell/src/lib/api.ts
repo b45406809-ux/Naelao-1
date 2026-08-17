@@ -271,6 +271,15 @@ export interface Message {
      *  field), unlike the client-only `activity` below. Lets a reload re-fetch this exact run's
      *  activity trail via getAgentRunTrace instead of losing it. */
     run_id?: string;
+    /** Set by thread.send_message: the business assistant spoke INTO this thread on the owner's
+     *  behalf, and (unless awaiting_reply is false) the named agent replied right after. Rendered
+     *  as ONE collapsible card covering both, so it doesn't read as the assistant answering its
+     *  own question in two adjacent left-aligned bubbles. */
+    assistant_delegation?: {
+      agent_id?: string | null;
+      on_behalf_of_user?: boolean;
+      awaiting_reply?: boolean;
+    };
   };
   /** CLIENT-ONLY, never persisted server-side: the "currently doing X" activity trail this run
    *  produced (observe/find/gate/reason/run/answer steps, live while the run was in flight — see

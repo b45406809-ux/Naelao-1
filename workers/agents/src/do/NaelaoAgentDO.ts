@@ -2483,7 +2483,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    * through) names who it's addressing.
    */
   private async sendToThreadImpl(
-    params: { threadId: string; message: string; spaceId: string; agentId?: string; respond?: boolean },
+    params: { threadId: string; message: string; spaceId: string; agentId?: string; respond?: boolean; model?: string },
     tenantId: string,
     apiKey: string,
     agentDO: DurableObjectNamespace<NaelaoAgentDO>
@@ -2517,9 +2517,29 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // The assistant's own turn, attributed to it (author_type resolves to 'assistant' for
       // agent_id 'naelao-agent') — visible in the real thread, unlike consultAgentImpl's write
       // into a hidden sub_agent thread.
+      //
+      // `assistant_delegation` is what stops this reading as the assistant talking to itself: the
+      // client groups this message and the target agent's reply into ONE collapsible card labelled
+      // as the business assistant acting on the owner's behalf, rather than two adjacent
+      // left-aligned bubbles that look like one speaker answering their own question.
       await this.env.SPACES_WORKER.fetch(new Request(
         `http://spaces-worker/spaces/${spaceId}/sessions/${sessionId}/messages`,
-        { method: "POST", headers, body: JSON.stringify({ role: "assistant", content: message, agent_id: "naelao-agent" }) }
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            role: "assistant",
+            content: message,
+            agent_id: "naelao-agent",
+            metadata: {
+              assistant_delegation: {
+                agent_id: params.agentId ?? null,
+                on_behalf_of_user: true,
+                awaiting_reply: respond,
+              },
+            },
+          }),
+        }
       ));
 
       if (!respond) return { ok: true, session_id: sessionId, dispatched: false };
@@ -2530,7 +2550,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          goal: message, spaceId, agentId: params.agentId, tenantId, sessionId, apiKey,
+          // Framed so the receiving agent knows this is the BUSINESS ASSISTANT acting for the
+          // owner — not an ordinary customer/user message. Without this it has no way to tell the
+          // two apart, and they warrant different judgement about what to do unasked.
+          goal:
+            `[from the business assistant, acting autonomously on the owner's behalf]\n${message}`,
+          spaceId, agentId: params.agentId, tenantId, sessionId, apiKey,
+          // An explicit model for this one dispatch — a cheap agent answering a routine question
+          // and one doing real reasoning shouldn't be forced onto the same model. Omitted, the
+          // target agent's own configured default applies, exactly as before.
+          ...(params.model ? { model: params.model } : {}),
           ...(thread.project_id ? { projectId: thread.project_id } : {}),
         }),
       }));

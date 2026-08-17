@@ -123,17 +123,32 @@ describe("sendToThreadImpl (via buildOrchestrationHooks.sendToThread)", () => {
     expect(calls.some((c) => c.method === "POST" && /\/sessions$/.test(new URL(c.url).pathname))).toBe(false);
     expect(calls.some((c) => c.method === "POST" && c.url.endsWith("/threads"))).toBe(false);
 
-    // The assistant's own message was posted into THAT session, attributed to it.
+    // The assistant's own message was posted into THAT session, attributed to it — and marked as
+    // a delegation, which is what lets the client group it with the agent's reply into one card
+    // instead of rendering the assistant apparently answering its own question.
     const messagePost = calls.find((c) => c.method === "POST" && c.url.includes("/messages"));
-    expect(messagePost!.body).toEqual({ role: "assistant", content: "checking on this", agent_id: "naelao-agent" });
+    expect(messagePost!.body).toEqual({
+      role: "assistant",
+      content: "checking on this",
+      agent_id: "naelao-agent",
+      metadata: {
+        assistant_delegation: { agent_id: "support-agent", on_behalf_of_user: true, awaiting_reply: true },
+      },
+    });
 
     // Dispatched to {sessionId}:{agentId}, same addressing @mention/agent.consult already use —
     // and the thread's own project_id was carried through automatically.
     expect(seenFetches).toHaveLength(1);
     expect(seenFetches[0]!.name).toContain("sess-existing:support-agent");
     expect(seenFetches[0]!.body).toMatchObject({
-      goal: "checking on this", agentId: "support-agent", sessionId: "sess-existing", projectId: "proj-1",
+      agentId: "support-agent", sessionId: "sess-existing", projectId: "proj-1",
     });
+    // The goal carries the real message AND says who is speaking. The receiving agent otherwise
+    // has no way to tell the business assistant acting for the owner from an ordinary customer
+    // message, and those warrant different judgement about what to do unasked.
+    const goal = (seenFetches[0]!.body as { goal: string }).goal;
+    expect(goal).toContain("checking on this");
+    expect(goal).toMatch(/business assistant/i);
   });
 
   it("mints a session for a thread that doesn't have one yet, then posts into it", async () => {

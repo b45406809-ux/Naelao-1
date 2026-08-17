@@ -209,3 +209,44 @@ describe("capability-matrix benchmark fields", () => {
     }
   });
 });
+
+// Every op that takes a model needs a way to find out what the real ids ARE — otherwise an agent
+// either guesses (and gets a provider 404) or never sets one, which makes per-task model choice
+// unusable. agent.list_models is that discovery op; these pin its shape.
+describe("agent.list_models — model discovery for ops that take a model", () => {
+  it("lists every allowed model with the fields a caller needs to choose one", async () => {
+    const { subAgent } = await import("../../../workers/agents/src/script-engine/prebuilt/sub-agent.js");
+    const out = (await subAgent.operations["agent.list_models"]!({}, { env: {} as never, run: async () => ({}) })) as {
+      default: string;
+      models: Array<{ id: string; context_window: number; supports_thinking: boolean; thinking_levels: string[]; cost_tier: string | null }>;
+    };
+
+    expect(out.models.length).toBe(ALLOWED_MODELS.length);
+    expect(out.default).toBe(DEFAULT_WORKING_MODEL);
+    for (const m of out.models) {
+      expect(ALLOWED_MODELS).toContain(m.id as (typeof ALLOWED_MODELS)[number]);
+      expect(m.context_window).toBeGreaterThan(0);
+      // supports_thinking must agree with the levels actually listed — a caller that trusts the
+      // boolean and then passes a thinking level would otherwise get a rejection.
+      expect(m.supports_thinking).toBe(m.thinking_levels.length > 0);
+    }
+  });
+
+  it("includes the pinned free-tier Gemini generations, and 3.7 Flash reports a thinking budget", async () => {
+    const { subAgent } = await import("../../../workers/agents/src/script-engine/prebuilt/sub-agent.js");
+    const out = (await subAgent.operations["agent.list_models"]!({}, { env: {} as never, run: async () => ({}) })) as {
+      models: Array<{ id: string; supports_thinking: boolean }>;
+    };
+    const byId = new Map(out.models.map((m) => [m.id, m]));
+    for (const id of [
+      "google-ai-studio/gemini-3.7-flash",
+      "google-ai-studio/gemini-3.6-flash",
+      "google-ai-studio/gemini-3.5-flash",
+      "google-ai-studio/gemini-3.5-flash-lite",
+    ]) {
+      expect(byId.has(id)).toBe(true);
+    }
+    // Controllable thinking is the whole reason to pin 3.7 rather than ride an alias.
+    expect(byId.get("google-ai-studio/gemini-3.7-flash")!.supports_thinking).toBe(true);
+  });
+});
