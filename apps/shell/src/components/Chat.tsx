@@ -38,6 +38,7 @@ import {
   instantiateAgentTemplate,
   type AgentDefinitionSummary,
   type AgentTemplateSummary,
+  getShellManifest,
 } from "@/lib/api";
 import type { SessionCredentials } from "@/lib/api";
 import {
@@ -272,6 +273,26 @@ export function Chat({
   // updateModelConfig/the Dashboard tab). Lazily read from localStorage so it survives reloads;
   // falls back to the platform default the very first time this space is ever opened.
   const [selectedModel, setSelectedModel] = React.useState<string>(() => getPreferredModel(spaceId) ?? DEFAULT_WORKING_MODEL);
+  // Whether the person has actually PICKED a model for this space, as opposed to the placeholder
+  // above. This distinction is load-bearing: the run request used to send `selectedModel`
+  // unconditionally, and /agent/run treats an explicit model as an override of the business's own
+  // configured one — so a browser with no stored preference silently forced every chat onto
+  // DEFAULT_WORKING_MODEL and the model a builder had configured was never used. (On a deployment
+  // whose default model is out of quota, that alone makes chat fail while a request that simply
+  // omits the field succeeds.) Only a real choice is sent.
+  const [modelIsExplicit, setModelIsExplicit] = React.useState<boolean>(() => getPreferredModel(spaceId) !== null);
+  // The business's own configured model, for DISPLAY only — so the picker and the context-window
+  // meter show what a run will really use instead of the placeholder. Never sent as an override.
+  React.useEffect(() => {
+    if (getPreferredModel(spaceId) !== null) return; // an explicit choice wins over the default
+    let cancelled = false;
+    getShellManifest(spaceId, session)
+      .then((m) => {
+        if (!cancelled && m.model && !getPreferredModel(spaceId)) setSelectedModel(m.model);
+      })
+      .catch(() => { /* keep the placeholder — display only, never blocks sending */ });
+    return () => { cancelled = true; };
+  }, [spaceId, session]);
   // Effort supersedes a directly-chosen reasoning level as the thing a person actually sets — the
   // model's own native reasoning param (selectedReasoningLevel below) is DERIVED from it, never
   // picked independently, so the two can never disagree. Defaults to "low": every model offers it,
@@ -289,6 +310,7 @@ export function Chat({
   const handleModelChange = React.useCallback(
     (model: string) => {
       setSelectedModel(model);
+      setModelIsExplicit(true);
       storePreferredModel(spaceId, model);
       // A level stored for the PREVIOUS model may not exist on the new one's own ladder (a model
       // switch can shrink the ladder, e.g. from gpt-oss's 4 levels down to llama-3.3's 2) —
@@ -1191,7 +1213,9 @@ export function Chat({
         goal,
         session,
         {
-          model: selectedModel,
+          // Only an explicit choice — see modelIsExplicit's own comment. Omitting the field is
+          // what lets the server use the business's configured model.
+          ...(modelIsExplicit ? { model: selectedModel } : {}),
           effort: selectedEffort,
           ...(selectedReasoningLevel ? { reasoningEffort: selectedReasoningLevel } : {}),
           ...(selectedAgentId ? { agentDefinitionId: selectedAgentId } : {}),
@@ -1220,7 +1244,7 @@ export function Chat({
         setError(err instanceof Error ? err.message : "Failed to send message");
       }
     }
-  }, [isLoading, pendingUploads, ensureSessionId, spaceId, sessionKey, session, attachToRun, selectedModel, selectedEffort, selectedReasoningLevel, selectedAgentId, sessionId, projectId]);
+  }, [isLoading, pendingUploads, ensureSessionId, spaceId, sessionKey, session, attachToRun, selectedModel, modelIsExplicit, selectedEffort, selectedReasoningLevel, selectedAgentId, sessionId, projectId]);
 
   /**
    * A message typed while the agent is still working.
