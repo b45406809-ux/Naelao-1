@@ -250,7 +250,16 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
   const canUseWorkspace = !requiresBusiness || businesses.length > 0;
 
   const currentEntry = activeSpaceId === product.space_id
-    ? { id: product.space_id, name: manifest?.space_name ?? product.product_name, meta: me ? `${me.credits_balance} credits` : "…" }
+    ? {
+        id: product.space_id,
+        // Step 19: in business-first (Launchpad) mode the product root is NOT a navigable
+        // business — the entries list already excludes it, and showing its name ("Launchpad") as
+        // the switcher's current entry made it look like a business the user could sit in. Use a
+        // neutral placeholder instead; in "team" mode the product root IS the workspace, so its
+        // name stays.
+        name: requiresBusiness ? "Select a business" : (manifest?.space_name ?? product.product_name),
+        meta: me ? `${me.credits_balance} credits` : "…",
+      }
     : {
         id: activeSpaceId,
         name: businesses.find((b) => b.id === activeSpaceId)?.name ?? manifest?.space_name ?? "Business",

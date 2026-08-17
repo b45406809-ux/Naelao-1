@@ -91,7 +91,9 @@ export function Sidebar({
   mobileOpen,
 }: SidebarProps) {
   const [moreOpen, setMoreOpen] = React.useState(false);
-  const [projectsOpen, setProjectsOpen] = React.useState(false);
+  // Step 13a: default OPEN so the first few projects list right there with a "… more projects"
+  // row (the ask was "list x projects with —more projects—"), while the chevron still collapses.
+  const [projectsOpen, setProjectsOpen] = React.useState(true);
   const [threadsOpen, setThreadsOpen] = React.useState(true);
 
   return (
