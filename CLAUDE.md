@@ -8206,6 +8206,71 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      own credits to test" instruction — no `/agent/run` was dispatched. **With this, all 6 phases
      of `/root/.claude/plans/gleaming-scribbling-pelican.md` are now fully shipped.**
 
+149. **A post-shipping pass over the SAME source list the 62-item plan came from
+     (`long running.txt`, Google Drive) — it had been updated with fresh reports from live use
+     AFTER those phases landed, so several items marked done were reported still broken. Ten real
+     defects found and fixed, most of them the "fixed on one path, missed the other" class this
+     file has now documented repeatedly.** Binary downloads corrupted (the knowledge worker read
+     every response as text, so a PDF landed as mojibake — now reads bytes once and returns
+     `encoding: "text"|"base64"`, refusing an oversized binary with 413 rather than truncating,
+     since half a PDF is corrupt rather than smaller); the Sub-agents panel queried the space-wide
+     assistant DO while a spawn records into the session's own DO, so it was structurally always
+     empty; `thread.create` still produced "Session not found" (the spaces-worker session proxy
+     derived `end_user_id` for only one of the two caller shapes); the Compact button hit a route
+     that ran space-wide maintenance and never touched the session it was invoked from; `effort`
+     capped its own ladder at the model's native reasoning-level count, so `ultra` was rejected on
+     models that could serve it; the personal-plan checkout still went LS-first after the Whop
+     cutover; `thread.send_message` rendered as the assistant apparently answering its own
+     question (now a collapsible on-behalf card, paired to the reply that follows it); the
+     project-thread page was unusable on a phone; and the agent had no way to see which models or
+     agent templates existed (`agent.list_models`, plus four free-tier Gemini models added to the
+     catalogue).
+     - **The two reported chat bugs were both about the SERVER transcript, and had separate root
+       causes.** A reload discards every scrap of client state, so anything wrong after a reload is
+       wrong in the database. *"I got a reply but when I reload it's gone"*: `NaelaoAgentDO` wrote
+       the answer back with `void` — a promise still pending when a DO handler returns may never
+       run, so the write raced the response (the same class as item 136's `recordWakeFailure`).
+       Awaited now; safe because `writeAgentAnswerToSession` already swallows its own errors, so it
+       still cannot turn a successful run into a failed one. *"the reload duplicate is still
+       there"*: `POST /messages` was not idempotent and `apps/shell`'s `apiFetch` retries a POST on
+       a network throw or a 5xx/429 — neither of which proves the server didn't already commit the
+       row, since a reset connection or a response lost on the way back both throw client-side
+       while the write succeeded. SpaceDO migration v38 adds `messages.client_message_id` with a
+       **partial** unique index on `(session_id, client_message_id)` (partial so the historical
+       unkeyed rows don't collide with each other); a repeat resolves to the row already written
+       and returns 200 with the same fields. `sendMessage` mints the key once, outside the retry
+       loop; the assistant write-back keys on `run:<runId>`, so a replayed Workflow step can't
+       append a second answer either. Deliberately keyed rather than content-hashed — a person
+       saying "yes" twice means it twice. Regression-proven: reverting the dedupe branch fails 4 of
+       7 new tests, while the 3 guarding against OVER-deduping keep passing.
+     - **A real flaw in the UI-verification harness itself, which had been silently producing
+       wrong evidence.** `shell-mobile-check.mjs` injects the session via `addScriptTag` after
+       `domcontentloaded` — a race against React hydrating and `AuthProvider` reading localStorage.
+       Win it and the page renders signed in; lose it and the app has already bounced to `/login`
+       before the session existed. Same URL, same session, different outcome run to run — observed
+       directly this pass, where the "before" shot showed a login page and the "after" shot of the
+       identical URL showed the authenticated app. That doesn't just waste a screenshot, it reads
+       exactly like a broken product. The injector now detects landing on `/login` and navigates
+       back to the requested page once (sessionStorage-flagged, so a genuinely-unauthenticated
+       session can never loop). Also worth remembering: `--session-space` must be the **product
+       root** space id, never a business's — `ProductAuthProvider` is mounted with
+       `product.space_id`, the same product-scoping that has now bitten `getMe`, the pricing
+       catalogue, and the credits routes.
+     - **UI sweep, verified with real authenticated screenshots at 390×844 and 1440×900** against
+       the live product, not just `next build`: mobile thread page (rail correctly collapsed and
+       now a labelled control rather than the ~14px mystery band `.spaces-layout`'s column stacking
+       produced), the mobile hamburger drawer actually opening (the confirming shot item 131 could
+       not get), mobile + desktop Dashboard, mobile + desktop Discover, and the desktop thread page
+       with its scrollable panel tab row. The dashboard was cross-checked against a real dispatched
+       run end to end — 1 run, 100% success, 8.6k tokens, credits decremented — so the analytics
+       pipeline is confirmed live, not just rendering. One nit fixed from the screenshots
+       ("1 credits" → "1 credit").
+     3224 tests pass, `npx turbo run typecheck --force` clean (76 tasks). Deployed:
+     `naelao-spaces`, `naelao-agents`, `naelao-knowledge`, `naelao-billing` (bare `wrangler
+     deploy`), `apps/shell` (`--branch=main`, `environment: "production"` confirmed via the Pages
+     API). Live-verified against production: three identical POSTs leave ONE message, and a real
+     agent run's reply is present in the transcript a reload re-reads.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

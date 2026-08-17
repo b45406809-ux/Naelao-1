@@ -431,7 +431,7 @@ export default function DiscoverPage() {
                         {row.business.name}
                       </div>
                       <div className="settings-row-sub">
-                        {row.runs30d} run{row.runs30d === 1 ? "" : "s"} · {row.creditsUsed30d.toLocaleString()} credits
+                        {row.runs30d} run{row.runs30d === 1 ? "" : "s"} · {row.creditsUsed30d.toLocaleString()} credit{row.creditsUsed30d === 1 ? "" : "s"}
                         {row.successRate !== null ? ` · ${Math.round(row.successRate * 100)}% success` : ""}
                         {row.failed ? " · couldn't load fully" : ""}
                       </div>

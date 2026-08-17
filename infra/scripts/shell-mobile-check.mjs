@@ -20,11 +20,31 @@ function parseArgs(argv) {
   return out;
 }
 
-function buildInjector({ sessionKey, sessionValue, activeSpaceKey, activeSpaceValue, clickSelector, clickDelayMs }) {
+function buildInjector({ sessionKey, sessionValue, activeSpaceKey, activeSpaceValue, clickSelector, clickDelayMs, targetUrl }) {
   return `
     (function () {
       try { localStorage.setItem(${JSON.stringify(sessionKey)}, ${JSON.stringify(sessionValue)}); } catch (e) {}
       ${activeSpaceKey ? `try { sessionStorage.setItem(${JSON.stringify(activeSpaceKey)}, ${JSON.stringify(activeSpaceValue)}); } catch (e) {}` : ""}
+
+      // addScriptTag lands after domcontentloaded, which is a RACE against React hydrating and
+      // AuthProvider reading localStorage: win it and the page renders signed in, lose it and the
+      // app has already bounced to /login before the session existed. Same shot, same session,
+      // different outcome run to run — which silently screenshots the wrong page and reads exactly
+      // like a broken product. The session is written by the time we get here either way, so if we
+      // find ourselves on /login just go back to the page that was asked for; the reload picks the
+      // session up. The flag makes this strictly once, so a genuinely-unauthenticated session can
+      // never turn into a redirect loop.
+      try {
+        var iv2 = setInterval(function () {
+          if (!/\\/login(\\?|$)/.test(location.pathname + location.search)) return;
+          clearInterval(iv2);
+          if (sessionStorage.getItem("__naelao_relogin")) return;
+          sessionStorage.setItem("__naelao_relogin", "1");
+          location.href = ${JSON.stringify(targetUrl)};
+        }, 150);
+        setTimeout(function () { clearInterval(iv2); }, 8000);
+      } catch (e) {}
+
       window.__naelaoClicked = false;
       ${clickSelector ? `
       var tries = 0;
@@ -51,6 +71,7 @@ async function shoot({ base, headers, url, width, height, session, sessionSpace,
     activeSpaceValue: activeSpaceId ? JSON.stringify({ id: activeSpaceId, name: null }) : undefined,
     clickSelector,
     clickDelayMs,
+    targetUrl: url,
   });
   const body = {
     url,
