@@ -8374,6 +8374,67 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      `naelao-knowledge` (bare `wrangler deploy`) and `apps/shell` (`--branch=main`,
      `environment: "production"` confirmed via the Pages API).
 
+151. **A new 28-step goal batch (Google Drive `new/goal 1.txt`) is IN PROGRESS — the first
+     tranche (steps 2, 3, 8, 9, 10, 12, 13a, 14, 19, 24) is BUILT, tested, and deployed.** The
+     authoritative list is the user's Drive file (28 steps, item 1 = a Claude-Code-style
+     context-window breakdown UI for the Stats tab; the finale = 6 business templates + business-
+     wide BYOK). Shipped so far:
+     - **Step 10 (spawn/consult model+agent validation):** `agent.spawn` validates each task's
+       model against `ALLOWED_MODELS` before delegating — a wrong id gets a real "did you mean"
+       (new `billing-core` `suggestModels`) instead of a silent escalation-clamp (which read as a
+       misleading "too expensive") or a bare provider 404. `thread.consult`/`thread.send_message`
+       validate `agent_id` (and model) up front with did-you-mean over the project's agents.
+     - **Step 8 (project model/agent listing):** new `thread.list_project_models` +
+       `thread.list_project_agents` on the `project-coordination` prebuilt; the agent listing
+       ALWAYS includes the general Space Assistant (`naelao-agent`) so a brand-new project still
+       shows a real, addressable target. Both auto-approved reads.
+     - **Step 9 (tool-result pagination):** generic size-guard in `ScriptToolSurface.run()` —
+       `applyToolResultLimit` (exported, tested) pages the primary list of an oversized (or
+       explicitly `limit`/`offset`-ed) result in place with a `_pagination` note carrying the true
+       total + next-page instruction, or truncates a non-list blob with guidance. Small results
+       stay byte-identical.
+     - **Step 3 (chunked file read/search):** `read_file` gains `offset`/`length` ranged reads
+       (`has_more`/`next_offset` paging) so a file over the single-read cap is read a slice at a
+       time; new `search_file` returns matching lines with line numbers + optional context without
+       pulling the whole file. paramHints added for every `r2-workspace` op.
+     - **Step 12 (self-scheduling / background-task wake):** new `schedule` prebuilt
+       (`schedule.wake_me`/`list`/`cancel`) lets an agent wake ITSELF later with a follow-up goal
+       — the "set a cron trigger to check back on a background task" pattern. Built on the existing
+       goal-based `scheduled_jobs` dispatcher; a delay-based wake is one-shot (`params._one_shot`,
+       which the dispatcher now disables after firing), a `cron` wake recurs. Granularity is the
+       hourly heartbeat (honestly documented). Wired into both assistant profiles.
+     - **Step 2 (self-updating goal + project delegation):** both assistant profiles gained a
+       "Running the business on a standing goal" methodology — rewrite your goal every wake-up from
+       what actually happened, and delegate long/segmented work by creating a project, writing its
+       journal goal, opening a thread with instructions, and SCHEDULING it (`schedule.wake_me`) so
+       the project agent runs itself between wake-ups instead of being babysat.
+     - **Step 19 (switcher):** in business-first mode the switcher no longer shows the product name
+       ("Launchpad") as its current entry when no business is selected — a neutral "Select a
+       business" placeholder (the entries list already excluded the product root).
+     - **Step 13a (sidebar projects):** the Projects section defaults OPEN so the first few
+       projects list with a "… more projects" row (already collapsible; just visible by default).
+     - **Steps 14 (channels tab lists all channels incl. unconnected) & 24 (Home recent-sessions
+       pool of 20)** were already correct in code (items 148/140) — the shell redeploy makes them
+       live for the user (who was on an older build).
+     30 new tests across `tool-addressing-robustness.test.ts` and `file-and-schedule-tools.test.ts`
+     (plus updated existing consult/r2/script-engine assertions), `npx turbo run typecheck` clean.
+     Deployed: `naelao-agents` (bare `wrangler deploy`, thrice across the tranche) and `apps/shell`
+     (`--branch=main`, production confirmed via 200s). **STILL OPEN in this batch (large, follow-up
+     work):** 1 (Stats context-window UI), 4/6 (multi-format file viewer + list/grid/tree),
+     5/7/11 (inline artifact preview + preview-on-success tools), 13b (project KB file upload),
+     15 (hide assistant-only tools from project UIs — note project agents already can't CALL them,
+     items 136/148; this is a UI-exposure refinement), 16 (agent-template project picker), 17
+     (custom agent builder), 18 (public business directory — conflicts with item 102's privacy
+     boundary; needs a safe cross-tenant projection), 20 (plugins directory + default project
+     plugins), 21 (customer-bot automation-dashboard project kind), 22 (heartbeat/cron editing —
+     largely built by item 144, verify + surface), 23 (wallet "not provisioned" after Whop OAuth —
+     the OAuth connector is a DIFFERENT rail from the invite-gated Platforms sub-merchant wallet,
+     items 52/53/141; needs the UI to reflect the connected-account revenue path clearly), 25
+     (model thinking visibility — pipeline exists per items 117/122/124; depends on model/effort
+     emitting it, needs live repro), 26/27 (SOTA long-running-researcher universal template), 28
+     (the 6 business templates + business-wide BYOK — the largest item). Not done in this tranche
+     by design: shipping a few things well beats many half-done.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
