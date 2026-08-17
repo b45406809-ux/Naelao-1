@@ -167,10 +167,12 @@ describe("ScriptToolSurface — the 6-op surface (spec §3)", () => {
       expect(coordination.paramHints![opName], `missing paramHints for ${opName}`).toBeTruthy();
     }
 
-    // r2-workspace declares no paramHints — the field must be absent, not an empty object, so a
-    // caller can tell "nothing to show" from "this script has 0 operations" without checking size.
+    // r2-workspace now declares paramHints too (step 3 — read_file's offset/length chunked read
+    // and search_file need documenting), and its hints name the new params.
     const r2 = groups.find((g) => g.script === "r2-workspace")!;
-    expect(r2.paramHints).toBeUndefined();
+    expect(r2.paramHints).toBeDefined();
+    expect(r2.paramHints!["read_file"]).toMatch(/offset/);
+    expect(r2.paramHints!["search_file"]).toMatch(/query/);
   });
 
   // commerce.create_product/update_product were the exact ops item 108's live trace found

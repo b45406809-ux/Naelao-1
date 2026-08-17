@@ -67,7 +67,9 @@ describe("read_file — size guard", () => {
     expect(result.content).toBeNull();
     expect(result.too_large).toBe(true);
     expect(result.size).toBe(200_001);
-    expect(result.message).toContain("stat_file");
+    // Step 3: the too_large message now points at the chunked-read / search_file escape hatches
+    // (a full read still refuses, but there IS a way to read it now).
+    expect(result.message).toMatch(/offset|search_file/);
   });
 
   it("reports exists:false for a missing file, unaffected by the size guard", async () => {

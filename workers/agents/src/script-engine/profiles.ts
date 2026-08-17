@@ -307,6 +307,10 @@ ${BASE_AGENTS_MD}`,
         // thing — so a project's own state and standing instructions had nowhere to live.
         "project-journal",
         "business-diagnostics",
+        // Self-scheduling (step 12): wake yourself later with a follow-up goal to check back on a
+        // long/background task, then end the run instead of blocking. schedule.list is read-only
+        // (auto-approved); wake_me/cancel are gated like any other structural write.
+        "schedule",
       ],
       agent_scripts: "auto",
       startup_observe: "observe_filesystem",
@@ -687,6 +691,10 @@ ${BASE_AGENTS_MD}`,
         "project-journal",
         // Situational awareness on every wake-up — see the Knowing What Happened section above.
         "business-diagnostics",
+        // Self-scheduling (step 12): wake yourself later with a follow-up goal to check back on a
+        // long/background task, then end the run instead of blocking. schedule.list is read-only
+        // (auto-approved); wake_me/cancel are gated like any other structural write.
+        "schedule",
       ],
       agent_scripts: "auto",
       startup_observe: "observe_filesystem",
@@ -765,6 +773,14 @@ export const LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED: string[] = [
   "list_directory",
   "read_file",
   "stat_file",
+  // Step 3: searching inside a file for matching lines is a pure read, same class as read_file.
+  "search_file",
+  // Step 8: seeing which models/agents you may address before spawning/consulting — pure reads,
+  // and gating them would mean asking permission before being allowed to find out who exists.
+  "thread.list_project_models",
+  "thread.list_project_agents",
+  // Step 12: listing your own scheduled wakes is read-only; wake_me/cancel stay gated.
+  "schedule.list",
   // Read-only lookup of the business's own mailbox record. email.send (reaches the outside world)
   // and email.provision (creates a billable AgentMail resource) stay gated, same posture as
   // business_wallet.balance being auto-approved while a payout is not.

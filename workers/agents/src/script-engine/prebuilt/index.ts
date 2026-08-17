@@ -44,6 +44,7 @@ import { workspace } from "./workspace.js";
 import { wallet } from "./wallet.js";
 import { businessWallet } from "./business-wallet.js";
 import { revenueTracker } from "./revenue-tracker.js";
+import { schedule } from "./schedule.js";
 
 /** Context handed to every prebuilt operation. */
 export interface PrebuiltOpContext {
@@ -145,6 +146,7 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   // revenue on platforms Naelao never custodies money through (Whop), so a builder-configured
   // revenue-cut % can be billed as a surcharge; see revenue-tracker.ts's header.
   [revenueTracker.name]: revenueTracker,
+  [schedule.name]: schedule,
 };
 
 /**
@@ -190,4 +192,5 @@ export {
   projectCoordination,
   businessDiagnostics,
   localMachine,
+  schedule,
 };

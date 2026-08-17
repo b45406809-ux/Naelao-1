@@ -5778,8 +5778,13 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
           console.log(`[scheduled-jobs] skipped job=${row.id} space=${row.space_id}: assistant still running a prior wake`);
           await recordScheduledJobRun(env, row, { ok: false, skippedBusy: true, firedAt: now });
         } else if (doResp.ok) {
+          // Step 12: a self-wake scheduled via schedule.wake_me with a delay is one-shot
+          // (params._one_shot) — disable it after it fires once rather than letting the pinned
+          // minute/hour/day cron recur a year later.
+          let oneShot = false;
+          try { oneShot = (JSON.parse(row.params || "{}") as Record<string, unknown>)["_one_shot"] === true; } catch { /* keep recurring */ }
           await env.PLATFORM_DB.prepare(
-            "UPDATE scheduled_jobs SET last_run_at = ?, consecutive_failures = 0, last_error = NULL WHERE id = ?"
+            `UPDATE scheduled_jobs SET last_run_at = ?, consecutive_failures = 0, last_error = NULL${oneShot ? ", enabled = 0" : ""} WHERE id = ?`
           ).bind(now, row.id).run();
           await recordScheduledJobRun(env, row, { ok: true, durationMs: Date.now() - dispatchStarted, firedAt: now });
         } else {
