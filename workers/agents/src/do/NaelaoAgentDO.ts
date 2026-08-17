@@ -184,6 +184,11 @@ const BUILDER_CALLER_ROLES = new Set(["owner", "admin", "editor", "viewer"]);
 
 // G-BB03: Context window budget constants
 // claude-sonnet-4-6 supports 200K tokens; we reserve 10K headroom for completion
+/** Reserved scope id for memory that belongs to the SPACE's assistant rather than any one project.
+ *  Same reserved name workspacePrefix() and the Tier-5 sandbox already use for "not a project", so
+ *  the assistant's shared layers key off one stable id instead of a per-session DO. */
+export const ASSISTANT_MEMORY_SCOPE = "_assistant";
+
 const MODEL_CONTEXT_LIMIT_TOKENS = 190_000;
 // Budget allocation per spec: system 20%, KB 40%, conversation 30%, remainder 10%
 const SYSTEM_BUDGET_TOKENS   = Math.floor(MODEL_CONTEXT_LIMIT_TOKENS * 0.20); // 38K
@@ -1696,13 +1701,24 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // sharing a project share facts/fabric/wiki even though each has its own local
       // episodic/semantic memory. The Space Assistant's own `_assistant` slot (no projectId)
       // keeps using localMemoryStore directly, unwrapped — unaffected by this migration.
-      env.memoryStore = (projectId && this.env.SPACES_WORKER)
+      //
+      // A run with NO projectId (the Space Assistant chatting) used to fall through to
+      // localMemoryStore alone — and a chat run's DO is addressed BY SESSION, so every fact it
+      // learned was sealed inside that one conversation's DO. Nothing survived to the next session,
+      // and the Memory panel (which reads the space-wide `{spaceId}:naelao-agent` DO) could never
+      // see any of it: "the AI isn't recording anything in memory". Those runs now share the
+      // space-level `_assistant` scope — the same reserved id workspacePrefix() and the Tier-5
+      // sandbox already use for "this space's assistant, not a project" — so the assistant's facts
+      // are one set across every conversation it has. Layer 5 (episodic) still stays local and
+      // per-session by design; it is the raw per-thread trail, not shared knowledge.
+      const memoryScope = projectId || ASSISTANT_MEMORY_SCOPE;
+      env.memoryStore = this.env.SPACES_WORKER
         ? buildHybridMemoryStore(localMemoryStore, buildProjectMemoryStore({
             spacesWorker: this.env.SPACES_WORKER,
             platformSecret: this.env.PLATFORM_SECRET,
             spaceId,
             tenantId,
-            projectId,
+            projectId: memoryScope,
             mintInternalToken,
           }))
         : localMemoryStore;
@@ -6522,8 +6538,54 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           .toArray() as { key: string; category: string; value: string; confidence: number }[]
       : this.ctx.storage.sql.exec(`SELECT * FROM agent_memory ORDER BY category, updated_at DESC`)
           .toArray() as { key: string; category: string; value: string; confidence: number }[];
-    const entries = rows.map(r => ({ ...r, value: (() => { try { return JSON.parse(r.value); } catch { return r.value; } })() }));
+    const legacy = rows.map(r => ({ ...r, value: (() => { try { return JSON.parse(r.value); } catch { return r.value; } })() }));
+
+    // `agent_memory` is the ORIGINAL key/value store, written only by this DO's own POST /memory.
+    // Nothing in the script-native agent loop writes there — every real memory the agent forms goes
+    // through Memory OS instead (`memory.remember`, and the automatic post-run episodic note), which
+    // lives in `structured_facts` and `episodic_log`. Reading only the legacy table is why the
+    // Memory panel showed nothing no matter how much the agent had actually recorded, and is the
+    // real reason behind "the AI isn't recording anything in memory".
+    //
+    // Both are surfaced, tagged by source, so the panel reflects what is genuinely stored. Wrapped
+    // per-table: these are created lazily by Memory OS's own init, so a DO that has never run an
+    // agent simply has no such table yet, which is "nothing recorded", not an error.
+    const facts = this.safeMemoryRows<{ entity: string; relation: string; attribute: string; trust_score: number; updated_at: number }>(
+      `SELECT entity, relation, attribute, trust_score, updated_at FROM structured_facts ORDER BY updated_at DESC LIMIT 200`
+    ).map((r) => ({
+      key: `${r.entity} ${r.relation}`,
+      category: "fact",
+      value: r.attribute,
+      confidence: r.trust_score,
+      updated_at: r.updated_at,
+      source: "memory-os" as const,
+    }));
+
+    const episodic = this.safeMemoryRows<{ text: string; importance: number; created_at: number }>(
+      `SELECT text, importance, created_at FROM episodic_log ORDER BY created_at DESC LIMIT 100`
+    ).map((r) => ({
+      key: r.text.slice(0, 80),
+      category: "episodic",
+      value: r.text,
+      confidence: r.importance,
+      updated_at: r.created_at,
+      source: "memory-os" as const,
+    }));
+
+    const entries = [
+      ...legacy.map((e) => ({ ...e, source: "legacy" as const })),
+      ...(category ? [...facts, ...episodic].filter((e) => e.category === category) : [...facts, ...episodic]),
+    ];
     return Response.json({ entries, count: entries.length });
+  }
+
+  /** Read a Memory OS table that may not exist yet on a DO that has never run an agent. */
+  private safeMemoryRows<T>(sql: string): T[] {
+    try {
+      return this.ctx.storage.sql.exec(sql).toArray() as T[];
+    } catch {
+      return [];
+    }
   }
 
   // ── POST /memory ──────────────────────────────────────────────────────────

@@ -37,6 +37,11 @@ export interface SidebarProps {
   onOpenThread?: (id: string) => void;
   onNewThread2?: () => void;
   onMoreThreads?: () => void;
+  /** Whether `threads` was actually truncated. The "… more sessions" row used to render purely
+   *  because a handler was supplied, so an account with three sessions was told there were more —
+   *  it is a claim about the data, not a navigation affordance. Defaults to true so existing
+   *  callers keep their current behaviour. */
+  hasMoreThreads?: boolean;
   spaceSwitcher?: {
     current: SpaceSwitcherEntry;
     entries: SpaceSwitcherEntry[];
@@ -79,6 +84,7 @@ export function Sidebar({
   threads,
   onOpenThread,
   onMoreThreads,
+  hasMoreThreads = true,
   spaceSwitcher,
   iconOnly,
   onToggleCollapse,
@@ -246,7 +252,7 @@ export function Sidebar({
               {threads.map((t) => (
                 <HistoryItem key={t.id} icon="threads" label={t.label} onClick={() => onOpenThread?.(t.id)} />
               ))}
-              {onMoreThreads && (
+              {onMoreThreads && hasMoreThreads && (
                 <HistoryItem icon="threads" label="… more sessions" muted onClick={onMoreThreads} />
               )}
             </div>

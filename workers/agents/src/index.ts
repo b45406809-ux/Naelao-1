@@ -13,7 +13,7 @@ import { contextWindowForModel, isAllowedModel, ALLOWED_MODELS, DEFAULT_WORKING_
 import { getDOName } from "@naelao/crypto";
 import { detectPromptInjection, detectPolicyViolations } from "@naelao/moderation";
 import { parseMentions, creatableFeatureKindsForRole, detectImplicitSignals, classifyFailure, type MentionableAgent } from "@naelao/events";
-import { NaelaoAgentDO } from "./do/NaelaoAgentDO.js";
+import { NaelaoAgentDO, ASSISTANT_MEMORY_SCOPE } from "./do/NaelaoAgentDO.js";
 import { HITLApprovalDO } from "./do/HITLApprovalDO.js";
 import { TaskDO } from "./do/TaskDO.js";
 import { ToolSandboxDO } from "./do/ToolSandboxDO.js";
@@ -4217,7 +4217,45 @@ app.get("/spaces/:spaceId/assistant/memory", async (c) => {
   if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
   const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
   const category = c.req.query("category");
-  return stub.fetch(new Request(`http://agent-do/memory${category ? `?category=${encodeURIComponent(category)}` : ""}`));
+  const local = await stub
+    .fetch(new Request(`http://agent-do/memory${category ? `?category=${encodeURIComponent(category)}` : ""}`))
+    .then((r) => r.json<{ entries?: unknown[] }>())
+    .catch(() => ({ entries: [] as unknown[] }));
+
+  // The space-wide DO only holds what CRON/heartbeat wake-ups recorded. A chat run's DO is
+  // addressed by session, so the assistant's real learned facts live in the shared `_assistant`
+  // scope in SpaceDO (see NaelaoAgentDO's memoryStore wiring). Reading only the DO above is why
+  // this panel stayed empty for a user who had only ever chatted. Best-effort: a SpaceDO hiccup
+  // degrades to the local rows rather than blanking the panel.
+  let shared: unknown[] = [];
+  if (c.env.SPACES_WORKER && category !== "episodic") {
+    try {
+      const resp = await c.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/spaces/${spaceId}/projects/${ASSISTANT_MEMORY_SCOPE}/memory/facts?q=&limit=50`,
+        {
+          headers: {
+            "x-naelao-tenant-id": tenantId,
+            "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
+          },
+        }
+      ));
+      if (resp.ok) {
+        const { data } = await resp.json<{ data?: Array<{ id: string; entity: string; relation: string; attribute: string; trust_score: number }> }>();
+        shared = (data ?? []).map((r) => ({
+          key: `${r.entity} ${r.relation}`,
+          category: "fact",
+          value: r.attribute,
+          confidence: r.trust_score,
+          source: "assistant-shared",
+        }));
+      }
+    } catch {
+      /* best-effort — see above */
+    }
+  }
+
+  const entries = [...(local.entries ?? []), ...shared];
+  return Response.json({ entries, count: entries.length });
 });
 
 // GET /spaces/:spaceId/assistant/channels — which channels are configured for this space (the

@@ -318,34 +318,12 @@ export const MODEL_BENCHMARKS: Record<AllowedModel, ModelBenchmark> = {
   // through this platform's own agent-loop eval (docs/MODEL_EVAL_2026-07-25.md /
   // agent-capability-matrix.jsonl) — no `eval`/`axes` entries until that happens, same
   // "don't fabricate a score" precedent as every other un-run model here.
-  // gpt-oss-120b deliberately NOT offered on Groq: dispatched twice live through the real
-  // reasoning loop and failed both times with "attempted to call tool 'json' which was not in
-  // request.tools", independent of reasoning effort — see models.ts's ALLOWED_MODELS comment for
-  // the full finding (the same model family also fails the tool contract on Workers AI).
-  "groq/openai/gpt-oss-20b": M(
-    "groq/openai/gpt-oss-20b", "GPT-OSS (Groq)", "economy", "measured",
-    "$0.075 / $0.30 per 1M tokens in / out — the cheapest reasoning-capable model on this list.",
-    ["Configurable reasoning effort (low/medium/high)", "Fast for its class", "14,400 requests/day free tier — note Groq also enforces a much tighter PER-MODEL tokens-per-minute cap (observed live: 8000 TPM on gpt-oss-120b, 6000 TPM on llama-3.1-8b-instant), so a burst of testing can 429 well before the daily request count is anywhere near exhausted"],
-    ["High-volume tasks that still benefit from adjustable reasoning depth"]
-  ),
-  "groq/llama-3.3-70b-versatile": M(
-    "groq/llama-3.3-70b-versatile", "Llama (Groq)", "economy", "measured",
-    "$0.59 / $0.79 per 1M tokens in / out — Groq's own published pricing.",
-    ["Same model family as this platform's own default (llama-3.3-70b), but on Groq's inference stack and its own separate quota", "14,400 requests/day free tier — 720x this platform's own Workers AI daily ceiling"],
-    ["A direct fallback when the platform's own Workers AI allowance is exhausted, on a model with the same known behaviour"]
-  ),
-  "groq/llama-3.1-8b-instant": M(
-    "groq/llama-3.1-8b-instant", "Llama (Groq)", "economy", "measured",
-    "$0.05 / $0.08 per 1M tokens in / out — the cheapest model on this entire list.",
-    ["Cheapest and fastest model available", "131K context window despite the small parameter count", "14,400 requests/day free tier"],
-    ["High-volume simple tasks where cost matters more than reasoning depth"]
-  ),
-  "groq/qwen/qwen3.6-27b": M(
-    "groq/qwen/qwen3.6-27b", "Qwen (Groq)", "standard", "measured",
-    "$0.60 / $3.00 per 1M tokens in / out — Groq's own published pricing, the priciest Groq entry.",
-    ["Togglable reasoning (none/default)", "Image input support (unused by this platform's own text-only tool contract today)", "14,400 requests/day free tier"],
-    ["Tasks where the platform's own Workers AI qwen3-30b variant is a good fit but its quota is exhausted"]
-  ),
+  // NO Groq entries: every Groq id this platform offered was re-probed live on 2026-08-17 and none
+  // is usable on this account — the two llama ids 404 ("model does not exist"; Groq's own docs no
+  // longer list them as production models) and gpt-oss-20b/qwen3.6-27b return 413 "Request too
+  // large ... in organization" because this account's Groq tier permits fewer tokens per minute
+  // than a single reasoning payload. gpt-oss-120b was already excluded separately for failing the
+  // tool contract live. See models.ts's ALLOWED_MODELS comment for the full finding.
 };
 
 /** Ordering used to rank cost tiers, cheapest first — the axis `effort.ts`'s escalation ceiling

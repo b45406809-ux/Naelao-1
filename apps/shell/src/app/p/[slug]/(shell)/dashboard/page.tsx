@@ -745,7 +745,11 @@ export default function DashboardPage() {
               </Panel>
             )}
 
-            <Panel title="Connected apps" count={connectors.length}>
+            {/* Count the apps actually CONNECTED, which is what the title claims. This used to be
+                connectors.length — the whole catalogue, coming-soon entries included — so a business
+                with nothing connected read "Connected apps 33", and it disagreed with the KPI tile
+                above it AND with its own body, which only lists the available ones. */}
+            <Panel title="Connected apps" count={connectedApps}>
               {connectors.length === 0 ? (
                 <Empty>Couldn&apos;t read the connector list.</Empty>
               ) : (

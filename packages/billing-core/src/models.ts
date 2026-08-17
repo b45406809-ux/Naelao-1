@@ -151,10 +151,19 @@ export const ALLOWED_MODELS = [
   // excludes `groq/compound`/`groq/compound-mini` (Groq's own built-in agentic systems — no
   // `tools` in their supported_features) and every audio/prompt-guard/tiny-context model on the
   // account (not chat-capable for this platform's use).
-  "groq/openai/gpt-oss-20b",
-  "groq/llama-3.3-70b-versatile",
-  "groq/llama-3.1-8b-instant",
-  "groq/qwen/qwen3.6-27b",
+  //
+  // 2026-08-17: all four were re-probed live through the real reasoning loop and NONE is usable on
+  // this account, so offering them means a builder picks a model and gets a product that fails on
+  // its first message — the same defect already fixed once for the Claude ids (CLAUDE.md item 72).
+  // Removed rather than left in a picker that cannot serve them:
+  //   • llama-3.3-70b-versatile, llama-3.1-8b-instant → 404 "model does not exist"; Groq's own docs
+  //     no longer list either as a production model.
+  //   • openai/gpt-oss-20b, qwen/qwen3.6-27b → 413 "Request too large for model ... in organization"
+  //     on every real run: this account's Groq tier allows fewer tokens per minute than one
+  //     reasoning payload, so the model exists but can never answer.
+  // A business already storing one of these degrades safely — resolveModelConfig re-validates
+  // against this list and falls back to DEFAULT_WORKING_MODEL rather than dispatching a dead id.
+  // Restore any of them the moment a live probe passes again; each is one line.
 ] as const;
 
 export type AllowedModel = (typeof ALLOWED_MODELS)[number];

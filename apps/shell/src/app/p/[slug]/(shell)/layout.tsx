@@ -305,6 +305,9 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
         threads={sessions.map((s) => ({ id: s.id, label: s.title ?? "Untitled conversation" }))}
         onOpenThread={(id) => router.push(`/p/${product.slug}/sessions/${id}`)}
         onMoreThreads={() => router.push(`/p/${product.slug}/sessions`)}
+        // Only claim there are more when the fetch actually came back full — otherwise an account
+        // with three sessions is told some are hidden.
+        hasMoreThreads={sessions.length >= SIDEBAR_RECENT_SESSIONS}
         spaceSwitcher={{
           current: currentEntry,
           entries: [
