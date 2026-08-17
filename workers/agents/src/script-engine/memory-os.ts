@@ -288,17 +288,40 @@ export function buildMemoryStore(opts: MemoryOSOptions): MemoryStore {
       const like = `%${query.text.replace(/[%_]/g, (c) => `\\${c}`)}%`;
       const now = Date.now();
 
+      // A fact is stored as three separate columns, so requiring the WHOLE query string to appear
+      // inside ONE of them means a natural-language recall almost always misses: "refund window"
+      // never matches (entity=refund, relation=window, attribute=30 days), even though that is
+      // exactly the fact being asked for. Agents recall in natural language, so that made the
+      // structured layer near-useless in practice.
+      //
+      // Match on TOKENS instead — any token appearing in any column is a hit. The whole-phrase
+      // term is kept as well so an exact substring match still works (and still ranks, since rows
+      // are ordered by trust_score). Deliberately OR rather than AND: recall is a retrieval aid
+      // whose results are re-read by the model, so a near-miss is far cheaper than a silent miss.
+      const factTerms = [
+        ...new Set(
+          query.text
+            .toLowerCase()
+            .split(/[^a-z0-9]+/)
+            .filter((t) => t.length > 2)
+            .map((t) => `%${t.replace(/[%_]/g, (c) => `\\${c}`)}%`)
+        ),
+      ];
+      if (factTerms.length === 0) factTerms.push(like);
+      const factClause = factTerms
+        .map(() => `(entity LIKE ? ESCAPE '\\' OR relation LIKE ? ESCAPE '\\' OR attribute LIKE ? ESCAPE '\\')`)
+        .join(" OR ");
+      const factParams = factTerms.flatMap((t) => [t, t, t]);
+
       // Structured facts: match entity/relation/attribute, scoped to this user + space-level.
       const factRows = opts.sql
         .exec(
           `SELECT * FROM structured_facts
-           WHERE user_id IN (?, ?) AND (entity LIKE ? ESCAPE '\\' OR relation LIKE ? ESCAPE '\\' OR attribute LIKE ? ESCAPE '\\')
+           WHERE user_id IN (?, ?) AND (${factClause})
            ORDER BY trust_score DESC LIMIT ?`,
           userId,
           UNSCOPED,
-          like,
-          like,
-          like,
+          ...factParams,
           limit
         )
         .toArray() as StructuredFactRow[];
@@ -321,12 +344,15 @@ export function buildMemoryStore(opts: MemoryOSOptions): MemoryStore {
       }));
 
       // Episodic log: recent free-text matches.
+      // Same token matching as structured facts above, and for the same reason: an agent asks
+      // "what did they say about the price", not the exact substring it once wrote down.
+      const episodicClause = factTerms.map(() => `text LIKE ? ESCAPE '\\'`).join(" OR ");
       const episodicRows = opts.sql
         .exec(
-          `SELECT * FROM episodic_log WHERE user_id IN (?, ?) AND text LIKE ? ESCAPE '\\' ORDER BY created_at DESC LIMIT ?`,
+          `SELECT * FROM episodic_log WHERE user_id IN (?, ?) AND (${episodicClause}) ORDER BY created_at DESC LIMIT ?`,
           userId,
           UNSCOPED,
-          like,
+          ...factTerms,
           limit
         )
         .toArray() as EpisodicRow[];

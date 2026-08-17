@@ -25,13 +25,18 @@ export const MAX_CONCURRENT_SUB_AGENT_TREES = 3;
 /**
  * Coarse budget→step translation — a secondary safety net alongside the loop's real
  * per-token enforcement (runScriptLoop's `maxTokens`, backed by the reasoner's actual
- * Anthropic `usage` counts, not an estimate). Bounds runaway step count even in the rare case
+ * `usage` counts, not an estimate). Bounds runaway step count even in the rare case
  * usage isn't reported (e.g. a non-standard model response). Each child gets its OWN ceiling
  * derived from ITS OWN requested budget, never the parent's remaining budget (fixes
  * "Sub-Agent Token Budget Not Isolated From Parent").
+ *
+ * The token budget is what should actually bind, so this is deliberately loose enough not to be
+ * the binding constraint in normal use. It used to cap at 10, which on the default 20k budget meant
+ * a child hit the step ceiling long before spending anything like its allowance — a sub-agent
+ * strictly less capable than the parent that spawned it, for no reason anyone chose.
  */
 export function budgetToMaxSteps(budgetTokens: number): number {
-  return Math.max(1, Math.min(10, Math.round(budgetTokens / 2000)));
+  return Math.max(3, Math.min(40, Math.round(budgetTokens / 1000)));
 }
 
 /** Caps size (context-bloat guard) and wraps a sub-agent's output so it can never be read

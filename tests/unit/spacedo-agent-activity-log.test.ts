@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { SpaceDO } from "../../workers/spaces/src/do/SpaceDO.js";
-import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
+import { createDOStorage } from "./helpers/sqlite-do-shim.js";
 
 // Security audit follow-up (observability gap): a builder had no way to see what their agent has
 // actually been doing — no run history, no cost, no visibility into why it escalated. agent_runs
@@ -11,7 +11,7 @@ import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
 // in-memory SQLite (node:sqlite), the same rigor as spacedo-project-spend.test.ts.
 
 function makeSpaceDO(): SpaceDO {
-  const ctx = { storage: { sql: createDOSqlStorage() } };
+  const ctx = { storage: createDOStorage() };
   const env = { PLATFORM_SECRET: "test-secret" };
   return new SpaceDO(ctx as never, env as never);
 }

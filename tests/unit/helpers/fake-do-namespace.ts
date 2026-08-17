@@ -1,4 +1,4 @@
-import { createDOSqlStorage } from "./sqlite-do-shim.js";
+import { createDOStorage } from "./sqlite-do-shim.js";
 
 /**
  * A stateful fake DurableObjectNamespace: idFromName(name).get() always returns the SAME
@@ -13,7 +13,7 @@ export function makeStatefulDoNamespace<T extends { fetch(req: Request): Promise
   function getOrCreate(name: string): T {
     let inst = instances.get(name);
     if (!inst) {
-      const ctx = { storage: { sql: createDOSqlStorage() } };
+      const ctx = { storage: createDOStorage() };
       inst = new DOClass(ctx as never, {} as never);
       instances.set(name, inst);
     }

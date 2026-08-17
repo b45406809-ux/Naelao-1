@@ -19,27 +19,48 @@ import {
   getShellManifest,
   getMe,
   listProjects,
-  listThreads,
-  createThread,
+  listSessions,
   listMyBusinesses,
+  listAllApprovals,
   type ShellManifest,
   type ProductUserMe,
   type Project,
-  type ThreadSummary,
+  type SessionSummary,
   type Business,
 } from "@/lib/api";
 
+// No "Home" entry: starting a conversation is what the "new session" button does, and having
+// both a button and a nav item pointing at the same surface just made the sidebar ambiguous.
+//
+// "Dashboard" (formerly "Assistant") is a merged business dashboard + assistant dashboard for
+// whichever space is currently active — it's the first thing worth seeing, so it leads the list,
+// ahead of Discover.
+/** How many recent conversations the left sidebar keeps. The sidebar collapses past its own
+ *  "show more" threshold anyway, so this is the pool that list draws from — five was small enough
+ *  that a couple of days' work pushed a conversation out of reach without ever going to /sessions. */
+const SIDEBAR_RECENT_SESSIONS = 15;
+
 const DEFAULT_PRIMARY_NAV: SidebarNavEntry[] = [
-  { key: "home", icon: "home", label: "Home" },
-  { key: "spaces", icon: "spaces", label: "Spaces" },
-  { key: "assistant", icon: "assistant", label: "Assistant" },
+  { key: "dashboard", icon: "assistant", label: "Dashboard" },
+  { key: "spaces", icon: "spaces", label: "Discover" },
   { key: "projects", icon: "projects", label: "Projects" },
 ];
 
 const DEFAULT_MORE_NAV: SidebarNavEntry[] = [
+  // Approvals sits in the primary nav below, not here, and only once something is actually
+  // waiting: a permanently-visible empty inbox trains people to ignore it, which defeats the one
+  // job it has.
   { key: "agents", icon: "agents", label: "Agents" },
+  { key: "analytics", icon: "analytics", label: "Analytics" },
   { key: "knowledge", icon: "knowledge", label: "Knowledge" },
+  // Real third-party apps (Composio/Pipedream-routed + bespoke OAuth/manual-key) the assistant
+  // and project agents can reach over MCP — see connectors/page.tsx.
+  { key: "connectors", icon: "marketplace", label: "Connectors" },
   { key: "workflows", icon: "workflows", label: "Workflows" },
+  // What the assistant/its agents want you to know about (an approval opened, a run failed, a
+  // connector needs setup) — distinct from Approvals (which needs a decision, not just a look).
+  // No dedicated bell icon in this design system yet; "explore" is the closest unused glyph.
+  { key: "notifications", icon: "explore", label: "Notifications" },
   { key: "settings", icon: "settings", label: "Settings" },
 ];
 
@@ -54,7 +75,7 @@ export default function ShellLayout({ children }: { children: React.ReactNode })
 
 function ShellLayoutInner({ children }: { children: React.ReactNode }) {
   const product = useProduct();
-  const { activeSpaceId, setActiveSpace, setSupportContact } = useActiveSpace();
+  const { activeSpaceId, setActiveSpace, setSupportContact, isHydrated: activeSpaceHydrated } = useActiveSpace();
   const { session, isHydrated, isAuthenticated } = useProductAuth();
   const router = useRouter();
   const pathname = usePathname();
@@ -64,9 +85,31 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
   const [manifest, setManifest] = React.useState<ShellManifest | null>(null);
   const [me, setMe] = React.useState<ProductUserMe | null>(null);
   const [projects, setProjects] = React.useState<Project[]>([]);
-  const [threads, setThreads] = React.useState<ThreadSummary[]>([]);
+  const [sessions, setSessions] = React.useState<SessionSummary[]>([]);
   const [businesses, setBusinesses] = React.useState<Business[]>([]);
+  // Distinct from businesses.length === 0 (the empty initial state before the list has even been
+  // fetched) — the business-first gate and default-business auto-select below both need to know
+  // the list has actually SETTLED, not just that it currently reads empty.
+  const [businessesLoaded, setBusinessesLoaded] = React.useState(false);
+  // How many actions an agent has paused on, waiting for this person. A parked action is
+  // invisible otherwise — the agent carries on with the rest of the task, which is exactly what
+  // makes it easy to miss that something needs a decision.
+  const [pendingApprovals, setPendingApprovals] = React.useState(0);
   const [switcherOpen, setSwitcherOpen] = React.useState(false);
+  // Live-reported bug: below the mockup's 900px breakpoint, #sidebar has always been rendered
+  // permanently off-canvas (packages/ui's own ported CSS transforms it out of view unless it
+  // carries a `mobile-open` class) — but nothing here ever added that class or gave a person any
+  // way to bring it back. There was no hamburger button, no drawer state, nothing: the sidebar
+  // was simply unreachable on a phone. Fixed by wiring the mobile top bar's hamburger to a real
+  // toggle, and closing the drawer automatically on every navigation (matching the mockup's own
+  // closeMobileSidebar()-on-every-nav behaviour).
+  const [mobileNavOpen, setMobileNavOpen] = React.useState(false);
+  React.useEffect(() => { setMobileNavOpen(false); }, [pathname]);
+  // hybrid/tenant products (Launchpad) are business-first: nothing chattable exists at the
+  // product root, every thread/project/session belongs to a business. "team" mode is the
+  // universal Journey-1B shell for a non-Launchpad SpaceType, where the product root IS the one
+  // and only workspace (no businesses concept at all) — that stays exactly as before.
+  const requiresBusiness = manifest ? manifest.membership_model !== "team" : false;
   // Cookie consent: shown only when the product's cookiePolicy is "third_party" and the user
   // hasn't already accepted in this browser. localStorage key is per-product-slug so accepting
   // on one product doesn't silently grant consent for another.
@@ -100,23 +143,83 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
       setManifest(m);
       setSupportContact(m.legal?.support_contact ?? null);
     }).catch(() => show("Couldn't load workspace"));
-    getMe(activeSpaceId, creds).then(setMe).catch(() => {});
+    // …with one deliberate exception: `me` is the PERSON, not the workspace. A ProductUserDO is
+    // one instance per (productId × endUserId), so scoping this to a business 404s and the credit
+    // balance renders as 0 forever. Always the product root.
+    getMe(product.space_id, creds).then(setMe).catch(() => {});
     listProjects(activeSpaceId, creds).then(setProjects).catch(() => {});
-    listThreads(activeSpaceId, creds).then((all) => setThreads(all.slice(0, 3))).catch(() => {});
+    // The sidebar's recent list is assistant SESSIONS (what Home starts), not structural project
+    // threads — those belong to a project and are reached through /projects/:id.
+    listSessions(activeSpaceId, creds, SIDEBAR_RECENT_SESSIONS).then(setSessions).catch(() => {});
     // The switcher's own entry list is always the product-root's businesses, regardless of which
     // one is currently active — deliberately NOT activeSpaceId.
-    listMyBusinesses(product.space_id, creds).then(setBusinesses).catch(() => {});
+    listMyBusinesses(product.space_id, creds)
+      .then((b) => { setBusinesses(b); setBusinessesLoaded(true); })
+      // Left unset on failure (not "loaded with zero") — a transient load error must not be
+      // mistaken for "this account genuinely has no businesses" and force a redirect loop.
+      .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, activeSpaceId, product.space_id, product.slug]);
 
-  async function handleNewThread() {
-    if (!creds) return;
-    try {
-      const created = await createThread(activeSpaceId, creds, { title: "New thread" });
-      router.push(`/p/${product.slug}/threads/${created.id}`);
-    } catch {
-      show("Failed to create thread");
-    }
+  // Live-reported bug: a pending approval is per-BUSINESS (HITLApprovalDO is addressed
+  // `hitl:{spaceId}`), but this used to only ever check `activeSpaceId` — whichever business the
+  // switcher happened to be pointed at. An approval parked under a business you weren't currently
+  // viewing was completely invisible: no badge, nothing on the Approvals page, no way to find it
+  // short of switching to every business one at a time and hoping. Now checked across every
+  // business the person belongs to, once the list has actually loaded — not just the active one.
+  // Separate effect from the one above (rather than folded into it) because it genuinely needs
+  // `businesses` to be populated first, not just kicked off in parallel with it.
+  React.useEffect(() => {
+    if (!creds || !businessesLoaded) return;
+    const productName = manifest?.space_name ?? product.product_name;
+    const refresh = () => {
+      listAllApprovals(product.space_id, productName, businesses, creds)
+        .then((a) => setPendingApprovals(a.length))
+        .catch(() => {});
+    };
+    refresh();
+    // A new approval can open mid-conversation, or from a background/scheduled run entirely
+    // outside this session — a light periodic re-check is what makes either visible without a
+    // manual reload.
+    const approvalPoll = window.setInterval(refresh, 30_000);
+    return () => window.clearInterval(approvalPoll);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session, businessesLoaded, businesses, product.space_id, product.product_name, manifest?.space_name]);
+
+  // Business-first gate: a hybrid/tenant product's Home/Projects/Threads/Assistant/Agents/
+  // Knowledge are meaningless at the product root — everything belongs to a business. A user with
+  // zero businesses is steered to the business-creation hub instead of landing in an empty,
+  // permanently-product-root chat. Exempt: the hub itself (spaces), account-level settings, and
+  // email verification — none of those are "workspace" pages. Gated on both isHydrated flags to
+  // avoid firing on stale default state before the real data (and any persisted active-space
+  // choice) has actually loaded.
+  React.useEffect(() => {
+    if (!isHydrated || !isAuthenticated) return;
+    if (!activeSpaceHydrated) return;
+    if (!manifest || !businessesLoaded) return;
+    if (!requiresBusiness) return;
+    if (businesses.length > 0) return;
+    const segments = pathname?.split("/").filter(Boolean) ?? [];
+    const key = segments[2] ?? "new";
+    if (key === "spaces" || key === "settings" || key === "verify-email") return;
+    router.replace(`/p/${product.slug}/spaces?onboarding=1`);
+  }, [isHydrated, isAuthenticated, activeSpaceHydrated, manifest, businessesLoaded, requiresBusiness, businesses.length, pathname, product.slug, router]);
+
+  // Once a business-first user actually has a business, default them straight into it rather than
+  // leaving them parked on the (now unreachable-by-gate, but still the default) product root.
+  // Never overrides an explicit switch — only fires while activeSpaceId is still the untouched
+  // default.
+  React.useEffect(() => {
+    if (!activeSpaceHydrated || !businessesLoaded || !requiresBusiness) return;
+    if (businesses.length === 0) return;
+    if (activeSpaceId !== product.space_id) return;
+    setActiveSpace(businesses[0]!.id, businesses[0]!.name);
+  }, [activeSpaceHydrated, businessesLoaded, requiresBusiness, businesses, activeSpaceId, product.space_id, setActiveSpace]);
+
+  // "New session" doesn't create anything — /new IS the new-session surface, and a session is
+  // only minted on a real first message (lazy creation). Navigating there is the whole action.
+  function handleNewSession() {
+    router.push(`/p/${product.slug}/new`);
   }
 
   if (!isHydrated || !isAuthenticated) {
@@ -128,9 +231,23 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
   }
 
   const hidden = new Set(manifest?.ui.hidden_core_items ?? []);
-  const primaryNav = DEFAULT_PRIMARY_NAV.filter((item) => !hidden.has(item.key));
+  const primaryNav: SidebarNavEntry[] = [
+    ...DEFAULT_PRIMARY_NAV.filter((item) => !hidden.has(item.key)),
+    ...(pendingApprovals > 0
+      ? [{ key: "approvals", icon: "agents" as const, label: "Approvals", badge: pendingApprovals }]
+      : []),
+  ];
   const moreNav = DEFAULT_MORE_NAV.filter((item) => !hidden.has(item.key));
-  const activeKey = pathname?.split("/").filter(Boolean)[2] ?? "home";
+  const rawKey = pathname?.split("/").filter(Boolean)[2] ?? "new";
+  // /new and /sessions are the conversation flow, which deliberately has no nav item of its own
+  // (the "new session" button and the recent list below it are its entry points), so neither
+  // should light up a nav entry.
+  const activeKey = rawKey === "sessions" ? "new" : rawKey;
+  // Belt-and-suspenders alongside the redirect gate above: while a business-first user still has
+  // zero businesses, they're parked on /spaces (the one page the gate exempts) — the sidebar's own
+  // "new thread"/"new project" buttons must not offer to create either against the product root
+  // while they're standing right there looking at "create your first business."
+  const canUseWorkspace = !requiresBusiness || businesses.length > 0;
 
   const currentEntry = activeSpaceId === product.space_id
     ? { id: product.space_id, name: manifest?.space_name ?? product.product_name, meta: me ? `${me.credits_balance} credits` : "…" }
@@ -142,23 +259,66 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
 
   return (
     <div id="app">
+      {/* Only visible below the 900px breakpoint (packages/ui/src/styles.css's own media query) —
+          a persistent bar carrying the one control a phone otherwise has no way to reach: opening
+          the off-canvas sidebar. */}
+      <div className="mobile-topbar">
+        <button
+          type="button"
+          className="mobile-menu-btn"
+          aria-label="Open menu"
+          onClick={() => setMobileNavOpen((v) => !v)}
+        >
+          <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="currentColor">
+            <line x1="2" y1="4" x2="14" y2="4" />
+            <line x1="2" y1="8" x2="14" y2="8" />
+            <line x1="2" y1="12" x2="14" y2="12" />
+          </svg>
+        </button>
+        <div className="mt-logo">
+          <div className="logo-mark">
+            <svg viewBox="0 0 14 14">
+              <path d="M7 1L12.5 4.25V10.75L7 14L1.5 10.75V4.25L7 1Z" />
+            </svg>
+          </div>
+          <span>{manifest?.space_name ?? product.product_name}</span>
+        </div>
+        <div className="mt-spacer" />
+      </div>
+      <div
+        className={["mobile-backdrop", mobileNavOpen ? "show" : ""].filter(Boolean).join(" ")}
+        onClick={() => setMobileNavOpen(false)}
+      />
       <Sidebar
         brandName={manifest?.space_name ?? product.product_name}
+        mobileOpen={mobileNavOpen}
         activeKey={activeKey}
-        onNavigate={(key) => router.push(key === "home" ? `/p/${product.slug}` : `/p/${product.slug}/${key}`)}
+        onNavigate={(key) => router.push(`/p/${product.slug}/${key}`)}
         primaryNav={primaryNav}
         moreNav={moreNav}
-        onNewThread={handleNewThread}
         projects={projects.map((p) => ({ id: p.id, label: p.name }))}
         onOpenProject={(id) => router.push(`/p/${product.slug}/projects/${id}`)}
-        onNewProject={() => router.push(`/p/${product.slug}/projects`)}
-        threads={threads.map((t) => ({ id: t.id, label: t.title ?? "Untitled thread" }))}
-        onOpenThread={(id) => router.push(`/p/${product.slug}/threads/${id}`)}
-        onMoreThreads={() => router.push(`/p/${product.slug}/threads`)}
+        onMoreProjects={() => router.push(`/p/${product.slug}/projects/all`)}
+        {...(canUseWorkspace
+          ? { onNewThread: handleNewSession, onNewProject: () => router.push(`/p/${product.slug}/projects/all`) }
+          : {})}
+        threads={sessions.map((s) => ({ id: s.id, label: s.title ?? "Untitled conversation" }))}
+        onOpenThread={(id) => router.push(`/p/${product.slug}/sessions/${id}`)}
+        onMoreThreads={() => router.push(`/p/${product.slug}/sessions`)}
+        // Only claim there are more when the fetch actually came back full — otherwise an account
+        // with three sessions is told some are hidden.
+        hasMoreThreads={sessions.length >= SIDEBAR_RECENT_SESSIONS}
         spaceSwitcher={{
           current: currentEntry,
           entries: [
-            { id: product.space_id, name: product.product_name, meta: "Product" },
+            // In business-first (hybrid/tenant) mode the product itself is NOT a workspace — it
+            // has no chat, no projects and no threads of its own — so listing it among the
+            // businesses only offered a way to land somewhere with nothing in it. Reaching the
+            // business hub is what "+ New business" and the Discover page are for. In "team" mode
+            // this IS the one and only workspace, so there it remains a normal entry.
+            ...(requiresBusiness
+              ? []
+              : [{ id: product.space_id, name: product.product_name, meta: "Product" }]),
             ...businesses.map((b) => ({ id: b.id, name: b.name, meta: `${b.role} · ${b.space_status}` })),
           ],
           open: switcherOpen,
@@ -166,6 +326,10 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
           onSwitch: (id) => {
             setSwitcherOpen(false);
             if (id === product.space_id) {
+              if (requiresBusiness) {
+                router.push(`/p/${product.slug}/spaces`);
+                return;
+              }
               setActiveSpace(product.space_id, product.product_name);
             } else {
               const business = businesses.find((b) => b.id === id);
@@ -191,12 +355,13 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
               justifyContent: "space-between",
               gap: 12,
               padding: "8px 16px",
-              background: "var(--accent-soft, #fef3c7)",
-              borderBottom: "1px solid var(--border)",
+              background: "#fde68a",
+              borderBottom: "1px solid #b45309",
               fontSize: 12.5,
+              color: "#78350f",
             }}
           >
-            <span>
+            <span style={{ color: "#78350f" }}>
               Verify your email to unlock your free starting credits
               {me.credits_balance === 0 ? " — your account has 0 credits until then." : "."}
             </span>
@@ -204,11 +369,13 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
               type="button"
               onClick={() => router.push(`/p/${product.slug}/verify-email`)}
               style={{
-                background: "none",
+                background: "#78350f",
                 border: "none",
-                color: "var(--accent)",
+                borderRadius: 6,
+                color: "#fde68a",
                 fontWeight: 600,
                 fontSize: 12.5,
+                padding: "4px 10px",
                 cursor: "pointer",
                 whiteSpace: "nowrap",
               }}

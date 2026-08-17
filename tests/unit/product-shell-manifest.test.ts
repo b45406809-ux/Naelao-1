@@ -76,13 +76,26 @@ const FAKE_TEMPLATES = [
   { id: "micro-saas", name: "Micro-SaaS", description: "d", free_tier_eligible: false, connectors: [], coming_soon: true },
 ];
 
+const FAKE_PROJECT_TEMPLATES = [
+  { id: "discord-community-bot", name: "Discord Community Bot", description: "d", kind: "customer_bot" },
+];
+const FAKE_AGENTS = [{ id: "launchpad-support-v1", name: "Support Agent", description: "d" }];
+
 function makeEnv(opts: { withAgentsWorker?: boolean; templateFetchCalls?: number[] } = {}) {
   const fakeDb = createFakeD1([SPACES_TABLE_SQL, BUILDER_DASHBOARD_MIGRATION, CREDENTIALS_MIGRATION, EMAIL_VERIFICATION_MIGRATION]);
   const kvStore = new Map<string, string>();
   kvStore.set("space-type-manifest:launchpad", JSON.stringify(FAKE_MANIFEST));
+  // Routes by path like the real agents worker: the manifest handler now fetches TWO catalogues
+  // (GET /templates for business templates, GET /catalog/shell for the Discover page's project
+  // presets + agents). A stub that answered every path with the template payload would let a
+  // wrong-path regression pass silently, and would make templateFetchCalls count both.
   const agentsWorker = opts.withAgentsWorker
     ? {
-        fetch: async () => {
+        fetch: async (req: Request) => {
+          const path = new URL(req.url).pathname;
+          if (path === "/catalog/shell") {
+            return new Response(JSON.stringify({ project_templates: FAKE_PROJECT_TEMPLATES, agents: FAKE_AGENTS }), { status: 200 });
+          }
           if (opts.templateFetchCalls) opts.templateFetchCalls.push(1);
           return new Response(JSON.stringify({ templates: FAKE_TEMPLATES }), { status: 200 });
         },
@@ -329,6 +342,127 @@ describe("GET /spaces/:spaceId/sessions (list)", () => {
     return res.json() as Promise<{ id: string }>;
   }
 
+  it("creates a session from an EMPTY body — the exact request apps/shell's startSession() sends, regression test for the NOT NULL space_id crash", async () => {
+    // Unlike this file's own createSession() helper above (which always passes space_id/
+    // tenant_id explicitly and so never exercised the bug), the real client
+    // (apps/shell/src/lib/api.ts's startSession()) POSTs an empty body ({}) — SpaceDO.
+    // createSession() reads space_id/tenant_id FROM the body, so every real end-user session
+    // create bound NULL into a NOT NULL column and 500'd with "An unexpected error occurred"
+    // on literally the shell's home page, confirmed live via wrangler tail against production.
+    const env = makeEnv();
+    await seedSpace(env, "prod-1", "tenant-1");
+    const res = await spacesWorker.fetch(
+      new Request("https://spaces.naelao.com/spaces/prod-1/sessions", {
+        method: "POST",
+        headers: await internalHeaders("tenant-1", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "user-a" }),
+        body: JSON.stringify({}),
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(201);
+    const body = await res.json() as { id: string; space_id: string };
+    expect(body.id).toBeTruthy();
+    expect(body.space_id).toBe("prod-1");
+  });
+
+  it("a session created from an empty body is readable by its own creator afterwards — regression test for the 'Session not found' bug", async () => {
+    // The empty-body fix above stopped the 500 on create by injecting space_id/tenant_id — but a
+    // first version of that fix left end_user_id out of the injected fields entirely, so every
+    // end-user-created session landed with end_user_id NULL. getSession/getMessages both reject
+    // any read whose end_user_id (from verified caller claims, S0.1) doesn't match the session's
+    // own end_user_id — NULL never matches a real id, so the creator's own very next read of
+    // their own brand-new session 404'd with "Session not found", confirmed live on the shell's
+    // home page and new-thread pages. This drives the exact create-then-read sequence the real
+    // client does and asserts the read succeeds.
+    const env = makeEnv();
+    await seedSpace(env, "prod-1", "tenant-1");
+    const headers = await internalHeaders("tenant-1", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "user-a" });
+    const createRes = await spacesWorker.fetch(
+      new Request("https://spaces.naelao.com/spaces/prod-1/sessions", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({}),
+      }),
+      env as never, execCtx
+    );
+    expect(createRes.status).toBe(201);
+    const { id: sessionId } = await createRes.json() as { id: string };
+
+    const getRes = await spacesWorker.fetch(
+      new Request(`https://spaces.naelao.com/spaces/prod-1/sessions/${sessionId}`, { headers }),
+      env as never, execCtx
+    );
+    expect(getRes.status).toBe(200);
+    const session = await getRes.json() as { end_user_id: string | null };
+    expect(session.end_user_id).toBe("user-a");
+
+    const messagesRes = await spacesWorker.fetch(
+      new Request(`https://spaces.naelao.com/spaces/prod-1/sessions/${sessionId}/messages`, { headers }),
+      env as never, execCtx
+    );
+    expect(messagesRes.status).toBe(200);
+  });
+
+  it("a session the ASSISTANT creates on a user's behalf is readable by that user — regression test for thread.create still showing 'Session not found'", async () => {
+    // The fix above covers a session the CLIENT creates (role: product_end_user). It did not cover
+    // the one `thread.create` creates: the agents worker calls this route internally, proving
+    // itself with an internal token and naming the acting user via x-naelao-user-id, but with NO
+    // product_end_user role header. end_user_id was only ever derived for a product_end_user
+    // caller, so the assistant's session landed owned by NOBODY — and getSession's ownership check
+    // then rejected the very person who asked for the thread. The thread existed and was correctly
+    // linked to a real session; it was simply unreadable, which surfaced as "Session not found".
+    const env = makeEnv();
+    await seedSpace(env, "prod-1", "tenant-1");
+
+    // Exactly what prebuilt/project-coordination.ts's spacesCall sends: tenant + internal token +
+    // the acting user, and a body carrying only thread_id.
+    const agentHeaders = await internalHeaders("tenant-1", { "x-naelao-user-id": "user-a" });
+    const createRes = await spacesWorker.fetch(
+      new Request("https://spaces.naelao.com/spaces/prod-1/sessions", {
+        method: "POST",
+        headers: agentHeaders,
+        body: JSON.stringify({ thread_id: "thread-xyz" }),
+      }),
+      env as never, execCtx
+    );
+    expect(createRes.status).toBe(201);
+    const created = await createRes.json() as { id: string };
+
+    // Now the person opens it in the shell, as a real product_end_user — the step that used to
+    // 404. Asserted through the real read path rather than the create response, because that read
+    // IS the thing that was broken.
+    const userHeaders = await internalHeaders("tenant-1", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "user-a" });
+    const getRes = await spacesWorker.fetch(
+      new Request(`https://spaces.naelao.com/spaces/prod-1/sessions/${created.id}`, { headers: userHeaders }),
+      env as never, execCtx
+    );
+    expect(getRes.status).toBe(200); // was 404 "Session not found"
+    const session = await getRes.json() as { end_user_id: string | null };
+    expect(session.end_user_id).toBe("user-a"); // was null — the actual defect
+  });
+
+  it("still refuses a DIFFERENT end user access to an assistant-created session", async () => {
+    // Widening end_user_id derivation must not widen who can read it.
+    const env = makeEnv();
+    await seedSpace(env, "prod-1", "tenant-1");
+    const createRes = await spacesWorker.fetch(
+      new Request("https://spaces.naelao.com/spaces/prod-1/sessions", {
+        method: "POST",
+        headers: await internalHeaders("tenant-1", { "x-naelao-user-id": "user-a" }),
+        body: JSON.stringify({ thread_id: "thread-xyz" }),
+      }),
+      env as never, execCtx
+    );
+    const { id } = await createRes.json() as { id: string };
+
+    const intruder = await internalHeaders("tenant-1", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "user-b" });
+    const res = await spacesWorker.fetch(
+      new Request(`https://spaces.naelao.com/spaces/prod-1/sessions/${id}`, { headers: intruder }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(404);
+  });
+
   it("a product end user's list is filtered to their own sessions only", async () => {
     const env = makeEnv();
     await seedSpace(env, "prod-1", "tenant-1");
@@ -379,6 +513,71 @@ describe("GET /spaces/:spaceId/sessions (list)", () => {
     );
     const body = await res.json() as { count: number };
     expect(body.count).toBe(2);
+  });
+});
+
+// item 79 (inline consult cards): messages.metadata round-trips a real JSON object through POST
+// and GET, so the client can render a card at the exact turn a consult happened without a second
+// mechanism correlating threads to messages.
+describe("messages.metadata (item 79)", () => {
+  async function internalHeaders(tenantId: string, extra: Record<string, string> = {}): Promise<Record<string, string>> {
+    const token = await mintInternalToken("test-platform-secret", tenantId);
+    return { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": token, ...extra };
+  }
+
+  async function createSession(env: ReturnType<typeof makeEnv>, spaceId: string, tenantId: string): Promise<string> {
+    const res = await spacesWorker.fetch(
+      new Request(`https://spaces.naelao.com/spaces/${spaceId}/sessions`, {
+        method: "POST", headers: await internalHeaders(tenantId), body: JSON.stringify({}),
+      }),
+      env as never, execCtx
+    );
+    return ((await res.json()) as { id: string }).id;
+  }
+
+  it("persists an assistant message's metadata and returns it, already parsed, on GET", async () => {
+    const env = makeEnv();
+    await seedSpace(env, "prod-1", "tenant-1");
+    const sessionId = await createSession(env, "prod-1", "tenant-1");
+    const metadata = { consulted_threads: [{ thread_id: "thread-9", agent_id: "wallet-agent", title: "Consult: wallet-agent", session_id: "sess-9" }] };
+
+    const postRes = await spacesWorker.fetch(
+      new Request(`https://spaces.naelao.com/spaces/prod-1/sessions/${sessionId}/messages`, {
+        method: "POST",
+        headers: await internalHeaders("tenant-1"),
+        body: JSON.stringify({ role: "assistant", content: "checked the wallet for you", agent_id: "naelao-agent", metadata }),
+      }),
+      env as never, execCtx
+    );
+    expect(postRes.status).toBe(201);
+    expect((await postRes.json()) as { metadata: unknown }).toMatchObject({ metadata });
+
+    const getRes = await spacesWorker.fetch(
+      new Request(`https://spaces.naelao.com/spaces/prod-1/sessions/${sessionId}/messages`, { headers: await internalHeaders("tenant-1") }),
+      env as never, execCtx
+    );
+    const body = (await getRes.json()) as { data: Array<{ content: string; metadata: unknown }> };
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0]!.metadata).toEqual(metadata);
+  });
+
+  it("an ordinary message with no metadata gets an empty object, not undefined or a raw string", async () => {
+    const env = makeEnv();
+    await seedSpace(env, "prod-1", "tenant-1");
+    const sessionId = await createSession(env, "prod-1", "tenant-1");
+
+    await spacesWorker.fetch(
+      new Request(`https://spaces.naelao.com/spaces/prod-1/sessions/${sessionId}/messages`, {
+        method: "POST", headers: await internalHeaders("tenant-1"), body: JSON.stringify({ role: "user", content: "hi" }),
+      }),
+      env as never, execCtx
+    );
+    const getRes = await spacesWorker.fetch(
+      new Request(`https://spaces.naelao.com/spaces/prod-1/sessions/${sessionId}/messages`, { headers: await internalHeaders("tenant-1") }),
+      env as never, execCtx
+    );
+    const body = (await getRes.json()) as { data: Array<{ metadata: unknown }> };
+    expect(body.data[0]!.metadata).toEqual({});
   });
 });
 

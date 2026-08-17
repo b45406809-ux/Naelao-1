@@ -11,10 +11,13 @@ workers_dev = false
 [vars]
 ENVIRONMENT = "development"
 # Public base URL of apps/shell, used to build a clickable email-verification link
-# ("${base}/p/{slug}/verify-email?token=..."). Left empty rather than guessing a production
-# domain — when unset, the verification email still carries a raw token, and the shell's
-# verify-email page accepts a manually pasted one, so verification works either way.
-PRODUCT_SHELL_URL = ""
+# ("${base}/p/{slug}/verify-email?token=..."). Was left empty deliberately rather than guessing a
+# production domain — the verification email still carried a raw token either way, and the
+# shell's verify-email page accepts a manually pasted one — but a live-reported bug confirmed
+# this is genuinely the difference between "click a link" and "notice, copy, and correctly paste
+# an opaque token string buried in an email," which several real users did not manage to do. Now
+# set to the real, live Product Shell domain (see CLAUDE.md's Live Deployment Facts).
+PRODUCT_SHELL_URL = "https://naelao-shell.pages.dev"
 
 # Cloudflare for SaaS custom-hostname provisioning (storefront custom domains).
 # Set the real values at deploy time as secrets:
@@ -151,8 +154,11 @@ binding = "NOTIFICATIONS_WORKER"
 service = "naelao-notifications"
 
 [env.production]
-# See [env.staging]'s comment above — same wrangler vars-replacement gotcha.
-vars = { ENVIRONMENT = "production", PRODUCT_SHELL_URL = "" }
+# See [env.staging]'s comment above — same wrangler vars-replacement gotcha. Real deploys of this
+# worker use bare `wrangler deploy` (top-level [vars]), not --env production (item 83's own
+# documented convention for naelao-agents applies here too) — kept in sync anyway so a future
+# --env production deploy doesn't silently regress to an empty PRODUCT_SHELL_URL.
+vars = { ENVIRONMENT = "production", PRODUCT_SHELL_URL = "https://naelao-shell.pages.dev" }
 
 [[env.production.services]]
 binding = "BILLING_WORKER"

@@ -17,7 +17,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Button, FormInput } from "@naelao/ui";
 import { useProduct } from "@/lib/product-context";
-import { useProductAuth } from "@/lib/auth-provider";
+import { useProductAuth, useSessionCredentials } from "@/lib/auth-provider";
 import { verifyEmail, resendVerification } from "@/lib/productAccount";
 import { getMe } from "@/lib/api";
 
@@ -37,7 +37,7 @@ export default function VerifyEmailPage() {
   const [knownEmail, setKnownEmail] = React.useState<string | null>(null);
   const [resendSent, setResendSent] = React.useState(false);
 
-  const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
+  const creds = useSessionCredentials();
 
   // If already signed in, pre-fill the resend email from the account's own profile — no need to
   // ask a signed-in user to retype the address they already gave at signup.
@@ -47,6 +47,23 @@ export default function VerifyEmailPage() {
       if (me.email) setKnownEmail(me.email);
     }).catch(() => {});
   }, [creds, product.space_id]);
+
+  // Live-reported bug: landing here (from the layout banner's "Verify now" button, or a stale
+  // bookmark — anything without ?token=) showed a passive "check your email" message with a
+  // SEPARATE "Resend" button below it — someone who never noticed the original signup email (or
+  // whose mail client buried a bare token string with no clickable link, before
+  // PRODUCT_SHELL_URL was actually configured — see that var's own comment) had to realize a
+  // second explicit click was needed, which several real users didn't. Landing here with a known
+  // account and no token IS the request for a fresh email — fire it once automatically rather
+  // than making that a second, easy-to-miss step. Guarded so this can't double-fire on React 18
+  // StrictMode's dev-mode double-invoke (the same pattern this codebase already uses for "don't
+  // bill/send twice" effects).
+  const autoResendFiredRef = React.useRef(false);
+  React.useEffect(() => {
+    if (urlToken || !knownEmail || autoResendFiredRef.current) return;
+    autoResendFiredRef.current = true;
+    resendVerification(product.space_id, knownEmail).catch(() => {}).finally(() => setResendSent(true));
+  }, [urlToken, knownEmail, product.space_id]);
 
   const runVerify = React.useCallback(async (token: string) => {
     setStatus("verifying");

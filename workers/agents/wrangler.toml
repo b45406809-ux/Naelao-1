@@ -109,6 +109,13 @@ index_name = "naelao-agent-memory"
 # change toggle, not a functionality cut.
 # [[worker_loaders]]
 # binding = "LOADER"
+#
+# VERIFIED 2026-08-08, and the result is a trap worth writing down: uncommenting this and running
+# `wrangler deploy` SUCCEEDS — it prints a normal deployment and a new Version ID — but Cloudflare
+# silently DROPS the binding. `GET /accounts/{id}/workers/services/naelao-agents/environments/
+# production/bindings` afterwards contains no LOADER, and a real Tier-2 script still fails with
+# "Tier 2 is unavailable: no worker_loaders binding configured in this environment".
+# So a successful deploy is NOT evidence that Worker Loaders is enabled. Check the bindings API.
 
 [[workflows]]
 name = "AgentTaskWorkflow"
@@ -185,6 +192,13 @@ service = "naelao-mcp-hub"
 binding = "CREDENTIALS_WORKER"
 service = "naelao-credentials"
 
+# Phase 5: agent-authored deliverables (a rendered HTML page, a report) — space-scoped R2 storage
+# distinct from r2-workspace's own scratch files. See workers/artifact's own header for why this
+# binding + its requireInternalHmac gate replaced the worker's prior, unauthenticated shape.
+[[services]]
+binding = "ARTIFACT_WORKER"
+service = "naelao-artifact"
+
 # CF Browser Rendering proxy — Tier 4 of the execution ladder (code-runner.ts). Agents never
 # get raw CDP; all browser ops are mediated by this Worker's SSRF guard + rate controls.
 [[services]]
@@ -196,6 +210,19 @@ service = "naelao-browser"
 [[services]]
 binding = "WS_GATEWAY"
 service = "naelao-ws-gateway"
+
+# PLATFORM_DB — this worker's src/index.ts declares `PLATFORM_DB: D1Database` on AgentsEnv and
+# uses it in 31 places (agent/run's model + space lookup, bootstrap/complete, channel inbound,
+# connector webhooks, template resolution...), but this binding was MISSING from wrangler.toml
+# entirely, so `c.env.PLATFORM_DB` was undefined on the live worker and every one of those routes
+# threw "Cannot read properties of undefined (reading 'prepare')". TypeScript cannot catch this:
+# wrangler.toml is never typechecked against the Env interface. It went unnoticed because a
+# separate PLATFORM_SECRET mismatch made every router-proxied request 401 before it could reach
+# any of this code.
+[[d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 
 [vars]
 ENVIRONMENT = "development"
@@ -215,6 +242,15 @@ NAELAO_GATEWAY_ID = "naelao-gateway"
 # in the CF dashboard, enable Authentication, and set the gateway token:
 #   wrangler secret put NAELAO_AIG_TOKEN
 # When NAELAO_AIG_TOKEN is unset AND no ANTHROPIC_API_KEY is provided, LLM calls fail honestly.
+#
+# Google AI Studio (Gemini) — a genuinely separate provider relationship, BYOK to a real Google
+# key (not held by the CF Gateway itself). Lets the model switcher offer Gemini models
+# (google-ai-studio/gemini-flash-lite-latest / -flash-latest / -pro-latest) as a real fallback
+# when the account's shared Workers AI neuron allowance is exhausted — see shared/ai-client.ts's
+# isGoogleAiStudioModel doc for the routing details.
+#   wrangler secret put GOOGLE_AI_STUDIO_API_KEY
+# When unset, those model ids degrade honestly (give_up naming the missing secret) rather than
+# firing a doomed request.
 
 # CF Workers AI — used by free-tier agents and sub-agent vision tasks.
 [ai]

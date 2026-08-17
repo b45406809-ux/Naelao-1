@@ -1,0 +1,480 @@
+import { describe, it, expect, afterEach } from "vitest";
+import { partialJsonString, parseUniversalStream } from "../../workers/agents/src/shared/ai-client.js";
+import { GatewayReasoner } from "../../workers/agents/src/script-engine/reasoner.js";
+
+/**
+ * Real streaming of the reasoning call — the difference between a chat that sits silent for eight
+ * seconds and one you can watch think.
+ *
+ * Two things are being proven here, and they are separable:
+ *   1. The model's user-visible text arrives WHILE it is being generated (partialJsonString +
+ *      parseUniversalStream), rather than only once the whole call has returned.
+ *   2. The streaming path degrades honestly. Asking for a stream is a request, not a guarantee —
+ *      a provider or gateway may answer with an ordinary JSON body, and reading that as SSE would
+ *      find no frames and report an empty turn. That would silently break every interactive run
+ *      against such a provider, so it is tested as carefully as the happy path.
+ */
+
+function sseResponse(frames: string[]): Response {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const enc = new TextEncoder();
+      for (const f of frames) controller.enqueue(enc.encode(`data: ${f}\n\n`));
+      controller.enqueue(enc.encode("data: [DONE]\n\n"));
+      controller.close();
+    },
+  });
+  return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+}
+
+/** One OpenAI-compatible tool-call argument fragment, as a provider actually emits it. */
+function argFrame(fragment: string): string {
+  return JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: fragment } }] } }] });
+}
+
+describe("partialJsonString — reading a value out of truncated JSON", () => {
+  it("returns whatever of the value has arrived when the string is still open", () => {
+    expect(partialJsonString('{"say":"Let me ch', "say")).toBe("Let me ch");
+  });
+
+  it("returns the whole value once the closing quote has arrived", () => {
+    expect(partialJsonString('{"say":"Let me check","name":"x"}', "say")).toBe("Let me check");
+  });
+
+  it("distinguishes 'key not seen yet' (undefined) from 'seen but empty so far' ('')", () => {
+    expect(partialJsonString('{"name":"x"', "say")).toBeUndefined();
+    expect(partialJsonString('{"say":"', "say")).toBe("");
+  });
+
+  it("unescapes as it goes, so a newline arrives as a newline and not a literal backslash-n", () => {
+    expect(partialJsonString('{"text":"line one\\nline two', "text")).toBe("line one\nline two");
+    expect(partialJsonString('{"text":"he said \\"hi\\"', "text")).toBe('he said "hi"');
+  });
+
+  it("stops at a half-arrived escape rather than emitting a lone backslash the next chunk replaces", () => {
+    // A trailing "\" is the escape itself still in flight — emitting it would show the user a
+    // stray backslash that vanishes a moment later.
+    expect(partialJsonString('{"text":"done\\', "text")).toBe("done");
+    // Same for a \uXXXX that has only half arrived.
+    expect(partialJsonString('{"text":"a\\u00', "text")).toBe("a");
+    expect(partialJsonString('{"text":"a\\u0041b', "text")).toBe("aAb");
+  });
+
+  it("ignores a non-string value rather than guessing at it", () => {
+    expect(partialJsonString('{"say":42}', "say")).toBeUndefined();
+  });
+});
+
+describe("parseUniversalStream", () => {
+  it("reports the growing text on every chunk, then returns the assembled tool call", async () => {
+    const seen: string[] = [];
+    const result = await parseUniversalStream(
+      sseResponse([
+        JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "run", arguments: "" } }] } }] }),
+        argFrame('{"say":"Let me '),
+        argFrame('check your store"'),
+        argFrame(',"name":"commerce.list_products","params":{}}'),
+        JSON.stringify({ usage: { prompt_tokens: 120, completion_tokens: 40 } }),
+      ]),
+      (p) => {
+        const say = partialJsonString(p.toolArguments, "say");
+        if (say !== undefined) seen.push(say);
+      }
+    );
+
+    // The point of the whole exercise: the sentence was readable BEFORE the call finished.
+    expect(seen).toContain("Let me ");
+    expect(seen[seen.length - 1]).toBe("Let me check your store");
+    expect(result.toolCall?.name).toBe("run");
+    expect(result.toolCall?.arguments["name"]).toBe("commerce.list_products");
+    expect(result.toolCall?.arguments["say"]).toBe("Let me check your store");
+    // Usage must survive streaming — the loop's budget accounting and per-run billing depend on
+    // real numbers, which is why stream_options.include_usage is requested.
+    expect(result.usage).toEqual({ input_tokens: 120, output_tokens: 40 });
+  });
+
+  it("accumulates plain assistant text for a provider that ignores the tool declaration", async () => {
+    const result = await parseUniversalStream(
+      sseResponse([
+        JSON.stringify({ choices: [{ delta: { content: "2 + 2 " } }] }),
+        JSON.stringify({ choices: [{ delta: { content: "is 4." } }] }),
+      ])
+    );
+    expect(result.text).toBe("2 + 2 is 4.");
+    expect(result.toolCall).toBeUndefined();
+  });
+
+  it("captures streamed chain-of-thought separately from the reply", async () => {
+    const result = await parseUniversalStream(
+      sseResponse([
+        JSON.stringify({ choices: [{ delta: { reasoning: "weighing options" } }] }),
+        JSON.stringify({ choices: [{ delta: { content: "here goes" } }] }),
+      ])
+    );
+    expect(result.thinking).toBe("weighing options");
+    expect(result.text).toBe("here goes");
+  });
+
+  it("falls back to whole-body JSON when the provider ignores stream:true", async () => {
+    // The failure this guards against is silent and total: read as SSE, a plain JSON body yields
+    // no frames, so every interactive run against such a provider would report an empty turn.
+    const resp = new Response(
+      JSON.stringify({ choices: [{ message: { content: null, tool_calls: [{ function: { name: "answer", arguments: '{"text":"done"}' } }] } }] }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+    const result = await parseUniversalStream(resp);
+    expect(result.toolCall?.name).toBe("answer");
+    expect(result.toolCall?.arguments["text"]).toBe("done");
+  });
+
+  it("salvages a whole JSON body even when it is mislabelled as an event stream", async () => {
+    const body = JSON.stringify({ choices: [{ message: { content: "plain reply" } }] });
+    const resp = new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+    const result = await parseUniversalStream(resp);
+    expect(result.text).toBe("plain reply");
+  });
+
+  it("keeps what arrived when the stream dies mid-tool-call, rather than losing the turn", async () => {
+    // Pull-based on purpose: controller.error() DISCARDS anything still queued, so enqueueing and
+    // erroring in the same tick means the chunk never reaches the reader at all — which tests
+    // nothing. Erroring on the second pull guarantees the first chunk was genuinely delivered.
+    let pulls = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        if (pulls === 1) {
+          const enc = new TextEncoder();
+          controller.enqueue(enc.encode(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "answer", arguments: '{"text":"partial ans' } }] } }] })}\n\n`));
+          return;
+        }
+        controller.error(new Error("connection reset"));
+      },
+    });
+    const result = await parseUniversalStream(new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }));
+    // Truncated arguments are not valid JSON — the salvage path recovers the string fields so a
+    // nearly-complete reply still becomes a usable decision.
+    expect(result.toolCall?.name).toBe("answer");
+    expect(result.toolCall?.arguments["text"]).toBe("partial ans");
+  });
+
+  it("recovers a final frame that never got its terminating blank line, even when the stream then dies", async () => {
+    // Frames are delimited by a blank line, so a stream that stops right after the last `data:`
+    // line leaves a complete, perfectly good frame sitting unprocessed in the buffer. Flushing the
+    // tail is what keeps that reply instead of reporting an empty turn.
+    //
+    // The stream ERRORS rather than closing cleanly, and that is the whole point: a clean close
+    // falls out of the read loop normally, so a flush on the success path alone would already
+    // cover it. Only a throw proves the flush happens unconditionally — which is exactly the case
+    // where losing the last frame costs a real answer.
+    let pulls = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        if (pulls === 1) {
+          const enc = new TextEncoder();
+          controller.enqueue(enc.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "no trailing newline" } }] })}`));
+          return;
+        }
+        controller.error(new Error("connection reset"));
+      },
+    });
+    const result = await parseUniversalStream(new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }));
+    expect(result.text).toBe("no trailing newline");
+  });
+
+  it("survives a malformed frame instead of abandoning the rest of the stream", async () => {
+    const result = await parseUniversalStream(
+      sseResponse([
+        "{not json at all",
+        JSON.stringify({ choices: [{ delta: { content: "still here" } }] }),
+      ])
+    );
+    expect(result.text).toBe("still here");
+  });
+});
+
+const ORIGINAL_FETCH = globalThis.fetch;
+
+describe("GatewayReasoner — streaming is opt-in per call", () => {
+  afterEach(() => { globalThis.fetch = ORIGINAL_FETCH; });
+
+  function captureBody(respond: () => Response): { bodies: string[] } {
+    const bodies: string[] = [];
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      bodies.push(String(init?.body ?? ""));
+      return respond();
+    }) as unknown as typeof fetch;
+    return { bodies };
+  }
+
+  const baseInput = {
+    goal: "what do I sell?",
+    level: "L4" as const,
+    snapshot: { type: "none" } as never,
+    candidates: [],
+    availableOperations: ["commerce.list_products"],
+  };
+
+  it("does NOT ask for a stream when nobody is watching", async () => {
+    // A cron wake, a channel drain and a sub-agent all pass no onDelta — paying for a held-open
+    // connection there buys nothing, since the output is only read once it is finished.
+    const { bodies } = captureBody(() => new Response(
+      JSON.stringify({ choices: [{ message: { content: null, tool_calls: [{ function: { name: "answer", arguments: '{"text":"hi"}' } }] } }] }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    ));
+    const reasoner = new GatewayReasoner({
+      apiKey: "k",
+      gateway: { accountId: "a", gatewayId: "g" },
+      ctx: { tenantId: "t", model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast" } as never,
+    });
+    const decision = await reasoner.decide(baseInput);
+    expect(decision).toEqual({ action: "answer", text: "hi" });
+    expect(JSON.parse(bodies[0]!).stream).toBeUndefined();
+  });
+
+  it("asks for a stream and reports the answer as it is written when onDelta is passed", async () => {
+    const { bodies } = captureBody(() => sseResponse([
+      JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "answer", arguments: "" } }] } }] }),
+      argFrame('{"text":"You sell '),
+      argFrame('websites."}'),
+    ]));
+    const reasoner = new GatewayReasoner({
+      apiKey: "k",
+      gateway: { accountId: "a", gatewayId: "g" },
+      ctx: { tenantId: "t", model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast" } as never,
+    });
+    const answers: string[] = [];
+    const decision = await reasoner.decide({
+      ...baseInput,
+      onDelta: (p) => { if (p.answer !== undefined) answers.push(p.answer); },
+    });
+    expect(JSON.parse(bodies[0]!).stream).toBe(true);
+    expect(answers).toContain("You sell ");
+    expect(answers[answers.length - 1]).toBe("You sell websites.");
+    expect(decision).toEqual({ action: "answer", text: "You sell websites." });
+  });
+
+  it("streams `doing` as the turn's status, kept separate from a real `say` message", async () => {
+    captureBody(() => sseResponse([
+      JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "run", arguments: "" } }] } }] }),
+      argFrame('{"doing":"Checking your '),
+      argFrame('store","say":"Let me see what you already sell.","name":"commerce.list_products","params":{}}'),
+    ]));
+    const reasoner = new GatewayReasoner({
+      apiKey: "k",
+      gateway: { accountId: "a", gatewayId: "g" },
+      ctx: { tenantId: "t", model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast" } as never,
+    });
+    const doings: string[] = [];
+    const says: string[] = [];
+    const decision = await reasoner.decide({
+      ...baseInput,
+      onDelta: (p) => {
+        if (p.doing !== undefined) doings.push(p.doing);
+        if (p.say !== undefined) says.push(p.say);
+      },
+    });
+    // Both are declared parameters, so both stream as they are written rather than arriving whole.
+    expect(doings).toContain("Checking your ");
+    expect(says).toContain("Let me see what you already sell.");
+    expect(decision).toEqual({ action: "run", name: "commerce.list_products", params: {} });
+    // And they survive the turn on SEPARATE fields — the whole point of the split. `doing` is the
+    // status the next action replaces; `say` is a message that stays in the conversation. Merging
+    // them is what produced a wall of near-identical lines on a multi-step run.
+    expect(reasoner.lastNarration).toBe("Checking your store");
+    expect(reasoner.lastMessage).toBe("Let me see what you already sell.");
+  });
+
+  it("leaves `lastMessage` unset on a turn where the model wrote only a status", async () => {
+    captureBody(() => sseResponse([
+      JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "run", arguments: "" } }] } }] }),
+      argFrame('{"doing":"Reading the order list","name":"commerce.list_orders","params":{}}'),
+    ]));
+    const reasoner = new GatewayReasoner({
+      apiKey: "k",
+      gateway: { accountId: "a", gatewayId: "g" },
+      ctx: { tenantId: "t", model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast" } as never,
+    });
+    await reasoner.decide({ ...baseInput, onDelta: () => {} });
+    expect(reasoner.lastNarration).toBe("Reading the order list");
+    // `say` is optional by design: most actions describe themselves and warrant no message. A
+    // model that skips it must not leave the PREVIOUS turn's message behind to be re-rendered.
+    expect(reasoner.lastMessage).toBeUndefined();
+  });
+});
+
+describe("a stream that comes back unusable never reaches a person as their answer", () => {
+  afterEach(() => { globalThis.fetch = ORIGINAL_FETCH; });
+
+  const baseInput = {
+    goal: "write me a plan",
+    level: "L4" as const,
+    snapshot: { type: "none" } as never,
+    candidates: [],
+    availableOperations: [],
+  };
+
+  function reasoner(): GatewayReasoner {
+    // A Gemini model on purpose — this is the provider the corruption was observed on — which
+    // means the Google credential has to be present or the call is refused before it is made.
+    return new GatewayReasoner({
+      apiKey: "k",
+      gateway: { accountId: "a", gatewayId: "g", googleAiStudioApiKey: "gkey" },
+      ctx: { tenantId: "t", model: "google-ai-studio/gemini-flash-latest" } as never,
+    });
+  }
+
+  it("retries without streaming when the stream yields a truncated decision", async () => {
+    // The exact live failure: Gemini through the compat endpoint sends a tool-call entry carrying
+    // only a thought signature, then streams the decision itself as ordinary content — and what
+    // came back was the single token `{"`. That was handed to the user AS THEIR REPLY. A message
+    // beginning with `{` is a decision the model was midway through writing, never prose, so it
+    // is never a legitimate answer.
+    const bodies: string[] = [];
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      bodies.push(String(init?.body ?? ""));
+      if (JSON.parse(String(init?.body ?? "{}")).stream) {
+        return sseResponse([JSON.stringify({ choices: [{ delta: { content: '{"' } }] })]);
+      }
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: null, tool_calls: [{ function: { name: "answer", arguments: '{"text":"Here is the real four-paragraph plan."}' } }] } }] }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }) as unknown as typeof fetch;
+
+    const decision = await reasoner().decide({ ...baseInput, onDelta: () => {} });
+    expect(decision).toEqual({ action: "answer", text: "Here is the real four-paragraph plan." });
+    // Two calls: the stream, then the retry. The retry must NOT ask for a stream, or it would
+    // hit the same wall and recurse.
+    expect(bodies).toHaveLength(2);
+    expect(JSON.parse(bodies[0]!).stream).toBe(true);
+    expect(JSON.parse(bodies[1]!).stream).toBeUndefined();
+  });
+
+  it("reports the honest failure when the retry is unusable too, rather than compounding it", async () => {
+    globalThis.fetch = (async () => sseResponse([JSON.stringify({ choices: [{ delta: { content: '{"' } }] })])) as unknown as typeof fetch;
+    const decision = await reasoner().decide({ ...baseInput, onDelta: () => {} });
+    expect(decision.action).toBe("give_up");
+    // Never the truncated fragment dressed up as a reply.
+    expect(JSON.stringify(decision)).not.toContain('"text":"{');
+  });
+
+  it("does not retry a non-streamed call, so it can never recurse", async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"' } }] }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof fetch;
+    const decision = await reasoner().decide(baseInput);
+    expect(calls).toBe(1);
+    expect(decision.action).toBe("give_up");
+  });
+
+  it("still treats genuine prose as the answer — the guard is about `{`, not about length", async () => {
+    globalThis.fetch = (async () => sseResponse([JSON.stringify({ choices: [{ delta: { content: "Yes." } }] })])) as unknown as typeof fetch;
+    const decision = await reasoner().decide({ ...baseInput, onDelta: () => {} });
+    expect(decision).toEqual({ action: "answer", text: "Yes." });
+  });
+});
+
+describe("a provider that fails part way through a 200 stream", () => {
+  afterEach(() => { globalThis.fetch = ORIGINAL_FETCH; });
+
+  const baseInput = {
+    goal: "write me a plan",
+    level: "L4" as const,
+    snapshot: { type: "none" } as never,
+    candidates: [],
+    availableOperations: [],
+  };
+
+  function reasoner(): GatewayReasoner {
+    return new GatewayReasoner({
+      apiKey: "k",
+      gateway: { accountId: "a", gatewayId: "g", googleAiStudioApiKey: "gkey" },
+      ctx: { tenantId: "t", model: "google-ai-studio/gemini-flash-latest" } as never,
+    });
+  }
+
+  it("surfaces a mid-stream error instead of returning the truncated text as an answer", async () => {
+    // The literal production failure. One token arrived, the provider sent an error frame, and the
+    // fragment `{"` was delivered to a person as their reply. Proven against the real captured
+    // wire shape: a tool-call entry carrying only a thought signature, then content, then error.
+    const result = await parseUniversalStream(sseResponse([
+      JSON.stringify({ choices: [{ delta: { role: "assistant", tool_calls: [{ extra_content: { google: { thought_signature: "EtMU" } } }] } }] }),
+      JSON.stringify({ choices: [{ delta: { content: '{"' } }] }),
+      JSON.stringify({ error: { message: "RESOURCE_EXHAUSTED: quota exceeded", code: 429 } }),
+    ]));
+    expect(result.error).toContain("RESOURCE_EXHAUSTED");
+    expect(result.text).toBe('{"');
+  });
+
+  it("reads a bare-string error as readily as an object one", async () => {
+    const result = await parseUniversalStream(sseResponse([JSON.stringify({ error: "upstream unavailable" })]));
+    expect(result.error).toBe("upstream unavailable");
+  });
+
+  it("retries without streaming when the stream errors, and answers properly", async () => {
+    globalThis.fetch = (async (_u: string, init?: RequestInit) => {
+      if (JSON.parse(String(init?.body ?? "{}")).stream) {
+        return sseResponse([
+          JSON.stringify({ choices: [{ delta: { content: '{"' } }] }),
+          JSON.stringify({ error: { message: "RESOURCE_EXHAUSTED" } }),
+        ]);
+      }
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: null, tool_calls: [{ function: { name: "answer", arguments: '{"text":"the real answer"}' } }] } }] }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }) as unknown as typeof fetch;
+    const decision = await reasoner().decide({ ...baseInput, onDelta: () => {} });
+    expect(decision).toEqual({ action: "answer", text: "the real answer" });
+  });
+
+  it("reports the provider's own words when the retry fails too", async () => {
+    globalThis.fetch = (async (_u: string, init?: RequestInit) => {
+      if (JSON.parse(String(init?.body ?? "{}")).stream) {
+        return sseResponse([
+          JSON.stringify({ choices: [{ delta: { content: '{"' } }] }),
+          JSON.stringify({ error: { message: "RESOURCE_EXHAUSTED: quota exceeded" } }),
+        ]);
+      }
+      return new Response("upstream is down", { status: 503 });
+    }) as unknown as typeof fetch;
+    const decision = await reasoner().decide({ ...baseInput, onDelta: () => {} });
+    expect(decision.action).toBe("give_up");
+    // The person deserves the real reason, not a generic parse complaint about a fragment.
+    expect(JSON.stringify(decision)).toContain("RESOURCE_EXHAUSTED");
+    // The non-streamed retry hits a 503, which is transient, so it is itself retried before the
+    // run gives up — hence the longer budget. See retryDelayMs.
+  }, 20_000);
+});
+
+describe("an empty stream is a turn that never happened, not an answer", () => {
+  afterEach(() => { globalThis.fetch = ORIGINAL_FETCH; });
+
+  it("retries without streaming when the stream closes having said nothing", async () => {
+    // Observed live: a provider closed the connection with no content and no error frame. That
+    // used to surface as "unparseable reasoner output: no JSON object in reasoner output" — a
+    // message about our parser, describing nothing the person can act on, for a turn the model
+    // never actually took.
+    globalThis.fetch = (async (_u: string, init?: RequestInit) => {
+      if (JSON.parse(String(init?.body ?? "{}")).stream) return sseResponse([]);
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: null, tool_calls: [{ function: { name: "answer", arguments: '{"text":"recovered"}' } }] } }] }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }) as unknown as typeof fetch;
+
+    const reasoner = new GatewayReasoner({
+      apiKey: "k",
+      gateway: { accountId: "a", gatewayId: "g", googleAiStudioApiKey: "gkey" },
+      ctx: { tenantId: "t", model: "google-ai-studio/gemini-flash-latest" } as never,
+    });
+    const decision = await reasoner.decide({
+      goal: "hello", level: "L4", snapshot: { type: "none" } as never,
+      candidates: [], availableOperations: [], onDelta: () => {},
+    });
+    expect(decision).toEqual({ action: "answer", text: "recovered" });
+  });
+});

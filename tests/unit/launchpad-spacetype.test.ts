@@ -13,10 +13,10 @@ import {
 // SpaceType differences live in config / agent definitions / manifests, never DB tables.
 
 describe("Launchpad SpaceType (§11)", () => {
-  it("is the launchpad space type with the five business-model templates + the Whop-seller platform template", () => {
+  it("is the launchpad space type with the business-model templates + the Whop-seller and web-studio platform templates", () => {
     expect(LAUNCHPAD_SPACETYPE.id).toBe("launchpad");
     expect(LAUNCHPAD_TEMPLATES.map(t => t.id).sort()).toEqual(
-      ["coaching-community", "creator-store", "customer-service", "micro-saas", "newsletter-business", "service-agency", "whop-seller"],
+      ["coaching-community", "creator-store", "customer-service", "micro-saas", "newsletter-business", "service-agency", "whop-seller", "whop-webdev-agency"],
     );
   });
 

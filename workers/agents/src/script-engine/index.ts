@@ -36,6 +36,7 @@ export {
   loadAgentConfig,
   writeAgentConfig,
   listSpaceAgents,
+  mergeMissingPrebuilt,
   type AgentConfig,
   type ScriptsConfig,
   type SkillsConfig,

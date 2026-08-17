@@ -24,7 +24,7 @@ const SPACES_TABLE_SQL = `
   );
   -- createSpaceRecord (create-space.ts) queries these; real schema per 0002_orgs.sql / 0003_spaces.sql.
   CREATE TABLE orgs (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', owner_id TEXT NOT NULL DEFAULT '', plan_tier TEXT NOT NULL DEFAULT 'free');
-  CREATE TABLE spacetypes (id TEXT PRIMARY KEY, config_schema TEXT);
+  CREATE TABLE spacetypes (id TEXT PRIMARY KEY, schema_json TEXT);
 `;
 const NAELAO_PRODUCT_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0044_naelao_product.sql"), "utf8");
 const BUILDER_DASHBOARD_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0045_builder_dashboard_api.sql"), "utf8");
@@ -182,6 +182,25 @@ describe("Builder Dashboard API — /builder/products CRUD", () => {
     expect(del.status).toBe(204);
     const after = await spacesWorker.fetch(req(`/builder/products/${created.id}`, { tenant: "tenant-1" }), env as never, execCtx);
     expect(after.status).toBe(404);
+  });
+
+  it("frees the deleted product's address so the name can be used again", async () => {
+    // The unique index on product_slug doesn't exclude deleted rows, so a soft delete used to
+    // burn the name permanently: a builder who deleted a product and rebuilt it under the same
+    // name got a replacement with NO slug — and therefore no working URL at all, since nothing
+    // lets a slug be set after creation.
+    const env = makeEnv();
+    const first = await (await spacesWorker.fetch(
+      req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
+    )).json() as { id: string };
+    await spacesWorker.fetch(req(`/builder/products/${first.id}`, { method: "DELETE", tenant: "tenant-1" }), env as never, execCtx);
+
+    const second = await (await spacesWorker.fetch(
+      req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
+    )).json() as { id: string };
+    const row = await env.PLATFORM_DB.prepare("SELECT product_slug FROM spaces WHERE id = ?")
+      .bind(second.id).first<{ product_slug: string | null }>();
+    expect(row?.product_slug).toBe("launchpad");
   });
 });
 

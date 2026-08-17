@@ -39,6 +39,11 @@ service = "naelao-credentials"
 binding = "AGENTS_WORKER"
 service = "naelao-agents"
 
+# Meters a platform-provider-key tool call to the builder's own org (see recordPlatformKeyUsage).
+[[services]]
+binding = "BILLING_WORKER"
+service = "naelao-billing"
+
 [vars]
 ENVIRONMENT = "development"
 # "development" or "production" — sent as x-pd-environment on every Pipedream Connect call.
@@ -56,6 +61,10 @@ service = "naelao-credentials"
 binding = "AGENTS_WORKER"
 service = "naelao-agents"
 
+[[env.staging.services]]
+binding = "BILLING_WORKER"
+service = "naelao-billing"
+
 [env.production]
 vars = { ENVIRONMENT = "production", PIPEDREAM_ENVIRONMENT = "production" }
 
@@ -66,3 +75,7 @@ service = "naelao-credentials"
 [[env.production.services]]
 binding = "AGENTS_WORKER"
 service = "naelao-agents"
+
+[[env.production.services]]
+binding = "BILLING_WORKER"
+service = "naelao-billing"

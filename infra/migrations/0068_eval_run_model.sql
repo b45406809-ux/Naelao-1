@@ -1,0 +1,14 @@
+-- The model an eval run was scored against.
+--
+-- Needed for the model-comparison matrix: several runs of the SAME suite differ only by which
+-- model answered, so without this a stored run can't be attributed and the comparison can only
+-- ever live in the caller's console output.
+--
+-- Deliberately the ONLY column added. Everything else the run summary reports (average score,
+-- pass/fail counts, agent/judge error counts) is derivable from the per-case eval_results rows
+-- and is computed on read rather than stored — the same "don't create a second source of truth
+-- alongside an aggregate you can already compute" rule applied to the billing usage counter.
+--
+-- eval_suites.model already exists and is a different thing: the suite's DEFAULT model. This is
+-- what a specific run actually used, which may be an explicit per-run override.
+ALTER TABLE eval_runs ADD COLUMN model TEXT;

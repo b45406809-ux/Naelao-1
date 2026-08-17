@@ -12,8 +12,8 @@ import {
 // checkout/portal (previously the last Stripe-backed path) now runs through the same LS store as
 // every other money path. stripe.ts is deleted; /webhooks/stripe removed.
 import { Hono } from "hono";
-import { checkQuota, recordUsageEvent, getUsageSummary } from "./quota.js";
-import { handleLemonSqueezyWebhook, recordPlatformPlanSubscription } from "./lemon-squeezy.js";
+import { checkQuota, checkWindowedQuota, recordUsageEvent, getUsageSummary } from "./quota.js";
+import { handleLemonSqueezyWebhook, recordPlatformPlanSubscription, grantPersonalPlanPurchase } from "./lemon-squeezy.js";
 import { createLsProductVariant, lsProductsConfig } from "./ls-products.js";
 import { registerWhopWalletRoutes, handleWhopWebhook, renderPayoutApprovalPage, confirmPayoutApproval, routeWhopWalletCheckout, getSubMerchant } from "./whop-wallet.js";
 import { createBusinessWhopOAuthCheckout } from "./whop-oauth-billing.js";
@@ -421,23 +421,69 @@ app.post("/billing/usage", async (c) => {
   return c.json({ recorded: true, id }, 201);
 });
 
+/**
+ * The org's plan tier, from the SAME authority everything else enforces against.
+ *
+ * `orgs.plan_tier` is what EntitlementsChecker.getTenantTier reads and what gates free-tier
+ * templates; `subscriptions.plan_tier` is written by the billing webhook. These two routes read
+ * only the latter, so an org whose tier was set on `orgs` alone — which is exactly what the docs
+ * tell an operator to do for their own account — kept getting free-tier quotas and hit a 100k
+ * token wall while showing as enterprise everywhere else. Item 45 fixed this same split-brain on
+ * the write side (the webhook now writes both); this fixes the read side that was still missed.
+ *
+ * orgs wins, subscriptions is the fallback, and an unknown org resolves to "free" — the most
+ * restrictive tier, failing closed, matching resolveOrgPlanTier's own posture.
+ */
+async function resolvePlanTier(db: D1Database, orgId: string): Promise<string> {
+  try {
+    const org = await db.prepare("SELECT plan_tier FROM orgs WHERE id = ?").bind(orgId).first<{ plan_tier: string }>();
+    if (org?.plan_tier) return org.plan_tier;
+  } catch {
+    // Fall through to the subscription row rather than failing the whole check.
+  }
+  try {
+    const sub = await db.prepare("SELECT plan_tier FROM subscriptions WHERE org_id = ?").bind(orgId).first<{ plan_tier: string }>();
+    return sub?.plan_tier ?? "free";
+  } catch {
+    return "free";
+  }
+}
+
+/** Phase 4 (money): `orgs.allow_quota_overage` — see migration 0072's own comment for what this
+ *  is and, just as importantly, what it deliberately is not (not metered billing). Fails to
+ *  `false` (the stricter, hard-gated default) on any read error, same posture as resolvePlanTier
+ *  falling to "free" — an outage must never silently grant overage. */
+async function resolveAllowOverage(db: D1Database, orgId: string): Promise<boolean> {
+  try {
+    const org = await db.prepare("SELECT allow_quota_overage FROM orgs WHERE id = ?").bind(orgId).first<{ allow_quota_overage: number }>();
+    return (org?.allow_quota_overage ?? 0) === 1;
+  } catch {
+    return false;
+  }
+}
+
 // ── GET /internal/usage/llm-tokens/check ─────────────────────────────────────
 // P0-3: NaelaoAgentDO's pre-run gate for a builder (owner/admin/editor/viewer) chatting with
 // their own Space Assistant (never a project-scoped run, never a signed-in product end user —
 // those have their own separate wallet/credit gates). Internal-only, HMAC-gated like every
 // sibling /internal/* route in this file; the org to check is the verified x-naelao-tenant-id
 // header, same posture as /billing/usage above.
+// Phase 4 (money): now checks day/week ceilings too (checkWindowedQuota), not just the monthly
+// one — and honors the org's own allow_quota_overage toggle, which turns a real breach into a
+// soft `overage: true` pass instead of a block. Response shape is additive (adds `window`/
+// `overage`) so this stays backward-compatible with the pre-existing {allowed, current, limit}
+// contract the caller already reads.
 app.use("/internal/usage/llm-tokens/check", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
 app.get("/internal/usage/llm-tokens/check", async (c) => {
   const orgId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!orgId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
 
-  const sub = await c.env.PLATFORM_DB.prepare(
-    "SELECT plan_tier FROM subscriptions WHERE org_id = ?"
-  ).bind(orgId).first<{ plan_tier: string }>();
-  const planTier = sub?.plan_tier ?? "free";
+  const [planTier, allowOverage] = await Promise.all([
+    resolvePlanTier(c.env.PLATFORM_DB, orgId),
+    resolveAllowOverage(c.env.PLATFORM_DB, orgId),
+  ]);
 
-  const quota = await checkQuota(c.env.QUOTA_CACHE, c.env.PLATFORM_DB, orgId, "llm_tokens", planTier);
+  const quota = await checkWindowedQuota(c.env.QUOTA_CACHE, c.env.PLATFORM_DB, orgId, "llm_tokens", planTier, allowOverage);
   return c.json({ ...quota, plan_tier: planTier });
 });
 
@@ -450,10 +496,7 @@ app.get("/internal/usage/infra-credits/check", async (c) => {
   const orgId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!orgId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
 
-  const sub = await c.env.PLATFORM_DB.prepare(
-    "SELECT plan_tier FROM subscriptions WHERE org_id = ?"
-  ).bind(orgId).first<{ plan_tier: string }>();
-  const planTier = sub?.plan_tier ?? "free";
+  const planTier = await resolvePlanTier(c.env.PLATFORM_DB, orgId);
 
   const quota = await checkQuota(c.env.QUOTA_CACHE, c.env.PLATFORM_DB, orgId, "infra_credits", planTier);
   return c.json({ ...quota, plan_tier: planTier });
@@ -470,10 +513,7 @@ app.get("/internal/usage/llm-tokens/summary", async (c) => {
   const orgId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!orgId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
 
-  const sub = await c.env.PLATFORM_DB.prepare(
-    "SELECT plan_tier FROM subscriptions WHERE org_id = ?"
-  ).bind(orgId).first<{ plan_tier: string }>();
-  const planTier = sub?.plan_tier ?? "free";
+  const planTier = await resolvePlanTier(c.env.PLATFORM_DB, orgId);
 
   const summary = await getUsageSummary(c.env.PLATFORM_DB, orgId, "llm_tokens", planTier);
   return c.json({ ...summary, plan_tier: planTier });
@@ -850,6 +890,100 @@ app.post("/internal/credit-packs/checkout", async (c) => {
   });
 });
 
+// ── POST /internal/personal-plan/checkout ─────────────────────────────────────
+// Phase 4 (money): an end user upgrades their OWN personal-plan tier (widens their slice of
+// maxBusinessesPerEndUser + unlocks inviting others — see @naelao/billing-core's
+// resolveEffectiveBusinessLimit/canPersonalPlanInvite).
+//
+// Rail order: Naelao's OWN Whop seller account first, then Lemon Squeezy, then the dev
+// placeholder — the same order /billing/checkout already uses for builder platform plans. This
+// is deliberately NOT the business's-own-connected-Whop branch that credit-packs and
+// wallet-topups take: those are a business's revenue, whereas a personal plan is Naelao selling
+// to an individual, which is the platform-plan shape.
+app.use("/internal/personal-plan/checkout", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
+app.post("/internal/personal-plan/checkout", async (c) => {
+  const body = await c.req.json<{ business_space_id: string; plan_id: string; end_user_id: string; customer_email?: string }>();
+  if (!body.business_space_id || !body.plan_id || !body.end_user_id) {
+    return c.json({ error_code: "bad_request", message: "business_space_id, plan_id, and end_user_id are required" }, 400);
+  }
+  if (!c.env.SPACES_WORKER) return c.json({ error_code: "unavailable", message: "spaces worker not bound" }, 503);
+
+  const spaceRow = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
+    .bind(body.business_space_id).first<{ tenant_id: string }>();
+  if (!spaceRow) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+
+  const catalogResp = await c.env.SPACES_WORKER.fetch(
+    new Request(`http://spaces-worker/internal/pricing-catalog?space_id=${encodeURIComponent(body.business_space_id)}`, {
+      headers: {
+        "x-naelao-tenant-id": spaceRow.tenant_id,
+        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, spaceRow.tenant_id),
+      },
+    })
+  );
+  if (!catalogResp.ok) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  const catalog = await catalogResp.json<{ product_space_id: string; personal_plans: Array<{ id: string; name: string; tier: string; priceCents: number; interval: string; whopPlanId?: string; lsVariantId?: string }> }>();
+  const plan = catalog.personal_plans.find((p) => p.id === body.plan_id);
+  if (!plan) return c.json({ error_code: "not_found", message: "Personal plan not found" }, 404);
+
+  // Whop first — Naelao's own seller account, same rail as builder platform plans. Falls through
+  // to LS (then the dev placeholder) when no Whop plan id is configured for this tier, so an
+  // existing LS-provisioned deployment keeps working unchanged.
+  if (c.env.WHOP_API_KEY && plan.whopPlanId) {
+    const { createWhopPlatformPlanCheckout } = await import("@naelao/billing-core");
+    try {
+      const { checkout_url } = await createWhopPlatformPlanCheckout(c.env.WHOP_API_KEY, {
+        planId: plan.whopPlanId,
+        ...(body.customer_email ? { customerEmail: body.customer_email } : {}),
+        // Same metadata contract the LS branch below uses, so one webhook handler serves both.
+        metadata: {
+          kind: "personal_plan",
+          plan_id: plan.id,
+          tier: plan.tier,
+          end_user_id: body.end_user_id,
+          product_space_id: catalog.product_space_id,
+        },
+      });
+      return c.json({
+        checkout_url,
+        plan: { id: plan.id, name: plan.name, tier: plan.tier, price_cents: plan.priceCents, interval: plan.interval },
+        provider: "whop",
+      });
+    } catch (err) {
+      console.warn(`[billing/personal-plan] Whop checkout failed, falling back to LS: ${(err as Error).message}`);
+    }
+  }
+
+  if (!c.env.LEMON_SQUEEZY_API_KEY || !c.env.LEMON_SQUEEZY_STORE_ID || !plan.lsVariantId) {
+    return c.json({
+      checkout_url: `https://checkout.naelao.com/dev/personal-plan/${body.business_space_id}/${plan.id}`,
+      plan: { id: plan.id, name: plan.name, tier: plan.tier, price_cents: plan.priceCents, interval: plan.interval },
+      dev: true,
+    });
+  }
+
+  const { LemonSqueezyProvider } = await import("@naelao/billing-core");
+  const provider = new LemonSqueezyProvider({
+    LEMON_SQUEEZY_API_KEY: c.env.LEMON_SQUEEZY_API_KEY,
+    LEMON_SQUEEZY_STORE_ID: c.env.LEMON_SQUEEZY_STORE_ID,
+  });
+  const { url } = await provider.createCheckout({
+    spaceId: body.business_space_id,
+    variantOrPriceId: plan.lsVariantId,
+    ...(body.customer_email ? { customerEmail: body.customer_email } : {}),
+    metadata: {
+      kind: "personal_plan",
+      plan_id: plan.id,
+      tier: plan.tier,
+      end_user_id: body.end_user_id,
+      product_space_id: catalog.product_space_id,
+    },
+  });
+  return c.json({
+    checkout_url: url,
+    plan: { id: plan.id, name: plan.name, tier: plan.tier, price_cents: plan.priceCents, interval: plan.interval },
+  });
+});
+
 // ── POST /internal/wallet-topups/checkout ─────────────────────────────────────
 // Launchpad Wallet (user-directed feature): a business tops up its OWN wallet_ledger balance
 // (a project flagged kind='wallet' under the business space) via a fixed-price Lemon Squeezy
@@ -1083,6 +1217,20 @@ app.post("/webhooks/whop-platform-plan", async (c) => {
     console.warn(`[billing/whop-platform-plan] failed to parse event body: ${(err as Error).message}`);
     return c.json({ ok: true, skipped: true, reason: "unparseable body" });
   }
+  // Naelao's own Whop company now sells TWO things: builder platform plans (org-level) and end
+  // users' personal plans. Both arrive here, distinguished by checkout metadata.kind, so route on
+  // that rather than assuming every event on this endpoint is a platform plan.
+  const custom = (event.metadata ?? {}) as Record<string, unknown>;
+  if (custom["kind"] === "personal_plan") {
+    const handledPersonal = await grantPersonalPlanPurchase(event, {
+      PLATFORM_DB: c.env.PLATFORM_DB,
+      PLATFORM_SECRET: c.env.PLATFORM_SECRET,
+      AGENTS_WORKER: c.env.AGENTS_WORKER,
+      ...(c.env.SPACES_WORKER ? { SPACES_WORKER: c.env.SPACES_WORKER } : {}),
+    } as Parameters<typeof grantPersonalPlanPurchase>[1]);
+    return c.json({ ok: true, handled: handledPersonal });
+  }
+
   const handled = await recordPlatformPlanSubscription(event, {
     PLATFORM_DB: c.env.PLATFORM_DB,
     PLATFORM_SECRET: c.env.PLATFORM_SECRET,

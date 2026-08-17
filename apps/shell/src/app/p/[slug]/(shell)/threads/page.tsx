@@ -9,7 +9,7 @@ import { Button, Badge, useToast, Toast } from "@naelao/ui";
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
 import { useActiveSpace } from "@/lib/active-space-context";
-import { listThreads, createThread, type ThreadSummary } from "@/lib/api";
+import { listThreads, createThread, startSession, type ThreadSummary } from "@/lib/api";
 
 export default function ThreadsPage() {
   const product = useProduct();
@@ -37,6 +37,11 @@ export default function ThreadsPage() {
     setCreating(true);
     try {
       const created = await createThread(activeSpaceId, creds, { title: "New thread" });
+      // Link a real chat session immediately — the same pattern the assistant's own thread.create
+      // op now uses (see project-coordination.ts) — otherwise this thread has no session_id and
+      // reading it back reports "Session not found" until Chat's own lazy-mint fallback runs,
+      // which never links back to this thread row at all.
+      await startSession(activeSpaceId, creds, "New thread", created.id).catch(() => {});
       router.push(`/p/${product.slug}/threads/${created.id}`);
     } catch (err) {
       show(err instanceof Error ? err.message : "Failed to create thread");
@@ -48,11 +53,11 @@ export default function ThreadsPage() {
     <div className="page-view">
       <div className="page-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
-          <div className="page-title">Threads</div>
+          <div className="page-title">Sessions</div>
           <div className="page-subtitle">Every conversation across this business.</div>
         </div>
         <Button onClick={handleNewThread} disabled={creating}>
-          {creating ? "Creating…" : "New Thread"}
+          {creating ? "Creating…" : "New Session"}
         </Button>
       </div>
 

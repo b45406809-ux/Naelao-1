@@ -175,16 +175,40 @@
 @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 .ai-icon{width:28px;height:28px;border-radius:7px;background:var(--text);display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-right:12px;margin-top:2px}
 .ai-icon svg{fill:var(--bg);width:13px;height:13px}
-.bubble{max-width:100%;padding:10px 14px;border-radius:14px;font-size:14px;line-height:1.68;color:var(--ai-text);background:var(--ai-bubble)}
-.bubble.user{background:var(--user-bubble);color:var(--user-text);border-radius:14px 14px 4px 14px}
+/* Claude-style: only the user's own message gets bubble chrome (background/padding/radius). An
+   assistant/agent reply renders as plain text on the page background — no box around it — same
+   as claude.ai's own thread. .bubble alone (no .user) is now just a text-metrics wrapper. */
+.bubble{max-width:100%;font-size:14px;line-height:1.68;color:var(--ai-text)}
+/* The toolcall table header's own colour (--surface2), as asked. It needs the border that the
+   table header gets for free from its container: in light mode --surface2 (#f9f8f5) and --bg
+   (#f5f4f0) are four hex points apart, so an unbordered bubble in that colour would read as
+   plain text on the page rather than as a message. pre-wrap because the user's own text is
+   rendered literally (never markdown — they typed it), so their line breaks have to survive. */
+.bubble.user{padding:10px 14px;border-radius:14px 14px 4px 14px;background:var(--surface2);color:var(--text);border:1px solid var(--border);white-space:pre-wrap}
 .bubble p{margin-bottom:8px}.bubble p:last-child{margin-bottom:0}
-.bubble ul{padding-left:18px;margin-bottom:8px}.bubble ul li{margin-bottom:3px}
+.bubble ul,.bubble ol{padding-left:18px;margin-bottom:8px}
+.bubble ul li,.bubble ol li{margin-bottom:3px}
+.bubble li>p{margin-bottom:0}
 .bubble strong{font-weight:500}.bubble em{font-style:italic;opacity:0.85}
+.bubble h1,.bubble h2,.bubble h3,.bubble h4,.bubble h5,.bubble h6{font-weight:600;line-height:1.35;margin:14px 0 6px}
+.bubble h1:first-child,.bubble h2:first-child,.bubble h3:first-child{margin-top:0}
+.bubble h1{font-size:18px}.bubble h2{font-size:16px}.bubble h3{font-size:15px}
+.bubble h4,.bubble h5,.bubble h6{font-size:14px}
+.bubble a{color:var(--accent);text-decoration:underline;text-underline-offset:2px}
+.bubble a:hover{text-decoration-thickness:2px}
+.bubble blockquote{border-left:2px solid var(--border2);padding-left:10px;margin:8px 0;color:var(--text2)}
+.bubble hr{border:none;border-top:1px solid var(--border);margin:12px 0}
+/* Wide tables scroll inside the bubble rather than pushing the whole thread sideways. */
+.bubble table{display:block;width:max-content;max-width:100%;overflow-x:auto;border-collapse:collapse;margin:8px 0;font-size:13px}
+.bubble th,.bubble td{border:1px solid var(--border);padding:5px 9px;text-align:left}
+.bubble th{background:var(--surface2);font-weight:600}
 .bubble pre{background:var(--surface3);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin:8px 0;overflow-x:auto;font-family:'Courier New',monospace;font-size:12.5px;line-height:1.5}
 .bubble code{background:var(--surface3);border:1px solid var(--border);border-radius:4px;padding:1px 5px;font-family:'Courier New',monospace;font-size:12.5px}
 .bubble pre code{background:none;border:none;padding:0}
 .msg-actions{display:flex;align-items:center;gap:4px;margin-top:6px;opacity:0;transition:opacity var(--transition)}
-.msg-row:hover .msg-actions{opacity:1}
+/* focus-within keeps the row reachable by keyboard; .revealed is set on tap, since :hover never
+   fires on touch and the row would otherwise be permanently invisible on a phone. */
+.msg-row:hover .msg-actions,.msg-row:focus-within .msg-actions,.msg-row.revealed .msg-actions{opacity:1}
 .msg-action{background:none;border:none;cursor:pointer;color:var(--text3);padding:4px;border-radius:6px;display:flex;transition:color var(--transition),background var(--transition);position:relative}
 .msg-action:hover{color:var(--text);background:var(--surface2)}
 .msg-action svg{width:13px;height:13px;stroke:currentColor}
@@ -205,6 +229,10 @@
 .tool-status-dot.done{background:#22c55e}
 .tool-status-dot.error{background:#ef4444}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+.activity-ellipsis{display:inline-block;margin-left:1px;animation:pulse 1s infinite}
+/* Briefly highlights an inline consult card when jumped to from the sidebar's "Assistant" tab. */
+.consult-highlight{animation:consultHighlight 1.6s ease-out}
+@keyframes consultHighlight{0%{box-shadow:0 0 0 2px var(--accent,#5b52f0)}100%{box-shadow:0 0 0 0 transparent}}
 .tool-card-body{padding:10px 12px;border-top:1px solid var(--border);font-size:12px;color:var(--text3);font-family:'Courier New',monospace;line-height:1.5;display:none}
 .tool-card.expanded .tool-card-body{display:block}
 .tool-card-toggle{margin-left:auto;color:var(--text3);font-size:11px}
@@ -215,8 +243,13 @@
 .thread-panel.hidden{width:0;border-left:none}
 .tp-header{padding:12px 14px 8px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
 .tp-header-title{font-size:12px;font-weight:500;color:var(--text);letter-spacing:0.01em}
-.tp-tabs{display:flex;gap:1px;padding:8px 10px 4px;flex-shrink:0;flex-wrap:wrap}
-.tp-tab{background:none;border:none;font-family:'DM Sans',sans-serif;font-size:11.5px;color:var(--text3);cursor:pointer;padding:4px 8px;border-radius:6px;transition:all var(--transition);white-space:nowrap}
+/* One scrollable row, not a wrapping block. There are a dozen tabs and the panel is 260px wide
+   (min(86vw,340px) as a mobile drawer), so flex-wrap turned the header into a four-row wall that
+   ate the panel it was supposed to be labelling. Same treatment .spaces-sidebar/.settings-nav
+   already get on mobile: horizontal scroll with the scrollbar itself hidden. */
+.tp-tabs{display:flex;gap:1px;padding:8px 10px 4px;flex-shrink:0;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}
+.tp-tabs::-webkit-scrollbar{display:none}
+.tp-tab{flex-shrink:0;background:none;border:none;font-family:'DM Sans',sans-serif;font-size:11.5px;color:var(--text3);cursor:pointer;padding:4px 8px;border-radius:6px;transition:all var(--transition);white-space:nowrap}
 .tp-tab.active{background:var(--accent-dim);color:var(--accent)}
 .tp-tab:hover:not(.active){background:var(--surface2);color:var(--text)}
 .tp-body{flex:1;overflow-y:auto;padding:4px 0;scrollbar-width:thin;scrollbar-color:var(--border2) transparent}
@@ -260,7 +293,17 @@
 .scroll-down svg{width:12px;height:12px;stroke:currentColor}
 
 /* ── HOME VIEW ── */
-.home-view{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:48px 24px 0;position:relative;overflow-y:auto}
+/* `justify-content:center` on a SCROLLABLE flex container overflows in BOTH directions, and the
+   overflow past the start edge cannot be scrolled to — on a phone (with the verify-email banner
+   taking a row, and once the recents list has loaded) the page heading was cut off with no way to
+   reach it. `safe center` is the purpose-built keyword for this but was measured live NOT applying
+   here (computed style came back plain `center`), so this uses the auto-margin technique instead:
+   two zero-size flex items whose auto margins absorb the free space. Identical centring while the
+   content fits, and once it doesn't the margins collapse to 0 and the content starts at the top,
+   fully scrollable. No dependency on `safe` support. */
+.home-view{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:48px 24px 0;position:relative;overflow-y:auto}
+.home-view::before{content:'';margin-top:auto}
+.home-view::after{content:'';margin-bottom:auto}
 .home-view h1{font-family:'Instrument Serif',serif;font-size:34px;font-weight:400;color:var(--text);text-align:center;margin-bottom:6px;letter-spacing:-0.02em;animation:fadeUp 0.4s ease both}
 .home-view p.sub{font-size:14px;color:var(--text2);text-align:center;margin-bottom:28px;animation:fadeUp 0.4s 0.07s ease both}
 
@@ -333,6 +376,14 @@
 .space-tree-item svg{width:14px;height:14px;stroke:currentColor;flex-shrink:0}
 .space-tree-indent{padding-left:22px}
 .space-tree-indent2{padding-left:44px}
+/* Reopen-tab for a collapsed .spaces-sidebar rail (project thread page). On desktop it's a narrow
+   vertical edge strip beside the chat. At <=900px .spaces-layout stacks to a column, so an
+   unstyled button stretched full-width into a ~14px tall mystery band carrying a stray right
+   border — see the mobile override below, which turns it into a labelled horizontal strip that
+   matches how .spaces-sidebar itself renders at that width. */
+.rail-expander{background:transparent;border:none;border-right:1px solid var(--border);color:var(--text3);cursor:pointer;font-family:'DM Sans',sans-serif;font-size:14px;padding:0 6px;flex-shrink:0;display:flex;align-items:center;gap:6px;transition:all var(--transition)}
+.rail-expander:hover{color:var(--text);background:var(--surface2)}
+.rail-expander-label{display:none;font-size:11.5px}
 .spaces-type-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:24px}
 
 /* ── GENERAL CARDS / GRID ── */
@@ -414,6 +465,17 @@
 .app-card-footer{display:flex;align-items:center;justify-content:space-between}
 .installed-badge{display:flex;align-items:center;gap:4px;font-size:12px;color:#16a34a;font-weight:500}
 .installed-badge svg{width:12px;height:12px;stroke:currentColor}
+/* Directory of connectable apps. Responsive rather than the fixed grid-3/grid-4 above, because
+   this list is thousands long and is browsed at every width. */
+.app-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}
+.app-card{display:flex;flex-direction:column}
+.app-card.connected{border-color:rgba(22,163,74,0.35)}
+.app-card-desc{flex:1;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+/* Real provider logos, on a neutral plate so a transparent PNG stays legible in both themes. */
+.app-card-logo{width:36px;height:36px;border-radius:9px;object-fit:contain;background:#fff;padding:5px;flex-shrink:0;border:1px solid var(--border)}
+/* Fallback when a provider sends no logo, or the URL fails to load: the app's own initial. */
+.app-card-initial{width:36px;height:36px;border-radius:9px;background:var(--accent-dim);color:var(--accent);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:15px;font-weight:600;text-transform:uppercase}
+.app-card-tag{font-size:10px;letter-spacing:0.05em;text-transform:uppercase;color:var(--text3)}
 
 /* analytics */
 .chart-bar-wrap{display:flex;align-items:flex-end;gap:6px;height:80px}
@@ -516,7 +578,104 @@
 .mobile-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);backdrop-filter:blur(2px);z-index:99;opacity:0;transition:opacity 0.22s}
 .mobile-backdrop.show{display:block;opacity:1}
 
+/* one labelled row inside a settings block — last row carries no rule, so a block never ends on a
+   dangling divider */
+.settings-line{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid var(--border)}
+.settings-line:last-child{border-bottom:none;padding-bottom:2px}
+
+/* ── COMPOSER DOCK ──
+   One continuous card holding, top to bottom: whichever panel is open, the message input, and the
+   toolbar. That stacking is the point — a panel is part of the composer, not a popover floating
+   over the page, so opening one pushes the input down as a single object and the whole thing reads
+   as one surface. The toolbar is a labelled primary pill on the left, a row of icon buttons, then
+   the member stack on the right. Same tokens as everything else, so it themes with the app. */
+.composer-dock{position:relative;width:100%;max-width:680px;display:flex;flex-direction:column;background:var(--input-bg);border:1px solid var(--border2);border-radius:22px;box-shadow:var(--shadow-md);overflow:hidden;transition:border-color var(--transition),box-shadow var(--transition),background 0.3s}
+.composer-dock:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-dim),var(--shadow-md)}
+/* the input keeps its own padding but loses the standalone card chrome once docked */
+.composer-dock .input-container{max-width:none;background:none;border:none;border-radius:0;box-shadow:none}
+.composer-dock .input-container:focus-within{border:none;box-shadow:none}
+.dock-panel{overflow:hidden;animation:dockUp 0.2s ease both}
+@keyframes dockUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.dock-panel-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:15px 18px 12px}
+.dock-panel-title{font-size:14.5px;font-weight:600;color:var(--text)}
+.dock-panel-note{display:flex;align-items:center;gap:5px;font-size:10px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:var(--text3)}
+.dock-panel-body{padding:0 12px 12px;max-height:330px;overflow-y:auto}
+.dock-close{width:24px;height:24px;flex-shrink:0;background:none;border:none;border-radius:6px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text3);transition:all var(--transition)}
+.dock-close:hover{background:var(--surface2);color:var(--text)}
+.dock-close svg{width:13px;height:13px;stroke:currentColor}
+
+/* one selectable row inside a panel (a model, an app, a member) */
+.dock-row{display:flex;align-items:center;gap:13px;padding:12px 14px;border:1px solid transparent;border-radius:14px;background:var(--surface2);transition:background var(--transition),border-color var(--transition)}
+.dock-row + .dock-row{margin-top:6px}
+.dock-row:hover{background:var(--surface3)}
+.dock-row.active{background:var(--surface3);border-color:var(--border2)}
+.dock-row-icon{width:32px;height:32px;flex-shrink:0;border-radius:10px;background:var(--surface);display:flex;align-items:center;justify-content:center;color:var(--text2);font-size:11px;font-weight:600;overflow:hidden}
+.dock-row-icon svg{width:15px;height:15px;stroke:currentColor}
+.dock-row-main{flex:1;min-width:0}
+.dock-row-title{font-size:13.5px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dock-row-desc{font-size:11.5px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+.dock-row-action{flex-shrink:0}
+.dock-pill{display:inline-flex;align-items:center;gap:5px;padding:5px 12px;border-radius:999px;font-size:10px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;border:1px solid var(--border2);background:none;color:var(--text3);cursor:pointer;font-family:'DM Sans',sans-serif;transition:all var(--transition)}
+.dock-pill:hover:not(:disabled){background:var(--surface);color:var(--text)}
+.dock-pill.on{background:var(--text);border-color:var(--text);color:var(--bg);cursor:default}
+.dock-pill:disabled{opacity:0.5;cursor:not-allowed}
+.dock-pill svg{width:11px;height:11px;stroke:currentColor}
+
+/* the tips strip (three side-by-side hint cards) */
+.dock-tips{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;padding:0 12px 12px;background:none}
+.dock-tip{background:var(--surface2);border:none;border-radius:0;padding:14px 15px 16px;text-align:left;font-family:'DM Sans',sans-serif}
+.dock-tip:first-child{border-radius:14px 0 0 14px}
+.dock-tip:last-child{border-radius:0 14px 14px 0}
+.dock-tip:hover{background:var(--surface3)}
+.dock-tip-dot{width:12px;height:12px;border-radius:999px;background:var(--accent);margin-bottom:26px}
+.dock-tip-title{font-size:12.5px;font-weight:600;color:var(--text);margin-bottom:3px}
+.dock-tip-desc{font-size:11px;color:var(--text3);line-height:1.45}
+
+/* the toolbar row — inside the same card as the input, separated by a hairline */
+.dock-bar{display:flex;align-items:center;gap:2px;padding:8px 10px;border-top:1px solid var(--border)}
+.dock-primary{display:flex;align-items:center;gap:9px;flex-shrink:0;background:var(--surface2);border:none;border-radius:999px;padding:9px 17px 9px 13px;font-family:'DM Sans',sans-serif;font-size:13.5px;color:var(--text2);cursor:pointer;transition:all var(--transition);max-width:220px}
+.dock-primary:hover,.dock-primary.open{background:var(--surface3);color:var(--text)}
+.dock-primary svg{width:17px;height:17px;stroke:currentColor;flex-shrink:0}
+.dock-primary span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dock-btn{position:relative;width:36px;height:36px;flex-shrink:0;background:none;border:none;border-radius:999px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text3);transition:all var(--transition)}
+.dock-btn:hover{background:var(--surface2);color:var(--text)}
+.dock-btn.open{background:var(--surface3);color:var(--text)}
+.dock-btn svg{width:17px;height:17px;stroke:currentColor}
+.dock-btn-dot{position:absolute;top:6px;right:6px;width:6px;height:6px;border-radius:999px;background:var(--accent)}
+/* Effort's own variant of .dock-btn — the label IS the control's live value ("Low", "Ultra", …),
+   so unlike the plain icon-only dock-btn this one needs to fit real text beside its icon. */
+.dock-btn-labeled{width:auto;padding:0 11px 0 9px;gap:5px;border-radius:999px}
+.dock-btn-labeled span{font-size:12px;font-weight:600;white-space:nowrap}
+.dock-sep{width:1px;height:22px;flex-shrink:0;background:var(--border);margin:0 8px}
+.dock-spacer{flex:1;min-width:4px}
+
+/* member avatar stack — accent-ringed, with the overflow count riding the top-right corner */
+.dock-stack{position:relative;display:flex;align-items:center;flex-shrink:0;background:var(--surface2);border:1.5px solid var(--accent);border-radius:999px;padding:3px 8px 3px 3px;cursor:pointer;transition:all var(--transition)}
+.dock-stack:hover,.dock-stack.open{background:var(--surface3)}
+.dock-avatar{width:28px;height:28px;border-radius:999px;border:2px solid var(--input-bg);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:#fff;flex-shrink:0}
+.dock-avatar + .dock-avatar{margin-left:-11px}
+.dock-stack-count{position:absolute;top:-6px;right:-6px;min-width:18px;height:18px;padding:0 4px;border-radius:999px;background:var(--accent);color:#fff;font-size:9.5px;font-weight:700;display:flex;align-items:center;justify-content:center;border:2px solid var(--input-bg)}
+
+@media (max-width:640px){
+  .dock-tips{grid-template-columns:1fr;gap:6px}
+  .dock-tip,.dock-tip:first-child,.dock-tip:last-child{border-radius:14px}
+  .dock-primary{max-width:140px;padding-left:10px;padding-right:12px}
+  .dock-sep{margin:0 3px}
+}
+
 @media (max-width:900px){
+  /* Live-reported bug, root-caused via computed-style diagnostics (not guessed from a
+     screenshot): #app is `display:flex` with the default ROW direction — correct on desktop,
+     where its only in-flow children are #sidebar and #main side by side. On mobile, #sidebar
+     drops out of flow (position:fixed, below) but .mobile-topbar becomes visible as a THIRD
+     in-flow child in that same row — so the header bar and the page body ended up sitting
+     SIDE BY SIDE (each squeezed to ~half the viewport) instead of stacked, and neither the
+     hamburger's own sidebar toggle nor the page underneath it were usable: the composer/
+     messages rendered in a ~190px sliver on the right with the topbar cut in half on the left.
+     Column direction here stacks .mobile-topbar above #main exactly as intended — #sidebar/
+     .mobile-backdrop/.thread-panel/.toast are all position:fixed regardless, so this doesn't
+     affect them. */
+  #app{flex-direction:column}
   #sidebar{position:fixed;top:0;left:0;height:100%;width:264px!important;max-width:86vw;z-index:200;
            padding-top:env(safe-area-inset-top);
            transform:translateX(-100%);transition:transform 0.24s cubic-bezier(.4,0,.2,1);box-shadow:var(--shadow-lg)}
@@ -530,7 +689,17 @@
   .mobile-topbar{display:flex}
   #main{width:100%}
 
-  .thread-panel,.thread-panel.hidden{width:0;border-left:none;overflow:hidden}
+  /* Live-reported bug: this used to unconditionally collapse .thread-panel to zero width on
+     mobile REGARDLESS of whether it was open — the existing desktop "toggle panel" button already
+     mounts/unmounts it (see Chat.tsx's panelOpen), so on a phone that toggle silently did nothing
+     visible. Turned into the same off-canvas-drawer pattern #sidebar already uses (mirrored to
+     the right edge) instead of hiding it outright — it only exists in the DOM while open, so no
+     transform/transition is needed to slide it in from off-screen. */
+  .thread-panel{position:fixed;top:0;right:0;height:100%;width:min(86vw,340px);z-index:200;
+           padding-top:env(safe-area-inset-top);box-shadow:var(--shadow-lg)}
+  .thread-panel-backdrop{display:none}
+  .thread-panel-backdrop.show{display:block;position:fixed;inset:0;background:rgba(0,0,0,0.45);
+           backdrop-filter:blur(2px);z-index:199}
   .assistant-panel{display:none}
 
   .spaces-layout,.settings-layout,.assistant-layout{flex-direction:column}
@@ -538,6 +707,16 @@
            border-bottom:1px solid var(--border);padding:8px 10px;gap:4px;scrollbar-width:none}
   .spaces-sidebar::-webkit-scrollbar,.settings-nav::-webkit-scrollbar{display:none}
   .space-tree-item,.settings-nav-item{flex-shrink:0;white-space:nowrap}
+  .rail-expander{border-right:none;border-bottom:1px solid var(--border);justify-content:flex-start;padding:7px 16px;width:100%}
+  .rail-expander-label{display:inline}
+  /* Every dock control is flex-shrink:0 by design (a 36px icon button that squashes is unusable),
+     so on a narrow viewport the row simply overflowed its container and the trailing buttons were
+     unreachable. Scroll it instead. The member avatar stack is pushed right by .dock-spacer, which
+     has nothing to distribute once the row is wider than the screen — margin-left:auto is what
+     keeps it at the far end in that case. */
+  .dock-bar{overflow-x:auto;scrollbar-width:none}
+  .dock-bar::-webkit-scrollbar{display:none}
+  .dock-stack{margin-left:auto}
   .space-tree-indent,.space-tree-indent2{display:none}
   .spaces-content,.settings-content{padding:18px 16px}
 
@@ -566,3 +745,30 @@
   .page-title{font-size:22px}
   .toast{left:16px;right:16px;bottom:16px;max-width:none;text-align:center}
 }
+
+/* ── INTERRUPTED RUN CARD ──
+   The standing "this didn't finish — continue?" offer in a thread. Amber rather than red: the
+   work is recoverable and mostly intact, which is a different thing from an error. Persistent by
+   construction (server-backed), so it must read as calm and answerable, not alarming. */
+.interrupted-card{margin:14px 0;padding:14px 16px 13px;border:1px solid var(--warn-border,#e0b872);border-radius:14px;background:var(--warn-bg,rgba(224,184,114,0.08));max-width:640px}
+.interrupted-head{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+.interrupted-dot{width:8px;height:8px;border-radius:999px;background:var(--warn-border,#e0b872);flex-shrink:0}
+.interrupted-title{font-size:13.5px;font-weight:600;color:var(--text)}
+.interrupted-reason{font-size:13px;color:var(--text2);line-height:1.5;margin:0 0 6px}
+.interrupted-explain{font-size:12px;color:var(--text2);line-height:1.5;margin:0 0 6px;font-style:italic}
+.interrupted-note{font-size:12px;color:var(--text3);line-height:1.5;margin:0 0 12px}
+.interrupted-error{font-size:12px;color:var(--danger,#c0392b);margin:0 0 10px}
+.interrupted-actions{display:flex;align-items:center;gap:8px}
+.interrupted-actions .btn-primary,.interrupted-actions .btn-ghost{padding:7px 15px;font-size:12.5px;border-radius:999px}
+
+/* The message input as a dock panel. It is only present when the composer is open — the dock is
+   a toolbar until you ask for it, matching the reference. The textarea grows with the text up to
+   this ceiling and then scrolls, so a long message never pushes the toolbar off screen. */
+.dock-compose{border-top:1px solid var(--border)}
+.dock-compose .msg-input{max-height:220px;overflow-y:auto}
+.dock-panel-sub{font-size:10px;font-weight:600;letter-spacing:0.07em;text-transform:uppercase;color:var(--text3);padding:12px 4px 7px}
+.dock-empty{font-size:12.5px;color:var(--text3);padding:10px 4px 4px;margin:0}
+.pending-uploads{display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px 0}
+.pending-upload-chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:4px 6px 4px 10px;border-radius:999px;background:var(--surface2,#f6f7f9);border:1px solid var(--border);color:var(--text2)}
+.pending-upload-chip button{border:none;background:none;color:var(--text3);cursor:pointer;font-size:15px;line-height:1;padding:0 2px}
+.pending-upload-chip button:hover{color:var(--text)}

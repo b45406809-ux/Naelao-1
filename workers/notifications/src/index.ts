@@ -1,5 +1,5 @@
 // G-N01: Notifications worker — email + in-app notification consumer
-import { badRequest, errorResponse, notFound, requestId } from "@naelao/http";
+import { badRequest, errorResponse, notFound, requestId, mintInternalToken } from "@naelao/http";
 import { Hono } from "hono";
 
 // ── Env ───────────────────────────────────────────────────────────────────────
@@ -8,6 +8,14 @@ export interface NotificationsEnv {
   ENVIRONMENT: string;
   RESEND_API_KEY: string;
   RESEND_API_URL: string;
+  /** Domain-verification gap, live-confirmed 2026-08-07 (`wrangler tail`): this account owns
+   *  ZERO DNS zones (CLAUDE.md Live Deployment Facts), so `naelao.com` — the address every send
+   *  used to hardcode — was never verified in Resend and every real send 403'd
+   *  ("The naelao.com domain is not verified"), silently swallowed by every caller's own
+   *  best-effort try/catch. `onboarding@resend.dev` is Resend's own zero-setup sender that needs
+   *  no domain verification and works today; a real branded domain can replace it here the
+   *  moment one is registered and verified, with no code change. */
+  RESEND_FROM_ADDRESS?: string;
   WEBHOOK_SIGNING_SECRET: string;
   PLATFORM_DB: D1Database;
   // G-P11/G-P12: APNs push notification credentials (optional — push disabled if absent)
@@ -16,6 +24,168 @@ export interface NotificationsEnv {
   APNS_PRIVATE_KEY_BASE64?: string;
   APNS_BUNDLE_ID?: string;
   APNS_HOST?: string; // "api.push.apple.com" prod, "api.sandbox.push.apple.com" sandbox
+  /** Needed to resolve a space's own bot token / webhook URL for chat-channel replies. Optional:
+   *  without it those channels degrade to delivered:false rather than crashing. */
+  CREDENTIALS_WORKER?: Fetcher;
+  PLATFORM_SECRET?: string;
+  /**
+   * Platform-app bot tokens, used when a business PAIRED a channel rather than bringing its own
+   * app — there is no per-space credential in that case, because the connection belongs to
+   * Naelao's app. Names match CHANNEL_SEND_CREDENTIAL so the lookup can fall through by key.
+   */
+  TELEGRAM_BOT_TOKEN?: string;
+  SLACK_BOT_TOKEN?: string;
+  DISCORD_BOT_TOKEN?: string;
+  WHATSAPP_ACCESS_TOKEN?: string;
+  /** Twilio as an alternative WhatsApp transport — platform-level, like the bot tokens above. */
+  TWILIO_ACCOUNT_SID?: string;
+  TWILIO_AUTH_TOKEN?: string;
+  TWILIO_WHATSAPP_NUMBER?: string;
+}
+
+/** Per-channel credential name in the vault — the token this worker needs to SEND, which is a
+ *  different secret from the one used to VERIFY inbound (see CHANNEL_SECRET_CREDENTIAL in the
+ *  agents worker). Slack/Discord/Telegram all reply through a bot token or webhook URL the owner
+ *  configures; nothing here is a platform-wide key. */
+const CHANNEL_SEND_CREDENTIAL: Record<string, string> = {
+  slack: "SLACK_BOT_TOKEN",
+  discord: "DISCORD_BOT_TOKEN",
+  telegram: "TELEGRAM_BOT_TOKEN",
+  whatsapp: "WHATSAPP_ACCESS_TOKEN",
+};
+
+/**
+ * Read a space's own channel credential out of the vault.
+ *
+ * Resolved at send time rather than cached: a rotated token has to take effect immediately, and a
+ * reply is already a non-hot path. Returns null (never throws) so a missing credential degrades to
+ * an honest delivered:false instead of failing the caller's whole run.
+ */
+async function resolveChannelCredential(
+  env: NotificationsEnv,
+  tenantId: string,
+  spaceId: string,
+  name: string
+): Promise<string | null> {
+  if (!env.CREDENTIALS_WORKER || !env.PLATFORM_SECRET || !spaceId) return null;
+  try {
+    const token = await mintInternalToken(env.PLATFORM_SECRET, tenantId);
+    const resp = await env.CREDENTIALS_WORKER.fetch(new Request(
+      `http://credentials-worker/v1/internal/spaces/${spaceId}/credentials/${encodeURIComponent(name)}/plaintext`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-naelao-tenant-id": tenantId,
+          "x-naelao-internal-token": token,
+        },
+        body: "{}",
+      }
+    ));
+    if (!resp.ok) return null;
+    const { value } = await resp.json<{ value?: string }>();
+    return value ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** One reply, out to a chat channel. Returns why it didn't go rather than throwing. */
+async function sendChatMessage(
+  env: NotificationsEnv,
+  opts: { channel: string; tenantId: string; spaceId: string; to: string; message: string }
+): Promise<{ delivered: boolean; reason?: string; status?: number }> {
+  const { channel, to, message } = opts;
+  const credName = CHANNEL_SEND_CREDENTIAL[channel];
+  if (!credName) return { delivered: false, reason: `no send path for channel '${channel}'` };
+  if (!to) return { delivered: false, reason: "missing recipient" };
+
+  // A business that PAIRED a channel (scanned a code against Naelao's own app) has no per-space
+  // token of its own — the platform app owns the connection. Falling back to the platform token
+  // is what makes a paired channel able to REPLY at all; without it, inbound would work and every
+  // answer would silently go nowhere.
+  // Twilio-backed WhatsApp authenticates with an account SID + auth token rather than a single
+  // credential, so it is resolved separately — and BEFORE the gate below, which would otherwise
+  // reject a perfectly working channel for lacking a Meta token it does not use.
+  const viaTwilio =
+    channel === "whatsapp" && Boolean(env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.TWILIO_WHATSAPP_NUMBER);
+
+  const credential =
+    (await resolveChannelCredential(env, opts.tenantId, opts.spaceId, credName)) ??
+    (env as unknown as Record<string, string | undefined>)[credName] ??
+    null;
+  if (!credential && !viaTwilio) {
+    return { delivered: false, reason: `${channel} is connected for receiving but has no ${credName} to reply with` };
+  }
+
+  const cred = credential ?? "";
+  try {
+    let resp: Response;
+    if (channel === "telegram") {
+      // `to` is the chat id the message came from, not a username.
+      resp = await fetch(`https://api.telegram.org/bot${cred}/sendMessage`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: to, text: message }),
+      });
+    } else if (channel === "slack") {
+      resp = await fetch("https://slack.com/api/chat.postMessage", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${cred}` },
+        body: JSON.stringify({ channel: to, text: message }),
+      });
+      // Slack answers 200 with ok:false for real failures (bad token, not in channel), so the
+      // HTTP status alone would report a silent drop as a success.
+      const payload = await resp.clone().json<{ ok?: boolean; error?: string }>()
+        .catch(() => ({ ok: false }) as { ok?: boolean; error?: string });
+      if (!payload.ok) return { delivered: false, reason: `slack: ${payload.error ?? "rejected"}`, status: resp.status };
+    } else if (channel === "discord") {
+      resp = await fetch(`https://discord.com/api/v10/channels/${encodeURIComponent(to)}/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bot ${cred}` },
+        body: JSON.stringify({ content: message }),
+      });
+    } else if (viaTwilio) {
+      // Twilio transport (see launchpad/channel-pairing.ts): checked FIRST, because when the
+      // platform is running WhatsApp through Twilio there is no Meta phone-number id to send
+      // through and the Meta branch below would report a configuration error for a channel that
+      // is in fact working.
+      resp = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Messages.json`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          authorization: `Basic ${btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`)}`,
+        },
+        body: new URLSearchParams({
+          From: `whatsapp:+${(env.TWILIO_WHATSAPP_NUMBER ?? "").replace(/^\+/, "")}`,
+          To: `whatsapp:+${to.replace(/^\+/, "")}`,
+          Body: message,
+        }),
+      });
+    } else if (channel === "whatsapp") {
+      // `to` is the customer's phone number; the credential is the Meta Cloud API access token,
+      // and the phone-number id it posts through rides in the same vault entry as "<id>:<token>"
+      // when the owner configured one — otherwise there is no route to send on.
+      const [phoneNumberId, accessToken] = cred.includes(":")
+        ? [cred.slice(0, cred.indexOf(":")), cred.slice(cred.indexOf(":") + 1)]
+        : [null, cred];
+      if (!phoneNumberId) {
+        return { delivered: false, reason: "whatsapp needs WHATSAPP_ACCESS_TOKEN as '<phone_number_id>:<token>'" };
+      }
+      resp = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ messaging_product: "whatsapp", to, type: "text", text: { body: message } }),
+      });
+    } else {
+      return { delivered: false, reason: `no send path for channel '${channel}'` };
+    }
+
+    if (!resp.ok) return { delivered: false, reason: `${channel} returned ${resp.status}`, status: resp.status };
+    return { delivered: true };
+  } catch (err) {
+    return { delivered: false, reason: `${channel} send failed: ${(err as Error).message}` };
+  }
 }
 
 function validateEnv(env: NotificationsEnv): void {
@@ -205,6 +375,25 @@ async function loadEmailTemplate(
 
 // ── Shared email send (used by both the async queue consumer and the synchronous
 // /internal/notify HTTP route — same Resend call + same D1 audit row, one implementation). ──
+/** Most callers of `sendEmailNow` (verify-email, reset-password, approval-request notices, the
+ *  `business-email`/`notifications` prebuilts) build a plain-text message and hand it in as
+ *  `html` — this field has always been sent to Resend verbatim, so a real multi-paragraph message
+ *  with `\n\n` line breaks arrived as one unbroken run-on paragraph (newlines carry no meaning in
+ *  HTML). Found live while diagnosing a "the verify-email link never arrives" report: Resend's
+ *  own delivery tracking showed the send WAS accepted and delivered, so the actual bug was
+ *  downstream of transport — this is the one, real, fixable defect on that path (the rest is
+ *  `onboarding@resend.dev` sandbox-domain deliverability, a known, already-documented limitation
+ *  above, not something this function can fix). Only touches content that doesn't already look
+ *  like real markup, so an actual HTML template (loaded below) is left untouched. */
+function plainTextToHtml(text: string): string {
+  if (/<[a-z][\s\S]*>/i.test(text)) return text;
+  const escaped = text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  return escaped.replace(/\n/g, "<br>");
+}
+
 async function sendEmailNow(
   env: NotificationsEnv,
   msg: Pick<NotificationMessage, "tenantId" | "userId" | "email" | "subject" | "html" | "templateId">
@@ -221,6 +410,7 @@ async function sendEmailNow(
   }
 
   if (!msg.email) return { ok: false };
+  html = plainTextToHtml(html);
 
   const res = await fetch(`${env.RESEND_API_URL}/emails`, {
     method: "POST",
@@ -229,14 +419,18 @@ async function sendEmailNow(
       Authorization: `Bearer ${env.RESEND_API_KEY}`,
     },
     body: JSON.stringify({
-      from: "noreply@naelao.com",
+      from: env.RESEND_FROM_ADDRESS || "onboarding@resend.dev",
       to: msg.email,
       subject,
       html,
     }),
   });
 
-  if (!res.ok) return { ok: false, status: res.status };
+  if (!res.ok) {
+    // eslint-disable-next-line no-console -- diagnostic only, Resend never echoes secrets back
+    console.error("resend send failed", res.status, await res.text().catch(() => ""));
+    return { ok: false, status: res.status };
+  }
 
   // Audit row in the `notifications` table (migration 0010: id, tenant_id, user_id NOT NULL,
   // type, title, body, ...) — this previously used columns (`status`, `subject`) that don't
@@ -422,6 +616,8 @@ app.post("/internal/notify", async (c) => {
     subject?: string;
     body?: string;
     html?: string;
+    /** Chat channels carry their text here rather than in `body`. */
+    message?: string;
   }>();
 
   if (body.channel === "email") {
@@ -438,8 +634,27 @@ app.post("/internal/notify", async (c) => {
     return c.json({ delivered: true, channel: "email" });
   }
 
-  // Non-email channels: not yet wired for synchronous delivery. Honest failure, not a silent
-  // no-op — callers already treat delivered:false as a real signal.
+  // Chat channels. Until now every one of these returned delivered:false unconditionally, which
+  // meant a customer could message a business on Slack/Discord/WhatsApp, the agent would run and
+  // produce a real answer, and the reply would never leave the building — the inbound half of
+  // every channel worked and the outbound half did not exist.
+  const chatChannel = String(body.channel ?? "");
+  if (CHANNEL_SEND_CREDENTIAL[chatChannel]) {
+    const result = await sendChatMessage(c.env, {
+      channel: chatChannel,
+      tenantId,
+      spaceId: body.space_id ?? "",
+      to: String(body.to ?? ""),
+      message: String(body.message ?? body.body ?? ""),
+    });
+    return c.json(
+      { delivered: result.delivered, channel: chatChannel, ...(result.reason ? { reason: result.reason } : {}) },
+      result.delivered ? 200 : 502
+    );
+  }
+
+  // Push (apns/fcm) still isn't wired synchronously. Honest failure, not a silent no-op — callers
+  // already treat delivered:false as a real signal.
   return c.json({ delivered: false, channel: body.channel ?? "unknown", reason: "channel not wired for synchronous delivery" });
 });
 

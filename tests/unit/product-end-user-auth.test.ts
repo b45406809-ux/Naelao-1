@@ -430,6 +430,25 @@ describe("email verification (security audit follow-up: closes the free-credit-f
     expect(env.__notifyCalls).toHaveLength(callsBefore); // no new email sent
   });
 
+  // Live-reported bug: a real request with an empty/malformed body (no `-d` at all) threw an
+  // unhandled `SyntaxError: Unexpected end of JSON input` inside `c.req.json()`, surfacing as a
+  // raw 500 "An unexpected error occurred" — exactly the kind of leak this route's own
+  // constant-response (ALWAYS_OK) design exists to prevent. Reproduced against production before
+  // fixing (naelao-spaces' own live tail), fixed with the same defensive `.catch(() => ({}))`
+  // parse convention every other body-parsing route in this codebase already uses.
+  it("never 500s on an empty or malformed body — degrades to the same constant response", async () => {
+    const env = makeEnv();
+    await seedProduct(env, "prod-1", "tenant-1");
+    await spacesWorker.fetch(req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx);
+
+    const emptyBodyReq = new Request("https://spaces.naelao.com/spaces/prod-1/end-users/resend-verification", {
+      method: "POST", headers: { "content-type": "application/json" }, // no body at all
+    });
+    const res = await spacesWorker.fetch(emptyBodyReq, env as never, execCtx);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, message: "If that account exists and isn't yet verified, a new verification link has been sent." });
+  });
+
   it("signup still succeeds even if the verification email step fails (e.g. a transient notify failure)", async () => {
     const env = makeEnv();
     env.NOTIFICATIONS_WORKER.fetch = async () => { throw new Error("network down"); };

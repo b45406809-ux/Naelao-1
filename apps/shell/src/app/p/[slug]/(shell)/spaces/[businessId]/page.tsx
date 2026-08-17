@@ -3,7 +3,7 @@
 export const runtime = "edge";
 
 import * as React from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { Button, Badge, Modal, FormInput, FormSelect, useToast, Toast } from "@naelao/ui";
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
@@ -46,6 +46,8 @@ import {
   type WhopWalletBalance,
   type WhopWalletTransaction,
   type PayoutDestination,
+  getOnboarding,
+  type OnboardingState,
   type ConnectorInfo,
 } from "@/lib/api";
 
@@ -56,7 +58,8 @@ function centsToDisplay(cents: number): string {
 }
 
 export default function BusinessDetailPage() {
-  const params = useParams<{ businessId: string }>();
+  const params = useParams<{ slug: string; businessId: string }>();
+  const router = useRouter();
   const product = useProduct();
   const { session } = useProductAuth();
   const { toast, show } = useToast();
@@ -101,6 +104,7 @@ export default function BusinessDetailPage() {
   // Connect your OWN Whop account (BYO, no Naelao Platforms invite needed) — the working revenue
   // path today, while the business-wallet rail above waits on Whop Platforms access.
   const [connectors, setConnectors] = React.useState<ConnectorInfo[]>([]);
+  const [onboarding, setOnboarding] = React.useState<OnboardingState | null>(null);
   const [whopKeyOpen, setWhopKeyOpen] = React.useState(false);
   const [whopKey, setWhopKey] = React.useState("");
   const [connectBusy, setConnectBusy] = React.useState(false);
@@ -136,7 +140,7 @@ export default function BusinessDetailPage() {
     if (!creds) return;
     setLoading(true);
     try {
-      const [mine, mem, pricing, manifest, grants, wal, whopBal, whopTx, destinations, conns] = await Promise.all([
+      const [mine, mem, pricing, manifest, grants, wal, whopBal, whopTx, destinations, conns, onboard] = await Promise.all([
         listMyBusinesses(product.space_id, creds),
         listBusinessMembers(params.businessId, creds),
         getPricing(params.businessId, creds).catch(() => ({ plans: [], credit_packs: [] })),
@@ -148,6 +152,8 @@ export default function BusinessDetailPage() {
         // Admin-only route — a plain member's 403 is expected, not an error.
         getPayoutDestinations(params.businessId, creds).catch(() => []),
         getConnectorStatus(params.businessId, creds).catch(() => []),
+        // Member-level read; a 403 here just means the caller lost membership mid-load.
+        getOnboarding(params.businessId, creds).catch(() => null),
       ]);
       setBusiness(mine.find((b) => b.id === params.businessId) ?? null);
       setMembers(mem);
@@ -159,6 +165,7 @@ export default function BusinessDetailPage() {
       setWhopTransactions(whopTx);
       setPayoutDestinations(destinations);
       setConnectors(conns);
+      setOnboarding(onboard);
       const commerce = manifest?.ui.sidebar_items.some((item) => item.id === "revenue") ?? false;
       setHasCommerce(commerce);
       if (commerce) {
@@ -481,6 +488,37 @@ export default function BusinessDetailPage() {
         {canManage && <Button onClick={() => setInviteOpen(true)}>Invite</Button>}
       </div>
 
+      {/* Setup that was started but never finished is the difference between a business that
+          exists and one that actually runs: until it completes, the assistant has no account to
+          read and no way to reach its owner. Prominent and persistent, not a dismissible nudge. */}
+      {onboarding && onboarding.status !== "complete" && onboarding.prompts.length > 0 && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 16,
+            flexWrap: "wrap",
+            padding: "14px 16px",
+            marginBottom: 18,
+            borderRadius: 10,
+            background: "var(--accent-soft, #eef2ff)",
+            border: "1px solid var(--accent, #5b52f0)",
+            fontSize: 13,
+          }}
+        >
+          <span>
+            <strong>Finish setting up {business.name}.</strong>{" "}
+            {onboarding.prompts.filter((p) => !p.satisfied).length} step
+            {onboarding.prompts.filter((p) => !p.satisfied).length === 1 ? "" : "s"} left — your
+            assistant can&rsquo;t start running this business until it&rsquo;s done.
+          </span>
+          <Button onClick={() => router.push(`/p/${params.slug}/spaces/${params.businessId}/onboarding`)}>
+            Finish setup
+          </Button>
+        </div>
+      )}
+
       <div className="section-label">Members</div>
       <div className="settings-block">
         {members.map((m) => (
@@ -705,6 +743,70 @@ export default function BusinessDetailPage() {
         );
       })()}
 
+      {/* My Connections (§A1.18 connector scope model) — personal connectors, distinct from the
+          shared "Connect Apps" above: connecting one is YOUR own account, never visible to or
+          usable by another member (like connecting your own Gmail/Slack identity in Claude or
+          ChatGPT, vs. an admin installing a workspace-wide integration). Any member can connect
+          their own, no admin needed. Nothing in the catalogue is scope_model='user' yet — see
+          catalogue.ts's own header — so this section simply doesn't render until one exists; the
+          mechanism (backend storage/resolution + this UI) is real and ready for when one does. */}
+      {(() => {
+        const personal = connectors.filter((c) => c.scope_model === "user" && c.status === "available");
+        if (personal.length === 0) return null;
+        return (
+          <>
+            <div className="section-label">My Connections</div>
+            <p style={{ fontSize: 12, color: "var(--text3)", marginBottom: 8 }}>
+              Your own personal accounts — connecting one only affects your agent conversations,
+              never anyone else on this business.
+            </p>
+            <div className="settings-block">
+              {personal.map((c) => (
+                <React.Fragment key={c.id}>
+                  <div className="settings-row">
+                    <div>
+                      <div className="settings-row-label">{c.name}</div>
+                      <div className="settings-row-sub">{c.summary}</div>
+                    </div>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      {c.connected ? (
+                        <Badge color="green">Connected</Badge>
+                      ) : manualKeyOpenFor !== c.id ? (
+                        <Button onClick={() => handleConnectApp(c)} disabled={appBusy === c.id}>
+                          {appBusy === c.id ? "Connecting…" : "Connect"}
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+                  {manualKeyOpenFor === c.id && (
+                    <div style={{ padding: "0 12px 12px", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+                      <FormInput
+                        type="password"
+                        placeholder={`Your ${c.name} API key`}
+                        value={manualKeyValue}
+                        onChange={(e) => setManualKeyValue(e.target.value)}
+                        style={{ flex: 1, minWidth: 220 }}
+                      />
+                      <Button onClick={() => handleManualAppConnect(c.id)} disabled={appBusy === c.id || !manualKeyValue.trim()}>
+                        {appBusy === c.id ? "Connecting…" : "Connect"}
+                      </Button>
+                      <button
+                        className="btn btn-secondary"
+                        type="button"
+                        onClick={() => { setManualKeyOpenFor(null); setManualKeyValue(""); }}
+                        disabled={appBusy === c.id}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+                </React.Fragment>
+              ))}
+            </div>
+          </>
+        );
+      })()}
+
       {/* Business Wallet (Whop Platforms/sub-merchant model): every business auto-provisions its
           own isolated wallet — but this rail needs Naelao's own invite-only Whop Platforms API
           access, not yet granted, so it stays inactive until then. The Connect card above is the
@@ -715,6 +817,20 @@ export default function BusinessDetailPage() {
         at creation. Revenue from Whop&rsquo;s own storefront/checkout and any connected 3rd-party
         platform settles here automatically; Naelao never holds this money.
       </p>
+      {whopWallet?.status === "not_provisioned" && connectors.find((c) => c.id === "whop")?.connected && (
+        // The bare "not provisioned yet" badge below, seen right after connecting Whop, reads
+        // like the connection didn't take — it's a genuinely different, separate rail (this one
+        // needs Naelao's own invite-only Whop Platforms API access; connecting your OWN Whop
+        // account above doesn't grant that). Say so explicitly rather than leaving that only in a
+        // source comment nobody using the product can see.
+        <p style={{ fontSize: 12, color: "var(--text3)", marginBottom: 8, padding: "6px 10px", background: "var(--surface2)", borderRadius: "var(--radius-sm)" }}>
+          Your Whop account is connected (see &ldquo;Connect Your Whop Account&rdquo; above) — that&rsquo;s
+          the real, working path for this business today, and it&rsquo;s already what the
+          assistant reads for orders and revenue. This separate wallet below only activates once
+          Naelao&rsquo;s own Whop Platforms API access is approved; &ldquo;not provisioned yet&rdquo;
+          here does not mean anything is broken.
+        </p>
+      )}
       <div className="settings-block">
         <div className="settings-row">
           <div>
@@ -868,7 +984,7 @@ export default function BusinessDetailPage() {
             <div className="settings-row">
               <div>
                 <div className="settings-row-label">This month ({revenue?.period ?? "—"})</div>
-                <div className="settings-row-sub">{revenue?.orders ?? 0} orders</div>
+                <div className="settings-row-sub">{revenue?.order_count ?? 0} orders</div>
               </div>
               <div style={{ textAlign: "right" }}>
                 <div className="settings-row-label">{revenue ? centsToDisplay(revenue.net_cents) : "—"} net</div>

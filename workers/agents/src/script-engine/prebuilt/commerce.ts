@@ -52,6 +52,36 @@ async function spaces(ctx: PrebuiltOpContext, path: string): Promise<unknown> {
   return resp.json();
 }
 
+/**
+ * A write against the space's own product catalogue.
+ *
+ * Separate from `billing()` above: these are the SAME routes the storefront UI already uses to
+ * manage products, not a money-in call, so they go to the spaces worker and need no billing
+ * binding. The error text deliberately carries the upstream body — an agent that is told only
+ * "failed: 400" cannot report anything useful to the owner.
+ */
+async function spacesWrite(
+  ctx: PrebuiltOpContext,
+  path: string,
+  method: "POST" | "PATCH",
+  body: Record<string, unknown>
+): Promise<unknown> {
+  if (!ctx.env.spacesWorker) throw new Error("commerce unavailable: spaces worker binding not configured");
+  const resp = await ctx.env.spacesWorker.fetch(
+    new Request(`http://spaces-worker${path}`, {
+      method,
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": ctx.env.tenantId,
+        "x-naelao-internal-token": await mintInternalToken(ctx.env.platformSecret ?? "", ctx.env.tenantId),
+      },
+      body: JSON.stringify(body),
+    })
+  );
+  if (!resp.ok) throw new Error(`commerce ${method} ${path} failed: ${resp.status} ${await resp.text()}`);
+  return resp.json();
+}
+
 export const commerce: PrebuiltScript = {
   name: "commerce",
   description:
@@ -59,6 +89,12 @@ export const commerce: PrebuiltScript = {
     "money-in path — platform fee applied automatically), list products, and read orders.",
   domain: "api",
   requires_tier: 2,
+  paramHints: {
+    "commerce.create_product": "name is required. description, price_cents (a whole number of cents, e.g. 2000 for $20), and kind are optional. Creates a DRAFT — it is not for sale until commerce.update_product sets status to 'published'.",
+    "commerce.update_product": "product_id is required — the id commerce.create_product or commerce.list_products returned, never guessed. status is the field that actually publishes it (e.g. status: 'published').",
+    "commerce.checkout": "product_id is required — from commerce.list_products. customer_email is optional.",
+    "commerce.get_order": "order_id is required — from commerce.list_orders. There is no way to look up an order by anything else.",
+  },
   operations: {
     // Money-in: returns a Naelao-store Lemon Squeezy checkout URL for the product.
     "commerce.checkout": (a, c) =>
@@ -73,6 +109,34 @@ export const commerce: PrebuiltScript = {
         ...(a["customer_email"] ? { customer_email: a["customer_email"] } : {}),
       }),
     "commerce.list_products": (_a, c) => spaces(c, `/spaces/${c.env.spaceId}/products`),
+    // Putting something up for sale.
+    //
+    // This did not exist, and its absence produced the worst failure this platform can have:
+    // asked to create a product, the assistant could not, did not say so, and instead reported a
+    // detailed success — title, price, "now live on your storefront at shop-…naelao.com". None of
+    // it was real; `launchpad_products` was empty. An owner acting on that believes they are
+    // selling something they are not. The storefront UI has always had these routes; the agent
+    // simply was never given them, so "run a business" stopped at reading.
+    "commerce.create_product": (a, c) =>
+      spacesWrite(c, `/spaces/${c.env.spaceId}/products`, "POST", {
+        name: a["name"],
+        ...(a["description"] ? { description: a["description"] } : {}),
+        ...(a["price_cents"] !== undefined ? { price_cents: a["price_cents"] } : {}),
+        ...(a["kind"] ? { kind: a["kind"] } : {}),
+      }),
+    // Publishing is deliberately its own step rather than a flag on create: a product going on
+    // sale is the moment customers can pay for it, and it should be a decision the agent (or the
+    // owner approving it) makes explicitly, not a side effect of drafting.
+    "commerce.update_product": (a, c) =>
+      spacesWrite(c, `/spaces/${c.env.spaceId}/products/${String(a["product_id"])}`, "PATCH", {
+        ...(a["status"] ? { status: a["status"] } : {}),
+      }),
+    // What actually sold. The seeded daily revenue-review cron asks the assistant to "check
+    // business_wallet.balance/history and any storefront/commerce orders" — and there was no
+    // operation to list orders at all, only `get_order`, which needs an id you could only have
+    // got from a list. So the one recurring job every Launchpad business ships with could not do
+    // half of what it was told to do. The route was already there; nothing exposed it.
+    "commerce.list_orders": (_a, c) => spaces(c, `/spaces/${c.env.spaceId}/orders`),
     "commerce.get_order": (a, c) => spaces(c, `/spaces/${c.env.spaceId}/orders`).then((o) => {
       const orders = (o as { data?: Array<{ id: string }> }).data ?? [];
       return orders.find((x) => x.id === a["order_id"]) ?? null;

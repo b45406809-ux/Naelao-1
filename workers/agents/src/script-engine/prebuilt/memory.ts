@@ -60,5 +60,16 @@ export const memory: PrebuiltScript = {
       await ctx.env.memoryStore.forget(id);
       return { ok: true };
     },
+    // Runs the SAME maintenance pass (decay/promote/prune) the shell UI triggers automatically at
+    // 85% context usage — callable directly, so a model that notices its own conversation getting
+    // long doesn't have to wait for the client to do it on its behalf. A convenience, not a
+    // correctness requirement: the script-native loop's own per-turn payload doesn't grow with
+    // conversation length (see conversation-context.ts's own header), so this is about keeping
+    // Memory OS's distilled facts/wiki fresh, not preventing an overflow.
+    async "memory.compact"(_args, ctx) {
+      if (!ctx.env.compactMemory) return { ok: false, reason: "compaction not available in this environment" };
+      const result = await ctx.env.compactMemory();
+      return { ok: true, result };
+    },
   },
 };

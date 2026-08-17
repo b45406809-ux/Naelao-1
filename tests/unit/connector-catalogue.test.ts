@@ -22,7 +22,10 @@ describe("connector catalogue", () => {
 
   it("availableConnectors() returns Whop + Gumroad + the growth-layer connectors in this build", () => {
     const avail = availableConnectors().map((c) => c.id).sort();
-    expect(avail).toEqual(["gumroad", "higgsfield", "instagram", "linkedin", "notion", "tiktok", "twitter", "whop"]);
+    expect(avail).toEqual([
+      "google-ads", "gumroad", "higgsfield", "hubspot", "instagram", "linkedin",
+      "meta-ads", "notion", "tiktok", "twitter", "whop",
+    ]);
   });
 
   it("Notion is a Pipedream-routed connector (the second hosted-connect provider) with no mcp_endpoint or builder credential", () => {
@@ -54,12 +57,28 @@ describe("connector catalogue", () => {
     expect(c?.auth.credential_name).toBe("HIGGSFIELD_API_KEY");
   });
 
-  it("coming_soon Composio placeholders (CRM/ads/advanced-email) resolve and carry a toolkit slug", () => {
-    for (const id of ["hubspot", "google-ads", "meta-ads", "agentmail"]) {
+  it("the CRM/ads connectors are live now that Composio-managed auth removed the Auth Config prerequisite", () => {
+    // These were coming_soon for exactly one reason — no hand-registered Auth Config — which
+    // managed auth removed. Each was verified live to produce a real Connect Link.
+    for (const id of ["hubspot", "google-ads", "meta-ads"]) {
       const c = getConnector(id);
-      expect(c?.status).toBe("coming_soon");
+      expect(c?.status).toBe("available");
       expect(c?.composio?.toolkit_slug).toBeTruthy();
+      expect((c?.operations ?? []).length).toBeGreaterThan(0);
     }
+  });
+
+  it("AgentMail stays coming_soon — Composio reports no managed credentials for that toolkit", () => {
+    // A real reason, not an unprovisioned config: one-click connect genuinely cannot work until
+    // we register our own OAuth app for it.
+    const c = getConnector("agentmail");
+    expect(c?.status).toBe("coming_soon");
+    expect(c?.composio?.toolkit_slug).toBe("agent_mail");
+  });
+
+  it("Meta Ads uses the toolkit slug Composio actually has", () => {
+    // Was "facebook_ads", which Composio rejects as nonexistent — caught by connecting it for real.
+    expect(getConnector("meta-ads")?.composio?.toolkit_slug).toBe("metaads");
   });
 
   it("the rest of the creator-economy platforms are coming_soon", () => {

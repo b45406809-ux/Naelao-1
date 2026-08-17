@@ -31,6 +31,12 @@ id = "0fdaabda06a64e1f911c32fddde5718c"
 binding = "SPACES_WORKER"
 service = "naelao-spaces"
 
+# Service binding to naelao-agents — best-effort AgentMail email seed at provision time
+# (holds AGENTMAIL_API_KEY). Optional: seedBusinessEmail no-ops when unbound/unconfigured.
+[[services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
+
 # Skill library / agent-config R2 — the provisioner writes each agent's 4 config files here.
 [[r2_buckets]]
 binding = "SCRIPTS_R2"
@@ -52,9 +58,17 @@ vars = { ENVIRONMENT = "staging" }
 binding = "SPACES_WORKER"
 service = "naelao-spaces"
 
+[[env.staging.services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
+
 [env.production]
 vars = { ENVIRONMENT = "production" }
 
 [[env.production.services]]
 binding = "SPACES_WORKER"
 service = "naelao-spaces"
+
+[[env.production.services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"

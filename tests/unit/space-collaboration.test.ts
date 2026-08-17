@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { SpaceDO, PRESENCE_PRUNE_CUTOFF_MS } from "../../workers/spaces/src/do/SpaceDO.js";
-import { createDOSqlStorage, type DOSqlStorage } from "./helpers/sqlite-do-shim.js";
+import { createDOStorage, type DOSqlStorage } from "./helpers/sqlite-do-shim.js";
 import { nameSimilarity, findPossibleDuplicateProjects, isPresenceFresh, PRESENCE_FRESHNESS_WINDOW_MS } from "@naelao/events";
 
 // Space collaboration (A1.8): "two members' assistants do not build two companies because
@@ -10,7 +10,7 @@ import { nameSimilarity, findPossibleDuplicateProjects, isPresenceFresh, PRESENC
 // on project creation, since exact-name idempotency already existed).
 
 function makeSpaceDO(env: Record<string, unknown> = {}): SpaceDO {
-  const ctx = { storage: { sql: createDOSqlStorage() } };
+  const ctx = { storage: createDOStorage() };
   return new SpaceDO(ctx as never, { PLATFORM_SECRET: "test-secret", ...env } as never);
 }
 
@@ -103,6 +103,23 @@ describe("SpaceDO — project deduplication", () => {
     const res = await call(spaceDO, "/projects", "POST", { space_id: "space1", name: "Orders" });
     expect(res.status).toBe(201);
     expect(res.json.possible_duplicates).toEqual([]);
+  });
+
+  // Live-reported bug (2026-08-07): a new business came with 2 starter threads per prebuilt
+  // project. Root cause: this endpoint ALWAYS returned 201/ok on `ON CONFLICT DO NOTHING`, so a
+  // caller re-seeding the same template (the provisioner at creation time, then bootstrap/complete
+  // again once an end user finished onboarding) could never tell a genuine create apart from a
+  // silent no-op — every re-run looked identical to the first, so it re-seeded a starter thread
+  // every time. `created` is what makes that distinguishable, driven against the REAL DO (not a
+  // fake) so this can't drift from the actual contract the way the bootstrap fake's own 409
+  // assumption once did.
+  it("a genuine create reports created:true; a same-name re-create reports created:false with the SAME id", async () => {
+    const first = await call(spaceDO, "/projects", "POST", { space_id: "space1", name: "Support" });
+    expect(first.json.created).toBe(true);
+
+    const second = await call(spaceDO, "/projects", "POST", { space_id: "space1", name: "Support" });
+    expect(second.json.created).toBe(false);
+    expect(second.json.id).toBe(first.json.id);
   });
 
   it("an archived project is not flagged as a duplicate candidate", async () => {
@@ -209,9 +226,9 @@ describe("SpaceDO — presence", () => {
   // active list" from "physically deleted," so they construct the DO with direct access to the
   // underlying SQL storage rather than using the shared `spaceDO`/`call` helpers above.
   function makeSpaceDOWithSql(): { doInstance: SpaceDO; sql: DOSqlStorage } {
-    const sql = createDOSqlStorage();
-    const doInstance = new SpaceDO({ storage: { sql } } as never, { PLATFORM_SECRET: "test-secret" } as never);
-    return { doInstance, sql };
+    const storage = createDOStorage();
+    const doInstance = new SpaceDO({ storage } as never, { PLATFORM_SECRET: "test-secret" } as never);
+    return { doInstance, sql: storage.sql };
   }
 
   function presenceRowCount(sql: DOSqlStorage, spaceId: string, userId: string): number {

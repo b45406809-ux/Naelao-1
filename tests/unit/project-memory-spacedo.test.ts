@@ -1,13 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { SpaceDO } from "../../workers/spaces/src/do/SpaceDO.js";
-import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
+import { createDOStorage } from "./helpers/sqlite-do-shim.js";
 
 // §A1.17 Phase U: project-scoped Memory OS Layers 3 (facts)/4 (fabric)/6 (wiki), implemented as
 // new SpaceDO routes so every agent thread bound to the SAME project can share them (T2 gave
 // each (thread, agentId) pair its own local memory, which would otherwise mean zero sharing).
 
 function makeSpaceDO(): SpaceDO {
-  const ctx = { storage: { sql: createDOSqlStorage() } };
+  const ctx = { storage: createDOStorage() };
   return new SpaceDO(ctx as never, { PLATFORM_SECRET: "test-secret" } as never);
 }
 

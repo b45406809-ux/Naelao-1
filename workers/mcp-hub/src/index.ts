@@ -29,6 +29,33 @@ export interface Env {
    *  near-expiry access token by calling this internal endpoint — only the agents worker holds
    *  the connector's OAuth client secret, so refresh logic lives there, not here. */
   AGENTS_WORKER?: Fetcher;
+  /** Meters a call that rode on Naelao's OWN platform provider key (not the builder's BYO
+   *  credential) so it bills the builder's org rather than being an open, unattributed platform
+   *  cost sink. Optional/best-effort — degrades to unmetered (not unblocked) when unwired. */
+  BILLING_WORKER?: Fetcher;
+}
+
+/** Meter a tool call that resolved to Naelao's platform provider key (never a builder's own BYO
+ *  credential — that case is the builder's own provider billing, not ours). Reuses the existing
+ *  generic POST /billing/usage sink (same one llm_tokens/infra_credits already use), so this
+ *  needs no new billing-worker route. Best-effort: never blocks or fails the tool call itself. */
+async function recordPlatformKeyUsage(env: Env, tenantId: string, spaceId: string, connectorProvider: string): Promise<void> {
+  if (!env.BILLING_WORKER) return;
+  try {
+    await env.BILLING_WORKER.fetch(
+      new Request("http://billing-worker/billing/usage", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-naelao-tenant-id": tenantId,
+          "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+        },
+        body: JSON.stringify({ space_id: spaceId, event_type: "platform_connector_key", quantity: 1 }),
+      })
+    );
+  } catch {
+    // Best-effort — the tool call itself already succeeded/failed independently of billing.
+  }
 }
 
 // Hosts that are external payment processors (incl. Naelao's own LS). A connector may never be
@@ -109,6 +136,15 @@ interface ProviderToolCallResult {
   error?: string;
 }
 
+// Composio moved its tool-execution/listing API from v2 (`/api/v2/actions/...`) to v3
+// (`/api/v3/tools/...`) — the connect-flow code in connectors/composio.ts was already updated to
+// v3 for the OAuth handshake (see its own header), but these two functions, which is what every
+// ACTUAL agent tool call goes through, were left on the dead v2 shape. Confirmed against
+// Composio's real, live OpenAPI spec (`GET https://backend.composio.dev/api/v3/openapi.json`,
+// fetched directly rather than assumed) — this is not a guess at a plausible shape the way some
+// of this file's other defensive parsing is; the exact field names below are the schema's own.
+const COMPOSIO_API_BASE = "https://backend.composio.dev/api/v3";
+
 async function composioToolCall(
   connectionId: string,
   toolName: string,
@@ -116,11 +152,11 @@ async function composioToolCall(
   apiKey: string
 ): Promise<ProviderToolCallResult> {
   const resp = await fetch(
-    `https://backend.composio.dev/api/v2/actions/${encodeURIComponent(toolName)}/execute`,
+    `${COMPOSIO_API_BASE}/tools/execute/${encodeURIComponent(toolName)}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-api-key": apiKey },
-      body: JSON.stringify({ connectedAccountId: connectionId, input }),
+      body: JSON.stringify({ connected_account_id: connectionId, arguments: input }),
       signal: AbortSignal.timeout(30_000),
     }
   );
@@ -128,8 +164,13 @@ async function composioToolCall(
     const text = await resp.text().catch(() => "");
     return { error: `Composio returned ${resp.status}: ${text.slice(0, 200)}` };
   }
-  const data = await resp.json<{ data?: unknown; error?: string }>();
+  const data = await resp.json<{ data?: unknown; error?: string | null; successful?: boolean }>();
   if (data.error) return { error: data.error };
+  // The v3 response envelope reports success via a dedicated `successful` boolean rather than
+  // relying solely on `error` being absent — a call whose HTTP status was 200 but whose
+  // `successful` field is `false` is still a failure (e.g. the upstream app itself rejected the
+  // action), and reporting it as a result would hide that from the agent.
+  if (data.successful === false) return { error: "Composio reported the tool call as unsuccessful" };
   return { result: data.data };
 }
 
@@ -137,12 +178,20 @@ async function composioListTools(
   connectionId: string,
   apiKey: string
 ): Promise<{ tools: unknown[] }> {
+  // v3 lists tools by TOOLKIT (`?toolkit_slug=`), not by connected account — there is no
+  // "list tools for this connection" filter anymore, confirmed against the real spec. A
+  // connected account always belongs to exactly one toolkit, so resolve that first.
+  const acctResp = await fetch(
+    `${COMPOSIO_API_BASE}/connected_accounts/${encodeURIComponent(connectionId)}`,
+    { headers: { "x-api-key": apiKey }, signal: AbortSignal.timeout(15_000) }
+  );
+  if (!acctResp.ok) return { tools: [] };
+  const acct = await acctResp.json<{ toolkit?: { slug?: string } }>().catch(() => ({}) as { toolkit?: { slug?: string } });
+  const toolkitSlug = acct.toolkit?.slug;
+  if (!toolkitSlug) return { tools: [] };
   const resp = await fetch(
-    `https://backend.composio.dev/api/v2/actions?connectedAccountId=${encodeURIComponent(connectionId)}&limit=100`,
-    {
-      headers: { "x-api-key": apiKey },
-      signal: AbortSignal.timeout(15_000),
-    }
+    `${COMPOSIO_API_BASE}/tools?toolkit_slug=${encodeURIComponent(toolkitSlug)}&limit=100`,
+    { headers: { "x-api-key": apiKey }, signal: AbortSignal.timeout(15_000) }
   );
   if (!resp.ok) return { tools: [] };
   const data = await resp.json<{ items?: unknown[] }>();
@@ -275,8 +324,33 @@ async function validateMcpUrl(rawUrl: string): Promise<{ ok: true; url: URL } | 
  * credentials worker, then build the auth headers for the upstream MCP server. The plaintext is
  * fetched per call and never persisted in mcp_servers — the row only holds the credential NAME.
  * agentId scopes the short-lived credential token (for the vault's audit trail).
+ *
+ * §A1.18 connector scope model: `actingUserId`, when given, is passed to the credentials worker
+ * as `on_behalf_of_user_id` — the plaintext-resolution route already implements the full
+ * space-override > user > space-shared hierarchy (`resolveCredential`, unchanged by this pass),
+ * it just never received an acting user from any caller. This is what makes a `scope='user'`
+ * connector credential (a member's own personal account) actually reachable at call time — before
+ * this, every resolution here was effectively space-only regardless of what was stored. Absent
+ * (the vast majority of calls — most connectors are space-scoped) resolves exactly as before.
  */
-export async function buildAuthHeaders(server: McpServer, env: Env, agentId: string): Promise<Record<string, string>> {
+/** Normalizes the `x-naelao-connector-scope` header (set by the mcp-connector prebuilt from the
+ *  chat surface's per-session connector-mode preference) into buildAuthHeaders' preferScope
+ *  param — any other/absent value degrades to undefined (today's default resolution), never a
+ *  thrown error over a malformed header. */
+function readPreferScope(raw: string | undefined): "business" | "personal" | undefined {
+  return raw === "business" || raw === "personal" ? raw : undefined;
+}
+
+export async function buildAuthHeaders(
+  server: McpServer,
+  env: Env,
+  agentId: string,
+  actingUserId?: string,
+  /** §A1 connector default-vs-personal switch: forwarded verbatim to the credentials worker's
+   *  resolveCredential (see that function's own doc for the tier semantics). Absent for every
+   *  pre-existing caller — byte-identical behavior. */
+  preferScope?: "business" | "personal"
+): Promise<Record<string, string>> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (server.auth_type === "none" || !server.auth_secret_name) return headers;
 
@@ -294,9 +368,19 @@ export async function buildAuthHeaders(server: McpServer, env: Env, agentId: str
           "x-naelao-tenant-id": server.tenant_id,
           "x-naelao-credential-token": token,
         },
+        body: JSON.stringify({
+          ...(actingUserId ? { on_behalf_of_user_id: actingUserId } : {}),
+          ...(preferScope ? { prefer_scope: preferScope } : {}),
+        }),
       }
     )
   );
+  if (resp.status === 404) {
+    const body = await resp.json<{ error_code?: string }>().catch(() => ({}) as Record<string, never>);
+    if (body.error_code === "personal_credential_required") {
+      throw new Error(`personal_credential_required: no personal account connected for '${server.name}' — switch to the business account or connect your own`);
+    }
+  }
   if (!resp.ok) {
     throw new Error(`Failed to resolve credential '${server.auth_secret_name}' (${resp.status})`);
   }
@@ -582,7 +666,10 @@ app.get("/v1/spaces/:spaceId/mcp-servers/:serverId/tools", async (c) => {
 
   let headers: Record<string, string>;
   try {
-    headers = await buildAuthHeaders(server, c.env, c.req.header("x-naelao-agent-id") ?? "mcp-hub");
+    headers = await buildAuthHeaders(
+      server, c.env, c.req.header("x-naelao-agent-id") ?? "mcp-hub", c.req.header("x-naelao-user-id") || undefined,
+      readPreferScope(c.req.header("x-naelao-connector-scope"))
+    );
   } catch (err) {
     return c.json({ error_code: "credential_error", message: (err as Error).message }, 502);
   }
@@ -666,6 +753,9 @@ app.post("/v1/spaces/:spaceId/mcp-servers/:serverId/tools/call", async (c) => {
     if (!server.provider_connection_id) {
       return c.json({ error_code: "bad_request", message: "Provider connection_id missing" }, 400);
     }
+    if (keyRes.source === "platform") {
+      c.executionCtx.waitUntil(recordPlatformKeyUsage(c.env, tenantId, spaceId, server.connector_provider ?? "unknown"));
+    }
     let providerResult: ProviderToolCallResult;
     if (server.connector_provider === "composio") {
       providerResult = await composioToolCall(server.provider_connection_id, body.tool_name, body.input, keyRes.apiKey);
@@ -687,7 +777,10 @@ app.post("/v1/spaces/:spaceId/mcp-servers/:serverId/tools/call", async (c) => {
 
   let headers: Record<string, string>;
   try {
-    headers = await buildAuthHeaders(server, c.env, c.req.header("x-naelao-agent-id") ?? "mcp-hub");
+    headers = await buildAuthHeaders(
+      server, c.env, c.req.header("x-naelao-agent-id") ?? "mcp-hub", c.req.header("x-naelao-user-id") || undefined,
+      readPreferScope(c.req.header("x-naelao-connector-scope"))
+    );
   } catch (err) {
     return c.json({ error_code: "credential_error", message: (err as Error).message }, 502);
   }

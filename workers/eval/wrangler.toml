@@ -29,12 +29,17 @@ ENVIRONMENT = "development"
 # itself, so no EVAL_LLM_KEY is required once it's set.
 NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3"
 NAELAO_GATEWAY_ID = "naelao-gateway"
+# Which model the JUDGE runs on. Deliberately a var, not a hardcoded constant: the previous
+# hardcoded Claude id does not resolve on every account's gateway (it does not on this one), which
+# silently scored every judged case 0 and read as "every model failed" rather than "the judge
+# never ran". CF_API_TOKEN is a secret (`wrangler secret put CF_API_TOKEN`).
+EVAL_JUDGE_MODEL = "@cf/openai/gpt-oss-120b"
 
 [env.staging]
 # wrangler does NOT merge [env.X].vars with the top-level [vars] block — it replaces it
 # entirely, so these must be repeated here or judge calls silently fall back to a direct
 # Anthropic call in staging (the same gotcha every other worker's wrangler.toml documents).
-vars = { ENVIRONMENT = "staging", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3", NAELAO_GATEWAY_ID = "naelao-gateway" }
+vars = { ENVIRONMENT = "staging", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3", NAELAO_GATEWAY_ID = "naelao-gateway", EVAL_JUDGE_MODEL = "@cf/openai/gpt-oss-120b" }
 
 [[env.staging.services]]
 binding = "AGENTS_WORKER"
@@ -42,7 +47,7 @@ service = "naelao-agents"
 
 [env.production]
 # See [env.staging]'s comment above — same wrangler vars-replacement gotcha.
-vars = { ENVIRONMENT = "production", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3", NAELAO_GATEWAY_ID = "naelao-gateway" }
+vars = { ENVIRONMENT = "production", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3", NAELAO_GATEWAY_ID = "naelao-gateway", EVAL_JUDGE_MODEL = "@cf/openai/gpt-oss-120b" }
 
 [[env.production.services]]
 binding = "AGENTS_WORKER"

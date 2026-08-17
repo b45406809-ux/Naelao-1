@@ -261,3 +261,45 @@ describe("NaelaoAgentDO /script/run — F-36 clamp resolved at run entry", () =>
     expect(calls.some((p) => p.includes("assistant-access"))).toBe(false);
   });
 });
+
+// A product end user can be the OWNER of their own business, not just a customer of it. Without
+// that distinction the F-36 clamp downgraded yolo for them unconditionally — so an owner who set
+// their own business to autonomous still had every action gated, with nobody but themself to
+// approve it. Found live: a real business set to yolo still returned deferred_approvals.
+describe("yolo and the business owner", () => {
+  const yolo = { approval_mode: "yolo" as const, auto_approved_actions: ["project.list"] };
+
+  it("applies yolo for a business owner acting as a product end user", () => {
+    const plan = resolveAssistantApprovalPlan(yolo, "product_end_user", "owner");
+    expect(plan.approvalMode).toBe("gate_listed");
+    expect(plan.requiresApprovalFor).toEqual([]);
+  });
+
+  it("applies it for a business admin too", () => {
+    expect(resolveAssistantApprovalPlan(yolo, "product_end_user", "admin").approvalMode).toBe("gate_listed");
+  });
+
+  it("still downgrades a plain member — yolo is the owner's choice about their own business", () => {
+    const plan = resolveAssistantApprovalPlan(yolo, "product_end_user", "member");
+    expect(plan.approvalMode).toBe("gate_unless_listed");
+    expect(plan.requiresApprovalFor).toEqual(["project.list"]);
+  });
+
+  it("downgrades when the business role could not be resolved at all", () => {
+    // Fail soft, not open: an unresolvable role keeps the always_ask posture.
+    expect(resolveAssistantApprovalPlan(yolo, "product_end_user", undefined).approvalMode).toBe("gate_unless_listed");
+  });
+
+  it("leaves builder and system callers exactly as they were", () => {
+    expect(resolveAssistantApprovalPlan(yolo, "owner").approvalMode).toBe("gate_listed");
+    expect(resolveAssistantApprovalPlan(yolo, undefined).approvalMode).toBe("gate_listed");
+    expect(resolveAssistantApprovalPlan(yolo, "viewer").approvalMode).toBe("gate_unless_listed");
+    // A business role must never promote a caller the platform role already refused.
+    expect(resolveAssistantApprovalPlan(yolo, "viewer", "owner").approvalMode).toBe("gate_unless_listed");
+  });
+
+  it("never grants yolo when the policy isn't yolo, whatever the business role", () => {
+    const askFirst = { approval_mode: "always_ask" as const, auto_approved_actions: [] };
+    expect(resolveAssistantApprovalPlan(askFirst, "product_end_user", "owner").approvalMode).toBe("gate_unless_listed");
+  });
+});

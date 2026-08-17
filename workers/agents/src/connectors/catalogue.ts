@@ -120,6 +120,21 @@ export interface ConnectorDefinition {
   category: ConnectorCategory;
   status: ConnectorStatus;
   summary: string;
+  /**
+   * Who a connected credential belongs to — same distinction Claude/ChatGPT connectors draw
+   * between an org-wide integration and a person's own account. `"space"` (default when absent,
+   * preserving every pre-existing connector's behavior): one shared credential for the whole
+   * business, connected once by an admin (Whop, a company Slack, a shared Notion workspace — the
+   * business-wallet precedent). `"user"`: each member connects their OWN account — a member's
+   * personal credential is never visible to or usable by another member, resolved via the
+   * existing credential hierarchy's user tier (packages this repo already built — see
+   * `workers/credentials`'s `resolveCredential` — the gap was that connectors never threaded an
+   * acting user id through to reach it, not that the hierarchy didn't exist). Every connector in
+   * this catalogue today is genuinely business-owned (a company's Whop/Gumroad/social account),
+   * so none currently opt into `"user"` — this field exists so a personal connector (a member's
+   * own inbox, calendar, ...) can be added later without new plumbing.
+   */
+  scope_model?: "space" | "user";
   /** Docs the builder/agent can consult. */
   docs_url?: string;
   auth: ConnectorAuth;
@@ -169,19 +184,34 @@ const WHOP: ConnectorDefinition = {
   oauth: {
     authorize_url: "https://api.whop.com/oauth/authorize",
     token_url: "https://api.whop.com/oauth/token",
-    // `openid` is required for the userinfo lookup below (same-account-multiple-businesses
-    // detection); `profile` isn't needed since only the stable `sub` is used, not the name/avatar.
-    // checkout_configuration:create/plan:create/access_pass:create+update/
-    // checkout_configuration:basic:read (added for the end-user billing pivot) let the connected
-    // business's OWN Whop company create plans + checkout links for its own end-user
-    // subscriptions/credit-packs (workers/billing/src/whop-oauth-billing.ts) — a genuinely new
-    // money-in capability beyond the original read-only connect, so an ALREADY-connected business
-    // must re-consent once for the widened scope (OAuth doesn't retroactively grant new scopes to
-    // an existing token).
+    // §A1.18 follow-up #3 — the prior two passes got the MECHANISM right (openid/profile/email +
+    // nonce is genuinely what unblocks the standalone `/oauth/authorize` flow — confirmed live,
+    // unchanged here) but were guessing at the resource-permission scopes beyond that OIDC triad,
+    // since `docs.whop.com`'s scopes reference page 404s from this environment. The owner pulled
+    // the app's REAL, full scope catalog straight from the Whop Developer Dashboard (~190 values)
+    // — every scope name below is copied verbatim from that list, not invented. Selected on
+    // least-privilege: only what this connector's own `operations` below actually call, plus the
+    // exact five (`checkout_configuration:create`, `plan:create`, `access_pass:create/update`,
+    // `company:manage_checkout`) item 58's OAuth-delegated end-user checkout depends on — those
+    // were flagged UNVERIFIED-as-real-scopes in the prior pass; the dashboard list now confirms
+    // they genuinely exist, resolving that flag (whether the connecting user's OWN Whop role
+    // actually grants them at consent time is still unverified — no live consent flow has run).
+    // NOT requested: anything company-admin-destructive (company:delete, developer:*,
+    // incorporation:*), payout/wallet scopes (that's the separate invite-gated Platforms API,
+    // items 50-51, not this BYO connector), or write scopes beyond what `operations` declares.
     scopes: [
-      "openid", "read_memberships", "read_payments",
-      "checkout_configuration:create", "checkout_configuration:basic:read",
+      "openid", "profile", "email",
+      "company:basic:read",
+      "member:basic:read", "member:email:read",
+      "access_pass:basic:read",
+      "plan:basic:read",
+      "payment:basic:read",
+      "dms:read", "dms:message:manage",
+      "forum:read", "forum:post:create",
+      // item 58's delegated end-user checkout (business's own connected Whop company sells directly):
+      "checkout_configuration:basic:read", "checkout_configuration:create",
       "plan:create", "access_pass:create", "access_pass:update",
+      "company:manage_checkout",
     ],
     client_id_env: "WHOP_OAUTH_CLIENT_ID",
     client_secret_env: "WHOP_OAUTH_CLIENT_SECRET",
@@ -341,6 +371,26 @@ function comingSoon(
 
 /** Coming-soon Composio-routed placeholder — no builder credential at all once flipped on, just
  *  an `auth_config_id_env` to provision. Kept `coming_soon` until that Auth Config exists. */
+/** A Composio-routed connector that is live. `auth_config_id_env` names an OPTIONAL override:
+ *  when that env var holds a hand-registered Auth Config we use it, otherwise Composio creates one
+ *  on demand with its own managed credentials (connectors/directory.ts). */
+function availableComposio(
+  id: string,
+  name: string,
+  category: ConnectorCategory,
+  toolkit_slug: string,
+  auth_config_id_env: string,
+  summary: string,
+  operations: ConnectorOperation[]
+): ConnectorDefinition {
+  return {
+    id, name, category, status: "available", summary,
+    auth: { type: "none", credential_name: "" },
+    composio: { toolkit_slug, auth_config_id_env },
+    operations,
+  };
+}
+
 function comingSoonComposio(
   id: string,
   name: string,
@@ -365,10 +415,31 @@ export const CONNECTOR_CATALOGUE: ConnectorDefinition[] = [
   INSTAGRAM,
   TIKTOK,
   NOTION,
-  // CRM / ads / advanced email — Composio-routed, data-only until an Auth Config is provisioned.
-  comingSoonComposio("hubspot", "HubSpot", "crm", "hubspot", "COMPOSIO_HUBSPOT_AUTH_CONFIG_ID", "CRM/lead pipeline — deals, contacts, pipeline stages."),
-  comingSoonComposio("google-ads", "Google Ads", "ads", "googleads", "COMPOSIO_GOOGLE_ADS_AUTH_CONFIG_ID", "Campaign performance, budgets, ad group management."),
-  comingSoonComposio("meta-ads", "Meta Ads", "ads", "facebook_ads", "COMPOSIO_META_ADS_AUTH_CONFIG_ID", "Meta (Facebook/Instagram) ad campaign management."),
+  // CRM / ads. These were coming_soon for exactly one reason — "until an Auth Config is
+  // provisioned" — and Composio's managed auth removed it: the connect route now creates a config
+  // on demand using Composio's own registered app (see connectors/directory.ts). Each of the three
+  // below was verified live to produce a real Connect Link before being flipped.
+  availableComposio("hubspot", "HubSpot", "crm", "hubspot", "COMPOSIO_HUBSPOT_AUTH_CONFIG_ID", "CRM/lead pipeline — deals, contacts, pipeline stages.", [
+    { name: "list_contacts", description: "List CRM contacts.", kind: "read" },
+    { name: "create_contact", description: "Create a CRM contact.", kind: "write" },
+    { name: "list_deals", description: "List deals and their pipeline stages.", kind: "read" },
+    { name: "update_deal", description: "Move a deal or edit its properties.", kind: "write" },
+  ]),
+  availableComposio("google-ads", "Google Ads", "ads", "googleads", "COMPOSIO_GOOGLE_ADS_AUTH_CONFIG_ID", "Campaign performance, budgets, ad group management.", [
+    { name: "list_campaigns", description: "List campaigns and their status.", kind: "read" },
+    { name: "get_campaign_performance", description: "Read spend, clicks and conversions for a campaign.", kind: "read" },
+    { name: "update_campaign_budget", description: "Change a campaign's daily budget.", kind: "write" },
+  ]),
+  // Slug corrected from "facebook_ads", which Composio rejects as a nonexistent toolkit — the real
+  // one is "metaads". Found by connecting it for real rather than by reading the file.
+  availableComposio("meta-ads", "Meta Ads", "ads", "metaads", "COMPOSIO_META_ADS_AUTH_CONFIG_ID", "Meta (Facebook/Instagram) ad campaign management.", [
+    { name: "list_campaigns", description: "List ad campaigns and their status.", kind: "read" },
+    { name: "get_campaign_insights", description: "Read spend, reach and results for a campaign.", kind: "read" },
+    { name: "update_campaign_budget", description: "Change a campaign's budget.", kind: "write" },
+  ]),
+  // Stays coming_soon, and for a real reason rather than an unprovisioned config: Composio
+  // reports it has no managed credentials for this toolkit, so one-click connect genuinely can't
+  // work until we register our own OAuth app for it.
   comingSoonComposio("agentmail", "AgentMail", "email", "agent_mail", "COMPOSIO_AGENTMAIL_AUTH_CONFIG_ID", "Dedicated agent-managed inbox — beyond the built-in business-email default."),
   // Course / product platforms
   comingSoon("stan-store", "Stan Store", "course_product", "Link-in-bio storefront, courses and bookings.", "STAN_API_KEY"),

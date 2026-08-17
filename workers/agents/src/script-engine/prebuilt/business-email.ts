@@ -2,14 +2,21 @@
  * business-email (spec §11) — a Naelao-provided business mailbox so the agent never has to
  * shop for a third-party email tool. Tier 2.
  *
- * Provisioning allocates hi@{slug}.naelao-mail.com (a Naelao-managed sending identity) and
- * records a business_services row. Sending routes through the notifications worker, which
- * holds the provider credentials, so usage reflects on the owner's billing. This is NOT a
- * reserved capability — a builder may instead author their own email script — but the
+ * TWO backends, chosen automatically:
+ *   1. AgentMail (preferred when AGENTMAIL_API_KEY is configured on the agents worker): a REAL,
+ *      inbound-capable mailbox on a domain AgentMail hosts — no Naelao DNS zone needed. Provision
+ *      creates an inbox + inbound webhook; send goes out from that address; replies flow back into
+ *      the business's channel inbox. Routed through the agents worker's own /internal/business-email/*
+ *      routes, which hold the API key — the agent (this isolate) never sees it.
+ *   2. Fallback (AgentMail not configured): the legacy behavior — a placeholder handle recorded in
+ *      business_services + outbound-only send through the notifications worker (Resend). Honest:
+ *      this address cannot RECEIVE, and provision says so.
+ *
+ * This is NOT a reserved capability — a builder may instead author their own email script — but the
  * Naelao service is the zero-config default.
  *
  * Operations:
- *   email.provision(slug?)             → { address: "hi@{slug}.naelao-mail.com", status }
+ *   email.provision(slug?)             → { address, inbound, status }
  *   email.send(to, subject, body)      → delivery receipt (from the business address)
  *   email.status()                     → current business-email service record
  */
@@ -40,11 +47,68 @@ async function bizService(
   return resp.json();
 }
 
+/** Call an /internal/business-email/* route on the agents worker itself (holds AGENTMAIL_API_KEY).
+ *  Returns null when the self-binding isn't wired (older env), so the caller falls back. */
+async function agentMailCall(
+  ctx: PrebuiltOpContext,
+  path: string,
+  body: Record<string, unknown>
+): Promise<Record<string, unknown> | null> {
+  if (!ctx.env.agentsWorker) return null;
+  const resp = await ctx.env.agentsWorker.fetch(new Request(`http://agents-worker${path}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-naelao-tenant-id": ctx.env.tenantId,
+      "x-naelao-internal-token": await mintInternalToken(ctx.env.platformSecret ?? "", ctx.env.tenantId),
+    },
+    body: JSON.stringify({ spaceId: ctx.env.spaceId, tenantId: ctx.env.tenantId, ...body }),
+  }));
+  return resp.json<Record<string, unknown>>().catch(() => null);
+}
+
+async function provision(ctx: PrebuiltOpContext, a: Record<string, unknown>): Promise<unknown> {
+  const slug = String(a["slug"] ?? a["name"] ?? "team");
+  // Prefer a REAL, inbound-capable AgentMail inbox.
+  const am = await agentMailCall(ctx, "/internal/business-email/provision", {
+    slug: toSlug(slug),
+    ...(a["display_name"] ? { displayName: String(a["display_name"]) } : {}),
+  });
+  if (am && am["configured"] === true && am["ok"] === true) {
+    return {
+      address: am["email"],
+      inbound: Boolean(am["inbound_wired"]) || Boolean(am["already"]),
+      status: "active",
+      provider: "agentmail",
+    };
+  }
+  // Fallback: legacy placeholder (send-only). Say plainly it can't receive.
+  const rec = (await bizService(ctx, "POST", { kind: "business_email", slug: toSlug(slug) })) as { naelao_handle?: string };
+  return {
+    address: rec?.naelao_handle,
+    inbound: false,
+    status: "active",
+    provider: "placeholder",
+    note: "This address can send but not receive yet (AgentMail is not configured on this deployment).",
+  };
+}
+
 async function send(ctx: PrebuiltOpContext, a: Record<string, unknown>): Promise<unknown> {
+  const to = a["to"];
+  // Prefer sending from the real AgentMail inbox (a genuine, reply-able from-address).
+  const am = await agentMailCall(ctx, "/internal/business-email/send", {
+    to,
+    ...(a["subject"] !== undefined ? { subject: a["subject"] } : {}),
+    ...(a["body"] !== undefined ? { text: a["body"] } : {}),
+    ...(a["html"] !== undefined ? { html: a["html"] } : {}),
+  });
+  if (am && am["ok"] === true) {
+    return { delivered: true, provider: "agentmail", message_id: am["messageId"] ?? null };
+  }
+  // Fallback: outbound-only via the notifications worker (Resend).
   if (!ctx.env.notificationsWorker) {
     return { delivered: false, reason: "notifications worker binding not configured" };
   }
-  // Resolve the provisioned from-address (falls back to the platform sender if unprovisioned).
   let from: string | undefined;
   try {
     const svc = (await bizService(ctx, "GET")) as { naelao_handle?: string } | null;
@@ -58,7 +122,7 @@ async function send(ctx: PrebuiltOpContext, a: Record<string, unknown>): Promise
       body: JSON.stringify({
         channel: "email",
         space_id: ctx.env.spaceId,
-        to: a["to"],
+        to,
         subject: a["subject"],
         body: a["body"],
         ...(from ? { from } : {}),
@@ -66,7 +130,7 @@ async function send(ctx: PrebuiltOpContext, a: Record<string, unknown>): Promise
     })
   );
   if (!resp.ok) throw new Error(`email.send failed: ${resp.status}`);
-  return { delivered: true, from: from ?? "platform" };
+  return { delivered: true, provider: "resend", from: from ?? "platform" };
 }
 
 function toSlug(input: string): string {
@@ -75,12 +139,11 @@ function toSlug(input: string): string {
 
 export const businessEmail: PrebuiltScript = {
   name: "business-email",
-  description: "Send transactional and marketing email from a Naelao-provided business address.",
+  description: "Send transactional and marketing email from a Naelao-provided business address (inbound-capable via AgentMail when configured).",
   domain: "comms",
   requires_tier: 2,
   operations: {
-    "email.provision": (a, c) =>
-      bizService(c, "POST", { kind: "business_email", slug: toSlug(String(a["slug"] ?? a["name"] ?? "team")) }),
+    "email.provision": (a, c) => provision(c, a),
     "email.send": (a, c) => send(c, a),
     "email.status": (_a, c) => bizService(c, "GET"),
   },

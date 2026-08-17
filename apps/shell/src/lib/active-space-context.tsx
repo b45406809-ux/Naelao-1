@@ -21,6 +21,13 @@ export interface ActiveSpaceContextValue {
   activeSpaceName: string | null;
   /** True when browsing a business other than the product root. */
   isBusinessSpace: boolean;
+  /** True once the sessionStorage hydration effect below has run. A consumer that auto-selects a
+   *  default active space (e.g. the shell layout steering a hybrid/tenant product's user into
+   *  their first business) MUST wait for this — React runs a child's effects before its parent's
+   *  within one commit, so an effect in a child of ActiveSpaceProvider would otherwise fire
+   *  before hydration and could clobber a real persisted choice with a computed default. Same
+   *  precedent as ProductAuthProvider's own isHydrated (auth-provider.tsx). */
+  isHydrated: boolean;
   setActiveSpace: (id: string, name?: string | null) => void;
   /** Builder-configured support contact (mailto: or https:) from manifest.legal.support_contact.
    *  Populated by the shell layout once the manifest loads; null until then or if unset. */
@@ -44,6 +51,7 @@ export function ActiveSpaceProvider({
   const [activeSpaceId, setActiveSpaceId] = React.useState(productSpaceId);
   const [activeSpaceName, setActiveSpaceName] = React.useState<string | null>(null);
   const [supportContact, setSupportContact] = React.useState<string | null>(null);
+  const [isHydrated, setIsHydrated] = React.useState(false);
 
   // Hydrate from sessionStorage once, client-side only — avoids an SSR/first-paint mismatch.
   React.useEffect(() => {
@@ -58,6 +66,8 @@ export function ActiveSpaceProvider({
       }
     } catch {
       /* sessionStorage unavailable (private mode, etc.) — stay on the product root */
+    } finally {
+      setIsHydrated(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [productSpaceId]);
@@ -84,11 +94,12 @@ export function ActiveSpaceProvider({
       activeSpaceId,
       activeSpaceName,
       isBusinessSpace: activeSpaceId !== productSpaceId,
+      isHydrated,
       setActiveSpace,
       supportContact,
       setSupportContact,
     }),
-    [activeSpaceId, activeSpaceName, productSpaceId, setActiveSpace, supportContact]
+    [activeSpaceId, activeSpaceName, productSpaceId, isHydrated, setActiveSpace, supportContact]
   );
 
   return <ActiveSpaceContext.Provider value={value}>{children}</ActiveSpaceContext.Provider>;

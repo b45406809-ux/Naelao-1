@@ -30,6 +30,15 @@ export const knowledgeBase: PrebuiltScript = {
   description: "Semantic search, index, and delete over the Space knowledge base (Vectorize RAG).",
   domain: "knowledge",
   requires_tier: 2,
+  // Phase 5: knowledge.index/knowledge.delete previously called routes that have never existed on
+  // the real knowledge worker (/kb/index, /kb/{id} — the real routes are /kb/documents and
+  // /kb/documents/:docId) — every real call 404'd. Fixed to the real contract; param hints (item
+  // 133's own convention) name the actual required fields since the op names alone don't.
+  paramHints: {
+    "knowledge.search": "{query: string, top_k?: number}",
+    "knowledge.index": "{title: string, content: string, content_type?: 'text'|'url'|'code'|'pdf', source_url?: string} — title and content are BOTH required, or the write is rejected.",
+    "knowledge.delete": "{id: string} — the kb_documents row id returned by knowledge.index (its own 'id' field), not a raw filename.",
+  },
   operations: {
     async "knowledge.search"(args, ctx) {
       const query = String(args["query"] ?? "");
@@ -45,26 +54,46 @@ export const knowledgeBase: PrebuiltScript = {
     },
 
     async "knowledge.index"(args, ctx) {
+      const title = String(args["title"] ?? "").trim();
+      const content = String(args["content"] ?? "");
+      if (!title) throw new Error("knowledge.index requires a non-empty 'title'");
+      if (!content) throw new Error("knowledge.index requires non-empty 'content'");
+      const contentType = typeof args["content_type"] === "string" ? args["content_type"] : "text";
       const resp = await reqWorker(ctx).fetch(
-        new Request(`http://knowledge-worker/spaces/${ctx.env.spaceId}/kb/index`, {
+        new Request(`http://knowledge-worker/spaces/${ctx.env.spaceId}/kb/documents`, {
           method: "POST",
           headers: await internalHeaders(ctx, { "content-type": "application/json" }),
-          body: JSON.stringify({ text: args["text"], metadata: args["metadata"] ?? {} }),
+          body: JSON.stringify({
+            title,
+            content,
+            content_type: contentType,
+            ...(typeof args["source_url"] === "string" ? { source_url: args["source_url"] } : {}),
+            // Project-scoped writes stay in that project's own KB slice — never inferred when the
+            // caller is the space-wide assistant (ctx.env.projectId absent for that context).
+            ...(ctx.env.projectId ? { project_id: ctx.env.projectId } : {}),
+          }),
         })
       );
-      if (!resp.ok) throw new Error(`knowledge.index failed: ${resp.status}`);
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => "");
+        throw new Error(`knowledge.index failed: ${resp.status}${body ? ` — ${body}` : ""}`);
+      }
       return await resp.json();
     },
 
     async "knowledge.delete"(args, ctx) {
       const id = String(args["id"] ?? "");
+      if (!id) throw new Error("knowledge.delete requires 'id'");
       const resp = await reqWorker(ctx).fetch(
-        new Request(`http://knowledge-worker/spaces/${ctx.env.spaceId}/kb/${encodeURIComponent(id)}`, {
+        new Request(`http://knowledge-worker/spaces/${ctx.env.spaceId}/kb/documents/${encodeURIComponent(id)}`, {
           method: "DELETE",
           headers: await internalHeaders(ctx),
         })
       );
-      if (!resp.ok) throw new Error(`knowledge.delete failed: ${resp.status}`);
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => "");
+        throw new Error(`knowledge.delete failed: ${resp.status}${body ? ` — ${body}` : ""}`);
+      }
       return { ok: true };
     },
   },

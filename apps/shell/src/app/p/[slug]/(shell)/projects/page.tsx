@@ -2,111 +2,44 @@
 
 export const runtime = "edge";
 
-import * as React from "react";
-import Link from "next/link";
-import { Button, Card, CardTitle, CardDesc, CardMeta, Modal, FormInput, FormTextarea, useToast, Toast } from "@naelao/ui";
-import { useProduct } from "@/lib/product-context";
-import { useProductAuth } from "@/lib/auth-provider";
-import { useActiveSpace } from "@/lib/active-space-context";
-import { listProjects, createProject, type Project } from "@/lib/api";
+// /projects (bare, no id) is no longer a list — it lands you straight in the business's default
+// "General" project, the way opening a folder takes you into it rather than showing you every
+// folder that exists first. The full list (and "New project") moved to /projects/all, reachable
+// from inside General's own header.
+//
+// Every business provisioned after this shipped gets a real General project seeded automatically
+// (see seedGeneralProject in workers/agents/src/launchpad/bootstrap.ts) — but an older business,
+// or one whose seed genuinely failed, might not have one yet. Falling back to the list in that
+// case (rather than a dead end) is what makes this safe to ship without a data migration.
 
-export default function ProjectsPage() {
+import * as React from "react";
+import { useRouter } from "next/navigation";
+import { useProduct } from "@/lib/product-context";
+import { useSessionCredentials } from "@/lib/auth-provider";
+import { useActiveSpace } from "@/lib/active-space-context";
+import { listProjects } from "@/lib/api";
+
+const GENERAL_PROJECT_NAME = "General";
+
+export default function ProjectsRootPage() {
   const product = useProduct();
   const { activeSpaceId } = useActiveSpace();
-  const { session } = useProductAuth();
-  const { toast, show } = useToast();
-  const [projects, setProjects] = React.useState<Project[]>([]);
-  const [loading, setLoading] = React.useState(true);
-  const [modalOpen, setModalOpen] = React.useState(false);
-  const [name, setName] = React.useState("");
-  const [description, setDescription] = React.useState("");
-  const [creating, setCreating] = React.useState(false);
-
-  const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
-
-  const refresh = React.useCallback(async () => {
-    if (!creds) return;
-    setLoading(true);
-    try {
-      setProjects(await listProjects(activeSpaceId, creds));
-    } catch {
-      show("Couldn't load projects");
-    } finally {
-      setLoading(false);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSpaceId, session]);
+  const creds = useSessionCredentials();
+  const router = useRouter();
 
   React.useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  async function handleCreate(e: React.FormEvent) {
-    e.preventDefault();
-    if (!creds || !name.trim()) return;
-    setCreating(true);
-    try {
-      await createProject(activeSpaceId, creds, name.trim(), description.trim() || undefined);
-      setModalOpen(false);
-      setName("");
-      setDescription("");
-      await refresh();
-    } catch (err) {
-      show(err instanceof Error ? err.message : "Failed to create project");
-    } finally {
-      setCreating(false);
-    }
-  }
+    if (!creds) return;
+    listProjects(activeSpaceId, creds)
+      .then((projects) => {
+        const general = projects.find((p) => p.name === GENERAL_PROJECT_NAME);
+        router.replace(`/p/${product.slug}/projects/${general ? general.id : "all"}`);
+      })
+      .catch(() => router.replace(`/p/${product.slug}/projects/all`));
+  }, [activeSpaceId, creds, product.slug, router]);
 
   return (
-    <div className="page-view">
-      <div className="page-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-        <div>
-          <div className="page-title">Projects</div>
-          <div className="page-subtitle">Workspaces your agents access through threads.</div>
-        </div>
-        <Button onClick={() => setModalOpen(true)}>New Project</Button>
-      </div>
-
-      {loading ? (
-        <p style={{ color: "var(--text3)", fontSize: 13 }}>Loading…</p>
-      ) : projects.length === 0 ? (
-        <p style={{ color: "var(--text3)", fontSize: 13 }}>No projects yet.</p>
-      ) : (
-        <div className="grid-3">
-          {projects.map((p) => (
-            <Link key={p.id} href={`/p/${product.slug}/projects/${p.id}`} style={{ textDecoration: "none" }}>
-              <Card>
-                <CardTitle>{p.name}</CardTitle>
-                {p.description && <CardDesc>{p.description}</CardDesc>}
-                <CardMeta>{p.max_threads > 0 ? `Up to ${p.max_threads} threads` : "Unlimited threads"}</CardMeta>
-              </Card>
-            </Link>
-          ))}
-        </div>
-      )}
-
-      <Modal
-        open={modalOpen}
-        onClose={() => setModalOpen(false)}
-        title="New Project"
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setModalOpen(false)} type="button">
-              Cancel
-            </Button>
-            <Button onClick={handleCreate} disabled={creating || !name.trim()}>
-              {creating ? "Creating…" : "Create"}
-            </Button>
-          </>
-        }
-      >
-        <form onSubmit={handleCreate} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <FormInput placeholder="Project name" value={name} onChange={(e) => setName(e.target.value)} required autoFocus />
-          <FormTextarea placeholder="Description (optional)" value={description} onChange={(e) => setDescription(e.target.value)} rows={3} />
-        </form>
-      </Modal>
-      <Toast toast={toast} />
+    <div style={{ minHeight: "60vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <span style={{ color: "var(--text3)", fontSize: 13 }}>Loading…</span>
     </div>
   );
 }

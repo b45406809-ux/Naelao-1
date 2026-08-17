@@ -145,4 +145,51 @@ describe("local-grants — business membership gate (§A1.17 Phase S)", () => {
     const res = await spacesWorker.fetch(req("/spaces/biz-alice/local-tunnel/connect-token", bobHeaders, { method: "POST" }), env as never, execCtx);
     expect(res.status).toBe(403);
   });
+
+  // Phase 5 plugins/skills batch — a project-scoped Local Machine side-panel tab needs ?project_id=
+  // to show only what would actually apply to a run in THAT project (its own grants plus every
+  // space-wide one — mirrors local-machine.ts's own grant-resolution rule exactly).
+  it("?project_id= returns this project's own grants PLUS space-wide ones, never a different project's", async () => {
+    const env = makeEnv();
+    const aliceHeaders = await endUserHeaders("tenant-1", "alice"); // POST uses the CALLER's own identity, not a body field
+    await spacesWorker.fetch(
+      req("/spaces/biz-alice/local-grants", aliceHeaders, { method: "POST", body: JSON.stringify({ grant_type: "read", directory: "/space-wide" }) }),
+      env as never, execCtx
+    );
+    await spacesWorker.fetch(
+      req("/spaces/biz-alice/local-grants", aliceHeaders, { method: "POST", body: JSON.stringify({ grant_type: "read", directory: "/proj-a-only", project_id: "proj-a" }) }),
+      env as never, execCtx
+    );
+    await spacesWorker.fetch(
+      req("/spaces/biz-alice/local-grants", aliceHeaders, { method: "POST", body: JSON.stringify({ grant_type: "read", directory: "/proj-b-only", project_id: "proj-b" }) }),
+      env as never, execCtx
+    );
+
+    const token = await mintInternalToken(PLATFORM_SECRET, "tenant-1");
+    const builderHeaders = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token };
+    const res = await spacesWorker.fetch(req("/spaces/biz-alice/local-grants?project_id=proj-a", builderHeaders), env as never, execCtx);
+    expect(res.status).toBe(200);
+    const body = await res.json<{ data: Array<{ directory: string | null }> }>();
+    const dirs = body.data.map((g) => g.directory).sort();
+    expect(dirs).toEqual(["/proj-a-only", "/space-wide"]); // proj-b's own grant never leaks in
+  });
+
+  it("omitting ?project_id= keeps the whole-space view unchanged (business detail page's own use)", async () => {
+    const env = makeEnv();
+    const aliceHeaders = await endUserHeaders("tenant-1", "alice");
+    await spacesWorker.fetch(
+      req("/spaces/biz-alice/local-grants", aliceHeaders, { method: "POST", body: JSON.stringify({ grant_type: "read", directory: "/proj-a-only", project_id: "proj-a" }) }),
+      env as never, execCtx
+    );
+    await spacesWorker.fetch(
+      req("/spaces/biz-alice/local-grants", aliceHeaders, { method: "POST", body: JSON.stringify({ grant_type: "read", directory: "/proj-b-only", project_id: "proj-b" }) }),
+      env as never, execCtx
+    );
+
+    const token = await mintInternalToken(PLATFORM_SECRET, "tenant-1");
+    const builderHeaders = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token };
+    const res = await spacesWorker.fetch(req("/spaces/biz-alice/local-grants", builderHeaders), env as never, execCtx);
+    const body = await res.json<{ data: Array<{ directory: string | null }> }>();
+    expect(body.data.length).toBe(2); // everything, regardless of project
+  });
 });

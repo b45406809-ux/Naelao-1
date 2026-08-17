@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { listBuilderProducts } from "@/lib/api";
 import type { BuilderProductSummary } from "@/lib/api";
+import { productShellDisplay } from "@/lib/product-url";
 
 const STATUS_COLORS: Record<string, string> = {
   active: "bg-green-100 text-green-700",
@@ -100,7 +101,7 @@ export default function ProductsPage() {
                 <tr key={p.id} className="hover:bg-gray-50 transition-colors">
                   <td className="px-6 py-4 font-medium text-gray-900">{p.name}</td>
                   <td className="px-6 py-4 text-gray-500">
-                    {p.product_slug ? `${p.product_slug}.naelao.app` : "—"}
+                    {productShellDisplay(p.product_slug) ?? "—"}
                   </td>
                   <td className="px-6 py-4">
                     <StatusBadge status={p.status} />

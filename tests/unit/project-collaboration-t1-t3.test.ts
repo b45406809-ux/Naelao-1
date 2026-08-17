@@ -1,13 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { SpaceDO } from "../../workers/spaces/src/do/SpaceDO.js";
-import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
+import { createDOStorage } from "./helpers/sqlite-do-shim.js";
 
 // §A1.17 Phase T1 (project visibility + real membership ACL) and T3 (hybrid thread locking,
 // hard half) — both implemented entirely inside SpaceDO. T2 (@mention per-thread-agent
 // addressing) is covered separately in project-mention-dispatch.test.ts.
 
 function makeSpaceDO(): SpaceDO {
-  const ctx = { storage: { sql: createDOSqlStorage() } };
+  const ctx = { storage: createDOStorage() };
   return new SpaceDO(ctx as never, { PLATFORM_SECRET: "test-secret" } as never);
 }
 

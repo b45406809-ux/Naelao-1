@@ -65,8 +65,13 @@ describe("channel type guard", () => {
   it("accepts known channels, rejects unknown", () => {
     expect(isChannelType("email")).toBe(true);
     expect(isChannelType("whatsapp")).toBe(true);
-    expect(isChannelType("telegram")).toBe(false);
-    expect(getAdapter("telegram")).toBeUndefined();
+    // Telegram is supported now (free, no business verification, no 24h reply window — the
+    // easiest channel for a business with no budget). Signal/iMessage deliberately are not:
+    // both need a phone number bound to a long-running local process.
+    expect(isChannelType("telegram")).toBe(true);
+    expect(getAdapter("telegram")).toBeDefined();
+    expect(isChannelType("signal")).toBe(false);
+    expect(getAdapter("signal")).toBeUndefined();
   });
 });
 

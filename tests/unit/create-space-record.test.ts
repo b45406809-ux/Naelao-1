@@ -22,7 +22,7 @@ const SPACES_TABLE_SQL = `
   );
   CREATE UNIQUE INDEX idx_spaces_product_slug ON spaces(product_slug) WHERE product_slug IS NOT NULL;
   CREATE TABLE orgs (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', owner_id TEXT NOT NULL DEFAULT '', plan_tier TEXT NOT NULL DEFAULT 'free');
-  CREATE TABLE spacetypes (id TEXT PRIMARY KEY, config_schema TEXT);
+  CREATE TABLE spacetypes (id TEXT PRIMARY KEY, schema_json TEXT);
 `;
 
 function makeDb() {
@@ -90,6 +90,42 @@ describe("createSpaceRecord — product_slug", () => {
     const result = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "A", spacetypeId: "launchpad", productSlug: "my-awesome-shop" });
     expect(result.id).toBeTruthy();
   });
+
+  // The Product Shell resolves every end-user URL as /p/{product_slug}. A product created without
+  // one provisioned fine, reported `active`, and could never be opened — by its owner or by a
+  // single customer. The wizard called the field optional, and nothing anywhere sets it later.
+  it("derives a slug from the name when none is given, so the product is reachable", async () => {
+    const fakeDb = makeDb();
+    const result = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "Acme Creator Store", spacetypeId: "launchpad" });
+    const row = await fakeDb.prepare("SELECT product_slug FROM spaces WHERE id = ?").bind(result.id).first<{ product_slug: string }>();
+    expect(row?.product_slug).toBe("acme-creator-store");
+  });
+
+  it("works around a taken name rather than failing on a field the builder never filled in", async () => {
+    const fakeDb = makeDb();
+    await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "Launchpad", spacetypeId: "launchpad" });
+    const second = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t2", name: "Launchpad", spacetypeId: "launchpad" });
+    const row = await fakeDb.prepare("SELECT product_slug FROM spaces WHERE id = ?").bind(second.id).first<{ product_slug: string }>();
+    expect(row?.product_slug).toMatch(/^launchpad-[a-z0-9]{4}$/);
+  });
+
+  it("never derives a reserved slug", async () => {
+    // "Admin" is a perfectly reasonable product name and a slug that must never be handed out.
+    const fakeDb = makeDb();
+    const result = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "Admin", spacetypeId: "launchpad" });
+    const row = await fakeDb.prepare("SELECT product_slug FROM spaces WHERE id = ?").bind(result.id).first<{ product_slug: string | null }>();
+    expect(row?.product_slug).not.toBe("admin");
+  });
+
+  it("creates the product anyway when no usable slug can be derived", async () => {
+    // Degrading to slugless is the old behavior — a name of pure punctuation must not block
+    // creation over a convenience value the builder never asked for.
+    const fakeDb = makeDb();
+    const result = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "!!!", spacetypeId: "launchpad" });
+    expect(result.id).toBeTruthy();
+    const row = await fakeDb.prepare("SELECT product_slug FROM spaces WHERE id = ?").bind(result.id).first<{ product_slug: string | null }>();
+    expect(row?.product_slug).toBeNull();
+  });
 });
 
 describe("createSpaceRecord — provisioning", () => {
@@ -128,13 +164,46 @@ describe("createSpaceRecord — provisioning", () => {
     const row = await fakeDb.prepare("SELECT config_json FROM spaces WHERE id = ?").bind(result.id).first<{ config_json: string }>();
     expect(JSON.parse(row!.config_json)).toMatchObject({ productConfig: { branding: { brandColor: "#ff0000" } } });
   });
+
+  // The proactive tick infrastructure (hourly cron + near-real-time channel triggers) already
+  // runs continuously; the digest email that reports on it was opt-in and off by default, so a
+  // builder who never found the toggle got no visibility. Defaulted ON here unless the caller
+  // already made an explicit choice.
+  it("defaults the daily digest email ON when the caller doesn't specify it", async () => {
+    const fakeDb = makeDb();
+    const result = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "A", spacetypeId: "launchpad" });
+    const row = await fakeDb.prepare("SELECT config_json FROM spaces WHERE id = ?").bind(result.id).first<{ config_json: string }>();
+    expect(JSON.parse(row!.config_json)).toMatchObject({ productConfig: { notificationsConfig: { dailyDigestEnabled: true } } });
+  });
+
+  it("respects an explicit dailyDigestEnabled: false rather than overriding it", async () => {
+    const fakeDb = makeDb();
+    const result = await createSpaceRecord(
+      { PLATFORM_DB: fakeDb },
+      { tenantId: "t1", name: "A", spacetypeId: "launchpad", configOverrides: { productConfig: { notificationsConfig: { dailyDigestEnabled: false } } } }
+    );
+    const row = await fakeDb.prepare("SELECT config_json FROM spaces WHERE id = ?").bind(result.id).first<{ config_json: string }>();
+    expect(JSON.parse(row!.config_json)).toMatchObject({ productConfig: { notificationsConfig: { dailyDigestEnabled: false } } });
+  });
+
+  it("preserves other productConfig fields alongside the defaulted digest setting", async () => {
+    const fakeDb = makeDb();
+    const result = await createSpaceRecord(
+      { PLATFORM_DB: fakeDb },
+      { tenantId: "t1", name: "A", spacetypeId: "launchpad", configOverrides: { productConfig: { branding: { brandColor: "#ff0000" } } } }
+    );
+    const row = await fakeDb.prepare("SELECT config_json FROM spaces WHERE id = ?").bind(result.id).first<{ config_json: string }>();
+    expect(JSON.parse(row!.config_json)).toMatchObject({
+      productConfig: { branding: { brandColor: "#ff0000" }, notificationsConfig: { dailyDigestEnabled: true } },
+    });
+  });
 });
 
 describe("createSpaceRecord — config schema validation (G-AV02)", () => {
   it("rejects overrides that fail the SpaceType's declared config_schema", async () => {
     const fakeDb = makeDb();
     fakeDb.db.exec(
-      `INSERT INTO spacetypes (id, config_schema) VALUES ('launchpad', '${JSON.stringify({
+      `INSERT INTO spacetypes (id, schema_json) VALUES ('launchpad', '${JSON.stringify({
         required: ["storefront_name"],
         properties: { storefront_name: { type: "string", minLength: 3 } },
       })}')`
@@ -147,7 +216,7 @@ describe("createSpaceRecord — config schema validation (G-AV02)", () => {
   it("accepts overrides that satisfy the schema", async () => {
     const fakeDb = makeDb();
     fakeDb.db.exec(
-      `INSERT INTO spacetypes (id, config_schema) VALUES ('launchpad', '${JSON.stringify({
+      `INSERT INTO spacetypes (id, schema_json) VALUES ('launchpad', '${JSON.stringify({
         required: ["storefront_name"],
         properties: { storefront_name: { type: "string", minLength: 3 } },
       })}')`

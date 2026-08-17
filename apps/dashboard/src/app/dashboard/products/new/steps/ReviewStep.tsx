@@ -2,6 +2,7 @@
 
 import type { WizardState } from "../wizardTypes";
 import { SLUG_PATTERN } from "../wizardTypes";
+import { productShellDisplay } from "@/lib/product-url";
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
@@ -32,11 +33,11 @@ export default function ReviewStep({ state }: { state: WizardState }) {
       <div className="bg-white border border-gray-200 rounded-xl p-4">
         <Row label="Name" value={state.name || "—"} />
         <Row
-          label="Domain"
+          label="Address"
           value={
             state.productSlug && SLUG_PATTERN.test(state.productSlug)
-              ? `${state.productSlug}.naelao.app`
-              : "Not set yet"
+              ? productShellDisplay(state.productSlug)!
+              : "Built from the name"
           }
         />
         <Row label="Starting point" value={state.templateName ?? state.spacetypeId ?? "—"} />

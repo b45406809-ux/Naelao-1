@@ -55,9 +55,14 @@ function makeEnv(opts: {
     async put(key: string, value: string) { cacheStore.set(key, value); },
     async delete(key: string) { cacheStore.delete(key); },
   };
-  const ai = { async run() { return { data: [{ embedding: new Array(8).fill(0.1) }] }; } };
+  // The shape CF's embedding model REALLY returns: a flat number[][], not Array<{embedding}>.
+  // This double used to assert the object form, which agreed with the code rather than with
+  // Cloudflare and is precisely why a broken ingestion path went unnoticed.
+  const ai = { async run() { return { data: [new Array(8).fill(0.1)], shape: [1, 8] }; } };
+  // One real match, so search actually produces a result and the caching path this test is
+  // about is genuinely exercised (an empty result is deliberately not cached).
   const vectors = {
-    query: vi.fn().mockResolvedValue({ matches: [] }),
+    query: vi.fn().mockResolvedValue({ matches: [{ id: "doc-1_chunk_0", score: 0.9 }] }),
     upsert: vi.fn().mockResolvedValue({}),
     deleteByIds: vi.fn().mockResolvedValue({}),
   };
@@ -67,7 +72,20 @@ function makeEnv(opts: {
     PLATFORM_DB: db,
     KB_CACHE: kv,
     KB_VECTORS: vectors,
-    KB_BUCKET: { async get() { return null; }, async list() { return { objects: [], truncated: false }; }, async delete() {} },
+    KB_BUCKET: {
+      async get(key: string) {
+        // Only a chunk read resolves — every other lookup (document mirrors, deletes) stays
+        // absent, as before.
+        if (!/\/chunk_\d+\.json$/.test(key)) return null;
+        return {
+          async text() {
+            return JSON.stringify({ docId: "doc-1", chunkIndex: 0, content: "hello there", spaceId: "shared-space-id", tenantId: opts.ownerTenantId });
+          },
+        };
+      },
+      async list() { return { objects: [], truncated: false }; },
+      async delete() {},
+    },
     AI: ai,
   };
 }

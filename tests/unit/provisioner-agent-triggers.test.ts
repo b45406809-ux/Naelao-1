@@ -107,12 +107,24 @@ describe("installLaunchpadAgents / installAgentTrigger (provisioner step 9 trigg
     await expect(installLaunchpadAgents("space-4", "tenant-1", "newsletter-business", MANIFEST, env)).resolves.toBeUndefined();
   });
 
-  it("installs all three core agents (with the content schedule wired) when no templateId is given", async () => {
+  it("wires a scheduled job for every schedule-triggered core agent when no templateId is given", async () => {
+    // No template means "install everything", so every core agent carrying a schedule trigger
+    // gets its cron — today the daily content run and the weekday lead-generation run. A space
+    // built from a specific template only installs THAT template's agents, so a space which is
+    // not a web studio never picks up the prospecting cron.
     const { env, calls } = makeEnv();
     await installLaunchpadAgents("space-5", "tenant-1", undefined, MANIFEST, env);
     const jobCalls = calls.filter((c) => c.url.endsWith("/scheduled-jobs"));
-    expect(jobCalls).toHaveLength(1);
-    expect((jobCalls[0]!.body as { agent_id: string }).agent_id).toBe("launchpad-content-v1");
+    const agentIds = jobCalls.map((c) => (c.body as { agent_id: string }).agent_id).sort();
+    expect(agentIds).toEqual(["launchpad-content-v1", "launchpad-leadgen-v1"]);
+  });
+
+  it("a web-studio space gets the lead-generation cron and nothing it does not need", async () => {
+    const { env, calls } = makeEnv();
+    await installLaunchpadAgents("space-6", "tenant-1", "whop-webdev-agency", MANIFEST, env);
+    const jobCalls = calls.filter((c) => c.url.endsWith("/scheduled-jobs"));
+    const agentIds = jobCalls.map((c) => (c.body as { agent_id: string }).agent_id);
+    expect(agentIds).toEqual(["launchpad-leadgen-v1"]);
   });
 
   // Phase C (§A1.17): a business built from MULTIPLE templates — installLaunchpadAgents now

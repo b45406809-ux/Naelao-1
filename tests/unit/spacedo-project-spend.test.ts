@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { SpaceDO } from "../../workers/spaces/src/do/SpaceDO.js";
-import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
+import { createDOStorage } from "./helpers/sqlite-do-shim.js";
 
 // F9: the customer-bot daily spend cap was enforced against a `project_spend` table living in
 // NaelaoAgentDO's OWN SQLite — but agent DOs are addressed space:project:thread, so every
@@ -12,7 +12,7 @@ import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
 // check (the next debit call with credits=0).
 
 function makeSpaceDO(): SpaceDO {
-  const ctx = { storage: { sql: createDOSqlStorage() } };
+  const ctx = { storage: createDOStorage() };
   const env = { PLATFORM_SECRET: "test-secret" };
   return new SpaceDO(ctx as never, env as never);
 }

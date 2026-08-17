@@ -4,7 +4,7 @@ import { SpaceDO } from "../../workers/spaces/src/do/SpaceDO.js";
 import { seedWallet } from "../../workers/provisioner/src/index.js";
 import type { Env as ProvisionerEnv } from "../../workers/provisioner/src/index.js";
 import { makeStatefulDoNamespace } from "./helpers/fake-do-namespace.js";
-import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
+import { createDOStorage } from "./helpers/sqlite-do-shim.js";
 import { mintInternalToken } from "@naelao/http";
 import {
   BUSINESS_FEATURE_KIND_REGISTRY, getBusinessFeatureKind, isKnownProjectKind,
@@ -127,7 +127,7 @@ describe("createProject with kind (F-33/F-35, via the real spaces worker)", () =
 // DO itself, not just the router in front of it, refuses to grant privilege on a missing creator.
 describe("createProject feature-kind gate — fail closed on missing created_by (defense in depth)", () => {
   function makeDO(): SpaceDO {
-    const ctx = { storage: { sql: createDOSqlStorage() } };
+    const ctx = { storage: createDOStorage() };
     return new SpaceDO(ctx as never, {} as never);
   }
   function doReq(body: Record<string, unknown>): Request {

@@ -48,6 +48,30 @@ export type NaelaoEventType =
   | "business_wallet.revenue_received"
   | "business_wallet.payout_requested"
   | "business_wallet.payout_completed"
+  // A file in a project's workspace was written or removed by an agent. This is what makes a
+  // handoff between projects possible without inventing a second mechanism: one project's agent
+  // records what it found (a lead, a spec, a finished build) as an ordinary file, that write
+  // fires this, and a no-code rule picks it up and wakes the agent that owns the next stage.
+  //
+  // The file IS the handoff. Passing the work as an event payload instead would mean the
+  // receiving agent's only record of the job is a message it has to remember; a file is state
+  // both sides can re-read, and survives the run that produced it.
+  //
+  // Payload: { path, operation: "write" | "delete", agent_id }.
+  | "workspace.file_changed"
+  // Phase 3 item 27/28 — a cron/scheduled-job's own CONFIG changed, not just what it produced
+  // when it fired. .disabled already existed (agents worker's recordScheduledJobFailure,
+  // auto-disable after too many consecutive failures); .created/.updated/.enabled/.paused/
+  // .deleted are the CRUD counterpart, fired from the spaces worker's own /scheduled-jobs
+  // routes the moment a business's own admin creates/edits/toggles/removes one — so a no-code
+  // trigger can react to a schedule change exactly like it already reacts to thread.created.
+  // Payload: { scheduled_job_id, ...op-specific extras (e.g. name/cron_expression on .created) }.
+  | "scheduled_job.created"
+  | "scheduled_job.updated"
+  | "scheduled_job.enabled"
+  | "scheduled_job.paused"
+  | "scheduled_job.deleted"
+  | "scheduled_job.disabled"
   | (string & {});
 
 export interface EventEnvelope {
@@ -454,7 +478,15 @@ export function isCronDue(
 ): boolean {
   const cron = parseCronExpression(cronExpression);
   const earliestStart = nowMs - lookbackMs;
-  const scanStart = Math.max(lastRunAtMs, earliestStart);
+  // A non-finite lastRunAt must not silently disable the job.
+  //
+  // Math.max(NaN, x) is NaN, which makes startMinute NaN, which makes the scan loop below never
+  // execute, which returns false — forever, and indistinguishably from "not due yet". That is
+  // exactly what happened in production: a caller passed NaN for every never-run job, so no
+  // newly-seeded cron on the platform could ever fire. Falling back to the lookback window means
+  // a bad timestamp costs at most one extra evaluation, instead of costing the schedule entirely.
+  const anchor = Number.isFinite(lastRunAtMs) ? lastRunAtMs : earliestStart;
+  const scanStart = Math.max(anchor, earliestStart);
   // Scan the minute AFTER scanStart through now (inclusive) — "after" so a job whose
   // last_run_at IS an exact match-minute doesn't refire immediately on the same minute.
   const startMinute = Math.floor(scanStart / 60_000) + 1;
@@ -465,5 +497,106 @@ export function isCronDue(
   return false;
 }
 
+/** Bound for computeNextRun's forward scan — mirrors CRON_DUE_MAX_LOOKBACK_MS's own bound but
+ *  looking forward instead of back. A cron combination that can never match (e.g. "day 31" of a
+ *  month field restricted to 30-day months) must not hang the scan forever. */
+export const CRON_NEXT_RUN_MAX_LOOKAHEAD_MS = 366 * 24 * 60 * 60 * 1000; // a bit over a year
+
+/**
+ * Phase 3 item 27/28 — the next UTC minute (epoch ms) at or after `fromMs` that a job with this
+ * cron expression would fire, for a Crons editing UI's "next run" display. Mirrors isCronDue's
+ * own minute-scan approach and its "strictly AFTER fromMs" rule (so passing the job's own
+ * last_run_at, or "now", never reports a match on that exact minute as still upcoming) — the two
+ * functions are deliberately kept in sync rather than sharing one generic scanner, since isCronDue
+ * scans backward from a bounded window and this scans forward from one; forcing them through a
+ * single abstraction would obscure both directions for no real benefit.
+ *
+ * Returns null if no match is found within the lookahead bound — a genuinely unsatisfiable
+ * expression (Feb 30) rather than a bug in the scan itself.
+ */
+export function computeNextRun(
+  cronExpression: string,
+  fromMs: number,
+  lookaheadMs: number = CRON_NEXT_RUN_MAX_LOOKAHEAD_MS
+): number | null {
+  const cron = parseCronExpression(cronExpression);
+  const startMinute = Math.floor(fromMs / 60_000) + 1;
+  const endMinute = Math.floor((fromMs + lookaheadMs) / 60_000);
+  for (let m = startMinute; m <= endMinute; m++) {
+    if (cronMatchesDate(cron, new Date(m * 60_000))) return m * 60_000;
+  }
+  return null;
+}
+
+// ── Project automations: expected-runtime watchdog (Phase 5 plugins/skills batch) ───
+// scheduled_job_runs (migration 0071) already records duration_ms per fire — this reads that
+// existing history to flag two distinct, real operational signals a builder/assistant should
+// notice, rather than inventing new tracking infrastructure: a job that fired but took far
+// longer than its own history says it usually does, and a job that's enabled but simply hasn't
+// fired when it should have (the sweep isn't reaching it — the exact class of bug item 117's own
+// NaN-timestamp fix addressed once already; this is the general-purpose signal for the same
+// failure mode recurring in a different shape).
+
+/** Minimum number of prior successful runs before a runtime average means anything — one or two
+ *  data points is noise, not a baseline. */
+const RUNTIME_WATCHDOG_MIN_SAMPLES = 3;
+
+/** A run is "anomalously slow" once it takes at least this many times the rolling average of the
+ *  prior successful runs. 3x is deliberately generous — this flags a real outlier, not ordinary
+ *  jitter between fast/slow tool calls within a normal range. */
+const RUNTIME_WATCHDOG_SLOW_RATIO = 3;
+
+export interface RuntimeAnomaly {
+  latest_ms: number;
+  average_ms: number;
+  ratio: number;
+}
+
+/** runs must be ordered newest-first (the shape listScheduledJobRuns/scheduled_job_runs already
+ *  returns). Returns null when there isn't enough history to judge, the latest run didn't
+ *  actually complete (skipped/failed runs carry no meaningful duration to compare), or it wasn't
+ *  actually anomalous — never a false "everything's fine" for a run that IS slow, since a caller
+ *  only needs to render something when this returns non-null. */
+export function detectRuntimeAnomaly(
+  // ok/skipped_busy accept the raw SQLite 0/1 shape (ScheduledJobRun's own wire type) as well as
+  // a real boolean — both are checked by plain truthiness below, never a strict `=== true`.
+  runs: readonly { duration_ms?: number | null; ok?: boolean | number; skipped_busy?: boolean | number }[]
+): RuntimeAnomaly | null {
+  const completed = runs.filter((r) => r.ok && !r.skipped_busy && typeof r.duration_ms === "number" && r.duration_ms > 0);
+  if (completed.length < RUNTIME_WATCHDOG_MIN_SAMPLES + 1) return null;
+  const [latest, ...history] = completed;
+  const latestMs = latest!.duration_ms!;
+  const sample = history.slice(0, 10); // recent history only — an old baseline shouldn't outvote what it does today
+  const averageMs = sample.reduce((sum, r) => sum + r.duration_ms!, 0) / sample.length;
+  if (averageMs <= 0) return null;
+  const ratio = latestMs / averageMs;
+  if (ratio < RUNTIME_WATCHDOG_SLOW_RATIO) return null;
+  return { latest_ms: latestMs, average_ms: Math.round(averageMs), ratio };
+}
+
+/** How far past its own expected fire a job may sit before it's flagged overdue rather than just
+ *  "the sweep hasn't gotten to it yet" — generous relative to the hourly sweep cadence
+ *  (enqueueAgentTicks) so this never fires on ordinary scheduling slack. */
+export const OVERDUE_GRACE_MS = 90 * 60_000; // 90 minutes
+
+/**
+ * A job's own `next_run_at` is computed forward from "now" on every read (see computeNextRun's
+ * caller) — it can never be in the past, so comparing it against now can never detect a stall.
+ * The real question is "what should have fired right after the LAST recorded run, and has that
+ * come and gone by more than the grace window" — answered by scanning forward from the last run
+ * instead of from now, reusing computeNextRun rather than a second cron-scanning implementation.
+ * lastRunAtMs === null (never fired) is deliberately not flagged here — a job that's simply new
+ * hasn't missed anything yet; that's a different, honest "no history" state, not a stall.
+ */
+export function isJobOverdue(enabled: boolean, cronExpression: string, lastRunAtMs: number | null, nowMs: number): boolean {
+  if (!enabled || lastRunAtMs === null) return false;
+  const expectedAfterLastRun = computeNextRun(cronExpression, lastRunAtMs, CRON_NEXT_RUN_MAX_LOOKAHEAD_MS);
+  if (expectedAfterLastRun === null) return false;
+  return nowMs - expectedAfterLastRun > OVERDUE_GRACE_MS;
+}
+
 // ── Business Feature Projects registry (F-34/F-41) ──────────────────────────────
 export * from "./business-feature-kinds.js";
+
+// ── Failure classification — what stopped a run, and can anything be done about it ──
+export * from "./failure-classification.js";

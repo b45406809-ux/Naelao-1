@@ -157,8 +157,10 @@ describe("router — product end-user hybrid auth", () => {
 
   // WS-2 (Space Assistant surface): /scheduled-jobs (Crons panel) and /assistant-policy (Status
   // panel) are now allowlisted too — the spaces worker added a resolveEndUserBusinessRole floor
-  // on GET (and explicitly rejects a product_end_user on the write methods that share the same
-  // path) before this was safe to allowlist.
+  // on GET. PATCH on assistant-policy used to be blocked outright for every product_end_user;
+  // it's now admin-gated by requireBusinessMembership instead (item 79) — the router still only
+  // resolves identity for either method, real authorization happens on the spaces worker (see
+  // that route's own test coverage for the admin-vs-member split).
   it("a valid nps_ session CAN now reach the allowlisted scheduled-jobs and assistant-policy GET paths", async () => {
     const env = makeEnv(makeSpacesStub({ validSession: true, resolvedTenant: "builder-tenant-1" }));
     for (const path of ["/spaces/prod-1/scheduled-jobs", "/spaces/prod-1/assistant-policy"]) {
@@ -166,6 +168,23 @@ describe("router — product end-user hybrid auth", () => {
         new Request(`https://router.naelao.com/v1${path}`, {
           method: "GET",
           headers: { authorization: "Bearer nps_realtoken", "x-naelao-end-user-id": "user-42" },
+        }),
+        env as never, execCtx
+      );
+      expect(res.status).toBe(200);
+    }
+  });
+
+  // item 79: a business-admin end user can now change the assistant's own approval policy
+  // (guided vs. yolo) for THEIR OWN business — and can reach the new model-config route.
+  it("a valid nps_ session CAN reach the allowlisted assistant-policy PATCH and model-config paths", async () => {
+    const env = makeEnv(makeSpacesStub({ validSession: true, resolvedTenant: "builder-tenant-1" }));
+    for (const path of ["/spaces/prod-1/assistant-policy", "/spaces/prod-1/model-config"]) {
+      const res = await routerWorker.fetch(
+        new Request(`https://router.naelao.com/v1${path}`, {
+          method: "PATCH",
+          headers: { authorization: "Bearer nps_realtoken", "x-naelao-end-user-id": "user-42", "content-type": "application/json" },
+          body: JSON.stringify({}),
         }),
         env as never, execCtx
       );

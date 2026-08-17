@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { GatewayReasoner } from "../../workers/agents/src/script-engine/reasoner.js";
 import {
   buildUniversalBody,
+  universalGatewayUrl,
   universalGatewayHeaders,
   canAuthenticateLlm,
 } from "../../workers/agents/src/shared/ai-client.js";
@@ -36,25 +37,61 @@ describe("canAuthenticateLlm", () => {
   it("true when a provider apiKey is supplied directly", () => {
     expect(canAuthenticateLlm({ accountId: "a", gatewayId: "g" }, "sk-ant-real")).toBe(true);
   });
-  it("false when neither is configured", () => {
+  it("true when only the CF API token is set (the AI REST API's own credential)", () => {
+    expect(canAuthenticateLlm({ accountId: "a", gatewayId: "g", cfApiToken: "cf-token" }, "")).toBe(true);
+  });
+  it("false when none is configured", () => {
     expect(canAuthenticateLlm({ accountId: "a", gatewayId: "g" }, "")).toBe(false);
   });
 });
 
-describe("buildUniversalBody — empty provider key omits the auth header (gateway injects its own)", () => {
+// AI Gateway migrated (2026-05-21) to the AI REST API: one flat, OpenAI-shaped body against
+// /ai/v1/chat/completions, with the Cloudflare API token as the credential. The per-provider
+// request translation these tests used to assert (an ordered `providers` array with an
+// Anthropic-style x-api-key header per entry) no longer exists — the old endpoint returns 401 and
+// the old body shape returns {"code":2008,"message":"Invalid provider"}, both confirmed live.
+describe("buildUniversalBody — flat OpenAI-shaped body for the AI REST API", () => {
   const base = {
     gatewayOpts: { accountId: "a", gatewayId: "g", aigToken: AIG },
     ctx: { spaceId: "s1" },
-    query: { model: "claude-haiku-4-5-20251001", max_tokens: 100, system: "sys", messages: [{ role: "user", content: "hi" }] },
+    query: { model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", max_tokens: 100, system: "sys", messages: [{ role: "user", content: "hi" }] },
   };
-  it("no x-api-key when apiKey is empty", () => {
+
+  it("sends model/messages/max_tokens flat — never a providers array", () => {
     const body = JSON.parse(buildUniversalBody({ apiKey: "", ...base }));
-    expect(body.providers[0].provider).toBe("anthropic");
-    expect(body.providers[0].headers["x-api-key"]).toBeUndefined();
+    expect(body.providers).toBeUndefined();
+    expect(body.model).toBe("@cf/meta/llama-3.3-70b-instruct-fp8-fast");
+    expect(body.max_tokens).toBe(100);
   });
-  it("sends x-api-key when a real key is supplied (BYO still works)", () => {
-    const body = JSON.parse(buildUniversalBody({ apiKey: "sk-ant-real", ...base }));
-    expect(body.providers[0].headers["x-api-key"]).toBe("sk-ant-real");
+
+  it("prepends the system prompt as a system message", () => {
+    const body = JSON.parse(buildUniversalBody({ apiKey: "", ...base }));
+    expect(body.messages[0]).toEqual({ role: "system", content: "sys" });
+    expect(body.messages[1]).toEqual({ role: "user", content: "hi" });
+  });
+
+  it("never puts any credential in the BODY — auth is header-only", () => {
+    const body = JSON.parse(buildUniversalBody({ apiKey: "sk-ant-real", cfApiToken: "cf-token", ...base }));
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain("sk-ant-real");
+    expect(serialized).not.toContain("cf-token");
+    expect(serialized).not.toContain(AIG);
+  });
+});
+
+describe("universalGatewayUrl / headers — the AI REST API contract", () => {
+  it("targets the account's /ai/v1/chat/completions endpoint", () => {
+    expect(universalGatewayUrl({ accountId: "acct-1", gatewayId: "gw" })).toBe(
+      "https://api.cloudflare.com/client/v4/accounts/acct-1/ai/v1/chat/completions"
+    );
+  });
+
+  it("authenticates with the CF API token and routes through OUR named gateway", () => {
+    const h = universalGatewayHeaders({ accountId: "a", gatewayId: "naelao-gateway", cfApiToken: "cf-token" });
+    expect(h["authorization"]).toBe("Bearer cf-token");
+    // Without this the call silently uses the account's DEFAULT gateway, losing our logging,
+    // caching and rate-limiting config.
+    expect(h["cf-aig-gateway-id"]).toBe("naelao-gateway");
   });
 });
 

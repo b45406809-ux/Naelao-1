@@ -5,6 +5,11 @@
 // usage-metering until the Stripe BillingProvider lands.
 export * from "./providers/index.js";
 export * from "./reseller.js";
+// model-benchmarks.ts and effort.ts import ALLOWED_MODELS back from THIS file (a deliberate
+// circular re-export, not a mistake) — they must be re-exported only AFTER everything they
+// depend on (ALLOWED_MODELS, capabilityForModel, etc.) is actually defined below, or their own
+// module-top-level evaluation reads those bindings before this file has assigned them. See the
+// bottom of this file for the actual export statements.
 
 export interface StripeConfig {
   secretKey: string;
@@ -134,28 +139,10 @@ export async function updateSubscriptionPrice(
   });
 }
 
-/**
- * §A1.27: per-model context window size, in tokens — replaces the single hardcoded
- * `MODEL_CONTEXT_LIMIT_TOKENS = 190_000` figure previously baked into `NaelaoAgentDO.ts` (tagged
- * to Sonnet specifically, so it was already wrong for any other model even before the model
- * switcher makes model choice real). Verify against current model documentation before relying on
- * this for a hard cutoff — these are the platform's own approximate defaults, kept next to
- * computeTokenCostMicro's per-model pricing table since both vary per model and should stay
- * mutually consistent (same set of known model strings).
- */
-export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
-  "claude-sonnet-4-6": 200_000,
-  "claude-haiku-4-5-20251001": 200_000,
-  "claude-opus-4-8": 200_000,
-};
-const DEFAULT_CONTEXT_WINDOW = 200_000;
-
-/** Context window size for a model, falling back to a documented default for an unknown model
- *  string rather than throwing — a model-switcher allowlist entry that outpaces this table
- *  should degrade to a sane default, not break context accounting. */
-export function contextWindowForModel(model: string): number {
-  return MODEL_CONTEXT_WINDOWS[model] ?? DEFAULT_CONTEXT_WINDOW;
-}
+// The curated model list, context windows, and reasoning-capability table — split into its own
+// dependency-free leaf module (see models.ts's own header for why: a real deploy-time module-
+// evaluation-order bug, caught by an actual `wrangler deploy`, not by the local test suite).
+export * from "./models.js";
 
 // Compute token cost in USD micros (cost * 1,000,000 for integer storage)
 export function computeTokenCostMicro(
@@ -167,6 +154,38 @@ export function computeTokenCostMicro(
     "claude-sonnet-4-6": { input: 3.0, output: 15.0 },      // per 1M tokens in USD
     "claude-haiku-4-5-20251001": { input: 0.25, output: 1.25 },
     "claude-opus-4-8": { input: 15.0, output: 75.0 },
+    // CF Workers AI bills in "neurons", not tokens, so this is DERIVED rather than published as
+    // a per-token price: three real calls against this account solved neurons = 0.026668*input +
+    // 0.204805*output exactly (the fit reproduces a held-out third measurement to 4 decimal
+    // places), converted at Cloudflare's own $0.011 per 1,000 neurons. Recheck if Cloudflare
+    // changes neuron pricing or this model's neuron cost. Note the shape differs from the Claude
+    // models: cheaper input than Haiku, but pricier output — a long-answer workload is NOT
+    // automatically cheaper here.
+    "@cf/meta/llama-3.3-70b-instruct-fp8-fast": { input: 0.293, output: 2.253 },
+    // Google AI Studio (Gemini) — Google's own published per-1M-token pricing for the CURRENT
+    // (3.x) generation these "-latest" aliases resolve to (see models.ts's MODEL_CONTEXT_WINDOWS
+    // comment for why aliases, not pinned ids — the 2.5 generation was cut off from new-user
+    // access mid-session). Standard tier only, not the >200K-context doubled rate for Pro — this
+    // table has no precedent for context-length-tiered pricing elsewhere. Billed to the CUSTOMER
+    // as real value even though the actual API call rides on the operator's own BYOK Google AI
+    // Studio key (often free-tier, $0 marginal cost to Naelao) — matches how every other model
+    // here is priced by real provider cost, not by what Naelao itself happens to pay. An alias's
+    // underlying model — and therefore its real price — can shift over time; revisit if Google
+    // republishes different figures for whatever these currently resolve to.
+    "google-ai-studio/gemini-flash-lite-latest": { input: 0.30, output: 2.50 },
+    "google-ai-studio/gemini-flash-latest": { input: 1.50, output: 7.50 },
+    "google-ai-studio/gemini-pro-latest": { input: 2.00, output: 12.0 },
+    // Groq — real per-1M-token pricing read directly off `GET
+    // https://api.groq.com/openai/v1/models`'s own `pricing.prompt`/`pricing.completion` fields
+    // (quoted per-token there; multiplied by 1e6 here) on 2026-08-10, not estimated. Billed to the
+    // customer as real value even though the actual call rides on the operator's own free-tier
+    // Groq key ($0 marginal cost to Naelao today) — same convention this table already applies to
+    // the Gemini rows above. gpt-oss-120b deliberately absent — see models.ts's ALLOWED_MODELS
+    // comment for the live tool-calling failure that excluded it from the catalogue.
+    "groq/openai/gpt-oss-20b": { input: 0.075, output: 0.30 },
+    "groq/llama-3.3-70b-versatile": { input: 0.59, output: 0.79 },
+    "groq/llama-3.1-8b-instant": { input: 0.05, output: 0.08 },
+    "groq/qwen/qwen3.6-27b": { input: 0.60, output: 3.00 },
   };
   const p = pricing[model] ?? { input: 3.0, output: 15.0 };
   const costUsd = (inputTokens / 1_000_000) * p.input + (outputTokens / 1_000_000) * p.output;
@@ -232,3 +251,8 @@ export function infraTimeToCredits(resourceType: InfraResourceType, durationMs: 
   if (costUsd <= 0) return 0;
   return Math.max(1, Math.ceil(costUsd * CREDITS_PER_USD));
 }
+
+// See the comment near the top of this file — these must come last.
+export * from "./model-benchmarks.js";
+export * from "./effort.js";
+export * from "./personal-plan.js";

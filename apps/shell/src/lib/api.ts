@@ -11,11 +11,62 @@ export interface SessionCredentials {
   endUserId: string;
 }
 
+// Callers need to distinguish "not found" (self-healable — e.g. Chat.tsx recreating a stale
+// session) from other failures, but the backend's `message` field is human text ("Session not
+// found") with no reliable substring to match on — a prior version of this threw a plain Error
+// and callers guessed via `message.includes("404")`, which never actually matched and meant a
+// 404 always surfaced as a raw, un-recovered error instead of self-healing. Carrying the real
+// HTTP status lets callers check `err.status === 404` instead of parsing prose.
+export class ApiError extends Error {
+  status: number;
+  errorCode?: string | undefined;
+  constructor(message: string, status: number, errorCode?: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.errorCode = errorCode;
+  }
+}
+
+// Retry a genuinely transient failure — a dropped connection, or the backend momentarily
+// unavailable — rather than surfacing it as an immediate error. Mirrors Claude Code's own CLI
+// behavior on a flaky API call ("retrying… (attempt x/10)") rather than making the user retype
+// their message over a blip that clears itself a second later.
+//
+// Deliberately NOT applied to a 4xx response: a bad request, an expired session, a missing
+// resource, an insufficient-credit refusal will fail exactly the same way every time, and
+// retrying one ten times just delays a real error the user needs to see now. Only a network-level
+// throw (offline, DNS, connection reset) and 5xx/429 responses are worth retrying.
+const DEFAULT_FETCH_RETRIES = 10;
+
+function isTransientStatus(status: number): boolean {
+  return status >= 500 || status === 429;
+}
+
+function retryDelayMs(attempt: number): number {
+  // 400, 800, 1200, 1600, 2000, 2400, 2800, then capped at 3000 — a real backoff, not a hammer,
+  // without making a full 10-attempt exhaustion take an absurd amount of time either.
+  return Math.min(400 * (attempt + 1), 3000);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function apiFetch<T>(
   path: string,
-  options: RequestInit & { session?: SessionCredentials } = {}
+  options: RequestInit & {
+    session?: SessionCredentials;
+    /** Called once per retry attempt (never on the first try) — the caller's hook for showing
+     *  "Request failed, retrying (x/10)…" or similar, rather than a silent multi-second stall. */
+    onRetry?: (attempt: number, max: number) => void;
+    /** Override the retry ceiling — 0 disables retrying entirely (a caller that already retries
+     *  at its own cadence, e.g. a polling loop, may want this). Defaults to 10. */
+    retries?: number;
+  } = {}
 ): Promise<T> {
-  const { session, ...fetchOptions } = options;
+  const { session, onRetry, retries, ...fetchOptions } = options;
+  const maxRetries = retries ?? DEFAULT_FETCH_RETRIES;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(fetchOptions.headers as Record<string, string> | undefined),
@@ -25,20 +76,43 @@ async function apiFetch<T>(
     headers["x-naelao-end-user-id"] = session.endUserId;
   }
 
-  const res = await fetch(`${API_URL}${path}`, { ...fetchOptions, headers });
-
-  if (!res.ok) {
-    let message = `API error ${res.status}`;
+  for (let attempt = 0; ; attempt++) {
+    let res: Response;
     try {
-      const body = (await res.json()) as { message?: string; error_code?: string };
-      message = body.message ?? body.error_code ?? message;
-    } catch {
-      // use default message
+      res = await fetch(`${API_URL}${path}`, { ...fetchOptions, headers });
+    } catch (err) {
+      if (attempt < maxRetries) {
+        onRetry?.(attempt + 1, maxRetries);
+        await sleep(retryDelayMs(attempt));
+        continue;
+      }
+      throw err instanceof Error ? err : new Error(String(err));
     }
-    throw new Error(message);
+
+    if (!res.ok) {
+      if (isTransientStatus(res.status) && attempt < maxRetries) {
+        onRetry?.(attempt + 1, maxRetries);
+        await sleep(retryDelayMs(attempt));
+        continue;
+      }
+      let message = `API error ${res.status}`;
+      let errorCode: string | undefined;
+      try {
+        // Most routes send `{message}`; the billing-gate 402s (insufficient_credits,
+        // subscription_inactive, ...) send `{error}` instead — falling straight through to
+        // error_code as the DISPLAYED text (e.g. the literal string "insufficient_credits")
+        // when `error` carries the real human-readable sentence was a real bug.
+        const body = (await res.json()) as { message?: string; error?: string; error_code?: string };
+        message = body.message ?? body.error ?? body.error_code ?? message;
+        errorCode = body.error_code;
+      } catch {
+        // use default message
+      }
+      throw new ApiError(message, res.status, errorCode);
+    }
+    if (res.status === 204) return undefined as unknown as T;
+    return res.json() as Promise<T>;
   }
-  if (res.status === 204) return undefined as unknown as T;
-  return res.json() as Promise<T>;
 }
 
 // ── Public, pre-login lookups ────────────────────────────────────────────────
@@ -76,6 +150,17 @@ export interface ShellManifest {
     suppress_naelao_branding: boolean;
   };
   assistant_mode: string;
+  /** §A1.28 model switcher — null means unset (the dispatch layer's own DEFAULT_WORKING_MODEL
+   *  fallback applies). Present in the real backend response since item 48; the type just never
+   *  carried it (item 79 — same "server sends it, TS type didn't know" gap as template_catalog's
+   *  missing free_tier_eligible, item 65). */
+  model: string | null;
+  /** The business's stored default Effort (billing-core's EffortLevel) — null means unset (the
+   *  dispatch layer's own "low" fallback applies). Not yet read by the shell's own initial-state
+   *  resolution (which defaults to "low" locally, the same value this would resolve to when
+   *  unset) — a business that's explicitly set a non-"low" default isn't picked up here until a
+   *  user first opens the Effort panel; a real, deliberately deferred refinement. */
+  effort: string | null;
   sub_space_display: unknown;
   allow_public_signup: boolean;
   auth_provider: string;
@@ -86,8 +171,16 @@ export interface ShellManifest {
    *  SpaceType ships (not yet configured by the builder) — the shell falls back to the full list. */
   business_templates: string[];
   /** Phase F: the real, coming_soon-aware template catalog — render the create-business dialog
-   *  from this instead of a hardcoded copy of LAUNCHPAD_TEMPLATES. */
-  template_catalog: Array<{ id: string; name: string; coming_soon: boolean }>;
+   *  from this instead of a hardcoded copy of LAUNCHPAD_TEMPLATES. free_tier_eligible was already
+   *  sent by the backend (workers/spaces/src/template-catalog.ts) but missing from this type, so
+   *  the dialog had no way to warn a free-plan user before they hit the server-side
+   *  plan_upgrade_required rejection — see spaces/page.tsx's "Requires upgrade" badge. */
+  template_catalog: Array<{ id: string; name: string; coming_soon: boolean; free_tier_eligible: boolean }>;
+  /** Browse-only: the project presets a business is configured with, and the core agents that
+   *  run it. Static product data — an agent's system_prompt is never included. Absent on an older
+   *  backend, so both are optional and default to empty. */
+  project_template_catalog?: Array<{ id: string; name: string; description: string; kind: string }>;
+  agent_catalog?: Array<{ id: string; name: string; description: string }>;
   /** Legal & support config — builder-defined; drives the cookie consent banner and the
    *  support contact link on error screens. Absent fields: shell falls back to Naelao defaults. */
   legal: {
@@ -157,47 +250,359 @@ export interface Message {
   role: "user" | "assistant" | "system" | "tool";
   content: string;
   created_at: string;
+  /** Which identity produced this. A thread can carry the Space Assistant, one or more named
+   *  project agents, and people — collapsing all of them into one anonymous "assistant" bubble
+   *  makes a multi-agent thread unreadable, and hides who actually did a thing. */
+  author_type?: "user" | "agent" | "assistant" | "tool";
+  /** The agent's own id for author_type "agent"; the person's id for "user". */
+  author_id?: string | null;
+  /** item 79: when this assistant message resulted from consulting a project agent, which
+   *  subthread(s) it opened — rendered inline as an expandable card at this exact turn instead
+   *  of only in the separate "Assistant" tab. Absent/empty for an ordinary message.
+   *  needs_connector/connector_id/connector_name: the assistant tried to use a catalogued but
+   *  not-yet-connected app (script-engine's tool-surface.ts) — rendered as an inline "Connect X"
+   *  card at this exact turn instead of the connector name only ever appearing in prose. */
+  metadata?: {
+    consulted_threads?: ConsultedThread[];
+    needs_connector?: boolean;
+    connector_id?: string;
+    connector_name?: string;
+    /** The run that produced this message — durable (see NaelaoAgentDO's own comment on this
+     *  field), unlike the client-only `activity` below. Lets a reload re-fetch this exact run's
+     *  activity trail via getAgentRunTrace instead of losing it. */
+    run_id?: string;
+    /** Set by thread.send_message: the business assistant spoke INTO this thread on the owner's
+     *  behalf, and (unless awaiting_reply is false) the named agent replied right after. Rendered
+     *  as ONE collapsible card covering both, so it doesn't read as the assistant answering its
+     *  own question in two adjacent left-aligned bubbles. */
+    assistant_delegation?: {
+      agent_id?: string | null;
+      on_behalf_of_user?: boolean;
+      awaiting_reply?: boolean;
+    };
+  };
+  /** CLIENT-ONLY, never persisted server-side: the "currently doing X" activity trail this run
+   *  produced (observe/find/gate/reason/run/answer steps, live while the run was in flight — see
+   *  LiveRunStep). Attached locally to the completed assistant bubble by Chat.tsx once the run
+   *  finishes, so the tool-call/thinking summary stays visible under that turn — lost on reload,
+   *  same documented scope as the backend's own in-memory (not persisted) live-progress map. */
+  activity?: LiveRunStep[];
+  /** CLIENT-ONLY: attached by Chat.tsx when THIS turn's run stopped waiting on a person, so an
+   *  inline approval card renders at the exact turn that asked for it. Not persisted — a reload
+   *  loses this (the run is still genuinely pending; the separate /approvals inbox is the
+   *  durable, reload-safe way to find and answer it). */
+  pendingApproval?: RunPendingApproval;
+  /** CLIENT-ONLY, same non-persisted scope as pendingApproval: one or more actions this run
+   *  parked and carried on around (as opposed to pendingApproval, where the WHOLE run stopped).
+   *  Rendered as the same inline card, one per entry. */
+  deferredApprovals?: RunPendingApproval[];
+  /** CLIENT-ONLY, set once at creation for a message finalized from a live run THIS session (never
+   *  set on a message loaded from history). Tells RevealText to animate this bubble's text in
+   *  rather than show it instantly — a reload must never re-animate a message it already showed. */
+  justArrived?: boolean;
+  /** CLIENT-ONLY: how much of this message's text the viewer had ALREADY watched stream in, in the
+   *  live in-flight block, before this bubble replaced it. The live block and the finalized
+   *  message are two different render branches, so React unmounts one and mounts the other — the
+   *  reveal animation would otherwise restart from empty and re-type text that was just read (the
+   *  visible "snap" at stream completion). RevealText seeds itself with this instead. */
+  revealedPrefix?: string;
+}
+
+export interface ConsultedThread {
+  thread_id: string;
+  agent_id: string;
+  title: string;
+  session_id?: string;
+}
+
+/** One "currently doing X" checkpoint from the script-native loop (observe/find/gate/reason/run/
+ *  answer/give_up) — mirrors workers/agents/src/index.ts's LiveRunStep. Live while a run is in
+ *  flight (NaelaoAgentDO's in-memory liveRuns map); the SAME shape is what loop.ts persists to
+ *  run_traces once the run completes, so a step seen live never changes shape once it's "done". */
+export interface LiveRunStep {
+  seq: number;
+  phase: string;
+  name?: string;
+  detail?: string;
+  ok?: boolean;
+  tier?: number;
+  duration_ms?: number;
+  tokens?: number;
+  /** A reasoning-capable model's own chain-of-thought for a "reason" step, when the model
+   *  returned one. Rendered as a separate collapsed "Thoughts" block, not folded into `detail`. */
+  thinking?: string;
+  /** The live STATUS for this step's action ("Checking your existing projects") — shown beside it
+   *  while it runs and REPLACED by the next action's own, so a run of tool calls shows one status
+   *  line rather than one per call. See TraceStep's own doc header. */
+  narration?: string;
+  /** A real MESSAGE the model chose to write to the person on this step. Unlike `narration` it is
+   *  never replaced: it renders as its own line in order, so a run reads as message → tool calls →
+   *  message → tool calls. Present only on the turns where the model judged one was warranted. */
+  message?: string;
+  /** For a "run" phase step: the exact arguments the tool was called with — the real command,
+   *  not just a duration (Claude Code's own cmd-tool view). Set on both the "begin" and
+   *  "complete" checkpoints for the same step. */
+  params?: unknown;
+  /** For a "run" phase step that succeeded: a size-capped, stringified view of the tool's raw
+   *  return value. A failed call's outcome is in `detail` instead. */
+  output?: string;
+  /** This step is still being written: the model is mid-sentence and the next update will carry
+   *  more of the same text under the SAME seq. Merge by seq, never append (see mergeActivitySteps),
+   *  or one reasoning turn renders as a dozen half-finished rows. Never set on a persisted trace. */
+  partial?: boolean;
+  ts: number;
+}
+
+/**
+ * Fold an incoming batch of activity steps into what's already on screen, keyed by `seq`.
+ *
+ * The stream now sends a step AGAIN whenever its text has grown — that's what makes a sentence
+ * appear as it's written — so a plain append would print each fragment as its own row. Replacing
+ * by seq keeps one row per real step, growing in place. Order follows first-appearance so a
+ * re-sent step stays where it was rather than jumping to the end of the list.
+ */
+export function mergeActivitySteps(existing: LiveRunStep[], incoming: LiveRunStep[]): LiveRunStep[] {
+  if (incoming.length === 0) return existing;
+  const bySeq = new Map<number, LiveRunStep>();
+  for (const s of existing) bySeq.set(s.seq, s);
+  for (const s of incoming) bySeq.set(s.seq, s);
+  return [...bySeq.values()].sort((a, b) => a.seq - b.seq);
+}
+
+/** Re-fetches a COMPLETED run's persisted activity trail (§A1 HX1's run_traces, the same shape
+ *  live_steps already used) — what makes a reload able to show the activity sequence again for a
+ *  message that carries metadata.run_id, instead of the trail being gone the moment the client's
+ *  own in-memory copy is. Business-member end users and builders alike; see the route's own
+ *  header on the agents worker for the gating rationale. */
+export async function getAgentRunTrace(
+  spaceId: string,
+  sessionId: string,
+  runId: string,
+  session: SessionCredentials
+): Promise<LiveRunStep[]> {
+  const res = await apiFetch<{ run_id: string; trace: LiveRunStep[] }>(
+    `/v1/spaces/${spaceId}/sessions/${sessionId}/agent/runs/${runId}/trace`,
+    { session }
+  );
+  return res.trace ?? [];
+}
+
+/** What a run is waiting on a PERSON for — the data an inline in-chat approval card renders.
+ *  Mirrors workers/agents/src/index.ts's RunPendingApproval. */
+export interface RunPendingApproval {
+  approval_id: string;
+  action_name: string;
+  params?: Record<string, unknown>;
+  expires_at?: number;
 }
 
 export interface AgentRun {
   id: string;
-  status: "running" | "completed" | "failed" | "cancelled";
+  /** `awaiting_approval` means the run paused at a gate and is waiting on a PERSON, not on the
+   *  machine. It is not terminal and it is not a failure — the work is intact and continues once
+   *  someone answers, which is a completely different thing to tell a user than "still working". */
+  status: "running" | "completed" | "failed" | "cancelled" | "awaiting_approval";
   final_answer?: string;
+  /** The answer as the model is WRITING it, present only while status is "running". Distinct from
+   *  final_answer so a client can tell "still growing" from "this is the result" — render it, but
+   *  never treat it as the run having finished. */
+  partial_answer?: string;
   error?: string;
+  /** Machine-readable classification of `error` when it's a billing gate (insufficient_credits,
+   *  subscription_inactive, quota_exceeded, infra_quota_exceeded, ...) — lets a client render an
+   *  upgrade dialog instead of a bare error banner. Absent for any non-billing failure. */
+  error_code?: string;
+  /** New steps recorded since the run started, present only while status is "running" — see
+   *  LiveRunStep's own doc. */
+  live_steps?: LiveRunStep[];
+  /** Present when status is "awaiting_approval" — which action, with what parameters. */
+  pending_approval?: RunPendingApproval;
+  /** Actions the run parked and carried on around — distinct from pending_approval (which means
+   *  the WHOLE run suspended). A run can finish (or even fail on something unrelated afterward)
+   *  while still carrying one or more of these — they must be rendered regardless of `status`. */
+  deferred_approvals?: RunPendingApproval[];
 }
 
-/** POST /v1/spaces/:spaceId/sessions — start a new chat session. */
-export async function startSession(spaceId: string, session: SessionCredentials): Promise<{ id: string; space_id: string }> {
-  return apiFetch(`/v1/spaces/${spaceId}/sessions`, { method: "POST", body: JSON.stringify({}), session });
+/** POST /v1/spaces/:spaceId/sessions — start a new chat session.
+ *  `title` rides in the session's own metadata (SpaceDO has no title column) so the recent-
+ *  sessions list can label a conversation without an N+1 fetch of every session's first message.
+ *  `threadId`, when this session is the chat transport for a structural project thread (not a
+ *  bare assistant/Home conversation), links the two server-side (threads.session_id) — without
+ *  it the thread's own session was indistinguishable from a top-level conversation and leaked
+ *  into the flat Sessions sidebar as an apparent duplicate. */
+export async function startSession(
+  spaceId: string,
+  session: SessionCredentials,
+  title?: string,
+  threadId?: string
+): Promise<{ id: string; space_id: string }> {
+  const body: Record<string, unknown> = {};
+  if (title) body.metadata = { title };
+  if (threadId) body.thread_id = threadId;
+  return apiFetch(`/v1/spaces/${spaceId}/sessions`, { method: "POST", body: JSON.stringify(body), session });
+}
+
+export interface SessionSummary {
+  id: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  /** Derived from metadata.title (set at creation from the opening message). */
+  title: string | null;
+}
+
+/**
+ * If the given session is a heartbeat/cron-wake session (metadata.session_kind === "heartbeat"),
+ * clears that flag so it starts appearing in the ordinary Sessions list/recents like any other
+ * conversation — the "continue a heartbeat session as a normal one" ask. Never a no-op silent
+ * failure: an already-promoted or ordinary session is simply left alone. `metadata` is a whole-
+ * object PATCH server-side (updateSession), not a merge — so this reads the current value first
+ * and writes back everything except the one key, rather than clobbering `title`/anything else.
+ */
+export async function promoteSessionIfHeartbeat(spaceId: string, sessionId: string, session: SessionCredentials): Promise<void> {
+  try {
+    const res = await apiFetch<{ metadata?: string }>(`/v1/spaces/${spaceId}/sessions/${sessionId}`, { session });
+    const meta = JSON.parse(res.metadata ?? "{}") as Record<string, unknown>;
+    if (meta["session_kind"] !== "heartbeat") return;
+    delete meta["session_kind"];
+    await apiFetch(`/v1/spaces/${spaceId}/sessions/${sessionId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ metadata: meta }),
+      session,
+    });
+  } catch {
+    // Best-effort — a failed promote just means this session stays filed as a heartbeat one;
+    // never blocks the actual message being sent.
+  }
+}
+
+/** GET /v1/spaces/:spaceId/sessions — the signed-in user's own recent conversations. The
+ *  end_user_id filter is applied SERVER-side from verified claims; a client-supplied one is
+ *  ignored, so this can only ever return the caller's own sessions. */
+export async function listSessions(
+  spaceId: string,
+  session: SessionCredentials,
+  limit = 20,
+  kind?: "heartbeat"
+): Promise<SessionSummary[]> {
+  const res = await apiFetch<{ data?: Array<{ id: string; status: string; created_at: string; updated_at: string; metadata?: string }> }>(
+    `/v1/spaces/${spaceId}/sessions?limit=${limit}${kind ? `&kind=${kind}` : ""}`,
+    { session }
+  );
+  return (res.data ?? []).map((row) => {
+    let title: string | null = null;
+    try {
+      title = (JSON.parse(row.metadata ?? "{}") as { title?: string }).title ?? null;
+    } catch {
+      // A session whose metadata isn't valid JSON still belongs in the list, just unlabeled.
+    }
+    return { id: row.id, status: row.status, created_at: row.created_at, updated_at: row.updated_at, title };
+  });
 }
 
 export async function getMessages(spaceId: string, sessionId: string, session: SessionCredentials): Promise<Message[]> {
+  // Ask for a deep tail explicitly. The server returns the NEWEST `limit` messages, and this client
+  // has no "load older" affordance, so whatever is not in this one response is unreachable in the
+  // UI — 200 covers any realistic conversation, where the default of 50 visibly cut history off.
   const res = await apiFetch<{ data?: Message[]; messages?: Message[] } | Message[]>(
-    `/v1/spaces/${spaceId}/sessions/${sessionId}/messages`,
+    `/v1/spaces/${spaceId}/sessions/${sessionId}/messages?limit=200`,
     { session }
   );
   if (Array.isArray(res)) return res;
   return res.data ?? res.messages ?? [];
 }
 
-/** Persists the user's message, then kicks off an agent run. */
+/**
+ * Truncate a session's transcript from `fromMessageId` onward (that message included).
+ *
+ * Editing your last message is a re-ask, and a re-ask should REPLACE the exchange it corrects.
+ * Without this the client dropped the old pair from its own array while the server kept it, so
+ * the correction looked clean until a reload re-read the transcript and rendered both versions.
+ * Best-effort by design: the caller re-asks either way, since losing the new question to a failed
+ * cleanup would be worse than briefly showing a stale one.
+ */
+export async function truncateMessagesFrom(
+  spaceId: string,
+  sessionId: string,
+  fromMessageId: string,
+  session: SessionCredentials
+): Promise<{ deleted: number }> {
+  return apiFetch<{ deleted: number }>(
+    `/v1/spaces/${spaceId}/sessions/${sessionId}/messages?from=${encodeURIComponent(fromMessageId)}`,
+    { method: "DELETE", session }
+  );
+}
+
+/** Model switcher options for one send — both optional, both already validated server-side
+ *  against billing-core's ALLOWED_MODELS/MODEL_CAPABILITIES; an invalid pairing 400s rather than
+ *  silently running a different config than the user chose. */
+export interface RunModelOptions {
+  model?: string;
+  reasoningEffort?: string;
+  /** The escalation-budget dial (billing-core's EffortLevel — "low"/"medium"/"high"/"ultra") —
+   *  caps which model any work THIS run delegates (a sub-agent spawn, a consult) is allowed to
+   *  use, independent of reasoningEffort (which only tunes the active model's own thinking
+   *  depth). Validated server-side against the resolved model before use. */
+  effort?: string;
+  /** Which project agent (a bare or `${spaceId}:` composite agent_definition id) should handle
+   *  this run — the project thread agent switcher's own selection. Omitted for an assistant
+   *  session (no second agent to pick) or when the default binding is fine. */
+  agentDefinitionId?: string;
+  /** The project this run's thread lives in, when there is one — see workspacePrefix() on the
+   *  agents worker. Without this the backend can't tell a project thread's run apart from the
+   *  Space Assistant's, so EVERY tool a project agent calls (r2-workspace, file-manager, KB,
+   *  Memory OS, the project journal, lock) silently falls back to the space-wide scope instead
+   *  of this thread's own project — a file the AI creates lands in the wrong workspace, and a
+   *  file the person already uploaded (which the upload route DOES scope correctly) becomes
+   *  unreadable to the AI, which is looking in the wrong place. Omitted for an assistant session,
+   *  which is deliberately space-wide. */
+  projectId?: string;
+}
+
+/** Persists the user's message, then kicks off an agent run.
+ *  `onRetry`, when given, is called on every transient-failure retry attempt (network hiccup or
+ *  a 5xx/429 from the gateway) — the caller's hook for showing "Request failed, retrying (x/10)…"
+ *  instead of a multi-second silent stall or an immediate, unnecessary error. */
 export async function sendMessage(
   spaceId: string,
   sessionId: string,
   content: string,
-  session: SessionCredentials
+  session: SessionCredentials,
+  modelOptions?: RunModelOptions,
+  onRetry?: (attempt: number, max: number) => void
 ): Promise<{ userMessage: Message; agentRunId: string }> {
+  // Minted ONCE, outside the retry loop inside apiFetch, so every retry of this same send carries
+  // the same key. apiFetch retries a POST on a network-level throw or a 5xx/429 — and neither
+  // proves the server didn't already commit the row (a reset connection or a response lost on the
+  // way back both throw here while the write succeeded). Without this the retry wrote a second
+  // identical message: invisible live, since the client only renders the one response it finally
+  // got, and plainly visible the moment you reload. SpaceDO dedupes on (session_id, this).
+  const clientMessageId = crypto.randomUUID();
   const userMessage = await apiFetch<Message>(`/v1/spaces/${spaceId}/sessions/${sessionId}/messages`, {
     method: "POST",
-    body: JSON.stringify({ role: "user", content }),
+    body: JSON.stringify({ role: "user", content, client_message_id: clientMessageId }),
     session,
+    ...(onRetry ? { onRetry } : {}),
   });
   // §A1.17 Phase Q: pass `goal` explicitly (the message just persisted above) — the backend
   // will still derive it from the session's latest user message if this is ever omitted, but
   // sending it directly avoids that extra round trip on every single message.
   const agentRun = await apiFetch<{ id?: string; run_id?: string; task_id?: string }>(
     `/v1/spaces/${spaceId}/sessions/${sessionId}/agent/run`,
-    { method: "POST", body: JSON.stringify({ session_id: sessionId, goal: content }), session }
+    {
+      method: "POST",
+      body: JSON.stringify({
+        session_id: sessionId,
+        goal: content,
+        ...(modelOptions?.model ? { model: modelOptions.model } : {}),
+        ...(modelOptions?.reasoningEffort ? { reasoning_effort: modelOptions.reasoningEffort } : {}),
+        ...(modelOptions?.effort ? { effort: modelOptions.effort } : {}),
+        ...(modelOptions?.agentDefinitionId ? { agent_definition_id: modelOptions.agentDefinitionId } : {}),
+        ...(modelOptions?.projectId ? { project_id: modelOptions.projectId } : {}),
+      }),
+      session,
+      ...(onRetry ? { onRetry } : {}),
+    }
   );
   return { userMessage, agentRunId: agentRun.id ?? agentRun.run_id ?? agentRun.task_id ?? "" };
 }
@@ -221,18 +626,218 @@ export async function getStreamUrl(spaceId: string, sessionId: string, runId: st
   }
 }
 
-/** Polling fallback for environments without SSE. */
-export async function pollRun(spaceId: string, sessionId: string, runId: string, session: SessionCredentials): Promise<AgentRun> {
-  const res = await apiFetch<{ id: string; status: string; final_answer?: string; error?: string }>(
+/**
+ * Is anything still running in this conversation?
+ *
+ * The in-flight run used to be tracked in sessionStorage, which is per-tab by construction — so
+ * closing the tab meant the run carried on with nobody watching, and reopening showed a silent
+ * transcript with no sign the agent was still working. The server knows, so ask it: this works
+ * from a new tab, a different browser, or another device.
+ *
+ * Returns the steps and partial answer accumulated so far alongside the id, so the caller can
+ * paint what it missed immediately and then continue live, rather than starting from blank.
+ */
+export async function getActiveRun(
+  spaceId: string,
+  sessionId: string,
+  session: SessionCredentials
+): Promise<{ active: boolean; run_id?: string; live_steps?: LiveRunStep[]; partial_answer?: string }> {
+  return apiFetch(`/v1/spaces/${spaceId}/sessions/${sessionId}/agent/active-run`, { session });
+}
+
+/**
+ * Ask a run to stop.
+ *
+ * Cooperative, not a kill: the agent finishes whatever action it is inside and stops at the next
+ * step boundary. Tearing it down mid-action would leave a side effect — an email, a payment, a
+ * created project — in a state nobody could report on afterwards.
+ */
+export async function cancelRun(
+  spaceId: string,
+  sessionId: string,
+  runId: string,
+  session: SessionCredentials
+): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/sessions/${sessionId}/agent/runs/${runId}/cancel`, {
+    method: "POST",
+    session,
+  });
+}
+
+/** Polling fallback for environments without SSE. `onRetry` — see sendMessage's own doc. */
+export async function pollRun(
+  spaceId: string,
+  sessionId: string,
+  runId: string,
+  session: SessionCredentials,
+  onRetry?: (attempt: number, max: number) => void
+): Promise<AgentRun> {
+  const res = await apiFetch<{ id: string; status: string; final_answer?: string; partial_answer?: string; error?: string; error_code?: string; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval; deferred_approvals?: RunPendingApproval[] }>(
     `/v1/spaces/${spaceId}/sessions/${sessionId}/agent/runs/${runId}`,
-    { session }
+    { session, ...(onRetry ? { onRetry } : {}) }
   );
   return {
     id: res.id,
     status: (res.status as AgentRun["status"]) ?? "running",
     ...(res.final_answer !== undefined ? { final_answer: res.final_answer } : {}),
+    ...(res.partial_answer !== undefined ? { partial_answer: res.partial_answer } : {}),
     ...(res.error !== undefined ? { error: res.error } : {}),
+    ...(res.error_code !== undefined ? { error_code: res.error_code } : {}),
+    ...(res.live_steps ? { live_steps: res.live_steps } : {}),
+    ...(res.pending_approval ? { pending_approval: res.pending_approval } : {}),
+    ...(res.deferred_approvals?.length ? { deferred_approvals: res.deferred_approvals } : {}),
   };
+}
+
+
+// ── Approvals — the things an agent is waiting on you for ────────────────────
+//
+// A gated action opens a request and does NOT run; the agent parks it and carries on with the
+// rest of the task. Until this existed there was no way to answer one from the product at all,
+// so every parked action sat until it expired — the feature was real end to end except for the
+// one step that needs a person.
+
+export interface PendingApproval {
+  id: string;
+  run_id: string;
+  session_id: string;
+  tool_name: string;
+  /** JSON string of the arguments the agent wants to run with — shown so a decision is informed. */
+  tool_input: string;
+  action_description: string;
+  status: "pending" | "approved" | "rejected" | "timeout";
+  reject_reason: string | null;
+  created_at: string;
+  expires_at: number;
+}
+
+/** Every open request in this space. The list is space-wide — the session in the path is only
+ *  there because that's where the route lives. */
+export async function listApprovals(spaceId: string, session: SessionCredentials): Promise<PendingApproval[]> {
+  const res = await apiFetch<{ approvals: PendingApproval[] }>(
+    `/v1/spaces/${spaceId}/sessions/inbox/approvals`,
+    { session }
+  );
+  return (res.approvals ?? []).filter((a) => a.status === "pending");
+}
+
+/** An approval tagged with which business it belongs to — see listAllApprovals's own header for
+ *  why this exists. */
+export interface PendingApprovalWithBusiness extends PendingApproval {
+  business_id: string;
+  business_name: string;
+}
+
+/** Live-reported bug: approvals are per-space (HITLApprovalDO is addressed `hitl:{spaceId}`,
+ *  one instance per business), but the sidebar badge and the Approvals page only ever checked
+ *  `activeSpaceId` — whichever business the switcher happened to be pointed at. A gated action
+ *  parked under Business A was completely invisible while looking at Business B: no badge, no
+ *  entry in the Approvals list, nothing — reported live as "the agent said it's waiting for
+ *  approval but there's nothing anywhere to approve." Fixed by checking every business the
+ *  person belongs to, not just the one currently in view. A handful of businesses per end user
+ *  is the normal case (unlike the platform-wide enumeration this codebase deliberately avoids
+ *  elsewhere), so a small parallel fan-out here is the right trade, not a scale risk.
+ *
+ *  `productSpaceId` is included too (tagged with `business_name: "Assistant"`) since a "team"-mode
+ *  product (no businesses concept) can itself have pending approvals at the root — and even on a
+ *  business-first product, the assistant can still open one there before any business exists. */
+export async function listAllApprovals(
+  productSpaceId: string,
+  productName: string,
+  businesses: Business[],
+  session: SessionCredentials
+): Promise<PendingApprovalWithBusiness[]> {
+  const targets = [
+    { id: productSpaceId, name: productName },
+    ...businesses.map((b) => ({ id: b.id, name: b.name })),
+  ];
+  const results = await Promise.allSettled(
+    targets.map(async (t) => {
+      const items = await listApprovals(t.id, session);
+      return items.map((a) => ({ ...a, business_id: t.id, business_name: t.name }));
+    })
+  );
+  return results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
+}
+
+export async function approveAction(spaceId: string, approvalId: string, session: SessionCredentials): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/sessions/inbox/approvals/${approvalId}/approve`, { method: "PUT", session });
+}
+
+export async function rejectAction(
+  spaceId: string,
+  approvalId: string,
+  reason: string,
+  session: SessionCredentials
+): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/sessions/inbox/approvals/${approvalId}/reject`, {
+    method: "PUT",
+    body: JSON.stringify({ reason }),
+    session,
+  });
+}
+
+/** What handleResumeRun's own continuation pass is called, once it's started — lets the chat
+ *  surface attach to it via the SAME pollRun/streamRun machinery an ordinary run uses, instead of
+ *  only learning the answer on reload with no activity trail. `resumed_run_id` is null until the
+ *  continuation has actually begun (it's recorded the moment it's minted, ahead of it finishing). */
+export async function getApprovalResumeStatus(
+  spaceId: string,
+  approvalId: string,
+  session: SessionCredentials
+): Promise<{ resumed_run_id: string | null; resume_status: string | null }> {
+  const res = await apiFetch<{ resumed_run_id?: string | null; resume_status?: string | null }>(
+    `/v1/spaces/${spaceId}/sessions/inbox/approvals/${approvalId}`,
+    { session }
+  );
+  return { resumed_run_id: res.resumed_run_id ?? null, resume_status: res.resume_status ?? null };
+}
+
+// ── Notifications — what the assistant/its agents surface for a human to see ─
+//
+// Distinct from approvals: a notification doesn't necessarily need a decision (a run failed, a
+// connector needs setup) — it just needs to be SEEN. Reading the list here does not mark
+// anything read; call markNotificationRead explicitly (mirrors the approvals inbox's own
+// explicit approve/reject, not an implicit "viewed it" side effect).
+
+export interface AppNotification {
+  id: string;
+  space_id: string;
+  project_id: string | null;
+  kind: string;
+  title: string;
+  body: string;
+  severity: "info" | "warning" | "critical";
+  source_agent_id: string | null;
+  related_id: string | null;
+  status: "unread" | "read";
+  read_at: string | null;
+  delivered_at: string | null;
+  created_at: string;
+}
+
+export async function listNotifications(
+  spaceId: string,
+  session: SessionCredentials,
+  opts?: { status?: "unread" | "read"; limit?: number; projectId?: string | null | undefined }
+): Promise<AppNotification[]> {
+  const params = new URLSearchParams();
+  if (opts?.status) params.set("status", opts.status);
+  if (opts?.projectId) params.set("project_id", opts.projectId);
+  params.set("limit", String(opts?.limit ?? 50));
+  const res = await apiFetch<{ data: AppNotification[] }>(
+    `/v1/spaces/${spaceId}/notifications?${params.toString()}`,
+    { session }
+  );
+  return res.data ?? [];
+}
+
+export async function markNotificationRead(spaceId: string, notificationId: string, session: SessionCredentials): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/notifications`, {
+    method: "POST",
+    body: JSON.stringify({ action: "mark_read", notification_id: notificationId }),
+    session,
+  });
 }
 
 // ── Context-window usage (§A1.27) ────────────────────────────────────────────
@@ -291,10 +896,52 @@ export async function listProjects(spaceId: string, session: SessionCredentials)
   return res.data;
 }
 
-export async function createProject(spaceId: string, session: SessionCredentials, name: string, description?: string): Promise<Project> {
+/** kind, when given, creates a Business Feature project (Wallet, CRM, Business Email, …) instead
+ *  of a plain workspace project — SpaceDO validates it against BUSINESS_FEATURE_KIND_REGISTRY and
+ *  role-gates/singleton-gates it server-side; a rejection here is real, not just UI-hidden. */
+export async function createProject(
+  spaceId: string,
+  session: SessionCredentials,
+  name: string,
+  description?: string,
+  kind?: string
+): Promise<Project> {
   return apiFetch(`/v1/spaces/${spaceId}/projects`, {
     method: "POST",
-    body: JSON.stringify({ name, ...(description ? { description } : {}) }),
+    body: JSON.stringify({ name, ...(description ? { description } : {}), ...(kind ? { kind } : {}) }),
+    session,
+  });
+}
+
+// ── Plugins directory (BUSINESS_FEATURE_KIND_REGISTRY, browsable+role-filtered) ────────────────
+
+export interface FeatureKind {
+  kind: string;
+  label: string;
+  description: string;
+  singleton: boolean;
+  minCreationRole: "owner" | "admin" | "editor";
+  autoProvisionable: boolean;
+  uiPanel?: string;
+}
+
+export async function getFeatureKinds(spaceId: string, session: SessionCredentials): Promise<FeatureKind[]> {
+  const res = await apiFetch<{ feature_kinds: FeatureKind[] }>(`/v1/spaces/${spaceId}/feature-kinds`, { session });
+  return res.feature_kinds;
+}
+
+/** One call, fully configured — the project row (kind, execution ceiling, spend cap, agent
+ *  binding) plus its starter rules/scheduled jobs, from any entry in the manifest's
+ *  `project_template_catalog`. The same mechanism a business's own onboarding already uses. */
+export async function createProjectFromTemplate(
+  spaceId: string,
+  session: SessionCredentials,
+  templateId: string,
+  name?: string
+): Promise<{ project_id: string }> {
+  return apiFetch(`/v1/spaces/${spaceId}/projects/from-template`, {
+    method: "POST",
+    body: JSON.stringify({ template_id: templateId, ...(name ? { name } : {}) }),
     session,
   });
 }
@@ -339,6 +986,7 @@ export interface ThreadSummary {
   status: string;
   thread_kind: string;
   parent_thread_id: string | null;
+  session_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -350,6 +998,18 @@ export async function listThreads(
 ): Promise<ThreadSummary[]> {
   const qs = opts.projectId ? `?project_id=${encodeURIComponent(opts.projectId)}` : "";
   const res = await apiFetch<{ data: ThreadSummary[]; count: number }>(`/v1/spaces/${spaceId}/threads${qs}`, { session });
+  return res.data;
+}
+
+// A project thread's own private assistant<->agent consult subthreads (§A1.18 thread model) —
+// hidden from the default project thread list, fetched explicitly here for the collapsed
+// "Assistant" panel on that thread's own page. Always answered in full regardless of the
+// project's show_sub_threads default (SpaceDO honors an explicit parent_thread_id ask).
+export async function listSubthreads(spaceId: string, parentThreadId: string, session: SessionCredentials): Promise<ThreadSummary[]> {
+  const res = await apiFetch<{ data: ThreadSummary[]; count: number }>(
+    `/v1/spaces/${spaceId}/threads?parent_thread_id=${encodeURIComponent(parentThreadId)}`,
+    { session }
+  );
   return res.data;
 }
 
@@ -383,6 +1043,59 @@ export async function listAgentDefinitions(spaceId: string, session: SessionCred
   return Array.isArray(res) ? res : res.data ?? [];
 }
 
+export interface AgentTemplateSummary {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  category: string;
+  prebuilt_scripts: string[];
+  approval_mode: string;
+}
+
+/** The browsable Naelao Agent Templates catalogue — real, distinct configurations (tool list,
+ *  autonomy default, vertical instructions), not a cosmetic label on the same generic agent. */
+export async function listAgentTemplates(spaceId: string, session: SessionCredentials): Promise<AgentTemplateSummary[]> {
+  const res = await apiFetch<{ templates: AgentTemplateSummary[] }>(`/v1/spaces/${spaceId}/agent-templates`, { session });
+  return res.templates ?? [];
+}
+
+/** Instantiate a template as a real agent_definition — writes its own config, seeds its own
+ *  approval policy, and (when project_id is given) binds it into that project's
+ *  allowed_agent_ids so it shows up in the project's own agent switcher immediately. */
+export async function instantiateAgentTemplate(
+  spaceId: string,
+  session: SessionCredentials,
+  params: { template_id: string; name?: string; project_id?: string }
+): Promise<{ agent_id: string; agent_definition_id: string; template_id: string }> {
+  return apiFetch(`/v1/spaces/${spaceId}/agent-templates`, { method: "POST", body: JSON.stringify(params), session });
+}
+
+/** A single project agent's own approval-policy override — falls back to the space-wide
+ *  assistant_policy row (getAssistantPolicy) when the agent has no override of its own. GET is
+ *  member-level, PATCH is business-admin-only (requireBusinessMembership on the spaces worker). */
+export interface AgentPolicy {
+  approval_mode: "always_ask" | "yolo";
+  auto_approved_actions: string[];
+}
+
+export async function getAgentPolicy(spaceId: string, agentId: string, session: SessionCredentials): Promise<AgentPolicy> {
+  return apiFetch(`/v1/spaces/${spaceId}/agents/${encodeURIComponent(agentId)}/policy`, { session });
+}
+
+export async function updateAgentPolicy(
+  spaceId: string,
+  agentId: string,
+  session: SessionCredentials,
+  patch: Partial<AgentPolicy>
+): Promise<AgentPolicy> {
+  return apiFetch(`/v1/spaces/${spaceId}/agents/${encodeURIComponent(agentId)}/policy`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+    session,
+  });
+}
+
 // ── Space Assistant surface (WS-2) — read-only panels, all pure consumers of existing backends ──
 
 export interface AssistantPolicy {
@@ -392,6 +1105,34 @@ export interface AssistantPolicy {
 
 export async function getAssistantPolicy(spaceId: string, session: SessionCredentials): Promise<AssistantPolicy> {
   return apiFetch(`/v1/spaces/${spaceId}/assistant-policy`, { session });
+}
+
+// item 79: a business admin can now change their OWN business's guided/autonomous policy — this
+// was previously a builder-dashboard-only write (the route 403'd every product_end_user caller
+// outright). Not exposed for a plain member — the caller composing the request enforces that in
+// the UI, and requireBusinessMembership enforces it for real on the backend either way.
+export async function updateAssistantPolicy(
+  spaceId: string,
+  session: SessionCredentials,
+  patch: Partial<AssistantPolicy>
+): Promise<AssistantPolicy> {
+  return apiFetch(`/v1/spaces/${spaceId}/assistant-policy`, { method: "PATCH", body: JSON.stringify(patch), session });
+}
+
+// item 79: which model this business's assistant/agents run on — a business-scoped counterpart
+// to the dashboard's own product-level model picker (Configuration tab), reachable by whoever
+// actually owns the business rather than only the platform builder account.
+export async function updateModelConfig(
+  spaceId: string,
+  session: SessionCredentials,
+  model: string,
+  effort?: string
+): Promise<{ model: string; effort?: string }> {
+  return apiFetch(`/v1/spaces/${spaceId}/model-config`, {
+    method: "PATCH",
+    body: JSON.stringify({ model, ...(effort ? { effort } : {}) }),
+    session,
+  });
 }
 
 export interface MemoryFact {
@@ -410,13 +1151,110 @@ export interface ScheduledJob {
   id: string;
   name: string;
   cron_expression: string;
+  script_name?: string;
+  goal?: string | null;
+  params?: string;
   enabled: number;
   last_run_at: string | null;
   consecutive_failures: number;
+  last_error?: string | null;
+  project_id?: string | null;
+  agent_id?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  /** Phase 3 item 27/28 — computed fresh on every read, never stored. Null for a disabled job. */
+  next_run_at: number | null;
 }
 
-export async function listScheduledJobs(spaceId: string, session: SessionCredentials): Promise<ScheduledJob[]> {
-  const res = await apiFetch<{ data: ScheduledJob[] }>(`/v1/spaces/${spaceId}/scheduled-jobs`, { session });
+/** scope: pass {projectId: "<id>"} to see only that project's own jobs, {projectId: null} to see
+ *  only the space-wide/assistant's own (project_id IS NULL), or omit entirely for the prior
+ *  unfiltered "everything" behavior (the Dashboard overview + dedicated Assistant page). */
+export async function listScheduledJobs(
+  spaceId: string,
+  session: SessionCredentials,
+  scope?: { projectId: string | null }
+): Promise<ScheduledJob[]> {
+  const qs = scope ? (scope.projectId ? `?project_id=${encodeURIComponent(scope.projectId)}` : "?scope=assistant") : "";
+  const res = await apiFetch<{ data: ScheduledJob[] }>(`/v1/spaces/${spaceId}/scheduled-jobs${qs}`, { session });
+  return res.data;
+}
+
+// Phase 3 item 27/28 — the backend CRUD routes (POST/PATCH/DELETE
+// /spaces/:spaceId/scheduled-jobs[/:jobId]) have existed since scheduled jobs shipped; only a
+// read wrapper existed here, so the Crons panel could show a job but never create, edit, or
+// remove one.
+export async function createScheduledJob(
+  spaceId: string,
+  session: SessionCredentials,
+  input: {
+    name: string;
+    cron_expression: string;
+    script_name?: string;
+    goal?: string;
+    params?: Record<string, unknown>;
+    project_id?: string;
+    agent_id?: string;
+  }
+): Promise<ScheduledJob> {
+  return apiFetch(`/v1/spaces/${spaceId}/scheduled-jobs`, { method: "POST", body: JSON.stringify(input), session });
+}
+
+export async function updateScheduledJob(
+  spaceId: string,
+  jobId: string,
+  session: SessionCredentials,
+  patch: Partial<{
+    name: string;
+    cron_expression: string;
+    script_name: string;
+    goal: string;
+    params: Record<string, unknown>;
+    agent_id: string;
+    enabled: boolean;
+  }>
+): Promise<{ id: string; updated_at: string }> {
+  return apiFetch(`/v1/spaces/${spaceId}/scheduled-jobs/${encodeURIComponent(jobId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+    session,
+  });
+}
+
+/** A dedicated enable/disable helper — the common case, without needing to remember the shape
+ *  of a full PATCH body just to flip one field. */
+export async function toggleScheduledJob(
+  spaceId: string,
+  jobId: string,
+  session: SessionCredentials,
+  enabled: boolean
+): Promise<{ id: string; updated_at: string }> {
+  return updateScheduledJob(spaceId, jobId, session, { enabled });
+}
+
+export async function deleteScheduledJob(spaceId: string, jobId: string, session: SessionCredentials): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/scheduled-jobs/${encodeURIComponent(jobId)}`, { method: "DELETE", session });
+}
+
+export interface ScheduledJobRun {
+  id: string;
+  fired_at: number;
+  ok: number;
+  error: string | null;
+  duration_ms: number | null;
+  skipped_busy: number;
+}
+
+/** Recent fires for one job (migration 0071), newest first. */
+export async function listScheduledJobRuns(
+  spaceId: string,
+  jobId: string,
+  session: SessionCredentials,
+  limit = 20
+): Promise<ScheduledJobRun[]> {
+  const res = await apiFetch<{ data: ScheduledJobRun[] }>(
+    `/v1/spaces/${spaceId}/scheduled-job-runs?job_id=${encodeURIComponent(jobId)}&limit=${limit}`,
+    { session }
+  );
   return res.data;
 }
 
@@ -424,11 +1262,63 @@ export interface ChannelLink {
   channel: string;
   enabled: number;
   created_at: string;
+  project_id?: string | null;
 }
 
-export async function listAssistantChannels(spaceId: string, session: SessionCredentials): Promise<ChannelLink[]> {
-  const res = await apiFetch<{ data: ChannelLink[] }>(`/v1/spaces/${spaceId}/assistant/channels`, { session });
+/** Same scoping convention as listScheduledJobs. */
+export async function listAssistantChannels(
+  spaceId: string,
+  session: SessionCredentials,
+  scope?: { projectId: string | null }
+): Promise<ChannelLink[]> {
+  const qs = scope ? (scope.projectId ? `?project_id=${encodeURIComponent(scope.projectId)}` : "?scope=assistant") : "";
+  const res = await apiFetch<{ data: ChannelLink[] }>(`/v1/spaces/${spaceId}/assistant/channels${qs}`, { session });
   return res.data;
+}
+
+export interface ChannelConnectResult {
+  connected?: boolean;
+  channel: string;
+  enabled?: boolean;
+  /** Paste this into the provider's own dashboard — connecting on our side isn't enough on its
+   *  own for messages to actually arrive. */
+  webhook_url?: string;
+}
+
+/** Connect a channel, or turn one off/back on. Owner/admin only, enforced server-side. */
+/** What the server hands back for action:"pair" — a link to open (or scan) plus human steps. */
+export interface ChannelPairing {
+  channel: string;
+  pair_url: string;
+  mode: "scan" | "redirect";
+  completion: "message" | "callback";
+  steps: string[];
+  expires_in_seconds: number;
+}
+
+export async function pairAssistantChannel(
+  spaceId: string,
+  session: SessionCredentials,
+  channel: string,
+  projectId?: string
+): Promise<ChannelPairing> {
+  return apiFetch<ChannelPairing>(`/v1/spaces/${spaceId}/assistant/channels`, {
+    method: "POST",
+    body: JSON.stringify({ action: "pair", channel, ...(projectId ? { project_id: projectId } : {}) }),
+    session,
+  });
+}
+
+export async function updateAssistantChannel(
+  spaceId: string,
+  session: SessionCredentials,
+  body: { action: "connect" | "disconnect" | "enable"; channel: string; secret?: string; project_id?: string }
+): Promise<ChannelConnectResult> {
+  return apiFetch<ChannelConnectResult>(`/v1/spaces/${spaceId}/assistant/channels`, {
+    method: "POST",
+    body: JSON.stringify(body),
+    session,
+  });
 }
 
 export interface SubAgentSummary {
@@ -440,9 +1330,24 @@ export interface SubAgentSummary {
   updated_at: string;
 }
 
-export async function listSubAgents(spaceId: string, session: SessionCredentials, parentRunId: string): Promise<SubAgentSummary[]> {
+/**
+ * Sub-agents for a conversation. `sessionId` is what makes this work at all: an agent DO is
+ * addressed per conversation, so without it the server falls back to the space-wide assistant DO
+ * — an instance that never ran this chat's spawns and therefore always answers "none".
+ * `agentId` mirrors /agent/run's own `{sessionId}:{agentId}` addressing for an explicitly bound
+ * project agent.
+ */
+export async function listSubAgents(
+  spaceId: string,
+  session: SessionCredentials,
+  parentRunId: string,
+  opts?: { sessionId?: string | null | undefined; agentId?: string | null | undefined }
+): Promise<SubAgentSummary[]> {
+  const qs = new URLSearchParams({ parent_run_id: parentRunId });
+  if (opts?.sessionId) qs.set("session_id", opts.sessionId);
+  if (opts?.agentId) qs.set("agent_id", opts.agentId);
   const res = await apiFetch<{ data?: SubAgentSummary[] } | SubAgentSummary[]>(
-    `/v1/spaces/${spaceId}/assistant/sub-agents?parent_run_id=${encodeURIComponent(parentRunId)}`,
+    `/v1/spaces/${spaceId}/assistant/sub-agents?${qs.toString()}`,
     { session }
   );
   return Array.isArray(res) ? res : res.data ?? [];
@@ -459,6 +1364,112 @@ export async function listAssistantFiles(spaceId: string, session: SessionCreden
   return res.data;
 }
 
+export async function readAssistantFile(spaceId: string, path: string, session: SessionCredentials): Promise<{ path: string; size: number; content?: string; too_large?: boolean }> {
+  return apiFetch(`/v1/spaces/${spaceId}/assistant/files/${path.split("/").map(encodeURIComponent).join("/")}`, { session });
+}
+
+// Phase 5: agent-authored deliverables — distinct from the workspace files above.
+export interface ArtifactSummary {
+  artifact_id: string;
+  filename: string;
+  content_type: string;
+  size: number;
+  uploaded: string;
+}
+export interface ArtifactContent {
+  artifact_id: string;
+  filename: string;
+  content_type: string;
+  content?: string;
+  too_large?: boolean;
+  binary?: boolean;
+}
+export async function listArtifacts(spaceId: string, session: SessionCredentials): Promise<ArtifactSummary[]> {
+  const res = await apiFetch<{ data: ArtifactSummary[] }>(`/v1/spaces/${spaceId}/assistant/artifacts`, { session });
+  return res.data;
+}
+export async function getArtifact(spaceId: string, artifactId: string, session: SessionCredentials): Promise<ArtifactContent> {
+  return apiFetch(`/v1/spaces/${spaceId}/assistant/artifacts/${encodeURIComponent(artifactId)}`, { session });
+}
+export async function deleteArtifact(spaceId: string, artifactId: string, session: SessionCredentials): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/assistant/artifacts/${encodeURIComponent(artifactId)}`, { method: "DELETE", session });
+}
+
+export interface PrebuiltCapability {
+  name: string;
+  description: string;
+  domain: string;
+  requires_tier: number;
+  operations: string[];
+  source: "prebuilt";
+}
+
+export interface LearnedSkill {
+  name: string;
+  source: "learned";
+}
+
+export interface AssistantCapabilities {
+  prebuilts: PrebuiltCapability[];
+  skills: LearnedSkill[];
+  prebuilt_count: number;
+  skill_count: number;
+}
+
+/** What the assistant can actually do — built-in scripts plus the space's own learned skills.
+ *  Metadata only; script source is deliberately not exposed to the end-user shell. */
+export async function getAssistantCapabilities(
+  spaceId: string,
+  session: SessionCredentials
+): Promise<AssistantCapabilities> {
+  return apiFetch<AssistantCapabilities>(`/v1/spaces/${spaceId}/assistant/capabilities`, { session });
+}
+
+// ── Skills directory (the shared, fleet-learned template library a business can browse and pull
+// individual skills from — distinct from Learned Skills above, which is what a space already has;
+// see workers/agents/src/index.ts's /skills/directory and /skills/inherit) ────────────────────
+
+export interface DirectorySkill {
+  name: string;
+  description: string;
+  domain: string;
+  version: number;
+  requires_tier: number;
+  installed: boolean;
+}
+
+/** Resolves the business's own template server-side — the caller never needs to know its id. A
+ *  template-less space (none was picked, or no template ships a shared library) is a real,
+ *  distinct 409, not an error the caller should surface as broken. */
+export async function getSkillsDirectory(
+  spaceId: string,
+  session: SessionCredentials
+): Promise<{ template_id: string; skills: DirectorySkill[] } | null> {
+  try {
+    return await apiFetch<{ template_id: string; skills: DirectorySkill[] }>(
+      `/v1/skills/directory?space_id=${encodeURIComponent(spaceId)}`,
+      { session }
+    );
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 409) return null;
+    throw e;
+  }
+}
+
+/** names omitted = pull in everything the space is missing; a specific list = the directory's
+ *  per-skill Add button. */
+export async function inheritSkills(
+  spaceId: string,
+  session: SessionCredentials,
+  names?: string[]
+): Promise<{ inherited: string[]; skipped: string[] }> {
+  return apiFetch(`/v1/skills/inherit`, {
+    method: "POST",
+    body: JSON.stringify({ space_id: spaceId, ...(names ? { names } : {}) }),
+    session,
+  });
+}
+
 // ── Businesses (Phase C — reseller-mode end users create/switch/invite into their own
 // businesses) ─────────────────────────────────────────────────────────────────
 
@@ -469,12 +1480,47 @@ export interface Business {
   membership_status: string;
   space_status: string;
   joined_at: string;
+  /** Where this business is in its setup checklist, read from the space's own config. `null` for
+   *  a business created without a template — there is no checklist, so nothing is outstanding. */
+  onboarding_status?: "pending" | "awaiting_setup" | "complete" | null;
+  template_id?: string | null;
 }
 
 /** GET /v1/spaces/:productSpaceId/my-businesses — the space switcher's list. */
 export async function listMyBusinesses(productSpaceId: string, session: SessionCredentials): Promise<Business[]> {
   const res = await apiFetch<{ data: Business[]; count: number }>(`/v1/spaces/${productSpaceId}/my-businesses`, { session });
   return res.data;
+}
+
+export interface TemplateActivity {
+  template_id: string;
+  active_count: number;
+  created_last_30d: number;
+}
+
+/** Discover's "what other businesses are doing" showcase — aggregate counts only, no names, no
+ *  revenue, cross-tenant. See the route's own header on the spaces worker for why this is safe. */
+export async function getTemplateActivity(productSpaceId: string, session: SessionCredentials): Promise<TemplateActivity[]> {
+  const res = await apiFetch<{ data: TemplateActivity[] }>(`/v1/spaces/${productSpaceId}/template-activity`, { session });
+  return res.data ?? [];
+}
+
+export interface BusinessAnalytics {
+  window_days: number;
+  runs: { total: number; completed: number; failed: number; success_rate: number | null; vs_prior_period: number | null };
+  credits: { used: number; vs_prior_period: number | null };
+  tokens_used: number;
+  by_agent: Array<{ agent_id: string; runs: number; completed: number; failed: number; success_rate: number | null; credits: number }>;
+  daily: Array<{ day: string; credits: number; runs: number }>;
+  heartbeats: { completed_with_work: number; failed: number; by_trigger: Array<{ trigger: string; failed: number }> };
+  structure: { projects: number; threads: number };
+}
+
+/** Analytics page — pure aggregate rollups of agent_activity_log, safe for any business member
+ *  (see the route's own header on the spaces worker for why this differs from the builder-only
+ *  agent-activity/agent-diagnostics endpoints it shares a table with). */
+export async function getBusinessAnalytics(spaceId: string, session: SessionCredentials, window: "7d" | "30d" | "90d" = "7d"): Promise<BusinessAnalytics> {
+  return apiFetch(`/v1/spaces/${spaceId}/business-analytics?window=${window}`, { session });
 }
 
 /** POST /v1/spaces/:productSpaceId/businesses — create a new business under this product.
@@ -605,7 +1651,9 @@ export interface RevenueSummary {
   gross_cents: number;
   fee_cents: number;
   net_cents: number;
-  orders: number;
+  /** The server's own field name (workers/spaces/src/index.ts). This was typed as `orders` here,
+   *  which never existed on the wire — the dashboard rendered a literal "undefined orders". */
+  order_count: number;
 }
 
 // F-WALLET-7: the consolidated per-business wallet view (available balance + lifetime cut summary
@@ -693,15 +1741,20 @@ export interface LocalGrant {
   created_at: string;
 }
 
-export async function listLocalGrants(spaceId: string, session: SessionCredentials): Promise<LocalGrant[]> {
-  const res = await apiFetch<{ data: LocalGrant[] }>(`/v1/spaces/${spaceId}/local-grants`, { session });
+export async function listLocalGrants(
+  spaceId: string,
+  session: SessionCredentials,
+  opts?: { projectId?: string }
+): Promise<LocalGrant[]> {
+  const qs = opts?.projectId ? `?project_id=${encodeURIComponent(opts.projectId)}` : "";
+  const res = await apiFetch<{ data: LocalGrant[] }>(`/v1/spaces/${spaceId}/local-grants${qs}`, { session });
   return res.data;
 }
 
 export async function createLocalGrant(
   spaceId: string,
   session: SessionCredentials,
-  input: { grant_type: "read" | "write" | "readwrite" | "exec"; directory?: string; commands?: string[] }
+  input: { grant_type: "read" | "write" | "readwrite" | "exec"; directory?: string; commands?: string[]; project_id?: string }
 ): Promise<LocalGrant> {
   return apiFetch(`/v1/spaces/${spaceId}/local-grants`, { method: "POST", body: JSON.stringify(input), session });
 }
@@ -754,6 +1807,83 @@ export async function createKbDocument(
 
 export async function deleteKbDocument(spaceId: string, docId: string, session: SessionCredentials): Promise<void> {
   await apiFetch(`/v1/spaces/${spaceId}/kb/documents/${encodeURIComponent(docId)}`, { method: "DELETE", session });
+}
+
+export interface KbSearchResult {
+  chunk_id: string;
+  doc_id: string;
+  chunk_index: number;
+  content: string;
+  score: number;
+}
+
+export async function searchKb(
+  spaceId: string,
+  session: SessionCredentials,
+  query: string,
+  projectId?: string
+): Promise<KbSearchResult[]> {
+  const params = new URLSearchParams({ q: query });
+  if (projectId) params.set("project_id", projectId);
+  const res = await apiFetch<{ data: KbSearchResult[] }>(`/v1/spaces/${spaceId}/kb/search?${params.toString()}`, { session });
+  return res.data ?? [];
+}
+
+// ── Chat uploads (input-bar attachments the agent reads directly — NOT knowledge-base
+// ingestion; see the agents-worker route's own header for the distinction) ────────────────────
+
+export interface ChatUpload {
+  name: string;
+  key: string;
+  size: number;
+  content_type: string;
+  uploaded?: string;
+}
+
+export async function uploadChatFiles(
+  spaceId: string,
+  sessionId: string,
+  files: File[],
+  session: SessionCredentials,
+  projectId?: string
+): Promise<ChatUpload[]> {
+  const form = new FormData();
+  for (const f of files) form.append("files", f);
+  if (projectId) form.append("project_id", projectId);
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${session.sessionToken}`,
+    "x-naelao-end-user-id": session.endUserId,
+  };
+  const res = await fetch(`${API_URL}/v1/spaces/${spaceId}/sessions/${sessionId}/uploads`, {
+    method: "POST", headers, body: form,
+  });
+  const body = (await res.json()) as { uploaded?: ChatUpload[]; message?: string; error_code?: string };
+  if (!res.ok) throw new ApiError(body.message ?? "Upload failed", res.status, body.error_code);
+  return body.uploaded ?? [];
+}
+
+export async function listChatUploads(
+  spaceId: string,
+  sessionId: string,
+  session: SessionCredentials,
+  projectId?: string
+): Promise<ChatUpload[]> {
+  const qs = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+  const res = await apiFetch<{ files: ChatUpload[] }>(`/v1/spaces/${spaceId}/sessions/${sessionId}/uploads${qs}`, { session });
+  return res.files ?? [];
+}
+
+export async function deleteChatUpload(
+  spaceId: string,
+  sessionId: string,
+  filename: string,
+  session: SessionCredentials,
+  projectId?: string
+): Promise<void> {
+  const qs = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+  await apiFetch(`/v1/spaces/${spaceId}/sessions/${sessionId}/uploads/${encodeURIComponent(filename)}${qs}`, {
+    method: "DELETE", session,
+  });
 }
 
 // ── Business Wallet (Whop sub-merchant model): the business's OWN bank account ────────────────
@@ -842,13 +1972,109 @@ export interface ConnectorInfo {
   status: "available" | "coming_soon";
   summary: string;
   connected?: boolean;
+  /** Real provider logo, resolved server-side from whichever provider brokers this app. Absent
+   *  for a connector neither brokers (Whop, Gumroad) — the card falls back to its initial. */
+  logo?: string;
   oauth?: unknown;
   composio?: unknown;
+  /** Pipedream Connect — the second hosted "click Install" provider (item 57), e.g. Notion.
+   *  Mutually exclusive with `composio` in practice, same real-catalogue precedent as that field. */
+  pipedream?: unknown;
+  /** "space" (default, absent = space): one shared connection for the whole business. "user":
+   *  each member connects their OWN account — never visible to or usable by anyone else. */
+  scope_model?: "space" | "user";
+}
+
+// §A1 connector default-vs-personal switch: which credential tier a session's connector calls use
+// — "business" (default, the shared account) or "personal" (this member's own connected one). A
+// missing entry means business. Read once by the agent per run, so a mismatch ("do X on my Gmail"
+// while still on business) can be reported instead of silently used against the wrong account.
+
+export async function getConnectorMode(
+  spaceId: string,
+  sessionId: string,
+  session: SessionCredentials
+): Promise<Record<string, "business" | "personal">> {
+  const res = await apiFetch<{ modes?: Record<string, string> }>(
+    `/v1/spaces/${spaceId}/sessions/${sessionId}/connector-mode`,
+    { session }
+  );
+  const out: Record<string, "business" | "personal"> = {};
+  for (const [k, v] of Object.entries(res.modes ?? {})) if (v === "personal") out[k] = "personal";
+  return out;
+}
+
+export async function setConnectorMode(
+  spaceId: string,
+  sessionId: string,
+  connectorId: string,
+  mode: "business" | "personal",
+  session: SessionCredentials
+): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/sessions/${sessionId}/connector-mode`, {
+    method: "PATCH",
+    body: JSON.stringify({ connector_id: connectorId, mode }),
+    session,
+  });
+}
+
+/** Which hosted-connect provider (or mechanism) a connector uses — for the Connectors page's
+ *  provider filter. Composio is the default/most common; Pipedream and bespoke OAuth/manual-key
+ *  connectors are real but fewer. */
+export function connectorProvider(c: ConnectorInfo): "composio" | "pipedream" | "oauth" | "manual" {
+  if (c.composio) return "composio";
+  if (c.pipedream) return "pipedream";
+  if (c.oauth) return "oauth";
+  return "manual";
 }
 
 export async function getConnectorStatus(spaceId: string, session: SessionCredentials): Promise<ConnectorInfo[]> {
   const res = await apiFetch<{ connectors: ConnectorInfo[] }>(`/v1/spaces/${spaceId}/connectors/status`, { session });
   return res.connectors ?? [];
+}
+
+/** One app from the full provider directory (every Composio toolkit + Pipedream app), as opposed
+ *  to the curated catalogue `ConnectorInfo` describes. `curated_as` means we already ship a
+ *  purpose-built connector for it — the UI should point there instead. */
+export interface DirectoryApp {
+  id: string;
+  provider: "composio" | "pipedream";
+  slug: string;
+  name: string;
+  description?: string;
+  logo?: string;
+  categories: string[];
+  auth?: string;
+  curated_as?: string;
+  /** Position in the provider's own popularity ordering, 0 = most reached for. Present only in
+   *  the default `popular` sort, and only for a provider that actually ranks. */
+  rank?: number;
+}
+
+export interface DirectoryPage {
+  apps: DirectoryApp[];
+  next_cursor?: string;
+  providers: Array<{ provider: string; available: boolean; reason?: string }>;
+}
+
+export async function getConnectorDirectory(
+  spaceId: string,
+  session: SessionCredentials,
+  opts: {
+    q?: string | undefined;
+    cursor?: string | undefined;
+    limit?: number | undefined;
+    /** Default `popular` — alphabetical opens the directory on "0codekit". */
+    sort?: "popular" | "name" | undefined;
+  } = {}
+): Promise<DirectoryPage> {
+  const params = new URLSearchParams();
+  if (opts.q) params.set("q", opts.q);
+  if (opts.cursor) params.set("cursor", opts.cursor);
+  if (opts.limit) params.set("limit", String(opts.limit));
+  if (opts.sort) params.set("sort", opts.sort);
+  const qs = params.toString();
+  return apiFetch(`/v1/spaces/${spaceId}/connectors/directory${qs ? `?${qs}` : ""}`, { session });
 }
 
 export async function connectPlatform(
@@ -896,4 +2122,122 @@ export async function startProviderConnect(
     body: JSON.stringify({ platform, return_url: returnUrl }),
     session,
   });
+}
+
+// ── First-run business setup wizard ──────────────────────────────────────────
+// One route on the spaces worker (GET reads, POST's `action` saves or completes) wrapping the
+// agents worker's real bootstrap machinery. Deliberately not a client-side script: the prompt set
+// belongs to the SpaceType template, so the wizard renders whatever the template defines rather
+// than carrying a copy that silently drifts the moment a template is edited.
+
+export interface OnboardingPrompt {
+  id: string;
+  type: "connection" | "credential" | "channel" | "choice" | "text" | "boolean";
+  question: string;
+  help?: string;
+  options?: string[];
+  connector?: string;
+  required?: boolean;
+  /** Never populated for credential/connection prompts — the server doesn't echo secrets back. */
+  answer?: string | null;
+  /** A connection prompt is satisfied by a REAL registered connector, not by a stored string. */
+  satisfied: boolean;
+  /** Whether one-click connect actually works on this deployment (the connector's OAuth app is
+   *  registered). False means the key-paste path is the only one that works — lead with it rather
+   *  than offering a button whose only possible outcome is a platform-internal error. */
+  oauth_available?: boolean;
+}
+
+export interface OnboardingState {
+  status: "pending" | "awaiting_setup" | "complete";
+  /** The SPACE's own status. A business is created before provisioning finishes, so an empty
+   *  prompt list means "still provisioning, wait" while this is not yet "active" — and genuinely
+   *  "nothing to configure" (a Custom business) once it is. */
+  space_status: string;
+  template_ids: string[];
+  templates: Array<{ id: string; name: string; description: string | null; connectors: string[] }>;
+  prompts: OnboardingPrompt[];
+  projects_created: string[];
+  setup_scripts: string[];
+}
+
+export async function getOnboarding(spaceId: string, session: SessionCredentials): Promise<OnboardingState> {
+  return apiFetch<OnboardingState>(`/v1/spaces/${spaceId}/onboarding`, { session });
+}
+
+/** Persist answers WITHOUT completing. Load-bearing before any connect click: that's a real
+ *  browser navigation away from the wizard, so unsaved answers would simply be gone on return. */
+export async function saveOnboarding(
+  spaceId: string,
+  session: SessionCredentials,
+  answers: Record<string, string>
+): Promise<{ ok: boolean }> {
+  return apiFetch(`/v1/spaces/${spaceId}/onboarding`, {
+    method: "POST",
+    body: JSON.stringify({ action: "save", answers }),
+    session,
+  });
+}
+
+/** Finish setup: creates the template's project presets, runs its setup scripts, and wakes the
+ *  assistant to introduce itself on the channel just chosen. Rejects with `onboarding_incomplete`
+ *  (carrying `missing`) while a required prompt is unmet. */
+export async function completeOnboarding(
+  spaceId: string,
+  session: SessionCredentials,
+  answers: Record<string, string>
+): Promise<{ ok: boolean; projects_created: string[]; first_contact_sent: boolean }> {
+  return apiFetch(`/v1/spaces/${spaceId}/onboarding`, {
+    method: "POST",
+    body: JSON.stringify({ action: "complete", answers }),
+    session,
+  });
+}
+
+// ── Interrupted runs ─────────────────────────────────────────────────────────
+// A run that failed leaves a standing offer to CONTINUE it. Read from the server rather than
+// held in the page, so the offer survives a refresh — the work is already done and paid for;
+// losing the only way to pick it up because someone reloaded would be the real failure.
+
+export interface InterruptedRun {
+  run_id: string;
+  goal: string;
+  reason: string;
+  /** How much the run had already completed before it stopped — what a Continue picks up from. */
+  steps_completed: number;
+  created_at: number;
+  /** Classified server-side (@naelao/events classifyFailure) from the reason text. */
+  failure_kind?: string;
+  /** True when simply waiting is likely enough — the model allowance resetting, a rate window
+   *  passing. Changes the card's advice from "continue" to "try again now". */
+  clears_on_its_own?: boolean;
+  /** What the error means, in words, since a raw provider string tells a person nothing. */
+  explanation?: string;
+}
+
+export async function getInterruptedRun(
+  spaceId: string,
+  sessionId: string,
+  session: SessionCredentials
+): Promise<InterruptedRun | null> {
+  const res = await apiFetch<{ interrupted: InterruptedRun | null }>(
+    `/v1/spaces/${spaceId}/sessions/${sessionId}/agent/interrupted`,
+    { session }
+  );
+  return res.interrupted ?? null;
+}
+
+/** Continue re-enters the loop under the original run's ledger key, so actions that already
+ *  executed replay instead of running a second time. Dismiss just closes the offer. */
+export async function resolveInterruptedRun(
+  spaceId: string,
+  sessionId: string,
+  runId: string,
+  action: "continue" | "dismiss",
+  session: SessionCredentials
+): Promise<{ continued: boolean; run_id?: string }> {
+  return apiFetch<{ continued: boolean; run_id?: string }>(
+    `/v1/spaces/${spaceId}/sessions/${sessionId}/agent/interrupted`,
+    { method: "POST", body: JSON.stringify({ run_id: runId, action }), session }
+  );
 }

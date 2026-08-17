@@ -189,6 +189,10 @@ describe("router — frontend route-parity (F-STRUCT)", () => {
       // F2: the builder's own platform subscription surface (Settings page) — was a dead route.
       ["/billing/subscription (dashboard settings)", /["'`]\/billing\/subscription["'`]/],
       ["/billing/checkout (dashboard settings)", /["'`]\/billing\/checkout["'`]/],
+      // The eval worker had NO router route at all, so the benchmark runner
+      // (infra/scripts/run-eval-suite.mjs) could never reach a real deployment — exactly the
+      // "entire route group is unrouted" class this guard exists to catch.
+      ["/evals (eval harness runner)", /["'`]\/evals\/\*["'`]/],
     ];
     const missing = REQUIRED_PREFIXES.filter(([, needle]) => !needle.test(routerSrc)).map(([label]) => label);
     expect(missing, `router is missing a route for: ${missing.join(", ")}`).toEqual([]);

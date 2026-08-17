@@ -28,10 +28,20 @@ export interface SidebarProps {
   projects?: SidebarListEntry[];
   onOpenProject?: (id: string) => void;
   onNewProject?: () => void;
+  /** Shown as a trailing "… more projects" row whenever `projects` is longer than the sidebar's
+   *  own display cap — same shape as `onMoreThreads` below, which this was missing entirely
+   *  (every project rendered unbounded, with no way to see the rest once a business had more
+   *  than fit comfortably in the panel). */
+  onMoreProjects?: () => void;
   threads?: SidebarListEntry[];
   onOpenThread?: (id: string) => void;
   onNewThread2?: () => void;
   onMoreThreads?: () => void;
+  /** Whether `threads` was actually truncated. The "… more sessions" row used to render purely
+   *  because a handler was supplied, so an account with three sessions was told there were more —
+   *  it is a claim about the data, not a navigation affordance. Defaults to true so existing
+   *  callers keep their current behaviour. */
+  hasMoreThreads?: boolean;
   spaceSwitcher?: {
     current: SpaceSwitcherEntry;
     entries: SpaceSwitcherEntry[];
@@ -47,7 +57,18 @@ export interface SidebarProps {
   };
   iconOnly?: boolean;
   onToggleCollapse?: () => void;
+  /** Below the mockup's 900px breakpoint the sidebar becomes an off-canvas drawer
+   *  (`#sidebar.mobile-open` in packages/ui/src/styles.css) — this is what the mobile top bar's
+   *  hamburger button toggles. No effect above that breakpoint (the CSS rule only exists inside
+   *  the media query), so a caller doesn't need to know the current viewport width itself. */
+  mobileOpen?: boolean;
 }
+
+/** How many projects render before the sidebar collapses the rest behind "… more projects" —
+ *  same idea as the Sessions section only ever fetching 5, kept as a display cap here (rather
+ *  than a fetch cap) since the caller already has the full list for other purposes (the active-
+ *  project highlight, the create-dialog's duplicate-name check). */
+const PROJECTS_SHOWN = 5;
 
 export function Sidebar({
   brandName = "Naelao",
@@ -59,19 +80,22 @@ export function Sidebar({
   projects,
   onOpenProject,
   onNewProject,
+  onMoreProjects,
   threads,
   onOpenThread,
   onMoreThreads,
+  hasMoreThreads = true,
   spaceSwitcher,
   iconOnly,
   onToggleCollapse,
+  mobileOpen,
 }: SidebarProps) {
   const [moreOpen, setMoreOpen] = React.useState(false);
   const [projectsOpen, setProjectsOpen] = React.useState(false);
   const [threadsOpen, setThreadsOpen] = React.useState(true);
 
   return (
-    <nav id="sidebar" className={iconOnly ? "icon-only" : undefined}>
+    <nav id="sidebar" className={[iconOnly ? "icon-only" : "", mobileOpen ? "mobile-open" : ""].filter(Boolean).join(" ") || undefined}>
       <div className="sidebar-logo">
         <div className="logo-mark">
           <svg viewBox="0 0 14 14">
@@ -98,7 +122,7 @@ export function Sidebar({
       {onNewThread && (
         <button className="new-chat-btn" onClick={onNewThread} type="button">
           <PlusIcon />
-          <span className="sidebar-text">New Thread</span>
+          <span className="sidebar-text">New Session</span>
         </button>
       )}
 
@@ -183,9 +207,12 @@ export function Sidebar({
           </div>
           {projectsOpen && (
             <div>
-              {projects.map((p) => (
+              {projects.slice(0, PROJECTS_SHOWN).map((p) => (
                 <HistoryItem key={p.id} icon="projects" label={p.label} meta={p.meta} onClick={() => onOpenProject?.(p.id)} />
               ))}
+              {projects.length > PROJECTS_SHOWN && onMoreProjects && (
+                <HistoryItem icon="projects" label="… more projects" muted onClick={onMoreProjects} />
+              )}
             </div>
           )}
         </>
@@ -204,12 +231,12 @@ export function Sidebar({
                 height={10}
                 style={{ transition: "transform 0.2s", transform: threadsOpen ? "rotate(90deg)" : "none" }}
               />
-              Threads
+              Sessions
             </span>
             {onNewThread && (
               <button
                 className="section-add"
-                title="New thread"
+                title="New session"
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -225,8 +252,8 @@ export function Sidebar({
               {threads.map((t) => (
                 <HistoryItem key={t.id} icon="threads" label={t.label} onClick={() => onOpenThread?.(t.id)} />
               ))}
-              {onMoreThreads && (
-                <HistoryItem icon="threads" label="… more threads" muted onClick={onMoreThreads} />
+              {onMoreThreads && hasMoreThreads && (
+                <HistoryItem icon="threads" label="… more sessions" muted onClick={onMoreThreads} />
               )}
             </div>
           )}

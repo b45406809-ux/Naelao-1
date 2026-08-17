@@ -686,7 +686,10 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
           sparse_score: 0,
         };
       });
-      await safeKvPut(c.env.KB_CACHE, cacheKey, JSON.stringify(results), { expirationTtl: 3600 });
+      // Same rule as the legacy path below: never cache an empty result.
+      if (results.length > 0) {
+        await safeKvPut(c.env.KB_CACHE, cacheKey, JSON.stringify(results), { expirationTtl: 3600 });
+      }
       return c.json({ data: results, cached: false, retrieval_mode: "autorag" });
     } catch {
       // Best-effort — fall through to the legacy hybrid pipeline below rather than erroring.
@@ -771,7 +774,16 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
   });
 
   // ── Cache results (G-BE02: safeKvPut validates size before write) ────────
-  await safeKvPut(c.env.KB_CACHE, cacheKey, JSON.stringify(results), { expirationTtl: 3600 });
+  //
+  // Only a NON-empty result is cached. An empty one usually means the vectors are not indexed
+  // yet — Vectorize indexes asynchronously — and caching that for an hour makes a document
+  // someone just uploaded invisible long after it became searchable. Seen live: a search run
+  // seconds after an upload cached the miss, and every later search returned `cached: true` with
+  // nothing in it, which reads exactly like ingestion is broken when it is not. A miss is cheap
+  // to recompute; a wrong "there is nothing here" is not.
+  if (results.length > 0) {
+    await safeKvPut(c.env.KB_CACHE, cacheKey, JSON.stringify(results), { expirationTtl: 3600 });
+  }
 
   return c.json({ data: results, cached: false, retrieval_mode: "legacy" });
 });
@@ -924,12 +936,14 @@ app.delete("/internal/semantic-cache", async (c) => {
 // (which is only for a builder's OWN external accounts). The key never leaves this worker — the
 // calling isolate only ever sees normalized results.
 //
-//   POST /internal/web-search/search   { query, max_results? }  → { configured, results[], answer? }
-//   POST /internal/web-search/fetch    { url }                  → { url, status, content }
-//   POST /internal/web-search/extract  { url, schema? }         → { configured, url, content }
+//   POST /internal/web-search/search    { query, max_results? }  → { configured, results[], answer? }
+//   POST /internal/web-search/fetch     { url }                  → { url, status, content }
+//   POST /internal/web-search/extract   { url, schema? }         → { configured, url, content }
+//   POST /internal/web-search/download  { url }                  → { url, status, content, size, truncated }
 //
 // `search`/`extract` need the provider key and report `configured:false` when it is unset rather
-// than faking empty results. `fetch` is a keyless SSRF-guarded GET and works out of the box.
+// than faking empty results. `fetch`/`download` are keyless SSRF-guarded GETs and work out of the
+// box — `download` is the higher-cap, save-don't-read variant (see its own comment).
 
 const TAVILY_SEARCH_URL = "https://api.tavily.com/search";
 const TAVILY_EXTRACT_URL = "https://api.tavily.com/extract";
@@ -1039,6 +1053,92 @@ app.post("/internal/web-search/extract", async (c) => {
     return c.json({ configured: Boolean(c.env.TAVILY_API_KEY), url: rawUrl, content: text });
   } catch (err) {
     return c.json({ configured: Boolean(c.env.TAVILY_API_KEY), url: rawUrl, content: "", error: String(err) }, 502);
+  }
+});
+
+// A DIFFERENT shape from /fetch and /extract on purpose: those two are meant to be read directly
+// (small, capped at WEB_SEARCH_CONTENT_CAP, returned straight into the reasoning payload). This
+// one is meant to be SAVED — a real download the agent's own downloads/ prebuilt op writes to R2
+// rather than reading into context, so a much larger cap is safe here.
+//
+// Binary is FIRST-CLASS here, not a refusal. An earlier revision rejected any binary content-type
+// with a 415 on the reasoning that a `.text()` decode of binary bytes produces mojibake — true,
+// but the conclusion was wrong: the fix is to stop calling `.text()`, not to stop accepting PDFs
+// and images, which are exactly what "download a file" means. Bytes are read once as an
+// ArrayBuffer and returned base64 when they aren't text, and the prebuilt writes the real decoded
+// bytes to R2.
+//
+// Text keeps a truncating cap (a partial CSV still has value). Binary does NOT truncate — half a
+// PDF is not a smaller PDF, it is a corrupt file — so an oversized binary is refused outright with
+// its real size named, which is actionable, rather than silently written as garbage.
+const WEB_DOWNLOAD_CONTENT_CAP = 2_000_000;
+const WEB_DOWNLOAD_BINARY_CAP = 12_000_000;
+
+/**
+ * Base64 a byte array without `String.fromCharCode(...bytes)`, which blows the call stack once the
+ * array is large (the same trap already hit and fixed once in the browser worker's screenshot
+ * path). Chunked rather than reaching for `Buffer`, which this worker's tsconfig does not type.
+ */
+function bytesToBase64(bytes: Uint8Array): string {
+  const CHUNK = 0x8000;
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+/** Text-ish content types that are safe and useful to hand back as a string. */
+function isTextualContentType(contentType: string): boolean {
+  const ct = contentType.toLowerCase();
+  if (ct.startsWith("text/")) return true;
+  return /^application\/(json|xml|javascript|x-ndjson|ld\+json|graphql|x-yaml|yaml)\b/.test(ct)
+    || /\+(json|xml)\b/.test(ct);
+}
+
+app.post("/internal/web-search/download", async (c) => {
+  const body = await c.req.json<{ url?: string }>().catch(() => ({} as { url?: string }));
+  const rawUrl = (body.url ?? "").trim();
+  if (!rawUrl) return c.json({ error_code: "bad_request", message: "url required" }, 400);
+
+  const ssrf = await checkSsrf(rawUrl);
+  if (ssrf.blocked) return c.json({ error_code: "forbidden", message: ssrf.reason ?? "url failed SSRF validation" }, 403);
+
+  try {
+    const resp = await fetch(rawUrl, { headers: { "user-agent": "naelao-agent/1.0" }, redirect: "follow" });
+    const contentType = (resp.headers.get("content-type") ?? "").split(";")[0]!.trim();
+    // Read the bytes ONCE. A body can only be consumed a single time, so the text-vs-binary
+    // decision has to happen against the buffer, never by re-reading the response.
+    const buf = await resp.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+
+    if (isTextualContentType(contentType)) {
+      const full = new TextDecoder().decode(bytes);
+      const truncated = full.length > WEB_DOWNLOAD_CONTENT_CAP;
+      return c.json({
+        url: rawUrl, status: resp.status, encoding: "text", content_type: contentType || "text/plain",
+        content: full.slice(0, WEB_DOWNLOAD_CONTENT_CAP),
+        size: full.length, truncated,
+      });
+    }
+
+    if (bytes.byteLength > WEB_DOWNLOAD_BINARY_CAP) {
+      return c.json({
+        url: rawUrl, status: resp.status, content: null, content_type: contentType,
+        error: `file is ${bytes.byteLength} bytes, over the ${WEB_DOWNLOAD_BINARY_CAP}-byte download limit. Binary files are not truncated because a partial file is corrupt.`,
+      }, 413);
+    }
+    // Buffer (nodejs_compat is on for this worker) rather than String.fromCharCode(...bytes),
+    // which blows the call stack on a large array — the same trap already hit and fixed once in
+    // the browser worker's screenshot path.
+    return c.json({
+      url: rawUrl, status: resp.status, encoding: "base64",
+      content_type: contentType || "application/octet-stream",
+      content: bytesToBase64(bytes),
+      size: bytes.byteLength, truncated: false,
+    });
+  } catch (err) {
+    return c.json({ url: rawUrl, status: 0, content: null, error: String(err) }, 502);
   }
 });
 

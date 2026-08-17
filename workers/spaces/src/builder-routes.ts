@@ -5,6 +5,7 @@
 // instance (matching this file's existing convention of one flat app — cf-saas.ts is pure logic
 // with no routes; this is the first split-out file that DOES register routes, so it takes `app`
 // rather than mounting a sub-app, to avoid a circular import with index.ts's own Env type: this
+import { ALLOWED_MODELS, isAllowedModel, isValidEffortLevel, DEFAULT_WORKING_MODEL } from "@naelao/billing-core";
 // file declares its own minimal structural Env shape instead of importing index.ts's Env).
 //
 // AUTH: every /builder/* route accepts EITHER of two callers, resolved by resolveBuilderAuth():
@@ -60,11 +61,6 @@ interface SpaceRow {
 }
 
 const ALLOWED_STATUSES = ["draft", "active", "paused", "suspended", "deleted"] as const;
-
-// §A1.28: the model switcher's curated allowlist — matches packages/billing-core's known model
-// set (computeTokenCostMicro/MODEL_CONTEXT_WINDOWS) so a chosen model is always priced/windowed
-// correctly rather than silently falling back to a default for an unrecognized string.
-const ALLOWED_MODELS = ["claude-haiku-4-5-20251001", "claude-sonnet-4-6", "claude-opus-4-8"] as const;
 
 async function sha256Hex(input: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
@@ -294,10 +290,15 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     }
     // §A1.28 (model switcher): a curated allowlist, not an arbitrary caller-supplied string — cost
     // predictability, and it keeps this in sync with what contextWindowForModel/tokensToCredits
-    // (packages/billing-core) actually know how to price.
+    // actually know how to price. The list itself now lives in packages/billing-core alongside
+    // those tables, so this and the agents worker's own run-time model override can never drift.
     const model = body.product_config?.modelConfig?.model;
-    if (model && !ALLOWED_MODELS.includes(model as (typeof ALLOWED_MODELS)[number])) {
+    if (model && !isAllowedModel(model)) {
       return c.json({ error_code: "bad_request", message: `modelConfig.model must be one of ${ALLOWED_MODELS.join(", ")}` }, 400);
+    }
+    const effort = body.product_config?.modelConfig?.effort;
+    if (effort && !isValidEffortLevel(model ?? DEFAULT_WORKING_MODEL, effort)) {
+      return c.json({ error_code: "bad_request", message: `modelConfig.effort '${effort}' is not offered by model '${model ?? DEFAULT_WORKING_MODEL}'` }, 400);
     }
 
     const config = parseProductConfig(product.config_json);
@@ -511,9 +512,21 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
     const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
     if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+    // Release the slug. The unique index on product_slug doesn't exclude deleted rows, so a
+    // soft delete used to burn the name permanently — a builder who deleted "Launchpad" and
+    // rebuilt it could never call it that again, and (since nothing lets a slug be set after
+    // creation) the replacement had no working URL at all. The old slug is preserved inside
+    // config_json so the row remains identifiable for audit/recovery; only the live, uniqueness-
+    // bearing column is cleared.
+    let config: Record<string, unknown> = {};
+    try {
+      config = JSON.parse(product.config_json ?? "{}") as Record<string, unknown>;
+    } catch { /* malformed config — proceed; releasing the slug matters more than preserving it */ }
+    if (product.product_slug) config["deleted_product_slug"] = product.product_slug;
+
     await env.PLATFORM_DB.prepare(
-      "UPDATE spaces SET status = 'deleted', updated_at = ? WHERE id = ? AND tenant_id = ?"
-    ).bind(new Date().toISOString(), product.id, auth.tenantId).run();
+      "UPDATE spaces SET status = 'deleted', product_slug = NULL, config_json = ?, updated_at = ? WHERE id = ? AND tenant_id = ?"
+    ).bind(JSON.stringify(config), new Date().toISOString(), product.id, auth.tenantId).run();
     return new Response(null, { status: 204 });
   });
 

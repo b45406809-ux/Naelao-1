@@ -174,7 +174,7 @@ const SPACES_TABLE_SQL = `
     created_by TEXT
   );
   CREATE TABLE orgs (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', owner_id TEXT NOT NULL DEFAULT '', plan_tier TEXT NOT NULL DEFAULT 'free');
-  CREATE TABLE spacetypes (id TEXT PRIMARY KEY, config_schema TEXT);
+  CREATE TABLE spacetypes (id TEXT PRIMARY KEY, schema_json TEXT);
 `;
 
 describe("G-BF08 — free-tier template gating: createSpaceRecord (POST /spaces + /builder/products)", () => {

@@ -5,15 +5,16 @@ import type { SpaceDO } from "./do/SpaceDO.js";
 import type { SpaceTypeRegistryDO, SpaceTypeProductConfig, NaelaoSpaceTypeManifestV2 } from "./do/SpaceTypeRegistryDO.js";
 import { LAUNCHPAD_MANIFEST } from "./launchpad-manifest.js";
 import { cfSaasConfig, createCustomHostname, getCustomHostname } from "./cf-saas.js";
-import { validateCronExpression } from "@naelao/events";
+import { validateCronExpression, computeNextRun } from "@naelao/events";
 import { registerBuilderRoutes } from "./builder-routes.js";
 import { registerProductEndUserRoutes, FREE_TIER_DEFAULT_SIGNUP_CREDITS } from "./product-end-user-routes.js";
 import { createSpaceRecord, SpaceCreationError, provisionBusinessWallet } from "./create-space.js";
 import type { ProvisionMessage } from "./create-space.js";
 import { requireBusinessMembership, requireBusinessMembershipForWallet, resolveEndUserBusinessRole } from "./business-auth.js";
 import { createBusinessForEndUser } from "./business-create.js";
-import { loadTemplateCatalog } from "./template-catalog.js";
+import { loadTemplateCatalog, loadShellCatalog } from "./template-catalog.js";
 import { registerBusinessRoutes } from "./business-routes.js";
+import { ALLOWED_MODELS, isAllowedModel, isValidEffortLevel, isPersonalPlanTier, PERSONAL_PLAN_LIMITS, type PersonalPlanTier } from "@naelao/billing-core";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { LockDO } from "./do/LockDO.js";
@@ -532,26 +533,75 @@ app.all("/spaces/:spaceId/sessions*", async (c) => {
     if (isProductEndUser) qs.set("end_user_id", callerId);
     const limit = url.searchParams.get("limit");
     if (limit) qs.set("limit", limit);
+    // Sessions-page filter (ordinary vs heartbeat/cron-wake) — only "heartbeat" does anything;
+    // anything else is dropped rather than forwarded blind, same allowlist discipline as limit.
+    const kind = url.searchParams.get("kind");
+    if (kind === "heartbeat") qs.set("kind", kind);
     search = `?${qs.toString()}`;
-  } else if (c.req.method === "GET" && /^\/sessions\/([^/]+)(\/messages)?$/.test(doPath) && isProductEndUser) {
+  } else if (
+    (c.req.method === "GET" || c.req.method === "DELETE") &&
+    /^\/sessions\/([^/]+)(\/messages)?$/.test(doPath) &&
+    isProductEndUser
+  ) {
     // For GET /sessions/:id and GET /sessions/:id/messages, pass end_user_id so SpaceDO can verify
-    // the caller owns this session before returning it.
+    // the caller owns this session before returning it. DELETE /sessions/:id/messages (the
+    // edit-and-re-ask truncate) needs the same check for the stronger reason — it WRITES — so it
+    // rides the same derived-from-claims id rather than anything the client sent.
     const qs = new URLSearchParams(url.searchParams);
     qs.set("end_user_id", callerId);
     search = `?${qs.toString()}`;
   }
   const doUrl = new URL(doPath + search, "http://space-do");
 
+  // SpaceDO.createSession() reads space_id/tenant_id from the JSON BODY (not the URL or
+  // headers — forwardToSpaceDO-style calls don't forward headers, and this DO instance has no
+  // other way to know its own space_id). Every client that calls POST /sessions (apps/shell's
+  // startSession()) sends an empty body ({}), so those fields were always undefined, binding
+  // NULL into a NOT NULL column and 500ing on every single session-create call — the literal
+  // cause of "An unexpected error occurred" on the shell's home page for every end user.
+  // Fixed by injecting them here, matching the exact pattern the /threads POST route below
+  // already uses for the same reason (SpaceDO needs tenant_id and has no other way to get it).
+  let doBody: BodyInit | null = c.req.raw.body;
+  let duplexInit: { duplex: "half" } | Record<string, never> = c.req.raw.body ? { duplex: "half" as const } : {};
+  if (c.req.method === "POST" && doPath === "/sessions") {
+    const parsedBody = await c.req.json().catch(() => ({}));
+    // A product_end_user's own real id (never client-supplied — same "identity from verified
+    // claims only" rule every other end_user_id use in this route already follows) so the
+    // session is actually owned by its creator. Without this, every end-user-created session
+    // landed with end_user_id NULL, which made getSession/getMessages' own ownership check
+    // ("session.end_user_id !== endUserId") reject EVERY subsequent read as "Session not found"
+    // — the space_id/tenant_id fix above stopped the 500 on create, but left every session
+    // permanently unreadable by the very user who just created it.
+    // `callerId` is the verified acting user for BOTH shapes of caller, and using it for both is
+    // what fixes the assistant-created thread still reporting "Session not found":
+    //  • a product_end_user chatting directly — their own id, exactly as before;
+    //  • an internal caller acting on someone's behalf (thread.create, which mints a session for
+    //    the person who asked) — that person's id, forwarded as x-naelao-user-id by a caller that
+    //    already proved itself with an internal token.
+    // Before this, the second case fell through to the client-supplied body field, which the agent
+    // doesn't send — so the session landed with end_user_id NULL, owned by nobody, and getSession's
+    // ownership check (`session.end_user_id !== endUserId`) rejected the very user who asked for
+    // it. The thread existed and was correctly linked; it was simply unreadable.
+    // Still never client-trusted: callerId comes from a header only a verified internal caller can
+    // set, and the body field remains a last resort for internal callers that supply neither.
+    // Truthiness, not `??`: getCallerIdentity defaults userId to "" rather than undefined, so a
+    // nullish check would pin end_user_id to "" for a caller that sends no user header at all and
+    // silently stop honouring the body field.
+    const endUserId = callerId || (parsedBody as { end_user_id?: string }).end_user_id;
+    doBody = JSON.stringify({ ...parsedBody, space_id: spaceId, tenant_id: tenantId, end_user_id: endUserId ?? null });
+    duplexInit = {};
+  }
+
   return stub.fetch(
     new Request(doUrl.toString(), {
       method: c.req.method,
       headers: c.req.raw.headers,
-      body: c.req.raw.body,
+      body: doBody,
       // Required by spec-compliant fetch implementations (e.g. Node's undici, used by this
       // repo's own test suite) whenever a streaming body is attached to a Request — omitting it
       // throws "duplex option is required" and was silently never hit before this Phase 6 pass
       // because this whole route was unreachable (see the routing-bug comment above).
-      ...(c.req.raw.body ? { duplex: "half" as const } : {}),
+      ...duplexInit,
     })
   );
 });
@@ -592,6 +642,33 @@ async function productUserDoStub(env: Env, productId: string, endUserId: string,
   return env.PRODUCT_USER_DO.get(doId);
 }
 
+/** Resolve `spaceId` to the PRODUCT ROOT space it belongs to (walking one `parent_space_id` hop —
+ *  spec §49's own invariant: a business is never more than one hop below its product root).
+ *  ProductUserDO is a PRODUCT-scoped concept (one instance per productId×endUserId — see
+ *  productUserDoStub's own doc), so a signed-in end user's session/credits/preferences all live
+ *  under the product root's id, never a business's own space id, even while they're actively
+ *  inside a business. Mirrors the identical inline walk already done at
+ *  /internal/product-sessions/verify, /internal/stream-tickets/issue, and loadPricingCatalog —
+ *  extracted here because the credit routes below were found NOT doing this walk: a
+ *  business-scoped assistant session (no projectId) called .../credits/balance with the
+ *  business's own space id, addressing a DIFFERENT, never-signed-up ProductUserDO with a
+ *  permanent 0 balance, even though the end user's real (product-root-keyed) balance was well
+ *  above zero — the live-reported "insufficient credits" bug despite a real 5000-credit grant. */
+async function resolveProductRootSpace(
+  env: Env,
+  spaceId: string
+): Promise<{ id: string; tenant_id: string } | null> {
+  const space = await env.PLATFORM_DB.prepare(
+    "SELECT tenant_id, parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'"
+  ).bind(spaceId).first<{ tenant_id: string; parent_space_id: string | null }>();
+  if (!space) return null;
+  if (!space.parent_space_id) return { id: spaceId, tenant_id: space.tenant_id };
+  const root = await env.PLATFORM_DB.prepare(
+    "SELECT id, tenant_id FROM spaces WHERE id = ? AND status != 'deleted'"
+  ).bind(space.parent_space_id).first<{ id: string; tenant_id: string }>();
+  return root ?? null;
+}
+
 /** Forward a request to a path on the SpaceDO, preserving method/headers/body. Spec-compliant
  *  fetch implementations (Node's undici, used by this repo's own tests) require `duplex: "half"`
  *  whenever a streaming body is attached — the same fix already applied to the session proxy
@@ -626,12 +703,15 @@ app.post("/spaces/:spaceId/registry", async (c) => {
 // SpaceDO (e.g. the agents worker's scheduled-jobs auto-disable, A1.16.13) run an arbitrary
 // event through the same event_triggers matching every structural mutation already uses, so a
 // builder can wire a no-code trigger to react to it the same way as thread.created etc.
+// tenant_id rides the query string, not a header — forwardToSpaceDO doesn't forward client
+// headers (see fireExternalEvent's own comment for the real bug this fixed: this route 400'd on
+// every real call until tenant_id had a way to actually reach the DO).
 app.use("/internal/spaces/:spaceId/events/fire", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.post("/internal/spaces/:spaceId/events/fire", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
-  const res = await forwardToSpaceDO(stub, "/internal/events/fire", "POST", c.req.raw.body);
+  const res = await forwardToSpaceDO(stub, `/internal/events/fire?tenant_id=${encodeURIComponent(tenantId)}`, "POST", c.req.raw.body);
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
@@ -1016,6 +1096,68 @@ app.post("/spaces/:spaceId/projects/:projectId/wallet/debit", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
+// POST /spaces/:spaceId/projects/:projectId/wallet/deposit-personal-credits — Phase 4 (money):
+// "optional 'deposit my personal credits into this business'" from the plan's own decision. A
+// real ledger-safe TRANSFER between two ALREADY-EXISTING ledgers (ProductUserDO's personal
+// credit_ledger and this project's own wallet_ledger) — never external money movement, so no new
+// payment-provider integration is needed. 1 credit = 1 cent exactly (CREDITS_PER_USD = 100, see
+// @naelao/billing-core), so the conversion is a straight pass-through.
+//
+// Member-level (not admin) — it's the CALLER's own personal balance moving, at their own request;
+// nothing here can move anyone ELSE's money. Two-phase with a real reversal on the second leg's
+// failure: deduct the caller's personal balance FIRST (idempotency-keyed), then credit the
+// project wallet; if the wallet credit fails, claw back the deduction so a transient DO/network
+// error never silently loses the user's credits into the void.
+app.use("/spaces/:spaceId/projects/:projectId/wallet/deposit-personal-credits", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/wallet/deposit-personal-credits", requireBusinessMembership({ POST: "member" }));
+app.post("/spaces/:spaceId/projects/:projectId/wallet/deposit-personal-credits", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const { tenantId, userId } = getCallerIdentity(c);
+  if (!userId) return c.json({ error_code: "unauthorized", message: "Missing end user identity" }, 401);
+  const body = await c.req.json<{ credits: number }>().catch(() => null);
+  if (!body || !Number.isFinite(body.credits) || body.credits <= 0) {
+    return c.json({ error_code: "bad_request", message: "credits must be a positive number" }, 400);
+  }
+  const credits = Math.floor(body.credits);
+
+  const root = await resolveProductRootSpace(c.env, spaceId);
+  if (!root) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  const produserStub = await productUserDoStub(c.env, root.id, userId, root.tenant_id);
+
+  const idempotencyKey = `deposit:${spaceId}:${projectId}:${userId}:${crypto.randomUUID()}`;
+  const deductRes = await produserStub.fetch(new Request("http://produser/credits/deduct", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ credits, reason: "deposit_to_business_wallet", idempotency_key: idempotencyKey }),
+  }));
+  if (!deductRes.ok) {
+    return new Response(deductRes.body, { status: deductRes.status, headers: { "content-type": "application/json" } });
+  }
+  const { balance_credits: personalBalanceAfter } = await deductRes.json<{ balance_credits: number }>();
+
+  const spaceStub = await spaceDoStub(c.env, spaceId, tenantId);
+  const creditRes = await forwardToSpaceDO(
+    spaceStub,
+    `/projects/${encodeURIComponent(projectId)}/wallet/credit?tenant_id=${encodeURIComponent(tenantId)}`,
+    "POST",
+    JSON.stringify({ cents: credits, idempotency_key: idempotencyKey })
+  );
+  if (!creditRes.ok) {
+    // Reverse the deduction — the user's credits must not vanish over a transient wallet failure.
+    // This is a GRANT (adding the credits back), not a clawback: /credits/clawback exists to
+    // reverse a GRANT (e.g. a refunded purchase) and SUBTRACTS — using it here would have
+    // deducted the credits a SECOND time instead of returning them.
+    await produserStub.fetch(new Request("http://produser/credits/grant", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ credits, reason: "deposit_to_business_wallet_reversal", idempotency_key: `${idempotencyKey}:reversal` }),
+    })).catch(() => { /* best-effort — a failed reversal is logged by the grant route itself if reachable */ });
+    return c.json({ error_code: "wallet_credit_failed", message: "Could not credit the business wallet — your personal balance was not charged." }, 502);
+  }
+  const walletBody = await creditRes.json<{ balance_cents: number }>();
+  return c.json({ deposited_credits: credits, personal_balance_credits: personalBalanceAfter, wallet_balance_cents: walletBody.balance_cents }, 201);
+});
+
 // GET /spaces/:spaceId/wallet-project — metering enforcement follow-up: internal-only (the agents
 // worker is the only caller, before/after a project-scoped run), never end-user or builder
 // dashboard reachable, matching /rules and /spend's existing internal-only posture. Finds the
@@ -1175,7 +1317,11 @@ app.get("/spaces/:spaceId/local-grants", async (c) => {
   // A business member sees only their OWN grants (directory paths are sensitive); a builder/
   // owner JWT caller keeps seeing the whole space's grants, unchanged from before this pass.
   const userFilter = identity.role === "product_end_user" && identity.userId ? `&user_id=${encodeURIComponent(identity.userId)}` : "";
-  const res = await forwardToSpaceDO(stub, `/local-grants?space_id=${encodeURIComponent(spaceId)}${userFilter}`, "GET");
+  // Optional ?project_id= narrows to grants that would actually apply within one project (its
+  // own scoped grants plus every space-wide one) — what a project-scoped panel wants to show.
+  const projectId = c.req.query("project_id");
+  const projectFilter = projectId ? `&project_id=${encodeURIComponent(projectId)}` : "";
+  const res = await forwardToSpaceDO(stub, `/local-grants?space_id=${encodeURIComponent(spaceId)}${userFilter}${projectFilter}`, "GET");
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
@@ -1358,13 +1504,24 @@ app.get("/spaces/:spaceId/business-wallet/payouts", async (c) =>
 // body; only "whop" is supported today anyway.
 app.use("/spaces/:spaceId/connectors/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/connectors/status", requireBusinessMembership({ GET: "member" }));
-app.use("/spaces/:spaceId/connectors/connect", requireBusinessMembership({ POST: "admin" }));
+// §A1.18: the floor is now "member", not "admin" — a scope_model='user' connector (a member's
+// OWN personal account, see catalogue.ts's own header) should need no more than membership to
+// connect. The admin requirement for a scope_model='space' connector is enforced downstream, in
+// the agents worker's own connect handler, which is the one place that actually knows a given
+// platform's scope_model — see the x-naelao-business-role forwarding below. Only the GATE moved;
+// no new route or route-shape changed, so this isn't the class of change that's previously
+// triggered this file's documented Hono route-table corruption (items 40/52/60 were all about
+// adding a NEW dynamic-segment-then-static-suffix route, not loosening an existing gate).
+app.use("/spaces/:spaceId/connectors/connect", requireBusinessMembership({ POST: "member" }));
 
-async function proxyConnectorsToAgents(
+// Generic authenticated proxy to the agents worker (connectors, and the onboarding wizard's
+// bootstrap routes) — mints a real internal token for the space's OWNING tenant.
+async function proxyToAgentsWorker(
   c: { env: Env; req: { header: (n: string) => string | undefined } },
   path: string,
   method: "GET" | "POST",
-  body?: Record<string, unknown>
+  body?: Record<string, unknown>,
+  extraHeaders?: Record<string, string>
 ): Promise<Response> {
   if (!c.env.AGENTS_WORKER) {
     return Response.json({ error_code: "connectors_unavailable", message: "Agents worker not configured" }, { status: 503 });
@@ -1384,6 +1541,7 @@ async function proxyConnectorsToAgents(
         "x-naelao-tenant-id": tenantId,
         "x-naelao-user-id": identity.userId ?? "",
         "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
+        ...extraHeaders,
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
     })
@@ -1392,17 +1550,89 @@ async function proxyConnectorsToAgents(
 }
 
 app.get("/spaces/:spaceId/connectors/status", async (c) =>
-  proxyConnectorsToAgents(c, `/connectors/status?space_id=${encodeURIComponent(c.req.param("spaceId"))}`, "GET")
+  proxyToAgentsWorker(c, `/connectors/status?space_id=${encodeURIComponent(c.req.param("spaceId"))}`, "GET")
 );
+
+// Everything the platform can reach, not just the curated dozen (connectors/directory.ts).
+// Read-only and identical for every tenant, so "member" is the right floor — connecting one is
+// still gated by /connectors/provider-connect-start's own admin check. Registered as a static
+// sibling of `status`, deliberately NOT as `/directory/:provider` — a dynamic segment followed by
+// a static suffix is the shape that has repeatedly corrupted this file's route table.
+app.use("/spaces/:spaceId/connectors/directory", requireBusinessMembership({ GET: "member" }));
+app.get("/spaces/:spaceId/connectors/directory", async (c) => {
+  const params = new URLSearchParams();
+  const q = c.req.query("q");
+  const cursor = c.req.query("cursor");
+  const limit = c.req.query("limit");
+  const sort = c.req.query("sort");
+  if (q) params.set("q", q);
+  if (cursor) params.set("cursor", cursor);
+  if (limit) params.set("limit", limit);
+  if (sort) params.set("sort", sort);
+  const qs = params.toString();
+  return proxyToAgentsWorker(c, `/connectors/directory${qs ? `?${qs}` : ""}`, "GET");
+});
+
+// The "plugins directory" (BUSINESS_FEATURE_KIND_REGISTRY) — which native business-feature
+// projects (Wallet, CRM, Support Inbox, Business Email, …) this business could add, role-filtered
+// server-side by the caller's real business role, same pattern as the connect route's own
+// x-naelao-business-role forwarding just above (a builder JWT caller has no business role — the
+// agents worker's own creatableFeatureKindsForRole treats an absent role as the lowest, "editor").
+// A static leaf, same corruption-avoidance discipline as connectors/directory beside it.
+app.use("/spaces/:spaceId/feature-kinds", requireBusinessMembership({ GET: "member" }));
+// business_memberships uses BusinessRole ("viewer"|"member"|"admin"|"owner") — a DIFFERENT
+// vocabulary from the feature-kind registry's FeatureKindRole ("editor"|"admin"|"owner", the
+// space-level Team-collaborator tiers creatableFeatureKindsForRole/ROLE_RANK compare against).
+// Passing a raw "member" straight through would match nothing in ROLE_RANK and silently show
+// every ordinary business member zero feature kinds — including the "editor"-tier ones (CRM,
+// Support Inbox) the registry clearly means for more than just admins to create. "member" is the
+// ordinary-contributor role in both vocabularies, so it maps onto "editor"; "viewer" has no
+// creation-capable analog and is deliberately left unmapped (falls through to undefined, which
+// correctly excludes everything — a viewer isn't meant to create anything).
+function businessRoleToFeatureKindRole(role: string): string {
+  return role === "member" ? "editor" : role;
+}
+
+app.get("/spaces/:spaceId/feature-kinds", async (c) => {
+  const identity = getCallerIdentity(c);
+  let businessRole: string | undefined;
+  if (identity.role === "product_end_user" && identity.userId) {
+    const resolved = await resolveEndUserBusinessRole(c.env.PLATFORM_DB, c.req.param("spaceId"), identity.userId);
+    businessRole = resolved ? businessRoleToFeatureKindRole(resolved) : undefined;
+  }
+  const qs = businessRole ? `?role=${encodeURIComponent(businessRole)}` : "";
+  const resp = await proxyToAgentsWorker(c, `/project-templates${qs}`, "GET");
+  // /project-templates also returns the unrelated no-code project-template catalogue — this
+  // route's whole point is to expose ONLY the feature-kinds half of that response, so a caller
+  // never has to know about (or accidentally depend on) the other catalogue living behind it.
+  if (!resp.ok) return resp;
+  const data = await resp.json<{ feature_kinds: unknown; feature_kinds_count: number }>();
+  return c.json({ feature_kinds: data.feature_kinds, count: data.feature_kinds_count });
+});
 
 app.post("/spaces/:spaceId/connectors/connect", async (c) => {
   const body = await c.req.json<{ platform?: string; api_key?: string }>().catch(() => ({}) as Record<string, never>);
   const platform = body.platform ?? "";
   if (!platform) return c.json({ error_code: "bad_request", message: "platform is required" }, 400);
-  return proxyConnectorsToAgents(c, `/connectors/${encodeURIComponent(platform)}/connect`, "POST", {
-    space_id: c.req.param("spaceId"),
-    api_key: body.api_key,
-  });
+  // §A1.18: the gate above only enforces "member" — the agents worker's own connect handler
+  // makes the real admin-vs-any-member decision per the PLATFORM's scope_model, which only it
+  // knows. It needs this caller's actual BUSINESS role to do that, which for a product_end_user
+  // is a resolved value (owner/admin/editor/member/viewer via business_memberships), not the raw
+  // "product_end_user" JWT role — resolved here, once, and forwarded. Absent for every other
+  // caller (a builder's own JWT role isn't a business role and never needs to be): the connect
+  // handler treats a missing header as "not an end user, apply today's unchanged behavior".
+  const identity = getCallerIdentity(c);
+  let businessRole: string | undefined;
+  if (identity.role === "product_end_user" && identity.userId) {
+    businessRole = (await resolveEndUserBusinessRole(c.env.PLATFORM_DB, c.req.param("spaceId"), identity.userId)) ?? undefined;
+  }
+  return proxyToAgentsWorker(
+    c,
+    `/connectors/${encodeURIComponent(platform)}/connect`,
+    "POST",
+    { space_id: c.req.param("spaceId"), api_key: body.api_key },
+    businessRole ? { "x-naelao-business-role": businessRole } : undefined
+  );
 });
 
 // "Connect with X" OAuth flow — same admin-only gate as the manual-key connect above, same
@@ -1414,7 +1644,7 @@ app.post("/spaces/:spaceId/connectors/oauth-start", async (c) => {
   const platform = body.platform ?? "";
   if (!platform) return c.json({ error_code: "bad_request", message: "platform is required" }, 400);
   if (!body.return_url) return c.json({ error_code: "bad_request", message: "return_url is required" }, 400);
-  return proxyConnectorsToAgents(c, `/connectors/${encodeURIComponent(platform)}/oauth/start`, "POST", {
+  return proxyToAgentsWorker(c, `/connectors/${encodeURIComponent(platform)}/oauth/start`, "POST", {
     space_id: c.req.param("spaceId"),
     return_url: body.return_url,
   });
@@ -1430,10 +1660,59 @@ app.post("/spaces/:spaceId/connectors/provider-connect-start", async (c) => {
   const platform = body.platform ?? "";
   if (!platform) return c.json({ error_code: "bad_request", message: "platform is required" }, 400);
   if (!body.return_url) return c.json({ error_code: "bad_request", message: "return_url is required" }, 400);
-  return proxyConnectorsToAgents(c, `/connectors/${encodeURIComponent(platform)}/provider-connect/start`, "POST", {
+  return proxyToAgentsWorker(c, `/connectors/${encodeURIComponent(platform)}/provider-connect/start`, "POST", {
     space_id: c.req.param("spaceId"),
     return_url: body.return_url,
   });
+});
+
+// ── Naelao Agent Templates ────────────────────────────────────────────────────
+// Browsing the catalogue needs no per-space check (it's a global, static list, same as
+// connectors/directory above) — "member" is the floor. Creating a real agent from one changes
+// what a project's agent switcher offers, so that's admin-only, same posture as connectors/
+// provider-connect-start. POST carries template_id in the BODY, not a URL segment — see
+// applyAgentTemplate's own comment on the agents worker for why.
+app.use("/spaces/:spaceId/agent-templates", requireBusinessMembership({ GET: "member", POST: "admin" }));
+app.get("/spaces/:spaceId/agent-templates", async (c) => proxyToAgentsWorker(c, "/agent-templates", "GET"));
+app.post("/spaces/:spaceId/agent-templates", async (c) => {
+  const body = await c.req.json<{ template_id?: string; name?: string; project_id?: string }>().catch(() => ({}) as Record<string, never>);
+  if (!body.template_id) return c.json({ error_code: "bad_request", message: "template_id is required" }, 400);
+  return proxyToAgentsWorker(c, "/agent-templates/instantiate", "POST", {
+    space_id: c.req.param("spaceId"),
+    template_id: body.template_id,
+    ...(body.name ? { name: body.name } : {}),
+    ...(body.project_id ? { project_id: body.project_id } : {}),
+  });
+});
+
+// ── Business setup wizard (first-run onboarding) ─────────────────────────────
+// The end user's own path into the bootstrap the builder dashboard has always driven. Same
+// two-gate pattern as connectors/local-grants above: identity at the router, real per-business
+// authorization here — reading the checklist is member-level, but answering it (connecting the
+// business's Whop account, choosing how autonomous the assistant is) changes how the business
+// operates and is admin-only.
+//
+// ONE route, with POST's `action` carrying the operation, instead of the natural
+// /onboarding/save + /onboarding/complete pair: a dynamic segment followed by a static suffix is
+// the exact shape that has repeatedly triggered this file's documented Hono RegExpRouter
+// route-table-scale corruption (silently 404ing UNRELATED routes elsewhere in the app — see the
+// record-install and connectors comments above).
+app.use("/spaces/:spaceId/onboarding", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/onboarding", requireBusinessMembership({ GET: "member", POST: "admin" }));
+
+app.get("/spaces/:spaceId/onboarding", async (c) =>
+  proxyToAgentsWorker(c, `/spaces/${encodeURIComponent(c.req.param("spaceId"))}/bootstrap`, "GET")
+);
+
+app.post("/spaces/:spaceId/onboarding", async (c) => {
+  const body = await c.req.json<{ action?: string; answers?: Record<string, unknown> }>().catch(() => ({}) as Record<string, never>);
+  const spaceId = encodeURIComponent(c.req.param("spaceId"));
+  const action = body.action ?? "save";
+  if (action !== "save" && action !== "complete") {
+    return c.json({ error_code: "bad_request", message: "action must be 'save' or 'complete'" }, 400);
+  }
+  const path = action === "complete" ? `/spaces/${spaceId}/bootstrap/complete` : `/spaces/${spaceId}/bootstrap/save`;
+  return proxyToAgentsWorker(c, path, "POST", { answers: body.answers ?? {} });
 });
 
 app.post("/spaces/:spaceId/business-wallet/payouts", async (c) => {
@@ -1521,35 +1800,111 @@ app.delete("/spaces/:spaceId/event-triggers/:triggerId", async (c) => {
 // (or their business's) assistant's Crons panel — loadOwnedSpace is tenant-match-only (no
 // per-caller floor), exactly the footgun the router's PRODUCT_END_USER_PATH_PATTERNS comment
 // warns about, so this adds the same resolveEndUserBusinessRole floor every other end-user-
-// reachable route in this file already has. POST/PATCH/DELETE stay un-allowlisted (never
-// reachable by a product_end_user regardless of this check, per the router's allowlist).
+// reachable route in this file already has. POST/PATCH/DELETE were originally un-allowlisted
+// entirely — Phase 3 item 27/28's Crons editing UI (below) added requireBusinessMembership's
+// admin floor to all three and allowlisted the router for exactly that reason.
+/** computeNextRun throws on a malformed cron_expression — create/update already reject one via
+ *  validateCronExpression, but a row could in principle predate that check, and a next-run
+ *  display bug must never take down the whole Crons list. */
+function safeComputeNextRun(cronExpression: string, fromMs: number): number | null {
+  try {
+    return computeNextRun(cronExpression, fromMs);
+  } catch {
+    return null;
+  }
+}
+
+/** Phase 3 item 29: a cron/heartbeat CONFIG change (created/updated/enabled/paused/deleted) is
+ *  itself an event worth an agent noticing, exactly like the existing scheduled_job.disabled
+ *  auto-disable event (agents worker, recordScheduledJobFailure) already is — a business owner
+ *  reconfiguring their own assistant's schedule is real, structural state a no-code trigger
+ *  should be able to react to (e.g. "when a cron is paused, tell the assistant why"), the same
+ *  precedent thread.created/project.created already set for every other structural mutation.
+ *  Reuses the SAME fireMatchingTriggers path via the DO directly (we're already inside this
+ *  worker, so no need for the internal-HTTP round trip the agents worker's own caller needs).
+ *  Best-effort: never throws, never blocks an already-successful CRUD response on a firing
+ *  failure — matches this file's own standing "never fail a successful mutation over a side
+ *  effect" convention everywhere else. */
+async function fireScheduledJobEvent(
+  env: Env,
+  spaceId: string,
+  tenantId: string,
+  type: "scheduled_job.created" | "scheduled_job.updated" | "scheduled_job.enabled" | "scheduled_job.paused" | "scheduled_job.deleted",
+  jobId: string,
+  projectId: string | null | undefined,
+  extra?: Record<string, unknown>
+): Promise<void> {
+  try {
+    const stub = await spaceDoStub(env, spaceId, tenantId);
+    await forwardToSpaceDO(
+      stub,
+      `/internal/events/fire?tenant_id=${encodeURIComponent(tenantId)}`,
+      "POST",
+      JSON.stringify({
+        type,
+        space_id: spaceId,
+        ...(projectId ? { project_id: projectId } : {}),
+        occurred_at: Date.now(),
+        payload: { scheduled_job_id: jobId, ...(extra ?? {}) },
+      })
+    );
+  } catch (err) {
+    console.error(`[scheduled-jobs] failed to fire ${type} for job=${jobId} space=${spaceId}:`, (err as Error).message);
+  }
+}
+
+// Phase 3 item 27/28's own Crons editing UI needed real write access for a business's own
+// admin/owner end user — POST used to forbid every product_end_user outright (WS-2's original
+// note below), which left every end-user-created business with no self-serve way to create a
+// job at all, only a JWT builder. requireBusinessMembership's admin floor is what makes this
+// safe (same precedent as model-config/assistant-policy PATCH): a plain member still can't
+// create/edit one, and a caller who isn't a member of THIS business at all is refused before
+// reaching the handler. GET keeps its existing member floor, just expressed as middleware
+// instead of an inline check so PATCH/DELETE below can share the same convention.
+app.use("/spaces/:spaceId/scheduled-jobs", requireBusinessMembership({ GET: "member", POST: "admin" }));
 app.get("/spaces/:spaceId/scheduled-jobs", async (c) => {
   const owned = await loadOwnedSpace(c, c.req.param("spaceId"));
   if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
-  const callerIdentity = getCallerIdentity(c);
-  if (callerIdentity.role === "product_end_user") {
-    const role = await resolveEndUserBusinessRole(c.env.PLATFORM_DB, c.req.param("spaceId"), callerIdentity.userId);
-    if (!role) return c.json({ error_code: "forbidden", message: "Not a member of this business" }, 403);
-  }
-  const { results } = await c.env.PLATFORM_DB.prepare(
-    `SELECT id, name, cron_expression, script_name, params, project_id, agent_id, goal, enabled, last_run_at,
-            consecutive_failures, last_error, created_at, updated_at
-       FROM scheduled_jobs WHERE space_id = ? ORDER BY created_at DESC`
-  ).bind(c.req.param("spaceId")).all();
-  return c.json({ data: results, count: results.length });
+  // Scoping for the Crons side-panel: the assistant/Home view wants its OWN (space-wide,
+  // project_id IS NULL) jobs — not a mix with every project's — while a project thread wants
+  // only that project's own. Neither query param given = unfiltered (the Dashboard overview and
+  // the dedicated Assistant settings page both want "everything" and predate this scoping).
+  const projectId = c.req.query("project_id");
+  const scope = c.req.query("scope");
+  const spaceId = c.req.param("spaceId");
+  const { results } = projectId
+    ? await c.env.PLATFORM_DB.prepare(
+        `SELECT id, name, cron_expression, script_name, params, project_id, agent_id, goal, enabled, last_run_at,
+                consecutive_failures, last_error, created_at, updated_at
+           FROM scheduled_jobs WHERE space_id = ? AND project_id = ? ORDER BY created_at DESC`
+      ).bind(spaceId, projectId).all()
+    : scope === "assistant"
+    ? await c.env.PLATFORM_DB.prepare(
+        `SELECT id, name, cron_expression, script_name, params, project_id, agent_id, goal, enabled, last_run_at,
+                consecutive_failures, last_error, created_at, updated_at
+           FROM scheduled_jobs WHERE space_id = ? AND project_id IS NULL ORDER BY created_at DESC`
+      ).bind(spaceId).all()
+    : await c.env.PLATFORM_DB.prepare(
+        `SELECT id, name, cron_expression, script_name, params, project_id, agent_id, goal, enabled, last_run_at,
+                consecutive_failures, last_error, created_at, updated_at
+           FROM scheduled_jobs WHERE space_id = ? ORDER BY created_at DESC`
+      ).bind(spaceId).all();
+  // Phase 3 item 27/28: when does this job fire next, for the Crons editing UI. Computed here
+  // (not stored) so it's always accurate against the CURRENT time and never drifts — a disabled
+  // job or a malformed cron_expression (shouldn't exist given create/update validation, but a
+  // row could predate it) reports null rather than throwing and losing the whole list.
+  const now = Date.now();
+  const withNextRun = (results as Array<Record<string, unknown>>).map((row) => ({
+    ...row,
+    next_run_at: row["enabled"] ? safeComputeNextRun(String(row["cron_expression"]), now) : null,
+  }));
+  return c.json({ data: withNextRun, count: withNextRun.length });
 });
 
 app.post("/spaces/:spaceId/scheduled-jobs", async (c) => {
   const spaceId = c.req.param("spaceId");
   const owned = await loadOwnedSpace(c, spaceId);
   if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
-  // WS-2: the router allowlist for this path (GET+POST share one path with no jobId segment)
-  // only proves a product_end_user's identity, never that write access is safe here — this
-  // route creates cron jobs, so (unlike the GET list) a product_end_user must never reach it,
-  // mirroring agent-definitions' "GET only for product_end_user" precedent.
-  if (getCallerIdentity(c).role === "product_end_user") {
-    return c.json({ error_code: "forbidden", message: "product_end_user callers may only read scheduled jobs" }, 403);
-  }
 
   const body = await c.req.json<{
     name: string;
@@ -1580,6 +1935,11 @@ app.post("/spaces/:spaceId/scheduled-jobs", async (c) => {
     body.script_name ?? "", JSON.stringify(body.params ?? {}), body.agent_id ?? null, body.goal ?? null, now, now
   ).run();
 
+  await fireScheduledJobEvent(c.env, spaceId, owned.tenantId, "scheduled_job.created", id, body.project_id ?? null, {
+    name: body.name,
+    cron_expression: body.cron_expression,
+  });
+
   return c.json({
     id, name: body.name, cron_expression: body.cron_expression, script_name: body.script_name ?? "",
     project_id: body.project_id ?? null, agent_id: body.agent_id ?? null, goal: body.goal ?? null,
@@ -1587,6 +1947,12 @@ app.post("/spaces/:spaceId/scheduled-jobs", async (c) => {
   }, 201);
 });
 
+// Same admin floor as POST above — a plain business member can view crons but not edit or
+// remove one; a business admin/owner end user genuinely can, mirroring model-config/
+// assistant-policy PATCH's own precedent for "an end-user-created business's own admin IS its
+// owner." No GET is registered on this path (single-job reads don't exist, only the list), so
+// only PATCH/DELETE need a floor here.
+app.use("/spaces/:spaceId/scheduled-jobs/:jobId", requireBusinessMembership({ PATCH: "admin", DELETE: "admin" }));
 app.patch("/spaces/:spaceId/scheduled-jobs/:jobId", async (c) => {
   const spaceId = c.req.param("spaceId");
   const jobId = c.req.param("jobId");
@@ -1607,6 +1973,13 @@ app.patch("/spaces/:spaceId/scheduled-jobs/:jobId", async (c) => {
     const cronError = validateCronExpression(body.cron_expression);
     if (cronError) return c.json({ error_code: "bad_request", message: `Invalid cron_expression: ${cronError}` }, 400);
   }
+
+  // Needed only for the fired event's project scoping — the UPDATE below can't change project_id
+  // (there's no such field on this route), so a plain read-before-write is fine for an
+  // admin-only, low-frequency write, unlike a hot path that would want this folded into one query.
+  const existing = await c.env.PLATFORM_DB.prepare(
+    "SELECT project_id FROM scheduled_jobs WHERE id = ? AND space_id = ? AND tenant_id = ?"
+  ).bind(jobId, spaceId, owned.tenantId).first<{ project_id: string | null }>();
 
   const now = new Date().toISOString();
   const res = await c.env.PLATFORM_DB.prepare(
@@ -1629,6 +2002,13 @@ app.patch("/spaces/:spaceId/scheduled-jobs/:jobId", async (c) => {
   ).run();
 
   if (res.meta.changes === 0) return c.json({ error_code: "not_found", message: "Scheduled job not found" }, 404);
+
+  // A pure enable/pause toggle (the shell's own toggleScheduledJob helper sends ONLY {enabled})
+  // gets its own, more specific event than a content edit — a no-code trigger reacting to "this
+  // was paused" shouldn't also have to distinguish that from "the goal text changed".
+  const eventType = body.enabled !== undefined ? (body.enabled ? "scheduled_job.enabled" : "scheduled_job.paused") : "scheduled_job.updated";
+  await fireScheduledJobEvent(c.env, spaceId, owned.tenantId, eventType, jobId, existing?.project_id ?? null);
+
   return c.json({ id: jobId, updated_at: now });
 });
 
@@ -1637,28 +2017,66 @@ app.delete("/spaces/:spaceId/scheduled-jobs/:jobId", async (c) => {
   const jobId = c.req.param("jobId");
   const owned = await loadOwnedSpace(c, spaceId);
   if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+  // Needed for the fired event's project scoping — read before delete, since the row (and its
+  // project_id) is gone the moment the DELETE below succeeds.
+  const existing = await c.env.PLATFORM_DB.prepare(
+    "SELECT project_id FROM scheduled_jobs WHERE id = ? AND space_id = ? AND tenant_id = ?"
+  ).bind(jobId, spaceId, owned.tenantId).first<{ project_id: string | null }>();
   const res = await c.env.PLATFORM_DB.prepare(
     "DELETE FROM scheduled_jobs WHERE id = ? AND space_id = ? AND tenant_id = ?"
   ).bind(jobId, spaceId, owned.tenantId).run();
   if (res.meta.changes === 0) return c.json({ error_code: "not_found", message: "Scheduled job not found" }, 404);
+  await fireScheduledJobEvent(c.env, spaceId, owned.tenantId, "scheduled_job.deleted", jobId, existing?.project_id ?? null);
   return c.json({ deleted: true, id: jobId });
 });
 
-// Space Assistant approval policy — "same access as the owning user, ask first unless the
-// user has trusted this action." PATCH stays owner-authenticated only; the assistant can never
-// set its own policy. WS-2: GET is now also reachable by a product_end_user viewing their own
-// Space Assistant's Status panel (which permissions the assistant currently has) — gated by the
-// same resolveEndUserBusinessRole floor every other end-user-reachable route uses.
-app.use("/spaces/:spaceId/assistant-policy", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.get("/spaces/:spaceId/assistant-policy", async (c) => {
+// GET /spaces/:spaceId/scheduled-job-runs?job_id=X — recent fires for a scheduled job (migration
+// 0071). Deliberately a FLAT sibling of /scheduled-jobs, `job_id` in the query string, not
+// nested under the existing dynamic /scheduled-jobs/:jobId route — a dynamic segment followed by
+// a static suffix (":jobId/runs") is exactly the shape that has repeatedly corrupted this
+// codebase's Hono route tables (items 40/52/60), and this file already carries one dynamic
+// segment there (PATCH/DELETE above); a second static suffix under it is not worth that risk for
+// a read endpoint. Same auth floor as GET /scheduled-jobs directly above it — a
+// product_end_user viewing their own business's Crons panel needs to see its history too.
+app.get("/spaces/:spaceId/scheduled-job-runs", async (c) => {
   const spaceId = c.req.param("spaceId");
-  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
-  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const owned = await loadOwnedSpace(c, spaceId);
+  if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
   const callerIdentity = getCallerIdentity(c);
   if (callerIdentity.role === "product_end_user") {
     const role = await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, callerIdentity.userId);
     if (!role) return c.json({ error_code: "forbidden", message: "Not a member of this business" }, 403);
   }
+  const jobId = c.req.query("job_id");
+  if (!jobId) return c.json({ error_code: "bad_request", message: "job_id is required" }, 400);
+  const limitParam = Number.parseInt(c.req.query("limit") ?? "", 10);
+  const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 100) : 20;
+  const { results } = await c.env.PLATFORM_DB.prepare(
+    `SELECT id, fired_at, ok, error, duration_ms, skipped_busy FROM scheduled_job_runs
+       WHERE job_id = ? AND space_id = ? ORDER BY fired_at DESC LIMIT ?`
+  ).bind(jobId, spaceId, limit).all();
+  return c.json({ data: results, count: results.length });
+});
+
+// Space Assistant approval policy — "same access as the owning user, ask first unless the
+// user has trusted this action." WS-2: GET is reachable by a product_end_user viewing their own
+// Space Assistant's Status panel (which permissions the assistant currently has) — gated by the
+// same resolveEndUserBusinessRole floor every other end-user-reachable route uses. PATCH used to
+// be blocked outright for every product_end_user, on the theory that only a JWT builder could
+// ever be "the owner" — but on a Launchpad business an end user with admin role on their OWN
+// business genuinely IS its owner (§A1.18/item 79: an end-user-created business needs the SAME
+// guided/autonomous toggle a dashboard-created one already has, or "does everything on the
+// user's behalf in yolo mode" has no real control surface for the person who actually runs the
+// business). requireBusinessMembership's admin floor is what makes this safe: a plain member
+// still cannot change it, and a caller who isn't a member of THIS business at all is refused
+// before reaching here — same precedent as local-grants/pricing's own admin-gated writes. A
+// builder JWT caller (role !== "product_end_user") is untouched, exactly as before.
+app.use("/spaces/:spaceId/assistant-policy", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/assistant-policy", requireBusinessMembership({ GET: "member", PATCH: "admin" }));
+app.get("/spaces/:spaceId/assistant-policy", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const res = await forwardToSpaceDO(stub, `/assistant-policy?space_id=${encodeURIComponent(spaceId)}`, "GET");
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
@@ -1668,15 +2086,46 @@ app.patch("/spaces/:spaceId/assistant-policy", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
-  // WS-2: the router allowlist for this path (GET+PATCH share it, no distinguishing sub-path)
-  // only proves identity — a product_end_user must never be able to CHANGE the assistant's own
-  // approval policy, only read it (same "GET only" precedent as agent-definitions/scheduled-jobs).
-  if (getCallerIdentity(c).role === "product_end_user") {
-    return c.json({ error_code: "forbidden", message: "product_end_user callers may only read the assistant policy" }, 403);
-  }
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const res = await forwardToSpaceDO(stub, `/assistant-policy?space_id=${encodeURIComponent(spaceId)}`, "PATCH", c.req.raw.body);
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+// PATCH /spaces/:spaceId/model-config — which model THIS business's assistant/agents run on.
+// §A1.28 shipped the switcher only on /builder/products/:id (JWT-builder-only, via the
+// dashboard) — a business an end user created and owns had no reachable way to change it, the
+// same reachability gap assistant-policy had (see the comment above). Reuses the exact
+// member-billing config_json-override pattern: read the space's OWN row (not the product root —
+// each business space carries its own productConfig override), merge modelConfig.model in,
+// write back. Same curated-allowlist validation as the builder route, so the two paths can never
+// let a caller pick a model contextWindowForModel/tokensToCredits don't know how to price.
+app.use("/spaces/:spaceId/model-config", requireBusinessMembership({ PATCH: "admin" }));
+app.patch("/spaces/:spaceId/model-config", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const owned = await loadOwnedSpace(c, spaceId);
+  if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+
+  const body = await c.req.json<{ model?: string; effort?: string }>().catch(() => ({}) as { model?: string; effort?: string });
+  if (!body.model || !isAllowedModel(body.model)) {
+    return c.json({ error_code: "bad_request", message: `model must be one of ${ALLOWED_MODELS.join(", ")}` }, 400);
+  }
+  if (body.effort && !isValidEffortLevel(body.model, body.effort)) {
+    return c.json({ error_code: "bad_request", message: `effort '${body.effort}' is not offered by model '${body.model}'` }, 400);
+  }
+
+  let config: { productConfig?: Partial<SpaceTypeProductConfig> } & Record<string, unknown> = {};
+  if (owned.configJson) {
+    try { config = JSON.parse(owned.configJson); } catch { /* start clean on malformed */ }
+  }
+  config.productConfig = {
+    ...(config.productConfig ?? {}),
+    modelConfig: { model: body.model, ...(body.effort ? { effort: body.effort } : {}) },
+  };
+  await c.env.PLATFORM_DB.prepare(
+    "UPDATE spaces SET config_json = ?, updated_at = ? WHERE id = ? AND tenant_id = ?"
+  ).bind(JSON.stringify(config), new Date().toISOString(), spaceId, owned.tenantId).run();
+
+  return c.json({ model: body.model, ...(body.effort ? { effort: body.effort } : {}) });
 });
 
 // ── Builder observability surface (security audit follow-up) ────────────────
@@ -1711,6 +2160,73 @@ app.get("/spaces/:spaceId/agent-activity", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
+// GET /spaces/:spaceId/business-analytics?window=7d|30d|90d — the end-user-facing Analytics page
+// (apps/shell). Unlike agent-activity above (builder-only, individual summaries + session ids),
+// this is pure aggregate — see SpaceDO.computeBusinessAnalytics's own header — so it's gated at
+// "member", the same floor /pricing uses, not rejected outright for a product_end_user caller.
+app.use("/spaces/:spaceId/business-analytics", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/business-analytics", requireBusinessMembership({ GET: "member" }));
+app.get("/spaces/:spaceId/business-analytics", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const qs = new URL(c.req.url).search;
+  const res = await forwardToSpaceDO(stub, `/business-analytics${qs}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+// ── Notifications inbox ──────────────────────────────────────────────────────
+// Unlike agent-activity (builder-only technical audit trail), this IS end-user-facing — a
+// business admin reading their own business's inbox — so the public route is
+// requireBusinessMembership-gated, not builder-only. Internal-only CREATE (NaelaoAgentDO's
+// createSpaceNotification) and the heartbeat sweep's undelivered-list/mark_delivered both go
+// through /internal/spaces/:spaceId/notifications instead — same path as agent-activity's own
+// internal/public split, chosen deliberately so this file gains no NEW dynamic-segment-then-
+// static-suffix route shape (the documented Hono RegExpRouter corruption, items 40/52/60).
+app.use("/internal/spaces/:spaceId/notifications", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.post("/internal/spaces/:spaceId/notifications", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, "/notifications", "POST", c.req.raw.body);
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+app.get("/internal/spaces/:spaceId/notifications", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const qs = new URL(c.req.url).search;
+  const res = await forwardToSpaceDO(stub, `/notifications${qs}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.use("/spaces/:spaceId/notifications", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/notifications", requireBusinessMembership({ GET: "member", POST: "member" }));
+app.get("/spaces/:spaceId/notifications", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const qs = new URL(c.req.url).search;
+  const res = await forwardToSpaceDO(stub, `/notifications${qs}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+// POST is restricted to the mark_read shape only — a caller reaching this without an internal
+// HMAC token (every real business-member caller) can never fabricate a notification, only mark
+// their own space's real ones read.
+app.post("/spaces/:spaceId/notifications", async (c) => {
+  const body = await c.req.json<{ action?: string; notification_id?: string }>().catch(() => ({}) as Record<string, never>);
+  if (body.action !== "mark_read" || !body.notification_id) {
+    return c.json({ error_code: "bad_request", message: "action must be 'mark_read' with a notification_id" }, 400);
+  }
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, "/notifications", "POST", JSON.stringify(body));
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
 // ── §A1 Harness Excellence Phase HX2: signals + session token-budget guard ──────
 // Explicit signals (agent-signals) and implicit signals (signal-events) are both builder-only
 // reads, same rationale/precedent as agent-activity just above (a cross-user audit/observability
@@ -1729,6 +2245,26 @@ app.get("/spaces/:spaceId/agent-signals", async (c) => {
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const qs = new URL(c.req.url).search;
   const res = await forwardToSpaceDO(stub, `/agent-signals${qs}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+// GET /spaces/:spaceId/agent-diagnostics — the whole-business summary an assistant reads on a
+// wake-up (see SpaceDO.computeAgentDiagnostics). Gated exactly like agent-activity above: the
+// internal-HMAC gate authenticates the calling worker, and a product_end_user caller is refused
+// because this spans every thread in the business, including other people's. The Space Assistant
+// reaches it through the business-diagnostics prebuilt, whose spacesCall sets no role header —
+// same path agent-activity's own writer already uses.
+app.use("/spaces/:spaceId/agent-diagnostics", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.get("/spaces/:spaceId/agent-diagnostics", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  if (getCallerIdentity(c).role === "product_end_user") {
+    return c.json({ error_code: "forbidden", message: "This is a builder-only view" }, 403);
+  }
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const qs = new URL(c.req.url).search;
+  const res = await forwardToSpaceDO(stub, `/agent-diagnostics${qs}`, "GET");
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
@@ -1827,7 +2363,12 @@ app.delete("/spaces/:spaceId/agents/:agentId/api-keys/:keyId", async (c) => {
 
 // GET/PATCH — an agent's own approval-policy override. Same shape/authorization as
 // assistant-policy above; falls back to the space-wide row when no override exists (SpaceDO's
-// resolveAgentPolicy).
+// resolveAgentPolicy). Previously builder-JWT-only (tenant-match via getCallerIdentity, no
+// requireBusinessMembership floor at all) — a business admin who owns their own Launchpad
+// business had no reachable way to configure a project agent's own approvals, same gap
+// assistant-policy itself had before item 79 relaxed it. Same fix, same precedent.
+app.use("/spaces/:spaceId/agents/:agentId/policy", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/agents/:agentId/policy", requireBusinessMembership({ GET: "member", PATCH: "admin" }));
 app.get("/spaces/:spaceId/agents/:agentId/policy", async (c) => {
   const spaceId = c.req.param("spaceId");
   const agentId = c.req.param("agentId");
@@ -1897,6 +2438,8 @@ app.get("/spaces/:spaceId/threads", async (c) => {
   if (projectId) qs.set("project_id", projectId);
   const includeSubThreads = c.req.query("include_sub_threads");
   if (includeSubThreads) qs.set("include_sub_threads", includeSubThreads);
+  const parentThreadId = c.req.query("parent_thread_id");
+  if (parentThreadId) qs.set("parent_thread_id", parentThreadId);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const res = await forwardToSpaceDO(stub, `/threads?${qs.toString()}`, "GET");
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
@@ -1920,6 +2463,21 @@ app.get("/spaces/:spaceId/threads/:threadId", async (c) => {
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const res = await forwardToSpaceDO(stub, `/threads/${encodeURIComponent(threadId)}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+// PATCH /spaces/:spaceId/threads/:threadId — rename and/or archive. There is no hard-delete
+// route: `requireBusinessMembership({ GET: "member" })` above already defaults PATCH to
+// "admin" for a product_end_user caller (same convention /projects/:projectId's own PATCH
+// relies on), so archiving someone else's thread out from under them needs the same privilege
+// a rename does.
+app.patch("/spaces/:spaceId/threads/:threadId", async (c) => {
+  const { spaceId, threadId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const body = await c.req.text();
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/threads/${encodeURIComponent(threadId)}`, "PATCH", body);
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
@@ -2273,6 +2831,12 @@ app.post("/internal/business-services", async (c) => {
     kind: "storefront" | "business_email" | "custom_domain";
     slug?: string;
     custom_domain?: string;
+    // AgentMail (auto-provisioned inbound-capable mailbox): when the agents worker has actually
+    // created a real AgentMail inbox, it passes the allocated address as `handle` (used verbatim
+    // instead of the slug-derived placeholder) and the inbox id to persist in config_json so
+    // send/status can resolve it later. Absent = the legacy slug-derived placeholder behavior.
+    handle?: string;
+    agentmail_inbox_id?: string;
   }>();
   if (!body.space_id || !body.kind) {
     return c.json({ error_code: "bad_request", message: "space_id and kind are required" }, 400);
@@ -2324,17 +2888,24 @@ app.post("/internal/business-services", async (c) => {
   // suffix from the space id so two spaces can both want "shop").
   const slug = (body.slug ?? "shop").toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "shop";
   const suffix = body.space_id.slice(0, 6);
-  const handle = body.kind === "storefront"
-    ? `${slug}-${suffix}.${STOREFRONT_ROOT}`
-    : `hi@${slug}-${suffix}.${EMAIL_ROOT}`;
+  // A real AgentMail-allocated address (body.handle) wins over the slug-derived placeholder — the
+  // placeholder was never inbound-capable, the AgentMail one is.
+  const handle = body.handle
+    ? body.handle
+    : body.kind === "storefront"
+      ? `${slug}-${suffix}.${STOREFRONT_ROOT}`
+      : `hi@${slug}-${suffix}.${EMAIL_ROOT}`;
+  // Store the AgentMail inbox id in config_json (no schema change — the column already exists),
+  // matching this codebase's "config_json override, not a new column/table" convention.
+  const configJson = body.agentmail_inbox_id ? JSON.stringify({ agentmail_inbox_id: body.agentmail_inbox_id }) : "{}";
 
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   await c.env.PLATFORM_DB.prepare(
-    `INSERT INTO business_services (id, space_id, tenant_id, kind, naelao_handle, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, 'active', ?, ?)
-     ON CONFLICT(space_id, kind) DO UPDATE SET naelao_handle = excluded.naelao_handle, status = 'active', updated_at = excluded.updated_at`
-  ).bind(id, body.space_id, tenantId, body.kind, handle, now, now).run();
+    `INSERT INTO business_services (id, space_id, tenant_id, kind, naelao_handle, config_json, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)
+     ON CONFLICT(space_id, kind) DO UPDATE SET naelao_handle = excluded.naelao_handle, config_json = excluded.config_json, status = 'active', updated_at = excluded.updated_at`
+  ).bind(id, body.space_id, tenantId, body.kind, handle, configJson, now, now).run();
 
   // For a storefront, register the Host→space route the portal Worker resolves.
   if (body.kind === "storefront") {
@@ -2538,15 +3109,16 @@ app.patch("/spaces/:spaceId/member-billing", async (c) => {
 type PlanDef = NonNullable<NonNullable<SpaceTypeProductConfig["pricingConfig"]>["plans"]>[number];
 type CreditPackDef = NonNullable<NonNullable<SpaceTypeProductConfig["pricingConfig"]>["creditPacks"]>[number];
 type WalletTopupDef = NonNullable<NonNullable<SpaceTypeProductConfig["pricingConfig"]>["walletTopups"]>[number];
+type PersonalPlanDef = NonNullable<NonNullable<SpaceTypeProductConfig["pricingConfig"]>["personalPlans"]>[number];
 type ExternalRevenueCutDef = NonNullable<SpaceTypeProductConfig["pricingConfig"]>["externalRevenueCut"];
 
-/** Resolve the effective plan/credit-pack/wallet-topup catalog for `spaceId` — walks to the
- *  product root if `spaceId` is a business (has a parent_space_id), since the catalog is
- *  authored on the root. */
+/** Resolve the effective plan/credit-pack/wallet-topup/personal-plan catalog for `spaceId` —
+ *  walks to the product root if `spaceId` is a business (has a parent_space_id), since the
+ *  catalog is authored on the root. */
 async function loadPricingCatalog(
   env: Env,
   spaceId: string
-): Promise<{ productSpaceId: string; productTenantId: string; plans: PlanDef[]; creditPacks: CreditPackDef[]; walletTopups: WalletTopupDef[]; externalRevenueCut: ExternalRevenueCutDef } | null> {
+): Promise<{ productSpaceId: string; productTenantId: string; plans: PlanDef[]; creditPacks: CreditPackDef[]; walletTopups: WalletTopupDef[]; personalPlans: PersonalPlanDef[]; externalRevenueCut: ExternalRevenueCutDef } | null> {
   const space = await env.PLATFORM_DB.prepare(
     "SELECT tenant_id, spacetype_id, config_json, parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'"
   ).bind(spaceId).first<{ tenant_id: string; spacetype_id: string; config_json: string | null; parent_space_id: string | null }>();
@@ -2574,6 +3146,7 @@ async function loadPricingCatalog(
     plans: pc?.pricingConfig?.plans ?? [],
     creditPacks: pc?.pricingConfig?.creditPacks ?? [],
     walletTopups: pc?.pricingConfig?.walletTopups ?? [],
+    personalPlans: pc?.pricingConfig?.personalPlans ?? [],
     externalRevenueCut: pc?.pricingConfig?.externalRevenueCut,
   };
 }
@@ -2590,6 +3163,7 @@ app.get("/spaces/:spaceId/pricing", async (c) => {
     plans: catalog.plans.map((p) => ({ id: p.id, name: p.name, price_cents: p.priceCents, interval: p.interval, credit_allowance: p.creditAllowance ?? null })),
     credit_packs: catalog.creditPacks.map((p) => ({ id: p.id, name: p.name, credits: p.credits, price_cents: p.priceCents })),
     wallet_topups: catalog.walletTopups.map((p) => ({ id: p.id, name: p.name, price_cents: p.priceCents })),
+    personal_plans: catalog.personalPlans.map((p) => ({ id: p.id, name: p.name, tier: p.tier, price_cents: p.priceCents, interval: p.interval })),
   });
 });
 
@@ -2652,6 +3226,80 @@ app.post("/spaces/:spaceId/credit-packs/checkout", async (c) => {
   return new Response(resp.body, { status: resp.status, headers: { "content-type": "application/json" } });
 });
 
+// GET /spaces/:spaceId/personal-plan — the caller's OWN personal-plan tier + its limits (Phase 4,
+// money). spaceId can be the product root or a business — resolveProductRootSpace walks to the
+// root either way, matching every other ProductUserDO-scoped route's own convention.
+app.use("/spaces/:spaceId/personal-plan", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/personal-plan", requireBusinessMembership({ GET: "member" }));
+app.get("/spaces/:spaceId/personal-plan", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const { userId } = getCallerIdentity(c);
+  if (!userId) return c.json({ error_code: "unauthorized", message: "Missing end user identity" }, 401);
+  const root = await resolveProductRootSpace(c.env, spaceId);
+  if (!root) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  const stub = await productUserDoStub(c.env, root.id, userId, root.tenant_id);
+  const resp = await stub.fetch(new Request("http://produser/plan-tier"));
+  const { plan_tier } = await resp.json<{ plan_tier: string }>();
+  const tier: PersonalPlanTier = isPersonalPlanTier(plan_tier) ? plan_tier : "free";
+  return c.json({ plan_tier: tier, limits: PERSONAL_PLAN_LIMITS[tier] });
+});
+
+// POST /spaces/:spaceId/personal-plan/checkout — an end user upgrades their OWN personal-plan
+// tier. Mirrors credit-packs/checkout's exact shape (proxy to the billing worker, which alone
+// holds Lemon Squeezy credentials) — the only difference is what the purchase ultimately grants.
+app.use("/spaces/:spaceId/personal-plan/checkout", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/personal-plan/checkout", requireBusinessMembership({ POST: "member" }));
+app.post("/spaces/:spaceId/personal-plan/checkout", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const { tenantId, userId } = getCallerIdentity(c);
+  if (!userId) return c.json({ error_code: "unauthorized", message: "Missing end user identity" }, 401);
+  if (!c.env.BILLING_WORKER) return c.json({ error_code: "unavailable", message: "Billing is not available" }, 503);
+  const body = await c.req.json<{ plan_id: string; customer_email?: string }>();
+  if (!body.plan_id) return c.json({ error_code: "bad_request", message: "plan_id is required" }, 400);
+
+  const resp = await c.env.BILLING_WORKER.fetch(
+    new Request("http://billing-worker/internal/personal-plan/checkout", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": tenantId,
+        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
+      },
+      body: JSON.stringify({
+        business_space_id: spaceId,
+        plan_id: body.plan_id,
+        end_user_id: userId,
+        ...(body.customer_email ? { customer_email: body.customer_email } : {}),
+      }),
+    })
+  );
+  return new Response(resp.body, { status: resp.status, headers: { "content-type": "application/json" } });
+});
+
+// POST /internal/personal-plan/grant — the billing worker's webhook handler calls this after a
+// real personal-plan checkout completes, mirroring /internal/credit-packs/grant's own addressing
+// (the PRODUCT's own tenant_id, resolved from product_space_id directly — same as ProductUserDO's
+// addressing convention everywhere else, NOT the calling worker's own verified tenant, which
+// needn't match) — it sets ProductUserDO.plan_tier instead of crediting a balance.
+app.use("/internal/personal-plan/grant", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.post("/internal/personal-plan/grant", async (c) => {
+  const body = await c.req.json<{ product_space_id: string; end_user_id: string; tier: string }>();
+  if (!body.product_space_id || !body.end_user_id || !isPersonalPlanTier(body.tier)) {
+    return c.json({ error_code: "bad_request", message: "product_space_id, end_user_id, and a valid tier are required" }, 400);
+  }
+  const product = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ? AND status != 'deleted'")
+    .bind(body.product_space_id).first<{ tenant_id: string }>();
+  if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+
+  const stub = await productUserDoStub(c.env, body.product_space_id, body.end_user_id, product.tenant_id);
+  const setRes = await stub.fetch(new Request("http://produser/plan-tier/set", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ plan_tier: body.tier }),
+  }));
+  return new Response(setRes.body, { status: setRes.status, headers: { "content-type": "application/json" } });
+});
+
 // GET /internal/pricing-catalog?space_id= — the billing worker's checkout routes resolve a
 // plan/pack's lsVariantId here (requireInternalHmac, not a builder/end-user-facing shape).
 app.use("/internal/pricing-catalog", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
@@ -2665,6 +3313,7 @@ app.get("/internal/pricing-catalog", async (c) => {
     plans: catalog.plans,
     credit_packs: catalog.creditPacks,
     wallet_topups: catalog.walletTopups,
+    personal_plans: catalog.personalPlans,
     external_revenue_cut: catalog.externalRevenueCut ?? null,
   });
 });
@@ -2806,11 +3455,10 @@ app.use("/internal/product-users/:spaceId/:endUserId/credits/balance", requireIn
 app.get("/internal/product-users/:spaceId/:endUserId/credits/balance", async (c) => {
   const spaceId = c.req.param("spaceId");
   const endUserId = c.req.param("endUserId");
-  const product = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ? AND status != 'deleted'")
-    .bind(spaceId).first<{ tenant_id: string }>();
-  if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+  const root = await resolveProductRootSpace(c.env, spaceId);
+  if (!root) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
 
-  const stub = await productUserDoStub(c.env, spaceId, endUserId, product.tenant_id);
+  const stub = await productUserDoStub(c.env, root.id, endUserId, root.tenant_id);
   const balRes = await stub.fetch(new Request("http://do/credits/balance"));
   const result = await balRes.json<{ balance_credits: number }>();
   return c.json(result);
@@ -2830,11 +3478,10 @@ app.post("/internal/product-users/:spaceId/:endUserId/credits/deduct", async (c)
   if (!Number.isFinite(body.credits) || body.credits <= 0) {
     return c.json({ error_code: "bad_request", message: "credits must be a positive number" }, 400);
   }
-  const product = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ? AND status != 'deleted'")
-    .bind(spaceId).first<{ tenant_id: string }>();
-  if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+  const root = await resolveProductRootSpace(c.env, spaceId);
+  if (!root) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
 
-  const stub = await productUserDoStub(c.env, spaceId, endUserId, product.tenant_id);
+  const stub = await productUserDoStub(c.env, root.id, endUserId, root.tenant_id);
   const deductRes = await stub.fetch(new Request("http://do/credits/deduct", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -2860,12 +3507,17 @@ app.use("/internal/product-users/:spaceId/:endUserId/credits/refresh-monthly", r
 app.post("/internal/product-users/:spaceId/:endUserId/credits/refresh-monthly", async (c) => {
   const spaceId = c.req.param("spaceId");
   const endUserId = c.req.param("endUserId");
-  const product = await c.env.PLATFORM_DB.prepare(
-    "SELECT tenant_id, spacetype_id, config_json FROM spaces WHERE id = ? AND status != 'deleted'"
-  ).bind(spaceId).first<{ tenant_id: string; spacetype_id: string; config_json: string | null }>();
-  if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+  const root = await resolveProductRootSpace(c.env, spaceId);
+  if (!root) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+  // Pricing (like the plan/credit-pack catalog — see loadPricingCatalog's own comment) is
+  // authored on the product ROOT, never on a business's own row — read the root's config, not
+  // whatever spaceId was passed in.
+  const rootRow = await c.env.PLATFORM_DB.prepare(
+    "SELECT spacetype_id, config_json FROM spaces WHERE id = ? AND status != 'deleted'"
+  ).bind(root.id).first<{ spacetype_id: string; config_json: string | null }>();
+  if (!rootRow) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
 
-  const pc = await loadEffectiveProductConfig(c.env, product.spacetype_id, product.config_json);
+  const pc = await loadEffectiveProductConfig(c.env, rootRow.spacetype_id, rootRow.config_json);
   const pricingConfig = pc?.pricingConfig;
   const isFreeOrUnconfigured = !pricingConfig || pricingConfig.model === "free";
   const monthlyCredits = pricingConfig?.creditsIncludedPerMonth
@@ -2873,7 +3525,7 @@ app.post("/internal/product-users/:spaceId/:endUserId/credits/refresh-monthly", 
   if (monthlyCredits <= 0) return c.json({ granted: false, reason: "no_monthly_allowance" });
 
   const monthKey = new Date().toISOString().slice(0, 7); // "2026-07" — one grant per calendar month
-  const stub = await productUserDoStub(c.env, spaceId, endUserId, product.tenant_id);
+  const stub = await productUserDoStub(c.env, root.id, endUserId, root.tenant_id);
   const grantRes = await stub.fetch(new Request("http://do/credits/grant", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -3182,6 +3834,37 @@ app.get("/products/by-slug/:slug", async (c) => {
   });
 });
 
+// GET /spaces/:productSpaceId/template-activity — Discover's "what other businesses are doing"
+// showcase (CLAUDE.md appendix BF.4's Business Network, scoped down: no opt-in feed, no
+// skill-sharing, no buying or selling — just an honest signal that a template is a real, chosen
+// thing, not a stat this pass invented). The QUERY itself is deliberately cross-tenant (other
+// tenants' activity is the whole point) and deliberately an AGGREGATE COUNT ONLY: no business
+// name, no owner, no revenue, no PII of any kind crosses the tenant boundary, matching this
+// codebase's own standing rule that a business-network-style feature never leaks individual
+// figures regardless of plan. `:productSpaceId` in the path carries no filtering weight in the
+// SQL below — it exists only so a product_end_user's nps_ session (which is verified per-product,
+// via naelao-router's PRODUCT_END_USER_PATH_PATTERNS) has a product to verify against, the same
+// reason /spaces/:productSpaceId/my-businesses is namespaced the same way for an account-wide
+// list.
+app.get("/spaces/:productSpaceId/template-activity", async (c) => {
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+
+  const { results } = await c.env.PLATFORM_DB.prepare(
+    `SELECT json_extract(config_json, '$.template_id') AS template_id,
+            COUNT(*) AS active_count,
+            SUM(CASE WHEN created_at >= datetime('now', '-30 days') THEN 1 ELSE 0 END) AS created_last_30d
+       FROM spaces
+      WHERE status = 'active'
+        AND parent_space_id IS NOT NULL
+        AND json_extract(config_json, '$.template_id') IS NOT NULL
+      GROUP BY template_id
+      ORDER BY active_count DESC`
+  ).all<{ template_id: string; active_count: number; created_last_30d: number }>();
+
+  return c.json({ data: results });
+});
+
 // ── Three-Tier Platform Model, Phase 6: Product Shell data layer ────────────────────────────
 // GET /spaces/:spaceId/shell/manifest — a SAFE PROJECTION of the SpaceType manifest for a
 // browser client (the manifest-driven Product Shell in apps/portal). Deliberately excludes
@@ -3217,6 +3900,9 @@ app.get("/spaces/:spaceId/shell/manifest", async (c) => {
   // matching business_templates' existing "not configured yet" semantics below.
   const templateCatalog =
     businessTemplates.length > 0 ? fullCatalog.filter((t) => businessTemplates.includes(t.id)) : fullCatalog;
+  // Browse-only: what a business comes preconfigured with and who runs it. Same "render from the
+  // real catalogue, never a client-side copy" rule as template_catalog above.
+  const shellCatalog = await loadShellCatalog(c.env);
 
   return c.json({
     space_id: space.id,
@@ -3238,10 +3924,15 @@ app.get("/spaces/:spaceId/shell/manifest", async (c) => {
       suppress_naelao_branding: pc?.branding?.suppressNaelaoBranding ?? false,
     },
     assistant_mode: pc?.assistantMode ?? "per-user",
-    // §A1.28 (model switcher): null means "unset" — the dispatch layer's own hardcoded fallback
-    // (e.g. "claude-haiku-4-5-20251001") applies, same meaning as every other unset productConfig
-    // field in this projection.
+    // §A1.28 (model switcher): null means "unset" — the dispatch layer's own DEFAULT_WORKING_MODEL
+    // fallback (@naelao/billing-core, a Workers AI id — see CLAUDE.md item 68/79: a Claude default
+    // 404s on an account with no Anthropic provider on its gateway) applies, same meaning as every
+    // other unset productConfig field in this projection.
     model: pc?.modelConfig?.model ?? null,
+    // The stored escalation-budget default for this business — the shell reads it as the
+    // starting point for a session that's never chosen its own effort locally yet. Same
+    // null-means-unset convention as model above (the dispatch layer's own default is "low").
+    effort: pc?.modelConfig?.effort ?? null,
     sub_space_display: pc?.subSpaceDisplay ?? null,
     allow_public_signup: pc?.allowPublicSignup ?? false,
     auth_provider: pc?.authProvider?.provider ?? "naelao-native",
@@ -3258,6 +3949,11 @@ app.get("/spaces/:spaceId/shell/manifest", async (c) => {
     // Phase F (§A1.17): the real, coming_soon-aware template catalog (id/name only) — the shell's
     // create-business dialog renders straight from this instead of a hardcoded duplicate list.
     template_catalog: templateCatalog,
+    // The Discover page's informational catalogues — the project presets a business is set up
+    // with, and the core agents that run it. Static product data (an agent's system_prompt is
+    // never included), safe pre-login exactly like template_catalog.
+    project_template_catalog: shellCatalog.project_templates,
+    agent_catalog: shellCatalog.agents,
     // Legal & support — safe to surface pre-login (ToS/Privacy must be readable before signup).
     // cookiePolicy drives the consent banner; supportContact gives stuck users a path to a human.
     // Unset fields: shell falls back to Naelao's own platform links (naelao.com/legal/*).

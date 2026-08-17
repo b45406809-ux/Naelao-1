@@ -16,7 +16,17 @@
 //       --session-id <eval-session-id> \
 //       [--agent-id <agent_definition_id>] \
 //       [--threshold 0.5] \
-//       [--mode agent|text]
+//       [--mode agent|text] \
+//       [--models "@cf/openai/gpt-oss-120b,@cf/qwen/qwen3-30b-a3b-fp8"] \
+//       [--datasets a.jsonl,b.jsonl] \
+//       [--trace-only]
+//
+// MODEL MATRIX: pass --models to score the SAME dataset across several candidate models in one
+// invocation and print a comparison table. Each model is a separate eval run carrying a per-run
+// model override, so nothing about the space's stored configuration is mutated to take the
+// measurement. The regression gate below is skipped in matrix mode — comparing models against
+// each other and gating one model against its own history are different questions, and conflating
+// them would fire a "regression" every time the matrix simply reordered.
 //
 // Auth: NAELAO_API_BASE is naelao-router's public base URL (e.g. https://api.naelao.com/v1);
 // NAELAO_TENANT_TOKEN is a Bearer JWT for a tenant that owns --space-id, exactly like any other
@@ -36,8 +46,26 @@ function parseArgs(argv) {
     else if (a === "--agent-id") args.agentId = argv[++i];
     else if (a === "--threshold") args.threshold = Number(argv[++i]);
     else if (a === "--mode") args.mode = argv[++i];
+    else if (a === "--models") args.models = argv[++i].split(",").map((m) => m.trim()).filter(Boolean);
+    // Skip the LLM judge entirely and score from trace checks alone. The judge model is a premium
+    // one, so on a capped free tier judging costs several times what the agent runs being measured
+    // cost — this is what makes a wide model matrix affordable at all. See the eval worker's
+    // RunBody comment for the intended two-pass design.
+    else if (a === "--trace-only") args.traceOnly = true;
+    else if (a === "--datasets") args.datasets = argv[++i].split(",").map((m) => m.trim()).filter(Boolean);
   }
   return args;
+}
+
+/** Right-pad for the comparison table. */
+function pad(v, n) {
+  const s = String(v);
+  return s.length >= n ? s.slice(0, n) : s + " ".repeat(n - s.length);
+}
+
+function padLeft(v, n) {
+  const s = String(v);
+  return s.length >= n ? s : " ".repeat(n - s.length) + s;
 }
 
 function loadCases(path) {
@@ -84,13 +112,22 @@ async function main() {
     console.error("Set NAELAO_API_BASE and NAELAO_TENANT_TOKEN env vars.");
     process.exit(2);
   }
-  if (!args.dataset || !args.name || !args.spaceId) {
-    console.error("Required: --dataset <path> --name <suite-name> --space-id <id>");
+  if (!args.dataset && !args.datasets) {
+    console.error("Required: --dataset <path> (or --datasets a,b) --name <suite-name> --space-id <id>");
+    process.exit(2);
+  }
+  if (!args.name || !args.spaceId) {
+    console.error("Required: --name <suite-name> --space-id <id>");
     process.exit(2);
   }
   if (args.mode === "agent" && !args.sessionId) {
     console.error("--session-id is required for --mode agent (the default)");
     process.exit(2);
+  }
+
+  if (args.models && args.models.length > 0) {
+    await runMatrix(base, token, args);
+    return;
   }
 
   const cases = loadCases(args.dataset);
@@ -106,6 +143,7 @@ async function main() {
 
   const runBody = {
     mode: args.mode,
+    ...(args.traceOnly ? { trace_only: true } : {}),
     ...(args.sessionId ? { session_id: args.sessionId } : {}),
     ...(args.agentId ? { agent_definition_id: args.agentId } : {}),
   };
@@ -134,6 +172,110 @@ async function main() {
   }
   console.log("No regression beyond threshold.");
   process.exit(0);
+}
+
+/**
+ * Score one or more datasets across several candidate models and print a comparison table.
+ *
+ * Reports four columns, not just a score, because a score alone hides the failure modes that
+ * actually disqualify a model for agent work:
+ *  - errors: runs that never produced an answer at all (a model that can't drive the tool loop
+ *    fails here long before its answer quality matters).
+ *  - judge: cases the JUDGE failed on. Excluded from the score by the worker, surfaced here so a
+ *    broken instrument is visible rather than quietly shrinking the sample.
+ *  - latency: an agent that takes 40s per turn is unusable in a chat surface regardless of score.
+ */
+async function runMatrix(base, token, args) {
+  const datasets = args.datasets ?? [args.dataset];
+  const rows = [];
+
+  for (const dataset of datasets) {
+    const cases = loadCases(dataset);
+    const suiteName = datasets.length > 1 ? `${args.name}:${dataset.split("/").pop()}` : args.name;
+    const suiteId = await findOrCreateSuite(base, token, suiteName, args.spaceId, cases);
+    console.log(`\n=== ${dataset} (${cases.length} cases) — suite ${suiteId} ===`);
+
+    for (const model of args.models) {
+      process.stdout.write(`  ${model} … `);
+      const startedAt = Date.now();
+      let result;
+      try {
+        result = await apiFetch(base, token, `/evals/${suiteId}/run`, {
+          method: "POST",
+          body: JSON.stringify({
+            mode: args.mode,
+            ...(args.sessionId ? { session_id: args.sessionId } : {}),
+            ...(args.agentId ? { agent_definition_id: args.agentId } : {}),
+            ...(args.traceOnly ? { trace_only: true } : {}),
+            model,
+          }),
+        });
+      } catch (err) {
+        // One model failing outright must not abandon the rest of the matrix — that IS a result.
+        console.log(`FAILED (${err instanceof Error ? err.message : String(err)})`);
+        rows.push({ dataset, model, score: null, errors: cases.length, judge: 0, latency: null, note: "run failed" });
+        continue;
+      }
+      const wall = Date.now() - startedAt;
+      console.log(`avg=${result.avg_score.toFixed(2)} errors=${result.agent_errors} judge_errors=${result.judge_errors} (${(wall / 1000).toFixed(1)}s)`);
+      rows.push({
+        dataset,
+        model,
+        score: result.avg_score,
+        errors: result.agent_errors,
+        judge: result.judge_errors,
+        latency: result.avg_latency_ms,
+        scored: result.scored_count,
+        cases: result.case_count,
+      });
+    }
+  }
+
+  console.log(`\n${"=".repeat(100)}\nMODEL COMPARISON\n${"=".repeat(100)}`);
+  console.log(`${pad("model", 46)} ${pad("dataset", 22)} ${padLeft("score", 6)} ${padLeft("err", 4)} ${padLeft("judge", 6)} ${padLeft("ms/case", 8)}`);
+  console.log("-".repeat(100));
+  for (const r of rows) {
+    console.log(
+      `${pad(r.model, 46)} ${pad((r.dataset ?? "").split("/").pop() ?? "", 22)} ` +
+        `${padLeft(r.score === null ? "—" : r.score.toFixed(2), 6)} ${padLeft(r.errors, 4)} ` +
+        `${padLeft(r.judge, 6)} ${padLeft(r.latency === null ? "—" : r.latency, 8)}`
+    );
+  }
+
+  // Aggregate across datasets so a model that is good at one thing and useless at another can't
+  // win on a single strong dataset.
+  const byModel = new Map();
+  for (const r of rows) {
+    const agg = byModel.get(r.model) ?? { score: 0, n: 0, errors: 0, judge: 0, latency: 0, latencyN: 0 };
+    if (r.score !== null) { agg.score += r.score; agg.n++; }
+    agg.errors += r.errors;
+    agg.judge += r.judge;
+    if (r.latency !== null && r.latency !== undefined) { agg.latency += r.latency; agg.latencyN++; }
+    byModel.set(r.model, agg);
+  }
+  const overall = [...byModel.entries()]
+    .map(([model, a]) => ({
+      model,
+      score: a.n > 0 ? a.score / a.n : null,
+      errors: a.errors,
+      judge: a.judge,
+      latency: a.latencyN > 0 ? Math.round(a.latency / a.latencyN) : null,
+    }))
+    // Errors first: a model that cannot complete runs is disqualified regardless of how the
+    // cases it DID finish were scored.
+    .sort((x, y) => x.errors - y.errors || (y.score ?? -1) - (x.score ?? -1));
+
+  console.log(`\n${"=".repeat(100)}\nOVERALL (averaged across datasets, ranked by errors then score)\n${"=".repeat(100)}`);
+  console.log(`${pad("model", 46)} ${padLeft("score", 6)} ${padLeft("err", 4)} ${padLeft("judge", 6)} ${padLeft("ms/case", 8)}`);
+  console.log("-".repeat(100));
+  for (const r of overall) {
+    console.log(
+      `${pad(r.model, 46)} ${padLeft(r.score === null ? "—" : r.score.toFixed(2), 6)} ` +
+        `${padLeft(r.errors, 4)} ${padLeft(r.judge, 6)} ${padLeft(r.latency === null ? "—" : r.latency, 8)}`
+    );
+  }
+
+  console.log(`\nJSON: ${JSON.stringify({ rows, overall })}`);
 }
 
 main().catch((err) => {

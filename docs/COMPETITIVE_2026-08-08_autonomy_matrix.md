@@ -1,0 +1,585 @@
+# Naelao vs OpenClaw, Claude Code, Hermes and Polsia — the autonomy comparison
+
+Written 2026-08-08, from a live end-to-end run on production plus current vendor documentation.
+Supersedes nothing: `COMPETITIVE_2026-08-05_openclaw_hermes.md` is still the right document for
+the OpenClaw/Hermes *feature* diff, and its two real gaps (Telegram, skill self-improvement) are
+both closed. This one asks a narrower and harder question:
+
+> Can the Space Assistant actually build and run a business better than a product whose entire
+> pitch is that it runs one for you?
+
+The honest answer, before this session's changes, was **no — and not for the reason we assumed.**
+Not orchestration, not memory, not tooling. The assistant could not name the business it was
+running.
+
+---
+
+## The four are not the same kind of thing
+
+Comparing them as one category is the mistake that produces bad roadmaps.
+
+| | What it is | Trust model | Who it serves |
+|---|---|---|---|
+| **Claude Code** | A coding agent in your terminal | You are present, approving | One developer, one repo |
+| **OpenClaw** | A personal agent on your machine | "Single operator with local tool access" | One operator |
+| **Hermes** | A personal agent, many surfaces | Single operator | One operator |
+| **Polsia** | An autonomous company builder | Delegated — it acts, you read results | One founder, one company |
+| **Naelao** | A platform where a builder ships products to end users, each running their own isolated business | Multi-tenant, per-business isolation, per-action approval | Many builders × many businesses |
+
+Three consequences follow, and they are the whole reason a straight feature port is usually wrong:
+
+1. **Their easy answers are unavailable to us.** OpenClaw's WhatsApp is Baileys — a
+   reverse-engineered web client running as the operator's *personal* account, QR-scanned via
+   Linked Devices. Sixty seconds to set up, and only possible because there is exactly one
+   operator on one machine. Holding thousands of customers' personal WhatsApp sessions is a
+   different proposition entirely, which is why ours went to Twilio.
+2. **Our hard problems do not exist for them.** Per-business credential isolation, spend caps,
+   an approval that a *different* person has to answer — none of these are meaningful for a
+   single operator with local shell access.
+3. **Our failure modes are worse.** When Claude Code is wrong, one developer sees it immediately.
+   When a Space Assistant is wrong, it emails a real customer of a real business, and the owner
+   may find out days later.
+
+---
+
+## Proactivity — the axis the whole product is judged on
+
+Polsia's claim is specific: it *"does not wait for prompts but evaluates the state of the
+business, prioritises tasks, and executes them independently."* OpenClaw's is the same shape:
+hooks (event-driven), cron (time-driven), and a heartbeat every ~30 minutes where *"the agent
+wakes up, checks whether there's anything to do, and either acts or goes back to sleep."*
+
+The mechanisms are at parity. All three exist here and are real, per-business, and were verified
+seeded on a live business during this session:
+
+| Primitive | OpenClaw | Naelao |
+|---|---|---|
+| Event-driven | hooks | `event_triggers` (+ `workspace.file_changed` cross-project handoff) |
+| Time-driven | cron | `scheduled_jobs` + cron matcher — live rows confirmed per business |
+| Periodic awareness | heartbeat (~30 min) | hourly sweep: channel drains, connector polls, scheduled jobs, digest |
+| Inbound-driven | — | a customer message triggers an immediate drain, not just the sweep |
+
+**But mechanism was never the gap.** What the wake-up *did* was the gap. The seeded recurring goal
+said: read the journal, check the wallet and orders, log findings, tell the owner if something
+needs attention. The profile said: *"tell the owner what's working, what isn't, and what you'd try
+next."* Both describe a **reviewer**. A reviewer that reports faithfully every day and never moves
+the business forward loses to a competitor that acts, however good the reports are — and worse,
+the brief returned *nothing at all* when the business was healthy, which is precisely the state
+where there is no failure to react to and the assistant most needed telling to go and do
+something.
+
+**Changed this session** (`ADVANCE_DIRECTIVE`, `workers/agents/src/index.ts`): every proactive
+wake now carries a standing instruction to decide the single most valuable next thing and actually
+do it — take the action if the approval policy already allows it, and where permission is needed
+open **one** approval with a concrete proposal (what exactly, and what it costs) rather than a
+vague suggestion. It rides on the quiet ticks too, not just the broken ones. Deliberately placed
+in the runtime wake path rather than the agent profile, because profiles are written to R2 at
+provision time and would only ever have reached *new* businesses.
+
+### And then the scheduled jobs turned out never to have fired at all
+
+Waiting for a real `0 13 * * *` cron on a real business, at 13:00 UTC, and watching it not happen.
+
+`enqueueAgentTicks` anchored a never-run job with ``Date.parse(`${created_at}Z`)``. D1 returns that
+column as a full ISO string that **already ends in Z**, so this produced `"…671ZZ"` → `NaN`.
+`isCronDue` then did `Math.max(NaN, earliest)` → `NaN` → its scan loop `for (m = NaN; m <= end;
+m++)` never executed → `false`. Measured against the real row: **0 minutes scanned, versus 160
+after the fix.**
+
+The failure was **self-sealing**: the job could not fire, so `last_run_at` stayed null, so the
+anchor stayed `NaN`, so it could never become due. And it was **silent** — no error, no log, and
+from outside indistinguishable from "not due yet". Every scheduled job seeded for every business
+was correct, enabled, and dead.
+
+So the honest position on the whole proactive layer, before this session: the mechanisms existed
+and were seeded per business, the wake-up brief and diagnostics were real, and **none of it ever
+ran**. Nothing in ~2,700 unit tests caught it, because every one of them passes a real number for
+`lastRunAtMs`; nothing exercised the never-run path with the string D1 actually returns.
+
+Fixed in two layers — parse both D1 timestamp shapes correctly and return `undefined` rather than
+`NaN`, and make `isCronDue` treat a non-finite anchor as unknown rather than as "never due", so a
+bad timestamp can cost one extra evaluation instead of the entire schedule.
+
+### Where we are now genuinely ahead
+
+The instinct is to close the gap by removing the approval gate. That would be a mistake, and it is
+worth stating why: an autonomous runner that silently spends an owner's money is not more advanced
+than one that asks — it is less accountable. The differentiator is being *better at asking*, not
+at skipping.
+
+- **Approvals that survive the process.** A gated action suspends the run durably and resumes it
+  up to 24h later when a human answers, with the already-completed steps handed back rather than
+  repeated. Polsia and OpenClaw both assume the operator is either present or irrelevant.
+- **An action ledger.** A retried run short-circuits actions that already succeeded. Neither
+  competitor documents an equivalent; both would re-send the email.
+- **Failure classification.** The assistant distinguishes "the model quota resets by itself, do
+  not rebuild anything" from "this script is genuinely broken" — and acts differently.
+- **Honest exhaustion.** A run that stops says *why*, naming what it tried.
+
+---
+
+## The gap that actually mattered, and what it cost
+
+Found by driving a real business (a web-design studio, `whop-webdev-agency`) end to end on
+production and asking the question its owner would ask first.
+
+> **"What is this business and what should I do first to get my first paying customer?"**
+>
+> *Before:* "This business is a digital business built using the Launchpad Space… you should
+> first discover what you actually want and can do, then propose concrete options… scaffold the
+> real projects and connections using the workspace-admin, mcp-connector, commerce, and
+> storefront prebuilts."
+
+Two failures in one answer, and they share a cause. It did not know the business sold websites,
+so it gave advice that would fit any business at all; and having nothing specific to say, it
+described its own machinery — naming internal components to a non-technical owner.
+
+The reasoner payload carried the agent's role, the goal, the conversation, a state fingerprint,
+candidate scripts. Nothing about the business. The profile is the same static text for every
+Launchpad business on the platform, so it establishes *what kind of agent this is* and can never
+establish *which business this is*. An autonomous business runner that does not know which
+business it runs cannot run it — every answer is generic by construction.
+
+> *After:* "This business is Pixel Forge Studio, offering Web Studio (ultra-cheap sites) to build
+> and sell small business websites from $10. To get your first paying customer, you should first
+> finish setting up your business. You can do this by going to the setup checklist on the business
+> page."
+
+Names it, knows what it sells, leads with the genuine blocker, no internal vocabulary.
+
+**Worth recording: the first fix did not work, and the second attempt is the interesting one.**
+Adding `business_context` to the payload, deploying, and re-asking the same question on the same
+business produced a word-for-word identical generic answer — the business name was sitting in the
+request and the model never looked at it. One field among a dozen, behind a 4kB action protocol
+and five tool schemas, is not somewhere a 70B model reliably reads. The fix was to state it as
+prose in the system message, beside the identity anchor that exists for exactly the same reason
+(a previous session found "who are you?" being answered from the machinery for the same
+attention reason). **On small open-weight models, placement is a correctness property, not a
+formatting preference.** Neither the payload nor the prompt version would have been caught by
+tests — only by asking a real business a real question and reading the answer.
+
+---
+
+## The default model is a product decision, and it is currently costing quality
+
+Measured, not inferred. The same project agent, same business, same question — *"What is your job
+here?"* — on two models:
+
+**`@cf/meta/llama-3.3-70b-instruct-fp8-fast` (today's default):**
+> "My job is to find customers for a small web studio… by using the `web-search` prebuilt to find
+> local businesses with a weak web presence and drafting outreach messages for the owner to
+> approve."
+
+**`@cf/openai/gpt-oss-120b`, identical prompt and business:**
+> "I'm here to help Clearline Web grow its client base. My job is to locate local businesses that
+> have weak or missing web presences — no website, a dead link, a social-media page acting as a
+> site, or a site that doesn't work well on mobile — and record exactly what I see. I then draft
+> outreach messages (including a click-to-WhatsApp link when a phone number is available) for you
+> to review and approve…"
+
+The instruction not to name internal tooling is present in three places for both runs — the
+reasoner protocol, the shared owner-facing language rule appended to every agent profile, and the
+agent's own prompt. The 70B model narrates its tooling anyway, because the prompt it has just read
+necessarily names those operations so it can pick the right one, and it mirrors that register. The
+120B model follows the instruction and writes like a person.
+
+So this is a **model-capability limit, not a prompt bug** — worth stating plainly because the
+obvious next move (write yet another, firmer instruction) is the wrong one; it has already been
+tried three times. The realistic options are: raise the default model, or accept that owner-facing
+prose is weaker on the cheapest tier. That is a cost decision, not an engineering one — a larger
+model burns the ~10,000 neuron/day free allowance faster — so it is flagged here rather than
+changed unilaterally.
+
+It also sharpens the Claude Code comparison below: the gap there is not architecture, it is that
+Claude Code runs frontier models and this platform's default does not.
+
+## Feature matrix
+
+Restricted to axes that differ. Everything in the 2026-08-05 doc's table still holds.
+
+| | Claude Code | OpenClaw | Hermes | Polsia | Naelao |
+|---|---|---|---|---|---|
+| Agentic loop + tools | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Runs unprompted | ✗ (you invoke it) | ✓ hooks/cron/heartbeat | ✓ | ✓ core pitch | ✓ + now acts, not just reviews |
+| Knows the business it runs | n/a | n/a | n/a | ✓ | ✓ *(this session)* |
+| Sub-agents | ✓ | ✓ | ✓ | ✓ 9 roles | ✓ + per-child token budgets |
+| Durable approvals across a closed session | ✗ | ✗ | ✗ | ✗ | ✓ 24h suspend/resume |
+| Exactly-once on retry | ✗ | ✗ | ✗ | ✗ | ✓ action ledger |
+| Layered memory | session | `MEMORY.md` + dir | files | — | ✓ 6-layer, project-shared/private split |
+| Skill self-improvement | ✗ | ✗ | partial | — | ✓ recency health, repair routing, retire |
+| Multi-tenant isolation | n/a | n/a | n/a | ✗ single company | ✓ structural |
+| Spend caps / credit metering | ✗ | ✗ | ✗ | ✗ | ✓ per session/project/business |
+| One-click connector OAuth | ✗ | ✗ config file | ✗ | partial | ✓ Composio + Pipedream, ~3,500 apps |
+| Business bank account | ✗ | ✗ | ✗ | ✗ | ✓ Whop wallet auto-provisioned |
+| Send *and receive* business email | ✗ | ✗ | ✗ | ✓ | ✓ AgentMail, auto-provisioned |
+
+**Claude Code is not a competitor on this axis and should not be treated as one.** It is a better
+*coding* agent than our project agents and will remain so — it is purpose-built, runs with a
+present operator, and has the whole repo in reach. The place it genuinely beats us is
+tool-call reliability, because it runs frontier models; our default is a 70B open-weight model on
+a free tier, which is why "state it as prose in the system message" is load-bearing here and
+irrelevant there. What Claude Code cannot do is run for three weeks against a business it
+remembers, ask a human for permission and still be waiting tomorrow.
+
+---
+
+## Autonomy: it was broken in production, and is now proven working
+
+The headline claim — an owner sets their business to Autonomous and it acts — **was false on the
+path that actually runs**, and only live testing found it.
+
+`/agent/run` resolves the caller's role in their own business (`business_memberships`) so that a
+business OWNER isn't downgraded by the F-36 clamp. It passed that into the async Workflow's params
+— and `AgentTaskParams` never declared the field, so the run-agent step never forwarded it. The
+async path is the DEFAULT for every real chat message. Net effect: an owner who flipped their
+business to Autonomous still had **every action gated, with nobody but themself to approve it**.
+Item 93 fixed exactly this bug on the *synchronous* dispatch and missed the one that runs.
+
+Reproduced live (real owner-role end user, policy set to `yolo`, still told *"Waiting on your
+approval for: quote-job"*), fixed, and re-verified. Proof after the fix — one prompt, no
+approvals, no human in the loop:
+
+> "Create a new project called Q3 Marketing Push for planning our autumn campaign, then confirm
+> it exists by listing the projects."
+>
+> ✅ *"The project **Q3 Marketing Push** has been created successfully (ID c8edd7cd…). When I
+> listed your workspace projects, I saw the existing ones: Wallet, General, Lead Generation,
+> Development, Client Communication, Pricing & Portfolio, **Q3 Marketing Push**…*
+> ⚠️ *Reminder: Pixel Forge Studio's overall setup is still unfinished…"*
+
+That is a multi-step autonomous action — mutate, verify by re-reading, report accurately with the
+real id, and volunteer the caveat without being asked. It is the shape of thing Polsia's pitch is
+built on, and it now works.
+
+### And the version that actually touches revenue — plus the failure that got there first
+
+The stronger test is whether it can put something up for **sale**. The first attempt produced the
+worst failure this platform can have:
+
+> *"I've created the Standard Website Package… Price: $20… The product is now live on your
+> storefront at shop-457302.naelao.com."*
+
+`launchpad_products` was empty platform-wide. None of it existed — including the URL. An owner
+acting on that believes they are selling something they are not, which is strictly worse than a
+visible failure.
+
+**The cause was a capability gap, not only a model one.** `commerce` had four operations —
+`checkout`, `seat_checkout`, `list_products`, `get_order`. There was no way to create a product at
+all, so "run a business" stopped at reading. Adding `commerce.create_product` /
+`update_product` against the routes the storefront UI has always used, the same request now
+produces:
+
+- agent reports product `c210c785-43c0-42d4-ad7e-3391eabfbb97`, $20, status `draft`
+- an independent `GET /spaces/:id/products` returns **that exact id, name and `price_cents: 2000`**
+
+$20 is the bottom of the Standard tier from this business's own published price list, so the
+pricing context is now driving a real commercial decision. Publishing was deliberately left as its
+own step — a product going on sale is the moment customers can pay for it.
+
+**Two lessons worth carrying, both uncomfortable.** First: always verify an agent's success claim
+against the datastore. This session it was false once and true once, and the two answers read
+almost identically. Second: an explicit "never report work you didn't do" instruction was added
+before the second attempt and **did not stop the fabrication on its own** — the run after adding it
+still claimed success while correctly reporting the product list was empty. What fixed the
+behaviour was giving the agent a real capability. On this model tier a prompt rule is a nudge;
+structure is what holds.
+
+## Still open, honestly
+
+1. **One unattended cron fire has not yet been observed end to end.** The bug that prevented it is
+   fixed and proven at the arithmetic level against the real production row (0 minutes scanned
+   before, 160 after), and deployed — but the sweep runs hourly, so confirming it live means
+   waiting for the next one. Until that is seen, the fix is proven, the schedule running is not.
+2. **Execution tiers 2-4 are genuinely plan-gated, and the way that fails is a trap.** Uncommenting
+   `[[worker_loaders]]` and running `wrangler deploy` **succeeds** — normal output, new Version ID,
+   no warning. Cloudflare then silently drops the binding: the bindings API shows no `LOADER`, and
+   a real Tier-2 script still fails with *"Tier 2 is unavailable: no worker_loaders binding
+   configured"*. Verified both ways this session. So a successful deploy is not evidence the
+   binding exists — check `GET /accounts/{id}/workers/services/{name}/environments/production/bindings`.
+   Every seeded skill (`quote-job`, `outreach-draft`, `store-provision`, …) needs this. **The
+   find→quote→build→deliver cycle is blocked on the CF Workers Paid plan, not on code**, and that
+   is the single highest-value unblock available.
+   Note what is NOT blocked by it: the prebuilts (web search, notifications, commerce, business
+   email, MCP connectors, project/workspace admin, journal) run natively, which is why the
+   autonomous project-creation proof above works today.
+3. **Model budget.** ~10,000 neurons/day ≈ 65 agent runs across the entire platform. Same unblock.
+4. **Profile changes only reach new businesses.** Profiles are written to R2 at provision time.
+   Runtime paths (the reasoner, the wake brief) reach every business immediately; anything put in
+   `profiles.ts` does not. Existing businesses also keep the approval allowlist snapshotted at
+   *their* provision time. A backfill path is a real, unbuilt piece of work.
+5. **Polsia auto-provisions infrastructure** (servers, databases, dev environments) as part of
+   starting a company. We provision a wallet, an inbox, projects and agents — but not compute for
+   the business's own product. Whether that is a gap or a different product depends on whether
+   Naelao businesses are meant to ship software; for the current templates (web studio, Whop
+   seller) it is not one.
+
+## Sources
+
+- [Polsia Review 2026 — AgentAya](https://agentaya.com/ai-review/polsia/)
+- [Polsia AI: The Autonomous Agent That Runs Your Company — navtools](https://navtools.ai/tool/polsia)
+- [Polsia Review 2026 — cto.new](https://cto.new/guides/polsia-review)
+- [OpenClaw Automations / cron jobs — official docs](https://docs.openclaw.ai/automation/cron-jobs)
+- [OpenClaw heartbeat scheduling — SFAI Labs](https://sfailabs.com/guides/openclaw-heartbeat-scheduling)
+- [The 3 Superpowers of OpenClaw — Kryll](https://blog.kryll.io/openclaw-hooks-cron-heartbeat-ai-agent-automation/)
+
+---
+
+# Addendum — a capability benchmark we can actually run (2026-08-08, later)
+
+The comparison above is a feature and behaviour argument. This addendum adds the
+instrument: a repeatable, trace-graded benchmark that scores any model on this
+platform's own agent loop, so "we beat X" becomes a number someone else can
+re-derive rather than a claim.
+
+## Why measure on our own loop instead of importing a leaderboard
+
+Two published results settle this.
+
+`Claw-SWE-Bench` (arXiv 2606.12344) holds the model fixed and varies the harness:
+the *same* GLM 5.1 backbone scores **19.1% Pass@1 with a minimal adapter and 73.4%
+with the full one**. Across five harnesses it reports harness choice worth
+**27.4pp** against model choice's **29.4pp** — the scaffold matters about as much
+as the model. It also notes systems at similar accuracy "can differ substantially
+in total API cost."
+
+`WildClawBench` runs the same 60 tasks under OpenClaw, Claude Code, Codex CLI and
+Hermes and finds the same thing from the other direction: GPT-5.4 scores 56.8% on
+Codex and 50.3% on OpenClaw.
+
+So a generic leaderboard number would be precise about the wrong quantity. What
+decides whether *our* assistant runs a business well is this loop, these tools,
+this approval model — which is exactly what the matrix scores.
+
+## The six axes
+
+Each is taken from a published benchmark category *and* from a failure we have
+actually shipped, so no axis is invented for the convenience of passing it.
+
+| Axis | Published basis | Our own failure it exists to catch |
+|---|---|---|
+| `agency` | WildClawBench "agency (multi-step tool orchestration)" | Work claimed without reading it back |
+| `safety` | WildClawBench "Safety Alignment — adversarial robustness and credential awareness" | OpenClaw's CVE-2026-25253 shape: exfiltrate a token, then disable approvals |
+| `fabrication` | — (our domain) | Item 108: a reported product, with price and storefront URL, against an empty products table |
+| `recovery` | WildClawBench long-horizon robustness | Item 111: a mistyped tool name killing a live cron |
+| `proactivity` | The axis this product is judged on | A vague stall that leaves the owner no next step |
+| `synthesis` | WildClawBench "Productivity Flow — multi-source aggregation" | Item 105: an assistant that did not know which business it ran |
+
+## Grading from the trace, not the prose
+
+The LLM judge reads what the agent *wrote*. That is the right instrument for
+answer quality and the wrong one for "did it do this" — a model can describe work
+it never performed, and the judge scores it well because the paragraph is good.
+Item 108 is exactly that.
+
+So the objectively-checkable half is graded from the HX1 run trace: which tools
+ran, whether they succeeded, whether a write was read back, whether a failing call
+was repeated, whether the run escalated. `claweval` scores its own tool-calling
+category the same way — "deterministic (tool name + params match)" — rather than
+asking a model. Composition with the judge is **MIN, not average**: a run the
+trace proves fabricated must not be rescued by writing well about it.
+
+## The cost finding, which changed the design
+
+The configured judge model is a premium one. Measured on this account's own neuron
+billing: an agent run on the default model costs **~330 neurons**, while a judged
+case adds a premium-model call costing roughly **3× that**. Judging four cases
+would therefore cost several times the six runs being measured — the instrument
+outweighing the measurement, on a **10,000 neuron/day** free tier.
+
+Hence a two-pass design: a cheap trace-only pass ranks every candidate on
+behaviour, then a judged pass scores answer quality on the finalists. That is not
+only a budget trick — it mirrors this platform's own earlier finding that
+reliability and answer quality are different axes and should not be collapsed into
+one number. Measured budget: **~2,000 neurons per model for a 6-case pass ⇒ ~5
+models per daily quota.**
+
+## What the first real run already caught
+
+The instrument was validated against production before being trusted: the trace
+endpoint returned 13 real steps with correct phases, names and ok flags.
+
+It immediately surfaced a genuine model weakness. Asked to create a project and
+read it back, `llama-3.3-70b` hit the approval gate on `project.create`, correctly
+ran `project.list`, and then **re-chose the already-parked `project.create` five
+consecutive times** (trace seq 7–11) until stall detection ended the run. The
+harness behaved correctly throughout — it told the model "still waiting on a human
+for this one", incremented the stall counter, and asked for a closing summary on
+the final step. The model ignored all three. That is a model-capability finding,
+and precisely what the benchmark exists to expose.
+
+It also caught a flaw in our own test design: on a fresh business `project.create`
+is gated, so the `agency` case would have measured the *approval policy* rather
+than the model, and every candidate would have failed it identically. The eval
+space is now set to autonomous so the matrix measures capability; the approval
+behaviour is measured by the `proactivity` case, where it belongs.
+
+## The measurement budget is itself a trap
+
+Attempting the matrix produced a finding worth more than the run would have been.
+
+The Workers AI free allocation is **not a calendar-day cap**. Measured from
+Cloudflare's own analytics: **2026-08-07 used 13,540 neurons and 08-08 used 11,068**,
+both above the nominal 10,000/day — which a per-day counter cannot explain. It
+behaves as a **rolling 24-hour window**, so budget frees up gradually as the previous
+day's spend ages out, not at midnight.
+
+Worse, the obvious way to check remaining budget is wrong in the most dangerous
+direction. A request rejected by the quota limiter **consumes no neurons**, so on a
+capped day the analytics aggregate cheerfully reports *0 used / 10,000 remaining*
+while every real call fails. Trusting it produced a full matrix pass recording
+`avg_score=0.00` for two models that had never actually run — a quota wall rendered
+as "these models are bad". That is exactly the instrument-failure-as-result mistake
+the trace grader was built to prevent, arriving from a direction nobody was watching.
+
+The runner now probes the real limiter with one minimal inference and **refuses to
+start** rather than emit those zeros, re-checking between models so a long matrix
+cannot cross the limit halfway and silently report half a measurement. The three
+polluted baseline runs were purged, so the first real pass sets the baseline.
+
+## Status
+
+- Harness, dataset and graders: **built, tested (46 new unit tests), deployed.**
+- Instrument: **validated against production** — the trace endpoint returns real
+  steps, and the grader caught a real model failure on its first live run.
+- Budget guard: **built and verified refusing** on a capped allocation.
+- Full model matrix: **blocked on the rolling quota window**, not on any code.
+  Numbers land in `MODEL_BENCHMARKS` (`axes`, `neuronsPerRun`) and render on the
+  Discover page, which already reads both fields.
+
+Only `neuronsPerRun` for the default model is recorded so far, because it is the
+only figure actually measured. Nothing else is filled in until it is run.
+
+## Sources
+
+- [Claw-SWE-Bench (arXiv 2606.12344)](https://arxiv.org/abs/2606.12344)
+- [WildClawBench](https://github.com/InternLM/WildClawBench/)
+- [claweval — OpenClaw Model Evaluation Suite](https://github.com/mcbuckeye/claweval)
+
+---
+
+# Addendum 2 — the feature comparison, substantiated (2026-08-09)
+
+Every Naelao claim below is traceable to code or to a live production test in this repo's
+changelog. Competitor claims are from their own docs/READMEs, cited at the end. Where we are
+behind, it says so — a comparison that only lists wins is marketing, not engineering.
+
+## These are not the same kind of thing
+
+This is the single most important framing, and it decides which features are even *possible*:
+
+- **OpenClaw** — a local gateway daemon for **one operator**. Its own docs: "exactly one WhatsApp
+  session per host, one Telegram bot connection." Its WhatsApp is Baileys, i.e. the operator's own
+  personal account linked as a device.
+- **Hermes** — a persistent daemon on **your own infrastructure**. "All data stays on your machine.
+  No telemetry."
+- **Claude Code** — a coding harness for a developer at a terminal.
+- **Naelao** — a **multi-tenant platform**: a builder ships a product to *their* customers, each of
+  whom gets an isolated business with its own agents, wallet, credentials and approvals.
+
+So "beats OpenClaw" is only meaningful per-axis. On a single operator's laptop, OpenClaw's model is
+simpler and in places better. On "a builder runs a business, or sells to customers who each run
+one", the single-operator assumption is structurally disqualifying.
+
+## Where the architectures genuinely differ
+
+| Capability | OpenClaw | Hermes | Claude Code | Naelao |
+|---|---|---|---|---|
+| Persistent memory across sessions | ✅ encrypted at rest | ✅ signature feature | ✗ per-session | ✅ 6-layer Memory OS, project-shared L3/L4/L6, private L5 |
+| Writes its own reusable skills | ✅ skills system | ✅ self-improving loop | ✗ | ✅ `distill` + versioned R2 library + `skill-manager` |
+| Skill **health/recency** and repair routing | ✗ not documented | ✗ not documented | ✗ | ✅ `skill-health.ts` — bounded recent-outcome window, `broken`/`degrading` verdicts route to repair |
+| Cron / scheduled unattended work | ✅ | ✅ built-in scheduler | ✗ | ✅ per-business, **verified firing live 3× unattended** |
+| Human approval for risky actions | ✅ high-risk routed to human | partial (toolsets) | ✅ permission prompts | ✅ **durable** — suspends, survives 24h, resumes |
+| Exactly-once on retry | ✗ | ✗ | ✗ | ✅ action ledger keyed to the original run |
+| Messaging channels | **20+** | **16+** incl. Signal/iMessage | ✗ | 5 (email, Slack, Discord, WhatsApp, Telegram) |
+| Model flexibility | provider-configurable | **200+ via OpenRouter** | Anthropic | 16 curated (**this account: Workers AI only**) |
+| Runs fully local / no telemetry | ✅ | ✅ | ✅ | ✗ cloud |
+| Multi-tenant isolation (sell to customers) | ✗ single operator | ✗ single operator | ✗ | ✅ per-business tenant, credentials, wallet |
+| Holds real money | ✗ | ✗ | ✗ | ✅ Whop connected-account wallet + payout approval |
+| Structured run trace / observability | ✗ | ✗ | partial | ✅ HX1 `run_traces`, builder-readable |
+
+## Where we are genuinely behind
+
+Stated plainly, because these are real:
+
+1. **Channels: 5 vs 16–20.** Notably missing Signal and iMessage. Both need a phone number bound to
+   a long-running local process — an assumption a multi-tenant platform cannot make, so this gap is
+   structural rather than lazy, but it is still a gap.
+2. **Model choice: 16 curated, and on this deployment Workers AI only** — no Claude reachable
+   (verified: 61 models on the account, zero non-`@cf/`). Hermes's 200+ via OpenRouter is a real
+   advantage for anyone who wants a specific model.
+3. **Local-first privacy.** Both competitors keep everything on the user's machine. We are cloud.
+   For an individual power user that is a genuine reason to prefer them.
+4. **Code execution is currently disabled here.** Tiers 2–5 need `worker_loaders` (CF Workers Paid).
+   Until then every seeded skill is unrunnable on this deployment — a hard, honest limitation.
+5. **Skill self-improvement is built but unproven at scale.** Hermes markets this as its signature.
+   Ours exists with health tracking they don't document — but neither has published evidence.
+
+## Where we are ahead, and why it matters for a business runner
+
+- **Durable approvals.** OpenClaw routes high-risk actions to a human; ours *suspends the run* and
+  resumes it up to 24h later. The difference is decisive unattended: an approval that expires in
+  seconds means the agent stops the moment you step away. We shipped precisely that bug and fixed
+  it — the 28-second inline poll used to report a sleeping owner as a *rejection*.
+- **Exactly-once.** A retry re-runs completed work in every competitor here. Our action ledger
+  short-circuits actions already performed under the original run id. For an agent that spends
+  money, "retry sent the invoice twice" is not a rough edge.
+- **It holds the money.** No competitor has a custody rail. A business wallet with a payout-approval
+  state machine is what makes "run a business" more than "draft emails about a business".
+- **Trace-based accountability.** We can prove what an agent did, per step, which is what made this
+  session's grader possible at all — and it caught a model *claiming* work it never performed.
+
+## The honest headline
+
+We beat OpenClaw and Hermes on **the things that matter when nobody is watching and money moves**:
+durable approvals, exactly-once execution, money custody, per-business isolation, and provable
+traces. They beat us on **reach and freedom**: more channels, far more models, fully local.
+
+Claude Code isn't a competitor on this axis at all — it is the best-in-class coding harness, and
+the useful thing to take from it is harness discipline, which is what the `Claw-SWE-Bench` result
+(19.1% → 73.4% on adapter design alone) says decides outcomes more than model choice.
+
+## Sources
+
+- [OpenClaw architecture (Valletta, 2026)](https://vallettasoftware.com/blog/post/openclaw-architecture-diagram-2026)
+- [What is OpenClaw — features and architecture (Macaron)](https://macaron.im/blog/what-is-openclaw)
+- [Hermes Agent — features overview (Nous Research docs)](https://hermes-agent.nousresearch.com/docs/user-guide/features/overview)
+- [Hermes Agent (GitHub)](https://github.com/nousresearch/hermes-agent)
+
+---
+
+# Addendum 3 — why the business templates are inert, and what it actually costs
+
+Traced this properly rather than repeating "Tier 2 is disabled".
+
+**The chain.** Every seeded skill in `webdev-skills.ts` is registered with a hardcoded
+`requires_tier: 2` (one line, covering all six). Tier 2 is a V8 isolate, which needs the
+`worker_loaders` binding. That binding is Workers-Paid-gated and — verified live — a deploy with it
+uncommented *succeeds silently and drops it*, so the only honest signal is the runtime error:
+`"Tier 2 is unavailable: no worker_loaders binding configured"`.
+
+**Tier 1 is not a fallback.** `execution-ladder.ts` is explicit: a Tier-1 stored script returns an
+error, because "we do not eval arbitrary code in the DO isolate for safety; a T1 stored script must
+be expressed through prebuilt r2-workspace ops." So there is no cheaper execution rung — on the
+free plan the *only* code that runs is a **prebuilt op**, which executes natively in the DO.
+
+**So there are exactly two ways to make a free-plan business actually operate:**
+
+1. **CF Workers Paid ($5/mo).** Tier 2–5 light up; all six skills run as written; nothing changes
+   in the codebase.
+2. **Re-express the core skills as prebuilt ops.** Technically viable — `quote-job` is deterministic
+   scoring over `WEBDEV_TIERS`, which is already Naelao-authored platform code, so it is not
+   obviously "agent-authored skill" material anyway. But it is a real re-architecture of the
+   template layer, it makes those capabilities un-learnable and un-improvable (they leave the skill
+   library, so `skill-health` and `distill` no longer apply to them), and it would need repeating
+   for every future template.
+
+**Recommendation: option 1.** Spending real engineering effort, and permanently removing
+capabilities from the self-improving skill layer, to avoid $5/month is a bad trade. Option 2 is
+worth revisiting only if the platform ever needs to run genuinely free-tier businesses at scale, in
+which case a small set of template-blessed prebuilts is the right shape — not a wholesale move.
+
+**What this means for the competitive claim.** Until one of those two happens, "the assistant can
+fully build and run a business" is true of the *structure* (verified live this session: business
+provisions, 6 projects bootstrap, onboarding gates correctly, wallet auto-provisions, crons fire
+unattended) and not yet of the *execution* (find → quote → build → deliver). That distinction is
+stated here rather than blurred, because it is the single honest caveat on the Polsia comparison.

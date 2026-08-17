@@ -30,3 +30,9 @@ vars = { ENVIRONMENT = "staging", RESEND_API_URL = "https://api.resend.com" }
 
 [env.production]
 vars = { ENVIRONMENT = "production", RESEND_API_URL = "https://api.resend.com" }
+
+# Chat-channel replies (Slack/Discord/Telegram/WhatsApp) resolve the space's own bot token
+# from the vault at send time — see resolveChannelCredential.
+[[services]]
+binding = "CREDENTIALS_WORKER"
+service = "naelao-credentials"

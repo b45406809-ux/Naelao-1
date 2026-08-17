@@ -36,12 +36,24 @@ describe("getUsageSummary", () => {
     expect(summary.monthly.used).toBe(200);
   });
 
-  it("all three windows report the SAME plan-tier limit (one real ceiling, three views of burn rate)", async () => {
+  // Phase 4 (money) added real per-window ceilings (QuotaLimits.maxDailyTokens/maxWeeklyTokens) —
+  // before this, every window shared the single monthly figure ("one real ceiling, three views of
+  // burn rate"). Now each window reports its OWN real limit for llm_tokens specifically.
+  it("llm_tokens: daily/weekly/monthly each report their OWN real per-window ceiling, not one shared figure", async () => {
     const db = makeDb({ "start of day": 0, "-7 days": 0, "start of month": 0 });
     const summary = await getUsageSummary(db, "org-1", "llm_tokens", "business");
+    // business tier's real maxDailyTokens/maxWeeklyTokens/maxMonthlyTokens (quota.ts PLAN_LIMITS).
+    expect(summary.daily.limit).toBe(2_000_000);
+    expect(summary.weekly.limit).toBe(7_000_000);
+    expect(summary.monthly.limit).toBe(20_000_000);
+  });
+
+  it("a metric with no dedicated daily/weekly ceiling (api_calls) falls back to the monthly limit for every window", async () => {
+    const db = makeDb({ "start of day": 0, "-7 days": 0, "start of month": 0 });
+    const summary = await getUsageSummary(db, "org-1", "api_calls", "business");
     expect(summary.daily.limit).toBe(summary.weekly.limit);
     expect(summary.weekly.limit).toBe(summary.monthly.limit);
-    expect(summary.monthly.limit).toBe(20_000_000); // business tier's real maxMonthlyTokens
+    expect(summary.monthly.limit).toBe(1_000_000); // business tier's real maxApiCallsPerMonth
   });
 
   it("resolves the correct limit for the infra_credits metric, not llm_tokens' limit", async () => {

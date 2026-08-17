@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname, useParams } from "next/navigation";
 import { ProductProvider, useProduct } from "./productContext";
+import { productShellUrl, productShellDisplay } from "@/lib/product-url";
 
 const TABS = [
   { label: "Overview", segment: "" },
@@ -60,7 +61,14 @@ function ProductHeader({ productId }: { productId: string }) {
             )}
           </div>
           {product?.product_slug && (
-            <p className="text-gray-500 mt-1 text-sm">{product.product_slug}.naelao.app</p>
+            <a
+              href={productShellUrl(product.product_slug)!}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-gray-500 hover:text-brand-600 mt-1 text-sm inline-block"
+            >
+              {productShellDisplay(product.product_slug)}
+            </a>
           )}
         </div>
       </div>

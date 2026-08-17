@@ -10,10 +10,29 @@ export interface EmbedResult {
   tokenCount: number;
 }
 
-// CF AI Workers model response shape
+/**
+ * CF AI's real embedding response.
+ *
+ * `data` is a flat array of vectors — `number[][]` — NOT `Array<{embedding}>`. This was declared
+ * as the object form, so `item.embedding` was `undefined` for every chunk and Vectorize threw
+ * "undefined is not iterable" the moment it tried to read the values. Knowledge-base ingestion
+ * had therefore never once succeeded against a real deployment; the test doubles asserted the
+ * shape the code expected rather than the shape Cloudflare sends, so nothing caught it.
+ *
+ * Verified against the live API (`/ai/run/@cf/baai/bge-large-en-v1.5`, shape [2, 1024]).
+ * The object form is still accepted, since a different embedding model may well return it and
+ * being liberal here costs nothing.
+ */
 interface AiEmbeddingResponse {
-  data: Array<{ embedding: number[] }>;
+  data: Array<number[] | { embedding: number[] }>;
   shape?: number[];
+}
+
+/** Pull the vector out of one entry, whichever of the two shapes it is. */
+function vectorOf(item: number[] | { embedding: number[] } | undefined): number[] | null {
+  if (Array.isArray(item)) return item;
+  if (item && Array.isArray(item.embedding)) return item.embedding;
+  return null;
 }
 
 const MODEL = "@cf/baai/bge-large-en-v1.5";
@@ -25,13 +44,13 @@ const MODEL = "@cf/baai/bge-large-en-v1.5";
 export async function embedText(ai: Ai, text: string): Promise<EmbedResult> {
   const response = await ai.run(MODEL, { text }) as AiEmbeddingResponse;
 
-  const first = response.data[0];
+  const first = vectorOf(response.data?.[0]);
   if (!first) {
-    throw new Error("embedText: CF AI returned empty data array");
+    throw new Error("embedText: CF AI returned no usable embedding");
   }
 
   return {
-    embedding: first.embedding,
+    embedding: first,
     tokenCount: Math.ceil(text.length / 4),
   };
 }
@@ -58,13 +77,15 @@ export async function embedBatch(ai: Ai, texts: string[]): Promise<EmbedResult[]
     }
 
     for (let j = 0; j < batch.length; j++) {
-      const item = response.data[j];
+      const vector = vectorOf(response.data[j]);
       const text = batch[j];
-      if (!item || text === undefined) {
-        throw new Error(`embedBatch: missing result at index ${i + j}`);
+      // Fail here, loudly, rather than passing an undefined vector down to Vectorize — that is
+      // what turned a bad response into an opaque "undefined is not iterable" three layers away.
+      if (!vector || text === undefined) {
+        throw new Error(`embedBatch: missing or malformed embedding at index ${i + j}`);
       }
       results.push({
-        embedding: item.embedding,
+        embedding: vector,
         tokenCount: Math.ceil(text.length / 4),
       });
     }

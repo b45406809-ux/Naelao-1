@@ -76,14 +76,28 @@ afterEach(() => {
   fetchOverride = null;
 });
 
-function mockComposio(opts: { linkStatus?: number; linkBody?: unknown; connectionStatus?: string }) {
+function mockComposio(opts: {
+  linkStatus?: number;
+  linkBody?: unknown;
+  connectionStatus?: string;
+  /** The on-demand managed Auth Config creation, used when no hand-registered id is configured. */
+  authConfigStatus?: number;
+  authConfigBody?: unknown;
+  expectAuthConfigId?: string;
+}) {
   fetchOverride = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+    if (url === "https://backend.composio.dev/api/v3.1/auth_configs") {
+      return new Response(
+        JSON.stringify(opts.authConfigBody ?? { auth_config: { id: "ac_managed_1", is_composio_managed: true } }),
+        { status: opts.authConfigStatus ?? 201 }
+      );
+    }
     if (url === "https://backend.composio.dev/api/v3/connected_accounts/link") {
       expect((init?.headers as Record<string, string>)["x-api-key"]).toBe("composio_test_key");
       const body = JSON.parse(init?.body as string) as { user_id: string; auth_config_id: string; callback_url: string };
       expect(body.user_id).toBe("naelao-space:space-a");
-      expect(body.auth_config_id).toBe("ac_twitter_123");
+      expect(body.auth_config_id).toBe(opts.expectAuthConfigId ?? "ac_twitter_123");
       return new Response(
         JSON.stringify(opts.linkBody ?? { redirect_url: "https://backend.composio.dev/consent/xyz", id: "conn_abc123" }),
         { status: opts.linkStatus ?? 200 }
@@ -126,11 +140,24 @@ describe("POST /connectors/:platform/provider-connect/start", () => {
     expect((await res.json<{ error_code: string }>()).error_code).toBe("provider_not_configured");
   });
 
-  it("degrades honestly to provider_not_configured when the app's Auth Config id is unset", async () => {
+  it("falls back to Composio-managed auth when no hand-registered Auth Config id is set", async () => {
+    // This used to 503. Requiring a per-app Auth Config, registered by hand in Composio's
+    // dashboard, is what kept most of the catalogue permanently "coming soon" — Composio will
+    // run the OAuth dance with its OWN app credentials, so the env var is now an override for
+    // the connectors where we want our own OAuth app, not a precondition for connecting at all.
     const env = makeEnv({ COMPOSIO_TWITTER_AUTH_CONFIG_ID: undefined });
+    mockComposio({ expectAuthConfigId: "ac_managed_1" });
     const res = await startReq(env);
-    expect(res.status).toBe(503);
-    expect((await res.json<{ error_code: string }>()).error_code).toBe("provider_not_configured");
+    expect(res.status).toBe(200);
+    expect((await res.json<{ connect_url: string }>()).connect_url).toBeTruthy();
+  });
+
+  it("still degrades honestly when Composio has no managed app for the toolkit", async () => {
+    const env = makeEnv({ COMPOSIO_TWITTER_AUTH_CONFIG_ID: undefined });
+    mockComposio({ authConfigStatus: 400, authConfigBody: { error: { message: "no managed auth" } } });
+    const res = await startReq(env);
+    expect(res.status).toBe(502);
+    expect((await res.json<{ error_code: string; message: string }>()).error_code).toBe("provider_connect_unavailable");
   });
 
   it("rejects a connector with no composio spec at all (e.g. Whop, which uses its own OAuth app)", async () => {

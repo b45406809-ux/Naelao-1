@@ -7,7 +7,8 @@
 
 import type { Hono } from "hono";
 import { getDOName } from "@naelao/crypto";
-import { createBusinessForEndUser, type BusinessCreateEnv } from "./business-create.js";
+import { createBusinessForEndUser, resolvePersonalPlanTier, loadEffectiveProductConfig, type BusinessCreateEnv } from "./business-create.js";
+import { canPersonalPlanInvite } from "@naelao/billing-core";
 import { resolveEndUserBusinessRole } from "./business-auth.js";
 
 export interface BusinessRoutesEnv extends BusinessCreateEnv {
@@ -142,9 +143,17 @@ export function registerBusinessRoutes(app: Hono<any>): void { // eslint-disable
     const { userId } = callerIdentity(c);
     if (!userId) return c.json({ error_code: "unauthorized", message: "Missing user" }, 401);
 
+    // onboarding_status/template_id ride along from the space's own config_json rather than
+    // costing a second round trip per business: Discover's most important call to action is
+    // "finish setting this one up", and a business that was created but never configured does
+    // nothing at all (its assistant has no account to read and no way to reach its owner). Both
+    // are NULL for a business created before templates existed, which the UI reads as "nothing
+    // left to do" — the honest default, since there is no checklist to point at.
     const { results } = await env.PLATFORM_DB.prepare(
       `SELECT m.business_space_id AS id, m.role, m.status AS membership_status, m.joined_at,
-              s.name, s.status AS space_status
+              s.name, s.status AS space_status,
+              json_extract(s.config_json, '$.onboarding.status') AS onboarding_status,
+              json_extract(s.config_json, '$.template_id') AS template_id
          FROM business_memberships m
          JOIN spaces s ON s.id = m.business_space_id
         WHERE m.product_space_id = ? AND m.end_user_id = ? AND m.status = 'active' AND s.status != 'deleted'
@@ -183,6 +192,37 @@ export function registerBusinessRoutes(app: Hono<any>): void { // eslint-disable
     ).bind(businessSpaceId).first<{ parent_space_id: string | null; tenant_id: string }>();
     if (!business?.parent_space_id) {
       return c.json({ error_code: "not_found", message: "Business not found" }, 404);
+    }
+
+    // Phase 4 (money): "a personal plan gates ... whether others may join" — the CALLER's own
+    // personal-plan tier (the person issuing the invite, already confirmed owner/admin above)
+    // must allow inviting at all. A builder/team caller (checked via callerPlatformRole above)
+    // is unaffected — this only applies to a product_end_user acting as a business owner/admin.
+    //
+    // DELIBERATELY ONLY ENFORCED when the product actually has a real personalPlans checkout
+    // configured (pc.pricingConfig.personalPlans non-empty) — this feature is brand new and no
+    // existing end user has ever purchased a personal plan, so gating invites unconditionally
+    // would instantly break every currently-working invite flow on every live business with no
+    // way for anyone to fix it (there'd be nothing to upgrade TO). Matches this codebase's own
+    // "never gate on a monetization control nobody can actually satisfy" precedent
+    // (free_tier_eligible's own template-catalog gate has the identical shape).
+    if (callerPlatformRole === "product_end_user") {
+      const productRoot = await env.PLATFORM_DB.prepare(
+        "SELECT tenant_id, spacetype_id, config_json FROM spaces WHERE id = ? AND status != 'deleted'"
+      ).bind(business.parent_space_id).first<{ tenant_id: string; spacetype_id: string; config_json: string | null }>();
+      if (productRoot) {
+        const pc = await loadEffectiveProductConfig(env, productRoot.spacetype_id, productRoot.config_json);
+        const hasRealUpgradePath = ((pc as { pricingConfig?: { personalPlans?: unknown[] } })?.pricingConfig?.personalPlans?.length ?? 0) > 0;
+        if (hasRealUpgradePath) {
+          const tier = await resolvePersonalPlanTier(env, business.parent_space_id, userId, productRoot.tenant_id);
+          if (!canPersonalPlanInvite(tier)) {
+            return c.json(
+              { error_code: "personal_plan_invite_not_allowed", message: "Your personal plan doesn't allow inviting others yet — upgrade to invite collaborators." },
+              403
+            );
+          }
+        }
+      }
     }
 
     const id = crypto.randomUUID();

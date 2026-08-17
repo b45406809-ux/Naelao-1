@@ -16,6 +16,7 @@
  */
 
 import type { ScriptMetadata, StoredScript, PatchRecord } from "./types.js";
+import { recordRecentOutcome } from "./skill-health.js";
 
 /** Derive stability_score in [0,1] from health counters (spec §4 "Health"). */
 export function computeStabilityScore(m: Pick<ScriptMetadata, "success_count" | "failure_count" | "patch_history">): number {
@@ -56,21 +57,35 @@ export class SkillLibrary {
     return `${this.root()}/${name}`;
   }
 
+  /** True when a name is safe to use as a path segment under the script directory. */
+  private isUsableName(name: string): boolean {
+    return /^[a-zA-Z0-9._-]{1,128}$/.test(name);
+  }
+
   /** Reject names that could escape the script directory or collide with the layout. */
   private assertName(name: string): void {
-    if (!/^[a-zA-Z0-9._-]{1,128}$/.test(name)) {
+    if (!this.isUsableName(name)) {
       throw new Error(`Invalid script name: ${JSON.stringify(name)}`);
     }
   }
 
+  // NOTE: the two LOOKUPS below deliberately do NOT throw on an unusable name — they report
+  // "no such script", because their caller is a model choosing a name, not code constructing a
+  // path. A model that writes `"notifications prebuilt"` instead of `notifications.send` should
+  // see a recoverable step failure it can correct on the next turn; throwing here escapes
+  // ScriptToolSurface.run()'s per-step error handling entirely and kills the whole run. That
+  // was fatal on the unattended proactive path, where nobody is watching to retry (the job just
+  // records consecutive_failures and goes quiet). Path safety is unaffected: an unusable name
+  // never reaches the bucket. Every WRITE path still calls assertName() and still throws, since
+  // there a bad name is a bug or an attack, not a typo.
   async exists(name: string): Promise<boolean> {
-    this.assertName(name);
+    if (!this.isUsableName(name)) return false;
     const head = await this.bucket.head(`${this.dir(name)}/SCRIPT.md`);
     return head !== null;
   }
 
   async read(name: string): Promise<StoredScript | null> {
-    this.assertName(name);
+    if (!this.isUsableName(name)) return null;
     const [metaObj, codeObj] = await Promise.all([
       this.bucket.get(`${this.dir(name)}/SCRIPT.md`),
       this.bucket.get(`${this.dir(name)}/code.ts`),
@@ -233,13 +248,24 @@ export class SkillLibrary {
     return [...names];
   }
 
-  /** Record the outcome of a run, updating health counters + stability (no new version). */
-  async recordOutcome(name: string, success: boolean): Promise<void> {
+  /**
+   * Record the outcome of a run, updating health counters + stability (no new version).
+   *
+   * `error` is what makes this a diagnosis rather than a tally: it lands in the bounded recent
+   * window (skill-health.ts), which is what lets a later run see "this failed its last three
+   * runs, and here is what it said" and repair the skill instead of re-running it.
+   */
+  async recordOutcome(name: string, success: boolean, error?: string): Promise<void> {
     const current = await this.readMetadata(name);
     if (!current) return;
     if (success) current.success_count += 1;
     else current.failure_count += 1;
     current.stability_score = computeStabilityScore(current);
+    current.recent_outcomes = recordRecentOutcome(current.recent_outcomes, {
+      ok: success,
+      at: Date.now(),
+      error,
+    });
     current.updated_at = Date.now();
     await this.bucket.put(`${this.dir(name)}/SCRIPT.md`, JSON.stringify(current, null, 2));
   }

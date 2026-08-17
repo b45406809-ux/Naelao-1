@@ -1,12 +1,20 @@
 // G-C01: Credentials worker — encrypted per-Space credential storage.
 //
 // Credential hierarchy (CLAUDE.md open follow-up, closed here): a credential is resolved for an
-// ACTING USER in three tiers, most-specific-wins EXCEPT a privileged override always wins:
+// ACTING USER in four tiers, most-specific-wins EXCEPT a privileged override always wins:
 //   1. space-scope row with is_override=1  — privileged (owner/admin) override, always wins
 //   2. user-scope row for the acting user  — personal credential (the per-user default)
-//   3. space-scope row with is_override=0  — shared space-wide fallback
-// See resolveCredential() below and infra/migrations/0040_space_credentials.sql.
-import { badRequest, errorResponse, forbidden, notFound, requestId, requireInternalHmac } from "@naelao/http";
+//   3. space-scope row with is_override=0  — shared business-wide fallback (optionally narrowed
+//      to specific members via shared_with_user_ids — NULL means everyone, unchanged default)
+//   4. the PRODUCT ROOT's own space-scope row — a builder-set product-wide default, checked only
+//      when this space is a business (has parent_space_id) and nothing matched above
+// A caller above this worker (mcp-hub, a prebuilt op) applies its own final fallback — a
+// Naelao-held platform Workers Secret (Tavily, etc, item 42's universal-tools doctrine) — when
+// this worker returns nothing at all; that tier is deliberately NOT a vaulted DB row here (see
+// CLAUDE.md's item on naelao-wide fallback billing).
+// See resolveCredential() below and infra/migrations/0040_space_credentials.sql +
+// infra/migrations/0069_credential_sharing_and_product_tier.sql.
+import { badRequest, errorResponse, forbidden, mintInternalToken, notFound, requestId, requireInternalHmac } from "@naelao/http";
 import { Hono } from "hono";
 
 // ── Env ───────────────────────────────────────────────────────────────────────
@@ -17,6 +25,41 @@ export interface CredentialsEnv {
   CREDENTIAL_ENCRYPTION_KEY: string;
   PLATFORM_DB: D1Database;
   ANALYTICS: AnalyticsEngineDataset;
+  // Optional: lets a resolved fallback (the acting user didn't get their own personal
+  // credential) notify the assistant via SpaceDO's generic event ingress. Best-effort —
+  // resolution/decryption never depends on this being wired.
+  SPACES_WORKER?: Fetcher;
+}
+
+/** Fire credential.fallback_used through SpaceDO's existing generic external-event ingress
+ *  (same pattern as workers/billing's fireWalletEvent) — best-effort, never blocks a resolved
+ *  credential read. Only fired when a specific acting user was named and didn't get their own
+ *  personal credential, so this is signal ("you're running on someone/something else's
+ *  credential"), not noise on every ordinary space-level resolution with no acting user. */
+async function fireCredentialFallbackEvent(
+  env: CredentialsEnv,
+  params: { tenantId: string; spaceId: string; name: string; actingUserId: string; tier: CredentialResolvedTier }
+): Promise<void> {
+  if (!env.SPACES_WORKER) return;
+  try {
+    await env.SPACES_WORKER.fetch(
+      new Request(`http://spaces-worker/internal/spaces/${encodeURIComponent(params.spaceId)}/events/fire`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-naelao-tenant-id": params.tenantId,
+          "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, params.tenantId),
+        },
+        body: JSON.stringify({
+          type: "credential.fallback_used",
+          space_id: params.spaceId,
+          payload: { connector: params.name, requested_by: params.actingUserId, resolved_tier: params.tier },
+        }),
+      })
+    );
+  } catch {
+    // Best-effort — the credential read itself already succeeded.
+  }
 }
 
 function validateEnv(env: CredentialsEnv): void {
@@ -192,13 +235,18 @@ async function verifyCredentialToken(
 
 // ── Validation ────────────────────────────────────────────────────────────────
 
-const CREDENTIAL_NAME_RE = /^[A-Za-z0-9_]{1,64}$/;
+// Plain "gmail" or a multi-slot "gmail::work" — the slot suffix lets one user hold several
+// named credentials on the same connector (e.g. a personal vs a work Gmail) with no schema
+// change: each slot is just a distinct credential name under the existing (space,name,scope
+// [,user]) uniqueness rules. The base connector id and the slot label are each capped like a
+// plain name would be.
+const CREDENTIAL_NAME_RE = /^[A-Za-z0-9_]{1,64}(::[A-Za-z0-9_]{1,32})?$/;
 const PRIVILEGED_ROLES = new Set(["owner", "admin"]);
 
 function validateCredentialName(name: string): void {
   if (!CREDENTIAL_NAME_RE.test(name)) {
     throw badRequest(
-      "Credential name must be 1–64 characters: alphanumeric and underscore only"
+      "Credential name must be 1–64 characters (alphanumeric/underscore), optionally followed by ::slot (1–32 alphanumeric/underscore)"
     );
   }
 }
@@ -217,6 +265,7 @@ interface CredentialRow {
   scope: "user" | "space";
   user_id: string | null;
   is_override: number;
+  shared_with_user_ids: string | null;
   encrypted_value: string;
   iv: string;
   key_version: string | null;
@@ -226,35 +275,99 @@ interface CredentialRow {
   updated_at: string;
 }
 
+export type CredentialResolvedTier = "business_override" | "user" | "business_shared" | "product";
+
+/** Does a business-shared row (is_override=0) apply to this specific acting user? */
+function sharedRowAppliesToUser(row: CredentialRow, actingUserId: string | null): boolean {
+  if (!row.shared_with_user_ids) return true; // NULL = shared with everyone (default)
+  if (!actingUserId) return false; // a selective share needs a known acting user to match against
+  try {
+    const allowed = JSON.parse(row.shared_with_user_ids) as string[];
+    return allowed.includes(actingUserId);
+  } catch {
+    return true; // malformed data must not silently deny an otherwise-valid shared credential
+  }
+}
+
+async function fetchSpaceRow(
+  db: D1Database,
+  spaceId: string,
+  tenantId: string,
+  name: string
+): Promise<CredentialRow | null> {
+  return db.prepare(
+    `SELECT * FROM space_credentials WHERE space_id = ? AND tenant_id = ? AND name = ? AND scope = 'space' LIMIT 1`
+  ).bind(spaceId, tenantId, name).first<CredentialRow>();
+}
+
 /**
  * Resolve the effective credential row for (spaceId, name, actingUserId) per the hierarchy:
- *   1. space-scope row with is_override=1  (privileged override — always wins)
- *   2. user-scope row for actingUserId      (personal, default)
- *   3. space-scope row with is_override=0   (shared fallback)
+ *   1. space-scope row with is_override=1        (privileged override — always wins)
+ *   2. user-scope row for actingUserId            (personal, default)
+ *   3. space-scope row with is_override=0         (business-shared fallback, optionally narrowed
+ *      to specific members via shared_with_user_ids)
+ *   4. the PRODUCT ROOT's own space-scope row     (product-wide default — only when this space
+ *      has a parent, i.e. is a business, and nothing above matched)
  * actingUserId may be omitted (e.g. an agent acting on behalf of the space as a whole, not a
- * specific member) — resolution then skips tier 2 and only considers the space-scope row.
+ * specific member) — resolution then skips tier 2 and treats a narrowed tier-3 row as absent.
+ * A caller's own further fallback (a Naelao platform-secret key) happens OUTSIDE this function
+ * when it returns null — that tier is never a space_credentials row.
  */
 async function resolveCredential(
   db: D1Database,
   spaceId: string,
   tenantId: string,
   name: string,
-  actingUserId: string | null
-): Promise<CredentialRow | null> {
-  const spaceRow = await db.prepare(
-    `SELECT * FROM space_credentials WHERE space_id = ? AND tenant_id = ? AND name = ? AND scope = 'space' LIMIT 1`
-  ).bind(spaceId, tenantId, name).first<CredentialRow>();
+  actingUserId: string | null,
+  /** §A1 connector default-vs-personal switch: an explicit ask from the caller for WHICH tier to
+   *  use, overriding the implicit "personal always wins when connected" default below.
+   *  "business": skip tier 2 entirely (a member's own personal credential is ignored even if one
+   *  exists) — the chat surface's default mode, so a shared business account is used unless the
+   *  caller deliberately switched. "personal": REQUIRE tier 2 — a missing personal credential is
+   *  reported distinctly (personal_required), never silently substituted with the shared one,
+   *  since that's exactly the "forgot to switch" case the UI needs to warn about. Absent (every
+   *  pre-existing caller) keeps today's byte-identical behavior. The privileged override (tier 1)
+   *  always wins regardless — an admin forcing a value is not something either mode should skip. */
+  preferScope?: "business" | "personal"
+): Promise<{ row: CredentialRow; tier: CredentialResolvedTier } | { notFoundReason: "personal_required" } | null> {
+  const spaceRow = await fetchSpaceRow(db, spaceId, tenantId, name);
 
-  if (spaceRow && spaceRow.is_override) return spaceRow;
+  if (spaceRow && spaceRow.is_override) return { row: spaceRow, tier: "business_override" };
 
-  if (actingUserId) {
+  const checkPersonalTier = preferScope !== "business" && Boolean(actingUserId);
+  if (checkPersonalTier) {
     const userRow = await db.prepare(
       `SELECT * FROM space_credentials WHERE space_id = ? AND tenant_id = ? AND name = ? AND scope = 'user' AND user_id = ? LIMIT 1`
     ).bind(spaceId, tenantId, name, actingUserId).first<CredentialRow>();
-    if (userRow) return userRow;
+    if (userRow) return { row: userRow, tier: "user" };
+  }
+  if (preferScope === "personal") {
+    // Explicitly asked for the personal account and there isn't one connected — never fall
+    // through to the shared credential silently, that's the exact mismatch the caller needs to
+    // know about (see catalogue.ts / the shell's connector-mode UI).
+    return { notFoundReason: "personal_required" };
   }
 
-  return spaceRow ?? null;
+  if (spaceRow && sharedRowAppliesToUser(spaceRow, actingUserId)) {
+    return { row: spaceRow, tier: "business_shared" };
+  }
+
+  // Best-effort: the product-root walk is a nice-to-have tier, never a hard dependency of
+  // credential resolution — a missing/unreachable spaces table must fall through to "not found"
+  // rather than 500 the whole lookup.
+  try {
+    const space = await db.prepare(
+      `SELECT parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'`
+    ).bind(spaceId).first<{ parent_space_id: string | null }>();
+    if (space?.parent_space_id) {
+      const rootRow = await fetchSpaceRow(db, space.parent_space_id, tenantId, name);
+      if (rootRow) return { row: rootRow, tier: "product" };
+    }
+  } catch {
+    // Fall through — see comment above.
+  }
+
+  return null;
 }
 
 // ── Hono app ──────────────────────────────────────────────────────────────────
@@ -277,12 +390,17 @@ app.use("/spaces/:spaceId/credentials", requireInternalHmac((c) => (c as unknown
 app.use("/spaces/:spaceId/credentials/:credId", requireInternalHmac((c) => (c as unknown as { env: CredentialsEnv }).env.PLATFORM_SECRET));
 
 // POST /v1/spaces/:spaceId/credentials — create a credential.
-// Body: { name, value, description?, scope?: 'user'|'space' (default 'user'), is_override?: boolean }
+// Body: { name, value, description?, scope?: 'user'|'space' (default 'user'), is_override?: boolean,
+//         shared_with_user_ids?: string[] | null }
 // - scope='user' (default): a member's own personal credential. Always allowed for the caller,
 //   always owned by the caller (a user can never create another user's credential).
-// - scope='space': the shared space-wide credential. Requires owner/admin.
+// - scope='space': the shared business-wide credential. Requires owner/admin.
 // - is_override=true: only valid with scope='space', requires owner/admin — forces this value
 //   ahead of any member's personal credential of the same name.
+// - shared_with_user_ids: only valid with scope='space' AND is_override=false — narrows the
+//   shared fallback to specific member ids instead of everyone in the business. Requires
+//   owner/admin, same as scope='space' itself (a non-admin can never widen/narrow who sees a
+//   credential they didn't have the privilege to share in the first place).
 app.post("/spaces/:spaceId/credentials", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   const userId = c.req.header("x-naelao-user-id") ?? "";
@@ -298,6 +416,7 @@ app.post("/spaces/:spaceId/credentials", async (c) => {
     description?: string;
     scope?: "user" | "space";
     is_override?: boolean;
+    shared_with_user_ids?: string[] | null;
   };
   try {
     body = await c.req.json();
@@ -318,7 +437,16 @@ app.post("/spaces/:spaceId/credentials", async (c) => {
     throw badRequest("is_override is only valid with scope='space'");
   }
   if ((scope === "space" || isOverride) && !isPrivileged(role)) {
-    throw forbidden("Only owner/admin may set a space-shared credential or override");
+    throw forbidden("Only owner/admin may set a business-shared credential or override");
+  }
+  const sharedWithUserIds = body.shared_with_user_ids ?? null;
+  if (sharedWithUserIds !== null) {
+    if (scope !== "space" || isOverride) {
+      throw badRequest("shared_with_user_ids is only valid with scope='space' and is_override=false");
+    }
+    if (!Array.isArray(sharedWithUserIds) || sharedWithUserIds.some((u) => typeof u !== "string" || !u)) {
+      throw badRequest("shared_with_user_ids must be an array of user ids, or null");
+    }
   }
 
   // G-AH07: Space-derived key; each space's credentials use a distinct HKDF-derived key
@@ -327,16 +455,18 @@ app.post("/spaces/:spaceId/credentials", async (c) => {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   const ownerUserId = scope === "user" ? userId : null;
+  const sharedWithJson = sharedWithUserIds ? JSON.stringify(sharedWithUserIds) : null;
 
   // Upsert on the unique (space,name,scope[,user]) index so re-saving the same name/scope
   // rotates the value in place rather than erroring or leaving orphaned rows.
   const conflictTarget = scope === "user" ? "(space_id, name, user_id)" : "(space_id, name)";
   await c.env.PLATFORM_DB.prepare(
     `INSERT INTO space_credentials
-       (id, space_id, tenant_id, name, scope, user_id, is_override, encrypted_value, iv, key_version, description, created_by, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       (id, space_id, tenant_id, name, scope, user_id, is_override, shared_with_user_ids, encrypted_value, iv, key_version, description, created_by, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT ${conflictTarget} WHERE scope = '${scope}' DO UPDATE SET
        is_override = excluded.is_override,
+       shared_with_user_ids = excluded.shared_with_user_ids,
        encrypted_value = excluded.encrypted_value,
        iv = excluded.iv,
        key_version = excluded.key_version,
@@ -351,6 +481,7 @@ app.post("/spaces/:spaceId/credentials", async (c) => {
       scope,
       ownerUserId,
       isOverride ? 1 : 0,
+      sharedWithJson,
       ciphertext,
       iv,
       key_version,
@@ -367,6 +498,7 @@ app.post("/spaces/:spaceId/credentials", async (c) => {
       name: body.name,
       scope,
       is_override: isOverride,
+      shared_with_user_ids: sharedWithUserIds,
       description: body.description ?? null,
       created_at: now,
     },
@@ -388,13 +520,13 @@ app.get("/spaces/:spaceId/credentials", async (c) => {
 
   const query = isPrivileged(role)
     ? c.env.PLATFORM_DB.prepare(
-        `SELECT id, name, scope, user_id, is_override, description, created_at
+        `SELECT id, name, scope, user_id, is_override, shared_with_user_ids, description, created_at
          FROM space_credentials
          WHERE space_id = ? AND tenant_id = ?
          ORDER BY created_at DESC`
       ).bind(spaceId, tenantId)
     : c.env.PLATFORM_DB.prepare(
-        `SELECT id, name, scope, user_id, is_override, description, created_at
+        `SELECT id, name, scope, user_id, is_override, shared_with_user_ids, description, created_at
          FROM space_credentials
          WHERE space_id = ? AND tenant_id = ? AND (scope = 'space' OR user_id = ?)
          ORDER BY created_at DESC`
@@ -406,12 +538,17 @@ app.get("/spaces/:spaceId/credentials", async (c) => {
     scope: "user" | "space";
     user_id: string | null;
     is_override: number;
+    shared_with_user_ids: string | null;
     description: string | null;
     created_at: string;
   }>();
 
   return c.json({
-    credentials: results.results.map((r) => ({ ...r, is_override: Boolean(r.is_override) })),
+    credentials: results.results.map((r) => ({
+      ...r,
+      is_override: Boolean(r.is_override),
+      shared_with_user_ids: r.shared_with_user_ids ? (JSON.parse(r.shared_with_user_ids) as string[]) : null,
+    })),
   });
 });
 
@@ -450,6 +587,46 @@ app.delete("/spaces/:spaceId/credentials/:credId", async (c) => {
   return c.json({ deleted: true });
 });
 
+// PATCH /v1/spaces/:spaceId/credentials/:credId — update sharing metadata on a business-shared
+// credential (who it's shared with) WITHOUT touching or re-supplying the secret value. This is
+// the "toggle sharing to everyone / selected members" control an admin uses from the UI — the
+// upsert-on-POST path above still works for rotating the actual value.
+app.patch("/spaces/:spaceId/credentials/:credId", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const role = c.req.header("x-naelao-role") ?? "viewer";
+  const spaceId = c.req.param("spaceId");
+  const credId = c.req.param("credId");
+
+  if (!tenantId) throw badRequest("x-naelao-tenant-id header is required");
+  if (!isPrivileged(role)) throw forbidden("Only owner/admin may change credential sharing");
+
+  const row = await c.env.PLATFORM_DB.prepare(
+    `SELECT scope, is_override FROM space_credentials WHERE id = ? AND space_id = ? AND tenant_id = ?`
+  ).bind(credId, spaceId, tenantId).first<{ scope: "user" | "space"; is_override: number }>();
+  if (!row) throw notFound("Credential");
+  if (row.scope !== "space") throw badRequest("Only a business-shared credential's sharing can be changed");
+
+  let body: { shared_with_user_ids?: string[] | null };
+  try {
+    body = await c.req.json();
+  } catch {
+    throw badRequest("Invalid JSON body");
+  }
+  if (body.shared_with_user_ids !== undefined && body.shared_with_user_ids !== null) {
+    if (!Array.isArray(body.shared_with_user_ids) || body.shared_with_user_ids.some((u) => typeof u !== "string" || !u)) {
+      throw badRequest("shared_with_user_ids must be an array of user ids, or null");
+    }
+  }
+  if (row.is_override) throw badRequest("An override credential is always shared with everyone — clear is_override first");
+
+  const sharedWithJson = body.shared_with_user_ids ? JSON.stringify(body.shared_with_user_ids) : null;
+  await c.env.PLATFORM_DB.prepare(
+    `UPDATE space_credentials SET shared_with_user_ids = ?, updated_at = ? WHERE id = ? AND space_id = ? AND tenant_id = ?`
+  ).bind(sharedWithJson, new Date().toISOString(), credId, spaceId, tenantId).run();
+
+  return c.json({ id: credId, shared_with_user_ids: body.shared_with_user_ids ?? null });
+});
+
 // POST /v1/internal/spaces/:spaceId/credentials/:name/plaintext
 // Internal endpoint — returns decrypted value for agent tool dispatch, resolved through the
 // credential hierarchy for an optional acting user (body.on_behalf_of_user_id). Callers that
@@ -473,23 +650,33 @@ app.post("/v1/internal/spaces/:spaceId/credentials/:name/plaintext", async (c) =
   }
 
   let onBehalfOfUserId: string | null = null;
+  let preferScope: "business" | "personal" | undefined;
   try {
-    const body = await c.req.json<{ on_behalf_of_user_id?: string }>();
+    const body = await c.req.json<{ on_behalf_of_user_id?: string; prefer_scope?: "business" | "personal" }>();
     onBehalfOfUserId = body.on_behalf_of_user_id ?? null;
+    preferScope = body.prefer_scope;
   } catch {
     // Empty/absent body is fine — resolves at the space level.
   }
 
-  const row = await resolveCredential(c.env.PLATFORM_DB, spaceId, tenantId, credName, onBehalfOfUserId);
-  if (!row) {
+  const resolved = await resolveCredential(c.env.PLATFORM_DB, spaceId, tenantId, credName, onBehalfOfUserId, preferScope);
+  if (!resolved) {
     throw notFound("Credential");
   }
+  if ("notFoundReason" in resolved) {
+    return c.json({ error_code: "personal_credential_required", message: "No personal credential is connected for this member" }, 404);
+  }
+  const { row, tier } = resolved;
 
   // G-AH07/G-D05: Resolve the root key matching this credential's key_version for decryption.
   const rootHex = resolveRootKeyHex(c.env, row.key_version);
 
-  // G-AH07: Re-derive the per-space key from the resolved root key hex and spaceId
-  const value = await decrypt(row.encrypted_value, row.iv, rootHex, spaceId);
+  // G-AH07: Re-derive the per-space key using the credential's OWN space (row.space_id) — NOT
+  // the requested spaceId. These differ exactly when tier === "product": the row was created on
+  // (and encrypted for) the product ROOT space, while spaceId in the URL is the business that
+  // fell through to it. Using the wrong space here derives the wrong HKDF key and decryption
+  // fails outright.
+  const value = await decrypt(row.encrypted_value, row.iv, rootHex, row.space_id);
 
   // G-D06: Immutable audit entry — credential_access event in Analytics Engine
   try {
@@ -505,7 +692,7 @@ app.post("/v1/internal/spaces/:spaceId/credentials/:name/plaintext", async (c) =
         spaceId,                      // blob3: space_id
         tokenParts["aid"] ?? "",      // blob4: agent_id
         tenantId,                     // blob5: tenant_id
-        row.scope,                    // blob6: resolved scope (user | space)
+        tier,                         // blob6: resolved tier (user | business_shared | business_override | product)
       ],
       doubles: [Date.now()],          // double1: access_timestamp_ms
       indexes: [spaceId],
@@ -514,7 +701,16 @@ app.post("/v1/internal/spaces/:spaceId/credentials/:name/plaintext", async (c) =
     // Best-effort — audit failures must not block the credential read
   }
 
-  return c.json({ name: row.name, value, scope: row.scope, is_override: Boolean(row.is_override) });
+  // Notify the assistant when a specific acting user didn't end up on their OWN credential —
+  // e.g. their personal one was missing and business-shared/product/an admin override was used
+  // instead. Fire-and-forget: this must never slow down or fail the actual credential read.
+  if (onBehalfOfUserId && tier !== "user") {
+    c.executionCtx.waitUntil(
+      fireCredentialFallbackEvent(c.env, { tenantId, spaceId, name: credName, actingUserId: onBehalfOfUserId, tier })
+    );
+  }
+
+  return c.json({ name: row.name, value, scope: row.scope, is_override: Boolean(row.is_override), resolved_tier: tier });
 });
 
 // ── Error handler ─────────────────────────────────────────────────────────────

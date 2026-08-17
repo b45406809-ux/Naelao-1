@@ -5,7 +5,7 @@ import type { MessageRole } from "@naelao/types";
 import {
   selectMatchingRules, evaluateCondition, buildFireParams,
   findPossibleDuplicateProjects, isPresenceFresh, PRESENCE_FRESHNESS_WINDOW_MS,
-  getBusinessFeatureKind, isKnownProjectKind, roleMeetsMinimum,
+  getBusinessFeatureKind, isKnownProjectKind, roleMeetsMinimum, isFailureKind,
 } from "@naelao/events";
 import type { TriggerRule, TriggerCondition, EventEnvelope, ConditionContext } from "@naelao/events";
 import { mintInternalToken, broadcastSpaceEvent } from "@naelao/http";
@@ -910,6 +910,134 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_session_spend_space ON session_spend(space_id);
     `,
   },
+  {
+    // threads.session_id — a general-purpose link from a structural thread row to the real chat
+    // session (SpaceDO `sessions`) that carries its actual messages. Item 71/74 documented these
+    // as two separate tables with no server-side link, approximated client-side via a cached
+    // sessionKey; this column closes that gap for threads created THROUGH this link (notably the
+    // new assistant<->agent consult subthreads, §A1.18/A1.34 thread model) without retrofitting
+    // every pre-existing thread/session pair, which stays exactly as it was.
+    version: 32,
+    description: "threads.session_id — links a structural thread to its chat session",
+    up: `
+      ALTER TABLE threads ADD COLUMN session_id TEXT;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_threads_session ON threads(session_id) WHERE session_id IS NOT NULL;
+    `,
+  },
+  {
+    // messages.metadata — same free-form JSON-override pattern sessions.metadata already used
+    // (this table, migration 0001). Item 79 (inline consult cards): when the assistant's own
+    // reply in a visible thread resulted from consulting a project agent in a hidden subthread
+    // (thread.consult), the ASSISTANT'S message here carries which subthread(s) it opened —
+    // {consulted_threads: [{thread_id, agent_id, title}]} — so the client can render an inline,
+    // expandable card at the exact point in the conversation where the delegation happened,
+    // instead of only in a separate side panel with no correlation to any specific turn.
+    version: 33,
+    description: "messages.metadata — carries structured per-message data (e.g. consulted_threads)",
+    up: `
+      ALTER TABLE messages ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}';
+    `,
+  },
+  {
+    // notifications — a durable, business-member-visible inbox for what the assistant/its agents
+    // surface (an approval waiting, a run that failed, a connector that needs setup). Distinct
+    // from agent_activity_log (builder-only, a technical audit trail) — this is END-USER-facing
+    // (a business admin using the shell) and carries read/delivery state so the assistant's own
+    // heartbeat sweep can tell "already seen" from "still needs escalating to a channel".
+    version: 34,
+    description: "notifications — durable business-member inbox + delivery tracking for heartbeat escalation",
+    up: `
+      CREATE TABLE IF NOT EXISTS notifications (
+        id            TEXT PRIMARY KEY,
+        space_id      TEXT NOT NULL,
+        project_id    TEXT,
+        kind          TEXT NOT NULL,
+        title         TEXT NOT NULL,
+        body          TEXT NOT NULL DEFAULT '',
+        severity      TEXT NOT NULL DEFAULT 'info' CHECK (severity IN ('info', 'warning', 'critical')),
+        source_agent_id TEXT,
+        related_id    TEXT,
+        status        TEXT NOT NULL DEFAULT 'unread' CHECK (status IN ('unread', 'read')),
+        read_at       TEXT,
+        delivered_at  TEXT,
+        created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_notifications_space ON notifications(space_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_notifications_undelivered ON notifications(space_id, status, delivered_at, created_at);
+    `,
+  },
+  {
+    // connector_account_mode — a per-session preference: which credential tier a script's mcp-hub
+    // calls should use for a given connector ("business", the default shared account, vs
+    // "personal", the caller's own connected one). No row for a connector = business (today's
+    // default resolution, unchanged). Deliberately its own table rather than folded into
+    // sessions.metadata — updateSession's PATCH replaces the whole metadata object, and a UI
+    // toggle firing concurrently with, say, a title update would silently clobber one or the other.
+    version: 35,
+    description: "connector_account_mode — per-session business-vs-personal connector preference",
+    up: `
+      CREATE TABLE IF NOT EXISTS connector_account_mode (
+        session_id   TEXT NOT NULL,
+        connector_id TEXT NOT NULL,
+        mode         TEXT NOT NULL CHECK (mode IN ('business', 'personal')),
+        updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (session_id, connector_id)
+      );
+    `,
+  },
+  {
+    // Failure diagnostics. agent_activity_log already recorded THAT a run failed, but not what
+    // kind of failure it was or which thread to resume — so an assistant reading it could see
+    // "3 runs failed" and do nothing useful with that. These four columns are what turn the log
+    // into something actionable: the classification (see @naelao/events classifyFailure), and the
+    // ids needed to actually go and continue the interrupted work.
+    //
+    // Deliberately ALTER ... ADD COLUMN rather than a table rebuild: the event_type CHECK
+    // constraint stays exactly as it is, because a failed wake-up IS a failed run — 'run_failed'
+    // plus a failure_kind says everything a new event type would have, without SQLite's
+    // can't-alter-a-CHECK-in-place rebuild (migrations 0052/0065 hit that; not worth it here).
+    version: 36,
+    description: "agent_activity_log failure diagnostics — classification + ids to resume from",
+    up: `
+      ALTER TABLE agent_activity_log ADD COLUMN failure_kind TEXT;
+      ALTER TABLE agent_activity_log ADD COLUMN session_id TEXT;
+      ALTER TABLE agent_activity_log ADD COLUMN run_id TEXT;
+      ALTER TABLE agent_activity_log ADD COLUMN trigger_source TEXT;
+      CREATE INDEX IF NOT EXISTS idx_agent_activity_failure
+        ON agent_activity_log(space_id, failure_kind, created_at DESC);
+    `,
+  },
+  {
+    // "recent" projects ordering was created_at-only — an assistant<->agent consult (or any real
+    // activity in a project's own threads) never bumped a project back to the top, the reported
+    // bug. last_activity_at is touched from ONE choke point, appendMessage (every message write —
+    // human chat, consult subthread messages, anything thread-linked — already lands there), by
+    // resolving the project via threads.project_id for the session, so this covers ordinary
+    // project-thread chat and consult subthreads uniformly with no NaelaoAgentDO-side change.
+    version: 37,
+    description: "projects.last_activity_at (touched on any thread-linked message) — recent ordering",
+    up: `
+      ALTER TABLE projects ADD COLUMN last_activity_at TEXT;
+    `,
+  },
+  {
+    // POST /messages was not idempotent, and the shell's apiFetch retries a POST on a network-level
+    // throw or a 5xx/429. A throw client-side does NOT mean the server didn't process it — a reset
+    // connection or a response lost in transit both throw while the row is already committed — so a
+    // retry wrote a SECOND identical message. Invisible in the live UI (the client only ever renders
+    // the one response it eventually got) and visible the moment you reload: the reported duplicate.
+    //
+    // A partial unique index rather than a plain one so the overwhelming majority of historical rows
+    // (client_message_id NULL) don't collide with each other. Dedupe is per session, since ids are
+    // minted client-side and only need to be unique within the conversation they belong to.
+    version: 38,
+    description: "messages.client_message_id — idempotency key so a retried POST can't duplicate",
+    up: `
+      ALTER TABLE messages ADD COLUMN client_message_id TEXT;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_client_id
+        ON messages(session_id, client_message_id) WHERE client_message_id IS NOT NULL;
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -950,6 +1078,8 @@ interface MessageRow {
   // "Agent2" vs the assistant instead of every non-user message collapsing into one identity.
   author_type: string;
   author_id: string | null;
+  /** Raw JSON string (migration v33) — parsed in getMessages before it reaches a client. */
+  metadata: string;
 }
 
 interface AgentStateRow {
@@ -1023,7 +1153,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
   private ensureInit(): void {
     if (this.initialized) return;
-    applyMigrations(this.ctx.storage.sql as never, MIGRATIONS);
+    applyMigrations(this.ctx.storage as never, MIGRATIONS);
     this.initialized = true;
   }
 
@@ -1060,9 +1190,23 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "GET" && msgMatch?.[1]) {
         return this.getMessages(msgMatch[1], url.searchParams);
       }
+      // DELETE /sessions/:id/messages?from=<messageId> — truncate the transcript from that
+      // message onward, so editing-and-resending REPLACES the old exchange instead of leaving
+      // the original question and answer behind for the next reload to render as duplicates.
+      if (method === "DELETE" && msgMatch?.[1]) {
+        return this.truncateMessages(msgMatch[1], url.searchParams);
+      }
       // PATCH /sessions/:id — update status
       if (method === "PATCH" && sessionMatch?.[1]) {
         return this.updateSession(request, sessionMatch[1]);
+      }
+      // §A1 connector default-vs-personal switch — GET/PATCH /sessions/:id/connector-mode
+      const connModeMatch = url.pathname.match(/^\/sessions\/([^/]+)\/connector-mode$/);
+      if (method === "GET" && connModeMatch?.[1]) {
+        return this.getConnectorMode(connModeMatch[1]);
+      }
+      if (method === "PATCH" && connModeMatch?.[1]) {
+        return await this.setConnectorMode(request, connModeMatch[1]);
       }
       // GET /sessions/:id/state — agent state
       const stateMatch = url.pathname.match(/^\/sessions\/([^/]+)\/state$/);
@@ -1303,11 +1447,36 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "GET" && url.pathname === "/agent-activity") {
         return this.listAgentActivity(url.searchParams);
       }
+      // ── Notifications inbox ────────────────────────────────────────────────
+      // Deliberately ONE path (no /notifications/undelivered sibling) — a dynamic-:spaceId route
+      // with a static suffix has repeatedly corrupted this file's Hono route table for UNRELATED
+      // routes elsewhere in the app (items 40/52/60's documented RegExpRouter bug); the
+      // undelivered-only sweep is a query param on the same GET instead.
+      if (method === "POST" && url.pathname === "/notifications") {
+        return await this.createOrActOnNotification(request);
+      }
+      if (method === "GET" && url.pathname === "/notifications") {
+        return this.listNotifications(url.searchParams);
+      }
       // ── §A1 Harness Excellence Phase HX2: signals + session token-budget guard ─
       // GET /agent-signals?project_id=&window_hours= — explicit signals, computed on read from
       // the already-existing agent_activity_log (no separate ingestion).
       if (method === "GET" && url.pathname === "/agent-signals") {
         return this.computeAgentSignals(url.searchParams);
+      }
+      // GET /agent-diagnostics?window_hours= — the whole-business summary the Space Assistant
+      // reads on a wake-up (counts, failure kinds, per-project shape, resumable stalls).
+      if (method === "GET" && url.pathname === "/agent-diagnostics") {
+        return this.computeAgentDiagnostics(url.searchParams);
+      }
+      // GET /business-analytics?window=7d|30d|90d — the end-user-facing Analytics page's data.
+      // Unlike agent-activity/agent-diagnostics (builder-only: individual summaries and session
+      // ids that could surface one member's escalation to another), this is PURE AGGREGATE —
+      // counts, sums, and per-day/per-agent rollups with no session/thread/summary text attached
+      // — so it's safe for any business member to read, not just an admin. Same "aggregate is
+      // safe, raw rows aren't" precedent as /template-activity.
+      if (method === "GET" && url.pathname === "/business-analytics") {
+        return this.computeBusinessAnalytics(url.searchParams);
       }
       // POST /signal-events — internal only (NaelaoAgentDO posts one row per detected implicit
       // signal — user frustration / agent-forgot markers). Same await-not-bare-return rationale
@@ -1355,7 +1524,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
       // ── Local-machine-as-container permission grants (§A1.17 Phase M) ─────────
       if (method === "GET" && url.pathname === "/local-grants") {
-        return this.listLocalGrants(url.searchParams.get("space_id") ?? "", url.searchParams.get("user_id") ?? undefined);
+        return this.listLocalGrants(
+          url.searchParams.get("space_id") ?? "",
+          url.searchParams.get("user_id") ?? undefined,
+          url.searchParams.get("project_id") ?? undefined
+        );
       }
       if (method === "POST" && url.pathname === "/local-grants") {
         return this.createLocalGrant(url.searchParams.get("space_id") ?? "", request);
@@ -1443,6 +1616,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "GET" && threadIdMatch?.[1]) {
         return this.getThread(threadIdMatch[1]);
       }
+      // PATCH /threads/:id — rename and/or archive (there is no hard delete — see updateThread).
+      if (method === "PATCH" && threadIdMatch?.[1]) {
+        return this.updateThread(threadIdMatch[1], request);
+      }
 
       // ── cross-space access grants (spec §49 checkPermission path) ─────────────
       // POST /cross-space-grants
@@ -1482,6 +1659,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       tenant_id: string;
       end_user_id?: string;
       metadata?: Record<string, unknown>;
+      /**
+       * When this session is the chat transport for a structural project thread (not a bare
+       * assistant/Home conversation), the caller passes the thread's own id so the two can be
+       * linked via `threads.session_id` (added for exactly this purpose — see that migration's
+       * own comment). Without this, a project thread's chat session was indistinguishable from an
+       * ordinary top-level conversation: it showed up in the flat `listSessions` "recent
+       * conversations" list as if it were one, which is what a user reported as a project thread
+       * mysteriously appearing in the Sessions sidebar. `listSessions` below excludes any session
+       * linked this way.
+       */
+      thread_id?: string;
     }>();
 
     // G-F03: Fast-path deny for recently banned/blocked users before touching SQLite
@@ -1516,6 +1704,24 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       now
     );
 
+    // Link this session to its owning thread, when it has one. `AND session_id IS NULL` makes
+    // this idempotent-safe (never clobbers a link that already exists) rather than a hard
+    // dependency of session creation — a thread that doesn't exist, or a race with another
+    // request, must never turn a successful session-create into a failure.
+    if (body.thread_id) {
+      try {
+        execute(
+          this.ctx.storage.sql as never,
+          "UPDATE threads SET session_id = ?, updated_at = ? WHERE id = ? AND session_id IS NULL",
+          id,
+          now,
+          body.thread_id
+        );
+      } catch {
+        /* the session itself was created successfully; the thread link is a convenience */
+      }
+    }
+
     return Response.json(
       { id, space_id: body.space_id, status: "active", created_at: now },
       { status: 201 }
@@ -1549,19 +1755,33 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // strictly scoped to that end_user_id's own sessions — this is a signed-in end user's own
   // "recent conversations" list, never a space-wide browse (that stays /threads, builder-only).
   // A builder-JWT caller omitting end_user_id gets the space-wide recent list.
+  //
+  // Excludes any session already linked to a structural project thread (threads.session_id) —
+  // that is a project thread's own chat transport, not a standalone assistant conversation, and
+  // listing it here duplicated it: a thread created and chatted in from inside a project also
+  // showed up in the flat Sessions sidebar as if it were a second, unrelated conversation.
   private listSessions(params: URLSearchParams): Response {
     const endUserId = params.get("end_user_id");
     const limit = Math.min(Math.max(Number(params.get("limit")) || 20, 1), 100);
+    const notThreadLinked = "id NOT IN (SELECT session_id FROM threads WHERE session_id IS NOT NULL)";
+    // Heartbeat/cron-wake sessions (metadata.session_kind === "heartbeat") are deliberately kept
+    // out of the ordinary recents list — the only two places they're meant to surface are here
+    // with ?kind=heartbeat (the Sessions page's own filter tab) and the Heartbeats sidebar tab,
+    // both of which call this with that param explicitly.
+    const kind = params.get("kind");
+    const kindClause = kind === "heartbeat"
+      ? "json_extract(metadata, '$.session_kind') = 'heartbeat'"
+      : "(json_extract(metadata, '$.session_kind') IS NULL OR json_extract(metadata, '$.session_kind') != 'heartbeat')";
     const rows = endUserId
       ? queryAll<SessionRow>(
           this.ctx.storage.sql as never,
-          "SELECT * FROM sessions WHERE end_user_id = ? ORDER BY updated_at DESC LIMIT ?",
+          `SELECT * FROM sessions WHERE end_user_id = ? AND ${notThreadLinked} AND ${kindClause} ORDER BY updated_at DESC LIMIT ?`,
           endUserId,
           limit
         )
       : queryAll<SessionRow>(
           this.ctx.storage.sql as never,
-          "SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?",
+          `SELECT * FROM sessions WHERE ${notThreadLinked} AND ${kindClause} ORDER BY updated_at DESC LIMIT ?`,
           limit
         );
     return Response.json({ data: rows, count: rows.length });
@@ -1628,6 +1848,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // never a human — those calls carry no x-naelao-role header at all (internalHeaders()
       // only sets tenant + internal-token), so this is how they name which agent replied.
       agent_id?: string;
+      // item 79: structured per-message data, same trust level as agent_id above (an internal
+      // write-back only) — e.g. {consulted_threads:[{thread_id, agent_id, title}]} so the client
+      // can render an inline card at the exact turn where the assistant consulted a project agent.
+      metadata?: Record<string, unknown>;
+      // Migration v38: caller-minted idempotency key, unique per session. Lets a retried POST
+      // resolve to the message it already wrote instead of a duplicate. Client-supplied by design
+      // — it identifies the caller's own send attempt and grants no authority of any kind, so
+      // unlike agent_id/metadata it needs no trusted-caller check.
+      client_message_id?: string;
     }>();
 
     // G-D02: Reject oversized messages before writing to SQLite
@@ -1691,10 +1920,33 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       authorId = headerUserId ?? body.end_user_id ?? null;
     }
 
+    // Migration v38 idempotency. A retried POST (the shell's apiFetch retries on a network throw
+    // or a 5xx/429 — neither of which proves the server didn't already commit the row) must not
+    // write a second copy. Return the message that already exists instead, so the caller sees the
+    // same 2xx it would have seen had the first response reached it.
+    if (body.client_message_id) {
+      const existing = queryOne<{ id: string; role: string; author_type: string; author_id: string | null; created_at: string }>(
+        this.ctx.storage.sql as never,
+        "SELECT id, role, author_type, author_id, created_at FROM messages WHERE session_id = ? AND client_message_id = ?",
+        sessionId,
+        body.client_message_id
+      );
+      if (existing) {
+        return Response.json(
+          {
+            id: existing.id, session_id: sessionId, role: existing.role,
+            author_type: existing.author_type, author_id: existing.author_id,
+            created_at: existing.created_at, deduplicated: true,
+          },
+          { status: 200 }
+        );
+      }
+    }
+
     execute(
       this.ctx.storage.sql as never,
-      `INSERT INTO messages (id, session_id, role, content, tool_call_id, tool_name, token_count, created_at, author_type, author_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO messages (id, session_id, role, content, tool_call_id, tool_name, token_count, created_at, author_type, author_id, metadata, client_message_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       sessionId,
       body.role,
@@ -1704,7 +1956,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       body.token_count ?? null,
       now,
       authorType,
-      authorId
+      authorId,
+      body.metadata ? JSON.stringify(body.metadata) : "{}",
+      body.client_message_id ?? null
     );
 
     // Update session updated_at
@@ -1715,15 +1969,119 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       sessionId
     );
 
+    // Migration v37: bump the project's own "recent" ordering on any thread-linked message write
+    // — ordinary chat in a project thread AND consult subthreads alike, since both land here via
+    // this SAME choke point (a subthread is still a real `threads` row with `project_id` set).
+    // Best-effort: a session with no linked thread (Home/assistant sessions, the common case)
+    // simply finds nothing and this is a no-op.
+    try {
+      const linkedThread = queryOne<{ project_id: string | null }>(
+        this.ctx.storage.sql as never,
+        "SELECT project_id FROM threads WHERE session_id = ?",
+        sessionId
+      );
+      if (linkedThread?.project_id) {
+        execute(
+          this.ctx.storage.sql as never,
+          "UPDATE projects SET last_activity_at = ? WHERE id = ?",
+          now,
+          linkedThread.project_id
+        );
+      }
+    } catch {
+      /* recency ordering is a nicety, never blocks a real message write */
+    }
+
     return Response.json(
-      { id, session_id: sessionId, role: body.role, author_type: authorType, author_id: authorId, created_at: now },
+      {
+        id, session_id: sessionId, role: body.role, author_type: authorType, author_id: authorId, created_at: now,
+        ...(body.metadata ? { metadata: body.metadata } : {}),
+      },
       { status: 201 }
     );
   }
 
+  /**
+   * Truncate a session's transcript from one message onward (that message included).
+   *
+   * This is what makes "edit your last message and re-ask" honest. The client used to slice its
+   * OWN array and then send a fresh message, which looked right until a reload re-read the server
+   * transcript and rendered the original question, the original answer, the edited question and
+   * the new answer — four bubbles for what the user experienced as one correction.
+   *
+   * "Everything after" is resolved by SQLite's implicit `rowid` — insertion order — NOT by
+   * `created_at`. Two messages CAN share a timestamp (it is a millisecond ISO string, and an
+   * agent's write-back can land in the same millisecond as the message it answers), and `id` is a
+   * random UUID, so the `created_at`/`id` tie-break getMessages uses for stable *display* order is
+   * arbitrary as a *deletion* boundary: the assistant's reply could sort before the user message
+   * being replaced and survive, leaving an answer to a question that no longer exists. `rowid` is
+   * monotonic per insert and has no such tie.
+   *
+   * `end_user_id`, when present, is the caller's own verified id (the proxy derives it from
+   * claims and never from the query string) — an end user may only truncate their own session.
+   */
+  private truncateMessages(sessionId: string, params: URLSearchParams): Response {
+    const fromId = params.get("from");
+    if (!fromId) {
+      return Response.json(
+        { error_code: "invalid_request", message: "from (a message id) is required" },
+        { status: 400 }
+      );
+    }
+    const endUserId = params.get("end_user_id");
+
+    const session = queryOne<SessionRow>(
+      this.ctx.storage.sql as never,
+      "SELECT end_user_id FROM sessions WHERE id = ?",
+      sessionId
+    );
+    // Same 404-on-mismatch shape as getMessages: an end user must never be able to tell the
+    // difference between "that session does not exist" and "it exists but is someone else's".
+    if (!session || (endUserId && session.end_user_id !== endUserId)) {
+      return Response.json(
+        { error_code: "not_found", message: "Session not found" },
+        { status: 404 }
+      );
+    }
+
+    const anchor = queryOne<{ rid: number }>(
+      this.ctx.storage.sql as never,
+      "SELECT rowid AS rid FROM messages WHERE id = ? AND session_id = ?",
+      fromId,
+      sessionId
+    );
+    // Already gone (a double-submit, or a retry after a partial failure) is a no-op success, not
+    // an error — the caller's intent, "these messages should not be here", already holds.
+    if (!anchor) return Response.json({ deleted: 0 });
+
+    const doomed = queryAll<{ id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT id FROM messages WHERE session_id = ? AND rowid >= ?",
+      sessionId,
+      anchor.rid
+    );
+    this.ctx.storage.sql.exec(
+      "DELETE FROM messages WHERE session_id = ? AND rowid >= ?",
+      sessionId,
+      anchor.rid
+    );
+
+    return Response.json({ deleted: doomed.length });
+  }
+
   private getMessages(sessionId: string, params: URLSearchParams): Response {
-    const limit = Math.min(parseInt(params.get("limit") ?? "50"), 200);
+    // Cap raised from 200 to 500 so the context-usage endpoint's own `?limit=500` is honoured
+    // instead of being silently clamped: that caller sums every message's length to report "% of
+    // context used", and clamping made it UNDER-report on exactly the long conversations where the
+    // number matters, which in turn suppressed the auto-compaction it drives.
+    const limit = Math.min(parseInt(params.get("limit") ?? "50"), 500);
     const before = params.get("before");
+    // `before` is a created_at timestamp, which is only millisecond-granular — several messages
+    // written in the same millisecond share one value, so `created_at < before` drops every one of
+    // them at once and a paging client silently loses messages. `before_id` names an exact message
+    // instead and pages by its rowid (insertion order), which cannot collide. Both are accepted:
+    // before_id wins when given, `before` stays supported for any caller already using it.
+    const beforeId = params.get("before_id");
     const endUserId = params.get("end_user_id");
 
     // S0.1: If end_user_id is provided (product_end_user call), verify the caller owns this session
@@ -1742,24 +2100,71 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
     }
 
-    // G-D01: id as tie-breaker ensures stable ordering when messages share a timestamp
-    const rows = before
-      ? queryAll<MessageRow>(
+    // G-D01 wanted a STABLE order when messages share a timestamp, and `id` delivered that — the
+    // same input always came back the same way. But `id` is a random UUID, so stable is not the
+    // same as CORRECT: two messages written in the same millisecond (a question and the answer
+    // written straight back to it) came out in whichever order their UUIDs happened to sort,
+    // which is how a reply could render above the question it answers. `rowid` is insertion
+    // order, so it is both stable and right. `created_at` stays the primary key of the sort for
+    // the `before` cursor's sake (it is a timestamp the client sends back to us); rowid only
+    // replaces the arbitrary tie-break.
+    // A transcript loads from the END. Both branches select DESC (newest first) so LIMIT keeps the
+    // page nearest the cursor, then reverse back to chronological order for the response — the
+    // client renders the same ascending array either way.
+    //
+    // The no-cursor branch used to be `ORDER BY created_at ASC ... LIMIT 50`, i.e. the OLDEST page.
+    // Reproduced live: a 55-message session reloaded to messages 1-50 and every newer turn was
+    // invisible, so the conversation could never be continued from the UI. apps/shell sends neither
+    // `limit` nor `before`, so that branch is the only one any real client takes.
+    // Resolve before_id to its rowid up front; an id that isn't in this session is treated as no
+    // cursor at all rather than silently returning an empty page.
+    const beforeRowid = beforeId
+      ? queryOne<{ rid: number }>(
           this.ctx.storage.sql as never,
-          `SELECT * FROM messages WHERE session_id = ? AND created_at < ?
-           ORDER BY created_at DESC, id DESC LIMIT ?`,
-          sessionId,
-          before,
-          limit
-        )
-      : queryAll<MessageRow>(
-          this.ctx.storage.sql as never,
-          `SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC, id ASC LIMIT ?`,
-          sessionId,
-          limit
-        );
+          "SELECT rowid AS rid FROM messages WHERE id = ? AND session_id = ?",
+          beforeId,
+          sessionId
+        )?.rid
+      : undefined;
 
-    return Response.json({ data: rows, count: rows.length });
+    const rows = (
+      beforeRowid !== undefined
+        ? queryAll<MessageRow>(
+            this.ctx.storage.sql as never,
+            `SELECT * FROM messages WHERE session_id = ? AND rowid < ?
+             ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+            sessionId,
+            beforeRowid,
+            limit
+          )
+        : before
+          ? queryAll<MessageRow>(
+              this.ctx.storage.sql as never,
+              `SELECT * FROM messages WHERE session_id = ? AND created_at < ?
+               ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+              sessionId,
+              before,
+              limit
+            )
+          : queryAll<MessageRow>(
+              this.ctx.storage.sql as never,
+              `SELECT * FROM messages WHERE session_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+              sessionId,
+              limit
+            )
+    ).reverse();
+
+    // metadata is stored as a raw JSON string column (matching sessions.metadata's own
+    // convention) — parsed here so the client never has to double-decode it. A malformed value
+    // (shouldn't happen — only this route's own JSON.stringify ever writes it) degrades to {}
+    // rather than breaking the whole message list.
+    const data = rows.map((r) => {
+      let metadata: Record<string, unknown> = {};
+      try { metadata = JSON.parse((r as unknown as { metadata?: string }).metadata ?? "{}"); } catch { /* default {} */ }
+      return { ...r, metadata };
+    });
+
+    return Response.json({ data, count: data.length });
   }
 
   private async updateSession(request: Request, sessionId: string): Promise<Response> {
@@ -1788,6 +2193,41 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       );
     }
     return Response.json({ id: sessionId, updated_at: now });
+  }
+
+  // §A1 connector default-vs-personal switch — {connector_id: "business"|"personal"} for a
+  // session, no entry meaning "business" (today's implicit default). Read by NaelaoAgentDO once
+  // per run (best-effort — a failure here means "resolve as business", never blocks a run) and
+  // written by the shell's Connectors popover.
+  private getConnectorMode(sessionId: string): Response {
+    const rows = queryAll<{ connector_id: string; mode: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT connector_id, mode FROM connector_account_mode WHERE session_id = ?",
+      sessionId
+    );
+    const modes: Record<string, string> = {};
+    for (const r of rows) modes[r.connector_id] = r.mode;
+    return Response.json({ modes });
+  }
+
+  private async setConnectorMode(request: Request, sessionId: string): Promise<Response> {
+    const body = await request.json<{ connector_id?: string; mode?: string }>().catch(() => null);
+    if (!body?.connector_id || (body.mode !== "business" && body.mode !== "personal")) {
+      return Response.json({ error_code: "bad_request", message: "connector_id and mode ('business'|'personal') are required" }, { status: 400 });
+    }
+    if (body.mode === "business") {
+      // Business is the implicit default — delete rather than store a redundant row, so a fresh
+      // read-out (getConnectorMode) and "was this ever switched" both stay simple.
+      execute(this.ctx.storage.sql as never, "DELETE FROM connector_account_mode WHERE session_id = ? AND connector_id = ?", sessionId, body.connector_id);
+      return Response.json({ ok: true, mode: "business" });
+    }
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO connector_account_mode (session_id, connector_id, mode) VALUES (?, ?, 'personal')
+       ON CONFLICT(session_id, connector_id) DO UPDATE SET mode = 'personal', updated_at = datetime('now')`,
+      sessionId, body.connector_id
+    );
+    return Response.json({ ok: true, mode: "personal" });
   }
 
   private getAgentState(sessionId: string): Response {
@@ -2127,13 +2567,25 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const rows = queryAll<{
       id: string; space_id: string; name: string; description: string; status: string;
       default_agent_id: string | null; max_threads: number; allowed_agent_ids: string | null;
-      visibility: string; created_by: string | null; created_at: string;
+      visibility: string; created_by: string | null; created_at: string; last_activity_at: string | null;
       kind: string; is_singleton_kind: number;
     }>(
       this.ctx.storage.sql as never,
       // F-40: `kind` is surfaced so the frontend project-page shell can mount the natively-built
       // panel for that kind (WalletLedgerPanel etc.) via a switch at the mount point.
-      "SELECT id, space_id, name, description, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at, kind, is_singleton_kind FROM projects WHERE space_id = ? AND status != 'archived' ORDER BY created_at",
+      //
+      // ORDER BY created_at DESC (newest first) — this used to omit DESC entirely, which both
+      // sorted OLDEST-first (the opposite of the "recents" ordering the Sessions list already
+      // uses, ORDER BY updated_at DESC) and never actually used idx_projects_space's own
+      // (space_id, created_at DESC) index, which was built expecting exactly this direction. The
+      // reported symptom — a project a person just created/uses looking "lost" in the sidebar's
+      // collapsed-to-a-few list (item 66) — is exactly what oldest-first ordering produces, since
+      // the newest, most relevant project is the one most likely to be hidden behind "show more".
+      // Migration v37 closed the gap this comment used to describe: last_activity_at (touched by
+      // appendMessage on every thread-linked message write — ordinary project chat AND consult
+      // subthreads alike) now takes precedence over created_at, so a project an assistant just
+      // consulted an agent about really does come back to the top, not just one a human typed in.
+      "SELECT id, space_id, name, description, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at, last_activity_at, kind, is_singleton_kind FROM projects WHERE space_id = ? AND status != 'archived' ORDER BY COALESCE(last_activity_at, created_at) DESC",
       spaceId
     );
     const visible = viewerId
@@ -2308,7 +2760,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       ? { ...row, allowed_agent_ids: safeJsonParseAgentIds(row.allowed_agent_ids) }
       : { id, name: body.name, status: "active", default_agent_id: body.default_agent_id ?? null, max_threads: body.max_threads ?? 0, allowed_agent_ids: body.allowed_agent_ids ?? null, created_at: now };
     return Response.json(
-      { ...responseRow, possible_duplicates: possibleDuplicates },
+      // `created` distinguishes a genuine insert from the `ON CONFLICT(space_id, name) DO NOTHING`
+      // no-op on a name collision — this endpoint always returned 201 either way, with no field a
+      // caller could use to tell them apart. Real, previously-documented-but-unfixed bug: a
+      // template's bootstrap (seedTemplateProjects) runs both at provision time AND again when an
+      // end user finishes the onboarding wizard (bootstrap/complete) — the second pass's project
+      // "creates" all silently succeeded as no-ops, and since `res.ok` was true either way, the
+      // caller had no way to skip re-seeding a starter thread for each one, producing exactly two
+      // starter threads per templated project. `created` is what closes that for real.
+      { ...responseRow, possible_duplicates: possibleDuplicates, created: !alreadyExisted },
       { status: 201 }
     );
   }
@@ -2827,17 +3287,28 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       summary?: string;
       tokens_used?: number | null;
       cost_credits?: number | null;
+      /** Classification from @naelao/events classifyFailure — set by the agent DO at the moment
+       *  of failure, so the diagnostics rollup never has to re-parse free text. */
+      failure_kind?: string | null;
+      /** The thread and run this happened in, so a reader can actually go and continue it. */
+      session_id?: string | null;
+      run_id?: string | null;
+      /** What woke this run: chat, heartbeat, scheduled_job, connector_poll, trigger. */
+      trigger_source?: string | null;
     }>().catch(() => null);
     if (!body?.space_id || !body.agent_id || !body.event_type) {
       return Response.json({ error_code: "bad_request", message: "space_id, agent_id, event_type are required" }, { status: 400 });
     }
     execute(
       this.ctx.storage.sql as never,
-      `INSERT INTO agent_activity_log (id, space_id, project_id, thread_id, agent_id, event_type, summary, tokens_used, cost_credits)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO agent_activity_log (id, space_id, project_id, thread_id, agent_id, event_type, summary, tokens_used, cost_credits,
+                                       failure_kind, session_id, run_id, trigger_source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       crypto.randomUUID(), body.space_id, body.project_id ?? null, body.thread_id ?? null,
       body.agent_id, body.event_type, (body.summary ?? "").slice(0, 2000),
-      body.tokens_used ?? null, body.cost_credits ?? null
+      body.tokens_used ?? null, body.cost_credits ?? null,
+      isFailureKind(body.failure_kind) ? body.failure_kind : null,
+      body.session_id ?? null, body.run_id ?? null, body.trigger_source ?? null
     );
     return Response.json({ ok: true }, { status: 201 });
   }
@@ -2847,17 +3318,130 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private listAgentActivity(params: URLSearchParams): Response {
     const projectId = params.get("project_id");
     const limit = Math.min(Math.max(parseInt(params.get("limit") ?? "50", 10) || 50, 1), 200);
-    const rows = projectId
-      ? queryAll(
-          this.ctx.storage.sql as never,
-          "SELECT * FROM agent_activity_log WHERE project_id = ? ORDER BY created_at DESC LIMIT ?",
-          projectId, limit
-        )
-      : queryAll(
-          this.ctx.storage.sql as never,
-          "SELECT * FROM agent_activity_log ORDER BY created_at DESC LIMIT ?",
-          limit
-        );
+    // failure_kind / event_type are the drill-down the diagnostics summary points at: the summary
+    // says "4 tool_error failures in Lead Generation", and this is how the assistant then reads
+    // those four rows specifically instead of paging the whole log looking for them.
+    const failureKind = params.get("failure_kind");
+    const eventType = params.get("event_type");
+
+    const where: string[] = [];
+    const binds: Array<string | number> = [];
+    if (projectId) { where.push("project_id = ?"); binds.push(projectId); }
+    if (failureKind && isFailureKind(failureKind)) { where.push("failure_kind = ?"); binds.push(failureKind); }
+    if (eventType) { where.push("event_type = ?"); binds.push(eventType); }
+    binds.push(limit);
+
+    const rows = queryAll(
+      this.ctx.storage.sql as never,
+      `SELECT * FROM agent_activity_log${where.length ? ` WHERE ${where.join(" AND ")}` : ""}
+       ORDER BY created_at DESC LIMIT ?`,
+      ...binds
+    );
+    return Response.json({ data: rows, count: rows.length });
+  }
+
+  // ── Notifications inbox ─────────────────────────────────────────────────────
+  // POST /notifications — either a CREATE (kind/title present, called internal-only by
+  // NaelaoAgentDO — see its createSpaceNotification helper) or a mark-read ACTION
+  // ({action:"mark_read", notification_id}, reachable by any business member for their own
+  // space's notifications). The spaces-worker route restricts a caller without an internal HMAC
+  // token to ONLY the mark_read shape (see index.ts) — this method still checks defensively so a
+  // bug at that layer can't turn into a forged notification.
+  private async createOrActOnNotification(request: Request): Promise<Response> {
+    const body = await request.json<{
+      action?: string;
+      notification_id?: string;
+      space_id?: string;
+      project_id?: string | null;
+      kind?: string;
+      title?: string;
+      body?: string;
+      severity?: "info" | "warning" | "critical";
+      source_agent_id?: string | null;
+      related_id?: string | null;
+    }>().catch(() => null);
+    if (!body) return Response.json({ error_code: "bad_request", message: "Invalid body" }, { status: 400 });
+
+    if (body.action === "mark_read") {
+      if (!body.notification_id) {
+        return Response.json({ error_code: "bad_request", message: "notification_id is required" }, { status: 400 });
+      }
+      execute(
+        this.ctx.storage.sql as never,
+        "UPDATE notifications SET status = 'read', read_at = datetime('now') WHERE id = ? AND status != 'read'",
+        body.notification_id
+      );
+      return Response.json({ ok: true });
+    }
+
+    // Internal-only in practice (the heartbeat sweep, after it actually sends the channel
+    // message) — marks a row so it's never re-escalated on the next sweep. Deliberately does NOT
+    // require internal auth at this DO layer (the spaces-worker route in front of it does), same
+    // posture as mark_read.
+    if (body.action === "mark_delivered") {
+      if (!body.notification_id) {
+        return Response.json({ error_code: "bad_request", message: "notification_id is required" }, { status: 400 });
+      }
+      execute(
+        this.ctx.storage.sql as never,
+        "UPDATE notifications SET delivered_at = datetime('now') WHERE id = ? AND delivered_at IS NULL",
+        body.notification_id
+      );
+      return Response.json({ ok: true });
+    }
+
+    if (!body.space_id || !body.kind || !body.title) {
+      return Response.json({ error_code: "bad_request", message: "space_id, kind, title are required" }, { status: 400 });
+    }
+    const id = crypto.randomUUID();
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO notifications (id, space_id, project_id, kind, title, body, severity, source_agent_id, related_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id, body.space_id, body.project_id ?? null, body.kind, body.title.slice(0, 300),
+      (body.body ?? "").slice(0, 2000), body.severity ?? "info",
+      body.source_agent_id ?? null, body.related_id ?? null
+    );
+    return Response.json({ ok: true, id }, { status: 201 });
+  }
+
+  // GET /notifications?status=&limit=&undelivered_only=&stale_after_minutes= — the same read path
+  // serves both the business-member-facing inbox (status/limit only) and the heartbeat sweep's
+  // "what still needs escalating to a channel" query (undelivered_only + stale_after_minutes),
+  // rather than a second route — see the dispatcher comment above for why.
+  // project_id filtering: the assistant/Home chat view wants ALL notifications (the Space
+  // Assistant oversees the whole business), so omitting project_id keeps the prior unfiltered
+  // behavior. A project thread's own sidebar wants only THAT project's agent's notifications —
+  // pass project_id to scope to it. There's no "assistant-only" (project_id IS NULL) mode here,
+  // unlike scheduled_jobs/channel_links, because the ask for this tab was explicitly "all
+  // notifications" for the assistant view, not "just the space-level ones."
+  private listNotifications(params: URLSearchParams): Response {
+    const status = params.get("status");
+    const projectId = params.get("project_id");
+    const limit = Math.min(Math.max(parseInt(params.get("limit") ?? "50", 10) || 50, 1), 200);
+    if (params.get("undelivered_only") === "true") {
+      const staleMinutesRaw = parseInt(params.get("stale_after_minutes") ?? "15", 10);
+      const staleMinutes = Number.isFinite(staleMinutesRaw) && staleMinutesRaw >= 0 ? staleMinutesRaw : 15;
+      const rows = queryAll(
+        this.ctx.storage.sql as never,
+        `SELECT * FROM notifications
+         WHERE status = 'unread' AND delivered_at IS NULL
+           AND created_at <= datetime('now', ?)
+         ORDER BY created_at ASC LIMIT ?`,
+        `-${staleMinutes} minutes`, limit
+      );
+      return Response.json({ data: rows, count: rows.length });
+    }
+    const clauses: string[] = [];
+    const args: unknown[] = [];
+    if (status) { clauses.push("status = ?"); args.push(status); }
+    if (projectId) { clauses.push("project_id = ?"); args.push(projectId); }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const rows = queryAll(
+      this.ctx.storage.sql as never,
+      `SELECT * FROM notifications ${where} ORDER BY created_at DESC LIMIT ?`,
+      ...args, limit
+    );
     return Response.json({ data: rows, count: rows.length });
   }
 
@@ -2915,6 +3499,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     let prevMs = 0;
     for (const row of threadRows) {
       if (!row.thread_id) continue;
+      // Safe here specifically: agent_activity_log.created_at is written ONLY by this table's own
+      // `datetime('now')` default, i.e. SQLite's bare "YYYY-MM-DD HH:MM:SS", which V8 parses with
+      // a Z appended. Do not copy this pattern to a column an application also writes explicitly:
+      // scheduled_jobs binds new Date().toISOString() over its identical default, so the same
+      // line there produced "…Z" + "Z" = NaN and silently disabled every schedule on the platform.
       const ms = Date.parse(row.created_at + "Z");
       if (row.thread_id === prevThread && ms - prevMs <= REGEN_WINDOW_MS) regenerations++;
       prevThread = row.thread_id;
@@ -2931,6 +3520,288 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       total_cost_credits: completedRow?.total_cost ?? 0,
       approvals_requested: byType.get("approval_requested")?.cnt ?? 0,
       regenerations,
+    });
+  }
+
+  /**
+   * GET /agent-diagnostics?window_hours= — the whole business in one bounded summary.
+   *
+   * The Space Assistant is woken by a heartbeat, a cron, a channel message — and each of those
+   * used to arrive with no idea what had happened since last time. It could read
+   * /agent-activity, but that is raw rows: "48 events" is not something to act on, and reading
+   * enough of them to find the pattern costs more context than the whole wake-up is worth.
+   *
+   * So this is deliberately a SUMMARY, not a feed. Counts, the failure kinds that actually
+   * occurred, the per-project shape of it, and — the part that makes it actionable — the ids
+   * needed to go deeper: which thread stopped, which run to continue, which project to read.
+   * Drilling down is a separate, explicit call the assistant makes only where it sees something
+   * wrong (GET /agent-activity?failure_kind=, project_journal.read, the interrupted-run route).
+   *
+   * Everything is capped: at most 8 projects, 6 recent failures, 5 stalls. A brief that grows
+   * with the business stops being a brief.
+   */
+  private computeAgentDiagnostics(params: URLSearchParams): Response {
+    const windowHours = Math.min(Math.max(parseInt(params.get("window_hours") ?? "24", 10) || 24, 1), 24 * 30);
+    const since = `datetime('now', '-${windowHours} hours')`;
+    const sql = this.ctx.storage.sql as never;
+
+    const byType = queryAll<{ event_type: string; cnt: number; tokens: number | null; credits: number | null }>(
+      sql,
+      `SELECT event_type, COUNT(*) as cnt, SUM(tokens_used) as tokens, SUM(cost_credits) as credits
+         FROM agent_activity_log WHERE created_at >= ${since} GROUP BY event_type`
+    );
+    const counts: Record<string, number> = {};
+    let totalTokens = 0;
+    let totalCredits = 0;
+    for (const r of byType) {
+      counts[r.event_type] = r.cnt;
+      totalTokens += r.tokens ?? 0;
+      totalCredits += r.credits ?? 0;
+    }
+
+    // Why runs failed, most common first. This is the single most useful line in the brief: an
+    // agent that knows its failures were all quota_exhausted behaves very differently from one
+    // whose failures were all tool_error, and neither behaviour is reachable from a bare count.
+    const failures = queryAll<{ failure_kind: string | null; cnt: number }>(
+      sql,
+      `SELECT failure_kind, COUNT(*) as cnt FROM agent_activity_log
+        WHERE event_type = 'run_failed' AND created_at >= ${since}
+        GROUP BY failure_kind ORDER BY cnt DESC LIMIT 8`
+    ).map((r) => ({ kind: r.failure_kind ?? "unknown", count: r.cnt }));
+
+    // Where the work is, per project — including which projects are burning tokens without
+    // finishing anything, which is exactly the "which project thread stopped and why" question.
+    const projects = queryAll<{
+      project_id: string | null; completed: number; failed: number; tokens: number | null; credits: number | null;
+    }>(
+      sql,
+      `SELECT project_id,
+              SUM(CASE WHEN event_type = 'run_completed' THEN 1 ELSE 0 END) as completed,
+              SUM(CASE WHEN event_type = 'run_failed'    THEN 1 ELSE 0 END) as failed,
+              SUM(tokens_used) as tokens, SUM(cost_credits) as credits
+         FROM agent_activity_log
+        WHERE created_at >= ${since} AND event_type IN ('run_completed','run_failed')
+        GROUP BY project_id
+        ORDER BY (failed * 3 + completed) DESC LIMIT 8`
+    );
+
+    // Project names, so the brief reads as "Lead Generation stalled" and not a bare uuid the
+    // assistant would have to spend another call resolving.
+    const nameById = new Map<string, string>();
+    for (const p of queryAll<{ id: string; name: string }>(sql, `SELECT id, name FROM projects`)) {
+      nameById.set(p.id, p.name);
+    }
+
+    // The stalls worth resuming: the most recent failures that still name a thread. Capped hard —
+    // this is a pointer list, not a log.
+    const stalls = queryAll<{
+      project_id: string | null; thread_id: string | null; session_id: string | null; run_id: string | null;
+      failure_kind: string | null; summary: string; trigger_source: string | null; created_at: string;
+      tokens_used: number | null;
+    }>(
+      sql,
+      `SELECT project_id, thread_id, session_id, run_id, failure_kind, summary, trigger_source, created_at, tokens_used
+         FROM agent_activity_log
+        WHERE event_type = 'run_failed' AND created_at >= ${since}
+        ORDER BY created_at DESC LIMIT 6`
+    ).map((r) => ({
+      project_id: r.project_id,
+      project_name: r.project_id ? nameById.get(r.project_id) ?? null : null,
+      thread_id: r.thread_id,
+      session_id: r.session_id,
+      run_id: r.run_id,
+      failure_kind: r.failure_kind ?? "unknown",
+      // The summary is already capped at 2000 on write; 240 is what fits a brief without turning
+      // it into a log dump. The full text stays available via /agent-activity.
+      summary: (r.summary ?? "").slice(0, 240),
+      woken_by: r.trigger_source,
+      tokens_used: r.tokens_used,
+      at: r.created_at,
+    }));
+
+    // How many wake-ups never got anywhere. A recurring "the heartbeat fired and immediately hit
+    // a limit" pattern is invisible in a per-run view and obvious here.
+    const wakeFailures = queryAll<{ trigger_source: string | null; cnt: number }>(
+      sql,
+      `SELECT trigger_source, COUNT(*) as cnt FROM agent_activity_log
+        WHERE event_type = 'run_failed' AND created_at >= ${since}
+          AND trigger_source IS NOT NULL AND trigger_source != 'chat'
+        GROUP BY trigger_source ORDER BY cnt DESC LIMIT 5`
+    ).map((r) => ({ trigger: r.trigger_source ?? "unknown", failed_runs: r.cnt }));
+
+    const unreadNotifications = queryOne<{ cnt: number }>(
+      sql, `SELECT COUNT(*) as cnt FROM notifications WHERE status = 'unread'`
+    )?.cnt ?? 0;
+    const criticalUnread = queryOne<{ cnt: number }>(
+      sql, `SELECT COUNT(*) as cnt FROM notifications WHERE status = 'unread' AND severity = 'critical'`
+    )?.cnt ?? 0;
+
+    const runsCompleted = counts["run_completed"] ?? 0;
+    const runsFailed = counts["run_failed"] ?? 0;
+    const runsTotal = runsCompleted + runsFailed;
+
+    return Response.json({
+      window_hours: windowHours,
+      runs: {
+        total: runsTotal,
+        completed: runsCompleted,
+        failed: runsFailed,
+        error_rate: runsTotal > 0 ? Number((runsFailed / runsTotal).toFixed(3)) : 0,
+      },
+      spend: { tokens_used: totalTokens, credits: totalCredits },
+      approvals: {
+        requested: counts["approval_requested"] ?? 0,
+        resolved: counts["approval_resolved"] ?? 0,
+        // A gap here means work is parked on a person who hasn't answered.
+        outstanding: Math.max(0, (counts["approval_requested"] ?? 0) - (counts["approval_resolved"] ?? 0)),
+      },
+      moderation_blocked: counts["moderation_blocked"] ?? 0,
+      failures_by_kind: failures,
+      wake_failures: wakeFailures,
+      projects: projects.map((p) => ({
+        project_id: p.project_id,
+        name: p.project_id ? nameById.get(p.project_id) ?? null : "(space assistant)",
+        completed: p.completed,
+        failed: p.failed,
+        tokens_used: p.tokens ?? 0,
+        credits: p.credits ?? 0,
+      })),
+      recent_stalls: stalls,
+      notifications: { unread: unreadNotifications, unread_critical: criticalUnread },
+    });
+  }
+
+  // GET /business-analytics?window=7d|30d|90d — the Analytics page's data (apps/shell's Settings-
+  // adjacent business dashboard, mirroring the mockup's Analytics view). Pure aggregate — counts,
+  // sums, and per-day/per-agent rollups, never a raw row with a session id, thread id, or summary
+  // text attached — which is what makes this safe for ANY business member, unlike the
+  // builder-only agent-activity/agent-diagnostics endpoints this shares its table with.
+  //
+  // "Heartbeat pass/fail": only FAILURES are ever logged for an idle heartbeat tick (see
+  // handleAgentTick in workers/agents — a heartbeat with nothing to do writes nothing, since
+  // logging a no-op tick for every space every hour platform-wide would dwarf the table for zero
+  // signal). So "passes" here honestly means "wake-ups that did real work and it completed", not
+  // "every tick that happened to run" — there is no record of a silent, work-free tick succeeding,
+  // and this deliberately does not invent one.
+  private computeBusinessAnalytics(params: URLSearchParams): Response {
+    const windowDays = params.get("window") === "30d" ? 30 : params.get("window") === "90d" ? 90 : 7;
+    const since = `datetime('now', '-${windowDays} days')`;
+    const prevSince = `datetime('now', '-${windowDays * 2} days')`;
+    const sql = this.ctx.storage.sql as never;
+
+    const byType = queryAll<{ event_type: string; cnt: number; tokens: number | null; credits: number | null }>(
+      sql,
+      `SELECT event_type, COUNT(*) as cnt, SUM(tokens_used) as tokens, SUM(cost_credits) as credits
+         FROM agent_activity_log WHERE created_at >= ${since} GROUP BY event_type`
+    );
+    const counts: Record<string, number> = {};
+    let totalTokens = 0;
+    let totalCredits = 0;
+    for (const r of byType) {
+      counts[r.event_type] = r.cnt;
+      totalTokens += r.tokens ?? 0;
+      totalCredits += r.credits ?? 0;
+    }
+    const runsCompleted = counts["run_completed"] ?? 0;
+    const runsFailed = counts["run_failed"] ?? 0;
+    const runsTotal = runsCompleted + runsFailed;
+
+    // Prior window, for the "vs last period" deltas the mockup's cards show — a real comparison,
+    // not a fabricated percentage.
+    const prevCredits = queryOne<{ credits: number | null }>(
+      sql,
+      `SELECT SUM(cost_credits) as credits FROM agent_activity_log
+        WHERE created_at >= ${prevSince} AND created_at < ${since}`
+    )?.credits ?? 0;
+    const prevRuns = queryOne<{ cnt: number }>(
+      sql,
+      `SELECT COUNT(*) as cnt FROM agent_activity_log
+        WHERE created_at >= ${prevSince} AND created_at < ${since} AND event_type IN ('run_completed','run_failed')`
+    )?.cnt ?? 0;
+
+    // Per-agent breakdown for the mockup's "Usage by Agent" table — runs/credits/success rate.
+    // No avg-duration column exists on this table (nothing measures wall time per run today), so
+    // this deliberately omits that field rather than fabricating one.
+    const byAgent = queryAll<{ agent_id: string; completed: number; failed: number; credits: number | null; tokens: number | null }>(
+      sql,
+      `SELECT agent_id,
+              SUM(CASE WHEN event_type = 'run_completed' THEN 1 ELSE 0 END) as completed,
+              SUM(CASE WHEN event_type = 'run_failed'    THEN 1 ELSE 0 END) as failed,
+              SUM(cost_credits) as credits, SUM(tokens_used) as tokens
+         FROM agent_activity_log
+        WHERE created_at >= ${since} AND event_type IN ('run_completed','run_failed')
+        GROUP BY agent_id ORDER BY (completed + failed) DESC LIMIT 12`
+    );
+
+    // Daily credit usage for the bar chart — one row per day even when a day had zero activity,
+    // computed in application code rather than a SQL date-series generator DO SQLite doesn't have.
+    const dailyRows = queryAll<{ day: string; credits: number | null; runs: number }>(
+      sql,
+      `SELECT substr(created_at, 1, 10) as day, SUM(cost_credits) as credits, COUNT(*) as runs
+         FROM agent_activity_log
+        WHERE created_at >= ${since} AND event_type IN ('run_completed','run_failed')
+        GROUP BY day`
+    );
+    const dailyByDay = new Map(dailyRows.map((r) => [r.day, { credits: r.credits ?? 0, runs: r.runs }]));
+    const daily: { day: string; credits: number; runs: number }[] = [];
+    const bucketDays = Math.min(windowDays, 30); // cap the series at 30 points even for the 90d window
+    const step = windowDays / bucketDays;
+    for (let i = bucketDays - 1; i >= 0; i--) {
+      const d = new Date(Date.now() - Math.round(i * step) * 24 * 60 * 60 * 1000);
+      const key = d.toISOString().slice(0, 10);
+      const found = dailyByDay.get(key);
+      daily.push({ day: key, credits: found?.credits ?? 0, runs: found?.runs ?? 0 });
+    }
+
+    // Heartbeat/scheduled wake-ups: failures by trigger, honestly labeled per the header comment
+    // above (no fabricated "pass" count for a silent no-op tick).
+    const wakeFailures = queryAll<{ trigger_source: string | null; cnt: number }>(
+      sql,
+      `SELECT trigger_source, COUNT(*) as cnt FROM agent_activity_log
+        WHERE event_type = 'run_failed' AND created_at >= ${since}
+          AND trigger_source IS NOT NULL AND trigger_source != 'chat'
+        GROUP BY trigger_source ORDER BY cnt DESC LIMIT 8`
+    ).map((r) => ({ trigger: r.trigger_source ?? "unknown", failed: r.cnt }));
+    const wakeCompleted = queryOne<{ cnt: number }>(
+      sql,
+      `SELECT COUNT(*) as cnt FROM agent_activity_log
+        WHERE event_type = 'run_completed' AND created_at >= ${since}
+          AND trigger_source IS NOT NULL AND trigger_source != 'chat'`
+    )?.cnt ?? 0;
+    const wakeFailedTotal = wakeFailures.reduce((sum, w) => sum + w.failed, 0);
+
+    const projectsTotal = queryOne<{ cnt: number }>(sql, `SELECT COUNT(*) as cnt FROM projects WHERE status != 'archived'`)?.cnt ?? 0;
+    const threadsTotal = queryOne<{ cnt: number }>(sql, `SELECT COUNT(*) as cnt FROM threads`)?.cnt ?? 0;
+
+    return Response.json({
+      window_days: windowDays,
+      runs: {
+        total: runsTotal,
+        completed: runsCompleted,
+        failed: runsFailed,
+        success_rate: runsTotal > 0 ? Number((runsCompleted / runsTotal).toFixed(3)) : null,
+        vs_prior_period: prevRuns > 0 ? Number((((runsTotal - prevRuns) / prevRuns) * 100).toFixed(1)) : null,
+      },
+      credits: {
+        used: totalCredits,
+        vs_prior_period: prevCredits > 0 ? Number((((totalCredits - prevCredits) / prevCredits) * 100).toFixed(1)) : null,
+      },
+      tokens_used: totalTokens,
+      by_agent: byAgent.map((a) => ({
+        agent_id: a.agent_id,
+        runs: a.completed + a.failed,
+        completed: a.completed,
+        failed: a.failed,
+        success_rate: (a.completed + a.failed) > 0 ? Number((a.completed / (a.completed + a.failed)).toFixed(3)) : null,
+        credits: a.credits ?? 0,
+      })),
+      daily,
+      heartbeats: {
+        completed_with_work: wakeCompleted,
+        failed: wakeFailedTotal,
+        by_trigger: wakeFailures,
+      },
+      structure: { projects: projectsTotal, threads: threadsTotal },
     });
   }
 
@@ -3239,7 +4110,22 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private getWalletBalance(projectId: string): Response {
     const project = this.requireWalletProject(projectId);
     if (!project) return Response.json({ error_code: "not_found", message: "Not a wallet project" }, { status: 404 });
-    return Response.json({ project_id: projectId, balance_cents: this.walletBalance(projectId), currency: "USD" });
+    // `credited_cents` is what makes a NEVER-FUNDED wallet distinguishable from a DEPLETED one.
+    // Both are a zero balance, and the run gate used to block on the balance alone — so a business
+    // created five seconds ago, whose wallet is auto-provisioned empty by design, was refused all
+    // project-agent work with "top up to keep this agent running" before its owner had done
+    // anything. Reproduced live on a real business. See checkProjectWallet in NaelaoAgentDO.
+    const credited = queryOne<{ total: number | null }>(
+      this.ctx.storage.sql as never,
+      "SELECT SUM(delta_cents) AS total FROM wallet_ledger WHERE project_id = ? AND delta_cents > 0",
+      projectId
+    );
+    return Response.json({
+      project_id: projectId,
+      balance_cents: this.walletBalance(projectId),
+      credited_cents: credited?.total ?? 0,
+      currency: "USD",
+    });
   }
 
   private async creditWallet(projectId: string, request: Request): Promise<Response> {
@@ -3456,24 +4342,29 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // member), never a client-supplied field, so one member can't browse another's local-machine
   // grants (directory paths are sensitive). A builder/owner JWT caller sees the whole space's
   // grants unfiltered, unchanged from before this pass.
-  private listLocalGrants(spaceId: string, filterUserId?: string): Response {
-    const rows = filterUserId
-      ? queryAll<{
-          id: string; space_id: string; project_id: string | null; user_id: string;
-          grant_type: string; directory: string | null; commands_json: string; created_at: string;
-        }>(
-          this.ctx.storage.sql as never,
-          "SELECT * FROM local_grants WHERE space_id = ? AND user_id = ? ORDER BY created_at",
-          spaceId, filterUserId
-        )
-      : queryAll<{
-          id: string; space_id: string; project_id: string | null; user_id: string;
-          grant_type: string; directory: string | null; commands_json: string; created_at: string;
-        }>(
-          this.ctx.storage.sql as never,
-          "SELECT * FROM local_grants WHERE space_id = ? ORDER BY created_at",
-          spaceId
-        );
+  // filterProjectId mirrors local-machine.ts's own grant-resolution rule exactly (a grant with
+  // project_id NULL applies space-wide/to any project; one with project_id set applies only to
+  // that project) — so a project-scoped panel sees the grants that would actually apply to a run
+  // in that project, not a naive exact-match that would hide the space-wide ones.
+  private listLocalGrants(spaceId: string, filterUserId?: string, filterProjectId?: string): Response {
+    const conditions = ["space_id = ?"];
+    const params: unknown[] = [spaceId];
+    if (filterUserId) {
+      conditions.push("user_id = ?");
+      params.push(filterUserId);
+    }
+    if (filterProjectId) {
+      conditions.push("(project_id IS NULL OR project_id = ?)");
+      params.push(filterProjectId);
+    }
+    const rows = queryAll<{
+      id: string; space_id: string; project_id: string | null; user_id: string;
+      grant_type: string; directory: string | null; commands_json: string; created_at: string;
+    }>(
+      this.ctx.storage.sql as never,
+      `SELECT * FROM local_grants WHERE ${conditions.join(" AND ")} ORDER BY created_at`,
+      ...params
+    );
     const data = rows.map((r) => ({ ...r, commands: JSON.parse(r.commands_json || "[]") as string[] }));
     return Response.json({ data, count: data.length });
   }
@@ -3673,6 +4564,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private listThreads(params: URLSearchParams): Response {
     const spaceId = params.get("space_id") ?? "";
     const projectId = params.get("project_id");
+    const parentThreadId = params.get("parent_thread_id");
     let showSubThreads = params.get("include_sub_threads") === "true";
     if (!showSubThreads && projectId) {
       const project = queryOne<{ show_sub_threads: number }>(
@@ -3689,7 +4581,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       clauses.push("project_id = ?");
       args.push(projectId);
     }
-    if (!showSubThreads) clauses.push("thread_kind = 'primary'");
+    // An explicit parent_thread_id ask (the shell's "show what the assistant discussed with the
+    // agent about this thread" panel, or the assistant's own thread.list op) is always answered
+    // in full regardless of the project's show_sub_threads default — the caller named exactly
+    // which subthreads it wants, not "give me everything hidden by default".
+    if (parentThreadId) {
+      clauses.push("parent_thread_id = ?");
+      args.push(parentThreadId);
+    } else if (!showSubThreads) {
+      clauses.push("thread_kind = 'primary'");
+    }
 
     const rows = queryAll(
       this.ctx.storage.sql as never,
@@ -3732,6 +4633,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       channel?: string;
       channel_session_id?: string;
       tenant_id?: string;
+      session_id?: string;
     }>().catch(() => ({}) as Record<string, never>);
     if (!body.space_id) {
       return Response.json({ error_code: "bad_request", message: "space_id is required" }, { status: 400 });
@@ -3770,10 +4672,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       execute(
         this.ctx.storage.sql as never,
-        `INSERT INTO threads (id, space_id, user_id, project_id, title, status, parent_thread_id, thread_kind, channel, channel_session_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO threads (id, space_id, user_id, project_id, title, status, parent_thread_id, thread_kind, channel, channel_session_id, session_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`,
         id, body.space_id, body.user_id ?? null, body.project_id ?? null, body.title ?? null,
-        body.parent_thread_id ?? null, kind, body.channel ?? null, body.channel_session_id, now, now
+        body.parent_thread_id ?? null, kind, body.channel ?? null, body.channel_session_id, body.session_id ?? null, now, now
       );
       await fireCreated(id, body.project_id ?? null);
       const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM threads WHERE id = ?", id);
@@ -3789,10 +4691,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       execute(
         this.ctx.storage.sql as never,
-        `INSERT INTO threads (id, space_id, user_id, project_id, title, status, parent_thread_id, thread_kind, channel, channel_session_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO threads (id, space_id, user_id, project_id, title, status, parent_thread_id, thread_kind, channel, channel_session_id, session_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`,
         id, body.space_id, body.user_id ?? null, body.project_id ?? null, body.title ?? null,
-        body.parent_thread_id ?? null, kind, body.channel ?? null, body.channel_session_id ?? null, now, now
+        body.parent_thread_id ?? null, kind, body.channel ?? null, body.channel_session_id ?? null, body.session_id ?? null, now, now
       );
       await fireCreated(id, body.project_id ?? null);
     }
@@ -3803,6 +4705,44 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private getThread(threadId: string): Response {
     const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM threads WHERE id = ?", threadId);
     if (!row) return Response.json({ error_code: "not_found", message: "Thread not found" }, { status: 404 });
+    return Response.json(row);
+  }
+
+  /**
+   * PATCH /threads/:id — rename and/or archive a thread. There is no hard DELETE for a thread,
+   * same convention `projects` already established (see updateProject): a thread's messages are
+   * real conversation history, and destroying them because someone clicked "delete" is a worse
+   * failure mode than leaving an inert archived row behind. `status: 'archived'` is what a
+   * "delete this thread" action in the UI (or the assistant's own thread.delete op) actually
+   * does — `isThreadLimitReached` already treats an archived thread as not counting toward a
+   * project's max_threads, so archiving genuinely frees up room the same way a real delete would.
+   */
+  private async updateThread(threadId: string, request: Request): Promise<Response> {
+    const body = await request.json<{ title?: string; status?: "active" | "archived" }>().catch(() => ({}) as Record<string, never>);
+    if (body.status !== undefined && body.status !== "active" && body.status !== "archived") {
+      return Response.json({ error_code: "bad_request", message: "status must be 'active' or 'archived'" }, { status: 400 });
+    }
+    const existing = queryOne<{ id: string }>(this.ctx.storage.sql as never, "SELECT id FROM threads WHERE id = ?", threadId);
+    if (!existing) return Response.json({ error_code: "not_found", message: "Thread not found" }, { status: 404 });
+
+    const sets: string[] = [];
+    const args: unknown[] = [];
+    if (body.title !== undefined) {
+      sets.push("title = ?");
+      args.push(body.title);
+    }
+    if (body.status !== undefined) {
+      sets.push("status = ?");
+      args.push(body.status);
+    }
+    if (sets.length === 0) {
+      return Response.json({ error_code: "bad_request", message: "nothing to update — provide title and/or status" }, { status: 400 });
+    }
+    sets.push("updated_at = ?");
+    args.push(new Date().toISOString());
+    args.push(threadId);
+    execute(this.ctx.storage.sql as never, `UPDATE threads SET ${sets.join(", ")} WHERE id = ?`, ...args);
+    const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM threads WHERE id = ?", threadId);
     return Response.json(row);
   }
 
@@ -3889,9 +4829,20 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
    * for fireMatchingTriggers to evaluate. tenantId comes from the caller's own verified
    * internal token (requireInternalHmac already checked it matches x-naelao-tenant-id before
    * this request reached the DO), same trust boundary as every other internal-only route.
+   *
+   * Read from the QUERY STRING, not a header — forwardToSpaceDO (workers/spaces/src/index.ts)
+   * builds a fresh Request carrying only content-type, the same reason /projects/:projectId's
+   * own PATCH route already rides tenant_id on the query string (see that route's own comment).
+   * A previous version of this method read x-naelao-tenant-id off request.headers, which
+   * forwardToSpaceDO never actually sets — every real call (including the agents worker's
+   * scheduled_job.disabled auto-disable event) would 400 here and never fire, undetected by
+   * space-fire-external-event.test.ts because that suite calls doInstance.fetch() directly with
+   * a hand-set header, never exercising the real HTTP round trip through the worker. Falls back
+   * to the header too, in case some future caller reaches this DO directly with one set.
    */
   private async fireExternalEvent(request: Request): Promise<Response> {
-    const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+    const url = new URL(request.url);
+    const tenantId = request.headers.get("x-naelao-tenant-id") || url.searchParams.get("tenant_id") || "";
     const body = await request.json<{
       type: string;
       space_id: string;

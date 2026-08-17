@@ -74,13 +74,19 @@ export interface InheritResult {
  * Inherit the shared template library into a space. By default only adds skills the space does not
  * already have (so a space's own learned/patched version is never clobbered). Called at
  * provisioning so a new space starts with everything the fleet has figured out.
+ *
+ * opts.names narrows to a specific subset (the "skills directory" add-dialog's per-skill Add
+ * button) — omitted (the provisioning-time call's own usage) means "everything the space lacks",
+ * unchanged from before this option existed.
  */
 export async function inheritTemplateSkills(
   templateLib: SkillLibrary,
   spaceLib: SkillLibrary,
-  opts: { overwrite?: boolean } = {}
+  opts: { overwrite?: boolean; names?: string[] } = {}
 ): Promise<InheritResult> {
-  const names = await templateLib.list();
+  const allNames = await templateLib.list();
+  const requestedNames = opts.names;
+  const names = requestedNames ? allNames.filter((n) => requestedNames.includes(n)) : allNames;
   const inherited: string[] = [];
   const skipped: string[] = [];
   for (const name of names) {

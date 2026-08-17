@@ -37,6 +37,33 @@ export interface ScriptParameter {
   default?: unknown;
 }
 
+/**
+ * One recorded run of a stored skill (see `ScriptMetadata.recent_outcomes`). The error is kept
+ * on failures only, truncated — it is the input a repair is aimed at, not a log line.
+ */
+export interface SkillOutcome {
+  ok: boolean;
+  at: number;
+  error?: string;
+}
+
+/** Recency verdict for a stored skill. Derived in skill-health.ts (all the logic lives there;
+ *  the shape lives here so `FindCandidate` can carry it without a circular import). */
+export type SkillHealthState = "unproven" | "proven" | "degrading" | "broken";
+
+export interface SkillHealth {
+  state: SkillHealthState;
+  /** Failures at the head of the recent window — the streak, which is what actually predicts
+   *  the next run. */
+  consecutive_failures: number;
+  recent_runs: number;
+  recent_failures: number;
+  /** The most recent failure's error, when there is one. What a repair is aimed at. */
+  last_error?: string;
+  /** One sentence written for the model, not for a dashboard. */
+  recommendation: string;
+}
+
 /** Why and how a version came to be (one entry per version in patch_history). */
 export interface PatchRecord {
   version: number;
@@ -105,6 +132,15 @@ export interface ScriptMetadata {
   patch_history: PatchRecord[];
   /** Derived signal in [0,1]; gates L1 candidacy and sorts script.find results. */
   stability_score: number;
+  /**
+   * Bounded rolling window of the most recent runs, newest first (see skill-health.ts).
+   * `stability_score` is a lifetime ratio and cannot express recency — 20 successes and 4
+   * failures scores the same whether those failures are spread over a year or are the last
+   * four in a row. This is what makes "failed its last three runs, and here is what it said"
+   * knowable, which is the difference between demoting a skill and repairing it.
+   * Optional: absent on scripts written before this existed, which read as unproven.
+   */
+  recent_outcomes?: SkillOutcome[];
 
   // Provenance
   /** "prebuilt" = bundled platform script; "distilled" = authored by an agent at L4;
@@ -154,6 +190,21 @@ export interface ScriptRunResult {
   needs_connector?: boolean;
   connector_id?: string;
   connector_name?: string;
+  /**
+   * Who authored `error`: the MODEL (its own `give_up` reason, in its own words) or the
+   * infrastructure around it (a gateway 429, a thrown exception, a budget gate).
+   *
+   * Load-bearing for the proactive loop, and found the hard way. A model that stops and explains
+   * itself is describing a situation; it is not itself evidence that the situation is real. When
+   * its prose was fed to classifyFailure like any other error string, a give_up that merely
+   * MENTIONED running out of allowance was classified `quota_exhausted` — a kind whose whole
+   * meaning is "this clears on its own, do not retry." The next wake-up's brief then told the
+   * assistant its quota was spent, so it gave up again, and that give_up was classified the same
+   * way. One genuine outage poisoned every future wake-up, permanently, long after capacity
+   * returned — observed live: an assistant running fine on a completely different provider
+   * refused to work because of a Workers AI failure from the previous day.
+   */
+  failure_origin?: "model" | "infrastructure";
 }
 
 /** A candidate returned by script.find. */
@@ -161,8 +212,22 @@ export interface FindCandidate {
   name: string;
   metadata: ScriptMetadata;
   semantic_similarity: number;
-  /** stability_score × semantic_similarity (the sort key). */
+  /**
+   * stability_score × semantic_similarity — "is this skill about the right thing?", with no
+   * recency judgment folded in. The GATE tests THIS against the confidence floor, because a
+   * broken skill is still the relevant one: reading it as "nothing found" would send the agent
+   * off to write a second skill for a job it already has one for, instead of fixing that one.
+   */
+  relevance: number;
+  /** relevance × health multiplier — "and can I trust it as it stands?". The sort key, so
+   *  anything that actually works out-ranks something that has been failing. */
   confidence: number;
+  /**
+   * Recency verdict derived from `metadata.recent_outcomes` (skill-health.ts). Carried on the
+   * candidate so the GATE can refuse to auto-run something broken and the reasoner can see WHY
+   * — without either re-deriving it from raw counters.
+   */
+  health?: SkillHealth;
 }
 
 /** Escalation level chosen by GATE (spec §5). */
@@ -178,7 +243,7 @@ export type EscalationLevel = "L1" | "L2" | "L3" | "L4";
  */
 export interface TraceStep {
   seq: number;
-  /** "observe" | "find" | "gate" | "reason" | "run" */
+  /** "observe" | "find" | "gate" | "reason" | "run" | "answer" | "give_up" */
   phase: string;
   /** Script name, when the step concerns one (find top candidate, reason decision, run). */
   name?: string | undefined;
@@ -187,9 +252,59 @@ export interface TraceStep {
   tokens?: number | undefined;
   ok?: boolean | undefined;
   detail?: string | undefined;
+  /** A reasoning-capable model's own chain-of-thought for this "reason" step, when the model
+   *  returned one — see billing-core's MODEL_CAPABILITIES doc header for which models this
+   *  applies to. Rendered as a collapsed "Thoughts" block a user can expand, distinct from
+   *  `detail` (which stays a short label like the chosen action). */
+  thinking?: string | undefined;
+  /** The live STATUS for this step's action — the model's own `doing` parameter, e.g. "Checking
+   *  what's already in your store". Rendered beside the action while it runs and REPLACED by the
+   *  next action's own, so a run of tool calls shows one status line rather than one per call.
+   *  See GatewayReasoner.lastNarration. Distinct from `thinking` (collapsed internal reasoning)
+   *  and from `message` (a real, permanent message — see below). */
+  narration?: string | undefined;
+  /** A real MESSAGE the model chose to write to the person on this step — its optional `say`
+   *  parameter. Unlike `narration` this is never replaced: it renders as its own line in the
+   *  conversation, in order, and a run reads as message → tool calls → message → tool calls
+   *  (Claude Code's own shape). Present only on turns where the model judged one was warranted,
+   *  which is what keeps a long run readable. See GatewayReasoner.lastMessage. */
+  message?: string | undefined;
+  /** For a "run" phase step: the exact arguments the tool was called with — what lets an
+   *  expanded tool call show the real command, not just a duration. Attached at both the "begin"
+   *  checkpoint (before the call resolves) and the "complete" one (unchanged). */
+  params?: unknown;
+  /** For a "run" phase step that succeeded: a size-capped, stringified view of the tool's raw
+   *  return value (see loop.ts's `formatToolOutput`). A failed call's outcome lives in `detail`/
+   *  `error` instead — this is only ever set on success. */
+  output?: string | undefined;
   /** Date.now() at the moment the step was recorded. */
   ts: number;
 }
+
+/**
+ * A live progress checkpoint — a TraceStep before it has a place in the trace, plus the two fields
+ * that only make sense WHILE something is happening and are therefore never persisted.
+ *
+ * The distinction matters: `TraceStep` is the durable record of what a run did, read back long
+ * after the fact from `run_traces`. This is the transient view of a run in flight, and it carries
+ * text that is still growing — so a consumer has to know whether what it is holding is finished.
+ */
+export type LiveCheckpoint = Omit<TraceStep, "seq" | "ts"> & {
+  /**
+   * This checkpoint UPDATES the step already in flight rather than describing a new one — the
+   * model is mid-sentence and this is the sentence so far. A consumer replaces its current step
+   * in place instead of appending, or a single reasoning turn would produce dozens of rows.
+   */
+  partial?: boolean | undefined;
+  /**
+   * The final answer as it is being written, for a turn where the model chose to answer.
+   *
+   * Kept apart from `narration` because the two end up in different places on screen: narration is
+   * a line inside the activity sequence, whereas this becomes the assistant's actual reply bubble.
+   * Merging them would print the answer twice.
+   */
+  answer_preview?: string | undefined;
+};
 
 export interface LoopResult {
   level: EscalationLevel;
@@ -200,6 +315,44 @@ export interface LoopResult {
   notes: string[];
   /** Structured per-phase/per-script.run trace (Phase HX1) — same run, richer than `notes`. */
   trace: TraceStep[];
+  /**
+   * Set only when the run stopped because a gated action is waiting on a human. This is NOT a
+   * failure and must never be rendered as one: the work is intact, paused at the point just
+   * before the gated action, and resumable once someone answers. `steps_completed` is what the
+   * run had already done, carried so a resume can hand it back to the model rather than
+   * re-deriving (or worse, re-executing) it.
+   */
+  pending_approval?: {
+    approval_id: string;
+    action_name: string;
+    params: Record<string, unknown>;
+    expires_at?: number;
+    steps_completed: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>;
+  };
+  /**
+   * Actions parked mid-run because they need a human, on a run that CARRIED ON around them and
+   * finished. Distinct from `pending_approval`, which is the whole run stopping: here the agent
+   * did everything else it could, so there is a real answer AND some outstanding work.
+   *
+   * Blocking on the first thing that needs permission is what makes an agent useless in practice —
+   * an assistant with five jobs stops dead on the one that needs a signature and stays stopped
+   * until somebody happens to look. Each entry carries its own checkpoint so it resumes alone.
+   */
+  deferred_approvals?: Array<{
+    approval_id: string;
+    action_name: string;
+    params: Record<string, unknown>;
+    expires_at?: number;
+    steps_completed: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>;
+  }>;
+  /**
+   * The ungated work this run completed, on EVERY exit — success, failure or exhaustion.
+   *
+   * A failed run used to hand back an error and nothing else, so the only thing a caller could
+   * offer was "start over", which redoes side effects that already happened. With this, a failure
+   * is resumable: the caller checkpoints these steps and a Continue picks up from them.
+   */
+  steps_completed?: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>;
 }
 
 // ── Engine bindings (dependency-injected so the engine is testable + DO-agnostic) ──────
@@ -260,6 +413,50 @@ export interface OrchestrationHooks {
   workflowRun?(name: string, params: Record<string, unknown>): Promise<unknown>;
   workflowSchedule?(name: string, cron: string): Promise<{ id: string }>;
   workflowStatus?(id: string): Promise<unknown>;
+  /**
+   * Assistant<->project-agent coordination lane (§A1.18 thread model). Unlike spawnSubAgent
+   * (a throwaway, isolated child with no identity of its own), this dispatches to an EXISTING
+   * named project agent definition, addressed the same way @mention dispatch does
+   * (`{sessionId}:{agentId}`) so the two share the agent's normal per-thread memory/state — the
+   * exchange lives in its own subthread (thread_kind='sub_agent', parent_thread_id), hidden by
+   * default and expandable in the UI, never mixed into the visible user<->agent transcript.
+   */
+  consultAgent?(params: {
+    agentId: string;
+    message: string;
+    spaceId: string;
+    projectId?: string;
+    parentThreadId?: string;
+    threadId?: string;
+  }): Promise<{
+    ok: boolean;
+    thread_id?: string;
+    session_id?: string;
+    reply?: string;
+    error?: string;
+  }>;
+  /**
+   * The other half of the §A1.18 thread model: post a message into an EXISTING, visible thread
+   * (never a private sub_agent thread) and, unless `respond:false`, dispatch the named agent to
+   * reply IN THAT SAME thread — what "chat with an ai inside the thread" looks like from the
+   * assistant's side, as opposed to consultAgent's private, hidden coordination channel.
+   */
+  sendToThread?(params: {
+    threadId: string;
+    message: string;
+    spaceId: string;
+    agentId?: string;
+    respond?: boolean;
+    /** Run the replying agent on a specific model for this one dispatch. Omit to use that
+     *  agent's own configured default. Valid ids come from sub-agent's agent.list_models. */
+    model?: string;
+  }): Promise<{
+    ok: boolean;
+    session_id?: string;
+    reply?: string;
+    dispatched: boolean;
+    error?: string;
+  }>;
 }
 
 /**
@@ -389,6 +586,18 @@ export interface LlmCallerGateway {
     input_tokens: number;
     output_tokens: number;
   }>;
+  /**
+   * A plain single-turn completion, for prebuilts that do their own small LLM work rather than
+   * reasoning (today: project-journal compaction condensing old activity into an archive).
+   * Optional — a caller without it degrades to that op's non-LLM fallback rather than failing,
+   * matching how every other optional gateway in this file behaves.
+   */
+  complete?(args: { model: string; prompt: string; maxTokens?: number | undefined }): Promise<{
+    text: string;
+    tokens_used: number;
+    input_tokens: number;
+    output_tokens: number;
+  }>;
 }
 
 /**
@@ -430,8 +639,14 @@ export interface ContainerWorkspaceGateway {
 export interface HITLGateway {
   /**
    * Pause execution and wait for a human to approve or reject the named action.
-   * Polls HITLApprovalDO (or the host equivalent) until resolved or timed out (28s).
-   * Returns { approved: true } to proceed, { approved: false } to abort.
+   *
+   * Three outcomes, not two. `approved: false` means a human said no. `pending: true` means
+   * nobody has answered YET and the request is still open — the run must suspend, not fail.
+   * Collapsing those two into one boolean is what made "human in the loop" mean "the human has
+   * a few seconds to answer or the action is refused": an owner who is asleep, at work, or
+   * simply on another screen could never approve anything, and the agent reported their absence
+   * as a refusal. An autonomous business that must ask before a payout or an ad spend cannot
+   * work on that timescale.
    */
   requestApproval(params: {
     runId: string;
@@ -439,7 +654,33 @@ export interface HITLGateway {
     actionName: string;
     actionInput: Record<string, unknown>;
     description: string;
-  }): Promise<{ approvalId: string; approved: boolean; reason?: string }>;
+  }): Promise<{ approvalId: string; approved: boolean; pending?: boolean; expiresAt?: number; reason?: string }>;
+}
+
+/**
+ * A record of actions that have actually been executed, so the same one is never executed twice.
+ *
+ * The gap this closes is replay. A run can be re-entered — a Workflow restart, or a resume after
+ * someone approves a gated action hours later — and re-entering means the loop walks the task
+ * again from the top. Handing the model its completed steps helps it not to repeat them, but
+ * "the model should know better" is not a guarantee, and the cost of being wrong is a second
+ * email, a second charge, a second payout.
+ *
+ * This is the ledger half of the durable-execution pattern (Palantir's Orchestrator names it
+ * exactly that): an action is recorded when it runs, and a later attempt at the SAME action with
+ * the SAME arguments under the SAME ledger key returns the recorded result instead of executing.
+ * The ledger key is what ties an original run to its own resumes — a genuinely new run doing the
+ * same work again is ordinary, and must not short-circuit.
+ *
+ * Optional: an unwired ledger degrades to today's behavior (the model's judgment plus the
+ * within-run repeat guard), never to a blocked run.
+ */
+export interface ActionLedger {
+  /** The recorded result of this exact action, if it has already run under this key. */
+  lookup(key: string, actionName: string, paramsHash: string): Promise<ScriptRunResult | null>;
+  /** Record an action that just executed. Never throws — a ledger write failure must not fail a
+   *  run that already succeeded (the cost is a possible repeat on replay, not a lost result). */
+  record(key: string, actionName: string, paramsHash: string, result: ScriptRunResult): Promise<void>;
 }
 
 /** Everything the engine needs from the host (NaelaoAgentDO) to operate. */
@@ -461,6 +702,11 @@ export interface ScriptEngineEnv {
   knowledgeWorker?: Fetcher;
   spacesWorker?: Fetcher;
   notificationsWorker?: Fetcher;
+  /** The agents worker's own self-binding (AGENTS_WORKER). Lets a prebuilt reach an internal
+   *  route on this same worker that holds a secret the isolate must never see — currently the
+   *  business-email prebuilt calling /internal/business-email/{provision,send} for the AgentMail
+   *  path (AGENTMAIL_API_KEY lives on the worker, not in the isolate env). */
+  agentsWorker?: Fetcher;
   /** Billing worker — holds Lemon Squeezy creds + Naelao store; the only money-in path. */
   billingWorker?: Fetcher;
   /** MCP hub worker — registry + tool proxy for external-platform connectors (mcp-connector). */
@@ -468,10 +714,37 @@ export interface ScriptEngineEnv {
   /** Credentials worker — the wallet prebuilt's check_bypass op reads a business's own
    *  credential list to detect a connected third-party payment provider. */
   credentialsWorker?: Fetcher;
+  /** Artifact worker — agent-authored deliverables (rendered HTML, a report), space-scoped R2
+   *  storage distinct from r2-workspace's own scratch files. The `artifacts` prebuilt degrades
+   *  honestly when unbound. */
+  artifactWorker?: Fetcher;
   /** Host-provided primitives for sub-agent / workflow prebuilt scripts. */
   orchestration?: OrchestrationHooks;
   /** HITL approval gateway — present when HITLApprovalDO is wired up. */
   hitlGateway?: HITLGateway;
+  /** Exactly-once record of executed actions — present when the host provides one. See
+   *  ActionLedger for why "the model can see it already ran" is not on its own a guarantee. */
+  actionLedger?: ActionLedger;
+  /**
+   * Called after a project workspace file is written or removed, so the host can fire a
+   * `workspace.file_changed` event.
+   *
+   * This is what turns a file into a handoff between projects: the lead-generation agent records
+   * a customer, that write fires the event, and a no-code rule wakes the agent that owns the next
+   * stage. Passing the work as an event payload instead would leave the receiving agent with only
+   * a message to remember — a file is state both sides can re-read, and it outlives the run that
+   * produced it.
+   *
+   * Fire-and-forget by contract: the write has already succeeded by the time this is called, and
+   * a listener failing must never turn it into a failure. Absent when the host wires no events.
+   */
+  onWorkspaceChange?: (change: { path: string; operation: "write" | "delete" }) => void;
+  /** Runs the SAME Memory OS maintenance pass (decay/promote/prune) the client-driven
+   *  POST .../sessions/:id/compact HTTP route triggers — as a tool the model itself can call mid-
+   *  run (see the `memory` prebuilt's `memory.compact` op), not only from the shell UI. Present
+   *  whenever the host DO wires it (always, in practice — see NaelaoAgentDO.buildScriptEngineEnv);
+   *  the op degrades honestly rather than throwing when it isn't. */
+  compactMemory?: () => Promise<unknown>;
   /** Generic named-lock primitive — present when CONCURRENCY_DO is wired up (the `lock`
    *  prebuilt reports itself degraded, not unavailable, when absent — see LockGateway). */
   lockGateway?: LockGateway;
@@ -504,6 +777,16 @@ export interface ScriptEngineEnv {
    *  (Memory OS) and per-(channel,user) sessions. Absent for space-level/system-triggered runs. */
   userId?: string;
   /**
+   * §A1 connector default-vs-personal switch: this session's chosen mode per connector id
+   * ("business" — the default, use the shared account; "personal" — require the caller's own
+   * connected account, refuse rather than silently fall back). Read once by NaelaoAgentDO at run
+   * start (best-effort GET to SpaceDO's connector-mode store) and forwarded by the mcp-connector
+   * prebuilt as `x-naelao-connector-scope` on each mcp-hub call for the referenced server. Absent
+   * entries (the common case — most connectors never had a user switch away from business) mean
+   * "resolve exactly as before this feature existed."
+   */
+  connectorAccountMode?: Record<string, "business" | "personal">;
+  /**
    * The project this run is bound to, when it's an ordinary (project-scoped) Naelao Agent
    * thread rather than the Space Assistant. Determines the R2 workspace prefix (see
    * `workspacePrefix()` below) — every thread's agent in the SAME project shares one
@@ -532,6 +815,19 @@ export interface ScriptEngineEnv {
    * instruction.
    */
   effectiveRole?: "owner" | "editor" | "viewer";
+  /**
+   * Progressive tool disclosure (Phase 2 item 13) — when true, `available_operations` in the
+   * reasoner payload is REDUCED to a small always-visible core set plus `tools.search`/
+   * `tools.describe` for discovering the rest, instead of the full grouped dump every turn.
+   * Execution itself is UNCHANGED either way — script.run still accepts any enabled operation
+   * regardless of whether it was shown, so this can only ever shrink the payload, never block a
+   * valid call. Default false (absent) = today's full-disclosure behavior, byte-identical.
+   * Deliberately NOT default-on anywhere yet: this session's own history (items 133-139) is a
+   * record of how fragile this exact reasoning-loop surface is on the platform's small models,
+   * so this ships opt-in per space/run until proven live on a real business. See
+   * ScriptToolSurface.disclosureGroups' own doc for the automatic full-disclosure fallback.
+   */
+  progressiveToolDisclosure?: boolean;
 }
 
 /**

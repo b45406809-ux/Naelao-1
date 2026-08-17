@@ -34,6 +34,8 @@ import {
 import { SkillLibrary } from "../../agents/src/script-engine/skill-library.js";
 import { seedScalingSkills } from "../../agents/src/launchpad/scaling-skills.js";
 import { seedGrowthSkills } from "../../agents/src/launchpad/growth-skills.js";
+import { seedWebdevSkills } from "../../agents/src/launchpad/webdev-skills.js";
+import { seedTemplateProjects, seedGeneralProject, normalizeProjectSeeds, type SeededProject } from "../../agents/src/launchpad/bootstrap.js";
 import { inheritTemplateSkills } from "../../agents/src/script-engine/federation.js";
 import type { AgentConfig } from "../../agents/src/script-engine/index.js";
 import type { NaelaoSpaceTypeManifestV2 } from "../../spaces/src/do/SpaceTypeRegistryDO.js";
@@ -50,6 +52,10 @@ export interface Env {
   SCRIPTS_R2: R2Bucket;
   /** Workspace R2 bucket for the external portal slug→spaceId KV route. */
   PORTAL_KV?: KVNamespace;
+  /** Service binding to naelao-agents — used only for the best-effort AgentMail email seed
+   *  (holds AGENTMAIL_API_KEY). Optional: the seed degrades to a no-op when unbound or the key
+   *  isn't configured, so email provisioning happens on-demand via the assistant instead. */
+  AGENTS_WORKER?: Fetcher;
 }
 
 interface ProvisionMessage {
@@ -162,17 +168,33 @@ export async function installLaunchpadAgents(
   } catch (err) {
     console.warn(`[provisioner] growth-skill seed failed for ${spaceId}:`, (err as Error).message);
   }
+
+  // Web-studio skills (quoting, build briefs, outreach drafting, pipeline status). Seeded for
+  // every Launchpad space rather than only the web-studio template: they are tagged, so
+  // script.find surfaces them exactly when a job looks like one, and an unused skill costs
+  // nothing. Same separate try/catch so one set failing never blocks another.
+  try {
+    const spaceLib = new SkillLibrary(env.SCRIPTS_R2, spaceId);
+    const seeded = await seedWebdevSkills(spaceLib);
+    if (seeded.length > 0) console.log(`[provisioner] seeded ${seeded.length} web-studio skill(s) into ${spaceId}`);
+  } catch (err) {
+    console.warn(`[provisioner] webdev-skill seed failed for ${spaceId}:`, (err as Error).message);
+  }
 }
 
 /**
- * §A1.17 Phase G: seed the "guided" assistant_policy default (always_ask + a read-only
- * auto_approved_actions allowlist) for a new Launchpad space, so the business-builder assistant
- * can look around (list projects/agents, check orders, list MCP servers) without asking
- * permission for every read, but still asks before it scaffolds a project or spends anything.
- * The builder can flip this to `yolo` (fully autonomous) any time via the existing
- * PATCH /assistant-policy endpoint. Best-effort: a failed seed logs and does not fail
- * provisioning (same posture as seedOwnerMember) — fetchAssistantPolicy's own fail-closed
- * default (always_ask, no auto-approved actions) is a safe fallback if this never lands.
+ * §A1.17 Phase G, revised per explicit user direction: seed a FULLY AUTONOMOUS ("yolo")
+ * assistant_policy default for a new Launchpad space — the business-builder assistant is meant
+ * to be able to do anything on the owner's behalf out of the box, the same way a hired operator
+ * would act without asking permission for every step. The prior default was the "guided" pairing
+ * (always_ask + a read-only auto_approved_actions allowlist); that allowlist is still stored here
+ * (harmless under yolo, since yolo ignores it) so a business that later dials autonomy back down
+ * to `gate_unless_listed` lands on a sensible read-only allowlist rather than an empty one. The
+ * owner can flip back to any of the four approval modes any time via the existing
+ * PATCH /assistant-policy endpoint (Dashboard's Assistant tab, or the shell's Config side-panel).
+ * Best-effort: a failed seed logs and does not fail provisioning (same posture as seedOwnerMember)
+ * — fetchAssistantPolicy's own fail-closed default (always_ask, no auto-approved actions) is a
+ * safe fallback if this never lands, so a seeding failure degrades to MORE cautious, never less.
  */
 export async function seedLaunchpadAssistantPolicy(spaceId: string, tenantId: string, env: Env): Promise<boolean> {
   const resp = await env.SPACES_WORKER.fetch(
@@ -183,7 +205,7 @@ export async function seedLaunchpadAssistantPolicy(spaceId: string, tenantId: st
         "x-naelao-tenant-id": tenantId,
         "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
       },
-      body: JSON.stringify({ approval_mode: "always_ask", auto_approved_actions: LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED }),
+      body: JSON.stringify({ approval_mode: "yolo", auto_approved_actions: LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED }),
     })
   ).catch((err: Error) => {
     console.warn(`[provisioner] assistant policy seed request failed for ${spaceId}: ${err.message}`);
@@ -260,6 +282,161 @@ async function installAgentTrigger(
   }
 }
 
+/**
+ * Seed a default "recurring wake-up" for the Space Assistant so a Launchpad business gets
+ * SOME proactive activity from day one, matching the "REVENUE REVIEW — on your recurring
+ * wake-ups" instruction already baked into LAUNCHPAD_ASSISTANT_PROFILE's system prompt (which
+ * otherwise sits unused unless a builder or the assistant itself creates a scheduled_jobs row).
+ * Without this, enqueueAgentTicks (workers/agents/src/index.ts) never fires anything for a
+ * business that has no connected channel, no pollable connector, and no cron of its own — so a
+ * business created and left alone got zero proactive agent activity, ever, unlike a Polsia-style
+ * cycle that runs unconditionally for every company. Deliberately DAILY, not hourly: the
+ * platform-wide tick infrastructure is already more continuous than a nightly batch (near-
+ * real-time channel triggers + an hourly sweep), so this only needs to cover the gap — a business
+ * with no channel/connector activity at all — without adding needless load on top of an
+ * already-constrained Workers AI quota. Best-effort/non-fatal, same posture as
+ * seedLaunchpadAssistantPolicy right above it; a failure here degrades to "no proactive review
+ * until the builder configures one," never blocks provisioning.
+ */
+/**
+ * Wire the web studio's pipeline so work moves between projects on its own.
+ *
+ * The chain, entirely out of pieces that already existed: an agent writes a file to its project
+ * workspace -> `workspace.file_changed` fires -> this rule matches -> the `handoff-to-project`
+ * skill reads that file and consults the agent that owns the next stage. Nothing new in the
+ * engine; the file is the handoff, and a no-code rule is what carries it across.
+ *
+ * Project-scoped on both ends. A rule scoped to Lead Generation can only ever match events from
+ * Lead Generation (matchesEvent enforces that structurally), and its target is named explicitly
+ * rather than inferred — a handoff that silently lands in the wrong project is worse than one
+ * that visibly did not happen.
+ *
+ * Best-effort, like every other provisioning seed: a business with no rules still works, the
+ * owner just moves work between projects by asking.
+ */
+export async function seedWebStudioHandoffRules(
+  spaceId: string,
+  tenantId: string,
+  projectIds: Record<string, string>,
+  env: Env
+): Promise<void> {
+  const leadGen = projectIds["Lead Generation"];
+  const development = projectIds["Development"];
+  const clientComms = projectIds["Client Communication"];
+  // Nothing to wire if the projects this depends on are not both there — say nothing rather
+  // than create a rule pointing at a project that does not exist.
+  if (!leadGen || !development) return;
+
+  const rules: Array<Record<string, unknown>> = [
+    {
+      // A lead written in Lead Generation starts the build.
+      // Flat script_name/params — the create route's own shape, not the nested TriggerAction the
+      // rule is stored as. Caught live: the nested form was rejected as a bad request.
+      event_type: "workspace.file_changed",
+      project_id: leadGen,
+      condition: { type: "always" },
+      script_name: "handoff-to-project",
+      params: { target_project_id: development, target_agent_id: "launchpad-webdev-v1" },
+      priority: 10,
+    },
+  ];
+  if (clientComms) {
+    rules.push({
+      // A finished build tells the customer.
+      event_type: "workspace.file_changed",
+      project_id: development,
+      condition: { type: "always" },
+      script_name: "handoff-to-project",
+      params: { target_project_id: clientComms, target_agent_id: "launchpad-support-v1" },
+      priority: 10,
+    });
+  }
+
+  for (const rule of rules) {
+    try {
+      const resp = await env.SPACES_WORKER.fetch(
+        new Request(`http://spaces-worker/spaces/${spaceId}/event-triggers`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-naelao-tenant-id": tenantId,
+            "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+          },
+          body: JSON.stringify(rule),
+        })
+      );
+      if (!resp.ok) {
+        console.warn(`[provisioner] handoff rule seed failed for ${spaceId}: ${await resp.text()}`);
+      }
+    } catch (err) {
+      console.warn(`[provisioner] handoff rule seed threw for ${spaceId}:`, (err as Error).message);
+    }
+  }
+}
+
+export async function seedDefaultRevenueReviewCron(spaceId: string, tenantId: string, env: Env): Promise<void> {
+  try {
+    const resp = await env.SPACES_WORKER.fetch(
+      new Request(`http://spaces-worker/spaces/${spaceId}/scheduled-jobs`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-naelao-tenant-id": tenantId,
+          "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+        },
+        body: JSON.stringify({
+          name: "Daily revenue review",
+          cron_expression: "0 13 * * *",
+          agent_id: LAUNCHPAD_ASSISTANT_PROFILE.agentId,
+          goal:
+            "Run your recurring revenue review. Read the project journal for what's already known, then check " +
+            "business_wallet.balance/history and any storefront/commerce orders since your last review. Log what " +
+            // Name a REAL operation, never a prebuilt's descriptive phrase. A model copies the
+            // wording it is given: "the notifications prebuilt" was reproduced verbatim as a
+            // script name and killed this exact job in production (the `notifications` prebuilt
+            // exposes ops prefixed `notify.`, so the phrase matches nothing).
+            "you find to the project journal. Only message the owner (notify.email) if something " +
+            "genuinely needs their attention — a stalled task, a real opportunity, or a problem — never a routine " +
+            "'all good' ping. Never fabricate a number you can't verify from real data.",
+        }),
+      })
+    );
+    if (!resp.ok) {
+      console.warn(`[provisioner] default revenue-review cron seed failed for ${spaceId}: ${await resp.text()}`);
+    }
+  } catch (err) {
+    console.warn(`[provisioner] default revenue-review cron seed threw for ${spaceId}:`, (err as Error).message);
+  }
+}
+
+/**
+ * Best-effort: auto-provision a REAL, inbound-capable AgentMail mailbox at creation time (like the
+ * wallet), so a business starts with an address it can send AND receive from without the owner
+ * connecting anything. Degrades to a no-op when AGENTS_WORKER is unbound or AGENTMAIL_API_KEY isn't
+ * configured (the agents-worker route returns configured:false) — email then provisions on demand
+ * the first time the assistant calls email.provision. Never throws; a mail-seed failure must never
+ * turn a successful space creation into a failed one (same posture as seedWallet/seedOwnerMember).
+ */
+export async function seedBusinessEmail(spaceId: string, tenantId: string, slug: string, env: Env): Promise<void> {
+  if (!env.AGENTS_WORKER) return;
+  try {
+    const resp = await env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/business-email/provision", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": tenantId,
+        "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+      },
+      body: JSON.stringify({ spaceId, tenantId, slug }),
+    }));
+    if (!resp.ok) {
+      console.warn(`[provisioner] business-email seed failed for ${spaceId}: ${resp.status}`);
+    }
+  } catch (err) {
+    console.warn(`[provisioner] business-email seed threw for ${spaceId}:`, (err as Error).message);
+  }
+}
+
 async function registerAgentIndex(
   spaceId: string,
   tenantId: string,
@@ -314,10 +491,18 @@ interface OnboardingState {
   /** Phase C (§A1.17): every template this business was built from; template_id stays the
    *  first entry for back-compat readers of the singular field. */
   template_ids?: string[];
-  status: "pending" | "complete";
+  /** "awaiting_setup" = the structural bootstrap (projects + starter threads) already ran at
+   *  provision time, but this template still has credential/preference prompts or setup scripts
+   *  that genuinely need a connected account first. "complete" = nothing further is required.
+   *  "pending" is the legacy value (structural work not yet done) — still read by
+   *  bootstrap/complete so spaces provisioned before this change still finish correctly. */
+  status: "pending" | "awaiting_setup" | "complete";
   projects: OnboardingProject[];
   setup_scripts: string[];
   created_at: string;
+  /** Names actually created by the provisioner's structural pass — lets the onboarding UI and
+   *  bootstrap/complete tell "already seeded" apart from "never ran". */
+  projects_created?: string[];
 }
 
 /** Merge bootstrap (projects + setup_scripts) across multiple templates. Projects dedupe by
@@ -645,6 +830,40 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
       provisioned.push("wallet");
     }
 
+    // Step 9a-bis: every business (templated or blank/"build from scratch") gets one ordinary
+    // "General" project to land in — /projects (bare, no id) redirects straight into it instead
+    // of showing a picker first. Deliberately OUTSIDE the `effectiveTemplateIds.length > 0` gate
+    // below (unlike seedTemplateProjects, which only applies to a templated business): a blank
+    // business gets no template-specific projects by design, but should never have ZERO projects
+    // to work in. Best-effort, matching every other convenience seed here (wallet is the one
+    // exception that throws, because agent runs are structurally unusable without a payer —
+    // a missing General project just means a bare product root a little longer, not a broken one).
+    if (manifest.backend.scriptAgentsEnabled) {
+      const postToSpaces = async (path: string, body: unknown) =>
+        env.SPACES_WORKER.fetch(
+          new Request(`http://spaces-worker${path}`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-naelao-tenant-id": tenantId,
+              "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+            },
+            body: JSON.stringify(body),
+          })
+        );
+      const getFromSpaces = async (path: string) =>
+        env.SPACES_WORKER.fetch(
+          new Request(`http://spaces-worker${path}`, {
+            headers: {
+              "x-naelao-tenant-id": tenantId,
+              "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+            },
+          })
+        );
+      const generalId = await seedGeneralProject({ postToSpaces, getFromSpaces }, spaceId);
+      if (generalId) provisioned.push("general-project");
+    }
+
     // Step 9b: Template bootstrap — inherit the shared template skill library (federated
     // learning) so the space starts with what the fleet has learned, then record the first-run
     // onboarding state (credential/preference prompts + projects) for the dashboard wizard.
@@ -667,13 +886,76 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
 
       const { projects, setup_scripts } = mergeTemplatesBootstrap(effectiveTemplateIds);
       if (projects.length > 0 || setup_scripts.length > 0) {
+        // Run the STRUCTURAL half of the bootstrap right here, for every creation path. This
+        // used to be recorded-but-never-executed unless the BUILDER dashboard's onboarding page
+        // explicitly called bootstrap/complete — so an end user creating a business through
+        // apps/shell got zero of the template's projects (confirmed live in production before
+        // this fix: a real whop-seller business went 'active' with only the auto-provisioned
+        // "Wallet" project). Best-effort by design: a template's projects failing to seed must
+        // never roll back an otherwise-successful provision.
+        let projectsCreated: SeededProject[] = [];
+        try {
+          projectsCreated = await seedTemplateProjects(
+            {
+              postToSpaces: async (path, body) =>
+                env.SPACES_WORKER.fetch(
+                  new Request(`http://spaces-worker${path}`, {
+                    method: "POST",
+                    headers: {
+                      "content-type": "application/json",
+                      "x-naelao-tenant-id": tenantId,
+                      "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+                    },
+                    body: JSON.stringify(body),
+                  })
+                ),
+            },
+            spaceId,
+            tenantId,
+            normalizeProjectSeeds(projects)
+          );
+          if (projectsCreated.length > 0) {
+            console.log(`[provisioner] seeded ${projectsCreated.length} template project(s) into ${spaceId}`);
+          }
+        } catch (err) {
+          console.warn(`[provisioner] template project seeding failed for ${spaceId}:`, (err as Error).message);
+        }
+
+        // With the projects in place, wire the pipeline between them: a file written in one
+        // project wakes the agent that owns the next stage. Only does anything for a template
+        // whose projects it recognises (see seedWebStudioHandoffRules).
+        await seedWebStudioHandoffRules(
+          spaceId,
+          tenantId,
+          Object.fromEntries(projectsCreated.filter((p) => p.id).map((p) => [p.name, p.id!])),
+          env
+        );
+
+        // Default proactive wake-up (see seedDefaultRevenueReviewCron's own doc comment) — every
+        // templated Launchpad business gets one, not just spaces with a channel/connector already
+        // configured.
+        await seedDefaultRevenueReviewCron(spaceId, tenantId, env);
+
+        // Auto-provision a real, inbound-capable business mailbox (like the wallet) — best-effort,
+        // no-op when AgentMail isn't configured. See seedBusinessEmail's own doc.
+        await seedBusinessEmail(spaceId, tenantId, spaceName, env);
+
+        // Anything still genuinely outstanding (setup scripts that need a connected account,
+        // credential/preference prompts) keeps onboarding open; otherwise it is already done and
+        // must not leave a permanent "finish setup" prompt hanging over a complete space.
+        const promptsOutstanding = effectiveTemplateIds.some(
+          (tid) => (getLaunchpadTemplate(tid)?.bootstrap?.prompts ?? []).length > 0
+        );
+        const needsSetup = setup_scripts.length > 0 || promptsOutstanding;
+
         await mergeOnboarding(env, spaceId, tenantId, {
           template_id: effectiveTemplateIds[0]!,
           template_ids: effectiveTemplateIds,
-          status: "pending",
+          status: needsSetup ? "awaiting_setup" : "complete",
           projects,
           setup_scripts,
           created_at: now,
+          projects_created: projectsCreated.map((p) => p.name),
         });
       }
       provisioned.push("bootstrap");

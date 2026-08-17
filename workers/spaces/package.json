@@ -8,6 +8,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@naelao/billing-core": "workspace:*",
     "@naelao/crypto": "workspace:*",
     "@naelao/db": "workspace:*",
     "@naelao/events": "workspace:*",

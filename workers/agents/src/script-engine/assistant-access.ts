@@ -48,6 +48,7 @@ export const READ_SAFE_PREBUILT_OPS: ReadonlySet<string> = new Set([
   // r2-workspace (bare op names)
   "read_file",
   "list_directory",
+  "stat_file",
   // file-manager (diff/history are reads; append/patch mutate)
   "file.diff",
   "file.history",
@@ -80,6 +81,10 @@ export const READ_SAFE_PREBUILT_OPS: ReadonlySet<string> = new Set([
   "email.status",
   "storefront.status",
   "local.status",
+  // tools.search/tools.describe (ScriptToolSurface, progressive tool disclosure) — pure metadata
+  // lookups over whatever is already enabled, no side effect of any kind.
+  "tools.search",
+  "tools.describe",
 ]);
 
 export function isReadSafeOperation(name: string): boolean {
@@ -103,11 +108,27 @@ export interface AssistantApprovalPlan {
  */
 export function resolveAssistantApprovalPlan(
   policy: { approval_mode: "always_ask" | "yolo"; auto_approved_actions: string[] } | null,
-  callerRole: string | undefined
+  callerRole: string | undefined,
+  /**
+   * The caller's role in THIS business, when they're a product end user.
+   *
+   * Without this, an end user always downgraded yolo — which was right when a product_end_user
+   * meant "a customer of the business", and wrong once they could be its owner. A business owner
+   * who flipped their own business to autonomous still had every action gated, and there was no
+   * approver but themself: the same owner-locked-out-of-their-own-business bug items 79 and 90
+   * fixed at the route and UI layers, one layer deeper. Resolved server-side from
+   * business_memberships, never client-supplied.
+   */
+  businessRole?: string | undefined
 ): AssistantApprovalPlan {
-  const yoloApplies =
-    policy?.approval_mode === "yolo" &&
-    (callerRole === undefined || YOLO_SELF_AUTHORIZING_ROLES.has(callerRole));
+  const selfAuthorizing =
+    callerRole === undefined ||
+    YOLO_SELF_AUTHORIZING_ROLES.has(callerRole) ||
+    // A plain member is still downgraded: yolo is the owner's choice about their own business,
+    // not a grant to everyone who can talk to it.
+    (callerRole === "product_end_user" && businessRole !== undefined && YOLO_SELF_AUTHORIZING_ROLES.has(businessRole));
+
+  const yoloApplies = policy?.approval_mode === "yolo" && selfAuthorizing;
   if (yoloApplies) {
     return { requiresApprovalFor: [], approvalMode: "gate_listed" };
   }

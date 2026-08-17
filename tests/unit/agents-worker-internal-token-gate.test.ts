@@ -113,3 +113,47 @@ describe("F1 — agents-worker routes reject a spoofed tenant header with no val
     expect(res.status).toBe(403);
   });
 });
+
+/**
+ * The on-demand heartbeat sweep runs the SAME enqueueAgentTicks the hourly cron runs, which
+ * dispatches real reasoning runs against the platform's own LLM budget for every space with a
+ * due job. That makes it exactly the shape of route F1 was written about — it must never be
+ * reachable from the public workers.dev URL with a spoofed tenant header alone.
+ */
+describe("POST /internal/agent-ticks/run is internal-only", () => {
+  it("403 with a spoofed tenant header and no token", async () => {
+    const res = await app.fetch(
+      new Request("https://agents.naelao.com/internal/agent-ticks/run", {
+        method: "POST",
+        headers: { "x-naelao-tenant-id": TENANT },
+      }),
+      makeEnv()
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("403 when the token is signed with the wrong secret", async () => {
+    const token = await mintInternalToken(OTHER_SECRET, TENANT);
+    const res = await app.fetch(
+      new Request("https://agents.naelao.com/internal/agent-ticks/run", {
+        method: "POST",
+        headers: { "x-naelao-tenant-id": TENANT, "x-naelao-internal-token": token },
+      }),
+      makeEnv()
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("sweeps with a validly-minted token", async () => {
+    const token = await mintInternalToken(SECRET, TENANT);
+    const res = await app.fetch(
+      new Request("https://agents.naelao.com/internal/agent-ticks/run", {
+        method: "POST",
+        headers: { "x-naelao-tenant-id": TENANT, "x-naelao-internal-token": token },
+      }),
+      makeEnv()
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, swept: true });
+  });
+});

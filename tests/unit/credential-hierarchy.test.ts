@@ -16,11 +16,25 @@ const MIGRATION_SQL = readFileSync(
   join(__dirname, "../../infra/migrations/0040_space_credentials.sql"),
   "utf8"
 );
+const SHARING_MIGRATION_SQL = readFileSync(
+  join(__dirname, "../../infra/migrations/0069_credential_sharing_and_product_tier.sql"),
+  "utf8"
+);
+// Minimal stand-in for the real `spaces` table (see infra/migrations/0003_spaces.sql +
+// 0034_space_hierarchy.sql) — only the columns resolveCredential's product-root walk actually
+// reads. Full spaces-table migration coverage lives in create-space-record.test.ts and friends.
+const SPACES_STUB_SQL = `
+  CREATE TABLE IF NOT EXISTS spaces (
+    id TEXT PRIMARY KEY,
+    parent_space_id TEXT,
+    status TEXT NOT NULL DEFAULT 'active'
+  );
+`;
 
 const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
 
 function makeEnv(): CredentialsEnv & { PLATFORM_DB: unknown; ANALYTICS: unknown } {
-  const fakeDb = createFakeD1([MIGRATION_SQL]);
+  const fakeDb = createFakeD1([SPACES_STUB_SQL, MIGRATION_SQL, SHARING_MIGRATION_SQL]);
   const analytics = { writeDataPoint() {} };
   return {
     ENVIRONMENT: "test",
@@ -29,6 +43,12 @@ function makeEnv(): CredentialsEnv & { PLATFORM_DB: unknown; ANALYTICS: unknown 
     PLATFORM_DB: fakeDb as unknown as D1Database,
     ANALYTICS: analytics as unknown as AnalyticsEngineDataset,
   };
+}
+
+/** Insert a minimal spaces row so the product-root walk has something to find. */
+async function insertSpace(env: ReturnType<typeof makeEnv>, id: string, parentSpaceId: string | null = null): Promise<void> {
+  await env.PLATFORM_DB.prepare("INSERT INTO spaces (id, parent_space_id, status) VALUES (?, ?, 'active')")
+    .bind(id, parentSpaceId).run();
 }
 
 async function req(
@@ -298,12 +318,264 @@ describe("credential hierarchy", () => {
     });
   });
 
+  // §A1 connector default-vs-personal switch: prefer_scope lets the caller (mcp-hub, forwarding
+  // the chat session's own toggle) override the implicit "personal always wins" default above.
+  describe("prefer_scope override", () => {
+    async function makeToken(spaceId: string, agentId = "agent-1"): Promise<string> {
+      return generateCredentialToken(env.PLATFORM_SECRET, spaceId, agentId);
+    }
+
+    it("prefer_scope='business' skips the personal credential even when one is connected", async () => {
+      await credentialsWorker.fetch(await req("/spaces/space-1/credentials", { method: "POST", user: "admin-1", role: "admin", body: { name: "GMAIL", value: "biz@x.com", scope: "space" } }), env, execCtx);
+      await credentialsWorker.fetch(await req("/spaces/space-1/credentials", { method: "POST", user: "user-1", body: { name: "GMAIL", value: "personal@x.com" } }), env, execCtx);
+
+      const token = await makeToken("space-1");
+      const res = await credentialsWorker.fetch(
+        await req("/v1/internal/spaces/space-1/credentials/GMAIL/plaintext", { method: "POST", credToken: token, body: { on_behalf_of_user_id: "user-1", prefer_scope: "business" } }),
+        env, execCtx
+      );
+      const json = await res.json() as { value: string; scope: string };
+      expect(json.value).toBe("biz@x.com");
+      expect(json.scope).toBe("space");
+    });
+
+    it("prefer_scope='personal' resolves the personal credential when connected", async () => {
+      await credentialsWorker.fetch(await req("/spaces/space-1/credentials", { method: "POST", user: "admin-1", role: "admin", body: { name: "GMAIL", value: "biz@x.com", scope: "space" } }), env, execCtx);
+      await credentialsWorker.fetch(await req("/spaces/space-1/credentials", { method: "POST", user: "user-1", body: { name: "GMAIL", value: "personal@x.com" } }), env, execCtx);
+
+      const token = await makeToken("space-1");
+      const res = await credentialsWorker.fetch(
+        await req("/v1/internal/spaces/space-1/credentials/GMAIL/plaintext", { method: "POST", credToken: token, body: { on_behalf_of_user_id: "user-1", prefer_scope: "personal" } }),
+        env, execCtx
+      );
+      const json = await res.json() as { value: string; scope: string };
+      expect(json.value).toBe("personal@x.com");
+      expect(json.scope).toBe("user");
+    });
+
+    it("prefer_scope='personal' with no personal credential connected returns a distinct 404, never the shared one", async () => {
+      await credentialsWorker.fetch(await req("/spaces/space-1/credentials", { method: "POST", user: "admin-1", role: "admin", body: { name: "GMAIL", value: "biz@x.com", scope: "space" } }), env, execCtx);
+
+      const token = await makeToken("space-1");
+      const res = await credentialsWorker.fetch(
+        await req("/v1/internal/spaces/space-1/credentials/GMAIL/plaintext", { method: "POST", credToken: token, body: { on_behalf_of_user_id: "user-1", prefer_scope: "personal" } }),
+        env, execCtx
+      );
+      expect(res.status).toBe(404);
+      const json = await res.json() as { error_code: string };
+      expect(json.error_code).toBe("personal_credential_required");
+    });
+
+    it("a privileged override still wins over prefer_scope='personal'", async () => {
+      await credentialsWorker.fetch(await req("/spaces/space-1/credentials", { method: "POST", user: "user-1", body: { name: "GMAIL", value: "personal@x.com" } }), env, execCtx);
+      await credentialsWorker.fetch(await req("/spaces/space-1/credentials", { method: "POST", user: "admin-1", role: "admin", body: { name: "GMAIL", value: "forced@x.com", scope: "space", is_override: true } }), env, execCtx);
+
+      const token = await makeToken("space-1");
+      const res = await credentialsWorker.fetch(
+        await req("/v1/internal/spaces/space-1/credentials/GMAIL/plaintext", { method: "POST", credToken: token, body: { on_behalf_of_user_id: "user-1", prefer_scope: "personal" } }),
+        env, execCtx
+      );
+      const json = await res.json() as { value: string; is_override: boolean };
+      expect(json.value).toBe("forced@x.com");
+      expect(json.is_override).toBe(true);
+    });
+
+    it("an unrecognized prefer_scope value is ignored, resolving exactly as if it were absent", async () => {
+      await credentialsWorker.fetch(await req("/spaces/space-1/credentials", { method: "POST", user: "admin-1", role: "admin", body: { name: "GMAIL", value: "biz@x.com", scope: "space" } }), env, execCtx);
+      await credentialsWorker.fetch(await req("/spaces/space-1/credentials", { method: "POST", user: "user-1", body: { name: "GMAIL", value: "personal@x.com" } }), env, execCtx);
+
+      const token = await makeToken("space-1");
+      const res = await credentialsWorker.fetch(
+        await req("/v1/internal/spaces/space-1/credentials/GMAIL/plaintext", { method: "POST", credToken: token, body: { on_behalf_of_user_id: "user-1", prefer_scope: "nonsense" } }),
+        env, execCtx
+      );
+      const json = await res.json() as { value: string };
+      expect(json.value).toBe("personal@x.com"); // today's default: personal wins
+    });
+  });
+
   describe("cross-tenant isolation", () => {
     it("a credential created under one tenant is invisible to another tenant's list", async () => {
       await credentialsWorker.fetch(await req("/spaces/space-1/credentials", { method: "POST", tenant: "tenant-A", user: "user-1", body: { name: "SECRET", value: "v" } }), env, execCtx);
       const res = await credentialsWorker.fetch(await req("/spaces/space-1/credentials", { tenant: "tenant-B", user: "user-1" }), env, execCtx);
       const json = await res.json() as { credentials: unknown[] };
       expect(json.credentials).toHaveLength(0);
+    });
+  });
+
+  // Naelao -> Product -> Business -> Personal hierarchy (user's own design, this session):
+  // a business with no local match falls through to its PRODUCT ROOT's own shared credential.
+  describe("product-root tier (business -> product fallback)", () => {
+    async function makeToken(spaceId: string, agentId = "agent-1"): Promise<string> {
+      return generateCredentialToken(env.PLATFORM_SECRET, spaceId, agentId);
+    }
+
+    it("a business with nothing of its own falls through to the product root's shared credential", async () => {
+      await insertSpace(env, "product-root");
+      await insertSpace(env, "biz-1", "product-root");
+      await credentialsWorker.fetch(
+        await req("/spaces/product-root/credentials", { method: "POST", user: "builder-1", role: "owner", body: { name: "TAVILY", value: "product-key", scope: "space" } }),
+        env, execCtx
+      );
+
+      const token = await makeToken("biz-1");
+      const res = await credentialsWorker.fetch(
+        await req("/v1/internal/spaces/biz-1/credentials/TAVILY/plaintext", { method: "POST", credToken: token, body: { on_behalf_of_user_id: "end-user-1" } }),
+        env, execCtx
+      );
+      expect(res.status).toBe(200);
+      const json = await res.json() as { value: string; resolved_tier: string };
+      expect(json.value).toBe("product-key");
+      expect(json.resolved_tier).toBe("product");
+    });
+
+    it("a business's own shared credential wins over the product root's", async () => {
+      await insertSpace(env, "product-root-2");
+      await insertSpace(env, "biz-2", "product-root-2");
+      await credentialsWorker.fetch(
+        await req("/spaces/product-root-2/credentials", { method: "POST", user: "builder-1", role: "owner", body: { name: "TAVILY", value: "product-key", scope: "space" } }),
+        env, execCtx
+      );
+      await credentialsWorker.fetch(
+        await req("/spaces/biz-2/credentials", { method: "POST", user: "biz-admin", role: "admin", body: { name: "TAVILY", value: "biz-key", scope: "space" } }),
+        env, execCtx
+      );
+
+      const token = await makeToken("biz-2");
+      const res = await credentialsWorker.fetch(
+        await req("/v1/internal/spaces/biz-2/credentials/TAVILY/plaintext", { method: "POST", credToken: token }),
+        env, execCtx
+      );
+      const json = await res.json() as { value: string; resolved_tier: string };
+      expect(json.value).toBe("biz-key");
+      expect(json.resolved_tier).toBe("business_shared");
+    });
+
+    it("the product root itself (no parent) never walks further — 404s like any other space with nothing", async () => {
+      await insertSpace(env, "root-only");
+      const token = await makeToken("root-only");
+      const res = await credentialsWorker.fetch(
+        await req("/v1/internal/spaces/root-only/credentials/NOPE/plaintext", { method: "POST", credToken: token }),
+        env, execCtx
+      );
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe("selective business sharing (shared_with_user_ids)", () => {
+    async function makeToken(spaceId: string, agentId = "agent-1"): Promise<string> {
+      return generateCredentialToken(env.PLATFORM_SECRET, spaceId, agentId);
+    }
+
+    it("a non-admin cannot set shared_with_user_ids", async () => {
+      const res = await credentialsWorker.fetch(
+        await req("/spaces/space-1/credentials", { method: "POST", user: "user-1", role: "member", body: { name: "X", value: "v", scope: "space", shared_with_user_ids: ["user-1"] } }),
+        env, execCtx
+      );
+      expect(res.status).toBe(403);
+    });
+
+    it("shared_with_user_ids is rejected on is_override", async () => {
+      const res = await credentialsWorker.fetch(
+        await req("/spaces/space-1/credentials", { method: "POST", user: "admin-1", role: "admin", body: { name: "X", value: "v", scope: "space", is_override: true, shared_with_user_ids: ["user-1"] } }),
+        env, execCtx
+      );
+      expect(res.status).toBe(400);
+    });
+
+    it("a member NOT in shared_with_user_ids does not get the credential (falls through to not-found)", async () => {
+      await credentialsWorker.fetch(
+        await req("/spaces/space-3/credentials", { method: "POST", user: "admin-1", role: "admin", body: { name: "SLACK", value: "s", scope: "space", shared_with_user_ids: ["user-allowed"] } }),
+        env, execCtx
+      );
+      const token = await makeToken("space-3");
+      const res = await credentialsWorker.fetch(
+        await req("/v1/internal/spaces/space-3/credentials/SLACK/plaintext", { method: "POST", credToken: token, body: { on_behalf_of_user_id: "user-blocked" } }),
+        env, execCtx
+      );
+      expect(res.status).toBe(404);
+    });
+
+    it("a member IN shared_with_user_ids gets the credential", async () => {
+      await credentialsWorker.fetch(
+        await req("/spaces/space-4/credentials", { method: "POST", user: "admin-1", role: "admin", body: { name: "SLACK", value: "s", scope: "space", shared_with_user_ids: ["user-allowed"] } }),
+        env, execCtx
+      );
+      const token = await makeToken("space-4");
+      const res = await credentialsWorker.fetch(
+        await req("/v1/internal/spaces/space-4/credentials/SLACK/plaintext", { method: "POST", credToken: token, body: { on_behalf_of_user_id: "user-allowed" } }),
+        env, execCtx
+      );
+      expect(res.status).toBe(200);
+      const json = await res.json() as { resolved_tier: string };
+      expect(json.resolved_tier).toBe("business_shared");
+    });
+
+    it("PATCH updates sharing without touching the encrypted value", async () => {
+      const create = await credentialsWorker.fetch(
+        await req("/spaces/space-5/credentials", { method: "POST", user: "admin-1", role: "admin", body: { name: "SLACK", value: "unchanged", scope: "space" } }),
+        env, execCtx
+      );
+      const { id } = await create.json() as { id: string };
+
+      const patch = await credentialsWorker.fetch(
+        await req(`/spaces/space-5/credentials/${id}`, { method: "PATCH", user: "admin-1", role: "admin", body: { shared_with_user_ids: ["user-x"] } }),
+        env, execCtx
+      );
+      expect(patch.status).toBe(200);
+
+      const token = await makeToken("space-5");
+      const blocked = await credentialsWorker.fetch(
+        await req("/v1/internal/spaces/space-5/credentials/SLACK/plaintext", { method: "POST", credToken: token, body: { on_behalf_of_user_id: "someone-else" } }),
+        env, execCtx
+      );
+      expect(blocked.status).toBe(404);
+
+      const allowed = await credentialsWorker.fetch(
+        await req("/v1/internal/spaces/space-5/credentials/SLACK/plaintext", { method: "POST", credToken: token, body: { on_behalf_of_user_id: "user-x" } }),
+        env, execCtx
+      );
+      expect(allowed.status).toBe(200);
+      expect((await allowed.json() as { value: string }).value).toBe("unchanged");
+    });
+
+    it("PATCH is rejected on a personal (scope=user) credential", async () => {
+      const create = await credentialsWorker.fetch(
+        await req("/spaces/space-6/credentials", { method: "POST", user: "user-1", body: { name: "MINE", value: "v" } }),
+        env, execCtx
+      );
+      const { id } = await create.json() as { id: string };
+      const patch = await credentialsWorker.fetch(
+        await req(`/spaces/space-6/credentials/${id}`, { method: "PATCH", user: "admin-1", role: "admin", body: { shared_with_user_ids: ["x"] } }),
+        env, execCtx
+      );
+      expect(patch.status).toBe(400);
+    });
+  });
+
+  describe("multi-slot naming (connector::slot)", () => {
+    it("accepts a ::slot suffix and treats it as a distinct credential name", async () => {
+      const a = await credentialsWorker.fetch(
+        await req("/spaces/space-7/credentials", { method: "POST", user: "user-1", body: { name: "gmail::work", value: "work-token" } }),
+        env, execCtx
+      );
+      const b = await credentialsWorker.fetch(
+        await req("/spaces/space-7/credentials", { method: "POST", user: "user-1", body: { name: "gmail::personal", value: "personal-token" } }),
+        env, execCtx
+      );
+      expect(a.status).toBe(201);
+      expect(b.status).toBe(201);
+
+      const list = await (await credentialsWorker.fetch(await req("/spaces/space-7/credentials", { user: "user-1" }), env, execCtx)).json() as { credentials: Array<{ name: string }> };
+      expect(list.credentials.map((c) => c.name).sort()).toEqual(["gmail::personal", "gmail::work"]);
+    });
+
+    it("rejects a malformed slot suffix", async () => {
+      const res = await credentialsWorker.fetch(
+        await req("/spaces/space-7/credentials", { method: "POST", user: "user-1", body: { name: "gmail::", value: "v" } }),
+        env, execCtx
+      );
+      expect(res.status).toBe(400);
     });
   });
 });

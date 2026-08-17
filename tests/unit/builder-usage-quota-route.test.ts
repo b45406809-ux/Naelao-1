@@ -15,8 +15,8 @@ import { mintInternalToken } from "@naelao/http";
 const SECRET = "test-platform-secret";
 const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
 
-function makeEnv(opts: { planTier?: string; monthlyTokensUsed?: number; usageRows?: Array<{ org_id: string; quantity: number }> } = {}) {
-  const { planTier = "free", monthlyTokensUsed = 0, usageRows } = opts;
+function makeEnv(opts: { planTier?: string; orgPlanTier?: string; monthlyTokensUsed?: number; usageRows?: Array<{ org_id: string; quantity: number }>; allowOverage?: boolean } = {}) {
+  const { planTier = "free", orgPlanTier, monthlyTokensUsed = 0, usageRows, allowOverage = false } = opts;
   const inserts: Array<{ org_id: string; event_type: string; quantity: number }> = [];
   const db = {
     prepare(sql: string) {
@@ -26,6 +26,9 @@ function makeEnv(opts: { planTier?: string; monthlyTokensUsed?: number; usageRow
           return stmt;
         },
         async first() {
+          // Two different tier sources exist in this schema; the route must prefer orgs.
+          if (/allow_quota_overage FROM orgs/.test(sql)) return { allow_quota_overage: allowOverage ? 1 : 0 };
+          if (/FROM orgs WHERE/.test(sql)) return orgPlanTier ? { plan_tier: orgPlanTier } : null;
           if (/FROM subscriptions WHERE/.test(sql)) return { plan_tier: planTier };
           if (/SUM\(quantity\).*usage_events/s.test(sql) || /FROM\s+usage_events/.test(sql)) {
             if (usageRows) {
@@ -173,5 +176,93 @@ describe("billing worker — GET /internal/usage/llm-tokens/check", () => {
     );
     const body = await res.json() as { allowed: boolean; current: number };
     expect(body).toMatchObject({ allowed: true, current: 0 });
+  });
+
+  // Phase 4 (money): checkQuota → checkWindowedQuota — a real breach now blocks on the FIRST
+  // window it crosses (day/week/month), not just month; allow_quota_overage turns that block
+  // into a soft pass instead.
+  it("blocks a free-tier org that breaches only the DAILY ceiling, even though monthly usage is still low", async () => {
+    // free daily ceiling is 20_000 — this fake DB returns the same figure for every window, so
+    // 25_000 breaches day (20_000) well before it would ever threaten month (100_000).
+    const { env } = makeEnv({ planTier: "free", monthlyTokensUsed: 25_000 });
+    const token = await mintInternalToken(SECRET, "tenant-1");
+    const res = await billingWorker.fetch(
+      new Request("https://billing.naelao.com/internal/usage/llm-tokens/check", {
+        headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
+      }),
+      env as never, execCtx
+    );
+    const body = await res.json() as { allowed: boolean; window: string };
+    expect(body).toMatchObject({ allowed: false, window: "day" });
+  });
+
+  it("allow_quota_overage=true turns a real breach into a soft pass with overage:true, not a block", async () => {
+    const { env } = makeEnv({ planTier: "free", monthlyTokensUsed: 150_000, allowOverage: true });
+    const token = await mintInternalToken(SECRET, "tenant-1");
+    const res = await billingWorker.fetch(
+      new Request("https://billing.naelao.com/internal/usage/llm-tokens/check", {
+        headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
+      }),
+      env as never, execCtx
+    );
+    const body = await res.json() as { allowed: boolean; overage?: boolean };
+    expect(body).toMatchObject({ allowed: true, overage: true });
+  });
+
+  it("allow_quota_overage=false (the default) still blocks exactly as before", async () => {
+    const { env } = makeEnv({ planTier: "free", monthlyTokensUsed: 150_000, allowOverage: false });
+    const token = await mintInternalToken(SECRET, "tenant-1");
+    const res = await billingWorker.fetch(
+      new Request("https://billing.naelao.com/internal/usage/llm-tokens/check", {
+        headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
+      }),
+      env as never, execCtx
+    );
+    const body = await res.json() as { allowed: boolean; overage?: boolean };
+    expect(body.allowed).toBe(false);
+    expect(body.overage).toBeUndefined();
+  });
+});
+
+// The quota gate resolved the plan tier from `subscriptions.plan_tier` alone, while
+// EntitlementsChecker.getTenantTier — the documented authority, and what gates free-tier
+// templates — reads `orgs.plan_tier`. An org upgraded on `orgs` only (exactly what the operator
+// docs instruct for one's own account) therefore showed as enterprise everywhere while still
+// being held to the free tier's 100k monthly tokens. Found by hitting that wall for real during
+// a live eval run. Item 45 fixed this same split-brain on the WRITE side; this is the read side.
+describe("quota gate — plan tier comes from the same authority everything else enforces", () => {
+  async function checkQuotaRoute(made: ReturnType<typeof makeEnv>) {
+    const token = await mintInternalToken(SECRET, "org-1");
+    const res = await billingWorker.fetch(
+      new Request("https://billing.naelao.com/internal/usage/llm-tokens/check", {
+        headers: { "x-naelao-tenant-id": "org-1", "x-naelao-internal-token": token },
+      }),
+      made.env as never,
+      execCtx
+    );
+    return res.json<{ allowed: boolean; limit: number; plan_tier: string }>();
+  }
+
+  it("honors orgs.plan_tier when there is no subscription row shape to match", async () => {
+    const body = await checkQuotaRoute(makeEnv({ orgPlanTier: "enterprise", monthlyTokensUsed: 500_000 }));
+    expect(body.plan_tier).toBe("enterprise");
+    // 500k tokens would be far past free's 100k ceiling; on enterprise it must not be blocked.
+    expect(body.allowed).toBe(true);
+  });
+
+  it("prefers orgs.plan_tier over a stale subscriptions row", async () => {
+    const body = await checkQuotaRoute(makeEnv({ orgPlanTier: "enterprise", planTier: "free", monthlyTokensUsed: 500_000 }));
+    expect(body.plan_tier).toBe("enterprise");
+    expect(body.allowed).toBe(true);
+  });
+
+  it("falls back to subscriptions.plan_tier when orgs has no row", async () => {
+    const body = await checkQuotaRoute(makeEnv({ planTier: "growth", monthlyTokensUsed: 10 }));
+    expect(body.plan_tier).toBe("growth");
+  });
+
+  it("resolves to free — the most restrictive tier — when neither source knows the org", async () => {
+    const body = await checkQuotaRoute(makeEnv({ planTier: undefined as unknown as string, monthlyTokensUsed: 200_000 }));
+    expect(body.allowed).toBe(false);
   });
 });

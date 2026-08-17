@@ -2,6 +2,7 @@
 
 import type { StepProps } from "../wizardTypes";
 import { SLUG_PATTERN } from "../wizardTypes";
+import { productShellDisplay } from "@/lib/product-url";
 
 export default function DomainStep({ state, update }: StepProps) {
   return (
@@ -15,10 +16,10 @@ export default function DomainStep({ state, update }: StepProps) {
 
       <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg">
         <p className="text-sm text-gray-700">
-          <span className="font-medium">Naelao subdomain:</span>{" "}
+          <span className="font-medium">Your product address:</span>{" "}
           {state.productSlug && SLUG_PATTERN.test(state.productSlug)
-            ? `${state.productSlug}.naelao.app`
-            : "Not set — pick one on the Identity step, or use only a custom domain."}
+            ? productShellDisplay(state.productSlug)
+            : "Built from the product name — set one explicitly on the Identity step to choose it."}
         </p>
       </div>
 

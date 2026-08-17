@@ -4,7 +4,7 @@ import { ScriptToolSurface } from "../../workers/agents/src/script-engine/tool-s
 import { scriptFind } from "../../workers/agents/src/script-engine/script-find.js";
 import { runScriptLoop, type Reasoner, type ReasonDecision } from "../../workers/agents/src/script-engine/loop.js";
 import { observeFilesystem } from "../../workers/agents/src/script-engine/observe.js";
-import { writeAgentConfig, loadAgentConfig } from "../../workers/agents/src/script-engine/agent-config.js";
+import { writeAgentConfig, loadAgentConfig, mergeMissingPrebuilt } from "../../workers/agents/src/script-engine/agent-config.js";
 import { launchpadAgentToProfile, DEFAULT_NAELAO_AGENT, SPACE_ASSISTANT_PROFILE } from "../../workers/agents/src/script-engine/profiles.js";
 import { LAUNCHPAD_CORE_AGENTS } from "../../workers/agents/src/launchpad/spacetype.js";
 import type { ScriptEngineEnv } from "../../workers/agents/src/script-engine/types.js";
@@ -125,6 +125,71 @@ describe("ScriptToolSurface — the 6-op surface (spec §3)", () => {
     expect(ops).toContain("read_file");
     expect(ops).toContain("notify.email");
   });
+
+  it("groups operations by owning script with that script's description — live-reported gap: a bare flat name list left real capabilities undiscoverable", () => {
+    const env = makeEnv();
+    const tools = new ScriptToolSurface(env, ["r2-workspace", "notifications", "project-coordination"]);
+    const groups = tools.availableOperationsGrouped();
+
+    const coordination = groups.find((g) => g.script === "project-coordination");
+    expect(coordination).toBeDefined();
+    expect(coordination!.description.length).toBeGreaterThan(0);
+    // thread.create / thread.send_message must be discoverable somewhere in the grouped shape —
+    // the exact bug this exists to fix: a model that couldn't see these named as "the answer" to
+    // "chat inside an existing thread" claimed the capability didn't exist.
+    expect(coordination!.operations).toContain("thread.create");
+    expect(coordination!.operations).toContain("thread.send_message");
+
+    const notify = groups.find((g) => g.script === "notifications");
+    expect(notify!.operations).toContain("notify.email");
+
+    // Every op from availableOperations() appears exactly once across the grouped shape — no op
+    // lost, none duplicated across groups.
+    const flat = tools.availableOperations();
+    const grouped = groups.flatMap((g) => g.operations);
+    expect(grouped.sort()).toEqual(flat.sort());
+  });
+
+  it("surfaces paramHints when a script declares them, and omits the field entirely when none do — the live-reported gap where thread.create({}) ran with no project_id and thread.send_message was never even attempted, because nothing told the model what fields either call needed", () => {
+    const env = makeEnv();
+    const tools = new ScriptToolSurface(env, ["r2-workspace", "project-coordination"]);
+    const groups = tools.availableOperationsGrouped();
+
+    const coordination = groups.find((g) => g.script === "project-coordination")!;
+    expect(coordination.paramHints).toBeDefined();
+    // The exact operation the live bug involved: the hint must actually name project_id, or the
+    // fix doesn't close the gap it was written for.
+    expect(coordination.paramHints!["thread.create"]).toMatch(/project_id/);
+    expect(coordination.paramHints!["thread.send_message"]).toMatch(/thread_id/);
+    expect(coordination.paramHints!["thread.send_message"]).toMatch(/message/);
+    // Every operation in the group has a hint — a silently-undocumented op defeats the point.
+    for (const opName of coordination.operations) {
+      expect(coordination.paramHints![opName], `missing paramHints for ${opName}`).toBeTruthy();
+    }
+
+    // r2-workspace declares no paramHints — the field must be absent, not an empty object, so a
+    // caller can tell "nothing to show" from "this script has 0 operations" without checking size.
+    const r2 = groups.find((g) => g.script === "r2-workspace")!;
+    expect(r2.paramHints).toBeUndefined();
+  });
+
+  // commerce.create_product/update_product were the exact ops item 108's live trace found
+  // fabricated (the model claimed a product was live when it never called them at all, and
+  // once it could, the risk shifted to a wrong or missing product_id/status). storefront's two
+  // ops share a real footgun of their own (posting kind='storefront' where 'custom_domain' was
+  // meant silently drops the domain — see that script's own header) — both get explicit hints.
+  it("surfaces the commerce and storefront paramHints added to close known footguns", () => {
+    const env = makeEnv();
+    const tools = new ScriptToolSurface(env, ["commerce", "storefront"]);
+    const groups = tools.availableOperationsGrouped();
+
+    const commerce = groups.find((g) => g.script === "commerce")!;
+    expect(commerce.paramHints!["commerce.create_product"]).toMatch(/name/);
+    expect(commerce.paramHints!["commerce.update_product"]).toMatch(/product_id/);
+
+    const storefront = groups.find((g) => g.script === "storefront")!;
+    expect(storefront.paramHints!["storefront.set_custom_domain"]).toMatch(/domain/);
+  });
 });
 
 describe("script.find — degraded text scan when no Vectorize (spec §16)", () => {
@@ -138,6 +203,57 @@ describe("script.find — degraded text scan when no Vectorize (spec §16)", () 
     const results = await scriptFind(env, "email customer");
     expect(results.length).toBeGreaterThan(0);
     expect(results[0]!.name).toBe("send_email");
+  });
+
+  // A real production request 500'd with a raw Workers AI "4006: daily neuron allocation
+  // exhausted" error and never reached the reasoner at all — because a Vectorize index AND an
+  // embedder WERE wired (so the "no Vectorize configured" degraded path above never engaged),
+  // and the underlying embed() call itself threw with no try/catch around it. FIND runs
+  // algorithmically ahead of any model choice, so this killed the whole run regardless of which
+  // chat model the caller had picked (including a request that had deliberately switched away
+  // from Workers AI specifically to keep working through the quota cap). These two cases prove
+  // the fix: wired-but-failing degrades exactly like unwired, rather than propagating.
+  it("degrades to the tag/substring scan when the embedder is wired but its embed() call throws", async () => {
+    const env: ScriptEngineEnv = {
+      ...makeEnv(),
+      embedder: { embed: async () => { throw new Error("4006: daily neuron allocation exhausted"); } },
+      vectorIndex: { query: async () => ({ matches: [] }), upsert: async () => {}, deleteByIds: async () => {} } as never,
+    };
+    const lib = new SkillLibrary(env.scriptsBucket, env.spaceId);
+    await lib.create({ name: "send_email", code: "x", metadata: { description: "send an email to a customer", domain: "comms", requires_tier: 2, tags: ["email", "customer"] } });
+
+    const results = await scriptFind(env, "email customer");
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0]!.name).toBe("send_email");
+  });
+
+  it("degrades to the tag/substring scan when the ANN query call throws (embed succeeded, Vectorize itself failed)", async () => {
+    const env: ScriptEngineEnv = {
+      ...makeEnv(),
+      embedder: { embed: async () => [0.1, 0.2] },
+      vectorIndex: { query: async () => { throw new Error("Vectorize unavailable"); }, upsert: async () => {}, deleteByIds: async () => {} } as never,
+    };
+    const lib = new SkillLibrary(env.scriptsBucket, env.spaceId);
+    await lib.create({ name: "send_email", code: "x", metadata: { description: "send an email to a customer", domain: "comms", requires_tier: 2, tags: ["email", "customer"] } });
+
+    const results = await scriptFind(env, "email customer");
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0]!.name).toBe("send_email");
+  });
+
+  it("script.create never fails just because indexing its embedding failed — R2 write is the real data, the vector is a search index", async () => {
+    const env: ScriptEngineEnv = {
+      ...makeEnv(),
+      embedder: { embed: async () => { throw new Error("4006: daily neuron allocation exhausted"); } },
+      vectorIndex: { query: async () => ({ matches: [] }), upsert: async () => { throw new Error("should never reach upsert"); }, deleteByIds: async () => {} } as never,
+    };
+    const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    const created = await tools.create({
+      name: "new_skill",
+      code: "x",
+      metadata: { description: "a brand new skill", domain: "compute", requires_tier: 1 },
+    });
+    expect(created.name).toBe("new_skill");
   });
 });
 
@@ -163,9 +279,15 @@ describe("runScriptLoop — L1 execution + L4 distill (spec §2/§5)", () => {
     // loop runs it. We model the distilled script as a prebuilt call by having the loop
     // run the distilled NAME — but since stored-code execution needs a runner, we instead
     // have the reasoner choose `run` of an existing prebuilt op (valid L4 outcome).
+    // Runs the tool, THEN answers — a realistic turn. (These tests used to use a reasoner that
+    // only ever returned `run` and never answered; they passed because the loop wrongly ended on
+    // the first successful tool call. A run that never composes an answer now fails, correctly.)
+    let step = 0;
     const reasoner: Reasoner = {
       async decide(): Promise<ReasonDecision> {
-        return { action: "run", name: "write_file", params: { path: "out.txt", content: "done" } };
+        return step++ === 0
+          ? { action: "run", name: "write_file", params: { path: "out.txt", content: "done" } }
+          : { action: "answer", text: "Wrote out.txt." };
       },
     };
     const result = await runScriptLoop(env, tools, reasoner, ["r2-workspace"], {
@@ -258,7 +380,13 @@ describe("runScriptLoop — real per-token accounting (replaces the step-count-o
     expect(result.notes.some((n) => n.includes("token budget"))).toBe(true);
   });
 
-  it("onProgress fires at observe, gate, and each L3/L4 step", async () => {
+  it("onProgress fires live (pre-step) AND persisted (post-step, via pushTrace) checkpoints in phase order", async () => {
+    // §A1 Harness Excellence Phase HX2+ (live activity feed): onProgress now fires the SAME
+    // TraceStep-shaped checkpoint pushTrace persists, both right before a slow operation starts
+    // (a "Thinking…"/"Running X" live ping with no `ok`) and again once it completes — so a host
+    // with no live-progress needs can ignore it, and one building a chat UI's "currently doing X"
+    // indicator gets it for free. Assert relative ORDER (a subsequence), not exact call count,
+    // since exactly how many times a phase pings is an implementation detail.
     const env = makeEnv();
     const tools = new ScriptToolSurface(env, ["r2-workspace"]);
     const reasoner: Reasoner = {
@@ -274,7 +402,8 @@ describe("runScriptLoop — real per-token accounting (replaces the step-count-o
         phases.push(checkpoint.phase);
       },
     });
-    expect(phases).toEqual(["observe", "gate", "step"]);
+    const uniqueInOrder = [...new Set(phases)];
+    expect(uniqueInOrder).toEqual(["observe", "find", "gate", "reason", "answer"]);
   });
 
   it("a throwing onProgress never fails the run", async () => {
@@ -300,9 +429,15 @@ describe("runScriptLoop — structured trace (§A1 Phase HX1, the persisted coun
   it("records observe/find/gate/reason/run phases in order with real tier/tokens/ok", async () => {
     const env = makeEnv();
     const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    // Runs the tool, THEN answers — a realistic turn. (These tests used to use a reasoner that
+    // only ever returned `run` and never answered; they passed because the loop wrongly ended on
+    // the first successful tool call. A run that never composes an answer now fails, correctly.)
+    let step = 0;
     const reasoner: Reasoner = {
       async decide(): Promise<ReasonDecision> {
-        return { action: "run", name: "write_file", params: { path: "out.txt", content: "done" } };
+        return step++ === 0
+          ? { action: "run", name: "write_file", params: { path: "out.txt", content: "done" } }
+          : { action: "answer", text: "Wrote out.txt." };
       },
     };
     const result = await runScriptLoop(env, tools, reasoner, ["r2-workspace"], {
@@ -395,9 +530,12 @@ describe("runScriptLoop — approval modes (Space Assistant default-ask vs ordin
     const tools = new ScriptToolSurface(env, ["r2-workspace"]);
     const { calls, gateway } = makeHitlGateway(true);
     env.hitlGateway = gateway;
+    let step = 0;
     const reasoner: Reasoner = {
       async decide(): Promise<ReasonDecision> {
-        return { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } };
+        return step++ === 0
+          ? { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } }
+          : { action: "answer", text: "Wrote a.txt." };
       },
     };
     // "write_file" is NOT in the auto-approved list -> gate_unless_listed asks first.
@@ -444,7 +582,11 @@ describe("runScriptLoop — approval modes (Space Assistant default-ask vs ordin
       approvalMode: "gate_unless_listed",
     });
     expect(result.result?.ok).toBe(false);
-    expect(result.result?.error).toMatch(/HITL rejected/);
+    // Names the action and why it didn't run. A bare "HITL rejected" couldn't distinguish a
+    // human declining from a policy fetch failing closed — an ambiguity that cost real debugging
+    // time during the live model-matrix run.
+    expect(result.result?.error).toMatch(/needed approval and was not approved/);
+    expect(result.result?.error).toContain("write_file");
   });
 
   it("YOLO (empty requiresApprovalFor, default gate_listed mode) never asks even with a gateway wired", async () => {
@@ -487,6 +629,38 @@ describe("Agent config 4 R2 files + profiles (spec §11/§13)", () => {
     expect(SPACE_ASSISTANT_PROFILE).toBe(DEFAULT_NAELAO_AGENT);
   });
 
+  // Live-reported: a business's Space Assistant claimed thread.create "isn't supported" — a real,
+  // shipped capability. Root cause: scripts.json is written ONCE at provision time and nothing
+  // re-syncs it when profiles.ts later gains a new prebuilt script. mergeMissingPrebuilt is the
+  // pure additive-union primitive the self-heal (NaelaoAgentDO.loadAgentConfigHealed) is built on.
+  describe("mergeMissingPrebuilt — additive union for a stale persisted prebuilt list", () => {
+    it("adds only what's missing, preserving persisted order", () => {
+      const { merged, changed, added } = mergeMissingPrebuilt(
+        { prebuilt: ["r2-workspace", "web-search"], startup_observe: "observe_filesystem" },
+        ["web-search", "project-coordination", "business-diagnostics"]
+      );
+      expect(changed).toBe(true);
+      expect(added).toEqual(["project-coordination", "business-diagnostics"]);
+      expect(merged.prebuilt).toEqual(["r2-workspace", "web-search", "project-coordination", "business-diagnostics"]);
+    });
+
+    it("reports changed:false and returns the SAME object when nothing is missing (skip a needless write)", () => {
+      const scripts = { prebuilt: ["r2-workspace", "project-coordination"], startup_observe: "observe_filesystem" };
+      const result = mergeMissingPrebuilt(scripts, ["project-coordination"]);
+      expect(result.changed).toBe(false);
+      expect(result.added).toEqual([]);
+      expect(result.merged).toBe(scripts);
+    });
+
+    it("never removes anything already persisted, even if it's not in `additions`", () => {
+      const { merged } = mergeMissingPrebuilt(
+        { prebuilt: ["r2-workspace", "local-machine"], startup_observe: "observe_filesystem" },
+        ["r2-workspace", "web-search"]
+      );
+      expect(merged.prebuilt).toContain("local-machine");
+    });
+  });
+
   it("the Space Assistant profile reflects continuous existence, channels, and honest escalation (spec §05/A1.3)", () => {
     const combined = DEFAULT_NAELAO_AGENT.config.agentsMd + " " + DEFAULT_NAELAO_AGENT.config.systemPrompt;
     expect(combined).toMatch(/heartbeat/i);
@@ -500,7 +674,15 @@ describe("Agent config 4 R2 files + profiles (spec §11/§13)", () => {
     for (const def of LAUNCHPAD_CORE_AGENTS) {
       const profile = launchpadAgentToProfile(def);
       expect(profile.agentId).toBe(def.id);
-      expect(profile.config.systemPrompt).toBe(def.system_prompt);
+      // The profile now appends a shared rule about how to TALK to an owner: each definition's
+      // own prose necessarily names the operations it should call, and a live run showed a small
+      // model narrating those names straight back at a business owner. The definition's
+      // instructions must still be present in full, with the rule after them.
+      expect(profile.config.systemPrompt).toContain(def.system_prompt);
+      expect(profile.config.systemPrompt).toContain("How you talk to people");
+      expect(profile.config.systemPrompt.indexOf(def.system_prompt)).toBeLessThan(
+        profile.config.systemPrompt.indexOf("How you talk to people")
+      );
       // every agent gets the workspace + notifications surface
       expect(profile.config.scripts.prebuilt).toContain("r2-workspace");
       expect(profile.config.scripts.prebuilt).toContain("notifications");

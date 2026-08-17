@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { SpaceDO } from "../../workers/spaces/src/do/SpaceDO.js";
-import { createDOSqlStorage, type DOSqlStorage } from "./helpers/sqlite-do-shim.js";
+import { createDOStorage, type DOSqlStorage } from "./helpers/sqlite-do-shim.js";
 
 // Templates ship pre-wired projects bound to whichever installed agent owns that project's
 // work (spec follow-up: "prebuilt projects, threads, agents ... that's what a template should
@@ -9,7 +9,7 @@ import { createDOSqlStorage, type DOSqlStorage } from "./helpers/sqlite-do-shim.
 // settable at creation, readable via GET/list, and freely reassignable/clearable via PATCH.
 
 function makeSpaceDO(): SpaceDO {
-  const ctx = { storage: { sql: createDOSqlStorage() } };
+  const ctx = { storage: createDOStorage() };
   return new SpaceDO(ctx as never, { PLATFORM_SECRET: "test-secret" } as never);
 }
 
@@ -198,8 +198,9 @@ describe("SpaceDO projects — max_threads + thread creation enforcement", () =>
   });
 
   it("archiving a thread frees a slot under the cap", async () => {
-    const sql = createDOSqlStorage();
-    const doInstance = new SpaceDO({ storage: { sql } } as never, { PLATFORM_SECRET: "test-secret" } as never);
+    const storage = createDOStorage();
+    const sql = storage.sql;
+    const doInstance = new SpaceDO({ storage } as never, { PLATFORM_SECRET: "test-secret" } as never);
     const project = await call(doInstance, "/projects", "POST", { space_id: "space1", name: "Orders", max_threads: 1 });
     const projectId = project.json.id;
 
@@ -240,5 +241,26 @@ describe("SpaceDO projects — max_threads + thread creation enforcement", () =>
     const t2 = await call(doInstance, "/threads", "POST", { space_id: "space1", title: "Two" });
     expect(t1.status).toBe(201);
     expect(t2.status).toBe(201);
+  });
+});
+
+// The left sidebar's project list was ordered oldest-first (no DESC), unlike the Sessions list's
+// own ORDER BY updated_at DESC — a newly created/relevant project could be pushed behind the
+// sidebar's "show more" collapse (item 66) instead of surfacing at the top. Fixed to
+// ORDER BY created_at DESC, matching the (space_id, created_at DESC) index that already existed
+// for this exact query and Sessions' own recency convention.
+describe("SpaceDO projects — list ordering", () => {
+  it("lists newest-created project first (matches Sessions' ORDER BY ... DESC recency convention)", async () => {
+    const doInstance = makeSpaceDO();
+    const older = await call(doInstance, "/projects", "POST", { space_id: "space1", name: "Older Project" });
+    const newer = await call(doInstance, "/projects", "POST", { space_id: "space1", name: "Newer Project" });
+    // Force distinct created_at values — both rows can otherwise land in the same
+    // datetime('now') second in a fast test run, making ASC vs DESC indistinguishable.
+    const ctx = (doInstance as unknown as { ctx: { storage: { sql: { exec: (q: string, ...p: unknown[]) => unknown } } } }).ctx;
+    ctx.storage.sql.exec("UPDATE projects SET created_at = ? WHERE id = ?", "2020-01-01 00:00:00", older.json.id);
+    ctx.storage.sql.exec("UPDATE projects SET created_at = ? WHERE id = ?", "2025-01-01 00:00:00", newer.json.id);
+
+    const list = await call(doInstance, "/projects?space_id=space1", "GET");
+    expect(list.json.data.map((p: { name: string }) => p.name)).toEqual(["Newer Project", "Older Project"]);
   });
 });

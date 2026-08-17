@@ -104,7 +104,12 @@ describe("Launchpad Wallet ledger (SpaceDO, real migration chain)", () => {
     expect(await creditRes.json()).toEqual({ balance_cents: 2500 });
 
     const balRes = await spacesWorker.fetch(req(`/spaces/space-1/projects/${projectId}/wallet/balance`, h), env as never, execCtx);
-    expect(await balRes.json()).toEqual({ project_id: projectId, balance_cents: 2500, currency: "USD" });
+    // `credited_cents` (money that has EVER gone in) is what lets the run gate tell a
+    // never-funded wallet apart from a depleted one — a brand-new business auto-provisions an
+    // empty wallet, and blocking on the balance alone refused it its own agents on day one.
+    expect(await balRes.json()).toEqual({
+      project_id: projectId, balance_cents: 2500, credited_cents: 2500, currency: "USD",
+    });
   });
 
   it("rejects a non-USD credit with a clear 400 — walletBalance sums delta_cents with no currency filter, so a single-currency ledger is the only currently-correct semantics (cf. item 39's builder-payout multi-currency bug)", async () => {

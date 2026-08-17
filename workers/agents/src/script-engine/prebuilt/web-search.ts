@@ -26,6 +26,7 @@
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 import { mintInternalToken } from "@naelao/http";
+import { workspacePrefix } from "../types.js";
 
 async function proxy(ctx: PrebuiltOpContext, path: string, body: unknown): Promise<unknown> {
   if (!ctx.env.knowledgeWorker) {
@@ -49,9 +50,13 @@ async function proxy(ctx: PrebuiltOpContext, path: string, body: unknown): Promi
 
 export const webSearch: PrebuiltScript = {
   name: "web-search",
-  description: "Search the web, fetch a page, and extract structured content (platform-provided, no key required).",
+  description:
+    "Search the web, fetch a page, extract structured content, and download a file into the workspace (platform-provided, no key required).",
   domain: "api",
   requires_tier: 2,
+  paramHints: {
+    download_file: "url is required. filename is optional — defaults to the last path segment of the URL. Handles BINARY files (PDF, images, zip) as well as text. Saves to downloads/<filename> in the workspace; does not return the content, use read_file/stat_file to inspect it afterward (read_file only works on text).",
+  },
   operations: {
     async search(args, ctx) {
       return proxy(ctx, "/internal/web-search/search", {
@@ -86,6 +91,71 @@ export const webSearch: PrebuiltScript = {
         answer: result.answer,
         citations: result.citations,
         usage: { tokens_used: result.tokens_used, input_tokens: result.input_tokens, output_tokens: result.output_tokens },
+      };
+    },
+    // Downloads a real file into the workspace, mirroring the existing `uploads/` convention —
+    // the SAME r2-workspace bucket/prefix, under `downloads/` instead. Deliberately does NOT
+    // return the content in the tool result (unlike fetch_page/extract_content): a download can
+    // be up to 2MB (WEB_DOWNLOAD_CONTENT_CAP on the knowledge worker), and echoing that into the
+    // reasoning payload would defeat the entire point of saving it to disk instead of reading it.
+    // The caller gets a path and a size; use read_file/stat_file on it afterward if inspection is
+    // actually needed — read_file's own size guard applies there too.
+    async download_file(args, ctx) {
+      const url = String(args["url"] ?? "").trim();
+      if (!url) throw new Error("download_file requires 'url'");
+      const result = (await proxy(ctx, "/internal/web-search/download", { url })) as {
+        url: string; status: number; content: string | null; size?: number; truncated?: boolean;
+        error?: string; encoding?: "text" | "base64"; content_type?: string;
+      };
+      if (!result.content) {
+        return { ok: false, url, status: result.status, error: result.error ?? `download failed (status ${result.status})` };
+      }
+      // A failing server still sends a BODY — an error page, a rate-limit notice, a JSON error.
+      // Only "was there content" was checked, so a 429/502 was written into the workspace as if it
+      // were the requested file and reported as a successful download. Seen live: a GitHub 502 was
+      // saved as a 16-byte `README.md` reading "error code: 502", and the agent told the user the
+      // file had downloaded. Anything outside 2xx is a failed download, whatever came back with it.
+      if (result.status < 200 || result.status >= 300) {
+        return {
+          ok: false,
+          url,
+          status: result.status,
+          error: `download failed (status ${result.status}) — the server returned an error page, not the file`,
+          body_preview: result.content.slice(0, 200),
+        };
+      }
+      const explicitName = typeof args["filename"] === "string" && args["filename"] ? (args["filename"] as string) : undefined;
+      // R2 keys are flat strings with no real directory-traversal semantics, but sanitized the
+      // same defensive way r2-workspace.ts's own key() helper does for consistency: strip
+      // anything but a safe character class, then collapse any run of 2+ dots (".." and longer)
+      // so a filename can never even LOOK like a traversal attempt.
+      const filename = (
+        (explicitName ?? url.split("/").pop() ?? "download")
+          .replace(/[^a-zA-Z0-9._-]/g, "_")
+          .replace(/\.{2,}/g, "_")
+          .replace(/^[._]+/, "")
+      ) || "download";
+      const bucket = ctx.env.workspaceBucket ?? ctx.env.scriptsBucket;
+      const path = `downloads/${filename}`;
+      // A base64 payload has to be decoded back to real bytes before it hits R2 — writing the
+      // base64 STRING would store a file that is neither the original nor readable as text.
+      const payload: string | Uint8Array =
+        result.encoding === "base64"
+          ? Uint8Array.from(atob(result.content), (ch) => ch.charCodeAt(0))
+          : result.content;
+      await bucket.put(`${workspacePrefix(ctx.env)}${path}`, payload, {
+        // Recording the real content type is what lets the Files viewer decide between an
+        // inline preview and a download, instead of guessing from the extension.
+        ...(result.content_type ? { httpMetadata: { contentType: result.content_type } } : {}),
+        customMetadata: { updatedAt: Date.now().toString(), sourceUrl: url },
+      });
+      ctx.env.onWorkspaceChange?.({ path, operation: "write" });
+      return {
+        ok: true, path,
+        size: result.size ?? (payload instanceof Uint8Array ? payload.byteLength : payload.length),
+        content_type: result.content_type ?? null,
+        binary: result.encoding === "base64",
+        truncated: result.truncated ?? false,
       };
     },
   },

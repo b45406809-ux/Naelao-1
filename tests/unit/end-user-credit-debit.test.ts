@@ -18,7 +18,8 @@ const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as Ex
 const SPACES_TABLE_SQL = `
   CREATE TABLE spaces (
     id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
-    name TEXT NOT NULL DEFAULT '', spacetype_id TEXT NOT NULL DEFAULT 'launchpad'
+    name TEXT NOT NULL DEFAULT '', spacetype_id TEXT NOT NULL DEFAULT 'launchpad',
+    config_json TEXT, parent_space_id TEXT
   );
 `;
 
@@ -35,6 +36,12 @@ function makeEnv() {
 async function seedProduct(env: ReturnType<typeof makeEnv>, id: string, tenantId: string) {
   await env.PLATFORM_DB.prepare("INSERT INTO spaces (id, tenant_id, status, name, spacetype_id) VALUES (?, ?, 'active', 'Product', 'launchpad')")
     .bind(id, tenantId).run();
+}
+
+async function seedBusiness(env: ReturnType<typeof makeEnv>, id: string, tenantId: string, parentSpaceId: string) {
+  await env.PLATFORM_DB.prepare(
+    "INSERT INTO spaces (id, tenant_id, status, name, spacetype_id, parent_space_id) VALUES (?, ?, 'active', 'Business', 'launchpad', ?)"
+  ).bind(id, tenantId, parentSpaceId).run();
 }
 
 function req(path: string, init: RequestInit & { headers?: Record<string, string> } = {}): Request {
@@ -194,5 +201,88 @@ describe("GET /internal/product-users/:spaceId/:endUserId/credits/balance", () =
       env as never, execCtx
     );
     expect(res.status).toBe(404);
+  });
+});
+
+// Live-reported bug: a signed-in end user with a real, positive balance saw "insufficient
+// credits" while chatting in a BUSINESS-scoped assistant session (no projectId) — but the same
+// business's project-thread chat worked fine (that path checks the project WALLET, a different
+// gate). Root cause: ProductUserDO is a product-scoped concept (one instance per productId x
+// endUserId, addressed by the PRODUCT ROOT's space id) — but enforceRunGates calls these credit
+// routes with whatever spaceId the run is actually happening in, which for a business-scoped
+// session is the BUSINESS's own space id, not the root. These prove the routes now resolve a
+// business's requests to the SAME ProductUserDO as the root, instead of a phantom, never-signed-
+// up one that's permanently stuck at 0.
+describe("credit routes resolve a business-scoped spaceId to its product root's ProductUserDO", () => {
+  it("credits/balance: a grant made at the root is visible when queried with the BUSINESS's own space id", async () => {
+    const env = makeEnv();
+    await seedProduct(env, "root-1", "tenant-1");
+    await seedBusiness(env, "biz-1", "tenant-1", "root-1");
+    await grantCredits(env, "root-1", "alice", 5000);
+
+    const token = await mintInternalToken(PLATFORM_SECRET, "tenant-1");
+    const res = await spacesWorker.fetch(
+      req("/internal/product-users/biz-1/alice/credits/balance", {
+        headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(200);
+    expect((await res.json() as { balance_credits: number }).balance_credits).toBe(5000);
+  });
+
+  it("credits/deduct: debiting via the business's space id draws down the SAME balance as the root", async () => {
+    const env = makeEnv();
+    await seedProduct(env, "root-1", "tenant-1");
+    await seedBusiness(env, "biz-1", "tenant-1", "root-1");
+    await grantCredits(env, "root-1", "alice", 100);
+
+    const token = await mintInternalToken(PLATFORM_SECRET, "tenant-1");
+    const deductRes = await spacesWorker.fetch(
+      req("/internal/product-users/biz-1/alice/credits/deduct", {
+        method: "POST",
+        headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
+        body: JSON.stringify({ credits: 30 }),
+      }),
+      env as never, execCtx
+    );
+    expect(deductRes.status).toBe(201);
+    expect((await deductRes.json() as { balance_credits: number }).balance_credits).toBe(70);
+
+    // Reading back from the ROOT id shows the same drawn-down balance — proof it's the same DO.
+    const rootBalRes = await spacesWorker.fetch(
+      req("/internal/product-users/root-1/alice/credits/balance", {
+        headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
+      }),
+      env as never, execCtx
+    );
+    expect((await rootBalRes.json() as { balance_credits: number }).balance_credits).toBe(70);
+  });
+
+  it("credits/balance: 404s when the business's own row references a since-deleted root", async () => {
+    const env = makeEnv();
+    await seedBusiness(env, "biz-orphan", "tenant-1", "no-such-root");
+    const token = await mintInternalToken(PLATFORM_SECRET, "tenant-1");
+    const res = await spacesWorker.fetch(
+      req("/internal/product-users/biz-orphan/alice/credits/balance", {
+        headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("a space with no parent_space_id (an ordinary product root) behaves exactly as before", async () => {
+    const env = makeEnv();
+    await seedProduct(env, "root-1", "tenant-1");
+    await grantCredits(env, "root-1", "alice", 42);
+    const token = await mintInternalToken(PLATFORM_SECRET, "tenant-1");
+    const res = await spacesWorker.fetch(
+      req("/internal/product-users/root-1/alice/credits/balance", {
+        headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
+      }),
+      env as never, execCtx
+    );
+    expect((await res.json() as { balance_credits: number }).balance_credits).toBe(42);
   });
 });

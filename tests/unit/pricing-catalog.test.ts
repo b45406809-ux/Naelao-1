@@ -315,3 +315,122 @@ describe("POST /internal/credit-packs/grant (webhook-safe, idempotent)", () => {
     expect(second.deduplicated).toBe(true);
   });
 });
+
+// Phase 4 (money): the personal-plan catalog rides the exact same pricing-catalog machinery as
+// plans/creditPacks above — same product-root authorship, same walk-to-root resolution.
+describe("GET /spaces/:spaceId/personal-plan + POST /internal/personal-plan/grant (Phase 4, money)", () => {
+  async function seedProductWithPersonalPlans(env: ReturnType<typeof makeEnv>) {
+    const pricingConfig = {
+      model: "credits",
+      personalPlans: [{ id: "plus-monthly", name: "Plus", tier: "plus", priceCents: 500, interval: "month", lsVariantId: "var_plus" }],
+    };
+    await env.PLATFORM_DB.prepare(
+      "INSERT INTO spaces (id, tenant_id, status, name, spacetype_id, config_json) VALUES ('prod-root', 'root-tenant', 'active', 'Product', 'launchpad', ?)"
+    ).bind(JSON.stringify({ productConfig: { pricingConfig } })).run();
+    await env.PLATFORM_DB.prepare(
+      "INSERT INTO spaces (id, tenant_id, status, name, spacetype_id, parent_space_id) VALUES ('biz-alice', 'alice-tenant', 'active', 'Alice Biz', 'launchpad', 'prod-root')"
+    ).run();
+    await env.PLATFORM_DB.prepare(
+      "INSERT INTO business_memberships (business_space_id, product_space_id, end_user_id, role, status) VALUES ('biz-alice', 'prod-root', 'alice', 'owner', 'active')"
+    ).run();
+  }
+
+  it("GET /spaces/:spaceId/pricing surfaces personal_plans alongside plans/credit_packs", async () => {
+    const env = makeEnv();
+    await seedProductWithPersonalPlans(env);
+    const res = await spacesWorker.fetch(
+      req("/spaces/biz-alice/pricing", { headers: await endUserHeaders("alice-tenant", "alice") }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { personal_plans: Array<{ id: string; tier: string; price_cents: number }> };
+    expect(body.personal_plans).toHaveLength(1);
+    expect(body.personal_plans[0]).toMatchObject({ id: "plus-monthly", tier: "plus", price_cents: 500 });
+  });
+
+  it("GET /spaces/:spaceId/personal-plan defaults a new end user to 'free' with the real free-tier limits", async () => {
+    const env = makeEnv();
+    await seedProductWithPersonalPlans(env);
+    const res = await spacesWorker.fetch(
+      req("/spaces/biz-alice/personal-plan", { headers: await endUserHeaders("alice-tenant", "alice") }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { plan_tier: string; limits: { maxBusinessesOwned: number; canInviteOthers: boolean } };
+    expect(body.plan_tier).toBe("free");
+    expect(body.limits).toEqual({ maxBusinessesOwned: 3, canInviteOthers: false });
+  });
+
+  it("POST /internal/personal-plan/grant requires a verified internal token", async () => {
+    const env = makeEnv();
+    const res = await spacesWorker.fetch(
+      req("/internal/personal-plan/grant", { method: "POST", body: JSON.stringify({ product_space_id: "prod-root", end_user_id: "alice", tier: "plus" }) }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("POST /internal/personal-plan/grant sets the tier, and GET /personal-plan reflects it immediately", async () => {
+    const env = makeEnv();
+    await seedProductWithPersonalPlans(env);
+    const token = await mintInternalToken(PLATFORM_SECRET, "root-tenant");
+    const grantRes = await spacesWorker.fetch(
+      req("/internal/personal-plan/grant", {
+        method: "POST",
+        headers: { "x-naelao-tenant-id": "root-tenant", "x-naelao-internal-token": token },
+        body: JSON.stringify({ product_space_id: "prod-root", end_user_id: "alice", tier: "plus" }),
+      }),
+      env as never, execCtx
+    );
+    expect(grantRes.status).toBe(200);
+
+    const readRes = await spacesWorker.fetch(
+      req("/spaces/biz-alice/personal-plan", { headers: await endUserHeaders("alice-tenant", "alice") }),
+      env as never, execCtx
+    );
+    const body = (await readRes.json()) as { plan_tier: string; limits: { maxBusinessesOwned: number; canInviteOthers: boolean } };
+    expect(body.plan_tier).toBe("plus");
+    expect(body.limits).toEqual({ maxBusinessesOwned: 25, canInviteOthers: true });
+  });
+
+  it("rejects a nonsense tier at the grant route", async () => {
+    const env = makeEnv();
+    await seedProductWithPersonalPlans(env);
+    const token = await mintInternalToken(PLATFORM_SECRET, "root-tenant");
+    const res = await spacesWorker.fetch(
+      req("/internal/personal-plan/grant", {
+        method: "POST",
+        headers: { "x-naelao-tenant-id": "root-tenant", "x-naelao-internal-token": token },
+        body: JSON.stringify({ product_space_id: "prod-root", end_user_id: "alice", tier: "premium-forever" }),
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("CRITICAL: a different end user's own tier is completely independent (no cross-user leakage)", async () => {
+    const env = makeEnv();
+    await seedProductWithPersonalPlans(env);
+    // bob is also a genuine member of the SAME business, so his own /personal-plan read is
+    // reachable — the real test is that alice's grant never bleeds into his.
+    await env.PLATFORM_DB.prepare(
+      "INSERT INTO business_memberships (business_space_id, product_space_id, end_user_id, role, status) VALUES ('biz-alice', 'prod-root', 'bob', 'member', 'active')"
+    ).run();
+    const token = await mintInternalToken(PLATFORM_SECRET, "root-tenant");
+    await spacesWorker.fetch(
+      req("/internal/personal-plan/grant", {
+        method: "POST",
+        headers: { "x-naelao-tenant-id": "root-tenant", "x-naelao-internal-token": token },
+        body: JSON.stringify({ product_space_id: "prod-root", end_user_id: "alice", tier: "plus" }),
+      }),
+      env as never, execCtx
+    );
+    const bobRes = await spacesWorker.fetch(
+      req("/spaces/biz-alice/personal-plan", { headers: await endUserHeaders("alice-tenant", "bob") }),
+      env as never, execCtx
+    );
+    expect(bobRes.status).toBe(200);
+    const bobBody = (await bobRes.json()) as { plan_tier: string };
+    expect(bobBody.plan_tier).toBe("free"); // alice's grant did not leak to bob
+  });
+});

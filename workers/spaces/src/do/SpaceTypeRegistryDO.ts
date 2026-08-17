@@ -7,6 +7,7 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
+import { LAUNCHPAD_MANIFEST } from "../launchpad-manifest.js";
 
 // ── SpaceType Manifest v2 (spec §61) ─────────────────────────────────────────
 
@@ -165,7 +166,15 @@ export interface SpaceTypeProductConfig {
    */
   assistantMode: "per-user" | "shared";
 
-  /** Allow anyone to self-serve sign up to the product portal. */
+  /**
+   * Whether a signed-in customer may create their OWN business under this product (tenant/hybrid
+   * only; ignored for "team").
+   *
+   * NOT a gate on signing up to the product — end-user signup lives in product-end-user-routes.ts
+   * and never reads this. The old wording here ("self-serve sign up to the product portal") is what
+   * produced an error message telling builders signup was disabled while customers were visibly
+   * signing up fine. The name is kept for compatibility; the meaning is this.
+   */
   allowPublicSignup: boolean;
 
   /**
@@ -326,6 +335,28 @@ export interface SpaceTypeProductConfig {
       lsVariantId?: string;
     }>;
 
+    /** Phase 4 (money): a real checkout for the end user's OWN personal-plan tier (widens
+     *  maxBusinessesPerEndUser's per-user slice and unlocks inviting others — see
+     *  @naelao/billing-core's PERSONAL_PLAN_LIMITS/resolveEffectiveBusinessLimit). Recurring, one
+     *  LS variant per plan, same provision-on-save pattern as `plans` above — but sets the
+     *  caller's OWN ProductUserDO.plan_tier via /internal/personal-plan/grant rather than funding
+     *  a business. `tier` is which PersonalPlanTier this purchase grants (only "plus" makes sense
+     *  to sell — "free" is the default with no checkout). */
+    personalPlans?: Array<{
+      id: string;
+      name: string;
+      tier: "plus";
+      priceCents: number;
+      interval: "month" | "year";
+      /** Naelao's own Whop plan id — the PRIMARY rail, tried before Lemon Squeezy, matching how
+       *  builder platform plans are already sold (whop-platform-plan.ts). A personal plan is a
+       *  purchase Naelao makes to an individual, so it belongs on Naelao's own seller account,
+       *  not on any one business's revenue rail. */
+      whopPlanId?: string;
+      /** Fallback rail, kept because a store may already be provisioned there. */
+      lsVariantId?: string;
+    }>;
+
     /** Launchpad Wallet (user-directed feature): fixed-price top-up packs for a business's own
      *  wallet_ledger balance (SpaceDO, projects.kind='wallet') — same "checkout for a
      *  pre-configured LS variant, no arbitrary custom amount" shape as creditPacks, but the
@@ -415,6 +446,12 @@ export interface SpaceTypeProductConfig {
    *  from before this feature existed. */
   modelConfig?: {
     model?: string;
+    /** The escalation-budget dial (billing-core/effort.ts's EffortLevel) — how far a run on this
+     *  business's own default model may reach for a more capable (pricier) model when it
+     *  delegates work to a sub-agent. Validated against the CHOSEN model at the PATCH route (an
+     *  effort level a model doesn't offer is rejected, same posture as `model` above). Unset ->
+     *  "low", the safest default for a business that's never configured this. */
+    effort?: string;
   };
 
   /** §A1 Harness Excellence Phase HX2: session token-budget guard. Same config_json-override
@@ -515,6 +552,36 @@ export class SpaceTypeRegistryDO extends DurableObject {
       );
     `);
     this.initialized = true;
+
+    // Self-heal: this registry must always carry at least the built-in Naelao
+    // manifests. Seeding was originally a manual, easy-to-forget POST
+    // /internal/space-types/seed call at deploy time — if that was never run
+    // against a fresh/reset instance, every listing (GET /types, the builder
+    // wizard's SpaceType step, provisioning's own GET /type/:id) would silently
+    // return an empty catalogue rather than erroring, with no visible sign
+    // anything was wrong. Seed inline instead of depending on that step.
+    const existing = this.ctx.storage.sql.exec(`SELECT COUNT(*) AS n FROM space_types`).toArray() as unknown as { n: number }[];
+    if ((existing[0]?.n ?? 0) === 0) {
+      for (const manifest of [LAUNCHPAD_MANIFEST]) {
+        this.registerManifest(manifest, "naelao");
+      }
+    }
+  }
+
+  private registerManifest(manifest: NaelaoSpaceTypeManifestV2, authorId: string): void {
+    const now = Date.now();
+    this.ctx.storage.sql.exec(
+      `INSERT OR REPLACE INTO space_types
+         (id, name, description, author, current_version, manifest, status, visible, price_usd, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'approved', 1, ?, ?)`,
+      manifest.id, manifest.name, manifest.description, authorId,
+      manifest.version, JSON.stringify(manifest), manifest.marketplace.priceUsdPerMonth, now
+    );
+    this.ctx.storage.sql.exec(
+      `INSERT OR REPLACE INTO versions (type_id, version, manifest, change_type, canary_pct, stable, published_at)
+       VALUES (?, ?, ?, 'minor', 100, 1, ?)`,
+      manifest.id, manifest.version, JSON.stringify(manifest), now
+    );
   }
 
   override async fetch(request: Request): Promise<Response> {
@@ -574,19 +641,7 @@ export class SpaceTypeRegistryDO extends DurableObject {
           { status: 400 }
         );
       }
-      const now = Date.now();
-      this.ctx.storage.sql.exec(
-        `INSERT OR REPLACE INTO space_types
-           (id, name, description, author, current_version, manifest, status, visible, price_usd, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'approved', 1, ?, ?)`,
-        m.id, m.name, m.description, body.authorId,
-        m.version, JSON.stringify(m), m.marketplace.priceUsdPerMonth, now
-      );
-      this.ctx.storage.sql.exec(
-        `INSERT OR REPLACE INTO versions (type_id, version, manifest, change_type, canary_pct, stable, published_at)
-         VALUES (?, ?, ?, 'minor', 100, 1, ?)`,
-        m.id, m.version, JSON.stringify(m), now
-      );
+      this.registerManifest(m, body.authorId);
       return Response.json({ accepted: true });
     }
 

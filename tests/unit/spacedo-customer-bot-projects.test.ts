@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { SpaceDO } from "../../workers/spaces/src/do/SpaceDO.js";
-import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
+import { createDOStorage } from "./helpers/sqlite-do-shim.js";
 
 // Customer-bot project config (migration v12) — drives the REAL SpaceDO over a real
 // in-memory SQLite engine (node:sqlite), exercising the actual migration + route code
 // rather than a hand-rolled fake.
 
 function makeSpaceDO(): SpaceDO {
-  const ctx = { storage: { sql: createDOSqlStorage() } };
+  const ctx = { storage: createDOStorage() };
   const env = { PLATFORM_SECRET: "test-secret" };
   // The DurableObject base is stubbed for tests (tests/stubs/cloudflare-workers.ts) — its
   // constructor just assigns ctx/env, so direct construction is safe and exercises the
