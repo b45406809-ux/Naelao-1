@@ -100,6 +100,120 @@ const RENAMED_OPERATIONS: Record<string, string> = {
   "agent.consult": "thread.consult",
 };
 
+// ── Tool-result pagination (step 9) ─────────────────────────────────────────────────────────
+// Some ops (thread.list, agent.list, knowledge.search, analytics, …) can return far more data
+// than a run's context can hold. Rather than make every op re-implement paging, run() applies a
+// generic, opt-out size-guard: when a result is oversized OR the caller explicitly passed a paging
+// arg, page the result's primary list and attach a `_pagination` note telling the model exactly how
+// to fetch the next page (call the SAME op with the same args + a bumped offset). Never drops data
+// silently — the note always carries the true total and the next-offset instruction.
+const MAX_TOOL_RESULT_BYTES = 16_000; // ~4k tokens — a safety ceiling, not a hard per-op contract.
+const DEFAULT_TOOL_PAGE_SIZE = 50;
+
+/** Read a numeric paging arg, accepting both `limit`/`offset` and `_limit`/`_offset` spellings. */
+function pageArg(params: Record<string, unknown>, ...names: string[]): number | undefined {
+  for (const n of names) {
+    const v = params[n];
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+    if (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))) return Number(v);
+  }
+  return undefined;
+}
+
+/** Locate the "primary" array in an op's output: the output itself if it's an array, else the
+ *  longest array-valued field of a plain object. Returns null when there's nothing list-shaped. */
+function findPrimaryArray(
+  output: unknown
+): { arr: unknown[]; rebuild: (page: unknown[], note: unknown) => unknown } | null {
+  if (Array.isArray(output)) {
+    return { arr: output, rebuild: (page, note) => ({ items: page, _pagination: note }) };
+  }
+  if (output && typeof output === "object") {
+    const obj = output as Record<string, unknown>;
+    let bestKey: string | null = null;
+    let bestLen = -1;
+    for (const [k, v] of Object.entries(obj)) {
+      if (Array.isArray(v) && v.length > bestLen) {
+        bestKey = k;
+        bestLen = v.length;
+      }
+    }
+    if (bestKey !== null) {
+      const key = bestKey;
+      return { arr: obj[key] as unknown[], rebuild: (page, note) => ({ ...obj, [key]: page, _pagination: note }) };
+    }
+  }
+  return null;
+}
+
+/**
+ * Apply the generic result limit. Untouched (byte-identical) when the result is small AND the
+ * caller passed no paging arg — so ordinary small results keep their exact shape. Otherwise pages
+ * the primary list, or (no list to page) truncates a genuinely oversized blob with an instruction.
+ * Exported for direct unit testing — it must behave the same in isolation as inside run().
+ */
+export function applyToolResultLimit(output: unknown, params: Record<string, unknown>): unknown {
+  const explicitLimit = pageArg(params, "limit", "_limit");
+  const explicitOffset = pageArg(params, "offset", "_offset");
+  let bytes: number;
+  try {
+    bytes = JSON.stringify(output ?? null).length;
+  } catch {
+    return output; // Non-serializable (shouldn't happen for a real op result) — leave it be.
+  }
+  const oversized = bytes > MAX_TOOL_RESULT_BYTES;
+  const pagingRequested = explicitLimit !== undefined || explicitOffset !== undefined;
+  if (!oversized && !pagingRequested) return output;
+
+  const primary = findPrimaryArray(output);
+  if (primary) {
+    const total = primary.arr.length;
+    let limit = explicitLimit ?? DEFAULT_TOOL_PAGE_SIZE;
+    if (explicitLimit === undefined && oversized && total > 0) {
+      // Shrink the page until it fits the byte budget: average per-item bytes → items that fit.
+      const perItem = Math.max(1, Math.floor(bytes / total));
+      limit = Math.max(1, Math.floor(MAX_TOOL_RESULT_BYTES / perItem));
+    }
+    const offset = Math.max(0, explicitOffset ?? 0);
+    const page = primary.arr.slice(offset, offset + limit);
+    const hasMore = offset + limit < total;
+    const note: Record<string, unknown> = {
+      total,
+      offset,
+      limit,
+      returned: page.length,
+      has_more: hasMore,
+    };
+    if (hasMore) {
+      note["next_offset"] = offset + limit;
+      note["instruction"] =
+        `Showing ${page.length} of ${total} items. To see more, call this SAME operation again ` +
+        `with the same arguments plus offset=${offset + limit} (add limit=<n> to change the page size).`;
+    }
+    return primary.rebuild(page, note);
+  }
+
+  // No list to page, but genuinely oversized — a large scalar/blob. Truncate the string view.
+  if (oversized) {
+    let s: string;
+    try {
+      s = typeof output === "string" ? output : JSON.stringify(output);
+    } catch {
+      s = String(output);
+    }
+    return {
+      _truncated: true,
+      _total_bytes: bytes,
+      preview: s.slice(0, MAX_TOOL_RESULT_BYTES),
+      instruction:
+        `This result is ${bytes} bytes and was truncated to ${MAX_TOOL_RESULT_BYTES}. ` +
+        `Use a search/read operation with a query or offset to fetch only the part you need ` +
+        `rather than the whole thing.`,
+    };
+  }
+  return output;
+}
+
 export class ScriptToolSurface {
   private readonly library: SkillLibrary;
   private readonly ops: Map<string, { op: PrebuiltOp; prebuilt: PrebuiltScript }>;
@@ -568,9 +682,12 @@ export class ScriptToolSurface {
         // ScriptRunResult.tokens_used/input_tokens/output_tokens via withTokenUsage). An op that
         // never touches an LLM leaves this at 0, unchanged from before this feature existed.
         const usage = (output as { usage?: { tokens_used?: number; input_tokens?: number; output_tokens?: number } } | null)?.usage;
+        // Step 9: generic result-size guard. Read usage from the ORIGINAL output above (the
+        // paginated view may replace the primary list), then hand the model the size-limited view.
+        const limited = applyToolResultLimit(output, params);
         return {
           ok: true,
-          output,
+          output: limited,
           tier: prebuilt.prebuilt.requires_tier,
           duration_ms: Date.now() - started,
           tokens_used: usage?.tokens_used ?? 0,

@@ -174,6 +174,34 @@ export function isAllowedModel(model: string): model is AllowedModel {
 }
 
 /**
+ * "Did you mean" ranking for a model id an agent typed that isn't in ALLOWED_MODELS. A weak model
+ * that guesses `gemini-flash` or `llama-70b` or `gpt-oss` (a partial / stale / provider-prefix-less
+ * id) should get pointed at the closest real ids rather than a bare 404. Ranks every allowed model
+ * against the guess by token overlap over the id's own segments (split on `/`, `-`, `.`, `@`),
+ * with a substring bonus, and returns the best few. Deterministic and dependency-free — matches
+ * the same "structure over a fuzzy library" posture as tool-surface's suggestOperations.
+ */
+export function suggestModels(guess: string, max = 3): AllowedModel[] {
+  const g = guess.toLowerCase().trim();
+  if (!g) return [];
+  const gTokens = new Set(g.split(/[/\-.@\s]+/).filter(Boolean));
+  const scored = ALLOWED_MODELS.map((m) => {
+    const ml = m.toLowerCase();
+    const mTokens = ml.split(/[/\-.@\s]+/).filter(Boolean);
+    let score = 0;
+    for (const t of mTokens) if (gTokens.has(t)) score += 2;
+    // Substring in either direction (e.g. guess "llama-70b" ⊂ "llama-3.3-70b-...").
+    if (ml.includes(g) || g.includes(ml)) score += 3;
+    // A shared distinctive segment (a family/vendor token appearing in both) is a strong signal.
+    for (const t of gTokens) if (t.length >= 3 && ml.includes(t)) score += 1;
+    return { m, score };
+  })
+    .filter((s) => s.score > 0)
+    .sort((a, b) => b.score - a.score);
+  return scored.slice(0, max).map((s) => s.m);
+}
+
+/**
  * The model a run falls back to when neither an explicit request nor a product's own
  * `productConfig.modelConfig.model` names one. This used to be a bare `"claude-sonnet-4-6"`
  * literal at each fallback site — on an account whose AI Gateway has no Anthropic provider wired

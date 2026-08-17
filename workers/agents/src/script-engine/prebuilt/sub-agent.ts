@@ -15,6 +15,8 @@ import {
   capabilityForModel,
   contextWindowForModel,
   benchmarkForModel,
+  isAllowedModel,
+  suggestModels,
 } from "@naelao/billing-core";
 
 function hooks(ctx: PrebuiltOpContext): OrchestrationHooks {
@@ -62,6 +64,27 @@ export const subAgent: PrebuiltScript = {
     async "agent.spawn"(args, ctx) {
       const h = hooks(ctx);
       if (!h.spawnSubAgent) return { ok: false, reason: "sub-agent spawning not available in this environment" };
+      // Validate any explicitly-named model BEFORE delegating. A wrong id must get a real
+      // "not available / did you mean" answer, not a silent clamp (which read as a misleading
+      // "too expensive for your Effort" reason, since resolveEscalationModel can't tell an
+      // invalid id from a valid-but-pricey one) and never a bare provider 404 down the line.
+      // This is the model-selector's own allowlist — the same list agent.list_models returns.
+      const tasks = Array.isArray(args["tasks"]) ? (args["tasks"] as Array<Record<string, unknown>>) : [];
+      for (const t of tasks) {
+        const m = t && typeof t["model"] === "string" ? (t["model"] as string) : "";
+        if (m && !isAllowedModel(m)) {
+          const suggestions = suggestModels(m);
+          return {
+            ok: false,
+            error:
+              `model "${m}" is not available.` +
+              (suggestions.length ? ` Did you mean: ${suggestions.join(", ")}?` : "") +
+              ` Call agent.list_models to see every model a spawn may name (omit "model" to let the platform choose).`,
+            did_you_mean: suggestions,
+            available_models: ALLOWED_MODELS as readonly string[],
+          };
+        }
+      }
       return await h.spawnSubAgent(args);
     },
     async "agent.send"(args, ctx) {

@@ -67,7 +67,9 @@ describe("project-coordination prebuilt", () => {
           return { ok: true, thread_id: "thread-1", session_id: "sess-1", reply: "done" };
         },
       };
-      const env = makeEnv([], undefined, orchestration);
+      // agent1 must exist in the project's agent listing now (thread.consult validates agent_id
+      // up front — step 10). The GET /agent-definitions call returns it.
+      const env = makeEnv([], (call) => (call.url.includes("/agent-definitions") ? { data: [{ id: "agent1", name: "Agent 1" }] } : {}), orchestration);
       const result = await projectCoordination.operations["thread.consult"]!(
         { agent_id: "agent1", message: "please check the wallet" },
         { env, run: noopRun }
@@ -81,7 +83,7 @@ describe("project-coordination prebuilt", () => {
       const orchestration: OrchestrationHooks = {
         consultAgent: async (params) => { seen = params; return { ok: true }; },
       };
-      const env = makeEnv([], undefined, orchestration);
+      const env = makeEnv([], (call) => (call.url.includes("/agent-definitions") ? { data: [{ id: "agent1", name: "Agent 1" }] } : {}), orchestration);
       await projectCoordination.operations["thread.consult"]!(
         {
           agent_id: "agent1",

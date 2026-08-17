@@ -30,6 +30,110 @@
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 import { mintInternalToken } from "@naelao/http";
+import {
+  ALLOWED_MODELS,
+  DEFAULT_WORKING_MODEL,
+  capabilityForModel,
+  contextWindowForModel,
+  benchmarkForModel,
+  isAllowedModel,
+  suggestModels,
+} from "@naelao/billing-core";
+
+/** The general Space Assistant agent id — provisioned in every space, so it is a valid target in
+ *  every project even one with no explicit agent_definitions rows. Kept in sync with
+ *  DEFAULT_NAELAO_AGENT.agentId in profiles.ts. */
+const GENERAL_AGENT_ID = "naelao-agent";
+
+interface ProjectAgentEntry {
+  id: string;
+  name: string;
+  description?: string;
+  is_default?: boolean;
+}
+
+/** List the agents addressable from a project: every agent_definition in the space PLUS the
+ *  general Space Assistant, which is always addressable even in a brand-new project (auto-added
+ *  to the listing so a spawn/consult/send can name it). De-duplicated by id. */
+async function listProjectAgents(ctx: PrebuiltOpContext): Promise<ProjectAgentEntry[]> {
+  let rows: Array<Record<string, unknown>> = [];
+  try {
+    const res = (await spacesCall(
+      ctx,
+      "GET",
+      `/spaces/${ctx.env.spaceId}/agent-definitions?space_id=${encodeURIComponent(ctx.env.spaceId)}`
+    )) as { data?: Array<Record<string, unknown>> };
+    rows = Array.isArray(res.data) ? res.data : [];
+  } catch {
+    // A listing failure must never make the general agent invisible — it is always addressable.
+    rows = [];
+  }
+  const entries: ProjectAgentEntry[] = rows.map((r) => ({
+    id: String(r["id"] ?? ""),
+    name: String(r["name"] ?? r["id"] ?? "agent"),
+    ...(typeof r["description"] === "string" ? { description: r["description"] as string } : {}),
+  }));
+  if (!entries.some((e) => e.id === GENERAL_AGENT_ID)) {
+    entries.unshift({
+      id: GENERAL_AGENT_ID,
+      name: "Space Assistant (general)",
+      description: "The default general-purpose agent, available in every project.",
+      is_default: true,
+    });
+  }
+  return entries;
+}
+
+/** Rank candidate agent ids/names against a guess by token overlap — the "did you mean" list for
+ *  an agent_id that names no real agent (same shape as billing-core's suggestModels). */
+function suggestAgents(guess: string, agents: ProjectAgentEntry[], max = 3): string[] {
+  const g = guess.toLowerCase().trim();
+  if (!g) return [];
+  const gTokens = new Set(g.split(/[/\-.@\s_]+/).filter(Boolean));
+  return agents
+    .map((a) => {
+      const hay = `${a.id} ${a.name}`.toLowerCase();
+      let score = 0;
+      for (const t of hay.split(/[/\-.@\s_]+/).filter(Boolean)) if (gTokens.has(t)) score += 2;
+      if (hay.includes(g)) score += 3;
+      for (const t of gTokens) if (t.length >= 3 && hay.includes(t)) score += 1;
+      return { id: a.id, score };
+    })
+    .filter((s) => s.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, max)
+    .map((s) => s.id);
+}
+
+/** Returns a structured error result when `agentId` names no addressable agent, else null. */
+async function validateAgentId(ctx: PrebuiltOpContext, agentId: string): Promise<Record<string, unknown> | null> {
+  const agents = await listProjectAgents(ctx);
+  if (agents.some((a) => a.id === agentId)) return null;
+  const suggestions = suggestAgents(agentId, agents);
+  return {
+    ok: false,
+    error:
+      `agent "${agentId}" was not found in this project.` +
+      (suggestions.length ? ` Did you mean: ${suggestions.join(", ")}?` : "") +
+      ` Call thread.list_project_agents to see who you can address ("${GENERAL_AGENT_ID}" is always available).`,
+    did_you_mean: suggestions,
+    available_agents: agents.map((a) => a.id),
+  };
+}
+
+/** Returns a structured error result when `model` is a non-empty, non-allowed id, else null. */
+function validateModel(model: string | undefined): Record<string, unknown> | null {
+  if (!model || isAllowedModel(model)) return null;
+  const suggestions = suggestModels(model);
+  return {
+    ok: false,
+    error:
+      `model "${model}" is not available.` +
+      (suggestions.length ? ` Did you mean: ${suggestions.join(", ")}?` : "") +
+      ` Call thread.list_project_models to see every model you can name (omit "model" to use the agent's default).`,
+    did_you_mean: suggestions,
+  };
+}
 
 async function spacesCall(ctx: PrebuiltOpContext, method: string, path: string, body?: Record<string, unknown>): Promise<unknown> {
   if (!ctx.env.spacesWorker) throw new Error("project-coordination unavailable: spaces worker binding not configured");
@@ -75,6 +179,10 @@ export const projectCoordination: PrebuiltScript = {
       const agentId = String(a["agent_id"] ?? "");
       const message = String(a["message"] ?? "");
       if (!agentId || !message) throw new Error("thread.consult requires agent_id and message");
+      // Validate the target agent up front so a wrong id gets a real "did you mean" list instead
+      // of the bare "HTTP 404 / not provisioned" the DO dispatch would otherwise surface.
+      const agentCheck = await validateAgentId(c, agentId);
+      if (agentCheck) return agentCheck;
       const projectId = a["project_id"] ? String(a["project_id"]) : c.env.projectId;
       const parentThreadId = a["parent_thread_id"] ? String(a["parent_thread_id"]) : undefined;
       const threadId = a["thread_id"] ? String(a["thread_id"]) : undefined;
@@ -102,6 +210,14 @@ export const projectCoordination: PrebuiltScript = {
       const agentId = a["agent_id"] ? String(a["agent_id"]) : undefined;
       const respond = a["respond"] !== false;
       const model = a["model"] ? String(a["model"]) : undefined;
+      // Validate the model and (when a reply is wanted) the target agent up front, so a wrong id
+      // returns a real did-you-mean rather than a bare 404 from the dispatch.
+      const modelErr = validateModel(model);
+      if (modelErr) return modelErr;
+      if (respond && agentId) {
+        const agentErr = await validateAgentId(c, agentId);
+        if (agentErr) return agentErr;
+      }
       return c.env.orchestration.sendToThread({
         threadId,
         message,
@@ -195,6 +311,32 @@ export const projectCoordination: PrebuiltScript = {
       const matches = (listed.data ?? []).filter((t) => (t.title ?? "").toLowerCase().includes(query));
       return { query, matches, matched_count: matches.length };
     },
+    // Step 8: the AI must be able to SEE which models/agents it may address before spawning,
+    // consulting, or sending — otherwise it guesses an id and gets a 404 (or never sets one).
+    // list_project_models mirrors sub-agent's agent.list_models; list_project_agents always
+    // includes the general agent so a brand-new project still lists a real, addressable target.
+    "thread.list_project_models": async () => {
+      return {
+        default: DEFAULT_WORKING_MODEL,
+        models: ALLOWED_MODELS.map((m) => {
+          const cap = capabilityForModel(m);
+          const bench = benchmarkForModel(m);
+          return {
+            id: m,
+            family: bench?.family ?? null,
+            cost_tier: bench?.costTier ?? null,
+            context_window: contextWindowForModel(m),
+            supports_thinking: cap.reasoningLevels.length > 0,
+            thinking_levels: cap.reasoningLevels,
+            best_for: bench?.bestFor ?? [],
+          };
+        }),
+      };
+    },
+    "thread.list_project_agents": async (_a, c) => {
+      const agents = await listProjectAgents(c);
+      return { agents, default_agent: GENERAL_AGENT_ID };
+    },
   },
   // Live-reported bug this closes: a model asked to "create a thread in project p1 and say hello"
   // called thread.create({}) — no project_id, since nothing told it that field existed — landing
@@ -223,5 +365,10 @@ export const projectCoordination: PrebuiltScript = {
     "thread.delete": "thread_id (string, REQUIRED) — archives it; there is no hard delete.",
     "thread.search": "query (string, REQUIRED — matched against thread TITLES only, not message " +
       "content). project_id (string, optional).",
+    "thread.list_project_models": "no parameters. Returns every model you may name in a spawn, " +
+      "consult, or send_message (with context window, thinking support, cost tier) — call this " +
+      "before guessing a model id.",
+    "thread.list_project_agents": "no parameters. Returns every agent you may address in this " +
+      "project (id + name); the general Space Assistant is always included and addressable.",
   },
 };
