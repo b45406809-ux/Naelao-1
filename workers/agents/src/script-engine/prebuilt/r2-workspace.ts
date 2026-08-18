@@ -83,52 +83,52 @@ export const r2Workspace: PrebuiltScript = {
     async read_file(args, ctx) {
       const path = reqStr(args, "path");
       const k = key(ctx, path);
-      const head = await bucket(ctx).head(k);
-      if (!head) return { exists: false, content: null };
 
       // Step 3: chunked/ranged read. When offset and/or length are given, read only that byte
       // range — the way to read a file LARGER than the single-read cap, a slice at a time. The
       // returned chunk is byte-bounded by the cap; has_more/next_offset tell the agent how to
-      // page through the rest (same convention as the tool-result paginator).
+      // page through the rest (same convention as the tool-result paginator). A ranged R2 get()
+      // still reports the FULL object size in `.size`, so no separate head() is needed.
       const offset = numArg(args, "offset");
       const length = numArg(args, "length");
       if (offset !== undefined || length !== undefined) {
         const off = Math.max(0, offset ?? 0);
         const len = Math.min(length ?? MAX_READABLE_FILE_BYTES, MAX_READABLE_FILE_BYTES);
-        if (off >= head.size) {
-          return { exists: true, content: "", offset: off, length: 0, total_size: head.size, has_more: false };
-        }
         const obj = await bucket(ctx).get(k, { range: { offset: off, length: len } });
         if (!obj) return { exists: false, content: null };
+        const total = obj.size;
+        if (off >= total) {
+          return { exists: true, content: "", offset: off, length: 0, total_size: total, has_more: false };
+        }
         const content = await obj.text();
         // Byte-accurate next offset (content.length is chars, which drifts for multibyte UTF-8).
-        const bytesRead = Math.min(len, head.size - off);
+        const bytesRead = Math.min(len, total - off);
         const end = off + bytesRead;
-        const hasMore = end < head.size;
+        const hasMore = end < total;
         return {
           exists: true,
           content,
           offset: off,
           length: bytesRead,
-          total_size: head.size,
+          total_size: total,
           has_more: hasMore,
           ...(hasMore ? { next_offset: end } : {}),
         };
       }
 
-      // Full read. .size is real object metadata, available before the body is ever pulled —
-      // checking it here avoids reading a multi-MB body into memory just to discard it.
-      if (head.size > MAX_READABLE_FILE_BYTES) {
+      // Full read. get() returns the object with its real `.size` metadata, so the oversize check
+      // still happens before the body is materialized into a payload that could blow the turn.
+      const obj = await bucket(ctx).get(k);
+      if (!obj) return { exists: false, content: null };
+      if (obj.size > MAX_READABLE_FILE_BYTES) {
         return {
           exists: true,
           content: null,
-          size: head.size,
+          size: obj.size,
           too_large: true,
-          message: `This file is ${head.size} bytes, over the ${MAX_READABLE_FILE_BYTES}-byte limit for a single read. Read it in chunks with read_file(path, offset, length) — start at offset 0, then use the next_offset it returns — or use search_file(path, query) to jump straight to the part you need.`,
+          message: `This file is ${obj.size} bytes, over the ${MAX_READABLE_FILE_BYTES}-byte limit for a single read. Read it in chunks with read_file(path, offset, length) — start at offset 0, then use the next_offset it returns — or use search_file(path, query) to jump straight to the part you need.`,
         };
       }
-      const obj = await bucket(ctx).get(k);
-      if (!obj) return { exists: false, content: null };
       return { exists: true, content: await obj.text(), size: obj.size };
     },
     // Step 3: search WITHIN a file and get back only the matching lines (with line numbers, and
