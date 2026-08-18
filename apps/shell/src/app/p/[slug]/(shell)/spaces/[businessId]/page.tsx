@@ -811,7 +811,7 @@ export default function BusinessDetailPage() {
           own isolated wallet — but this rail needs Naelao's own invite-only Whop Platforms API
           access, not yet granted, so it stays inactive until then. The Connect card above is the
           working path today. Balance is member-visible; adding a payout destination is admin-only. */}
-      <div className="section-label">Business Wallet (Naelao-managed, pending Whop approval)</div>
+      <div className="section-label">Business Wallet — Naelao-managed (coming soon)</div>
       <p style={{ fontSize: 12, color: "var(--text3)", marginBottom: 8 }}>
         This business&rsquo;s own Whop sub-merchant wallet — a real bank account, auto-provisioned
         at creation. Revenue from Whop&rsquo;s own storefront/checkout and any connected 3rd-party
@@ -836,8 +836,11 @@ export default function BusinessDetailPage() {
           <div>
             <div className="settings-row-label">Balance</div>
             <div className="settings-row-sub">
-              <Badge color={whopWallet?.status === "active" ? "green" : whopWallet?.status === "pending" || whopWallet?.status === "awaiting_kyc" ? "amber" : "red"}>
-                {whopWallet?.status === "not_provisioned" ? "not provisioned yet" : whopWallet?.status === "awaiting_kyc" ? "verification needed" : whopWallet?.status ?? "loading"}
+              {/* Step 23: "not provisioned" is a FUTURE rail, not a failure — a red badge read as
+                  "your connection didn't take". Show it as a neutral "coming soon" (amber), so the
+                  connected Whop OAuth account above clearly stays the live path. */}
+              <Badge color={whopWallet?.status === "active" ? "green" : whopWallet?.status === "not_provisioned" || whopWallet?.status === "pending" || whopWallet?.status === "awaiting_kyc" ? "amber" : "red"}>
+                {whopWallet?.status === "not_provisioned" ? "coming soon" : whopWallet?.status === "awaiting_kyc" ? "verification needed" : whopWallet?.status ?? "loading"}
               </Badge>
             </div>
           </div>

@@ -26,6 +26,8 @@ import {
   listAgentDefinitions,
   listAgentTemplates,
   instantiateAgentTemplate,
+  listProjects,
+  type Project,
   type AgentDefinitionSummary,
   type AgentTemplateSummary,
 } from "@/lib/api";
@@ -43,6 +45,10 @@ export default function AgentsPage() {
   const [templates, setTemplates] = React.useState<AgentTemplateSummary[]>([]);
   const [templatesLoading, setTemplatesLoading] = React.useState(false);
   const [instantiating, setInstantiating] = React.useState(false);
+  // Step 16: after a template is chosen, pick which project to add it to before instantiating.
+  const [pendingTemplate, setPendingTemplate] = React.useState<AgentTemplateSummary | null>(null);
+  const [projects, setProjects] = React.useState<Project[]>([]);
+  const [projectsLoading, setProjectsLoading] = React.useState(false);
 
   const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
 
@@ -74,13 +80,33 @@ export default function AgentsPage() {
     }
   }
 
+  // Step 16: choosing a template no longer instantiates immediately — it opens a project picker
+  // so the agent is added to a project the user chooses (or the assistant/space-wide).
   async function handleAddFromTemplate(t: AgentTemplateSummary) {
     if (!creds || instantiating) return;
+    setPendingTemplate(t);
+    setTemplatePickerOpen(false);
+    setProjectsLoading(true);
+    try {
+      setProjects(await listProjects(activeSpaceId, creds));
+    } catch {
+      setProjects([]);
+    } finally {
+      setProjectsLoading(false);
+    }
+  }
+
+  async function confirmAddToProject(projectId?: string) {
+    if (!creds || !pendingTemplate || instantiating) return;
+    const t = pendingTemplate;
     setInstantiating(true);
     try {
-      await instantiateAgentTemplate(activeSpaceId, creds, { template_id: t.id });
-      setTemplatePickerOpen(false);
-      show(`${t.name} added — bind it to a project from that project's own page`);
+      await instantiateAgentTemplate(activeSpaceId, creds, {
+        template_id: t.id,
+        ...(projectId ? { project_id: projectId } : {}),
+      });
+      setPendingTemplate(null);
+      show(projectId ? `${t.name} added to that project` : `${t.name} added`);
       refresh();
     } catch (err) {
       show(err instanceof Error ? err.message : "Couldn't add this agent");
@@ -153,6 +179,39 @@ export default function AgentsPage() {
                 <span className="app-card-tag">{t.category}</span>
               </button>
             ))}
+          </div>
+        )}
+      </Modal>
+      {/* Step 16: pick which project to add the chosen template agent to. */}
+      <Modal open={pendingTemplate !== null} onClose={() => setPendingTemplate(null)} title={pendingTemplate ? `Add "${pendingTemplate.name}" to…` : "Add to project"}>
+        <p style={{ fontSize: 12.5, color: "var(--text3)", margin: "0 0 12px" }}>
+          Choose which project this agent works in. It gets that project&apos;s workspace, journal and threads.
+        </p>
+        {projectsLoading ? (
+          <p style={{ color: "var(--text3)", fontSize: 13 }}>Loading projects…</p>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {projects.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                className="settings-row"
+                disabled={instantiating}
+                onClick={() => void confirmAddToProject(p.id)}
+                style={{ textAlign: "left", cursor: instantiating ? "default" : "pointer", font: "inherit", border: "1px solid var(--border)", borderRadius: 8, padding: "10px 12px", background: "transparent" }}
+              >
+                {p.name}
+              </button>
+            ))}
+            <button
+              type="button"
+              className="settings-row"
+              disabled={instantiating}
+              onClick={() => void confirmAddToProject(undefined)}
+              style={{ textAlign: "left", cursor: instantiating ? "default" : "pointer", font: "inherit", border: "1px dashed var(--border)", borderRadius: 8, padding: "10px 12px", background: "transparent", color: "var(--text3)" }}
+            >
+              Add without a project (space-wide / assistant)
+            </button>
           </div>
         )}
       </Modal>
