@@ -663,6 +663,214 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
       setup_scripts: ["knowledge-base.status"],
     },
   },
+  // ── Step 28: six "just create it and start earning" business templates ──────────────────────
+  // Each reuses the existing core agents and the script-native prebuilts (commerce/storefront for
+  // the paywall, code-exec/artifacts for the deliverable, web-search for research/SEO,
+  // business-email for delivery). The AI builds the actual intake portal / calculator / storefront
+  // / vault as an ARTIFACT and sells it through the owner's connected Whop store — the same
+  // "assistant builds the business" model as whop-webdev-agency, generalized to six more shapes.
+  {
+    id: "paid-audit",
+    name: "Paid Audit / Analysis Service",
+    description:
+      "Sell automated expert audits ($29-$299 each). A client uploads their files/links and pays; " +
+      "your agent analyzes them and delivers a polished custom report. Works for a copy roaster, a " +
+      "lease red-flag scanner, a resume/portfolio optimizer — pick your specialty.",
+    agents: ["launchpad-fulfillment-v1", "launchpad-support-v1", "launchpad-content-v1"],
+    skills: ["web-search", "code-exec", "email-tool", "mcp-connector"],
+    connectors: ["whop"],
+    free_tier_eligible: true,
+    pricing_tiers: [
+      { id: "quick", name: "Quick Audit", price_usd_min: 29, price_usd_max: 29, summary: "A focused single-issue audit", includes: ["1 deliverable", "Key findings + top 3 fixes"] },
+      { id: "standard", name: "Full Audit", price_usd_min: 99, price_usd_max: 99, summary: "A thorough audit with an action plan", includes: ["Detailed report", "Prioritized action plan", "1 revision"] },
+      { id: "premium", name: "Premium Audit + Call Notes", price_usd_min: 299, price_usd_max: 299, summary: "Deep audit with a written strategy", includes: ["Comprehensive report", "Strategy write-up", "2 revisions"] },
+    ],
+    bootstrap: {
+      prompts: [
+        { id: "whop_connection", type: "connection", connector: "whop", question: "Connect your Whop account.", help: "Opens Whop and asks you to approve access. Your assistant sets up your store with the three audit tiers, and Whop handles the money.", required: true },
+        { id: "specialty", type: "text", question: "What will you audit, and for whom?", help: "Be specific — 'landing pages for SaaS founders', 'Airbnb lease agreements', 'senior-dev resumes + GitHub'. Your agent builds the intake and report around this.", required: true },
+        { id: "owner_channel", type: "channel", question: "Where should your assistant reach you?", help: "It sends you new orders to review and flags anything it can't handle.", options: ["email", "slack", "discord", "whatsapp"], required: true },
+        { id: "autonomy", type: "choice", question: "How much should it do on its own?", options: ["Ask me first — approve every report before it's sent", "Draft reports for one-click approval", "Full autonomy — send reports, only ask when stuck"], required: true },
+      ],
+      projects: [
+        { name: "Intake & Reports", default_agent_id: "launchpad-fulfillment-v1" },
+        { name: "Marketing", default_agent_id: "launchpad-content-v1" },
+        { name: "Support", default_agent_id: "launchpad-support-v1" },
+      ],
+      first_contact: {
+        goal:
+          "Onboarding just completed for a Paid Audit business. Read the connected Whop account (mcp-connector) to confirm the store and tiers exist. Then build the actual service: (1) create an intake page as an HTML artifact (artifacts.create) where a client describes their audit and pastes links/files, matching the owner's specialty; (2) draft the report-generation approach (what your analysis will cover, using web-search + code-exec) and write it to the Intake & Reports project journal; (3) draft 2-3 social-media 'teardown' posts the Marketing project can publish to attract leads. Send the owner ONE short message: what you set up, a link to the intake artifact, and the 2-3 first things you'll do to get their first paying customer. Respect their autonomy setting. Real specifics, no placeholders.",
+      },
+    },
+  },
+  {
+    id: "interactive-tool",
+    name: "Interactive Tool → Paid Plan",
+    description:
+      "A free web calculator/tool that gives a taste, then charges ($19/mo or $49 one-off) for the " +
+      "full plan or dashboard. A SaaS burn-rate simulator, a marathon+nutrition planner, a solar-ROI " +
+      "estimator — your agent builds the tool and the paywall.",
+    agents: ["launchpad-webdev-v1", "launchpad-support-v1", "launchpad-content-v1"],
+    skills: ["web-search", "code-exec", "file-manager", "email-tool", "mcp-connector"],
+    connectors: ["whop"],
+    free_tier_eligible: true,
+    pricing_tiers: [
+      { id: "oneoff", name: "Full Plan (one-off)", price_usd_min: 49, price_usd_max: 49, summary: "The complete customized result", includes: ["Full calculation", "Downloadable plan"] },
+      { id: "monthly", name: "Pro (monthly)", price_usd_min: 19, price_usd_max: 19, summary: "Ongoing dashboard + updates", includes: ["Saved scenarios", "Ongoing access"] },
+    ],
+    bootstrap: {
+      prompts: [
+        { id: "whop_connection", type: "connection", connector: "whop", question: "Connect your Whop account.", help: "For the paid plan/subscription. Whop handles the money.", required: true },
+        { id: "tool_idea", type: "text", question: "What tool do you want, and who's it for?", help: "e.g. 'a SaaS valuation & burn-rate simulator for founders', 'a marathon + nutrition planner'. Your agent builds it as a real interactive web app.", required: true },
+        { id: "owner_channel", type: "channel", question: "Where should your assistant reach you?", options: ["email", "slack", "discord", "whatsapp"], required: true },
+        { id: "autonomy", type: "choice", question: "How much should it do on its own?", options: ["Ask me first", "Handle routine work, ask about money/customers", "Full autonomy"], required: true },
+      ],
+      projects: [
+        { name: "Build", default_agent_id: "launchpad-webdev-v1" },
+        { name: "Growth & SEO", default_agent_id: "launchpad-content-v1" },
+        { name: "Support", default_agent_id: "launchpad-support-v1" },
+      ],
+      first_contact: {
+        goal:
+          "Onboarding just completed for an Interactive-Tool business. Build a REAL first version of the tool the owner described as an HTML artifact (artifacts.create) — dynamic inputs/sliders, the calculation logic in JS, a clear free result, and a 'get the full plan' call-to-action that points at the Whop checkout. Write the calculation approach to the Build project journal. Draft 1-2 SEO article outlines for the Growth project to drive organic traffic. Send the owner ONE short message: a link to the tool artifact, what's free vs paid, and the first 2-3 things you'll do to get traffic and the first paying user. Respect their autonomy setting.",
+      },
+    },
+  },
+  {
+    id: "productized-service",
+    name: "Productized Solo Service",
+    description:
+      "Turn a freelance skill into a flat-rate recurring service ($200-$1,500/mo) with no email chaos: " +
+      "a client portal, an intake board, and automated delivery. Thumbnail design, newsletter " +
+      "ghostwriting, Shopify bug-fixing — your specialty, standardized.",
+    agents: ["launchpad-fulfillment-v1", "launchpad-support-v1", "launchpad-content-v1"],
+    skills: ["web-search", "code-exec", "file-manager", "email-tool", "mcp-connector"],
+    connectors: ["whop"],
+    free_tier_eligible: true,
+    pricing_tiers: [
+      { id: "starter", name: "Starter", price_usd_min: 200, price_usd_max: 200, summary: "A few tasks a month", includes: ["Intake board", "Standard turnaround"] },
+      { id: "growth", name: "Growth", price_usd_min: 500, price_usd_max: 500, summary: "Higher volume, faster", includes: ["Priority queue", "Faster turnaround"] },
+      { id: "unlimited", name: "Unlimited", price_usd_min: 1500, price_usd_max: 1500, summary: "Unlimited requests, one at a time", includes: ["Unlimited queue", "Dedicated account bot"] },
+    ],
+    bootstrap: {
+      prompts: [
+        { id: "whop_connection", type: "connection", connector: "whop", question: "Connect your Whop account.", help: "For the recurring subscription. Whop handles the money.", required: true },
+        { id: "service", type: "text", question: "What's the service, and what does one deliverable look like?", help: "e.g. 'unlimited video thumbnails, one at a time', 'a weekly B2B newsletter', 'Shopify bug fixes'. This shapes the intake board and delivery pipeline.", required: true },
+        { id: "owner_channel", type: "channel", question: "Where should your assistant reach you?", options: ["email", "slack", "discord", "whatsapp"], required: true },
+        { id: "autonomy", type: "choice", question: "How much should it do on its own?", options: ["Draft every deliverable for me to approve", "Auto-handle routine requests, ask on the rest", "Full autonomy"], required: true },
+      ],
+      projects: [
+        { name: "Intake & Delivery", default_agent_id: "launchpad-fulfillment-v1" },
+        { name: "Client Desk", default_agent_id: "launchpad-support-v1" },
+        { name: "Marketing", default_agent_id: "launchpad-content-v1" },
+      ],
+      first_contact: {
+        goal:
+          "Onboarding just completed for a Productized-Service business. Build the client-facing intake page as an HTML artifact (artifacts.create) — a simple request form matching the owner's service and tiers, pointing at the Whop checkout for the subscription. Write the delivery pipeline (how a request becomes a finished deliverable) to the Intake & Delivery project journal. Set up a first draft of the 24/7 Client Account Manager on the owner's channel. Send the owner ONE short message: a link to the intake artifact, how a client goes from signup to first deliverable, and the first 2-3 things you'll do to land a client. Respect their autonomy setting.",
+      },
+    },
+  },
+  {
+    id: "intelligence-vault",
+    name: "Curated Intelligence Vault",
+    description:
+      "A paywalled, always-fresh vault of high-value data + weekly alerts ($15-$99/mo): off-market " +
+      "real-estate deals, verified angel investors, remote-dev jobs with real salaries. Your agents " +
+      "scrape nightly, prune dead entries, and send the digest.",
+    agents: ["launchpad-leadgen-v1", "launchpad-content-v1", "launchpad-support-v1"],
+    skills: ["web-search", "code-exec", "knowledge-base", "email-tool", "mcp-connector"],
+    connectors: ["whop"],
+    free_tier_eligible: true,
+    pricing_tiers: [
+      { id: "basic", name: "Basic", price_usd_min: 15, price_usd_max: 15, summary: "The vault + weekly digest", includes: ["Searchable vault", "Weekly email"] },
+      { id: "pro", name: "Pro", price_usd_min: 49, price_usd_max: 49, summary: "Vault + faster alerts + filters", includes: ["Instant alerts", "Advanced filters"] },
+      { id: "premium", name: "Premium", price_usd_min: 99, price_usd_max: 99, summary: "Everything + priority requests", includes: ["Priority sourcing", "Custom watchlists"] },
+    ],
+    bootstrap: {
+      prompts: [
+        { id: "whop_connection", type: "connection", connector: "whop", question: "Connect your Whop account.", help: "For the membership. Whop handles the money.", required: true },
+        { id: "vault_topic", type: "text", question: "What's in the vault, and who wants it?", help: "e.g. 'off-market commercial real-estate deals', 'active angel investors open to AI pitches', 'remote Rust jobs with real salaries'. Your agents source and curate around this.", required: true },
+        { id: "owner_channel", type: "channel", question: "Where should your assistant reach you?", options: ["email", "slack", "discord", "whatsapp"], required: true },
+        { id: "autonomy", type: "choice", question: "How much should it do on its own?", options: ["Ask me before adding/removing entries", "Auto-curate, ask before the digest goes out", "Full autonomy"], required: true },
+      ],
+      projects: [
+        { name: "Curation", default_agent_id: "launchpad-leadgen-v1" },
+        { name: "Digest", default_agent_id: "launchpad-content-v1" },
+        { name: "Members", default_agent_id: "launchpad-support-v1" },
+      ],
+      first_contact: {
+        goal:
+          "Onboarding just completed for a Curated Intelligence Vault. Do a first real sourcing pass (web-search) for the vault topic, and store the verified entries in the knowledge base (knowledge-base) so they're searchable. Build a members' vault page as an HTML artifact (artifacts.create) that lists the entries and gates the full set behind the Whop membership. Draft the first weekly digest for the Digest project. Set up a recurring nightly sourcing schedule (schedule.wake_me) on the Curation project. Send the owner ONE short message: how many verified entries you found, a link to the vault artifact, and the first 2-3 things you'll do to get the first member. Respect their autonomy setting.",
+      },
+    },
+  },
+  {
+    id: "digital-toolkit",
+    name: "Digital Toolkit Storefront",
+    description:
+      "An automated storefront for digital products — prompt packs, templates, Notion workspaces, " +
+      "code snippets, Excel models — with instant delivery and programmatic SEO. Your agent builds " +
+      "the store, handles delivery questions, and writes the SEO articles.",
+    agents: ["launchpad-fulfillment-v1", "launchpad-content-v1", "launchpad-support-v1"],
+    skills: ["web-search", "code-exec", "file-manager", "email-tool", "mcp-connector"],
+    connectors: ["whop"],
+    free_tier_eligible: true,
+    pricing_tiers: [
+      { id: "single", name: "Single Product", price_usd_min: 9, price_usd_max: 49, summary: "One digital product, priced per item", includes: ["Instant download", "Free updates"] },
+      { id: "bundle", name: "Bundle", price_usd_min: 39, price_usd_max: 149, summary: "A bundle of related products", includes: ["Multiple products", "Best value"] },
+    ],
+    bootstrap: {
+      prompts: [
+        { id: "whop_connection", type: "connection", connector: "whop", question: "Connect your Whop account.", help: "For selling and delivering the downloads. Whop handles the money.", required: true },
+        { id: "products", type: "text", question: "What digital products will you sell?", help: "e.g. 'Notion workspaces for law students', 'Tailwind component packs', 'e-commerce Excel financial models'. Your agent builds the store around these.", required: true },
+        { id: "owner_channel", type: "channel", question: "Where should your assistant reach you?", options: ["email", "slack", "discord", "whatsapp"], required: true },
+        { id: "autonomy", type: "choice", question: "How much should it do on its own?", options: ["Ask me first", "Handle routine work, ask about pricing/new products", "Full autonomy"], required: true },
+      ],
+      projects: [
+        { name: "Storefront", default_agent_id: "launchpad-fulfillment-v1" },
+        { name: "SEO & Marketing", default_agent_id: "launchpad-content-v1" },
+        { name: "Support", default_agent_id: "launchpad-support-v1" },
+      ],
+      first_contact: {
+        goal:
+          "Onboarding just completed for a Digital Toolkit Storefront. Build the storefront as an HTML artifact (artifacts.create) listing the owner's products with 'buy' buttons that point at the Whop checkout, and set up instant delivery. Draft 2-3 programmatic-SEO article outlines for the SEO project to drive organic traffic. Set up the automated download-support flow on the owner's channel. Send the owner ONE short message: a link to the storefront artifact, how delivery works, and the first 2-3 things you'll do to get the first sale. Respect their autonomy setting.",
+      },
+    },
+  },
+  {
+    id: "niche-community",
+    name: "Niche Community & Mastermind",
+    description:
+      "A private, gated community monetized by monthly access ($29-$149/mo): a mastermind, a " +
+      "build-in-public club, a researchers' hub. Your agents welcome new members, answer common " +
+      "questions from past discussions, moderate spam, and flag members at risk of churning.",
+    agents: ["launchpad-support-v1", "launchpad-content-v1", "launchpad-fulfillment-v1"],
+    skills: ["web-search", "knowledge-base", "email-tool", "mcp-connector"],
+    connectors: ["whop"],
+    free_tier_eligible: true,
+    pricing_tiers: [
+      { id: "member", name: "Member", price_usd_min: 29, price_usd_max: 29, summary: "Full community access", includes: ["Discussion feed", "Resource library"] },
+      { id: "pro", name: "Pro", price_usd_min: 79, price_usd_max: 79, summary: "Access + priority + events", includes: ["Priority support", "Member directory"] },
+      { id: "inner", name: "Inner Circle", price_usd_min: 149, price_usd_max: 149, summary: "Everything + direct access", includes: ["Small-group access", "Direct line"] },
+    ],
+    bootstrap: {
+      prompts: [
+        { id: "whop_connection", type: "connection", connector: "whop", question: "Connect your Whop account.", help: "For the recurring membership. Whop handles the money and the gated access.", required: true },
+        { id: "community", type: "text", question: "What's the community, and who's it for?", help: "e.g. 'a mastermind for 6-figure Amazon FBA sellers', 'a build-in-public accountability club', 'a biotech researchers' hub'. Your agents run the day-to-day around this.", required: true },
+        { id: "owner_channel", type: "channel", question: "Where should your assistant reach you?", options: ["email", "slack", "discord", "whatsapp"], required: true },
+        { id: "autonomy", type: "choice", question: "How much should it do on its own?", options: ["Draft welcomes/replies for me to send", "Auto-welcome + moderate, ask on the rest", "Full autonomy"], required: true },
+      ],
+      projects: [
+        { name: "Community", default_agent_id: "launchpad-support-v1" },
+        { name: "Content & Events", default_agent_id: "launchpad-content-v1" },
+        { name: "Members", default_agent_id: "launchpad-fulfillment-v1" },
+      ],
+      first_contact: {
+        goal:
+          "Onboarding just completed for a Niche Community business. Build a landing/join page as an HTML artifact (artifacts.create) describing the community, its tiers, and a join button pointing at the Whop membership checkout. Draft a welcome message and 3-5 seed discussion prompts for the Community project to give the space life from day one. Set up the auto-welcome flow and a churn-risk check (flag inactive members) on the owner's channel. Store any community FAQ in the knowledge base so the agent can answer from past discussions. Send the owner ONE short message: a link to the join-page artifact, what happens when someone joins, and the first 2-3 things you'll do to get the first members. Respect their autonomy setting.",
+      },
+    },
+  },
 ];
 
 export const LAUNCHPAD_SPACETYPE: LaunchpadSpaceType = {

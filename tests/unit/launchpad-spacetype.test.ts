@@ -16,7 +16,15 @@ describe("Launchpad SpaceType (§11)", () => {
   it("is the launchpad space type with the business-model templates + the Whop-seller and web-studio platform templates", () => {
     expect(LAUNCHPAD_SPACETYPE.id).toBe("launchpad");
     expect(LAUNCHPAD_TEMPLATES.map(t => t.id).sort()).toEqual(
-      ["coaching-community", "creator-store", "customer-service", "micro-saas", "newsletter-business", "service-agency", "whop-seller", "whop-webdev-agency"],
+      // Step 28: six "just create it and start earning" business templates added alongside the
+      // originals — paid-audit, interactive-tool, productized-service, intelligence-vault,
+      // digital-toolkit, niche-community.
+      [
+        "coaching-community", "creator-store", "customer-service", "digital-toolkit",
+        "intelligence-vault", "interactive-tool", "micro-saas", "newsletter-business",
+        "niche-community", "paid-audit", "productized-service", "service-agency",
+        "whop-seller", "whop-webdev-agency",
+      ],
     );
   });
 
