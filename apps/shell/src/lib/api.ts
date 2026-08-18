@@ -988,6 +988,72 @@ export async function updateProject(
   });
 }
 
+// ── Customer-bot no-code automation rules (step 21) ──────────────────────────
+
+/** A no-code "after the customer says X, this happens" rule on a customer_bot project. Checked
+ *  deterministically before the reasoning loop ever runs — cheap, admin-authored. */
+export interface ProjectRule {
+  id: string;
+  project_id: string;
+  trigger_pattern: string;
+  action: "reply" | "run_script" | "human_takeover";
+  reply_text?: string | null;
+  script_name?: string | null;
+  enabled?: number;
+  priority?: number;
+  created_at: string;
+}
+
+/** GET /v1/spaces/:spaceId/projects/:projectId/rules — the customer bot's automation rules
+ *  (business member+). */
+export async function getProjectRules(
+  spaceId: string,
+  projectId: string,
+  session: SessionCredentials,
+): Promise<ProjectRule[]> {
+  const res = await apiFetch<{ rules: ProjectRule[] } | { data: ProjectRule[] } | ProjectRule[]>(
+    `/v1/spaces/${spaceId}/projects/${projectId}/rules`,
+    { session },
+  );
+  // The DO returns { rules: [...] }; tolerate a bare array or { data } too.
+  if (Array.isArray(res)) return res;
+  if ("rules" in res) return res.rules;
+  return res.data;
+}
+
+/** POST — create a rule (business admin). */
+export async function createProjectRule(
+  spaceId: string,
+  projectId: string,
+  session: SessionCredentials,
+  rule: {
+    trigger_pattern: string;
+    action: "reply" | "run_script" | "human_takeover";
+    reply_text?: string;
+    script_name?: string;
+    priority?: number;
+  },
+): Promise<ProjectRule> {
+  return apiFetch(`/v1/spaces/${spaceId}/projects/${projectId}/rules`, {
+    method: "POST",
+    body: JSON.stringify(rule),
+    session,
+  });
+}
+
+/** DELETE — remove a rule (business admin). */
+export async function deleteProjectRule(
+  spaceId: string,
+  projectId: string,
+  ruleId: string,
+  session: SessionCredentials,
+): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/projects/${projectId}/rules/${ruleId}`, {
+    method: "DELETE",
+    session,
+  });
+}
+
 // ── Threads ────────────────────────────────────────────────────────────────
 
 export interface ThreadSummary {

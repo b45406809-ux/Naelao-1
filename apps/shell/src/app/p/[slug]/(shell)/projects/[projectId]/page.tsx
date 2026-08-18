@@ -40,6 +40,7 @@ import {
   type AgentTemplateSummary,
 } from "@/lib/api";
 import { ProjectKindPanel } from "@/components/ProjectKindPanel";
+import { CustomerBotAutomation } from "@/components/CustomerBotAutomation";
 import { AgentPolicyPanel } from "@/components/AgentPolicyPanel";
 
 const STATUS_BADGE: Record<string, "green" | "amber" | "blue" | undefined> = {
@@ -359,6 +360,13 @@ export default function ProjectDetailPage() {
       {/* F-40: the kind-specific panel (wallet ledger, etc.) + F-39 files viewer, above the shared
           shell's generic Settings/Threads/KB scaffolding. */}
       {creds && <ProjectKindPanel project={project} spaceId={activeSpaceId} creds={creds} />}
+
+      {/* Step 21: the customer-bot Automation dashboard — no-code "when a message matches X, do Y"
+          rules, shown only on a customer_bot project (project.kind is refreshed after a settings
+          save, so switching a project to Customer bot and saving surfaces it). */}
+      {creds && project.kind === "customer_bot" && (
+        <CustomerBotAutomation spaceId={activeSpaceId} projectId={project.id} creds={creds} />
+      )}
 
       {/* Real data only — no fabricated "credits used" tile the way the mockup's equivalent had. */}
       <div className="grid-4">

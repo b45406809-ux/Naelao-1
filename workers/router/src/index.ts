@@ -535,6 +535,13 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // /rules and /spend still don't match, matching the Phase B precedent for this same route family.
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/members(\/[^/]+)?$/,
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/activate-thread$/,
+  // Step 21: a customer-bot's no-code automation rules — now editable from the business's own
+  // Automation dashboard by a business ADMIN (GET member / POST+DELETE admin, enforced by
+  // requireBusinessMembership on the spaces worker; identity here, authorization there). Matches
+  // both /rules and /rules/:ruleId (one dynamic leaf after a static suffix — the SAME shape as
+  // /members(\/[^/]+)? above, not the corrupting dynamic-then-static shape). /spend stays OFF this
+  // allowlist deliberately — it's server-to-server agent accounting, never an operator surface.
+  /^\/spaces\/([^/]+)\/projects\/([^/]+)\/rules(\/[^/]+)?$/,
   // Launchpad Wallet (user-directed feature): balance/history are a business owner's own read
   // surface, gated the same way as the routes above (identity here, requireBusinessMembership on
   // the spaces worker). Explicitly capped to those two sub-paths so /wallet/credit and

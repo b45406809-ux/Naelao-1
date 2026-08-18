@@ -728,7 +728,18 @@ app.use("/spaces/:spaceId/projects", requireInternalHmac((c) => (c as unknown as
 app.use("/spaces/:spaceId/projects", requireBusinessMembership({ GET: "member", POST: "member" }));
 app.use("/spaces/:spaceId/projects/:projectId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/projects/:projectId", requireBusinessMembership({ GET: "member" }));
+// Step 21: a customer-bot's no-code automation rules ("after the customer says X, this happens")
+// are now editable from the business's own Automation dashboard — opened to a business ADMIN (the
+// person who owns the business), same admin-floor precedent as model-config/assistant-policy/
+// scheduled-jobs. GET is member (any teammate may see how the bot is wired); POST/DELETE are admin.
+// The `:ruleId` DELETE path ALSO gets requireInternalHmac here, closing a pre-existing gap — the
+// bare-`/rules` app.use never matched the `/rules/:ruleId` sub-path, so DELETE had no came-through-
+// router gate at all (harmless in practice — workers_dev=false + never router-allowlisted — but
+// wrong; every sibling item path (members/:userId, local-grants/:grantId) gates both levels).
 app.use("/spaces/:spaceId/projects/:projectId/rules", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/rules", requireBusinessMembership({ GET: "member", POST: "admin" }));
+app.use("/spaces/:spaceId/projects/:projectId/rules/:ruleId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/rules/:ruleId", requireBusinessMembership({ DELETE: "admin" }));
 app.use("/spaces/:spaceId/projects/:projectId/spend", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 
 // Launchpad Wallet (user-directed feature). credit/debit are internal-only (called by the
