@@ -8435,6 +8435,76 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      (the 6 business templates + business-wide BYOK — the largest item). Not done in this tranche
      by design: shipping a few things well beats many half-done.
 
+152. **Second tranche of the 28-step goal batch — steps 1, 5/7/11, 6, 13b, 15, 16, 22, 23, 26/27,
+     and the templates half of 28 are now BUILT, tested (full suite 3272 green), and deployed.**
+     Continuation of item 151; 20 of the 28 steps are now done.
+     - **Step 26/27 (SOTA deep-research template):** the `long-running-researcher` agent template
+       is rebuilt as a "Deep Research Agent" with a real methodology (orient from journal → plan
+       into 3-7 sub-questions → fan out parallel sub-agents → gather from PRIMARY sources →
+       triangulate every claim across ≥2 independent sources → identify gaps and iterate →
+       synthesize a CITED HTML report artifact → go long via `schedule.wake_me` + journal
+       checkpoints). Given the tools to do it: `sub-agent`/`schedule`/`artifacts` added to its
+       prebuilt list. Same cheap script-native engine + a methodical process, aimed at competing
+       with Gemini/OpenAI deep-research on hard questions.
+     - **Step 28 (templates half):** six new live, free-tier-eligible Launchpad business templates —
+       `paid-audit`, `interactive-tool`, `productized-service`, `intelligence-vault`,
+       `digital-toolkit`, `niche-community` (from the user's spec). Each reuses the existing core
+       agents + script-native prebuilts (commerce/storefront paywall, `artifacts` for the
+       deliverable, web-search, business-email), with real pricing tiers, onboarding prompts,
+       projects, and a `first_contact` goal instructing the assistant to BUILD the intake portal /
+       tool / storefront / vault as an artifact and sell it through the owner's connected Whop
+       store. All pass `validateLaunchpadSpaceType`. **BYOK (the other half of step 28) is
+       DEFERRED** — businesses can already SELECT Gemini/Groq/CF platform-keyed models (the
+       cheap-model goal is met); a business supplying its OWN provider key is the large deferred
+       feature item 145 flagged.
+     - **Step 1 (Stats context-window UI):** the context-usage endpoint returns an honest
+       per-category `breakdown` (conversation MEASURED from the transcript; system-prompt+tools
+       flagged as an estimate; free = remainder, partitioning the window exactly). The Stats-tab
+       meter renders a Claude-Code-style segmented bar + labeled category rows + a "Plan usage"
+       section with day/week/month progress bars.
+     - **Step 5/7/11 (inline artifact preview):** an artifact the assistant CREATES during a run
+       is surfaced in the reply's metadata (`created_artifacts`, scanned from the run's own trace)
+       and rendered inline in chat via a new `InlineArtifactCard` — sandboxed iframe preview for
+       HTML, `<pre>` for text, plus Download — under the reply, like Claude. Survives reload
+       (rides in persisted message metadata).
+     - **Step 6 (files list/grid/tree):** the Files panel gains a view switcher — list (default),
+       grid of file cards, and a real collapsible directory tree built from the flat workspace
+       paths.
+     - **Step 13b (project KB file upload):** the project page's Knowledge Base form gains an
+       "Upload a file instead" button (text-only/2MB guard, same as the space-wide KB page).
+     - **Step 15 (hide assistant-only tools in projects):** `/assistant/capabilities` excludes the
+       space-assistant-only orchestration scripts (`workspace-admin`, `project-coordination`,
+       `sub-agent`, `schedule`, `business-diagnostics`) when `project_id` is set — a project agent
+       genuinely can't call those (items 136/148), so a project thread's Skills/Config panels no
+       longer show create-project/create-thread/spawn as if the project had them. The shell threads
+       `projectId` into those capability fetches.
+     - **Step 16 (agent-template project picker):** choosing a Naelao Agent Template now opens a
+       project picker (the space's projects + "add without a project") and instantiates into the
+       chosen project via `instantiateAgentTemplate`'s `project_id`.
+     - **Step 22 (heartbeat/cron editing):** confirmed already built (CronsPanel CRUD + run history;
+       HeartbeatsPanel lists recent heartbeat sessions + activity — items 144/122/115); redeploy
+       makes it live.
+     - **Step 23 (Whop wallet clarity):** the "Business Wallet (Naelao-managed)" section — which
+       shows "not provisioned" because it's the invite-gated Whop Platforms rail, NOT the connected
+       OAuth account — no longer reads as broken: relabeled "coming soon", amber (not red) badge,
+       the existing "your connected Whop OAuth account is the live revenue path" note kept.
+     - **A regression fixed in the same tranche:** step 3's chunked-read rewrite added a `head()`
+       call to `read_file` that the `workspace-scoping` test mock doesn't implement — refactored to
+       use `get()` only (a ranged R2 get already reports the full `.size`), all file-op tests pass.
+     ~35 new/updated tests across the tranche; **full suite 3272/3272 green**, typecheck clean.
+     Deployed: `naelao-agents` (bare `wrangler deploy`, multiple times) and `apps/shell`
+     (`--branch=main`, production 200s). **STILL OPEN (the largest/riskiest 8 of 28):** 4
+     (multi-format Word/PDF/Office viewer — needs client-side binary parsers, a large deps pass;
+     the current viewer handles HTML/text/markdown), 17 (custom agent builder — a full
+     create-agent form), 18 (public cross-tenant business directory — needs a safe projection;
+     conflicts with item 102's privacy boundary, needs a deliberate decision), 20 (fuller plugins
+     directory + default project plugins — item 147 built the feature-kinds directory; this wants
+     more), 21 (customer-bot automation-dashboard project kind — a large UI + execution-ladder
+     scoping), 25 (model-thinking visibility — the pipeline exists per items 117/122/124; whether
+     it shows depends on the model/effort actually emitting thinking, needs live repro), and the
+     BYOK half of 28. These are genuinely multi-session features, documented here rather than
+     half-built.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
