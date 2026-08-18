@@ -4,8 +4,9 @@ import * as React from "react";
 import { Button } from "@naelao/ui";
 import {
   getBusinessWallet, listWorkspaceFiles, readWorkspaceFile,
-  type Project, type BusinessWallet, type WorkspaceFile,
+  type Project, type BusinessWallet, type WorkspaceFile, type WorkspaceFileContent,
 } from "@/lib/api";
+import { FileViewer } from "@/components/FileViewer";
 
 type Creds = { sessionToken: string; endUserId: string };
 
@@ -70,7 +71,7 @@ function WalletLedgerPanel({ spaceId, creds }: { spaceId: string; creds: Creds }
 function WorkspaceFilesPanel({ spaceId, projectId, creds }: { spaceId: string; projectId: string; creds: Creds }) {
   const [files, setFiles] = React.useState<WorkspaceFile[]>([]);
   const [loading, setLoading] = React.useState(true);
-  const [open, setOpen] = React.useState<{ path: string; content?: string; too_large?: boolean } | null>(null);
+  const [open, setOpen] = React.useState<WorkspaceFileContent | null>(null);
   React.useEffect(() => {
     listWorkspaceFiles(spaceId, projectId, creds).then(setFiles).catch(() => setFiles([])).finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -102,13 +103,8 @@ function WorkspaceFilesPanel({ spaceId, projectId, creds }: { spaceId: string; p
             <strong style={{ fontSize: 13 }}>{open.path}</strong>
             <Button size="sm" variant="ghost" onClick={() => setOpen(null)}>Close</Button>
           </div>
-          {open.too_large ? (
-            <p style={{ color: "var(--text3)", fontSize: 13 }}>File is too large to preview inline.</p>
-          ) : open.path.endsWith(".html") ? (
-            <iframe title={open.path} sandbox="" srcDoc={open.content ?? ""} style={{ width: "100%", height: 400, border: "1px solid var(--border)", borderRadius: 6, background: "#fff" }} />
-          ) : (
-            <pre style={{ whiteSpace: "pre-wrap", fontSize: 12, maxHeight: 400, overflow: "auto", margin: 0 }}>{open.content ?? ""}</pre>
-          )}
+          {/* Step 4: multi-format viewer (PDF, images, Word/Excel, text/html/markdown/csv). */}
+          <FileViewer file={open} />
         </div>
       )}
     </>

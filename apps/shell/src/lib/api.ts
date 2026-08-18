@@ -1489,7 +1489,18 @@ export async function listAssistantFiles(spaceId: string, session: SessionCreden
   return res.data;
 }
 
-export async function readAssistantFile(spaceId: string, path: string, session: SessionCredentials): Promise<{ path: string; size: number; content?: string; too_large?: boolean }> {
+/** A read workspace file: text inline (`content`), or a viewable binary (`encoding:"base64"` +
+ *  `content_type`), or `too_large`. Step 4 added the binary case for PDF/image/Office viewing. */
+export interface WorkspaceFileContent {
+  path: string;
+  size?: number;
+  content?: string;
+  too_large?: boolean;
+  encoding?: "base64";
+  content_type?: string;
+}
+
+export async function readAssistantFile(spaceId: string, path: string, session: SessionCredentials): Promise<WorkspaceFileContent> {
   return apiFetch(`/v1/spaces/${spaceId}/assistant/files/${path.split("/").map(encodeURIComponent).join("/")}`, { session });
 }
 
@@ -1847,7 +1858,7 @@ export async function listWorkspaceFiles(spaceId: string, projectId: string, ses
   const res = await apiFetch<{ data: WorkspaceFile[] }>(`/v1/spaces/${spaceId}/projects/${projectId}/workspace/files`, { session });
   return res.data ?? [];
 }
-export async function readWorkspaceFile(spaceId: string, projectId: string, path: string, session: SessionCredentials): Promise<{ path: string; size: number; content?: string; too_large?: boolean }> {
+export async function readWorkspaceFile(spaceId: string, projectId: string, path: string, session: SessionCredentials): Promise<WorkspaceFileContent> {
   return apiFetch(`/v1/spaces/${spaceId}/projects/${projectId}/workspace/files/${path.split("/").map(encodeURIComponent).join("/")}`, { session });
 }
 

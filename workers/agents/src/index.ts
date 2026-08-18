@@ -4633,6 +4633,22 @@ app.get("/spaces/:spaceId/assistant/files", async (c) => {
 // equivalent (workers/spaces/src/index.ts, /projects/:projectId/workspace/files/*) byte for byte:
 // server-side ..-traversal collapse, a 2MB inline-view cap, too_large beyond it, 404 for missing.
 const ASSISTANT_FILE_MAX_BYTES = 2 * 1024 * 1024;
+// Step 4: same viewable-binary set as the project-scoped route (workers/spaces/src/index.ts) — a
+// PDF/image/Office file is returned base64 so the shell's viewer can render it, not just text.
+const ASSISTANT_VIEWABLE_BINARY: Record<string, string> = {
+  pdf: "application/pdf",
+  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+};
+function assistantArrayBufferToBase64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  let bin = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  return btoa(bin);
+}
 app.get("/spaces/:spaceId/assistant/files/*", async (c) => {
   const spaceId = c.req.param("spaceId");
   await requireVerifiedTenant(c);
@@ -4647,8 +4663,12 @@ app.get("/spaces/:spaceId/assistant/files/*", async (c) => {
   if (obj.size > ASSISTANT_FILE_MAX_BYTES) {
     return c.json({ path: relative, size: obj.size, too_large: true, message: "File exceeds the 2MB inline view limit" });
   }
-  const content = await obj.text();
-  return c.json({ path: relative, size: obj.size, content });
+  const contentType = ASSISTANT_VIEWABLE_BINARY[(relative.split(".").pop() ?? "").toLowerCase()];
+  if (contentType) {
+    const b64 = assistantArrayBufferToBase64(await obj.arrayBuffer());
+    return c.json({ path: relative, size: obj.size, encoding: "base64", content_type: contentType, content: b64 });
+  }
+  return c.json({ path: relative, size: obj.size, content: await obj.text() });
 });
 
 // GET /spaces/:spaceId/assistant/artifacts[/*] — Phase 5: agent-authored deliverables (a

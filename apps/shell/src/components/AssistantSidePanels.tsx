@@ -70,9 +70,11 @@ import {
   type SessionSummary,
   type LocalGrant,
   type DirectorySkill,
+  type WorkspaceFileContent,
 } from "@/lib/api";
 import { useProduct } from "@/lib/product-context";
 import { canManageSpaceSettings } from "@/lib/roles";
+import { FileViewer } from "@/components/FileViewer";
 import { ApprovedActionsEditor, type OperationGroup } from "./ApprovedActionsEditor";
 
 export type SidePanelTab =
@@ -1039,7 +1041,7 @@ function FileTreeView({
 
 function FilesPanel({ spaceId, projectId, session }: { spaceId: string; projectId?: string | null | undefined; session: SessionCredentials }) {
   const [files, setFiles] = React.useState<WorkspaceFile[] | null>(null);
-  const [open, setOpen] = React.useState<{ path: string; content?: string; too_large?: boolean } | null>(null);
+  const [open, setOpen] = React.useState<WorkspaceFileContent | null>(null);
   const [opening, setOpening] = React.useState<string | null>(null);
   const [view, setView] = React.useState<"list" | "grid" | "tree">("list");
   const [collapsed, setCollapsed] = React.useState<Set<string>>(new Set());
@@ -1146,18 +1148,8 @@ function FilesPanel({ spaceId, projectId, session }: { spaceId: string; projectI
               Close
             </button>
           </div>
-          {open.too_large ? (
-            <p style={{ color: "var(--text3)", fontSize: 11.5, margin: 0 }}>Too large to preview inline.</p>
-          ) : open.path.endsWith(".html") ? (
-            <iframe
-              title={open.path}
-              sandbox=""
-              srcDoc={open.content ?? ""}
-              style={{ width: "100%", height: 260, border: "1px solid var(--border)", borderRadius: 6, background: "#fff" }}
-            />
-          ) : (
-            <pre style={{ whiteSpace: "pre-wrap", fontSize: 11, maxHeight: 260, overflow: "auto", margin: 0 }}>{open.content ?? ""}</pre>
-          )}
+          {/* Step 4: multi-format viewer (PDF, images, Word/Excel, text/html/markdown/csv). */}
+          <FileViewer file={open} />
         </div>
       )}
     </>

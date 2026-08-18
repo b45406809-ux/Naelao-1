@@ -837,6 +837,41 @@ const WORKSPACE_MAX_FILE_BYTES = 2 * 1024 * 1024;
 function workspaceKeyPrefix(spaceId: string, projectId: string): string {
   return `spaces/${spaceId}/projects/${projectId}/workspace/`;
 }
+
+// Step 4: file types the shell's viewer can render from raw bytes (PDF native, images natively,
+// Office docs via a lazy client-side parser). For these the read route returns base64 instead of
+// obj.text() — the same "return the real bytes, honestly" convention as the download route.
+const VIEWABLE_BINARY_TYPES: Record<string, string> = {
+  pdf: "application/pdf",
+  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+};
+function viewableBinaryType(path: string): string | undefined {
+  return VIEWABLE_BINARY_TYPES[(path.split(".").pop() ?? "").toLowerCase()];
+}
+function arrayBufferToBase64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  let bin = "";
+  const CHUNK = 0x8000; // chunked so a 2MB buffer never blows String.fromCharCode's arg limit
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(bin);
+}
+/** Read one workspace object: text inline, a viewable binary as base64, else a binary marker. */
+async function readWorkspaceObject(obj: R2ObjectBody, relative: string): Promise<Response> {
+  if (obj.size > WORKSPACE_MAX_FILE_BYTES) {
+    return Response.json({ path: relative, size: obj.size, too_large: true, message: "File exceeds the 2MB inline view limit" });
+  }
+  const contentType = viewableBinaryType(relative);
+  if (contentType) {
+    const b64 = arrayBufferToBase64(await obj.arrayBuffer());
+    return Response.json({ path: relative, size: obj.size, encoding: "base64", content_type: contentType, content: b64 });
+  }
+  return Response.json({ path: relative, size: obj.size, content: await obj.text() });
+}
 app.use("/spaces/:spaceId/projects/:projectId/workspace/files", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/projects/:projectId/workspace/files", requireBusinessMembership({ GET: "member" }));
 app.get("/spaces/:spaceId/projects/:projectId/workspace/files", async (c) => {
@@ -870,11 +905,7 @@ app.get("/spaces/:spaceId/projects/:projectId/workspace/files/*", async (c) => {
   if (!relative) return c.json({ error_code: "bad_request", message: "file path required" }, 400);
   const obj = await c.env.SCRIPTS_R2.get(prefix + relative);
   if (!obj) return c.json({ error_code: "not_found", message: "File not found" }, 404);
-  if (obj.size > WORKSPACE_MAX_FILE_BYTES) {
-    return c.json({ path: relative, size: obj.size, too_large: true, message: "File exceeds the 2MB inline view limit" });
-  }
-  const content = await obj.text();
-  return c.json({ path: relative, size: obj.size, content });
+  return readWorkspaceObject(obj, relative);
 });
 
 // F-36: the effective role an assistant has in a project when acting for a given user (member GET
