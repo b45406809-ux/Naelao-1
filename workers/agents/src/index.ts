@@ -2000,6 +2000,22 @@ app.get("/spaces/:spaceId/sessions/:sessionId/context-usage", async (c) => {
   const modelWindow = contextWindowForModel(model);
   const percentFull = modelWindow > 0 ? Math.min(100, Math.round((currentTokens / modelWindow) * 100)) : 0;
 
+  // Step 1: a Claude-Code-style per-category breakdown for the Stats tab's segmented bar.
+  // "Conversation" is MEASURED (the session transcript above). "System prompt & tools" is an
+  // ESTIMATE (flagged as such) — the composed system prompt is bounded to ~5k tokens by the
+  // reasoner's own char-budget, and the tool-schema payload adds a couple thousand more; we do
+  // not fabricate an exact figure, we report a documented estimate and mark it. "Free space" is
+  // the remainder. This is honest per the codebase's anti-fabrication discipline: only what we
+  // can measure is unflagged.
+  const OVERHEAD_TOKENS_ESTIMATE = 7000;
+  const overheadTokens = Math.min(OVERHEAD_TOKENS_ESTIMATE, Math.max(0, modelWindow - currentTokens));
+  const freeTokens = Math.max(0, modelWindow - currentTokens - overheadTokens);
+  const breakdown = [
+    { key: "conversation", label: "Conversation", tokens: currentTokens, estimated: false },
+    { key: "overhead", label: "System prompt & tools", tokens: overheadTokens, estimated: true },
+    { key: "free", label: "Free space", tokens: freeTokens, estimated: false },
+  ];
+
   let usage: { daily: { used: number; limit: number }; weekly: { used: number; limit: number }; monthly: { used: number; limit: number } } | null = null;
   if (c.env.BILLING_WORKER) {
     try {
@@ -2018,6 +2034,7 @@ app.get("/spaces/:spaceId/sessions/:sessionId/context-usage", async (c) => {
     model,
     model_window: modelWindow,
     percent_full: percentFull,
+    breakdown,
     daily_used: usage?.daily.used ?? null,
     daily_limit: usage?.daily.limit ?? null,
     weekly_used: usage?.weekly.used ?? null,
@@ -4523,14 +4540,23 @@ app.get("/spaces/:spaceId/assistant/capabilities", async (c) => {
   await requireVerifiedTenant(c);
   if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
 
-  const prebuilts = Object.values(PREBUILT_SCRIPTS).map((s) => ({
-    name: s.name,
-    description: s.description,
-    domain: s.domain,
-    requires_tier: s.requires_tier,
-    operations: Object.keys(s.operations),
-    source: "prebuilt" as const,
-  }));
+  // Step 15: a PROJECT thread's agent does not have the space-assistant-only orchestration
+  // scripts — its ScriptToolSurface is built from its own profile's prebuilt list, which never
+  // includes these (confirmed architecture, CLAUDE.md items 136/148). So when this panel is asked
+  // in a project context (project_id set), hide them, rather than showing tools the project agent
+  // can't actually call ("why do projects have access to create thread/create project?").
+  const ASSISTANT_ONLY_SCRIPTS = new Set(["workspace-admin", "project-coordination", "sub-agent", "schedule", "business-diagnostics"]);
+  const projectScoped = Boolean(c.req.query("project_id"));
+  const prebuilts = Object.values(PREBUILT_SCRIPTS)
+    .filter((s) => !projectScoped || !ASSISTANT_ONLY_SCRIPTS.has(s.name))
+    .map((s) => ({
+      name: s.name,
+      description: s.description,
+      domain: s.domain,
+      requires_tier: s.requires_tier,
+      operations: Object.keys(s.operations),
+      source: "prebuilt" as const,
+    }));
 
   // The learned library lives in R2 as `spaces/{id}/scripts/{name}/SCRIPT.md`; list the
   // directory rather than reading every file, so this stays one cheap call regardless of size.

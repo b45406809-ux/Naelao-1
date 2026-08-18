@@ -842,11 +842,20 @@ export async function markNotificationRead(spaceId: string, notificationId: stri
 
 // ── Context-window usage (§A1.27) ────────────────────────────────────────────
 
+export interface ContextUsageBreakdown {
+  key: string;
+  label: string;
+  tokens: number;
+  estimated: boolean;
+}
+
 export interface ContextUsage {
   current_tokens: number;
   model: string;
   model_window: number;
   percent_full: number;
+  /** Step 1: per-category breakdown for the Stats-tab segmented bar (conversation/overhead/free). */
+  breakdown?: ContextUsageBreakdown[];
   daily_used: number | null;
   daily_limit: number | null;
   weekly_used: number | null;
@@ -1420,9 +1429,14 @@ export interface AssistantCapabilities {
  *  Metadata only; script source is deliberately not exposed to the end-user shell. */
 export async function getAssistantCapabilities(
   spaceId: string,
-  session: SessionCredentials
+  session: SessionCredentials,
+  /** Step 15: pass the project id inside a project thread so the space-assistant-only
+   *  orchestration scripts (create project/thread, spawn, schedule) are hidden — a project
+   *  agent doesn't have them. */
+  projectId?: string
 ): Promise<AssistantCapabilities> {
-  return apiFetch<AssistantCapabilities>(`/v1/spaces/${spaceId}/assistant/capabilities`, { session });
+  const qs = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+  return apiFetch<AssistantCapabilities>(`/v1/spaces/${spaceId}/assistant/capabilities${qs}`, { session });
 }
 
 // ── Skills directory (the shared, fleet-learned template library a business can browse and pull

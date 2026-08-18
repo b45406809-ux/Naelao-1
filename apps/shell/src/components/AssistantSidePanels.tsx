@@ -151,11 +151,13 @@ function ConfigPanel({
   session,
   agentId,
   isBusinessSpace,
+  projectId,
 }: {
   spaceId: string;
   session: SessionCredentials;
   agentId?: string | null | undefined;
   isBusinessSpace: boolean;
+  projectId?: string | null | undefined;
 }) {
   const product = useProduct();
   const [canEdit, setCanEdit] = React.useState(false);
@@ -172,14 +174,14 @@ function ConfigPanel({
 
   React.useEffect(() => {
     let cancelled = false;
-    getAssistantCapabilities(spaceId, session)
+    getAssistantCapabilities(spaceId, session, projectId ?? undefined)
       .then((caps) => {
         if (cancelled) return;
         setCatalogue(caps.prebuilts.map((p) => ({ script: p.name, description: p.description, operations: p.operations })));
       })
       .catch(() => { if (!cancelled) setCatalogue([]); });
     return () => { cancelled = true; };
-  }, [spaceId, session]);
+  }, [spaceId, session, projectId]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -1152,7 +1154,7 @@ function ArtifactsPanel({ spaceId, session }: { spaceId: string; session: Sessio
   );
 }
 
-function SkillsPanel({ spaceId, session }: { spaceId: string; session: SessionCredentials }) {
+function SkillsPanel({ spaceId, session, projectId }: { spaceId: string; session: SessionCredentials; projectId?: string | null | undefined }) {
   const [caps, setCaps] = React.useState<AssistantCapabilities | null>(null);
   const [showAllPrebuilts, setShowAllPrebuilts] = React.useState(false);
   // The shared, fleet-learned template library — what OTHER spaces on the same template have
@@ -1172,9 +1174,9 @@ function SkillsPanel({ spaceId, session }: { spaceId: string; session: SessionCr
 
   React.useEffect(() => {
     let cancelled = false;
-    getAssistantCapabilities(spaceId, session).then((c) => { if (!cancelled) setCaps(c); }).catch(() => { if (!cancelled) setCaps({ prebuilts: [], skills: [], prebuilt_count: 0, skill_count: 0 }); });
+    getAssistantCapabilities(spaceId, session, projectId ?? undefined).then((c) => { if (!cancelled) setCaps(c); }).catch(() => { if (!cancelled) setCaps({ prebuilts: [], skills: [], prebuilt_count: 0, skill_count: 0 }); });
     return () => { cancelled = true; };
-  }, [spaceId, session]);
+  }, [spaceId, session, projectId]);
 
   React.useEffect(() => { loadDirectory(); }, [loadDirectory]);
 
@@ -1183,7 +1185,7 @@ function SkillsPanel({ spaceId, session }: { spaceId: string; session: SessionCr
     try {
       await inheritSkills(spaceId, session, [name]);
       loadDirectory(); // reflects the new installed:true badge
-      getAssistantCapabilities(spaceId, session).then(setCaps).catch(() => {}); // learned-skill count too
+      getAssistantCapabilities(spaceId, session, projectId ?? undefined).then(setCaps).catch(() => {}); // learned-skill count too
     } catch {
       // Best-effort — the directory reload above will show the real (unchanged) installed state.
     } finally {
@@ -1454,7 +1456,7 @@ export function AssistantSidePanelBody({
 }) {
   switch (tab) {
     case "config":
-      return <ConfigPanel spaceId={spaceId} session={session} agentId={agentId} isBusinessSpace={isBusinessSpace} />;
+      return <ConfigPanel spaceId={spaceId} session={session} agentId={agentId} isBusinessSpace={isBusinessSpace} projectId={projectId} />;
     case "memory":
       return <MemoryPanel spaceId={spaceId} session={session} />;
     case "crons":
@@ -1470,7 +1472,7 @@ export function AssistantSidePanelBody({
     case "artifacts":
       return <ArtifactsPanel spaceId={spaceId} session={session} />;
     case "skills":
-      return <SkillsPanel spaceId={spaceId} session={session} />;
+      return <SkillsPanel spaceId={spaceId} session={session} projectId={projectId} />;
     case "notifications":
       return <NotificationsPanel spaceId={spaceId} session={session} projectId={projectId} />;
     case "local-machine":

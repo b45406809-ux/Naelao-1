@@ -176,29 +176,84 @@ export function ContextUsageMeter({
           )}
         </span>
       </div>
-      <div style={{ height: 4, borderRadius: 2, background: "var(--surface2, #23232b)", overflow: "hidden" }}>
-        <div
-          style={{
-            height: "100%",
-            width: `${Math.min(100, usage.percent_full)}%`,
-            background: barColor(usage.percent_full),
-            transition: "width 200ms ease",
-          }}
-        />
-      </div>
+      {/* Segmented bar — one coloured segment per breakdown category (Claude Code style). Falls
+          back to the single conversation bar when the backend didn't send a breakdown. */}
+      {usage.breakdown && usage.breakdown.length > 0 ? (
+        <div style={{ display: "flex", height: 8, borderRadius: 3, overflow: "hidden", background: "var(--surface2, #23232b)" }}>
+          {usage.breakdown.map((seg) => {
+            const pct = usage.model_window > 0 ? (seg.tokens / usage.model_window) * 100 : 0;
+            if (pct <= 0) return null;
+            return (
+              <div
+                key={seg.key}
+                title={`${seg.label}: ${formatCount(seg.tokens)} tokens`}
+                style={{ width: `${pct}%`, background: SEGMENT_COLORS[seg.key] ?? "var(--text3)", transition: "width 200ms ease" }}
+              />
+            );
+          })}
+        </div>
+      ) : (
+        <div style={{ height: 8, borderRadius: 3, background: "var(--surface2, #23232b)", overflow: "hidden" }}>
+          <div style={{ height: "100%", width: `${Math.min(100, usage.percent_full)}%`, background: barColor(usage.percent_full), transition: "width 200ms ease" }} />
+        </div>
+      )}
+
+      {/* Labeled category rows: coloured dot + label + token count + %. */}
+      {usage.breakdown && usage.breakdown.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 4 }}>
+          {usage.breakdown.map((seg) => {
+            const pct = usage.model_window > 0 ? Math.round((seg.tokens / usage.model_window) * 100) : 0;
+            return (
+              <div key={seg.key} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11.5 }}>
+                <span style={{ width: 9, height: 9, borderRadius: 2, background: SEGMENT_COLORS[seg.key] ?? "var(--text3)", flexShrink: 0 }} />
+                <span style={{ flex: 1, color: "var(--text1)" }}>
+                  {seg.label}
+                  {seg.estimated && <span style={{ color: "var(--text3)", fontSize: 10 }}> (est.)</span>}
+                </span>
+                <span style={{ color: "var(--text3)", fontVariantNumeric: "tabular-nums" }}>{formatCount(seg.tokens)}</span>
+                <span style={{ color: "var(--text3)", width: 34, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{pct}%</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Plan usage — day/week/month against the org's token limit, as progress bars. */}
       {(usage.daily_limit !== null || usage.weekly_limit !== null || usage.monthly_limit !== null) && (
-        <div style={{ display: "flex", gap: 12, fontSize: 11, color: "var(--text3)" }}>
-          {usage.daily_limit !== null && (
-            <span>Today: {formatCount(usage.daily_used)}/{formatCount(usage.daily_limit)}</span>
-          )}
-          {usage.weekly_limit !== null && (
-            <span>This week: {formatCount(usage.weekly_used)}/{formatCount(usage.weekly_limit)}</span>
-          )}
-          {usage.monthly_limit !== null && (
-            <span>This month: {formatCount(usage.monthly_used)}/{formatCount(usage.monthly_limit)}</span>
-          )}
+        <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ fontSize: 11, color: "var(--text3)", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 }}>Plan usage</div>
+          {([
+            { label: "Today", used: usage.daily_used, limit: usage.daily_limit },
+            { label: "This week", used: usage.weekly_used, limit: usage.weekly_limit },
+            { label: "This month", used: usage.monthly_used, limit: usage.monthly_limit },
+          ] as const)
+            .filter((r) => r.limit !== null)
+            .map((r) => {
+              const used = r.used ?? 0;
+              const limit = r.limit ?? 1;
+              const pct = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
+              return (
+                <div key={r.label} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--text3)" }}>
+                    <span>{r.label}</span>
+                    <span style={{ fontVariantNumeric: "tabular-nums" }}>{formatCount(used)} / {formatCount(limit)} ({pct}%)</span>
+                  </div>
+                  <div style={{ height: 3, borderRadius: 2, background: "var(--surface2, #23232b)", overflow: "hidden" }}>
+                    <div style={{ height: "100%", width: `${pct}%`, background: barColor(pct), transition: "width 200ms ease" }} />
+                  </div>
+                </div>
+              );
+            })}
         </div>
       )}
     </div>
   );
 }
+
+/** Distinct colours per context-breakdown category (Claude Code style: each segment a different
+ *  hue). Free space stays a muted grey so the "used" segments read as the filled portion. */
+const SEGMENT_COLORS: Record<string, string> = {
+  conversation: "#5b52f0",
+  overhead: "#f5a623",
+  free: "var(--surface3, #34343e)",
+};

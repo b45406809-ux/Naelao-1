@@ -85,6 +85,24 @@ describe("GET .../sessions/:sessionId/context-usage", () => {
     expect(body.percent_full).toBe(0);
   });
 
+  it("returns a per-category breakdown whose segments sum to the model window (step 1)", async () => {
+    const env = makeEnv({ messages: [{ content: "x".repeat(4000) }] }); // ~1000 tokens conversation
+    const res = await getUsage(env, "claude-haiku-4-5-20251001");
+    const body = await res.json() as {
+      model_window: number;
+      current_tokens: number;
+      breakdown: Array<{ key: string; label: string; tokens: number; estimated: boolean }>;
+    };
+    expect(body.breakdown.map((b) => b.key)).toEqual(["conversation", "overhead", "free"]);
+    // Conversation is measured (not estimated); overhead is flagged as an estimate.
+    expect(body.breakdown.find((b) => b.key === "conversation")!.estimated).toBe(false);
+    expect(body.breakdown.find((b) => b.key === "overhead")!.estimated).toBe(true);
+    expect(body.breakdown.find((b) => b.key === "conversation")!.tokens).toBe(body.current_tokens);
+    // The three segments partition the window exactly.
+    const sum = body.breakdown.reduce((s, b) => s + b.tokens, 0);
+    expect(sum).toBe(body.model_window);
+  });
+
   it("includes real daily/weekly/monthly usage when the billing worker is reachable", async () => {
     const env = makeEnv({ messages: [], billingSummary: { daily: { used: 100, limit: 5000 }, weekly: { used: 500, limit: 5000 }, monthly: { used: 1000, limit: 5000 } } });
     const res = await getUsage(env);
