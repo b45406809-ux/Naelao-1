@@ -988,6 +988,39 @@ export async function updateProject(
   });
 }
 
+// ── Business-wide BYOK LLM keys (step 28) ────────────────────────────────────
+
+/** Which BYOK providers this business has a key configured for. Never carries the key value. */
+export interface ByokProviderStatus {
+  provider: string;
+  configured: boolean;
+}
+
+/** GET /v1/spaces/:spaceId/llm-byok — which providers are wired (member+). */
+export async function getByokStatus(spaceId: string, session: SessionCredentials): Promise<ByokProviderStatus[]> {
+  const res = await apiFetch<{ providers: ByokProviderStatus[] }>(`/v1/spaces/${spaceId}/llm-byok`, { session });
+  return res.providers;
+}
+
+/** PUT — store a business's own provider key (admin). The key is vaulted, never returned again. */
+export async function setByokKey(
+  spaceId: string,
+  session: SessionCredentials,
+  provider: string,
+  key: string,
+): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/llm-byok`, {
+    method: "PUT",
+    body: JSON.stringify({ provider, key }),
+    session,
+  });
+}
+
+/** DELETE — remove a stored key (admin). */
+export async function deleteByokKey(spaceId: string, session: SessionCredentials, provider: string): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/llm-byok/${provider}`, { method: "DELETE", session });
+}
+
 // ── Customer-bot no-code automation rules (step 21) ──────────────────────────
 
 /** A no-code "after the customer says X, this happens" rule on a customer_bot project. Checked

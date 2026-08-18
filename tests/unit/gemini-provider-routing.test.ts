@@ -5,6 +5,8 @@ import {
   googleAiStudioGatewayUrl,
   googleAiStudioGatewayHeaders,
   canAuthenticateLlm,
+  byokProviderForModel,
+  BYOK_PROVIDER_KEY_FIELD,
 } from "../../workers/agents/src/shared/ai-client.js";
 import {
   ALLOWED_MODELS,
@@ -36,6 +38,21 @@ import type { ObserveSnapshot } from "../../workers/agents/src/script-engine/typ
 const GOOGLE_KEY = "google-ai-studio-key-abc";
 const AIG = "aig-token-xyz";
 const GEMINI_FLASH = "google-ai-studio/gemini-flash-latest";
+
+describe("byokProviderForModel (step 28 BYOK gate)", () => {
+  it("maps a Gemini/Groq model to its canonical provider slug", () => {
+    expect(byokProviderForModel("google-ai-studio/gemini-flash-latest")).toBe("google-ai-studio");
+    expect(byokProviderForModel("groq/llama-3.3-70b-versatile")).toBe("groq");
+  });
+  it("returns null for a default @cf/ (Workers AI) model — so NO BYOK lookup happens for the common case", () => {
+    expect(byokProviderForModel("@cf/meta/llama-3.3-70b-instruct-fp8-fast")).toBeNull();
+    expect(byokProviderForModel("claude-opus-4-8")).toBeNull();
+  });
+  it("has a GatewayOpts key field for each BYOK provider slug", () => {
+    expect(BYOK_PROVIDER_KEY_FIELD["google-ai-studio"]).toBe("googleAiStudioApiKey");
+    expect(BYOK_PROVIDER_KEY_FIELD["groq"]).toBe("groqApiKey");
+  });
+});
 
 describe("isGoogleAiStudioModel", () => {
   it("true for a google-ai-studio/ prefixed model", () => {

@@ -114,6 +114,25 @@ export function byokKeyFieldForModel(model: string): keyof GatewayOpts | null {
   return null;
 }
 
+/**
+ * Step 28 (business-wide BYOK): the canonical provider slug for a model — the value stored in a
+ * business's `productConfig.byok.providers` list and used in its credential name
+ * (`llm-byok:{slug}`). Returns null for a model that isn't a BYOK-compat provider (an ordinary
+ * AI-REST-API/Cloudflare model — those aren't a simple single-key override; see NaelaoAgentDO's
+ * resolveBusinessLlmOverride for why CF Workers AI BYOK is a separate, larger piece).
+ */
+export const BYOK_PROVIDER_KEY_FIELD: Record<string, keyof Pick<GatewayOpts, "googleAiStudioApiKey" | "groqApiKey">> = {
+  "google-ai-studio": "googleAiStudioApiKey",
+  "groq": "groqApiKey",
+};
+
+export function byokProviderForModel(model: string): string | null {
+  for (const prefix of Object.keys(BYOK_COMPAT_PROVIDERS)) {
+    if (model.startsWith(prefix)) return prefix.replace(/\/$/, "");
+  }
+  return null;
+}
+
 /** Does this model route through the compat endpoint rather than the AI REST API? */
 export function isCompatProviderModel(model: string): boolean {
   return byokKeyFieldForModel(model) !== null;

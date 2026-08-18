@@ -38,6 +38,7 @@ import {
 } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 import { ApprovedActionsEditor } from "@/components/ApprovedActionsEditor";
+import { ByokKeysPanel } from "@/components/ByokKeysPanel";
 import { SettingsSection, SettingsRow } from "@/components/SettingsSection";
 import { ChannelConnect } from "@/components/ChannelConnect";
 import { canManageSpaceSettings } from "@/lib/roles";
@@ -310,6 +311,15 @@ export default function AssistantSettingsPage() {
         <p style={{ fontSize: 11.5, color: "var(--text3)", lineHeight: 1.6 }}>
           {effortOptionsForModel(activeModel).find((o) => o.level === (effort ?? "low"))?.description}
         </p>
+      </SettingsSection>
+
+      <SettingsSection
+        title="Your own AI keys"
+        desc="Bring your own Google AI Studio (Gemini) or Groq key so this business runs on your own free/paid quota instead of the shared platform allowance. Optional — leave blank to keep using the platform's."
+      >
+        {creds && activeSpaceId ? (
+          <ByokKeysPanel spaceId={activeSpaceId} creds={creds} canEdit={canEdit} />
+        ) : null}
       </SettingsSection>
 
       <SettingsSection

@@ -2588,6 +2588,114 @@ async function storeConnectorCredential(
   );
 }
 
+// ── Step 28: business-wide BYOK LLM keys (AI Studio / Groq) ──────────────────
+// A business supplies its OWN Gemini/Groq key so its runs draw on ITS provider quota, not the
+// platform's shared allowance. Stored space-scoped in the vault under `llm-byok:{provider}` (a
+// secret — never config_json); the agent isolate never sees it. NaelaoAgentDO resolves it at
+// run time when the resolved model is that provider's (resolveBusinessLlmOverride). The spaces
+// worker wraps these with requireBusinessMembership (GET member, PUT/DELETE admin) — this
+// requireVerifiedTenant gate only proves SOME verified tenant, so a product_end_user must reach
+// them via that wrapper, never directly. CF Workers AI BYOK is deliberately absent: it needs a
+// business's own account-id + a scoped token + different gateway routing, a separate larger piece.
+const BYOK_PROVIDERS = ["google-ai-studio", "groq"] as const;
+type ByokProvider = (typeof BYOK_PROVIDERS)[number];
+function isByokProvider(p: string): p is ByokProvider {
+  return (BYOK_PROVIDERS as readonly string[]).includes(p);
+}
+function byokCredentialName(provider: ByokProvider): string {
+  return `llm-byok:${provider}`;
+}
+
+/** List which BYOK providers this space has a key configured for — metadata only, never the key. */
+async function listByokCredentials(
+  env: Pick<AgentsEnv, "CREDENTIALS_WORKER" | "PLATFORM_SECRET">,
+  tenantId: string,
+  spaceId: string,
+): Promise<Array<{ id: string; name: string }>> {
+  if (!env.CREDENTIALS_WORKER) return [];
+  const resp = await env.CREDENTIALS_WORKER.fetch(
+    new Request(`http://credentials/spaces/${spaceId}/credentials`, {
+      headers: {
+        "x-naelao-tenant-id": tenantId,
+        "x-naelao-user-id": "byok-system",
+        "x-naelao-role": "admin",
+        "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+      },
+    }),
+  );
+  if (!resp.ok) return [];
+  const { credentials } = await resp.json<{ credentials?: Array<{ id: string; name: string }> }>().catch(() => ({ credentials: [] as Array<{ id: string; name: string }> }));
+  return (credentials ?? []).filter((cr) => cr.name.startsWith("llm-byok:"));
+}
+
+app.get("/spaces/:spaceId/llm-byok", async (c) => {
+  const tenantId = await requireVerifiedTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const rows = await listByokCredentials(c.env, tenantId, spaceId);
+  const configured = new Set(rows.map((r) => r.name.replace(/^llm-byok:/, "")));
+  return c.json({
+    providers: BYOK_PROVIDERS.map((provider) => ({ provider, configured: configured.has(provider) })),
+  });
+});
+
+app.put("/spaces/:spaceId/llm-byok", async (c) => {
+  const tenantId = await requireVerifiedTenant(c);
+  const { userId } = getCallerIdentity(c);
+  const spaceId = c.req.param("spaceId");
+  if (!c.env.CREDENTIALS_WORKER) {
+    return c.json({ error_code: "unavailable", message: "Credential vault not bound" }, 503);
+  }
+  const body = await c.req.json<{ provider?: string; key?: string }>().catch(() => ({}) as { provider?: string; key?: string });
+  if (!body.provider || !isByokProvider(body.provider)) {
+    return c.json({ error_code: "bad_request", message: `provider must be one of: ${BYOK_PROVIDERS.join(", ")}` }, 400);
+  }
+  if (!body.key || !body.key.trim()) {
+    return c.json({ error_code: "bad_request", message: "key is required" }, 400);
+  }
+  const stored = await storeConnectorCredential(c.env, {
+    tenantId,
+    spaceId,
+    userId: userId ?? "",
+    name: byokCredentialName(body.provider),
+    value: body.key.trim(),
+    description: `BYOK LLM key (${body.provider})`,
+    scope: "space",
+  });
+  if (!stored.ok) {
+    const detail = await stored.text().catch(() => "");
+    return c.json({ error_code: "store_failed", message: `Couldn't store the key (${stored.status}) ${detail}`.trim() }, 502);
+  }
+  return c.json({ ok: true, provider: body.provider, configured: true });
+});
+
+app.delete("/spaces/:spaceId/llm-byok/:provider", async (c) => {
+  const tenantId = await requireVerifiedTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const provider = c.req.param("provider");
+  if (!isByokProvider(provider)) {
+    return c.json({ error_code: "bad_request", message: "unknown provider" }, 400);
+  }
+  if (!c.env.CREDENTIALS_WORKER) {
+    return c.json({ error_code: "unavailable", message: "Credential vault not bound" }, 503);
+  }
+  const rows = await listByokCredentials(c.env, tenantId, spaceId);
+  const match = rows.find((r) => r.name === byokCredentialName(provider));
+  if (!match) return c.json({ ok: true, provider, configured: false }); // idempotent
+  const del = await c.env.CREDENTIALS_WORKER.fetch(
+    new Request(`http://credentials/spaces/${spaceId}/credentials/${encodeURIComponent(match.id)}`, {
+      method: "DELETE",
+      headers: {
+        "x-naelao-tenant-id": tenantId,
+        "x-naelao-user-id": "byok-system",
+        "x-naelao-role": "admin",
+        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
+      },
+    }),
+  );
+  if (!del.ok) return c.json({ error_code: "delete_failed", message: `Couldn't remove the key (${del.status})` }, 502);
+  return c.json({ ok: true, provider, configured: false });
+});
+
 // POST /connectors/:platform/connect — store the builder's API key in the vault and register
 // the platform as an MCP server. The agent then reaches it via script.run("mcp.call", …). The
 // key is stored under the connector's credential_name; the hub resolves it at call time, so the

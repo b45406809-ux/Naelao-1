@@ -623,6 +623,11 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // Composio "click Install" hosted-connect flow (G-1/G-3 growth layer): same admin-level write
   // gate as connect/oauth-start above (requireBusinessMembership on the spaces worker).
   /^\/spaces\/([^/]+)\/connectors\/provider-connect-start$/,
+  // Step 28: business-wide BYOK LLM keys — GET (member) shows which providers are wired, PUT
+  // (admin) stores the business's own key, DELETE (admin) removes it. requireBusinessMembership on
+  // the spaces worker is the real authorization; the KEY value never leaves the vault. A static
+  // collection + a single dynamic leaf, the /members(/:userId) shape — not the corrupting one.
+  /^\/spaces\/([^/]+)\/llm-byok(\/[^/]+)?$/,
   // Naelao Agent Templates: browsing is member-level, instantiating a real agent from one is
   // admin-level — both enforced by requireBusinessMembership on the spaces worker.
   /^\/spaces\/([^/]+)\/agent-templates$/,

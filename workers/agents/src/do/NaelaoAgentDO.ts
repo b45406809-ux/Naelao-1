@@ -16,7 +16,8 @@ import type { SystemBlock } from "@naelao/llm-gateway";
 import { moderateText } from "@naelao/moderation";
 import { tokensToCredits, infraTimeToCredits, capabilityForModel, contextWindowForModel, DEFAULT_WORKING_MODEL, isValidEffortLevel, resolveEscalationModel, type EffortLevel } from "@naelao/billing-core";
 import { classifyFailure } from "@naelao/events";
-import type { ReasoningRequest } from "../shared/ai-client.js";
+import type { ReasoningRequest, GatewayOpts } from "../shared/ai-client.js";
+import { byokProviderForModel, BYOK_PROVIDER_KEY_FIELD } from "../shared/ai-client.js";
 import {
   ScriptToolSurface,
   runScriptLoop,
@@ -3297,6 +3298,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const consultLog: Array<{ thread_id: string; agent_id: string; title: string }> = [];
     engineEnv.orchestration = this.buildOrchestrationHooks(spaceId, agentId, tenantId, body.apiKey ?? "", runId, sessionId, projectId, tools, userId, consultLog, body.model, body.effort);
     const reasoningRequest = NaelaoAgentDO.resolveReasoningRequest(body.model, body.reasoningEffort);
+    // Step 28: a business's OWN Gemini/Groq key wins over the platform key for its own runs. Spread
+    // AFTER the env keys so it overrides; a business with none (or a default @cf/ model) gets the
+    // platform key exactly as before — see resolveBusinessLlmOverride's own doc.
+    const byokOverride = await this.resolveBusinessLlmOverride(spaceId, tenantId, body.model ?? DEFAULT_WORKING_MODEL);
     const reasoner = new GatewayReasoner({
       apiKey: body.apiKey ?? "",
       gateway: {
@@ -3305,6 +3310,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         ...(this.env.CF_API_TOKEN ? { cfApiToken: this.env.CF_API_TOKEN } : {}),
         ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}),
         ...(this.env.GOOGLE_AI_STUDIO_API_KEY ? { googleAiStudioApiKey: this.env.GOOGLE_AI_STUDIO_API_KEY } : {}), ...(this.env.GROQ_API_KEY ? { groqApiKey: this.env.GROQ_API_KEY } : {}),
+        ...byokOverride,
       },
       ctx: { spaceId, agentId, model: body.model ?? DEFAULT_WORKING_MODEL },
       ...(body.model ? { model: body.model } : {}),
@@ -5361,9 +5367,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const requiresApprovalFor = config.requiresApprovalFor ?? [...parseRequiresApprovalFor(config.agentsMd)];
     const tools = new ScriptToolSurface(engineEnv, config.scripts.prebuilt);
     const model = body.model ?? DEFAULT_WORKING_MODEL;
+    // Step 28: same BYOK override as the interactive path — a customer messaging a business on a
+    // channel is answered on the business's own Gemini/Groq key when it has one.
+    const byokOverride = await this.resolveBusinessLlmOverride(spaceId, tenantId, model);
     const reasoner = new GatewayReasoner({
       apiKey: body.apiKey ?? "",
-      gateway: { accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway", ...(this.env.CF_API_TOKEN ? { cfApiToken: this.env.CF_API_TOKEN } : {}), ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}), ...(this.env.GOOGLE_AI_STUDIO_API_KEY ? { googleAiStudioApiKey: this.env.GOOGLE_AI_STUDIO_API_KEY } : {}), ...(this.env.GROQ_API_KEY ? { groqApiKey: this.env.GROQ_API_KEY } : {}) },
+      gateway: { accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway", ...(this.env.CF_API_TOKEN ? { cfApiToken: this.env.CF_API_TOKEN } : {}), ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}), ...(this.env.GOOGLE_AI_STUDIO_API_KEY ? { googleAiStudioApiKey: this.env.GOOGLE_AI_STUDIO_API_KEY } : {}), ...(this.env.GROQ_API_KEY ? { groqApiKey: this.env.GROQ_API_KEY } : {}), ...byokOverride },
       ctx: { spaceId, agentId, model },
       model,
       fallbacks: this.resolveFailoverChain(model, body.apiKey ?? ""),
@@ -6364,6 +6373,64 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway",
       ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}),
     };
+  }
+
+  /**
+   * Step 28 (business-wide BYOK): a business's OWN Gemini/Groq key, when it has stored one, so its
+   * runs draw on ITS provider quota instead of the platform's shared allowance (the thing every
+   * daily-quota limit in this platform's own docs keeps hitting). Resolved from the credentials
+   * vault — never config_json, since it's a secret. Gated by the MODEL itself: the default
+   * `@cf/...` model isn't a BYOK-compat provider, so `byokProviderForModel` returns null and NO
+   * lookup happens for the overwhelming majority of runs; only a business that actually chose a
+   * Gemini/Groq model pays one cheap internal fetch to check for its own key. Fails OPEN on any
+   * error (missing binding, 404, network) — a BYOK lookup must never break a run; it falls straight
+   * back to the platform key. CF Workers AI BYOK is deliberately NOT here: it needs a business's own
+   * account-id + a scoped token + different gateway routing (not a drop-in key), a separate larger
+   * piece.
+   */
+  private async resolveBusinessLlmOverride(
+    spaceId: string,
+    tenantId: string,
+    model: string,
+  ): Promise<Partial<Pick<GatewayOpts, "googleAiStudioApiKey" | "groqApiKey">>> {
+    const provider = byokProviderForModel(model);
+    if (!provider || !this.env.CREDENTIALS_WORKER) return {};
+    const field = BYOK_PROVIDER_KEY_FIELD[provider];
+    if (!field) return {};
+    try {
+      const token = await this.generateCredentialToken(spaceId, "naelao-agent");
+      const resp = await this.env.CREDENTIALS_WORKER.fetch(
+        new Request(
+          `http://credentials/v1/internal/spaces/${spaceId}/credentials/${encodeURIComponent(`llm-byok:${provider}`)}/plaintext`,
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-naelao-tenant-id": tenantId,
+              "x-naelao-credential-token": token,
+            },
+            body: "{}",
+          },
+        ),
+      );
+      if (!resp.ok) return {};
+      const { value } = await resp.json<{ value?: string }>().catch(() => ({}) as { value?: string });
+      return value ? { [field]: value } : {};
+    } catch {
+      return {};
+    }
+  }
+
+  /** Short-lived HMAC credential token — mirrors the agents worker's own generateCredentialToken
+   *  (index.ts) and workers/credentials, so the vault accepts this DO as a legitimate resolver. */
+  private async generateCredentialToken(spaceId: string, agentId: string): Promise<string> {
+    const timestamp = Math.floor(Date.now() / 1000);
+    const key = await crypto.subtle.importKey(
+      "raw", new TextEncoder().encode(this.env.PLATFORM_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+    );
+    const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${spaceId}:${agentId}:${timestamp}`));
+    const hex = Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
+    return `t=${timestamp},aid=${agentId},v1=${hex}`;
   }
 
   private resolveFailoverChain(primaryModel: string, anthropicKey: string): { model: string; apiKey: string }[] {

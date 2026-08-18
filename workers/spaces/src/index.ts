@@ -1530,7 +1530,7 @@ app.use("/spaces/:spaceId/connectors/connect", requireBusinessMembership({ POST:
 async function proxyToAgentsWorker(
   c: { env: Env; req: { header: (n: string) => string | undefined } },
   path: string,
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "PUT" | "DELETE",
   body?: Record<string, unknown>,
   extraHeaders?: Record<string, string>
 ): Promise<Response> {
@@ -1583,6 +1583,33 @@ app.get("/spaces/:spaceId/connectors/directory", async (c) => {
   const qs = params.toString();
   return proxyToAgentsWorker(c, `/connectors/directory${qs ? `?${qs}` : ""}`, "GET");
 });
+
+// Step 28: business-wide BYOK LLM keys (AI Studio / Groq). GET member (see which providers are
+// wired), PUT admin (store the business's own key), DELETE admin (remove it). Same wrapper pattern
+// as connectors above — identity/business-role gate here, the agents worker holds the credential
+// vault and the requireVerifiedTenant floor. `/llm-byok` and `/llm-byok/:provider` are a static
+// collection + a single dynamic leaf (the /members(/:userId) shape), never the corrupting
+// dynamic-then-static shape. The KEY is never returned by GET — the agents route projects
+// configured:boolean only.
+app.use("/spaces/:spaceId/llm-byok", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/llm-byok", requireBusinessMembership({ GET: "member", PUT: "admin" }));
+app.use("/spaces/:spaceId/llm-byok/:provider", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/llm-byok/:provider", requireBusinessMembership({ DELETE: "admin" }));
+
+app.get("/spaces/:spaceId/llm-byok", async (c) =>
+  proxyToAgentsWorker(c, `/spaces/${encodeURIComponent(c.req.param("spaceId"))}/llm-byok`, "GET")
+);
+app.put("/spaces/:spaceId/llm-byok", async (c) => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}));
+  return proxyToAgentsWorker(c, `/spaces/${encodeURIComponent(c.req.param("spaceId"))}/llm-byok`, "PUT", body);
+});
+app.delete("/spaces/:spaceId/llm-byok/:provider", async (c) =>
+  proxyToAgentsWorker(
+    c,
+    `/spaces/${encodeURIComponent(c.req.param("spaceId"))}/llm-byok/${encodeURIComponent(c.req.param("provider"))}`,
+    "DELETE",
+  )
+);
 
 // The "plugins directory" (BUSINESS_FEATURE_KIND_REGISTRY) — which native business-feature
 // projects (Wallet, CRM, Support Inbox, Business Email, …) this business could add, role-filtered
