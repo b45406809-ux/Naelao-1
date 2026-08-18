@@ -971,10 +971,78 @@ function SubAgentsPanel({
 // panel's compact tp-* styling rather than settings-block/settings-row. Project-scoped reads go
 // through readWorkspaceFile (pre-existing); the space-wide assistant workspace now has a matching
 // per-file read route too (previously list-only — see the new /assistant/files/* backend route).
+// Step 6: build a nested directory tree from flat workspace paths (split on "/").
+type FileTreeNode = { name: string; path: string; size?: number; children?: Record<string, FileTreeNode> };
+function buildFileTree(files: WorkspaceFile[]): Record<string, FileTreeNode> {
+  const root: Record<string, FileTreeNode> = {};
+  for (const f of files) {
+    const parts = f.path.split("/").filter(Boolean);
+    let level = root;
+    let acc = "";
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i]!;
+      acc = acc ? `${acc}/${part}` : part;
+      const isFile = i === parts.length - 1;
+      if (!level[part]) level[part] = { name: part, path: acc, ...(isFile ? { size: f.size } : { children: {} }) };
+      if (!isFile) level = level[part]!.children!;
+    }
+  }
+  return root;
+}
+
+function FileTreeView({
+  nodes, depth, collapsed, toggleDir, openFile, opening,
+}: {
+  nodes: Record<string, FileTreeNode>;
+  depth: number;
+  collapsed: Set<string>;
+  toggleDir: (path: string) => void;
+  openFile: (path: string) => void;
+  opening: string | null;
+}) {
+  // Directories first, then files, each alphabetical.
+  const entries = Object.values(nodes).sort((a, b) => {
+    const ad = a.children ? 0 : 1;
+    const bd = b.children ? 0 : 1;
+    return ad - bd || a.name.localeCompare(b.name);
+  });
+  return (
+    <>
+      {entries.map((n) => {
+        const isDir = !!n.children;
+        const isOpen = !collapsed.has(n.path);
+        return (
+          <div key={n.path}>
+            <div
+              onClick={() => (isDir ? toggleDir(n.path) : openFile(n.path))}
+              style={{ display: "flex", alignItems: "center", gap: 5, padding: "3px 6px", paddingLeft: 6 + depth * 12, fontSize: 11.5, cursor: "pointer", color: "var(--text2)" }}
+            >
+              {isDir ? (
+                <span style={{ color: "var(--text3)", width: 10, display: "inline-block" }}>{isOpen ? "▾" : "▸"}</span>
+              ) : (
+                <span style={{ width: 10, display: "inline-block" }} />
+              )}
+              <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {isDir ? "📁 " : "📄 "}{n.name}
+              </span>
+              {!isDir && <span style={{ color: "var(--text3)", fontSize: 9.5 }}>{opening === n.path ? "…" : formatBytes(n.size ?? 0)}</span>}
+            </div>
+            {isDir && isOpen && n.children && (
+              <FileTreeView nodes={n.children} depth={depth + 1} collapsed={collapsed} toggleDir={toggleDir} openFile={openFile} opening={opening} />
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 function FilesPanel({ spaceId, projectId, session }: { spaceId: string; projectId?: string | null | undefined; session: SessionCredentials }) {
   const [files, setFiles] = React.useState<WorkspaceFile[] | null>(null);
   const [open, setOpen] = React.useState<{ path: string; content?: string; too_large?: boolean } | null>(null);
   const [opening, setOpening] = React.useState<string | null>(null);
+  const [view, setView] = React.useState<"list" | "grid" | "tree">("list");
+  const [collapsed, setCollapsed] = React.useState<Set<string>>(new Set());
   React.useEffect(() => {
     let cancelled = false;
     setOpen(null);
@@ -999,11 +1067,61 @@ function FilesPanel({ spaceId, projectId, session }: { spaceId: string; projectI
 
   return (
     <>
-      <div className="tp-section">{projectId ? "Project Workspace" : "Workspace"}</div>
+      <div className="tp-section" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span>{projectId ? "Project Workspace" : "Workspace"}</span>
+        {/* Step 6: switch between list, grid, and collapsible tree views. */}
+        <span style={{ display: "flex", gap: 2 }}>
+          {(["list", "grid", "tree"] as const).map((v) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => setView(v)}
+              title={`${v} view`}
+              style={{
+                border: "none", background: view === v ? "var(--surface3, #e8e6e0)" : "transparent",
+                color: view === v ? "var(--text1)" : "var(--text3)", cursor: "pointer",
+                fontSize: 12, padding: "2px 5px", borderRadius: 4, lineHeight: 1,
+              }}
+            >
+              {v === "list" ? "☰" : v === "grid" ? "▦" : "🌲"}
+            </button>
+          ))}
+        </span>
+      </div>
       {files === null ? (
         <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>Loading…</div>
       ) : files.length === 0 ? (
         <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>No files yet.</div>
+      ) : view === "grid" ? (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(84px, 1fr))", gap: 6, padding: "4px 14px" }}>
+          {files.map((f) => {
+            const name = f.path.split("/").pop() ?? f.path;
+            return (
+              <button
+                key={f.path}
+                type="button"
+                onClick={() => openFile(f.path)}
+                title={f.path}
+                style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4, padding: "8px 4px", border: "1px solid var(--border)", borderRadius: 8, background: "transparent", cursor: "pointer", fontSize: 10.5, color: "var(--text2)" }}
+              >
+                <span style={{ fontSize: 20 }}>📄</span>
+                <span style={{ width: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "center" }}>{name}</span>
+                <span style={{ color: "var(--text3)", fontSize: 9 }}>{opening === f.path ? "…" : formatBytes(f.size)}</span>
+              </button>
+            );
+          })}
+        </div>
+      ) : view === "tree" ? (
+        <div style={{ padding: "2px 8px 4px" }}>
+          <FileTreeView
+            nodes={buildFileTree(files)}
+            depth={0}
+            collapsed={collapsed}
+            toggleDir={(p) => setCollapsed((prev) => { const next = new Set(prev); if (next.has(p)) next.delete(p); else next.add(p); return next; })}
+            openFile={openFile}
+            opening={opening}
+          />
+        </div>
       ) : (
         files.map((f) => (
           <div
