@@ -209,3 +209,39 @@ ${BASE_AGENTS_MD}`,
     skills: { skills: [] },
   };
 }
+
+/** Step 17: a CUSTOM agent built from user-supplied config rather than a fixed template — the
+ *  user picks the instructions, the tool (prebuilt-script) list, and the tone. The universal
+ *  baseline (r2-workspace/memory/notifications) is always included, exactly as a template's is,
+ *  so a custom agent can never end up with no filesystem/memory at all. `approval_mode` and
+ *  `auto_approved_actions` are seeded separately by the caller (same as a template). */
+export interface CustomAgentInput {
+  name: string;
+  description?: string;
+  instructions: string;
+  system_prompt?: string;
+  prebuilt_scripts: string[];
+  skills?: string[];
+}
+export function customAgentToConfig(input: CustomAgentInput): AgentConfig {
+  const prebuilt = new Set<string>(["r2-workspace", "memory", "notifications", ...input.prebuilt_scripts]);
+  const scripts: ScriptsConfig = {
+    prebuilt: [...prebuilt],
+    agent_scripts: "auto",
+    startup_observe: "observe_filesystem",
+  };
+  return {
+    agentsMd: `# Agent Identity
+Custom agent: ${input.name}
+${input.description ? `Role: ${input.description}\n` : ""}
+${input.instructions}
+
+${BASE_AGENTS_MD}`,
+    systemPrompt: input.system_prompt?.trim() || `You are ${input.name}, a specialist agent. ${input.description ?? ""}`.trim(),
+    scripts,
+    // Learned skills attach by name at the space level (script.find resolves them at run time), so
+    // a custom agent starts with none in its own config — same as a template. `input.skills` is
+    // reserved for a future per-agent skill-pin feature.
+    skills: { skills: [] },
+  };
+}

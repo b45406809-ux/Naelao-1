@@ -477,10 +477,15 @@ export function ActivitySequence({ steps, animate, live }: { steps: LiveRunStep[
                           );
                         }
                         return (
+                          // Step 25: a Thought row defaults to OPEN (the reasoning model's actual
+                          // chain-of-thought is what "I want to see the model thinking" is about —
+                          // burying it behind a click meant it was effectively invisible). The
+                          // same `openRows` set is reused with an inverted meaning for thoughts:
+                          // present = user explicitly collapsed it.
                           <ThoughtRowView
                             key={key}
                             row={row as ThoughtRow}
-                            isOpen={openRows.has(key)}
+                            isOpen={!openRows.has(key)}
                             onToggle={() => toggleRow(key)}
                           />
                         );

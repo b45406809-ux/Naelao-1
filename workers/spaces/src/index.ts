@@ -1675,7 +1675,33 @@ app.post("/spaces/:spaceId/connectors/provider-connect-start", async (c) => {
 app.use("/spaces/:spaceId/agent-templates", requireBusinessMembership({ GET: "member", POST: "admin" }));
 app.get("/spaces/:spaceId/agent-templates", async (c) => proxyToAgentsWorker(c, "/agent-templates", "GET"));
 app.post("/spaces/:spaceId/agent-templates", async (c) => {
-  const body = await c.req.json<{ template_id?: string; name?: string; project_id?: string }>().catch(() => ({}) as Record<string, never>);
+  const body = await c.req.json<{
+    template_id?: string; name?: string; project_id?: string;
+    // Step 17: a `custom` payload creates a CUSTOM agent (own instructions/tools/autonomy) rather
+    // than instantiating a fixed template. Handled through this SAME route (a distinguishing body
+    // flag) rather than a new `/agents/custom` route, whose dynamic-then-static shape has
+    // repeatedly triggered this file's documented Hono route-table corruption.
+    custom?: {
+      name?: string; description?: string; instructions?: string; system_prompt?: string;
+      prebuilt_scripts?: string[]; approval_mode?: string; auto_approved_actions?: string[]; project_id?: string;
+    };
+  }>().catch(() => ({}) as Record<string, never>);
+  if (body.custom) {
+    const cst = body.custom;
+    if (!cst.name?.trim()) return c.json({ error_code: "bad_request", message: "name is required" }, 400);
+    if (!cst.instructions?.trim()) return c.json({ error_code: "bad_request", message: "instructions are required" }, 400);
+    return proxyToAgentsWorker(c, "/agents/custom", "POST", {
+      space_id: c.req.param("spaceId"),
+      name: cst.name,
+      ...(cst.description ? { description: cst.description } : {}),
+      instructions: cst.instructions,
+      ...(cst.system_prompt ? { system_prompt: cst.system_prompt } : {}),
+      prebuilt_scripts: cst.prebuilt_scripts ?? [],
+      ...(cst.approval_mode ? { approval_mode: cst.approval_mode } : {}),
+      ...(cst.auto_approved_actions ? { auto_approved_actions: cst.auto_approved_actions } : {}),
+      ...(cst.project_id ? { project_id: cst.project_id } : {}),
+    });
+  }
   if (!body.template_id) return c.json({ error_code: "bad_request", message: "template_id is required" }, 400);
   return proxyToAgentsWorker(c, "/agent-templates/instantiate", "POST", {
     space_id: c.req.param("spaceId"),

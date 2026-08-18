@@ -26,10 +26,13 @@ import {
   listAgentDefinitions,
   listAgentTemplates,
   instantiateAgentTemplate,
+  createCustomAgent,
+  getAssistantCapabilities,
   listProjects,
   type Project,
   type AgentDefinitionSummary,
   type AgentTemplateSummary,
+  type AssistantCapabilities,
 } from "@/lib/api";
 
 export default function AgentsPage() {
@@ -49,6 +52,16 @@ export default function AgentsPage() {
   const [pendingTemplate, setPendingTemplate] = React.useState<AgentTemplateSummary | null>(null);
   const [projects, setProjects] = React.useState<Project[]>([]);
   const [projectsLoading, setProjectsLoading] = React.useState(false);
+  // Step 17: custom agent builder.
+  const [customOpen, setCustomOpen] = React.useState(false);
+  const [caps, setCaps] = React.useState<AssistantCapabilities | null>(null);
+  const [cName, setCName] = React.useState("");
+  const [cDesc, setCDesc] = React.useState("");
+  const [cInstr, setCInstr] = React.useState("");
+  const [cTools, setCTools] = React.useState<Set<string>>(new Set(["web-search", "knowledge-base", "code-exec", "project-journal"]));
+  const [cMode, setCMode] = React.useState<"always_ask" | "gate_unless_listed" | "yolo">("gate_unless_listed");
+  const [cProject, setCProject] = React.useState<string>("");
+  const [creating, setCreating] = React.useState(false);
 
   const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
 
@@ -96,6 +109,37 @@ export default function AgentsPage() {
     }
   }
 
+  async function openCustomBuilder() {
+    if (!creds) return;
+    setCustomOpen(true);
+    if (!caps) getAssistantCapabilities(activeSpaceId, creds).then(setCaps).catch(() => setCaps({ prebuilts: [], skills: [], prebuilt_count: 0, skill_count: 0 }));
+    if (projects.length === 0) listProjects(activeSpaceId, creds).then(setProjects).catch(() => {});
+  }
+
+  async function submitCustomAgent() {
+    if (!creds || creating) return;
+    if (!cName.trim() || !cInstr.trim()) { show("Name and instructions are required"); return; }
+    setCreating(true);
+    try {
+      await createCustomAgent(activeSpaceId, creds, {
+        name: cName.trim(),
+        ...(cDesc.trim() ? { description: cDesc.trim() } : {}),
+        instructions: cInstr.trim(),
+        prebuilt_scripts: [...cTools],
+        approval_mode: cMode,
+        ...(cProject ? { project_id: cProject } : {}),
+      });
+      setCustomOpen(false);
+      setCName(""); setCDesc(""); setCInstr(""); setCProject("");
+      show(`${cName.trim()} created`);
+      refresh();
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Couldn't create the agent");
+    } finally {
+      setCreating(false);
+    }
+  }
+
   async function confirmAddToProject(projectId?: string) {
     if (!creds || !pendingTemplate || instantiating) return;
     const t = pendingTemplate;
@@ -125,7 +169,10 @@ export default function AgentsPage() {
             alongside your assistant. Open one to set what it may do on its own.
           </div>
         </div>
-        <Button onClick={() => void openTemplatePicker()}>+ Add from template</Button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <Button variant="secondary" onClick={() => void openCustomBuilder()}>+ Create custom</Button>
+          <Button onClick={() => void openTemplatePicker()}>+ Add from template</Button>
+        </div>
       </div>
 
       {loading ? (
@@ -215,7 +262,70 @@ export default function AgentsPage() {
           </div>
         )}
       </Modal>
+      {/* Step 17: custom agent builder — instructions, tool list, autonomy, project. */}
+      <Modal open={customOpen} onClose={() => setCustomOpen(false)} title="Create a custom agent">
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <label style={{ fontSize: 12.5 }}>
+            <div style={{ color: "var(--text3)", marginBottom: 4 }}>Name</div>
+            <input value={cName} onChange={(e) => setCName(e.target.value)} placeholder="e.g. SEO Writer" style={inputStyle} />
+          </label>
+          <label style={{ fontSize: 12.5 }}>
+            <div style={{ color: "var(--text3)", marginBottom: 4 }}>Short description (optional)</div>
+            <input value={cDesc} onChange={(e) => setCDesc(e.target.value)} placeholder="What it does, in a line" style={inputStyle} />
+          </label>
+          <label style={{ fontSize: 12.5 }}>
+            <div style={{ color: "var(--text3)", marginBottom: 4 }}>Instructions</div>
+            <textarea value={cInstr} onChange={(e) => setCInstr(e.target.value)} rows={5} placeholder="How this agent should behave, what it's for, any rules it must follow…" style={{ ...inputStyle, resize: "vertical" }} />
+          </label>
+          <div style={{ fontSize: 12.5 }}>
+            <div style={{ color: "var(--text3)", marginBottom: 6 }}>Tools it can use</div>
+            {caps === null ? (
+              <div style={{ color: "var(--text3)", fontSize: 12 }}>Loading…</div>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, maxHeight: 180, overflowY: "auto" }}>
+                {caps.prebuilts.map((p) => (
+                  <label key={p.name} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={cTools.has(p.name)}
+                      onChange={(e) => setCTools((prev) => { const n = new Set(prev); if (e.target.checked) n.add(p.name); else n.delete(p.name); return n; })}
+                    />
+                    <span title={p.description}>{p.name}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+            <div style={{ color: "var(--text3)", fontSize: 10.5, marginTop: 4 }}>r2-workspace, memory and notifications are always included.</div>
+          </div>
+          <label style={{ fontSize: 12.5 }}>
+            <div style={{ color: "var(--text3)", marginBottom: 4 }}>Autonomy</div>
+            <select value={cMode} onChange={(e) => setCMode(e.target.value as typeof cMode)} style={inputStyle}>
+              <option value="always_ask">Always ask before acting</option>
+              <option value="gate_unless_listed">Ask for anything not pre-approved</option>
+              <option value="yolo">Full autonomy (never ask)</option>
+            </select>
+          </label>
+          <label style={{ fontSize: 12.5 }}>
+            <div style={{ color: "var(--text3)", marginBottom: 4 }}>Project (optional)</div>
+            <select value={cProject} onChange={(e) => setCProject(e.target.value)} style={inputStyle}>
+              <option value="">No project (space-wide)</option>
+              {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </label>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            <Button variant="secondary" onClick={() => setCustomOpen(false)}>Cancel</Button>
+            <Button disabled={creating || !cName.trim() || !cInstr.trim()} onClick={() => void submitCustomAgent()}>
+              {creating ? "Creating…" : "Create agent"}
+            </Button>
+          </div>
+        </div>
+      </Modal>
       <Toast toast={toast} />
     </div>
   );
 }
+
+const inputStyle: React.CSSProperties = {
+  width: "100%", padding: "8px 10px", fontSize: 13, borderRadius: 8,
+  border: "1px solid var(--border)", background: "var(--surface1, var(--bg))", color: "var(--text1)",
+};

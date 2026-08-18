@@ -1083,6 +1083,20 @@ export async function instantiateAgentTemplate(
   return apiFetch(`/v1/spaces/${spaceId}/agent-templates`, { method: "POST", body: JSON.stringify(params), session });
 }
 
+/** Step 17: create a fully custom agent — its own instructions, tool (prebuilt-script) list, and
+ *  autonomy. Goes through the same /agent-templates route with a `custom` payload. */
+export async function createCustomAgent(
+  spaceId: string,
+  session: SessionCredentials,
+  custom: {
+    name: string; description?: string; instructions: string;
+    prebuilt_scripts: string[]; approval_mode?: "always_ask" | "gate_unless_listed" | "yolo";
+    auto_approved_actions?: string[]; project_id?: string;
+  }
+): Promise<{ agent_id: string; agent_definition_id: string; custom: boolean }> {
+  return apiFetch(`/v1/spaces/${spaceId}/agent-templates`, { method: "POST", body: JSON.stringify({ custom }), session });
+}
+
 /** A single project agent's own approval-policy override — falls back to the space-wide
  *  assistant_policy row (getAssistantPolicy) when the agent has no override of its own. GET is
  *  member-level, PATCH is business-admin-only (requireBusinessMembership on the spaces worker). */

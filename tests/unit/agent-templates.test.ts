@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { app } from "../../workers/agents/src/index.js";
 import type { AgentsEnv } from "../../workers/agents/src/index.js";
 import { mintInternalToken } from "@naelao/http";
-import { AGENT_TEMPLATES, agentTemplateSummaries, findAgentTemplate, agentTemplateToConfig } from "../../workers/agents/src/agent-templates.js";
+import { AGENT_TEMPLATES, agentTemplateSummaries, findAgentTemplate, agentTemplateToConfig, customAgentToConfig } from "../../workers/agents/src/agent-templates.js";
 
 // GET /agent-templates (catalogue browse) + POST /agent-templates/instantiate (a project's own
 // switcher/#68 depends on both): applying a template writes the 4 R2 config files, registers a
@@ -261,5 +261,72 @@ describe("Agent template instantiation is idempotent per space", () => {
     await app.fetch(await instantiateReq({ space_id: SPACE_ID, template_id: "general", project_id: "proj-1" }), env);
     expect(projectPatches).toHaveLength(1);
     expect(projectPatches[0]).toContain(first.agent_id);
+  });
+});
+
+describe("customAgentToConfig (step 17)", () => {
+  it("always includes the universal baseline plus the chosen tools, and carries the instructions", () => {
+    const cfg = customAgentToConfig({
+      name: "SEO Writer",
+      description: "Writes SEO articles",
+      instructions: "Write keyword-optimized articles. Never fabricate stats.",
+      prebuilt_scripts: ["web-search", "knowledge-base"],
+    });
+    // Universal baseline is always present, even if the caller didn't list it.
+    expect(cfg.scripts.prebuilt).toEqual(expect.arrayContaining(["r2-workspace", "memory", "notifications", "web-search", "knowledge-base"]));
+    // No duplicate baseline entries if the caller also listed one.
+    const withDup = customAgentToConfig({ name: "X", instructions: "do things", prebuilt_scripts: ["memory", "web-search"] });
+    expect(withDup.scripts.prebuilt.filter((s) => s === "memory")).toHaveLength(1);
+    // The instructions are in the agents.md identity block.
+    expect(cfg.agentsMd).toContain("Never fabricate stats");
+    expect(cfg.agentsMd).toContain("SEO Writer");
+    // A custom agent starts with no pinned skills (learned skills resolve at run time).
+    expect(cfg.skills.skills).toEqual([]);
+  });
+
+  it("synthesizes a system prompt when none is given", () => {
+    const cfg = customAgentToConfig({ name: "Helper", instructions: "help", prebuilt_scripts: [] });
+    expect(cfg.systemPrompt).toContain("Helper");
+  });
+});
+
+describe("POST /agents/custom (step 17)", () => {
+  it("writes R2 config, registers the agent, and seeds the chosen autonomy", async () => {
+    const { env, r2, spacesCalls } = makeEnv();
+    const req = new Request("https://agents.naelao.com/agents/custom", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": TENANT_ID,
+        "x-naelao-internal-token": await mintInternalToken(SECRET, TENANT_ID),
+      },
+      body: JSON.stringify({
+        space_id: SPACE_ID,
+        name: "SEO Writer",
+        instructions: "Write SEO articles, never fabricate stats.",
+        prebuilt_scripts: ["web-search", "knowledge-base"],
+        approval_mode: "yolo",
+      }),
+    });
+    const res = await app.fetch(req, env);
+    expect(res.status).toBe(201);
+    const body = await res.json() as { agent_id: string; custom: boolean };
+    expect(body.agent_id).toMatch(/^custom-/);
+    expect(body.custom).toBe(true);
+    const scripts = JSON.parse(r2.store.get(`spaces/${SPACE_ID}/agents/${body.agent_id}/scripts.json`)!);
+    expect(scripts.prebuilt).toEqual(expect.arrayContaining(["r2-workspace", "web-search", "knowledge-base"]));
+    const policyCall = spacesCalls.find((c) => c.path.includes("/policy") && c.method === "PATCH");
+    expect((policyCall!.body as { approval_mode: string }).approval_mode).toBe("yolo");
+  });
+
+  it("rejects with no name or no instructions", async () => {
+    const { env } = makeEnv();
+    const mk = async (b: Record<string, unknown>) => app.fetch(new Request("https://agents.naelao.com/agents/custom", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": TENANT_ID, "x-naelao-internal-token": await mintInternalToken(SECRET, TENANT_ID) },
+      body: JSON.stringify(b),
+    }), env);
+    expect((await mk({ space_id: SPACE_ID, instructions: "x", prebuilt_scripts: [] })).status).toBe(400);
+    expect((await mk({ space_id: SPACE_ID, name: "X", prebuilt_scripts: [] })).status).toBe(400);
   });
 });

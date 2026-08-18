@@ -58,7 +58,7 @@ import {
 import { PROJECT_TEMPLATES, getProjectTemplate } from "./launchpad/project-templates.js";
 import { seedTemplateProjects, seedGeneralProject } from "./launchpad/bootstrap.js";
 import { PREBUILT_SCRIPTS } from "./script-engine/prebuilt/index.js";
-import { findAgentTemplate, agentTemplateSummaries, agentTemplateToConfig } from "./agent-templates.js";
+import { findAgentTemplate, agentTemplateSummaries, agentTemplateToConfig, customAgentToConfig } from "./agent-templates.js";
 import { writeAgentConfig } from "./script-engine/agent-config.js";
 
 function safeParse(s: string): unknown {
@@ -3544,6 +3544,93 @@ async function applyAgentTemplate(
 
   return { agentId, agentDefinitionId: `${spaceId}:${agentId}` };
 }
+
+// Step 17: create a CUSTOM agent from user-supplied config (instructions, tool list, autonomy).
+// Mirrors applyAgentTemplate's write+register+seed-policy flow, but from custom input and with no
+// template-idempotency (each custom agent is genuinely distinct).
+interface CustomAgentCreate {
+  name: string;
+  description?: string;
+  instructions: string;
+  system_prompt?: string;
+  prebuilt_scripts: string[];
+  approval_mode?: "always_ask" | "gate_unless_listed" | "yolo";
+  auto_approved_actions?: string[];
+  project_id?: string;
+}
+async function createCustomAgent(
+  env: AgentsEnv,
+  spaceId: string,
+  tenantId: string,
+  input: CustomAgentCreate,
+  callerUserId?: string
+): Promise<{ agentId: string; agentDefinitionId: string } | { error: string; status: number }> {
+  if (!env.SCRIPTS_R2) return { error: "Agent config storage is not bound", status: 503 };
+  if (!input.name?.trim()) return { error: "name is required", status: 400 };
+  if (!input.instructions?.trim()) return { error: "instructions are required", status: 400 };
+
+  const agentId = `custom-${crypto.randomUUID().slice(0, 12)}`;
+  await writeAgentConfig(
+    env.SCRIPTS_R2,
+    spaceId,
+    agentId,
+    customAgentToConfig({
+      name: input.name.trim(),
+      ...(input.description ? { description: input.description } : {}),
+      instructions: input.instructions,
+      ...(input.system_prompt ? { system_prompt: input.system_prompt } : {}),
+      prebuilt_scripts: input.prebuilt_scripts ?? [],
+    })
+  );
+
+  const internalToken = await mintInternalToken(env.PLATFORM_SECRET, tenantId);
+  const headers = {
+    "content-type": "application/json",
+    "x-naelao-tenant-id": tenantId,
+    "x-naelao-internal-token": internalToken,
+    ...(callerUserId ? { "x-naelao-user-id": callerUserId } : {}),
+  };
+
+  const registerResp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/agent-definitions`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      id: `${spaceId}:${agentId}`,
+      space_id: spaceId,
+      name: input.name.trim(),
+      description: input.description ?? "A custom agent.",
+      config: { agent_id: agentId, config_path: `spaces/${spaceId}/agents/${agentId}/`, custom: true },
+    }),
+  }));
+  if (!registerResp.ok) return { error: await registerResp.text(), status: 502 };
+
+  // Seed the chosen autonomy (defaults to gate_unless_listed with the given allowlist).
+  await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/agents/${agentId}/policy`, {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify({
+      approval_mode: input.approval_mode ?? "gate_unless_listed",
+      auto_approved_actions: input.auto_approved_actions ?? [],
+    }),
+  })).catch(() => {});
+
+  if (input.project_id) await bindAgentToProject(env, spaceId, tenantId, input.project_id, agentId, callerUserId);
+
+  return { agentId, agentDefinitionId: `${spaceId}:${agentId}` };
+}
+
+// POST /agents/custom  { space_id, name, description?, instructions, prebuilt_scripts, ... }
+app.post("/agents/custom", async (c) => {
+  const tenantId = await requireVerifiedTenant(c);
+  const { userId } = getCallerIdentity(c);
+  const body = await c.req.json<CustomAgentCreate & { space_id?: string }>().catch(() => ({}) as CustomAgentCreate & { space_id?: string });
+  if (!body.space_id) throw badRequest("space_id is required");
+  const result = await createCustomAgent(c.env, body.space_id, tenantId, body, userId || undefined);
+  if ("error" in result) {
+    return c.json({ error_code: "custom_agent_failed", message: result.error }, result.status as 400 | 502 | 503);
+  }
+  return c.json({ agent_id: result.agentId, agent_definition_id: result.agentDefinitionId, custom: true }, 201);
+});
 
 // POST /agent-templates/instantiate  { space_id, template_id, name?, project_id? }
 // A dedicated create action rather than a REST-y /agent-templates/:id/instantiate — a dynamic
