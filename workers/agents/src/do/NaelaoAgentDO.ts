@@ -3447,6 +3447,28 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           if (result.result.connector_id) answerMetadata["connector_id"] = result.result.connector_id;
           if (result.result.connector_name) answerMetadata["connector_name"] = result.result.connector_name;
         }
+        // Step 5/7/11: surface any artifact CREATED during this run so the chat renders an inline
+        // preview (iframe + download) at this exact turn — like Claude showing an artifact — rather
+        // than the artifact only ever appearing in the side panel. Reuses this run's own trace
+        // (the artifacts.create step already recorded its result), so no extra work/LLM call.
+        const createdArtifacts: Array<{ artifact_id: string; filename: string; content_type?: string }> = [];
+        for (const step of result.trace ?? []) {
+          if (step.phase === "run" && step.name === "artifacts.create" && step.ok && step.output != null) {
+            try {
+              const out = (typeof step.output === "string" ? JSON.parse(step.output) : step.output) as Record<string, unknown>;
+              const id = out["artifact_id"] ?? out["id"];
+              const filename = out["filename"];
+              if (id && filename) {
+                createdArtifacts.push({
+                  artifact_id: String(id),
+                  filename: String(filename),
+                  ...(typeof out["content_type"] === "string" ? { content_type: out["content_type"] as string } : {}),
+                });
+              }
+            } catch { /* unparseable trace output — skip */ }
+          }
+        }
+        if (createdArtifacts.length) answerMetadata["created_artifacts"] = createdArtifacts;
         // The run's own id, so a reload can re-fetch this exact run's activity trail (run_traces,
         // §A1 HX1) instead of losing it — the client's own in-memory `activity` is genuinely
         // client-only and doesn't survive a reload, but the trace itself is durable; this is what

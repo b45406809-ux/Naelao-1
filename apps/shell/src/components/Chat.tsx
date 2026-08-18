@@ -65,6 +65,7 @@ import { InterruptedRunCard } from "./InterruptedRunCard";
 import { MessageActions } from "./MessageActions";
 import { InlineApprovalCard } from "./InlineApprovalCard";
 import { InlineConnectorCard } from "./InlineConnectorCard";
+import { InlineArtifactCard } from "./InlineArtifactCard";
 import { UpgradeDialog } from "./UpgradeDialog";
 import { ComposerDock } from "./ComposerDock";
 import { useActiveSpace } from "@/lib/active-space-context";
@@ -1581,6 +1582,18 @@ export function Chat({
                     <div key={c.thread_id} style={{ marginTop: 6, maxWidth: 420 }}>
                       <SubthreadEntry spaceId={spaceId} thread={consultThreadSummary(spaceId, c)} session={session} inline />
                     </div>
+                  ))}
+                  {/* Step 5/7/11: an artifact the assistant created this turn — inline preview
+                      (iframe for HTML) + download, right under the reply, like Claude. */}
+                  {m.role !== "user" && m.metadata?.created_artifacts?.map((art) => (
+                    <InlineArtifactCard
+                      key={art.artifact_id}
+                      spaceId={spaceId}
+                      artifactId={art.artifact_id}
+                      filename={art.filename}
+                      {...(art.content_type ? { contentType: art.content_type } : {})}
+                      session={session}
+                    />
                   ))}
                 </div>
               </div>

@@ -207,6 +207,32 @@ export default function ProjectDetailPage() {
     }
   }
 
+  // Step 13b: upload a FILE into the project KB, not just paste text. Reads a text-readable file
+  // and pre-fills the title (from the filename) + content, then the person clicks Add. Same
+  // text-only/2MB guard as the space-wide Knowledge Base page (real PDF/office parsing is a
+  // separate, larger pipeline feature — a binary is rejected rather than ingested as garbage).
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
+  async function handlePickFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-picking the same file
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      show("File is over 2MB — paste the relevant part instead, or upload a smaller file.");
+      return;
+    }
+    try {
+      const text = await file.text();
+      if (!/\S/.test(text)) {
+        show("That file has no readable text (it may be a PDF/image/binary — paste the text instead).");
+        return;
+      }
+      if (!newDocTitle.trim()) setNewDocTitle(file.name.replace(/\.[^.]+$/, ""));
+      setNewDocContent(text);
+    } catch {
+      show("Couldn't read that file.");
+    }
+  }
+
   async function handleAddDoc(e: React.FormEvent) {
     e.preventDefault();
     if (!creds || !newDocTitle.trim() || !newDocContent.trim()) return;
@@ -563,10 +589,19 @@ export default function ProjectDetailPage() {
           rows={4}
           required
         />
-        <div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <Button size="sm" disabled={addingDoc}>
             {addingDoc ? "Adding…" : "Add document"}
           </Button>
+          <input ref={fileInputRef} type="file" accept=".txt,.md,.csv,.json,.html,.xml,.log,text/*" style={{ display: "none" }} onChange={handlePickFile} />
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => fileInputRef.current?.click()}
+            style={{ fontSize: 12.5 }}
+          >
+            Upload a file instead
+          </button>
         </div>
       </form>
 

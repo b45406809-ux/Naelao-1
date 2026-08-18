@@ -280,6 +280,9 @@ export interface Message {
       on_behalf_of_user?: boolean;
       awaiting_reply?: boolean;
     };
+    /** Step 5/7/11: artifacts the assistant CREATED during this run — rendered inline as a
+     *  preview (iframe for HTML + download) at this turn, like Claude showing an artifact. */
+    created_artifacts?: Array<{ artifact_id: string; filename: string; content_type?: string }>;
   };
   /** CLIENT-ONLY, never persisted server-side: the "currently doing X" activity trail this run
    *  produced (observe/find/gate/reason/run/answer steps, live while the run was in flight — see
