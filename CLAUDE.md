@@ -8504,6 +8504,56 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      it shows depends on the model/effort actually emitting thinking, needs live repro), and the
      BYOK half of 28. These are genuinely multi-session features, documented here rather than
      half-built.
+153. **The 5 remaining items item 152 left open (18, 20, 21, 28-BYOK, 4) are now all BUILT — the
+     28-step goal batch (`new/goal 1.txt`) is COMPLETE.** Each shipped end-to-end (backend + gate +
+     UI + tests + deploy), full suite green throughout (ended at 3289/3289).
+     - **Step 18 (Discover — explore all businesses, navigate own only):** new `GET
+       /spaces/:productSpaceId/directory` (business-routes) lists every active business under a
+       product with a safe projection (id/name/template_id/created_at) + an `is_mine` flag from the
+       caller's own `business_memberships`. Product-scoped, NOT platform-wide (item 102's
+       cross-tenant privacy boundary), never leaks owner identity/revenue. Router allowlist +
+       `getBusinessDirectory` client + an "Explore businesses" section on Discover (non-navigable
+       cards for others' businesses). 3 tests.
+     - **Step 20 (Plugins directory):** a dedicated `/plugins` page (More nav) surfacing the whole
+       plugin surface in one place — Installed (from the project list, links to the project),
+       Available to add (role-filtered feature kinds minus active singletons), and which come by
+       Default (autoProvisionable). A "plugin" IS a project of a Business Feature kind (same
+       mechanism); installing one creates that kind of project. Frontend-only on the already-tested
+       `GET /spaces/:id/feature-kinds`.
+     - **Step 21 (customer-bot Automation dashboard):** the no-code "after the customer says X, do
+       Y" rules (`project_rules`) were internal-only (assistant/builder-authored) — opened to a
+       business ADMIN (GET member, POST/DELETE admin) via `requireBusinessMembership`, same
+       admin-floor precedent as model-config/scheduled-jobs. Closed a pre-existing gap: the bare
+       `/rules` `app.use` never covered `/rules/:ruleId`, so DELETE had no `requireInternalHmac`
+       gate. Router allowlist + `getProjectRules`/`create`/`delete` client +
+       `CustomerBotAutomation` dashboard (add/remove rules, shown on a customer_bot project; member
+       read-only). 3 gating tests + full suite (no Hono route-table corruption).
+     - **Step 28 BYOK (business-wide bring-your-own Gemini/Groq key):** `ai-client`'s
+       `byokProviderForModel` — the model prefix IS the efficiency gate (a default `@cf/` model
+       needs no lookup). `NaelaoAgentDO.resolveBusinessLlmOverride` resolves the business's own key
+       from the credential vault (never config_json — it's a secret) and overrides the platform key
+       at BOTH reasoner sites (interactive + channel heartbeat); fails OPEN (a BYOK lookup can never
+       break a run). The agent isolate never sees the key. `GET/PUT/DELETE /spaces/:id/llm-byok`
+       (agents worker, credential vault, space-scoped admin; GET projects `configured:boolean`
+       only) + spaces-worker `requireBusinessMembership` wrappers + router allowlist +
+       `ByokKeysPanel` on the assistant dashboard. CF Workers AI BYOK deliberately excluded (needs
+       account-id + scoped token + different gateway routing). 7 tests. **The 6-templates half of
+       28 was already done in the item 152 tranche.**
+     - **Step 4 (multi-format file viewer):** the Files panels rendered only text/html/markdown;
+       now PDF, images, and Office docs (Word/Excel) too. Each Office format is a lazy-loaded
+       "plugin" — `mammoth` (.docx) / `xlsx` (.xlsx) dynamically `import()`'d only when a file of
+       that type opens, so it stays off the main bundle AND the edge worker (both confirmed via a
+       real `next-on-pages` build). PDFs/images use the browser's own native rendering (no library);
+       CSV is a zero-dep table; unrenderable types get a download link, not a broken preview. Both
+       file-read routes (`workers/spaces` project + `workers/agents` assistant) now return base64
+       (+ content_type) for a viewable-binary extension instead of only `obj.text()` (chunked
+       base64 encode, 2MB cap unchanged). New `FileViewer` component + `WorkspaceFileContent` type,
+       wired into both the side-panel Files viewer and the ProjectKindPanel workspace viewer.
+     **Not live-verified in a browser this batch** (same standing Playwright/TLS-handshake limit as
+     every prior UI pass) — every claim is backed by unit tests against the real request/response
+     contracts + a real `next-on-pages` build + deployed-bundle content checks; the office-doc
+     rendering specifically (mammoth/xlsx in the browser) is proven only to BUILD and BUNDLE
+     correctly, not exercised against a real .docx/.xlsx in a live browser.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
