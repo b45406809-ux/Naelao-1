@@ -185,6 +185,51 @@ describe("GET /spaces/:productSpaceId/my-businesses", () => {
   });
 });
 
+describe("GET /spaces/:productSpaceId/directory (step 18)", () => {
+  it("lists EVERY active business under the product, flagging which are the caller's own", async () => {
+    const env = makeEnv();
+    const aliceBiz = await createBusiness(env, "alice", "Alice's Shop");
+    const bobBiz = await createBusiness(env, "bob", "Bob's Shop");
+    await env.PLATFORM_DB.prepare("UPDATE spaces SET config_json = ? WHERE id = ?")
+      .bind(JSON.stringify({ template_id: "whop-seller" }), aliceBiz.space_id).run();
+    void bobBiz;
+
+    const aliceHeaders = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "alice" });
+    const res = await spacesWorker.fetch(req("/spaces/prod-1/directory", aliceHeaders), env as never, execCtx);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: Array<{ id: string; name: string; template_id: string | null; is_mine: number }>; count: number };
+    // Both businesses are visible (discovery), never just the caller's own.
+    expect(body.count).toBe(2);
+    const names = body.data.map((d) => d.name).sort();
+    expect(names).toEqual(["Alice's Shop", "Bob's Shop"]);
+    // is_mine gates navigation: alice's own is flagged, bob's is not.
+    const mine = body.data.find((d) => d.name === "Alice's Shop")!;
+    const theirs = body.data.find((d) => d.name === "Bob's Shop")!;
+    expect(mine.is_mine).toBe(1);
+    expect(mine.template_id).toBe("whop-seller");
+    expect(theirs.is_mine).toBe(0);
+  });
+
+  it("never leaks owner identity, revenue, or any private metric — safe projection only", async () => {
+    const env = makeEnv();
+    await createBusiness(env, "alice", "Alice's Shop");
+    const bobHeaders = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "bob" });
+    const res = await spacesWorker.fetch(req("/spaces/prod-1/directory", bobHeaders), env as never, execCtx);
+    const body = (await res.json()) as { data: Array<Record<string, unknown>> };
+    // A different end user sees the business exists but nothing private about it.
+    const row = body.data[0]!;
+    expect(Object.keys(row).sort()).toEqual(["created_at", "id", "is_mine", "name", "template_id"]);
+    expect(row.is_mine).toBe(0);
+  });
+
+  it("rejects with no user id", async () => {
+    const env = makeEnv();
+    const headers = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user" });
+    const res = await spacesWorker.fetch(req("/spaces/prod-1/directory", headers), env as never, execCtx);
+    expect(res.status).toBe(401);
+  });
+});
+
 describe("GET /spaces/:productSpaceId/template-activity", () => {
   it("aggregates active businesses per template across DIFFERENT tenants, revealing no PII", async () => {
     const env = makeEnv();

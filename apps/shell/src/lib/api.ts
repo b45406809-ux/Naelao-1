@@ -1523,6 +1523,32 @@ export async function listMyBusinesses(productSpaceId: string, session: SessionC
   return res.data;
 }
 
+/** A safe-projection entry in the product's public business directory (step 18). */
+export interface DirectoryBusiness {
+  id: string;
+  name: string;
+  template_id?: string | null;
+  created_at?: string | null;
+  /** 1 when the signed-in user is a member of this business (so the UI can gate navigation). */
+  is_mine: number;
+}
+
+/**
+ * GET /v1/spaces/:productSpaceId/directory — every active business under this product (step 18).
+ * DISCOVER what others have built; NAVIGATE only into your own (is_mine). Never leaks owner
+ * identity, revenue, or any private metric — safe projection only.
+ */
+export async function getBusinessDirectory(
+  productSpaceId: string,
+  session: SessionCredentials,
+): Promise<DirectoryBusiness[]> {
+  const res = await apiFetch<{ data: DirectoryBusiness[]; count: number }>(
+    `/v1/spaces/${productSpaceId}/directory`,
+    { session },
+  );
+  return res.data;
+}
+
 export interface TemplateActivity {
   template_id: string;
   active_count: number;

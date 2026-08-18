@@ -23,9 +23,11 @@ import {
   getTemplateActivity,
   getBusinessRevenue,
   getBusinessAnalytics,
+  getBusinessDirectory,
   type ShellManifest,
   type Business,
   type TemplateActivity,
+  type DirectoryBusiness,
 } from "@/lib/api";
 import { listModelBenchmarks, DEFAULT_WORKING_MODEL, type CostTier } from "@naelao/billing-core";
 import { modelLabel } from "@/components/ModelSelector";
@@ -97,6 +99,10 @@ export default function DiscoverPage() {
   const [showAllModels, setShowAllModels] = React.useState(false);
   const [leaderboard, setLeaderboard] = React.useState<LeaderboardRow[] | null>(null);
   const [leaderboardLoading, setLeaderboardLoading] = React.useState(false);
+  // Step 18: every active business under this product (not just the caller's own). Discover-only —
+  // a card navigates in only when is_mine. Genuinely optional (allSettled): a failure just hides
+  // the section, never an error the user sees or a blank "there are none" claim.
+  const [directory, setDirectory] = React.useState<DirectoryBusiness[]>([]);
 
   const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
 
@@ -122,6 +128,9 @@ export default function DiscoverPage() {
     // Genuinely optional — a failure here just means the showcase section doesn't render, never
     // an error the user sees.
     getTemplateActivity(product.space_id, creds).then(setTemplateActivity).catch(() => {});
+    // Step 18: the public-within-product directory. Optional in the same way — a failure hides the
+    // section rather than surfacing an error.
+    getBusinessDirectory(product.space_id, creds).then(setDirectory).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [product.space_id, session]);
 
@@ -250,6 +259,10 @@ export default function DiscoverPage() {
   const filteredBusinesses = query.trim()
     ? businesses.filter((b) => b.name.toLowerCase().includes(query.trim().toLowerCase()))
     : businesses;
+
+  // Step 18: businesses under this product that AREN'T the caller's own — the "explore" set. The
+  // directory route already flags is_mine; the caller's own are shown at the top of the page.
+  const otherBusinesses = directory.filter((d) => d.is_mine !== 1);
 
   // Showcase rows: activity joined against real template names, sorted by how many businesses are
   // actually running each one. A template with zero active businesses simply doesn't appear —
@@ -468,6 +481,35 @@ export default function DiscoverPage() {
                 </CardDesc>
                 {r.created_last_30d > 0 && (
                   <Badge color="green">{r.created_last_30d} new this month</Badge>
+                )}
+              </Card>
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* Step 18: Explore businesses — every OTHER active business under this product (your own are
+          already listed at the top). Discover what others have built, but you can only open your
+          own: a card here is deliberately NOT a link. Safe projection only (name + template) — no
+          owner identity, no revenue, no private metric ever reaches this list. */}
+      {otherBusinesses.length > 0 && (
+        <>
+          <div className="section-label" style={{ marginTop: 26 }}>
+            Explore businesses ({otherBusinesses.length})
+          </div>
+          <p style={{ fontSize: 12, color: "var(--text3)", margin: "-6px 0 12px" }}>
+            What others have built in this product. You can see them, but only open the ones
+            you&rsquo;re part of.
+          </p>
+          <div className="grid-3">
+            {otherBusinesses.map((d) => (
+              <Card key={d.id} interactive={false} style={{ cursor: "default" }}>
+                <div className="app-card-header">
+                  <div className="app-card-initial">{d.name.slice(0, 1)}</div>
+                  <CardTitle>{d.name}</CardTitle>
+                </div>
+                {d.template_id && (
+                  <Badge color="blue">{d.template_id.replace(/-/g, " ")}</Badge>
                 )}
               </Card>
             ))}

@@ -559,6 +559,11 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/presence$/,
   /^\/spaces\/([^/]+)\/businesses$/,
   /^\/spaces\/([^/]+)\/my-businesses$/,
+  // Step 18: the public-within-the-product business directory (all active businesses under this
+  // product; safe projection only + an is_mine flag). Identity here (which product's session to
+  // verify), authorization there (the route computes is_mine from the caller's own memberships and
+  // never leaks owner identity/revenue). A single dynamic leaf segment, not the corrupting shape.
+  /^\/spaces\/([^/]+)\/directory$/,
   // Discover's "what other businesses are doing" showcase — cross-tenant AGGREGATE COUNTS only
   // (see the route's own header on the spaces worker). No requireBusinessMembership needed: the
   // productSpaceId in the path only identifies which product's session to verify, the query

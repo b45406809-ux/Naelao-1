@@ -163,6 +163,33 @@ export function registerBusinessRoutes(app: Hono<any>): void { // eslint-disable
     return c.json({ data: results, count: results.length });
   });
 
+  // Step 18: GET /spaces/:productSpaceId/directory — a public-within-the-product directory of
+  // ALL active businesses under this product (not just the caller's own), so a signed-in end user
+  // can DISCOVER what others have built, but only NAVIGATE into their own. Deliberately scoped to
+  // the product (businesses share one product root), NOT platform-wide — that would be a much
+  // larger cross-product privacy decision (item 102's boundary). Safe projection only: id, name,
+  // template_id, created_at — never owner identity, revenue, or any private metric. `is_mine` is
+  // computed from the caller's own business_memberships so the shell can gate navigation.
+  app.get("/spaces/:productSpaceId/directory", async (c) => {
+    const env = c.env as BusinessRoutesEnv;
+    const productSpaceId = c.req.param("productSpaceId");
+    const { userId } = callerIdentity(c);
+    if (!userId) return c.json({ error_code: "unauthorized", message: "Missing user" }, 401);
+    const { results } = await env.PLATFORM_DB.prepare(
+      `SELECT s.id, s.name,
+              json_extract(s.config_json, '$.template_id') AS template_id,
+              s.created_at,
+              CASE WHEN m.end_user_id IS NOT NULL THEN 1 ELSE 0 END AS is_mine
+         FROM spaces s
+         LEFT JOIN business_memberships m
+           ON m.business_space_id = s.id AND m.end_user_id = ? AND m.status = 'active'
+        WHERE s.parent_space_id = ? AND s.status NOT IN ('deleted', 'error')
+        ORDER BY s.created_at DESC
+        LIMIT 200`
+    ).bind(userId, productSpaceId).all();
+    return c.json({ data: results, count: results.length });
+  });
+
   // POST /spaces/:businessSpaceId/invites — owner/admin of the BUSINESS invites a collaborator by
   // email. Returns the raw token exactly once (never stored — only its hash, PBKDF2-password
   // precedent's lighter-weight sibling since this is a high-entropy random value, not a
