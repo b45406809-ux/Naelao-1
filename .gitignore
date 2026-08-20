@@ -13,3 +13,8 @@ dist/
 .next/
 .vercel/
 .cf-credentials.local
+
+# repomix output (generated on demand for AI Studio / external-LLM packaging — see repomix.shell.config.json)
+repomix-*.xml
+repomix-*.md
+repomix-*.txt

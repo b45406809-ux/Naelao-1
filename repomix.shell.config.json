@@ -1,0 +1,64 @@
+{
+  "$schema": "https://repomix.com/schemas/latest/schema.json",
+  "input": {
+    "maxFileSize": 5000000
+  },
+  "output": {
+    "filePath": "repomix-shell-backend.xml",
+    "style": "xml",
+    "parsableStyle": false,
+    "fileSummary": true,
+    "directoryStructure": true,
+    "removeComments": false,
+    "removeEmptyLines": false,
+    "showLineNumbers": false,
+    "copyToClipboard": false,
+    "topFilesLength": 30
+  },
+  "include": [
+    "apps/shell/**",
+    "workers/router/**",
+    "workers/spaces/**",
+    "workers/agents/**",
+    "workers/credentials/**",
+    "workers/knowledge/**",
+    "workers/billing/**",
+    "workers/notifications/**",
+    "workers/mcp-hub/**",
+    "workers/artifact/**",
+    "workers/browser/**",
+    "workers/ws-gateway/**",
+    "workers/provisioner/**",
+    "packages/**",
+    "infra/migrations/**",
+    "docs/LAUNCHPAD_ARCHITECTURE.md",
+    "docs/spec-appendix/A1-script-agents-and-space-assistants.md",
+    "package.json",
+    "pnpm-workspace.yaml",
+    "turbo.json",
+    "tsconfig.base.json",
+    "tsconfig.json"
+  ],
+  "ignore": {
+    "useGitignore": true,
+    "useDefaultPatterns": true,
+    "customPatterns": [
+      "**/naelao_expanded_gaps_resolved.html",
+      "**/naelao_whop_businesses_spec.html",
+      "**/CLAUDE.md",
+      "apps/dashboard/**",
+      "**/node_modules/**",
+      "**/.next/**",
+      "**/.wrangler/**",
+      "**/dist/**",
+      "**/*.tsbuildinfo",
+      "**/*.js.map",
+      "**/.env*",
+      "**/.dev.vars*",
+      "**/*.local"
+    ]
+  },
+  "security": {
+    "enableSecurityCheck": true
+  }
+}
