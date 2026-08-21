@@ -49,6 +49,14 @@ export const READ_SAFE_PREBUILT_OPS: ReadonlySet<string> = new Set([
   "read_file",
   "list_directory",
   "stat_file",
+  // search_file was a pure read the same class as read_file/list_directory but was never added
+  // here — found while adding the REPL-primitive reads below.
+  "search_file",
+  // Claude-Code-shaped REPL primitives (r2-workspace.ts) — Read/Grep/Glob are reads; Edit/Write
+  // mutate and Bash executes, so neither is on this list.
+  "Read",
+  "Grep",
+  "Glob",
   // file-manager (diff/history are reads; append/patch mutate)
   "file.diff",
   "file.history",
@@ -85,6 +93,9 @@ export const READ_SAFE_PREBUILT_OPS: ReadonlySet<string> = new Set([
   // lookups over whatever is already enabled, no side effect of any kind.
   "tools.search",
   "tools.describe",
+  // tasks.ts (AVOS plan step 4) — listing the project's task DAG is a pure read; create/start/
+  // complete/block are structural writes and stay off this list.
+  "task.list",
 ]);
 
 export function isReadSafeOperation(name: string): boolean {

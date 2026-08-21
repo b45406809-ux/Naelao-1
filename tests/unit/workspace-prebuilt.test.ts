@@ -153,4 +153,62 @@ describe("workspace prebuilt", () => {
       expect(container.store.has("big.log")).toBe(false);
     });
   });
+
+  // AVOS plan, step 3 — bulk copy every file under a prefix in ONE call, instead of one
+  // workspace.copy per file.
+  describe("workspace.sync_to_container", () => {
+    it("copies every R2 file under the run's prefix into the container in one call", async () => {
+      const r2 = makeFakeR2();
+      r2.store.set("spaces/space-1/workspace/a.ts", "1");
+      r2.store.set("spaces/space-1/workspace/src/b.ts", "2");
+      const container = makeContainerWorkspace();
+      const ctx = makeCtx({ r2, container });
+
+      const result = await call(ctx, "workspace.sync_to_container", {});
+
+      expect(result).toEqual({ ok: true, synced_files_count: 2, target: "container:/workspace" });
+      expect(container.store.get("a.ts")).toBe("1");
+      expect(container.store.get("src/b.ts")).toBe("2");
+      // R2 source is untouched — this is a copy, not a move.
+      expect(r2.store.get("spaces/space-1/workspace/a.ts")).toBe("1");
+    });
+
+    it("scopes to a path prefix when given one", async () => {
+      const r2 = makeFakeR2();
+      r2.store.set("spaces/space-1/workspace/src/a.ts", "1");
+      r2.store.set("spaces/space-1/workspace/docs/readme.md", "2");
+      const container = makeContainerWorkspace();
+      const ctx = makeCtx({ r2, container });
+
+      const result = await call(ctx, "workspace.sync_to_container", { path: "src" });
+
+      expect(result.synced_files_count).toBe(1);
+      expect(container.store.has("src/a.ts")).toBe(true);
+      expect(container.store.has("docs/readme.md")).toBe(false);
+    });
+
+    it("fails closed when TOOL_SANDBOX isn't configured", async () => {
+      const ctx = makeCtx({});
+      await expect(call(ctx, "workspace.sync_to_container", {})).rejects.toThrow(/container workspace unavailable/);
+    });
+  });
+
+  describe("workspace.sync_from_container", () => {
+    it("copies every container file back into R2 at the same relative paths", async () => {
+      const r2 = makeFakeR2();
+      const container = makeContainerWorkspace({ "out.csv": "a,b", "nested/report.json": "{}" });
+      const ctx = makeCtx({ r2, container });
+
+      const result = await call(ctx, "workspace.sync_from_container", {});
+
+      expect(result).toEqual({ ok: true, synced_files_count: 2, target: "r2" });
+      expect(r2.store.get("spaces/space-1/workspace/out.csv")).toBe("a,b");
+      expect(r2.store.get("spaces/space-1/workspace/nested/report.json")).toBe("{}");
+    });
+
+    it("fails closed when TOOL_SANDBOX isn't configured", async () => {
+      const ctx = makeCtx({});
+      await expect(call(ctx, "workspace.sync_from_container", {})).rejects.toThrow(/container workspace unavailable/);
+    });
+  });
 });

@@ -1038,6 +1038,33 @@ const MIGRATIONS: Migration[] = [
         ON messages(session_id, client_message_id) WHERE client_message_id IS NOT NULL;
     `,
   },
+  {
+    // AVOS plan, step 4 — a task DAG state machine for multi-agent coordination WITHIN a
+    // project. Distinct from project_journal's own todos (project-journal.ts): a journal todo
+    // is a loose personal checklist item (text + done), with no dependency graph and no
+    // assignment — fine for "what I still need to do," useless for "Agent2's task is blocked on
+    // Agent1 finishing theirs." `dependencies` is a JSON array of other task ids in THIS same
+    // table (never enforced as a real foreign key — D1/DO SQLite has no cross-row CHECK — the
+    // `tasks` prebuilt script is what's expected to read it before marking a task IN_PROGRESS).
+    version: 39,
+    description: "tasks — a per-project task DAG (dependencies + status), for multi-agent coordination",
+    up: `
+      CREATE TABLE IF NOT EXISTS tasks (
+        id             TEXT PRIMARY KEY,
+        space_id       TEXT NOT NULL,
+        project_id     TEXT,
+        thread_id      TEXT,
+        title          TEXT NOT NULL,
+        status         TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'in_progress', 'completed', 'blocked', 'cancelled')),
+        dependencies   TEXT NOT NULL DEFAULT '[]',
+        assigned_agent TEXT,
+        created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_tasks_space_project ON tasks(space_id, project_id, status);
+      CREATE INDEX IF NOT EXISTS idx_tasks_thread ON tasks(thread_id) WHERE thread_id IS NOT NULL;
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -1619,6 +1646,27 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // PATCH /threads/:id — rename and/or archive (there is no hard delete — see updateThread).
       if (method === "PATCH" && threadIdMatch?.[1]) {
         return this.updateThread(threadIdMatch[1], request);
+      }
+
+      // ── tasks (AVOS plan step 4 — a per-project task DAG, distinct from project_journal's
+      // own loose todos) ──────────────────────────────────────────────────────────
+      // GET /tasks?space_id=&project_id=&thread_id=&status=
+      if (method === "GET" && url.pathname === "/tasks") {
+        return this.listTasks(url.searchParams);
+      }
+      // POST /tasks — create ONE task (bare object body, not the plural {tasks:[...]} batch
+      // shape — the tasks prebuilt creates one at a time, and a single-item batch API is a
+      // needless extra layer for its only real caller).
+      if (method === "POST" && url.pathname === "/tasks") {
+        return this.createTask(request);
+      }
+      const taskIdMatch = url.pathname.match(/^\/tasks\/([^/]+)$/);
+      // PATCH /tasks/:id — status/title/dependencies/assigned_agent, any subset.
+      if (method === "PATCH" && taskIdMatch?.[1]) {
+        return this.updateTask(taskIdMatch[1], request);
+      }
+      if (method === "DELETE" && taskIdMatch?.[1]) {
+        return this.deleteTask(taskIdMatch[1]);
       }
 
       // ── cross-space access grants (spec §49 checkPermission path) ─────────────
@@ -4744,6 +4792,98 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     execute(this.ctx.storage.sql as never, `UPDATE threads SET ${sets.join(", ")} WHERE id = ?`, ...args);
     const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM threads WHERE id = ?", threadId);
     return Response.json(row);
+  }
+
+  // ── tasks (AVOS plan step 4 — a per-project task DAG) ──────────────────────────────────
+  // Deliberately DUMB CRUD: whether a task's dependencies are actually satisfied before it may
+  // move to in_progress is a business rule the `tasks` prebuilt script checks BEFORE calling
+  // PATCH here (same separation project-coordination.ts's own validateModel/validateAgentId
+  // already establish — a business rule lives with the agent-facing caller, not the store).
+  private static readonly TASK_STATUSES = ["pending", "in_progress", "completed", "blocked", "cancelled"] as const;
+
+  private listTasks(params: URLSearchParams): Response {
+    const spaceId = params.get("space_id") ?? "";
+    const projectId = params.get("project_id");
+    const threadId = params.get("thread_id");
+    const status = params.get("status");
+    const clauses = ["space_id = ?"];
+    const args: unknown[] = [spaceId];
+    if (projectId) { clauses.push("project_id = ?"); args.push(projectId); }
+    if (threadId) { clauses.push("thread_id = ?"); args.push(threadId); }
+    if (status) { clauses.push("status = ?"); args.push(status); }
+    const rows = queryAll<{ dependencies: string }>(
+      this.ctx.storage.sql as never,
+      `SELECT * FROM tasks WHERE ${clauses.join(" AND ")} ORDER BY created_at ASC LIMIT 200`,
+      ...args
+    );
+    return Response.json({ data: rows.map((r) => ({ ...r, dependencies: safeJsonParseArr(r.dependencies) as string[] })), count: rows.length });
+  }
+
+  private async createTask(request: Request): Promise<Response> {
+    const body = await request.json<{
+      id?: string;
+      space_id: string;
+      project_id?: string;
+      thread_id?: string;
+      title?: string;
+      status?: string;
+      dependencies?: string[];
+      assigned_agent?: string;
+    }>().catch(() => ({}) as Record<string, never>);
+    if (!body.space_id) return Response.json({ error_code: "bad_request", message: "space_id is required" }, { status: 400 });
+    if (!body.title) return Response.json({ error_code: "bad_request", message: "title is required" }, { status: 400 });
+    const status = body.status ?? "pending";
+    if (!SpaceDO.TASK_STATUSES.includes(status as (typeof SpaceDO.TASK_STATUSES)[number])) {
+      return Response.json({ error_code: "bad_request", message: `status must be one of: ${SpaceDO.TASK_STATUSES.join(", ")}` }, { status: 400 });
+    }
+    const id = body.id ?? crypto.randomUUID();
+    const now = new Date().toISOString();
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO tasks (id, space_id, project_id, thread_id, title, status, dependencies, assigned_agent, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id, body.space_id, body.project_id ?? null, body.thread_id ?? null, body.title, status,
+      JSON.stringify(Array.isArray(body.dependencies) ? body.dependencies.map(String) : []),
+      body.assigned_agent ?? null, now, now
+    );
+    const row = queryOne<{ dependencies: string }>(this.ctx.storage.sql as never, "SELECT * FROM tasks WHERE id = ?", id);
+    return Response.json({ ...row, dependencies: safeJsonParseArr(row!.dependencies) as string[] }, { status: 201 });
+  }
+
+  private async updateTask(taskId: string, request: Request): Promise<Response> {
+    const body = await request.json<{
+      title?: string;
+      status?: string;
+      dependencies?: string[];
+      assigned_agent?: string | null;
+    }>().catch(() => ({}) as Record<string, never>);
+    const existing = queryOne<{ id: string }>(this.ctx.storage.sql as never, "SELECT id FROM tasks WHERE id = ?", taskId);
+    if (!existing) return Response.json({ error_code: "not_found", message: "Task not found" }, { status: 404 });
+    if (body.status !== undefined && !SpaceDO.TASK_STATUSES.includes(body.status as (typeof SpaceDO.TASK_STATUSES)[number])) {
+      return Response.json({ error_code: "bad_request", message: `status must be one of: ${SpaceDO.TASK_STATUSES.join(", ")}` }, { status: 400 });
+    }
+    const sets: string[] = [];
+    const args: unknown[] = [];
+    if (body.title !== undefined) { sets.push("title = ?"); args.push(body.title); }
+    if (body.status !== undefined) { sets.push("status = ?"); args.push(body.status); }
+    if (body.dependencies !== undefined) { sets.push("dependencies = ?"); args.push(JSON.stringify(body.dependencies.map(String))); }
+    if (body.assigned_agent !== undefined) { sets.push("assigned_agent = ?"); args.push(body.assigned_agent); }
+    if (sets.length === 0) {
+      return Response.json({ error_code: "bad_request", message: "nothing to update — provide title, status, dependencies, and/or assigned_agent" }, { status: 400 });
+    }
+    sets.push("updated_at = ?");
+    args.push(new Date().toISOString());
+    args.push(taskId);
+    execute(this.ctx.storage.sql as never, `UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`, ...args);
+    const row = queryOne<{ dependencies: string }>(this.ctx.storage.sql as never, "SELECT * FROM tasks WHERE id = ?", taskId);
+    return Response.json({ ...row, dependencies: safeJsonParseArr(row!.dependencies) as string[] });
+  }
+
+  private deleteTask(taskId: string): Response {
+    const existing = queryOne<{ id: string }>(this.ctx.storage.sql as never, "SELECT id FROM tasks WHERE id = ?", taskId);
+    if (!existing) return Response.json({ error_code: "not_found", message: "Task not found" }, { status: 404 });
+    execute(this.ctx.storage.sql as never, "DELETE FROM tasks WHERE id = ?", taskId);
+    return Response.json({ ok: true, deleted: taskId });
   }
 
   // ── Event triggers (@naelao/events) — no-code "after X happens, run script Y" ─────────────

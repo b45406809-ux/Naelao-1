@@ -84,6 +84,26 @@ const DEFAULT_ISOLATE_TIMEOUT_MS = 15_000;
 const DEFAULT_CONTAINER_TIMEOUT_MS = 60_000;
 const ISOLATE_COMPAT_DATE = "2024-12-01";
 
+/**
+ * Execution Ladder auto-promotion (AVOS plan, step 3): a Tier 2-4 isolate has NO real OS, no
+ * `npm`/`pip`, and (at Tier 2) no package resolution at all — Tier 3's own CDN-ESM-shim
+ * (extractBarePackageImports, above) is already the isolate's best attempt at "install a
+ * package," and Tier 4 adds only a browser proxy, not a filesystem. So a script whose failure is
+ * genuinely "this isolate structurally cannot do that" (an unresolved import — the isolate has
+ * no module the CDN shim could find, or Tier 2 didn't even try) is a real, deterministic signal
+ * that Tier 5 (a real container: real npm/pip, real files) can plausibly succeed where the
+ * isolate never could. Deliberately narrow, and deliberately does NOT include a plain execution
+ * timeout: a script that's slow or genuinely stuck is not obviously fixed by a cold-starting
+ * container with a longer (60s vs 15s) but still finite timeout — retrying there risks doubling
+ * the wall-clock cost of something that was always going to fail, for no real capability gain.
+ */
+const ISOLATE_PROMOTION_ERROR_PATTERNS = [
+  /cannot find module/i,
+  /failed to resolve (specifier|module)/i,
+  /no such module/i,
+  /module not found/i,
+];
+
 /** Bare (non-relative) import specifiers a Tier-3 script wants resolved from a CDN. */
 function extractBarePackageImports(code: string): string[] {
   const specs = new Set<string>();
@@ -224,7 +244,18 @@ async function fetchEsmModule(pkg: string): Promise<string | null> {
 
 async function runIsolate(
   opts: CodeRunnerOptions,
-  params: { name: string; code: string; tier: ExecutionTier; args: Record<string, unknown>; spaceId: string; agentId: string; tenantId: string }
+  params: {
+    name: string;
+    code: string;
+    tier: ExecutionTier;
+    args: Record<string, unknown>;
+    spaceId: string;
+    agentId: string;
+    tenantId: string;
+    // Widened to accept (and, on auto-promotion, forward) the same optional fields
+    // runContainer expects — absent for the overwhelming majority of Tier 2-4 calls.
+    projectId?: string;
+  }
 ): Promise<ScriptRunResult> {
   const started = Date.now();
   if (!opts.loader) {
@@ -320,9 +351,33 @@ async function runIsolate(
     }
   } catch (err) {
     const aborted = err instanceof Error && err.name === "AbortError";
+    const errMsg = aborted ? `Tier ${params.tier} execution timed out` : String(err instanceof Error ? err.message : err);
+
+    // Auto-promotion — see ISOLATE_PROMOTION_ERROR_PATTERNS's own doc for why only an unresolved-
+    // import failure qualifies (never a timeout, which this branch also handles above but does
+    // NOT match any of the patterns). No-op when Tier 5 itself isn't wired — the caller gets the
+    // original isolate error, which is still more useful than a second "unavailable" on top of it.
+    if (opts.toolSandbox && !aborted && ISOLATE_PROMOTION_ERROR_PATTERNS.some((p) => p.test(errMsg))) {
+      console.warn(`[execution-ladder] auto-promoting '${params.name}' from Tier ${params.tier} to Tier 5 after: ${errMsg}`);
+      const promoted = await runContainer(opts, {
+        name: params.name,
+        code: params.code,
+        args: params.args,
+        spaceId: params.spaceId,
+        agentId: params.agentId,
+        ...(params.projectId ? { projectId: params.projectId } : {}),
+      });
+      // A successful promotion's `output` is the script's own real return value — left exactly
+      // as runContainer produced it, never annotated. A FAILED promotion gets the isolate's
+      // original error folded in ahead of the container's own, so "why did this fail" reads as
+      // one coherent story instead of only the second attempt's error with no trace of the first.
+      if (promoted.ok) return promoted;
+      return { ...promoted, error: `Tier ${params.tier} failed (${errMsg}); auto-promoted to Tier 5, which also failed: ${promoted.error ?? "unknown error"}` };
+    }
+
     return {
       ok: false,
-      error: aborted ? `Tier ${params.tier} execution timed out` : String(err instanceof Error ? err.message : err),
+      error: errMsg,
       tier: params.tier,
       duration_ms: Date.now() - started,
       tokens_used: 0,

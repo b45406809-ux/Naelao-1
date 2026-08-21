@@ -2576,6 +2576,61 @@ app.patch("/spaces/:spaceId/threads/:threadId", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
+// ── tasks (AVOS plan step 4 — a per-project task DAG, agent-facing via the `tasks` prebuilt) ──
+// Same two-gate pattern as /threads above: requireInternalHmac verifies the CALLING WORKER (the
+// agents worker's tasks prebuilt mints this via mintInternalToken); requireBusinessMembership
+// then checks the ACTING PERSON the agent is running on behalf of (forwarded x-naelao-user-id) —
+// a plain member may read/create/progress tasks, same floor as creating a thread.
+app.use("/spaces/:spaceId/tasks", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/tasks", requireBusinessMembership({ GET: "member", POST: "member" }));
+app.use("/spaces/:spaceId/tasks/:taskId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/tasks/:taskId", requireBusinessMembership({ PATCH: "member", DELETE: "member" }));
+
+app.get("/spaces/:spaceId/tasks", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const qs = new URLSearchParams({ space_id: spaceId });
+  const projectId = c.req.query("project_id");
+  if (projectId) qs.set("project_id", projectId);
+  const threadId = c.req.query("thread_id");
+  if (threadId) qs.set("thread_id", threadId);
+  const status = c.req.query("status");
+  if (status) qs.set("status", status);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/tasks?${qs.toString()}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.post("/spaces/:spaceId/tasks", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const body = await c.req.json().catch(() => ({}));
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, "/tasks", "POST", JSON.stringify({ ...body, space_id: spaceId }));
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.patch("/spaces/:spaceId/tasks/:taskId", async (c) => {
+  const { spaceId, taskId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const body = await c.req.text();
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/tasks/${encodeURIComponent(taskId)}`, "PATCH", body);
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.delete("/spaces/:spaceId/tasks/:taskId", async (c) => {
+  const { spaceId, taskId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/tasks/${encodeURIComponent(taskId)}`, "DELETE");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
 // GET /spaces/:spaceId/sub-spaces — list the product's space registry (root + departments).
 app.get("/spaces/:spaceId/sub-spaces", async (c) => {
   const spaceId = c.req.param("spaceId");

@@ -32,6 +32,9 @@ export interface LlmFunctionTool {
   description: string;
   input_schema: Record<string, unknown>; // JSON Schema object
   require_approval?: boolean; // G-AY01: HITL — pause agent and wait for human approval before executing
+  // Prompt caching (G-C05) — set on the LAST tool in the array by buildRequestBody, same "mark
+  // the last block of a stable prefix" convention already used for the system prompt below.
+  cache_control?: { type: "ephemeral" };
 }
 
 /** §A1.25: Anthropic's native, server-executed web search tool (CF AI Gateway proxies it
@@ -46,6 +49,7 @@ export interface LlmNativeWebSearchTool {
   allowed_domains?: string[];
   blocked_domains?: string[];
   user_location?: { type: "approximate"; city?: string; region?: string; country?: string; timezone?: string };
+  cache_control?: { type: "ephemeral" };
 }
 
 export type LlmTool = LlmFunctionTool | LlmNativeWebSearchTool;

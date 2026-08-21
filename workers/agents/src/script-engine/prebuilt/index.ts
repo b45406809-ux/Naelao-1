@@ -45,6 +45,7 @@ import { wallet } from "./wallet.js";
 import { businessWallet } from "./business-wallet.js";
 import { revenueTracker } from "./revenue-tracker.js";
 import { schedule } from "./schedule.js";
+import { tasks } from "./tasks.js";
 
 /** Context handed to every prebuilt operation. */
 export interface PrebuiltOpContext {
@@ -147,6 +148,9 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   // revenue-cut % can be billed as a surcharge; see revenue-tracker.ts's header.
   [revenueTracker.name]: revenueTracker,
   [schedule.name]: schedule,
+  // A per-project task DAG (AVOS plan step 4) — distinct from project_journal's own loose
+  // todos; see tasks.ts's own header for why this exists as a separate script.
+  [tasks.name]: tasks,
 };
 
 /**
@@ -193,4 +197,5 @@ export {
   businessDiagnostics,
   localMachine,
   schedule,
+  tasks,
 };

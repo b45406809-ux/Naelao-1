@@ -80,6 +80,17 @@ const CORE_OPERATIONS = new Set<string>([
   "project_journal.read", // project-journal.ts
   "notify.email",         // notifications.ts
   "conversation.search",  // conversation.ts
+  // Claude-Code-shaped REPL primitives (r2-workspace.ts / code-exec.ts) — kept visible even under
+  // reduced disclosure since these are the most-used verbs in any multi-step run, mirroring how a
+  // coding agent's own default tool list always shows its file/search/exec primitives. This only
+  // controls what the REDUCED payload shows, never permission — the HITL gate/approval allowlist
+  // is a separate mechanism (assistant_policy.auto_approved_actions), untouched by this set.
+  "Read",
+  "Edit",
+  "Write",
+  "Grep",
+  "Glob",
+  "Bash",
 ]);
 
 /** Consecutive "unknown operation" misses in reduced-disclosure mode before this run
@@ -98,6 +109,16 @@ const RENAMED_OPERATIONS: Record<string, string> = {
   // Every thread-scoped operation is namespaced `thread.*`; consulting an agent privately is one of
   // them, and being the lone `agent.*` member of that script made it read like a different subsystem.
   "agent.consult": "thread.consult",
+  // Lowercase spellings of the REPL primitives — a model reaching for the more familiar casing
+  // (matching how it would type a shell verb) still resolves to the real, PascalCase op name.
+  "read": "Read",
+  "edit": "Edit",
+  "write": "Write",
+  "grep": "Grep",
+  "glob": "Glob",
+  "bash": "Bash",
+  "execute_bash": "Bash",
+  "patch_file": "Edit",
 };
 
 // ── Tool-result pagination (step 9) ─────────────────────────────────────────────────────────

@@ -396,3 +396,111 @@ describe("code-runner — Tier 5 Container Marketplace routing (§A1.17 Phase L)
     expect((toolSandbox as unknown as { get: ReturnType<typeof vi.fn> }).get).not.toHaveBeenCalled();
   });
 });
+
+// AVOS plan, step 3 — an isolate has no real package manager, so a genuinely unresolved import
+// is a deterministic "this tier structurally cannot do this" signal; a plain timeout is not.
+describe("code-runner — Execution Ladder auto-promotion (Tier 2-4 -> Tier 5)", () => {
+  function loaderThatThrows(message: string): WorkerLoaderBinding {
+    return {
+      get() {
+        return {
+          getEntrypoint() {
+            return {
+              async fetch(): Promise<Response> {
+                throw new Error(message);
+              },
+            } as unknown as Fetcher;
+          },
+        };
+      },
+    };
+  }
+
+  it("promotes to Tier 5 and returns its output when the isolate fails with an unresolved import", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, result: { installed: true } }), { status: 200 }));
+    const toolSandbox = { idFromName: vi.fn().mockReturnValue("do-id"), get: vi.fn().mockReturnValue({ fetch: fetchSpy }) } as unknown as DurableObjectNamespace;
+    const runner = buildCodeRunner({ loader: loaderThatThrows("Cannot find module 'pandas'"), toolSandbox });
+
+    const result = await runner.run({
+      name: "run-pandas", code: "import pandas", tier: 3, args: {}, spaceId: "space1", agentId: "agent1", tenantId: "t",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.output).toEqual({ installed: true });
+    expect(result.tier).toBe(5); // the promoted attempt's own tier, not the original 3
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("forwards projectId to the promoted container run — same project's shared sandbox", async () => {
+    const idFromName = vi.fn().mockReturnValue("do-id");
+    const fetchSpy = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 }));
+    const toolSandbox = { idFromName, get: vi.fn().mockReturnValue({ fetch: fetchSpy }) } as unknown as DurableObjectNamespace;
+    const runner = buildCodeRunner({ loader: loaderThatThrows("Module not found: 'requests'"), toolSandbox });
+
+    await runner.run({
+      name: "x", code: "c", tier: 2, args: {}, spaceId: "space1", agentId: "agent1", tenantId: "t", projectId: "proj-1",
+    });
+
+    expect(idFromName).toHaveBeenCalledWith("sandbox:space1:proj-1");
+  });
+
+  it("reports BOTH errors, in order, when the promoted container run also fails", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: false, error: "pip install failed" }), { status: 200 }));
+    const toolSandbox = { idFromName: vi.fn().mockReturnValue("do-id"), get: vi.fn().mockReturnValue({ fetch: fetchSpy }) } as unknown as DurableObjectNamespace;
+    const runner = buildCodeRunner({ loader: loaderThatThrows("Cannot find module 'x'"), toolSandbox });
+
+    const result = await runner.run({ name: "x", code: "c", tier: 2, args: {}, spaceId: "s", agentId: "a", tenantId: "t" });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("Cannot find module 'x'");
+    expect(result.error).toContain("pip install failed");
+  });
+
+  it("does NOT promote a plain timeout — a slower container isn't obviously the fix", async () => {
+    const fetchSpy = vi.fn();
+    const toolSandbox = { idFromName: vi.fn().mockReturnValue("do-id"), get: vi.fn().mockReturnValue({ fetch: fetchSpy }) } as unknown as DurableObjectNamespace;
+    const abortLoader: WorkerLoaderBinding = {
+      get() {
+        return {
+          getEntrypoint() {
+            return {
+              async fetch(): Promise<Response> {
+                const e = new Error("aborted");
+                e.name = "AbortError";
+                throw e;
+              },
+            } as unknown as Fetcher;
+          },
+        };
+      },
+    };
+    const runner = buildCodeRunner({ loader: abortLoader, toolSandbox, isolateTimeoutMs: 5 });
+
+    const result = await runner.run({ name: "x", code: "c", tier: 2, args: {}, spaceId: "s", agentId: "a", tenantId: "t" });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("timed out");
+    expect(result.tier).toBe(2); // never promoted
+    expect(fetchSpy).not.toHaveBeenCalled(); // the container was never even attempted
+  });
+
+  it("does NOT promote when no ToolSandboxDO binding is wired — the original isolate error stands", async () => {
+    const runner = buildCodeRunner({ loader: loaderThatThrows("Cannot find module 'x'") }); // no toolSandbox at all
+    const result = await runner.run({ name: "x", code: "c", tier: 2, args: {}, spaceId: "s", agentId: "a", tenantId: "t" });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("Cannot find module 'x'");
+    expect(result.tier).toBe(2);
+  });
+
+  it("does NOT promote an unrelated runtime error (e.g. a real bug in the script)", async () => {
+    const fetchSpy = vi.fn();
+    const toolSandbox = { idFromName: vi.fn().mockReturnValue("do-id"), get: vi.fn().mockReturnValue({ fetch: fetchSpy }) } as unknown as DurableObjectNamespace;
+    const runner = buildCodeRunner({ loader: loaderThatThrows("TypeError: x is not a function"), toolSandbox });
+
+    const result = await runner.run({ name: "x", code: "c", tier: 2, args: {}, spaceId: "s", agentId: "a", tenantId: "t" });
+
+    expect(result.ok).toBe(false);
+    expect(result.tier).toBe(2);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});

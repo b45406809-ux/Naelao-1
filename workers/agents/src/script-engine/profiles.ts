@@ -335,6 +335,11 @@ ${BASE_AGENTS_MD}`,
         // long/background task, then end the run instead of blocking. schedule.list is read-only
         // (auto-approved); wake_me/cancel are gated like any other structural write.
         "schedule",
+        // AVOS plan step 4: a per-project task DAG for coordinating work across MULTIPLE agents —
+        // distinct from project-journal's own loose todos (no dependency graph, no assignment).
+        // task.list is read-only (auto-approved); create/start/complete/block are structural
+        // writes, gated like any other.
+        "tasks",
       ],
       agent_scripts: "auto",
       startup_observe: "observe_filesystem",
@@ -743,6 +748,9 @@ ${BASE_AGENTS_MD}`,
         // long/background task, then end the run instead of blocking. schedule.list is read-only
         // (auto-approved); wake_me/cancel are gated like any other structural write.
         "schedule",
+        // AVOS plan step 4: a per-project task DAG for coordinating work across MULTIPLE agents —
+        // distinct from project-journal's own loose todos (no dependency graph, no assignment).
+        "tasks",
       ],
       agent_scripts: "auto",
       startup_observe: "observe_filesystem",
@@ -823,6 +831,12 @@ export const LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED: string[] = [
   "stat_file",
   // Step 3: searching inside a file for matching lines is a pure read, same class as read_file.
   "search_file",
+  // Claude-Code-shaped REPL primitives (r2-workspace.ts) — Read/Grep/Glob are the same class of
+  // pure read as read_file/search_file/list_directory above; Edit/Write/Bash stay gated (they
+  // change the business's data or run real commands).
+  "Read",
+  "Grep",
+  "Glob",
   // Step 8: seeing which models/agents you may address before spawning/consulting — pure reads,
   // and gating them would mean asking permission before being allowed to find out who exists.
   "thread.list_project_models",
@@ -861,6 +875,9 @@ export const LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED: string[] = [
   // gated" split as diagnostics/business_wallet above. approvals.approve/decline stay gated: an
   // approval it clears on the owner's behalf may itself move money or reach outside the business.
   "approvals.list",
+  // AVOS plan step 4 — seeing the project's task DAG is orientation, same class as
+  // schedule.list/project.list above. create/start/complete/block stay gated (structural writes).
+  "task.list",
 ];
 
 /** Map a Launchpad allowed_skill id → prebuilt scripts available in this build. */

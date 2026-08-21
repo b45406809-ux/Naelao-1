@@ -156,7 +156,18 @@ function buildRequestBody(request: LlmRequest): Record<string, unknown> {
   }
 
   if (request.tools && request.tools.length > 0) {
-    body.tools = request.tools;
+    // Prompt caching (G-C05), extended to tool schemas: Anthropic caches everything BEFORE a
+    // cache_control breakpoint as one unit, and the tool-definitions block is exactly as stable
+    // across an agent run's turns as the system prompt already marked below — only the LAST
+    // entry needs the marker; a call already carrying one on its last tool is left untouched
+    // (never double-marked) rather than assuming this is the only writer of that field.
+    const tools = [...request.tools];
+    const lastIdx = tools.length - 1;
+    const lastTool = tools[lastIdx];
+    if (lastTool && !lastTool.cache_control) {
+      tools[lastIdx] = { ...lastTool, cache_control: { type: "ephemeral" } };
+    }
+    body.tools = tools;
   }
 
   if (request.metadata) {

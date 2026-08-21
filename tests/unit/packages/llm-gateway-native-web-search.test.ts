@@ -42,7 +42,11 @@ describe("callLlm — passes the native web-search tool through unchanged", () =
       tools: [NATIVE_WEB_SEARCH],
       max_tokens: 100,
     });
-    expect(capturedBody.tools).toEqual([NATIVE_WEB_SEARCH]);
+    // AVOS plan step 2: buildRequestBody now marks the LAST tool with cache_control (prompt
+    // caching, extended from the system prompt to tool schemas — see
+    // llm-gateway-tool-caching.test.ts) — the native web-search block is otherwise untouched,
+    // which is what "unchanged" in this test's name is actually verifying.
+    expect(capturedBody.tools).toEqual([{ ...NATIVE_WEB_SEARCH, cache_control: { type: "ephemeral" } }]);
   });
 
   it("callLlm's response mapping already passes through server_tool_use/web_search_tool_result blocks unfiltered (no per-block-type logic to break)", async () => {

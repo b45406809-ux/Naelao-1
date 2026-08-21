@@ -66,15 +66,90 @@ async function deleteOne(ctx: PrebuiltOpContext, ws: WorkspaceName, path: string
   await ctx.env.containerWorkspace.remove([path]);
 }
 
+/** Every R2 workspace key under this run's prefix, as {relativePath: content} — the bulk-read
+ *  half of workspace.sync_to_container. Deliberately bounded (a container's disk and a single
+ *  write() call both have real limits, unlike R2 itself): a workspace with more than
+ *  SYNC_MAX_FILES or whose total content exceeds SYNC_MAX_TOTAL_BYTES reports what it skipped
+ *  rather than silently truncating or failing outright. */
+const SYNC_MAX_FILES = 500;
+const SYNC_MAX_TOTAL_BYTES = 20_000_000;
+
+async function readAllR2(
+  ctx: PrebuiltOpContext,
+  pathPrefix: string
+): Promise<{ files: Record<string, string>; skipped_count: number; skipped_reason?: string }> {
+  const prefix = key(ctx, pathPrefix);
+  const wsPrefix = workspacePrefix(ctx.env);
+  const files: Record<string, string> = {};
+  let totalBytes = 0;
+  let skippedCount = 0;
+  let cursor: string | undefined;
+  do {
+    const listing = await bucket(ctx).list(cursor ? { prefix, cursor } : { prefix });
+    for (const o of listing.objects) {
+      if (o.key.endsWith("/.keep")) continue;
+      if (Object.keys(files).length >= SYNC_MAX_FILES || totalBytes + o.size > SYNC_MAX_TOTAL_BYTES) {
+        skippedCount++;
+        continue;
+      }
+      const obj = await bucket(ctx).get(o.key);
+      if (!obj) continue;
+      const relativePath = o.key.slice(wsPrefix.length);
+      const text = await obj.text();
+      files[relativePath] = text;
+      totalBytes += text.length;
+    }
+    cursor = listing.truncated ? listing.cursor : undefined;
+  } while (cursor);
+  return {
+    files,
+    skipped_count: skippedCount,
+    ...(skippedCount > 0
+      ? { skipped_reason: `over the ${SYNC_MAX_FILES}-file / ${SYNC_MAX_TOTAL_BYTES}-byte sync limit — sync a narrower 'path' prefix, or workspace.copy the specific files you need.` }
+      : {}),
+  };
+}
+
 export const workspace: PrebuiltScript = {
   name: "workspace",
   description:
     "Copy, move, or list files between the R2 workspace (always available, durable, small/text) " +
     "and the Tier-5 container's own local disk (large/binary/stateful-capable, but only persists " +
-    "while that container stays warm — copy anything worth keeping back to R2 before finishing).",
+    "while that container stays warm — copy anything worth keeping back to R2 before finishing). " +
+    "sync_to_container/sync_from_container bulk-copy EVERY file under a prefix in one call, for " +
+    "when you need the whole project staged rather than one file at a time.",
   domain: "filesystem",
   requires_tier: 1,
+  paramHints: {
+    "workspace.sync_to_container": "path (string, optional prefix — omit to sync the whole R2 " +
+      `workspace; bounded at ${SYNC_MAX_FILES} files / ${SYNC_MAX_TOTAL_BYTES} bytes total).`,
+    "workspace.sync_from_container": "No arguments — copies every file the container currently " +
+      "has back into the R2 workspace, at the SAME relative paths.",
+  },
   operations: {
+    async "workspace.sync_to_container"(args, ctx) {
+      if (!ctx.env.containerWorkspace) throw new Error("container workspace unavailable: TOOL_SANDBOX not configured");
+      const pathPrefix = typeof args["path"] === "string" ? (args["path"] as string) : "";
+      const { files, skipped_count, skipped_reason } = await readAllR2(ctx, pathPrefix);
+      const count = Object.keys(files).length;
+      if (count > 0) await ctx.env.containerWorkspace.write(files);
+      return {
+        ok: true,
+        synced_files_count: count,
+        target: "container:/workspace",
+        ...(skipped_count > 0 ? { skipped_count, skipped_reason } : {}),
+      };
+    },
+
+    async "workspace.sync_from_container"(_args, ctx) {
+      if (!ctx.env.containerWorkspace) throw new Error("container workspace unavailable: TOOL_SANDBOX not configured");
+      const { files } = await ctx.env.containerWorkspace.read();
+      const entries = Object.entries(files);
+      for (const [path, content] of entries) {
+        await bucket(ctx).put(key(ctx, path), content, { customMetadata: { updatedAt: Date.now().toString() } });
+      }
+      return { ok: true, synced_files_count: entries.length, target: "r2" };
+    },
     async "workspace.list"(args, ctx) {
       const name = reqWorkspace(args, "name");
       if (name === "r2") {

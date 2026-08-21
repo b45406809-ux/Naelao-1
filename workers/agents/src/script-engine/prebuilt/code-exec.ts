@@ -1,6 +1,9 @@
 /**
  * code-exec (spec "Platform Skills" §code-exec, byte ~676541) — execute code in Python,
- * Bash, or TypeScript. Operations: code.execute_python, code.execute_bash, code.run_js.
+ * Bash, or TypeScript. Operations: code.execute_python, code.execute_bash, code.run_js — plus
+ * `Bash`, an alias for code.execute_bash matching the Claude-Code-shaped REPL primitive naming
+ * r2-workspace.ts's Read/Edit/Write/Grep/Glob use (resolved via tool-surface.ts's
+ * RENAMED_OPERATIONS, "bash"/"execute_bash" -> "Bash").
  *
  * Per the spec's own routing rule ("DO NOT use execute_python for simple JS calculations"):
  *   - run_js     → Tier 2 isolate (codemode) — fast, no container, no file I/O.
@@ -9,6 +12,17 @@
  * The Tier-5 harnesses below are platform-authored (not agent-authored), so they carry the
  * same trust level as every other prebuilt op; the agent only ever supplies `args`, never code
  * that runs outside this fixed wrapper.
+ *
+ * BASH_HARNESS's failure path deliberately still THROWS (never returns a normal
+ * `{exit_code, ...}` object on a non-zero exit) — runTier()'s outer wrapper below treats a
+ * non-throwing harness result as `ok:true`, and this op's caller (ScriptToolSurface.run, the
+ * loop's repeat-guard, the action ledger, distill-a-fix-for-a-failure guidance) all depend on a
+ * genuinely failed command coming back as `ok:false`. What changed from the plain `execSync`
+ * version: async `exec` (a blocking `execSync` call inside a long-lived, potentially warm
+ * container harness process is a real concurrency hazard for any OTHER request that process is
+ * serving concurrently — see NaelaoAgentDO/Phase-K's own note on this), stdout squashed to a
+ * short confirmation on a genuinely-silent success (nothing for the model to parse), and a
+ * failure's stderr trimmed to its last 15 lines (Node's raw exec error can otherwise be enormous).
  */
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
@@ -41,19 +55,40 @@ export async function run(args, ctx) {
 `;
 
 const BASH_HARNESS = `
-import { execSync } from "node:child_process";
+import { exec } from "node:child_process";
+import { promisify } from "node:util";
+const execAsync = promisify(exec);
 
 export async function run(args, ctx) {
-  const commands = args.commands;
+  const commands = args.commands || args.command || args.cmd;
   if (!commands || typeof commands !== "string") throw new Error("commands is required");
   const timeoutMs = (Number(args.timeout) || 30) * 1000;
-  const stdout = execSync(commands, {
-    cwd: args.working_dir || "/workspace",
-    timeout: timeoutMs,
-    encoding: "utf8",
-    shell: "/bin/bash",
-  });
-  return { stdout };
+  const cwd = args.working_dir || (ctx && ctx.workspaceDir) || "/workspace";
+
+  try {
+    const { stdout, stderr } = await execAsync(commands, {
+      cwd,
+      timeout: timeoutMs,
+      encoding: "utf8",
+      shell: "/bin/bash",
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    const cleanOut = (stdout || "").trim();
+    // A genuinely silent success (no stdout, no stderr) — give the model something to read
+    // rather than an empty string that reads as "did this even run?".
+    if (!cleanOut && !stderr) {
+      return { exit_code: 0, stdout: "(command produced no output — exit code 0)" };
+    }
+    return { exit_code: 0, stdout: cleanOut, stderr: (stderr || "").trim() };
+  } catch (err) {
+    // Deliberately still THROWS (never returns normally) — see this file's own header on why a
+    // failed command must resolve to ok:false at the ScriptToolSurface level, not a normally-
+    // returned "failure-shaped" object the outer wrapper would read as a success.
+    const stderrText = String((err && (err.stderr || err.message)) || "Command failed");
+    const last15 = stderrText.trim().split(/\\r?\\n/).slice(-15).join("\\n");
+    const exitCode = (err && err.code) || 1;
+    throw new Error(\`Command failed with exit code \${exitCode}:\\n\${last15}\`);
+  }
 }
 `;
 
@@ -86,9 +121,24 @@ export const codeExec: PrebuiltScript = {
   description: "Execute Python or Bash in a real sandbox container, or fast JS in a V8 isolate.",
   domain: "container",
   requires_tier: 5,
+  paramHints: {
+    "code.execute_bash": "commands (string, REQUIRED — a bash command line). timeout (number, " +
+      "optional seconds, default 30). working_dir (string, optional, default the synced project " +
+      "workspace).",
+    "Bash": "Same as code.execute_bash — commands (string, REQUIRED). timeout (number, optional " +
+      "seconds). working_dir (string, optional).",
+    "code.execute_python": "code (string, REQUIRED — a Python script body). timeout (number, " +
+      "optional seconds, default 30). install_deps (string[], optional — pip packages to install " +
+      "first).",
+    "code.run_js": "code (string, REQUIRED — a `run(args, ctx)` module body, no file I/O). args " +
+      "(object, optional — passed through to the module's own args param).",
+  },
   operations: {
     "code.execute_python": (a, c) => runTier(c, "code-exec.execute_python", PYTHON_HARNESS, 5, a),
     "code.execute_bash": (a, c) => runTier(c, "code-exec.execute_bash", BASH_HARNESS, 5, a),
+    // Same op as code.execute_bash — see RENAMED_OPERATIONS in tool-surface.ts ("bash"/
+    // "execute_bash" -> "Bash") and this file's own header.
+    "Bash": (a, c) => runTier(c, "code-exec.execute_bash", BASH_HARNESS, 5, a),
     // codemode (spec): JS/TS with no file I/O runs at Tier 2 — the agent supplies its own
     // `run(args, ctx)` module body directly (no fixed harness; this *is* the Tier-2 contract).
     // Same reserved-capability gate as script.create/update applies here too — ad hoc code
