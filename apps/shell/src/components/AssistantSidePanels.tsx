@@ -75,6 +75,7 @@ import {
 import { useProduct } from "@/lib/product-context";
 import { canManageSpaceSettings } from "@/lib/roles";
 import { FileViewer } from "@/components/FileViewer";
+import { HtmlPreviewFrame } from "@/components/HtmlPreviewFrame";
 import { ApprovedActionsEditor, type OperationGroup } from "./ApprovedActionsEditor";
 
 export type SidePanelTab =
@@ -1148,8 +1149,10 @@ function FilesPanel({ spaceId, projectId, session }: { spaceId: string; projectI
               Close
             </button>
           </div>
-          {/* Step 4: multi-format viewer (PDF, images, Word/Excel, text/html/markdown/csv). */}
-          <FileViewer file={open} />
+          {/* Step 4: multi-format viewer (PDF, images, Word/Excel, text/html/markdown/csv).
+              AVOS plan step 6: this panel is always rendered alongside Chat.tsx, so click-to-
+              inspect on an HTML file is safe to turn on — see HtmlPreviewFrame's own header. */}
+          <FileViewer file={open} interactive />
         </div>
       )}
     </>
@@ -1249,12 +1252,11 @@ function ArtifactsPanel({ spaceId, session }: { spaceId: string; session: Sessio
           ) : open.binary ? (
             <p style={{ color: "var(--text3)", fontSize: 11.5, margin: 0 }}>Binary content ({open.content_type}) — preview isn't supported here yet.</p>
           ) : open.content_type === "text/html" ? (
-            <iframe
-              title={open.filename}
-              sandbox=""
-              srcDoc={open.content ?? ""}
-              style={{ width: "100%", height: 260, border: "1px solid var(--border)", borderRadius: 6, background: "#fff" }}
-            />
+            // AVOS plan step 6 — this panel is always rendered alongside Chat.tsx (it's one of the
+            // side-panel tabs), so its own "message" listener is guaranteed mounted; click-to-
+            // inspect is safe to turn on here (see HtmlPreviewFrame's own header for the sandbox
+            // reasoning).
+            <HtmlPreviewFrame html={open.content ?? ""} title={open.filename} interactive />
           ) : (
             <pre style={{ whiteSpace: "pre-wrap", fontSize: 11, maxHeight: 260, overflow: "auto", margin: 0 }}>{open.content ?? ""}</pre>
           )}

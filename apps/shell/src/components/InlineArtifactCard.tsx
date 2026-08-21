@@ -8,6 +8,7 @@
 
 import * as React from "react";
 import { getArtifact, type ArtifactContent, type SessionCredentials } from "@/lib/api";
+import { HtmlPreviewFrame } from "@/components/HtmlPreviewFrame";
 
 function isHtml(a: { content_type?: string | undefined; filename: string }): boolean {
   return (a.content_type ?? "").includes("html") || /\.html?$/i.test(a.filename);
@@ -79,12 +80,14 @@ export function InlineArtifactCard({
               {detail.binary ? "Binary file — download to open it." : "This file is too large to preview inline — download it to view."}
             </div>
           ) : html ? (
-            <iframe
-              title={filename}
-              sandbox="allow-scripts allow-same-origin"
-              srcDoc={detail.content}
-              style={{ width: "100%", height: 360, border: "none", background: "#fff" }}
-            />
+            // AVOS plan step 6 — this used to be `sandbox="allow-scripts allow-same-origin"`, a
+            // real latent risk: a srcDoc iframe sandboxed with BOTH flags is treated as sharing
+            // the PARENT document's origin, so an agent-generated page could reach window.parent
+            // directly instead of being confined to postMessage. HtmlPreviewFrame's own
+            // `allow-scripts`-only posture fixes that while ALSO being what makes click-to-inspect
+            // possible — always on here since this only ever renders inside the chat transcript,
+            // where Chat.tsx's own "message" listener is guaranteed to be mounted.
+            <HtmlPreviewFrame html={detail.content} title={filename} height={360} interactive />
           ) : (
             <pre style={{ margin: 0, padding: 12, maxHeight: 360, overflow: "auto", fontSize: 12, whiteSpace: "pre-wrap", wordBreak: "break-word", color: "var(--text1)" }}>
               {detail.content}

@@ -43,6 +43,28 @@ export interface BusinessFeatureKind {
   uiPanel?: string;
 }
 
+/**
+ * AVOS plan step 6 ("Cursor for X" Plugin System) proposed FOUR new fields here —
+ * `viewportComponent`, `domainSystemPrompt`, `allowedLadderTiers`, `linterRules` — turning every
+ * kind into a full plugin manifest (a dynamically-loaded custom React viewport, a per-kind
+ * system-prompt supplement, a per-kind execution-tier ceiling, and a linting engine). Deliberately
+ * NOT added: each would need its own real infrastructure with no other consumer today —
+ * `viewportComponent` needs a dynamic-import component registry, `allowedLadderTiers` needs a
+ * per-KIND (not per-script) tier gate the execution ladder has no concept of, and `linterRules`
+ * needs a linting engine that doesn't exist anywhere in this codebase. `domainSystemPrompt` is the
+ * one genuinely close to real (kinds like `crm`/`support_inbox` already get bespoke instructions
+ * — but those live in the AGENT/template that operates the kind, e.g. Launchpad's own agent
+ * profiles, not on the kind itself; a kind can be operated by more than one agent archetype, so a
+ * single prompt fragment attached HERE would be exactly the split-brain CLAUDE.md's own ground
+ * rule #4 warns against — "SpaceType differences live in config... never DB tables", and by the
+ * same logic, never a second config surface competing with the one that already exists).
+ *
+ * What WAS real and got built instead (see HtmlPreviewFrame.tsx / Chat.tsx): a single, kind-
+ * agnostic click-to-inspect visual canvas for any HTML file/artifact preview — genuinely useful
+ * for the one real "viewport" this platform's agents actually produce today (a generated web
+ * page), without inventing a manifest system for viewports that don't exist yet.
+ */
+
 const ROLE_RANK: Record<FeatureKindRole, number> = { editor: 1, admin: 2, owner: 3 };
 
 /**

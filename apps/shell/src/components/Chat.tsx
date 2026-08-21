@@ -68,6 +68,7 @@ import { InlineConnectorCard } from "./InlineConnectorCard";
 import { InlineArtifactCard } from "./InlineArtifactCard";
 import { UpgradeDialog } from "./UpgradeDialog";
 import { ComposerDock } from "./ComposerDock";
+import type { InspectedElement } from "./HtmlPreviewFrame";
 import { useActiveSpace } from "@/lib/active-space-context";
 import type { ThreadSummary, ConsultedThread } from "@/lib/api";
 
@@ -1177,6 +1178,23 @@ export function Chat({
   // Files attached via the dock's Uploads panel before the message that references them is sent.
   // Cleared once folded into an outgoing goal — see `send` below.
   const [pendingUploads, setPendingUploads] = React.useState<ChatUpload[]>([]);
+  // AVOS plan step 6 — the "Cursor for X" visual inspector. Any interactive HTML preview on this
+  // page (a workspace/artifact file, the Artifacts side-panel tab, an artifact rendered inline in
+  // the transcript — see HtmlPreviewFrame) posts a real DOM `window` message when someone clicks
+  // an element inside it; this ONE listener is what makes every one of those surfaces work without
+  // threading a callback prop through each of them individually. Cleared once folded into an
+  // outgoing goal, same lifecycle as pendingUploads above.
+  const [inspectedElement, setInspectedElement] = React.useState<InspectedElement | null>(null);
+  React.useEffect(() => {
+    function onMessage(e: MessageEvent) {
+      const data = e.data as { type?: unknown; selector?: unknown; tag?: unknown; text?: unknown } | null;
+      if (!data || data.type !== "AVOS_DOM_CLICK") return;
+      if (typeof data.selector !== "string" || typeof data.tag !== "string") return;
+      setInspectedElement({ selector: data.selector, tag: data.tag, text: typeof data.text === "string" ? data.text : "" });
+    }
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
   // "Continue a heartbeat session as a normal one": the first real message SENT into an existing
   // session opened by explicit id (sessionId prop — a fresh Home/thread session is never a
   // heartbeat one, so this is safely scoped to skip the extra round trip in the common case)
@@ -1186,7 +1204,7 @@ export function Chat({
 
   const send = React.useCallback(async (text: string) => {
     const trimmed = text.trim();
-    if ((!trimmed && pendingUploads.length === 0) || isLoading) return;
+    if ((!trimmed && pendingUploads.length === 0 && !inspectedElement) || isLoading) return;
     setError(null);
     setBillingWall(null);
     setRetryStatus(null);
@@ -1204,10 +1222,18 @@ export function Chat({
       // A path relative to the agent's OWN r2-workspace root (see workspacePrefix() /
       // uploadsPrefix() on the agents worker) — the model can read it directly with
       // r2-workspace.read_file without needing to discover its own session id first.
-      const goal = pendingUploads.length > 0
+      let goal = pendingUploads.length > 0
         ? `Attached files (in the workspace, read with r2-workspace.read_file): ${pendingUploads.map((u) => `uploads/${sid}/${u.name}`).join(", ")}\n\n${trimmed}`
         : trimmed;
+      // AVOS plan step 6 — a pinned inspector selection describes the SAME thing a person clicking
+      // that element could describe in words (tag/selector/text, never a fabricated source-file:
+      // line — see HtmlPreviewFrame's own header for why), folded in as plain context exactly like
+      // an attached file above.
+      if (inspectedElement) {
+        goal = `Referring to this element in the preview: <${inspectedElement.tag}> matching "${inspectedElement.selector}"${inspectedElement.text ? ` with text "${inspectedElement.text}"` : ""}.\n\n${goal}`;
+      }
       setPendingUploads([]);
+      setInspectedElement(null);
       const { agentRunId } = await sendMessage(
         spaceId,
         sid,
@@ -1245,7 +1271,7 @@ export function Chat({
         setError(err instanceof Error ? err.message : "Failed to send message");
       }
     }
-  }, [isLoading, pendingUploads, ensureSessionId, spaceId, sessionKey, session, attachToRun, selectedModel, modelIsExplicit, selectedEffort, selectedReasoningLevel, selectedAgentId, sessionId, projectId]);
+  }, [isLoading, pendingUploads, inspectedElement, ensureSessionId, spaceId, sessionKey, session, attachToRun, selectedModel, modelIsExplicit, selectedEffort, selectedReasoningLevel, selectedAgentId, sessionId, projectId]);
 
   /**
    * A message typed while the agent is still working.
@@ -1811,6 +1837,18 @@ export function Chat({
                       </button>
                     </span>
                   ))}
+                </div>
+              )}
+              {/* AVOS plan step 6 — the Visual Inspector Pin Chip: what was clicked in a preview,
+                  pinned above the input until sent or cleared. */}
+              {inspectedElement && (
+                <div className="pending-uploads">
+                  <span className="pending-upload-chip" title={inspectedElement.text || inspectedElement.selector}>
+                    🎯 Inspecting: {inspectedElement.tag} · {inspectedElement.selector}
+                    <button type="button" aria-label="Clear inspected element" onClick={() => setInspectedElement(null)}>
+                      ×
+                    </button>
+                  </span>
                 </div>
               )}
               <div className="input-top">

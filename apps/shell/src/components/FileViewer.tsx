@@ -9,6 +9,7 @@
 
 import * as React from "react";
 import { Markdown } from "@/components/Markdown";
+import { HtmlPreviewFrame } from "@/components/HtmlPreviewFrame";
 import type { WorkspaceFileContent } from "@/lib/api";
 
 function base64ToBytes(b64: string): Uint8Array {
@@ -140,7 +141,16 @@ function PdfView({ content }: { content: string }) {
   return <iframe title="PDF" src={url} style={{ width: "100%", height: 340, border: "1px solid var(--border)", borderRadius: 6, background: "#fff" }} />;
 }
 
-export function FileViewer({ file }: { file: WorkspaceFileContent }) {
+export function FileViewer({
+  file,
+  interactive = false,
+}: {
+  file: WorkspaceFileContent;
+  /** AVOS plan step 6 — turns on click-to-inspect for an HTML preview (see HtmlPreviewFrame's own
+   *  header for why this is opt-in: only a caller that knows a Chat.tsx listener is mounted
+   *  nearby should turn it on). */
+  interactive?: boolean;
+}) {
   if (file.too_large) {
     return <p style={{ color: "var(--text3)", fontSize: 11.5, margin: 0 }}>Too large to preview inline.</p>;
   }
@@ -169,7 +179,7 @@ export function FileViewer({ file }: { file: WorkspaceFileContent }) {
   const e = ext(file.path);
   const text = file.content ?? "";
   if (e === "html" || e === "htm") {
-    return <iframe title={file.path} sandbox="" srcDoc={text} style={{ width: "100%", height: 260, border: "1px solid var(--border)", borderRadius: 6, background: "#fff" }} />;
+    return <HtmlPreviewFrame html={text} title={file.path} interactive={interactive} />;
   }
   if (e === "md" || e === "markdown") {
     return <div style={{ maxHeight: 300, overflow: "auto", fontSize: 12 }}><Markdown text={text} /></div>;
