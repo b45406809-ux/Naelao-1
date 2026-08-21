@@ -35,6 +35,23 @@ import { modelLabel } from "@/components/ModelSelector";
 const COST_TIER_LABEL: Record<CostTier, string> = { economy: "Economy", standard: "Standard", premium: "Premium" };
 const COST_TIER_BADGE: Record<CostTier, "green" | "blue" | "amber"> = { economy: "green", standard: "blue", premium: "amber" };
 
+/**
+ * AVOS plan step 7 ("Market Radar") — a badge on each template card, built ONLY from what
+ * template-activity already reports honestly (a cross-tenant COUNT, no PII, no revenue — see that
+ * route's own header on the spaces worker). Deliberately NOT a "94/100 Viability" / "Blue Ocean"
+ * score: this platform has no external market-research data (TAM, competitor pricing, search
+ * trends) to back a claim like that, and inventing one from an internal business count would be
+ * exactly the kind of fabricated number this codebase's own convention refuses to ship elsewhere
+ * (see e.g. the dashboard's `credits_consumed: null` precedent). What IS real: how many other
+ * businesses on THIS product are actually running this template right now, and whether it's
+ * getting new ones — genuinely useful signal, honestly labeled as what it is.
+ */
+function templateActivityBadge(a: { active_count: number; created_last_30d: number } | undefined): { label: string; color: "green" | "blue" } | null {
+  if (!a || a.active_count === 0) return null;
+  if (a.created_last_30d > 0) return { label: `${a.active_count} running · growing`, color: "green" };
+  return { label: `${a.active_count} running`, color: "blue" };
+}
+
 /** Short labels for the capability axes the trace-graded matrix scores. Plain words, not the
  *  internal axis keys — a business owner reading this should not have to learn our vocabulary to
  *  understand that "Won't invent results" is the column that matters most to them. */
@@ -270,6 +287,7 @@ export default function DiscoverPage() {
   const showcaseRows = templateActivity
     .map((a) => ({ ...a, name: availableTemplates.find((t) => t.id === a.template_id)?.name ?? a.template_id }))
     .filter((r) => r.active_count > 0);
+  const activityByTemplate = new Map(templateActivity.map((a) => [a.template_id, a]));
 
   const needsSetupCount = businesses.filter((b) => b.onboarding_status != null && b.onboarding_status !== "complete").length;
   // Portfolio totals across every business the leaderboard fetch could reach — real for however
@@ -523,30 +541,36 @@ export default function DiscoverPage() {
             Start a business
           </div>
           <div className="grid-3">
-            {availableTemplates.map((t) => (
-              <Card
-                key={t.id}
-                interactive={!t.coming_soon}
-                onClick={t.coming_soon ? undefined : () => openCreate(t.id)}
-                style={t.coming_soon ? { opacity: 0.55, cursor: "default" } : { cursor: "pointer" }}
-              >
-                <div className="app-card-header">
-                  <div className="app-card-initial">{t.name.slice(0, 1)}</div>
-                  <CardTitle>{t.name}</CardTitle>
-                </div>
-                <CardDesc>
-                  {t.coming_soon
-                    ? "Not available yet."
-                    : "Preconfigured workspaces, agents and setup — ready to run."}
-                </CardDesc>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {t.coming_soon && <Badge color="amber">Coming soon</Badge>}
-                  {/* The backend rejects a non-free_tier_eligible template on the free plan, so
-                      say it here rather than after a failed click. */}
-                  {!t.coming_soon && !t.free_tier_eligible && <Badge color="amber">Requires plan upgrade</Badge>}
-                </div>
-              </Card>
-            ))}
+            {availableTemplates.map((t) => {
+              const activity = t.coming_soon ? null : templateActivityBadge(activityByTemplate.get(t.id));
+              return (
+                <Card
+                  key={t.id}
+                  interactive={!t.coming_soon}
+                  onClick={t.coming_soon ? undefined : () => openCreate(t.id)}
+                  style={t.coming_soon ? { opacity: 0.55, cursor: "default" } : { cursor: "pointer" }}
+                >
+                  <div className="app-card-header">
+                    <div className="app-card-initial">{t.name.slice(0, 1)}</div>
+                    <CardTitle>{t.name}</CardTitle>
+                  </div>
+                  <CardDesc>
+                    {t.coming_soon
+                      ? "Not available yet."
+                      : "Preconfigured workspaces, agents and setup — ready to run."}
+                  </CardDesc>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {t.coming_soon && <Badge color="amber">Coming soon</Badge>}
+                    {/* The backend rejects a non-free_tier_eligible template on the free plan, so
+                        say it here rather than after a failed click. */}
+                    {!t.coming_soon && !t.free_tier_eligible && <Badge color="amber">Requires plan upgrade</Badge>}
+                    {/* AVOS plan step 7 — real, cross-tenant activity on THIS product only (never
+                        fabricated market-research jargon; see templateActivityBadge's own header). */}
+                    {activity && <Badge color={activity.color}>{activity.label}</Badge>}
+                  </div>
+                </Card>
+              );
+            })}
             <Card interactive onClick={() => openCreate(CUSTOM_BUSINESS)} style={{ cursor: "pointer", borderStyle: "dashed" }}>
               <div className="app-card-header">
                 <div className="app-card-initial" style={{ background: "var(--surface2)", color: "var(--text3)" }}>+</div>
@@ -735,6 +759,7 @@ export default function DiscoverPage() {
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                   {t.coming_soon && <Badge color="amber">Coming soon</Badge>}
                   {!t.coming_soon && !t.free_tier_eligible && <Badge color="amber">Requires plan upgrade</Badge>}
+                  {!t.coming_soon && (() => { const a = templateActivityBadge(activityByTemplate.get(t.id)); return a && <Badge color={a.color}>{a.label}</Badge>; })()}
                 </div>
               </button>
             ))}

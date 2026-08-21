@@ -172,6 +172,41 @@ export interface LaunchpadTemplate {
   }>;
 }
 
+/**
+ * AVOS plan step 7 ("Declarative Business Blueprint Marketplace & Market Radar") proposed a NEW
+ * `BlueprintProjectSpec` type + `blueprint_projects`/`knowledge_seeds`/`seed_repository_url`
+ * fields on LaunchpadTemplate, "atomic" 1-click Genesis, and live `saturation_index`/
+ * `opportunity_score`/`network_gmv_cents` scoring rendered as "94/100 Viability"/"Blue Ocean"
+ * badges. Investigated and deliberately NOT built as proposed:
+ *
+ * - `blueprint_projects` would be a SECOND way to declare "what projects does this template
+ *   create," alongside the TemplateBootstrap fields immediately above (`projects`,
+ *   `project_templates`, `setup_scripts`) that already do exactly this and are what the real
+ *   provisioner/bootstrap flow reads. Two competing declarations, one silently winning, is the
+ *   split-brain CLAUDE.md's own ground rule #4 warns against.
+ * - "Atomic" Genesis would be a real regression against this codebase's own deliberate,
+ *   repeatedly-established convention: every provision-time seed (seedWallet, seedOwnerMember,
+ *   seedBusinessEmail, seedDefaultRevenueReviewCron, ...) is explicitly best-effort/fail-soft, so
+ *   a transient failure in ONE piece (a wallet provider outage, say) never strands or rolls back
+ *   an otherwise-successful business creation. True cross-system atomicity (R2 + DO SQLite +
+ *   external service calls) is a real distributed-transaction problem, not a flag to add.
+ * - `network_gmv_cents` (exact aggregate revenue across other businesses on the same template) has
+ *   a genuine deanonymization risk this codebase's own privacy discipline already accounts for
+ *   elsewhere (see appendix BF.4, the Business Network's "exact figures never shared regardless of
+ *   plan" rule): on a template with only 1-2 active businesses, "network GMV" IS that business's
+ *   own revenue, fully identifying it to anyone who can see the badge.
+ * - `saturation_index`/`opportunity_score` framed as "94/100 Viability"/"Blue Ocean" implies real
+ *   external market research (TAM, competitor pricing, search-demand trends) this platform has no
+ *   way to compute — fabricating a score from an internal business count and dressing it up as
+ *   market intelligence is exactly the class of invented number this codebase's own convention
+ *   refuses to ship (see e.g. the builder dashboard's `credits_consumed: null` precedent).
+ *
+ * What WAS already real, and honestly built by an earlier pass: GET /spaces/:id/template-activity
+ * (workers/spaces/src/index.ts) — a cross-tenant, PII-free COUNT of active businesses per
+ * template_id (a real, queryable field — see business-create.ts's own config_json.template_id).
+ * The one genuine gap this step closed: that data was fetched by the shell but never actually
+ * shown on the template picker cards themselves — see spaces/page.tsx's templateActivityBadge.
+ */
 export interface LaunchpadSpaceType {
   id: "launchpad";
   version: string;
