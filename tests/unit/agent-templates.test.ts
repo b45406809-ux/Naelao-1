@@ -329,4 +329,70 @@ describe("POST /agents/custom (step 17)", () => {
     expect((await mk({ space_id: SPACE_ID, instructions: "x", prebuilt_scripts: [] })).status).toBe(400);
     expect((await mk({ space_id: SPACE_ID, name: "X", prebuilt_scripts: [] })).status).toBe(400);
   });
+
+  // AVOS plan step 5 — capability-firewall archetype (opt-in; omitted = legacy unrestricted
+  // behavior, already proven by the first test in this block).
+  it("with an archetype: clamps the script list and reports what was rejected", async () => {
+    const { env, r2 } = makeEnv();
+    const res = await app.fetch(new Request("https://agents.naelao.com/agents/custom", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": TENANT_ID, "x-naelao-internal-token": await mintInternalToken(SECRET, TENANT_ID) },
+      body: JSON.stringify({
+        space_id: SPACE_ID,
+        name: "Support Bot",
+        instructions: "Answer support questions.",
+        // code-exec and local-machine have no business in a customer_support archetype.
+        prebuilt_scripts: ["knowledge-base", "code-exec", "local-machine"],
+        archetype: "customer_support",
+      }),
+    }), env);
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { agent_id: string; rejected_scripts?: string[] };
+    expect(body.rejected_scripts?.sort()).toEqual(["code-exec", "local-machine"]);
+    const scripts = JSON.parse(r2.store.get(`spaces/${SPACE_ID}/agents/${body.agent_id}/scripts.json`)!);
+    expect(scripts.prebuilt).toContain("knowledge-base");
+    expect(scripts.prebuilt).not.toContain("code-exec");
+    expect(scripts.prebuilt).not.toContain("local-machine");
+  });
+
+  it("with an archetype: no rejected_scripts field when everything requested was already allowed", async () => {
+    const { env } = makeEnv();
+    const res = await app.fetch(new Request("https://agents.naelao.com/agents/custom", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": TENANT_ID, "x-naelao-internal-token": await mintInternalToken(SECRET, TENANT_ID) },
+      body: JSON.stringify({
+        space_id: SPACE_ID, name: "Support Bot", instructions: "Answer support questions.",
+        prebuilt_scripts: ["knowledge-base"], archetype: "customer_support",
+      }),
+    }), env);
+    const body = (await res.json()) as { rejected_scripts?: string[] };
+    expect(body.rejected_scripts).toBeUndefined();
+  });
+
+  it("rejects an unknown archetype with 400 before writing anything", async () => {
+    const { env, r2 } = makeEnv();
+    const res = await app.fetch(new Request("https://agents.naelao.com/agents/custom", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": TENANT_ID, "x-naelao-internal-token": await mintInternalToken(SECRET, TENANT_ID) },
+      body: JSON.stringify({
+        space_id: SPACE_ID, name: "X", instructions: "y", prebuilt_scripts: [], archetype: "super_admin",
+      }),
+    }), env);
+    expect(res.status).toBe(400);
+    expect(r2.store.size).toBe(0);
+  });
+});
+
+describe("GET /archetypes (AVOS plan step 5)", () => {
+  it("lists every archetype preset with its allowlist", async () => {
+    const { env } = makeEnv();
+    const res = await app.fetch(await getReq("/archetypes"), env);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { archetypes: Array<{ role: string; allowedScripts: string[] }> };
+    const roles = body.archetypes.map((a) => a.role).sort();
+    expect(roles).toEqual(["architect_delegate", "customer_support", "dev_operator", "growth_operator"]);
+    const support = body.archetypes.find((a) => a.role === "customer_support")!;
+    expect(support.allowedScripts).not.toContain("code-exec");
+    expect(support.allowedScripts).not.toContain("local-machine");
+  });
 });

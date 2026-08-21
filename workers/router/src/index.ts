@@ -631,6 +631,9 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // Naelao Agent Templates: browsing is member-level, instantiating a real agent from one is
   // admin-level — both enforced by requireBusinessMembership on the spaces worker.
   /^\/spaces\/([^/]+)\/agent-templates$/,
+  // AVOS plan step 5 — the capability-firewall archetype presets a custom agent can opt into;
+  // read-only, member-level, same enforcement split as agent-templates above.
+  /^\/spaces\/([^/]+)\/archetypes$/,
   // First-run business setup wizard — the end user's own path into the template bootstrap the
   // builder dashboard has always driven. Additionally gated by requireBusinessMembership on the
   // spaces worker (member GET / admin POST), same identity-here-authorization-there split.

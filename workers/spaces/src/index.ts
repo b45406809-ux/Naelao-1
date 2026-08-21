@@ -1743,6 +1743,11 @@ app.post("/spaces/:spaceId/connectors/provider-connect-start", async (c) => {
 // applyAgentTemplate's own comment on the agents worker for why.
 app.use("/spaces/:spaceId/agent-templates", requireBusinessMembership({ GET: "member", POST: "admin" }));
 app.get("/spaces/:spaceId/agent-templates", async (c) => proxyToAgentsWorker(c, "/agent-templates", "GET"));
+
+// AVOS plan step 5 — the archetype presets a custom agent can opt into. Same read floor as the
+// templates catalogue above (member).
+app.use("/spaces/:spaceId/archetypes", requireBusinessMembership({ GET: "member" }));
+app.get("/spaces/:spaceId/archetypes", async (c) => proxyToAgentsWorker(c, "/archetypes", "GET"));
 app.post("/spaces/:spaceId/agent-templates", async (c) => {
   const body = await c.req.json<{
     template_id?: string; name?: string; project_id?: string;
@@ -1753,6 +1758,9 @@ app.post("/spaces/:spaceId/agent-templates", async (c) => {
     custom?: {
       name?: string; description?: string; instructions?: string; system_prompt?: string;
       prebuilt_scripts?: string[]; approval_mode?: string; auto_approved_actions?: string[]; project_id?: string;
+      // AVOS plan step 5 — optional capability-firewall archetype (dev_operator/growth_operator/
+      // customer_support/architect_delegate). Omitted = unchanged, unrestricted legacy behavior.
+      archetype?: string;
     };
   }>().catch(() => ({}) as Record<string, never>);
   if (body.custom) {
@@ -1769,6 +1777,7 @@ app.post("/spaces/:spaceId/agent-templates", async (c) => {
       ...(cst.approval_mode ? { approval_mode: cst.approval_mode } : {}),
       ...(cst.auto_approved_actions ? { auto_approved_actions: cst.auto_approved_actions } : {}),
       ...(cst.project_id ? { project_id: cst.project_id } : {}),
+      ...(cst.archetype ? { archetype: cst.archetype } : {}),
     });
   }
   if (!body.template_id) return c.json({ error_code: "bad_request", message: "template_id is required" }, 400);

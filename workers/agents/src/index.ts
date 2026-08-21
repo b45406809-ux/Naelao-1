@@ -59,6 +59,7 @@ import { PROJECT_TEMPLATES, getProjectTemplate } from "./launchpad/project-templ
 import { seedTemplateProjects, seedGeneralProject } from "./launchpad/bootstrap.js";
 import { PREBUILT_SCRIPTS } from "./script-engine/prebuilt/index.js";
 import { findAgentTemplate, agentTemplateSummaries, agentTemplateToConfig, customAgentToConfig } from "./agent-templates.js";
+import { ARCHETYPE_PRESETS, isKnownArchetype, clampScriptsToArchetype } from "./script-engine/agent-archetypes.js";
 import { writeAgentConfig } from "./script-engine/agent-config.js";
 
 function safeParse(s: string): unknown {
@@ -3517,6 +3518,14 @@ app.get("/agent-templates", async (c) => {
   return c.json({ templates: agentTemplateSummaries() });
 });
 
+// GET /archetypes — AVOS plan step 5: the capability-firewall presets a custom agent can opt
+// into (see agent-archetypes.ts's own header). Browsable so the custom-agent-creation UI can
+// offer them; global, not space-scoped, same posture as /agent-templates above.
+app.get("/archetypes", async (c) => {
+  await requireVerifiedTenant(c);
+  return c.json({ archetypes: Object.values(ARCHETYPE_PRESETS) });
+});
+
 /**
  * Instantiate one AGENT_TEMPLATES entry as a real, standalone agent_definition in a space:
  * writes its 4 R2 config files (agents.md/system-prompt.md/scripts.json/skills.json), registers
@@ -3665,6 +3674,12 @@ interface CustomAgentCreate {
   approval_mode?: "always_ask" | "gate_unless_listed" | "yolo";
   auto_approved_actions?: string[];
   project_id?: string;
+  // AVOS plan step 5 — optional capability-firewall archetype. Absent = unchanged, unrestricted
+  // legacy behavior (prebuilt_scripts passed through verbatim); given, the requested script list
+  // is clamped to that archetype's allowlist and whatever was dropped is reported back rather
+  // than silently narrowed. See agent-archetypes.ts's own header for why this is opt-in
+  // validation at CREATION time, not a runtime override of every agent's config.
+  archetype?: string;
 }
 async function createCustomAgent(
   env: AgentsEnv,
@@ -3672,10 +3687,21 @@ async function createCustomAgent(
   tenantId: string,
   input: CustomAgentCreate,
   callerUserId?: string
-): Promise<{ agentId: string; agentDefinitionId: string } | { error: string; status: number }> {
+): Promise<{ agentId: string; agentDefinitionId: string; rejected_scripts?: string[] } | { error: string; status: number }> {
   if (!env.SCRIPTS_R2) return { error: "Agent config storage is not bound", status: 503 };
   if (!input.name?.trim()) return { error: "name is required", status: 400 };
   if (!input.instructions?.trim()) return { error: "instructions are required", status: 400 };
+
+  let scriptsToGrant = input.prebuilt_scripts ?? [];
+  let rejectedScripts: string[] | undefined;
+  if (input.archetype !== undefined) {
+    if (!isKnownArchetype(input.archetype)) {
+      return { error: `unknown archetype '${input.archetype}'. Must be one of: ${Object.keys(ARCHETYPE_PRESETS).join(", ")}`, status: 400 };
+    }
+    const clamped = clampScriptsToArchetype(input.archetype, scriptsToGrant);
+    scriptsToGrant = clamped.allowed;
+    if (clamped.rejected.length > 0) rejectedScripts = clamped.rejected;
+  }
 
   const agentId = `custom-${crypto.randomUUID().slice(0, 12)}`;
   await writeAgentConfig(
@@ -3687,7 +3713,7 @@ async function createCustomAgent(
       ...(input.description ? { description: input.description } : {}),
       instructions: input.instructions,
       ...(input.system_prompt ? { system_prompt: input.system_prompt } : {}),
-      prebuilt_scripts: input.prebuilt_scripts ?? [],
+      prebuilt_scripts: scriptsToGrant,
     })
   );
 
@@ -3724,7 +3750,7 @@ async function createCustomAgent(
 
   if (input.project_id) await bindAgentToProject(env, spaceId, tenantId, input.project_id, agentId, callerUserId);
 
-  return { agentId, agentDefinitionId: `${spaceId}:${agentId}` };
+  return { agentId, agentDefinitionId: `${spaceId}:${agentId}`, ...(rejectedScripts ? { rejected_scripts: rejectedScripts } : {}) };
 }
 
 // POST /agents/custom  { space_id, name, description?, instructions, prebuilt_scripts, ... }
@@ -3737,7 +3763,10 @@ app.post("/agents/custom", async (c) => {
   if ("error" in result) {
     return c.json({ error_code: "custom_agent_failed", message: result.error }, result.status as 400 | 502 | 503);
   }
-  return c.json({ agent_id: result.agentId, agent_definition_id: result.agentDefinitionId, custom: true }, 201);
+  return c.json({
+    agent_id: result.agentId, agent_definition_id: result.agentDefinitionId, custom: true,
+    ...(result.rejected_scripts ? { rejected_scripts: result.rejected_scripts } : {}),
+  }, 201);
 });
 
 // POST /agent-templates/instantiate  { space_id, template_id, name?, project_id? }

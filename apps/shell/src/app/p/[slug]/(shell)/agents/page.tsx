@@ -29,10 +29,12 @@ import {
   createCustomAgent,
   getAssistantCapabilities,
   listProjects,
+  listArchetypes,
   type Project,
   type AgentDefinitionSummary,
   type AgentTemplateSummary,
   type AssistantCapabilities,
+  type ArchetypePreset,
 } from "@/lib/api";
 
 export default function AgentsPage() {
@@ -62,6 +64,10 @@ export default function AgentsPage() {
   const [cMode, setCMode] = React.useState<"always_ask" | "gate_unless_listed" | "yolo">("gate_unless_listed");
   const [cProject, setCProject] = React.useState<string>("");
   const [creating, setCreating] = React.useState(false);
+  // AVOS plan step 5 — an optional capability-firewall archetype. Empty = unrestricted (the
+  // tools checked above are used verbatim), matching the backend's own opt-in default.
+  const [archetypes, setArchetypes] = React.useState<ArchetypePreset[]>([]);
+  const [cArchetype, setCArchetype] = React.useState<string>("");
 
   const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
 
@@ -114,6 +120,9 @@ export default function AgentsPage() {
     setCustomOpen(true);
     if (!caps) getAssistantCapabilities(activeSpaceId, creds).then(setCaps).catch(() => setCaps({ prebuilts: [], skills: [], prebuilt_count: 0, skill_count: 0 }));
     if (projects.length === 0) listProjects(activeSpaceId, creds).then(setProjects).catch(() => {});
+    // AVOS plan step 5 — best-effort; an empty list just means the archetype picker offers only
+    // "No restriction", which is the same behavior this had before archetypes existed.
+    if (archetypes.length === 0) listArchetypes(activeSpaceId, creds).then(setArchetypes).catch(() => setArchetypes([]));
   }
 
   async function submitCustomAgent() {
@@ -121,17 +130,28 @@ export default function AgentsPage() {
     if (!cName.trim() || !cInstr.trim()) { show("Name and instructions are required"); return; }
     setCreating(true);
     try {
-      await createCustomAgent(activeSpaceId, creds, {
+      const created = await createCustomAgent(activeSpaceId, creds, {
         name: cName.trim(),
         ...(cDesc.trim() ? { description: cDesc.trim() } : {}),
         instructions: cInstr.trim(),
         prebuilt_scripts: [...cTools],
         approval_mode: cMode,
         ...(cProject ? { project_id: cProject } : {}),
+        // AVOS plan step 5 — the archetype, when one is chosen, clamps the tool list above to what
+        // that role is allowed. Omitted entirely when unset, so an unrestricted custom agent is
+        // still the default and existing behavior is unchanged.
+        ...(cArchetype ? { archetype: cArchetype } : {}),
       });
       setCustomOpen(false);
-      setCName(""); setCDesc(""); setCInstr(""); setCProject("");
-      show(`${cName.trim()} created`);
+      setCName(""); setCDesc(""); setCInstr(""); setCProject(""); setCArchetype("");
+      // The archetype may have silently dropped some of the tools that were checked — say so,
+      // rather than letting the agent later look like it "can't do what it was configured to do"
+      // with no explanation anywhere.
+      show(
+        created.rejected_scripts && created.rejected_scripts.length > 0
+          ? `${cName.trim()} created — its archetype doesn't allow: ${created.rejected_scripts.join(", ")}`
+          : `${cName.trim()} created`
+      );
       refresh();
     } catch (err) {
       show(err instanceof Error ? err.message : "Couldn't create the agent");
@@ -297,6 +317,19 @@ export default function AgentsPage() {
             )}
             <div style={{ color: "var(--text3)", fontSize: 10.5, marginTop: 4 }}>r2-workspace, memory and notifications are always included.</div>
           </div>
+          <label style={{ fontSize: 12.5 }}>
+            <div style={{ color: "var(--text3)", marginBottom: 4 }}>Archetype (optional)</div>
+            <select value={cArchetype} onChange={(e) => setCArchetype(e.target.value)} style={inputStyle}>
+              <option value="">No restriction — use exactly the tools checked above</option>
+              {archetypes.map((a) => <option key={a.role} value={a.role}>{a.label}</option>)}
+            </select>
+            {cArchetype && (
+              <div style={{ color: "var(--text3)", fontSize: 10.5, marginTop: 4 }}>
+                {archetypes.find((a) => a.role === cArchetype)?.description}
+                {" "}Anything checked above outside this role&apos;s allowed tools won&apos;t be granted.
+              </div>
+            )}
+          </label>
           <label style={{ fontSize: 12.5 }}>
             <div style={{ color: "var(--text3)", marginBottom: 4 }}>Autonomy</div>
             <select value={cMode} onChange={(e) => setCMode(e.target.value as typeof cMode)} style={inputStyle}>

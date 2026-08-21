@@ -1191,9 +1191,24 @@ export async function createCustomAgent(
     name: string; description?: string; instructions: string;
     prebuilt_scripts: string[]; approval_mode?: "always_ask" | "gate_unless_listed" | "yolo";
     auto_approved_actions?: string[]; project_id?: string;
+    // AVOS plan step 5 — optional capability-firewall archetype. Omitted = unrestricted (the
+    // prebuilt_scripts list above is used verbatim, unchanged legacy behavior).
+    archetype?: string;
   }
-): Promise<{ agent_id: string; agent_definition_id: string; custom: boolean }> {
+): Promise<{ agent_id: string; agent_definition_id: string; custom: boolean; rejected_scripts?: string[] }> {
   return apiFetch(`/v1/spaces/${spaceId}/agent-templates`, { method: "POST", body: JSON.stringify({ custom }), session });
+}
+
+/** AVOS plan step 5 — the capability-firewall archetype presets a custom agent can opt into. */
+export interface ArchetypePreset {
+  role: string;
+  label: string;
+  description: string;
+  allowedScripts: string[];
+}
+export async function listArchetypes(spaceId: string, session: SessionCredentials): Promise<ArchetypePreset[]> {
+  const res = await apiFetch<{ archetypes: ArchetypePreset[] }>(`/v1/spaces/${spaceId}/archetypes`, { session });
+  return res.archetypes ?? [];
 }
 
 /** A single project agent's own approval-policy override — falls back to the space-wide
