@@ -514,6 +514,65 @@ describe("GET /spaces/:spaceId/sessions (list)", () => {
     const body = await res.json() as { count: number };
     expect(body.count).toBe(2);
   });
+
+  // Reported bug: the Heartbeats panel showed real "N did work / N failed" counts but an empty
+  // sessions list, and the Sessions page's heartbeat tab was empty too. A heartbeat/cron-wake
+  // session is created by an INTERNAL caller (createHeartbeatSession — no end-user identity), so it
+  // lands with end_user_id NULL, owned by the system. The panel reads as a product_end_user, whose
+  // list is scoped `WHERE end_user_id = <them>` — which a NULL owner never matched, filtering every
+  // heartbeat session out. Heartbeat sessions are business-level system artifacts, so a heartbeat
+  // listing is deliberately NOT scoped by the caller's own id.
+  async function createHeartbeatSession(env: ReturnType<typeof makeEnv>, spaceId: string, tenantId: string): Promise<string> {
+    // Exactly what workers/agents/src/index.ts's createHeartbeatSession sends: internal token,
+    // tenant only, NO user role/header, and metadata tagging it a heartbeat wake.
+    const res = await spacesWorker.fetch(
+      new Request(`https://spaces.naelao.com/spaces/${spaceId}/sessions`, {
+        method: "POST",
+        headers: await internalHeaders(tenantId),
+        body: JSON.stringify({ metadata: { session_kind: "heartbeat", title: "Heartbeat — 2026-08-23 12:00" } }),
+      }),
+      env as never, execCtx
+    );
+    if (!res.ok) throw new Error(`createHeartbeatSession failed: ${res.status} ${await res.text()}`);
+    return (await res.json() as { id: string }).id;
+  }
+
+  it("a product end user CAN see the space's heartbeat/cron-wake sessions (kind=heartbeat), even though they're owned by no user", async () => {
+    const env = makeEnv();
+    await seedSpace(env, "prod-1", "tenant-1");
+    const hbId = await createHeartbeatSession(env, "prod-1", "tenant-1");
+    await createSession(env, "prod-1", "tenant-1", "user-a"); // an ordinary user conversation
+
+    const res = await spacesWorker.fetch(
+      new Request("https://spaces.naelao.com/spaces/prod-1/sessions?kind=heartbeat", {
+        headers: await internalHeaders("tenant-1", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "user-a" }),
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json() as { data: { id: string; end_user_id: string | null }[]; count: number };
+    expect(body.count).toBe(1); // was 0 — the heartbeat session was filtered out by the end_user_id scope
+    expect(body.data[0]!.id).toBe(hbId);
+    expect(body.data[0]!.end_user_id).toBeNull(); // owned by the system, not user-a — that's the point
+  });
+
+  it("the ordinary (non-heartbeat) list still excludes heartbeat sessions and stays per-user", async () => {
+    const env = makeEnv();
+    await seedSpace(env, "prod-1", "tenant-1");
+    await createHeartbeatSession(env, "prod-1", "tenant-1");
+    await createSession(env, "prod-1", "tenant-1", "user-a");
+
+    const res = await spacesWorker.fetch(
+      new Request("https://spaces.naelao.com/spaces/prod-1/sessions", {
+        headers: await internalHeaders("tenant-1", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "user-a" }),
+      }),
+      env as never, execCtx
+    );
+    const body = await res.json() as { data: { end_user_id: string | null }[]; count: number };
+    // Only user-a's own ordinary conversation — the heartbeat session is NOT in the ordinary list.
+    expect(body.count).toBe(1);
+    expect(body.data[0]!.end_user_id).toBe("user-a");
+  });
 });
 
 // item 79 (inline consult cards): messages.metadata round-trips a real JSON object through POST

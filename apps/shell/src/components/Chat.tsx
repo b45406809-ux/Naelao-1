@@ -73,7 +73,15 @@ import { useActiveSpace } from "@/lib/active-space-context";
 import type { ThreadSummary, ConsultedThread } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 1500;
-const MAX_POLL_DURATION_MS = 60_000;
+// A STALL deadline, not a total cap. It used to be a flat 60s ceiling on the whole run, which
+// fired "Timed out waiting for a response" even while the agent was legitimately still working —
+// routine now that a multi-step research/delegation run is unbounded and easily runs past a
+// minute. The deadline is reset every tick that shows real progress (a new step, or the reply
+// growing), so a run that keeps moving never trips it; it only fires after this long with NO
+// progress at all — a genuine stall. Even then the run is durable and keeps going server-side, so
+// the foreground surfaces a soft "still running in the background" notice (reattached on the next
+// reload/interaction) rather than a red error.
+const STALL_TIMEOUT_MS = 120_000;
 // A run that failed on one of these is not just "an error" — there's something real to DO about
 // it (buy credits, resubscribe, wait for a quota reset), so it gets the UpgradeDialog instead of
 // a bare red banner. See UpgradeDialog's own doc for what each code offers.
@@ -350,6 +358,10 @@ export function Chat({
   // here (rather than down by liveActivity, where it used to live) because handleAddAgentTemplate
   // below needs it in scope.
   const [uploadNotice, setUploadNotice] = React.useState<string | null>(null);
+  // A soft, non-error notice for "this run is still going in the background" — shown when the
+  // foreground poll stalls out on a durable run that hasn't failed, so the user isn't told a red
+  // "timed out" for work that is actually still happening. Cleared on the next send.
+  const [backgroundNotice, setBackgroundNotice] = React.useState<string | null>(null);
 
   const refreshAgentBindings = React.useCallback(async () => {
     if (!projectId) return;
@@ -810,7 +822,10 @@ export function Chat({
       // independently-retrying poll call layered on every 1.5s on top of the ones still winding
       // down, compounding load on exactly the thing that's already having trouble.
       let inFlight = false;
-      pollDeadlineRef.current = Date.now() + MAX_POLL_DURATION_MS;
+      // A signature of the last progress we saw (step count + reply length). When it changes, the
+      // run is genuinely moving, so the stall deadline is pushed out — see STALL_TIMEOUT_MS.
+      let lastProgressSig = "";
+      pollDeadlineRef.current = Date.now() + STALL_TIMEOUT_MS;
       pollTimerRef.current = setInterval(async () => {
         if (settled || inFlight) return;
         if (Date.now() > pollDeadlineRef.current) {
@@ -820,7 +835,12 @@ export function Chat({
           setIsLoading(false);
           setStreamingContent("");
           setRetryStatus(null);
-          setError("Timed out waiting for a response");
+          // The run never reached a terminal state within the stall window — but it is durable and
+          // keeps running server-side, so DON'T declare a hard failure or drop the active-run id.
+          // Leaving storeActiveRunId in place lets the reattach-on-mount effect pick it back up on
+          // the next reload/interaction (item 119's durable-run machinery). A soft, gray notice
+          // instead of a red error, since nothing has actually gone wrong.
+          setBackgroundNotice("Still working on this in the background — reopen this conversation to check on it.");
           return;
         }
         inFlight = true;
@@ -840,6 +860,13 @@ export function Chat({
             if (growing) {
               lastStreamed = growing;
               setStreamingContent(growing);
+            }
+            // Genuine progress (a new step, or the reply growing) resets the stall deadline, so a
+            // legitimately long multi-step run is never told it timed out.
+            const sig = `${run.live_steps?.length ?? 0}:${(growing ?? "").length}`;
+            if (sig !== lastProgressSig) {
+              lastProgressSig = sig;
+              pollDeadlineRef.current = Date.now() + STALL_TIMEOUT_MS;
             }
             return;
           }
@@ -1207,6 +1234,7 @@ export function Chat({
     if ((!trimmed && pendingUploads.length === 0 && !inspectedElement) || isLoading) return;
     setError(null);
     setBillingWall(null);
+    setBackgroundNotice(null);
     setRetryStatus(null);
     setIsLoading(true);
     setStreamingContent("");
@@ -1910,6 +1938,7 @@ export function Chat({
             </div>
           </ComposerDock>
           {uploadNotice && <p style={{ fontSize: 11.5, color: "var(--text3)", marginTop: 4 }}>{uploadNotice}</p>}
+          {backgroundNotice && <p style={{ fontSize: 11.5, color: "var(--text3)", marginTop: 4 }}>⏳ {backgroundNotice}</p>}
           <p className="disclaimer">AI-generated responses may be inaccurate.</p>
         </div>
       </div>

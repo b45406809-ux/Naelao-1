@@ -1817,10 +1817,22 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     // with ?kind=heartbeat (the Sessions page's own filter tab) and the Heartbeats sidebar tab,
     // both of which call this with that param explicitly.
     const kind = params.get("kind");
-    const kindClause = kind === "heartbeat"
+    const isHeartbeat = kind === "heartbeat";
+    const kindClause = isHeartbeat
       ? "json_extract(metadata, '$.session_kind') = 'heartbeat'"
       : "(json_extract(metadata, '$.session_kind') IS NULL OR json_extract(metadata, '$.session_kind') != 'heartbeat')";
-    const rows = endUserId
+    // Reported bug: the Heartbeats panel showed real "N did work / N failed" counts (from the
+    // space-wide agent_activity_log) but an empty sessions list. Root cause: a heartbeat/cron-wake
+    // session is created by an INTERNAL caller (createHeartbeatSession — a tenant-scoped internal
+    // token, no end-user identity), so it lands with end_user_id = NULL, owned by the SYSTEM/
+    // business rather than any one person. But the panel reads as a product_end_user, whose list is
+    // scoped `WHERE end_user_id = <them>` — which NULL never matches, so every heartbeat session was
+    // filtered out. They are business-level system artifacts (the assistant's own wake-up work, not
+    // a private per-user conversation), and reaching this SpaceDO at all already required verified
+    // business membership (router hybrid-auth + product-session verify), so a heartbeat listing is
+    // deliberately NOT scoped by end_user_id. Only the heartbeat branch drops the scope; ordinary
+    // recents stay per-user exactly as before.
+    const rows = endUserId && !isHeartbeat
       ? queryAll<SessionRow>(
           this.ctx.storage.sql as never,
           `SELECT * FROM sessions WHERE end_user_id = ? AND ${notThreadLinked} AND ${kindClause} ORDER BY updated_at DESC LIMIT ?`,
