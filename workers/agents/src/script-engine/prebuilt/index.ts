@@ -46,6 +46,7 @@ import { businessWallet } from "./business-wallet.js";
 import { revenueTracker } from "./revenue-tracker.js";
 import { schedule } from "./schedule.js";
 import { tasks } from "./tasks.js";
+import { plan } from "./plan.js";
 
 /** Context handed to every prebuilt operation. */
 export interface PrebuiltOpContext {
@@ -151,6 +152,9 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   // A per-project task DAG (AVOS plan step 4) — distinct from project_journal's own loose
   // todos; see tasks.ts's own header for why this exists as a separate script.
   [tasks.name]: tasks,
+  // The run-scoped plan/checklist (Claude Code TodoWrite). Enforced by loop.ts: once set, a run
+  // can't stop with open steps. Distinct from `tasks` (durable, cross-agent) — see plan.ts.
+  [plan.name]: plan,
 };
 
 /**
@@ -198,4 +202,5 @@ export {
   localMachine,
   schedule,
   tasks,
+  plan,
 };

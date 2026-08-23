@@ -848,6 +848,17 @@ export class GatewayReasoner implements Reasoner {
       // Present on every L3/L4 turn so the model can judge for itself whether it is converging,
       // not just discover on the last possible turn that it never was.
       ...(input.progress ? { progress: input.progress } : {}),
+      // The agent's own committed plan (the `plan` prebuilt), present only once it has set one. The
+      // loop refuses answer/give_up while any step here is still open — see the plan gate in
+      // loop.ts. Rendered so the model always sees exactly what it committed to and what remains.
+      ...(input.plan
+        ? {
+            plan: input.plan,
+            plan_rule:
+              "You committed to this plan. Do NOT answer or give_up while any step's done is false — " +
+              "finish the work for the next open step and mark it done with plan.complete_step first.",
+          }
+        : {}),
     });
 
     const query = {

@@ -683,6 +683,30 @@ export interface ActionLedger {
   record(key: string, actionName: string, paramsHash: string, result: ScriptRunResult): Promise<void>;
 }
 
+/**
+ * One committed step of the agent's own plan for THIS run — the Claude-Code-TodoWrite model, not
+ * the durable per-project `tasks` DAG (which is for coordinating work ACROSS agents/runs and lives
+ * in SpaceDO). A plan is run-scoped: it exists to keep a multi-step agent honest about finishing
+ * what it said it would do before it stops. See the `plan` prebuilt and loop.ts's plan gate.
+ */
+export interface PlanStep {
+  /** Stable id (an index-derived slug), so complete_step can name a specific step. */
+  id: string;
+  text: string;
+  done: boolean;
+}
+
+/**
+ * The live plan for the current run. A single mutable object shared by reference between the `plan`
+ * prebuilt ops (which write it — plan.set/add_step/complete_step) and the loop (which reads it at
+ * terminal-decision time to refuse a premature stop). Run-scoped: the loop creates it fresh per run
+ * and reconstructs it from resumeSteps on a resume, so a plan set before an approval-suspend
+ * survives the resume. Absent on env until the loop initializes it.
+ */
+export interface PlanState {
+  steps: PlanStep[];
+}
+
 /** Everything the engine needs from the host (NaelaoAgentDO) to operate. */
 export interface ScriptEngineEnv {
   /** R2 bucket holding the skill library (spaces/{spaceId}/scripts/...). */
@@ -725,6 +749,14 @@ export interface ScriptEngineEnv {
   /** Exactly-once record of executed actions — present when the host provides one. See
    *  ActionLedger for why "the model can see it already ran" is not on its own a guarantee. */
   actionLedger?: ActionLedger;
+  /**
+   * The current run's plan (Claude-Code TodoWrite-style checklist) — a mutable object the loop
+   * initializes at the start of every L3/L4 run and the `plan` prebuilt ops write to. Shared by
+   * reference so the loop can enforce "don't stop with incomplete plan steps" against the SAME
+   * state the model updated. Set by runScriptLoop, never by the host — a caller/test that never
+   * runs the loop leaves it absent, and the plan ops degrade to a clear "no active run" message.
+   */
+  plan?: PlanState;
   /**
    * Called after a project workspace file is written or removed, so the host can fire a
    * `workspace.file_changed` event.

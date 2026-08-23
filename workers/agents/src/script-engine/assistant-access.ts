@@ -96,6 +96,14 @@ export const READ_SAFE_PREBUILT_OPS: ReadonlySet<string> = new Set([
   // tasks.ts (AVOS plan step 4) — listing the project's task DAG is a pure read; create/start/
   // complete/block are structural writes and stay off this list.
   "task.list",
+  // plan.ts — the run-scoped checklist. Every plan op is safe-by-construction: it only organizes
+  // THIS run's own plan state (no external side effect, no money, no outside reach), so even a
+  // read-only-clamped run may use it to plan and track its own work.
+  "plan.set",
+  "plan.add_step",
+  "plan.complete_step",
+  "plan.status",
+  "plan.clear",
 ]);
 
 export function isReadSafeOperation(name: string): boolean {

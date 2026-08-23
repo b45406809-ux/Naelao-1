@@ -37,6 +37,33 @@ import { compactSteps, stepLimitsForModel, squeezeStepLimits } from "./step-cont
 import { fingerprintSimilarity, isMatch, isPartial } from "./fingerprint.js";
 import { FIND_CONFIDENCE_FLOOR } from "./script-find.js";
 import { assessSkillHealth, isSafeToAutoRun } from "./skill-health.js";
+import { applyPlanOp } from "./prebuilt/plan.js";
+import type { PlanState } from "./types.js";
+
+/**
+ * Rebuild the run's plan from its recorded history — used at the start of a RESUMED run, where the
+ * original run's plan.* calls are in resumeSteps (shown to the model as done work) but were not
+ * re-executed, so env.plan would otherwise be empty and the plan gate would let a half-finished
+ * plan slip through on resume. Replays every recorded plan.* call through the SAME applyPlanOp the
+ * live ops use, so a reconstructed plan is identical to the one the original run held. A fresh run
+ * (empty resumeSteps) yields an empty plan.
+ */
+function reconstructPlanFromSteps(
+  steps: Array<{ name: string; params: Record<string, unknown> }>
+): PlanState {
+  const state: PlanState = { steps: [] };
+  for (const s of steps) {
+    if (s.name.startsWith("plan.")) applyPlanOp(state, s.name, s.params);
+  }
+  return state;
+}
+
+/** How many consecutive times the loop will refuse a premature terminal decision (a stop with an
+ *  incomplete plan) before it gives up enforcing and lets the run end. This is belt-and-suspenders
+ *  on top of the stall budget (a refusal is a non-progress step and counts toward maxStallSteps
+ *  anyway) — it guarantees the plan gate can never itself run a plan to the 50-step runaway
+ *  ceiling if the model simply refuses to either finish or mark its steps. */
+const MAX_PLAN_GATE_REFUSALS = 6;
 
 /**
  * LEGACY FALLBACK ONLY (spec §11). The enforced source of truth is the structural
@@ -267,6 +294,19 @@ export interface Reasoner {
       max_stall_steps: number;
       tokens_used: number;
       max_tokens?: number;
+    };
+    /**
+     * The agent's own committed plan for this run (the `plan` prebuilt), present only once at least
+     * one step has been set. Passed on every turn so a plan survives history compaction — the model
+     * can always see exactly what it committed to and which steps remain. The loop enforces it:
+     * a terminal answer/give_up is refused while any step is still open (see the plan gate in the
+     * L3/L4 body). Absent for agents that never set a plan — every existing agent is unaffected.
+     */
+    plan?: {
+      total: number;
+      completed: number;
+      remaining: number;
+      steps: Array<{ id: string; text: string; done: boolean }>;
     };
     /**
      * Called repeatedly WHILE the model is generating, with whatever user-visible text has
@@ -759,6 +799,13 @@ export async function runScriptLoop(
       // Same array, exposed on every exit by finish() — so a run that fails can be continued
       // from what it had already done rather than restarted from nothing.
       stepsOut = priorSteps;
+      // The run's plan (the `plan` prebuilt). Reconstructed from resumeSteps so a plan set before an
+      // approval-suspend survives the resume; the plan ops mutate this SAME object by reference
+      // (it's on env), and the terminal-decision gate below reads it. A fresh run starts empty.
+      env.plan = reconstructPlanFromSteps(opts.resumeSteps ?? []);
+      /** How many times in a row the plan gate has refused a premature stop — bounded so it can
+       *  never itself drive the run to the runaway ceiling (see MAX_PLAN_GATE_REFUSALS). */
+      let planGateRefusals = 0;
       // Actions parked mid-run because they need a human. The run continues around them; each one
       // carries its own checkpoint so it can be picked up alone when the answer arrives.
       const deferred: NonNullable<LoopResult["deferred_approvals"]> = [];
@@ -864,6 +911,18 @@ export async function runScriptLoop(
             tokens_used: usageAcc.input + usageAcc.output,
             ...(budget.maxTokens !== undefined ? { max_tokens: budget.maxTokens } : {}),
           },
+          // The committed plan, present only once the model has set one — so it always sees which
+          // steps remain even after history is compacted, and knows it's held to finishing them.
+          ...(env.plan && env.plan.steps.length > 0
+            ? {
+                plan: {
+                  total: env.plan.steps.length,
+                  completed: env.plan.steps.filter((s) => s.done).length,
+                  remaining: env.plan.steps.filter((s) => !s.done).length,
+                  steps: env.plan.steps.map((s) => ({ id: s.id, text: s.text, done: s.done })),
+                },
+              }
+            : {}),
           ...(deltaReporter(opts) ? { onDelta: deltaReporter(opts)! } : {}),
         });
         longestStepMs = Math.max(longestStepMs, Date.now() - reasonStart);
@@ -1066,6 +1125,37 @@ export async function runScriptLoop(
         }
 
         if (decision.action === "answer" || decision.action === "give_up") {
+          // Plan gate — the "don't stop half-done" enforcement. Once the agent has committed to a
+          // plan (the `plan` prebuilt), it may not answer or give up while any step is still open:
+          // that is the single most common way multi-step autonomous work goes half-finished. The
+          // model is told to finish the remaining work and mark each step done (plan.complete_step)
+          // — or, if a step is genuinely impossible, to do what it can and say so plainly in the
+          // answer. The escapes the user explicitly allows are respected: it is NOT applied on the
+          // final step (budget/time is out — that is the "error/resource" stop the user permits, and
+          // re-gating it would leave the run no way to ever end), and a user Stop / a real error take
+          // their own exits entirely. Bounded by MAX_PLAN_GATE_REFUSALS AND the stall budget so it
+          // can never itself drive a run to the runaway ceiling.
+          const openSteps = env.plan?.steps.filter((s) => !s.done) ?? [];
+          if (openSteps.length > 0 && !isFinalStep && planGateRefusals < MAX_PLAN_GATE_REFUSALS) {
+            planGateRefusals++;
+            const remaining = openSteps.map((s) => `${s.id}: ${s.text}`).join("; ");
+            notes.push(`${level} tried to ${decision.action} with ${openSteps.length} plan step(s) still open — refused (${planGateRefusals}/${MAX_PLAN_GATE_REFUSALS})`);
+            pushTrace({ phase: "gate", detail: "plan_incomplete", ok: false });
+            priorSteps.push({
+              name: "(plan not finished)",
+              params: {},
+              ok: false,
+              error:
+                `You tried to ${decision.action}, but your own plan still has ${openSteps.length} ` +
+                `step(s) not marked done: ${remaining}. You committed to this plan and must not stop ` +
+                `until it is finished. Do the work for the next open step, then mark it done with ` +
+                `plan.complete_step. If a step is genuinely impossible, finish every step you CAN, ` +
+                `then in your answer say plainly which step you couldn't do and why. Do not repeat ` +
+                `this answer/give_up until every step is done or explicitly resolved.`,
+            });
+            stallSteps++;
+            continue;
+          }
           return finish(withTokenUsage(await applyTerminalDecision(level, decision, tools, opts.goal, notes, pushTrace, runOnce), usageAcc));
         }
 

@@ -795,6 +795,15 @@ export const LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED: string[] = [
   "thread.read",
   "thread.search",
   "project.list_members",
+  // plan.ts — the run-scoped checklist. Every op only touches THIS run's own plan state (no
+  // external side effect, no money, no outside reach) — safe by construction, same class as
+  // memory.recall/conversation.search. Gating them would mean asking permission before being
+  // allowed to organize the run's own work.
+  "plan.set",
+  "plan.add_step",
+  "plan.complete_step",
+  "plan.status",
+  "plan.clear",
   // Read-only, platform-keyed (no BYO credential, no external side effect) — same class of
   // "safe by construction" as mcp.list_tools/memory.recall above. A user reported this gated
   // web search under guided mode's default, which is real friction for zero actual risk: a
