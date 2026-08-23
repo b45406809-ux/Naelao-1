@@ -14,7 +14,7 @@ import type { LlmTool, LlmFunctionTool, LlmMessage, ContentBlock } from "@naelao
 import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
 import type { SystemBlock } from "@naelao/llm-gateway";
 import { moderateText } from "@naelao/moderation";
-import { tokensToCredits, infraTimeToCredits, capabilityForModel, contextWindowForModel, DEFAULT_WORKING_MODEL, isValidEffortLevel, resolveEscalationModel, type EffortLevel } from "@naelao/billing-core";
+import { tokensToCredits, infraTimeToCredits, capabilityForModel, contextWindowForModel, DEFAULT_WORKING_MODEL, UTILITY_MODEL, isValidEffortLevel, resolveEscalationModel, type EffortLevel } from "@naelao/billing-core";
 import { classifyFailure } from "@naelao/events";
 import type { ReasoningRequest, GatewayOpts } from "../shared/ai-client.js";
 import { byokProviderForModel, BYOK_PROVIDER_KEY_FIELD } from "../shared/ai-client.js";
@@ -6265,8 +6265,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const response = await callLlm(
         "",
         {
-          // Compaction is background maintenance, not user-facing reasoning — use the cheap model.
-          model: "@cf/ibm-granite/granite-4.0-h-micro",
+          // Compaction is background maintenance, not user-facing reasoning — cascaded-routing
+          // trick 4: route it to the shared cheap UTILITY_MODEL, not the agent's reasoning model.
+          model: UTILITY_MODEL,
           messages: [{ role: "user", content: buildSummaryPrompt(older, existingSummary) }],
           max_tokens: 600,
         },

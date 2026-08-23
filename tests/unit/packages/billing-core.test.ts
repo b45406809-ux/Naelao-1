@@ -3,7 +3,22 @@ import {
   computeTokenCostMicro, tokensToCredits, CREDITS_PER_USD, contextWindowForModel, MODEL_CONTEXT_WINDOWS,
   capabilityForModel, isValidReasoningLevel, ALLOWED_MODELS, MODEL_CAPABILITIES,
   PERSONAL_PLAN_LIMITS, isPersonalPlanTier, resolveEffectiveBusinessLimit, canPersonalPlanInvite,
+  UTILITY_MODEL, DEFAULT_WORKING_MODEL, capabilityForModel as capFor,
 } from "@naelao/billing-core";
+
+describe("UTILITY_MODEL — cascaded-routing cheap tier (token trick 4)", () => {
+  it("is a real, allowed model", () => {
+    expect(ALLOWED_MODELS).toContain(UTILITY_MODEL);
+  });
+  it("has a known context window (not the fallback default)", () => {
+    // A model the engine routes utility work to must be in the real capability tables.
+    expect(MODEL_CONTEXT_WINDOWS[UTILITY_MODEL]).toBeGreaterThan(0);
+    expect(capFor(UTILITY_MODEL)).toBeDefined();
+  });
+  it("is distinct from the reasoning default — utility work must not burn the reasoning model", () => {
+    expect(UTILITY_MODEL).not.toBe(DEFAULT_WORKING_MODEL);
+  });
+});
 
 describe("computeTokenCostMicro — per-model USD pricing", () => {
   it("prices a known model's input/output tokens separately", () => {

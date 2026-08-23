@@ -213,6 +213,20 @@ export function suggestModels(guess: string, max = 3): AllowedModel[] {
  * builder who never opens Configuration gets a different default than the one shown as selected.
  */
 export const DEFAULT_WORKING_MODEL: AllowedModel = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+
+/**
+ * The cheapest capable model, for BACKGROUND / non-reasoning UTILITY work — the "junior dev" tier
+ * of the cascaded-model-routing trick (token-efficiency trick 4): condensing an old activity log
+ * into an archive, summarizing a conversation for compaction, and similar format/summarize tasks
+ * that must never burn the agent's chosen reasoning model. One shared constant so every utility
+ * call routes to the same tuned model instead of drifting hardcoded strings across files; change it
+ * here and every background call follows. A Workers AI id, guaranteed to resolve on this account
+ * (see DEFAULT_WORKING_MODEL's own note — a Claude id 404s on a gateway with no Anthropic behind
+ * it). Deliberately NOT used for the main reasoning loop or the closing-answer summary, which are
+ * real reasoning, not utility.
+ */
+export const UTILITY_MODEL: AllowedModel = "@cf/ibm-granite/granite-4.0-h-micro";
+
 const DEFAULT_CONTEXT_WINDOW = 200_000;
 
 /** Context window size for a model, falling back to a documented default for an unknown model

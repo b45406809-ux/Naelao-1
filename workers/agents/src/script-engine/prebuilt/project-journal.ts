@@ -29,6 +29,7 @@ import {
   type ProjectJournal,
   type JournalSummarizer,
 } from "../project-journal.js";
+import { UTILITY_MODEL } from "@naelao/billing-core";
 
 function bucket(ctx: PrebuiltOpContext): R2Bucket {
   return ctx.env.workspaceBucket ?? ctx.env.scriptsBucket;
@@ -75,9 +76,10 @@ function summarizerFor(ctx: PrebuiltOpContext): JournalSummarizer | undefined {
       `NEW ENTRIES:\n${lines}`,
     ].join("\n");
     const out = await caller.complete!({
-      // Compaction is a background maintenance task, not user-facing reasoning — the cheapest
-      // capable model is the right default here.
-      model: "@cf/ibm-granite/granite-4.0-h-micro",
+      // Compaction is a background maintenance task, not user-facing reasoning — cascaded-routing
+      // trick 4: route it to the shared cheap UTILITY_MODEL (one tuned constant, not a drifting
+      // hardcoded string), not the agent's reasoning model.
+      model: UTILITY_MODEL,
       prompt,
       maxTokens: 400,
     });
