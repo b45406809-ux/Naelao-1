@@ -6,6 +6,6 @@
   "types": "./dist/index.d.ts",
   "exports": { ".": { "import": "./dist/index.js", "types": "./dist/index.d.ts" } },
   "scripts": { "build": "tsc", "typecheck": "tsc --noEmit" },
-  "dependencies": { "@naelao/types": "workspace:*", "@naelao/client-sdk": "workspace:*" },
+  "dependencies": { "@naelao/types": "*", "@naelao/client-sdk": "*" },
   "devDependencies": { "typescript": "*" }
 }

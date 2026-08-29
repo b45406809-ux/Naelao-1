@@ -7,9 +7,9 @@
   "exports": { ".": { "import": "./dist/index.js", "types": "./dist/index.d.ts" } },
   "scripts": { "build": "tsc", "typecheck": "tsc --noEmit" },
   "dependencies": {
-    "@naelao/auth": "workspace:*",
-    "@naelao/crypto": "workspace:*",
-    "@naelao/types": "workspace:*",
+    "@naelao/auth": "*",
+    "@naelao/crypto": "*",
+    "@naelao/types": "*",
     "hono": "^4.6.14"
   },
   "devDependencies": { "typescript": "*", "@cloudflare/workers-types": "*" }

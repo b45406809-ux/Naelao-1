@@ -10,8 +10,8 @@
     "deploy:production": "wrangler deploy --env production"
   },
   "dependencies": {
-    "@naelao/types": "workspace:*",
-    "@naelao/http": "workspace:*",
+    "@naelao/types": "*",
+    "@naelao/http": "*",
     "hono": "^4.6.0"
   },
   "devDependencies": {

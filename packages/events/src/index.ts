@@ -596,7 +596,7 @@ export function isJobOverdue(enabled: boolean, cronExpression: string, lastRunAt
 }
 
 // ── Business Feature Projects registry (F-34/F-41) ──────────────────────────────
-export * from "./business-feature-kinds.js";
+export * from "./business-feature-kinds";
 
 // ── Failure classification — what stopped a run, and can anything be done about it ──
-export * from "./failure-classification.js";
+export * from "./failure-classification";

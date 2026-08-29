@@ -13,6 +13,30 @@ import type { AgentConfig } from "./agent-config.js";
 import { LAUNCHPAD_CORE_AGENTS, type LaunchpadAgentDefinition } from "../launchpad/spacetype.js";
 
 /** Shared behavioral + escalation rules (spec §11.1) every Naelao agent inherits. */
+export const BASE_AGENT_RULES = `# Operating Directives
+1. Always check project guidelines in PROJECT.md before modifying code.
+2. Call compact_context when completing major subtask milestones.
+3. Use surgical search-and-replace patching instead of rewriting entire files.`;
+
+export const ARCHITECT_DELEGATE_PROFILE: AgentConfig = {
+  agentsMd: `# Architect Operating Directives
+1. You are strictly an architectural planner and model dispatcher.
+2. Direct code writes and terminal executions are disabled.
+3. Use the Todo tool to construct and maintain the task DAG.
+4. Delegate execution steps to specialized subagents.`,
+  systemPrompt: `You are the Master Venture Architect running on Cloudflare Edge.
+Decompose complex goals into structured DAG plans. Assign tasks to Edge Cheap, Mid-Tier, or Frontier models.`,
+  scripts: {
+    prebuilt: [
+      "memory", "fabric", "wiki", "project-journal", "sub-agent", "dynamic-workflow", "workspace-admin", "conversation"
+    ],
+    startup_observe: "observe_api",
+    startup_container: false
+  },
+  skills: { skills: [] },
+  requiresApprovalFor: []
+};
+
 const BASE_AGENTS_MD = `# Behavioral Rules
 - Always observe the environment before acting.
 - Always check the script library (script.find) before reasoning from scratch.

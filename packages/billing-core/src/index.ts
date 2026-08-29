@@ -3,8 +3,8 @@
 // Provider-agnostic billing (spec Appendix H): Lemon Squeezy is the primary provider,
 // Stripe is a future addition. See ./providers. The Stripe helpers below remain for
 // usage-metering until the Stripe BillingProvider lands.
-export * from "./providers/index.js";
-export * from "./reseller.js";
+export * from "./providers/index";
+export * from "./reseller";
 // model-benchmarks.ts and effort.ts import ALLOWED_MODELS back from THIS file (a deliberate
 // circular re-export, not a mistake) — they must be re-exported only AFTER everything they
 // depend on (ALLOWED_MODELS, capabilityForModel, etc.) is actually defined below, or their own
@@ -142,7 +142,7 @@ export async function updateSubscriptionPrice(
 // The curated model list, context windows, and reasoning-capability table — split into its own
 // dependency-free leaf module (see models.ts's own header for why: a real deploy-time module-
 // evaluation-order bug, caught by an actual `wrangler deploy`, not by the local test suite).
-export * from "./models.js";
+export * from "./models";
 
 // Compute token cost in USD micros (cost * 1,000,000 for integer storage)
 export function computeTokenCostMicro(
@@ -253,6 +253,6 @@ export function infraTimeToCredits(resourceType: InfraResourceType, durationMs: 
 }
 
 // See the comment near the top of this file — these must come last.
-export * from "./model-benchmarks.js";
-export * from "./effort.js";
-export * from "./personal-plan.js";
+export * from "./model-benchmarks";
+export * from "./effort";
+export * from "./personal-plan";

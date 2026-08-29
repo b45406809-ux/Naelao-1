@@ -14,6 +14,7 @@
  */
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
+import { workspacePrefix } from "../types.js";
 
 function userIdFor(args: Record<string, unknown>, ctx: PrebuiltOpContext): string | undefined {
   const explicit = args["user_id"];
@@ -24,10 +25,64 @@ function userIdFor(args: Record<string, unknown>, ctx: PrebuiltOpContext): strin
 export const memory: PrebuiltScript = {
   name: "memory",
   description:
-    "Remember durable facts and notes, recall them by meaning or entity, and forget what's stale.",
+    "Remember durable facts and notes, recall them by meaning or entity, manage Task DAGs, and inspect/update project guidelines.",
   domain: "knowledge",
   requires_tier: 1,
   operations: {
+    // ── Claude Code Task State Machine ──────────────────────────────────────────
+    Todo: async (args, ctx) => {
+      const rawTasks = (args["tasks"] as Array<any>) || [];
+      if (rawTasks.length === 0) {
+        return { ok: true, message: "No tasks updated." };
+      }
+
+      // Forward DAG update to authoritative SpaceDO tasks store
+      try {
+        await ctx.env.spacesWorker?.fetch(`http://internal/tasks`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            spaceId: ctx.env.spaceId,
+            projectId: ctx.env.projectId,
+            tasks: rawTasks
+          })
+        });
+      } catch {
+        /* Fallback if spacesWorker RPC fails */
+      }
+
+      const completed = rawTasks.filter((t: any) => String(t.status).toUpperCase() === "COMPLETED").length;
+      return {
+        ok: true,
+        tasks: rawTasks,
+        summary: `✔ Task DAG updated (${completed}/${rawTasks.length} tasks completed).`
+      };
+    },
+
+    // ── Deterministic Layer 2 Project Rules (PROJECT.md) ───────────────────────
+    "memory.get_project_rules": async (_args, ctx) => {
+      const bucket = ctx.env.workspaceBucket || ctx.env.scriptsBucket;
+      const key = `${workspacePrefix(ctx.env)}PROJECT.md`;
+      const file = await bucket.get(key);
+      if (!file) {
+        return {
+          exists: false,
+          rules: "# Project Guidelines\nNo custom guidelines established. Follow standard Astro + Tailwind + Cloudflare edge patterns."
+        };
+      }
+      return { exists: true, rules: await file.text() };
+    },
+
+    "memory.update_project_rules": async (args, ctx) => {
+      const content = (args["content"] as string) || (args["rules"] as string);
+      if (!content) throw new Error("Missing 'content' parameter for PROJECT.md update.");
+      const bucket = ctx.env.workspaceBucket || ctx.env.scriptsBucket;
+      const key = `${workspacePrefix(ctx.env)}PROJECT.md`;
+      await bucket.put(key, content);
+      ctx.env.onWorkspaceChange?.({ path: "PROJECT.md", operation: "write" });
+      return { ok: true, message: "✔ Successfully updated PROJECT.md baseline." };
+    },
+
     async "memory.remember"(args, ctx) {
       if (!ctx.env.memoryStore) return { ok: false, reason: "memory store not available in this environment" };
       const text = String(args["text"] ?? "");

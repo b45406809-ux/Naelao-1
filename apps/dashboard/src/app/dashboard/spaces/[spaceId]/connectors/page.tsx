@@ -1,6 +1,5 @@
 "use client";
 
-export const runtime = "edge";
 
 // Connectors console — the external-platform connector layer ("Whop first, everything else
 // coming soon"). Reads the Naelao-authored connector catalogue and lets a builder connect a

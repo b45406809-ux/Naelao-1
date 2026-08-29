@@ -1,6 +1,5 @@
 "use client";
 
-export const runtime = "edge";
 
 // Launchpad commerce console (spec §11). Surfaces the manifest's Revenue / Products / Orders
 // sidebar items in one page. Products are CRUD; orders + revenue are read-only rollups

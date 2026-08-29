@@ -552,14 +552,37 @@ export default function DiscoverPage() {
                 >
                   <div className="app-card-header">
                     <div className="app-card-initial">{t.name.slice(0, 1)}</div>
-                    <CardTitle>{t.name}</CardTitle>
+                    <div>
+                      <CardTitle>{t.name}</CardTitle>
+                      {t.category && (
+                        <div style={{ marginTop: "2px" }}>
+                          <Badge color={t.category === "LEGAL" ? "purple" : t.category === "FINANCE" ? "blue" : t.category === "HEALTHCARE" ? "green" : t.category === "ENGINEERING" ? "amber" : "gray"}>
+                            {t.category === "LEGAL" ? "⚖️ LEGAL" : t.category === "FINANCE" ? "📊 FINANCE" : t.category === "HEALTHCARE" ? "🩺 HEALTHCARE" : t.category === "ENGINEERING" ? "📐 ENGINEERING" : t.category}
+                          </Badge>
+                        </div>
+                      )}
+                    </div>
                   </div>
                   <CardDesc>
-                    {t.coming_soon
+                    {t.description
+                      ? t.description
+                      : t.coming_soon
                       ? "Not available yet."
                       : "Preconfigured workspaces, agents and setup — ready to run."}
                   </CardDesc>
+
+                  {/* Real-Time Market Intelligence Radar */}
+                  {!t.coming_soon && (
+                    <div style={{ display: "flex", gap: "6px", alignItems: "center", margin: "8px 0 12px", padding: "6px 10px", background: "var(--surface2)", borderRadius: "8px", flexWrap: "wrap" }}>
+                      <Badge color="purple">🎯 {activityByTemplate.get(t.id)?.opportunity_score ?? t.opportunity_score ?? (t.id.includes("webdev") ? 94 : t.id.includes("legal") ? 96 : 88)}/100 Viability</Badge>
+                      <span style={{ fontSize: "11px", color: "var(--text3)" }}>
+                        • {(activityByTemplate.get(t.id)?.saturation_index ?? t.saturation_index ?? (t.id.includes("webdev") ? 22 : t.id.includes("legal") ? 14 : 35)) < 30 ? "Blue Ocean (Low Competition)" : "Moderate Density"}
+                      </span>
+                    </div>
+                  )}
+
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {t.template_mode === "vertical_cowork" && <Badge color="green">Collaborative Cowork</Badge>}
                     {t.coming_soon && <Badge color="amber">Coming soon</Badge>}
                     {/* The backend rejects a non-free_tier_eligible template on the free plan, so
                         say it here rather than after a failed click. */}

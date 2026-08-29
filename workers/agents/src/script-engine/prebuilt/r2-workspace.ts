@@ -515,31 +515,38 @@ export const r2Workspace: PrebuiltScript = {
 
     // ── Claude-Code-shaped REPL primitives — same workspace, different lens (see file header) ──
     async Read(args, ctx) {
-      return readWindowed(ctx, reqStr(args, "path"), numArg(args, "offset"), numArg(args, "limit"));
+      const p = (args["filePath"] as string) || (args["path"] as string) || "";
+      return readWindowed(ctx, p, numArg(args, "offset"), numArg(args, "limit"));
     },
     async Edit(args, ctx) {
-      const newString = args["newString"];
-      return editFile(
-        ctx,
-        reqStr(args, "path"),
-        reqStr(args, "oldString"),
-        typeof newString === "string" ? newString : ""
-      );
+      const p = (args["filePath"] as string) || (args["path"] as string) || "";
+      const oldStr = (args["oldString"] as string) || (args["find"] as string) || (args["searchBlock"] as string) || "";
+      const newStr = typeof args["newString"] === "string" ? args["newString"] : ((args["replace"] as string) ?? (args["replaceBlock"] as string) ?? "");
+      return editFile(ctx, p, oldStr, newStr);
+    },
+    async patch_file(args, ctx) {
+      const p = (args["filePath"] as string) || (args["path"] as string) || "";
+      const oldStr = (args["oldString"] as string) || (args["find"] as string) || (args["searchBlock"] as string) || "";
+      const newStr = typeof args["newString"] === "string" ? args["newString"] : ((args["replace"] as string) ?? (args["replaceBlock"] as string) ?? "");
+      return editFile(ctx, p, oldStr, newStr);
     },
     async Write(args, ctx) {
-      return writeFileImpl(ctx, reqStr(args, "path"), reqStr(args, "content"));
+      const p = (args["filePath"] as string) || (args["path"] as string) || "";
+      const content = typeof args["content"] === "string" ? args["content"] : "";
+      return writeFileImpl(ctx, p, content);
     },
     async Grep(args, ctx) {
-      const p = args["path"];
-      return grepWorkspace(ctx, reqStr(args, "pattern"), typeof p === "string" ? p : "");
+      const pattern = (args["pattern"] as string) || (args["query"] as string) || "";
+      const p = (args["path"] as string) || "";
+      return grepWorkspace(ctx, pattern, p);
     },
     async Glob(args, ctx) {
-      const pattern = args["pattern"];
-      const p = args["path"];
+      const pattern = (args["pattern"] as string);
+      const p = (args["path"] as string) || "";
       return globWorkspace(
         ctx,
         typeof pattern === "string" ? pattern : undefined,
-        typeof p === "string" ? p : ""
+        p
       );
     },
   },

@@ -77,7 +77,22 @@ export class ToolSandboxDO extends DurableObject {
     // caller (workspace.copy) is responsible for staging anything it needs before running code
     // that depends on it.
     if (!container.running) {
-      container.start({ enableInternet: false });
+      container.start({ enableInternet: true });
+    }
+
+    const url = new URL(request.url);
+
+    // Intercept bulk staging before forwarding to container harness
+    if (url.pathname === "/workspace/sync" && request.method === "POST") {
+      const payload = await request.text();
+      const port = container.getTcpPort(HARNESS_PORT);
+      return await port.fetch(
+        new Request("http://127.0.0.1:8080/workspace/write", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: payload,
+        })
+      );
     }
 
     // /build, /exec, and every /workspace/* route all forward to the harness as-is now — this

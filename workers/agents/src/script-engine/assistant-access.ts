@@ -37,6 +37,58 @@
 import type { ApprovalMode } from "./loop.js";
 
 export type AssistantEffectiveRole = "owner" | "editor" | "viewer";
+export type AgentArchetypeRole = "DEV_OPERATOR" | "GROWTH_OPERATOR" | "CUSTOMER_SUPPORT" | "ARCHITECT_DELEGATE" | "CUSTOM";
+
+/**
+ * Physical Capability Firewall Matrix:
+ * Hardcoded operational boundaries per archetype role. Tool schemas outside these sets
+ * are physically stripped before the LLM prompt is assembled.
+ */
+export const ALLOWED_SCRIPTS_BY_ROLE: Record<Exclude<AgentArchetypeRole, "CUSTOM">, string[]> = {
+  DEV_OPERATOR: [
+    "r2-workspace", "file-manager", "code-exec", "workspace", "browser-use",
+    "knowledge-base", "memory", "fabric", "wiki", "project-journal", "conversation", "lock"
+  ],
+  GROWTH_OPERATOR: [
+    "web-search", "browser-use", "notifications", "business-email", "artifacts",
+    "knowledge-base", "memory", "fabric", "wiki", "project-journal", "conversation", "mcp-connector"
+  ],
+  CUSTOMER_SUPPORT: [
+    "knowledge-base", "memory", "conversation", "notifications"
+  ],
+  ARCHITECT_DELEGATE: [
+    "memory", "fabric", "wiki", "project-journal", "sub-agent", "dynamic-workflow", "workspace-admin", "conversation"
+  ]
+};
+
+export const MAX_TIER_BY_ROLE: Record<AgentArchetypeRole, number> = {
+  DEV_OPERATOR: 5,       // Isolate -> Container
+  GROWTH_OPERATOR: 4,    // Isolate -> Browser (Containers strictly blocked)
+  CUSTOMER_SUPPORT: 1,   // Pure memory/RAG only (Zero isolate shell, zero containers)
+  ARCHITECT_DELEGATE: 2, // Orchestration workflows only (Zero direct file/code exec)
+  CUSTOM: 5,             // User-configured ceiling
+};
+
+/**
+ * Strips unauthorized scripts from the agent's prebuilt list before engine initialization.
+ */
+export function sanitizePrebuiltListForRole(role: AgentArchetypeRole | undefined, requestedPrebuilts: string[]): string[] {
+  if (!role || role === "CUSTOM" || !(role in ALLOWED_SCRIPTS_BY_ROLE)) return requestedPrebuilts;
+  const allowed = new Set(ALLOWED_SCRIPTS_BY_ROLE[role as Exclude<AgentArchetypeRole, "CUSTOM">]);
+  return requestedPrebuilts.filter(p => allowed.has(p));
+}
+
+/**
+ * Physical Execution Ladder Guard: throws immediately if an agent attempts to execute
+ * on a tier higher than its archetype permits.
+ */
+export function assertRoleCanExecuteTier(role: AgentArchetypeRole | undefined, tier: number): void {
+  if (!role) return;
+  const maxAllowed = MAX_TIER_BY_ROLE[role] ?? 5;
+  if (tier > maxAllowed) {
+    throw new Error(`Security Violation: Agent role '${role}' is restricted to Tier ${maxAllowed}, but attempted Tier ${tier}.`);
+  }
+}
 
 /**
  * Prebuilt operations a `viewer`-clamped run may execute: reads with no side effect beyond

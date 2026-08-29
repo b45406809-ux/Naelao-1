@@ -1,12 +1,9 @@
-import { setupDevPlatform } from '@cloudflare/next-on-pages/next-dev';
-
-if (process.env.NODE_ENV === 'development') {
-  await setupDevPlatform();
-}
-
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  output: 'standalone',
+  transpilePackages: ['@naelao/ui', '@naelao/types', '@naelao/billing-core'],
 };
 
 export default nextConfig;
+

@@ -112,13 +112,16 @@ const RENAMED_OPERATIONS: Record<string, string> = {
   // Lowercase spellings of the REPL primitives — a model reaching for the more familiar casing
   // (matching how it would type a shell verb) still resolves to the real, PascalCase op name.
   "read": "Read",
+  "read_file": "Read",
   "edit": "Edit",
+  "patch_file": "Edit",
   "write": "Write",
+  "write_file": "Write",
   "grep": "Grep",
   "glob": "Glob",
   "bash": "Bash",
   "execute_bash": "Bash",
-  "patch_file": "Edit",
+  "code.execute_bash": "Bash",
 };
 
 // ── Tool-result pagination (step 9) ─────────────────────────────────────────────────────────

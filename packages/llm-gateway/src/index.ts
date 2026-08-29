@@ -9,7 +9,7 @@ export type {
   LlmRequest,
   LlmResponse,
   TokenBudget,
-} from "./types.js";
+} from "./types";
 
 export {
   callLlm,
@@ -18,4 +18,4 @@ export {
   moderateInput,
   moderateOutput,
   LlmGatewayError,
-} from "./gateway.js";
+} from "./gateway";

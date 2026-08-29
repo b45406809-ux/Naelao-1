@@ -139,6 +139,15 @@ function parseTodos(block: string): JournalTodo[] {
   return todos;
 }
 
+/** Formats structured tasks into clean, human-readable markdown TODO lines. */
+export function formatTasksToTodos(tasks: Array<{ title: string; status: string }>): JournalTodo[] {
+  return tasks.map(t => ({
+    text: t.title,
+    done: t.status === "COMPLETED" || t.status === "completed",
+    at: new Date().toISOString()
+  }));
+}
+
 function parseActivity(block: string): JournalActivity[] {
   const out: JournalActivity[] = [];
   for (const line of block.split(/\r?\n/)) {

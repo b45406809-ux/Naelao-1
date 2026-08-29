@@ -576,6 +576,13 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // productSpaceId in the path only identifies which product's session to verify, the query
   // itself carries no tenant filter to authorize against.
   /^\/spaces\/([^/]+)\/template-activity$/,
+  // Template Marketplace, Venture Exporter & Creator Studio routes
+  /^\/spaces\/([^/]+)\/export-template$/,
+  /^\/spaces\/([^/]+)\/creator-studio$/,
+  /^\/marketplace\/templates(\/[^/]+)?$/,
+  /^\/marketplace\/templates\/([^/]+)\/purchase$/,
+  /^\/marketplace\/templates\/([^/]+)\/reviews$/,
+  /^\/marketplace\/templates\/([^/]+)\/publish-update$/,
   /^\/spaces\/([^/]+)\/invites(\/|$)/,
   /^\/spaces\/([^/]+)\/business-members(\/|$)/,
   // Phase E (§A1.17): pricing display + checkout initiation. All three are additionally gated by

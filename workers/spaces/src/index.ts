@@ -14,6 +14,7 @@ import { requireBusinessMembership, requireBusinessMembershipForWallet, resolveE
 import { createBusinessForEndUser } from "./business-create.js";
 import { loadTemplateCatalog, loadShellCatalog } from "./template-catalog.js";
 import { registerBusinessRoutes } from "./business-routes.js";
+import { registerMarketplaceRoutes } from "./template-marketplace.js";
 import { ALLOWED_MODELS, isAllowedModel, isValidEffortLevel, isPersonalPlanTier, PERSONAL_PLAN_LIMITS, type PersonalPlanTier } from "@naelao/billing-core";
 
 export { SpaceDO } from "./do/SpaceDO.js";
@@ -2493,6 +2494,29 @@ app.patch("/spaces/:spaceId/agents/:agentId/policy", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
+// ── Per-agent universal config / manifest ──────────────────────────────────────
+app.use("/spaces/:spaceId/agents/:agentId/config", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/agents/:agentId/config", requireBusinessMembership({ GET: "member", PATCH: "admin" }));
+app.get("/spaces/:spaceId/agents/:agentId/config", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const agentId = c.req.param("agentId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/agents/${encodeURIComponent(agentId)}/config?space_id=${encodeURIComponent(spaceId)}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.patch("/spaces/:spaceId/agents/:agentId/config", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const agentId = c.req.param("agentId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/agents/${encodeURIComponent(agentId)}/config?space_id=${encodeURIComponent(spaceId)}`, "PATCH", c.req.raw.body);
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
 // POST /internal/agent-keys/verify — naelao-router calls this to resolve a Bearer nak_...
 // agent key into the owning tenant + agentId + effective approval policy BEFORE it can mint the
 // router's own claims for that request. Gated by a direct platform-secret check (same
@@ -4021,7 +4045,15 @@ app.get("/spaces/:productSpaceId/template-activity", async (c) => {
       ORDER BY active_count DESC`
   ).all<{ template_id: string; active_count: number; created_last_30d: number }>();
 
-  return c.json({ data: results });
+  const activities = (results || []).map((r) => ({
+    template_id: r.template_id,
+    active_count: Number(r.active_count ?? 0),
+    created_last_30d: Number(r.created_last_30d ?? 0),
+    saturation_index: Math.max(10, Math.min(90, Number(r.active_count ?? 0) * 4)),
+    opportunity_score: Math.max(50, Math.min(98, 100 - (Number(r.active_count ?? 0) * 3))),
+  }));
+
+  return c.json({ data: activities });
 });
 
 // ── Three-Tier Platform Model, Phase 6: Product Shell data layer ────────────────────────────
@@ -4449,6 +4481,8 @@ registerBuilderRoutes(app);
 registerProductEndUserRoutes(app);
 // Three-Tier Platform Model, Phase C (docs/spec-appendix A1.17) — businesses, space switcher, invites.
 registerBusinessRoutes(app);
+// Marketplace Templates, Venture Exporter, and Creator Studio
+registerMarketplaceRoutes(app);
 
 app.onError((err, c) => errorResponse(err, c.get("requestId") ?? "unknown"));
 

@@ -1,6 +1,5 @@
 "use client";
 
-export const runtime = "edge";
 
 // Naelao -> Product -> Business -> Personal credential hierarchy (see workers/credentials'
 // resolveCredential): this page manages this SPACE's own credentials. When spaceId is a

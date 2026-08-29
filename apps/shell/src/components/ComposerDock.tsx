@@ -33,6 +33,7 @@ import {
   type AgentTemplateSummary,
 } from "@/lib/api";
 import { startConnectorConnect, startDirectoryConnect, submitManualConnectorKey } from "@/lib/connectorActions";
+import type { InspectedElement } from "./ProjectKindPanel";
 import { modelLabel } from "./ModelSelector";
 
 type DockPanel = "compose" | "model" | "effort" | "agent" | "apps" | "uploads" | "tips" | "members";
@@ -113,6 +114,8 @@ export function ComposerDock({
   availableTemplates,
   addingTemplateId,
   onAddTemplate,
+  inspectedElement,
+  onClearInspectedElement,
   children,
 }: {
   spaceId: string;
@@ -157,6 +160,8 @@ export function ComposerDock({
    *  "Adding…" rather than letting a slow request look like a dead click. */
   addingTemplateId?: string | null;
   onAddTemplate?: (templateId: string) => void;
+  inspectedElement?: InspectedElement | null;
+  onClearInspectedElement?: () => void;
   /** The message input itself. The dock owns the whole stack — panel above, input in the middle,
    *  toolbar below — so an open panel pushes the input down as one unit instead of overlaying it. */
   children?: React.ReactNode;
@@ -803,7 +808,24 @@ export function ComposerDock({
 
       {/* The message input is a panel like any other — the dock is only a toolbar until you
           open it. It grows with what you type, up to the dock's own ceiling, then scrolls. */}
-      {panel === "compose" && <div className="dock-compose">{children}</div>}
+      {panel === "compose" && (
+        <div className="dock-compose">
+          {/* Visual Canvas Inspector Pin Chip */}
+          {inspectedElement && (
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 14px", background: "var(--surface3)", borderBottom: "1px solid var(--border)", fontSize: "12px", color: "var(--text)" }}>
+              <span style={{ color: "var(--accent)" }}>🎯 Inspecting:</span>
+              <code style={{ fontFamily: "monospace", color: "var(--accent-cyan, #00F0FF)" }}>
+                {inspectedElement.filePath}{inspectedElement.line ? `:${inspectedElement.line}` : ""}
+              </code>
+              {inspectedElement.text && <span style={{ color: "var(--text3)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "250px" }}>&ldquo;{inspectedElement.text}&rdquo;</span>}
+              <button type="button" onClick={onClearInspectedElement} style={{ marginLeft: "auto", background: "none", border: "none", color: "var(--text3)", cursor: "pointer", fontSize: "14px" }}>
+                ✕
+              </button>
+            </div>
+          )}
+          {children}
+        </div>
+      )}
 
       <div className="dock-bar">
         {/* Item 107 removed this as "redundant" (every other panel's own button already returns

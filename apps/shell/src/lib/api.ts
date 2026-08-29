@@ -175,7 +175,24 @@ export interface ShellManifest {
    *  sent by the backend (workers/spaces/src/template-catalog.ts) but missing from this type, so
    *  the dialog had no way to warn a free-plan user before they hit the server-side
    *  plan_upgrade_required rejection — see spaces/page.tsx's "Requires upgrade" badge. */
-  template_catalog: Array<{ id: string; name: string; coming_soon: boolean; free_tier_eligible: boolean }>;
+  template_catalog: Array<{
+    id: string;
+    name: string;
+    description?: string;
+    template_mode?: "autonomous_venture" | "vertical_cowork";
+    category?: string;
+    cowork_config?: {
+      defaultViewport: string;
+      citationVerificationRequired?: boolean;
+      collaborationMode?: string;
+      auditLogRetentionDays?: number;
+    };
+    coming_soon: boolean;
+    free_tier_eligible: boolean;
+    saturation_index?: number;
+    opportunity_score?: number;
+    active_launches?: number;
+  }>;
   /** Browse-only: the project presets a business is configured with, and the core agents that
    *  run it. Static product data — an agent's system_prompt is never included. Absent on an older
    *  backend, so both are optional and default to empty. */
@@ -973,7 +990,7 @@ export async function updateProject(
   patch: Partial<{
     name: string;
     description: string;
-    kind: "workspace" | "customer_bot";
+    kind: string;
     execution_ceiling: number;
     daily_spend_cap_credits: number;
     max_threads: number;
@@ -1209,6 +1226,64 @@ export interface ArchetypePreset {
 export async function listArchetypes(spaceId: string, session: SessionCredentials): Promise<ArchetypePreset[]> {
   const res = await apiFetch<{ archetypes: ArchetypePreset[] }>(`/v1/spaces/${spaceId}/archetypes`, { session });
   return res.archetypes ?? [];
+}
+
+export interface UniversalAgentManifest {
+  id: string;
+  name: string;
+  description?: string;
+  scope: "SPACE_WIDE" | "PROJECT_BOUND";
+  projectId?: string;
+  role: "DEV_OPERATOR" | "GROWTH_OPERATOR" | "CUSTOMER_SUPPORT" | "ARCHITECT_DELEGATE" | "CUSTOM";
+  prompts: {
+    systemPrompt: string;
+    instructions: string;
+    userCustomInstructions?: string;
+  };
+  capabilities: {
+    enabledPrebuilts: string[];
+    installedPlugins: string[];
+    maxTier: 1 | 2 | 3 | 4 | 5;
+  };
+  autonomy: {
+    approvalMode: "always_ask" | "gate_unless_listed" | "yolo";
+    autoApprovedActions: string[];
+    requiresApprovalFor: string[];
+  };
+  triggers: {
+    proactiveHeartbeat: boolean;
+    cronSchedule?: string;
+    reactiveToThreads: boolean;
+  };
+}
+
+export async function getAgentManifest(
+  spaceId: string,
+  agentId: string,
+  session: SessionCredentials
+): Promise<UniversalAgentManifest> {
+  const res = await apiFetch<{ data?: UniversalAgentManifest } | UniversalAgentManifest>(
+    `/v1/spaces/${spaceId}/agents/${encodeURIComponent(agentId)}/config`,
+    { session }
+  );
+  return ("data" in res && res.data) ? res.data : (res as UniversalAgentManifest);
+}
+
+export async function updateAgentManifest(
+  spaceId: string,
+  agentId: string,
+  session: SessionCredentials,
+  patch: Partial<UniversalAgentManifest>
+): Promise<UniversalAgentManifest> {
+  const res = await apiFetch<{ data?: UniversalAgentManifest } | UniversalAgentManifest>(
+    `/v1/spaces/${spaceId}/agents/${encodeURIComponent(agentId)}/config`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+      session,
+    }
+  );
+  return ("data" in res && res.data) ? res.data : (res as UniversalAgentManifest);
 }
 
 /** A single project agent's own approval-policy override — falls back to the space-wide
@@ -1678,6 +1753,8 @@ export interface TemplateActivity {
   template_id: string;
   active_count: number;
   created_last_30d: number;
+  saturation_index?: number;
+  opportunity_score?: number;
 }
 
 /** Discover's "what other businesses are doing" showcase — aggregate counts only, no names, no
@@ -2421,5 +2498,176 @@ export async function resolveInterruptedRun(
   return apiFetch<{ continued: boolean; run_id?: string }>(
     `/v1/spaces/${spaceId}/sessions/${sessionId}/agent/interrupted`,
     { method: "POST", body: JSON.stringify({ run_id: runId, action }), session }
+  );
+}
+
+// ── Marketplace & Creator Studio Types ──────────────────────────────────────
+
+export interface MarketplaceTemplateListing {
+  id: string;
+  name: string;
+  author_name: string;
+  description: string;
+  category: string;
+  tags: string[];
+  pricing: "free" | "paid";
+  price_cents: number;
+  pricing_model: "free" | "one_time" | "recurring_monthly" | "gmv_royalty";
+  royalty_share_bps: number;
+  security_review_status: "audit_passed" | "flagged" | "pending";
+  safety_score: number;
+  install_count: number;
+  avg_rating: number;
+  rating_count: number;
+  active_licensees_count: number;
+  version: string;
+  published_at: string;
+  opportunity_score: number;
+  saturation_index: number;
+}
+
+export interface CreatorStudioMetrics {
+  active_licensees: number;
+  monthly_creator_earnings_cents: number;
+  lifetime_creator_earnings_cents: number;
+  average_rating: number;
+  conversion_rate_pct: number;
+}
+
+export interface CreatorStudioData {
+  metrics: CreatorStudioMetrics;
+  listings: Array<{
+    id: string;
+    name: string;
+    category: string;
+    price_cents: number;
+    pricing_model: string;
+    royalty_share_bps: number;
+    status: string;
+    security_review_status: string;
+    safety_score: number;
+    install_count: number;
+    active_licensees_count: number;
+    avg_rating: number;
+    version: string;
+    published_at: string;
+  }>;
+  recent_activity: Array<{
+    id: string;
+    amount_cents: number;
+    gross_cents: number;
+    title: string;
+    created_at: string;
+  }>;
+}
+
+export interface ExportTemplatePayload {
+  templateTitle: string;
+  description?: string;
+  category?: string;
+  priceCents?: number;
+  pricingModel?: "free" | "one_time" | "recurring_monthly" | "gmv_royalty";
+  royaltyShareBps?: number;
+  tags?: string[];
+}
+
+export interface ExportTemplateResult {
+  ok: boolean;
+  blueprintId: string;
+  listingId: string;
+  safetyScore: number;
+  securityStatus: string;
+  auditReasons: string[];
+  message: string;
+}
+
+export async function exportSpaceTemplate(
+  spaceId: string,
+  payload: ExportTemplatePayload,
+  session: SessionCredentials
+): Promise<ExportTemplateResult> {
+  return apiFetch<ExportTemplateResult>(`/spaces/${spaceId}/export-template`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+    session,
+  });
+}
+
+export async function listMarketplaceTemplates(
+  filters: { category?: string; pricing?: string } = {},
+  session?: SessionCredentials
+): Promise<{ templates: MarketplaceTemplateListing[]; count: number }> {
+  const query = new URLSearchParams();
+  if (filters.category) query.set("category", filters.category);
+  if (filters.pricing) query.set("pricing", filters.pricing);
+  const qStr = query.toString() ? `?${query.toString()}` : "";
+  return apiFetch<{ templates: MarketplaceTemplateListing[]; count: number }>(
+    `/marketplace/templates${qStr}`,
+    { session }
+  );
+}
+
+export async function getMarketplaceTemplate(
+  id: string,
+  session?: SessionCredentials
+): Promise<{ template: MarketplaceTemplateListing & { blueprint_preview?: any; reviews?: any[] } }> {
+  return apiFetch<{ template: MarketplaceTemplateListing & { blueprint_preview?: any; reviews?: any[] } }>(
+    `/marketplace/templates/${id}`,
+    { session }
+  );
+}
+
+export async function purchaseMarketplaceTemplate(
+  id: string,
+  payload: { productSpaceId: string; businessName?: string },
+  session: SessionCredentials
+): Promise<{ ok: boolean; space_id: string; purchase_id: string; creator_payout_cents: number; message: string }> {
+  return apiFetch<{ ok: boolean; space_id: string; purchase_id: string; creator_payout_cents: number; message: string }>(
+    `/marketplace/templates/${id}/purchase`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+      session,
+    }
+  );
+}
+
+export async function submitTemplateReview(
+  id: string,
+  payload: { rating: number; body?: string },
+  session: SessionCredentials
+): Promise<{ ok: boolean; message: string }> {
+  return apiFetch<{ ok: boolean; message: string }>(
+    `/marketplace/templates/${id}/reviews`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+      session,
+    }
+  );
+}
+
+export async function getCreatorStudio(
+  productSpaceId: string,
+  session: SessionCredentials
+): Promise<CreatorStudioData> {
+  return apiFetch<CreatorStudioData>(
+    `/spaces/${productSpaceId}/creator-studio`,
+    { session }
+  );
+}
+
+export async function publishTemplateVersionUpdate(
+  id: string,
+  payload: { version: string; releaseNotes?: string },
+  session: SessionCredentials
+): Promise<{ ok: boolean; version: string; message: string }> {
+  return apiFetch<{ ok: boolean; version: string; message: string }>(
+    `/marketplace/templates/${id}/publish-update`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+      session,
+    }
   );
 }

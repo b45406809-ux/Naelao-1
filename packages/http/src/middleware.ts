@@ -3,7 +3,7 @@ import { createMiddleware } from "hono/factory";
 import { verifyJwt, AuthError } from "@naelao/auth";
 import { verifyHmac, signHmac } from "@naelao/crypto";
 import type { NaelaoJwtClaims } from "@naelao/types";
-import { unauthorized, forbidden } from "./errors.js";
+import { unauthorized, forbidden } from "./errors";
 
 // Keep Context import used for module augmentation below
 type _CtxRef = Context;

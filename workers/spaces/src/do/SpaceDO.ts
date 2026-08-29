@@ -1254,6 +1254,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return this.getUserMessages(url.searchParams);
       }
 
+      // GET /export-blueprint — exports projects, rules, tasks, agent defs, and seeds for marketplace blueprint
+      if (method === "GET" && url.pathname === "/export-blueprint") {
+        return this.exportSpaceBlueprint(url.searchParams);
+      }
+
       // DELETE /me/data?user_id=xxx — G-AO31: erase all user data within space
       if (method === "DELETE" && url.pathname === "/me/data") {
         return this.eraseUserData(url.searchParams);
@@ -1626,6 +1631,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       if (method === "PATCH" && agentPolicyMatch?.[1]) {
         return this.updateAgentPolicy(url.searchParams.get("space_id") ?? "", agentPolicyMatch[1], request);
+      }
+
+      // ── Per-agent universal config / manifest ────────────────────────────────
+      const agentConfigMatch = url.pathname.match(/^\/agents\/([^/]+)\/config$/);
+      if (method === "GET" && agentConfigMatch?.[1]) {
+        return this.getUniversalAgentConfig(url.searchParams.get("space_id") ?? "", agentConfigMatch[1]);
+      }
+      if (method === "PATCH" && agentConfigMatch?.[1]) {
+        return this.updateUniversalAgentConfig(url.searchParams.get("space_id") ?? "", agentConfigMatch[1], request);
       }
 
       // ── threads (spec-canonical; sub-agent/channel mirrors are ordinary subthreads) ────
@@ -2440,6 +2454,103 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     console.log(`[gdpr][erasure] user=${userId} sessions=${sessionsDeleted} messages=${messagesDeleted} at=${erasedAt}`);
 
     return Response.json({ erased: true, sessions_deleted: sessionsDeleted, messages_deleted: messagesDeleted, erased_at: erasedAt });
+  }
+
+  // Exports space blueprint structure (projects, rules, tasks, agent definitions, seeds)
+  private exportSpaceBlueprint(params: URLSearchParams): Response {
+    const spaceId = params.get("space_id") ?? "";
+    const spaceRow = queryOne<{ name: string; description: string; spacetype_id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT name, description, spacetype_id FROM spaces WHERE id = ?",
+      spaceId
+    );
+
+    const projects = queryAll<{
+      id: string; name: string; description: string; kind: string;
+      execution_ceiling: number; daily_spend_cap_credits: number;
+      show_sub_threads: number; default_agent_id: string | null;
+      allowed_agent_ids: string | null; visibility: string;
+    }>(
+      this.ctx.storage.sql as never,
+      "SELECT id, name, description, kind, execution_ceiling, daily_spend_cap_credits, show_sub_threads, default_agent_id, allowed_agent_ids, visibility FROM projects WHERE space_id = ? AND status != 'archived'",
+      spaceId
+    );
+
+    const agentDefs = queryAll<{
+      id: string; name: string; description: string; system_prompt: string;
+      model: string; allowed_skills: string; max_spend_per_action_usd: number;
+      resource_tier: number;
+    }>(
+      this.ctx.storage.sql as never,
+      "SELECT id, name, description, system_prompt, model, allowed_skills, max_spend_per_action_usd, resource_tier FROM agent_definitions WHERE space_id = ?",
+      spaceId
+    );
+
+    const projectRules = queryAll<{
+      id: string; project_id: string; trigger_type: string; condition_expression: string; action_type: string; action_payload: string;
+    }>(
+      this.ctx.storage.sql as never,
+      "SELECT id, project_id, trigger_type, condition_expression, action_type, action_payload FROM project_rules WHERE space_id = ?",
+      spaceId
+    );
+
+    const tasks = queryAll<{
+      id: string; project_id: string | null; title: string; description: string; status: string; priority: string;
+    }>(
+      this.ctx.storage.sql as never,
+      "SELECT id, project_id, title, description, status, priority FROM tasks WHERE space_id = ?",
+      spaceId
+    );
+
+    const facts = queryAll<{
+      project_id: string; entity: string; relation: string; target: string;
+    }>(
+      this.ctx.storage.sql as never,
+      "SELECT project_id, entity, relation, target FROM project_facts WHERE project_id IN (SELECT id FROM projects WHERE space_id = ?)",
+      spaceId
+    );
+
+    return Response.json({
+      name: spaceRow?.name ?? "Exported Studio Space",
+      description: spaceRow?.description ?? "A configured vertical workspace template",
+      spacetype_id: spaceRow?.spacetype_id ?? "custom",
+      projects: projects.map((p) => ({
+        name: p.name,
+        description: p.description,
+        kind: p.kind,
+        execution_ceiling: p.execution_ceiling,
+        daily_spend_cap_credits: p.daily_spend_cap_credits,
+        show_sub_threads: p.show_sub_threads === 1,
+        default_agent_id: p.default_agent_id,
+        allowed_agent_ids: safeJsonParseAgentIds(p.allowed_agent_ids),
+      })),
+      agent_definitions: agentDefs.map((a) => ({
+        name: a.name,
+        description: a.description,
+        system_prompt: a.system_prompt,
+        model: a.model,
+        allowed_skills: safeJsonParseArr(a.allowed_skills),
+        max_spend_per_action_usd: a.max_spend_per_action_usd,
+        resource_tier: a.resource_tier,
+      })),
+      project_rules: projectRules.map((r) => ({
+        trigger_type: r.trigger_type,
+        condition_expression: r.condition_expression,
+        action_type: r.action_type,
+        action_payload: r.action_payload,
+      })),
+      tasks: tasks.map((t) => ({
+        title: t.title,
+        description: t.description,
+        status: t.status,
+        priority: t.priority,
+      })),
+      knowledge_seeds: facts.map((f) => ({
+        entity: f.entity,
+        relation: f.relation,
+        target: f.target,
+      })),
+    });
   }
 
   // ── agent_definitions methods ────────────────────────────────────────────────
@@ -4615,6 +4726,180 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return this.getAgentPolicy(spaceId, agentId);
   }
 
+  private async getUniversalAgentConfig(spaceId: string, agentId: string): Promise<Response> {
+    interface AgentDefRow {
+      id: string; space_id: string; name: string; description: string;
+      config_json: string; version: number; enabled: number; created_at: string; updated_at: string;
+    }
+    const row = queryOne<AgentDefRow>(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM agent_definitions WHERE id = ? OR (space_id = ? AND id = ?)",
+      agentId, spaceId, agentId
+    );
+    const policy = this.resolveAgentPolicy(spaceId, agentId);
+
+    let parsedConfig: Record<string, unknown> = {};
+    if (row?.config_json) {
+      try {
+        parsedConfig = JSON.parse(row.config_json);
+      } catch {}
+    }
+
+    const manifest = (parsedConfig.manifest as Record<string, unknown>) ?? {};
+    const prompts = (manifest.prompts as Record<string, unknown>) ?? (parsedConfig.prompts as Record<string, unknown>) ?? {};
+    const capabilities = (manifest.capabilities as Record<string, unknown>) ?? (parsedConfig.capabilities as Record<string, unknown>) ?? {};
+    const triggers = (manifest.triggers as Record<string, unknown>) ?? (parsedConfig.triggers as Record<string, unknown>) ?? {};
+
+    // Determine archetype role
+    let role = (manifest.role as string) ?? (parsedConfig.role as string);
+    if (!role) {
+      if (agentId.includes("support") || agentId.includes("customer")) role = "CUSTOMER_SUPPORT";
+      else if (agentId.includes("growth") || agentId.includes("marketing") || agentId.includes("sales")) role = "GROWTH_OPERATOR";
+      else if (agentId.includes("architect")) role = "ARCHITECT_DELEGATE";
+      else if (agentId.includes("dev") || agentId.includes("code")) role = "DEV_OPERATOR";
+      else role = "CUSTOM";
+    }
+
+    const scope = (manifest.scope as string) ?? (parsedConfig.scope as string) ?? (parsedConfig.project_id ? "PROJECT_BOUND" : (agentId === "naelao-agent" ? "SPACE_WIDE" : "PROJECT_BOUND"));
+    const projectId = (manifest.projectId as string) ?? (parsedConfig.project_id as string) ?? undefined;
+
+    const fullManifest = {
+      id: agentId,
+      name: row?.name ?? (agentId === "naelao-agent" ? "Space Assistant" : agentId),
+      description: row?.description ?? "",
+      scope,
+      projectId,
+      role,
+      prompts: {
+        systemPrompt: (prompts.systemPrompt as string) ?? (parsedConfig.system_prompt as string) ?? "",
+        instructions: (prompts.instructions as string) ?? (parsedConfig.instructions as string) ?? "",
+        userCustomInstructions: (prompts.userCustomInstructions as string) ?? (parsedConfig.userCustomInstructions as string) ?? (parsedConfig.custom_instructions as string) ?? "",
+      },
+      capabilities: {
+        enabledPrebuilts: (capabilities.enabledPrebuilts as string[]) ?? (parsedConfig.allowed_skills as string[]) ?? [
+          "r2-workspace", "code-exec", "memory", "knowledge-base", "web-search"
+        ],
+        installedPlugins: (capabilities.installedPlugins as string[]) ?? [],
+        maxTier: (capabilities.maxTier as number) ?? (parsedConfig.resource_tier as number) ?? 5,
+      },
+      autonomy: {
+        approvalMode: policy.approval_mode ?? (scope === "SPACE_WIDE" ? "always_ask" : "gate_unless_listed"),
+        autoApprovedActions: policy.auto_approved_actions ?? [],
+        requiresApprovalFor: (policy.requires_approval_for as string[]) ?? [],
+      },
+      triggers: {
+        proactiveHeartbeat: (triggers.proactiveHeartbeat as boolean) ?? (scope === "SPACE_WIDE"),
+        cronSchedule: (triggers.cronSchedule as string) ?? undefined,
+        reactiveToThreads: (triggers.reactiveToThreads as boolean) ?? true,
+      },
+    };
+
+    return Response.json({ data: fullManifest });
+  }
+
+  private async updateUniversalAgentConfig(spaceId: string, agentId: string, request: Request): Promise<Response> {
+    const body = await request.json<{
+      name?: string;
+      description?: string;
+      role?: string;
+      scope?: string;
+      projectId?: string;
+      prompts?: {
+        systemPrompt?: string;
+        instructions?: string;
+        userCustomInstructions?: string;
+      };
+      capabilities?: {
+        enabledPrebuilts?: string[];
+        installedPlugins?: string[];
+        maxTier?: number;
+      };
+      autonomy?: {
+        approvalMode?: "always_ask" | "gate_unless_listed" | "yolo";
+        autoApprovedActions?: string[];
+        requiresApprovalFor?: string[];
+      };
+      triggers?: {
+        proactiveHeartbeat?: boolean;
+        cronSchedule?: string;
+        reactiveToThreads?: boolean;
+      };
+    }>().catch(() => ({}) as Record<string, never>);
+
+    const existingRes = await this.getUniversalAgentConfig(spaceId, agentId);
+    const existingData = (await existingRes.json()) as { data: Record<string, unknown> };
+    const existing = existingData.data;
+
+    const merged = {
+      id: agentId,
+      name: body.name ?? (existing.name as string),
+      description: body.description ?? (existing.description as string),
+      scope: body.scope ?? (existing.scope as string),
+      projectId: body.projectId !== undefined ? body.projectId : (existing.projectId as string | undefined),
+      role: body.role ?? (existing.role as string),
+      prompts: {
+        systemPrompt: body.prompts?.systemPrompt ?? ((existing.prompts as Record<string, string>)?.systemPrompt ?? ""),
+        instructions: body.prompts?.instructions ?? ((existing.prompts as Record<string, string>)?.instructions ?? ""),
+        userCustomInstructions: body.prompts?.userCustomInstructions !== undefined
+          ? body.prompts.userCustomInstructions
+          : ((existing.prompts as Record<string, string>)?.userCustomInstructions ?? ""),
+      },
+      capabilities: {
+        enabledPrebuilts: body.capabilities?.enabledPrebuilts ?? ((existing.capabilities as Record<string, unknown>)?.enabledPrebuilts as string[] ?? []),
+        installedPlugins: body.capabilities?.installedPlugins ?? ((existing.capabilities as Record<string, unknown>)?.installedPlugins as string[] ?? []),
+        maxTier: body.capabilities?.maxTier ?? ((existing.capabilities as Record<string, unknown>)?.maxTier as number ?? 5),
+      },
+      autonomy: {
+        approvalMode: body.autonomy?.approvalMode ?? ((existing.autonomy as Record<string, unknown>)?.approvalMode as string ?? "always_ask"),
+        autoApprovedActions: body.autonomy?.autoApprovedActions ?? ((existing.autonomy as Record<string, unknown>)?.autoApprovedActions as string[] ?? []),
+        requiresApprovalFor: body.autonomy?.requiresApprovalFor ?? ((existing.autonomy as Record<string, unknown>)?.requiresApprovalFor as string[] ?? []),
+      },
+      triggers: {
+        proactiveHeartbeat: body.triggers?.proactiveHeartbeat !== undefined
+          ? body.triggers.proactiveHeartbeat
+          : ((existing.triggers as Record<string, unknown>)?.proactiveHeartbeat as boolean ?? false),
+        cronSchedule: body.triggers?.cronSchedule !== undefined
+          ? body.triggers.cronSchedule
+          : ((existing.triggers as Record<string, unknown>)?.cronSchedule as string | undefined),
+        reactiveToThreads: body.triggers?.reactiveToThreads !== undefined
+          ? body.triggers.reactiveToThreads
+          : ((existing.triggers as Record<string, unknown>)?.reactiveToThreads as boolean ?? true),
+      },
+    };
+
+    const now = new Date().toISOString();
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO agent_definitions (id, space_id, name, description, config_json, version, enabled, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         name = excluded.name,
+         description = excluded.description,
+         config_json = excluded.config_json,
+         version = agent_definitions.version + 1,
+         updated_at = excluded.updated_at`,
+      agentId,
+      spaceId,
+      merged.name,
+      merged.description ?? "",
+      JSON.stringify(merged),
+      now,
+      now
+    );
+
+    if (body.autonomy?.approvalMode || body.autonomy?.autoApprovedActions) {
+      const mode = (merged.autonomy.approvalMode === "yolo" ? "yolo" : "always_ask");
+      execute(
+        this.ctx.storage.sql as never,
+        `INSERT INTO agent_policy_overrides (space_id, agent_id, approval_mode, auto_approved_actions, updated_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(space_id, agent_id) DO UPDATE SET approval_mode = excluded.approval_mode, auto_approved_actions = excluded.auto_approved_actions, updated_at = excluded.updated_at`,
+        spaceId, agentId, mode, JSON.stringify(merged.autonomy.autoApprovedActions), now
+      );
+    }
+
+    return Response.json({ data: merged });
+  }
+
   // ── Threads (spec-canonical) ─────────────────────────────────────────────────
   // A sub-agent run or a channel conversation mirrors in here as an ordinary thread —
   // thread_kind='sub_agent'/'channel' plus parent_thread_id, not a separate concept. Default
@@ -4814,37 +5099,61 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private static readonly TASK_STATUSES = ["pending", "in_progress", "completed", "blocked", "cancelled"] as const;
 
   private listTasks(params: URLSearchParams): Response {
-    const spaceId = params.get("space_id") ?? "";
-    const projectId = params.get("project_id");
-    const threadId = params.get("thread_id");
+    const spaceId = params.get("space_id") ?? params.get("spaceId") ?? "";
+    const projectId = params.get("project_id") ?? params.get("projectId");
+    const threadId = params.get("thread_id") ?? params.get("threadId");
     const status = params.get("status");
     const clauses = ["space_id = ?"];
     const args: unknown[] = [spaceId];
     if (projectId) { clauses.push("project_id = ?"); args.push(projectId); }
     if (threadId) { clauses.push("thread_id = ?"); args.push(threadId); }
-    if (status) { clauses.push("status = ?"); args.push(status); }
+    if (status) { clauses.push("status = ?"); args.push(status.toLowerCase()); }
     const rows = queryAll<{ dependencies: string }>(
       this.ctx.storage.sql as never,
       `SELECT * FROM tasks WHERE ${clauses.join(" AND ")} ORDER BY created_at ASC LIMIT 200`,
       ...args
     );
-    return Response.json({ data: rows.map((r) => ({ ...r, dependencies: safeJsonParseArr(r.dependencies) as string[] })), count: rows.length });
+    const mapped = rows.map((r) => ({ ...r, dependencies: safeJsonParseArr(r.dependencies) as string[] }));
+    return Response.json({ ok: true, tasks: mapped, data: mapped, count: mapped.length });
   }
 
   private async createTask(request: Request): Promise<Response> {
-    const body = await request.json<{
-      id?: string;
-      space_id: string;
-      project_id?: string;
-      thread_id?: string;
-      title?: string;
-      status?: string;
-      dependencies?: string[];
-      assigned_agent?: string;
-    }>().catch(() => ({}) as Record<string, never>);
-    if (!body.space_id) return Response.json({ error_code: "bad_request", message: "space_id is required" }, { status: 400 });
+    const body = (await request.json().catch(() => ({}))) as any;
+    const spaceId = body.space_id || body.spaceId;
+    if (!spaceId) return Response.json({ error_code: "bad_request", message: "space_id is required" }, { status: 400 });
+
+    // Batch upsert support (e.g. from Todo task state machine)
+    if (Array.isArray(body.tasks)) {
+      for (const t of body.tasks) {
+        const rawStatus = (t.status || "pending").toString();
+        const status = rawStatus.toLowerCase();
+        const deps = JSON.stringify(t.dependencies || []);
+        const taskId = t.id || crypto.randomUUID();
+        execute(
+          this.ctx.storage.sql as never,
+          `INSERT INTO tasks (id, space_id, project_id, thread_id, title, status, dependencies, assigned_agent, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+           ON CONFLICT(id) DO UPDATE SET
+             title = excluded.title,
+             status = excluded.status,
+             dependencies = excluded.dependencies,
+             assigned_agent = excluded.assigned_agent,
+             updated_at = datetime('now')`,
+          taskId,
+          spaceId,
+          body.projectId || body.project_id || null,
+          body.threadId || body.thread_id || null,
+          t.title,
+          status,
+          deps,
+          t.assigned_agent || null
+        );
+      }
+      return Response.json({ ok: true, synced: body.tasks.length });
+    }
+
     if (!body.title) return Response.json({ error_code: "bad_request", message: "title is required" }, { status: 400 });
-    const status = body.status ?? "pending";
+    const status = (body.status ?? "pending").toString().toLowerCase();
     if (!SpaceDO.TASK_STATUSES.includes(status as (typeof SpaceDO.TASK_STATUSES)[number])) {
       return Response.json({ error_code: "bad_request", message: `status must be one of: ${SpaceDO.TASK_STATUSES.join(", ")}` }, { status: 400 });
     }
@@ -4853,8 +5162,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     execute(
       this.ctx.storage.sql as never,
       `INSERT INTO tasks (id, space_id, project_id, thread_id, title, status, dependencies, assigned_agent, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      id, body.space_id, body.project_id ?? null, body.thread_id ?? null, body.title, status,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         title = excluded.title,
+         status = excluded.status,
+         dependencies = excluded.dependencies,
+         assigned_agent = excluded.assigned_agent,
+         updated_at = datetime('now')`,
+      id, spaceId, body.project_id ?? body.projectId ?? null, body.thread_id ?? body.threadId ?? null, body.title, status,
       JSON.stringify(Array.isArray(body.dependencies) ? body.dependencies.map(String) : []),
       body.assigned_agent ?? null, now, now
     );

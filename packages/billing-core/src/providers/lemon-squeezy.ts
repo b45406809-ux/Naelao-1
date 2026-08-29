@@ -23,7 +23,7 @@ import type {
   BillingProviderEnv,
   CheckoutParams,
   NormalizedBillingEvent,
-} from "./types.js";
+} from "./types";
 
 const LS_API = "https://api.lemonsqueezy.com/v1";
 

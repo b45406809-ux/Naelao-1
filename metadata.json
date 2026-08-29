@@ -1,0 +1,6 @@
+{
+  "name": "Naelao",
+  "description": "Autonomous AI business builder platform and dashboard",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

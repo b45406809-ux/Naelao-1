@@ -32,7 +32,38 @@ const MODEL_LABELS: Record<string, string> = {
   "google-ai-studio/gemini-pro-latest": "Gemini Pro",
 };
 
+export interface CustomCompanyModel {
+  id: string;
+  name: string;
+  description: string;
+  trainedOn: string;
+  accuracy: string;
+}
+
+export const DEFAULT_COMPANY_MODELS: CustomCompanyModel[] = [
+  {
+    id: "custom/acme-support-v1-2",
+    name: "Acme Support Llama-8B (v1.2)",
+    description: "Fine-tuned customer support model with SLA & policy grounding",
+    trainedOn: "142 docs (PDFs, Markdown, Zendesk CSVs)",
+    accuracy: "96.4%",
+  },
+  {
+    id: "custom/acme-legal-redline",
+    name: "Acme Legal Redline Specialist",
+    description: "Specialized in M&A terms, indemnity exceptions & liability clauses",
+    trainedOn: "85 negotiated agreements & standard playbooks",
+    accuracy: "98.1%",
+  },
+];
+
 export function modelLabel(model: string): string {
+  if (model.startsWith("custom/")) {
+    const matched = DEFAULT_COMPANY_MODELS.find((c) => c.id === model);
+    if (matched) return matched.name;
+    const clean = model.replace(/^custom\//, "").replace(/-/g, " ");
+    return `🧠 ${clean.charAt(0).toUpperCase() + clean.slice(1)}`;
+  }
   return MODEL_LABELS[model] ?? model;
 }
 
@@ -103,8 +134,34 @@ export function ModelSelector({
             boxShadow: "var(--shadow-md)", zIndex: 40, padding: 6,
           }}
         >
-          <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text3)", textTransform: "uppercase", letterSpacing: 0.4, padding: "4px 8px" }}>
-            Model
+          <div style={{ fontSize: 10.5, fontWeight: 700, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 0.5, padding: "6px 8px 4px", display: "flex", alignItems: "center", gap: 5 }}>
+            <span>🌟</span> COMPANY FINE-TUNED MODELS (Private LoRA)
+          </div>
+          {DEFAULT_COMPANY_MODELS.map((cm) => (
+            <button
+              key={cm.id}
+              type="button"
+              onClick={() => {
+                onChange(cm.id, null);
+              }}
+              style={{
+                display: "flex", width: "100%", flexDirection: "column", alignItems: "flex-start",
+                gap: 2, padding: "6px 8px", borderRadius: 8, border: "none",
+                background: cm.id === model ? "var(--accent-dim)" : "transparent",
+                color: "var(--text)", fontSize: 12.5, cursor: "pointer", textAlign: "left",
+              }}
+            >
+              <div style={{ display: "flex", width: "100%", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontWeight: 600 }}>{cm.name}</span>
+                <span style={{ fontSize: 10, background: "#22c55e22", color: "#16a34a", padding: "1px 5px", borderRadius: 4, fontWeight: 600 }}>{cm.accuracy} eval</span>
+              </div>
+              <span style={{ fontSize: 11, color: "var(--text3)" }}>{cm.trainedOn}</span>
+            </button>
+          ))}
+
+          <div style={{ height: 1, background: "var(--border)", margin: "6px 4px" }} />
+          <div style={{ fontSize: 10.5, fontWeight: 700, color: "var(--text3)", textTransform: "uppercase", letterSpacing: 0.5, padding: "4px 8px", display: "flex", alignItems: "center", gap: 5 }}>
+            <span>🌐</span> FOUNDATION EDGE MODELS
           </div>
           {ALLOWED_MODELS.map((m) => (
             <button

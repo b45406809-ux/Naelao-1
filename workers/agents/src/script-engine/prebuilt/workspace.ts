@@ -1,7 +1,7 @@
 /**
- * workspace (§A1.17 Phase R) — explicit copy/move/list between the two DIFFERENT filesystems an
- * agent can use: 'r2' (Tier 1's r2-workspace — always available, small/text files, durable
- * across restarts) and 'container' (the Tier-5 sandbox's own local disk — large/binary/
+ * workspace (§A1.17 Phase R) — explicit copy/move/list between the filesystems an
+ * agent can use: 'sqlite' (Tier 1 authoritative Virtual FS in DO SQLite), 'r2' (R2 object storage),
+ * and 'container' (the Tier-5 sandbox's own local disk — large/binary/
  * stateful-capable, e.g. real database data files or a full git clone, but only persists while
  * that specific container instance stays warm; genuinely empty on a cold start).
  *
@@ -14,7 +14,7 @@
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 import { workspacePrefix } from "../types.js";
 
-type WorkspaceName = "r2" | "container";
+type WorkspaceName = "sqlite" | "r2" | "container";
 
 function bucket(ctx: PrebuiltOpContext): R2Bucket {
   return ctx.env.workspaceBucket ?? ctx.env.scriptsBucket;
@@ -34,11 +34,30 @@ function reqStr(args: Record<string, unknown>, name: string): string {
 
 function reqWorkspace(args: Record<string, unknown>, name: string): WorkspaceName {
   const v = args[name];
-  if (v !== "r2" && v !== "container") throw new Error(`'${name}' must be 'r2' or 'container'`);
+  if (v !== "sqlite" && v !== "r2" && v !== "container") throw new Error(`'${name}' must be 'sqlite', 'r2' or 'container'`);
   return v;
 }
 
+async function readFromSqlite(ctx: PrebuiltOpContext, path: string): Promise<string | null> {
+  try {
+    const res = await (ctx.env as any).agentDo?.fetch(`http://internal/workspace/sqlite/read?path=${encodeURIComponent(path)}`);
+    if (!res || !res.ok) return null;
+    const data = await res.json() as any;
+    return data.file?.content ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeToSqlite(ctx: PrebuiltOpContext, path: string, content: string): Promise<void> {
+  await (ctx.env as any).agentDo?.fetch(`http://internal/workspace/sqlite/write`, {
+    method: "POST",
+    body: JSON.stringify({ path, content })
+  });
+}
+
 async function readOne(ctx: PrebuiltOpContext, ws: WorkspaceName, path: string): Promise<string | null> {
+  if (ws === "sqlite") return readFromSqlite(ctx, path);
   if (ws === "r2") {
     const obj = await bucket(ctx).get(key(ctx, path));
     return obj ? obj.text() : null;
@@ -49,6 +68,7 @@ async function readOne(ctx: PrebuiltOpContext, ws: WorkspaceName, path: string):
 }
 
 async function writeOne(ctx: PrebuiltOpContext, ws: WorkspaceName, path: string, content: string): Promise<void> {
+  if (ws === "sqlite") return writeToSqlite(ctx, path, content);
   if (ws === "r2") {
     await bucket(ctx).put(key(ctx, path), content, { customMetadata: { updatedAt: Date.now().toString() } });
     return;
@@ -129,16 +149,32 @@ export const workspace: PrebuiltScript = {
   operations: {
     async "workspace.sync_to_container"(args, ctx) {
       if (!ctx.env.containerWorkspace) throw new Error("container workspace unavailable: TOOL_SANDBOX not configured");
-      const pathPrefix = typeof args["path"] === "string" ? (args["path"] as string) : "";
-      const { files, skipped_count, skipped_reason } = await readAllR2(ctx, pathPrefix);
-      const count = Object.keys(files).length;
-      if (count > 0) await ctx.env.containerWorkspace.write(files);
-      return {
-        ok: true,
-        synced_files_count: count,
-        target: "container:/workspace",
-        ...(skipped_count > 0 ? { skipped_count, skipped_reason } : {}),
-      };
+      const prefix = typeof args["prefix"] === "string" ? (args["prefix"] as string) : (typeof args["path"] === "string" ? (args["path"] as string) : "");
+      
+      // 1. Fetch files from authoritative SQLite Virtual FS
+      let bundle: Record<string, string> = {};
+      try {
+        const listRes = await (ctx.env as any).agentDo?.fetch(`http://internal/workspace/sqlite/list?prefix=${encodeURIComponent(prefix)}`);
+        const fileList = listRes && listRes.ok ? (await listRes.json() as any).files : [];
+        if (fileList && fileList.length > 0) {
+          for (const item of fileList) {
+            const content = await readFromSqlite(ctx, item.path);
+            if (content !== null) bundle[item.path] = content;
+          }
+        }
+      } catch {
+        // fallback
+      }
+
+      if (Object.keys(bundle).length === 0) {
+        const { files } = await readAllR2(ctx, prefix);
+        bundle = files;
+      }
+
+      // 2. Stage into Container Disk
+      const count = Object.keys(bundle).length;
+      if (count > 0) await ctx.env.containerWorkspace.write(bundle);
+      return { ok: true, syncedFiles: count, message: `Staged ${count} files to container disk.` };
     },
 
     async "workspace.sync_from_container"(_args, ctx) {
@@ -146,12 +182,23 @@ export const workspace: PrebuiltScript = {
       const { files } = await ctx.env.containerWorkspace.read();
       const entries = Object.entries(files);
       for (const [path, content] of entries) {
+        await writeToSqlite(ctx, path, content);
         await bucket(ctx).put(key(ctx, path), content, { customMetadata: { updatedAt: Date.now().toString() } });
       }
       return { ok: true, synced_files_count: entries.length, target: "r2" };
     },
     async "workspace.list"(args, ctx) {
       const name = reqWorkspace(args, "name");
+      if (name === "sqlite") {
+        const prefix = typeof args["path"] === "string" ? (args["path"] as string) : "";
+        try {
+          const listRes = await (ctx.env as any).agentDo?.fetch(`http://internal/workspace/sqlite/list?prefix=${encodeURIComponent(prefix)}`);
+          const rows = listRes && listRes.ok ? (await listRes.json() as any).files : [];
+          return { workspace: "sqlite", files: rows.map((r: any) => r.path) };
+        } catch {
+          return { workspace: "sqlite", files: [] };
+        }
+      }
       if (name === "r2") {
         const prefix = key(ctx, typeof args["path"] === "string" ? (args["path"] as string) : "");
         const out: string[] = [];

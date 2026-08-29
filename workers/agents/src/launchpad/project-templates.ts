@@ -42,27 +42,22 @@ export interface ProjectTemplate {
   id: string;
   name: string;
   description: string;
-  /** Which project kind this template configures. customer_bot templates get the
-   *  execution-ceiling/spend-cap/rules enforcement that kind implies; workspace templates are
-   *  ordinary projects with a pre-wired agent binding/schedule instead. */
-  kind: "workspace" | "customer_bot";
+  /** Which project kind this template configures (e.g. 'customer_bot', 'workspace', 'product_dev', 'contract_redline', etc.) */
+  kind: string;
   /** customer_bot templates only — which channel this project is meant to connect to. */
   suggested_channel?: ChannelType;
-  /** Execution ladder ceiling. A customer-facing bot never needs Tier 4/5 by default; a
-   *  workspace template picks whatever tier its seeded work actually needs. */
+  /** Execution ladder ceiling. Customer-facing bots use restricted lower tiers (Tier 1-3) to avoid security threats from untrusted external user input. */
   execution_ceiling: 1 | 2 | 3 | 4 | 5;
   daily_spend_cap_credits: number;
-  /** 0/omitted = unlimited real conversations (primary threads + channel sessions) in this
-   *  project — see SpaceDO migration v19. */
+  /** 0/omitted = unlimited real conversations in this project */
   max_threads?: number;
-  /** Which agent this project's runs default to. Must be one of allowed_agent_ids when both
-   *  are set (SpaceDO's validateAgentBinding enforces this at apply time too). */
+  /** Which agent this project's runs default to. */
   default_agent_id?: string;
   /** The thread-level "switch agent" allowlist. Omitted/empty = unrestricted. */
   allowed_agent_ids?: string[];
-  /** No-code "after the customer says X, this happens" rules — customer_bot's reactive
-   *  trigger mechanism. Omitted/empty for workspace templates, which are schedule/observation
-   *  driven rather than reactive. */
+  /** Prebuilt plugins/scripts enabled for this project template */
+  plugins?: string[];
+  /** No-code "after the customer says X, this happens" rules — reactive triggers. */
   rules?: ProjectRuleSeed[];
   /** Cron-scheduled ops seeded into this project on template application. */
   scheduled_jobs?: ScheduledJobSeed[];
@@ -78,28 +73,46 @@ const BASELINE_RULES: ProjectRuleSeed[] = [
 ];
 
 export const PROJECT_TEMPLATES: ProjectTemplate[] = [
+  // ── Customer Service & Inbound Bot Projects (Lower Execution Ladder: Tier 1-3) ──
   {
     id: "whatsapp-support-bot",
-    name: "WhatsApp Support Bot",
-    description: "Answers customer questions on your WhatsApp Business number. Read-only by default — it can look things up and reply, never run code or touch external services.",
+    name: "WhatsApp Support Desk",
+    description: "Answers customer inquiries 24/7 on your WhatsApp Business number. Read-only in-memory RAG by default — talks and looks up FAQs/orders, never touches arbitrary external code.",
     kind: "customer_bot",
     suggested_channel: "whatsapp",
     execution_ceiling: 2,
     daily_spend_cap_credits: 2000,
+    plugins: ["knowledge-base", "notifications"],
     rules: [
       ...BASELINE_RULES,
       { trigger_pattern: "hours", action: "reply", reply_text: "We're open Monday-Friday, 9am-5pm. We'll reply to your message as soon as we're back.", priority: 10 },
-      { trigger_pattern: "hi", action: "reply", reply_text: "Hi! Thanks for reaching out — how can we help?", priority: 1 },
+      { trigger_pattern: "hi", action: "reply", reply_text: "Hi! Thanks for reaching out — how can we help you today?", priority: 1 },
+    ],
+  },
+  {
+    id: "telegram-receptionist-bot",
+    name: "Telegram Sales & Inquiries Receptionist",
+    description: "Inbound Telegram bot that qualifies leads, answers service FAQs, and books discovery calls.",
+    kind: "customer_bot",
+    suggested_channel: "telegram",
+    execution_ceiling: 2,
+    daily_spend_cap_credits: 2000,
+    plugins: ["knowledge-base", "notifications"],
+    rules: [
+      ...BASELINE_RULES,
+      { trigger_pattern: "pricing", action: "reply", reply_text: "You can view our published service packages and transparent pricing on our storefront.", priority: 10 },
+      { trigger_pattern: "start", action: "reply", reply_text: "Welcome! Tell us what you're looking for, or ask any question about our services.", priority: 1 },
     ],
   },
   {
     id: "discord-community-bot",
-    name: "Discord Community Bot",
-    description: "Answers member questions in your Discord server. Same restricted execution as the WhatsApp template — talk and look things up, nothing else.",
+    name: "Discord Community Moderator & FAQ Bot",
+    description: "Answers member questions in your Discord server, routes support requests, and flags rule violations.",
     kind: "customer_bot",
     suggested_channel: "discord",
     execution_ceiling: 2,
     daily_spend_cap_credits: 2000,
+    plugins: ["knowledge-base", "notifications"],
     rules: [
       { trigger_pattern: "talk to a human", action: "human_takeover", priority: 900 },
       { trigger_pattern: "speak to a person", action: "human_takeover", priority: 900 },
@@ -108,22 +121,183 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
   },
   {
     id: "email-support-bot",
-    name: "Email Support Bot",
-    description: "Drafts replies to inbound support email. Slightly higher ceiling (Tier 3) so it can pull data via a script when answering, still no browser/container access.",
+    name: "Email Support Triaging Desk",
+    description: "Drafts grounded replies to inbound support emails and categorizes tickets with SLA tags.",
     kind: "customer_bot",
     suggested_channel: "email",
     execution_ceiling: 3,
     daily_spend_cap_credits: 3000,
+    plugins: ["business-email", "knowledge-base"],
     rules: BASELINE_RULES,
   },
-  // ── Workspace-kind templates — schedule/observation-driven, not reactive-rule-driven ──
+
+  // ── Product Development & Edge IDE Projects (Tier 5 Full Sandbox Execution) ──
+  {
+    id: "edge-web-ide",
+    name: "Astro + Tailwind Edge Web IDE",
+    description: "Full-stack web application development studio with live visual canvas preview and surgical search-and-replace patching.",
+    kind: "product_dev",
+    execution_ceiling: 5,
+    daily_spend_cap_credits: 5000,
+    plugins: ["r2-workspace", "file-manager", "code-exec", "workspace", "browser-use"],
+  },
+  {
+    id: "api-microservice-dev",
+    name: "TypeScript Worker & Microservice Suite",
+    description: "Cloudflare Worker & REST API microservice studio with TypeScript typechecking and automated integration tests.",
+    kind: "product_dev",
+    execution_ceiling: 5,
+    daily_spend_cap_credits: 5000,
+    plugins: ["r2-workspace", "file-manager", "code-exec", "workspace"],
+  },
+
+  // ── Vertical Cowork & Legal/Finance/Health Studios (Tier 2-3 Precision Work) ──
+  {
+    id: "inbound-nda-scanner",
+    name: "Inbound NDA & Contract Redline Studio",
+    description: "Instant contract redlining, indemnity clause risk detection, and clause-by-clause diffing with statutory citations.",
+    kind: "contract_redline",
+    execution_ceiling: 2,
+    daily_spend_cap_credits: 3000,
+    plugins: ["knowledge-base", "file-manager", "artifacts"],
+  },
+  {
+    id: "deposition-cross-examiner",
+    name: "Litigation Discovery & Deposition Cross-Examiner",
+    description: "Cross-references deposition transcripts and court filings with exact transcript line number semantic grounding.",
+    kind: "litigation_discovery",
+    execution_ceiling: 2,
+    daily_spend_cap_credits: 3000,
+    plugins: ["knowledge-base", "file-manager", "web-search"],
+  },
+  {
+    id: "edgar-10k-reconciler",
+    name: "SEC 10-K & Financial RAG Studio",
+    description: "EDGAR filing deep-RAG, footnote extraction, EBITDA reconciliation, and valuation comps formula grids.",
+    kind: "sec_rag",
+    execution_ceiling: 3,
+    daily_spend_cap_credits: 4000,
+    plugins: ["web-search", "knowledge-base", "artifacts", "file-manager"],
+  },
+  {
+    id: "pe-investment-memo",
+    name: "Private Equity Investment Memo & Comps",
+    description: "Automated investment committee memos, valuation multiples, and deal thesis modeling with dynamic calculations.",
+    kind: "memo_studio",
+    execution_ceiling: 3,
+    daily_spend_cap_credits: 4000,
+    plugins: ["knowledge-base", "artifacts", "file-manager"],
+  },
+  {
+    id: "clinical-soap-generator",
+    name: "Clinical SOAP Notes & EHR Studio",
+    description: "Voice and encounter transcripts converted into structured SOAP clinical documentation with HIPAA PII sanitization.",
+    kind: "soap_notes",
+    execution_ceiling: 2,
+    daily_spend_cap_credits: 3000,
+    plugins: ["knowledge-base", "file-manager", "artifacts"],
+  },
+  {
+    id: "chart-to-icd10-preauth",
+    name: "Medical Billing ICD-10 & Pre-Auth Appeals",
+    description: "Chart-to-code ICD-10/CPT suggestion engine and insurer pre-authorization appeal letter generator.",
+    kind: "billing_icd10",
+    execution_ceiling: 2,
+    daily_spend_cap_credits: 3000,
+    plugins: ["knowledge-base", "artifacts"],
+  },
+  {
+    id: "ibc-ada-code-auditor",
+    name: "Building Code & Plan Compliance Inspector",
+    description: "IBC, ADA, and local municipal zoning code verification for architectural drawings and specifications.",
+    kind: "building_code_rag",
+    execution_ceiling: 2,
+    daily_spend_cap_credits: 3000,
+    plugins: ["knowledge-base", "file-manager", "artifacts"],
+  },
+  {
+    id: "bid-leveling-matrix",
+    name: "Subcontractor RFP & Bid Leveling Matrix",
+    description: "Bid leveling comparison matrices, subcontractor scope tracking, and change order variance audits.",
+    kind: "subcontractor_rfp",
+    execution_ceiling: 2,
+    daily_spend_cap_credits: 3000,
+    plugins: ["file-manager", "artifacts", "knowledge-base"],
+  },
+
+  // ── Business Operations & Growth Kinds ──
+  {
+    id: "b2b-pipeline-tracker",
+    name: "B2B Sales CRM & Pipeline Tracker",
+    description: "High-touch deals pipeline, lead enrichment, contact stages, and follow-up reminders.",
+    kind: "crm",
+    execution_ceiling: 2,
+    daily_spend_cap_credits: 2000,
+    plugins: ["knowledge-base", "notifications"],
+  },
+  {
+    id: "sla-ticket-desk",
+    name: "Support Tickets & SLA Queue",
+    description: "Centralized support ticketing queue with automated SLA timers and agent assignment.",
+    kind: "support_inbox",
+    execution_ceiling: 2,
+    daily_spend_cap_credits: 2000,
+    plugins: ["knowledge-base", "notifications"],
+  },
+  {
+    id: "ai-triaged-inbox",
+    name: "AI-Triaged Mailbox",
+    description: "A provisioned business mailbox with autonomous inbound email triaging, draft generation, and spam defense.",
+    kind: "business_email",
+    execution_ceiling: 2,
+    daily_spend_cap_credits: 2000,
+    plugins: ["business-email"],
+  },
+  {
+    id: "digital-product-catalog",
+    name: "Storefront & Digital Product Catalog",
+    description: "Sell digital downloads, licenses, and services directly with instant fulfillment and checkout integration.",
+    kind: "storefront",
+    execution_ceiling: 2,
+    daily_spend_cap_credits: 2000,
+  },
+
+  // ── Enterprise Fine-Tuning & Auto-Researcher Studios (model_studio) ──
+  {
+    id: "support-lora-distiller",
+    name: "Support Desk Knowledge Distiller & Fine-Tuner",
+    description: "Converts customer service tickets and FAQ documentation into synthetic JSONL pairs and fine-tunes a dedicated edge LoRA support model.",
+    kind: "model_studio",
+    execution_ceiling: 5,
+    daily_spend_cap_credits: 5000,
+    plugins: ["file-manager", "artifacts", "knowledge-base", "code-exec"],
+  },
+  {
+    id: "legal-lora-specialist",
+    name: "Legal & Contract Clause Specialist",
+    description: "Trains an 8B edge model to recognize non-standard liability terms, indemnity clauses, and risk exceptions from past negotiated redlines.",
+    kind: "model_studio",
+    execution_ceiling: 5,
+    daily_spend_cap_credits: 5000,
+    plugins: ["file-manager", "artifacts", "knowledge-base", "code-exec"],
+  },
+  {
+    id: "api-codebase-lora",
+    name: "Internal API & SDK Codebase Assistant",
+    description: "Ingests internal engineering documentation and TypeScript SDKs to fine-tune an internal developer autocomplete copilot.",
+    kind: "model_studio",
+    execution_ceiling: 5,
+    daily_spend_cap_credits: 5000,
+    plugins: ["file-manager", "artifacts", "knowledge-base", "code-exec", "workspace"],
+  },
+
+  // ── Workspace-kind templates — schedule/observation-driven ──
   {
     id: "community-member-monitoring",
     name: "Community Member Monitoring",
     description:
       "A weekly check-in on your community: the support agent reviews activity and pings you " +
-      "with anything worth knowing. Not a customer-bot project — this one runs on a schedule, " +
-      "not in reaction to inbound messages, so it stays kind: 'workspace'.",
+      "with anything worth knowing. Runs on a schedule, not in reaction to inbound messages.",
     kind: "workspace",
     execution_ceiling: 2,
     daily_spend_cap_credits: 1000,
@@ -135,6 +309,40 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
         cron_expression: "0 9 * * 1",
         script_name: "notifications.notify",
         params: { message: "Weekly community check-in: review activity and flag anything that needs attention." },
+      },
+    ],
+  },
+  {
+    id: "daily-seo-content-engine",
+    name: "Daily Programmatic SEO Content Engine",
+    description: "Daily automated search keyword research, competitor gap analysis, and draft article generation.",
+    kind: "workspace",
+    execution_ceiling: 3,
+    daily_spend_cap_credits: 3000,
+    plugins: ["web-search", "artifacts", "file-manager"],
+    scheduled_jobs: [
+      {
+        name: "Daily keyword scrape & article draft",
+        cron_expression: "0 6 * * *",
+        script_name: "web-search.search",
+        params: { query: "trending industry keywords and search queries" },
+      },
+    ],
+  },
+  {
+    id: "scheduled-lead-scraper",
+    name: "B2B Lead Finder & Verification Engine",
+    description: "Scheduled lead enrichment, finding verified company contacts and syncing them into the deal pipeline.",
+    kind: "workspace",
+    execution_ceiling: 3,
+    daily_spend_cap_credits: 3000,
+    plugins: ["web-search", "knowledge-base"],
+    scheduled_jobs: [
+      {
+        name: "Bi-weekly lead sourcing pass",
+        cron_expression: "0 8 * * 2,4",
+        script_name: "web-search.search",
+        params: { query: "new prospect companies and decision makers" },
       },
     ],
   },

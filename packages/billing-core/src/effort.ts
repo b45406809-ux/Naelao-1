@@ -20,8 +20,8 @@
  * at all would just be two buttons doing the same thing.
  */
 
-import { capabilityForModel, type AllowedModel, ALLOWED_MODELS, DEFAULT_WORKING_MODEL } from "./models.js";
-import { costRankForModel, benchmarkForModel } from "./model-benchmarks.js";
+import { capabilityForModel, type AllowedModel, ALLOWED_MODELS, DEFAULT_WORKING_MODEL } from "./models";
+import { costRankForModel, benchmarkForModel } from "./model-benchmarks";
 
 export const EFFORT_LEVELS = ["low", "medium", "high", "ultra"] as const;
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];

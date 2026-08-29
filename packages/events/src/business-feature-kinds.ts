@@ -41,6 +41,24 @@ export interface BusinessFeatureKind {
   /** Frontend panel key — the shell mounts the natively-built panel for this kind (F-40). A kind
    *  with no built panel yet renders the shared workspace shell alone (expected incremental path). */
   uiPanel?: string;
+  /** "Cursor for X" Custom Viewport component rendered in the project workspace canvas. */
+  viewportComponent?:
+    | "CodeWorkspace"
+    | "DesignCanvas"
+    | "SpreadsheetGrid"
+    | "SpreadsheetFormulaGrid"
+    | "CampaignBoard"
+    | "WalletLedgerPanel"
+    | "DocumentRedlineCanvas"
+    | "ClinicalSoapEditor"
+    | "PlanSpecCanvas"
+    | "ModelStudioCanvas";
+  /** Domain-specific system prompt injected into agents operating in this project. */
+  domainSystemPrompt?: string;
+  /** Scoped Execution Ladder tiers permitted for this plugin kind. */
+  allowedLadderTiers?: number[];
+  /** Domain linting and validation rules running in V8 isolate. */
+  linterRules?: string[];
 }
 
 /**
@@ -75,6 +93,19 @@ const ROLE_RANK: Record<FeatureKindRole, number> = { editor: 1, admin: 2, owner:
  */
 export const BUSINESS_FEATURE_KIND_REGISTRY: readonly BusinessFeatureKind[] = [
   {
+    kind: "product_dev",
+    label: "Product Development & Edge IDE",
+    description: "Full-stack edge application development with live visual canvas and Astro/Tailwind hot-reloading.",
+    singleton: false,
+    minCreationRole: "editor",
+    autoProvisionable: true,
+    prebuiltScripts: ["r2-workspace", "file-manager", "code-exec", "workspace", "browser-use"],
+    viewportComponent: "DesignCanvas",
+    domainSystemPrompt: "You are an Edge Development Specialist. Use surgical search-and-replace patching with Edit and verify builds with Bash.",
+    allowedLadderTiers: [1, 2, 3, 4, 5],
+    linterRules: ["tailwind-syntax", "astro-typecheck", "html-structure"],
+  },
+  {
     kind: "wallet",
     label: "Wallet",
     description: "The business's earned-revenue balance and ledger — the money its AI is allowed to spend. Naelao-custodied.",
@@ -83,6 +114,8 @@ export const BUSINESS_FEATURE_KIND_REGISTRY: readonly BusinessFeatureKind[] = [
     autoProvisionable: true,
     prebuiltScripts: ["wallet"],
     uiPanel: "wallet-ledger",
+    viewportComponent: "WalletLedgerPanel",
+    allowedLadderTiers: [1, 2],
   },
   {
     kind: "business_wallet",
@@ -193,6 +226,119 @@ export const BUSINESS_FEATURE_KIND_REGISTRY: readonly BusinessFeatureKind[] = [
     singleton: false,
     minCreationRole: "editor",
     autoProvisionable: false,
+  },
+  // Vertical AI Cowork Studios ("Harvey AI for X", "Hebbia for X", "Clinica", "AcuBuild")
+  {
+    kind: "contract_redline",
+    label: "Contract Analysis & Redline Studio",
+    description: "AI-assisted contract redlining, indemnity clause risk detection, and side-by-side legal diffs.",
+    singleton: false,
+    minCreationRole: "editor",
+    autoProvisionable: true,
+    prebuiltScripts: ["knowledge-base", "file-manager", "artifacts"],
+    viewportComponent: "DocumentRedlineCanvas",
+    domainSystemPrompt: "You are a Legal Specialist and Contract Redliner. Detect indemnification risks, ambiguous warranties, and liability caps with exact clause citations.",
+    allowedLadderTiers: [1, 2],
+    linterRules: ["gdpr-check", "delaware-corp-statute", "indemnity-risk-scan"],
+  },
+  {
+    kind: "litigation_discovery",
+    label: "Litigation Discovery & Briefs",
+    description: "Cross-references discovery documents, deposition transcripts, and case filings with semantic grounding.",
+    singleton: false,
+    minCreationRole: "editor",
+    autoProvisionable: true,
+    prebuiltScripts: ["knowledge-base", "file-manager", "web-search"],
+    viewportComponent: "DocumentRedlineCanvas",
+    domainSystemPrompt: "You are a Litigation Discovery Specialist. Cross-reference depositions and filings, citing exact exhibit and transcript line numbers.",
+    allowedLadderTiers: [1, 2],
+  },
+  {
+    kind: "sec_rag",
+    label: "SEC 10-K & Financial RAG Studio",
+    description: "EDGAR filing deep-RAG, footnote extraction, EBITDA adjustment reconciliation, and financial model formula grids.",
+    singleton: false,
+    minCreationRole: "editor",
+    autoProvisionable: true,
+    prebuiltScripts: ["web-search", "knowledge-base", "artifacts", "file-manager"],
+    viewportComponent: "SpreadsheetFormulaGrid",
+    domainSystemPrompt: "You are a Private Equity & Financial Analyst. Reconcile EBITDA, analyze SEC 10-K filings, and construct valuation comp models.",
+    allowedLadderTiers: [1, 2, 3],
+  },
+  {
+    kind: "memo_studio",
+    label: "Investment Memo & Comps Studio",
+    description: "Automated investment committee memos, valuation multiples, and deal thesis modeling.",
+    singleton: false,
+    minCreationRole: "editor",
+    autoProvisionable: true,
+    prebuiltScripts: ["knowledge-base", "artifacts", "file-manager"],
+    viewportComponent: "SpreadsheetFormulaGrid",
+    domainSystemPrompt: "You are an Investment Banking Analyst. Draft structured memos and compute trading multiples with real-time calculations.",
+    allowedLadderTiers: [1, 2, 3],
+  },
+  {
+    kind: "soap_notes",
+    label: "Clinical SOAP Notes & EHR Studio",
+    description: "Voice/transcript to structured SOAP clinical documentation with HIPAA PII sanitization.",
+    singleton: false,
+    minCreationRole: "editor",
+    autoProvisionable: true,
+    prebuiltScripts: ["knowledge-base", "file-manager", "artifacts"],
+    viewportComponent: "ClinicalSoapEditor",
+    domainSystemPrompt: "You are a Clinical Documentation Specialist. Convert patient encounters into structured SOAP notes with ICD-10 diagnostic suggestions.",
+    allowedLadderTiers: [1, 2],
+    linterRules: ["hipaa-pii-scrubber", "icd10-code-validator"],
+  },
+  {
+    kind: "billing_icd10",
+    label: "Medical Billing & Pre-Authorization",
+    description: "Chart-to-code ICD-10/CPT suggestion engine and insurer pre-authorization appeal drafts.",
+    singleton: false,
+    minCreationRole: "editor",
+    autoProvisionable: true,
+    prebuiltScripts: ["knowledge-base", "artifacts"],
+    viewportComponent: "ClinicalSoapEditor",
+    domainSystemPrompt: "You are a Medical Coding & Pre-Authorization Specialist. Cross-reference CPT and ICD-10 codes against clinical guidelines.",
+    allowedLadderTiers: [1, 2],
+  },
+  {
+    kind: "building_code_rag",
+    label: "Building Code & Plan Compliance",
+    description: "IBC, ADA, and local municipal zoning code verification for architectural drawings and specifications.",
+    singleton: false,
+    minCreationRole: "editor",
+    autoProvisionable: true,
+    prebuiltScripts: ["knowledge-base", "file-manager", "artifacts"],
+    viewportComponent: "PlanSpecCanvas",
+    domainSystemPrompt: "You are a Building Code & Architectural Plan Specialist. Inspect specifications against IBC and local municipal codes.",
+    allowedLadderTiers: [1, 2],
+    linterRules: ["ibc-compliance-check", "ada-accessibility-scan"],
+  },
+  {
+    kind: "subcontractor_rfp",
+    label: "Subcontractor RFP & Change Orders",
+    description: "Bid leveling comparison matrices, subcontractor scope tracking, and change order impact audits.",
+    singleton: false,
+    minCreationRole: "editor",
+    autoProvisionable: true,
+    prebuiltScripts: ["file-manager", "artifacts", "knowledge-base"],
+    viewportComponent: "PlanSpecCanvas",
+    domainSystemPrompt: "You are a General Contractor RFP & Estimating Specialist. Level subcontractor bids and calculate change order variances.",
+    allowedLadderTiers: [1, 2],
+  },
+  {
+    kind: "model_studio",
+    label: "Model Training & Auto-Researcher Studio",
+    description: "Convert company documentation into synthetic training data, fine-tune custom LoRA models, and deploy to your team's model picker.",
+    singleton: false,
+    minCreationRole: "admin",
+    autoProvisionable: false,
+    prebuiltScripts: ["file-manager", "artifacts", "knowledge-base", "code-exec"],
+    viewportComponent: "ModelStudioCanvas",
+    domainSystemPrompt: "You are an Auto-Researcher ML Engineer. Your goal is to parse company documentation, synthesize clean training/eval pairs, evaluate model accuracy, and register fine-tuned models for the company.",
+    allowedLadderTiers: [1, 2, 5],
+    linterRules: ["jsonl-format-check", "dataset-leakage-guard", "pii-scrubber"],
   },
 ];
 

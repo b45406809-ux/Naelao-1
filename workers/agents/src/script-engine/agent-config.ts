@@ -9,6 +9,8 @@
  *     skills.json         ← which SKILL.md knowledge docs are in context
  */
 
+import type { UniversalAgentManifest } from "@naelao/types";
+
 /** scripts.json (spec §11.2). */
 export interface ScriptsConfig {
   /** Prebuilt platform scripts to enable (names from the catalogue). */
@@ -48,6 +50,10 @@ export interface AgentConfig {
    * MUST fall back to `parseRequiresApprovalFor(agentsMd)` in that case (see loop.ts).
    */
   requiresApprovalFor?: string[];
+  /** Layer 4: Founder/user prompt overrides configured via UI */
+  userCustomInstructions?: string;
+  /** Declarative Universal Manifest */
+  manifest?: UniversalAgentManifest;
 }
 
 /** On-disk shape of scripts.json: ScriptsConfig plus the structural approval-gate list. Kept
@@ -59,22 +65,26 @@ function agentDir(spaceId: string, agentId: string): string {
   return `spaces/${spaceId}/agents/${agentId}`;
 }
 
-/** Load the four config files for an agent. Returns null when the agent is not provisioned. */
+/** Load the config files and optional manifest for an agent. Returns null when the agent is not provisioned. */
 export async function loadAgentConfig(
   bucket: R2Bucket,
   spaceId: string,
   agentId: string
 ): Promise<AgentConfig | null> {
   const dir = agentDir(spaceId, agentId);
-  const [agentsMd, systemPrompt, scriptsJson, skillsJson] = await Promise.all([
+  const [agentsMd, systemPrompt, scriptsJson, skillsJson, customInstr, manifestJson] = await Promise.all([
     bucket.get(`${dir}/agents.md`),
     bucket.get(`${dir}/system-prompt.md`),
     bucket.get(`${dir}/scripts.json`),
     bucket.get(`${dir}/skills.json`),
+    bucket.get(`${dir}/custom-instructions.md`),
+    bucket.get(`${dir}/manifest.json`),
   ]);
   if (!scriptsJson || !systemPrompt) return null;
 
   const { requires_approval_for, ...scripts } = JSON.parse(await scriptsJson.text()) as PersistedScriptsConfig;
+  const userCustomInstructions = customInstr ? (await customInstr.text()).trim() : undefined;
+  const manifest = manifestJson ? (JSON.parse(await manifestJson.text()) as UniversalAgentManifest) : undefined;
 
   return {
     agentsMd: agentsMd ? await agentsMd.text() : "",
@@ -82,10 +92,12 @@ export async function loadAgentConfig(
     scripts,
     skills: skillsJson ? (JSON.parse(await skillsJson.text()) as SkillsConfig) : { skills: [] },
     ...(requires_approval_for ? { requiresApprovalFor: requires_approval_for } : {}),
+    ...(userCustomInstructions ? { userCustomInstructions } : {}),
+    ...(manifest ? { manifest } : {}),
   };
 }
 
-/** Write the four config files for an agent (used by the provisioner / profile install). */
+/** Write the config files and optional manifest for an agent. */
 export async function writeAgentConfig(
   bucket: R2Bucket,
   spaceId: string,
@@ -96,12 +108,21 @@ export async function writeAgentConfig(
   const persistedScripts: PersistedScriptsConfig = config.requiresApprovalFor
     ? { ...config.scripts, requires_approval_for: config.requiresApprovalFor }
     : config.scripts;
-  await Promise.all([
+  const writes: Promise<unknown>[] = [
     bucket.put(`${dir}/agents.md`, config.agentsMd),
     bucket.put(`${dir}/system-prompt.md`, config.systemPrompt),
     bucket.put(`${dir}/scripts.json`, JSON.stringify(persistedScripts, null, 2)),
     bucket.put(`${dir}/skills.json`, JSON.stringify(config.skills, null, 2)),
-  ]);
+  ];
+
+  if (config.userCustomInstructions !== undefined) {
+    writes.push(bucket.put(`${dir}/custom-instructions.md`, config.userCustomInstructions));
+  }
+  if (config.manifest) {
+    writes.push(bucket.put(`${dir}/manifest.json`, JSON.stringify(config.manifest, null, 2)));
+  }
+
+  await Promise.all(writes);
 }
 
 /**

@@ -1,3 +1,3 @@
-export * from "./chunk.js";
-export * from "./embed.js";
-export * from "./hybrid.js";
+export * from "./chunk";
+export * from "./embed";
+export * from "./hybrid";

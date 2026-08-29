@@ -15,7 +15,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@naelao/types": "workspace:*"
+    "@naelao/types": "*"
   },
   "devDependencies": {
     "typescript": "*",

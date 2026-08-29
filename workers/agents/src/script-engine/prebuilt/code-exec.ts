@@ -29,6 +29,25 @@ import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 import type { ExecutionTier } from "../types.js";
 import { assertNoReservedViolation } from "../reserved-capabilities.js";
 
+/**
+ * Sanitizes terminal output to eliminate token bloat:
+ * - Exit Code 0: completely squashes verbose stdout.
+ * - Exit Code != 0: strips noisy warnings and extracts only the last 15 lines of stderr.
+ */
+export function sanitizeTerminalResult(raw: { stdout?: string; stderr?: string; exitCode?: number; ok?: boolean }) {
+  const exit = raw.exitCode ?? (raw.ok ? 0 : 1);
+  if (exit === 0) {
+    const out = (raw.stdout || "").trim();
+    return out.length > 2000 
+      ? `✔ Command succeeded. (Output truncated: ${out.slice(-400)})` 
+      : (out || "✔ Command executed successfully (Exit Code 0).");
+  }
+
+  const stderr = raw.stderr || raw.stdout || "Unknown error";
+  const lines = stderr.split("\n").filter(l => !l.includes("ExperimentalWarning") && !l.includes("npm WARN"));
+  return `✖ Exit ${exit}: ${lines.slice(-15).join("\n")}`;
+}
+
 const PYTHON_HARNESS = `
 import { execFileSync } from "node:child_process";
 import { writeFileSync, mkdtempSync } from "node:fs";

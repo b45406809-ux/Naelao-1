@@ -8,9 +8,9 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@naelao/auth": "workspace:*",
-    "@naelao/http": "workspace:*",
-    "@naelao/types": "workspace:*",
+    "@naelao/auth": "*",
+    "@naelao/http": "*",
+    "@naelao/types": "*",
     "hono": "^4.6.14"
   },
   "devDependencies": {

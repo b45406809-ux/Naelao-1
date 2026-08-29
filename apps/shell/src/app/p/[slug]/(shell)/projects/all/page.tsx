@@ -22,6 +22,7 @@ import {
   type Project,
   type FeatureKind,
 } from "@/lib/api";
+import { ExportTemplateModal } from "@/components/ExportTemplateModal";
 
 interface ProjectTemplate {
   id: string;
@@ -46,6 +47,7 @@ export default function ProjectsAllPage() {
 
   // Two-step dialog: pick a template/plugin (or "Blank") first, then — only for Blank — name it.
   const [modalOpen, setModalOpen] = React.useState(false);
+  const [exportModalOpen, setExportModalOpen] = React.useState(false);
   const [pickedTemplate, setPickedTemplate] = React.useState<ProjectTemplate | "blank" | null>(null);
   const [pickedKind, setPickedKind] = React.useState<FeatureKind | null>(null);
   const [name, setName] = React.useState("");
@@ -134,7 +136,12 @@ export default function ProjectsAllPage() {
           <div className="page-title">All Projects</div>
           <div className="page-subtitle">Workspaces your agents access through threads.</div>
         </div>
-        <Button onClick={openModal}>New Project</Button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <Button variant="secondary" onClick={() => setExportModalOpen(true)}>
+            Export as Template
+          </Button>
+          <Button onClick={openModal}>New Project</Button>
+        </div>
       </div>
 
       {loading ? (
@@ -248,6 +255,18 @@ export default function ProjectsAllPage() {
           </div>
         )}
       </Modal>
+      {creds && (
+        <ExportTemplateModal
+          spaceId={activeSpaceId}
+          spaceName={product.name || "Cowork Studio"}
+          session={creds}
+          isOpen={exportModalOpen}
+          onClose={() => setExportModalOpen(false)}
+          onSuccess={(res) => {
+            show(`Template "${res.listingId}" published to Marketplace!`);
+          }}
+        />
+      )}
       <Toast toast={toast} />
     </div>
   );

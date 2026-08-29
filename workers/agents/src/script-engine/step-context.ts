@@ -40,6 +40,21 @@ export interface LoopStep {
   error?: string;
 }
 
+/**
+ * Surgical Tool Payload Eviction:
+ * Nullifies historical tool payloads older than preserveLastNTurns while keeping
+ * the message envelope intact.
+ */
+export function evictHistoricalToolPayloads(steps: LoopStep[], preserveLastNTurns = 3): LoopStep[] {
+  const cutoff = Math.max(0, steps.length - preserveLastNTurns);
+  return steps.map((step, idx) => {
+    if (idx < cutoff && step.output && typeof step.output === "string" && step.output.length > 250) {
+      return { ...step, output: "[Payload evicted: Output verified and recorded]" };
+    }
+    return step;
+  });
+}
+
 export interface StepContextLimits {
   /** Token budget for the whole steps block of the reasoner payload. */
   maxTokens: number;

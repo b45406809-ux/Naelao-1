@@ -1,7 +1,7 @@
-export { detectSqlInjection, detectXss, detectPathTraversal, scanRequestBody, wafMiddleware } from "./waf.js";
-export { writeAudit, readAuditLog } from "./audit.js";
-export type { AuditEntry } from "./audit.js";
-export { generateApiKey, hashApiKey, verifyApiKey, validatePasswordStrength, generateCsrfToken, verifyCsrfToken } from "./secrets.js";
-export { securityHeaders } from "./headers.js";
-export { checkSsrf, resolveHostnameIps } from "./ssrf-guard.js";
-export type { SsrfCheckResult } from "./ssrf-guard.js";
+export { detectSqlInjection, detectXss, detectPathTraversal, scanRequestBody, wafMiddleware } from "./waf";
+export { writeAudit, readAuditLog } from "./audit";
+export type { AuditEntry } from "./audit";
+export { generateApiKey, hashApiKey, verifyApiKey, validatePasswordStrength, generateCsrfToken, verifyCsrfToken } from "./secrets";
+export { securityHeaders } from "./headers";
+export { checkSsrf, resolveHostnameIps } from "./ssrf-guard";
+export type { SsrfCheckResult } from "./ssrf-guard";

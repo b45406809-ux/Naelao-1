@@ -260,6 +260,12 @@ export interface ReasoningRequest {
   level: string;
 }
 
+/** Resolves custom fine-tuned company model LoRA adapter IDs for Cloudflare Workers AI */
+export function resolveLoraIdFromSpace(model: string, spaceId?: string): string {
+  const cleanModelName = model.replace(/^custom\//, "");
+  return spaceId ? `lora-${spaceId}-${cleanModelName}` : `lora-enterprise-${cleanModelName}`;
+}
+
 export function buildUniversalBody(opts: {
   apiKey: string;
   cfApiToken?: string;
@@ -291,8 +297,13 @@ export function buildUniversalBody(opts: {
   stream?: boolean;
 }): string {
   const { query, tools, reasoning } = opts;
+  const isCustomModel = query.model.startsWith("custom/");
+  const effectiveModel = isCustomModel ? "@cf/meta/llama-3.1-8b-instruct" : query.model;
+  const loraAdapter = isCustomModel ? resolveLoraIdFromSpace(query.model, opts.ctx.spaceId) : undefined;
+
   return JSON.stringify({
-    model: query.model,
+    model: effectiveModel,
+    ...(loraAdapter ? { lora: loraAdapter } : {}),
     max_tokens: query.max_tokens,
     messages: [{ role: "system", content: query.system }, ...query.messages],
     ...(tools && tools.length > 0 ? { tools: toolsWire(tools), tool_choice: "required" } : {}),

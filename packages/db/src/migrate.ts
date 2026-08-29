@@ -1,5 +1,5 @@
-import type { SqlStorage } from "./sql.js";
-import { execute, queryOne } from "./sql.js";
+import type { SqlStorage } from "./sql";
+import { execute, queryOne } from "./sql";
 
 export interface Migration {
   version: number;

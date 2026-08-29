@@ -426,6 +426,50 @@ export function buildMemoryStore(opts: MemoryOSOptions): MemoryStore {
       }
     },
 
+    /**
+     * Layer 3 & Layer 5 Asynchronous Learning Extraction Hook:
+     * Extracts technical facts, business preferences, and bugs from completed turns.
+     */
+    async extractAndPromoteLearnings(userPrompt: string, agentActions: string, aiGatewayModel: any) {
+      if (!aiGatewayModel) return;
+      try {
+        let learnedFacts: Array<{ entity: string; relation: string; attribute: string; confidence?: number }> = [];
+
+        if (typeof aiGatewayModel.generateObject === "function") {
+          const res = await aiGatewayModel.generateObject({
+            prompt: `Extract durable technical and business facts from this completed interaction:
+User Prompt: "${userPrompt}"
+Agent Execution Trace: "${agentActions.slice(0, 3000)}"`
+          });
+          learnedFacts = res?.object?.learnedFacts ?? res?.learnedFacts ?? [];
+        } else if (typeof aiGatewayModel.complete === "function") {
+          const res = await aiGatewayModel.complete({
+            prompt: `Extract durable technical and business facts as JSON from this interaction:
+User Prompt: "${userPrompt}"
+Agent Execution Trace: "${agentActions.slice(0, 3000)}"
+Return JSON: {"learnedFacts": [{"entity": "...", "relation": "...", "attribute": "..."}]}`
+          });
+          const parsed = JSON.parse(res.text || "{}");
+          learnedFacts = parsed.learnedFacts || [];
+        }
+
+        for (const fact of learnedFacts) {
+          if (!fact.entity || !fact.relation || !fact.attribute) continue;
+          const text = `${fact.entity} ${fact.relation} ${fact.attribute}`;
+          await this.remember({
+            userId: (opts as any).userId,
+            text,
+            entity: fact.entity,
+            relation: fact.relation,
+            attribute: fact.attribute,
+            importance: 0.8
+          });
+        }
+      } catch {
+        /* Best-effort background memory promotion */
+      }
+    },
+
     // ── Layer 4 (Fabric) ──────────────────────────────────────────────────────
     async recordFabric(entry) {
       const userId = scope(entry.userId);

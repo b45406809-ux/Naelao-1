@@ -478,6 +478,18 @@ async function runContainerRequest(
   }
 }
 
+/**
+ * Detects if an execution failure in an Isolate is caused by missing native tools or compilers,
+ * signaling that the task should be automatically promoted to Tier 5 Container.
+ */
+function requiresContainerPromotion(errorMsg: string, code: string): boolean {
+  const nativeKeywords = [
+    "npm", "pnpm", "npx", "pip", "python", "esbuild", "vite", "astro",
+    "Cannot find module", "command not found", "ENOENT", "spawn"
+  ];
+  return nativeKeywords.some((kw) => errorMsg.includes(kw) || code.includes(kw));
+}
+
 /** Cheap deterministic string hash (FNV-1a) — used only to key isolate reuse, not security. */
 function hashCode(s: string): string {
   let h = 0x811c9dc5;
@@ -492,15 +504,24 @@ function hashCode(s: string): string {
 export function buildCodeRunner(opts: CodeRunnerOptions): TieredCodeRunner {
   return {
     async run(params) {
-      if (params.tier === 5) return runContainer(opts, params);
-      if (params.tier === 2 || params.tier === 3 || params.tier === 4) return runIsolate(opts, params);
-      return {
-        ok: false,
-        error: `Tier ${params.tier} has no codeRunner backend (Tier 1 must be handled in-process)`,
-        tier: params.tier,
-        duration_ms: 0,
-        tokens_used: 0,
-      };
+      if (params.tier === 1) {
+        throw new Error("Tier 1 scripts are pure R2/SQLite and must be handled in-process.");
+      }
+
+      // Execute in Isolate for Tiers 2-4
+      if (params.tier <= 4) {
+        const res = await runIsolate(opts, params);
+
+        // Ladder Self-Healing: Automatically promote to Container if isolate hits a native tool wall
+        if (!res.ok && res.error && opts.toolSandbox && requiresContainerPromotion(res.error, params.code)) {
+          return await runContainer(opts, {
+            ...params,
+            args: { ...params.args, _promotedFromTier: params.tier },
+          });
+        }
+        return res;
+      }
+      return runContainer(opts, params);
     },
   };
 }

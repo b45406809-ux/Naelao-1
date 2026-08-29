@@ -132,11 +132,58 @@ export interface TemplateBootstrap {
   first_contact?: TemplateFirstContact;
 }
 
-/** A Launchpad template: a pre-wired digital-business model the owner can pick. */
+/** Declarative Blueprint Project Specification for 1-Click Company Provisioning. */
+export interface BlueprintProjectSpec {
+  name: string;
+  slug: string;
+  kind: string;
+  plugins: string[];
+  allowedLadderTiers: number[];
+  journalGoals: Array<{ id: string; title: string; tier: number }>;
+}
+
+export interface CoworkConfig {
+  defaultViewport:
+    | "DocumentRedlineCanvas"
+    | "SpreadsheetFormulaGrid"
+    | "ClinicalSoapEditor"
+    | "PlanSpecCanvas"
+    | "DesignCanvas"
+    | "WalletLedgerPanel"
+    | "CodeWorkspace";
+  citationVerificationRequired?: boolean;
+  collaborationMode?: "realtime_crdt" | "interactive_session";
+  auditLogRetentionDays?: number;
+}
+
+/** Configuration for mobile channels (Telegram, WhatsApp, Slack, etc.) attached to a template */
+export interface ChannelBlueprintConfig {
+  /**
+   * Channel Role:
+   * - "PRIVATE_EXECUTIVE_COPILOT": In vertical cowork mode, acts as the private on-the-go Chief of Staff for firm professionals
+   * - "PUBLIC_CUSTOMER_BOT": In autonomous venture mode, acts as the 24/7 sales receptionist and public support desk
+   */
+  channel_role: "PRIVATE_EXECUTIVE_COPILOT" | "PUBLIC_CUSTOMER_BOT";
+  allowedChannels: Array<"telegram" | "whatsapp" | "slack" | "discord" | "email">;
+  enableVoiceMemoTranscription?: boolean;
+  enableDocumentIngestion?: boolean;
+  notifyOnPendingApprovals?: boolean;
+  instantRagEnabled?: boolean;
+}
+
+/** A Launchpad template: a pre-wired digital-business model or vertical cowork studio. */
 export interface LaunchpadTemplate {
   id: string;
   name: string;
   description: string;
+  /** Operating Mode: Autonomous Venture vs. Vertical Cowork Studio ("Harvey AI for X") */
+  template_mode?: "autonomous_venture" | "vertical_cowork";
+  /** Category taxonomy (LEGAL, FINANCE, HEALTHCARE, AGENCY, MICRO_SAAS, ENGINEERING, etc.) */
+  category?: "LEGAL" | "FINANCE" | "HEALTHCARE" | "AGENCY" | "MICRO_SAAS" | "ENGINEERING" | "COMMERCE" | "COMMUNITY" | string;
+  /** Cowork studio configuration when template_mode === "vertical_cowork" */
+  cowork_config?: CoworkConfig;
+  /** Mobile channel configuration (Telegram, WhatsApp, Slack, etc.) */
+  channel_config?: ChannelBlueprintConfig;
   /** Core agent ids this template installs (subset/superset of LAUNCHPAD_CORE_AGENTS). */
   agents: string[];
   /** Marketplace skills the template needs wired (commerce/Lemon Squeezy, email, etc.). */
@@ -151,6 +198,11 @@ export interface LaunchpadTemplate {
    * its connector/shim ships. "Whop first, everything else coming soon" lives as this flag.
    */
   coming_soon?: boolean;
+  /** Turnkey Blueprint Projects created during 1-click Genesis */
+  blueprint_projects?: BlueprintProjectSpec[];
+  /** Pre-indexed semantic knowledge seeds */
+  knowledge_seeds?: Array<{ question: string; answer: string; sourceDocumentUrl?: string }>;
+  seed_repository_url?: string;
   /**
    * The template's published price list, when it sells a fixed set of packages.
    *
@@ -351,6 +403,64 @@ export const LAUNCHPAD_CORE_AGENTS: LaunchpadAgentDefinition[] = [
     allowed_skills: ["file-manager", "code-exec", "web-search", "build-brief", "pipeline-status", "notifications"],
     trigger: { type: "webhook", event: "brief.accepted", source: "projects" },
     requires_approval_for: ["site_publish", "domain_purchase"],
+    max_spend_per_action_usd: 0,
+    resource_tier: "workspace",
+  },
+  // ── Vertical Cowork Specialist Agents ("Harvey AI for X") ──
+  {
+    id: "launchpad-legal-v1",
+    name: "Legal Analysis & Redline Specialist",
+    description: "Assists counsel with contract redlining, indemnity risk analysis, and discovery cross-referencing",
+    system_prompt:
+      "You are a Legal Cowork Specialist assisting legal counsel and paralegals.\n\n" +
+      "OPERATING POSTURE: Assistive and collaborative. Always cite exact clauses, statutes, or exhibit coordinates. " +
+      "Highlight ambiguous terms, uncapped liabilities, and missing boilerplate. Format proposed changes clearly " +
+      "with strike-through deletions and bold additions. Never give definitive legal advice — format outputs as draft recommendations for attorney review.",
+    model: DEFAULT_WORKING_MODEL,
+    allowed_skills: ["knowledge-base", "file-manager", "web-search", "artifacts"],
+    requires_approval_for: ["contract_sign", "filing_submit"],
+    max_spend_per_action_usd: 0,
+    resource_tier: "workspace",
+  },
+  {
+    id: "launchpad-finance-v1",
+    name: "Financial Analysis & Valuation Specialist",
+    description: "Assists investment teams with SEC 10-K RAG, adjusted EBITDA reconciliation, and valuation modeling",
+    system_prompt:
+      "You are a Private Equity & Financial Analysis Specialist assisting deal teams and investors.\n\n" +
+      "OPERATING POSTURE: Precise, formula-grounded, and numbers-first. When extracting 10-K filings or financial statements, " +
+      "cite exact footnotes and reporting periods. Show explicit formula steps for EBITDA reconciliations and multiples. Never invent numbers.",
+    model: DEFAULT_WORKING_MODEL,
+    allowed_skills: ["knowledge-base", "file-manager", "web-search", "artifacts"],
+    requires_approval_for: ["memo_publish", "trade_execute"],
+    max_spend_per_action_usd: 0,
+    resource_tier: "workspace",
+  },
+  {
+    id: "launchpad-clinical-v1",
+    name: "Clinical Documentation & EHR Specialist",
+    description: "Assists healthcare practitioners with SOAP notes, ICD-10 coding suggestions, and pre-authorization drafts",
+    system_prompt:
+      "You are a Clinical Documentation Specialist assisting healthcare providers.\n\n" +
+      "OPERATING POSTURE: HIPAA-conscious and structured. Convert patient encounter data into clean SOAP format (Subjective, Objective, Assessment, Plan). " +
+      "Cross-reference diagnosis narratives with accurate ICD-10 and CPT codes. Automatically scrub unneeded direct PII.",
+    model: DEFAULT_WORKING_MODEL,
+    allowed_skills: ["knowledge-base", "file-manager", "artifacts"],
+    requires_approval_for: ["chart_sign", "claim_submit"],
+    max_spend_per_action_usd: 0,
+    resource_tier: "workspace",
+  },
+  {
+    id: "launchpad-arch-v1",
+    name: "Building Code & Spec Compliance Specialist",
+    description: "Assists architects and contractors with IBC/ADA building code audits and subcontractor RFP bid leveling",
+    system_prompt:
+      "You are an Architectural Spec & Building Code Specialist assisting architects and general contractors.\n\n" +
+      "OPERATING POSTURE: Code-verified and spec-grounded. Audit drawings and specifications against IBC 2024, ADA Title III, and local municipal zoning laws. " +
+      "Level subcontractor bids with clear trade-by-trade cost breakdowns.",
+    model: DEFAULT_WORKING_MODEL,
+    allowed_skills: ["knowledge-base", "file-manager", "web-search", "artifacts"],
+    requires_approval_for: ["spec_publish", "change_order_approve"],
     max_spend_per_action_usd: 0,
     resource_tier: "workspace",
   },
@@ -574,10 +684,44 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
       "Build and sell small business websites from $10. Your agents find local businesses with a " +
       "weak web presence, draft the outreach for you to approve, quote the job, build the site, and " +
       "tell the customer when it's ready. Sold through your own Whop store.",
+    template_mode: "autonomous_venture",
+    category: "AGENCY",
+    channel_config: {
+      channel_role: "PRIVATE_EXECUTIVE_COPILOT",
+      allowedChannels: ["telegram", "whatsapp", "slack", "discord", "email"],
+      enableVoiceMemoTranscription: true,
+      enableDocumentIngestion: true,
+      notifyOnPendingApprovals: true,
+      instantRagEnabled: true,
+    },
     agents: ["launchpad-leadgen-v1", "launchpad-webdev-v1", "launchpad-support-v1"],
     skills: ["web-search", "mcp-connector", "file-manager", "code-exec", "email-tool"],
     connectors: ["whop"],
     free_tier_eligible: true,
+    blueprint_projects: [
+      {
+        name: "Core Development",
+        slug: "dev",
+        kind: "product_dev",
+        plugins: ["r2-workspace", "file-manager", "code-exec"],
+        allowedLadderTiers: [1, 2, 3, 4, 5],
+        journalGoals: [
+          { id: "1", title: "Scaffold Astro + Tailwind Client Website", tier: 1 },
+          { id: "2", title: "Verify Responsive Build in Isolate", tier: 1 },
+          { id: "3", title: "Deploy Live Edge Preview to Cloudflare Pages", tier: 1 },
+        ],
+      },
+      {
+        name: "Customer Receptionist",
+        slug: "support",
+        kind: "customer_bot",
+        plugins: ["knowledge-base", "notifications"],
+        allowedLadderTiers: [1],
+        journalGoals: [
+          { id: "1", title: "Connect 24/7 WhatsApp Lead Intake Bot", tier: 1 },
+        ],
+      },
+    ],
     // The published price list. Read by the Whop store provisioning step and by the `quote-job`
     // skill, so a quote can never name a price the store cannot actually sell.
     pricing_tiers: WEBDEV_TIERS.map((t) => ({
@@ -676,6 +820,16 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     description:
       "An AI support desk: answers customer questions grounded in your knowledge base + order data " +
       "across channels, escalates what it's unsure of, and drafts replies for review.",
+    template_mode: "autonomous_venture",
+    category: "COMMUNITY",
+    channel_config: {
+      channel_role: "PRIVATE_EXECUTIVE_COPILOT",
+      allowedChannels: ["telegram", "whatsapp", "slack", "discord", "email"],
+      enableVoiceMemoTranscription: true,
+      enableDocumentIngestion: true,
+      notifyOnPendingApprovals: true,
+      instantRagEnabled: true,
+    },
     agents: ["launchpad-support-v1"],
     skills: ["email-tool", "web-search", "mcp-connector"],
     free_tier_eligible: true,
@@ -711,6 +865,16 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
       "Sell automated expert audits ($29-$299 each). A client uploads their files/links and pays; " +
       "your agent analyzes them and delivers a polished custom report. Works for a copy roaster, a " +
       "lease red-flag scanner, a resume/portfolio optimizer — pick your specialty.",
+    template_mode: "autonomous_venture",
+    category: "AGENCY",
+    channel_config: {
+      channel_role: "PRIVATE_EXECUTIVE_COPILOT",
+      allowedChannels: ["telegram", "whatsapp", "slack", "discord", "email"],
+      enableVoiceMemoTranscription: true,
+      enableDocumentIngestion: true,
+      notifyOnPendingApprovals: true,
+      instantRagEnabled: true,
+    },
     agents: ["launchpad-fulfillment-v1", "launchpad-support-v1", "launchpad-content-v1"],
     skills: ["web-search", "code-exec", "email-tool", "mcp-connector"],
     connectors: ["whop"],
@@ -745,6 +909,16 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
       "A free web calculator/tool that gives a taste, then charges ($19/mo or $49 one-off) for the " +
       "full plan or dashboard. A SaaS burn-rate simulator, a marathon+nutrition planner, a solar-ROI " +
       "estimator — your agent builds the tool and the paywall.",
+    template_mode: "autonomous_venture",
+    category: "MICRO_SAAS",
+    channel_config: {
+      channel_role: "PRIVATE_EXECUTIVE_COPILOT",
+      allowedChannels: ["telegram", "whatsapp", "slack", "discord", "email"],
+      enableVoiceMemoTranscription: true,
+      enableDocumentIngestion: true,
+      notifyOnPendingApprovals: true,
+      instantRagEnabled: true,
+    },
     agents: ["launchpad-webdev-v1", "launchpad-support-v1", "launchpad-content-v1"],
     skills: ["web-search", "code-exec", "file-manager", "email-tool", "mcp-connector"],
     connectors: ["whop"],
@@ -778,6 +952,16 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
       "Turn a freelance skill into a flat-rate recurring service ($200-$1,500/mo) with no email chaos: " +
       "a client portal, an intake board, and automated delivery. Thumbnail design, newsletter " +
       "ghostwriting, Shopify bug-fixing — your specialty, standardized.",
+    template_mode: "autonomous_venture",
+    category: "AGENCY",
+    channel_config: {
+      channel_role: "PRIVATE_EXECUTIVE_COPILOT",
+      allowedChannels: ["telegram", "whatsapp", "slack", "discord", "email"],
+      enableVoiceMemoTranscription: true,
+      enableDocumentIngestion: true,
+      notifyOnPendingApprovals: true,
+      instantRagEnabled: true,
+    },
     agents: ["launchpad-fulfillment-v1", "launchpad-support-v1", "launchpad-content-v1"],
     skills: ["web-search", "code-exec", "file-manager", "email-tool", "mcp-connector"],
     connectors: ["whop"],
@@ -812,6 +996,16 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
       "A paywalled, always-fresh vault of high-value data + weekly alerts ($15-$99/mo): off-market " +
       "real-estate deals, verified angel investors, remote-dev jobs with real salaries. Your agents " +
       "scrape nightly, prune dead entries, and send the digest.",
+    template_mode: "autonomous_venture",
+    category: "COMMERCE",
+    channel_config: {
+      channel_role: "PRIVATE_EXECUTIVE_COPILOT",
+      allowedChannels: ["telegram", "whatsapp", "slack", "discord", "email"],
+      enableVoiceMemoTranscription: true,
+      enableDocumentIngestion: true,
+      notifyOnPendingApprovals: true,
+      instantRagEnabled: true,
+    },
     agents: ["launchpad-leadgen-v1", "launchpad-content-v1", "launchpad-support-v1"],
     skills: ["web-search", "code-exec", "knowledge-base", "email-tool", "mcp-connector"],
     connectors: ["whop"],
@@ -846,6 +1040,16 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
       "An automated storefront for digital products — prompt packs, templates, Notion workspaces, " +
       "code snippets, Excel models — with instant delivery and programmatic SEO. Your agent builds " +
       "the store, handles delivery questions, and writes the SEO articles.",
+    template_mode: "autonomous_venture",
+    category: "COMMERCE",
+    channel_config: {
+      channel_role: "PRIVATE_EXECUTIVE_COPILOT",
+      allowedChannels: ["telegram", "whatsapp", "slack", "discord", "email"],
+      enableVoiceMemoTranscription: true,
+      enableDocumentIngestion: true,
+      notifyOnPendingApprovals: true,
+      instantRagEnabled: true,
+    },
     agents: ["launchpad-fulfillment-v1", "launchpad-content-v1", "launchpad-support-v1"],
     skills: ["web-search", "code-exec", "file-manager", "email-tool", "mcp-connector"],
     connectors: ["whop"],
@@ -879,6 +1083,16 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
       "A private, gated community monetized by monthly access ($29-$149/mo): a mastermind, a " +
       "build-in-public club, a researchers' hub. Your agents welcome new members, answer common " +
       "questions from past discussions, moderate spam, and flag members at risk of churning.",
+    template_mode: "autonomous_venture",
+    category: "COMMUNITY",
+    channel_config: {
+      channel_role: "PRIVATE_EXECUTIVE_COPILOT",
+      allowedChannels: ["telegram", "whatsapp", "slack", "discord", "email"],
+      enableVoiceMemoTranscription: true,
+      enableDocumentIngestion: true,
+      notifyOnPendingApprovals: true,
+      instantRagEnabled: true,
+    },
     agents: ["launchpad-support-v1", "launchpad-content-v1", "launchpad-fulfillment-v1"],
     skills: ["web-search", "knowledge-base", "email-tool", "mcp-connector"],
     connectors: ["whop"],
@@ -903,6 +1117,301 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
       first_contact: {
         goal:
           "Onboarding just completed for a Niche Community business. Build a landing/join page as an HTML artifact (artifacts.create) describing the community, its tiers, and a join button pointing at the Whop membership checkout. Draft a welcome message and 3-5 seed discussion prompts for the Community project to give the space life from day one. Set up the auto-welcome flow and a churn-risk check (flag inactive members) on the owner's channel. Store any community FAQ in the knowledge base so the agent can answer from past discussions. Send the owner ONE short message: a link to the join-page artifact, what happens when someone joins, and the first 2-3 things you'll do to get the first members. Respect their autonomy setting.",
+      },
+    },
+  },
+  // ── Vertical Cowork Blueprints ("Harvey AI / Hebbia for X") ────────────────
+  {
+    id: "lexpulse-legal-cowork",
+    name: "LexPulse Legal Studio (Harvey / Legora Competitor)",
+    description:
+      "Collaborative AI cowork studio for boutique law firms, corporate legal counsel, and paralegals. Interactive contract redlining, NDA risk detection, discovery synthesis, and regulatory compliance.",
+    template_mode: "vertical_cowork",
+    category: "LEGAL",
+    free_tier_eligible: true,
+    channel_config: {
+      channel_role: "PRIVATE_EXECUTIVE_COPILOT",
+      allowedChannels: ["telegram", "whatsapp", "slack", "discord", "email"],
+      enableVoiceMemoTranscription: true,
+      enableDocumentIngestion: true,
+      notifyOnPendingApprovals: true,
+      instantRagEnabled: true,
+    },
+    agents: ["launchpad-legal-v1", "launchpad-support-v1"],
+    skills: ["knowledge-base", "file-manager", "web-search", "artifacts"],
+    cowork_config: {
+      defaultViewport: "DocumentRedlineCanvas",
+      citationVerificationRequired: true,
+      collaborationMode: "realtime_crdt",
+      auditLogRetentionDays: 365,
+    },
+    blueprint_projects: [
+      {
+        name: "Contract Analysis & Redline Studio",
+        slug: "contract-redline",
+        kind: "contract_redline",
+        plugins: ["knowledge-base", "file-manager", "artifacts"],
+        allowedLadderTiers: [1, 2],
+        journalGoals: [
+          { id: "1", title: "Ingest Master Services Agreement & scan indemnity clauses", tier: 1 },
+          { id: "2", title: "Generate side-by-side redline diff with risk annotations", tier: 1 },
+          { id: "3", title: "Export executive legal summary with statutory citations", tier: 1 },
+        ],
+      },
+      {
+        name: "Litigation Discovery & Briefs",
+        slug: "litigation-discovery",
+        kind: "litigation_discovery",
+        plugins: ["knowledge-base", "file-manager", "web-search"],
+        allowedLadderTiers: [1, 2],
+        journalGoals: [
+          { id: "1", title: "Index deposition transcripts & discovery exhibits in Vectorize", tier: 1 },
+          { id: "2", title: "Draft cross-examination timeline with transcript citations", tier: 1 },
+        ],
+      },
+      {
+        name: "Regulatory & Statutory Compliance",
+        slug: "regulatory-compliance",
+        kind: "legal_compliance",
+        plugins: ["web-search", "knowledge-base", "artifacts"],
+        allowedLadderTiers: [1, 2],
+        journalGoals: [
+          { id: "1", title: "Monitor state and federal corporate statutory amendments", tier: 1 },
+        ],
+      },
+    ],
+    knowledge_seeds: [
+      {
+        question: "What are the standard indemnification and liability caps for SaaS MSAs in Delaware?",
+        answer: "Standard market practice sets mutual indemnification for IP infringement uncapped, with general breach liability capped at 12 months fees paid under Delaware General Corporation Law.",
+      },
+      {
+        question: "How are non-compete clauses evaluated post-FTC ruling?",
+        answer: "Post-FTC ruling and state statutes (e.g. CA, MN), non-compete clauses are largely unenforceable for non-equity workers; advise substituting robust non-disclosure and non-solicitation covenants.",
+      },
+    ],
+    bootstrap: {
+      prompts: [
+        { id: "firm_name", type: "text", question: "What is your Law Firm or Legal Team name?", required: true },
+        { id: "jurisdiction", type: "text", question: "Primary jurisdiction(s) (e.g. Delaware, New York, California, England & Wales)?", required: true },
+        { id: "practice_focus", type: "choice", question: "Primary practice area focus?", options: ["Commercial Contracts & M&A", "Litigation & Dispute Resolution", "IP & Technology Licensing", "Employment & Compliance"], required: true },
+        { id: "owner_channel", type: "channel", question: "Where should your cowork assistant send high-risk alerts?", options: ["email", "slack", "discord", "whatsapp"], required: true },
+      ],
+      projects: [
+        { name: "Contract Analysis & Redline Studio", default_agent_id: "launchpad-legal-v1" },
+        { name: "Litigation Discovery & Briefs", default_agent_id: "launchpad-legal-v1" },
+        { name: "Regulatory & Statutory Compliance", default_agent_id: "launchpad-support-v1" },
+      ],
+      first_contact: {
+        goal: "Onboarding completed for LexPulse Legal Studio. Introduce yourself as the collaborative legal coworker in human-in-the-loop mode. Summarize the pre-configured workspaces: Contract Redline Canvas, Litigation Discovery, and Regulatory Compliance. Invite the attorney or paralegal to upload an MSA or discovery transcript for immediate clause-by-clause analysis.",
+      },
+    },
+  },
+  {
+    id: "capforge-pe-cowork",
+    name: "CapForge PE & M&A Studio (Hebbia / Tegus Competitor)",
+    description:
+      "Assistive research and financial modeling studio for VC, private equity, and family offices. Deep SEC 10-K RAG, footnote reconciliation, investment memo drafting, and live valuation comp sheets.",
+    template_mode: "vertical_cowork",
+    category: "FINANCE",
+    free_tier_eligible: true,
+    channel_config: {
+      channel_role: "PRIVATE_EXECUTIVE_COPILOT",
+      allowedChannels: ["telegram", "whatsapp", "slack", "discord", "email"],
+      enableVoiceMemoTranscription: true,
+      enableDocumentIngestion: true,
+      notifyOnPendingApprovals: true,
+      instantRagEnabled: true,
+    },
+    agents: ["launchpad-finance-v1", "launchpad-support-v1"],
+    skills: ["web-search", "knowledge-base", "artifacts", "file-manager"],
+    cowork_config: {
+      defaultViewport: "SpreadsheetFormulaGrid",
+      citationVerificationRequired: true,
+      collaborationMode: "realtime_crdt",
+      auditLogRetentionDays: 180,
+    },
+    blueprint_projects: [
+      {
+        name: "SEC 10-K & Financial RAG Studio",
+        slug: "sec-rag",
+        kind: "sec_rag",
+        plugins: ["web-search", "knowledge-base", "artifacts"],
+        allowedLadderTiers: [1, 2, 3],
+        journalGoals: [
+          { id: "1", title: "Parse SEC 10-K EDGAR filings and extract segment footnotes", tier: 1 },
+          { id: "2", title: "Reconcile adjusted EBITDA add-backs against GAAP net income", tier: 1 },
+        ],
+      },
+      {
+        name: "Investment Memo & Valuation Studio",
+        slug: "memo-studio",
+        kind: "memo_studio",
+        plugins: ["knowledge-base", "artifacts", "file-manager"],
+        allowedLadderTiers: [1, 2, 3],
+        journalGoals: [
+          { id: "1", title: "Synthesize confidential data room into 5-page Investment Committee memo", tier: 1 },
+          { id: "2", title: "Build trading multiples & DCF valuation comp grid", tier: 1 },
+        ],
+      },
+    ],
+    knowledge_seeds: [
+      {
+        question: "What are common non-recurring adjustments when computing Adjusted EBITDA?",
+        answer: "Common adjustments include stock-based compensation, transaction-related legal/consulting expenses, restructuring charges, one-off litigation settlements, and normalized owner compensation.",
+      },
+    ],
+    bootstrap: {
+      prompts: [
+        { id: "fund_name", type: "text", question: "What is your Fund or Advisory Firm name?", required: true },
+        { id: "fund_stage", type: "choice", question: "Primary investment stage?", options: ["Early-Stage Venture Capital", "Growth Equity", "Middle-Market Private Equity", "Corporate M&A / Corporate Dev"], required: true },
+        { id: "target_sectors", type: "text", question: "Primary target sectors (e.g., B2B SaaS, FinTech, Healthcare, Industrial)?", required: true },
+        { id: "owner_channel", type: "channel", question: "Where should deal summary alerts be delivered?", options: ["email", "slack", "discord", "whatsapp"], required: true },
+      ],
+      projects: [
+        { name: "SEC 10-K & Financial RAG Studio", default_agent_id: "launchpad-finance-v1" },
+        { name: "Investment Memo & Valuation Studio", default_agent_id: "launchpad-finance-v1" },
+      ],
+      first_contact: {
+        goal: "Onboarding completed for CapForge PE & M&A Studio. Introduce yourself as the financial research and valuation coworker. Welcome the deal team to the interactive Spreadsheet Formula Grid and SEC EDGAR RAG studio.",
+      },
+    },
+  },
+  {
+    id: "clinica-ehr-cowork",
+    name: "Clinica AI Practice & Clinical EHR Cowork",
+    description:
+      "HIPAA-conscious clinical documentation assistant for clinics, dental practices, and physical therapists. Ambient audio to structured SOAP notes, ICD-10/CPT coding suggestions, and pre-auth appeals.",
+    template_mode: "vertical_cowork",
+    category: "HEALTHCARE",
+    free_tier_eligible: true,
+    channel_config: {
+      channel_role: "PRIVATE_EXECUTIVE_COPILOT",
+      allowedChannels: ["telegram", "whatsapp", "slack", "discord", "email"],
+      enableVoiceMemoTranscription: true,
+      enableDocumentIngestion: true,
+      notifyOnPendingApprovals: true,
+      instantRagEnabled: true,
+    },
+    agents: ["launchpad-clinical-v1", "launchpad-support-v1"],
+    skills: ["knowledge-base", "file-manager", "artifacts"],
+    cowork_config: {
+      defaultViewport: "ClinicalSoapEditor",
+      citationVerificationRequired: true,
+      collaborationMode: "realtime_crdt",
+      auditLogRetentionDays: 365,
+    },
+    blueprint_projects: [
+      {
+        name: "Clinical SOAP Notes & EHR Studio",
+        slug: "soap-notes",
+        kind: "soap_notes",
+        plugins: ["knowledge-base", "file-manager", "artifacts"],
+        allowedLadderTiers: [1, 2],
+        journalGoals: [
+          { id: "1", title: "Convert patient encounter notes to structured SOAP format", tier: 1 },
+          { id: "2", title: "Run HIPAA PII scrubber on clinical transcription text", tier: 1 },
+        ],
+      },
+      {
+        name: "Medical Billing & Pre-Authorization",
+        slug: "billing-preauth",
+        kind: "billing_icd10",
+        plugins: ["knowledge-base", "artifacts"],
+        allowedLadderTiers: [1, 2],
+        journalGoals: [
+          { id: "1", title: "Recommend billable CPT codes with matching ICD-10 diagnostic codes", tier: 1 },
+          { id: "2", title: "Draft insurance pre-authorization appeal letter citing clinical criteria", tier: 1 },
+        ],
+      },
+    ],
+    knowledge_seeds: [
+      {
+        question: "What clinical documentation elements are required for Level 4 E/M (99214) outpatient billing?",
+        answer: "Requires medically appropriate history/exam and Moderate Complexity Medical Decision Making (either 2+ stable chronic illnesses, 1 chronic illness with exacerbation, or 1 undiagnosed new problem with uncertain prognosis).",
+      },
+    ],
+    bootstrap: {
+      prompts: [
+        { id: "practice_name", type: "text", question: "What is your Practice or Clinic name?", required: true },
+        { id: "specialty", type: "choice", question: "Clinical specialty?", options: ["Primary Care & Family Medicine", "Physical Therapy & Orthopedics", "Dentistry & Oral Health", "Mental & Behavioral Health"], required: true },
+        { id: "owner_channel", type: "channel", question: "Where should daily chart completion reminders go?", options: ["email", "slack", "discord", "whatsapp"], required: true },
+      ],
+      projects: [
+        { name: "Clinical SOAP Notes & EHR Studio", default_agent_id: "launchpad-clinical-v1" },
+        { name: "Medical Billing & Pre-Authorization", default_agent_id: "launchpad-clinical-v1" },
+      ],
+      first_contact: {
+        goal: "Onboarding completed for Clinica AI Practice Cowork. Introduce yourself to the clinical staff with HIPAA PII scrubber active. Explain how audio transcripts or rough encounter notes map directly into Subjective, Objective, Assessment, and Plan (SOAP) drafts with suggested ICD-10 diagnosis codes.",
+      },
+    },
+  },
+  {
+    id: "acubuild-arch-cowork",
+    name: "AcuBuild Architecture & Engineering Studio",
+    description:
+      "Plan inspection, municipal code compliance, and subcontractor bid leveling cowork studio for architects, structural engineers, and general contractors. IBC 2024 compliance checking and change order tracking.",
+    template_mode: "vertical_cowork",
+    category: "ENGINEERING",
+    free_tier_eligible: true,
+    channel_config: {
+      channel_role: "PRIVATE_EXECUTIVE_COPILOT",
+      allowedChannels: ["telegram", "whatsapp", "slack", "discord", "email"],
+      enableVoiceMemoTranscription: true,
+      enableDocumentIngestion: true,
+      notifyOnPendingApprovals: true,
+      instantRagEnabled: true,
+    },
+    agents: ["launchpad-arch-v1", "launchpad-support-v1"],
+    skills: ["file-manager", "knowledge-base", "web-search", "artifacts"],
+    cowork_config: {
+      defaultViewport: "PlanSpecCanvas",
+      citationVerificationRequired: true,
+      collaborationMode: "realtime_crdt",
+      auditLogRetentionDays: 180,
+    },
+    blueprint_projects: [
+      {
+        name: "Building Code & Plan Compliance",
+        slug: "building-code",
+        kind: "building_code_rag",
+        plugins: ["knowledge-base", "file-manager", "artifacts"],
+        allowedLadderTiers: [1, 2],
+        journalGoals: [
+          { id: "1", title: "Check architectural plans against IBC 2024 egress & fire separation rules", tier: 1 },
+          { id: "2", title: "Verify ADA corridor width and slope clearances on site plan", tier: 1 },
+        ],
+      },
+      {
+        name: "Subcontractor RFP & Change Orders",
+        slug: "rfp-change-orders",
+        kind: "subcontractor_rfp",
+        plugins: ["file-manager", "artifacts", "knowledge-base"],
+        allowedLadderTiers: [1, 2],
+        journalGoals: [
+          { id: "1", title: "Level 10 subcontractor bids across electrical and plumbing trades", tier: 1 },
+          { id: "2", title: "Audit change order request #14 against original contract scope", tier: 1 },
+        ],
+      },
+    ],
+    knowledge_seeds: [
+      {
+        question: "What is the minimum egress corridor width required by IBC Chapter 10 for commercial occupancies?",
+        answer: "Under IBC Section 1020.2, minimum corridor width is 44 inches when serving an occupant load of 50 or more, or 36 inches when serving fewer than 50 occupants.",
+      },
+    ],
+    bootstrap: {
+      prompts: [
+        { id: "studio_name", type: "text", question: "What is your Architecture Studio or Contracting Company name?", required: true },
+        { id: "project_types", type: "choice", question: "Primary project typology?", options: ["Commercial & Retail", "Multi-Family Residential", "Single-Family Custom Residential", "Industrial & Logistics"], required: true },
+        { id: "owner_channel", type: "channel", question: "Where should code variance alerts be sent?", options: ["email", "slack", "discord", "whatsapp"], required: true },
+      ],
+      projects: [
+        { name: "Building Code & Plan Compliance", default_agent_id: "launchpad-arch-v1" },
+        { name: "Subcontractor RFP & Change Orders", default_agent_id: "launchpad-arch-v1" },
+      ],
+      first_contact: {
+        goal: "Onboarding completed for AcuBuild Architecture & Engineering Studio. Introduce yourself as the plan inspection and IBC code compliance coworker. Welcome the architect or contractor to the interactive PlanSpec Canvas and Subcontractor Bid Leveling studio.",
       },
     },
   },

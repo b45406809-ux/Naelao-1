@@ -25,7 +25,7 @@
  * documented REST conventions, not confirmed against a live company/plan in this pass.
  */
 
-import type { NormalizedBillingEvent } from "./types.js";
+import type { NormalizedBillingEvent } from "./types";
 
 const WHOP_API = "https://api.whop.com/api/v5";
 

@@ -554,6 +554,12 @@ export interface MemoryStore {
   upsertWikiConcept(entry: { userId?: string; concept: string; definition: string; relationships?: string[] }): Promise<{ concept: string }>;
   lookupWikiConcept(userId: string | undefined, concept: string): Promise<WikiArticle | null>;
   searchWiki(query: { userId?: string; text: string; limit?: number }): Promise<WikiArticle[]>;
+
+  /**
+   * Layer 3 & Layer 5 Asynchronous Learning Extraction Hook:
+   * Extracts technical facts, business preferences, and bugs from completed turns.
+   */
+  extractAndPromoteLearnings?(userPrompt: string, agentActions: string, aiGatewayModel?: any): Promise<void>;
 }
 
 /**

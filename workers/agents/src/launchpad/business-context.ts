@@ -44,6 +44,12 @@ export interface BusinessContext {
   pricing?: string;
   /** "complete" once the owner finished setup; otherwise what stage it is at. */
   setup_status: string;
+  /** Operating Mode: "autonomous_venture" | "vertical_cowork" */
+  template_mode?: "autonomous_venture" | "vertical_cowork";
+  /** Category (LEGAL, FINANCE, HEALTHCARE, AGENCY, MICRO_SAAS, ENGINEERING, COMMERCE, COMMUNITY) */
+  category?: string;
+  /** Mobile channel role: "PRIVATE_EXECUTIVE_COPILOT" | "PUBLIC_CUSTOMER_BOT" */
+  channel_role?: "PRIVATE_EXECUTIVE_COPILOT" | "PUBLIC_CUSTOMER_BOT";
   /**
    * Present ONLY while setup is unfinished. Phrased as a fact about the business plus what to do
    * about it, because the model reads this and speaks to the owner — a bare status enum produced
@@ -56,6 +62,9 @@ export interface BusinessContext {
  *  created before any of these fields existed must still resolve, just with less to say. */
 export interface SpaceConfigForContext {
   template_id?: unknown;
+  template_mode?: unknown;
+  category?: unknown;
+  channel_role?: unknown;
   onboarding?: { status?: unknown; template_ids?: unknown } | undefined;
 }
 
@@ -98,6 +107,11 @@ export function resolveBusinessContext(input: {
   if (template) {
     const desc = (template.description ?? "").trim();
     ctx.offering = desc ? `${template.name} — ${desc}` : template.name;
+    if (template.template_mode) ctx.template_mode = template.template_mode;
+    if (template.category) ctx.category = template.category;
+    if (template.channel_config?.channel_role) {
+      ctx.channel_role = template.channel_config.channel_role;
+    }
 
     // A range (min !== max) is rendered as a range on purpose: the template's own comment is that
     // such a tier is scoped per job and the agent is expected to quote WITHIN it and say what it
@@ -115,6 +129,17 @@ export function resolveBusinessContext(input: {
         })
         .join("; ");
     }
+  }
+
+  // Allow runtime config overrides for template_mode, category, and channel_role if set in config_json
+  if (cfg.template_mode === "autonomous_venture" || cfg.template_mode === "vertical_cowork") {
+    ctx.template_mode = cfg.template_mode;
+  }
+  if (typeof cfg.category === "string" && cfg.category.trim()) {
+    ctx.category = cfg.category.trim();
+  }
+  if (cfg.channel_role === "PRIVATE_EXECUTIVE_COPILOT" || cfg.channel_role === "PUBLIC_CUSTOMER_BOT") {
+    ctx.channel_role = cfg.channel_role;
   }
 
   if (setupStatus !== COMPLETE) {

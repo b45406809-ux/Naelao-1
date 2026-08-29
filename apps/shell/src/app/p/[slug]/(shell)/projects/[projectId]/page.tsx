@@ -39,7 +39,7 @@ import {
   type KbDocument,
   type AgentTemplateSummary,
 } from "@/lib/api";
-import { ProjectKindPanel } from "@/components/ProjectKindPanel";
+import { ProjectKindPanel, type InspectedElement } from "@/components/ProjectKindPanel";
 import { CustomerBotAutomation } from "@/components/CustomerBotAutomation";
 import { AgentPolicyPanel } from "@/components/AgentPolicyPanel";
 
@@ -62,6 +62,7 @@ export default function ProjectDetailPage() {
   const [loading, setLoading] = React.useState(true);
   const [creating, setCreating] = React.useState(false);
   const [threadQuery, setThreadQuery] = React.useState("");
+  const [inspectedElement, setInspectedElement] = React.useState<InspectedElement | null>(null);
   const settingsRef = React.useRef<HTMLDivElement>(null);
 
   // Naelao Agent Templates — add a real, differently-configured agent to this project.
@@ -81,7 +82,7 @@ export default function ProjectDetailPage() {
   // business; the settings section is still shown to a plain member (read-only save attempt
   // will surface the 403 via toast rather than pre-computing role client-side).
   const [savingSettings, setSavingSettings] = React.useState(false);
-  const [draftKind, setDraftKind] = React.useState<"workspace" | "customer_bot">("workspace");
+  const [draftKind, setDraftKind] = React.useState<string>("workspace");
   const [draftMaxThreads, setDraftMaxThreads] = React.useState("0");
   const [draftExecutionCeiling, setDraftExecutionCeiling] = React.useState("5");
   const [draftSpendCap, setDraftSpendCap] = React.useState("0");
@@ -103,7 +104,7 @@ export default function ProjectDetailPage() {
       setThreads(t);
       setAgents(a);
       setAllProjects(allP);
-      setDraftKind(p.kind === "customer_bot" ? "customer_bot" : "workspace");
+      setDraftKind(p.kind || "workspace");
       setDraftMaxThreads(String(p.max_threads ?? 0));
       setDraftExecutionCeiling(String(p.execution_ceiling ?? 5));
       setDraftSpendCap(String(p.daily_spend_cap_credits ?? 0));
@@ -359,7 +360,17 @@ export default function ProjectDetailPage() {
 
       {/* F-40: the kind-specific panel (wallet ledger, etc.) + F-39 files viewer, above the shared
           shell's generic Settings/Threads/KB scaffolding. */}
-      {creds && <ProjectKindPanel project={project} spaceId={activeSpaceId} creds={creds} />}
+      {creds && (
+        <ProjectKindPanel
+          project={project}
+          spaceId={activeSpaceId}
+          creds={creds}
+          onSelectElement={(elem) => {
+            setInspectedElement(elem);
+            show(`Selected ${elem.filePath}${elem.line ? `:${elem.line}` : ""} for inspection.`);
+          }}
+        />
+      )}
 
       {/* Step 21: the customer-bot Automation dashboard — no-code "when a message matches X, do Y"
           rules, shown only on a customer_bot project (project.kind is refreshed after a settings
@@ -511,11 +522,26 @@ export default function ProjectDetailPage() {
         <div className="settings-row">
           <div>
             <div className="settings-row-label">Kind</div>
-            <div className="settings-row-sub">Customer-bot projects get a capped execution ceiling, a daily spend cap, and no-code rules</div>
+            <div className="settings-row-sub">Domain purpose and archetype capabilities (customer bot, edge IDE, legal, finance, healthcare, CRM)</div>
           </div>
-          <FormSelect value={draftKind} onChange={(e) => setDraftKind(e.target.value as "workspace" | "customer_bot")} style={{ maxWidth: 180 }}>
+          <FormSelect value={draftKind} onChange={(e) => setDraftKind(e.target.value)} style={{ maxWidth: 220 }}>
             <option value="workspace">Workspace</option>
-            <option value="customer_bot">Customer bot</option>
+            <option value="customer_bot">Customer bot (Restricted execution)</option>
+            <option value="product_dev">Product Dev / Edge IDE</option>
+            <option value="contract_redline">Contract Redline Studio</option>
+            <option value="litigation_discovery">Litigation Discovery</option>
+            <option value="sec_rag">SEC 10-K & Financial RAG</option>
+            <option value="memo_studio">Investment Memo Studio</option>
+            <option value="soap_notes">Clinical SOAP Notes</option>
+            <option value="billing_icd10">Medical Billing & ICD-10</option>
+            <option value="building_code_rag">Building Code & Plan Review</option>
+            <option value="subcontractor_rfp">Subcontractor RFP & Bids</option>
+            <option value="crm">CRM & Pipeline</option>
+            <option value="support_inbox">Support Tickets & SLA</option>
+            <option value="business_email">AI-Triaged Mailbox</option>
+            <option value="storefront">Storefront & Downloads</option>
+            <option value="wallet">Wallet & Payouts</option>
+            <option value="model_studio">Model Studio & Auto-Researcher</option>
           </FormSelect>
         </div>
         <div className="settings-row">

@@ -25,7 +25,7 @@
  * an agentic/tool-calling harness.
  */
 
-import { ALLOWED_MODELS, type AllowedModel } from "./models.js";
+import { ALLOWED_MODELS, type AllowedModel } from "./models";
 
 export type CostTier = "economy" | "standard" | "premium";
 

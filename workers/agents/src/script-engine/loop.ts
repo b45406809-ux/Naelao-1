@@ -33,7 +33,7 @@ type PushTrace = (step: Omit<TraceStep, "seq" | "ts">) => void;
 import { ScriptToolSurface } from "./tool-surface.js";
 import { runObserve } from "./observe.js";
 import { assessBudget, resolveLoopBudget, isContextOverflowError, type LoopBudget } from "./loop-budget.js";
-import { compactSteps, stepLimitsForModel, squeezeStepLimits } from "./step-context.js";
+import { compactSteps, stepLimitsForModel, squeezeStepLimits, evictHistoricalToolPayloads } from "./step-context.js";
 import { fingerprintSimilarity, isMatch, isPartial } from "./fingerprint.js";
 import { FIND_CONFIDENCE_FLOOR } from "./script-find.js";
 import { assessSkillHealth, isSafeToAutoRun } from "./skill-health.js";
@@ -875,11 +875,9 @@ export async function runScriptLoop(
           detail: isFinalStep ? "Wrapping up…" : `Thinking (step ${step + 1})…`,
         });
         const reasonStart = Date.now();
-        // Fold the older half of this run's history into one line per step, so a long run stays
-        // inside the model's real context window instead of overflowing it somewhere past step
-        // twenty. The full `priorSteps` array is untouched — checkpoints and deferred approvals
-        // need the real results.
-        const stepContext = compactSteps(priorSteps, stepLimits);
+        // Apply surgical tool payload eviction on historical steps (>3 turns old)
+        const activeSteps = evictHistoricalToolPayloads(priorSteps, 3);
+        const stepContext = compactSteps(activeSteps, stepLimits);
         if (stepContext.compacted) {
           notes.push(`${level} folded ${stepContext.omitted} earlier step(s) to fit the context window`);
         }
@@ -964,6 +962,24 @@ export async function runScriptLoop(
         });
 
         if (decision.action === "run") {
+          // Handle in-flight self-compaction if requested by the agent
+          if (decision.name === "compact_context") {
+            const start = Number(decision.params?.startIndex ?? 0);
+            const end = Number(decision.params?.endIndex ?? (priorSteps.length - 1));
+            const summaryText = String(decision.params?.summary ?? "Completed subtasks.");
+            const count = Math.max(1, end - start + 1);
+
+            priorSteps.splice(start, count, {
+              name: "checkpoint",
+              params: {},
+              ok: true,
+              output: `[COMPACTED CONTEXT CHECKPOINT]: ${summaryText}`
+            });
+
+            pushTrace({ phase: "gate", name: "compact_context", detail: `Pruned ${count} intermediate turns.` });
+            continue;
+          }
+
           // The model was told this is its last turn and chose a tool anyway. Running it would
           // spend real money/side effects on work nobody will ever see the result of, since
           // there's no step left to report it in — so it isn't run, and the loop drops straight

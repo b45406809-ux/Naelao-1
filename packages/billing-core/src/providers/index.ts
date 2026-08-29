@@ -6,17 +6,17 @@
  * (see that file's header).
  */
 
-import type { BillingProvider, BillingProviderEnv } from "./types.js";
-import { LemonSqueezyProvider } from "./lemon-squeezy.js";
+import type { BillingProvider, BillingProviderEnv } from "./types";
+import { LemonSqueezyProvider } from "./lemon-squeezy";
 
-export * from "./types.js";
+export * from "./types";
 export {
   LemonSqueezyProvider,
   lsListStores,
   lsCreateWebhook,
   lsDeleteWebhook,
-} from "./lemon-squeezy.js";
-export type { LsStoreSummary } from "./lemon-squeezy.js";
+} from "./lemon-squeezy";
+export type { LsStoreSummary } from "./lemon-squeezy";
 export {
   createSubMerchant,
   getCompanyStatus,
@@ -25,28 +25,28 @@ export {
   transferPlatformFee,
   verifyWhopWebhook,
   parseWhopWalletEvent,
-} from "./whop.js";
+} from "./whop";
 export type {
   WhopSubMerchant,
   WhopCompanyStatus,
   WhopCheckoutParams,
   WhopWithdrawal,
   WhopWalletEvent,
-} from "./whop.js";
+} from "./whop";
 export {
   createOrGetAccessPass,
   createWhopOAuthPlan,
   createWhopOAuthCheckoutLink,
   createWhopOAuthCheckout,
-} from "./whop-oauth-checkout.js";
-export type { WhopOAuthPlanParams, WhopOAuthCheckoutParams } from "./whop-oauth-checkout.js";
+} from "./whop-oauth-checkout";
+export type { WhopOAuthPlanParams, WhopOAuthCheckoutParams } from "./whop-oauth-checkout";
 export {
   createWhopPlatformPlanCheckout,
   WHOP_CUSTOMER_ORDERS_URL,
   verifyWhopPlatformPlanWebhook,
   parseWhopPlatformPlanEvent,
-} from "./whop-platform-plan.js";
-export type { WhopPlatformPlanCheckoutParams } from "./whop-platform-plan.js";
+} from "./whop-platform-plan";
+export type { WhopPlatformPlanCheckoutParams } from "./whop-platform-plan";
 
 /** Resolve the active PLATFORM billing provider from env (always Lemon Squeezy — item 45). */
 export function selectBillingProvider(env: BillingProviderEnv): BillingProvider {

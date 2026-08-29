@@ -37,7 +37,13 @@ import {
 } from "../script-engine/index.js";
 import { createTracer } from "@naelao/tracing";
 import { GatewayReasoner, WorkersAIEmbedder } from "../script-engine/reasoner.js";
-import { resolveAssistantApprovalPlan, type AssistantEffectiveRole } from "../script-engine/assistant-access.js";
+import {
+  resolveAssistantApprovalPlan,
+  sanitizePrebuiltListForRole,
+  assertRoleCanExecuteTier,
+  type AssistantEffectiveRole,
+  type AgentArchetypeRole,
+} from "../script-engine/assistant-access.js";
 import { buildCodeRunner, type WorkerLoaderBinding } from "../script-engine/code-runner.js";
 import { initMemorySchema, buildMemoryStore, runMemoryMaintenance } from "../script-engine/memory-os.js";
 import { buildProjectMemoryStore, buildHybridMemoryStore } from "../script-engine/project-memory-client.js";
@@ -49,6 +55,7 @@ import {
   type ConversationMessage,
 } from "../script-engine/conversation-context.js";
 import { isChannelType, getAdapter, type NormalizedInbound } from "../launchpad/channels.js";
+import { sha256Hex } from "../script-engine/fingerprint.js";
 import type { BusinessContext } from "../launchpad/business-context.js";
 import {
   sanitizeSubAgentOutput,
@@ -1339,6 +1346,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // calls), without needing a WebSocket/SSE channel.
     try { this.ctx.storage.sql.exec(`ALTER TABLE sub_agents ADD COLUMN progress_note TEXT`); } catch { /* exists */ }
 
+    // Authoritative SQLite Virtual Filesystem: sub-millisecond in-DO isolate execution
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS workspace_files (
+        path TEXT PRIMARY KEY,
+        content TEXT NOT NULL,
+        hash TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+
     this.initialized = true;
   }
 
@@ -1401,6 +1419,32 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // in this codebase.
       if (method === "POST" && url.pathname === "/script/interrupted") {
         return this.handleContinueInterruptedRun(request);
+      }
+
+      // ── SQLite Virtual Filesystem API ─────────────────────────────────────────
+      if (url.pathname === "/workspace/sqlite/read") {
+        const path = url.searchParams.get("path") ?? "";
+        const row = this.ctx.storage.sql.exec(`SELECT path, content, hash, size_bytes FROM workspace_files WHERE path = ?`, path).toArray()[0] as any;
+        if (!row) return Response.json({ error: `File not found: ${path}` }, { status: 404 });
+        return Response.json({ ok: true, file: row });
+      }
+
+      if (url.pathname === "/workspace/sqlite/write" && request.method === "POST") {
+        const body = (await request.json()) as { path: string; content: string };
+        const hash = await sha256Hex(body.content);
+        const size = new TextEncoder().encode(body.content).length;
+        this.ctx.storage.sql.exec(`
+          INSERT INTO workspace_files (path, content, hash, size_bytes, updated_at)
+          VALUES (?, ?, ?, ?, datetime('now'))
+          ON CONFLICT(path) DO UPDATE SET content = excluded.content, hash = excluded.hash, size_bytes = excluded.size_bytes, updated_at = datetime('now')
+        `, body.path, body.content, hash, size);
+        return Response.json({ ok: true, path: body.path, hash, size_bytes: size });
+      }
+
+      if (url.pathname === "/workspace/sqlite/list") {
+        const prefix = url.searchParams.get("prefix") ?? "";
+        const rows = this.ctx.storage.sql.exec(`SELECT path, hash, size_bytes, updated_at FROM workspace_files WHERE path LIKE ? ORDER BY path ASC`, `${prefix}%`).toArray();
+        return Response.json({ ok: true, files: rows });
       }
 
       // POST /cancel — cancel all active runs for this DO
@@ -3256,6 +3300,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return Response.json({ error: `agent '${agentId}' is not provisioned in space '${spaceId}'` }, { status: 404 });
     }
 
+    // Determine archetype role (derived from template/agent definition)
+    let archetypeRole: AgentArchetypeRole | undefined = undefined;
+    if (agentId.includes("support") || agentId.includes("customer")) archetypeRole = "CUSTOMER_SUPPORT";
+    else if (agentId.includes("growth") || agentId.includes("marketing") || agentId.includes("sales")) archetypeRole = "GROWTH_OPERATOR";
+    else if (agentId.includes("architect")) archetypeRole = "ARCHITECT_DELEGATE";
+    else if (agentId.includes("dev") || agentId.includes("code")) archetypeRole = "DEV_OPERATOR";
+
+    // ── Physical Capability Stripping (Agent Firewall) ──────────────────────────
+    // Physically prune tool definitions from config before initializing ScriptToolSurface
+    const sanitizedPrebuilts = sanitizePrebuiltListForRole(archetypeRole, config.scripts.prebuilt);
+    config.scripts.prebuilt = sanitizedPrebuilts;
+
     // Approval policy. A project-bound Naelao Agent keeps the ordinary allowlist-of-gated
     // actions (spec §11, appendix A1.16.1). The Space Assistant (no projectId) is different:
     // "same access as the owning user, but ask first unless the user has explicitly trusted
@@ -3319,6 +3375,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // The agent's OWN identity and instructions. Loaded from R2 on every run since the script
       // engine was built, and never once handed to the model — see ReasonerDeps.agentPrompt.
       ...(config.systemPrompt ? { agentPrompt: config.systemPrompt } : {}),
+      // Layer 4 user custom instructions
+      ...(config.userCustomInstructions ? { userCustomInstructions: config.userCustomInstructions } : {}),
       // WHICH business this run is for. Resolved by index.ts from the space row it already
       // fetches; omitted entirely when the caller never resolved one.
       ...(body.businessContext ? { businessContext: body.businessContext } : {}),
@@ -5363,6 +5421,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!engineEnv) return Response.json({ error: "script engine unavailable: SCRIPTS_R2 not bound" }, { status: 503 });
     const config = await this.loadAgentConfigHealed(engineEnv.scriptsBucket, spaceId, agentId);
     if (!config) return Response.json({ error: `agent '${agentId}' is not provisioned in space '${spaceId}'` }, { status: 404 });
+
+    // Determine archetype role (derived from template/agent definition or id)
+    let archetypeRole: AgentArchetypeRole | undefined = undefined;
+    if (agentId.includes("support") || agentId.includes("customer")) archetypeRole = "CUSTOMER_SUPPORT";
+    else if (agentId.includes("growth") || agentId.includes("marketing") || agentId.includes("sales")) archetypeRole = "GROWTH_OPERATOR";
+    else if (agentId.includes("architect")) archetypeRole = "ARCHITECT_DELEGATE";
+    else if (agentId.includes("dev") || agentId.includes("code")) archetypeRole = "DEV_OPERATOR";
+
+    // ── Physical Capability Stripping (Agent Firewall) ──────────────────────────
+    const sanitizedPrebuilts = sanitizePrebuiltListForRole(archetypeRole, config.scripts.prebuilt);
+    config.scripts.prebuilt = sanitizedPrebuilts;
+
     // Same structural-config-first, agents.md-parse-fallback precedence as handleScriptRun above.
     const requiresApprovalFor = config.requiresApprovalFor ?? [...parseRequiresApprovalFor(config.agentsMd)];
     const tools = new ScriptToolSurface(engineEnv, config.scripts.prebuilt);
@@ -5379,6 +5449,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // Same gap as the interactive path: a customer messaging a business on Slack/WhatsApp was
       // being answered by a model that had never been told what business it was answering for.
       ...(config.systemPrompt ? { agentPrompt: config.systemPrompt } : {}),
+      ...(config.userCustomInstructions ? { userCustomInstructions: config.userCustomInstructions } : {}),
       // WHICH business this run is for. Resolved by index.ts from the space row it already
       // fetches; omitted entirely when the caller never resolved one.
       ...(body.businessContext ? { businessContext: body.businessContext } : {}),

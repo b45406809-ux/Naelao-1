@@ -15,7 +15,7 @@
  *                  builder and nothing is attributed to the parent.
  */
 
-import type { NormalizedBillingEvent } from "./providers/types.js";
+import type { NormalizedBillingEvent } from "./providers/types";
 
 export type BillingRelationship = "reseller" | "referral" | "platform";
 

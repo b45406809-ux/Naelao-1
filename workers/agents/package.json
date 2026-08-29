@@ -10,15 +10,15 @@
     "deploy:production": "wrangler deploy --env production"
   },
   "dependencies": {
-    "@naelao/crypto": "workspace:*",
-    "@naelao/types": "workspace:*",
-    "@naelao/http": "workspace:*",
-    "@naelao/llm-gateway": "workspace:*",
-    "@naelao/billing-core": "workspace:*",
-    "@naelao/entitlements": "workspace:*",
-    "@naelao/moderation": "workspace:*",
-    "@naelao/events": "workspace:*",
-    "@naelao/tracing": "workspace:*",
+    "@naelao/crypto": "*",
+    "@naelao/types": "*",
+    "@naelao/http": "*",
+    "@naelao/llm-gateway": "*",
+    "@naelao/billing-core": "*",
+    "@naelao/entitlements": "*",
+    "@naelao/moderation": "*",
+    "@naelao/events": "*",
+    "@naelao/tracing": "*",
     "hono": "^4.6.0"
   },
   "devDependencies": {
