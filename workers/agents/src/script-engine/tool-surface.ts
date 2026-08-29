@@ -91,6 +91,17 @@ const CORE_OPERATIONS = new Set<string>([
   "Grep",
   "Glob",
   "Bash",
+  // 6 Tier-Specific Universal Execution Primitives (CodeAct & Script-Native Ladder) + Todo state machine
+  "exec_sqlite_fs",
+  "exec_isolate_codemode",
+  "exec_workflow",
+  "exec_kitesurf",
+  "exec_browser",
+  "exec_container_bash",
+  "Todo",
+  "plan.set",
+  "plan.complete_step",
+  "plan.status",
 ]);
 
 /** Consecutive "unknown operation" misses in reduced-disclosure mode before this run
@@ -122,6 +133,13 @@ const RENAMED_OPERATIONS: Record<string, string> = {
   "bash": "Bash",
   "execute_bash": "Bash",
   "code.execute_bash": "Bash",
+  // Tier primitive aliases
+  "exec_isolate": "exec_isolate_codemode",
+  "codemode": "exec_isolate_codemode",
+  "code.run_js": "exec_isolate_codemode",
+  "exec_container": "exec_container_bash",
+  "todo": "Todo",
+  "tasks.todo": "Todo",
 };
 
 // ── Tool-result pagination (step 9) ─────────────────────────────────────────────────────────

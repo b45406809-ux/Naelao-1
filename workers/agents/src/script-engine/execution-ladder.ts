@@ -3,28 +3,15 @@
  * The agent never picks a tier; it calls script.run(name, params) and the orchestrator
  * routes by the script's declared `requires_tier`.
  *
- *   Tier 1 — Direct R2 (Workspace)      ~0ms boot. File ops only. Handled in-process.
- *   Tier 2 — V8 Isolate (Dynamic Worker) TS/JS + HTTP fetch. No fs, no native bins.
- *   Tier 3 — npm (Dynamic Worker + pkg)  Tier 2 + npm package resolution.
- *   Tier 4 — Browser (CF Browser)        DOM/click/fill/screenshot via naelao-browser proxy.
- *                                        naelao-browser itself tries Kitesurf FIRST (a
- *                                        lightweight, agent-first browser Cloudflare announced
- *                                        2026-08-06 — 3-7x less CPU/memory than Chromium, ~1.7x
- *                                        slower wall time, real per @cloudflare/puppeteer 1.3.0's
- *                                        `WorkersLaunchOptions.browser: 'kitesurf'`) and falls
- *                                        back to Chromium on any failure — an internal detail of
- *                                        Tier 4, not a 6th tier, since it changes cost/reliability
- *                                        but not capability. Known Kitesurf gaps (still beta, no
- *                                        GA date): video playback, WebGL, bot-challenge/TLS-
- *                                        fingerprint handshakes, persistent authenticated
- *                                        sessions, pixel-perfect rendering — a caller that knows a
- *                                        target needs one of those can force `engine: "chromium"`.
- *   Tier 5 — Container (SandboxDO)        Full Linux, Python/bash, native bins, multi-container.
+ *   Tier 1 — Direct In-Memory Virtual FS (@cloudflare/computer / DO SQLite / R2) ~0ms boot.
+ *   Tier 2 — Dynamic Worker Loader (V8 Isolate Shell / TS Script) TS/JS + HTTP fetch + MCP.
+ *   Tier 3 — Dynamic Workflows (Cloudflare Workflows / Cron Hub) Durable multi-step runs, sleep, retries.
+ *   Tier 4 — Lightweight Agent Browser (Cloudflare Kitesurf) DOM text extraction & form fills (3-7x cheaper/faster).
+ *   Tier 5 — Full Headless Chromium (Puppeteer / Browser Render) Visual QA snapshots, WebGL, Canvas, bot defense.
+ *   Tier 6 — Sandboxed Linux Container (ToolSandboxDO / Ubuntu) Full OS userland, npm install, compilers, Python.
  *
- * Tiers 2-5 execute arbitrary stored code and so are delegated to an injected
- * TieredCodeRunner (the concrete mechanism — Dynamic Worker Loader, browser proxy,
- * SandboxDO — lives in the host worker, not here). Tier 1 is implemented directly because
- * it is pure R2 and must always work even with no runner wired.
+ * Tiers 2-6 execute arbitrary stored code and so are delegated to an injected
+ * TieredCodeRunner or workflowRunner. Tier 1 is implemented directly in-process.
  */
 
 import type { ExecutionTier, ScriptEngineEnv, ScriptRunResult, StoredScript } from "./types.js";
@@ -49,10 +36,7 @@ export async function runStoredScript(
   }
 
   if (tier === 1) {
-    // Tier 1 stored scripts are rare (most T1 work is a prebuilt op), but a stored T1
-    // script is a pure R2 transform. We do not eval arbitrary code in the DO isolate for
-    // safety; a T1 stored script must be expressed through prebuilt r2-workspace ops, so
-    // reaching here means the script was mis-tiered.
+    // Tier 1 stored scripts are pure Virtual FS / R2 transforms.
     return {
       ok: false,
       error:
@@ -64,15 +48,12 @@ export async function runStoredScript(
     };
   }
 
-  // §A1.17 Phase J: a script tagged runtime:"workflow" dispatches to a durable CF Workflow
-  // instance instead of running synchronously here — for long-running/cron automations that
-  // must survive restarts or run for hours/days without holding an isolate or this DO awake.
-  // Orthogonal to tier (which still governs what the eventual execution may do).
-  if (script.metadata.runtime === "workflow") {
+  // Tier 3 or runtime:"workflow": dispatches to a durable CF Workflow instance
+  if (tier === 3 || script.metadata.runtime === "workflow") {
     if (!env.workflowRunner) {
       return {
         ok: false,
-        error: `Script '${script.metadata.name}' is marked runtime:"workflow" but no workflow runner is wired in this environment`,
+        error: `Script '${script.metadata.name}' requires Tier 3 / runtime:"workflow" but no workflow runner is wired in this environment`,
         tier,
         duration_ms: Date.now() - started,
         tokens_used: 0,
@@ -105,7 +86,7 @@ export async function runStoredScript(
     }
   }
 
-  // Tiers 2-5: delegate to the injected runner.
+  // Tiers 2, 4, 5, 6: delegate to the injected runner.
   if (!env.codeRunner) {
     return {
       ok: false,
@@ -143,11 +124,12 @@ export async function runStoredScript(
 export function tierLabel(tier: ExecutionTier): string {
   return (
     {
-      1: "T1 direct-R2",
+      1: "T1 virtual-fs",
       2: "T2 v8-isolate",
-      3: "T3 npm-isolate",
-      4: "T4 browser",
-      5: "T5 container",
+      3: "T3 dynamic-workflow",
+      4: "T4 kitesurf-browser",
+      5: "T5 chromium-browser",
+      6: "T6 container",
     } as const
   )[tier];
 }

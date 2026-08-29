@@ -127,7 +127,9 @@ app.post("/v1/browser/navigate", async (c) => {
   }
 
   const requested = body.engine ?? "auto";
-  const wantKitesurfFirst = requested === "auto" || requested === "kitesurf";
+  // If the task explicitly requires visual screenshots / Visual QA, or forces chromium, prioritize full Chromium
+  const requiresVisualQa = body.take_screenshot === true || requested === "chromium";
+  const wantKitesurfFirst = !requiresVisualQa && (requested === "auto" || requested === "kitesurf");
   const firstEngine: "chromium" | "kitesurf" = wantKitesurfFirst ? "kitesurf" : "chromium";
 
   let browser: Browser | undefined;

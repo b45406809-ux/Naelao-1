@@ -1065,6 +1065,14 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_tasks_thread ON tasks(thread_id) WHERE thread_id IS NOT NULL;
     `,
   },
+  {
+    version: 40,
+    description: "threads.thread_tier (3-tier thread hierarchy: main, task, consult)",
+    up: `
+      ALTER TABLE threads ADD COLUMN thread_tier TEXT NOT NULL DEFAULT 'task' CHECK (thread_tier IN ('main', 'task', 'consult'));
+      CREATE INDEX IF NOT EXISTS idx_threads_tier ON threads(space_id, project_id, thread_tier);
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -1352,7 +1360,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // GET /projects/:id — single project (incl. customer-bot config)
       const projectIdMatch = url.pathname.match(/^\/projects\/([^/]+)$/);
       if (method === "GET" && projectIdMatch?.[1]) {
-        return this.getProject(projectIdMatch[1]);
+        return this.getProject(projectIdMatch[1], url.searchParams.get("viewer_id") ?? undefined);
       }
       // PATCH /projects/:id — configure kind / execution_ceiling / channel_config / spend cap
       if (method === "PATCH" && projectIdMatch?.[1]) {
@@ -2773,6 +2781,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       space_id: string; name: string; description?: string; tenant_id?: string;
       default_agent_id?: string; max_threads?: number; allowed_agent_ids?: string[];
       visibility?: "public" | "private"; created_by?: string; kind?: string;
+      invited_user_ids?: string[];
+      invited_members?: Array<{ user_id: string; role?: "owner" | "editor" | "viewer" } | string>;
       /** Set ONLY by the spaces worker's own POST /spaces/:spaceId/projects handler, derived from
        *  the verified absence of an authenticated caller (no x-naelao-user-id) — never read from
        *  a client body field. True for the provisioner's seedWallet call and other genuinely
@@ -2893,13 +2903,50 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     // The creator is always an implicit project_members owner — so a private project the creator
     // just made is immediately visible to them in listProjects' viewer_id filter, without a
     // separate follow-up call.
-    if (!alreadyExisted && row && body.created_by) {
+    if (!alreadyExisted && row) {
+      if (body.created_by) {
+        execute(
+          this.ctx.storage.sql as never,
+          `INSERT INTO project_members (project_id, user_id, role, added_at) VALUES (?, ?, 'owner', ?)
+           ON CONFLICT(project_id, user_id) DO NOTHING`,
+          row.id, body.created_by, now
+        );
+      }
+      // Seed Tier 1: Main Project Channel ("Team Room")
+      const mainThreadId = crypto.randomUUID();
       execute(
         this.ctx.storage.sql as never,
-        `INSERT INTO project_members (project_id, user_id, role, added_at) VALUES (?, ?, 'owner', ?)
-         ON CONFLICT(project_id, user_id) DO NOTHING`,
-        row.id, body.created_by, now
+        `INSERT INTO threads (id, space_id, user_id, project_id, title, status, thread_kind, thread_tier, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'Team Room', 'active', 'primary', 'main', ?, ?)`,
+        mainThreadId, body.space_id, body.created_by ?? null, row.id, now, now
       );
+
+      // Seed invited members if provided
+      const invited = body.invited_user_ids ?? [];
+      for (const uid of invited) {
+        if (typeof uid === "string" && uid.trim() && uid.trim() !== body.created_by) {
+          execute(
+            this.ctx.storage.sql as never,
+            `INSERT INTO project_members (project_id, user_id, role, added_at) VALUES (?, ?, 'editor', ?)
+             ON CONFLICT(project_id, user_id) DO NOTHING`,
+            row.id, uid.trim(), now
+          );
+        }
+      }
+      if (Array.isArray(body.invited_members)) {
+        for (const item of body.invited_members) {
+          const uid = typeof item === "string" ? item.trim() : (item.user_id ?? "").trim();
+          const role = typeof item === "object" && item.role ? item.role : "editor";
+          if (uid && uid !== body.created_by) {
+            execute(
+              this.ctx.storage.sql as never,
+              `INSERT INTO project_members (project_id, user_id, role, added_at) VALUES (?, ?, ?, ?)
+               ON CONFLICT(project_id, user_id) DO NOTHING`,
+              row.id, uid, role, now
+            );
+          }
+        }
+      }
     }
     if (!alreadyExisted && row) {
       const tenantId = body.tenant_id ?? request.headers.get("x-naelao-tenant-id") ?? "";
@@ -3000,13 +3047,21 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   // ── Customer-bot project config (no-code, admin-configured) ─────────────────
-  private getProject(projectId: string): Response {
+  private getProject(projectId: string, viewerId?: string): Response {
     const row = queryOne<{
       id: string; space_id: string; name: string; description: string; status: string;
       kind: string; execution_ceiling: number; daily_spend_cap_credits: number; channel_config: string;
-      default_agent_id: string | null; max_threads: number; allowed_agent_ids: string | null; created_at: string;
+      default_agent_id: string | null; max_threads: number; allowed_agent_ids: string | null;
+      visibility: string; created_at: string;
     }>(this.ctx.storage.sql as never, "SELECT * FROM projects WHERE id = ?", projectId);
     if (!row) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+    if (viewerId && row.visibility === "private") {
+      const isMember = this.getProjectMemberRole(row.id, viewerId) !== null;
+      const isSpaceSuper = this.isSpaceOwnerOrAdmin(viewerId);
+      if (!isMember && !isSpaceSuper) {
+        return Response.json({ error_code: "forbidden", message: "Private project access denied" }, { status: 403 });
+      }
+    }
     return Response.json({ ...row, channel_config: safeJsonParseObj(row.channel_config), allowed_agent_ids: safeJsonParseAgentIds(row.allowed_agent_ids) });
   }
 
@@ -3137,10 +3192,47 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return this.getProject(projectId);
   }
 
-  private isSpaceOwnerOrAdmin(userId: string): boolean {
+  private isSpaceOwnerOrAdmin(userId: string, targetSpaceId?: string): boolean {
     if (!userId) return false;
-    const row = queryOne<{ role: string }>(this.ctx.storage.sql as never, "SELECT role FROM space_members WHERE user_id = ?", userId);
-    return row?.role === "owner" || row?.role === "admin";
+    // 1. Direct check in targetSpaceId if provided
+    if (targetSpaceId) {
+      const direct = queryOne<{ role: string }>(
+        this.ctx.storage.sql as never,
+        "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?",
+        targetSpaceId,
+        userId
+      );
+      if (direct?.role === "owner" || direct?.role === "admin") return true;
+
+      // 2. Downward oversight: walk up parent space hierarchy (parent owners/admins have full oversight on sub-spaces)
+      let curId: string | null = targetSpaceId;
+      while (curId) {
+        const space = queryOne<{ parent_id: string | null }>(
+          this.ctx.storage.sql as never,
+          "SELECT parent_id FROM spaces WHERE id = ?",
+          curId
+        );
+        if (!space || !space.parent_id) break;
+        curId = space.parent_id;
+        const parentMember = queryOne<{ role: string }>(
+          this.ctx.storage.sql as never,
+          "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?",
+          curId,
+          userId
+        );
+        if (parentMember?.role === "owner" || parentMember?.role === "admin") {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    const row = queryOne<{ role: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT role FROM space_members WHERE user_id = ? AND (role = 'owner' OR role = 'admin') LIMIT 1",
+      userId
+    );
+    return Boolean(row);
   }
 
   // §A1.17 Phase T1: real per-project membership ACL — a routing/authorization table, not just a
@@ -4910,6 +5002,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const spaceId = params.get("space_id") ?? "";
     const projectId = params.get("project_id");
     const parentThreadId = params.get("parent_thread_id");
+    const tier = params.get("tier") ?? params.get("thread_tier");
     let showSubThreads = params.get("include_sub_threads") === "true";
     if (!showSubThreads && projectId) {
       const project = queryOne<{ show_sub_threads: number }>(
@@ -4926,6 +5019,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       clauses.push("project_id = ?");
       args.push(projectId);
     }
+    if (tier && ["main", "task", "consult"].includes(tier)) {
+      clauses.push("thread_tier = ?");
+      args.push(tier);
+    }
     // An explicit parent_thread_id ask (the shell's "show what the assistant discussed with the
     // agent about this thread" panel, or the assistant's own thread.list op) is always answered
     // in full regardless of the project's show_sub_threads default — the caller named exactly
@@ -4933,7 +5030,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (parentThreadId) {
       clauses.push("parent_thread_id = ?");
       args.push(parentThreadId);
-    } else if (!showSubThreads) {
+    } else if (!showSubThreads && !tier) {
       clauses.push("thread_kind = 'primary'");
     }
 
@@ -4975,6 +5072,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       title?: string;
       parent_thread_id?: string;
       thread_kind?: "primary" | "sub_agent" | "channel";
+      thread_tier?: "main" | "task" | "consult";
       channel?: string;
       channel_session_id?: string;
       tenant_id?: string;
@@ -4987,6 +5085,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (!["primary", "sub_agent", "channel"].includes(kind)) {
       return Response.json({ error_code: "bad_request", message: "thread_kind must be 'primary', 'sub_agent', or 'channel'" }, { status: 400 });
     }
+    const tier = body.thread_tier
+      ? body.thread_tier
+      : (kind === "sub_agent" || body.parent_thread_id)
+      ? "consult"
+      : "task";
     const id = body.id ?? crypto.randomUUID();
     const now = new Date().toISOString();
     const tenantId = body.tenant_id ?? request.headers.get("x-naelao-tenant-id") ?? "";
@@ -5017,10 +5120,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       execute(
         this.ctx.storage.sql as never,
-        `INSERT INTO threads (id, space_id, user_id, project_id, title, status, parent_thread_id, thread_kind, channel, channel_session_id, session_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO threads (id, space_id, user_id, project_id, title, status, parent_thread_id, thread_kind, thread_tier, channel, channel_session_id, session_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)`,
         id, body.space_id, body.user_id ?? null, body.project_id ?? null, body.title ?? null,
-        body.parent_thread_id ?? null, kind, body.channel ?? null, body.channel_session_id, body.session_id ?? null, now, now
+        body.parent_thread_id ?? null, kind, tier, body.channel ?? null, body.channel_session_id, body.session_id ?? null, now, now
       );
       await fireCreated(id, body.project_id ?? null);
       const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM threads WHERE id = ?", id);
@@ -5036,10 +5139,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       execute(
         this.ctx.storage.sql as never,
-        `INSERT INTO threads (id, space_id, user_id, project_id, title, status, parent_thread_id, thread_kind, channel, channel_session_id, session_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO threads (id, space_id, user_id, project_id, title, status, parent_thread_id, thread_kind, thread_tier, channel, channel_session_id, session_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)`,
         id, body.space_id, body.user_id ?? null, body.project_id ?? null, body.title ?? null,
-        body.parent_thread_id ?? null, kind, body.channel ?? null, body.channel_session_id ?? null, body.session_id ?? null, now, now
+        body.parent_thread_id ?? null, kind, tier, body.channel ?? null, body.channel_session_id ?? null, body.session_id ?? null, now, now
       );
       await fireCreated(id, body.project_id ?? null);
     }
@@ -5660,6 +5763,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       );
       if (member) {
         return Response.json({ permitted: true, reason: `Direct member with role '${member.role}'.`, grant_type: null });
+      }
+
+      // Downward oversight: Is the user an owner/admin in an ancestor parent space?
+      if (this.isSpaceOwnerOrAdmin(userId, targetSpaceId)) {
+        return Response.json({
+          permitted: true,
+          reason: `Inherited downward oversight access as ancestor space owner/admin.`,
+          grant_type: "full-access",
+        });
       }
 
       // Valid cross-space grant from requesting → target.

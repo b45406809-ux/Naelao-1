@@ -14,7 +14,7 @@
  */
 
 /** Execution tier a script declares (the orchestrator routes script.run by this). */
-export type ExecutionTier = 1 | 2 | 3 | 4 | 5;
+export type ExecutionTier = 1 | 2 | 3 | 4 | 5 | 6;
 
 /** Domains an observe/action script can target. Open-ended by design. */
 export type ScriptDomain =

@@ -866,12 +866,14 @@ async function readWorkspaceObject(obj: R2ObjectBody, relative: string): Promise
   if (obj.size > WORKSPACE_MAX_FILE_BYTES) {
     return Response.json({ path: relative, size: obj.size, too_large: true, message: "File exceeds the 2MB inline view limit" });
   }
+  const hash = obj.customMetadata?.hash ?? "";
   const contentType = viewableBinaryType(relative);
   if (contentType) {
     const b64 = arrayBufferToBase64(await obj.arrayBuffer());
-    return Response.json({ path: relative, size: obj.size, encoding: "base64", content_type: contentType, content: b64 });
+    return Response.json({ path: relative, size: obj.size, encoding: "base64", content_type: contentType, content: b64, hash, uploaded: obj.uploaded.toISOString() });
   }
-  return Response.json({ path: relative, size: obj.size, content: await obj.text() });
+  const text = await obj.text();
+  return Response.json({ path: relative, size: obj.size, content: text, hash, uploaded: obj.uploaded.toISOString() });
 }
 app.use("/spaces/:spaceId/projects/:projectId/workspace/files", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/projects/:projectId/workspace/files", requireBusinessMembership({ GET: "member" }));
@@ -879,13 +881,13 @@ app.get("/spaces/:spaceId/projects/:projectId/workspace/files", async (c) => {
   const { spaceId, projectId } = c.req.param();
   if (!c.env.SCRIPTS_R2) return c.json({ data: [], count: 0, unavailable: true });
   const prefix = workspaceKeyPrefix(spaceId, projectId);
-  const files: Array<{ path: string; size: number; uploaded: string }> = [];
+  const files: Array<{ path: string; size: number; uploaded: string; hash?: string }> = [];
   let cursor: string | undefined;
   do {
     const list = await c.env.SCRIPTS_R2.list({ prefix, ...(cursor ? { cursor } : {}), limit: 1000 });
     for (const obj of list.objects) {
       if (obj.key.endsWith("/.keep")) continue;
-      files.push({ path: obj.key.slice(prefix.length), size: obj.size, uploaded: obj.uploaded.toISOString() });
+      files.push({ path: obj.key.slice(prefix.length), size: obj.size, uploaded: obj.uploaded.toISOString(), hash: obj.customMetadata?.hash });
       if (files.length >= WORKSPACE_MAX_FILES) break;
     }
     cursor = list.truncated && files.length < WORKSPACE_MAX_FILES ? list.cursor : undefined;
@@ -959,10 +961,12 @@ app.all("/spaces/:spaceId/projects/:projectId/memory/*", async (c) => {
 // renders these as form fields, never as a code editor.
 app.get("/spaces/:spaceId/projects/:projectId", async (c) => {
   const { spaceId, projectId } = c.req.param();
-  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  const identity = getCallerIdentity(c);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
-  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}`, "GET");
+  const viewerParam = identity.userId ? `?viewer_id=${encodeURIComponent(identity.userId)}` : "";
+  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}${viewerParam}`, "GET");
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 

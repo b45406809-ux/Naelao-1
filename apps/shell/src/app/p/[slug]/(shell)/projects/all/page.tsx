@@ -52,6 +52,8 @@ export default function ProjectsAllPage() {
   const [pickedKind, setPickedKind] = React.useState<FeatureKind | null>(null);
   const [name, setName] = React.useState("");
   const [description, setDescription] = React.useState("");
+  const [visibility, setVisibility] = React.useState<"public" | "private">("private");
+  const [invitedMembers, setInvitedMembers] = React.useState("");
   const [creating, setCreating] = React.useState(false);
 
   const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
@@ -86,6 +88,8 @@ export default function ProjectsAllPage() {
     setPickedKind(null);
     setName("");
     setDescription("");
+    setVisibility("private");
+    setInvitedMembers("");
     setModalOpen(true);
   }
 
@@ -109,6 +113,8 @@ export default function ProjectsAllPage() {
     setPickedTemplate(null);
     setName(k.label);
     setDescription(k.description);
+    setVisibility("private");
+    setInvitedMembers("");
   }
 
   // Handles both the "Blank project" step and a picked plugin/feature-kind step — both just need
@@ -118,7 +124,17 @@ export default function ProjectsAllPage() {
     if (!creds || !name.trim()) return;
     setCreating(true);
     try {
-      await createProject(activeSpaceId, creds, name.trim(), description.trim() || undefined, pickedKind?.kind);
+      const invitedList = invitedMembers
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+      await createProject(activeSpaceId, creds, name.trim(), {
+        description: description.trim() || undefined,
+        kind: pickedKind?.kind,
+        visibility,
+        invited_user_ids: invitedList,
+      });
       setModalOpen(false);
       if (pickedKind) show(`"${name.trim()}" added.`);
       await refresh();
@@ -153,7 +169,12 @@ export default function ProjectsAllPage() {
           {projects.map((p) => (
             <Link key={p.id} href={`/p/${product.slug}/projects/${p.id}`} style={{ textDecoration: "none" }}>
               <Card>
-                <CardTitle>{p.name}</CardTitle>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                  <CardTitle>{p.name}</CardTitle>
+                  <span style={{ fontSize: 11, padding: "2px 6px", borderRadius: 4, background: p.visibility === "public" ? "rgba(16, 185, 129, 0.1)" : "rgba(107, 114, 128, 0.1)", color: p.visibility === "public" ? "var(--accent-green, #10b981)" : "var(--text3)" }}>
+                    {p.visibility === "public" ? "🌐 Public" : "🔒 Private"}
+                  </span>
+                </div>
                 {p.description && <CardDesc>{p.description}</CardDesc>}
                 <CardMeta>{p.max_threads > 0 ? `Up to ${p.max_threads} threads` : "Unlimited threads"}</CardMeta>
               </Card>
@@ -187,6 +208,56 @@ export default function ProjectsAllPage() {
           <form onSubmit={handleCreateNamed} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <FormInput placeholder="Project name" value={name} onChange={(e) => setName(e.target.value)} required autoFocus />
             <FormTextarea placeholder="Description (optional)" value={description} onChange={(e) => setDescription(e.target.value)} rows={3} />
+            <div>
+              <label style={{ fontSize: 12.5, fontWeight: 500, display: "block", marginBottom: 6, color: "var(--text1)" }}>
+                Project Access & Visibility
+              </label>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  type="button"
+                  onClick={() => setVisibility("private")}
+                  style={{
+                    flex: 1,
+                    padding: "8px 12px",
+                    borderRadius: 6,
+                    border: `1px solid ${visibility === "private" ? "var(--accent, #6366f1)" : "var(--border)"}`,
+                    background: visibility === "private" ? "rgba(99, 102, 241, 0.08)" : "transparent",
+                    color: "var(--text1)",
+                    fontSize: 12.5,
+                    cursor: "pointer",
+                    textAlign: "left",
+                  }}
+                >
+                  <div style={{ fontWeight: 600 }}>🔒 Private</div>
+                  <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 2 }}>Only creator & invited members</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setVisibility("public")}
+                  style={{
+                    flex: 1,
+                    padding: "8px 12px",
+                    borderRadius: 6,
+                    border: `1px solid ${visibility === "public" ? "var(--accent, #6366f1)" : "var(--border)"}`,
+                    background: visibility === "public" ? "rgba(99, 102, 241, 0.08)" : "transparent",
+                    color: "var(--text1)",
+                    fontSize: 12.5,
+                    cursor: "pointer",
+                    textAlign: "left",
+                  }}
+                >
+                  <div style={{ fontWeight: 600 }}>🌐 Public</div>
+                  <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 2 }}>Accessible to all space teammates</div>
+                </button>
+              </div>
+            </div>
+            {visibility === "private" && (
+              <FormInput
+                placeholder="Invite teammates (comma-separated user IDs or emails)"
+                value={invitedMembers}
+                onChange={(e) => setInvitedMembers(e.target.value)}
+              />
+            )}
           </form>
         ) : (
           <div>

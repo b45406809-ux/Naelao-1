@@ -164,10 +164,14 @@ export default {
     if (env.__BROWSER__) {
       ctx.browser = {
         navigate: async (req) => {
+          const payload = typeof req === "string" ? { url: req } : { ...req };
+          if (env.__DEFAULT_ENGINE__ && !payload.engine) {
+            payload.engine = env.__DEFAULT_ENGINE__;
+          }
           const r = await env.__BROWSER__.fetch("http://browser/v1/browser/navigate", {
             method: "POST",
             headers: { "content-type": "application/json", "x-naelao-internal-token": env.__BROWSER_TOKEN__ || "" },
-            body: JSON.stringify(req),
+            body: JSON.stringify(payload),
           });
           const body = await r.json();
           if (!r.ok) throw new Error("browser.navigate failed: " + (body && body.message ? body.message : r.status));
@@ -280,11 +284,11 @@ async function runIsolate(
   }
 
   const env: Record<string, unknown> = {};
-  if (params.tier === 4) {
+  if (params.tier === 4 || params.tier === 5) {
     if (!opts.browserWorker) {
       return {
         ok: false,
-        error: "Tier 4 is unavailable: no naelao-browser service binding configured",
+        error: `Tier ${params.tier} is unavailable: no naelao-browser service binding configured`,
         tier: params.tier,
         duration_ms: Date.now() - started,
         tokens_used: 0,
@@ -292,6 +296,7 @@ async function runIsolate(
     }
     env.__BROWSER__ = opts.browserWorker;
     env.__BROWSER_TOKEN__ = opts.platformSecret ?? "";
+    env.__DEFAULT_ENGINE__ = params.tier === 4 ? "kitesurf" : "chromium";
   }
 
   // ctx.mcp is available at every isolate tier (2-4) — Code Mode's core use case is fast,
@@ -400,14 +405,11 @@ async function runContainer(
       return {
         ok: false,
         error: `Container image '${params.containerImage}' is not available in this environment yet`,
-        tier: 5,
+        tier: 6,
         duration_ms: Date.now() - started,
         tokens_used: 0,
       };
     }
-    // No live image binds a namespace yet (see the comment above), so this branch has no
-    // reachable success path today — the addressing convention (per project, like Phase K's
-    // base sandbox) is documented here for whichever image lands it first.
     const doId = namespace.idFromName(`slot:${params.containerImage}:${params.spaceId}:${params.projectId ?? "_assistant"}`);
     const stub = namespace.get(doId);
     return runContainerRequest(stub, opts, params, started);
@@ -416,17 +418,13 @@ async function runContainer(
   if (!opts.toolSandbox) {
     return {
       ok: false,
-      error: "Tier 5 is unavailable: no ToolSandboxDO (TOOL_SANDBOX) binding configured",
-      tier: 5,
+      error: "Tier 6 is unavailable: no ToolSandboxDO (TOOL_SANDBOX) binding configured",
+      tier: 6,
       duration_ms: Date.now() - started,
       tokens_used: 0,
     };
   }
 
-  // §A1.17 Phase K: addressed per PROJECT (not per agent) so every thread's agent in the same
-  // project shares one container + R2 workspace (spec §33b) — matches workspacePrefix()'s own
-  // space/project scoping. "_assistant" is a fixed per-space slot for the Space Assistant
-  // (projectId absent), analogous to workspacePrefix()'s space-scoped fallback.
   const doId = opts.toolSandbox.idFromName(`sandbox:${params.spaceId}:${params.projectId ?? "_assistant"}`);
   const stub = opts.toolSandbox.get(doId);
   return runContainerRequest(stub, opts, params, started);
@@ -460,7 +458,7 @@ async function runContainerRequest(
     return {
       ok: resp.ok && body.ok,
       ...(resp.ok && body.ok ? { output: body.result } : { error: body.error ?? `container returned ${resp.status}` }),
-      tier: 5,
+      tier: 6,
       duration_ms: Date.now() - started,
       tokens_used: 0,
     };
@@ -468,8 +466,8 @@ async function runContainerRequest(
     const aborted = err instanceof Error && err.name === "AbortError";
     return {
       ok: false,
-      error: aborted ? "Tier 5 execution timed out" : String(err instanceof Error ? err.message : err),
-      tier: 5,
+      error: aborted ? "Tier 6 execution timed out" : String(err instanceof Error ? err.message : err),
+      tier: 6,
       duration_ms: Date.now() - started,
       tokens_used: 0,
     };
@@ -480,7 +478,7 @@ async function runContainerRequest(
 
 /**
  * Detects if an execution failure in an Isolate is caused by missing native tools or compilers,
- * signaling that the task should be automatically promoted to Tier 5 Container.
+ * signaling that the task should be automatically promoted to Tier 6 Container.
  */
 function requiresContainerPromotion(errorMsg: string, code: string): boolean {
   const nativeKeywords = [
@@ -508,8 +506,8 @@ export function buildCodeRunner(opts: CodeRunnerOptions): TieredCodeRunner {
         throw new Error("Tier 1 scripts are pure R2/SQLite and must be handled in-process.");
       }
 
-      // Execute in Isolate for Tiers 2-4
-      if (params.tier <= 4) {
+      // Execute in Isolate for Tiers 2, 4, 5
+      if (params.tier <= 5) {
         const res = await runIsolate(opts, params);
 
         // Ladder Self-Healing: Automatically promote to Container if isolate hits a native tool wall

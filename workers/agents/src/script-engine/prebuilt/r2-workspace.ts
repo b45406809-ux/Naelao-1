@@ -30,15 +30,15 @@ import { workspacePrefix } from "../types.js";
 /** Above this, read_file refuses rather than returning a payload that can blow the context of a
  *  turn all by itself. ~50k tokens at a rough 4-chars/token estimate — generous for real text/
  *  config/code files, bounded well under even the platform's smallest usable model window. */
-const MAX_READABLE_FILE_BYTES = 200_000;
+export const MAX_READABLE_FILE_BYTES = 200_000;
 
 /** Resolve the workspace bucket (falls back to the scripts bucket if not separate). */
-function bucket(ctx: PrebuiltOpContext): R2Bucket {
+export function bucket(ctx: PrebuiltOpContext): R2Bucket {
   return ctx.env.workspaceBucket ?? ctx.env.scriptsBucket;
 }
 
 /** All workspace keys are scoped under the run's workspace prefix (space- or project-scoped). */
-function key(ctx: PrebuiltOpContext, path: string): string {
+export function key(ctx: PrebuiltOpContext, path: string): string {
   const clean = String(path).replace(/^\/+/, "");
   if (clean.includes("..")) throw new Error(`Path traversal rejected: ${path}`);
   return `${workspacePrefix(ctx.env)}${clean}`;
@@ -60,35 +60,62 @@ function numArg(args: Record<string, unknown>, name: string): number | undefined
 /** Cap on how large a file search_file/Read/Grep will read in one pass. Higher than the
  *  single-read cap because search returns only matching lines, not the whole file — but still
  *  bounded so a genuinely huge file is read in chunks via read_file(offset,length) instead. */
-const MAX_SEARCHABLE_FILE_BYTES = 5_000_000;
+export const MAX_SEARCHABLE_FILE_BYTES = 5_000_000;
 
 /** Grep scans across the whole workspace, not one named file — bounded on BOTH files touched
  *  and matches found so a sparse query against a large workspace can't approach the platform's
  *  1000-subrequest-per-invocation ceiling (one R2 get per file scanned) or blow a turn's payload. */
-const MAX_GREP_FILES_SCANNED = 300;
-const MAX_GREP_MATCHES = 100;
+export const MAX_GREP_FILES_SCANNED = 300;
+export const MAX_GREP_MATCHES = 100;
 
-async function writeFileImpl(
+export async function computeSha256(content: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(content));
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+export async function writeFileImpl(
   ctx: PrebuiltOpContext,
   path: string,
-  content: string
-): Promise<{ ok: true; path: string; size: number }> {
-  await bucket(ctx).put(key(ctx, path), content, {
-    customMetadata: { updatedAt: Date.now().toString() },
+  content: string,
+  expectedHash?: string
+): Promise<{ ok: boolean; path: string; size?: number; hash?: string; error?: string; message?: string; current_hash?: string }> {
+  const fullKey = key(ctx, path);
+  if (expectedHash) {
+    const existing = await bucket(ctx).get(fullKey);
+    if (existing) {
+      const existingText = await existing.text();
+      const existingHash = (existing.customMetadata?.hash) || (await computeSha256(existingText));
+      if (existingHash !== expectedHash) {
+        return {
+          ok: false,
+          path,
+          error: "conflict_detected",
+          message: `Conflict Error: '${path}' was modified by another thread. Re-read lines before applying patch.`,
+          current_hash: existingHash,
+        };
+      }
+    }
+  }
+
+  const newHash = await computeSha256(content);
+  await bucket(ctx).put(fullKey, content, {
+    customMetadata: { updatedAt: Date.now().toString(), hash: newHash },
   });
   // The file IS the handoff between projects: one project's agent records what it found, that
   // write fires an event, and a no-code rule wakes whoever owns the next stage. Fired after the
   // write actually succeeded, and never awaited — a listener failing must not turn a successful
   // write into a failed one.
   ctx.env.onWorkspaceChange?.({ path, operation: "write" });
-  return { ok: true, path, size: content.length };
+  return { ok: true, path, size: content.length, hash: newHash };
 }
 
 /** Claude-Code-shaped windowed reader: 1-indexed LINE offset/limit, returned as
  *  `"<n> | <line>"` text the way an agent expects a file viewer to look. Distinct from
  *  read_file's byte-oriented offset/length — the two are NOT interchangeable, and existing
  *  callers of read_file (byte offsets) must keep working unchanged. */
-async function readWindowed(
+export async function readWindowed(
   ctx: PrebuiltOpContext,
   path: string,
   offsetLines?: number,
@@ -102,6 +129,7 @@ async function readWindowed(
   has_more?: boolean;
   too_large?: boolean;
   size?: number;
+  hash?: string;
   message?: string;
 }> {
   const head = await bucket(ctx).head(key(ctx, path));
@@ -116,7 +144,9 @@ async function readWindowed(
   }
   const obj = await bucket(ctx).get(key(ctx, path));
   if (!obj) return { exists: false };
-  const allLines = (await obj.text()).split(/\r?\n/);
+  const rawText = await obj.text();
+  const fileHash = (obj.customMetadata?.hash) || (await computeSha256(rawText));
+  const allLines = rawText.split(/\r?\n/);
   const total = allLines.length;
   const start = Math.max(1, offsetLines ?? 1);
   const count = Math.max(1, Math.min(limitLines ?? 2000, 2000));
@@ -130,6 +160,7 @@ async function readWindowed(
     lines_total: total,
     offset: start,
     limit: count,
+    hash: fileHash,
     ...(hasMore ? { has_more: true } : { has_more: false }),
   };
 }
@@ -138,12 +169,13 @@ async function readWindowed(
  *  text isn't found — returning nearby lines sharing a keyword so the model can self-correct
  *  without a wasted extra Read round-trip — and refuses when the match is ambiguous (>1
  *  occurrence), since replacing "the wrong one" silently is worse than asking for more context. */
-async function editFile(
+export async function editFile(
   ctx: PrebuiltOpContext,
   path: string,
   oldString: string,
-  newString: string
-): Promise<{ ok: boolean; path: string; replacements?: number; error?: string; hint?: string }> {
+  newString: string,
+  expectedHash?: string
+): Promise<{ ok: boolean; path: string; replacements?: number; hash?: string; current_hash?: string; error?: string; hint?: string; message?: string }> {
   if (!oldString) throw new Error("'oldString' (string) is required");
   const head = await bucket(ctx).head(key(ctx, path));
   if (!head) return { ok: false, path, error: `File not found: ${path}` };
@@ -157,6 +189,17 @@ async function editFile(
   const obj = await bucket(ctx).get(key(ctx, path));
   if (!obj) return { ok: false, path, error: `File not found: ${path}` };
   const content = await obj.text();
+  const currentHash = (obj.customMetadata?.hash) || (await computeSha256(content));
+
+  if (expectedHash && expectedHash !== currentHash) {
+    return {
+      ok: false,
+      path,
+      error: "conflict_detected",
+      message: `Conflict Error: '${path}' was modified by another thread. Re-read lines before applying patch.`,
+      current_hash: currentHash,
+    };
+  }
 
   if (!content.includes(oldString)) {
     const searchLines = oldString.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 3);
@@ -187,14 +230,15 @@ async function editFile(
   }
 
   const patched = content.replace(oldString, newString);
-  await writeFileImpl(ctx, path, patched);
-  return { ok: true, path, replacements: 1 };
+  const writeRes = await writeFileImpl(ctx, path, patched);
+  if (!writeRes.ok) return writeRes;
+  return { ok: true, path, replacements: 1, ...(writeRes.hash ? { hash: writeRes.hash } : {}) };
 }
 
 /** Regex search across every file under a prefix (the whole workspace, or a narrower path) —
  *  distinct from search_file, which searches ONE named file. Bounded on files scanned AND
  *  matches found; a search that hits either cap says so rather than silently stopping. */
-async function grepWorkspace(
+export async function grepWorkspace(
   ctx: PrebuiltOpContext,
   pattern: string,
   pathPrefix = ""
@@ -285,7 +329,7 @@ function globToRegex(pattern: string): RegExp {
   return new RegExp(`^${out}$`);
 }
 
-async function globWorkspace(
+export async function globWorkspace(
   ctx: PrebuiltOpContext,
   pattern: string | undefined,
   pathPrefix = ""
@@ -406,7 +450,9 @@ export const r2Workspace: PrebuiltScript = {
           message: `This file is ${obj.size} bytes, over the ${MAX_READABLE_FILE_BYTES}-byte limit for a single read. Read it in chunks with read_file(path, offset, length) — start at offset 0, then use the next_offset it returns — or use search_file(path, query) to jump straight to the part you need.`,
         };
       }
-      return { exists: true, content: await obj.text(), size: obj.size };
+      const raw = await obj.text();
+      const fileHash = (obj.customMetadata?.hash) || (await computeSha256(raw));
+      return { exists: true, content: raw, size: obj.size, hash: fileHash };
     },
     // Step 3: search WITHIN a file and get back only the matching lines (with line numbers, and
     // optional surrounding context) instead of pulling the whole file. Many matches are paged by
@@ -458,32 +504,31 @@ export const r2Workspace: PrebuiltScript = {
         size: head.size,
         uploaded: head.uploaded.toISOString(),
         readable: head.size <= MAX_READABLE_FILE_BYTES,
+        hash: head.customMetadata?.hash ?? undefined,
       };
     },
 
     async write_file(args, ctx) {
       const path = reqStr(args, "path");
       const content = args["content"];
+      const expectedHash = (args["expected_hash"] as string) || (args["expectedHash"] as string) || undefined;
       if (typeof content !== "string") throw new Error("'content' (string) is required");
-      await bucket(ctx).put(key(ctx, path), content, {
-        customMetadata: { updatedAt: Date.now().toString() },
-      });
-      // The file IS the handoff between projects: one project's agent records what it found,
-      // that write fires an event, and a no-code rule wakes whoever owns the next stage. Fired
-      // after the write actually succeeded, and never awaited — a listener failing must not turn
-      // a successful write into a failed one.
-      ctx.env.onWorkspaceChange?.({ path, operation: "write" });
-      return { ok: true, path };
+      return writeFileImpl(ctx, path, content, expectedHash);
     },
 
     async list_directory(args, ctx) {
       const prefix = key(ctx, typeof args["path"] === "string" ? (args["path"] as string) : "");
-      const out: Array<{ key: string; size: number; uploaded: string }> = [];
+      const out: Array<{ key: string; size: number; uploaded: string; hash?: string }> = [];
       let cursor: string | undefined;
       do {
         const listing = await bucket(ctx).list(cursor ? { prefix, cursor } : { prefix });
         for (const o of listing.objects) {
-          out.push({ key: o.key, size: o.size, uploaded: o.uploaded.toISOString() });
+          out.push({
+            key: o.key,
+            size: o.size,
+            uploaded: o.uploaded.toISOString(),
+            ...(o.customMetadata?.hash ? { hash: o.customMetadata.hash } : {}),
+          });
         }
         cursor = listing.truncated ? listing.cursor : undefined;
       } while (cursor);
@@ -522,18 +567,21 @@ export const r2Workspace: PrebuiltScript = {
       const p = (args["filePath"] as string) || (args["path"] as string) || "";
       const oldStr = (args["oldString"] as string) || (args["find"] as string) || (args["searchBlock"] as string) || "";
       const newStr = typeof args["newString"] === "string" ? args["newString"] : ((args["replace"] as string) ?? (args["replaceBlock"] as string) ?? "");
-      return editFile(ctx, p, oldStr, newStr);
+      const expHash = (args["expected_hash"] as string) || (args["expectedHash"] as string) || undefined;
+      return editFile(ctx, p, oldStr, newStr, expHash);
     },
     async patch_file(args, ctx) {
       const p = (args["filePath"] as string) || (args["path"] as string) || "";
       const oldStr = (args["oldString"] as string) || (args["find"] as string) || (args["searchBlock"] as string) || "";
       const newStr = typeof args["newString"] === "string" ? args["newString"] : ((args["replace"] as string) ?? (args["replaceBlock"] as string) ?? "");
-      return editFile(ctx, p, oldStr, newStr);
+      const expHash = (args["expected_hash"] as string) || (args["expectedHash"] as string) || undefined;
+      return editFile(ctx, p, oldStr, newStr, expHash);
     },
     async Write(args, ctx) {
       const p = (args["filePath"] as string) || (args["path"] as string) || "";
       const content = typeof args["content"] === "string" ? args["content"] : "";
-      return writeFileImpl(ctx, p, content);
+      const expHash = (args["expected_hash"] as string) || (args["expectedHash"] as string) || undefined;
+      return writeFileImpl(ctx, p, content, expHash);
     },
     async Grep(args, ctx) {
       const pattern = (args["pattern"] as string) || (args["query"] as string) || "";

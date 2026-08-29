@@ -87,6 +87,7 @@ export default function ProjectDetailPage() {
   const [draftExecutionCeiling, setDraftExecutionCeiling] = React.useState("5");
   const [draftSpendCap, setDraftSpendCap] = React.useState("0");
   const [draftDefaultAgentId, setDraftDefaultAgentId] = React.useState("");
+  const [draftExclusiveMode, setDraftExclusiveMode] = React.useState(false);
 
   const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
 
@@ -96,7 +97,7 @@ export default function ProjectDetailPage() {
     try {
       const [p, t, a, allP] = await Promise.all([
         getProject(activeSpaceId, params.projectId, creds),
-        listThreads(activeSpaceId, creds, { projectId: params.projectId }),
+        listThreads(activeSpaceId, creds, { projectId: params.projectId, include_sub_threads: true }),
         listAgentDefinitions(activeSpaceId, creds).catch(() => []),
         listProjects(activeSpaceId, creds).catch(() => []),
       ]);
@@ -109,6 +110,7 @@ export default function ProjectDetailPage() {
       setDraftExecutionCeiling(String(p.execution_ceiling ?? 5));
       setDraftSpendCap(String(p.daily_spend_cap_credits ?? 0));
       setDraftDefaultAgentId(p.default_agent_id ?? "");
+      setDraftExclusiveMode(Boolean(p.exclusive_mode));
     } catch {
       show("Couldn't load project");
     } finally {
@@ -174,11 +176,17 @@ export default function ProjectDetailPage() {
     }
   }
 
-  async function handleNewThread() {
+  async function handleNewThread(tier: "task" | "consult" = "task") {
     if (!creds) return;
     setCreating(true);
     try {
-      const created = await createThread(activeSpaceId, creds, { project_id: params.projectId, title: "New thread" });
+      const defaultTitle = tier === "consult" ? "Consultation session" : "Task thread";
+      const created = await createThread(activeSpaceId, creds, {
+        project_id: params.projectId,
+        title: defaultTitle,
+        thread_tier: tier,
+        thread_kind: tier === "consult" ? "sub_agent" : "primary",
+      });
       // Open it. Creating a thread and being left staring at the same list is a dead end — the
       // point of making one is to start working in it.
       router.push(`/p/${product.slug}/projects/${params.projectId}/threads/${created.id}`);
@@ -199,6 +207,7 @@ export default function ProjectDetailPage() {
         execution_ceiling: Number(draftExecutionCeiling) || 1,
         daily_spend_cap_credits: Number(draftSpendCap) || 0,
         default_agent_id: draftDefaultAgentId || null,
+        exclusive_mode: draftExclusiveMode,
       });
       setProject(updated);
       show("Settings saved");
@@ -349,11 +358,17 @@ export default function ProjectDetailPage() {
             </svg>
             Settings
           </button>
-          <button type="button" className="btn btn-primary btn-sm" onClick={handleNewThread} disabled={creating}>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => void handleNewThread("consult")} disabled={creating}>
+            <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="currentColor" width={12} height={12}>
+              <circle cx="8" cy="8" r="6" /><line x1="8" y1="5" x2="8" y2="8" /><circle cx="8" cy="11" r="0.5" />
+            </svg>
+            + Consult
+          </button>
+          <button type="button" className="btn btn-primary btn-sm" onClick={() => void handleNewThread("task")} disabled={creating}>
             <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="currentColor" width={12} height={12}>
               <line x1="8" y1="3" x2="8" y2="13" /><line x1="3" y1="8" x2="13" y2="8" />
             </svg>
-            {creating ? "Creating…" : "New Thread"}
+            {creating ? "Creating…" : "+ Task Thread"}
           </button>
         </div>
       </div>
@@ -423,8 +438,14 @@ export default function ProjectDetailPage() {
                   </svg>
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div className="workflow-name" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {t.title ?? "Untitled thread"}
+                  <div className="workflow-name" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 6 }}>
+                    <span>{t.title ?? "Untitled thread"}</span>
+                    {t.thread_tier === "main" && (
+                      <span className="badge badge-blue" style={{ fontSize: 9.5, padding: "1px 6px" }}>Team Room</span>
+                    )}
+                    {t.thread_tier === "consult" && (
+                      <span className="badge" style={{ fontSize: 9.5, padding: "1px 6px", background: "var(--surface2)", color: "var(--text2)" }}>Consult</span>
+                    )}
                   </div>
                   <div className="workflow-meta">{relativeTime(t.updated_at)}</div>
                 </div>
@@ -584,6 +605,20 @@ export default function ProjectDetailPage() {
             onChange={(e) => setDraftExecutionCeiling(e.target.value)}
             style={{ maxWidth: 100, textAlign: "right" }}
           />
+        </div>
+        <div className="settings-row">
+          <div>
+            <div className="settings-row-label">Execution Mode</div>
+            <div className="settings-row-sub">Sprint Mode locks project execution to a single active thread; Collaborative Mode allows multi-agent concurrency with OCC</div>
+          </div>
+          <FormSelect
+            value={draftExclusiveMode ? "exclusive" : "collaborative"}
+            onChange={(e) => setDraftExclusiveMode(e.target.value === "exclusive")}
+            style={{ maxWidth: 220 }}
+          >
+            <option value="collaborative">Collaborative (Multi-Agent Concurrent)</option>
+            <option value="exclusive">Sprint Mode (Exclusive Lock)</option>
+          </FormSelect>
         </div>
         <div className="settings-row">
           <div>

@@ -918,11 +918,19 @@ export interface Project {
   daily_spend_cap_credits?: number;
   channel_config?: Record<string, unknown>;
   visibility?: "public" | "private";
+  exclusive_mode?: boolean;
 }
 
 export async function listProjects(spaceId: string, session: SessionCredentials): Promise<Project[]> {
   const res = await apiFetch<{ data: Project[]; count: number }>(`/v1/spaces/${spaceId}/projects`, { session });
   return res.data;
+}
+
+export interface CreateProjectOptions {
+  description?: string;
+  kind?: string;
+  visibility?: "public" | "private";
+  invited_user_ids?: string[];
 }
 
 /** kind, when given, creates a Business Feature project (Wallet, CRM, Business Email, …) instead
@@ -932,12 +940,22 @@ export async function createProject(
   spaceId: string,
   session: SessionCredentials,
   name: string,
-  description?: string,
+  descriptionOrOptions?: string | CreateProjectOptions,
   kind?: string
 ): Promise<Project> {
+  const opts: CreateProjectOptions = typeof descriptionOrOptions === "object"
+    ? descriptionOrOptions
+    : { description: descriptionOrOptions, kind };
+
   return apiFetch(`/v1/spaces/${spaceId}/projects`, {
     method: "POST",
-    body: JSON.stringify({ name, ...(description ? { description } : {}), ...(kind ? { kind } : {}) }),
+    body: JSON.stringify({
+      name,
+      ...(opts.description ? { description: opts.description } : {}),
+      ...(opts.kind ? { kind: opts.kind } : {}),
+      ...(opts.visibility ? { visibility: opts.visibility } : {}),
+      ...(opts.invited_user_ids && opts.invited_user_ids.length > 0 ? { invited_user_ids: opts.invited_user_ids } : {}),
+    }),
     session,
   });
 }
@@ -1113,6 +1131,7 @@ export interface ThreadSummary {
   title: string | null;
   status: string;
   thread_kind: string;
+  thread_tier?: "main" | "task" | "consult";
   parent_thread_id: string | null;
   session_id: string | null;
   created_at: string;
@@ -1122,9 +1141,13 @@ export interface ThreadSummary {
 export async function listThreads(
   spaceId: string,
   session: SessionCredentials,
-  opts: { projectId?: string } = {}
+  opts: { projectId?: string; tier?: "main" | "task" | "consult"; include_sub_threads?: boolean } = {}
 ): Promise<ThreadSummary[]> {
-  const qs = opts.projectId ? `?project_id=${encodeURIComponent(opts.projectId)}` : "";
+  const params = new URLSearchParams();
+  if (opts.projectId) params.set("project_id", opts.projectId);
+  if (opts.tier) params.set("tier", opts.tier);
+  if (opts.include_sub_threads) params.set("include_sub_threads", "true");
+  const qs = params.toString() ? `?${params.toString()}` : "";
   const res = await apiFetch<{ data: ThreadSummary[]; count: number }>(`/v1/spaces/${spaceId}/threads${qs}`, { session });
   return res.data;
 }
@@ -1144,7 +1167,7 @@ export async function listSubthreads(spaceId: string, parentThreadId: string, se
 export async function createThread(
   spaceId: string,
   session: SessionCredentials,
-  opts: { title?: string; project_id?: string } = {}
+  opts: { title?: string; project_id?: string; thread_tier?: "main" | "task" | "consult"; thread_kind?: "primary" | "sub_agent" | "channel" } = {}
 ): Promise<ThreadSummary> {
   return apiFetch(`/v1/spaces/${spaceId}/threads`, { method: "POST", body: JSON.stringify(opts), session });
 }

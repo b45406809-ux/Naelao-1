@@ -47,6 +47,7 @@ import { revenueTracker } from "./revenue-tracker.js";
 import { schedule } from "./schedule.js";
 import { tasks } from "./tasks.js";
 import { plan } from "./plan.js";
+import { tierPrimitives } from "./tier-primitives.js";
 
 /** Context handed to every prebuilt operation. */
 export interface PrebuiltOpContext {
@@ -155,6 +156,8 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   // The run-scoped plan/checklist (Claude Code TodoWrite). Enforced by loop.ts: once set, a run
   // can't stop with open steps. Distinct from `tasks` (durable, cross-agent) — see plan.ts.
   [plan.name]: plan,
+  // 6 Tier-Specific Universal Execution Primitives (CodeAct & Script-Native Ladder)
+  [tierPrimitives.name]: tierPrimitives,
 };
 
 /**
@@ -203,4 +206,5 @@ export {
   schedule,
   tasks,
   plan,
+  tierPrimitives,
 };

@@ -47,12 +47,23 @@ function autoragKbKey(spaceId: string, projectId: string | null, docId: string):
 
 // ── R2 chunk record shape ─────────────────────────────────────────────────────
 
+interface DocumentAclMetadata {
+  spaceId: string;
+  projectId?: string | null;
+  visibility: "public" | "private" | "role_restricted";
+  allowedRoles?: Array<"owner" | "admin" | "editor" | "member" | "viewer" | string>;
+  allowedUserIds?: string[];
+}
+
 interface ChunkRecord {
   docId: string;
   chunkIndex: number;
   content: string;
   spaceId: string;
   tenantId: string;
+  visibility?: "public" | "private" | "role_restricted";
+  allowedRoles?: string[];
+  allowedUserIds?: string[];
 }
 
 // WS-4: Vectorize metadata can't filter on a genuinely absent field the same way SQL's
@@ -227,8 +238,18 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     /** WS-4: optional — isolates this document to a single project's own KB, distinct from the
      *  space-wide default (omitted/null). */
     project_id?: string;
+    visibility?: "public" | "private" | "role_restricted";
+    allowed_roles?: string[] | Array<"owner" | "admin" | "editor" | "member" | "viewer" | string>;
+    allowedRoles?: string[] | Array<"owner" | "admin" | "editor" | "member" | "viewer" | string>;
+    allowed_user_ids?: string[];
+    allowedUserIds?: string[];
   }>();
   const projectId = body.project_id ?? null;
+  const visibility = body.visibility ?? "public";
+  const rawRoles = body.allowed_roles ?? body.allowedRoles ?? [];
+  const allowedRoles = Array.isArray(rawRoles) ? rawRoles : [];
+  const rawUserIds = body.allowed_user_ids ?? body.allowedUserIds ?? [];
+  const allowedUserIds = Array.isArray(rawUserIds) ? rawUserIds : [];
 
   // Validate required fields
   if (!body.title || typeof body.title !== "string" || body.title.trim().length === 0) {
@@ -283,13 +304,26 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
   const docId = crypto.randomUUID();
   const now = new Date().toISOString();
 
-  // Insert doc record with status=processing
+  // Insert doc record with status=processing & ACL metadata
   await c.env.PLATFORM_DB.prepare(
     `INSERT INTO kb_documents
-       (id, space_id, tenant_id, project_id, title, source_url, content_type, status, chunk_count, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'processing', 0, ?, ?)`
+       (id, space_id, tenant_id, project_id, title, source_url, content_type, status, chunk_count, visibility, allowed_roles, allowed_user_ids, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'processing', 0, ?, ?, ?, ?, ?)`
   )
-    .bind(docId, spaceId, tenantId, projectId, body.title.trim(), body.source_url ?? null, contentType, now, now)
+    .bind(
+      docId,
+      spaceId,
+      tenantId,
+      projectId,
+      body.title.trim(),
+      body.source_url ?? null,
+      contentType,
+      visibility,
+      allowedRoles.length > 0 ? JSON.stringify(allowedRoles) : null,
+      allowedUserIds.length > 0 ? JSON.stringify(allowedUserIds) : null,
+      now,
+      now
+    )
     .run();
 
   try {
@@ -710,8 +744,12 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
   // Build dense results for RRF (id = vector id like "{docId}_chunk_{i}")
   const denseForRrf = denseMatches.map(m => ({ id: m.id, score: m.score ?? 0 }));
 
-  // ── Sparse retrieval (BM25) ───────────────────────────────────────────────
-  // Fetch chunk content from R2 for all dense candidates to run BM25 over them
+  // ── Sparse retrieval (BM25) with ACL Clearance Check ───────────────────────
+  const callerUserId = c.req.header("x-naelao-user-id") ?? url.searchParams.get("user_id") ?? "";
+  const callerRole = (c.req.header("x-naelao-user-role") ?? url.searchParams.get("user_role") ?? url.searchParams.get("role") ?? "member").toLowerCase();
+  const isSuperUser = callerRole === "owner" || callerRole === "admin";
+
+  // Fetch chunk content from R2 for all dense candidates to run BM25 and verify ACLs
   const chunkContents: Array<{ id: string; content: string; docId: string; chunkIndex: number }> = [];
 
   await Promise.all(
@@ -725,6 +763,22 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
 
       const chunkRecord = await readChunkFromR2(c.env.KB_BUCKET, spaceId, projectId, matchDocId, chunkIndex);
       if (!chunkRecord) return;
+
+      // ACL Clearance Verification:
+      // If visibility is private or role_restricted, only authorized roles/users may access
+      if (!isSuperUser) {
+        if (chunkRecord.visibility === "private") {
+          const allowedUsers = chunkRecord.allowedUserIds ?? [];
+          if (!callerUserId || !allowedUsers.includes(callerUserId)) {
+            return; // unauthorized
+          }
+        } else if (chunkRecord.visibility === "role_restricted") {
+          const allowedRoles = chunkRecord.allowedRoles ?? [];
+          if (!allowedRoles.includes(callerRole)) {
+            return; // unauthorized
+          }
+        }
+      }
 
       chunkContents.push({
         id: match.id,
