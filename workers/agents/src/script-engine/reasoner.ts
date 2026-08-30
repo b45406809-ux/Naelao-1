@@ -15,6 +15,7 @@ import { renderStepsForReasoner } from "./step-context.js";
 import type { BusinessContext } from "../launchpad/business-context.js";
 import type { Reasoner, ReasonDecision, ReasonerUsage } from "./loop.js";
 import type { Embedder } from "./types.js";
+import { AVOS_SDK_DTS } from "./code-runner.js";
 import {
   buildUniversalBody,
   normalizeUniversalResponse,
@@ -173,6 +174,11 @@ export function composeSystemPrompt(
 
   // Layer 1: Universal Operating Kernel
   sections.push(UNIVERSAL_OPERATING_KERNEL);
+
+  // Layer 1.5: Universal AVOS Runtime SDK (CodeMode & Script-Native Metaprogramming)
+  sections.push(
+    `# AVOS RUNTIME ENVIRONMENT & SDK DEFINITIONS (ctx)\nWhen authoring scripts (action: 'distill' or 'exec_isolate_codemode'), write standard TypeScript targeting the global \`ctx\` SDK:\n\`\`\`typescript\n${AVOS_SDK_DTS}\n\`\`\``
+  );
 
   // Layer 2: Living Enterprise Identity
   if (business) {

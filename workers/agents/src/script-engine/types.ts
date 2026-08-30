@@ -811,6 +811,10 @@ export interface ScriptEngineEnv {
    *  @naelao/http. Optional so environments that never make such a call (most script tests)
    *  don't need to supply it. */
   platformSecret?: string;
+  /** Space credentials or secrets map for zero-leak vault credential injection. */
+  spaceCredentials?: Record<string, string>;
+  /** Optional bindings map for edge worker execution. */
+  bindings?: Record<string, unknown>;
   /** The end-user this run is on behalf of (set per /script/run call). Scopes the user model
    *  (Memory OS) and per-(channel,user) sessions. Absent for space-level/system-triggered runs. */
   userId?: string;

@@ -28,6 +28,7 @@ import {
 } from "./r2-workspace.js";
 import { applyPlanOp } from "./plan.js";
 import type { PlanState } from "../types.js";
+import { buildTierSdkContext } from "../code-runner.js";
 
 function ensurePlan(ctx: PrebuiltOpContext): PlanState | { ok: false; error: string } {
   if (!ctx.env.plan) {
@@ -204,8 +205,19 @@ export const tierPrimitives: PrebuiltScript = {
       if (!code) throw new Error("exec_isolate_codemode requires 'code' (TypeScript/JavaScript source).");
       assertNoReservedViolation({ name: "exec_isolate_codemode", code });
 
+      const runArgs = (args["args"] as Record<string, unknown>) ?? (args["params"] as Record<string, unknown>) ?? {};
+      const sdkCtx = buildTierSdkContext(ctx.env, ctx.env.projectId ? "PROJECT_BOUND" : "SPACE_WIDE");
+
       if (!ctx.env.codeRunner) {
-        return { ok: false, reason: "Tier 2 (isolate) unavailable: no code runner configured in this environment" };
+        // Safe In-Process CodeMode fallback with Authoritative ctx SDK
+        try {
+          const fnBody = code.includes("return") || code.includes(";") ? code : `return (${code});`;
+          const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+          const fn = new AsyncFunction("args", "ctx", fnBody);
+          return await fn(runArgs, sdkCtx);
+        } catch (err) {
+          throw new Error(`Tier 2 in-process execution failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
 
       // If user passed a bare function body without export, wrap it safely
@@ -213,7 +225,6 @@ export const tierPrimitives: PrebuiltScript = {
         ? code
         : `export async function run(args, ctx) {\n${code}\n}`;
 
-      const runArgs = (args["args"] as Record<string, unknown>) ?? (args["params"] as Record<string, unknown>) ?? {};
       const result = await ctx.env.codeRunner.run({
         name: "codemode_dynamic",
         code: executableModule,

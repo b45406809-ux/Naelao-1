@@ -32,8 +32,17 @@
  * optional binding in this engine (AI, Vectorize, MCP_HUB, ...).
  */
 
-import type { TieredCodeRunner, ScriptRunResult, ExecutionTier } from "./types.js";
+import type { TieredCodeRunner, ScriptRunResult, ExecutionTier, ScriptEngineEnv } from "./types.js";
 import { mintInternalToken } from "@naelao/http";
+import { r2Workspace } from "./prebuilt/r2-workspace.js";
+import { projectJournal } from "./prebuilt/project-journal.js";
+import { projectCoordination } from "./prebuilt/project-coordination.js";
+import { workspaceAdmin } from "./prebuilt/workspace-admin.js";
+import { businessWallet } from "./prebuilt/business-wallet.js";
+import { notifications } from "./prebuilt/notifications.js";
+import { mcpConnector } from "./prebuilt/mcp-connector.js";
+import { browserUse } from "./prebuilt/browser-use.js";
+import { tierPrimitives } from "./prebuilt/tier-primitives.js";
 
 // ── CF Worker Loader binding (beta) — minimal local typing ─────────────────────────────
 
@@ -222,6 +231,19 @@ export default {
     if (typeof run !== "function") {
       return Response.json({ ok: false, error: "script must export an async function named 'run'" }, { status: 500 });
     }
+    // Universal Zero-Leak Vault Outbound Fetcher
+    ctx.vault = {
+      fetchWithAuth: async (url, init = {}) => {
+        const headers = new Headers(init.headers || {});
+        if (init.credentialName) {
+          headers.set("x-naelao-vault-credential", init.credentialName);
+        }
+        return __ssrfGuardedFetch(url, {
+          ...init,
+          headers,
+        });
+      },
+    };
     try {
       const result = await run(args, ctx);
       return Response.json({ ok: true, result });
@@ -523,3 +545,187 @@ export function buildCodeRunner(opts: CodeRunnerOptions): TieredCodeRunner {
     },
   };
 }
+
+/**
+ * TypeScript API definition of the Universal AVOS Runtime SDK (v2.0).
+ * Injected into agent reasoning context for Tier 2/3/6 CodeMode scripts.
+ */
+export const AVOS_SDK_DTS = `/**
+ * AVOS RUNTIME ENVIRONMENT DEFINITIONS (v2.0)
+ * Available in all Isolate CodeMode (Tier 2), Workflows (Tier 3), and Container (Tier 6) scripts.
+ */
+declare namespace ctx {
+  namespace fs {
+    function read(path: string, opts?: { offset?: number; limit?: number }): Promise<{ content: string; totalLines: number }>;
+    function edit(path: string, oldString: string, newString: string): Promise<{ ok: boolean; message: string }>;
+    function write(path: string, content: string): Promise<{ ok: boolean; bytesWritten: number }>;
+    function grep(pattern: string, path?: string): Promise<{ matches: Array<{ file: string; line: number; text: string }> }>;
+    function glob(pattern: string): Promise<{ files: string[] }>;
+    function diff(path: string, newContent: string): Promise<{ ok: boolean; differences: Array<{ line: number; original: string; modified: string }> }>;
+  }
+  namespace project {
+    const id: string;
+    function getJournal(): Promise<{ goal: string; status: string; todos: Array<{ text: string; done: boolean }> }>;
+    function updateJournal(status: string, goal?: string): Promise<{ ok: boolean }>;
+    function createTask(title: string, deps?: string[]): Promise<{ ok: boolean }>;
+    function listThreads(): Promise<Array<{ id: string; title: string }>>;
+    function postMessage(threadId: string, text: string): Promise<{ ok: boolean }>;
+    function readRules(): Promise<{ content: string }>;
+  }
+  // ONLY available in Space Assistant (CEO) context
+  namespace space {
+    const id: string;
+    function createProject(name: string, kind?: string, templateId?: string): Promise<{ id: string; name: string }>;
+    function listProjects(): Promise<Array<{ id: string; name: string; kind: string }>>;
+    function configureProject(id: string, config?: Record<string, unknown>): Promise<{ ok: boolean }>;
+    function getWalletBalance(): Promise<{ balance_cents: number; currency: string }>;
+    function requestPayout(destId: string, cents: number): Promise<{ ok: boolean; payoutId: string }>;
+    function sendNotification(title: string, body?: string): Promise<{ ok: boolean }>;
+  }
+  namespace vault {
+    function fetchWithAuth(url: string, init: { credentialName?: string; method?: string; headers?: Record<string, string>; body?: any }): Promise<Response>;
+  }
+  namespace mcp {
+    function call(server: string, tool: string, params?: Record<string, any>): Promise<any>;
+    function listTools(server: string): Promise<Array<{ name: string; description: string }>>;
+  }
+  namespace browser {
+    function navigate(url: string): Promise<{ title: string; textContent: string }>;
+    function click(selector: string): Promise<{ ok: boolean }>;
+    function type(selector: string, text: string): Promise<{ ok: boolean }>;
+    function extract(selector: string): Promise<string[]>;
+  }
+  function runSkill(skillName: string, args?: Record<string, any>): Promise<any>;
+}`;
+
+/**
+ * Universal AVOS Runtime SDK builder for all 6 tiers.
+ * Scoped by role: Space Assistant (SPACE_WIDE) gets ctx.space; Project Agents get ctx.project.
+ */
+export function buildTierSdkContext(
+  env: ScriptEngineEnv,
+  scope: "SPACE_WIDE" | "PROJECT_BOUND" = env.projectId ? "PROJECT_BOUND" : "SPACE_WIDE"
+) {
+  const dummyRun = async (name: string, params: Record<string, unknown>) => {
+    if (env.codeRunner) {
+      const res = await env.codeRunner.run({
+        name,
+        code: "",
+        tier: 2,
+        args: params,
+        spaceId: env.spaceId,
+        agentId: env.agentId,
+        tenantId: env.tenantId,
+        projectId: env.projectId,
+      });
+      if (!res.ok) throw new Error(res.error ?? `Execution of ${name} failed`);
+      return res.output;
+    }
+    return null;
+  };
+
+  // 1. Filesystem bound to the correct workspace prefix
+  const fs = {
+    read: (path: string, opts?: { offset?: number; limit?: number }) =>
+      r2Workspace.operations.Read({ path, ...opts }, { env, run: dummyRun }),
+    edit: (path: string, oldString: string, newString: string) =>
+      r2Workspace.operations.Edit({ path, oldString, newString }, { env, run: dummyRun }),
+    write: (path: string, content: string) =>
+      r2Workspace.operations.Write({ path, content }, { env, run: dummyRun }),
+    grep: (pattern: string, path?: string) =>
+      r2Workspace.operations.Grep({ pattern, path }, { env, run: dummyRun }),
+    glob: (pattern: string) =>
+      r2Workspace.operations.Glob({ pattern }, { env, run: dummyRun }),
+    diff: (path: string, newContent: string) =>
+      tierPrimitives.operations.exec_sqlite_fs({ op: "diff", path, content: newContent }, { env, run: dummyRun }),
+  };
+
+  // 2. Project-level primitives (available to both Assistant and Project Agents)
+  const project = env.projectId
+    ? {
+        id: env.projectId,
+        getJournal: () => projectJournal.operations["project_journal.read"]({}, { env, run: dummyRun }),
+        updateJournal: (status: string, goal?: string) =>
+          projectJournal.operations["project_journal.set_status"]({ status, goal }, { env, run: dummyRun }),
+        createTask: (title: string, deps?: string[]) =>
+          projectJournal.operations["project_journal.add_todo"]({ text: title, deps }, { env, run: dummyRun }),
+        listThreads: () =>
+          projectCoordination.operations["thread.list"]({ project_id: env.projectId }, { env, run: dummyRun }),
+        postMessage: (threadId: string, text: string) =>
+          projectCoordination.operations["thread.send_message"]({ thread_id: threadId, message: text }, { env, run: dummyRun }),
+        readRules: () => r2Workspace.operations.Read({ path: "CLAUDE.md" }, { env, run: dummyRun }),
+      }
+    : undefined;
+
+  // 3. Space-level primitives (STRICTLY RESTRICTED to Space Assistant)
+  const space =
+    scope === "SPACE_WIDE"
+      ? {
+          id: env.spaceId,
+          createProject: (name: string, kind?: string, templateId?: string) =>
+            workspaceAdmin.operations["project.create_from_template"]({ templateId, name, kind }, { env, run: dummyRun }),
+          listProjects: () => workspaceAdmin.operations["project.list"]({}, { env, run: dummyRun }),
+          configureProject: (id: string, config?: Record<string, unknown>) =>
+            workspaceAdmin.operations["project.configure"]({ id, ...config }, { env, run: dummyRun }),
+          getWalletBalance: () => businessWallet.operations["business_wallet.balance"]({}, { env, run: dummyRun }),
+          requestPayout: (destId: string, cents: number) =>
+            businessWallet.operations["business_wallet.request_payout"]({ destination_id: destId, amount_cents: cents }, { env, run: dummyRun }),
+          sendNotification: (title: string, body?: string) =>
+            notifications.operations["notify.email"]({ title, body: body || "" }, { env, run: dummyRun }),
+        }
+      : undefined;
+
+  // 4. Zero-Leak Vault / Outbound Fetcher
+  const vault = {
+    fetchWithAuth: async (
+      url: string,
+      init?: { credentialName?: string; method?: string; headers?: Record<string, string>; body?: unknown }
+    ) => {
+      const headers = new Headers(init?.headers || {});
+      if (init?.credentialName) {
+        const secret = env.spaceCredentials?.[init.credentialName];
+        if (secret) {
+          headers.set("Authorization", `Bearer ${secret}`);
+        } else {
+          headers.set("x-naelao-vault-credential", init.credentialName);
+        }
+      }
+      return fetch(url, {
+        method: init?.method || "GET",
+        headers,
+        body: init?.body ? (typeof init.body === "string" ? init.body : JSON.stringify(init.body)) : undefined,
+      });
+    },
+  };
+
+  // 5. MCP Connector
+  const mcp = {
+    call: (server: string, tool: string, params?: Record<string, unknown>) =>
+      mcpConnector.operations["mcp.call"]({ server, tool, params: params || {} }, { env, run: dummyRun }),
+    listTools: (server: string) => mcpConnector.operations["mcp.list_tools"]({ server }, { env, run: dummyRun }),
+  };
+
+  // 6. Browser (Tier 4 / 5)
+  const browser = {
+    navigate: (url: string) => browserUse.operations["browser.navigate"]({ url }, { env, run: dummyRun }),
+    click: (selector: string) => browserUse.operations["browser.click"]({ selector }, { env, run: dummyRun }),
+    type: (selector: string, text: string) => browserUse.operations["browser.type"]({ selector, text }, { env, run: dummyRun }),
+    extract: (selector: string) => browserUse.operations["browser.extract"]({ selector }, { env, run: dummyRun }),
+  };
+
+  // 7. Skill Distillation & Reusable Run
+  const runSkill = (skillName: string, args?: Record<string, unknown>) =>
+    env.codeRunner?.run({
+      name: skillName,
+      code: "",
+      tier: 2,
+      args: args || {},
+      spaceId: env.spaceId,
+      agentId: env.agentId,
+      tenantId: env.tenantId,
+      projectId: env.projectId,
+    });
+
+  return { fs, project, space, vault, mcp, browser, runSkill, fetch: vault.fetchWithAuth };
+}
+
