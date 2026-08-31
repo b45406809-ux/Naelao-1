@@ -16,6 +16,7 @@
 
 export * from "./types.js";
 export * from "./fingerprint.js";
+export * from "./dual-tier-executor.js";
 export { SkillLibrary, computeStabilityScore } from "./skill-library.js";
 export { scriptFind, indexScriptEmbedding, removeScriptEmbedding, FIND_CONFIDENCE_FLOOR } from "./script-find.js";
 export { runStoredScript, tierLabel } from "./execution-ladder.js";

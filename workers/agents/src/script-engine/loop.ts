@@ -39,6 +39,7 @@ import { FIND_CONFIDENCE_FLOOR } from "./script-find.js";
 import { assessSkillHealth, isSafeToAutoRun } from "./skill-health.js";
 import { applyPlanOp } from "./prebuilt/plan.js";
 import type { PlanState } from "./types.js";
+import { parseGoalCommand, runDualTierPipeline } from "./dual-tier-executor.js";
 
 /**
  * Rebuild the run's plan from its recorded history — used at the start of a RESUMED run, where the
@@ -642,6 +643,35 @@ export async function runScriptLoop(
   // 1-2. OBSERVE + FINGERPRINT
   await reportProgress(opts, { phase: "observe", detail: "Observing current state" });
   const observeStart = Date.now();
+
+  // Dual-Tier Architecture Mode: intercept /goal command or dual_tier_goal execution
+  const goalCmd = parseGoalCommand(opts.goal);
+  if (goalCmd.isGoalMode) {
+    const effectiveGoal = goalCmd.goalPrompt || opts.goal;
+    await reportProgress(opts, { phase: "reason", detail: "Frontier Planner: Architecting Task DAG…" });
+    const dtResult = await runDualTierPipeline(effectiveGoal, env);
+    pushTrace({
+      phase: "run",
+      name: "dual_tier_goal",
+      tier: 1,
+      ok: dtResult.ok,
+      detail: `Dual-Tier execution: ${dtResult.completedTasks.length}/${dtResult.plan.tasks.length} subtasks completed. ${dtResult.totalCostSavedEstimate}`,
+    });
+    const formattedSummary = `### ⚡ Dual-Tier Architecture Execution\n\n**Goal**: ${dtResult.goal}\n\n**Architect Plan (${dtResult.plan.tasks.length} subtasks)**:\n${dtResult.plan.tasks.map((t) => `- **[${t.status === "completed" ? "✓" : "✗"}] ${t.title}** (${t.assignedTier}) → *${t.targetFiles.join(", ")}*\n  ${t.outputSummary ?? t.specification}`).join("\n\n")}\n\n**Frontier Audit**: ${dtResult.reviewSummary}\n\n**Efficiency**: ${dtResult.totalCostSavedEstimate}`;
+    return finish({
+      level: "L1",
+      script_name: "dual_tier_goal",
+      result: {
+        ok: dtResult.ok,
+        output: formattedSummary,
+        tier: 1,
+        duration_ms: Date.now() - observeStart,
+        tokens_used: 1200,
+      },
+      notes: [...notes, `dual-tier executed ${dtResult.completedTasks.length} tasks in isolated contexts`],
+    });
+  }
+
   const snapshot = await runObserve(env, opts.startupObserve, opts.observeArgs ?? {});
   notes.push(`observed ${snapshot.type} fingerprint=${snapshot.fingerprint.slice(0, 12)}`);
   pushTrace({ phase: "observe", detail: snapshot.type, duration_ms: Date.now() - observeStart, ok: true });

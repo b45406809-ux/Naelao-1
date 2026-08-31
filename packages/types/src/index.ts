@@ -45,6 +45,20 @@ export type UserRole = "owner" | "admin" | "editor" | "viewer" | "product_end_us
 // ── Plan tiers ───────────────────────────────────────────────────────────────
 export type PlanTier = "free" | "growth" | "business" | "enterprise";
 
+// ── Vertical-Scoped Model Curation & Enforcement ──────────────────────────────
+export interface VerticalModelPolicy {
+  /** Mode: "whitelist_only" (hard filter) vs "all_allowed" (standard) */
+  mode: "whitelist_only" | "all_allowed";
+  /** The exact allowed model IDs for this vertical */
+  allowedModelIds: string[];
+  /** Default selected model on space creation */
+  defaultModelId: string;
+  /** Can a space admin expand this list, or is it locked by compliance? */
+  lockedByCompliancePolicy: boolean;
+  /** UI Custom Category Label (e.g. "🏥 Clinically Vetted Models") */
+  pickerHeaderLabel?: string;
+}
+
 // ── SpaceType / Template ──────────────────────────────────────────────────────
 export interface SpaceTypeManifest {
   id: SpaceTypeId;

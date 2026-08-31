@@ -206,7 +206,7 @@ export function Chat({
   // Only used to label/scope the composer dock. Compared against the space this Chat was actually
   // given: the dock's member stack must never describe a DIFFERENT space than the conversation
   // belongs to, which is possible during a space switch before this component remounts.
-  const { activeSpaceId, activeSpaceName, isBusinessSpace } = useActiveSpace();
+  const { activeSpaceId, activeSpaceName, isBusinessSpace, modelPolicy } = useActiveSpace();
   const dockIsBusinessSpace = isBusinessSpace && activeSpaceId === spaceId;
 
   const [chatSessionId, setChatSessionId] = React.useState<string | null>(sessionId ?? null);
@@ -313,6 +313,7 @@ export function Chat({
     const stored = getPreferredEffort(spaceId, model);
     return stored && isValidEffortLevel(model, stored) ? (stored as EffortLevel) : "low";
   });
+  const [dualTierMode, setDualTierMode] = React.useState<boolean>(false);
   const selectedReasoningLevel = React.useMemo(
     () => nativeReasoningForEffort(selectedModel, selectedEffort),
     [selectedModel, selectedEffort]
@@ -1260,6 +1261,9 @@ export function Chat({
       if (inspectedElement) {
         goal = `Referring to this element in the preview: <${inspectedElement.tag}> matching "${inspectedElement.selector}"${inspectedElement.text ? ` with text "${inspectedElement.text}"` : ""}.\n\n${goal}`;
       }
+      if (dualTierMode && !goal.trim().startsWith("/goal")) {
+        goal = `/goal ${goal}`;
+      }
       setPendingUploads([]);
       setInspectedElement(null);
       const { agentRunId } = await sendMessage(
@@ -1280,6 +1284,7 @@ export function Chat({
           // thread). Without it the backend can't scope R2/KB/Memory-OS/journal to this thread's
           // project, so every one of them silently fell back to space-wide.
           ...(projectId ? { projectId } : {}),
+          ...(dualTierMode ? { dualTierMode: true } : {}),
         },
         (attempt, max) => setRetryStatus({ attempt, max })
       );
@@ -1833,6 +1838,7 @@ export function Chat({
             onModelChange={handleModelChange}
             effort={selectedEffort}
             onEffortChange={handleEffortChange}
+            modelPolicy={activeSpaceId === spaceId ? modelPolicy : null}
             spaceName={activeSpaceName ?? undefined}
             isBusinessSpace={dockIsBusinessSpace}
             agentOptions={agentOptions}
@@ -1849,6 +1855,8 @@ export function Chat({
             ensureSessionId={ensureSessionId}
             pendingUploads={pendingUploads}
             onUploadsChange={setPendingUploads}
+            dualTierMode={dualTierMode}
+            onToggleDualTierMode={setDualTierMode}
           >
             <div className="input-container">
               {pendingUploads.length > 0 && (

@@ -22,7 +22,7 @@
 
 // The web studio's price list lives with its skills, so the storefront the assistant provisions
 // and the skill that quotes a job read the SAME numbers.
-import { DEFAULT_WORKING_MODEL } from "@naelao/billing-core";
+import { DEFAULT_WORKING_MODEL, type VerticalModelPolicy } from "@naelao/billing-core";
 import { WEBDEV_TIERS } from "./webdev-skills.js";
 
 /** An agent definition exactly in the §11 shape (stored in SpaceDO.agent_definitions). */
@@ -184,6 +184,8 @@ export interface LaunchpadTemplate {
   cowork_config?: CoworkConfig;
   /** Mobile channel configuration (Telegram, WhatsApp, Slack, etc.) */
   channel_config?: ChannelBlueprintConfig;
+  /** Vertical-Scoped Model Curation & Enforcement policy */
+  model_policy?: VerticalModelPolicy;
   /** Core agent ids this template installs (subset/superset of LAUNCHPAD_CORE_AGENTS). */
   agents: string[];
   /** Marketplace skills the template needs wired (commerce/Lemon Squeezy, email, etc.). */
@@ -1129,6 +1131,19 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     template_mode: "vertical_cowork",
     category: "LEGAL",
     free_tier_eligible: true,
+    model_policy: {
+      mode: "whitelist_only",
+      pickerHeaderLabel: "⚖️ Delaware & Legal High-Reasoning Certified Models",
+      defaultModelId: "custom/acme-legal-redline",
+      lockedByCompliancePolicy: true,
+      allowedModelIds: [
+        "custom/acme-legal-redline",
+        "custom/lexpulse-delaware-legal-v2",
+        "claude-sonnet-4-6",
+        "@cf/openai/gpt-oss-120b",
+        "google-ai-studio/gemini-3.7-flash",
+      ],
+    },
     channel_config: {
       channel_role: "PRIVATE_EXECUTIVE_COPILOT",
       allowedChannels: ["telegram", "whatsapp", "slack", "discord", "email"],
@@ -1215,6 +1230,18 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     template_mode: "vertical_cowork",
     category: "FINANCE",
     free_tier_eligible: true,
+    model_policy: {
+      mode: "whitelist_only",
+      pickerHeaderLabel: "📊 SEC 10-K & Quantitative Finance Vetted Models",
+      defaultModelId: "@cf/openai/gpt-oss-120b",
+      lockedByCompliancePolicy: true,
+      allowedModelIds: [
+        "@cf/openai/gpt-oss-120b",
+        "claude-sonnet-4-6",
+        "@cf/nvidia/nemotron-3-120b-a12b",
+        "google-ai-studio/gemini-3.7-flash",
+      ],
+    },
     channel_config: {
       channel_role: "PRIVATE_EXECUTIVE_COPILOT",
       allowedChannels: ["telegram", "whatsapp", "slack", "discord", "email"],
@@ -1285,6 +1312,18 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     template_mode: "vertical_cowork",
     category: "HEALTHCARE",
     free_tier_eligible: true,
+    model_policy: {
+      mode: "whitelist_only",
+      pickerHeaderLabel: "🏥 HIPAA & Clinically Vetted Models",
+      defaultModelId: "custom/hospital-clinical-llama8b-v1",
+      lockedByCompliancePolicy: true,
+      allowedModelIds: [
+        "custom/hospital-clinical-llama8b-v1",
+        "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        "claude-sonnet-4-6",
+        "google-ai-studio/gemini-3.7-flash",
+      ],
+    },
     channel_config: {
       channel_role: "PRIVATE_EXECUTIVE_COPILOT",
       allowedChannels: ["telegram", "whatsapp", "slack", "discord", "email"],
@@ -1354,6 +1393,17 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     template_mode: "vertical_cowork",
     category: "ENGINEERING",
     free_tier_eligible: true,
+    model_policy: {
+      mode: "whitelist_only",
+      pickerHeaderLabel: "🏗️ IBC 2024 & Engineering Spec Certified Models",
+      defaultModelId: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+      lockedByCompliancePolicy: true,
+      allowedModelIds: [
+        "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        "claude-sonnet-4-6",
+        "@cf/google/gemma-4-26b-a4b-it",
+      ],
+    },
     channel_config: {
       channel_role: "PRIVATE_EXECUTIVE_COPILOT",
       allowedChannels: ["telegram", "whatsapp", "slack", "discord", "email"],
@@ -1510,5 +1560,20 @@ export function validateLaunchpadSpaceType(st: LaunchpadSpaceType = LAUNCHPAD_SP
   }
 }
 
+/**
+ * Look up the vertical model policy for a given template ID.
+ */
+export function getTemplateModelPolicy(templateId: string): VerticalModelPolicy | undefined {
+  const t = templateById(templateId);
+  return t?.model_policy;
+}
+
+// ── Turnkey Blueprint Exports for Direct Construction & Embedding ───────────
+export const HOSPITAL_COWORK_BLUEPRINT: LaunchpadTemplate = templateById("clinica-ehr-cowork")!;
+export const LEGAL_COWORK_BLUEPRINT: LaunchpadTemplate = templateById("lexpulse-legal-cowork")!;
+export const FINANCE_COWORK_BLUEPRINT: LaunchpadTemplate = templateById("capforge-pe-cowork")!;
+export const ARCHITECTURE_COWORK_BLUEPRINT: LaunchpadTemplate = templateById("acubuild-arch-cowork")!;
+
 // Fail fast at import if the SpaceType is malformed.
 validateLaunchpadSpaceType();
+

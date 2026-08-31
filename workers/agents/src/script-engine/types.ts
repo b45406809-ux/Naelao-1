@@ -888,3 +888,34 @@ export function workspacePrefix(env: Pick<ScriptEngineEnv, "spaceId" | "projectI
     ? `spaces/${env.spaceId}/projects/${env.projectId}/workspace/`
     : `spaces/${env.spaceId}/workspace/`;
 }
+
+// ── Frontier-Planner + Open-Worker (Context Isolation) Pipeline Types ────────────────
+
+export interface SubtaskPlanItem {
+  id: string;
+  title: string;
+  targetFiles: string[];
+  specification: string;
+  assignedModelTier: "EDGE_OPEN" | "FRONTIER_REASON";
+  dependencies: string[];
+  status?: "pending" | "in_progress" | "completed" | "failed";
+  outputSummary?: string;
+}
+
+export interface FrontierArchitecturePlan {
+  architecturalSummary: string;
+  targetRepositoryFiles: string[];
+  tasks: SubtaskPlanItem[];
+}
+
+export interface DualTierExecutionResult {
+  ok: boolean;
+  goal: string;
+  plan: FrontierArchitecturePlan;
+  completedTasks: string[];
+  failedTasks: string[];
+  reviewSummary?: string;
+  finalDiffSummary?: string;
+  totalCostSavedEstimate?: string;
+}
+

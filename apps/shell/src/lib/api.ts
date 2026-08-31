@@ -161,6 +161,13 @@ export interface ShellManifest {
    *  unset) — a business that's explicitly set a non-"low" default isn't picked up here until a
    *  user first opens the Effort panel; a real, deliberately deferred refinement. */
   effort: string | null;
+  model_policy?: {
+    mode: "whitelist_only" | "all_allowed";
+    allowedModelIds?: string[];
+    defaultModelId?: string;
+    pickerHeaderLabel?: string;
+    lockedByCompliancePolicy?: boolean;
+  };
   sub_space_display: unknown;
   allow_public_signup: boolean;
   auth_provider: string;
@@ -181,6 +188,13 @@ export interface ShellManifest {
     description?: string;
     template_mode?: "autonomous_venture" | "vertical_cowork";
     category?: string;
+    model_policy?: {
+      mode: "whitelist_only" | "all_allowed";
+      allowedModelIds?: string[];
+      defaultModelId?: string;
+      pickerHeaderLabel?: string;
+      lockedByCompliancePolicy?: boolean;
+    };
     cowork_config?: {
       defaultViewport: string;
       citationVerificationRequired?: boolean;

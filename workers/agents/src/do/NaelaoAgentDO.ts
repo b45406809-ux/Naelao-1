@@ -45,6 +45,7 @@ import {
   type AgentArchetypeRole,
 } from "../script-engine/assistant-access.js";
 import { buildCodeRunner, type WorkerLoaderBinding } from "../script-engine/code-runner.js";
+import { parseGoalCommand, runDualTierPipeline } from "../script-engine/dual-tier-executor.js";
 import { initMemorySchema, buildMemoryStore, runMemoryMaintenance } from "../script-engine/memory-os.js";
 import { buildProjectMemoryStore, buildHybridMemoryStore } from "../script-engine/project-memory-client.js";
 import {
@@ -3346,7 +3347,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       approvalMode = plan.approvalMode;
     }
 
-    const tools = new ScriptToolSurface(engineEnv, config.scripts.prebuilt);
+    const effectivePrebuilts = config.scripts.prebuilt.includes("dual_tier_goal")
+      ? config.scripts.prebuilt
+      : [...config.scripts.prebuilt, "dual_tier_goal"];
+
+    const tools = new ScriptToolSurface(engineEnv, effectivePrebuilts);
     // A sub-agent spawned mid-task inherits the SAME project scoping as its parent — it's
     // conceptually a subthread of the same project, not a different workspace. Built after
     // `tools` (§A1.17 Phase J's workflow.create/run ops need it to author/re-run stored
@@ -3394,7 +3399,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // The thread's own history — without it the agent has no memory of the conversation it is
       // replying in. Best-effort: undefined simply means "no history", the prior behaviour.
       const conversation = await this.loadConversationContext(spaceId, sessionId, tenantId);
-      const result = await runScriptLoop(engineEnv, tools, reasoner, config.scripts.prebuilt, {
+      const result = await runScriptLoop(engineEnv, tools, reasoner, effectivePrebuilts, {
         goal: body.goal,
         startupObserve: config.scripts.startup_observe,
         ...(conversation ? { conversation } : {}),

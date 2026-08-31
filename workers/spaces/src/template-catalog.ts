@@ -19,6 +19,13 @@ export interface TemplateCatalogEntry {
     collaborationMode?: string;
     auditLogRetentionDays?: number;
   };
+  model_policy?: {
+    mode: "whitelist_only" | "all_allowed";
+    allowedModelIds?: string[];
+    defaultModelId?: string;
+    pickerHeaderLabel?: string;
+    lockedByCompliancePolicy?: boolean;
+  };
   coming_soon: boolean;
   free_tier_eligible: boolean;
   saturation_index?: number;    // 0-100 (Lower = Less Crowded / Blue Ocean)

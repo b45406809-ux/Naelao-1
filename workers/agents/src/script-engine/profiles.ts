@@ -364,6 +364,8 @@ ${BASE_AGENTS_MD}`,
         // task.list is read-only (auto-approved); create/start/complete/block are structural
         // writes, gated like any other.
         "tasks",
+        // Dual-Tier Architecture Pipeline (Frontier-Planner + Open-Worker Context Isolation)
+        "dual_tier_goal",
       ],
       agent_scripts: "auto",
       startup_observe: "observe_filesystem",

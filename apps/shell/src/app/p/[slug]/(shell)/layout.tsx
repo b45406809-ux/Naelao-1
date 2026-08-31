@@ -80,7 +80,7 @@ export default function ShellLayout({ children }: { children: React.ReactNode })
 
 function ShellLayoutInner({ children }: { children: React.ReactNode }) {
   const product = useProduct();
-  const { activeSpaceId, setActiveSpace, setSupportContact, isHydrated: activeSpaceHydrated } = useActiveSpace();
+  const { activeSpaceId, setActiveSpace, setSupportContact, setModelPolicy, isHydrated: activeSpaceHydrated } = useActiveSpace();
   const { session, isHydrated, isAuthenticated } = useProductAuth();
   const router = useRouter();
   const pathname = usePathname();
@@ -147,6 +147,7 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
     getShellManifest(activeSpaceId, creds).then((m) => {
       setManifest(m);
       setSupportContact(m.legal?.support_contact ?? null);
+      setModelPolicy(m.model_policy ?? null);
     }).catch(() => show("Couldn't load workspace"));
     // …with one deliberate exception: `me` is the PERSON, not the workspace. A ProductUserDO is
     // one instance per (productId × endUserId), so scoping this to a business 404s and the credit

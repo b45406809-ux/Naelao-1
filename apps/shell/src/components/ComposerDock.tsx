@@ -15,7 +15,7 @@
 // plausible number.
 
 import * as React from "react";
-import { ALLOWED_MODELS, capabilityForModel, effortOptionsForModel, nativeReasoningForEffort, type EffortLevel } from "@naelao/billing-core";
+import { ALLOWED_MODELS, capabilityForModel, effortOptionsForModel, nativeReasoningForEffort, type EffortLevel, type VerticalModelPolicy } from "@naelao/billing-core";
 import {
   getConnectorStatus,
   getConnectorMode,
@@ -99,6 +99,7 @@ export function ComposerDock({
   onModelChange,
   effort,
   onEffortChange,
+  modelPolicy,
   /** Shown as the primary pill's label. The business/space name, not the product — this dock is
    *  always scoped to whatever space the conversation belongs to. */
   spaceName,
@@ -133,6 +134,8 @@ export function ComposerDock({
    *  to "low" upstream (Chat.tsx / modelPreference.ts), never left undefined here. */
   effort: EffortLevel;
   onEffortChange: (effort: EffortLevel) => void;
+  /** Vertical Model Policy restricting or curating allowed models */
+  modelPolicy?: VerticalModelPolicy | null;
   spaceName?: string | undefined;
   isBusinessSpace: boolean;
   onNotice?: (message: string) => void;
@@ -162,6 +165,9 @@ export function ComposerDock({
   onAddTemplate?: (templateId: string) => void;
   inspectedElement?: InspectedElement | null;
   onClearInspectedElement?: () => void;
+  /** Dual-Tier Architecture Mode (Frontier-Planner + Open-Worker Context Isolation) toggle */
+  dualTierMode?: boolean;
+  onToggleDualTierMode?: (enabled: boolean) => void;
   /** The message input itself. The dock owns the whole stack — panel above, input in the middle,
    *  toolbar below — so an open panel pushes the input down as one unit instead of overlaying it. */
   children?: React.ReactNode;
@@ -349,11 +355,18 @@ export function ComposerDock({
       {panel === "model" && (
         <div className="dock-panel">
           <div className="dock-panel-head">
-            <span className="dock-panel-title">Change model</span>
-            <span className="dock-panel-note">{modelLabel(model)}</span>
+            <span className="dock-panel-title">
+              {modelPolicy?.pickerHeaderLabel ? modelPolicy.pickerHeaderLabel : "Change model"}
+            </span>
+            <span className="dock-panel-note">
+              {modelPolicy?.lockedByCompliancePolicy ? "🔒 Compliance Locked" : modelLabel(model)}
+            </span>
           </div>
           <div className="dock-panel-body">
-            {ALLOWED_MODELS.map((m) => {
+            {(modelPolicy?.mode === "whitelist_only" && modelPolicy.allowedModelIds
+              ? ALLOWED_MODELS.filter((m) => modelPolicy.allowedModelIds.includes(m))
+              : ALLOWED_MODELS
+            ).map((m) => {
               const cap = capabilityForModel(m);
               const isActive = m === model;
               return (
@@ -875,6 +888,17 @@ export function ComposerDock({
         <button type="button" className={`dock-btn${panel === "apps" ? " open" : ""}`} onClick={() => toggle("apps")} title="Connected apps">
           <Icon path={ICONS.plug} />
           {connectedCount > 0 && <span className="dock-btn-dot" />}
+        </button>
+
+        <button
+          type="button"
+          className={`dock-btn dock-btn-labeled${dualTierMode ? " active" : ""}`}
+          onClick={() => onToggleDualTierMode?.(!dualTierMode)}
+          style={dualTierMode ? { background: "var(--accent-glow, rgba(0, 240, 255, 0.15))", borderColor: "var(--accent-cyan, #00F0FF)", color: "var(--accent-cyan, #00F0FF)" } : {}}
+          title={dualTierMode ? "Dual-Tier Mode: ON (Frontier Planner + Open Workers for isolated context & ~96% cost savings)" : "Toggle Dual-Tier Mode (Frontier Planner + Edge Open Workers)"}
+        >
+          <span style={{ fontSize: "12px", fontWeight: "bold" }}>⚡</span>
+          <span>{dualTierMode ? "Dual-Tier" : "/goal"}</span>
         </button>
 
         <div className="dock-sep" />

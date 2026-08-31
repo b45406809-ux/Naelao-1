@@ -48,6 +48,7 @@ import { schedule } from "./schedule.js";
 import { tasks } from "./tasks.js";
 import { plan } from "./plan.js";
 import { tierPrimitives } from "./tier-primitives.js";
+import { dualTierGoal } from "./dual-tier-goal.js";
 
 /** Context handed to every prebuilt operation. */
 export interface PrebuiltOpContext {
@@ -158,6 +159,8 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   [plan.name]: plan,
   // 6 Tier-Specific Universal Execution Primitives (CodeAct & Script-Native Ladder)
   [tierPrimitives.name]: tierPrimitives,
+  // Dual-Tier Architecture Mode (Frontier-Planner + Open-Worker Context Isolation)
+  [dualTierGoal.name]: dualTierGoal,
 };
 
 /**
@@ -207,4 +210,5 @@ export {
   tasks,
   plan,
   tierPrimitives,
+  dualTierGoal,
 };

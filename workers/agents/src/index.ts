@@ -9,7 +9,11 @@
 import { Hono } from "hono";
 import { errorResponse, requestId, notFound, badRequest, unauthorized, forbidden, mintInternalToken, verifyInternalToken } from "@naelao/http";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
-import { contextWindowForModel, isAllowedModel, ALLOWED_MODELS, DEFAULT_WORKING_MODEL, isValidReasoningLevel, capabilityForModel, isValidEffortLevel, type EffortLevel } from "@naelao/billing-core";
+import {
+  contextWindowForModel, isAllowedModel, ALLOWED_MODELS, DEFAULT_WORKING_MODEL,
+  isValidReasoningLevel, capabilityForModel, isValidEffortLevel, type EffortLevel,
+  validateModelForSpacePolicy, type VerticalModelPolicy,
+} from "@naelao/billing-core";
 import { getDOName } from "@naelao/crypto";
 import { detectPromptInjection, detectPolicyViolations } from "@naelao/moderation";
 import { parseMentions, creatableFeatureKindsForRole, detectImplicitSignals, classifyFailure, type MentionableAgent } from "@naelao/events";
@@ -18,7 +22,7 @@ import { HITLApprovalDO } from "./do/HITLApprovalDO.js";
 import { TaskDO } from "./do/TaskDO.js";
 import { ToolSandboxDO } from "./do/ToolSandboxDO.js";
 import { LocalTunnelDO } from "./do/LocalTunnelDO.js";
-import { LAUNCHPAD_TEMPLATES, LAUNCHPAD_CORE_AGENTS, getLaunchpadTemplate } from "./launchpad/spacetype.js";
+import { LAUNCHPAD_TEMPLATES, LAUNCHPAD_CORE_AGENTS, getLaunchpadTemplate, getTemplateModelPolicy } from "./launchpad/spacetype.js";
 import { resolveBusinessContext, parseSpaceConfigForContext, loadBusinessContext, type BusinessContext } from "./launchpad/business-context.js";
 import { CONNECTOR_CATALOGUE, getConnector, pollableConnectorIds } from "./connectors/catalogue.js";
 import { CONTAINER_IMAGE_CATALOGUE } from "./script-engine/container-catalogue.js";
@@ -564,6 +568,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   // trip, and threaded into the DO call below so enforceRunGates can gate on it without needing
   // its own PLATFORM_DB binding (NaelaoAgentDO has none — see item 47's own note on this).
   let sessionCreditCeiling: number | undefined;
+  let spaceModelPolicy: VerticalModelPolicy | undefined;
   // WHICH business this run is for. The same already-parsed config_json carries `template_id` and
   // `onboarding.status`, and spaceRow carries the name — so the agent can finally be told what it
   // is running for zero extra queries. Before this, the reasoner payload described the agent's
@@ -573,10 +578,20 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   let businessContext: BusinessContext | undefined;
   try {
     const cfg = JSON.parse(spaceRow.config_json || "{}") as {
-      productConfig?: { modelConfig?: { model?: string; effort?: string; progressiveToolDisclosure?: boolean }; limits?: { sessionCreditCeiling?: number } };
+      template_id?: string;
+      model_policy?: VerticalModelPolicy;
+      productConfig?: {
+        modelConfig?: { model?: string; effort?: string; progressiveToolDisclosure?: boolean };
+        model_policy?: VerticalModelPolicy;
+        limits?: { sessionCreditCeiling?: number };
+      };
     };
     modelConfig = cfg.productConfig?.modelConfig ?? {};
     sessionCreditCeiling = cfg.productConfig?.limits?.sessionCreditCeiling;
+    spaceModelPolicy =
+      cfg.model_policy ??
+      cfg.productConfig?.model_policy ??
+      (cfg.template_id ? getTemplateModelPolicy(cfg.template_id) : undefined);
   } catch {
     modelConfig = {};
   }
@@ -596,7 +611,15 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   // will actually run, not just what the client happened to send. An invalid pairing is rejected
   // outright rather than silently dropped, same posture as the model check above: a client that
   // thinks it configured reasoning should learn immediately if that request can't be honored.
-  const effectiveModelForReasoning = rawBody.model ?? modelConfig.model ?? DEFAULT_WORKING_MODEL;
+  const effectiveModelForReasoning =
+    rawBody.model ?? modelConfig.model ?? (spaceModelPolicy?.defaultModelId ?? DEFAULT_WORKING_MODEL);
+
+  // Vertical Compliance Gate: verify requested / resolved model conforms to space vertical policy
+  const policyCheck = validateModelForSpacePolicy(effectiveModelForReasoning, spaceModelPolicy);
+  if (!policyCheck.valid) {
+    throw badRequest(policyCheck.reason ?? `Model '${effectiveModelForReasoning}' is not permitted by space compliance policy`);
+  }
+
   if (rawBody.reasoning_effort && !isValidReasoningLevel(effectiveModelForReasoning, rawBody.reasoning_effort)) {
     throw badRequest(`reasoning_effort '${rawBody.reasoning_effort}' is not offered by model '${effectiveModelForReasoning}'`);
   }
@@ -772,6 +795,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         effort: effectiveEffort,
         // Phase 2 item 13 — see effectiveProgressiveToolDisclosure's own comment above.
         progressiveToolDisclosure: effectiveProgressiveToolDisclosure,
+        dualTierMode: rawBody.dual_tier_mode ?? rawBody.dualTierMode ?? false,
       },
     });
 
@@ -836,6 +860,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         effort: effectiveEffort,
         // Phase 2 item 13 — see effectiveProgressiveToolDisclosure's own comment above.
         progressiveToolDisclosure: effectiveProgressiveToolDisclosure,
+        dualTierMode: rawBody.dual_tier_mode ?? rawBody.dualTierMode ?? false,
         // The id returned to the client below. Without sending it, the DO minted its own and
         // persisted the run trace under that instead — so GET .../runs/:runId/trace (HX1's
         // builder-facing observability) could never find a trace for any id a caller actually had.
@@ -5356,6 +5381,7 @@ app.get("/templates", async (c) => {
       template_mode: t.template_mode ?? "autonomous_venture",
       category: t.category ?? (t.id.includes("webdev") ? "AGENCY" : "COMMERCE"),
       ...(t.cowork_config ? { cowork_config: t.cowork_config } : {}),
+      ...(t.model_policy ? { model_policy: t.model_policy } : {}),
       free_tier_eligible: t.free_tier_eligible,
       connectors: t.connectors ?? [],
       coming_soon: t.coming_soon ?? false,

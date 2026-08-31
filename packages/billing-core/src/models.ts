@@ -142,6 +142,11 @@ export const ALLOWED_MODELS = [
   "google-ai-studio/gemini-3.6-flash",
   "google-ai-studio/gemini-3.5-flash",
   "google-ai-studio/gemini-3.5-flash-lite",
+  // Company Fine-Tuned / Vertical Curated LoRA Models
+  "custom/acme-support-v1-2",
+  "custom/acme-legal-redline",
+  "custom/hospital-clinical-llama8b-v1",
+  "custom/lexpulse-delaware-legal-v2",
   // Groq — see MODEL_CONTEXT_WINDOWS' own comment above for why, and for why gpt-oss-120b is
   // excluded (the only one of the account's real candidates that didn't survive a LIVE dispatched
   // test through the real reasoning loop). The remaining four were each confirmed present and
@@ -353,3 +358,45 @@ export function capabilityForModel(model: string): ModelCapability {
 export function isValidReasoningLevel(model: string, level: string): boolean {
   return capabilityForModel(model).reasoningLevels.includes(level);
 }
+
+/**
+ * Vertical Model Policy definition & compliance gate.
+ */
+export interface VerticalModelPolicy {
+  /** Mode: "whitelist_only" (hard filter) vs "all_allowed" (standard) */
+  mode: "whitelist_only" | "all_allowed";
+  /** The exact allowed model IDs for this vertical */
+  allowedModelIds: string[];
+  /** Default selected model on space creation */
+  defaultModelId: string;
+  /** Can a space admin expand this list, or is it locked by compliance? */
+  lockedByCompliancePolicy: boolean;
+  /** UI Custom Category Label */
+  pickerHeaderLabel?: string;
+}
+
+/**
+ * Server-side compliance gate: validates whether a requested model string is authorized
+ * by a Space's vertical model policy.
+ */
+export function validateModelForSpacePolicy(
+  requestedModel: string,
+  policy?: VerticalModelPolicy | null
+): { valid: boolean; reason?: string } {
+  if (!policy || policy.mode === "all_allowed") {
+    return { valid: true };
+  }
+
+  if (policy.mode === "whitelist_only") {
+    const isAllowed = policy.allowedModelIds.includes(requestedModel);
+    if (!isAllowed) {
+      return {
+        valid: false,
+        reason: `Model '${requestedModel}' is not authorized by this Space's compliance policy (${policy.pickerHeaderLabel || "Whitelist Only"}). Authorized models: ${policy.allowedModelIds.join(", ")}`,
+      };
+    }
+  }
+
+  return { valid: true };
+}
+
