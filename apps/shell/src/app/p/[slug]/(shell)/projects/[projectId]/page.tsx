@@ -42,6 +42,7 @@ import {
 import { ProjectKindPanel, type InspectedElement } from "@/components/ProjectKindPanel";
 import { CustomerBotAutomation } from "@/components/CustomerBotAutomation";
 import { AgentPolicyPanel } from "@/components/AgentPolicyPanel";
+import { ProjectCoworkersOffice } from "@/components/ProjectCoworkersOffice";
 
 const STATUS_BADGE: Record<string, "green" | "amber" | "blue" | undefined> = {
   active: "green",
@@ -58,6 +59,7 @@ export default function ProjectDetailPage() {
   const [project, setProject] = React.useState<Project | null>(null);
   const [allProjects, setAllProjects] = React.useState<Project[]>([]);
   const [threads, setThreads] = React.useState<ThreadSummary[]>([]);
+  const [includeHeartbeats, setIncludeHeartbeats] = React.useState(false);
   const [agents, setAgents] = React.useState<AgentDefinitionSummary[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [creating, setCreating] = React.useState(false);
@@ -97,7 +99,7 @@ export default function ProjectDetailPage() {
     try {
       const [p, t, a, allP] = await Promise.all([
         getProject(activeSpaceId, params.projectId, creds),
-        listThreads(activeSpaceId, creds, { projectId: params.projectId, include_sub_threads: true }),
+        listThreads(activeSpaceId, creds, { projectId: params.projectId, include_sub_threads: true, include_heartbeats: includeHeartbeats }),
         listAgentDefinitions(activeSpaceId, creds).catch(() => []),
         listProjects(activeSpaceId, creds).catch(() => []),
       ]);
@@ -117,7 +119,7 @@ export default function ProjectDetailPage() {
       setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSpaceId, params.projectId, session]);
+  }, [activeSpaceId, params.projectId, session, includeHeartbeats]);
 
   const refreshDocs = React.useCallback(async () => {
     if (!creds) return;
@@ -387,6 +389,16 @@ export default function ProjectDetailPage() {
         />
       )}
 
+      {/* Multi-Agent Virtual Office: Coworker Bots, Living Project Journal, Git Artifacts Stream & Spend Guard */}
+      {creds && project && (
+        <ProjectCoworkersOffice
+          project={project}
+          spaceId={activeSpaceId}
+          productSlug={product.slug}
+          creds={creds}
+        />
+      )}
+
       {/* Step 21: the customer-bot Automation dashboard — no-code "when a message matches X, do Y"
           rules, shown only on a customer_bot project (project.kind is refreshed after a settings
           save, so switching a project to Customer bot and saving surfaces it). */}
@@ -414,8 +426,19 @@ export default function ProjectDetailPage() {
         </Card>
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-        <div className="section-label" style={{ margin: 0 }}>Threads</div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div className="section-label" style={{ margin: 0 }}>Threads</div>
+          <label style={{ fontSize: 11.5, color: "var(--text3)", display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={includeHeartbeats}
+              onChange={(e) => setIncludeHeartbeats(e.target.checked)}
+              style={{ margin: 0 }}
+            />
+            Show autonomous wake-up sessions
+          </label>
+        </div>
         {threads.length > 0 && (
           <div className="search-bar" style={{ margin: 0, maxWidth: 220, padding: "5px 10px" }}>
             <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="currentColor"><circle cx="7" cy="7" r="4.5" /><line x1="10.5" y1="10.5" x2="14" y2="14" /></svg>

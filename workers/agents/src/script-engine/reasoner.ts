@@ -14,8 +14,9 @@ import { renderConversationForReasoner } from "./conversation-context.js";
 import { renderStepsForReasoner } from "./step-context.js";
 import type { BusinessContext } from "../launchpad/business-context.js";
 import type { Reasoner, ReasonDecision, ReasonerUsage } from "./loop.js";
-import type { Embedder } from "./types.js";
+import type { Embedder, LocalTunnelGateway } from "./types.js";
 import { AVOS_SDK_DTS } from "./code-runner.js";
+import { isLocalModel } from "@naelao/billing-core";
 import {
   buildUniversalBody,
   normalizeUniversalResponse,
@@ -42,6 +43,12 @@ export interface ReasonerDeps {
   gateway: GatewayOpts;
   ctx: AIClientContext;
   model?: string;
+  /** Local-machine tunnel gateway for on-premises GPU model execution (Ollama/vLLM). */
+  localTunnel?: LocalTunnelGateway;
+  /** Acting user ID for tunnel dispatch. */
+  userId?: string;
+  /** Enterprise air-gapped lock: blocks all external cloud AI egress. */
+  airGappedOnly?: boolean;
   /** F-12: ordered cross-provider failover chain (each {model, apiKey}). The CF AI Gateway tries
    *  the primary then each of these until one succeeds. Empty/absent = no failover (single provider). */
   fallbacks?: FailoverModel[];
@@ -888,6 +895,76 @@ export class GatewayReasoner implements Reasoner {
       system: composeSystemPrompt(this.deps.agentPrompt, this.deps.businessContext, this.deps.userCustomInstructions),
       messages: [{ role: "user", content: userContent }],
     };
+
+    // 0. Air-Gapped Policy Enforcement: if the space is locked to air-gapped on-premise execution,
+    // prevent any external cloud AI provider request.
+    const isLocal = isLocalModel(query.model);
+    if (this.deps.airGappedOnly && !isLocal) {
+      return {
+        action: "give_up",
+        reason: "Air-Gapped Policy Violation: External Cloud AI egress is strictly prohibited for this space. Connect an on-premise local runner (Ollama/vLLM) and select a local/* model.",
+      };
+    }
+
+    // 1. On-Premises Local Runner Dispatch (Zero Cloud Egress):
+    // Routes prompt via the builder's local tunnel daemon directly to Ollama / vLLM on their local machine.
+    if (isLocal) {
+      if (!this.deps.localTunnel) {
+        return {
+          action: "give_up",
+          reason: "Local on-premise model requested but no local tunnel is available in this environment. Run the Naelao Local Agent with --ollama to connect.",
+        };
+      }
+      const rawPayload = JSON.parse(
+        buildUniversalBody({
+          apiKey: this.deps.apiKey || "local",
+          gatewayOpts: this.deps.gateway,
+          ctx: { ...this.deps.ctx, skipCache: true },
+          query,
+          tools: decisionTools(query.model),
+          ...(this.deps.reasoning ? { reasoning: this.deps.reasoning } : {}),
+        })
+      );
+      const tunnelResult = await this.deps.localTunnel.exec({
+        userId: this.deps.userId ?? "default",
+        op: "local_llm_chat",
+        params: rawPayload,
+      });
+      if (!tunnelResult.ok) {
+        return {
+          action: "give_up",
+          reason: `Local on-premise runner error: ${tunnelResult.error ?? "failed to communicate with local Ollama/vLLM daemon"}`,
+        };
+      }
+      const parsed = normalizeUniversalResponse(tunnelResult.result);
+      const { text, usage, toolCall, thinking } = parsed;
+      if (usage) this.lastUsage = usage;
+      if (thinking) this.lastThinking = thinking;
+      if (toolCall) {
+        const decision = decisionFromToolCall(toolCall);
+        if (decision) {
+          if (decision.action !== "answer" && decision.action !== "give_up") {
+            this.captureSpokenText(toolCall, text);
+          }
+          return decision;
+        }
+        const asOperation = coerceOperationToolCall(toolCall);
+        if (asOperation) {
+          this.captureSpokenText(toolCall, text);
+          return asOperation;
+        }
+      }
+      try {
+        const coerced = coerceDecision(extractJson(text));
+        if (coerced) return coerced;
+        const asAnswer = stripDecisionJson(text);
+        if (asAnswer) return { action: "answer", text: asAnswer };
+        if (text && text.trim()) return { action: "answer", text: text.trim() };
+        return { action: "give_up", reason: "Local on-premise runner returned empty or unparseable response" };
+      } catch (err) {
+        return { action: "give_up", reason: `Local on-premise response parsing error: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    }
 
     // No provider key AND no gateway-stored-key auth → the call can't authenticate. Fail honestly
     // here rather than firing a doomed request (whose 401 would just surface as a vague give_up).

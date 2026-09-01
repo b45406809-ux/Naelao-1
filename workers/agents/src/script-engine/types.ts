@@ -616,7 +616,8 @@ export interface LlmCallerGateway {
  */
 export interface LocalTunnelGateway {
   exec(params: { userId: string; op: string; params: Record<string, unknown> }): Promise<{ ok: boolean; result?: unknown; error?: string }>;
-  status(userId: string): Promise<{ connected: boolean }>;
+  status(userId: string): Promise<{ connected: boolean; models?: Array<{ id: string; name: string; size?: string; context_window?: number }> }>;
+  models?(userId: string): Promise<{ connected: boolean; models: Array<{ id: string; name: string; size?: string; context_window?: number }> }>;
 }
 
 /**

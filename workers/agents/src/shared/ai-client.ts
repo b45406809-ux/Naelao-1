@@ -17,6 +17,9 @@
  * For CF Workers AI (embeddings, free-tier sub-agent vision), use callWorkersAI() directly.
  */
 
+import { isLocalModel } from "@naelao/billing-core";
+export { isLocalModel };
+
 export interface AIClientContext {
   spaceId: string;
   userId?: string;
@@ -192,8 +195,10 @@ export function universalGatewayHeaders(opts: GatewayOpts): Record<string, strin
  *  A Google AI Studio model is checked separately: it never authenticates with the Cloudflare
  *  token/aigToken alone (see isGoogleAiStudioModel's doc) — it needs a real `googleAiStudioApiKey`,
  *  full stop, or the request is a guaranteed 401. `model` is optional so every pre-existing call
- *  site (which doesn't know or care about a specific model) keeps its old behavior unchanged. */
+ *  site (which doesn't know or care about a specific model) keeps its old behavior unchanged.
+ *  Local on-premises models authenticate via their active LocalTunnel WebSocket connection. */
 export function canAuthenticateLlm(opts: GatewayOpts, apiKey: string, model?: string): boolean {
+  if (model && isLocalModel(model)) return true;
   // A BYOK provider needs its OWN key, full stop — a Cloudflare token cannot stand in, so the
   // request would be a guaranteed 401 and is better refused here with a message naming the secret.
   const field = model ? byokKeyFieldForModel(model) : null;

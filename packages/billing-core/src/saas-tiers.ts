@@ -21,6 +21,9 @@ export interface SaaSTierConfig {
   maxCustomDomains: number;
   maxSubSpaces: number; // Sub-spaces / Departments
   maxTeamSeats: number;
+  maxBotsPerProject: number; // Free: 2, Starter: 5, Pro: 15, Enterprise: -1 (unlimited)
+  maxConcurrentBotExecutions: number; // Concurrency ladder capacity
+  dailySpendLimitCreditsDefault: number; // Project daily spend cap default
   unlockedExecutionTiers: number[]; // 1..6
   features: {
     byokOnly: boolean;
@@ -47,6 +50,9 @@ export const SAAS_TIER_CONFIGS: Record<PlatformSaaSTier, SaaSTierConfig> = {
     maxCustomDomains: 0,
     maxSubSpaces: 0,
     maxTeamSeats: 1,
+    maxBotsPerProject: 2,
+    maxConcurrentBotExecutions: 1,
+    dailySpendLimitCreditsDefault: 200,
     unlockedExecutionTiers: [1, 2],
     features: {
       byokOnly: true,
@@ -71,6 +77,9 @@ export const SAAS_TIER_CONFIGS: Record<PlatformSaaSTier, SaaSTierConfig> = {
     maxCustomDomains: 1,
     maxSubSpaces: 0,
     maxTeamSeats: 1,
+    maxBotsPerProject: 5,
+    maxConcurrentBotExecutions: 2,
+    dailySpendLimitCreditsDefault: 1000,
     unlockedExecutionTiers: [1, 2, 3, 4],
     features: {
       byokOnly: false,
@@ -95,6 +104,9 @@ export const SAAS_TIER_CONFIGS: Record<PlatformSaaSTier, SaaSTierConfig> = {
     maxCustomDomains: 5,
     maxSubSpaces: 3,
     maxTeamSeats: 5,
+    maxBotsPerProject: 15,
+    maxConcurrentBotExecutions: 5,
+    dailySpendLimitCreditsDefault: 5000,
     unlockedExecutionTiers: [1, 2, 3, 4, 5, 6],
     features: {
       byokOnly: false,
@@ -119,6 +131,9 @@ export const SAAS_TIER_CONFIGS: Record<PlatformSaaSTier, SaaSTierConfig> = {
     maxCustomDomains: 50,
     maxSubSpaces: 25,
     maxTeamSeats: 25,
+    maxBotsPerProject: -1, // Unlimited
+    maxConcurrentBotExecutions: 20,
+    dailySpendLimitCreditsDefault: 50000,
     unlockedExecutionTiers: [1, 2, 3, 4, 5, 6],
     features: {
       byokOnly: false,

@@ -8,7 +8,7 @@
 // control, rather than a dead/disabled one.
 
 import * as React from "react";
-import { ALLOWED_MODELS, capabilityForModel, type VerticalModelPolicy } from "@naelao/billing-core";
+import { ALLOWED_MODELS, capabilityForModel, isLocalModel, type VerticalModelPolicy } from "@naelao/billing-core";
 
 const MODEL_LABELS: Record<string, string> = {
   "claude-haiku-4-5-20251001": "Claude Haiku 4.5",
@@ -38,7 +38,23 @@ const MODEL_LABELS: Record<string, string> = {
   "custom/acme-legal-redline": "Acme Legal Redline Specialist",
   "custom/hospital-clinical-llama8b-v1": "Clinica Hospital Llama-8B (Clinical LoRA)",
   "custom/lexpulse-delaware-legal-v2": "LexPulse Delaware Legal Specialist (v2)",
+  "local/ollama/llama3.3:70b": "Llama 3.3 70B (Local Ollama)",
+  "local/ollama/qwen2.5-coder:32b": "Qwen 2.5 Coder 32B (Local Ollama)",
+  "local/ollama/deepseek-r1:8b": "DeepSeek R1 8B (Local Ollama)",
 };
+
+export interface LocalDiscoveredModel {
+  id: string;
+  name: string;
+  size?: string;
+  context_window?: number;
+}
+
+export const DEFAULT_LOCAL_MODELS: LocalDiscoveredModel[] = [
+  { id: "local/ollama/llama3.3:70b", name: "Llama 3.3 70B (Local GPU Workstation)", size: "39.4GB" },
+  { id: "local/ollama/qwen2.5-coder:32b", name: "Qwen 2.5 Coder 32B (On-Premises Ollama)", size: "18.2GB" },
+  { id: "local/ollama/deepseek-r1:8b", name: "DeepSeek R1 8B (Private Air-Gapped)", size: "4.7GB" },
+];
 
 export interface CustomCompanyModel {
   id: string;
@@ -80,6 +96,12 @@ export const DEFAULT_COMPANY_MODELS: CustomCompanyModel[] = [
 ];
 
 export function modelLabel(model: string): string {
+  if (isLocalModel(model)) {
+    const matched = DEFAULT_LOCAL_MODELS.find((l) => l.id === model);
+    if (matched) return matched.name;
+    const clean = model.replace(/^(local\/|ollama\/|vllm\/)/, "");
+    return `🖥️ ${clean} (Local)`;
+  }
   if (model.startsWith("custom/")) {
     const matched = DEFAULT_COMPANY_MODELS.find((c) => c.id === model);
     if (matched) return matched.name;
@@ -100,6 +122,7 @@ export interface ModelSelectorProps {
   /** Vertical model policy restricting or curating allowed models */
   modelPolicy?: VerticalModelPolicy | null;
   spaceModelPolicy?: VerticalModelPolicy | null;
+  localModels?: LocalDiscoveredModel[];
   /** Called whenever either the model or the reasoning level changes. */
   onChange?: (model: string, reasoningLevel: string | null) => void;
   onModelChange?: (model: string) => void;
@@ -111,11 +134,14 @@ export function ModelSelector({
   reasoningLevel = null,
   modelPolicy: propModelPolicy,
   spaceModelPolicy: propSpaceModelPolicy,
+  localModels,
   onChange,
   onModelChange,
 }: ModelSelectorProps) {
-  const model = propModel ?? propSelectedModel ?? "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
   const modelPolicy = propSpaceModelPolicy ?? propModelPolicy;
+  const isAirGapped = Boolean(modelPolicy?.airGappedOnly);
+  const defaultModel = isAirGapped ? "local/ollama/llama3.3:70b" : "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+  const model = propModel ?? propSelectedModel ?? defaultModel;
   const [open, setOpen] = React.useState(false);
   const rootRef = React.useRef<HTMLDivElement>(null);
   const capability = capabilityForModel(model);
@@ -143,15 +169,24 @@ export function ModelSelector({
     return isWhitelist && modelPolicy?.allowedModelIds ? new Set(modelPolicy.allowedModelIds) : null;
   }, [isWhitelist, modelPolicy]);
 
+  const availableLocalModels = React.useMemo(() => {
+    const list = localModels && localModels.length > 0 ? localModels : DEFAULT_LOCAL_MODELS;
+    if (isAirGapped) return list;
+    if (!allowedSet) return list;
+    return list.filter((m) => allowedSet.has(m.id) || allowedSet.has("local/*"));
+  }, [localModels, isAirGapped, allowedSet]);
+
   const filteredCompanyModels = React.useMemo(() => {
+    if (isAirGapped) return []; // Air-gapped disables cloud fine-tuned APIs
     if (!allowedSet) return DEFAULT_COMPANY_MODELS;
     return DEFAULT_COMPANY_MODELS.filter((cm) => allowedSet.has(cm.id) || allowedSet.has("custom/*") || Array.from(allowedSet).some(m => m.startsWith("custom/")));
-  }, [allowedSet]);
+  }, [allowedSet, isAirGapped]);
 
   const filteredFoundationModels = React.useMemo(() => {
+    if (isAirGapped) return []; // Air-gapped blocks external cloud APIs
     if (!allowedSet) return ALLOWED_MODELS.filter((m) => !m.startsWith("custom/"));
     return ALLOWED_MODELS.filter((m) => allowedSet.has(m) && !m.startsWith("custom/"));
-  }, [allowedSet]);
+  }, [allowedSet, isAirGapped]);
 
   return (
     <div ref={rootRef} style={{ position: "relative" }}>
@@ -166,7 +201,17 @@ export function ModelSelector({
         }}
       >
         <span>{modelLabel(model)}</span>
-        {isWhitelist && (
+        {isAirGapped && (
+          <span
+            style={{
+              fontSize: 10, color: "#16a34a", background: "#22c55e18",
+              borderRadius: 4, padding: "1px 5px", fontWeight: 600,
+            }}
+          >
+            🛡️ Air-Gapped
+          </span>
+        )}
+        {isWhitelist && !isAirGapped && (
           <span
             style={{
               fontSize: 10, color: "#16a34a", background: "#22c55e18",
@@ -201,7 +246,23 @@ export function ModelSelector({
             boxShadow: "var(--shadow-md)", zIndex: 40, padding: 6,
           }}
         >
-          {isWhitelist && (
+          {isAirGapped && (
+            <div
+              style={{
+                fontSize: 11, fontWeight: 700, color: "#16a34a",
+                padding: "6px 8px 6px", borderBottom: "1px solid var(--border)",
+                marginBottom: 6, display: "flex", alignItems: "center", justifyContent: "space-between",
+                background: "rgba(34, 197, 94, 0.08)", borderRadius: 6,
+              }}
+            >
+              <span>🛡️ Enterprise Air-Gapped Mode Active</span>
+              <span style={{ fontSize: 9.5, color: "#16a34a", background: "rgba(34, 197, 94, 0.16)", padding: "1px 5px", borderRadius: 4 }}>
+                Cloud AI Blocked
+              </span>
+            </div>
+          )}
+
+          {isWhitelist && !isAirGapped && (
             <div
               style={{
                 fontSize: 11, fontWeight: 700, color: "var(--accent)",
@@ -216,6 +277,37 @@ export function ModelSelector({
                 </span>
               )}
             </div>
+          )}
+
+          {availableLocalModels.length > 0 && (
+            <>
+              <div style={{ fontSize: 10.5, fontWeight: 700, color: "#16a34a", textTransform: "uppercase", letterSpacing: 0.5, padding: "4px 8px 4px", display: "flex", alignItems: "center", gap: 5 }}>
+                <span>🖥️</span> ON-PREMISES LOCAL RUNNERS (Zero Egress)
+              </div>
+              {availableLocalModels.map((lm) => (
+                <button
+                  key={lm.id}
+                  type="button"
+                  onClick={() => {
+                    handleSelection(lm.id, "medium");
+                  }}
+                  style={{
+                    display: "flex", width: "100%", flexDirection: "column", alignItems: "flex-start",
+                    gap: 2, padding: "6px 8px", borderRadius: 8, border: "none",
+                    background: lm.id === model ? "rgba(34, 197, 94, 0.12)" : "transparent",
+                    color: "var(--text)", fontSize: 12.5, cursor: "pointer", textAlign: "left",
+                  }}
+                >
+                  <div style={{ display: "flex", width: "100%", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontWeight: 600 }}>🦙 {lm.name}</span>
+                    <span style={{ fontSize: 10, background: "#22c55e22", color: "#16a34a", padding: "1px 5px", borderRadius: 4, fontWeight: 600 }}>
+                      {lm.size ?? "Local"}
+                    </span>
+                  </div>
+                  <span style={{ fontSize: 11, color: "var(--text3)" }}>Direct zero-latency inference on your local hardware</span>
+                </button>
+              ))}
+            </>
           )}
 
           {filteredCompanyModels.length > 0 && (

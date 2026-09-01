@@ -1589,6 +1589,123 @@ app.delete("/spaces/:spaceId/projects/:projectId/container-slots/:slotId", async
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
+// ── Multi-Agent Virtual Office (Commits, Roster, Living Journal & Spend Cap) ──
+app.use("/spaces/:spaceId/projects/:projectId/commits", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/commits", requireBusinessMembership({ GET: "member", POST: "member" }));
+
+app.get("/spaces/:spaceId/projects/:projectId/commits", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/commits`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.post("/spaces/:spaceId/projects/:projectId/commits", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const body = await c.req.json();
+  body.space_id = spaceId;
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/commits`, "POST", JSON.stringify(body));
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.use("/spaces/:spaceId/projects/:projectId/roster", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/roster", requireBusinessMembership({ GET: "member", POST: "admin" }));
+app.use("/spaces/:spaceId/projects/:projectId/roster/:botId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/roster/:botId", requireBusinessMembership({ PATCH: "member", DELETE: "admin" }));
+
+app.get("/spaces/:spaceId/projects/:projectId/roster", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/roster?space_id=${encodeURIComponent(spaceId)}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.post("/spaces/:spaceId/projects/:projectId/roster", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const body = await c.req.json();
+  body.space_id = spaceId;
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/roster`, "POST", JSON.stringify(body));
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.patch("/spaces/:spaceId/projects/:projectId/roster/:botId", async (c) => {
+  const { spaceId, projectId, botId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const body = await c.req.json();
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/roster/${encodeURIComponent(botId)}`, "PATCH", JSON.stringify(body));
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.delete("/spaces/:spaceId/projects/:projectId/roster/:botId", async (c) => {
+  const { spaceId, projectId, botId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/roster/${encodeURIComponent(botId)}`, "DELETE");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.use("/spaces/:spaceId/projects/:projectId/journal/full", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/journal/full", requireBusinessMembership({ GET: "member" }));
+
+app.get("/spaces/:spaceId/projects/:projectId/journal/full", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/journal/full?space_id=${encodeURIComponent(spaceId)}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.use("/spaces/:spaceId/projects/:projectId/check-goals-cycle", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/check-goals-cycle", requireBusinessMembership({ POST: "member" }));
+
+app.post("/spaces/:spaceId/projects/:projectId/check-goals-cycle", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const body = await c.req.json().catch(() => ({}));
+  body.space_id = spaceId;
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/check-goals-cycle`, "POST", JSON.stringify(body));
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.use("/spaces/:spaceId/projects/:projectId/spend-cap", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/spend-cap", requireBusinessMembership({ GET: "member", POST: "admin" }));
+
+app.get("/spaces/:spaceId/projects/:projectId/spend-cap", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/spend-cap?space_id=${encodeURIComponent(spaceId)}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.post("/spaces/:spaceId/projects/:projectId/spend-cap", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const body = await c.req.json();
+  body.space_id = spaceId;
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/spend-cap`, "POST", JSON.stringify(body));
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
 // ── Local-machine-as-container (spec "Local PC as a Container Target", gap G-3; §A1.17
 // Phase M, UI added Phase S) — a builder OR a business's own end-user member opts their OWN
 // machine in as a grant-checked Tier-5c target. Gated by requireInternalHmac (the SAME token

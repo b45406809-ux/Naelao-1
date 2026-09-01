@@ -933,6 +933,7 @@ export interface Project {
   channel_config?: Record<string, unknown>;
   visibility?: "public" | "private";
   exclusive_mode?: boolean;
+  lifecycle?: "finite" | "continuous";
 }
 
 export async function listProjects(spaceId: string, session: SessionCredentials): Promise<Project[]> {
@@ -944,6 +945,7 @@ export interface CreateProjectOptions {
   description?: string;
   kind?: string;
   visibility?: "public" | "private";
+  lifecycle?: "finite" | "continuous";
   invited_user_ids?: string[];
 }
 
@@ -968,6 +970,7 @@ export async function createProject(
       ...(opts.description ? { description: opts.description } : {}),
       ...(opts.kind ? { kind: opts.kind } : {}),
       ...(opts.visibility ? { visibility: opts.visibility } : {}),
+      ...(opts.lifecycle ? { lifecycle: opts.lifecycle } : {}),
       ...(opts.invited_user_ids && opts.invited_user_ids.length > 0 ? { invited_user_ids: opts.invited_user_ids } : {}),
     }),
     session,
@@ -1028,6 +1031,7 @@ export async function updateProject(
     max_threads: number;
     default_agent_id: string | null;
     allowed_agent_ids: string[] | null;
+    lifecycle?: "finite" | "continuous";
   }>
 ): Promise<Project> {
   return apiFetch(`/v1/spaces/${spaceId}/projects/${projectId}`, {
@@ -1132,6 +1136,210 @@ export async function deleteProjectRule(
 ): Promise<void> {
   await apiFetch(`/v1/spaces/${spaceId}/projects/${projectId}/rules/${ruleId}`, {
     method: "DELETE",
+    session,
+  });
+}
+
+// ── Multi-Agent Virtual Office: Commits, Roster, Journal & Spend Cap ────────
+
+export interface ProjectGitCommit {
+  id: string;
+  space_id: string;
+  project_id: string;
+  branch: string;
+  message: string;
+  author_name: string;
+  author_type: "bot" | "human";
+  author_id?: string | null;
+  pr_id?: string | null;
+  pr_title?: string | null;
+  diff_stats?: { files_changed?: number; additions?: number; deletions?: number };
+  created_at: string;
+}
+
+export interface ProjectRosterBot {
+  id: string;
+  space_id: string;
+  project_id: string;
+  name: string;
+  handle: string;
+  role: string;
+  status: "idle" | "working" | "blocked" | "offline";
+  current_activity: string | null;
+  avatar: string | null;
+  skills: string[];
+  model: string | null;
+  config?: Record<string, unknown>;
+  last_active_at: string;
+  created_at: string;
+}
+
+export interface ProjectTaskItem {
+  id: string;
+  space_id: string;
+  project_id: string;
+  thread_id: string | null;
+  title: string;
+  status: "pending" | "in_progress" | "completed" | "blocked";
+  dependencies: string[];
+  assigned_agent: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectJournalSummary {
+  totalTasks: number;
+  completedTasks: number;
+  inProgressTasks: number;
+  blockedTasks: number;
+  pendingTasks: number;
+  progressPct: number;
+  allGoalsCompleted: boolean;
+}
+
+export interface ProjectJournalFull {
+  project_id: string;
+  space_id: string;
+  tasks: ProjectTaskItem[];
+  commits: ProjectGitCommit[];
+  roster: ProjectRosterBot[];
+  summary: ProjectJournalSummary;
+}
+
+export interface ProjectSpendCap {
+  project_id: string;
+  daily_credit_limit: number;
+  today_credits_used: number;
+  last_reset_date: string;
+  circuit_breaker_tripped: boolean;
+  remaining_credits_today: number;
+}
+
+export async function listProjectCommits(
+  spaceId: string,
+  projectId: string,
+  session: SessionCredentials
+): Promise<ProjectGitCommit[]> {
+  const res = await apiFetch<{ data: ProjectGitCommit[]; count: number }>(
+    `/v1/spaces/${spaceId}/projects/${projectId}/commits`,
+    { session }
+  );
+  return res.data ?? [];
+}
+
+export async function recordProjectCommit(
+  spaceId: string,
+  projectId: string,
+  commit: Omit<ProjectGitCommit, "id" | "space_id" | "project_id" | "created_at">,
+  session: SessionCredentials
+): Promise<ProjectGitCommit> {
+  const res = await apiFetch<{ ok: boolean; commit: ProjectGitCommit }>(
+    `/v1/spaces/${spaceId}/projects/${projectId}/commits`,
+    {
+      method: "POST",
+      body: JSON.stringify(commit),
+      session,
+    }
+  );
+  return res.commit;
+}
+
+export async function listProjectRoster(
+  spaceId: string,
+  projectId: string,
+  session: SessionCredentials
+): Promise<ProjectRosterBot[]> {
+  const res = await apiFetch<{ data: ProjectRosterBot[]; count: number }>(
+    `/v1/spaces/${spaceId}/projects/${projectId}/roster`,
+    { session }
+  );
+  return res.data ?? [];
+}
+
+export async function upsertProjectRosterBot(
+  spaceId: string,
+  projectId: string,
+  bot: Partial<ProjectRosterBot> & { name: string; handle: string; role: string },
+  session: SessionCredentials
+): Promise<{ ok: boolean; id: string }> {
+  return apiFetch(`/v1/spaces/${spaceId}/projects/${projectId}/roster`, {
+    method: "POST",
+    body: JSON.stringify(bot),
+    session,
+  });
+}
+
+export async function updateProjectRosterBot(
+  spaceId: string,
+  projectId: string,
+  botId: string,
+  patch: Partial<ProjectRosterBot>,
+  session: SessionCredentials
+): Promise<{ ok: boolean; bot: ProjectRosterBot }> {
+  return apiFetch(`/v1/spaces/${spaceId}/projects/${projectId}/roster/${botId}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+    session,
+  });
+}
+
+export async function deleteProjectRosterBot(
+  spaceId: string,
+  projectId: string,
+  botId: string,
+  session: SessionCredentials
+): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/projects/${projectId}/roster/${botId}`, {
+    method: "DELETE",
+    session,
+  });
+}
+
+export async function getProjectJournalFull(
+  spaceId: string,
+  projectId: string,
+  session: SessionCredentials
+): Promise<ProjectJournalFull> {
+  const res = await apiFetch<{ ok: boolean; journal: ProjectJournalFull }>(
+    `/v1/spaces/${spaceId}/projects/${projectId}/journal/full`,
+    { session }
+  );
+  return res.journal;
+}
+
+export async function checkProjectGoalsCycle(
+  spaceId: string,
+  projectId: string,
+  session: SessionCredentials
+): Promise<{ ok: boolean; all_completed: boolean; total: number; completed: number; lifecycle?: "finite" | "continuous"; is_hibernating?: boolean }> {
+  return apiFetch(`/v1/spaces/${spaceId}/projects/${projectId}/check-goals-cycle`, {
+    method: "POST",
+    body: JSON.stringify({}),
+    session,
+  });
+}
+
+export async function getProjectSpendCap(
+  spaceId: string,
+  projectId: string,
+  session: SessionCredentials
+): Promise<ProjectSpendCap> {
+  const res = await apiFetch<{ ok: boolean; spend_cap: ProjectSpendCap }>(
+    `/v1/spaces/${spaceId}/projects/${projectId}/spend-cap`,
+    { session }
+  );
+  return res.spend_cap;
+}
+
+export async function updateProjectSpendCap(
+  spaceId: string,
+  projectId: string,
+  patch: { daily_credit_limit?: number; reset_tripped?: boolean },
+  session: SessionCredentials
+): Promise<{ ok: boolean; daily_credit_limit: number; today_credits_used: number; circuit_breaker_tripped: boolean }> {
+  return apiFetch(`/v1/spaces/${spaceId}/projects/${projectId}/spend-cap`, {
+    method: "POST",
+    body: JSON.stringify(patch),
     session,
   });
 }

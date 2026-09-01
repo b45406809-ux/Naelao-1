@@ -2166,6 +2166,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           const resp = await stub.fetch(new Request("http://local-tunnel/status"));
           return resp.json<{ connected: boolean }>();
         },
+        models: async (userId) => {
+          const stub = localTunnelDO.get(localTunnelDO.idFromName(`local-tunnel:${spaceId}:${userId}`));
+          const resp = await stub.fetch(new Request("http://local-tunnel/models"));
+          return resp.json<{ connected: boolean; models: Array<{ id: string; name: string; size?: number; modified_at?: string; provider?: string }> }>();
+        },
       };
     }
 
@@ -3319,6 +3324,19 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return Response.json({ error: "goal and spaceId are required" }, { status: 400 });
     }
 
+    // ── Multi-Bot Office Circuit Breakers ───────────────────────────────────────
+    // Layer 1: Trace Propagation Depth Limiter (prevents infinite bot-to-bot ping-pong loops)
+    const propagationDepth = Number(request.headers.get("x-naelao-depth") ?? body.context?.depth ?? 0);
+    if (propagationDepth > 4) {
+      return Response.json(
+        {
+          error: "Circuit Breaker: Bot-to-bot recursion depth limit reached (> 4). Halting cascade.",
+          error_code: "depth_limit_exceeded",
+        },
+        { status: 429 }
+      );
+    }
+
     // Go-live monetization pass: a business that opted into revenue-cut billing (productConfig.
     // pricingConfig.externalRevenueCut.enabled) but has stopped reporting its tracked revenue
     // (Whop credential revoked/broken) could otherwise keep running its agent indefinitely with
@@ -3466,6 +3484,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         ...byokOverride,
       },
       ctx: { spaceId, agentId, model: body.model ?? DEFAULT_WORKING_MODEL },
+      ...(engineEnv.localTunnel ? { localTunnel: engineEnv.localTunnel } : {}),
+      userId,
+      airGappedOnly: Boolean(body.airGappedOnly),
       ...(body.model ? { model: body.model } : {}),
       fallbacks: this.resolveFailoverChain(body.model ?? DEFAULT_WORKING_MODEL, body.apiKey ?? ""),
       ...(reasoningRequest ? { reasoning: reasoningRequest } : {}),
@@ -5541,6 +5562,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       apiKey: body.apiKey ?? "",
       gateway: { accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway", ...(this.env.CF_API_TOKEN ? { cfApiToken: this.env.CF_API_TOKEN } : {}), ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}), ...(this.env.GOOGLE_AI_STUDIO_API_KEY ? { googleAiStudioApiKey: this.env.GOOGLE_AI_STUDIO_API_KEY } : {}), ...(this.env.GROQ_API_KEY ? { groqApiKey: this.env.GROQ_API_KEY } : {}), ...byokOverride },
       ctx: { spaceId, agentId, model },
+      ...(engineEnv.localTunnel ? { localTunnel: engineEnv.localTunnel } : {}),
+      airGappedOnly: Boolean(body.airGappedOnly),
       model,
       fallbacks: this.resolveFailoverChain(model, body.apiKey ?? ""),
       // Same gap as the interactive path: a customer messaging a business on Slack/WhatsApp was

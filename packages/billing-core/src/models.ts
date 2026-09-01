@@ -173,8 +173,15 @@ export const ALLOWED_MODELS = [
 
 export type AllowedModel = (typeof ALLOWED_MODELS)[number];
 
+/** Whether a model is an on-premises / locally hosted model (Ollama, vLLM, private GPU runner). */
+export function isLocalModel(model: string): boolean {
+  if (!model || typeof model !== "string") return false;
+  return model.startsWith("local/") || model.startsWith("ollama/") || model.startsWith("vllm/");
+}
+
 /** Whether a model string is one a builder may select / a run may name. */
 export function isAllowedModel(model: string): model is AllowedModel {
+  if (isLocalModel(model)) return true;
   return (ALLOWED_MODELS as readonly string[]).includes(model);
 }
 
@@ -238,6 +245,7 @@ const DEFAULT_CONTEXT_WINDOW = 200_000;
  *  string rather than throwing — a model-switcher allowlist entry that outpaces this table
  *  should degrade to a sane default, not break context accounting. */
 export function contextWindowForModel(model: string): number {
+  if (isLocalModel(model)) return 131_072;
   return MODEL_CONTEXT_WINDOWS[model] ?? DEFAULT_CONTEXT_WINDOW;
 }
 
@@ -355,6 +363,9 @@ export const MODEL_CAPABILITIES: Record<string, ModelCapability> = {
  *  table above rather than throwing — an unknown/future model should just show no reasoning
  *  control, not break the config card. */
 export function capabilityForModel(model: string): ModelCapability {
+  if (isLocalModel(model)) {
+    return { reasoningLevels: ["none", "low", "medium", "high"], reasoningParam: "reasoning_effort" };
+  }
   return MODEL_CAPABILITIES[model] ?? NO_REASONING;
 }
 
@@ -378,6 +389,14 @@ export interface VerticalModelPolicy {
   lockedByCompliancePolicy: boolean;
   /** UI Custom Category Label */
   pickerHeaderLabel?: string;
+  /**
+   * Enterprise Air-Gapped Compliance Lock:
+   * When true, ZERO external cloud AI network calls are permitted.
+   * All reasoning runs MUST route strictly through authorized on-premises Local Tunnel daemons (Ollama/vLLM).
+   */
+  airGappedOnly?: boolean;
+  /** Optional allowed tunnel identifiers for on-premises runner isolation */
+  allowedLocalTunnels?: string[];
 }
 
 /**
@@ -388,7 +407,17 @@ export function validateModelForSpacePolicy(
   requestedModel: string,
   spaceModelPolicy?: VerticalModelPolicy | null
 ): { valid: boolean; reason?: string } {
-  // If template has no restrictive policy, allow platform default allowlist
+  // If air-gapped mode is enabled on the space, cloud AI egress is strictly forbidden
+  if (spaceModelPolicy?.airGappedOnly) {
+    if (!isLocalModel(requestedModel)) {
+      return {
+        valid: false,
+        reason: `Air-Gapped Compliance Lock: External Cloud AI egress is strictly prohibited for this space. Model '${requestedModel}' is a cloud provider. Only on-premise local models (local/*, ollama/*) are authorized.`,
+      };
+    }
+  }
+
+  // If template has no restrictive whitelist policy, allow platform default allowlist
   if (!spaceModelPolicy || spaceModelPolicy.mode !== "whitelist_only") {
     if (!isAllowedModel(requestedModel)) {
       return {
@@ -402,6 +431,7 @@ export function validateModelForSpacePolicy(
   // Enforce the vertical whitelist strictly
   const isWhitelisted =
     spaceModelPolicy.allowedModelIds.includes(requestedModel) ||
+    (spaceModelPolicy.allowedModelIds.includes("local/*") && isLocalModel(requestedModel)) ||
     (requestedModel.startsWith("custom/") && spaceModelPolicy.allowedModelIds.some((m) => m.startsWith("custom/")));
 
   if (!isWhitelisted) {

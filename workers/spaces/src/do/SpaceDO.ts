@@ -1094,6 +1094,63 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_calendar_project ON space_calendar_events(created_by_project_id);
     `,
   },
+  {
+    version: 42,
+    description: "project_git_commits, project_roster_bots, and project_spend_limits (Multi-Agent Virtual Office)",
+    up: `
+      CREATE TABLE IF NOT EXISTS project_git_commits (
+        id              TEXT PRIMARY KEY,
+        space_id        TEXT NOT NULL,
+        project_id      TEXT NOT NULL,
+        branch          TEXT NOT NULL DEFAULT 'main',
+        message         TEXT NOT NULL,
+        author_name     TEXT NOT NULL,
+        author_type     TEXT NOT NULL DEFAULT 'bot' CHECK (author_type IN ('bot', 'human')),
+        author_id       TEXT,
+        pr_id           TEXT,
+        pr_title        TEXT,
+        diff_stats_json TEXT DEFAULT '{}',
+        created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_git_commits_project ON project_git_commits(project_id, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS project_roster_bots (
+        id               TEXT PRIMARY KEY,
+        space_id         TEXT NOT NULL,
+        project_id       TEXT NOT NULL,
+        name             TEXT NOT NULL,
+        handle           TEXT NOT NULL,
+        role             TEXT NOT NULL,
+        status           TEXT NOT NULL DEFAULT 'idle' CHECK (status IN ('idle', 'working', 'blocked', 'offline')),
+        current_activity TEXT,
+        avatar           TEXT,
+        skills_json      TEXT DEFAULT '[]',
+        model            TEXT,
+        config_json      TEXT DEFAULT '{}',
+        last_active_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_roster_project_handle ON project_roster_bots(project_id, handle);
+      CREATE INDEX IF NOT EXISTS idx_roster_space_project ON project_roster_bots(space_id, project_id);
+
+      CREATE TABLE IF NOT EXISTS project_spend_limits (
+        project_id              TEXT PRIMARY KEY,
+        space_id                TEXT NOT NULL,
+        daily_credit_limit      INTEGER NOT NULL DEFAULT 1000,
+        today_credits_used      INTEGER NOT NULL DEFAULT 0,
+        last_reset_date         TEXT NOT NULL DEFAULT (date('now')),
+        circuit_breaker_tripped INTEGER NOT NULL DEFAULT 0,
+        updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `,
+  },
+  {
+    version: 43,
+    description: "projects lifecycle (finite build-and-sleep vs continuous 24/7 standing desk)",
+    up: `
+      ALTER TABLE projects ADD COLUMN lifecycle TEXT NOT NULL DEFAULT 'finite' CHECK (lifecycle IN ('finite', 'continuous'));
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -1581,6 +1638,48 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const containerSlotIdMatch = url.pathname.match(/^\/projects\/([^/]+)\/container-slots\/([^/]+)$/);
       if (method === "DELETE" && containerSlotIdMatch?.[1] && containerSlotIdMatch?.[2]) {
         return this.deleteContainerSlot(containerSlotIdMatch[1], containerSlotIdMatch[2]);
+      }
+
+      // ── Multi-Agent Virtual Office: Commits, Roster, Living Journal & Spend Cap ──
+      const projectCommitsMatch = url.pathname.match(/^\/projects\/([^/]+)\/commits$/);
+      if (method === "GET" && projectCommitsMatch?.[1]) {
+        return this.listProjectCommits(projectCommitsMatch[1]);
+      }
+      if (method === "POST" && projectCommitsMatch?.[1]) {
+        return this.recordProjectCommit(projectCommitsMatch[1], request);
+      }
+
+      const projectRosterMatch = url.pathname.match(/^\/projects\/([^/]+)\/roster$/);
+      if (method === "GET" && projectRosterMatch?.[1]) {
+        return this.listProjectRoster(projectRosterMatch[1], url.searchParams.get("space_id") ?? "");
+      }
+      if (method === "POST" && projectRosterMatch?.[1]) {
+        return this.upsertProjectRosterBot(projectRosterMatch[1], request);
+      }
+      const projectRosterBotIdMatch = url.pathname.match(/^\/projects\/([^/]+)\/roster\/([^/]+)$/);
+      if (method === "PATCH" && projectRosterBotIdMatch?.[1] && projectRosterBotIdMatch?.[2]) {
+        return this.updateProjectRosterBot(projectRosterBotIdMatch[1], projectRosterBotIdMatch[2], request);
+      }
+      if (method === "DELETE" && projectRosterBotIdMatch?.[1] && projectRosterBotIdMatch?.[2]) {
+        return this.deleteProjectRosterBot(projectRosterBotIdMatch[1], projectRosterBotIdMatch[2]);
+      }
+
+      const projectJournalFullMatch = url.pathname.match(/^\/projects\/([^/]+)\/journal\/full$/);
+      if (method === "GET" && projectJournalFullMatch?.[1]) {
+        return this.getProjectJournalFull(projectJournalFullMatch[1], url.searchParams.get("space_id") ?? "");
+      }
+
+      const projectGoalsCycleMatch = url.pathname.match(/^\/projects\/([^/]+)\/check-goals-cycle$/);
+      if (method === "POST" && projectGoalsCycleMatch?.[1]) {
+        return this.checkProjectGoalsCycle(projectGoalsCycleMatch[1], request);
+      }
+
+      const projectSpendCapMatch = url.pathname.match(/^\/projects\/([^/]+)\/spend-cap$/);
+      if (method === "GET" && projectSpendCapMatch?.[1]) {
+        return this.getProjectSpendCap(projectSpendCapMatch[1], url.searchParams.get("space_id") ?? "");
+      }
+      if (method === "POST" && projectSpendCapMatch?.[1]) {
+        return this.updateProjectSpendCap(projectSpendCapMatch[1], request);
       }
 
       // ── Local-machine-as-container permission grants (§A1.17 Phase M) ─────────
@@ -2804,7 +2903,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // appendMessage on every thread-linked message write — ordinary project chat AND consult
       // subthreads alike) now takes precedence over created_at, so a project an assistant just
       // consulted an agent about really does come back to the top, not just one a human typed in.
-      "SELECT id, space_id, name, description, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at, last_activity_at, kind, is_singleton_kind FROM projects WHERE space_id = ? AND status != 'archived' ORDER BY COALESCE(last_activity_at, created_at) DESC",
+      "SELECT id, space_id, name, description, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at, last_activity_at, kind, is_singleton_kind, lifecycle FROM projects WHERE space_id = ? AND status != 'archived' ORDER BY COALESCE(last_activity_at, created_at) DESC",
       spaceId
     );
     const visible = viewerId
@@ -2821,6 +2920,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       space_id: string; name: string; description?: string; tenant_id?: string;
       default_agent_id?: string; max_threads?: number; allowed_agent_ids?: string[];
       visibility?: "public" | "private"; created_by?: string; kind?: string;
+      lifecycle?: "finite" | "continuous";
       invited_user_ids?: string[];
       invited_members?: Array<{ user_id: string; role?: "owner" | "editor" | "viewer" } | string>;
       /** Set ONLY by the spaces worker's own POST /spaces/:spaceId/projects handler, derived from
@@ -2909,14 +3009,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const allowedAgentIdsJson = body.allowed_agent_ids && body.allowed_agent_ids.length > 0
       ? JSON.stringify(body.allowed_agent_ids)
       : null;
+    const lifecycle = body.lifecycle ?? (kind === "customer_bot" ? "continuous" : "finite");
     try {
       execute(
         this.ctx.storage.sql as never,
-        `INSERT INTO projects (id, space_id, name, description, status, kind, is_singleton_kind, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at)
-         VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO projects (id, space_id, name, description, status, kind, is_singleton_kind, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, lifecycle, created_at)
+         VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(space_id, name) DO NOTHING`,
         id, body.space_id, body.name, body.description ?? "", kind, isSingletonKind, body.default_agent_id ?? null,
-        body.max_threads ?? 0, allowedAgentIdsJson, body.visibility ?? "private", body.created_by ?? null, now
+        body.max_threads ?? 0, allowedAgentIdsJson, body.visibility ?? "private", body.created_by ?? null, lifecycle, now
       );
     } catch (err) {
       // F-32: the partial unique index (space_id, kind) WHERE is_singleton_kind=1 fired — a
@@ -2934,10 +3035,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
     const row = queryOne<{
       id: string; name: string; status: string; default_agent_id: string | null;
-      max_threads: number; allowed_agent_ids: string | null; visibility: string; created_by: string | null; created_at: string;
+      max_threads: number; allowed_agent_ids: string | null; visibility: string; created_by: string | null; lifecycle: string; created_at: string;
     }>(
       this.ctx.storage.sql as never,
-      "SELECT id, name, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at FROM projects WHERE space_id = ? AND name = ?",
+      "SELECT id, name, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, lifecycle, created_at FROM projects WHERE space_id = ? AND name = ?",
       body.space_id, body.name
     );
     // The creator is always an implicit project_members owner — so a private project the creator
@@ -3016,7 +3117,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
     const responseRow = row
       ? { ...row, allowed_agent_ids: safeJsonParseAgentIds(row.allowed_agent_ids) }
-      : { id, name: body.name, status: "active", default_agent_id: body.default_agent_id ?? null, max_threads: body.max_threads ?? 0, allowed_agent_ids: body.allowed_agent_ids ?? null, created_at: now };
+      : { id, name: body.name, status: "active", default_agent_id: body.default_agent_id ?? null, max_threads: body.max_threads ?? 0, allowed_agent_ids: body.allowed_agent_ids ?? null, lifecycle, created_at: now };
     return Response.json(
       // `created` distinguishes a genuine insert from the `ON CONFLICT(space_id, name) DO NOTHING`
       // no-op on a name collision — this endpoint always returned 201 either way, with no field a
@@ -3092,7 +3193,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       id: string; space_id: string; name: string; description: string; status: string;
       kind: string; execution_ceiling: number; daily_spend_cap_credits: number; channel_config: string;
       default_agent_id: string | null; max_threads: number; allowed_agent_ids: string | null;
-      visibility: string; created_at: string;
+      visibility: string; lifecycle: string; created_at: string;
     }>(this.ctx.storage.sql as never, "SELECT * FROM projects WHERE id = ?", projectId);
     if (!row) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
     if (viewerId && row.visibility === "private") {
@@ -3102,7 +3203,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return Response.json({ error_code: "forbidden", message: "Private project access denied" }, { status: 403 });
       }
     }
-    return Response.json({ ...row, channel_config: safeJsonParseObj(row.channel_config), allowed_agent_ids: safeJsonParseAgentIds(row.allowed_agent_ids) });
+    return Response.json({ ...row, lifecycle: row.lifecycle || "finite", channel_config: safeJsonParseObj(row.channel_config), allowed_agent_ids: safeJsonParseAgentIds(row.allowed_agent_ids) });
   }
 
   private async updateProject(projectId: string, request: Request): Promise<Response> {
@@ -3131,6 +3232,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       visibility?: "public" | "private";
       /** §A1.17 Phase T3: opts a project into the hard single-active-thread lock. */
       exclusive_mode?: boolean;
+      /** Lifecycle mode: 'finite' (auto-hibernate on task completion) vs 'continuous' (24/7 standing desk) */
+      lifecycle?: "finite" | "continuous";
     }>().catch(() => ({}) as Record<string, never>);
 
     const existing = queryOne<{ id: string; space_id: string; default_agent_id: string | null; allowed_agent_ids: string | null }>(
@@ -3224,6 +3327,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
     if (body.exclusive_mode !== undefined) {
       execute(this.ctx.storage.sql as never, "UPDATE projects SET exclusive_mode = ? WHERE id = ?", body.exclusive_mode ? 1 : 0, projectId);
+    }
+    if (body.lifecycle !== undefined) {
+      if (body.lifecycle !== "finite" && body.lifecycle !== "continuous") {
+        return Response.json({ error_code: "bad_request", message: "lifecycle must be 'finite' or 'continuous'" }, { status: 400 });
+      }
+      execute(this.ctx.storage.sql as never, "UPDATE projects SET lifecycle = ? WHERE id = ?", body.lifecycle, projectId);
     }
     // §A1.17 Phase V: live-sync — best-effort, never blocks the PATCH response. tenant_id rides
     // the query string (see the spaces-worker route's comment for why not a header/body field).
@@ -5043,6 +5152,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const projectId = params.get("project_id");
     const parentThreadId = params.get("parent_thread_id");
     const tier = params.get("tier") ?? params.get("thread_tier");
+    const threadKind = params.get("kind") ?? params.get("thread_kind");
+    const showHeartbeats = params.get("include_heartbeats") === "true";
     let showSubThreads = params.get("include_sub_threads") === "true";
     if (!showSubThreads && projectId) {
       const project = queryOne<{ show_sub_threads: number }>(
@@ -5059,6 +5170,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       clauses.push("project_id = ?");
       args.push(projectId);
     }
+    if (threadKind) {
+      clauses.push("thread_kind = ?");
+      args.push(threadKind);
+    } else if (!showHeartbeats) {
+      // By default hide heartbeat wake sessions unless explicitly requested or toggled
+      clauses.push("thread_kind != 'heartbeat_wake'");
+    }
+
     if (tier && ["main", "task", "consult"].includes(tier)) {
       clauses.push("thread_tier = ?");
       args.push(tier);
@@ -5070,7 +5189,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (parentThreadId) {
       clauses.push("parent_thread_id = ?");
       args.push(parentThreadId);
-    } else if (!showSubThreads && !tier) {
+    } else if (!showSubThreads && !tier && !threadKind) {
       clauses.push("thread_kind = 'primary'");
     }
 
@@ -6008,4 +6127,518 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
     return Response.json({ ok: true, id, status: "CANCELLED" });
   }
+
+  // ── Multi-Agent Virtual Office: Commits, Roster, Living Journal & Spend Cap ──
+
+  private listProjectCommits(projectId: string): Response {
+    const rows = queryAll<{
+      id: string; space_id: string; project_id: string; branch: string;
+      message: string; author_name: string; author_type: string; author_id: string | null;
+      pr_id: string | null; pr_title: string | null; diff_stats_json: string; created_at: string;
+    }>(
+      this.ctx.storage.sql as never,
+      `SELECT * FROM project_git_commits WHERE project_id = ? ORDER BY created_at DESC LIMIT 50`,
+      projectId
+    );
+    const parsed = rows.map((r) => ({
+      ...r,
+      diff_stats: JSON.parse(r.diff_stats_json || "{}"),
+    }));
+    return Response.json({ data: parsed, count: parsed.length });
+  }
+
+  private async recordProjectCommit(projectId: string, request: Request): Promise<Response> {
+    const body = await request.json<{
+      space_id: string;
+      id?: string;
+      branch?: string;
+      message: string;
+      author_name: string;
+      author_type?: "bot" | "human";
+      author_id?: string;
+      pr_id?: string;
+      pr_title?: string;
+      diff_stats?: Record<string, unknown>;
+    }>();
+
+    if (!body.message || !body.author_name || !body.space_id) {
+      return Response.json({ error_code: "bad_request", message: "space_id, message, and author_name are required" }, { status: 400 });
+    }
+
+    const commitId = body.id || `c_${crypto.randomUUID().slice(0, 8)}`;
+    const branch = body.branch || "main";
+    const authorType = body.author_type || "bot";
+    const now = new Date().toISOString();
+
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO project_git_commits (id, space_id, project_id, branch, message, author_name, author_type, author_id, pr_id, pr_title, diff_stats_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET message = excluded.message, pr_id = excluded.pr_id, pr_title = excluded.pr_title`,
+      commitId, body.space_id, projectId, branch, body.message, body.author_name, authorType,
+      body.author_id ?? null, body.pr_id ?? null, body.pr_title ?? null,
+      JSON.stringify(body.diff_stats ?? {}), now
+    );
+
+    if (this.env.WS_GATEWAY) {
+      void broadcastSpaceEvent(this.env.WS_GATEWAY, body.space_id, {
+        type: "artifacts.repo.pushed",
+        space_id: body.space_id,
+        payload: { project_id: projectId, commit_id: commitId, branch, author_name: body.author_name, message: body.message, pr_id: body.pr_id },
+      });
+    }
+
+    return Response.json({
+      ok: true,
+      commit: {
+        id: commitId,
+        space_id: body.space_id,
+        project_id: projectId,
+        branch,
+        message: body.message,
+        author_name: body.author_name,
+        author_type: authorType,
+        pr_id: body.pr_id ?? null,
+        pr_title: body.pr_title ?? null,
+        created_at: now,
+      },
+    }, { status: 201 });
+  }
+
+  private listProjectRoster(projectId: string, spaceId: string): Response {
+    let rows = queryAll<{
+      id: string; space_id: string; project_id: string; name: string;
+      handle: string; role: string; status: string; current_activity: string | null;
+      avatar: string | null; skills_json: string; model: string | null;
+      config_json: string; last_active_at: string; created_at: string;
+    }>(
+      this.ctx.storage.sql as never,
+      `SELECT * FROM project_roster_bots WHERE project_id = ? ORDER BY created_at ASC`,
+      projectId
+    );
+
+    // If roster is empty for this project, auto-seed the default autonomous bot coworkers
+    if (rows.length === 0 && spaceId) {
+      const defaultBots = [
+        {
+          id: `bot_architect_${projectId.slice(0, 6)}`,
+          name: "Architect Bot",
+          handle: "@ArchitectBot",
+          role: "System Architecture & Task Planning",
+          status: "idle",
+          current_activity: "Monitoring backlog & milestone architecture",
+          avatar: "📐",
+          model: "google/gemini-2.5-pro",
+          skills: ["task_decomposition", "schema_scaffolding", "pr_planning"],
+        },
+        {
+          id: `bot_dev_${projectId.slice(0, 6)}`,
+          name: "Dev Bot",
+          handle: "@DevBot",
+          role: "Full-Stack Implementation Engineer",
+          status: "idle",
+          current_activity: "Ready for feature tasks & bug fixes",
+          avatar: "⚡",
+          model: "anthropic/claude-3-7-sonnet",
+          skills: ["code_execution", "git_branching", "sqlite_fs", "npm_test"],
+        },
+        {
+          id: `bot_review_${projectId.slice(0, 6)}`,
+          name: "Review Bot",
+          handle: "@ReviewBot",
+          role: "Autonomous Code Review & QA",
+          status: "idle",
+          current_activity: "Waiting for open Pull Requests",
+          avatar: "🔍",
+          model: "openai/gpt-4.5-turbo",
+          skills: ["ast_linting", "security_scan", "diff_audit", "pr_merge"],
+        },
+        {
+          id: `bot_ops_${projectId.slice(0, 6)}`,
+          name: "Ops Bot",
+          handle: "@OpsBot",
+          role: "DevOps, Journal Sync & Deployments",
+          status: "idle",
+          current_activity: "Synchronizing project journal & health checks",
+          avatar: "🚀",
+          model: "groq/llama-3.3-70b",
+          skills: ["journal_sync", "cf_pages_deploy", "container_health"],
+        },
+      ];
+
+      const now = new Date().toISOString();
+      for (const bot of defaultBots) {
+        execute(
+          this.ctx.storage.sql as never,
+          `INSERT INTO project_roster_bots (id, space_id, project_id, name, handle, role, status, current_activity, avatar, skills_json, model, config_json, last_active_at, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)`,
+          bot.id, spaceId, projectId, bot.name, bot.handle, bot.role, bot.status, bot.current_activity, bot.avatar,
+          JSON.stringify(bot.skills), bot.model, now, now
+        );
+      }
+
+      rows = queryAll(
+        this.ctx.storage.sql as never,
+        `SELECT * FROM project_roster_bots WHERE project_id = ? ORDER BY created_at ASC`,
+        projectId
+      );
+    }
+
+    const parsed = rows.map((r) => ({
+      ...r,
+      skills: JSON.parse(r.skills_json || "[]"),
+      config: JSON.parse(r.config_json || "{}"),
+    }));
+
+    return Response.json({ data: parsed, count: parsed.length });
+  }
+
+  private async upsertProjectRosterBot(projectId: string, request: Request): Promise<Response> {
+    const body = await request.json<{
+      id?: string;
+      space_id: string;
+      name: string;
+      handle: string;
+      role: string;
+      status?: "idle" | "working" | "blocked" | "offline";
+      current_activity?: string;
+      avatar?: string;
+      skills?: string[];
+      model?: string;
+      config?: Record<string, unknown>;
+    }>();
+
+    if (!body.name || !body.handle || !body.space_id) {
+      return Response.json({ error_code: "bad_request", message: "space_id, name, and handle are required" }, { status: 400 });
+    }
+
+    const id = body.id || `bot_${crypto.randomUUID().slice(0, 8)}`;
+    const now = new Date().toISOString();
+
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO project_roster_bots (id, space_id, project_id, name, handle, role, status, current_activity, avatar, skills_json, model, config_json, last_active_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(project_id, handle) DO UPDATE SET
+         name = excluded.name,
+         role = excluded.role,
+         status = excluded.status,
+         current_activity = excluded.current_activity,
+         avatar = excluded.avatar,
+         skills_json = excluded.skills_json,
+         model = excluded.model,
+         config_json = excluded.config_json,
+         last_active_at = excluded.last_active_at`,
+      id, body.space_id, projectId, body.name, body.handle, body.role,
+      body.status || "idle", body.current_activity || null, body.avatar || "🤖",
+      JSON.stringify(body.skills || []), body.model || null, JSON.stringify(body.config || {}),
+      now, now
+    );
+
+    return Response.json({ ok: true, id }, { status: 201 });
+  }
+
+  private async updateProjectRosterBot(projectId: string, botId: string, request: Request): Promise<Response> {
+    const body = await request.json<{
+      status?: "idle" | "working" | "blocked" | "offline";
+      current_activity?: string;
+      role?: string;
+      model?: string;
+    }>();
+
+    const sets: string[] = ["last_active_at = ?"];
+    const args: unknown[] = [new Date().toISOString()];
+
+    if (body.status !== undefined) {
+      sets.push("status = ?");
+      args.push(body.status);
+    }
+    if (body.current_activity !== undefined) {
+      sets.push("current_activity = ?");
+      args.push(body.current_activity);
+    }
+    if (body.role !== undefined) {
+      sets.push("role = ?");
+      args.push(body.role);
+    }
+    if (body.model !== undefined) {
+      sets.push("model = ?");
+      args.push(body.model);
+    }
+
+    args.push(botId);
+    args.push(projectId);
+
+    execute(
+      this.ctx.storage.sql as never,
+      `UPDATE project_roster_bots SET ${sets.join(", ")} WHERE id = ? AND project_id = ?`,
+      ...args
+    );
+
+    const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM project_roster_bots WHERE id = ?", botId);
+    return Response.json({ ok: true, bot: row });
+  }
+
+  private deleteProjectRosterBot(projectId: string, botId: string): Response {
+    execute(this.ctx.storage.sql as never, "DELETE FROM project_roster_bots WHERE id = ? AND project_id = ?", botId, projectId);
+    return Response.json({ ok: true, deleted: botId });
+  }
+
+  private getProjectJournalFull(projectId: string, spaceId: string): Response {
+    // 1. Fetch active tasks
+    const taskRows = queryAll<{
+      id: string; space_id: string; project_id: string; thread_id: string | null;
+      title: string; status: string; dependencies: string; assigned_agent: string | null;
+      created_at: string; updated_at: string;
+    }>(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM tasks WHERE project_id = ? ORDER BY created_at ASC",
+      projectId
+    );
+
+    const tasks = taskRows.map((t) => ({
+      ...t,
+      dependencies: JSON.parse(t.dependencies || "[]"),
+    }));
+
+    // 2. Fetch recent git commits
+    const commitRows = queryAll<{
+      id: string; space_id: string; project_id: string; branch: string;
+      message: string; author_name: string; author_type: string; author_id: string | null;
+      pr_id: string | null; pr_title: string | null; diff_stats_json: string; created_at: string;
+    }>(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM project_git_commits WHERE project_id = ? ORDER BY created_at DESC LIMIT 20",
+      projectId
+    );
+
+    const commits = commitRows.map((c) => ({
+      ...c,
+      diff_stats: JSON.parse(c.diff_stats_json || "{}"),
+    }));
+
+    // 3. Fetch active bot coworkers on roster
+    const rosterRows = queryAll<{
+      id: string; name: string; handle: string; role: string; status: string;
+      current_activity: string | null; avatar: string | null; model: string | null;
+      skills_json: string; last_active_at: string;
+    }>(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM project_roster_bots WHERE project_id = ? ORDER BY created_at ASC",
+      projectId
+    );
+
+    const roster = rosterRows.map((b) => ({
+      ...b,
+      skills: JSON.parse(b.skills_json || "[]"),
+    }));
+
+    // 4. Compute overall sprint progress
+    const totalTasks = tasks.length;
+    const completedTasks = tasks.filter((t) => t.status === "completed").length;
+    const inProgressTasks = tasks.filter((t) => t.status === "in_progress").length;
+    const blockedTasks = tasks.filter((t) => t.status === "blocked").length;
+    const pendingTasks = tasks.filter((t) => t.status === "pending").length;
+    const progressPct = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 100;
+
+    return Response.json({
+      ok: true,
+      journal: {
+        project_id: projectId,
+        space_id: spaceId,
+        tasks,
+        commits,
+        roster,
+        summary: {
+          totalTasks,
+          completedTasks,
+          inProgressTasks,
+          blockedTasks,
+          pendingTasks,
+          progressPct,
+          allGoalsCompleted: totalTasks > 0 && completedTasks === totalTasks,
+        },
+      },
+    });
+  }
+
+  private async checkProjectGoalsCycle(projectId: string, request: Request): Promise<Response> {
+    const body = await request.json<{ space_id: string; auto_delegate?: boolean }>().catch(() => ({ space_id: "" }));
+    const spaceId = body.space_id;
+
+    const projectRow = queryOne<{ id: string; lifecycle: string; name: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT id, lifecycle, name FROM projects WHERE id = ?",
+      projectId
+    );
+    const lifecycle = projectRow?.lifecycle || "finite";
+
+    const taskRows = queryAll<{ id: string; status: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT id, status FROM tasks WHERE project_id = ?",
+      projectId
+    );
+
+    const total = taskRows.length;
+    const completed = taskRows.filter((t) => t.status === "completed").length;
+    const allCompleted = total > 0 && completed === total;
+
+    if (allCompleted) {
+      if (lifecycle === "finite") {
+        // Clear all scheduled DO alarms/heartbeats so Durable Object enters dormant hibernation at $0
+        try {
+          await this.ctx.storage.deleteAlarm();
+        } catch {
+          // ignore if unsupported or already cleared
+        }
+
+        // Set all roster bots to idle
+        execute(
+          this.ctx.storage.sql as never,
+          "UPDATE project_roster_bots SET status = 'idle', current_activity = 'Sprint finished — sleeping until next message' WHERE project_id = ?",
+          projectId
+        );
+
+        // Record a completion commit in project git log
+        const commitId = "c_" + crypto.randomUUID().slice(0, 8);
+        execute(
+          this.ctx.storage.sql as never,
+          `INSERT INTO project_git_commits (id, space_id, project_id, branch, message, author_name, author_type, diff_stats_json, created_at)
+           VALUES (?, ?, ?, 'main', '🏁 All sprint tasks completed successfully. Project entered dormant hibernation ($0 cost).', 'Project Coordinator', 'bot', '{"files_changed":0,"insertions":0,"deletions":0}', datetime('now'))
+           ON CONFLICT(id) DO NOTHING`,
+          commitId, spaceId, projectId
+        );
+
+        if (this.env.WS_GATEWAY && spaceId) {
+          void broadcastSpaceEvent(this.env.WS_GATEWAY, spaceId, {
+            type: "project.hibernated",
+            space_id: spaceId,
+            payload: {
+              project_id: projectId,
+              lifecycle: "finite",
+              status: "hibernating",
+              total_tasks: total,
+              message: "All project tasks completed successfully. Project entered dormant hibernation ($0 cost).",
+            },
+          });
+        }
+      } else {
+        // Continuous / Standing Desk: keep standing loop and notify ready for next cycle
+        if (this.env.AGENTS_WORKER && spaceId) {
+          void this.fireMatchingTriggers({
+            type: "project.goals_completed",
+            space_id: spaceId,
+            project_id: projectId,
+            occurred_at: Date.now(),
+          }, "internal");
+        }
+
+        if (this.env.WS_GATEWAY && spaceId) {
+          void broadcastSpaceEvent(this.env.WS_GATEWAY, spaceId, {
+            type: "project.goals_completed",
+            space_id: spaceId,
+            payload: {
+              project_id: projectId,
+              lifecycle: "continuous",
+              total_tasks: total,
+              message: "Standing sprint goals completed. Desk continuous loop listening for next triggers.",
+            },
+          });
+        }
+      }
+    }
+
+    return Response.json({
+      ok: true,
+      all_completed: allCompleted,
+      total,
+      completed,
+      lifecycle,
+      is_hibernating: lifecycle === "finite" && allCompleted,
+    });
+  }
+
+  private getProjectSpendCap(projectId: string, spaceId: string): Response {
+    const today = new Date().toISOString().slice(0, 10);
+    let row = queryOne<{
+      project_id: string; space_id: string; daily_credit_limit: number;
+      today_credits_used: number; last_reset_date: string; circuit_breaker_tripped: number;
+    }>(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM project_spend_limits WHERE project_id = ?",
+      projectId
+    );
+
+    if (!row && spaceId) {
+      execute(
+        this.ctx.storage.sql as never,
+        `INSERT INTO project_spend_limits (project_id, space_id, daily_credit_limit, today_credits_used, last_reset_date, circuit_breaker_tripped, updated_at)
+         VALUES (?, ?, 1000, 0, ?, 0, datetime('now'))`,
+        projectId, spaceId, today
+      );
+      row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM project_spend_limits WHERE project_id = ?", projectId);
+    } else if (row && row.last_reset_date !== today) {
+      // Automatic daily reset
+      execute(
+        this.ctx.storage.sql as never,
+        `UPDATE project_spend_limits SET today_credits_used = 0, last_reset_date = ?, circuit_breaker_tripped = 0, updated_at = datetime('now') WHERE project_id = ?`,
+        today, projectId
+      );
+      row.today_credits_used = 0;
+      row.last_reset_date = today;
+      row.circuit_breaker_tripped = 0;
+    }
+
+    return Response.json({
+      ok: true,
+      spend_cap: {
+        project_id: projectId,
+        daily_credit_limit: row?.daily_credit_limit ?? 1000,
+        today_credits_used: row?.today_credits_used ?? 0,
+        last_reset_date: row?.last_reset_date ?? today,
+        circuit_breaker_tripped: Boolean(row?.circuit_breaker_tripped),
+        remaining_credits_today: Math.max(0, (row?.daily_credit_limit ?? 1000) - (row?.today_credits_used ?? 0)),
+      },
+    });
+  }
+
+  private async updateProjectSpendCap(projectId: string, request: Request): Promise<Response> {
+    const body = await request.json<{
+      space_id?: string;
+      daily_credit_limit?: number;
+      delta_credits?: number;
+      reset_tripped?: boolean;
+    }>();
+
+    const today = new Date().toISOString().slice(0, 10);
+    const existing = queryOne<{
+      daily_credit_limit: number; today_credits_used: number; last_reset_date: string; circuit_breaker_tripped: number;
+    }>(this.ctx.storage.sql as never, "SELECT * FROM project_spend_limits WHERE project_id = ?", projectId);
+
+    const limit = body.daily_credit_limit !== undefined ? body.daily_credit_limit : (existing?.daily_credit_limit ?? 1000);
+    let used = (existing?.last_reset_date === today ? existing.today_credits_used : 0) + (body.delta_credits || 0);
+    let tripped = used >= limit ? 1 : 0;
+    if (body.reset_tripped) tripped = 0;
+
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO project_spend_limits (project_id, space_id, daily_credit_limit, today_credits_used, last_reset_date, circuit_breaker_tripped, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(project_id) DO UPDATE SET
+         daily_credit_limit = excluded.daily_credit_limit,
+         today_credits_used = excluded.today_credits_used,
+         last_reset_date = excluded.last_reset_date,
+         circuit_breaker_tripped = excluded.circuit_breaker_tripped,
+         updated_at = datetime('now')`,
+      projectId, body.space_id || "", limit, used, today, tripped
+    );
+
+    return Response.json({
+      ok: true,
+      daily_credit_limit: limit,
+      today_credits_used: used,
+      circuit_breaker_tripped: Boolean(tripped),
+    });
+  }
 }
+

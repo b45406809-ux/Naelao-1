@@ -25,12 +25,14 @@ import {
   deleteChatUpload,
   listBusinessMembers,
   getConnectorDirectory,
+  listProjectRoster,
   type ConnectorInfo,
   type DirectoryApp,
   type ChatUpload,
   type BusinessMember,
   type SessionCredentials,
   type AgentTemplateSummary,
+  type ProjectRosterBot,
 } from "@/lib/api";
 import { startConnectorConnect, startDirectoryConnect, submitManualConnectorKey } from "@/lib/connectorActions";
 import type { InspectedElement } from "./ProjectKindPanel";
@@ -187,6 +189,7 @@ export function ComposerDock({
   // not-yet-sent attachments), fetched once a real session id exists.
   const [priorUploads, setPriorUploads] = React.useState<ChatUpload[]>([]);
   const [members, setMembers] = React.useState<BusinessMember[]>([]);
+  const [rosterBots, setRosterBots] = React.useState<ProjectRosterBot[]>([]);
   const [uploading, setUploading] = React.useState(false);
   // Searching the full provider directory from here, not just the dozen curated recommendations.
   // This panel used to render `connectors` alone, so an app we hadn't hand-added to the catalogue
@@ -212,6 +215,15 @@ export function ComposerDock({
     }
     return () => { cancelled = true; };
   }, [spaceId, session, isBusinessSpace]);
+
+  React.useEffect(() => {
+    if (!projectId) { setRosterBots([]); return; }
+    let cancelled = false;
+    listProjectRoster(spaceId, projectId, session)
+      .then((bots) => { if (!cancelled) setRosterBots(bots); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [spaceId, projectId, session, panel]);
 
   React.useEffect(() => {
     if (panel !== "uploads" || !sessionId) { setPriorUploads([]); return; }
@@ -514,6 +526,42 @@ export function ComposerDock({
                     </div>
                   );
                 })}
+
+                {rosterBots.length > 0 && (
+                  <>
+                    <div className="dock-panel-head" style={{ marginTop: 8 }}>
+                      <span className="dock-panel-title" style={{ fontSize: 11.5 }}>Autonomous Coworker Bots</span>
+                      <span className="dock-panel-note">type @handle in message to direct tasks</span>
+                    </div>
+                    {rosterBots.map((bot) => (
+                      <div key={bot.id} className="dock-row">
+                        <div className="dock-row-icon" style={{ fontSize: 16 }}>{bot.avatar || "🤖"}</div>
+                        <div className="dock-row-main">
+                          <div className="dock-row-title" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <span>{bot.name}</span>
+                            <span style={{ fontSize: 11, color: "var(--accent)" }}>{bot.handle}</span>
+                            <span className="badge" style={{ fontSize: 9, padding: "1px 4px", textTransform: "capitalize" }}>
+                              {bot.status}
+                            </span>
+                          </div>
+                          <div className="dock-row-desc">{bot.role}</div>
+                        </div>
+                        <div className="dock-row-action">
+                          <button
+                            type="button"
+                            className="dock-pill"
+                            onClick={() => {
+                              onUseTip?.(`${bot.handle} `);
+                              setPanel("compose");
+                            }}
+                          >
+                            @Mention
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </>
+                )}
 
                 {availableTemplates && availableTemplates.length > 0 && (
                   <>

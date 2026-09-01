@@ -35,15 +35,28 @@ interface LocalTunnelEnv {
   PLATFORM_SECRET: string;
 }
 
+export interface LocalDiscoveredModel {
+  id: string;
+  name: string;
+  size?: string;
+  context_window?: number;
+  format?: string;
+  family?: string;
+  quantization_level?: string;
+  modified_at?: string;
+}
+
 interface PendingRequest {
   resolve: (value: { ok: boolean; result?: unknown; error?: string }) => void;
   timer: ReturnType<typeof setTimeout>;
 }
 
-const EXEC_TIMEOUT_MS = 30_000;
+const EXEC_TIMEOUT_MS = 60_000; // 60s for local GPU inference
 
 export class LocalTunnelDO extends DurableObject<LocalTunnelEnv> {
   private pending = new Map<string, PendingRequest>();
+  private localModels: LocalDiscoveredModel[] = [];
+  private lastHeartbeatAt = 0;
 
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -65,11 +78,9 @@ export class LocalTunnelDO extends DurableObject<LocalTunnelEnv> {
 
       const pair = new WebSocketPair();
       const [client, server] = [pair[0], pair[1]] as [WebSocket, WebSocket];
-      // Hibernation API — tags let the DO re-identify this socket after waking from sleep,
-      // matching WsHubDO's precedent (this DO never actually needs to re-identify sockets today
-      // since it always targets "the" connected client for this space/user pair, but tagging
-      // costs nothing and keeps the door open for multi-connection scenarios later).
+      // Hibernation API — tags let the DO re-identify this socket after waking from sleep
       this.ctx.acceptWebSocket(server, [`space:${spaceId}`, `user:${userId}`]);
+      this.lastHeartbeatAt = Date.now();
       return new Response(null, { status: 101, webSocket: client });
     }
 
@@ -87,14 +98,11 @@ export class LocalTunnelDO extends DurableObject<LocalTunnelEnv> {
       const resultPromise = new Promise<{ ok: boolean; result?: unknown; error?: string }>((resolve) => {
         const timer = setTimeout(() => {
           this.pending.delete(requestId);
-          resolve({ ok: false, error: "timeout: the Local Agent did not respond within 30s" });
+          resolve({ ok: false, error: "timeout: the Local Agent did not respond within 60s" });
         }, EXEC_TIMEOUT_MS);
         this.pending.set(requestId, { resolve, timer });
       });
 
-      // Most recent socket only — a (space, user) tunnel is meant to be one machine, one live
-      // connection at a time; if an older connection is still technically open (e.g. the client
-      // reconnected without a clean close) the newest one is the one actually listening.
       const target = sockets[sockets.length - 1]!;
       try {
         target.send(JSON.stringify({ type: "request", request_id: requestId, op: body.op, params: body.params ?? {} }));
@@ -108,9 +116,22 @@ export class LocalTunnelDO extends DurableObject<LocalTunnelEnv> {
       return Response.json(result);
     }
 
+    if (url.pathname === "/models" && request.method === "GET") {
+      const sockets = this.ctx.getWebSockets();
+      return Response.json({
+        connected: sockets.length > 0,
+        models: this.localModels,
+        lastHeartbeatAt: this.lastHeartbeatAt,
+      });
+    }
+
     if (url.pathname === "/status" && request.method === "GET") {
       const sockets = this.ctx.getWebSockets();
-      return Response.json({ connected: sockets.length > 0 });
+      return Response.json({
+        connected: sockets.length > 0,
+        models: this.localModels,
+        lastHeartbeatAt: this.lastHeartbeatAt,
+      });
     }
 
     return Response.json({ error_code: "not_found", message: "Not found" }, { status: 404 });
@@ -125,7 +146,29 @@ export class LocalTunnelDO extends DurableObject<LocalTunnelEnv> {
       return;
     }
     if (parsed === null || typeof parsed !== "object") return;
-    const msg = parsed as { type?: string; request_id?: string; ok?: boolean; result?: unknown; error?: string };
+    const msg = parsed as {
+      type?: string;
+      request_id?: string;
+      ok?: boolean;
+      result?: unknown;
+      error?: string;
+      models?: LocalDiscoveredModel[];
+    };
+
+    // Auto-discovered local models registration from on-premises daemon
+    if (msg.type === "models_discovered" || msg.type === "register_models") {
+      if (Array.isArray(msg.models)) {
+        this.localModels = msg.models;
+        this.lastHeartbeatAt = Date.now();
+      }
+      return;
+    }
+
+    if (msg.type === "heartbeat") {
+      this.lastHeartbeatAt = Date.now();
+      return;
+    }
+
     if (msg.type === "response" && msg.request_id) {
       const pending = this.pending.get(msg.request_id);
       if (pending) {
@@ -137,8 +180,6 @@ export class LocalTunnelDO extends DurableObject<LocalTunnelEnv> {
   }
 
   override webSocketClose(_ws: WebSocket, _code: number, _reason: string, _wasClean: boolean): void {
-    // Any request still waiting on this connection will never get a response — resolve it now
-    // with an honest error instead of making the caller wait out the full 30s timeout.
     for (const [id, pending] of this.pending) {
       clearTimeout(pending.timer);
       pending.resolve({ ok: false, error: "not_connected: the Local Agent disconnected" });
