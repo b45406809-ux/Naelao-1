@@ -16,6 +16,7 @@
     "@naelao/security": "workspace:*",
     "@naelao/entitlements": "workspace:*",
     "@naelao/llm-gateway": "workspace:*",
+    "@naelao/tool-runtime": "workspace:*",
     "hono": "^4.6.0"
   },
   "devDependencies": {

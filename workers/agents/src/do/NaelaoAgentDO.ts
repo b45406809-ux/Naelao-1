@@ -57,6 +57,7 @@ import {
 } from "../script-engine/conversation-context.js";
 import { isChannelType, getAdapter, type NormalizedInbound } from "../launchpad/channels.js";
 import { sha256Hex } from "../script-engine/fingerprint.js";
+import { WorkspaceBranchEngine } from "../script-engine/prebuilt/workspace-branch.js";
 import type { BusinessContext } from "../launchpad/business-context.js";
 import {
   sanitizeSubAgentOutput,
@@ -1347,14 +1348,35 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // calls), without needing a WebSocket/SSE channel.
     try { this.ctx.storage.sql.exec(`ALTER TABLE sub_agents ADD COLUMN progress_note TEXT`); } catch { /* exists */ }
 
-    // Authoritative SQLite Virtual Filesystem: sub-millisecond in-DO isolate execution
+    // Authoritative Branch-Aware SQLite Virtual Filesystem: sub-millisecond in-DO isolate execution
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS workspace_files (
-        path TEXT PRIMARY KEY,
+        branch TEXT NOT NULL DEFAULT 'main',
+        path TEXT NOT NULL,
         content TEXT NOT NULL,
         hash TEXT NOT NULL,
         size_bytes INTEGER NOT NULL,
-        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (branch, path)
+      );
+    `);
+    try { this.ctx.storage.sql.exec(`ALTER TABLE workspace_files ADD COLUMN branch TEXT NOT NULL DEFAULT 'main'`); } catch { /* column exists */ }
+
+    // Pull Request & Change Proposals Table
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS pull_requests (
+        id TEXT PRIMARY KEY,
+        space_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        source_branch TEXT NOT NULL,
+        target_branch TEXT NOT NULL DEFAULT 'main',
+        title TEXT NOT NULL,
+        reasoning_summary TEXT NOT NULL,
+        diff_manifest_json TEXT NOT NULL,
+        author_user_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'MERGED', 'REJECTED', 'CHANGES_REQUESTED')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        merged_at TEXT
       );
     `);
 
@@ -1422,30 +1444,100 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         return this.handleContinueInterruptedRun(request);
       }
 
-      // ── SQLite Virtual Filesystem API ─────────────────────────────────────────
+      // ── Branch-Aware SQLite Virtual Filesystem API ────────────────────────────
       if (url.pathname === "/workspace/sqlite/read") {
         const path = url.searchParams.get("path") ?? "";
-        const row = this.ctx.storage.sql.exec(`SELECT path, content, hash, size_bytes FROM workspace_files WHERE path = ?`, path).toArray()[0] as any;
-        if (!row) return Response.json({ error: `File not found: ${path}` }, { status: 404 });
+        const branch = url.searchParams.get("branch") || "main";
+        const row = this.ctx.storage.sql.exec(
+          `SELECT branch, path, content, hash, size_bytes FROM workspace_files WHERE branch = ? AND path = ?`,
+          branch,
+          path
+        ).toArray()[0] as any;
+        if (!row) return Response.json({ error: `File not found on branch '${branch}': ${path}` }, { status: 404 });
         return Response.json({ ok: true, file: row });
       }
 
       if (url.pathname === "/workspace/sqlite/write" && request.method === "POST") {
-        const body = (await request.json()) as { path: string; content: string };
+        const body = (await request.json()) as { path: string; content: string; branch?: string };
+        const branch = body.branch || "main";
         const hash = await sha256Hex(body.content);
         const size = new TextEncoder().encode(body.content).length;
         this.ctx.storage.sql.exec(`
-          INSERT INTO workspace_files (path, content, hash, size_bytes, updated_at)
-          VALUES (?, ?, ?, ?, datetime('now'))
-          ON CONFLICT(path) DO UPDATE SET content = excluded.content, hash = excluded.hash, size_bytes = excluded.size_bytes, updated_at = datetime('now')
-        `, body.path, body.content, hash, size);
-        return Response.json({ ok: true, path: body.path, hash, size_bytes: size });
+          INSERT INTO workspace_files (branch, path, content, hash, size_bytes, updated_at)
+          VALUES (?, ?, ?, ?, ?, datetime('now'))
+          ON CONFLICT(branch, path) DO UPDATE SET
+            content = excluded.content,
+            hash = excluded.hash,
+            size_bytes = excluded.size_bytes,
+            updated_at = datetime('now')
+        `, branch, body.path, body.content, hash, size);
+        return Response.json({ ok: true, branch, path: body.path, hash, size_bytes: size });
       }
 
       if (url.pathname === "/workspace/sqlite/list") {
         const prefix = url.searchParams.get("prefix") ?? "";
-        const rows = this.ctx.storage.sql.exec(`SELECT path, hash, size_bytes, updated_at FROM workspace_files WHERE path LIKE ? ORDER BY path ASC`, `${prefix}%`).toArray();
-        return Response.json({ ok: true, files: rows });
+        const branch = url.searchParams.get("branch") || "main";
+        const rows = this.ctx.storage.sql.exec(
+          `SELECT branch, path, hash, size_bytes, updated_at FROM workspace_files WHERE branch = ? AND path LIKE ? ORDER BY path ASC`,
+          branch,
+          `${prefix}%`
+        ).toArray();
+        return Response.json({ ok: true, branch, files: rows });
+      }
+
+      // ── Workspace Virtual Branches & Pull Requests API ────────────────────────
+      const branchEngine = new WorkspaceBranchEngine(this.ctx.storage as any);
+
+      if (url.pathname === "/workspace/branch/create" && request.method === "POST") {
+        const body = (await request.json()) as { sourceBranch?: string; newBranch: string };
+        const res = await branchEngine.createBranch(body.sourceBranch || "main", body.newBranch);
+        return Response.json(res);
+      }
+
+      if (url.pathname === "/workspace/branch/list") {
+        const rows = this.ctx.storage.sql.exec(`SELECT DISTINCT branch FROM workspace_files ORDER BY branch ASC`).toArray();
+        return Response.json({ ok: true, branches: rows.map((r: any) => r.branch) });
+      }
+
+      if (url.pathname === "/workspace/pr/create" && request.method === "POST") {
+        const body = (await request.json()) as {
+          spaceId: string;
+          projectId: string;
+          sourceBranch: string;
+          targetBranch?: string;
+          title: string;
+          reasoningSummary: string;
+          authorUserId: string;
+        };
+        const res = await branchEngine.createPullRequest(body);
+        return Response.json(res);
+      }
+
+      if (url.pathname === "/workspace/pr/list") {
+        const spaceId = url.searchParams.get("spaceId") ?? undefined;
+        const projectId = url.searchParams.get("projectId") ?? undefined;
+        const status = url.searchParams.get("status") ?? undefined;
+        const prs = branchEngine.listPullRequests(spaceId, projectId, status);
+        return Response.json({ ok: true, pullRequests: prs });
+      }
+
+      if (url.pathname === "/workspace/pr/get") {
+        const prId = url.searchParams.get("prId") ?? "";
+        const pr = branchEngine.getPullRequest(prId);
+        if (!pr) return Response.json({ error: "Pull Request not found" }, { status: 404 });
+        return Response.json({ ok: true, pullRequest: pr });
+      }
+
+      if (url.pathname === "/workspace/pr/merge" && request.method === "POST") {
+        const body = (await request.json()) as { prId: string };
+        const res = await branchEngine.mergePullRequest(body.prId);
+        return Response.json(res);
+      }
+
+      if (url.pathname === "/workspace/pr/reject" && request.method === "POST") {
+        const body = (await request.json()) as { prId: string; reason?: string };
+        const res = await branchEngine.rejectPullRequest(body.prId, body.reason);
+        return Response.json(res);
       }
 
       // POST /cancel — cancel all active runs for this DO

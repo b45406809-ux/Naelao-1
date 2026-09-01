@@ -7,10 +7,27 @@
 
 import { Hono } from "hono";
 import { requestId, errorResponse, notFound, badRequest, unauthorized, internalError, safeKvPut, requireInternalHmac } from "@naelao/http";
-import { chunkText, embedText, embedBatch, bm25Score, reciprocalRankFusion } from "@naelao/rag";
+import {
+  chunkText,
+  embedText,
+  embedBatch,
+  bm25Score,
+  reciprocalRankFusion,
+  resolveDocumentBitmask,
+  resolveUserBitmask,
+  hasBitmaskClearance,
+  createContextSandboxEnvelope,
+  resolveMinRoleRank,
+  ROLE_HIERARCHY_RANK,
+  CloudflareAiSearchClient,
+  ContinuousIngestionEngine,
+  formatAiSearchCitations,
+  type AiSearchBinding,
+} from "@naelao/rag";
 import { checkSsrf } from "@naelao/security";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { moderateInput } from "@naelao/llm-gateway";
+import { createMcpHandler } from "@naelao/tool-runtime";
 
 // ── Environment ───────────────────────────────────────────────────────────────
 
@@ -24,6 +41,9 @@ interface KnowledgeEnv {
   SEMANTIC_CACHE_VECTORS: VectorizeIndex;
   SEMANTIC_CACHE_KV: KVNamespace;
   AI: Ai;
+  // Plan 244-245: Cloudflare AI Search bindings
+  COMPANY_SEARCH?: AiSearchBinding;
+  AI_SEARCH?: AiSearchBinding;
   // UNIVERSAL / PLATFORM-PROVIDED web search (CLAUDE.md "universal tools" principle): Naelao
   // holds ONE search-provider key here as a Workers Secret so every agent gets web search for
   // free — never the BYO-key `space_credentials` model. Optional: when unset, `search`/`extract`
@@ -355,6 +375,8 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
       allEmbedResults.push(...batchResults);
     }
 
+    const docBitmask = resolveDocumentBitmask(visibility, allowedRoles);
+
     // ── R2 storage + Vectorize upsert ───────────────────────────────────────
     const vectorUpserts: VectorizeVector[] = [];
 
@@ -370,11 +392,16 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
         content: chunk,
         spaceId,
         tenantId,
+        visibility,
+        allowedRoles,
+        allowedUserIds,
       };
       await c.env.KB_BUCKET.put(
         chunkR2Key(spaceId, projectId, docId, i),
         JSON.stringify(chunkRecord),
       );
+
+      const minRoleRank = resolveMinRoleRank(body.visibility, body.allowed_roles);
 
       // Prepare Vectorize vector. project_id always set (never omitted) — Vectorize's flat
       // $eq filter can't distinguish "field absent" from "field present," so the space-wide
@@ -389,6 +416,8 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
           chunk_index: i,
           title: body.title.trim(),
           content_preview: chunk.slice(0, 200),
+          role_mask: docBitmask,
+          min_role_rank: minRoleRank,
         },
       });
     }
@@ -558,6 +587,7 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
           chunk_index: i,
           title: newTitle,
           content_preview: chunk.slice(0, 200),
+          min_role_rank: 1,
         },
       });
     }
@@ -813,7 +843,13 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
     const chunkIndex = parts.length === 2 ? parseInt(parts[1] ?? "0", 10) : 0;
 
     const rawContent = chunkInfo?.content ?? "";
-    // Wrap content in XML tags for prompt injection protection
+    // Wrap content in XML sandbox envelope for prompt injection protection
+    const safeEnvelope = createContextSandboxEnvelope({
+      id: item.id,
+      content: rawContent,
+      access: "verified",
+      similarityScore: item.score,
+    });
     const wrappedContent = `<kb_content>${rawContent}</kb_content>`;
 
     return {
@@ -821,6 +857,7 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
       doc_id: docId,
       chunk_index: chunkIndex,
       content: wrappedContent,
+      safe_context_envelope: safeEnvelope,
       score: item.score,
       dense_score: denseScoreMap.get(item.id) ?? 0,
       sparse_score: sparseScoreMap.get(item.id) ?? 0,
@@ -841,6 +878,207 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
 
   return c.json({ data: results, cached: false, retrieval_mode: "legacy" });
 });
+
+// ── Cloudflare AI Search & AutoRAG Managed Endpoints (Plan 244-245) ────────────
+
+// Continuous Ingestion for Workspace Files & Docs into AI Search Vault
+app.post("/spaces/:spaceId/kb/auto-ingest", async (c) => {
+  const tenantId = requireTenant(c);
+  const spaceId = c.req.param("spaceId");
+
+  const ownsSpace = await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId);
+  if (!ownsSpace) throw unauthorized("Tenant does not own this space");
+
+  const body = await c.req.json<{
+    files?: Array<{ doc_id?: string; title: string; content: string; project_id?: string | null }>;
+    doc_id?: string;
+    title?: string;
+    content?: string;
+    project_id?: string | null;
+  }>();
+
+  const filesToIngest = body.files ?? (body.title && body.content ? [{
+    doc_id: body.doc_id,
+    title: body.title,
+    content: body.content,
+    project_id: body.project_id,
+  }] : []);
+
+  if (filesToIngest.length === 0) {
+    throw badRequest("No files or document content provided for auto-ingest");
+  }
+
+  const ingestionEngine = new ContinuousIngestionEngine(c.env.KB_BUCKET, c.env.AUTORAG_KB_INSTANCE);
+  const ingested: Array<{ id: string; title: string; key: string }> = [];
+
+  for (const file of filesToIngest) {
+    const docId = file.doc_id || crypto.randomUUID();
+    const projectId = file.project_id ?? null;
+    const { key } = await ingestionEngine.syncDocument({
+      spaceId,
+      projectId,
+      docId,
+      title: file.title.trim(),
+      content: file.content,
+    });
+
+    await c.env.PLATFORM_DB.prepare(
+      `INSERT INTO kb_documents (id, space_id, tenant_id, project_id, title, status, chunk_count, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'indexed', 1, datetime('now'), datetime('now'))
+       ON CONFLICT (id) DO UPDATE SET title = excluded.title, status = 'indexed', updated_at = datetime('now')`
+    )
+      .bind(docId, spaceId, tenantId, projectId, file.title.trim())
+      .run()
+      .catch(() => {});
+
+    ingested.push({ id: docId, title: file.title, key });
+  }
+
+  return c.json({
+    status: "success",
+    message: `✔ Continuous AI Search auto-ingested ${ingested.length} document(s) directly to knowledge vault with zero manual chunking boilerplate.`,
+    ingested,
+  }, 201);
+});
+
+// Single-Line Cloudflare AI Search Endpoint with Numbered Citations ([1], [2])
+const handleAiSearch = async (c: { req: { query: (k: string) => string | undefined; json: () => Promise<any>; method: string }; env: KnowledgeEnv; json: (d: any, s?: number) => Response }) => {
+  const url = new URL(c.req.url || "http://localhost");
+  const queryParam = url.searchParams.get("q") || url.searchParams.get("query");
+  let body: any = {};
+  if (c.req.method === "POST") {
+    body = await c.req.json().catch(() => ({}));
+  }
+
+  const query = String(body.query || queryParam || "").trim();
+  if (!query) {
+    return c.json({ error_code: "bad_request", message: "Search query is required ('q' or 'query')" }, 400);
+  }
+
+  const spaceId = url.pathname.split("/")[2] || body.space_id || "";
+  const projectId = body.project_id || url.searchParams.get("project_id") || undefined;
+  const topK = Number(body.topK || url.searchParams.get("top_k") || 6);
+
+  const searchClient = new CloudflareAiSearchClient(
+    c.env.COMPANY_SEARCH || c.env.AI_SEARCH,
+    async (q, filter, k) => {
+      // Fallback to D1 & Vectorize hybrid search if native AI search binding is not configured
+      const qEmbed = await embedText(c.env.AI, q);
+      const matches = await c.env.KB_VECTORS.query(qEmbed.embedding, {
+        topK: k || 6,
+        filter: { space_id: { $eq: spaceId } },
+        returnMetadata: "indexed",
+      });
+
+      return (matches.matches || []).map((m, i) => ({
+        id: m.id,
+        docId: String(m.metadata?.["doc_id"] || m.id),
+        title: String(m.metadata?.["title"] || `Document ${i + 1}`),
+        content: String(m.metadata?.["content_preview"] || ""),
+        score: m.score || 0,
+        metadata: m.metadata as Record<string, unknown>,
+      }));
+    }
+  );
+
+  const response = await searchClient.search({
+    query,
+    filter: { space_id: spaceId, ...(projectId ? { project_id: projectId } : {}) },
+    topK,
+    rerank: body.rerank !== false,
+  });
+
+  return c.json({
+    data: response.results,
+    citations: response.citations,
+    citation_footnotes: response.citationFootnotes,
+    latency_ms: response.latencyMs,
+    engine: response.engine,
+  });
+};
+
+app.get("/spaces/:spaceId/search", (c: any) => handleAiSearch(c));
+app.post("/spaces/:spaceId/search", (c: any) => handleAiSearch(c));
+app.get("/v1/spaces/:spaceId/search", (c: any) => handleAiSearch(c));
+app.post("/v1/spaces/:spaceId/search", (c: any) => handleAiSearch(c));
+
+// Native MCP v2 Server Endpoint for this Knowledge Vault (/spaces/:spaceId/mcp)
+const handleKnowledgeMcp = (c: any) => {
+  const spaceId = c.req.param("spaceId");
+  const mcpHandler = createMcpHandler({
+    serverInfo: {
+      name: `naelao-knowledge-vault-${spaceId}`,
+      version: "2.0.0",
+    },
+    tools: {
+      searchKnowledge: {
+        description: "Query company knowledge vault with Cloudflare AI Search & hybrid reranking",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string", description: "Search query or question" },
+            project_id: { type: "string", description: "Optional project id scope" },
+            top_k: { type: "number", description: "Max results to return (default 6)" },
+          },
+          required: ["query"],
+        },
+        execute: async (params) => {
+          const client = new CloudflareAiSearchClient(c.env.COMPANY_SEARCH || c.env.AI_SEARCH);
+          return await client.search({
+            query: String(params["query"]),
+            filter: { space_id: spaceId, ...(params["project_id"] ? { project_id: params["project_id"] } : {}) },
+            topK: Number(params["top_k"] || 6),
+          });
+        },
+      },
+      readDocument: {
+        description: "Read a whole document from the knowledge base by document ID",
+        parameters: {
+          type: "object",
+          properties: {
+            doc_id: { type: "string", description: "The document ID" },
+            project_id: { type: "string", description: "Optional project ID" },
+          },
+          required: ["doc_id"],
+        },
+        execute: async (params) => {
+          const docId = String(params["doc_id"]);
+          const projectId = params["project_id"] ? String(params["project_id"]) : null;
+          const key = autoragKbKey(spaceId, projectId, docId);
+          const obj = await c.env.KB_BUCKET.get(key);
+          if (!obj) {
+            return { error: `Document ${docId} not found in knowledge vault.` };
+          }
+          const text = await obj.text();
+          return { doc_id: docId, content: text };
+        },
+      },
+      listDocuments: {
+        description: "List knowledge base documents for this space",
+        parameters: {
+          type: "object",
+          properties: {
+            limit: { type: "number", description: "Maximum documents to return" },
+          },
+        },
+        execute: async (params) => {
+          const limit = Math.min(Number(params["limit"] || 50), 100);
+          const { results } = await c.env.PLATFORM_DB.prepare(
+            "SELECT id, title, project_id, status, chunk_count, created_at, updated_at FROM kb_documents WHERE space_id = ? ORDER BY updated_at DESC LIMIT ?"
+          )
+            .bind(spaceId, limit)
+            .all();
+          return { documents: results };
+        },
+      },
+    },
+  });
+
+  return mcpHandler(c.req.raw);
+};
+
+app.all("/spaces/:spaceId/mcp", handleKnowledgeMcp);
+app.all("/v1/spaces/:spaceId/mcp", handleKnowledgeMcp);
 
 // ── G-AZ19: Semantic Response Cache ──────────────────────────────────────────
 // Endpoint: POST /internal/semantic-cache/lookup

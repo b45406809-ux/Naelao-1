@@ -252,3 +252,211 @@ export interface UniversalAgentManifest {
   // 6. TRIGGER CADENCE (Proactive vs. Reactive)
   triggers: AgentTriggers;
 }
+
+// ── Axis 6: 4-Tier Collaboration Model ─────────────────────────────────────────
+export type CollaborationTierLevel = 1 | 2 | 3 | 4;
+
+export interface CollaborationLaneConfig {
+  tier: CollaborationTierLevel;
+  name: "Tier 1: Team Room" | "Tier 2: Task Workstations" | "Tier 3: System Consult Lanes" | "Tier 4: Private Scratchpad";
+  visibility: "public_to_project" | "internal_system" | "strictly_private";
+  interactionModel: "humans_and_at_mentions" | "feature_dag_and_at_mentions" | "internal_specialist_consult" | "private_direct_unmentioned";
+  workspaceWritePermission: "full_execution" | "coordination_only" | "read_only_simulation";
+  requiresAtMentionForAgents: boolean;
+  canMutateFilesystem: boolean;
+}
+
+// ── Axis 6: Optimistic Concurrency Control (OCC) & Mutex ───────────────────────
+export interface AstPatchOperation {
+  file: string;
+  findBlock: string;
+  replaceBlock: string;
+  expectedBaseHash: string;
+  fuzzyThreshold?: number;
+}
+
+export interface OccConflictDetails {
+  file: string;
+  expectedHash: string;
+  currentHash: string;
+  isLocked: boolean;
+  lockedBy?: string;
+  nearbyLines?: string[];
+  conflictDiff?: string;
+}
+
+export interface OccCommitResult {
+  success: boolean;
+  newHash?: string;
+  bytesWritten?: number;
+  conflict?: OccConflictDetails;
+}
+
+// ── Axis 7: 6-Tier Compute Execution Ladder ───────────────────────────────────
+export type ExecutionTierLevel = 1 | 2 | 3 | 4 | 5 | 6;
+
+export interface ComputeLadderTierDefinition {
+  tier: ExecutionTierLevel;
+  code: "VIRTUAL_FS" | "V8_ISOLATE" | "DYNAMIC_WORKFLOW" | "KITESURF_BROWSER" | "PUPPETEER_CHROMIUM" | "LINUX_CONTAINER";
+  name: string;
+  description: string;
+  typicalColdStartMs: number;
+  costWeight: number; // relative normalized cost
+  capabilities: string[];
+}
+
+// ── Part 1: 3-Tier Scoped Knowledge Base (Mini-AGI ACL) ────────────────────────
+export type MemberRoleRank = "viewer" | "member" | "editor" | "admin" | "owner";
+
+export const ROLE_HIERARCHY_RANK: Record<string, number> = {
+  viewer: 1,
+  member: 2,
+  editor: 3,
+  admin: 4,
+  owner: 5,
+};
+
+export interface ChunkVectorMetadata {
+  space_id: string;
+  project_id: string; // "" = Space-wide, otherwise specific projectId
+  min_role_rank: number; // e.g. 4 for Admin-only documents
+  doc_id: string;
+  chunk_index?: number;
+  title: string;
+  text: string;
+  source_url?: string;
+}
+
+// ── Part 2: Google Search AI Mode at the Edge ─────────────────────────────────
+export interface SearchCitation {
+  index: number;
+  title: string;
+  docId: string;
+  snippet: string;
+  sourceUrl?: string;
+}
+
+export interface GoogleModeSearchResult {
+  text?: string;
+  source: "SEMANTIC_CACHE" | "HYBRID_RRF" | "LIVE_WEB_GROUNDING";
+  latencyMs: number;
+  confidenceScore?: number;
+  chunks?: Array<{ id: string; score: number; content?: string }>;
+  citations: SearchCitation[];
+}
+
+// ── Part 3: Virtual FS Branching & Pull Request Engine ────────────────────────
+export type PullRequestStatus = "OPEN" | "MERGED" | "REJECTED" | "CHANGES_REQUESTED";
+
+export interface FileDiffItem {
+  path: string;
+  status: "MODIFIED" | "CREATED" | "DELETED";
+  oldContent?: string;
+  newContent?: string;
+  oldHash?: string;
+  newHash?: string;
+  additions?: number;
+  deletions?: number;
+}
+
+export interface PullRequestRecord {
+  id: string;
+  space_id: string;
+  project_id: string;
+  source_branch: string;
+  target_branch: string;
+  title: string;
+  reasoning_summary: string;
+  diff_manifest_json: string;
+  diff_manifest?: FileDiffItem[];
+  author_user_id: string;
+  status: PullRequestStatus;
+  created_at: string;
+  merged_at?: string | null;
+}
+
+// ── Cloudflare Artifacts Multi-Agent Git Extensions (241-243) ─────────────────
+
+export interface BranchDivergenceStatus {
+  branch: string;
+  upstreamBranch: string;
+  commitsBehind: number;
+  commitsAhead: number;
+  baseCommit: string;
+  upstreamHead: string;
+  localHead: string;
+  changedFiles: string[];
+}
+
+export type UpstreamReconcileStatus = "UP_TO_DATE" | "AUTO_REBASED" | "REVIEW_REQUIRED" | "CONFLICT_RESOLVED";
+
+export interface UpstreamReconcileResult {
+  status: UpstreamReconcileStatus;
+  commitsPulled?: number;
+  commitsBehind?: number;
+  overlappingFiles?: string[];
+  upstreamChangesSummary?: string;
+  message: string;
+  rebasedCommit?: string;
+}
+
+export interface ReasoningCommitMeta {
+  author: string;
+  goal?: string;
+  rationale: string;
+  task_id?: string;
+  turn_number?: number;
+  [key: string]: any;
+}
+
+export interface TurnCheckpointRecord {
+  turn_number: number;
+  commit_hash: string;
+  message: string;
+  reasoning?: string;
+  files_changed: string[];
+  created_at: string;
+}
+
+export interface BlameReasoningItem {
+  line: number;
+  content: string;
+  commit_hash: string;
+  author: string;
+  goal?: string;
+  rationale?: string;
+  task_id?: string;
+  timestamp: string;
+}
+
+export interface ModelBranchCandidate {
+  modelId: string;
+  branchName: string;
+  commitHash: string;
+  testsPassed: number;
+  testsTotal: number;
+  executionTurns: number;
+  durationMs: number;
+  score: number; // 0-100 normalized
+  patchSummary: string;
+}
+
+export interface BranchRaceResult {
+  taskId: string;
+  winningModelId: string;
+  winningBranch: string;
+  winningScore: number;
+  candidates: ModelBranchCandidate[];
+  prId?: string;
+  summary: string;
+}
+
+export interface AstConflictResolution {
+  filePath: string;
+  clean3WayMerge: boolean;
+  resolvedContent: string;
+  conflictsDetected: number;
+  resolvedNodes: string[];
+  manualReviewRequired: boolean;
+}
+

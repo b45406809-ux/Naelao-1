@@ -14,6 +14,7 @@
     "@naelao/events": "workspace:*",
     "@naelao/http": "workspace:*",
     "@naelao/types": "workspace:*",
+    "@naelao/tool-runtime": "workspace:*",
     "hono": "^4.6.14"
   },
   "devDependencies": {

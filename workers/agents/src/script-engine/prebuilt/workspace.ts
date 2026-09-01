@@ -174,7 +174,11 @@ export const workspace: PrebuiltScript = {
       // 2. Stage into Container Disk
       const count = Object.keys(bundle).length;
       if (count > 0) await ctx.env.containerWorkspace.write(bundle);
-      return { ok: true, syncedFiles: count, message: `Staged ${count} files to container disk.` };
+      return {
+        ok: true,
+        synced_files_count: count,
+        target: "container:/workspace",
+      };
     },
 
     async "workspace.sync_from_container"(_args, ctx) {

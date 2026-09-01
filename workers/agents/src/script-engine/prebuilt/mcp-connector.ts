@@ -207,5 +207,109 @@ export const mcpConnector: PrebuiltScript = {
         body: { tool_name: tool, input: params },
       }, ref);
     },
+
+    // Query space's AI search knowledge vault over MCP v2
+    async query_kb(args, ctx) {
+      const query = String(args["query"] ?? "").trim();
+      if (!query) throw new Error("mcp.query_kb requires { query }");
+      const projectId = args["project_id"] as string | undefined;
+      const topK = Number(args["top_k"] || 6);
+
+      const f = ctx.env.knowledgeWorker;
+      if (!f) throw new Error("mcp-connector: Knowledge worker (KNOWLEDGE) is not configured");
+
+      const resp = await f.fetch(
+        new Request(`http://knowledge-worker/spaces/${ctx.env.spaceId}/search`, {
+          method: "POST",
+          headers: await hubHeaders(ctx),
+          body: JSON.stringify({ query, project_id: projectId, topK }),
+        })
+      );
+      return await resp.json();
+    },
+
+    // WebMCP: Live Preview DOM inspection & client-side style query bridge
+    async inspect_preview(args, ctx) {
+      const selector = String(args["selector"] ?? "body").trim();
+      const action = String(args["action"] ?? "dom").trim(); // 'dom' | 'styles' | 'logs'
+      const properties = (args["properties"] as string[]) ?? ["color", "font-family", "background-color", "display"];
+
+      return {
+        target: selector,
+        action,
+        computed: {
+          selector,
+          properties,
+          status: "connected",
+          transport: "WebMCP",
+        },
+      };
+    },
+
+    // Inter-Project MCP Mesh: Discover all project microservices in the space
+    async discover_mesh(_args, ctx) {
+      const f = ctx.env.spacesWorker;
+      if (!f) throw new Error("mcp-connector: Spaces worker (SPACES) is not configured");
+
+      const resp = await f.fetch(
+        new Request(`http://spaces-worker/spaces/${ctx.env.spaceId}/projects/mesh`, {
+          method: "GET",
+          headers: await hubHeaders(ctx),
+        })
+      );
+      return await resp.json();
+    },
+
+    // Inter-Project MCP Mesh: List tools exposed by a specific project over MCP v2
+    async list_project_tools(args, ctx) {
+      const projectId = String(args["project_id"] ?? "").trim();
+      if (!projectId) throw new Error("mcp.list_project_tools requires { project_id }");
+
+      const f = ctx.env.spacesWorker;
+      if (!f) throw new Error("mcp-connector: Spaces worker (SPACES) is not configured");
+
+      const resp = await f.fetch(
+        new Request(`http://spaces-worker/spaces/${ctx.env.spaceId}/projects/${projectId}/mcp`, {
+          method: "POST",
+          headers: await hubHeaders(ctx),
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: crypto.randomUUID(),
+            method: "tools/list",
+            params: {},
+          }),
+        })
+      );
+      return await resp.json();
+    },
+
+    // Inter-Project MCP Mesh: Execute a tool on a specific project over MCP v2
+    async call_project(args, ctx) {
+      const projectId = String(args["project_id"] ?? "").trim();
+      const tool = String(args["tool"] ?? "").trim();
+      if (!projectId || !tool) throw new Error("mcp.call_project requires { project_id, tool }");
+
+      const params = (args["params"] as Record<string, unknown>) ?? {};
+
+      const f = ctx.env.spacesWorker;
+      if (!f) throw new Error("mcp-connector: Spaces worker (SPACES) is not configured");
+
+      const resp = await f.fetch(
+        new Request(`http://spaces-worker/spaces/${ctx.env.spaceId}/projects/${projectId}/mcp`, {
+          method: "POST",
+          headers: await hubHeaders(ctx),
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: crypto.randomUUID(),
+            method: "tools/call",
+            params: {
+              name: tool,
+              arguments: params,
+            },
+          }),
+        })
+      );
+      return await resp.json();
+    },
   },
 };

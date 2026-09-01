@@ -1564,15 +1564,15 @@ export function validateLaunchpadSpaceType(st: LaunchpadSpaceType = LAUNCHPAD_SP
  * Look up the vertical model policy for a given template ID.
  */
 export function getTemplateModelPolicy(templateId: string): VerticalModelPolicy | undefined {
-  const t = templateById(templateId);
+  const t = getLaunchpadTemplate(templateId);
   return t?.model_policy;
 }
 
 // ── Turnkey Blueprint Exports for Direct Construction & Embedding ───────────
-export const HOSPITAL_COWORK_BLUEPRINT: LaunchpadTemplate = templateById("clinica-ehr-cowork")!;
-export const LEGAL_COWORK_BLUEPRINT: LaunchpadTemplate = templateById("lexpulse-legal-cowork")!;
-export const FINANCE_COWORK_BLUEPRINT: LaunchpadTemplate = templateById("capforge-pe-cowork")!;
-export const ARCHITECTURE_COWORK_BLUEPRINT: LaunchpadTemplate = templateById("acubuild-arch-cowork")!;
+export const HOSPITAL_COWORK_BLUEPRINT: LaunchpadTemplate = getLaunchpadTemplate("clinica-ehr-cowork")!;
+export const LEGAL_COWORK_BLUEPRINT: LaunchpadTemplate = getLaunchpadTemplate("lexpulse-legal-cowork")!;
+export const FINANCE_COWORK_BLUEPRINT: LaunchpadTemplate = getLaunchpadTemplate("capforge-pe-cowork")!;
+export const ARCHITECTURE_COWORK_BLUEPRINT: LaunchpadTemplate = getLaunchpadTemplate("acubuild-arch-cowork")!;
 
 // Fail fast at import if the SpaceType is malformed.
 validateLaunchpadSpaceType();

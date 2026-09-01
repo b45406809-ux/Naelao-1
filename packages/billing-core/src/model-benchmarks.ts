@@ -311,6 +311,31 @@ export const MODEL_BENCHMARKS: Record<AllowedModel, ModelBenchmark> = {
     ["Google's flagship reasoning model", "1M-token context window", "Reasoning cannot be fully disabled — always at least some thinking depth"],
     ["Hard judgement calls on a Gemini key", "Very low free-tier RPM — expect to hit rate limits quickly on a free key (confirmed live: a real 429 on this exact tier during testing)"]
   ),
+  // Custom Fine-Tuned / Vertical Curated LoRA Models
+  "custom/acme-support-v1-2": M(
+    "custom/acme-support-v1-2", "Llama", "economy", "estimated",
+    "Internal fine-tuned Llama-8B model deployed for company customer support triage.",
+    ["Fine-tuned on Acme internal support tickets", "Low latency edge inference", "Specialized ticket classification"],
+    ["Company support desk ticket handling", "Internal escalation routing"]
+  ),
+  "custom/acme-legal-redline": M(
+    "custom/acme-legal-redline", "Llama", "standard", "estimated",
+    "Internal fine-tuned model specialized in NDA and MSA contract redlining.",
+    ["Specialized legal phrasing extraction", "Strict Delaware contract compliance", "Fast clause comparison"],
+    ["Automated vendor contract redlining", "Internal NDA reviews"]
+  ),
+  "custom/hospital-clinical-llama8b-v1": M(
+    "custom/hospital-clinical-llama8b-v1", "Llama", "economy", "estimated",
+    "Fine-tuned clinical LoRA adapter for patient intake summarization and HIPAA compliance.",
+    ["Clinical vocabulary tuning", "HIPAA de-identification awareness", "Fast edge inference"],
+    ["Clinical intake triage", "Medical chart summarization"]
+  ),
+  "custom/lexpulse-delaware-legal-v2": M(
+    "custom/lexpulse-delaware-legal-v2", "Llama", "standard", "estimated",
+    "Specialized legal intelligence adapter trained on Delaware corporate law precedents.",
+    ["Delaware Chancery Court precedent alignment", "Corporate governance validation", "M&A agreement verification"],
+    ["Delaware corporate filings", "Corporate governance audits"]
+  ),
   // Groq — a THIRD, independent BYOK provider (models.ts's MODEL_CONTEXT_WINDOWS comment has the
   // full "why"). costBasis "measured": real per-1M-token pricing read directly off Groq's own
   // `GET /openai/v1/models` response on 2026-08-10, wired into computeTokenCostMicro's table

@@ -326,6 +326,11 @@ export const MODEL_CAPABILITIES: Record<string, ModelCapability> = {
   "google-ai-studio/gemini-3.6-flash": { reasoningLevels: ["none", "low", "medium", "high"], reasoningParam: "reasoning_effort" },
   "google-ai-studio/gemini-3.5-flash": { reasoningLevels: ["none", "low", "medium", "high"], reasoningParam: "reasoning_effort" },
   "google-ai-studio/gemini-3.5-flash-lite": { reasoningLevels: ["none", "low", "medium", "high"], reasoningParam: "reasoning_effort" },
+  // Custom Fine-Tuned / Vertical Curated LoRA Models
+  "custom/acme-support-v1-2": NO_REASONING,
+  "custom/acme-legal-redline": NO_REASONING,
+  "custom/hospital-clinical-llama8b-v1": NO_REASONING,
+  "custom/lexpulse-delaware-legal-v2": NO_REASONING,
   // Groq. Confirmed via Groq's own docs (console.groq.com/docs/reasoning), not inferred from the
   // Workers AI entries above even though this is the SAME underlying model — Groq is a different
   // hosting provider and could in principle expose a different parameter surface; it happens to
@@ -381,20 +386,29 @@ export interface VerticalModelPolicy {
  */
 export function validateModelForSpacePolicy(
   requestedModel: string,
-  policy?: VerticalModelPolicy | null
+  spaceModelPolicy?: VerticalModelPolicy | null
 ): { valid: boolean; reason?: string } {
-  if (!policy || policy.mode === "all_allowed") {
+  // If template has no restrictive policy, allow platform default allowlist
+  if (!spaceModelPolicy || spaceModelPolicy.mode !== "whitelist_only") {
+    if (!isAllowedModel(requestedModel)) {
+      return {
+        valid: false,
+        reason: `Model '${requestedModel}' is not on the platform allowlist.`,
+      };
+    }
     return { valid: true };
   }
 
-  if (policy.mode === "whitelist_only") {
-    const isAllowed = policy.allowedModelIds.includes(requestedModel);
-    if (!isAllowed) {
-      return {
-        valid: false,
-        reason: `Model '${requestedModel}' is not authorized by this Space's compliance policy (${policy.pickerHeaderLabel || "Whitelist Only"}). Authorized models: ${policy.allowedModelIds.join(", ")}`,
-      };
-    }
+  // Enforce the vertical whitelist strictly
+  const isWhitelisted =
+    spaceModelPolicy.allowedModelIds.includes(requestedModel) ||
+    (requestedModel.startsWith("custom/") && spaceModelPolicy.allowedModelIds.some((m) => m.startsWith("custom/")));
+
+  if (!isWhitelisted) {
+    return {
+      valid: false,
+      reason: `Compliance Violation: Model '${requestedModel}' is not certified for this vertical space. Permitted models: [${spaceModelPolicy.allowedModelIds.join(", ")}]`,
+    };
   }
 
   return { valid: true };

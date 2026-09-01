@@ -85,7 +85,7 @@ describe("workspace prebuilt", () => {
 
     it("rejects an unknown workspace name", async () => {
       const ctx = makeCtx({});
-      await expect(call(ctx, "workspace.list", { name: "s3" })).rejects.toThrow(/must be 'r2' or 'container'/);
+      await expect(call(ctx, "workspace.list", { name: "s3" })).rejects.toThrow(/must be.*'r2' or 'container'/);
     });
   });
 

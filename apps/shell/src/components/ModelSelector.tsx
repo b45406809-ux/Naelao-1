@@ -93,24 +93,41 @@ const LEVEL_LABELS: Record<string, string> = {
   off: "Off", on: "On", low: "Low", medium: "Medium", high: "High", max: "Max",
 };
 
-export function ModelSelector({
-  model,
-  reasoningLevel,
-  modelPolicy,
-  onChange,
-}: {
-  model: string;
-  reasoningLevel: string | null;
+export interface ModelSelectorProps {
+  model?: string;
+  selectedModel?: string;
+  reasoningLevel?: string | null;
   /** Vertical model policy restricting or curating allowed models */
   modelPolicy?: VerticalModelPolicy | null;
-  /** Called whenever either the model or the reasoning level changes. Switching model always
-   *  re-picks a level (the first one the new model offers, or null when it offers none) — a level
-   *  chosen for the PREVIOUS model may not even be valid for the new one. */
-  onChange: (model: string, reasoningLevel: string | null) => void;
-}) {
+  spaceModelPolicy?: VerticalModelPolicy | null;
+  /** Called whenever either the model or the reasoning level changes. */
+  onChange?: (model: string, reasoningLevel: string | null) => void;
+  onModelChange?: (model: string) => void;
+}
+
+export function ModelSelector({
+  model: propModel,
+  selectedModel: propSelectedModel,
+  reasoningLevel = null,
+  modelPolicy: propModelPolicy,
+  spaceModelPolicy: propSpaceModelPolicy,
+  onChange,
+  onModelChange,
+}: ModelSelectorProps) {
+  const model = propModel ?? propSelectedModel ?? "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+  const modelPolicy = propSpaceModelPolicy ?? propModelPolicy;
   const [open, setOpen] = React.useState(false);
   const rootRef = React.useRef<HTMLDivElement>(null);
   const capability = capabilityForModel(model);
+
+  const handleSelection = (newModel: string, newReasoningLevel: string | null) => {
+    if (onChange) {
+      onChange(newModel, newReasoningLevel);
+    }
+    if (onModelChange) {
+      onModelChange(newModel);
+    }
+  };
 
   React.useEffect(() => {
     if (!open) return;
@@ -128,7 +145,7 @@ export function ModelSelector({
 
   const filteredCompanyModels = React.useMemo(() => {
     if (!allowedSet) return DEFAULT_COMPANY_MODELS;
-    return DEFAULT_COMPANY_MODELS.filter((cm) => allowedSet.has(cm.id));
+    return DEFAULT_COMPANY_MODELS.filter((cm) => allowedSet.has(cm.id) || allowedSet.has("custom/*") || Array.from(allowedSet).some(m => m.startsWith("custom/")));
   }, [allowedSet]);
 
   const filteredFoundationModels = React.useMemo(() => {
@@ -211,7 +228,7 @@ export function ModelSelector({
                   key={cm.id}
                   type="button"
                   onClick={() => {
-                    onChange(cm.id, null);
+                    handleSelection(cm.id, null);
                   }}
                   style={{
                     display: "flex", width: "100%", flexDirection: "column", alignItems: "flex-start",
@@ -240,7 +257,7 @@ export function ModelSelector({
               type="button"
               onClick={() => {
                 const cap = capabilityForModel(m);
-                onChange(m, cap.reasoningLevels.length > 0 ? (cap.reasoningLevels[0] ?? null) : null);
+                handleSelection(m, cap.reasoningLevels.length > 0 ? (cap.reasoningLevels[0] ?? null) : null);
               }}
               style={{
                 display: "flex", width: "100%", alignItems: "center", justifyContent: "space-between",
@@ -265,7 +282,7 @@ export function ModelSelector({
                   <button
                     key={level}
                     type="button"
-                    onClick={() => onChange(model, level)}
+                    onClick={() => handleSelection(model, level)}
                     style={{
                       flex: 1, padding: "6px 0", borderRadius: 7,
                       border: `1px solid ${level === reasoningLevel ? "var(--accent)" : "var(--border)"}`,

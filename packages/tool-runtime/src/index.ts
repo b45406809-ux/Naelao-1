@@ -1,4 +1,5 @@
 // Dynamic tool registry (D1-backed), tool contract validation
+export * from "./mcp-v2.js";
 
 export interface ToolDefinition {
   id: string;

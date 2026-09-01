@@ -49,6 +49,7 @@ import { tasks } from "./tasks.js";
 import { plan } from "./plan.js";
 import { tierPrimitives } from "./tier-primitives.js";
 import { dualTierGoal } from "./dual-tier-goal.js";
+import { gitSync } from "./git-sync.js";
 
 /** Context handed to every prebuilt operation. */
 export interface PrebuiltOpContext {
@@ -161,6 +162,8 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   [tierPrimitives.name]: tierPrimitives,
   // Dual-Tier Architecture Mode (Frontier-Planner + Open-Worker Context Isolation)
   [dualTierGoal.name]: dualTierGoal,
+  // Cloudflare Artifacts Multi-Agent Git Engine & Rebase Operations (241 - 243)
+  [gitSync.name]: gitSync,
 };
 
 /**

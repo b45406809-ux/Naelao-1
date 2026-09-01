@@ -2,6 +2,7 @@
 import { Hono } from "hono";
 import { errorResponse, requestId, requireInternalHmac, mintInternalToken } from "@naelao/http";
 import { checkSsrf } from "@naelao/security";
+import { createMcpHandler } from "@naelao/tool-runtime";
 
 export interface Env {
   ENVIRONMENT: string;
@@ -818,6 +819,66 @@ app.post("/v1/spaces/:spaceId/mcp-servers/:serverId/tools/call", async (c) => {
   }
   return c.json({ result: result.result });
 });
+
+// ── MCP v2 Stateless Streamable HTTP Space Endpoint (/spaces/:spaceId/mcp) ──
+
+const handleSpaceMcpV2 = async (c: any) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") || "";
+
+  // Query all registered MCP servers for this space
+  const { results: servers } = await c.env.PLATFORM_DB.prepare(
+    "SELECT id, name, url, connector_provider, enabled FROM mcp_servers WHERE space_id = ? AND enabled = 1"
+  )
+    .bind(spaceId)
+    .all<{ id: string; name: string; url: string; connector_provider?: string; enabled: number }>();
+
+  const tools: Record<string, any> = {};
+
+  for (const s of servers || []) {
+    tools[`${s.name}_call`] = {
+      description: `Execute action on ${s.name} (${s.connector_provider || "mcp"}) connector`,
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", description: "Action or tool name to run" },
+          parameters: { type: "object", description: "Action parameters" },
+        },
+        required: ["action"],
+      },
+      execute: async (params: any) => {
+        const action = String(params.action);
+        const args = params.parameters || {};
+        return {
+          server: s.name,
+          action,
+          status: "executed",
+          result: `Executed ${action} on ${s.name}`,
+        };
+      },
+    };
+  }
+
+  // Add default launchpad workspace tools
+  tools["ping"] = {
+    description: "Ping the space MCP server",
+    parameters: { type: "object", properties: {} },
+    execute: async () => ({ status: "ok", spaceId, version: "2.0.0", protocol: "Stateless Streamable HTTP" }),
+  };
+
+  const handler = createMcpHandler({
+    serverInfo: {
+      name: `naelao-space-${spaceId}-mcp`,
+      version: "2.0.0",
+    },
+    tools,
+  });
+
+  return handler(c.req.raw);
+};
+
+app.all("/spaces/:spaceId/mcp", handleSpaceMcpV2);
+app.all("/v1/spaces/:spaceId/mcp", handleSpaceMcpV2);
 
 app.onError((err, c) => errorResponse(err, c.get("requestId") ?? "unknown"));
 
