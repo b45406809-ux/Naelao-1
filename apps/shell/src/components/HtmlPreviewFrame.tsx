@@ -56,6 +56,25 @@ const INSPECTOR_SCRIPT = `
   document.addEventListener("click", function (e) {
     var d = describe(e.target);
     if (!d) return;
+    
+    // Check if element or ancestor declares an MCP-UI action
+    var actionEl = e.target.closest ? e.target.closest("[data-mcp-action], button, a, form") : null;
+    var mcpAction = actionEl && actionEl.getAttribute ? actionEl.getAttribute("data-mcp-action") : null;
+    var mcpPayload = actionEl && actionEl.getAttribute ? actionEl.getAttribute("data-mcp-payload") : null;
+    
+    if (mcpAction) {
+      try {
+        var parsedPayload = mcpPayload ? JSON.parse(mcpPayload) : { id: actionEl.id, text: d.text };
+        window.parent.postMessage({
+          type: "MCP_UI_ACTION",
+          action: mcpAction,
+          payload: parsedPayload,
+          selector: d.selector,
+          tag: d.tag
+        }, "*");
+      } catch (err) {}
+    }
+
     e.preventDefault();
     e.stopPropagation();
     try {

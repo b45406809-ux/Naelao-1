@@ -38,6 +38,8 @@ export const microApp: PrebuiltScript = {
     "microapp.query": "{appId: string, table?: string, gatekeeperToken: string, limit?: number, offset?: number}",
     "microapp.insert": "{appId: string, table?: string, record: Record<string, unknown>, gatekeeperToken: string}",
     "microapp.mint_token": "{appId: string, targetUserId?: string, targetRole?: string, grants: GatekeeperGrant[], ttlSeconds?: number}",
+    "microapp.mcp_list_tools": "{appId: string}",
+    "microapp.mcp_call_tool": "{appId: string, toolName: string, toolArgs?: Record<string, unknown>}",
   },
   operations: {
     async "microapp.synthesize"(args, ctx) {
@@ -177,6 +179,62 @@ export const microApp: PrebuiltScript = {
       );
 
       return { ok: true, token, appId, spaceId: ctx.env.spaceId };
+    },
+
+    async "microapp.mcp_list_tools"(args, ctx) {
+      const appId = String(args["appId"] ?? "").trim();
+      if (!appId) throw new Error("microapp.mcp_list_tools requires 'appId'");
+
+      const resp = await reqSpacesWorker(ctx).fetch(
+        new Request(`http://spaces-worker/spaces/${ctx.env.spaceId}/micro-apps/${appId}/mcp`, {
+          method: "POST",
+          headers: await internalHeaders(ctx, { "content-type": "application/json" }),
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: `req_${Date.now()}`,
+            method: "tools/list",
+            params: {},
+          }),
+        })
+      );
+
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => "");
+        throw new Error(`microapp.mcp_list_tools failed: ${resp.status}${body ? ` — ${body}` : ""}`);
+      }
+      const data = (await resp.json()) as any;
+      return data?.result?.tools || [];
+    },
+
+    async "microapp.mcp_call_tool"(args, ctx) {
+      const appId = String(args["appId"] ?? "").trim();
+      const toolName = String(args["toolName"] ?? "").trim();
+      const toolArgs = (args["toolArgs"] || {}) as Record<string, unknown>;
+
+      if (!appId) throw new Error("microapp.mcp_call_tool requires 'appId'");
+      if (!toolName) throw new Error("microapp.mcp_call_tool requires 'toolName'");
+
+      const resp = await reqSpacesWorker(ctx).fetch(
+        new Request(`http://spaces-worker/spaces/${ctx.env.spaceId}/micro-apps/${appId}/mcp`, {
+          method: "POST",
+          headers: await internalHeaders(ctx, { "content-type": "application/json" }),
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: `req_${Date.now()}`,
+            method: "tools/call",
+            params: {
+              name: toolName,
+              arguments: toolArgs,
+            },
+          }),
+        })
+      );
+
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => "");
+        throw new Error(`microapp.mcp_call_tool failed: ${resp.status}${body ? ` — ${body}` : ""}`);
+      }
+      return await resp.json();
     },
   },
 };

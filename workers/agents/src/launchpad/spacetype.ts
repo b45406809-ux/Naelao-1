@@ -22,7 +22,7 @@
 
 // The web studio's price list lives with its skills, so the storefront the assistant provisions
 // and the skill that quotes a job read the SAME numbers.
-import { DEFAULT_WORKING_MODEL, type VerticalModelPolicy } from "@naelao/billing-core";
+import { DEFAULT_WORKING_MODEL, type VerticalModelPolicy, type TemplateFeatureGating } from "@naelao/billing-core";
 import { WEBDEV_TIERS } from "./webdev-skills.js";
 
 /** An agent definition exactly in the §11 shape (stored in SpaceDO.agent_definitions). */
@@ -205,6 +205,8 @@ export interface LaunchpadTemplate {
   /** Pre-indexed semantic knowledge seeds */
   knowledge_seeds?: Array<{ question: string; answer: string; sourceDocumentUrl?: string }>;
   seed_repository_url?: string;
+  /** Template feature gating and mutual exclusivity rules */
+  feature_gating?: TemplateFeatureGating;
   /**
    * The template's published price list, when it sells a fixed set of packages.
    *

@@ -460,3 +460,29 @@ export interface AstConflictResolution {
   manualReviewRequired: boolean;
 }
 
+// ── Template Feature Gating & Mutual Exclusivity Monetization ─────────────────
+export type MonetizationModel = "FREEMIUM_TIERED_SAAS" | "FIXED_ONE_OFF_UNLOCKED";
+
+export interface PlanTierAccessRule {
+  allowedProjectKinds: string[];
+  allowedPlugins: string[];
+  maxExecutionTier: number;
+  monthlyQueryAllowance: number;
+}
+
+export interface TierAccessRules {
+  entryPlan: PlanTierAccessRule;   // $20 / mo (plans <= $25)
+  growthPlan: PlanTierAccessRule;  // $50 / mo (plans $26 - $149)
+  proPlan: PlanTierAccessRule;     // $150+ / mo (plans >= $150)
+}
+
+export interface TemplateFeatureGating {
+  /** Enforce Mutual Exclusivity: Freemium Tiered SaaS ($0 upfront + gating) vs Fixed One-Off (100% unlocked) */
+  monetizationModel: MonetizationModel;
+  /** Set ONLY when monetizationModel === "FIXED_ONE_OFF_UNLOCKED" (e.g. 9900 = $99.00) */
+  fixedPriceCents?: number;
+  /** Set ONLY when monetizationModel === "FREEMIUM_TIERED_SAAS" (Upfront is always $0) */
+  tierAccessRules?: TierAccessRules;
+}
+
+

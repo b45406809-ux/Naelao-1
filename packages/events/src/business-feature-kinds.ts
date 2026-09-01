@@ -53,7 +53,8 @@ export interface BusinessFeatureKind {
     | "ClinicalSoapEditor"
     | "PlanSpecCanvas"
     | "ModelStudioCanvas"
-    | "AppStudioCanvas";
+    | "AppStudioCanvas"
+    | "VoiceAgentCanvas";
   /** Domain-specific system prompt injected into agents operating in this project. */
   domainSystemPrompt?: string;
   /** Scoped Execution Ladder tiers permitted for this plugin kind. */
@@ -356,7 +357,27 @@ Generate clean HTML/Preact frontends and Hono backend routes using private in-DO
 Always declare explicit Gatekeeper permission grants for required resources.`,
     linterRules: ["sql-injection-check", "gatekeeper-schema-validator"],
   },
+  {
+    kind: "voice_agent",
+    label: "Voice Telephony & Call Desk",
+    description: "24/7 AI voice phone receptionist powered by Cloudflare Calls and WebRTC with shared calendar booking.",
+    singleton: false,
+    minCreationRole: "admin",
+    autoProvisionable: true,
+    prebuiltScripts: ["knowledge-base", "file-manager", "notifications"],
+    viewportComponent: "VoiceAgentCanvas", // Call dashboard + real-time waveform & live transcript
+    allowedLadderTiers: [1, 2],           // Safe RAG + Calendar tools only
+    domainSystemPrompt: `You are a professional Voice Receptionist speaking over a live phone call.
+Rules:
+1. Speak in short, conversational sentences (1-2 sentences max per turn).
+2. Do not use markdown, emojis, or bullet points in your speech output.
+3. Check company-wide calendar availability and confirm bookings atomically.`,
+  },
 ];
+
+export const VOICE_AGENT_KIND: BusinessFeatureKind = BUSINESS_FEATURE_KIND_REGISTRY.find(
+  (k) => k.kind === "voice_agent"
+)!;
 
 export const APP_STUDIO_KIND: BusinessFeatureKind = BUSINESS_FEATURE_KIND_REGISTRY.find(
   (k) => k.kind === "app_studio"

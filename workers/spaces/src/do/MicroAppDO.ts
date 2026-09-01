@@ -106,6 +106,11 @@ export class MicroAppDO extends DurableObject {
       return this.handleNotify(request);
     }
 
+    // ── 4. MCP v2 Server JSON-RPC Protocol Endpoint (/mcp & /api/mcp) ─────────
+    if ((pathname === "/mcp" || pathname === "/api/mcp") && request.method === "POST") {
+      return this.handleMcpJsonRpc(request);
+    }
+
     return new Response(JSON.stringify({ error: "Not Found", path: pathname }), {
       status: 404,
       headers: { "content-type": "application/json" },
@@ -535,11 +540,199 @@ export class MicroAppDO extends DurableObject {
     <div class="bg-gray-50 rounded-lg p-3 text-left text-xs font-mono text-gray-700">
       Status: Active<br>
       Engine: Cloudflare MicroAppDO<br>
-      Database: In-DO Private SQLite
+      Database: In-DO Private SQLite<br>
+      Protocol: MCP v2 Server Enabled (/mcp)
     </div>
   </div>
 </body>
 </html>`;
+  }
+
+  /**
+   * Handles MCP v2 JSON-RPC requests, exposing this micro-app's SQLite tables as standard MCP tools.
+   */
+  private async handleMcpJsonRpc(request: Request): Promise<Response> {
+    let body: any;
+    try {
+      body = await request.json();
+    } catch {
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    const { id, method, params } = body || {};
+    const manifest = (await this.readManifest()) || { appId: "microapp", title: "Micro-App" };
+    const appId = manifest.appId || "microapp";
+    const tables = this.listUserTables();
+
+    // 1. tools/list
+    if (method === "tools/list" || method === "mcp.list_tools") {
+      const tools = [
+        {
+          name: `app_${sanitizeIdentifier(appId)}_list_records`,
+          description: `Query and filter records in the ${manifest.title} (${appId}) micro-app database.`,
+          inputSchema: {
+            type: "object",
+            properties: {
+              table: { type: "string", description: `Table to query (available: ${tables.join(", ")})`, default: tables[0] || "app_records" },
+              limit: { type: "number", description: "Maximum records to return (default: 50)", default: 50 },
+              offset: { type: "number", description: "Offset for pagination", default: 0 },
+            },
+          },
+        },
+        {
+          name: `app_${sanitizeIdentifier(appId)}_insert_record`,
+          description: `Insert a new record into the ${manifest.title} (${appId}) micro-app SQLite database.`,
+          inputSchema: {
+            type: "object",
+            properties: {
+              table: { type: "string", description: "Table name", default: tables[0] || "app_records" },
+              record: { type: "object", description: "Record key-value pairs matching table schema" },
+            },
+            required: ["record"],
+          },
+        },
+        {
+          name: `app_${sanitizeIdentifier(appId)}_query_sql`,
+          description: `Execute a read-only parameterized SELECT query against ${manifest.title} private SQLite database.`,
+          inputSchema: {
+            type: "object",
+            properties: {
+              sql: { type: "string", description: "SELECT SQL query" },
+              params: { type: "array", description: "Optional SQL parameters" },
+            },
+            required: ["sql"],
+          },
+        },
+      ];
+
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: { tools } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    // 2. tools/call
+    if (method === "tools/call" || method === "mcp.call_tool") {
+      const toolName = params?.name || "";
+      const toolArgs = params?.arguments || {};
+
+      try {
+        if (toolName.endsWith("_list_records")) {
+          const table = sanitizeIdentifier(toolArgs.table || tables[0] || "app_records");
+          const limit = Math.min(100, Math.max(1, Number(toolArgs.limit || 50)));
+          const offset = Math.max(0, Number(toolArgs.offset || 0));
+
+          const cursor = this.ctx.storage.sql.exec(`SELECT * FROM ${table} LIMIT ? OFFSET ?`, limit, offset);
+          const rows = cursor.toArray();
+
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id,
+              result: {
+                content: [{ type: "text", text: JSON.stringify({ ok: true, table, count: rows.length, rows }) }],
+              },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          );
+        }
+
+        if (toolName.endsWith("_insert_record")) {
+          const table = sanitizeIdentifier(toolArgs.table || tables[0] || "app_records");
+          const record = toolArgs.record || {};
+          const recordId = record.id || `rec_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+          if (table === "app_records") {
+            this.ctx.storage.sql.exec(
+              `INSERT INTO app_records (id, data_json, created_at, updated_at) VALUES (?, ?, datetime('now'), datetime('now'))`,
+              recordId,
+              JSON.stringify(record)
+            );
+          } else {
+            const keys = Object.keys(record).map(sanitizeIdentifier);
+            const placeholders = keys.map(() => "?").join(", ");
+            const values = Object.values(record);
+            this.ctx.storage.sql.exec(
+              `INSERT INTO ${table} (${keys.join(", ")}) VALUES (${placeholders})`,
+              ...values
+            );
+          }
+
+          this.recordAudit("mcp_tool_insert", "agent_mcp", { table, recordId });
+
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id,
+              result: {
+                content: [{ type: "text", text: JSON.stringify({ ok: true, message: `Inserted record into ${table}`, id: recordId }) }],
+              },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          );
+        }
+
+        if (toolName.endsWith("_query_sql")) {
+          const sql = String(toolArgs.sql || "").trim();
+          if (!sql.toUpperCase().startsWith("SELECT")) {
+            throw new Error("Only read-only SELECT queries are permitted via MCP SQL tool");
+          }
+          const sqlParams = Array.isArray(toolArgs.params) ? toolArgs.params : [];
+          const cursor = this.ctx.storage.sql.exec(sql, ...sqlParams);
+          const rows = cursor.toArray();
+
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id,
+              result: {
+                content: [{ type: "text", text: JSON.stringify({ ok: true, count: rows.length, rows }) }],
+              },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          );
+        }
+
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id,
+            error: { code: -32601, message: `Unknown MCP tool '${toolName}'` },
+          }),
+          { status: 400, headers: { "content-type": "application/json" } }
+        );
+      } catch (err: any) {
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id,
+            error: { code: -32000, message: err?.message || "Tool execution failed" },
+          }),
+          { status: 500, headers: { "content-type": "application/json" } }
+        );
+      }
+    }
+
+    // 3. resources/list
+    if (method === "resources/list" || method === "mcp.list_resources") {
+      const resources = tables.map((t) => ({
+        uri: `sqlite://${appId}/${t}`,
+        name: `Table: ${t}`,
+        mimeType: "application/json",
+      }));
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: { resources } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    return new Response(
+      JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32601, message: `Method '${method}' not supported` } }),
+      { status: 400, headers: { "content-type": "application/json" } }
+    );
   }
 }
 

@@ -2854,3 +2854,95 @@ export async function verifyFeatureAccessApi(
   return apiFetch(`/billing/partner/verify-access?${q.toString()}`, { session });
 }
 
+// ── Calendar Events & Appointments ─────────────────────────────────────────
+
+export interface CalendarEvent {
+  id: string;
+  space_id: string;
+  session_id?: string | null;
+  agent_id?: string | null;
+  title: string;
+  description?: string | null;
+  start_time: string;
+  end_time: string;
+  status: "CONFIRMED" | "CANCELLED" | "COMPLETED";
+  attendee_name?: string | null;
+  attendee_email?: string | null;
+  attendee_phone?: string | null;
+  metadata?: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function listCalendarEvents(
+  spaceId: string,
+  session: SessionCredentials,
+  query?: { start_time?: string; end_time?: string; status?: string }
+): Promise<{ events: CalendarEvent[]; count: number }> {
+  const qs = new URLSearchParams();
+  if (query?.start_time) qs.set("start_time", query.start_time);
+  if (query?.end_time) qs.set("end_time", query.end_time);
+  if (query?.status) qs.set("status", query.status);
+  const qStr = qs.toString();
+  return apiFetch<{ events: CalendarEvent[]; count: number }>(
+    `/spaces/${spaceId}/calendar/events${qStr ? `?${qStr}` : ""}`,
+    { session }
+  );
+}
+
+export async function checkCalendarAvailability(
+  spaceId: string,
+  startTime: string,
+  endTime: string,
+  session: SessionCredentials
+): Promise<{ available: boolean; conflict_count: number; conflicts: CalendarEvent[] }> {
+  const qs = new URLSearchParams({ start_time: startTime, end_time: endTime });
+  return apiFetch<{ available: boolean; conflict_count: number; conflicts: CalendarEvent[] }>(
+    `/spaces/${spaceId}/calendar/availability?${qs.toString()}`,
+    { session }
+  );
+}
+
+export async function bookCalendarEvent(
+  spaceId: string,
+  payload: {
+    title: string;
+    description?: string;
+    start_time: string;
+    end_time: string;
+    attendee_name?: string;
+    attendee_email?: string;
+    attendee_phone?: string;
+    session_id?: string;
+    agent_id?: string;
+    metadata?: Record<string, unknown>;
+  },
+  session: SessionCredentials
+): Promise<{ ok: boolean; event: CalendarEvent }> {
+  return apiFetch<{ ok: boolean; event: CalendarEvent }>(
+    `/spaces/${spaceId}/calendar/book`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+      session,
+    }
+  );
+}
+
+export async function cancelCalendarEvent(
+  spaceId: string,
+  eventId: string,
+  reason: string,
+  session: SessionCredentials
+): Promise<{ ok: boolean; event: CalendarEvent }> {
+  return apiFetch<{ ok: boolean; event: CalendarEvent }>(
+    `/spaces/${spaceId}/calendar/events/${encodeURIComponent(eventId)}/cancel`,
+    {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+      session,
+    }
+  );
+}
+
+

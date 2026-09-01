@@ -168,6 +168,8 @@ export function ComposerDock({
   /** Dual-Tier Architecture Mode (Frontier-Planner + Open-Worker Context Isolation) toggle */
   dualTierMode?: boolean;
   onToggleDualTierMode?: (enabled: boolean) => void;
+  /** Live Voice Call Mode (@cloudflare/voice ChatGPT-style) */
+  onStartVoiceCall?: () => void;
   /** The message input itself. The dock owns the whole stack — panel above, input in the middle,
    *  toolbar below — so an open panel pushes the input down as one unit instead of overlaying it. */
   children?: React.ReactNode;
@@ -909,6 +911,18 @@ export function ComposerDock({
         <button type="button" className={`dock-btn${panel === "tips" ? " open" : ""}`} onClick={() => toggle("tips")} title="Tips for a better answer">
           <Icon path={ICONS.bulb} />
         </button>
+        {onStartVoiceCall && (
+          <button
+            type="button"
+            className="dock-btn dock-btn-labeled"
+            onClick={onStartVoiceCall}
+            style={{ color: "var(--green, #22c55e)", borderColor: "rgba(34, 197, 94, 0.3)" }}
+            title="Start Live Duplex Voice Call with Agent (@cloudflare/voice sub-300ms)"
+          >
+            <span style={{ fontSize: "12px" }}>📞</span>
+            <span>Call</span>
+          </button>
+        )}
 
         <div className="dock-spacer" />
 

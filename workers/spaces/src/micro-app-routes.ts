@@ -171,6 +171,22 @@ export function registerMicroAppRoutes(app: Hono<{ Bindings: Env }>): void {
     }));
   });
 
+  app.all("/spaces/:spaceId/micro-apps/:appId/mcp", async (c) => {
+    const { spaceId, appId } = c.req.param();
+    if (!c.env.MICRO_APP_DO) return c.json({ error: "MicroAppDO not configured" }, 500);
+
+    const doName = await getDOName("microapp", appId, spaceId, c.env.PLATFORM_SECRET);
+    const doId = c.env.MICRO_APP_DO.idFromName(doName);
+    const stub = c.env.MICRO_APP_DO.get(doId);
+
+    const forwardedHeaders = new Headers(c.req.raw.headers);
+    return stub.fetch(new Request("https://microapp.internal/mcp", {
+      method: c.req.method,
+      headers: forwardedHeaders,
+      body: ["GET", "HEAD"].includes(c.req.method) ? undefined : c.req.raw.body,
+    }));
+  });
+
   app.all("/spaces/:spaceId/micro-apps/:appId/api/*", async (c) => {
     const { spaceId, appId } = c.req.param();
     if (!c.env.MICRO_APP_DO) return c.json({ error: "MicroAppDO not configured" }, 500);

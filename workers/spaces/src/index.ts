@@ -2918,6 +2918,66 @@ app.delete("/spaces/:spaceId/tasks/:taskId", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
+// ── Calendar & Booking Ledger (Space-Wide Shared Schedule) ────────────────────
+app.use("/spaces/:spaceId/calendar/events", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/calendar/events", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/calendar/availability", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/calendar/availability", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/calendar/book", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/calendar/book", requireBusinessMembership({ POST: "member" }));
+app.use("/spaces/:spaceId/calendar/events/:eventId/cancel", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/calendar/events/:eventId/cancel", requireBusinessMembership({ POST: "member" }));
+
+app.get("/spaces/:spaceId/calendar/events", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const qs = new URLSearchParams({ space_id: spaceId });
+  const startTime = c.req.query("start_time");
+  if (startTime) qs.set("start_time", startTime);
+  const endTime = c.req.query("end_time");
+  if (endTime) qs.set("end_time", endTime);
+  const status = c.req.query("status");
+  if (status) qs.set("status", status);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/calendar/events?${qs.toString()}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.get("/spaces/:spaceId/calendar/availability", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const qs = new URLSearchParams({ space_id: spaceId });
+  const startTime = c.req.query("start_time");
+  if (startTime) qs.set("start_time", startTime);
+  const endTime = c.req.query("end_time");
+  if (endTime) qs.set("end_time", endTime);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/calendar/availability?${qs.toString()}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.post("/spaces/:spaceId/calendar/book", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const body = await c.req.json().catch(() => ({}));
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, "/calendar/book", "POST", JSON.stringify({ ...body, space_id: spaceId }));
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.post("/spaces/:spaceId/calendar/events/:eventId/cancel", async (c) => {
+  const { spaceId, eventId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const body = await c.req.json().catch(() => ({}));
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/calendar/events/${encodeURIComponent(eventId)}/cancel`, "POST", JSON.stringify({ ...body, space_id: spaceId }));
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
 // GET /spaces/:spaceId/sub-spaces — list the product's space registry (root + departments).
 app.get("/spaces/:spaceId/sub-spaces", async (c) => {
   const spaceId = c.req.param("spaceId");

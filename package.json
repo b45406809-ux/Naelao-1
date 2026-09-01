@@ -8,9 +8,9 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "node server.ts",
-    "start": "node server.ts",
-    "build": "echo 'Build successful'",
+    "dev": "npm run dev --workspace=apps/dashboard",
+    "start": "npm run start --workspace=apps/dashboard",
+    "build": "npm run build --workspace=apps/dashboard",
     "test": "echo 'Tests ok'",
     "lint": "echo 'ok'",
     "typecheck": "echo 'ok'"

@@ -1073,6 +1073,27 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_threads_tier ON threads(space_id, project_id, thread_tier);
     `,
   },
+  {
+    version: 41,
+    description: "space_calendar_events — space-wide shared appointments, bookings, and customer CRM schedule",
+    up: `
+      CREATE TABLE IF NOT EXISTS space_calendar_events (
+        id                    TEXT PRIMARY KEY,
+        space_id              TEXT NOT NULL,
+        created_by_project_id TEXT,
+        client_name           TEXT NOT NULL,
+        client_contact        TEXT NOT NULL DEFAULT '',
+        event_type            TEXT NOT NULL DEFAULT 'consultation',
+        start_time            TEXT NOT NULL,
+        end_time              TEXT NOT NULL,
+        status                TEXT NOT NULL DEFAULT 'CONFIRMED' CHECK (status IN ('CONFIRMED', 'CANCELLED', 'RESCHEDULED')),
+        metadata_json         TEXT DEFAULT '{}',
+        created_at            TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_calendar_space ON space_calendar_events(space_id, start_time ASC);
+      CREATE INDEX IF NOT EXISTS idx_calendar_project ON space_calendar_events(created_by_project_id);
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -1708,6 +1729,25 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // GET /cross-space-check?user_id=&requesting_space_id=&target_space_id=&grant_type=
       if (method === "GET" && url.pathname === "/cross-space-check") {
         return this.checkCrossSpace(url.searchParams);
+      }
+
+      // ── Space-Wide Shared Calendar & CRM Ledger ─────────────────────────────
+      // GET /calendar/events?space_id=&start_time=&end_time=&status=
+      if (method === "GET" && url.pathname === "/calendar/events") {
+        return this.listCalendarEvents(url.searchParams);
+      }
+      // GET /calendar/availability?space_id=&start_time=&end_time=
+      if (method === "GET" && url.pathname === "/calendar/availability") {
+        return this.checkCalendarAvailability(url.searchParams);
+      }
+      // POST /calendar/book — check availability & atomically book slot
+      if (method === "POST" && url.pathname === "/calendar/book") {
+        return this.bookCalendarSlot(request);
+      }
+      // POST /calendar/events/:id/cancel
+      const cancelCalendarMatch = url.pathname.match(/^\/calendar\/events\/([^/]+)\/cancel$/);
+      if (method === "POST" && cancelCalendarMatch?.[1]) {
+        return this.cancelCalendarEvent(cancelCalendarMatch[1], request);
       }
 
       return Response.json(
@@ -5798,5 +5838,174 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       console.error("[SpaceDO] checkCrossSpace UNEXPECTED ERROR — defaulting to DENIED", err);
       return Response.json({ permitted: false, reason: "Permission check failed; access denied as a safety default.", grant_type: null });
     }
+  }
+
+  // ── Space-Wide Shared Calendar & CRM Ledger ─────────────────────────────
+  private listCalendarEvents(params: URLSearchParams): Response {
+    const spaceId = params.get("space_id") ?? "";
+    const startTime = params.get("start_time");
+    const endTime = params.get("end_time");
+    const status = params.get("status") ?? "CONFIRMED";
+
+    let sql = "SELECT * FROM space_calendar_events WHERE space_id = ?";
+    const bindings: unknown[] = [spaceId];
+
+    if (status !== "all") {
+      sql += " AND status = ?";
+      bindings.push(status);
+    }
+    if (startTime) {
+      sql += " AND end_time >= ?";
+      bindings.push(startTime);
+    }
+    if (endTime) {
+      sql += " AND start_time <= ?";
+      bindings.push(endTime);
+    }
+    sql += " ORDER BY start_time ASC";
+
+    const rows = queryAll<{
+      id: string;
+      space_id: string;
+      created_by_project_id: string | null;
+      client_name: string;
+      client_contact: string;
+      event_type: string;
+      start_time: string;
+      end_time: string;
+      status: string;
+      metadata_json: string;
+      created_at: string;
+    }>(this.ctx.storage.sql as never, sql, ...bindings);
+
+    return Response.json({
+      events: rows.map((r) => ({
+        ...r,
+        metadata: safeJsonParseObj(r.metadata_json),
+      })),
+    });
+  }
+
+  private checkCalendarAvailability(params: URLSearchParams): Response {
+    const spaceId = params.get("space_id") ?? "";
+    const startTime = params.get("start_time");
+    const endTime = params.get("end_time");
+
+    if (!spaceId || !startTime) {
+      return Response.json({ error_code: "bad_request", message: "space_id and start_time are required" }, { status: 400 });
+    }
+
+    const calculatedEndTime = endTime || new Date(new Date(startTime).getTime() + 30 * 60000).toISOString();
+
+    const conflicts = queryAll<{ id: string; client_name: string; start_time: string; end_time: string }>(
+      this.ctx.storage.sql as never,
+      `SELECT id, client_name, start_time, end_time FROM space_calendar_events
+       WHERE space_id = ? AND status = 'CONFIRMED'
+         AND start_time < ? AND end_time > ?`,
+      spaceId, calculatedEndTime, startTime
+    );
+
+    return Response.json({
+      available: conflicts.length === 0,
+      conflicts,
+      checkedSlot: { startTime, endTime: calculatedEndTime },
+    });
+  }
+
+  private async bookCalendarSlot(request: Request): Promise<Response> {
+    const body = await request.json<{
+      space_id: string;
+      client_name: string;
+      client_contact?: string;
+      event_type?: string;
+      start_time: string;
+      end_time?: string;
+      created_by_project_id?: string;
+      metadata?: Record<string, unknown>;
+    }>();
+
+    if (!body.space_id || !body.client_name || !body.start_time) {
+      return Response.json({ error_code: "bad_request", message: "space_id, client_name, and start_time are required" }, { status: 400 });
+    }
+
+    const endTime = body.end_time || new Date(new Date(body.start_time).getTime() + 30 * 60000).toISOString();
+
+    // Check for double booking
+    const conflict = queryOne<{ id: string; client_name: string }>(
+      this.ctx.storage.sql as never,
+      `SELECT id, client_name FROM space_calendar_events
+       WHERE space_id = ? AND status = 'CONFIRMED'
+         AND start_time < ? AND end_time > ? LIMIT 1`,
+      body.space_id, endTime, body.start_time
+    );
+
+    if (conflict) {
+      return Response.json({
+        ok: false,
+        error_code: "slot_conflict",
+        message: `Slot is already booked for ${conflict.client_name}. Please choose another time.`,
+      }, { status: 409 });
+    }
+
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO space_calendar_events (id, space_id, created_by_project_id, client_name, client_contact, event_type, start_time, end_time, status, metadata_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'CONFIRMED', ?, ?)`,
+      id,
+      body.space_id,
+      body.created_by_project_id ?? null,
+      body.client_name,
+      body.client_contact ?? "",
+      body.event_type ?? "consultation",
+      body.start_time,
+      endTime,
+      JSON.stringify(body.metadata ?? {}),
+      now
+    );
+
+    if (this.env.WS_GATEWAY) {
+      void broadcastSpaceEvent(this.env.WS_GATEWAY, body.space_id, {
+        type: "calendar.booked",
+        space_id: body.space_id,
+        payload: { id, client_name: body.client_name, start_time: body.start_time, end_time: endTime },
+      });
+    }
+
+    return Response.json({
+      ok: true,
+      event: {
+        id,
+        space_id: body.space_id,
+        created_by_project_id: body.created_by_project_id ?? null,
+        client_name: body.client_name,
+        client_contact: body.client_contact ?? "",
+        event_type: body.event_type ?? "consultation",
+        start_time: body.start_time,
+        end_time: endTime,
+        status: "CONFIRMED",
+        metadata: body.metadata ?? {},
+        created_at: now,
+      },
+    }, { status: 201 });
+  }
+
+  private async cancelCalendarEvent(id: string, request: Request): Promise<Response> {
+    const body = await request.json<{ space_id?: string }>().catch(() => ({}));
+    execute(
+      this.ctx.storage.sql as never,
+      `UPDATE space_calendar_events SET status = 'CANCELLED' WHERE id = ?`,
+      id
+    );
+    if (body.space_id && this.env.WS_GATEWAY) {
+      void broadcastSpaceEvent(this.env.WS_GATEWAY, body.space_id, {
+        type: "calendar.cancelled",
+        space_id: body.space_id,
+        payload: { id },
+      });
+    }
+    return Response.json({ ok: true, id, status: "CANCELLED" });
   }
 }

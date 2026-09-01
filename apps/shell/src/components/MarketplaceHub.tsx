@@ -9,6 +9,7 @@ import {
 } from "../lib/api";
 import { CreatorStudio } from "./CreatorStudio";
 import { DeveloperPartnerHub } from "./DeveloperPartnerHub";
+import { LaunchpadBillingPricing } from "./LaunchpadBillingPricing";
 
 interface MarketplaceHubProps {
   productSpaceId: string;
@@ -21,7 +22,7 @@ export function MarketplaceHub({
   session,
   onLaunchSuccess,
 }: MarketplaceHubProps) {
-  const [activeTab, setActiveTab] = useState<"marketplace" | "creator_studio" | "partner_portal">("marketplace");
+  const [activeTab, setActiveTab] = useState<"marketplace" | "creator_studio" | "partner_portal" | "pricing_billing">("marketplace");
   const [category, setCategory] = useState("ALL");
   const [pricingFilter, setPricingFilter] = useState("all");
   const [templates, setTemplates] = useState<MarketplaceTemplateListing[]>([]);
@@ -127,10 +128,23 @@ export function MarketplaceHub({
           >
             💵 Partner Portal (40% Split)
           </button>
+          <button
+            id="tab-pricing-billing"
+            onClick={() => setActiveTab("pricing_billing")}
+            className={`rounded-lg px-4 py-1.5 text-xs font-semibold transition ${
+              activeTab === "pricing_billing"
+                ? "bg-white text-zinc-900 shadow-sm dark:bg-zinc-900 dark:text-zinc-100"
+                : "text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
+            }`}
+          >
+            💳 Plans & Metering
+          </button>
         </div>
       </div>
 
-      {activeTab === "partner_portal" ? (
+      {activeTab === "pricing_billing" ? (
+        <LaunchpadBillingPricing spaceId={productSpaceId} session={session} />
+      ) : activeTab === "partner_portal" ? (
         <DeveloperPartnerHub productSpaceId={productSpaceId} session={session} />
       ) : activeTab === "creator_studio" ? (
         <CreatorStudio productSpaceId={productSpaceId} session={session} />

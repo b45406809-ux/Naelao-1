@@ -66,8 +66,10 @@ import { MessageActions } from "./MessageActions";
 import { InlineApprovalCard } from "./InlineApprovalCard";
 import { InlineConnectorCard } from "./InlineConnectorCard";
 import { InlineArtifactCard } from "./InlineArtifactCard";
+import { DynamicGenerativeUI, extractDynamicUiBlock } from "./DynamicGenerativeUI";
 import { UpgradeDialog } from "./UpgradeDialog";
 import { ComposerDock } from "./ComposerDock";
+import { LiveVoiceCallModal } from "./LiveVoiceCallModal";
 import type { InspectedElement } from "./HtmlPreviewFrame";
 import { useActiveSpace } from "@/lib/active-space-context";
 import type { ThreadSummary, ConsultedThread } from "@/lib/api";
@@ -359,6 +361,8 @@ export function Chat({
   // here (rather than down by liveActivity, where it used to live) because handleAddAgentTemplate
   // below needs it in scope.
   const [uploadNotice, setUploadNotice] = React.useState<string | null>(null);
+  // Live Voice Call Mode (@cloudflare/voice ChatGPT-style duplex calling)
+  const [showVoiceCallModal, setShowVoiceCallModal] = React.useState<boolean>(false);
   // A soft, non-error notice for "this run is still going in the background" — shown when the
   // foreground poll stalls out on a durable run that hasn't failed, so the user isn't told a red
   // "timed out" for work that is actually still happening. Cleared on the next send.
@@ -1654,6 +1658,21 @@ export function Chat({
                       session={session}
                     />
                   ))}
+                  {/* Dynamic in-chat Generative UI (Google Search AI Mode style) */}
+                  {m.role !== "user" && (() => {
+                    const block = extractDynamicUiBlock(m.content, m.metadata);
+                    if (!block) return null;
+                    return (
+                      <DynamicGenerativeUI
+                        block={block}
+                        disabled={isLoading}
+                        onDispatchAction={(actionName, payload) => {
+                          const actionSummary = `[Action: ${actionName}] ${JSON.stringify(payload)}`;
+                          void send(actionSummary);
+                        }}
+                      />
+                    );
+                  })()}
                 </div>
               </div>
               )
@@ -1857,6 +1876,10 @@ export function Chat({
             onUploadsChange={setPendingUploads}
             dualTierMode={dualTierMode}
             onToggleDualTierMode={setDualTierMode}
+            onStartVoiceCall={async () => {
+              const sid = await ensureSessionId();
+              if (sid) setShowVoiceCallModal(true);
+            }}
           >
             <div className="input-container">
               {pendingUploads.length > 0 && (
@@ -2041,6 +2064,34 @@ export function Chat({
           </div>
         </div>
         </>
+      )}
+
+      {showVoiceCallModal && chatSessionId && (
+        <LiveVoiceCallModal
+          spaceId={spaceId}
+          sessionId={chatSessionId}
+          threadId={threadId}
+          projectName={activeSpaceName ?? undefined}
+          agentName={agentOptions.find((a) => a.id === selectedAgentId)?.name ?? "Space Assistant"}
+          session={session}
+          onClose={() => setShowVoiceCallModal(false)}
+          onTranscriptMessage={(text, speaker) => {
+            if (speaker === "user") {
+              // Automatically append user voice transcripts
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: `voice-${Date.now()}`,
+                  session_id: chatSessionId,
+                  role: "user",
+                  author_type: "user",
+                  content: text,
+                  created_at: new Date().toISOString(),
+                },
+              ]);
+            }
+          }}
+        />
       )}
     </div>
   );

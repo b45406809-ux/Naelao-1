@@ -31,6 +31,7 @@ import {
 } from "@/lib/api";
 import { listModelBenchmarks, DEFAULT_WORKING_MODEL, type CostTier } from "@naelao/billing-core";
 import { modelLabel } from "@/components/ModelSelector";
+import { LiveRadarTrendsHero, type RadarOpportunity } from "@/components/LiveRadarTrendsHero";
 
 const COST_TIER_LABEL: Record<CostTier, string> = { economy: "Economy", standard: "Standard", premium: "Premium" };
 const COST_TIER_BADGE: Record<CostTier, "green" | "blue" | "amber"> = { economy: "green", standard: "blue", premium: "amber" };
@@ -227,6 +228,13 @@ export default function DiscoverPage() {
     setModalOpen(true);
   }
 
+  function handleLaunchRadarTrend(trend: RadarOpportunity) {
+    setName(trend.title);
+    setSelectedTemplates(new Set([trend.blueprintSpec.baseTemplateId]));
+    setCreateError(null);
+    setModalOpen(true);
+  }
+
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     if (!creds || !name.trim()) return;
@@ -322,6 +330,11 @@ export default function DiscoverPage() {
         </div>
         {canCreate && <Button onClick={() => openCreate()}>New business</Button>}
       </div>
+
+      {/* Top 5 High-Velocity Market Opportunities Verified by Cloudflare Radar */}
+      {canCreate && (
+        <LiveRadarTrendsHero onLaunchVenture={handleLaunchRadarTrend} />
+      )}
 
       {/* Portfolio at a glance — real numbers whenever the leaderboard fetch reached at least one
           business, never fabricated for one that failed or hasn't loaded yet. */}

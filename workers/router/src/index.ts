@@ -561,6 +561,7 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // recent transactions) the shell's business Wallet section reads. Gated by
   // requireBusinessMembership (member GET) on the spaces worker — identity here, authorization there.
   /^\/spaces\/([^/]+)\/wallet$/,
+  /^\/spaces\/([^/]+)\/calendar(\/.*)?$/,
   /^\/spaces\/([^/]+)\/threads(\/[^/]+)?$/,
   /^\/spaces\/([^/]+)\/agent-definitions(\/|$)/,
   /^\/spaces\/([^/]+)\/presence$/,

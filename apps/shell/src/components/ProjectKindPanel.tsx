@@ -7,6 +7,7 @@ import {
   type Project, type BusinessWallet, type WorkspaceFile, type WorkspaceFileContent,
 } from "@/lib/api";
 import { FileViewer } from "@/components/FileViewer";
+import { VoiceAgentCanvas } from "@/components/VoiceAgentCanvas";
 
 type Creds = { sessionToken: string; endUserId: string };
 
@@ -1455,6 +1456,20 @@ export function ProjectKindPanel({
           onSelectElement={onSelectElement}
         />
         <div className="section-label">Micro-App Workspace Files & Assets</div>
+        <WorkspaceFilesPanel spaceId={spaceId} projectId={project.id} creds={creds} />
+      </div>
+    );
+  }
+
+  if (project.kind === "voice_agent") {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+        <VoiceAgentCanvas
+          spaceId={spaceId}
+          projectName={project.name}
+          creds={creds}
+        />
+        <div className="section-label">Call Recordings, Transcripts & Exhibits</div>
         <WorkspaceFilesPanel spaceId={spaceId} projectId={project.id} creds={creds} />
       </div>
     );

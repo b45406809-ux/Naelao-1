@@ -51,6 +51,10 @@ import { tierPrimitives } from "./tier-primitives.js";
 import { dualTierGoal } from "./dual-tier-goal.js";
 import { gitSync } from "./git-sync.js";
 import { microApp } from "./micro-app.js";
+import { voiceDesk } from "./voice-desk.js";
+import { outboundWriteGuard } from "./outbound-writeguard.js";
+import { radarResearcher } from "./radar-researcher.js";
+import { pipelinesIceberg } from "./pipelines-iceberg.js";
 
 /** Context handed to every prebuilt operation. */
 export interface PrebuiltOpContext {
@@ -167,6 +171,14 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   [gitSync.name]: gitSync,
   // Micro-Apps & Gatekeepers (Prompt-to-Application Engine)
   [microApp.name]: microApp,
+  // Voice Telephony Desk & AI Receptionist (277 - 282)
+  [voiceDesk.name]: voiceDesk,
+  // Outbound Egress Worker & WriteGuard SQL/Tool Mutation Interceptor (292 - 294)
+  [outboundWriteGuard.name]: outboundWriteGuard,
+  // Cloudflare Radar Telemetry Researcher (Global traffic trends) (292 - 294)
+  [radarResearcher.name]: radarResearcher,
+  // Cloudflare Pipelines & Apache Iceberg Streaming Lakehouse on R2 (292 - 294)
+  [pipelinesIceberg.name]: pipelinesIceberg,
 };
 
 /**
@@ -219,4 +231,8 @@ export {
   dualTierGoal,
   gitSync,
   microApp,
+  voiceDesk,
+  outboundWriteGuard,
+  radarResearcher,
+  pipelinesIceberg,
 };
