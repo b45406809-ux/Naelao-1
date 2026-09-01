@@ -6,3 +6,4 @@ export { securityHeaders } from "./headers";
 export { checkSsrf, resolveHostnameIps } from "./ssrf-guard";
 export type { SsrfCheckResult } from "./ssrf-guard";
 export * from "./concurrency-occ";
+export * from "./gatekeeper";

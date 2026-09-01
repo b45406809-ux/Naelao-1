@@ -15,6 +15,8 @@ import { createBusinessForEndUser } from "./business-create.js";
 import { loadTemplateCatalog, loadShellCatalog } from "./template-catalog.js";
 import { registerBusinessRoutes } from "./business-routes.js";
 import { registerMarketplaceRoutes } from "./template-marketplace.js";
+import { registerMicroAppRoutes } from "./micro-app-routes.js";
+import type { MicroAppDO } from "./do/MicroAppDO.js";
 import { ALLOWED_MODELS, isAllowedModel, isValidEffortLevel, isPersonalPlanTier, PERSONAL_PLAN_LIMITS, type PersonalPlanTier } from "@naelao/billing-core";
 import { createMcpHandler } from "@naelao/tool-runtime";
 
@@ -25,6 +27,7 @@ export { TransactionCoordinatorDO } from "./do/TransactionCoordinatorDO.js";
 export { SpaceTypeRegistryDO } from "./do/SpaceTypeRegistryDO.js";
 export { BuilderAccountDO } from "./do/BuilderAccountDO.js";
 export { ProductUserDO } from "./do/ProductUserDO.js";
+export { MicroAppDO } from "./do/MicroAppDO.js";
 
 export interface Env {
   ENVIRONMENT: string;
@@ -36,6 +39,8 @@ export interface Env {
   BUILDER_ACCOUNT_DO: DurableObjectNamespace;
   /** Three-Tier Platform Model, Phase 2 — one per (productId, endUserId). */
   PRODUCT_USER_DO: DurableObjectNamespace;
+  /** Micro-Apps Edge Runtime — dedicated DO with private in-DO SQLite storage. */
+  MICRO_APP_DO?: DurableObjectNamespace<MicroAppDO>;
   NAELAO_CONFIG_KV: KVNamespace;
   EXPORTS_BUCKET: R2Bucket;
   /** F-39: agent workspace bucket (read-only file viewer). Optional so tests/dev without R2 degrade. */
@@ -4732,6 +4737,8 @@ registerProductEndUserRoutes(app);
 registerBusinessRoutes(app);
 // Marketplace Templates, Venture Exporter, and Creator Studio
 registerMarketplaceRoutes(app);
+// Prompt-to-Application Micro-Apps and Gatekeeper Capabilities
+registerMicroAppRoutes(app);
 
 app.onError((err, c) => errorResponse(err, c.get("requestId") ?? "unknown"));
 

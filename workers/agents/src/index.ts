@@ -48,7 +48,6 @@ import {
   providerTicketKey,
   ensureComposioAuthConfig,
 } from "./connectors/composio.js";
-import { startPipedreamConnect, getPipedreamAccountStatus } from "./connectors/pipedream.js";
 import { listDirectory, resolveConnectTarget, curatedLogos } from "./connectors/directory.js";
 import { isChannelType, getAdapter, twilioWhatsappAdapter, type ChannelType } from "./launchpad/channels.js";
 import {
@@ -214,18 +213,6 @@ export interface AgentsEnv {
    *  configuration to INITIATE the hosted-auth redirect. mcp-hub holds its own copy of this same
    *  secret for the tool-call proxy side; this copy is only used to start/poll the connection. */
   COMPOSIO_API_KEY?: string;
-  /** Same universal-tools doctrine, second hosted-connect provider (Pipedream Connect). Unlike
-   *  Composio's single API key, Pipedream's REST API is OAuth client_credentials-only (VERIFIED
-   *  against Pipedream's own docs — pipedream.ts's header) — Naelao's ONE Pipedream OAuth client
-   *  id/secret + project id, used only to start/poll the connection (mcp-hub holds its own copy
-   *  for the tool-call proxy side). Optional: the pipedream-routed connect flow degrades to an
-   *  honest `provider_not_configured` when any of the three is unset. */
-  PIPEDREAM_CLIENT_ID?: string;
-  PIPEDREAM_CLIENT_SECRET?: string;
-  PIPEDREAM_PROJECT_ID?: string;
-  /** "development" or "production" — Pipedream's Connect API requires this on every call via the
-   *  x-pd-environment header. Defaults to "development" when unset. */
-  PIPEDREAM_ENVIRONMENT?: string;
   /** AgentMail — auto-provisioned, INBOUND-capable business mailbox (AgentMail hosts the domain,
    *  so no Naelao DNS zone is needed — see channels/agentmail.ts). A Workers Secret; unset = the
    *  whole email feature degrades honestly (send falls back to Resend, no inbound). */
@@ -2987,14 +2974,13 @@ app.get("/connectors/:platform/oauth/callback", async (c) => {
   }
 });
 
-// Shared by both hosted-connect providers' callback routes: register-or-enable the MCP server
-// row once the provider's connection is confirmed ACTIVE. Extracted so Composio and Pipedream
-// (identical upsert shape, only `connector_provider` differs) can't drift apart.
+// Hosted-connect provider callback route: register-or-enable the MCP server row
+// once the provider's connection is confirmed ACTIVE.
 async function upsertProviderMcpServer(
   env: AgentsEnv,
   ticket: { spaceId: string; tenantId: string; connectionId: string },
   connectorId: string,
-  provider: "composio" | "pipedream"
+  provider: "composio"
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   if (!env.MCP_HUB) return { ok: false, reason: "connectors_unavailable" };
   const mcpInternalToken = await mintInternalToken(env.PLATFORM_SECRET, ticket.tenantId);
@@ -3035,17 +3021,15 @@ async function upsertProviderMcpServer(
   return { ok: true };
 }
 
-// POST /connectors/:platform/provider-connect/start — the hosted "click Install" flow (G-1/G-3
-// growth-layer work): unlike /oauth/start (a bespoke per-platform OAuth app), the connector's
-// entire OAuth dance is hosted by a THIRD PARTY (Composio or Pipedream) — the builder
-// authenticates on that provider's own consent page for the real app, no API key ever entered by
-// hand. Branches on which hosted provider the connector declares (mutually exclusive in
-// practice). Authenticated (this call itself is a plain fetch, not a page navigation).
+// POST /connectors/:platform/provider-connect/start — the hosted "click Install" flow:
+// unlike /oauth/start (a bespoke per-platform OAuth app), the connector's entire OAuth
+// dance is hosted by Composio — the builder authenticates on that provider's own consent
+// page for the real app, no API key ever entered by hand.
 app.post("/connectors/:platform/provider-connect/start", async (c) => {
   const tenantId = await requireVerifiedTenant(c);
   const { userId } = getCallerIdentity(c);
   const platform = c.req.param("platform");
-  // A curated connector, or a `{provider}:{slug}` directory app. Curated always wins — it carries
+  // A curated connector, or a `composio:{slug}` directory app. Curated always wins — it carries
   // real declared operations and sometimes a purpose-built MCP shim, which a generically brokered
   // connection does not (connectors/directory.ts).
   const target = resolveConnectTarget(platform);
@@ -3053,7 +3037,7 @@ app.post("/connectors/:platform/provider-connect/start", async (c) => {
   const connector = target.kind === "curated" ? getConnector(target.id) : null;
   if (target.kind === "curated") {
     if (!connector) throw notFound("Connector");
-    if (!connector.composio && !connector.pipedream) {
+    if (!connector.composio) {
       return c.json({ error_code: "provider_connect_not_supported", message: `${connector.name} has no hosted connect flow` }, 400);
     }
     if (connector.status !== "available") {
@@ -3081,83 +3065,48 @@ app.post("/connectors/:platform/provider-connect/start", async (c) => {
   const ticketPlaceholder = crypto.randomUUID();
   const callbackUrl = `${c.env.PUBLIC_AGENTS_URL.replace(/\/$/, "")}/connectors/${encodeURIComponent(platform)}/provider-connect/callback?ticket=${ticketPlaceholder}`;
 
-  const useComposio = target.kind === "curated" ? Boolean(connector!.composio) : target.provider === "composio";
-  const appSlug =
-    target.kind === "curated"
-      ? (connector!.pipedream?.app_slug ?? connector!.composio?.toolkit_slug ?? "")
-      : target.slug;
+  const appSlug = target.kind === "curated" ? (connector!.composio?.toolkit_slug ?? "") : target.slug;
 
-  let connectUrl: string;
-  let connectionId: string;
-  if (useComposio) {
-    const apiKey = c.env.COMPOSIO_API_KEY;
-    if (!apiKey) {
-      return c.json({ error_code: "provider_not_configured", message: `${displayName} is not configured on this platform yet` }, 503);
-    }
-    // A curated connector names an env var holding a hand-registered Auth Config (our own OAuth
-    // app for that platform, where we want the extra control). A directory app has none — so
-    // Composio creates one on demand using ITS OWN registered app credentials. That single
-    // difference is what turns the directory from browsable into connectable.
-    // A curated connector MAY name an env var holding a hand-registered Auth Config — our own
-    // OAuth app for that platform, where we want the extra control. That is now an OVERRIDE, not
-    // a requirement: when it isn't set (and for every directory app, which has none), Composio
-    // creates one on demand using its OWN registered app credentials. Requiring it was what made
-    // half the catalogue permanently "coming soon".
-    let authConfigId: string | undefined;
-    if (target.kind === "curated" && connector!.composio) {
-      authConfigId = (c.env as unknown as Record<string, string | undefined>)[connector!.composio.auth_config_id_env];
-    }
-    if (!authConfigId) {
-      try {
-        authConfigId = await ensureComposioAuthConfig({ apiKey, toolkitSlug: appSlug, cache: c.env.AGENT_CACHE });
-      } catch (err) {
-        // Composio has no managed app for this toolkit (or refused) — say so specifically rather
-        // than rendering a Connect button that dead-ends on the consent page.
-        return c.json({ error_code: "provider_connect_unavailable", message: (err as Error).message }, 502);
-      }
-    }
+  const apiKey = c.env.COMPOSIO_API_KEY;
+  if (!apiKey) {
+    return c.json({ error_code: "provider_not_configured", message: `${displayName} is not configured on this platform yet` }, 503);
+  }
+
+  let authConfigId: string | undefined;
+  if (target.kind === "curated" && connector!.composio) {
+    authConfigId = (c.env as unknown as Record<string, string | undefined>)[connector!.composio.auth_config_id_env];
+  }
+  if (!authConfigId) {
     try {
-      const link = await startComposioLink({ apiKey, spaceId: body.space_id, authConfigId, callbackUrl });
-      connectUrl = link.redirect_url;
-      connectionId = link.connection_id;
+      authConfigId = await ensureComposioAuthConfig({ apiKey, toolkitSlug: appSlug, cache: c.env.AGENT_CACHE });
     } catch (err) {
-      return c.json({ error_code: "provider_connect_failed", message: (err as Error).message }, 502);
-    }
-  } else {
-    const clientId = c.env.PIPEDREAM_CLIENT_ID;
-    const clientSecret = c.env.PIPEDREAM_CLIENT_SECRET;
-    const projectId = c.env.PIPEDREAM_PROJECT_ID;
-    if (!clientId || !clientSecret || !projectId) {
-      return c.json({ error_code: "provider_not_configured", message: `${displayName} is not configured on this platform yet` }, 503);
-    }
-    // One Pipedream Connect account per Naelao space (mirrors Composio's naelao-space:{spaceId}
-    // user_id convention) — this doubles as provider_connection_id since Pipedream's own tool-call
-    // proxy addresses connections by external_user_id, not a separate opaque connection id.
-    const externalUserId = `naelao-space:${body.space_id}`;
-    try {
-      const link = await startPipedreamConnect({
-        clientId, clientSecret, projectId,
-        environment: c.env.PIPEDREAM_ENVIRONMENT ?? "development",
-        externalUserId, appSlug,
-        successRedirectUri: callbackUrl,
-      });
-      connectUrl = link.connect_url;
-      connectionId = externalUserId;
-    } catch (err) {
-      return c.json({ error_code: "provider_connect_failed", message: (err as Error).message }, 502);
+      return c.json({ error_code: "provider_connect_unavailable", message: (err as Error).message }, 502);
     }
   }
 
-  // Re-issue under the SAME id used in the callback URL above (issueProviderConnectTicket mints
-  // its own random id — pass ticketPlaceholder explicitly isn't supported, so store keyed by it
-  // directly to keep the callback URL and the KV key in lockstep).
+  let connectUrl: string;
+  let connectionId: string;
+  try {
+    const link = await startComposioLink({ apiKey, spaceId: body.space_id, authConfigId, callbackUrl });
+    connectUrl = link.redirect_url;
+    connectionId = link.connection_id;
+  } catch (err) {
+    return c.json({ error_code: "provider_connect_failed", message: (err as Error).message }, 502);
+  }
+
+  // Re-issue under the SAME id used in the callback URL above.
   await c.env.AGENT_CACHE.put(
     providerTicketKey(ticketPlaceholder),
     JSON.stringify({
-      spaceId: body.space_id, tenantId, userId, returnUrl: body.return_url, platform, connectionId,
-      // Resolved here, not re-derived in the callback: a directory app has no catalogue row for
-      // the callback to look up, and carrying it means the two halves can never disagree.
-      provider: useComposio ? "composio" : "pipedream", connectorId, appSlug,
+      spaceId: body.space_id,
+      tenantId,
+      userId,
+      returnUrl: body.return_url,
+      platform,
+      connectionId,
+      provider: "composio",
+      connectorId,
+      appSlug,
     }),
     { expirationTtl: 600 }
   );
@@ -3167,9 +3116,8 @@ app.post("/connectors/:platform/provider-connect/start", async (c) => {
 
 // GET /connectors/:platform/provider-connect/callback — PUBLIC/unauthenticated (the provider
 // redirects the raw browser here with no Naelao auth attached; the single-use `ticket` query
-// param IS the auth). Polls the REAL connection status (never trusts the redirect alone — see
-// composio.ts's/pipedream.ts's headers) before registering the connector, so a user who bails out
-// mid-consent doesn't leave a server row claiming success.
+// param IS the auth). Polls the REAL connection status before registering the connector, so a
+// user who bails out mid-consent doesn't leave a server row claiming success.
 app.get("/connectors/:platform/provider-connect/callback", async (c) => {
   const platform = c.req.param("platform");
   const ticketId = c.req.query("ticket");
@@ -3178,11 +3126,7 @@ app.get("/connectors/:platform/provider-connect/callback", async (c) => {
   if (!ticket || ticket.platform !== platform) {
     return c.text("This connection link has expired or was already used. Go back and try connecting again.", 400);
   }
-  // The ticket carries the resolution made at start time. A directory app has no catalogue row at
-  // all, so falling back to a lookup is only for tickets minted before that field existed.
   const connector = getConnector(ticket.connectorId ?? platform);
-  const useComposio = ticket.provider ? ticket.provider === "composio" : Boolean(connector?.composio);
-  const appSlug = ticket.appSlug ?? connector?.pipedream?.app_slug ?? connector?.composio?.toolkit_slug ?? "";
   const connectorId = ticket.connectorId ?? connector?.id;
   if (!connectorId) return c.text("Unknown connector", 404);
   const failRedirect = (reason: string) => {
@@ -3192,28 +3136,12 @@ app.get("/connectors/:platform/provider-connect/callback", async (c) => {
   };
 
   try {
-    let provider: "composio" | "pipedream";
-    if (useComposio) {
-      const apiKey = c.env.COMPOSIO_API_KEY;
-      if (!apiKey) return failRedirect("provider_not_configured");
-      const status = await getComposioConnectionStatus(apiKey, ticket.connectionId);
-      if (status !== "ACTIVE") return failRedirect(`connection_${status.toLowerCase()}`);
-      provider = "composio";
-    } else {
-      const clientId = c.env.PIPEDREAM_CLIENT_ID;
-      const clientSecret = c.env.PIPEDREAM_CLIENT_SECRET;
-      const projectId = c.env.PIPEDREAM_PROJECT_ID;
-      if (!clientId || !clientSecret || !projectId) return failRedirect("provider_not_configured");
-      const status = await getPipedreamAccountStatus({
-        clientId, clientSecret, projectId,
-        environment: c.env.PIPEDREAM_ENVIRONMENT ?? "development",
-        externalUserId: ticket.connectionId, appSlug,
-      });
-      if (status !== "ACTIVE") return failRedirect(`connection_${status.toLowerCase()}`);
-      provider = "pipedream";
-    }
+    const apiKey = c.env.COMPOSIO_API_KEY;
+    if (!apiKey) return failRedirect("provider_not_configured");
+    const status = await getComposioConnectionStatus(apiKey, ticket.connectionId);
+    if (status !== "ACTIVE") return failRedirect(`connection_${status.toLowerCase()}`);
 
-    const upserted = await upsertProviderMcpServer(c.env, ticket, connectorId, provider);
+    const upserted = await upsertProviderMcpServer(c.env, ticket, connectorId, "composio");
     if (!upserted.ok) return failRedirect(upserted.reason);
 
     const successUrl = new URL(ticket.returnUrl);

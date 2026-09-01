@@ -2708,3 +2708,149 @@ export async function publishTemplateVersionUpdate(
     }
   );
 }
+
+// ── Developer Partner Portal & Tier-Based Duration Settlement ──────────────
+
+export type MonetizationModel = "FREEMIUM_TIERED_SAAS" | "FIXED_ONE_OFF_UNLOCKED";
+
+export interface PlanTierAccessRule {
+  allowedProjectKinds: string[];
+  allowedPlugins: string[];
+  maxExecutionTier: number;
+  monthlyQueryAllowance: number;
+}
+
+export interface TierAccessRules {
+  entryPlan: PlanTierAccessRule;   // $20 / mo (plans <= $25)
+  growthPlan: PlanTierAccessRule;  // $50 / mo (plans $26 - $149)
+  proPlan: PlanTierAccessRule;     // $150+ / mo (plans >= $150)
+}
+
+export interface TemplateFeatureGating {
+  monetizationModel: MonetizationModel;
+  fixedPriceCents?: number;
+  tierAccessRules?: TierAccessRules;
+}
+
+export interface PartnerClientRosterItem {
+  spaceId: string;
+  templateId: string;
+  templateName?: string;
+  clientBusinessName?: string;
+  monthlySubCents: number;
+  developerCutCents: number;
+  attributionChannel: "DEVELOPER_REFERRAL" | "MARKETPLACE_ORGANIC" | "FIXED_ONE_OFF";
+  billingCycleCount: number;
+  cyclesPaidEntryTier?: number;
+  cyclesPaidGrowthTier?: number;
+  cyclesPaidProTier?: number;
+  maxCommissionCycles: number | null;
+  status: "active" | "paused" | "cancelled";
+  tierName: "Entry ($20/mo)" | "Growth ($50/mo)" | "Pro ($150+/mo)" | "Custom";
+  durationStatus: "lifetime" | "in_progress" | "expired";
+  remainingCycles: number | null;
+  upgradePitchRecommended: boolean;
+}
+
+export interface PartnerEarningsSummary {
+  partnerId: string;
+  userId: string;
+  displayName: string;
+  payoutEmail: string;
+  totalEarnedCents: number;
+  balanceCents: number;
+  activeClientsCount: number;
+  monthlyRecurringCommissionCents: number;
+  recentLedgerEntries: Array<{
+    id: string;
+    developerUserId: string;
+    spaceId: string;
+    eventType: "monthly_subscription_cut" | "one_off_license_sale";
+    grossCents: number;
+    developerCutCents: number;
+    platformCutCents: number;
+    period: string;
+    createdAt: string;
+  }>;
+  clientRoster: PartnerClientRosterItem[];
+}
+
+export async function getPartnerSummary(
+  session: SessionCredentials
+): Promise<{ ok: boolean; registered: boolean; summary?: PartnerEarningsSummary; message?: string }> {
+  return apiFetch<{ ok: boolean; registered: boolean; summary?: PartnerEarningsSummary; message?: string }>(
+    "/billing/partner/summary",
+    { session }
+  );
+}
+
+export async function registerPartnerAccount(
+  payload: { displayName: string; payoutEmail: string; payoutDestinationJson?: string },
+  session: SessionCredentials
+): Promise<{ ok: boolean; partner: any }> {
+  return apiFetch<{ ok: boolean; partner: any }>(
+    "/billing/partner/register",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+      session,
+    }
+  );
+}
+
+export async function publishPartnerTemplateMonetization(
+  payload: {
+    templateId?: string;
+    name: string;
+    category: string;
+    description: string;
+    blueprintR2Key?: string;
+    priceCentsMonthly?: number;
+    priceCentsOneOff?: number;
+    fixedPriceCents?: number;
+    monetizationType?: "subscription" | "fixed_one_off";
+    monetizationModel?: MonetizationModel;
+    tierAccessRules?: TierAccessRules;
+    isPublic?: boolean;
+  },
+  session: SessionCredentials
+): Promise<{
+  ok: boolean;
+  template_id: string;
+  partner_id: string;
+  monetization_model?: string;
+  monetization_type: string;
+  monthly_price_cents: number;
+  fixed_price_cents?: number;
+  one_off_price_cents: number;
+  referral_url: string;
+  feature_gating_enabled?: boolean;
+  commission_breakdown: {
+    referral_direct_split_pct: number;
+    organic_marketplace_split_pct: number;
+    fixed_upfront_split_pct: number;
+    duration_policy: string;
+  };
+}> {
+  return apiFetch(
+    "/billing/partner/templates/publish",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+      session,
+    }
+  );
+}
+
+export async function verifyFeatureAccessApi(
+  params: { spaceId: string; projectKind: string; planPriceUsd: number },
+  session: SessionCredentials
+): Promise<{ allowed: boolean; requiredPlan?: string; reason?: string }> {
+  const q = new URLSearchParams({
+    spaceId: params.spaceId,
+    projectKind: params.projectKind,
+    planPriceUsd: params.planPriceUsd.toString(),
+  });
+  return apiFetch(`/billing/partner/verify-access?${q.toString()}`, { session });
+}
+

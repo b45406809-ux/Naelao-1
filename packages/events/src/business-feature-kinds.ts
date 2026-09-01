@@ -52,7 +52,8 @@ export interface BusinessFeatureKind {
     | "DocumentRedlineCanvas"
     | "ClinicalSoapEditor"
     | "PlanSpecCanvas"
-    | "ModelStudioCanvas";
+    | "ModelStudioCanvas"
+    | "AppStudioCanvas";
   /** Domain-specific system prompt injected into agents operating in this project. */
   domainSystemPrompt?: string;
   /** Scoped Execution Ladder tiers permitted for this plugin kind. */
@@ -340,7 +341,26 @@ export const BUSINESS_FEATURE_KIND_REGISTRY: readonly BusinessFeatureKind[] = [
     allowedLadderTiers: [1, 2, 5],
     linterRules: ["jsonl-format-check", "dataset-leakage-guard", "pii-scrubber"],
   },
+  {
+    kind: "app_studio",
+    label: "Micro-App & Tool Studio",
+    description: "Prompt-to-application engine: generates sandboxed full-stack apps with private SQLite databases and Gatekeeper security.",
+    singleton: false,
+    minCreationRole: "editor",
+    autoProvisionable: false,
+    prebuiltScripts: ["micro-app", "code-exec", "artifacts", "file-manager"],
+    viewportComponent: "AppStudioCanvas", // Live app runner + SQLite table viewer
+    allowedLadderTiers: [1, 2],           // Isolate execution only
+    domainSystemPrompt: `You are a Micro-App Synthesis Specialist. 
+Generate clean HTML/Preact frontends and Hono backend routes using private in-DO SQLite tables. 
+Always declare explicit Gatekeeper permission grants for required resources.`,
+    linterRules: ["sql-injection-check", "gatekeeper-schema-validator"],
+  },
 ];
+
+export const APP_STUDIO_KIND: BusinessFeatureKind = BUSINESS_FEATURE_KIND_REGISTRY.find(
+  (k) => k.kind === "app_studio"
+)!;
 
 const KIND_MAP: Map<string, BusinessFeatureKind> = new Map(
   BUSINESS_FEATURE_KIND_REGISTRY.map((k) => [k.kind, k])

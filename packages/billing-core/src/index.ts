@@ -5,6 +5,7 @@
 // usage-metering until the Stripe BillingProvider lands.
 export * from "./providers/index";
 export * from "./reseller";
+export * from "./partner-settlement";
 // model-benchmarks.ts and effort.ts import ALLOWED_MODELS back from THIS file (a deliberate
 // circular re-export, not a mistake) — they must be re-exported only AFTER everything they
 // depend on (ALLOWED_MODELS, capabilityForModel, etc.) is actually defined below, or their own

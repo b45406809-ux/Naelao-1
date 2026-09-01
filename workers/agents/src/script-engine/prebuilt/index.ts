@@ -50,6 +50,7 @@ import { plan } from "./plan.js";
 import { tierPrimitives } from "./tier-primitives.js";
 import { dualTierGoal } from "./dual-tier-goal.js";
 import { gitSync } from "./git-sync.js";
+import { microApp } from "./micro-app.js";
 
 /** Context handed to every prebuilt operation. */
 export interface PrebuiltOpContext {
@@ -164,6 +165,8 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   [dualTierGoal.name]: dualTierGoal,
   // Cloudflare Artifacts Multi-Agent Git Engine & Rebase Operations (241 - 243)
   [gitSync.name]: gitSync,
+  // Micro-Apps & Gatekeepers (Prompt-to-Application Engine)
+  [microApp.name]: microApp,
 };
 
 /**
@@ -214,4 +217,6 @@ export {
   plan,
   tierPrimitives,
   dualTierGoal,
+  gitSync,
+  microApp,
 };

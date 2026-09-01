@@ -17,6 +17,7 @@ import { handleLemonSqueezyWebhook, recordPlatformPlanSubscription, grantPersona
 import { createLsProductVariant, lsProductsConfig } from "./ls-products.js";
 import { registerWhopWalletRoutes, handleWhopWebhook, renderPayoutApprovalPage, confirmPayoutApproval, routeWhopWalletCheckout, getSubMerchant } from "./whop-wallet.js";
 import { createBusinessWhopOAuthCheckout } from "./whop-oauth-billing.js";
+import { registerPartnerRoutes } from "./partner-routes.js";
 
 export interface BillingEnv {
   ENVIRONMENT: string;
@@ -1269,6 +1270,9 @@ app.post("/webhooks/whop-wallet/payouts/:id/approve", async (c) => {
 
 // ── Whop sub-merchant wallet — the business-bank-account rail ────────────────
 registerWhopWalletRoutes(app);
+
+// ── Developer Partner Portal & Tier-Based Settlement Engine ──────────────────
+registerPartnerRoutes(app);
 
 // ── Error handler ─────────────────────────────────────────────────────────────
 app.onError((err, c) => errorResponse(err, c.get("requestId") ?? "unknown"));

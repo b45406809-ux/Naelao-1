@@ -101,19 +101,6 @@ export interface ConnectorComposioSpec {
   auth_config_id_env: string;
 }
 
-/**
- * Pipedream Connect hosted-connect support (pipedream.ts) — the second hosted "click Install"
- * provider behind the SAME /provider-connect/* routes and shell UI as Composio. Naelao holds ONE
- * platform Pipedream OAuth client (PIPEDREAM_CLIENT_ID/CLIENT_SECRET, universal-tools doctrine);
- * unlike Composio, Pipedream needs no pre-created per-app "Auth Config" for managed auth — the
- * connector only needs to name the app's Pipedream slug. Mutually exclusive with `composio` in
- * practice (not enforced) — a connector picks whichever hosted provider actually lists the app.
- */
-export interface ConnectorPipedreamSpec {
-  /** Pipedream's app slug (e.g. "notion", "airtable") — passed as the Connect Link's `?app=`. */
-  app_slug: string;
-}
-
 export interface ConnectorDefinition {
   id: string;
   name: string;
@@ -147,20 +134,17 @@ export interface ConnectorDefinition {
    *  of a bespoke OAuth app or a manual API key. Mutually exclusive with `oauth` in practice
    *  (not enforced) — a connector picks whichever mechanism its real platform actually supports. */
   composio?: ConnectorComposioSpec;
-  /** Present when this connector is reached via Pipedream's hosted click-to-install flow. See
-   *  ConnectorPipedreamSpec's header. */
-  pipedream?: ConnectorPipedreamSpec;
   /**
    * Canonical MCP endpoint for the platform's shim (Naelao-hosted, or the platform's own hosted
-   * MCP server e.g. Higgsfield's). Absent for coming-soon entries AND for composio/pipedream-
-   * routed connectors (the provider resolves the endpoint — mirrors mcp-hub's own registration
-   * rule that `url` is optional for provider-routed connectors).
+   * MCP server e.g. Higgsfield's). Absent for coming-soon entries AND for composio-routed
+   * connectors (the provider resolves the endpoint — mirrors mcp-hub's own registration rule
+   * that `url` is optional for provider-routed connectors).
    */
   mcp_endpoint?: string;
   /** The wrapper surface — the operations the agent expects (also discoverable via mcp.list_tools).
-   *  For a composio/pipedream-routed connector these are illustrative (the provider exposes the
-   *  live tool list per app; the agent discovers the real names via mcp.list_tools after
-   *  connecting), not a contract enforced against the provider. */
+   *  For a composio-routed connector these are illustrative (the provider exposes the live tool
+   *  list per app; the agent discovers the real names via mcp.list_tools after connecting), not a
+   *  contract enforced against the provider. */
   operations?: ConnectorOperation[];
 }
 
@@ -334,10 +318,8 @@ const TIKTOK: ConnectorDefinition = composioSocial(
 );
 
 /**
- * Notion — the first Pipedream-routed connector (the composioSocial helper above is Composio-
- * specific; Notion is reached through Pipedream's managed auth instead, proving the second
- * hosted-provider mechanism end-to-end). No API key ever entered by hand — click Connect,
- * authenticate on Notion's own consent page via Pipedream's hosted Connect Link, done.
+ * Notion — productivity connector routed through Composio's hosted auth. No API key ever
+ * entered by hand — click Connect, authenticate on Notion's own consent page, done.
  */
 const NOTION: ConnectorDefinition = {
   id: "notion",
@@ -345,10 +327,10 @@ const NOTION: ConnectorDefinition = {
   category: "productivity",
   status: "available",
   summary:
-    "Read and write Notion pages and databases — connected via Pipedream's hosted auth. Useful for " +
+    "Read and write Notion pages and databases — connected via Composio's hosted auth. Useful for " +
     "a knowledge base, content calendar, or internal docs the assistant keeps up to date.",
   auth: { type: "none", credential_name: "" },
-  pipedream: { app_slug: "notion" },
+  composio: { toolkit_slug: "notion", auth_config_id_env: "COMPOSIO_AUTH_CONFIG_NOTION" },
   operations: [
     { name: "list_databases", description: "List databases the connected account can access.", kind: "read" },
     { name: "query_database", description: "Query rows/pages in a database.", kind: "read" },

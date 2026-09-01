@@ -895,6 +895,425 @@ export function ModelStudioCanvas({ projectName }: { projectName?: string }) {
   );
 }
 
+// ── Domain Viewport 11: AppStudioCanvas (Micro-App Studio & Gatekeeper Security) ──
+export function AppStudioCanvas({
+  projectName,
+  projectId,
+  spaceId,
+  onSelectElement,
+}: {
+  projectName: string;
+  projectId: string;
+  spaceId: string;
+  onSelectElement?: (elem: InspectedElement) => void;
+}) {
+  const [activeTab, setActiveTab] = React.useState<"preview" | "tables" | "gatekeepers" | "audit">("preview");
+  const [tokenCopied, setTokenCopied] = React.useState(false);
+  const [records, setRecords] = React.useState<Array<Record<string, unknown>>>([
+    { id: "exp_101", amount_cents: 4250, category: "SaaS Software", merchant: "GitHub Copilot", status: "approved", created_at: "2026-03-28 14:12" },
+    { id: "exp_102", amount_cents: 12000, category: "Travel", merchant: "Delta Air", status: "pending", created_at: "2026-03-29 09:30" },
+    { id: "exp_103", amount_cents: 1850, category: "Office Supplies", merchant: "Staples", status: "approved", created_at: "2026-03-29 16:45" },
+  ]);
+  const [newMerchant, setNewMerchant] = React.useState("");
+  const [newAmount, setNewAmount] = React.useState("");
+  const [newCategory, setNewCategory] = React.useState("Software");
+
+  const appId = `app_${projectId.slice(0, 8)}`;
+  const sampleToken = `gk_eyJhcHBJZCI6IiR7YXBwSWR9Iiwic3BhY2VJZCI6IiR7c3BhY2VJZH0iLCJjcmVhdG9yUm9sZVJhbmsiOjMsImdyYW50cyI6W3sicmVzb3VyY2UiOiJzcWxpdGVfZGIiLCJ0YXJnZXQiOiJ0YWJsZTpleHBlbnNlcyIsIm9wZXJhdGlvbnMiOlsicmVhZCIsIndyaXRlIl19LHsicmVzb3VyY2UiOiJjaGFubmVsX25vdGlmeSIsInRhcmdldCI6IiNmaW5hbmNlIiwib3BlcmF0aW9ucyI6WyJleGVjdXRlIl0sImNvbnN0cmFpbnRzIjp7InJhdGVMaW1pdFBlck1pbnV0ZSI6MTB9fV19.signature_hmac256_verified`;
+
+  const handleAddRecord = () => {
+    if (!newMerchant || !newAmount) return;
+    const newId = `exp_${Date.now().toString().slice(-3)}`;
+    const parsedAmount = Math.round(parseFloat(newAmount) * 100);
+    const newRow = {
+      id: newId,
+      amount_cents: parsedAmount,
+      category: newCategory,
+      merchant: newMerchant,
+      status: "pending",
+      created_at: "Just now",
+    };
+    setRecords([newRow, ...records]);
+    setNewMerchant("");
+    setNewAmount("");
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+      {/* Studio Header Card */}
+      <div
+        className="card"
+        style={{
+          padding: "14px 18px",
+          background: "var(--surface)",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--radius-sm)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          <div
+            style={{
+              width: 36,
+              height: 36,
+              borderRadius: 8,
+              background: "linear-gradient(135deg, #0ea5e9 0%, #2563eb 100%)",
+              color: "#fff",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: 18,
+            }}
+          >
+            ⚡
+          </div>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 15, fontWeight: 700, color: "var(--text)" }}>{projectName || "Internal Tool"}</span>
+              <span style={{ fontSize: 10.5, background: "#22c55e22", color: "#16a34a", padding: "1px 6px", borderRadius: 4, fontWeight: 600 }}>
+                ● Active MicroAppDO
+              </span>
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text3)", marginTop: 2 }}>
+              Edge V8 Isolate &bull; Private In-DO SQLite &bull; Capability Attenuated
+            </div>
+          </div>
+        </div>
+
+        {/* View Tabs */}
+        <div style={{ display: "flex", gap: "6px", background: "var(--bg-subtle, #f3f4f6)", padding: "3px", borderRadius: 6 }}>
+          {[
+            { key: "preview", label: "🖥️ Live App", badge: "Preact" },
+            { key: "tables", label: "🗄️ SQLite Data", badge: `${records.length} rows` },
+            { key: "gatekeepers", label: "🛡️ Gatekeepers", badge: "Active" },
+            { key: "audit", label: "📜 Audit Log", badge: "4 events" },
+          ].map((tab) => (
+            <button
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key as any)}
+              style={{
+                border: "none",
+                padding: "6px 12px",
+                borderRadius: 4,
+                fontSize: 12,
+                fontWeight: activeTab === tab.key ? 600 : 500,
+                background: activeTab === tab.key ? "var(--surface)" : "transparent",
+                color: activeTab === tab.key ? "var(--text)" : "var(--text3)",
+                boxShadow: activeTab === tab.key ? "0 1px 2px rgba(0,0,0,0.06)" : "none",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+            >
+              <span>{tab.label}</span>
+              <span style={{ fontSize: 10, opacity: 0.8 }}>({tab.badge})</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* TAB 1: Live Interactive App Preview */}
+      {activeTab === "preview" && (
+        <div
+          className="card"
+          style={{
+            padding: 0,
+            overflow: "hidden",
+            border: "1px solid var(--border)",
+            borderRadius: "var(--radius-sm)",
+            background: "#ffffff",
+          }}
+        >
+          <div
+            style={{
+              padding: "8px 14px",
+              background: "#f8fafc",
+              borderBottom: "1px solid var(--border)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#22c55e" }} />
+              <span style={{ fontSize: 12, fontFamily: "monospace", color: "#64748b" }}>
+                https://edge.naelao.internal/spaces/{spaceId}/micro-apps/{appId}/app
+              </span>
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  onSelectElement?.({
+                    filePath: "apps/microapp/index.html",
+                    selector: "button.submit-expense",
+                    text: "Submit Expense Approval",
+                  });
+                }}
+              >
+                🎯 Inspect UI Code
+              </Button>
+            </div>
+          </div>
+
+          {/* Micro-App Native UI Canvas */}
+          <div style={{ padding: "24px", minHeight: "420px", background: "#f8fafc" }}>
+            <div style={{ maxWidth: 640, margin: "0 auto", background: "#ffffff", borderRadius: 12, border: "1px solid #e2e8f0", padding: "20px", boxShadow: "0 4px 6px -1px rgba(0,0,0,0.05)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, borderBottom: "1px solid #f1f5f9", paddingBottom: 12 }}>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: "#0f172a" }}>Team Expense Reimbursements</h3>
+                  <p style={{ margin: "2px 0 0", fontSize: 12, color: "#64748b" }}>Automated approvals with Slack alerts & SQLite audit trail</p>
+                </div>
+                <span style={{ fontSize: 11, background: "#e0f2fe", color: "#0369a1", padding: "3px 8px", borderRadius: 6, fontWeight: 600 }}>
+                  Gatekeeper Protected
+                </span>
+              </div>
+
+              {/* Form */}
+              <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1.2fr auto", gap: 8, marginBottom: 16 }}>
+                <input
+                  type="text"
+                  placeholder="Merchant / Vendor..."
+                  value={newMerchant}
+                  onChange={(e) => setNewMerchant(e.target.value)}
+                  style={{ padding: "7px 10px", fontSize: 13, border: "1px solid #cbd5e1", borderRadius: 6 }}
+                />
+                <input
+                  type="number"
+                  placeholder="$ Amount"
+                  value={newAmount}
+                  onChange={(e) => setNewAmount(e.target.value)}
+                  style={{ padding: "7px 10px", fontSize: 13, border: "1px solid #cbd5e1", borderRadius: 6 }}
+                />
+                <select
+                  value={newCategory}
+                  onChange={(e) => setNewCategory(e.target.value)}
+                  style={{ padding: "7px 10px", fontSize: 13, border: "1px solid #cbd5e1", borderRadius: 6 }}
+                >
+                  <option value="Software">Software</option>
+                  <option value="Travel">Travel</option>
+                  <option value="Supplies">Supplies</option>
+                  <option value="Meals">Meals</option>
+                </select>
+                <button
+                  onClick={handleAddRecord}
+                  style={{ background: "#2563eb", color: "#fff", border: "none", borderRadius: 6, padding: "7px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+                >
+                  + Add
+                </button>
+              </div>
+
+              {/* Live Record List */}
+              <div style={{ border: "1px solid #e2e8f0", borderRadius: 8, overflow: "hidden" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, textAlign: "left" }}>
+                  <thead style={{ background: "#f8fafc", color: "#64748b", fontWeight: 600, borderBottom: "1px solid #e2e8f0" }}>
+                    <tr>
+                      <th style={{ padding: "8px 12px" }}>ID</th>
+                      <th style={{ padding: "8px 12px" }}>Merchant</th>
+                      <th style={{ padding: "8px 12px" }}>Category</th>
+                      <th style={{ padding: "8px 12px" }}>Amount</th>
+                      <th style={{ padding: "8px 12px" }}>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {records.map((r, i) => (
+                      <tr key={i} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                        <td style={{ padding: "8px 12px", fontFamily: "monospace", color: "#94a3b8" }}>{String(r.id)}</td>
+                        <td style={{ padding: "8px 12px", fontWeight: 600, color: "#1e293b" }}>{String(r.merchant)}</td>
+                        <td style={{ padding: "8px 12px", color: "#475569" }}>{String(r.category)}</td>
+                        <td style={{ padding: "8px 12px", fontFamily: "monospace", fontWeight: 600, color: "#0f172a" }}>
+                          ${(Number(r.amount_cents) / 100).toFixed(2)}
+                        </td>
+                        <td style={{ padding: "8px 12px" }}>
+                          <span
+                            style={{
+                              padding: "2px 6px",
+                              borderRadius: 4,
+                              fontSize: 10.5,
+                              fontWeight: 600,
+                              background: r.status === "approved" ? "#dcfce7" : "#fef3c7",
+                              color: r.status === "approved" ? "#15803d" : "#b45309",
+                            }}
+                          >
+                            {String(r.status)}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 2: SQLite Schema & Data Explorer */}
+      {activeTab === "tables" && (
+        <div className="card" style={{ padding: 16, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text)" }}>
+              📊 In-DO SQLite Master Schema: <code>expenses</code>
+            </div>
+            <div style={{ fontSize: 11, color: "var(--text3)", fontFamily: "monospace" }}>
+              Engine: Cloudflare DO ctx.storage.sql
+            </div>
+          </div>
+
+          <div style={{ background: "var(--bg)", padding: 12, borderRadius: 6, border: "1px solid var(--border)", marginBottom: 16 }}>
+            <pre style={{ margin: 0, fontSize: 12, fontFamily: "monospace", color: "var(--text2)" }}>
+              {`CREATE TABLE expenses (
+  id TEXT PRIMARY KEY,
+  amount_cents INTEGER NOT NULL,
+  category TEXT NOT NULL,
+  merchant TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);`}
+            </pre>
+          </div>
+
+          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text2)", marginBottom: 8 }}>
+            Current Rows in SQLite Table ({records.length} total):
+          </div>
+
+          <div style={{ border: "1px solid var(--border)", borderRadius: 6, overflow: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead style={{ background: "var(--bg-subtle, #f9fafb)", borderBottom: "1px solid var(--border)", textAlign: "left" }}>
+                <tr>
+                  <th style={{ padding: "8px 12px" }}>id (TEXT)</th>
+                  <th style={{ padding: "8px 12px" }}>amount_cents (INT)</th>
+                  <th style={{ padding: "8px 12px" }}>category (TEXT)</th>
+                  <th style={{ padding: "8px 12px" }}>merchant (TEXT)</th>
+                  <th style={{ padding: "8px 12px" }}>status (TEXT)</th>
+                  <th style={{ padding: "8px 12px" }}>created_at (TEXT)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {records.map((row, i) => (
+                  <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
+                    <td style={{ padding: "8px 12px", fontFamily: "monospace" }}>{String(row.id)}</td>
+                    <td style={{ padding: "8px 12px", fontFamily: "monospace" }}>{String(row.amount_cents)}</td>
+                    <td style={{ padding: "8px 12px" }}>{String(row.category)}</td>
+                    <td style={{ padding: "8px 12px", fontWeight: 500 }}>{String(row.merchant)}</td>
+                    <td style={{ padding: "8px 12px" }}>{String(row.status)}</td>
+                    <td style={{ padding: "8px 12px", color: "var(--text3)" }}>{String(row.created_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 3: Gatekeeper Attenuation & Permission Tokens */}
+      {activeTab === "gatekeepers" && (
+        <div className="card" style={{ padding: 16, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text)" }}>
+              🛡️ Gatekeeper Cryptographic Capability Token
+            </div>
+            <span style={{ fontSize: 11, background: "#dbeafe", color: "#1e40af", padding: "2px 8px", borderRadius: 4, fontWeight: 600 }}>
+              HMAC-SHA256 Signed
+            </span>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+            <div style={{ padding: 12, background: "var(--bg-subtle, #f9fafb)", borderRadius: 6, border: "1px solid var(--border)" }}>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", color: "var(--text3)", marginBottom: 4 }}>
+                Invariant #1: Human Permission Ceiling
+              </div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>
+                Creator Role: Editor (Rank 3)
+              </div>
+              <div style={{ fontSize: 11.5, color: "var(--text2)", marginTop: 2 }}>
+                Micro-app capability is clamped. Physical inability to execute admin/billing/refund operations.
+              </div>
+            </div>
+
+            <div style={{ padding: 12, background: "var(--bg-subtle, #f9fafb)", borderRadius: 6, border: "1px solid var(--border)" }}>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", color: "var(--text3)", marginBottom: 4 }}>
+                Invariant #2: Attenuated Grants
+              </div>
+              <div style={{ fontSize: 12, color: "var(--text)", fontFamily: "monospace" }}>
+                ✓ sqlite_db: table:expenses [read, write]<br />
+                ✓ channel_notify: #finance [max 10/min]<br />
+                ✗ billing:* [DENIED]
+              </div>
+            </div>
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text2)", display: "block", marginBottom: 4 }}>
+              Active Bearer Capability Token (Zero-Leak Runtime Proxy):
+            </label>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                type="text"
+                readOnly
+                value={sampleToken}
+                style={{ flex: 1, padding: "6px 10px", fontSize: 11.5, fontFamily: "monospace", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 4 }}
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  navigator.clipboard?.writeText(sampleToken);
+                  setTokenCopied(true);
+                  setTimeout(() => setTokenCopied(false), 2000);
+                }}
+              >
+                {tokenCopied ? "✓ Copied" : "Copy Token"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 4: Audit Trail */}
+      {activeTab === "audit" && (
+        <div className="card" style={{ padding: 16, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text)", marginBottom: 12 }}>
+            📜 Real-Time In-DO Audit Trail (app_audit_log)
+          </div>
+
+          <div style={{ border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead style={{ background: "var(--bg-subtle, #f9fafb)", borderBottom: "1px solid var(--border)", textAlign: "left" }}>
+                <tr>
+                  <th style={{ padding: "8px 12px" }}>Timestamp</th>
+                  <th style={{ padding: "8px 12px" }}>Action</th>
+                  <th style={{ padding: "8px 12px" }}>Actor</th>
+                  <th style={{ padding: "8px 12px" }}>Details</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[
+                  { time: "2026-03-29 16:45", action: "data_insert", actor: "usr_alice", details: '{"table":"expenses","id":"exp_103","amount":1850}' },
+                  { time: "2026-03-29 09:30", action: "channel_notify", actor: "usr_bob", details: '{"channel":"#finance-approvals","status":"dispatched"}' },
+                  { time: "2026-03-29 09:30", action: "data_insert", actor: "usr_bob", details: '{"table":"expenses","id":"exp_102","amount":12000}' },
+                  { time: "2026-03-28 14:12", action: "deploy", actor: "usr_alice", details: '{"version":1,"tables":["expenses"]}' },
+                ].map((log, i) => (
+                  <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
+                    <td style={{ padding: "8px 12px", color: "var(--text3)", fontFamily: "monospace" }}>{log.time}</td>
+                    <td style={{ padding: "8px 12px", fontWeight: 600, color: "var(--accent)" }}>{log.action}</td>
+                    <td style={{ padding: "8px 12px", fontFamily: "monospace" }}>{log.actor}</td>
+                    <td style={{ padding: "8px 12px", fontFamily: "monospace", color: "var(--text2)" }}>{log.details}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * F-40: the mount point. A SWITCH on project.kind (never a data-driven interchangeable lookup) —
  * each kind's panel is its own purpose-built component. A kind with no panel yet renders nothing
@@ -1021,6 +1440,21 @@ export function ProjectKindPanel({
       <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
         <ModelStudioCanvas projectName={project.name} />
         <div className="section-label">Dataset Documents & LoRA Artifacts</div>
+        <WorkspaceFilesPanel spaceId={spaceId} projectId={project.id} creds={creds} />
+      </div>
+    );
+  }
+
+  if (project.kind === "app_studio") {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+        <AppStudioCanvas
+          projectName={project.name}
+          projectId={project.id}
+          spaceId={spaceId}
+          onSelectElement={onSelectElement}
+        />
+        <div className="section-label">Micro-App Workspace Files & Assets</div>
         <WorkspaceFilesPanel spaceId={spaceId} projectId={project.id} creds={creds} />
       </div>
     );

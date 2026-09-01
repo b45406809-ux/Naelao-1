@@ -8,6 +8,7 @@ import {
   type SessionCredentials,
 } from "../lib/api";
 import { CreatorStudio } from "./CreatorStudio";
+import { DeveloperPartnerHub } from "./DeveloperPartnerHub";
 
 interface MarketplaceHubProps {
   productSpaceId: string;
@@ -20,7 +21,7 @@ export function MarketplaceHub({
   session,
   onLaunchSuccess,
 }: MarketplaceHubProps) {
-  const [activeTab, setActiveTab] = useState<"marketplace" | "creator_studio">("marketplace");
+  const [activeTab, setActiveTab] = useState<"marketplace" | "creator_studio" | "partner_portal">("marketplace");
   const [category, setCategory] = useState("ALL");
   const [pricingFilter, setPricingFilter] = useState("all");
   const [templates, setTemplates] = useState<MarketplaceTemplateListing[]>([]);
@@ -115,10 +116,23 @@ export function MarketplaceHub({
           >
             Creator Studio & MRR
           </button>
+          <button
+            id="tab-partner-portal"
+            onClick={() => setActiveTab("partner_portal")}
+            className={`rounded-lg px-4 py-1.5 text-xs font-semibold transition ${
+              activeTab === "partner_portal"
+                ? "bg-white text-zinc-900 shadow-sm dark:bg-zinc-900 dark:text-zinc-100"
+                : "text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
+            }`}
+          >
+            💵 Partner Portal (40% Split)
+          </button>
         </div>
       </div>
 
-      {activeTab === "creator_studio" ? (
+      {activeTab === "partner_portal" ? (
+        <DeveloperPartnerHub productSpaceId={productSpaceId} session={session} />
+      ) : activeTab === "creator_studio" ? (
         <CreatorStudio productSpaceId={productSpaceId} session={session} />
       ) : (
         <>

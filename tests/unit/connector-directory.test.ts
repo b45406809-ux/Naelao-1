@@ -45,10 +45,9 @@ function memoryKv(): KVNamespace {
 describe("directory app ids", () => {
   it("round-trips provider and slug", () => {
     expect(parseDirectoryAppId(directoryAppId("composio", "notion"))).toEqual({ provider: "composio", slug: "notion" });
-    expect(parseDirectoryAppId("pipedream:google-sheets")).toEqual({ provider: "pipedream", slug: "google-sheets" });
   });
 
-  it("rejects anything that isn't one of our two providers, and bare curated ids", () => {
+  it("rejects anything that isn't composio, and bare curated ids", () => {
     // A bare id has no colon — that's how the connect routes tell a curated connector from a
     // directory app, so it must NOT parse as one.
     expect(parseDirectoryAppId("whop")).toBeNull();
@@ -162,114 +161,71 @@ describe("ensureComposioAuthConfig — what makes the directory connectable", ()
 });
 
 describe("listDirectory", () => {
-  it("merges both providers, dedupes the same app, and marks what we already curate", async () => {
-    // Notion is offered by BOTH — and is a curated PIPEDREAM connector. Whichever entry survives
-    // dedup must be the curated one, or the user gets offered a generic brokered connection
-    // instead of the one with real declared operations.
+  it("lists apps from Composio, dedupes, and marks what we already curate", async () => {
     mockFetch((url) => {
       if (url.includes("backend.composio.dev")) {
         return json({ items: [{ slug: "notion", name: "Notion" }, { slug: "asana", name: "Asana" }] });
       }
-      if (url.includes("/oauth/token")) return json({ access_token: "t", expires_in: 3600 });
-      return json({ data: [{ name_slug: "notion", name: "Notion" }, { name_slug: "slack", name: "Slack" }] });
+      return json({}, 404);
     });
 
     const page = await listDirectory({
       COMPOSIO_API_KEY: "k",
-      PIPEDREAM_CLIENT_ID: "id",
-      PIPEDREAM_CLIENT_SECRET: "secret",
     });
 
-    expect(page.apps.map((a) => a.slug).sort()).toEqual(["asana", "notion", "slack"]);
+    expect(page.apps.map((a) => a.slug).sort()).toEqual(["asana", "notion"]);
     expect(page.providers.every((p) => p.available)).toBe(true);
     const notion = page.apps.find((a) => a.slug === "notion")!;
-    expect(notion.provider).toBe("pipedream"); // the curated side won, not the first-seen one
+    expect(notion.provider).toBe("composio");
     expect(notion.curated_as).toBe("notion");
   });
 
-  it("still returns one provider's apps when the other fails", async () => {
-    // A Composio outage must not hide Pipedream's thousands of apps.
-    mockFetch((url) => {
-      if (url.includes("backend.composio.dev")) return json({ message: "upstream boom" }, 500);
-      if (url.includes("/oauth/token")) return json({ access_token: "t", expires_in: 3600 });
-      return json({ data: [{ name_slug: "slack", name: "Slack" }] });
-    });
-
-    const page = await listDirectory({
-      COMPOSIO_API_KEY: "k",
-      PIPEDREAM_CLIENT_ID: "id",
-      PIPEDREAM_CLIENT_SECRET: "secret",
-    });
-    expect(page.apps.map((a) => a.slug)).toEqual(["slack"]);
-    expect(page.providers.find((p) => p.provider === "composio")).toMatchObject({ available: false });
-    expect(page.providers.find((p) => p.provider === "pipedream")).toMatchObject({ available: true });
-  });
-
   it("reports an unconfigured provider as unavailable rather than just returning less", async () => {
-    // "We found 12 apps" reads very differently when half the directory is switched off.
-    mockFetch((url) => {
-      if (url.includes("backend.composio.dev")) return json({ items: [{ slug: "notion", name: "Notion" }] });
-      return json({}, 500);
-    });
-    const page = await listDirectory({ COMPOSIO_API_KEY: "k" });
-    expect(page.providers.find((p) => p.provider === "pipedream")).toEqual({
-      provider: "pipedream",
+    const page = await listDirectory({});
+    expect(page.providers.find((p) => p.provider === "composio")).toEqual({
+      provider: "composio",
       available: false,
       reason: "not_configured",
     });
   });
 
-  it("does not restart an exhausted provider on the next page", async () => {
-    // Composio has a second page, Pipedream does not. Paging must not replay Pipedream's first
-    // page forever, which is what an absent cursor would otherwise mean.
+  it("handles pagination via next_cursor correctly", async () => {
     let composioCalls = 0;
-    let pipedreamListCalls = 0;
     mockFetch((url) => {
       if (url.includes("backend.composio.dev")) {
         composioCalls += 1;
-        return json({ items: [{ slug: `c${composioCalls}`, name: "C" }], next_cursor: "more" });
+        return json({ items: [{ slug: `c${composioCalls}`, name: "C" }], next_cursor: composioCalls === 1 ? "more" : null });
       }
-      if (url.includes("/oauth/token")) return json({ access_token: "t", expires_in: 3600 });
-      pipedreamListCalls += 1;
-      return json({ data: [{ name_slug: "slack", name: "Slack" }] }); // short page → no cursor
+      return json({}, 404);
     });
 
-    const env = { COMPOSIO_API_KEY: "k", PIPEDREAM_CLIENT_ID: "id", PIPEDREAM_CLIENT_SECRET: "s" };
+    const env = { COMPOSIO_API_KEY: "k" };
     const first = await listDirectory(env, { limit: 50 });
     expect(first.next_cursor).toBeTruthy();
 
     const second = await listDirectory(env, { cursor: first.next_cursor, limit: 50 });
-    expect(second.apps.map((a) => a.slug)).toEqual(["c2"]); // Pipedream not re-listed
-    expect(pipedreamListCalls).toBe(1);
+    expect(second.apps.map((a) => a.slug)).toEqual(["c2"]);
+    expect(composioCalls).toBe(2);
   });
 });
 
 describe("listDirectory ordering", () => {
-  // Alphabetical opened the directory on "0codekit" and buried Gmail hundreds of entries down,
-  // which makes a genuinely rich catalogue look like junk. The ordering is the whole difference
-  // between a browsable app store and a raw dump.
-
   it("asks Composio for its own usage ordering by default, and preserves it", async () => {
     let sortParam: string | null = null;
     mockFetch((url) => {
       if (url.includes("backend.composio.dev")) {
         sortParam = new URL(url).searchParams.get("sort_by");
-        // Returned in Composio's usage order — position IS the rank; there is no score to read.
         return json({ items: [{ slug: "gmail", name: "Gmail" }, { slug: "github", name: "GitHub" }] });
       }
-      if (url.includes("/oauth/token")) return json({ access_token: "t", expires_in: 3600 });
-      return json({ data: [{ name_slug: "aaa_alphabetically_first", name: "AAA" }] });
+      return json({}, 404);
     });
 
     const page = await listDirectory({
       COMPOSIO_API_KEY: "k",
-      PIPEDREAM_CLIENT_ID: "id",
-      PIPEDREAM_CLIENT_SECRET: "s",
     });
 
     expect(sortParam).toBe("usage");
-    // Gmail leads despite "AAA" winning on name — that is the point.
-    expect(page.apps.map((a) => a.slug)).toEqual(["gmail", "github", "aaa_alphabetically_first"]);
+    expect(page.apps.map((a) => a.slug)).toEqual(["gmail", "github"]);
     expect(page.apps[0]?.rank).toBe(0);
     expect(page.apps[1]?.rank).toBe(1);
   });
@@ -279,101 +235,46 @@ describe("listDirectory ordering", () => {
     mockFetch((url) => {
       if (url.includes("backend.composio.dev")) {
         sortParam = new URL(url).searchParams.get("sort_by");
-        return json({ items: [{ slug: "gmail", name: "Gmail" }] });
+        return json({ items: [{ slug: "gmail", name: "Gmail" }, { slug: "airtable", name: "Airtable" }] });
       }
-      if (url.includes("/oauth/token")) return json({ access_token: "t", expires_in: 3600 });
-      return json({ data: [{ name_slug: "airtable", name: "Airtable" }] });
+      return json({}, 404);
     });
 
     const page = await listDirectory(
-      { COMPOSIO_API_KEY: "k", PIPEDREAM_CLIENT_ID: "id", PIPEDREAM_CLIENT_SECRET: "s" },
+      { COMPOSIO_API_KEY: "k" },
       { sort: "name" }
     );
 
     expect(sortParam).toBe("alphabetically");
     expect(page.apps.map((a) => a.name)).toEqual(["Airtable", "Gmail"]);
-    // No rank is claimed in name order — it would be a number that means nothing.
     expect(page.apps.every((a) => a.rank === undefined)).toBe(true);
   });
 
-  it("still orders sensibly when Pipedream sends no popularity weight at all", async () => {
-    // The weight is read defensively; if Pipedream never sends it, unranked entries must fall
-    // back to alphabetical rather than arriving in whatever order the response happened to use.
-    mockFetch((url) => {
-      if (url.includes("backend.composio.dev")) return json({ items: [] });
-      if (url.includes("/oauth/token")) return json({ access_token: "t", expires_in: 3600 });
-      return json({ data: [{ name_slug: "zoom", name: "Zoom" }, { name_slug: "airtable", name: "Airtable" }] });
-    });
-
-    const page = await listDirectory({
-      COMPOSIO_API_KEY: "k",
-      PIPEDREAM_CLIENT_ID: "id",
-      PIPEDREAM_CLIENT_SECRET: "s",
-    });
-
-    expect(page.apps.map((a) => a.name)).toEqual(["Airtable", "Zoom"]);
-  });
-
-  it("uses Pipedream's own weight when it does send one", async () => {
-    mockFetch((url) => {
-      if (url.includes("backend.composio.dev")) return json({ items: [] });
-      if (url.includes("/oauth/token")) return json({ access_token: "t", expires_in: 3600 });
-      return json({
-        data: [
-          { name_slug: "airtable", name: "Airtable", featured_weight: 1 },
-          { name_slug: "zoom", name: "Zoom", featured_weight: 99 },
-        ],
-      });
-    });
-
-    const page = await listDirectory({
-      COMPOSIO_API_KEY: "k",
-      PIPEDREAM_CLIENT_ID: "id",
-      PIPEDREAM_CLIENT_SECRET: "s",
-    });
-
-    // Heavier weight wins over the alphabetical order it would otherwise have had.
-    expect(page.apps.map((a) => a.name)).toEqual(["Zoom", "Airtable"]);
-  });
-
-  it("marks a curated app even when the OTHER provider is the one listing it", async () => {
-    // We curate Notion through Pipedream; Composio also has a `notion` toolkit. Matching only on
-    // `{provider}:{slug}` left Composio's entry unmarked, so the grid rendered Notion twice —
-    // once as our real connector and once as a generic brokered one.
+  it("marks a curated app when Composio lists it", async () => {
     mockFetch((url) => {
       if (url.includes("backend.composio.dev")) return json({ items: [{ slug: "notion", name: "Notion" }] });
-      if (url.includes("/oauth/token")) return json({ access_token: "t", expires_in: 3600 });
-      return json({ data: [] });
+      return json({}, 404);
     });
 
     const page = await listDirectory({
       COMPOSIO_API_KEY: "k",
-      PIPEDREAM_CLIENT_ID: "id",
-      PIPEDREAM_CLIENT_SECRET: "s",
     });
 
     expect(page.apps).toHaveLength(1);
     expect(page.apps[0]?.curated_as).toBe("notion");
-    // The logo still comes through — the UI harvests it for the curated card, which has none.
-    expect(page.apps[0]?.logo).toBeUndefined();
     expect(page.apps[0]?.provider).toBe("composio");
   });
 
   it("never offers Composio's own management toolkit as a business app", async () => {
-    // It ranks near the top of Composio's usage list because AGENTS call it, not because a
-    // business would ever connect it — a confusing first card on the most-used screen.
     mockFetch((url) => {
       if (url.includes("backend.composio.dev")) {
         return json({ items: [{ slug: "composio", name: "Composio" }, { slug: "gmail", name: "Gmail" }] });
       }
-      if (url.includes("/oauth/token")) return json({ access_token: "t", expires_in: 3600 });
-      return json({ data: [] });
+      return json({}, 404);
     });
 
     const page = await listDirectory({
       COMPOSIO_API_KEY: "k",
-      PIPEDREAM_CLIENT_ID: "id",
-      PIPEDREAM_CLIENT_SECRET: "s",
     });
 
     expect(page.apps.map((a) => a.slug)).toEqual(["gmail"]);
