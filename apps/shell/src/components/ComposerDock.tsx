@@ -671,21 +671,23 @@ export function ComposerDock({
                     <div className="dock-row-title">{c.name}</div>
                     <div className="dock-row-desc">
                       {c.connected && sessionId
-                        ? `Using the ${(modes[c.id] ?? "business") === "personal" ? "personal" : "business"} account`
+                        ? (modes[c.id] ?? "business") === "personal"
+                          ? "🔒 Using your Personal Account"
+                          : "🏢 Using the Company Shared Workspace"
                         : c.summary || "Reachable by the assistant once connected"}
                     </div>
                   </div>
-                  <div className="dock-row-action" style={{ display: "flex", gap: 6 }}>
+                  <div className="dock-row-action" style={{ display: "flex", gap: 6, alignItems: "center" }}>
                     {c.connected ? (
                       <>
                         {sessionId && (
                           <button
                             type="button"
-                            className="dock-pill"
+                            className={`dock-pill${(modes[c.id] ?? "business") === "personal" ? " on" : ""}`}
                             onClick={() => void toggleConnectorMode(c.id)}
-                            title="Switch which account this conversation's tool calls use"
+                            title={`Currently using ${(modes[c.id] ?? "business") === "personal" ? "Personal Account" : "Company Shared"}. Click to switch.`}
                           >
-                            Switch account
+                            {(modes[c.id] ?? "business") === "personal" ? "👤 Personal" : "🏢 Company"}
                           </button>
                         )}
                         <span className="dock-pill on"><Icon path={ICONS.check} size={11} />Connected</span>

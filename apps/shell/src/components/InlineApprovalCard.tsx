@@ -10,6 +10,42 @@ import * as React from "react";
 import { approveAction, rejectAction, getAssistantPolicy, updateAssistantPolicy, type RunPendingApproval } from "@/lib/api";
 import type { SessionCredentials } from "@/lib/api";
 
+function formatHumanAction(actionName: string, params: Record<string, unknown>): { title: string; subtitle: string; icon: string } {
+  if (actionName.includes("artifacts.merge") || actionName.includes("git.pr") || actionName.includes("git.merge")) {
+    return {
+      title: "Review Proposed Changes",
+      subtitle: (params.title as string) || (params.summary as string) || "The team drafted improvements for this project.",
+      icon: "📬",
+    };
+  }
+  if (actionName.includes("email") || actionName.includes("send_email")) {
+    return {
+      title: "Send Email Campaign / Message",
+      subtitle: `To: ${params.to || params.recipient || "Customer"}`,
+      icon: "✉️",
+    };
+  }
+  if (actionName.includes("twitter") || actionName.includes("tweet") || actionName.includes("social")) {
+    return {
+      title: "Publish Social Media Update",
+      subtitle: (params.text as string) || (params.content as string) || "Post update to social channels",
+      icon: "📢",
+    };
+  }
+  if (actionName.includes("calendar") || actionName.includes("schedule.book")) {
+    return {
+      title: "Schedule Calendar Event",
+      subtitle: (params.summary as string) || (params.title as string) || "Book appointment on calendar",
+      icon: "📅",
+    };
+  }
+  return {
+    title: `Action: ${actionName.replace(/[._]/g, " ")}`,
+    subtitle: "Waiting for your confirmation to proceed.",
+    icon: "🔒",
+  };
+}
+
 export function InlineApprovalCard({
   spaceId,
   approval,
@@ -32,6 +68,8 @@ export function InlineApprovalCard({
   // when the caller isn't a business admin (PATCH is admin-gated; approving itself is not).
   const [alwaysAllowed, setAlwaysAllowed] = React.useState(false);
   const [alwaysAllowFailed, setAlwaysAllowFailed] = React.useState(false);
+
+  const human = formatHumanAction(approval.action_name, approval.params ?? {});
 
   async function handleApprove(alwaysAllow: boolean) {
     setBusy(true);
@@ -83,36 +121,41 @@ export function InlineApprovalCard({
   return (
     <div
       style={{
-        marginTop: 6, maxWidth: 440, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
-        background: "var(--surface2)", padding: 12,
+        marginTop: 8, maxWidth: 460, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
+        background: "var(--surface2)", padding: 14, boxShadow: "0 2px 8px rgba(0,0,0,0.04)",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
-        <span aria-hidden style={{ fontSize: 13 }}>🔒</span>
-        <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text)" }}>Waiting for your approval</span>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+        <span aria-hidden style={{ fontSize: 16 }}>{human.icon}</span>
+        <span style={{ fontSize: 13.5, fontWeight: 600, color: "var(--text)" }}>{human.title}</span>
       </div>
-      <div style={{ fontSize: 12.5, color: "var(--text2)", marginBottom: paramEntries.length ? 6 : 10 }}>
-        The agent wants to run <code style={{ fontSize: 12 }}>{approval.action_name}</code>
+      <div style={{ fontSize: 12.5, color: "var(--text2)", marginBottom: 10, lineHeight: 1.45 }}>
+        {human.subtitle}
       </div>
       {paramEntries.length > 0 && (
-        <div
-          style={{
-            fontSize: 11.5, color: "var(--text3)", background: "var(--surface)", borderRadius: 8,
-            padding: 8, marginBottom: 10, fontFamily: "monospace", whiteSpace: "pre-wrap", wordBreak: "break-word",
-          }}
-        >
-          {paramEntries.map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`).join("\n")}
-        </div>
+        <details style={{ marginBottom: 10 }}>
+          <summary style={{ fontSize: 11.5, color: "var(--text3)", cursor: "pointer", userSelect: "none" }}>
+            View technical details
+          </summary>
+          <div
+            style={{
+              fontSize: 11.5, color: "var(--text3)", background: "var(--surface)", borderRadius: 6,
+              padding: 8, marginTop: 6, fontFamily: "monospace", whiteSpace: "pre-wrap", wordBreak: "break-word",
+            }}
+          >
+            {paramEntries.map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`).join("\n")}
+          </div>
+        </details>
       )}
 
       {resolved ? (
         <div>
-          <div style={{ fontSize: 12.5, color: resolved === "approved" ? "var(--accent)" : "var(--text3)", fontWeight: 600 }}>
-            {resolved === "approved" ? "Approved — the agent will continue." : "Declined."}
+          <div style={{ fontSize: 12.5, color: resolved === "approved" ? "#16a34a" : "var(--text3)", fontWeight: 600 }}>
+            {resolved === "approved" ? "✅ Applied to project — the agent will continue." : "Declined."}
           </div>
           {alwaysAllowed && (
             <div style={{ fontSize: 11.5, color: "var(--text3)", marginTop: 4 }}>
-              Won&apos;t ask for <code style={{ fontSize: 11 }}>{approval.action_name}</code> again.
+              Won&apos;t ask for this action again.
             </div>
           )}
           {alwaysAllowFailed && (
@@ -139,15 +182,15 @@ export function InlineApprovalCard({
         </div>
       ) : (
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button type="button" className="btn btn-primary btn-sm" onClick={() => void handleApprove(false)} disabled={busy}>
-            {busy ? "…" : "Approve"}
+          <button type="button" className="btn btn-primary btn-sm" style={{ background: "#16a34a", color: "#fff", border: "none" }} onClick={() => void handleApprove(false)} disabled={busy}>
+            {busy ? "…" : "Apply to Live Project"}
           </button>
           <button
             type="button"
             className="btn btn-ghost btn-sm"
             onClick={() => void handleApprove(true)}
             disabled={busy}
-            title="Approve this, and auto-approve this exact action from now on"
+            title="Approve this and auto-approve similar updates"
           >
             {busy ? "…" : "Always allow"}
           </button>

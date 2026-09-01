@@ -82,19 +82,28 @@ export const schedule: PrebuiltScript = {
       const goal = String(a["goal"] ?? "").trim();
       if (!goal) throw new Error("schedule.wake_me requires a goal (what to do when you wake)");
       const explicitCron = typeof a["cron"] === "string" ? (a["cron"] as string).trim() : "";
-      const delayMinutes = numArg(a, "delay_minutes");
-      const delayHours = numArg(a, "delay_hours");
+      const delayMinutes = numArg(a, "delay_minutes") ?? numArg(a, "delayMinutes");
+      const delayHours = numArg(a, "delay_hours") ?? numArg(a, "delayHours");
+      const delayDays = numArg(a, "delay_days") ?? numArg(a, "delayDays");
+      const wakeAtRaw = typeof a["wake_at"] === "string" ? a["wake_at"] : typeof a["wakeAt"] === "string" ? a["wakeAt"] : undefined;
+
       let cron: string;
       let oneShot = false;
       if (explicitCron) {
         cron = explicitCron;
-      } else if (delayHours !== undefined || delayMinutes !== undefined) {
-        const mins = (delayHours ?? 0) * 60 + (delayMinutes ?? 0);
+      } else if (wakeAtRaw) {
+        const targetMs = new Date(wakeAtRaw).getTime();
+        const diffMins = Math.round((targetMs - Date.now()) / 60_000);
+        if (isNaN(diffMins) || diffMins <= 0) throw new Error("wake_at must be a valid future date/timestamp");
+        cron = cronForDelay(diffMins);
+        oneShot = true;
+      } else if (delayDays !== undefined || delayHours !== undefined || delayMinutes !== undefined) {
+        const mins = (delayDays ?? 0) * 1440 + (delayHours ?? 0) * 60 + (delayMinutes ?? 0);
         if (mins <= 0) throw new Error("delay must be positive");
         cron = cronForDelay(mins);
         oneShot = true;
       } else {
-        throw new Error("schedule.wake_me requires either delay_minutes/delay_hours or a cron expression");
+        throw new Error("schedule.wake_me requires delay_minutes/delay_hours/delay_days, wake_at, or a cron expression");
       }
       const name = typeof a["name"] === "string" && a["name"] ? (a["name"] as string) : `wake: ${goal.slice(0, 40)}`;
       const res = await spacesCall(c, "POST", `/spaces/${c.env.spaceId}/scheduled-jobs`, {

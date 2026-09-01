@@ -125,3 +125,13 @@ export async function executeTool(
 export function createSpaceSDK(client: NaelaoClient, spaceId: string): SpaceSDK {
   return new SpaceSDK(client, spaceId);
 }
+
+// ── Connector Account Intent Intelligence ─────────────────────────────────────
+export {
+  detectConnectorAccountIntent,
+  getThreadTierDefaultConnectorScope,
+  resolveConnectorAccountIntent,
+  buildConnectorClarificationCard,
+  getConnectorDisplayName,
+} from "../../../workers/agents/src/connectors/account-intent.js";
+

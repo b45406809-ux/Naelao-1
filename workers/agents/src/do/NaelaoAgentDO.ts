@@ -60,6 +60,11 @@ import { sha256Hex } from "../script-engine/fingerprint.js";
 import { WorkspaceBranchEngine } from "../script-engine/prebuilt/workspace-branch.js";
 import type { BusinessContext } from "../launchpad/business-context.js";
 import {
+  detectConnectorAccountIntent,
+  getThreadTierDefaultConnectorScope,
+  resolveConnectorAccountIntent,
+} from "../connectors/account-intent.js";
+import {
   sanitizeSubAgentOutput,
   safeJsonParse,
   budgetToMaxSteps,
@@ -3373,7 +3378,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
     // §A1 connector default-vs-personal switch: read once per run, best-effort — a failure or an
     // empty map both mean "resolve as business" (today's implicit default), never blocks the run.
-    engineEnv.connectorAccountMode = await this.fetchConnectorAccountMode(spaceId, sessionId, tenantId);
+    engineEnv.connectorAccountMode = await this.fetchConnectorAccountMode(spaceId, sessionId, tenantId, body.goal);
     // F14: customer-bot daily spend cap was only enforced in the channel-heartbeat drain path
     // (handleChannelHeartbeat) — a direct /script/run call with the same projectId bypassed it
     // entirely. Apply the identical cap-then-execution-ceiling gate here.
@@ -4510,26 +4515,61 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
   }
 
-  /** §A1 connector default-vs-personal switch: this session's stored mode per connector id. Any
-   *  failure (unbound worker, network error, not-yet-migrated deployment) degrades to an empty
-   *  map — identical to "nobody ever switched away from business", never a run-blocking error. */
-  private async fetchConnectorAccountMode(spaceId: string, sessionId: string, tenantId: string): Promise<Record<string, "business" | "personal">> {
-    if (!this.env.SPACES_WORKER || !tenantId) return {};
-    try {
-      const resp = await this.env.SPACES_WORKER.fetch(new Request(
-        `http://spaces-worker/spaces/${spaceId}/sessions/${sessionId}/connector-mode`,
-        { headers: await this.internalHeaders(tenantId) }
-      ));
-      if (!resp.ok) return {};
-      const data = await resp.json<{ modes?: Record<string, string> }>();
-      const out: Record<string, "business" | "personal"> = {};
-      for (const [k, v] of Object.entries(data.modes ?? {})) {
-        if (v === "personal") out[k] = "personal";
+  /** §A1 connector default-vs-personal switch: this session's stored mode per connector id,
+   *  augmented by 3-Layer Connector Account Intelligence (Layer 1 Thread Tier default, Layer 2 Linguistic Intent).
+   *  Any failure degrades gracefully without blocking the run. */
+  private async fetchConnectorAccountMode(
+    spaceId: string,
+    sessionId: string,
+    tenantId: string,
+    messageText?: string,
+    tier?: number,
+    projectKind?: string
+  ): Promise<Record<string, "business" | "personal">> {
+    const out: Record<string, "business" | "personal"> = {};
+    if (this.env.SPACES_WORKER && tenantId) {
+      try {
+        const resp = await this.env.SPACES_WORKER.fetch(new Request(
+          `http://spaces-worker/spaces/${spaceId}/sessions/${sessionId}/connector-mode`,
+          { headers: await this.internalHeaders(tenantId) }
+        ));
+        if (resp.ok) {
+          const data = await resp.json<{ modes?: Record<string, string> }>();
+          for (const [k, v] of Object.entries(data.modes ?? {})) {
+            if (v === "personal") out[k] = "personal";
+            else if (v === "business") out[k] = "business";
+          }
+        }
+      } catch {
+        // degrades gracefully
       }
-      return out;
-    } catch {
-      return {};
     }
+
+    // Layer 2: Linguistic Intent Detection for common connectors if unassigned
+    if (messageText) {
+      const linguistic = detectConnectorAccountIntent(messageText);
+      if (linguistic === "personal") {
+        const common = ["google_calendar", "google_gmail", "gmail", "google_drive", "outlook", "slack"];
+        for (const c of common) {
+          if (!out[c]) out[c] = "personal";
+        }
+      } else if (linguistic === "company_shared") {
+        const common = ["google_calendar", "google_gmail", "gmail", "google_drive", "twitter", "slack"];
+        for (const c of common) {
+          if (!out[c]) out[c] = "business";
+        }
+      }
+    }
+
+    // Layer 1: Tier 4 Scratchpad defaults to personal
+    if (tier === 4) {
+      const common = ["google_calendar", "google_gmail", "gmail", "google_drive"];
+      for (const c of common) {
+        if (!out[c]) out[c] = "personal";
+      }
+    }
+
+    return out;
   }
 
   /** Whether anyone has a fresh presence heartbeat in this space right now — see

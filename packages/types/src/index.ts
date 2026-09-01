@@ -253,12 +253,16 @@ export interface UniversalAgentManifest {
   triggers: AgentTriggers;
 }
 
-// ── Axis 6: 4-Tier Collaboration Model ─────────────────────────────────────────
+// ── Axis 6: 4-Tier Collaboration Model (Apple on the Surface, Linux at the Edge) ──
 export type CollaborationTierLevel = 1 | 2 | 3 | 4;
 
 export interface CollaborationLaneConfig {
   tier: CollaborationTierLevel;
-  name: "Tier 1: Team Room" | "Tier 2: Task Workstations" | "Tier 3: System Consult Lanes" | "Tier 4: Private Scratchpad";
+  name: "Tier 1: Team Room" | "Tier 2: Task Workstations" | "Tier 3: System Consult Lanes" | "Tier 4: Private Scratchpad" | string;
+  /** Human-friendly UI label in Business Mode */
+  displayLabel: "Project Chat" | "Active Tasks" | "System Consult (Internal)" | "My Private Drafts" | string;
+  /** Short description of the space */
+  description?: string;
   visibility: "public_to_project" | "internal_system" | "strictly_private";
   interactionModel: "humans_and_at_mentions" | "feature_dag_and_at_mentions" | "internal_specialist_consult" | "private_direct_unmentioned";
   workspaceWritePermission: "full_execution" | "coordination_only" | "read_only_simulation";
@@ -484,5 +488,62 @@ export interface TemplateFeatureGating {
   /** Set ONLY when monetizationModel === "FREEMIUM_TIERED_SAAS" (Upfront is always $0) */
   tierAccessRules?: TierAccessRules;
 }
+
+// ── Project Lifecycle & Sleep Cycles (Finite vs Standing Desks) ───────────────
+export type ProjectLifecycle = "finite" | "continuous";
+export type ProjectLifecycleStatus = "active" | "dormant" | "completed" | "sleeping";
+
+export interface ProjectLifecycleEvent {
+  projectId: string;
+  spaceId: string;
+  lifecycle: ProjectLifecycle;
+  status: ProjectLifecycleStatus;
+  totalTasks: number;
+  completedTasks: number;
+  message: string;
+  hibernatedAt?: string;
+}
+
+// ── Connector Account Intelligence: 3-Layer Intent & Context Filter ───────────
+export type ConnectorAccountScope = "personal" | "company_shared" | "business";
+
+export interface ConnectorAccountOption {
+  scope: ConnectorAccountScope;
+  label: string;
+  description: string;
+  icon: string;
+}
+
+export interface ConnectorAccountResolution {
+  connectorId: string;
+  accountScope: ConnectorAccountScope;
+  source: "thread_tier_default" | "linguistic_intent" | "composer_pill_override" | "clarification_prompt";
+  confidence: number;
+  userName?: string;
+  companyName?: string;
+  ambiguous?: boolean;
+  options?: ConnectorAccountOption[];
+}
+
+export interface ConnectorScopePillState {
+  connectorId: string;
+  connectorName: string;
+  activeScope: ConnectorAccountScope;
+  accountLabel: string;
+  icon: string;
+}
+
+export interface ConnectorClarificationCardMetadata {
+  connector_id: string;
+  prompt_question: string;
+  options: Array<{
+    scope: ConnectorAccountScope;
+    label: string;
+    description: string;
+    icon?: string;
+  }>;
+  resolved_scope?: ConnectorAccountScope;
+}
+
 
 

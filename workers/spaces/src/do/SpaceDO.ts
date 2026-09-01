@@ -5435,6 +5435,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       JSON.stringify(Array.isArray(body.dependencies) ? body.dependencies.map(String) : []),
       body.assigned_agent ?? null, now, now
     );
+    // If this task is created for a completed/dormant project, awaken the project to active
+    const targetProjectId = body.project_id ?? body.projectId ?? null;
+    if (targetProjectId) {
+      execute(this.ctx.storage.sql as never, "UPDATE projects SET status = 'active', updated_at = datetime('now') WHERE id = ? AND status = 'completed'", targetProjectId);
+    }
     const row = queryOne<{ dependencies: string }>(this.ctx.storage.sql as never, "SELECT * FROM tasks WHERE id = ?", id);
     return Response.json({ ...row, dependencies: safeJsonParseArr(row!.dependencies) as string[] }, { status: 201 });
   }
@@ -5464,7 +5469,39 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     args.push(new Date().toISOString());
     args.push(taskId);
     execute(this.ctx.storage.sql as never, `UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`, ...args);
-    const row = queryOne<{ dependencies: string }>(this.ctx.storage.sql as never, "SELECT * FROM tasks WHERE id = ?", taskId);
+    const row = queryOne<{ dependencies: string; project_id: string | null; space_id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM tasks WHERE id = ?",
+      taskId
+    );
+
+    // Goal cycle & sleep check: if a finite project's tasks are all completed, enter dormant sleep cycle ($0 cost)
+    if (row?.project_id && body.status === "completed") {
+      const proj = queryOne<{ id: string; name: string; lifecycle: string; status: string; space_id: string }>(
+        this.ctx.storage.sql as never,
+        "SELECT id, name, lifecycle, status, space_id FROM projects WHERE id = ?",
+        row.project_id
+      );
+      if (proj && proj.lifecycle === "finite") {
+        const remaining = queryOne<{ count: number }>(
+          this.ctx.storage.sql as never,
+          "SELECT count(*) as count FROM tasks WHERE project_id = ? AND status != 'completed'",
+          row.project_id
+        )?.count ?? 0;
+        if (remaining === 0 && proj.status !== "completed") {
+          execute(this.ctx.storage.sql as never, "UPDATE projects SET status = 'completed', updated_at = datetime('now') WHERE id = ?", row.project_id);
+          execute(this.ctx.storage.sql as never, "UPDATE roster_bots SET status = 'idle', updated_at = datetime('now') WHERE project_id = ?", row.project_id);
+          const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+          await broadcastSpaceEvent(this.env, tenantId, proj.space_id, "project.hibernated", {
+            project_id: proj.id,
+            lifecycle: "finite",
+            status: "dormant",
+            message: `All tasks for project '${proj.name}' completed. Entering dormant hibernation ($0 cost).`,
+          });
+        }
+      }
+    }
+
     return Response.json({ ...row, dependencies: safeJsonParseArr(row!.dependencies) as string[] });
   }
 

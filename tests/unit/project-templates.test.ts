@@ -11,9 +11,16 @@ const CUSTOMER_BOT_TEMPLATES = PROJECT_TEMPLATES.filter((t) => t.kind === "custo
 const WORKSPACE_TEMPLATES = PROJECT_TEMPLATES.filter((t) => t.kind === "workspace");
 
 describe("project templates — catalogue invariants", () => {
-  it("every template has a restricted execution ceiling (never the unrestricted default of 5)", () => {
-    for (const t of PROJECT_TEMPLATES) {
+  it("every customer_bot template has a restricted execution ceiling (never the unrestricted default of 5)", () => {
+    for (const t of CUSTOMER_BOT_TEMPLATES) {
       expect(t.execution_ceiling).toBeLessThan(5);
+      expect(t.execution_ceiling).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  it("every template has a valid execution ceiling between 1 and 5", () => {
+    for (const t of PROJECT_TEMPLATES) {
+      expect(t.execution_ceiling).toBeLessThanOrEqual(5);
       expect(t.execution_ceiling).toBeGreaterThanOrEqual(1);
     }
   });

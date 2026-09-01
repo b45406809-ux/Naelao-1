@@ -21,15 +21,19 @@ export const COLLABORATION_TIERS: Record<CollaborationTierLevel, CollaborationLa
   1: {
     tier: 1,
     name: "Tier 1: Team Room",
+    displayLabel: "Project Chat",
+    description: "The main team conversation and shared project space",
     visibility: "public_to_project",
     interactionModel: "humans_and_at_mentions",
     workspaceWritePermission: "full_execution",
-    requiresAtMentionForAgents: true,
+    requiresAtMentionForAgents: false, // Smart auto-routing handles un-mentioned messages gracefully
     canMutateFilesystem: true,
   },
   2: {
     tier: 2,
     name: "Tier 2: Task Workstations",
+    displayLabel: "Active Tasks",
+    description: "Task checklist with focused execution and comments",
     visibility: "public_to_project",
     interactionModel: "feature_dag_and_at_mentions",
     workspaceWritePermission: "full_execution",
@@ -39,6 +43,8 @@ export const COLLABORATION_TIERS: Record<CollaborationTierLevel, CollaborationLa
   3: {
     tier: 3,
     name: "Tier 3: System Consult Lanes",
+    displayLabel: "System Consult (Internal)",
+    description: "Silent internal bot-to-bot coordination lane",
     visibility: "internal_system",
     interactionModel: "internal_specialist_consult",
     workspaceWritePermission: "coordination_only",
@@ -48,6 +54,8 @@ export const COLLABORATION_TIERS: Record<CollaborationTierLevel, CollaborationLa
   4: {
     tier: 4,
     name: "Tier 4: Private Scratchpad",
+    displayLabel: "My Private Drafts",
+    description: "Personal 1-on-1 space for draft notes and ideas",
     visibility: "strictly_private",
     interactionModel: "private_direct_unmentioned",
     workspaceWritePermission: "read_only_simulation",
@@ -98,24 +106,32 @@ export function parseMentionDispatch(message: string): {
 }
 
 /**
- * Determines if an agent should activate and respond based on the lane tier and @mention presence.
+ * Determines if an agent should activate and respond based on the lane tier, @mention presence, or smart auto-routing.
  */
 export function shouldAgentRespondInTier(
   tier: CollaborationTierLevel,
   agentHandle: string,
-  message: string
+  message: string,
+  isLeadAgent: boolean = false
 ): boolean {
   const lane = COLLABORATION_TIERS[tier];
   if (!lane) return false;
 
-  // In Tier 3 & Tier 4, agents operate directly or via internal consultation without @mentions
-  if (!lane.requiresAtMentionForAgents) {
+  const { mentions, isMentioned } = parseMentionDispatch(message);
+
+  // If specific mentions exist, honor explicit @mention routing
+  if (mentions.length > 0) {
+    return isMentioned(agentHandle);
+  }
+
+  // Non-technical "Apple Simplicity" Smart Auto-Routing:
+  // In Tier 1 (Project Chat) or Tier 4 (My Private Drafts), the Lead / Space Assistant automatically responds
+  // and delegates behind the scenes without forcing the user to type @mentions.
+  if (isLeadAgent || !lane.requiresAtMentionForAgents) {
     return true;
   }
 
-  // In Tier 1 & Tier 2, public team rooms only dispatch agents on explicit @mention
-  const { isMentioned } = parseMentionDispatch(message);
-  return isMentioned(agentHandle);
+  return false;
 }
 
 // ── 2. OCC Storage Layer & AST Patching Engine ────────────────────────────────

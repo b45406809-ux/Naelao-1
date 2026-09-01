@@ -20,6 +20,7 @@
  */
 
 import type { ChannelType } from "./channels.js";
+import type { ProjectLifecycle } from "@naelao/types";
 
 export interface ProjectRuleSeed {
   trigger_pattern: string;
@@ -44,6 +45,8 @@ export interface ProjectTemplate {
   description: string;
   /** Which project kind this template configures (e.g. 'customer_bot', 'workspace', 'product_dev', 'contract_redline', etc.) */
   kind: string;
+  /** Project lifecycle: 'finite' for task-oriented projects (which hibernate after all tasks complete) vs 'continuous' for 24/7 standing desks & scheduled monitors */
+  lifecycle?: ProjectLifecycle;
   /** customer_bot templates only — which channel this project is meant to connect to. */
   suggested_channel?: ChannelType;
   /** Execution ladder ceiling. Customer-facing bots use restricted lower tiers (Tier 1-3) to avoid security threats from untrusted external user input. */
@@ -73,12 +76,13 @@ const BASELINE_RULES: ProjectRuleSeed[] = [
 ];
 
 export const PROJECT_TEMPLATES: ProjectTemplate[] = [
-  // ── Customer Service & Inbound Bot Projects (Lower Execution Ladder: Tier 1-3) ──
+  // ── Customer Service & Inbound Bot Projects (Continuous 24/7 Standing Desks: Tier 1-3) ──
   {
     id: "whatsapp-support-bot",
     name: "WhatsApp Support Desk",
     description: "Answers customer inquiries 24/7 on your WhatsApp Business number. Read-only in-memory RAG by default — talks and looks up FAQs/orders, never touches arbitrary external code.",
     kind: "customer_bot",
+    lifecycle: "continuous",
     suggested_channel: "whatsapp",
     execution_ceiling: 2,
     daily_spend_cap_credits: 2000,
@@ -94,6 +98,7 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     name: "Telegram Sales & Inquiries Receptionist",
     description: "Inbound Telegram bot that qualifies leads, answers service FAQs, and books discovery calls.",
     kind: "customer_bot",
+    lifecycle: "continuous",
     suggested_channel: "telegram",
     execution_ceiling: 2,
     daily_spend_cap_credits: 2000,
@@ -109,6 +114,7 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     name: "Discord Community Moderator & FAQ Bot",
     description: "Answers member questions in your Discord server, routes support requests, and flags rule violations.",
     kind: "customer_bot",
+    lifecycle: "continuous",
     suggested_channel: "discord",
     execution_ceiling: 2,
     daily_spend_cap_credits: 2000,
@@ -124,6 +130,7 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     name: "Email Support Triaging Desk",
     description: "Drafts grounded replies to inbound support emails and categorizes tickets with SLA tags.",
     kind: "customer_bot",
+    lifecycle: "continuous",
     suggested_channel: "email",
     execution_ceiling: 3,
     daily_spend_cap_credits: 3000,
@@ -131,12 +138,13 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     rules: BASELINE_RULES,
   },
 
-  // ── Product Development & Edge IDE Projects (Tier 5 Full Sandbox Execution) ──
+  // ── Product Development & Edge IDE Projects (Finite Goal Cycles: Tier 5 Full Sandbox Execution) ──
   {
     id: "edge-web-ide",
     name: "Astro + Tailwind Edge Web IDE",
     description: "Full-stack web application development studio with live visual canvas preview and surgical search-and-replace patching.",
     kind: "product_dev",
+    lifecycle: "finite",
     execution_ceiling: 5,
     daily_spend_cap_credits: 5000,
     plugins: ["r2-workspace", "file-manager", "code-exec", "workspace", "browser-use"],
@@ -146,17 +154,19 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     name: "TypeScript Worker & Microservice Suite",
     description: "Cloudflare Worker & REST API microservice studio with TypeScript typechecking and automated integration tests.",
     kind: "product_dev",
+    lifecycle: "finite",
     execution_ceiling: 5,
     daily_spend_cap_credits: 5000,
     plugins: ["r2-workspace", "file-manager", "code-exec", "workspace"],
   },
 
-  // ── Vertical Cowork & Legal/Finance/Health Studios (Tier 2-3 Precision Work) ──
+  // ── Vertical Cowork & Legal/Finance/Health Studios (Finite Goal Cycles: Tier 2-3 Precision Work) ──
   {
     id: "inbound-nda-scanner",
     name: "Inbound NDA & Contract Redline Studio",
     description: "Instant contract redlining, indemnity clause risk detection, and clause-by-clause diffing with statutory citations.",
     kind: "contract_redline",
+    lifecycle: "finite",
     execution_ceiling: 2,
     daily_spend_cap_credits: 3000,
     plugins: ["knowledge-base", "file-manager", "artifacts"],
@@ -166,6 +176,7 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     name: "Litigation Discovery & Deposition Cross-Examiner",
     description: "Cross-references deposition transcripts and court filings with exact transcript line number semantic grounding.",
     kind: "litigation_discovery",
+    lifecycle: "finite",
     execution_ceiling: 2,
     daily_spend_cap_credits: 3000,
     plugins: ["knowledge-base", "file-manager", "web-search"],
@@ -175,6 +186,7 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     name: "SEC 10-K & Financial RAG Studio",
     description: "EDGAR filing deep-RAG, footnote extraction, EBITDA reconciliation, and valuation comps formula grids.",
     kind: "sec_rag",
+    lifecycle: "finite",
     execution_ceiling: 3,
     daily_spend_cap_credits: 4000,
     plugins: ["web-search", "knowledge-base", "artifacts", "file-manager"],
@@ -184,6 +196,7 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     name: "Private Equity Investment Memo & Comps",
     description: "Automated investment committee memos, valuation multiples, and deal thesis modeling with dynamic calculations.",
     kind: "memo_studio",
+    lifecycle: "finite",
     execution_ceiling: 3,
     daily_spend_cap_credits: 4000,
     plugins: ["knowledge-base", "artifacts", "file-manager"],
@@ -193,6 +206,7 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     name: "Clinical SOAP Notes & EHR Studio",
     description: "Voice and encounter transcripts converted into structured SOAP clinical documentation with HIPAA PII sanitization.",
     kind: "soap_notes",
+    lifecycle: "finite",
     execution_ceiling: 2,
     daily_spend_cap_credits: 3000,
     plugins: ["knowledge-base", "file-manager", "artifacts"],
@@ -202,6 +216,7 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     name: "Medical Billing ICD-10 & Pre-Auth Appeals",
     description: "Chart-to-code ICD-10/CPT suggestion engine and insurer pre-authorization appeal letter generator.",
     kind: "billing_icd10",
+    lifecycle: "finite",
     execution_ceiling: 2,
     daily_spend_cap_credits: 3000,
     plugins: ["knowledge-base", "artifacts"],
@@ -211,6 +226,7 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     name: "Building Code & Plan Compliance Inspector",
     description: "IBC, ADA, and local municipal zoning code verification for architectural drawings and specifications.",
     kind: "building_code_rag",
+    lifecycle: "finite",
     execution_ceiling: 2,
     daily_spend_cap_credits: 3000,
     plugins: ["knowledge-base", "file-manager", "artifacts"],
@@ -220,17 +236,19 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     name: "Subcontractor RFP & Bid Leveling Matrix",
     description: "Bid leveling comparison matrices, subcontractor scope tracking, and change order variance audits.",
     kind: "subcontractor_rfp",
+    lifecycle: "finite",
     execution_ceiling: 2,
     daily_spend_cap_credits: 3000,
     plugins: ["file-manager", "artifacts", "knowledge-base"],
   },
 
-  // ── Business Operations & Growth Kinds ──
+  // ── Business Operations & Growth Kinds (Continuous 24/7 Standing Desks) ──
   {
     id: "b2b-pipeline-tracker",
     name: "B2B Sales CRM & Pipeline Tracker",
     description: "High-touch deals pipeline, lead enrichment, contact stages, and follow-up reminders.",
     kind: "crm",
+    lifecycle: "continuous",
     execution_ceiling: 2,
     daily_spend_cap_credits: 2000,
     plugins: ["knowledge-base", "notifications"],
@@ -240,6 +258,7 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     name: "Support Tickets & SLA Queue",
     description: "Centralized support ticketing queue with automated SLA timers and agent assignment.",
     kind: "support_inbox",
+    lifecycle: "continuous",
     execution_ceiling: 2,
     daily_spend_cap_credits: 2000,
     plugins: ["knowledge-base", "notifications"],
@@ -249,6 +268,7 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     name: "AI-Triaged Mailbox",
     description: "A provisioned business mailbox with autonomous inbound email triaging, draft generation, and spam defense.",
     kind: "business_email",
+    lifecycle: "continuous",
     execution_ceiling: 2,
     daily_spend_cap_credits: 2000,
     plugins: ["business-email"],
@@ -258,16 +278,18 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     name: "Storefront & Digital Product Catalog",
     description: "Sell digital downloads, licenses, and services directly with instant fulfillment and checkout integration.",
     kind: "storefront",
+    lifecycle: "continuous",
     execution_ceiling: 2,
     daily_spend_cap_credits: 2000,
   },
 
-  // ── Enterprise Fine-Tuning & Auto-Researcher Studios (model_studio) ──
+  // ── Enterprise Fine-Tuning & Auto-Researcher Studios (Finite Goal Cycles: model_studio) ──
   {
     id: "support-lora-distiller",
     name: "Support Desk Knowledge Distiller & Fine-Tuner",
     description: "Converts customer service tickets and FAQ documentation into synthetic JSONL pairs and fine-tunes a dedicated edge LoRA support model.",
     kind: "model_studio",
+    lifecycle: "finite",
     execution_ceiling: 5,
     daily_spend_cap_credits: 5000,
     plugins: ["file-manager", "artifacts", "knowledge-base", "code-exec"],
@@ -277,6 +299,7 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     name: "Legal & Contract Clause Specialist",
     description: "Trains an 8B edge model to recognize non-standard liability terms, indemnity clauses, and risk exceptions from past negotiated redlines.",
     kind: "model_studio",
+    lifecycle: "finite",
     execution_ceiling: 5,
     daily_spend_cap_credits: 5000,
     plugins: ["file-manager", "artifacts", "knowledge-base", "code-exec"],
@@ -286,12 +309,13 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     name: "Internal API & SDK Codebase Assistant",
     description: "Ingests internal engineering documentation and TypeScript SDKs to fine-tune an internal developer autocomplete copilot.",
     kind: "model_studio",
+    lifecycle: "finite",
     execution_ceiling: 5,
     daily_spend_cap_credits: 5000,
     plugins: ["file-manager", "artifacts", "knowledge-base", "code-exec", "workspace"],
   },
 
-  // ── Workspace-kind templates — schedule/observation-driven ──
+  // ── Workspace-kind templates — schedule/observation-driven (Continuous) ──
   {
     id: "community-member-monitoring",
     name: "Community Member Monitoring",
@@ -299,6 +323,7 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
       "A weekly check-in on your community: the support agent reviews activity and pings you " +
       "with anything worth knowing. Runs on a schedule, not in reaction to inbound messages.",
     kind: "workspace",
+    lifecycle: "continuous",
     execution_ceiling: 2,
     daily_spend_cap_credits: 1000,
     default_agent_id: "launchpad-support-v1",
@@ -317,6 +342,7 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     name: "Daily Programmatic SEO Content Engine",
     description: "Daily automated search keyword research, competitor gap analysis, and draft article generation.",
     kind: "workspace",
+    lifecycle: "continuous",
     execution_ceiling: 3,
     daily_spend_cap_credits: 3000,
     plugins: ["web-search", "artifacts", "file-manager"],
@@ -334,6 +360,7 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     name: "B2B Lead Finder & Verification Engine",
     description: "Scheduled lead enrichment, finding verified company contacts and syncing them into the deal pipeline.",
     kind: "workspace",
+    lifecycle: "continuous",
     execution_ceiling: 3,
     daily_spend_cap_credits: 3000,
     plugins: ["web-search", "knowledge-base"],
@@ -350,6 +377,19 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
 
 export function getProjectTemplate(id: string): ProjectTemplate | null {
   return PROJECT_TEMPLATES.find((t) => t.id === id) ?? null;
+}
+
+/**
+ * Determine default lifecycle for a given template ID or project kind.
+ * Customer bots and workspace monitors run continuously; build/redline/audit studios run finite cycles.
+ */
+export function getProjectLifecycle(templateIdOrKind?: string): ProjectLifecycle {
+  if (!templateIdOrKind) return "finite";
+  const template = getProjectTemplate(templateIdOrKind);
+  if (template?.lifecycle) return template.lifecycle;
+  const continuousKinds = new Set(["customer_bot", "crm", "support_inbox", "business_email", "storefront"]);
+  if (continuousKinds.has(templateIdOrKind)) return "continuous";
+  return "finite";
 }
 
 /**
