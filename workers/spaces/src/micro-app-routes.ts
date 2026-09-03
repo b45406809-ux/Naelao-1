@@ -8,15 +8,128 @@
 import type { Hono } from "hono";
 import type { Env } from "./index.js";
 import { getDOName } from "@naelao/crypto";
-import { mintGatekeeperToken, type GatekeeperGrant } from "@naelao/security";
+import {
+  mintGatekeeperToken,
+  mintDelegatedGatekeeperToken,
+  type GatekeeperGrant,
+  type GadgetScope,
+} from "@naelao/security";
 import { resolveEndUserBusinessRole } from "./business-auth.js";
 
 export function registerMicroAppRoutes(app: Hono<{ Bindings: Env }>): void {
-  // ── 1. Create / Deploy Micro-App in Space ──────────────────────────────────
-  app.post("/spaces/:spaceId/micro-apps", async (c) => {
+  // ── Blueprints Catalog ────────────────────────────────────────────────────
+  app.get("/spaces/:spaceId/gadgets/blueprints", async (c) => {
+    return c.json({
+      ok: true,
+      blueprints: [
+        {
+          id: "bug_intake_matrix",
+          name: "QA Bug Reporting & Acceptance Matrix",
+          description: "Cross-subspace issue tracker allowing engineering subspaces to log tickets into PM private SQLite DB.",
+          scope: "CROSS_SUBSPACE_DELEGATED",
+        },
+        {
+          id: "leave_tracker",
+          name: "Company-Wide PTO Leave Approval Tracker",
+          description: "All-company time-off request and manager approval ledger with live audit trail.",
+          scope: "SPACE_WIDE",
+        },
+        {
+          id: "barcode_scanner",
+          name: "Barcode Equipment Scanner & Return Ledger",
+          description: "Project-bound warehouse scanner tracking equipment checkouts and returns.",
+          scope: "PROJECT_BOUND",
+        },
+        {
+          id: "pomodoro_timer",
+          name: "Personal Pomodoro Timer & Scratchpad",
+          description: "Private focus timer and scratchpad for personal focus loops.",
+          scope: "USER_PRIVATE",
+        },
+      ],
+    });
+  });
+
+  // ── Instantiate Blueprint ──────────────────────────────────────────────────
+  app.post("/spaces/:spaceId/gadgets/blueprints/:blueprintId/instantiate", async (c) => {
+    const { spaceId, blueprintId } = c.req.param();
+    const endUserId = c.req.header("x-naelao-end-user-id") || c.req.header("x-naelao-user-id") || "user_anon";
+    const body = (await c.req.json().catch(() => ({}))) as {
+      appId?: string;
+      projectId?: string;
+      delegatedTargetSpaceIds?: string[];
+    };
+
+    const appId = body.appId || `gadget_${blueprintId}_${Date.now().toString(36)}`;
+    const doName = await getDOName("microapp", appId, spaceId, c.env.PLATFORM_SECRET);
+
+    if (!c.env.MICRO_APP_DO) {
+      return c.json({ error_code: "not_configured", message: "MICRO_APP_DO binding missing" }, 500);
+    }
+
+    const doId = c.env.MICRO_APP_DO.idFromName(doName);
+    const stub = c.env.MICRO_APP_DO.get(doId);
+
+    const deployRes = await stub.fetch(new Request("https://microapp.internal/admin/deploy-blueprint", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        blueprintId,
+        appId,
+        spaceId,
+        creatorUserId: endUserId,
+        projectId: body.projectId,
+        delegatedTargetSpaceIds: body.delegatedTargetSpaceIds,
+      }),
+    }));
+
+    const deployData = (await deployRes.json()) as Record<string, unknown>;
+    return c.json(deployData, deployRes.status as any);
+  });
+
+  // ── Cross-Subspace Delegation Endpoint ─────────────────────────────────────
+  app.post("/spaces/:spaceId/gadgets/:appId/delegate", async (c) => {
+    const { spaceId, appId } = c.req.param();
+    const endUserId = c.req.header("x-naelao-end-user-id") || c.req.header("x-naelao-user-id") || "user_anon";
+    const delegatorRole = (await resolveEndUserBusinessRole(c.env, spaceId, endUserId)) || "editor";
+
+    const body = (await c.req.json()) as {
+      targetSpaceId: string;
+      allowedOps: string[];
+      ttlSeconds?: number;
+    };
+
+    if (!body.targetSpaceId || !Array.isArray(body.allowedOps)) {
+      return c.json({ error_code: "invalid_payload", message: "targetSpaceId and allowedOps array are required" }, 400);
+    }
+
+    const delegatedToken = await mintDelegatedGatekeeperToken(
+      {
+        gadgetId: appId,
+        fromSpaceId: spaceId,
+        toSpaceId: body.targetSpaceId,
+        delegatorUserId: endUserId,
+        delegatorRole,
+        allowedOps: body.allowedOps,
+        ttlSeconds: body.ttlSeconds,
+      },
+      c.env.PLATFORM_SECRET
+    );
+
+    return c.json({
+      ok: true,
+      gadgetId: appId,
+      fromSpaceId: spaceId,
+      toSpaceId: body.targetSpaceId,
+      allowedOps: body.allowedOps,
+      delegatedToken,
+    });
+  });
+
+  // ── 1. Create / Deploy Micro-App or Gadget in Space ────────────────────────
+  const handleCreateOrDeploy = async (c: any) => {
     const spaceId = c.req.param("spaceId");
     const endUserId = c.req.header("x-naelao-end-user-id") || c.req.header("x-naelao-user-id") || "user_anon";
-    const tenantId = c.req.header("x-naelao-tenant-id") || spaceId;
 
     // Check caller role in space
     const role = (await resolveEndUserBusinessRole(c.env, spaceId, endUserId)) || "editor";
@@ -29,6 +142,9 @@ export function registerMicroAppRoutes(app: Hono<{ Bindings: Env }>): void {
       schemaSql?: string;
       initialData?: Array<{ table: string; records: Record<string, unknown>[] }>;
       requestedGrants?: GatekeeperGrant[];
+      scope?: GadgetScope;
+      projectId?: string;
+      delegatedTargetSpaceIds?: string[];
     };
 
     const appId = body.appId || `app_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -55,6 +171,9 @@ export function registerMicroAppRoutes(app: Hono<{ Bindings: Env }>): void {
         htmlBundle: body.htmlBundle,
         schemaSql: body.schemaSql,
         initialData: body.initialData,
+        scope: body.scope,
+        projectId: body.projectId,
+        delegatedTargetSpaceIds: body.delegatedTargetSpaceIds,
       }),
     }));
 
@@ -97,12 +216,15 @@ export function registerMicroAppRoutes(app: Hono<{ Bindings: Env }>): void {
       spaceId,
       manifest: deployData.manifest,
       gatekeeperToken: token,
-      appUrl: `/spaces/${spaceId}/micro-apps/${appId}/app`,
+      appUrl: `/spaces/${spaceId}/gadgets/${appId}/app`,
     }, 201);
-  });
+  };
 
-  // ── 2. Get Micro-App Manifest & SQLite Tables ──────────────────────────────
-  app.get("/spaces/:spaceId/micro-apps/:appId/manifest", async (c) => {
+  app.post("/spaces/:spaceId/micro-apps", handleCreateOrDeploy);
+  app.post("/spaces/:spaceId/gadgets", handleCreateOrDeploy);
+
+  // ── 2. Get Micro-App / Gadget Manifest & SQLite Tables ─────────────────────
+  const handleGetManifest = async (c: any) => {
     const { spaceId, appId } = c.req.param();
     if (!c.env.MICRO_APP_DO) return c.json({ error_code: "not_configured" }, 500);
 
@@ -113,10 +235,13 @@ export function registerMicroAppRoutes(app: Hono<{ Bindings: Env }>): void {
     const res = await stub.fetch(new Request("https://microapp.internal/admin/manifest"));
     const data = await res.json();
     return c.json(data, res.status as any);
-  });
+  };
 
-  // ── 3. Mint Attenuated Gatekeeper Token for Micro-App ──────────────────────
-  app.post("/spaces/:spaceId/micro-apps/:appId/token", async (c) => {
+  app.get("/spaces/:spaceId/micro-apps/:appId/manifest", handleGetManifest);
+  app.get("/spaces/:spaceId/gadgets/:appId/manifest", handleGetManifest);
+
+  // ── 3. Mint Attenuated Gatekeeper Token for Micro-App / Gadget ─────────────
+  const handleMintToken = async (c: any) => {
     const { spaceId, appId } = c.req.param();
     const endUserId = c.req.header("x-naelao-end-user-id") || c.req.header("x-naelao-user-id") || "user_anon";
 
@@ -147,10 +272,13 @@ export function registerMicroAppRoutes(app: Hono<{ Bindings: Env }>): void {
     );
 
     return c.json({ ok: true, token, appId, spaceId });
-  });
+  };
+
+  app.post("/spaces/:spaceId/micro-apps/:appId/token", handleMintToken);
+  app.post("/spaces/:spaceId/gadgets/:appId/token", handleMintToken);
 
   // ── 4. Proxy Frontend & API Routes to MicroAppDO ───────────────────────────
-  app.all("/spaces/:spaceId/micro-apps/:appId/app/*", async (c) => {
+  const handleProxyApp = async (c: any) => {
     const { spaceId, appId } = c.req.param();
     if (!c.env.MICRO_APP_DO) return c.text("MicroAppDO not configured", 500);
 
@@ -158,8 +286,10 @@ export function registerMicroAppRoutes(app: Hono<{ Bindings: Env }>): void {
     const doId = c.env.MICRO_APP_DO.idFromName(doName);
     const stub = c.env.MICRO_APP_DO.get(doId);
 
-    // Forward to root of DO
-    const subpath = c.req.path.replace(`/spaces/${spaceId}/micro-apps/${appId}/app`, "") || "/";
+    const basePath = c.req.path.includes("/gadgets/")
+      ? `/spaces/${spaceId}/gadgets/${appId}/app`
+      : `/spaces/${spaceId}/micro-apps/${appId}/app`;
+    const subpath = c.req.path.replace(basePath, "") || "/";
     const targetUrl = new URL(subpath, "https://microapp.internal");
     targetUrl.search = new URL(c.req.url).search;
 
@@ -169,9 +299,13 @@ export function registerMicroAppRoutes(app: Hono<{ Bindings: Env }>): void {
       headers: forwardedHeaders,
       body: ["GET", "HEAD"].includes(c.req.method) ? undefined : c.req.raw.body,
     }));
-  });
+  };
 
-  app.all("/spaces/:spaceId/micro-apps/:appId/mcp", async (c) => {
+  app.all("/spaces/:spaceId/micro-apps/:appId/app/*", handleProxyApp);
+  app.all("/spaces/:spaceId/gadgets/:appId/app/*", handleProxyApp);
+  app.all("/spaces/:spaceId/gadgets/:appId/app", handleProxyApp);
+
+  const handleProxyMcp = async (c: any) => {
     const { spaceId, appId } = c.req.param();
     if (!c.env.MICRO_APP_DO) return c.json({ error: "MicroAppDO not configured" }, 500);
 
@@ -185,9 +319,12 @@ export function registerMicroAppRoutes(app: Hono<{ Bindings: Env }>): void {
       headers: forwardedHeaders,
       body: ["GET", "HEAD"].includes(c.req.method) ? undefined : c.req.raw.body,
     }));
-  });
+  };
 
-  app.all("/spaces/:spaceId/micro-apps/:appId/api/*", async (c) => {
+  app.all("/spaces/:spaceId/micro-apps/:appId/mcp", handleProxyMcp);
+  app.all("/spaces/:spaceId/gadgets/:appId/mcp", handleProxyMcp);
+
+  const handleProxyApi = async (c: any) => {
     const { spaceId, appId } = c.req.param();
     if (!c.env.MICRO_APP_DO) return c.json({ error: "MicroAppDO not configured" }, 500);
 
@@ -195,7 +332,10 @@ export function registerMicroAppRoutes(app: Hono<{ Bindings: Env }>): void {
     const doId = c.env.MICRO_APP_DO.idFromName(doName);
     const stub = c.env.MICRO_APP_DO.get(doId);
 
-    const subpath = c.req.path.replace(`/spaces/${spaceId}/micro-apps/${appId}`, "");
+    const prefix = c.req.path.includes("/gadgets/")
+      ? `/spaces/${spaceId}/gadgets/${appId}`
+      : `/spaces/${spaceId}/micro-apps/${appId}`;
+    const subpath = c.req.path.replace(prefix, "");
     const targetUrl = new URL(subpath, "https://microapp.internal");
     targetUrl.search = new URL(c.req.url).search;
 
@@ -205,5 +345,8 @@ export function registerMicroAppRoutes(app: Hono<{ Bindings: Env }>): void {
       headers: forwardedHeaders,
       body: ["GET", "HEAD"].includes(c.req.method) ? undefined : c.req.raw.body,
     }));
-  });
+  };
+
+  app.all("/spaces/:spaceId/micro-apps/:appId/api/*", handleProxyApi);
+  app.all("/spaces/:spaceId/gadgets/:appId/api/*", handleProxyApi);
 }

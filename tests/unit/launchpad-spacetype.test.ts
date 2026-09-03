@@ -20,10 +20,24 @@ describe("Launchpad SpaceType (§11)", () => {
       // originals — paid-audit, interactive-tool, productized-service, intelligence-vault,
       // digital-toolkit, niche-community.
       [
-        "coaching-community", "creator-store", "customer-service", "digital-toolkit",
-        "intelligence-vault", "interactive-tool", "micro-saas", "newsletter-business",
-        "niche-community", "paid-audit", "productized-service", "service-agency",
-        "whop-seller", "whop-webdev-agency",
+        "acubuild-arch-cowork",
+        "capforge-pe-cowork",
+        "clinica-ehr-cowork",
+        "coaching-community",
+        "creator-store",
+        "customer-service",
+        "digital-toolkit",
+        "intelligence-vault",
+        "interactive-tool",
+        "lexpulse-legal-cowork",
+        "micro-saas",
+        "newsletter-business",
+        "niche-community",
+        "paid-audit",
+        "productized-service",
+        "service-agency",
+        "whop-seller",
+        "whop-webdev-agency",
       ],
     );
   });

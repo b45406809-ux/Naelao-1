@@ -15,7 +15,14 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
-import { verifyGatekeeperToken, checkGatekeeperGrant, type GatekeeperCapability } from "@naelao/security";
+import {
+  verifyGatekeeperToken,
+  checkGatekeeperGrant,
+  checkDelegatedGatekeeperGrant,
+  type GatekeeperCapability,
+  type AvosGadgetManifest,
+  type GadgetScope,
+} from "@naelao/security";
 
 export interface MicroAppManifest {
   appId: string;
@@ -28,7 +35,184 @@ export interface MicroAppManifest {
   createdAt: string;
   updatedAt: string;
   customTables: string[];
+  // Gadget 4-Scope Model (Cloudflare OS Gadgets)
+  scope?: GadgetScope;
+  projectId?: string;
+  delegatedTargetSpaceIds?: string[];
+  runtime?: {
+    engine: "dynamic_worker_isolate";
+    database: "do_facet_sqlite";
+    enableMcpV2Api: boolean;
+  };
+  gatekeeperGrants?: Array<{
+    resource: string;
+    operations: Array<"read" | "write" | "notify" | "delete" | "execute">;
+  }>;
 }
+
+export interface GadgetBlueprint {
+  id: string;
+  name: string;
+  description: string;
+  scope: GadgetScope;
+  schemaSql: string;
+  initialData?: Array<{ table: string; records: Record<string, unknown>[] }>;
+  defaultGrants: Array<{ resource: string; operations: Array<"read" | "write" | "notify" | "delete" | "execute"> }>;
+  htmlBundle: string;
+}
+
+export const GADGET_BLUEPRINTS: Record<string, GadgetBlueprint> = {
+  bug_intake_matrix: {
+    id: "bug_intake_matrix",
+    name: "QA Bug Reporting & Acceptance Matrix",
+    description: "Cross-subspace issue tracker allowing engineering subspaces to log tickets into PM private SQLite DB.",
+    scope: "CROSS_SUBSPACE_DELEGATED",
+    schemaSql: `
+      CREATE TABLE IF NOT EXISTS tickets (
+        id TEXT PRIMARY KEY,
+        reporter_user_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT,
+        severity TEXT DEFAULT 'MEDIUM',
+        status TEXT NOT NULL DEFAULT 'OPEN',
+        space_id TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `,
+    initialData: [
+      {
+        table: "tickets",
+        records: [
+          {
+            id: "tick_sample_1",
+            reporter_user_id: "user_pm",
+            title: "Navigation bar clipping on mobile safari",
+            description: "Header elements overlap when viewport width < 380px.",
+            severity: "HIGH",
+            status: "OPEN",
+            space_id: "sp_pm_core",
+          },
+        ],
+      },
+    ],
+    defaultGrants: [
+      { resource: "sqlite_db", operations: ["read", "write"] },
+      { resource: "notifications", operations: ["notify"] },
+    ],
+    htmlBundle: `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>QA Bug Matrix Gadget</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 text-gray-900 p-6 min-h-screen">
+  <div class="max-w-4xl mx-auto">
+    <div class="flex items-center justify-between pb-6 border-b border-gray-200">
+      <div>
+        <h1 class="text-2xl font-bold tracking-tight text-gray-950">QA Bug Reporting Matrix</h1>
+        <p class="text-sm text-gray-500 mt-1">Cross-Subspace Delegated Gadget (DO Facet SQLite)</p>
+      </div>
+      <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-200">
+        Gatekeeper Verified
+      </span>
+    </div>
+    <form id="ticketForm" class="mt-6 bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-4">
+      <div>
+        <label class="block text-xs font-semibold uppercase text-gray-600 mb-1">Ticket Title</label>
+        <input id="titleInput" required type="text" placeholder="e.g. Broken checkout button" class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none">
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-xs font-semibold uppercase text-gray-600 mb-1">Severity</label>
+          <select id="severityInput" class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm">
+            <option value="LOW">Low</option>
+            <option value="MEDIUM" selected>Medium</option>
+            <option value="HIGH">High</option>
+            <option value="CRITICAL">Critical</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-semibold uppercase text-gray-600 mb-1">Description</label>
+          <input id="descInput" type="text" placeholder="Steps to reproduce" class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm">
+        </div>
+      </div>
+      <button type="submit" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-lg text-sm transition">
+        Submit Ticket & Stream Event
+      </button>
+    </form>
+  </div>
+</body>
+</html>`,
+  },
+  leave_tracker: {
+    id: "leave_tracker",
+    name: "Company-Wide PTO Leave Approval Tracker",
+    description: "All-company time-off request and manager approval ledger.",
+    scope: "SPACE_WIDE",
+    schemaSql: `
+      CREATE TABLE IF NOT EXISTS leave_requests (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        user_name TEXT,
+        leave_type TEXT NOT NULL DEFAULT 'VACATION',
+        start_date TEXT NOT NULL,
+        end_date TEXT NOT NULL,
+        reason TEXT,
+        status TEXT NOT NULL DEFAULT 'PENDING',
+        approved_by TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `,
+    defaultGrants: [
+      { resource: "sqlite_db", operations: ["read", "write"] },
+      { resource: "notifications", operations: ["notify"] },
+    ],
+    htmlBundle: `<!DOCTYPE html><html><head><title>PTO Leave Tracker</title><script src="https://cdn.tailwindcss.com"></script></head><body class="p-6 bg-gray-50"><div class="max-w-2xl mx-auto"><h1 class="text-xl font-bold">PTO Leave Tracker</h1></div></body></html>`,
+  },
+  barcode_scanner: {
+    id: "barcode_scanner",
+    name: "Barcode Equipment Scanner & Return Ledger",
+    description: "Project-bound asset checkout and return tracking for warehouse operations.",
+    scope: "PROJECT_BOUND",
+    schemaSql: `
+      CREATE TABLE IF NOT EXISTS equipment_inventory (
+        id TEXT PRIMARY KEY,
+        item_name TEXT NOT NULL,
+        barcode TEXT UNIQUE NOT NULL,
+        condition TEXT DEFAULT 'GOOD',
+        checked_out_to TEXT,
+        status TEXT NOT NULL DEFAULT 'AVAILABLE',
+        last_inspected TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `,
+    defaultGrants: [
+      { resource: "sqlite_db", operations: ["read", "write"] },
+    ],
+    htmlBundle: `<!DOCTYPE html><html><head><title>Barcode Scanner</title><script src="https://cdn.tailwindcss.com"></script></head><body class="p-6 bg-gray-50"><div class="max-w-2xl mx-auto"><h1 class="text-xl font-bold">Equipment Ledger</h1></div></body></html>`,
+  },
+  pomodoro_timer: {
+    id: "pomodoro_timer",
+    name: "Personal Pomodoro Timer & Scratchpad",
+    description: "Private focus timer and scratchpad for personal focus loops.",
+    scope: "USER_PRIVATE",
+    schemaSql: `
+      CREATE TABLE IF NOT EXISTS focus_sessions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        duration_minutes INTEGER NOT NULL DEFAULT 25,
+        category TEXT DEFAULT 'WORK',
+        notes TEXT,
+        completed_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `,
+    defaultGrants: [
+      { resource: "sqlite_db", operations: ["read", "write"] },
+    ],
+    htmlBundle: `<!DOCTYPE html><html><head><title>Pomodoro Timer</title><script src="https://cdn.tailwindcss.com"></script></head><body class="p-6 bg-gray-50"><div class="max-w-2xl mx-auto"><h1 class="text-xl font-bold">Pomodoro Timer</h1></div></body></html>`,
+  },
+};
 
 export class MicroAppDO extends DurableObject {
   private isInitialized = false;
@@ -58,6 +242,15 @@ export class MicroAppDO extends DurableObject {
 
       CREATE INDEX IF NOT EXISTS idx_app_records_created ON app_records(created_at);
       CREATE INDEX IF NOT EXISTS idx_app_audit_timestamp ON app_audit_log(timestamp);
+
+      CREATE TABLE IF NOT EXISTS app_ui_events (
+        id            TEXT PRIMARY KEY,
+        action        TEXT NOT NULL,
+        actor_user_id TEXT,
+        payload_json  TEXT NOT NULL,
+        created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_app_ui_events_created ON app_ui_events(created_at);
     `);
     this.isInitialized = true;
   }
@@ -69,7 +262,7 @@ export class MicroAppDO extends DurableObject {
 
     // ── 1. Edge SSR Frontend Delivery (HTML/JS/Preact/Tailwind) ────────────────
     if (pathname === "/" || pathname === "/app" || pathname === "/index.html") {
-      return this.handleServeFrontend();
+      return this.handleServeFrontend(request);
     }
 
     // ── 2. Admin & Deployment Management ──────────────────────────────────────
@@ -83,6 +276,24 @@ export class MicroAppDO extends DurableObject {
 
     if (pathname === "/admin/tables" && request.method === "GET") {
       return this.handleGetTables();
+    }
+
+    // ── Blueprints: Shareable Gadget Templates ────────────────────────────────
+    if (pathname === "/admin/blueprints" && request.method === "GET") {
+      return this.handleGetBlueprints();
+    }
+
+    if (pathname === "/admin/deploy-blueprint" && request.method === "POST") {
+      return this.handleDeployBlueprint(request);
+    }
+
+    // ── MCP-UI: Real-Time UI Action Streaming ─────────────────────────────────
+    if ((pathname === "/api/mcp-ui/emit" || pathname === "/api/mcp-ui/action") && request.method === "POST") {
+      return this.handleMcpUiEmit(request);
+    }
+
+    if (pathname === "/api/mcp-ui/events" && request.method === "GET") {
+      return this.handleGetMcpUiEvents(request);
     }
 
     // ── 3. Gatekeeper-Guarded Private SQLite API Routes ────────────────────────
@@ -120,7 +331,19 @@ export class MicroAppDO extends DurableObject {
   /**
    * Serves the SSR frontend HTML bundle for this micro-app.
    */
-  private async handleServeFrontend(): Promise<Response> {
+  private async handleServeFrontend(request: Request): Promise<Response> {
+    const manifest = await this.readManifest();
+    if (manifest) {
+      const caller = this.extractCaller(request);
+      const scopeCheck = this.checkScopeAccess(manifest, caller);
+      if (!scopeCheck.allowed) {
+        return new Response(JSON.stringify({ error: scopeCheck.reason }), {
+          status: 403,
+          headers: { "content-type": "application/json" },
+        });
+      }
+    }
+
     const html = (await this.ctx.storage.get<string>("app_bundle_html")) || this.getDefaultFallbackHtml();
     return new Response(html, {
       status: 200,
@@ -147,6 +370,18 @@ export class MicroAppDO extends DurableObject {
         htmlBundle?: string;
         schemaSql?: string;
         initialData?: Array<{ table: string; records: Record<string, unknown>[] }>;
+        scope?: GadgetScope;
+        projectId?: string;
+        delegatedTargetSpaceIds?: string[];
+        runtime?: {
+          engine: "dynamic_worker_isolate";
+          database: "do_facet_sqlite";
+          enableMcpV2Api: boolean;
+        };
+        gatekeeperGrants?: Array<{
+          resource: string;
+          operations: Array<"read" | "write" | "notify" | "delete" | "execute">;
+        }>;
       };
 
       if (!body.appId || !body.spaceId) {
@@ -206,12 +441,25 @@ export class MicroAppDO extends DurableObject {
         createdAt: existingManifest?.createdAt || new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         customTables,
+        scope: body.scope || existingManifest?.scope || "SPACE_WIDE",
+        projectId: body.projectId || existingManifest?.projectId,
+        delegatedTargetSpaceIds: body.delegatedTargetSpaceIds || existingManifest?.delegatedTargetSpaceIds,
+        runtime: body.runtime || existingManifest?.runtime || {
+          engine: "dynamic_worker_isolate",
+          database: "do_facet_sqlite",
+          enableMcpV2Api: true,
+        },
+        gatekeeperGrants: body.gatekeeperGrants || existingManifest?.gatekeeperGrants,
       };
 
       await this.writeManifest(manifest);
 
       // 5. Audit log
-      this.recordAudit("deploy", manifest.creatorUserId, { version, tables: customTables });
+      this.recordAudit("deploy", manifest.creatorUserId, {
+        version,
+        tables: customTables,
+        scope: manifest.scope,
+      });
 
       return Response.json({
         ok: true,
@@ -224,6 +472,188 @@ export class MicroAppDO extends DurableObject {
         { status: 500 }
       );
     }
+  }
+
+  /**
+   * Helper to extract zero-trust caller identity injected by edge proxy.
+   */
+  private extractCaller(request: Request): {
+    userId?: string;
+    userRole?: string;
+    spaceId?: string;
+    projectId?: string;
+  } {
+    return {
+      userId: request.headers.get("x-naelao-end-user-id") || request.headers.get("x-naelao-user-id") || undefined,
+      userRole: request.headers.get("x-naelao-user-role") || undefined,
+      spaceId: request.headers.get("x-naelao-space-id") || undefined,
+      projectId: request.headers.get("x-naelao-project-id") || undefined,
+    };
+  }
+
+  /**
+   * Enforces the 4-Scope Model:
+   * - USER_PRIVATE: Creator sandbox only
+   * - PROJECT_BOUND: Designated project members only
+   * - SPACE_WIDE: Entire tenant/space organization
+   * - CROSS_SUBSPACE_DELEGATED: Delegated target subspaces via Gatekeeper
+   */
+  private checkScopeAccess(
+    manifest: MicroAppManifest,
+    caller: { userId?: string; userRole?: string; spaceId?: string; projectId?: string }
+  ): { allowed: boolean; reason?: string } {
+    const scope = manifest.scope || "SPACE_WIDE";
+
+    if (scope === "USER_PRIVATE") {
+      const isOwner = caller.userId && caller.userId === manifest.creatorUserId;
+      const isSpaceAdmin = caller.userRole === "owner" || caller.userRole === "admin";
+      if (!isOwner && !isSpaceAdmin) {
+        return { allowed: false, reason: "Access denied: USER_PRIVATE gadget restricted to its creator" };
+      }
+    } else if (scope === "PROJECT_BOUND") {
+      if (manifest.projectId && caller.projectId && caller.projectId !== manifest.projectId) {
+        return { allowed: false, reason: "Access denied: PROJECT_BOUND gadget restricted to designated project" };
+      }
+    } else if (scope === "CROSS_SUBSPACE_DELEGATED") {
+      const isOwnerSpace = caller.spaceId && caller.spaceId === manifest.spaceId;
+      const isDelegatedSpace =
+        caller.spaceId &&
+        Array.isArray(manifest.delegatedTargetSpaceIds) &&
+        manifest.delegatedTargetSpaceIds.includes(caller.spaceId);
+      if (!isOwnerSpace && !isDelegatedSpace) {
+        return { allowed: false, reason: "Access denied: CROSS_SUBSPACE_DELEGATED gadget not shared with caller space" };
+      }
+    }
+
+    return { allowed: true };
+  }
+
+  /**
+   * Catalog of shareable gadget blueprints.
+   */
+  private handleGetBlueprints(): Response {
+    return Response.json({
+      ok: true,
+      blueprints: [
+        {
+          id: "bug_intake_matrix",
+          name: "QA Bug Reporting & Acceptance Matrix",
+          description: "Cross-subspace issue tracker allowing engineering subspaces to log tickets into PM private SQLite DB.",
+          scope: "CROSS_SUBSPACE_DELEGATED",
+        },
+        {
+          id: "leave_tracker",
+          name: "Company-Wide PTO Leave Approval Tracker",
+          description: "All-company time-off request and manager approval ledger with live audit trail.",
+          scope: "SPACE_WIDE",
+        },
+        {
+          id: "barcode_scanner",
+          name: "Barcode Equipment Scanner & Return Ledger",
+          description: "Project-bound warehouse scanner tracking equipment checkouts and returns.",
+          scope: "PROJECT_BOUND",
+        },
+        {
+          id: "pomodoro_timer",
+          name: "Personal Pomodoro Timer & Scratchpad",
+          description: "Private focus timer and scratchpad for personal focus loops.",
+          scope: "USER_PRIVATE",
+        },
+      ],
+    });
+  }
+
+  /**
+   * Instantly deploys a pre-configured gadget blueprint.
+   */
+  private async handleDeployBlueprint(request: Request): Promise<Response> {
+    const body = (await request.json()) as {
+      blueprintId: string;
+      appId: string;
+      spaceId: string;
+      creatorUserId?: string;
+      projectId?: string;
+      delegatedTargetSpaceIds?: string[];
+    };
+
+    const bp = GADGET_BLUEPRINTS[body.blueprintId];
+    if (!bp) {
+      return Response.json({ error: `Unknown blueprint '${body.blueprintId}'` }, { status: 400 });
+    }
+
+    const deployRequest = new Request("https://microapp.internal/admin/deploy", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        appId: body.appId,
+        spaceId: body.spaceId,
+        creatorUserId: body.creatorUserId,
+        title: bp.name,
+        description: bp.description,
+        scope: bp.scope,
+        projectId: body.projectId,
+        delegatedTargetSpaceIds: body.delegatedTargetSpaceIds,
+        schemaSql: bp.schemaSql,
+        initialData: bp.initialData,
+        htmlBundle: bp.htmlBundle,
+        runtime: {
+          engine: "dynamic_worker_isolate",
+          database: "do_facet_sqlite",
+          enableMcpV2Api: true,
+        },
+        gatekeeperGrants: bp.defaultGrants,
+      }),
+    });
+
+    return this.handleDeploy(deployRequest);
+  }
+
+  /**
+   * Emits a real-time UI action from the sandboxed iframe to observing AI agents via MCP-UI.
+   */
+  private async handleMcpUiEmit(request: Request): Promise<Response> {
+    const body = (await request.json()) as {
+      action: string;
+      [key: string]: unknown;
+    };
+
+    if (!body.action) {
+      return Response.json({ error: "action field is required" }, { status: 400 });
+    }
+
+    const eventId = `evt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const caller = this.extractCaller(request);
+    const actorId = caller.userId || (body.author as string) || "user_anon";
+
+    this.ctx.storage.sql.exec(
+      `INSERT INTO app_ui_events (id, action, actor_user_id, payload_json, created_at) VALUES (?, ?, ?, ?, datetime('now'))`,
+      eventId,
+      body.action,
+      actorId,
+      JSON.stringify(body)
+    );
+
+    this.recordAudit(`ui_action:${body.action}`, actorId, body);
+
+    return Response.json({
+      ok: true,
+      eventId,
+      action: body.action,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  /**
+   * Retrieves recent MCP-UI action events for observing AI agents.
+   */
+  private async handleGetMcpUiEvents(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get("limit") || "50", 10)));
+    const rows = this.ctx.storage.sql
+      .exec(`SELECT * FROM app_ui_events ORDER BY created_at DESC LIMIT ?`, limit)
+      .toArray();
+
+    return Response.json({ ok: true, events: rows });
   }
 
   /**

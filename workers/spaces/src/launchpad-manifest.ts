@@ -57,6 +57,7 @@ export const LAUNCHPAD_MANIFEST: NaelaoSpaceTypeManifestV2 = {
         { id: "customers", label: "Customers", icon: "users", path: "/customers" },
         { id: "products", label: "Products", icon: "box", path: "/products" },
         { id: "campaigns", label: "Campaigns", icon: "megaphone", path: "/campaigns" },
+        { id: "gadgets", label: "Gadgets", icon: "box", path: "/gadgets" },
         { id: "agents", label: "Agents", icon: "cpu", path: "/agents" },
       ],
       dashboardWidgets: [],

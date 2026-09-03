@@ -1151,6 +1151,134 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE projects ADD COLUMN lifecycle TEXT NOT NULL DEFAULT 'finite' CHECK (lifecycle IN ('finite', 'continuous'));
     `,
   },
+  {
+    version: 44,
+    description: "site_monitor_targets and site_monitor_incidents (G-7 Uptime/Health Monitoring)",
+    up: `
+      CREATE TABLE IF NOT EXISTS site_monitor_targets (
+        id                     TEXT PRIMARY KEY,
+        space_id               TEXT NOT NULL,
+        project_id             TEXT NOT NULL,
+        name                   TEXT NOT NULL,
+        url                    TEXT NOT NULL,
+        method                 TEXT NOT NULL DEFAULT 'GET',
+        expected_status        INTEGER NOT NULL DEFAULT 200,
+        check_interval_seconds INTEGER NOT NULL DEFAULT 300,
+        status                 TEXT NOT NULL DEFAULT 'unknown' CHECK (status IN ('up','down','degraded','unknown')),
+        last_checked_at        TEXT,
+        last_latency_ms        INTEGER,
+        consecutive_failures   INTEGER NOT NULL DEFAULT 0,
+        created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_site_monitor_targets_space ON site_monitor_targets(space_id);
+      CREATE INDEX IF NOT EXISTS idx_site_monitor_targets_project ON site_monitor_targets(project_id);
+
+      CREATE TABLE IF NOT EXISTS site_monitor_incidents (
+        id               TEXT PRIMARY KEY,
+        target_id        TEXT NOT NULL,
+        space_id         TEXT NOT NULL,
+        project_id       TEXT NOT NULL,
+        status           TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','investigating','resolved')),
+        error_message    TEXT NOT NULL,
+        started_at       TEXT NOT NULL DEFAULT (datetime('now')),
+        resolved_at      TEXT,
+        acknowledged_by  TEXT,
+        details_json     TEXT,
+        created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_site_monitor_incidents_target ON site_monitor_incidents(target_id);
+      CREATE INDEX IF NOT EXISTS idx_site_monitor_incidents_space ON site_monitor_incidents(space_id);
+    `,
+  },
+  {
+    version: 45,
+    description: "crm_leads and crm_activities (G-8 Native CRM & Lead-Pipeline)",
+    up: `
+      CREATE TABLE IF NOT EXISTS crm_leads (
+        id                 TEXT PRIMARY KEY,
+        space_id           TEXT NOT NULL,
+        project_id         TEXT NOT NULL,
+        name               TEXT NOT NULL,
+        email              TEXT,
+        company            TEXT,
+        phone              TEXT,
+        stage              TEXT NOT NULL DEFAULT 'new' CHECK (stage IN ('new','contacted','qualified','proposal','negotiation','won','lost')),
+        value_cents        INTEGER NOT NULL DEFAULT 0,
+        source             TEXT NOT NULL DEFAULT 'direct',
+        assigned_agent_id  TEXT,
+        notes              TEXT NOT NULL DEFAULT '',
+        custom_fields_json TEXT NOT NULL DEFAULT '{}',
+        last_contacted_at  TEXT,
+        created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_crm_leads_space ON crm_leads(space_id);
+      CREATE INDEX IF NOT EXISTS idx_crm_leads_project ON crm_leads(project_id);
+      CREATE INDEX IF NOT EXISTS idx_crm_leads_stage ON crm_leads(stage);
+
+      CREATE TABLE IF NOT EXISTS crm_activities (
+        id           TEXT PRIMARY KEY,
+        lead_id      TEXT NOT NULL,
+        space_id     TEXT NOT NULL,
+        project_id   TEXT NOT NULL,
+        type         TEXT NOT NULL CHECK (type IN ('email','call','note','stage_change','meeting','task')),
+        summary      TEXT NOT NULL,
+        performed_by TEXT NOT NULL,
+        created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_crm_activities_lead ON crm_activities(lead_id);
+      CREATE INDEX IF NOT EXISTS idx_crm_activities_space ON crm_activities(space_id);
+    `,
+  },
+  {
+    version: 46,
+    description: "outbound_campaigns, outbound_prospects, and outbound_opt_outs (G-4 Cold Outbound Sales)",
+    up: `
+      CREATE TABLE IF NOT EXISTS outbound_campaigns (
+        id               TEXT PRIMARY KEY,
+        space_id         TEXT NOT NULL,
+        project_id       TEXT NOT NULL,
+        name             TEXT NOT NULL,
+        channel          TEXT NOT NULL DEFAULT 'email' CHECK (channel IN ('email','linkedin','twitter','sms')),
+        daily_cap        INTEGER NOT NULL DEFAULT 10,
+        status           TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','active','paused','completed')),
+        template_subject TEXT NOT NULL DEFAULT '',
+        template_body    TEXT NOT NULL DEFAULT '',
+        created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_outbound_campaigns_space ON outbound_campaigns(space_id);
+      CREATE INDEX IF NOT EXISTS idx_outbound_campaigns_project ON outbound_campaigns(project_id);
+
+      CREATE TABLE IF NOT EXISTS outbound_prospects (
+        id            TEXT PRIMARY KEY,
+        campaign_id   TEXT NOT NULL,
+        space_id      TEXT NOT NULL,
+        email         TEXT NOT NULL,
+        name          TEXT NOT NULL DEFAULT '',
+        company       TEXT NOT NULL DEFAULT '',
+        status        TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','approved','sent','replied','opted_out','rejected')),
+        draft_subject TEXT,
+        draft_body    TEXT,
+        sent_at       TEXT,
+        created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_outbound_prospects_campaign ON outbound_prospects(campaign_id);
+      CREATE INDEX IF NOT EXISTS idx_outbound_prospects_space_email ON outbound_prospects(space_id, email);
+
+      CREATE TABLE IF NOT EXISTS outbound_opt_outs (
+        id           TEXT PRIMARY KEY,
+        space_id     TEXT NOT NULL,
+        email        TEXT NOT NULL,
+        reason       TEXT,
+        opted_out_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_outbound_opt_outs_space_email ON outbound_opt_outs(space_id, email);
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -1847,6 +1975,89 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const cancelCalendarMatch = url.pathname.match(/^\/calendar\/events\/([^/]+)\/cancel$/);
       if (method === "POST" && cancelCalendarMatch?.[1]) {
         return this.cancelCalendarEvent(cancelCalendarMatch[1], request);
+      }
+
+      // ── Site / Uptime Health Monitoring (G-7) ─────────────────────────────
+      if (method === "POST" && url.pathname === "/site-monitor/targets") {
+        return this.createSiteMonitorTarget(request);
+      }
+      if (method === "GET" && url.pathname === "/site-monitor/targets") {
+        return this.listSiteMonitorTargets(url.searchParams);
+      }
+      const targetMatch = url.pathname.match(/^\/site-monitor\/targets\/([^/]+)$/);
+      if (method === "PATCH" && targetMatch?.[1]) {
+        return this.updateSiteMonitorTarget(targetMatch[1], request);
+      }
+      if (method === "DELETE" && targetMatch?.[1]) {
+        return this.deleteSiteMonitorTarget(targetMatch[1]);
+      }
+      const targetCheckMatch = url.pathname.match(/^\/site-monitor\/targets\/([^/]+)\/check$/);
+      if (method === "POST" && targetCheckMatch?.[1]) {
+        return this.recordSiteMonitorCheck(targetCheckMatch[1], request);
+      }
+      if (method === "GET" && url.pathname === "/site-monitor/incidents") {
+        return this.listSiteMonitorIncidents(url.searchParams);
+      }
+      const incidentMatch = url.pathname.match(/^\/site-monitor\/incidents\/([^/]+)$/);
+      if (method === "PATCH" && incidentMatch?.[1]) {
+        return this.updateSiteMonitorIncident(incidentMatch[1], request);
+      }
+
+      // ── Native CRM / Lead-Pipeline Data Model (G-8) ───────────────────────
+      if (method === "POST" && url.pathname === "/crm/leads") {
+        return this.createCrmLead(request);
+      }
+      if (method === "GET" && url.pathname === "/crm/leads") {
+        return this.listCrmLeads(url.searchParams);
+      }
+      const crmLeadMatch = url.pathname.match(/^\/crm\/leads\/([^/]+)$/);
+      if (method === "GET" && crmLeadMatch?.[1]) {
+        return this.getCrmLead(crmLeadMatch[1]);
+      }
+      if (method === "PATCH" && crmLeadMatch?.[1]) {
+        return this.updateCrmLead(crmLeadMatch[1], request);
+      }
+      if (method === "DELETE" && crmLeadMatch?.[1]) {
+        return this.deleteCrmLead(crmLeadMatch[1]);
+      }
+      const crmActMatch = url.pathname.match(/^\/crm\/leads\/([^/]+)\/activities$/);
+      if (method === "POST" && crmActMatch?.[1]) {
+        return this.createCrmActivity(crmActMatch[1], request);
+      }
+      if (method === "GET" && crmActMatch?.[1]) {
+        return this.listCrmActivities(crmActMatch[1]);
+      }
+
+      // ── Cold Outbound Sales Engine (G-4) ──────────────────────────────────
+      if (method === "POST" && url.pathname === "/outbound/campaigns") {
+        return this.createOutboundCampaign(request);
+      }
+      if (method === "GET" && url.pathname === "/outbound/campaigns") {
+        return this.listOutboundCampaigns(url.searchParams);
+      }
+      const outboundCampMatch = url.pathname.match(/^\/outbound\/campaigns\/([^/]+)$/);
+      if (method === "GET" && outboundCampMatch?.[1]) {
+        return this.getOutboundCampaign(outboundCampMatch[1]);
+      }
+      if (method === "PATCH" && outboundCampMatch?.[1]) {
+        return this.updateOutboundCampaign(outboundCampMatch[1], request);
+      }
+      const outboundProspectsMatch = url.pathname.match(/^\/outbound\/campaigns\/([^/]+)\/prospects$/);
+      if (method === "POST" && outboundProspectsMatch?.[1]) {
+        return this.addOutboundProspects(outboundProspectsMatch[1], request);
+      }
+      if (method === "GET" && outboundProspectsMatch?.[1]) {
+        return this.listOutboundProspects(outboundProspectsMatch[1], url.searchParams);
+      }
+      const outboundProspectSingleMatch = url.pathname.match(/^\/outbound\/prospects\/([^/]+)$/);
+      if (method === "PATCH" && outboundProspectSingleMatch?.[1]) {
+        return this.updateOutboundProspect(outboundProspectSingleMatch[1], request);
+      }
+      if (method === "POST" && url.pathname === "/outbound/opt-outs") {
+        return this.recordOutboundOptOut(request);
+      }
+      if (method === "GET" && url.pathname === "/outbound/opt-outs") {
+        return this.listOutboundOptOuts(url.searchParams);
       }
 
       return Response.json(
@@ -5216,7 +5427,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (!project || project.max_threads <= 0) return false;
     const countRow = queryOne<{ n: number }>(
       this.ctx.storage.sql as never,
-      "SELECT COUNT(*) as n FROM threads WHERE project_id = ? AND status = 'active' AND thread_kind IN ('primary','channel')",
+      "SELECT COUNT(*) as n FROM threads WHERE project_id = ? AND status = 'active' AND thread_kind IN ('primary','channel') AND (thread_tier IS NULL OR thread_tier != 'main')",
       projectId
     );
     return (countRow?.n ?? 0) >= project.max_threads;
@@ -6676,6 +6887,485 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       today_credits_used: used,
       circuit_breaker_tripped: Boolean(tripped),
     });
+  }
+
+  // ── Site Monitor (G-7) ────────────────────────────────────────────────────
+  private async createSiteMonitorTarget(request: Request): Promise<Response> {
+    const body = await request.json<{
+      space_id: string; project_id: string; name: string; url: string;
+      method?: string; expected_status?: number; check_interval_seconds?: number;
+    }>();
+    if (!body.space_id || !body.project_id || !body.name || !body.url) {
+      return Response.json({ error_code: "bad_request", message: "space_id, project_id, name, and url are required" }, { status: 400 });
+    }
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO site_monitor_targets (id, space_id, project_id, name, url, method, expected_status, check_interval_seconds, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unknown', ?, ?)`,
+      id, body.space_id, body.project_id, body.name, body.url, body.method ?? "GET", body.expected_status ?? 200, body.check_interval_seconds ?? 300, now, now
+    );
+    const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM site_monitor_targets WHERE id = ?", id);
+    return Response.json(row, { status: 201 });
+  }
+
+  private listSiteMonitorTargets(params: URLSearchParams): Response {
+    const spaceId = params.get("space_id");
+    const projectId = params.get("project_id");
+    if (!spaceId) {
+      return Response.json({ error_code: "bad_request", message: "space_id is required" }, { status: 400 });
+    }
+    const query = projectId
+      ? "SELECT * FROM site_monitor_targets WHERE space_id = ? AND project_id = ? ORDER BY created_at DESC"
+      : "SELECT * FROM site_monitor_targets WHERE space_id = ? ORDER BY created_at DESC";
+    const args = projectId ? [spaceId, projectId] : [spaceId];
+    const rows = queryAll(this.ctx.storage.sql as never, query, ...args);
+    return Response.json({ data: rows, count: rows.length });
+  }
+
+  private async updateSiteMonitorTarget(targetId: string, request: Request): Promise<Response> {
+    const existing = queryOne<{ id: string }>(this.ctx.storage.sql as never, "SELECT id FROM site_monitor_targets WHERE id = ?", targetId);
+    if (!existing) return Response.json({ error_code: "not_found", message: "Target not found" }, { status: 404 });
+    const body = await request.json<{
+      name?: string; url?: string; method?: string; expected_status?: number; check_interval_seconds?: number;
+    }>();
+    const now = new Date().toISOString();
+    execute(
+      this.ctx.storage.sql as never,
+      `UPDATE site_monitor_targets SET
+         name = COALESCE(?, name),
+         url = COALESCE(?, url),
+         method = COALESCE(?, method),
+         expected_status = COALESCE(?, expected_status),
+         check_interval_seconds = COALESCE(?, check_interval_seconds),
+         updated_at = ?
+       WHERE id = ?`,
+      body.name ?? null, body.url ?? null, body.method ?? null, body.expected_status ?? null, body.check_interval_seconds ?? null, now, targetId
+    );
+    const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM site_monitor_targets WHERE id = ?", targetId);
+    return Response.json(row);
+  }
+
+  private deleteSiteMonitorTarget(targetId: string): Response {
+    execute(this.ctx.storage.sql as never, "DELETE FROM site_monitor_targets WHERE id = ?", targetId);
+    execute(this.ctx.storage.sql as never, "DELETE FROM site_monitor_incidents WHERE target_id = ?", targetId);
+    return Response.json({ deleted: true });
+  }
+
+  private async recordSiteMonitorCheck(targetId: string, request: Request): Promise<Response> {
+    const target = queryOne<{
+      id: string; space_id: string; project_id: string; name: string; expected_status: number; consecutive_failures: number;
+    }>(this.ctx.storage.sql as never, "SELECT * FROM site_monitor_targets WHERE id = ?", targetId);
+    if (!target) return Response.json({ error_code: "not_found", message: "Target not found" }, { status: 404 });
+
+    const body = await request.json<{
+      status_code: number; latency_ms: number; error_message?: string;
+    }>();
+    const now = new Date().toISOString();
+    const isUp = body.status_code === target.expected_status;
+    const newStatus = isUp ? "up" : "down";
+    const consecutiveFailures = isUp ? 0 : target.consecutive_failures + 1;
+
+    execute(
+      this.ctx.storage.sql as never,
+      `UPDATE site_monitor_targets SET
+         status = ?,
+         last_checked_at = ?,
+         last_latency_ms = ?,
+         consecutive_failures = ?,
+         updated_at = ?
+       WHERE id = ?`,
+      newStatus, now, body.latency_ms, consecutiveFailures, now, targetId
+    );
+
+    let incidentCreated = false;
+    let incidentId: string | null = null;
+    if (!isUp) {
+      // Check if there is already an open incident
+      const openIncident = queryOne<{ id: string }>(
+        this.ctx.storage.sql as never,
+        "SELECT id FROM site_monitor_incidents WHERE target_id = ? AND status != 'resolved'",
+        targetId
+      );
+      if (!openIncident) {
+        incidentId = crypto.randomUUID();
+        execute(
+          this.ctx.storage.sql as never,
+          `INSERT INTO site_monitor_incidents (id, target_id, space_id, project_id, status, error_message, started_at, details_json, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)`,
+          incidentId, targetId, target.space_id, target.project_id,
+          body.error_message || `Expected ${target.expected_status}, received ${body.status_code}`,
+          now, JSON.stringify({ status_code: body.status_code, latency_ms: body.latency_ms }), now, now
+        );
+        incidentCreated = true;
+      }
+    } else {
+      // Auto-resolve any open incident
+      execute(
+        this.ctx.storage.sql as never,
+        "UPDATE site_monitor_incidents SET status = 'resolved', resolved_at = ?, updated_at = ? WHERE target_id = ? AND status != 'resolved'",
+        now, now, targetId
+      );
+    }
+
+    return Response.json({
+      target_id: targetId,
+      status: newStatus,
+      latency_ms: body.latency_ms,
+      consecutive_failures: consecutiveFailures,
+      incident_created: incidentCreated,
+      incident_id: incidentId,
+    });
+  }
+
+  private listSiteMonitorIncidents(params: URLSearchParams): Response {
+    const spaceId = params.get("space_id");
+    const targetId = params.get("target_id");
+    if (!spaceId) return Response.json({ error_code: "bad_request", message: "space_id is required" }, { status: 400 });
+    const query = targetId
+      ? "SELECT * FROM site_monitor_incidents WHERE space_id = ? AND target_id = ? ORDER BY created_at DESC"
+      : "SELECT * FROM site_monitor_incidents WHERE space_id = ? ORDER BY created_at DESC";
+    const args = targetId ? [spaceId, targetId] : [spaceId];
+    const rows = queryAll(this.ctx.storage.sql as never, query, ...args);
+    return Response.json({ data: rows, count: rows.length });
+  }
+
+  private async updateSiteMonitorIncident(incidentId: string, request: Request): Promise<Response> {
+    const existing = queryOne<{ id: string }>(this.ctx.storage.sql as never, "SELECT id FROM site_monitor_incidents WHERE id = ?", incidentId);
+    if (!existing) return Response.json({ error_code: "not_found", message: "Incident not found" }, { status: 404 });
+    const body = await request.json<{ status?: "open" | "investigating" | "resolved"; acknowledged_by?: string }>();
+    const now = new Date().toISOString();
+    const resolvedAt = body.status === "resolved" ? now : null;
+    execute(
+      this.ctx.storage.sql as never,
+      `UPDATE site_monitor_incidents SET
+         status = COALESCE(?, status),
+         acknowledged_by = COALESCE(?, acknowledged_by),
+         resolved_at = CASE WHEN ? = 'resolved' THEN ? ELSE resolved_at END,
+         updated_at = ?
+       WHERE id = ?`,
+      body.status ?? null, body.acknowledged_by ?? null, body.status ?? null, resolvedAt, now, incidentId
+    );
+    const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM site_monitor_incidents WHERE id = ?", incidentId);
+    return Response.json(row);
+  }
+
+  // ── CRM Leads & Pipeline (G-8) ────────────────────────────────────────────
+  private async createCrmLead(request: Request): Promise<Response> {
+    const body = await request.json<{
+      space_id: string; project_id: string; name: string; email?: string; company?: string;
+      phone?: string; stage?: string; value_cents?: number; source?: string; notes?: string;
+      assigned_agent_id?: string; custom_fields?: Record<string, unknown>;
+    }>();
+    if (!body.space_id || !body.project_id || !body.name) {
+      return Response.json({ error_code: "bad_request", message: "space_id, project_id, and name are required" }, { status: 400 });
+    }
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const stage = body.stage ?? "new";
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO crm_leads (id, space_id, project_id, name, email, company, phone, stage, value_cents, source, assigned_agent_id, notes, custom_fields_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id, body.space_id, body.project_id, body.name, body.email ?? null, body.company ?? null,
+      body.phone ?? null, stage, body.value_cents ?? 0, body.source ?? "direct",
+      body.assigned_agent_id ?? null, body.notes ?? "", JSON.stringify(body.custom_fields ?? {}), now, now
+    );
+    const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM crm_leads WHERE id = ?", id);
+    return Response.json(row, { status: 201 });
+  }
+
+  private listCrmLeads(params: URLSearchParams): Response {
+    const spaceId = params.get("space_id");
+    const projectId = params.get("project_id");
+    const stage = params.get("stage");
+    if (!spaceId) return Response.json({ error_code: "bad_request", message: "space_id is required" }, { status: 400 });
+
+    let sql = "SELECT * FROM crm_leads WHERE space_id = ?";
+    const args: unknown[] = [spaceId];
+    if (projectId) {
+      sql += " AND project_id = ?";
+      args.push(projectId);
+    }
+    if (stage) {
+      sql += " AND stage = ?";
+      args.push(stage);
+    }
+    sql += " ORDER BY created_at DESC";
+
+    const rows = queryAll(this.ctx.storage.sql as never, sql, ...args);
+    return Response.json({ data: rows, count: rows.length });
+  }
+
+  private getCrmLead(leadId: string): Response {
+    const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM crm_leads WHERE id = ?", leadId);
+    if (!row) return Response.json({ error_code: "not_found", message: "Lead not found" }, { status: 404 });
+    return Response.json(row);
+  }
+
+  private async updateCrmLead(leadId: string, request: Request): Promise<Response> {
+    const existing = queryOne<{ id: string; space_id: string; project_id: string; stage: string }>(
+      this.ctx.storage.sql as never, "SELECT * FROM crm_leads WHERE id = ?", leadId
+    );
+    if (!existing) return Response.json({ error_code: "not_found", message: "Lead not found" }, { status: 404 });
+
+    const body = await request.json<{
+      name?: string; email?: string; company?: string; phone?: string; stage?: string;
+      value_cents?: number; notes?: string; assigned_agent_id?: string; custom_fields?: Record<string, unknown>;
+    }>();
+    const now = new Date().toISOString();
+
+    if (body.stage && body.stage !== existing.stage) {
+      // Auto-log stage change activity
+      execute(
+        this.ctx.storage.sql as never,
+        `INSERT INTO crm_activities (id, lead_id, space_id, project_id, type, summary, performed_by, created_at)
+         VALUES (?, ?, ?, ?, 'stage_change', ?, 'system', ?)`,
+        crypto.randomUUID(), leadId, existing.space_id, existing.project_id,
+        `Stage moved from ${existing.stage} to ${body.stage}`, now
+      );
+    }
+
+    execute(
+      this.ctx.storage.sql as never,
+      `UPDATE crm_leads SET
+         name = COALESCE(?, name),
+         email = COALESCE(?, email),
+         company = COALESCE(?, company),
+         phone = COALESCE(?, phone),
+         stage = COALESCE(?, stage),
+         value_cents = COALESCE(?, value_cents),
+         notes = COALESCE(?, notes),
+         assigned_agent_id = COALESCE(?, assigned_agent_id),
+         custom_fields_json = CASE WHEN ? IS NOT NULL THEN ? ELSE custom_fields_json END,
+         updated_at = ?
+       WHERE id = ?`,
+      body.name ?? null, body.email ?? null, body.company ?? null, body.phone ?? null,
+      body.stage ?? null, body.value_cents ?? null, body.notes ?? null, body.assigned_agent_id ?? null,
+      body.custom_fields ? JSON.stringify(body.custom_fields) : null,
+      body.custom_fields ? JSON.stringify(body.custom_fields) : null,
+      now, leadId
+    );
+
+    const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM crm_leads WHERE id = ?", leadId);
+    return Response.json(row);
+  }
+
+  private deleteCrmLead(leadId: string): Response {
+    execute(this.ctx.storage.sql as never, "DELETE FROM crm_leads WHERE id = ?", leadId);
+    execute(this.ctx.storage.sql as never, "DELETE FROM crm_activities WHERE lead_id = ?", leadId);
+    return Response.json({ deleted: true });
+  }
+
+  private async createCrmActivity(leadId: string, request: Request): Promise<Response> {
+    const lead = queryOne<{ id: string; space_id: string; project_id: string }>(
+      this.ctx.storage.sql as never, "SELECT * FROM crm_leads WHERE id = ?", leadId
+    );
+    if (!lead) return Response.json({ error_code: "not_found", message: "Lead not found" }, { status: 404 });
+
+    const body = await request.json<{ type: string; summary: string; performed_by?: string }>();
+    if (!body.type || !body.summary) {
+      return Response.json({ error_code: "bad_request", message: "type and summary are required" }, { status: 400 });
+    }
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO crm_activities (id, lead_id, space_id, project_id, type, summary, performed_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      id, leadId, lead.space_id, lead.project_id, body.type, body.summary, body.performed_by ?? "agent", now
+    );
+    execute(this.ctx.storage.sql as never, "UPDATE crm_leads SET last_contacted_at = ?, updated_at = ? WHERE id = ?", now, now, leadId);
+    const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM crm_activities WHERE id = ?", id);
+    return Response.json(row, { status: 201 });
+  }
+
+  private listCrmActivities(leadId: string): Response {
+    const rows = queryAll(this.ctx.storage.sql as never, "SELECT * FROM crm_activities WHERE lead_id = ? ORDER BY created_at DESC", leadId);
+    return Response.json({ data: rows, count: rows.length });
+  }
+
+  // ── Cold Outbound Sales (G-4) ─────────────────────────────────────────────
+  private async createOutboundCampaign(request: Request): Promise<Response> {
+    const body = await request.json<{
+      space_id: string; project_id: string; name: string; channel?: string; daily_cap?: number;
+      template_subject?: string; template_body?: string;
+    }>();
+    if (!body.space_id || !body.project_id || !body.name) {
+      return Response.json({ error_code: "bad_request", message: "space_id, project_id, and name are required" }, { status: 400 });
+    }
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO outbound_campaigns (id, space_id, project_id, name, channel, daily_cap, status, template_subject, template_body, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)`,
+      id, body.space_id, body.project_id, body.name, body.channel ?? "email", body.daily_cap ?? 10,
+      body.template_subject ?? "", body.template_body ?? "", now, now
+    );
+    const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM outbound_campaigns WHERE id = ?", id);
+    return Response.json(row, { status: 201 });
+  }
+
+  private listOutboundCampaigns(params: URLSearchParams): Response {
+    const spaceId = params.get("space_id");
+    const projectId = params.get("project_id");
+    if (!spaceId) return Response.json({ error_code: "bad_request", message: "space_id is required" }, { status: 400 });
+    const query = projectId
+      ? "SELECT * FROM outbound_campaigns WHERE space_id = ? AND project_id = ? ORDER BY created_at DESC"
+      : "SELECT * FROM outbound_campaigns WHERE space_id = ? ORDER BY created_at DESC";
+    const args = projectId ? [spaceId, projectId] : [spaceId];
+    const rows = queryAll(this.ctx.storage.sql as never, query, ...args);
+    return Response.json({ data: rows, count: rows.length });
+  }
+
+  private getOutboundCampaign(campaignId: string): Response {
+    const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM outbound_campaigns WHERE id = ?", campaignId);
+    if (!row) return Response.json({ error_code: "not_found", message: "Campaign not found" }, { status: 404 });
+    return Response.json(row);
+  }
+
+  private async updateOutboundCampaign(campaignId: string, request: Request): Promise<Response> {
+    const existing = queryOne<{ id: string }>(this.ctx.storage.sql as never, "SELECT id FROM outbound_campaigns WHERE id = ?", campaignId);
+    if (!existing) return Response.json({ error_code: "not_found", message: "Campaign not found" }, { status: 404 });
+    const body = await request.json<{
+      name?: string; daily_cap?: number; status?: "draft" | "active" | "paused" | "completed";
+      template_subject?: string; template_body?: string;
+    }>();
+    const now = new Date().toISOString();
+    execute(
+      this.ctx.storage.sql as never,
+      `UPDATE outbound_campaigns SET
+         name = COALESCE(?, name),
+         daily_cap = COALESCE(?, daily_cap),
+         status = COALESCE(?, status),
+         template_subject = COALESCE(?, template_subject),
+         template_body = COALESCE(?, template_body),
+         updated_at = ?
+       WHERE id = ?`,
+      body.name ?? null, body.daily_cap ?? null, body.status ?? null, body.template_subject ?? null, body.template_body ?? null, now, campaignId
+    );
+    const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM outbound_campaigns WHERE id = ?", campaignId);
+    return Response.json(row);
+  }
+
+  private async addOutboundProspects(campaignId: string, request: Request): Promise<Response> {
+    const campaign = queryOne<{ id: string; space_id: string }>(
+      this.ctx.storage.sql as never, "SELECT * FROM outbound_campaigns WHERE id = ?", campaignId
+    );
+    if (!campaign) return Response.json({ error_code: "not_found", message: "Campaign not found" }, { status: 404 });
+
+    const body = await request.json<{
+      prospects: Array<{ email: string; name?: string; company?: string; draft_subject?: string; draft_body?: string }>;
+    }>();
+    if (!Array.isArray(body.prospects) || body.prospects.length === 0) {
+      return Response.json({ error_code: "bad_request", message: "prospects array is required" }, { status: 400 });
+    }
+
+    const now = new Date().toISOString();
+    let addedCount = 0;
+    let skippedOptOutCount = 0;
+
+    for (const p of body.prospects) {
+      if (!p.email) continue;
+      const normalizedEmail = p.email.trim().toLowerCase();
+      // Check opt-out
+      const optOut = queryOne<{ id: string }>(
+        this.ctx.storage.sql as never,
+        "SELECT id FROM outbound_opt_outs WHERE space_id = ? AND email = ?",
+        campaign.space_id, normalizedEmail
+      );
+      if (optOut) {
+        skippedOptOutCount++;
+        continue;
+      }
+
+      const id = crypto.randomUUID();
+      execute(
+        this.ctx.storage.sql as never,
+        `INSERT INTO outbound_prospects (id, campaign_id, space_id, email, name, company, status, draft_subject, draft_body, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)`,
+        id, campaignId, campaign.space_id, normalizedEmail, p.name ?? "", p.company ?? "",
+        p.draft_subject ?? null, p.draft_body ?? null, now, now
+      );
+      addedCount++;
+    }
+
+    return Response.json({ added: addedCount, skipped_opt_out: skippedOptOutCount }, { status: 201 });
+  }
+
+  private listOutboundProspects(campaignId: string, params: URLSearchParams): Response {
+    const status = params.get("status");
+    let sql = "SELECT * FROM outbound_prospects WHERE campaign_id = ?";
+    const args: unknown[] = [campaignId];
+    if (status) {
+      sql += " AND status = ?";
+      args.push(status);
+    }
+    sql += " ORDER BY created_at ASC";
+    const rows = queryAll(this.ctx.storage.sql as never, sql, ...args);
+    return Response.json({ data: rows, count: rows.length });
+  }
+
+  private async updateOutboundProspect(prospectId: string, request: Request): Promise<Response> {
+    const existing = queryOne<{ id: string; campaign_id: string }>(
+      this.ctx.storage.sql as never, "SELECT * FROM outbound_prospects WHERE id = ?", prospectId
+    );
+    if (!existing) return Response.json({ error_code: "not_found", message: "Prospect not found" }, { status: 404 });
+
+    const body = await request.json<{
+      status?: "draft" | "approved" | "sent" | "replied" | "opted_out" | "rejected";
+      draft_subject?: string; draft_body?: string;
+    }>();
+    const now = new Date().toISOString();
+    const sentAt = body.status === "sent" ? now : null;
+
+    execute(
+      this.ctx.storage.sql as never,
+      `UPDATE outbound_prospects SET
+         status = COALESCE(?, status),
+         draft_subject = COALESCE(?, draft_subject),
+         draft_body = COALESCE(?, draft_body),
+         sent_at = CASE WHEN ? = 'sent' THEN ? ELSE sent_at END,
+         updated_at = ?
+       WHERE id = ?`,
+      body.status ?? null, body.draft_subject ?? null, body.draft_body ?? null,
+      body.status ?? null, sentAt, now, prospectId
+    );
+    const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM outbound_prospects WHERE id = ?", prospectId);
+    return Response.json(row);
+  }
+
+  private async recordOutboundOptOut(request: Request): Promise<Response> {
+    const body = await request.json<{ space_id: string; email: string; reason?: string }>();
+    if (!body.space_id || !body.email) {
+      return Response.json({ error_code: "bad_request", message: "space_id and email are required" }, { status: 400 });
+    }
+    const id = crypto.randomUUID();
+    const normalizedEmail = body.email.trim().toLowerCase();
+    const now = new Date().toISOString();
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO outbound_opt_outs (id, space_id, email, reason, opted_out_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(space_id, email) DO UPDATE SET reason = excluded.reason`,
+      id, body.space_id, normalizedEmail, body.reason ?? "user requested", now
+    );
+    // Mark any existing prospects for this email as opted_out
+    execute(
+      this.ctx.storage.sql as never,
+      "UPDATE outbound_prospects SET status = 'opted_out', updated_at = ? WHERE space_id = ? AND email = ?",
+      now, body.space_id, normalizedEmail
+    );
+    return Response.json({ success: true, email: normalizedEmail }, { status: 201 });
+  }
+
+  private listOutboundOptOuts(params: URLSearchParams): Response {
+    const spaceId = params.get("space_id");
+    if (!spaceId) return Response.json({ error_code: "bad_request", message: "space_id is required" }, { status: 400 });
+    const rows = queryAll(this.ctx.storage.sql as never, "SELECT * FROM outbound_opt_outs WHERE space_id = ? ORDER BY opted_out_at DESC", spaceId);
+    return Response.json({ data: rows, count: rows.length });
   }
 }
 

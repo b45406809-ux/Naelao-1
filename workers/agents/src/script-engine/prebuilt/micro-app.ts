@@ -40,6 +40,11 @@ export const microApp: PrebuiltScript = {
     "microapp.mint_token": "{appId: string, targetUserId?: string, targetRole?: string, grants: GatekeeperGrant[], ttlSeconds?: number}",
     "microapp.mcp_list_tools": "{appId: string}",
     "microapp.mcp_call_tool": "{appId: string, toolName: string, toolArgs?: Record<string, unknown>}",
+    "gadget.list_blueprints": "{}",
+    "gadget.instantiate_blueprint": "{blueprintId: string, appId?: string, projectId?: string, delegatedTargetSpaceIds?: string[]}",
+    "gadget.delegate": "{gadgetId: string, targetSpaceId: string, allowedOps: string[], ttlSeconds?: number}",
+    "gadget.emit_ui_action": "{gadgetId: string, action: string, payload?: Record<string, unknown>}",
+    "gadget.get_ui_events": "{gadgetId: string, limit?: number}",
   },
   operations: {
     async "microapp.synthesize"(args, ctx) {
@@ -233,6 +238,113 @@ export const microApp: PrebuiltScript = {
       if (!resp.ok) {
         const body = await resp.text().catch(() => "");
         throw new Error(`microapp.mcp_call_tool failed: ${resp.status}${body ? ` — ${body}` : ""}`);
+      }
+      return await resp.json();
+    },
+
+    async "gadget.list_blueprints"(_args, ctx) {
+      const resp = await reqSpacesWorker(ctx).fetch(
+        new Request(`http://spaces-worker/spaces/${ctx.env.spaceId}/gadgets/blueprints`, {
+          method: "GET",
+          headers: await internalHeaders(ctx),
+        })
+      );
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => "");
+        throw new Error(`gadget.list_blueprints failed: ${resp.status}${body ? ` — ${body}` : ""}`);
+      }
+      return await resp.json();
+    },
+
+    async "gadget.instantiate_blueprint"(args, ctx) {
+      const blueprintId = String(args["blueprintId"] ?? "").trim();
+      if (!blueprintId) throw new Error("gadget.instantiate_blueprint requires 'blueprintId'");
+
+      const resp = await reqSpacesWorker(ctx).fetch(
+        new Request(`http://spaces-worker/spaces/${ctx.env.spaceId}/gadgets/blueprints/${blueprintId}/instantiate`, {
+          method: "POST",
+          headers: await internalHeaders(ctx, { "content-type": "application/json" }),
+          body: JSON.stringify({
+            appId: args["appId"],
+            projectId: args["projectId"],
+            delegatedTargetSpaceIds: args["delegatedTargetSpaceIds"],
+          }),
+        })
+      );
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => "");
+        throw new Error(`gadget.instantiate_blueprint failed: ${resp.status}${body ? ` — ${body}` : ""}`);
+      }
+      return await resp.json();
+    },
+
+    async "gadget.delegate"(args, ctx) {
+      const gadgetId = String(args["gadgetId"] ?? "").trim();
+      const targetSpaceId = String(args["targetSpaceId"] ?? "").trim();
+      const allowedOps = Array.isArray(args["allowedOps"]) ? (args["allowedOps"] as string[]) : [];
+
+      if (!gadgetId) throw new Error("gadget.delegate requires 'gadgetId'");
+      if (!targetSpaceId) throw new Error("gadget.delegate requires 'targetSpaceId'");
+      if (allowedOps.length === 0) throw new Error("gadget.delegate requires non-empty 'allowedOps'");
+
+      const resp = await reqSpacesWorker(ctx).fetch(
+        new Request(`http://spaces-worker/spaces/${ctx.env.spaceId}/gadgets/${gadgetId}/delegate`, {
+          method: "POST",
+          headers: await internalHeaders(ctx, { "content-type": "application/json" }),
+          body: JSON.stringify({
+            targetSpaceId,
+            allowedOps,
+            ttlSeconds: args["ttlSeconds"],
+          }),
+        })
+      );
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => "");
+        throw new Error(`gadget.delegate failed: ${resp.status}${body ? ` — ${body}` : ""}`);
+      }
+      return await resp.json();
+    },
+
+    async "gadget.emit_ui_action"(args, ctx) {
+      const gadgetId = String(args["gadgetId"] ?? "").trim();
+      const action = String(args["action"] ?? "").trim();
+      if (!gadgetId) throw new Error("gadget.emit_ui_action requires 'gadgetId'");
+      if (!action) throw new Error("gadget.emit_ui_action requires 'action'");
+
+      const payload = (args["payload"] || {}) as Record<string, unknown>;
+
+      const resp = await reqSpacesWorker(ctx).fetch(
+        new Request(`http://spaces-worker/spaces/${ctx.env.spaceId}/gadgets/${gadgetId}/api/mcp-ui/emit`, {
+          method: "POST",
+          headers: await internalHeaders(ctx, { "content-type": "application/json" }),
+          body: JSON.stringify({
+            action,
+            ...payload,
+          }),
+        })
+      );
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => "");
+        throw new Error(`gadget.emit_ui_action failed: ${resp.status}${body ? ` — ${body}` : ""}`);
+      }
+      return await resp.json();
+    },
+
+    async "gadget.get_ui_events"(args, ctx) {
+      const gadgetId = String(args["gadgetId"] ?? "").trim();
+      if (!gadgetId) throw new Error("gadget.get_ui_events requires 'gadgetId'");
+
+      const limit = typeof args["limit"] === "number" ? args["limit"] : 50;
+
+      const resp = await reqSpacesWorker(ctx).fetch(
+        new Request(`http://spaces-worker/spaces/${ctx.env.spaceId}/gadgets/${gadgetId}/api/mcp-ui/events?limit=${limit}`, {
+          method: "GET",
+          headers: await internalHeaders(ctx),
+        })
+      );
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => "");
+        throw new Error(`gadget.get_ui_events failed: ${resp.status}${body ? ` — ${body}` : ""}`);
       }
       return await resp.json();
     },

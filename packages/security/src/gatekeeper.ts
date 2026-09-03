@@ -48,8 +48,41 @@ export interface GatekeeperCapability {
   grants: GatekeeperGrant[];
   issuedAt: number;
   expiresAt: number;
+  /** Delegated target space IDs if cross-subspace delegation is active */
+  targetSpaceId?: string;
+  allowedOps?: string[];
   /** HMAC-SHA256 signature signed with PLATFORM_SECRET */
   signature: string;
+}
+
+export type GadgetScope = "USER_PRIVATE" | "PROJECT_BOUND" | "SPACE_WIDE" | "CROSS_SUBSPACE_DELEGATED";
+
+export interface AvosGadgetManifest {
+  id: string; // e.g. "gadget_bug_tracker_v1"
+  name: string;
+  description: string;
+
+  // 1. Scoping & Installation Boundary
+  scope: GadgetScope;
+  ownerSpaceId: string;
+  ownerUserId: string;
+  projectId?: string;
+
+  // Target Subspaces (For Cross-Subspace Sharing)
+  delegatedTargetSpaceIds?: string[];
+
+  // 2. Storage & Compute
+  runtime: {
+    engine: "dynamic_worker_isolate"; // Runs in sub-ms V8 isolate
+    database: "do_facet_sqlite";       // Private dedicated SQLite DB
+    enableMcpV2Api: boolean;          // Exposes auto-generated /mcp endpoint
+  };
+
+  // 3. Gatekeeper Security Policy
+  gatekeeperGrants: Array<{
+    resource: "sqlite_db" | "notifications" | "slack" | string;
+    operations: Array<"read" | "write" | "notify" | "delete" | "execute">;
+  }>;
 }
 
 export const GATEKEEPER_ROLE_RANKS = {
@@ -209,6 +242,8 @@ export async function mintGatekeeperToken(
     grants: clampedGrants,
     issuedAt: now,
     expiresAt,
+    targetSpaceId: (params as any).targetSpaceId,
+    allowedOps: (params as any).allowedOps,
   };
 
   const canonical = canonicalStringify(payloadToSign);
@@ -220,6 +255,51 @@ export async function mintGatekeeperToken(
   };
 
   return `gk_${base64UrlEncode(JSON.stringify(fullCapability))}`;
+}
+
+/**
+ * Mint an attenuated Gatekeeper Capability Token for Cross-Subspace Delegation
+ * (e.g. PM Subspace delegating a gadget to Developer Subspace).
+ */
+export async function mintDelegatedGatekeeperToken(
+  params: {
+    gadgetId: string;
+    fromSpaceId: string;
+    toSpaceId: string;
+    delegatorUserId: string;
+    delegatorRole: string | number;
+    allowedOps: string[];
+    ttlSeconds?: number;
+  },
+  platformSecret: string
+): Promise<string> {
+  const grants: GatekeeperGrant[] = [
+    {
+      resource: "sqlite_db",
+      target: params.gadgetId,
+      operations: params.allowedOps.map((op) =>
+        op.startsWith("read") || op === "select" ? "read" : "write"
+      ) as Array<"read" | "write">,
+      constraints: {
+        delegatedToSpaceId: params.toSpaceId,
+        delegatedAllowedOps: params.allowedOps,
+      },
+    },
+  ];
+
+  return mintGatekeeperToken(
+    {
+      appId: params.gadgetId,
+      spaceId: params.fromSpaceId,
+      creatorUserId: params.delegatorUserId,
+      creatorRole: params.delegatorRole,
+      grants,
+      ttlSeconds: params.ttlSeconds || 30 * 86400,
+      targetSpaceId: params.toSpaceId,
+      allowedOps: params.allowedOps,
+    } as any,
+    platformSecret
+  );
 }
 
 /**
@@ -275,6 +355,8 @@ export async function verifyGatekeeperToken(
     grants: cap.grants,
     issuedAt: cap.issuedAt,
     expiresAt: cap.expiresAt,
+    targetSpaceId: cap.targetSpaceId,
+    allowedOps: cap.allowedOps,
   };
 
   const canonical = canonicalStringify(payloadToVerify);
@@ -285,6 +367,25 @@ export async function verifyGatekeeperToken(
   }
 
   return cap;
+}
+
+/**
+ * Checks whether a delegated capability token authorizes a specific operation on a target gadget.
+ */
+export function checkDelegatedGatekeeperGrant(
+  capability: GatekeeperCapability,
+  targetGadgetId: string,
+  op: string,
+  callerSpaceId?: string
+): boolean {
+  if (capability.appId !== targetGadgetId) return false;
+  if (callerSpaceId && capability.targetSpaceId && capability.targetSpaceId !== callerSpaceId) {
+    return false;
+  }
+  if (!capability.allowedOps || capability.allowedOps.length === 0) {
+    return true; // No granular restrictions
+  }
+  return capability.allowedOps.includes(op) || capability.allowedOps.includes("*");
 }
 
 /**

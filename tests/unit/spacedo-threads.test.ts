@@ -79,7 +79,8 @@ describe("SpaceDO — threads (spec-canonical, sub-agent/channel subthreads)", (
     });
 
     const list = await call(spaceDO, `/threads?space_id=space1&project_id=${project.json.id}`, "GET");
-    expect(list.json.count).toBe(2);
+    // 3 threads: the seeded Tier 1 "Team Room" main thread + "Primary" + "whatsapp"
+    expect(list.json.count).toBe(3);
   });
 
   it("mirroring the same channel_session_id twice is idempotent (no duplicate thread)", async () => {
