@@ -94,6 +94,45 @@ interface ChunkRecord {
 // query and a space-wide query never accidentally match each other.
 const SPACE_WIDE_PROJECT_SENTINEL = "";
 
+/** Verified roles are converted before the Vectorize request; never accept a client-supplied rank. */
+const ROLE_RANK: Record<string, number> = { viewer: 1, member: 2, developer: 2, editor: 3, admin: 4, executive: 4, owner: 5 };
+
+export interface PermissionedKnowledgeUser {
+  id: string;
+  roleRank: number;
+  bitmask: number;
+}
+
+/**
+ * Permission filtering belongs in Vectorize, before nearest-neighbour ranking.  In particular,
+ * do not widen this query and discard records after it returns: result density itself is a
+ * classification side channel. `bitmask` is carried in the verified identity for the next
+ * principal-index expansion; current role-restricted documents are represented by their minimum
+ * rank in Vectorize metadata.
+ */
+export async function searchPermissionedKnowledge(
+  vectorize: VectorizeIndex,
+  queryVector: number[],
+  spaceId: string,
+  user: PermissionedKnowledgeUser,
+  activeProjectId?: string,
+) {
+  return vectorize.query(queryVector, {
+    topK: 6,
+    filter: {
+      space_id: { $eq: spaceId },
+      project_id: { $eq: activeProjectId ?? SPACE_WIDE_PROJECT_SENTINEL },
+      min_role_rank: { $lte: user.roleRank },
+    } as never,
+    returnMetadata: "indexed",
+  });
+}
+
+/** Wrap retrieved text as untrusted data; it may inform an answer but cannot issue instructions. */
+export function untrustedContextEnvelope(content: string): string {
+  return `<context_chunk trust="untrusted">${content.replace(/<\/??context_chunk[^>]*>/gi, "")}</context_chunk>`;
+}
+
 // ── Hono app ──────────────────────────────────────────────────────────────────
 
 // G-A11: Validate required secrets at startup
@@ -770,7 +809,7 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
           chunk_id: d.filename ?? `autorag_${i}`,
           doc_id: (d.filename ?? "").split("/").pop()?.replace(/\.md$/, "") ?? "",
           chunk_index: 0,
-          content: `<kb_content>${rawContent}</kb_content>`,
+          content: untrustedContextEnvelope(rawContent),
           score: d.score ?? 1 - i / Math.max(1, (res.data?.length ?? 1)),
           dense_score: d.score ?? 0,
           sparse_score: 0,
@@ -787,13 +826,17 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
   }
 
   // ── Dense retrieval (Vectorize) ───────────────────────────────────────────
+  // These headers are supplied by the authenticated gateway. They construct the index
+  // pre-filter; authorization is never a post-ranking decision.
+  const callerUserId = c.req.header("x-naelao-user-id") ?? "";
+  const callerRole = (c.req.header("x-naelao-user-role") ?? "member").toLowerCase();
+  const callerRoleRank = ROLE_RANK[callerRole] ?? 0;
+  if (!callerUserId || callerRoleRank === 0) return c.json({ error_code: "unauthorized" }, 401);
   const queryEmbed = await embedText(c.env.AI, query.trim());
 
-  const denseResponse = await c.env.KB_VECTORS.query(queryEmbed.embedding, {
-    topK: topK * 2,
-    filter: { space_id: { $eq: spaceId }, project_id: { $eq: projectId ?? SPACE_WIDE_PROJECT_SENTINEL } },
-    returnMetadata: "indexed",
-  });
+  const denseResponse = await searchPermissionedKnowledge(c.env.KB_VECTORS, queryEmbed.embedding, spaceId, {
+    id: callerUserId, roleRank: callerRoleRank, bitmask: 0,
+  }, projectId ?? undefined);
 
   const denseMatches = denseResponse.matches ?? [];
 
@@ -801,8 +844,6 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
   const denseForRrf = denseMatches.map(m => ({ id: m.id, score: m.score ?? 0 }));
 
   // ── Sparse retrieval (BM25) with ACL Clearance Check ───────────────────────
-  const callerUserId = c.req.header("x-naelao-user-id") ?? url.searchParams.get("user_id") ?? "";
-  const callerRole = (c.req.header("x-naelao-user-role") ?? url.searchParams.get("user_role") ?? url.searchParams.get("role") ?? "member").toLowerCase();
   const isSuperUser = callerRole === "owner" || callerRole === "admin";
 
   // Fetch chunk content from R2 for all dense candidates to run BM25 and verify ACLs
@@ -876,7 +917,7 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
       access: "verified",
       similarityScore: item.score,
     });
-    const wrappedContent = `<kb_content>${rawContent}</kb_content>`;
+    const wrappedContent = untrustedContextEnvelope(rawContent);
 
     return {
       chunk_id: item.id,
