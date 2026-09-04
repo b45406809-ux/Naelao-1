@@ -37,6 +37,7 @@ import {
 } from "../script-engine/index.js";
 import { createTracer } from "@naelao/tracing";
 import { GatewayReasoner, WorkersAIEmbedder } from "../script-engine/reasoner.js";
+import { agentConfigToManifest, assembleUniversalAgent } from "../script-engine/universal-agent.js";
 import {
   resolveAssistantApprovalPlan,
   sanitizePrebuiltListForRole,
@@ -458,7 +459,7 @@ interface ProjectRule {
 // CLOSED on "error" (clamp to the most restrictive tier, treat as spend-capped) and only stay
 // permissive on "not_found".
 type ProjectConfigResult =
-  | { status: "found"; execution_ceiling: number; daily_spend_cap_credits: number }
+  | { status: "found"; execution_ceiling: number; daily_spend_cap_credits: number; kind?: string }
   | { status: "not_found" }
   | { status: "error" };
 
@@ -3416,17 +3417,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return Response.json({ error: `agent '${agentId}' is not provisioned in space '${spaceId}'` }, { status: 404 });
     }
 
-    // Determine archetype role (derived from template/agent definition)
-    let archetypeRole: AgentArchetypeRole | undefined = undefined;
-    if (agentId.includes("support") || agentId.includes("customer")) archetypeRole = "CUSTOMER_SUPPORT";
-    else if (agentId.includes("growth") || agentId.includes("marketing") || agentId.includes("sales")) archetypeRole = "GROWTH_OPERATOR";
-    else if (agentId.includes("architect")) archetypeRole = "ARCHITECT_DELEGATE";
-    else if (agentId.includes("dev") || agentId.includes("code")) archetypeRole = "DEV_OPERATOR";
-
-    // ── Physical Capability Stripping (Agent Firewall) ──────────────────────────
-    // Physically prune tool definitions from config before initializing ScriptToolSurface
-    const sanitizedPrebuilts = sanitizePrebuiltListForRole(archetypeRole, config.scripts.prebuilt);
-    config.scripts.prebuilt = sanitizedPrebuilts;
+    // Compile the manifest before creating the tool surface. This is a hard router boundary,
+    // not prompt guidance: the LLM never receives a forbidden schema.
+    const manifest = agentConfigToManifest(agentId, agentId, config, { projectId });
+    const assembled = assembleUniversalAgent(manifest, body.businessContext, spaceId);
+    const archetypeRole = manifest.role as AgentArchetypeRole;
+    config.scripts.prebuilt = sanitizePrebuiltListForRole(archetypeRole, config.scripts.prebuilt);
+    engineEnv.maxTier = Math.min(engineEnv.maxTier ?? 6, assembled.maxTier) as ExecutionTier;
+    // Project specialists always have a projectId, which makes workspacePrefix project-bound and
+    // prevents the code runner from exposing ctx.space to their isolated execution context.
 
     // Approval policy. A project-bound Naelao Agent keeps the ordinary allowlist-of-gated
     // actions (spec §11, appendix A1.16.1). The Space Assistant (no projectId) is different:
@@ -3488,11 +3487,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         ...(this.env.GOOGLE_AI_STUDIO_API_KEY ? { googleAiStudioApiKey: this.env.GOOGLE_AI_STUDIO_API_KEY } : {}), ...(this.env.GROQ_API_KEY ? { groqApiKey: this.env.GROQ_API_KEY } : {}),
         ...byokOverride,
       },
-      ctx: { spaceId, agentId, model: body.model ?? DEFAULT_WORKING_MODEL },
+      ctx: { spaceId, agentId, model: body.model ?? manifest.runtime.pinnedModelId ?? DEFAULT_WORKING_MODEL },
       ...(engineEnv.localTunnel ? { localTunnel: engineEnv.localTunnel } : {}),
       userId,
       airGappedOnly: Boolean(body.airGappedOnly),
-      ...(body.model ? { model: body.model } : {}),
+      model: body.model ?? manifest.runtime.pinnedModelId ?? DEFAULT_WORKING_MODEL,
       fallbacks: this.resolveFailoverChain(body.model ?? DEFAULT_WORKING_MODEL, body.apiKey ?? ""),
       ...(reasoningRequest ? { reasoning: reasoningRequest } : {}),
       // The agent's OWN identity and instructions. Loaded from R2 on every run since the script
@@ -4850,7 +4849,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             };
           }
         }
-        maxTier = projectCfg.execution_ceiling as ExecutionTier;
+        // Public customer/voice desks are quarantined: their project metadata cannot raise
+        // the runtime above the safe RAG tier even if a stale configuration says otherwise.
+        maxTier = (projectCfg.kind === "customer_bot" || projectCfg.kind === "voice_agent"
+          ? 1
+          : projectCfg.execution_ceiling) as ExecutionTier;
       }
       // status === "not_found": no project config row — permissive by design, unchanged.
 
@@ -5422,8 +5425,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }));
       if (resp.status === 404) return { status: "not_found" };
       if (!resp.ok) return { status: "error" };
-      const data = await resp.json<{ execution_ceiling: number; daily_spend_cap_credits: number }>();
-      return { status: "found", execution_ceiling: data.execution_ceiling, daily_spend_cap_credits: data.daily_spend_cap_credits };
+      const data = await resp.json<{ execution_ceiling: number; daily_spend_cap_credits: number; kind?: string }>();
+      return { status: "found", execution_ceiling: data.execution_ceiling, daily_spend_cap_credits: data.daily_spend_cap_credits, kind: data.kind };
     } catch {
       return { status: "error" };
     }
