@@ -271,6 +271,22 @@ export function resolveLoraIdFromSpace(model: string, spaceId?: string): string 
   return spaceId ? `lora-${spaceId}-${cleanModelName}` : `lora-enterprise-${cleanModelName}`;
 }
 
+/**
+ * Resolve the actual Workers AI invocation for a selected model. Custom model names are registry
+ * aliases, never provider model ids: every invocation uses the certified Llama base model plus
+ * the space-scoped LoRA adapter. Keeping this transformation here prevents a caller from sending
+ * `custom/*` directly to a cloud provider (or accidentally loading another company's adapter).
+ */
+export function resolveModelEndpoint(modelName: string, spaceId: string): { model: string; lora?: string } {
+  if (modelName.startsWith("custom/")) {
+    return {
+      model: "@cf/meta/llama-3.1-8b-instruct",
+      lora: resolveLoraIdFromSpace(modelName, spaceId),
+    };
+  }
+  return { model: modelName };
+}
+
 export function buildUniversalBody(opts: {
   apiKey: string;
   cfApiToken?: string;
@@ -302,13 +318,11 @@ export function buildUniversalBody(opts: {
   stream?: boolean;
 }): string {
   const { query, tools, reasoning } = opts;
-  const isCustomModel = query.model.startsWith("custom/");
-  const effectiveModel = isCustomModel ? "@cf/meta/llama-3.1-8b-instruct" : query.model;
-  const loraAdapter = isCustomModel ? resolveLoraIdFromSpace(query.model, opts.ctx.spaceId) : undefined;
+  const endpoint = resolveModelEndpoint(query.model, opts.ctx.spaceId);
 
   return JSON.stringify({
-    model: effectiveModel,
-    ...(loraAdapter ? { lora: loraAdapter } : {}),
+    model: endpoint.model,
+    ...(endpoint.lora ? { lora: endpoint.lora } : {}),
     max_tokens: query.max_tokens,
     messages: [{ role: "system", content: query.system }, ...query.messages],
     ...(tools && tools.length > 0 ? { tools: toolsWire(tools), tool_choice: "required" } : {}),

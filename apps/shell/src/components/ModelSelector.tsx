@@ -123,6 +123,8 @@ export interface ModelSelectorProps {
   modelPolicy?: VerticalModelPolicy | null;
   spaceModelPolicy?: VerticalModelPolicy | null;
   localModels?: LocalDiscoveredModel[];
+  /** Certified models registered by this space's Model Studio. */
+  companyModels?: CustomCompanyModel[];
   /** Called whenever either the model or the reasoning level changes. */
   onChange?: (model: string, reasoningLevel: string | null) => void;
   onModelChange?: (model: string) => void;
@@ -135,6 +137,7 @@ export function ModelSelector({
   modelPolicy: propModelPolicy,
   spaceModelPolicy: propSpaceModelPolicy,
   localModels,
+  companyModels,
   onChange,
   onModelChange,
 }: ModelSelectorProps) {
@@ -178,9 +181,12 @@ export function ModelSelector({
 
   const filteredCompanyModels = React.useMemo(() => {
     if (isAirGapped) return []; // Air-gapped disables cloud fine-tuned APIs
-    if (!allowedSet) return DEFAULT_COMPANY_MODELS;
-    return DEFAULT_COMPANY_MODELS.filter((cm) => allowedSet.has(cm.id) || allowedSet.has("custom/*") || Array.from(allowedSet).some(m => m.startsWith("custom/")));
-  }, [allowedSet, isAirGapped]);
+    const models = companyModels ?? DEFAULT_COMPANY_MODELS;
+    // A whitelist containing one custom model must not accidentally authorize every `custom/*`
+    // adapter. Regulated workspaces can opt into all certified adapters only explicitly.
+    if (!allowedSet) return models;
+    return models.filter((cm) => allowedSet.has(cm.id) || allowedSet.has("custom/*"));
+  }, [allowedSet, companyModels, isAirGapped]);
 
   const filteredFoundationModels = React.useMemo(() => {
     if (isAirGapped) return []; // Air-gapped blocks external cloud APIs
@@ -313,7 +319,7 @@ export function ModelSelector({
           {filteredCompanyModels.length > 0 && (
             <>
               <div style={{ fontSize: 10.5, fontWeight: 700, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 0.5, padding: "4px 8px 4px", display: "flex", alignItems: "center", gap: 5 }}>
-                <span>🌟</span> {isWhitelist ? "VERTICAL FINE-TUNED SPECIALISTS" : "COMPANY FINE-TUNED MODELS (Private LoRA)"}
+                <span>🌟</span> {isWhitelist ? "COMPANY CUSTOM MODELS (CERTIFIED)" : "COMPANY CUSTOM MODELS (Private LoRA)"}
               </div>
               {filteredCompanyModels.map((cm) => (
                 <button
@@ -398,4 +404,3 @@ export function ModelSelector({
     </div>
   );
 }
-
