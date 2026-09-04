@@ -33,6 +33,7 @@ import { assessSkillHealth } from "../skill-health.js";
 import { isPromotable } from "../federation.js";
 import { removeScriptEmbedding } from "../script-find.js";
 import { mintInternalToken } from "@naelao/http";
+import { distillSkillFromTrace, type DemonstrationTraceStep } from "./skill-distiller.js";
 
 function library(ctx: PrebuiltOpContext): SkillLibrary {
   return new SkillLibrary(ctx.env.scriptsBucket, ctx.env.spaceId);
@@ -336,6 +337,18 @@ ${steps.join("\n\n")}
   return { ok: true, skillName: created.name, version: 1, mode: "created" };
 }
 
+/**
+ * Strict demonstration pipeline. Unlike the legacy `skill.distill` compatibility
+ * operation, this route always verifies the generated module before it is stored
+ * in the private AVOS shared-skills namespace.
+ */
+async function distillVerifiedTrace(a: Record<string, unknown>, ctx: PrebuiltOpContext): Promise<unknown> {
+  const skillName = String(a["name"] ?? a["skill_name"] ?? "").trim();
+  if (!skillName) throw new Error("skill.distill_verified requires a skill name");
+  if (!Array.isArray(a["trace"])) throw new Error("skill.distill_verified requires a trace array");
+  return distillSkillFromTrace(a["trace"] as DemonstrationTraceStep[], skillName, ctx);
+}
+
 async function distillSkillFromVideo(a: Record<string, unknown>, ctx: PrebuiltOpContext): Promise<unknown> {
   const skillName = String(a["name"] ?? a["skill_name"] ?? a["skillName"] ?? "").trim();
   if (!skillName) throw new Error("skill.distill_from_video requires a skill name");
@@ -479,6 +492,7 @@ export const skillManager: PrebuiltScript = {
     "skill.promote": promote,
     "skill.distill": distillSkill,
     "skill.distill_demonstration": distillSkill,
+    "skill.distill_verified": distillVerifiedTrace,
     "skill.distill_from_video": distillSkillFromVideo,
     "skill.distill_video": distillSkillFromVideo,
   },
