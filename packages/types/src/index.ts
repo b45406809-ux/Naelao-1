@@ -199,60 +199,6 @@ export interface BaseEnv {
   ENVIRONMENT: "development" | "staging" | "production";
 }
 
-// ── Universal Agent Manifest & Configuration Hierarchy ─────────────────────────
-export type AgentScope = "SPACE_WIDE" | "PROJECT_BOUND";
-export type AgentArchetypeRole =
-  | "DEV_OPERATOR"
-  | "GROWTH_OPERATOR"
-  | "CUSTOMER_SUPPORT"
-  | "ARCHITECT_DELEGATE"
-  | "CUSTOM";
-
-export interface AgentPrompts {
-  systemPrompt: string;              // Role definition & task framing
-  instructions: string;              // Operating guidelines (agents.md)
-  userCustomInstructions?: string;   // Founder's custom prompt overrides from the UI
-}
-
-export interface AgentCapabilities {
-  enabledPrebuilts: string[];        // e.g. ["r2-workspace", "code-exec", "memory", "web-search"]
-  installedPlugins: string[];        // e.g. ["plugin_legal_redline", "plugin_seo_linter"]
-  maxTier: 1 | 2 | 3 | 4 | 5;        // 1 (Isolate) to 5 (Linux Container)
-}
-
-export interface AgentAutonomy {
-  approvalMode: "always_ask" | "gate_unless_listed" | "yolo";
-  autoApprovedActions: string[];
-  requiresApprovalFor: string[];
-}
-
-export interface AgentTriggers {
-  proactiveHeartbeat: boolean;       // true for Space Assistant, false for project agents
-  cronSchedule?: string;             // e.g. "0 9 * * *" for daily reports
-  reactiveToThreads: boolean;        // true for project agents responding to user chat
-}
-
-export interface UniversalAgentManifest {
-  id: string;                        // e.g., "naelao-agent" (Assistant) or "custom_tax_auditor"
-  name: string;                      // "Space Assistant" or "Senior Tax Analyst"
-  description?: string;
-  // 1. SCOPING & FILESYSTEM BOUNDARY
-  // Space Assistant = Space-wide (`spaces/{spaceId}/workspace/`)
-  // Project Agent   = Project-scoped (`spaces/{spaceId}/projects/{projectId}/workspace/`)
-  scope: AgentScope;
-  projectId?: string;
-  // 2. ARCHETYPE ROLE & CAPABILITY FIREWALL
-  role: AgentArchetypeRole;
-  // 3. INSTRUCTION & PROMPT LAYERS
-  prompts: AgentPrompts;
-  // 4. TOOLSET & EXECUTION LADDER CEILING
-  capabilities: AgentCapabilities;
-  // 5. AUTONOMY & HITL APPROVAL POSTURE
-  autonomy: AgentAutonomy;
-  // 6. TRIGGER CADENCE (Proactive vs. Reactive)
-  triggers: AgentTriggers;
-}
-
 // ── Axis 6: 4-Tier Collaboration Model (Apple on the Surface, Linux at the Edge) ──
 export type CollaborationTierLevel = 1 | 2 | 3 | 4;
 
@@ -549,3 +495,4 @@ export interface ConnectorClarificationCardMetadata {
 
 
 export type { BusinessBlueprint } from "./blueprint.js";
+export type { AgentScope, AgentArchetypeRole, UniversalAgentManifest } from "./agent.js";
