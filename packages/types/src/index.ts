@@ -547,3 +547,5 @@ export interface ConnectorClarificationCardMetadata {
 
 
 
+
+export type { BusinessBlueprint } from "./blueprint.js";

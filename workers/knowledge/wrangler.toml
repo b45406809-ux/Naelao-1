@@ -51,3 +51,6 @@ vars = { ENVIRONMENT = "staging" }
 
 [env.production]
 vars = { ENVIRONMENT = "production" }
+
+# COHERE_API_KEY is a Workers secret for Parse 5 (`wrangler secret put COHERE_API_KEY`).
+# Parse requests are made only by POST /spaces/:spaceId/kb/parse5-ingest after internal HMAC auth.

@@ -28,6 +28,7 @@ import { checkSsrf } from "@naelao/security";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { moderateInput } from "@naelao/llm-gateway";
 import { createMcpHandler } from "@naelao/tool-runtime";
+import { parseR2DocumentWithParse5 } from "./parse5Ingestion.js";
 
 // ── Environment ───────────────────────────────────────────────────────────────
 
@@ -49,6 +50,8 @@ interface KnowledgeEnv {
   // free — never the BYO-key `space_credentials` model. Optional: when unset, `search`/`extract`
   // report `configured:false` and `fetch` (a keyless SSRF-guarded GET) still works.
   TAVILY_API_KEY?: string;
+  /** Cohere Parse 5 key. Kept optional so standard text KB ingestion remains available. */
+  COHERE_API_KEY?: string;
   // §A1.19 (AutoRAG/AI Search): the AutoRAG instance name backing an opt-in retrieval mode
   // alongside the existing hand-built dense+BM25+RRF hybrid pipeline (default, unchanged).
   // Optional — when unset, `retrieval_mode=autorag` requests fall back to the legacy pipeline
@@ -242,6 +245,29 @@ app.get("/spaces/:spaceId/kb/documents", async (c) => {
     .all();
 
   return c.json({ data: results, count: results.length, limit, offset });
+});
+
+// ── POST /spaces/:spaceId/kb/parse5-ingest ───────────────────────────────────
+// Reads source bytes from the private KB bucket, persists Parse 5 Markdown as the durable
+// workspace-file representation, then feeds that same Markdown into the normal AI Search path.
+app.post("/spaces/:spaceId/kb/parse5-ingest", async (c) => {
+  const tenantId = requireTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const body = await c.req.json<{ r2_key?: string; title?: string; file_name?: string; content_type?: string; project_id?: string }>();
+  if (!body.r2_key || !body.title) throw badRequest("r2_key and title are required");
+  const source = await c.env.KB_BUCKET.get(body.r2_key);
+  if (!source) throw notFound("Source document not found in R2");
+  const parsed = await parseR2DocumentWithParse5(c.env, await source.arrayBuffer(), body.content_type ?? source.httpMetadata?.contentType ?? "application/pdf", body.file_name ?? body.title);
+  const workspaceKey = `workspace-files/${spaceId}/${body.project_id ?? "_space"}/${crypto.randomUUID()}.md`;
+  await c.env.KB_BUCKET.put(workspaceKey, parsed.markdown, { httpMetadata: { contentType: "text/markdown; charset=utf-8" } });
+  const headers = new Headers(c.req.raw.headers);
+  headers.set("content-type", "application/json");
+  headers.set("x-naelao-tenant-id", tenantId);
+  const indexed = await app.request(`http://knowledge/spaces/${spaceId}/kb/documents`, {
+    method: "POST", headers,
+    body: JSON.stringify({ title: body.title, content: parsed.markdown, content_type: "pdf", project_id: body.project_id, source_url: `r2://${workspaceKey}` }),
+  }, c.env, c.executionCtx);
+  return new Response(indexed.body, { status: indexed.status, headers: indexed.headers });
 });
 
 // ── POST /spaces/:spaceId/kb/documents ────────────────────────────────────────

@@ -60,32 +60,32 @@ export interface SecurityAuditResult {
 }
 
 /**
- * 1. PII & CREDENTIAL SCRUBBER
- * Strips customer emails, phone numbers, live API tokens, bearer keys, and sensitive vault secrets.
+ * Removes private runtime state before an export crosses a tenant boundary. Credentials become
+ * requirements, never masked values: a mask can still be copied into a published blueprint.
  */
 export function sanitizeAndScrubBlueprint(raw: SpaceBlueprintExport): SpaceBlueprintExport {
-  const jsonStr = JSON.stringify(raw);
-  const scrubbed = jsonStr
-    // Email regex
-    .replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,7}\b/g, "expert-author@example.com")
-    // Phone numbers
-    .replace(/\b(?:\+?1[-.\s]?)?\(?[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}\b/g, "[REDACTED_PHONE]")
-    // Stripe API keys
-    .replace(/(?:sk_live_[0-9a-zA-Z]{24,}|sk_test_[0-9a-zA-Z]{24,})/g, "[REDACTED_STRIPE_KEY]")
-    // Whop API keys
-    .replace(/(?:whop_[0-9a-zA-Z]{24,})/g, "[REDACTED_WHOP_KEY]")
-    // Lemon Squeezy API keys
-    .replace(/(?:ls_[0-9a-zA-Z]{24,})/g, "[REDACTED_LEMON_KEY]")
-    // Bearer tokens & JWTs
-    .replace(/(?:Bearer\s+[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*)/gi, "Bearer [REDACTED_TOKEN]")
-    // GitHub tokens
-    .replace(/(?:ghp_[A-Za-z0-9_]{36,}|gho_[A-Za-z0-9_]{36,})/g, "[REDACTED_GITHUB_TOKEN]")
-    // AWS & Cloud API keys
-    .replace(/(?:AKIA[0-9A-Z]{16})/g, "[REDACTED_AWS_KEY]")
-    .replace(/(?:AIza[0-9A-Za-z-_]{35})/g, "[REDACTED_GOOGLE_KEY]");
-
-  const parsed = JSON.parse(scrubbed) as SpaceBlueprintExport;
-  return parsed;
+  const credentialKeys = new Set(["space_credentials", "credentials", "secret", "token", "api_key", "access_token", "refresh_token"]);
+  const privateCollections = new Set(["transactions", "transaction_logs", "members", "member_emails", "chat_history", "messages", "sessions"]);
+  const scrub = (value: unknown, key?: string): unknown => {
+    const normalized = key?.toLowerCase();
+    if (normalized && privateCollections.has(normalized)) return undefined;
+    if (normalized && credentialKeys.has(normalized)) {
+      const service = typeof value === "object" && value && "service" in value ? String((value as { service?: unknown }).service) : "external_service";
+      return { requires_credential: `${service.toUpperCase()}_SECRET_KEY`, service };
+    }
+    if (Array.isArray(value)) return value.map((item) => scrub(item)).filter((item) => item !== undefined);
+    if (value && typeof value === "object") {
+      return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+        .map(([childKey, childValue]) => [childKey, scrub(childValue, childKey)] as const)
+        .filter(([, childValue]) => childValue !== undefined));
+    }
+    if (typeof value !== "string") return value;
+    return value
+      .replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, "[REDACTED_EMAIL]")
+      .replace(/\b(?:\+?1[-.\s]?)?\(?[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}\b/g, "[REDACTED_PHONE]")
+      .replace(/(?:sk_(?:live|test)_[0-9A-Za-z]+|gh[pou]_[0-9A-Za-z_]+|AKIA[0-9A-Z]{16}|Bearer\s+[A-Za-z0-9._-]+)/g, "[REDACTED_SECRET]");
+  };
+  return scrub(raw) as SpaceBlueprintExport;
 }
 
 /**
@@ -119,11 +119,13 @@ export function validateBlueprintSecurity(blueprint: SpaceBlueprintExport): Secu
       }
     }
 
-    // Role vs Execution capability validation
-    if (agent.name.toLowerCase().includes("support") || agent.name.toLowerCase().includes("growth")) {
-      if (agent.resource_tier > 3) {
-        score -= 20;
-        reasons.push(`Agent '${agent.name}' has non-administrative archetype but requests elevated container tier (${agent.resource_tier}).`);
+    // CUSTOMER_SUPPORT must be read-only: no Tier 6 container or filesystem mutation binding.
+    if (agent.name.toLowerCase().includes("support")) {
+      const skills = agent.allowed_skills ?? [];
+      const mutatingSkill = skills.find((skill) => /(?:file[-_ ]?(?:write|delete|manager)|workspace[-_ ]?write|container)/i.test(skill));
+      if (agent.resource_tier >= 6 || mutatingSkill) {
+        score -= 40;
+        reasons.push(`Customer support agent '${agent.name}' has a prohibited ${mutatingSkill ? `filesystem/container binding '${mutatingSkill}'` : `Tier ${agent.resource_tier} binding`}.`);
       }
     }
   }
@@ -151,8 +153,9 @@ export function validateBlueprintSecurity(blueprint: SpaceBlueprintExport): Secu
 
 /**
  * 3. AUTOMATED PAYOUT RAILS & REVENUE SETTLEMENT
- * Settle template sales: 80% to Creator, 20% Platform cut.
- * Records the margin into reseller_ledger and stores purchase audit record.
+ * Settle an initial marketplace charge using the declared attribution channel. Fixed licenses
+ * pay 100% of the upfront license fee to the developer; recurring referral/organic templates
+ * pay 40%/20% respectively. Ongoing tier-capped settlement is handled by billing-core.
  */
 export async function settleTemplateSale(
   db: D1Database,
@@ -163,12 +166,14 @@ export async function settleTemplateSale(
     creatorTenantId: string;
     grossCents: number;
     pricingModel: string;
+    attributionChannel?: "DEVELOPER_REFERRAL" | "MARKETPLACE_ORGANIC" | "FIXED_ONE_OFF";
   }
 ): Promise<{ purchaseId: string; creatorPayoutCents: number; platformCutCents: number }> {
   const purchaseId = `pur_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-  const platformFeeBps = 2000; // 20% platform take-rate
-  const platformCutCents = Math.round((params.grossCents * platformFeeBps) / 10000);
-  const creatorPayoutCents = params.grossCents - platformCutCents; // 80% to creator
+  const channel = params.attributionChannel ?? (params.pricingModel === "one_time" ? "FIXED_ONE_OFF" : "MARKETPLACE_ORGANIC");
+  const developerRate = channel === "FIXED_ONE_OFF" ? 1 : channel === "DEVELOPER_REFERRAL" ? 0.40 : 0.20;
+  const creatorPayoutCents = Math.round(params.grossCents * developerRate);
+  const platformCutCents = params.grossCents - creatorPayoutCents;
 
   // 1. Record purchase audit record
   await db.prepare(
@@ -249,6 +254,9 @@ export function registerMarketplaceRoutes(app: Hono<any>): void { // eslint-disa
       pricingModel?: "free" | "one_time" | "recurring_monthly" | "gmv_royalty";
       royaltyShareBps?: number;
       tags?: string[];
+      monetizationModel?: "FREEMIUM_TIERED_SAAS" | "FIXED_ONE_OFF_UNLOCKED";
+      pluginWholesaleFeesCents?: number[];
+      platformBasePlanCents?: number;
     }>().catch(() => null);
 
     if (!body?.templateTitle) {
@@ -273,32 +281,39 @@ export function registerMarketplaceRoutes(app: Hono<any>): void { // eslint-disa
     // 4. Generate Listing ID and Store Blueprint
     const blueprintId = `tpl_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const r2Key = `blueprints/${blueprintId}.json`;
-    const blueprintJsonStr = JSON.stringify(cleanBlueprint);
-
-    if (env.SCRIPTS_R2) {
-      try {
-        await env.SCRIPTS_R2.put(r2Key, blueprintJsonStr, {
-          httpMetadata: { contentType: "application/json" },
-        });
-      } catch {
-        // Degrade gracefully if R2 is unavailable in local dev
-      }
-    }
+    const blueprintJsonStr = JSON.stringify({ ...cleanBlueprint, marketplace: { monetization_model: body.monetizationModel ?? "FREEMIUM_TIERED_SAAS" } });
 
     const priceCents = Math.max(0, body.priceCents ?? 0);
-    const pricingModel = body.pricingModel ?? (priceCents > 0 ? "one_time" : "free");
+    const monetizationModel = body.monetizationModel ?? (priceCents > 0 ? "FIXED_ONE_OFF_UNLOCKED" : "FREEMIUM_TIERED_SAAS");
+    const pluginWholesaleFees = body.pluginWholesaleFeesCents ?? [];
+    if (pluginWholesaleFees.some((fee) => !Number.isInteger(fee) || fee < 0)) return c.json({ error_code: "bad_request", message: "pluginWholesaleFeesCents must contain non-negative integer cents" }, 400);
+    const minimumMonthOneCents = Math.max(0, body.platformBasePlanCents ?? 2900) + pluginWholesaleFees.reduce((sum, fee) => sum + fee, 0);
+    if (monetizationModel === "FIXED_ONE_OFF_UNLOCKED" && (priceCents < 4900 || priceCents > 49900)) return c.json({ error_code: "invalid_license_price", message: "Fixed one-off licenses must be priced from $49 to $499." }, 400);
+    if (monetizationModel === "FREEMIUM_TIERED_SAAS" && priceCents !== 0) return c.json({ error_code: "mutually_exclusive_monetization", message: "Freemium tiered templates must install for $0." }, 400);
+    if (priceCents > 0 && priceCents < minimumMonthOneCents) return c.json({ error_code: "price_floor_not_met", message: `Month-one price must be at least ${minimumMonthOneCents} cents.` }, 400);
+    if (audit.security_review_status !== "audit_passed") return c.json({ error_code: "security_review_failed", message: "Blueprint failed deterministic security review.", reasons: audit.reasons }, 422);
+    const pricingModel = monetizationModel === "FIXED_ONE_OFF_UNLOCKED" ? "one_time" : "free";
     const category = body.category ?? "AGENCY";
     const description = body.description || cleanBlueprint.description || "A turnkey AI-powered business workspace.";
     const tagsJson = JSON.stringify(body.tags ?? [category.toLowerCase(), "community"]);
+
+    if (!env.SCRIPTS_R2) return c.json({ error_code: "export_storage_unavailable", message: "Blueprint storage is not configured." }, 503);
+    try {
+      await env.SCRIPTS_R2.put(r2Key, blueprintJsonStr, {
+        httpMetadata: { contentType: "application/json" },
+      });
+    } catch {
+      return c.json({ error_code: "export_storage_failed", message: "Could not persist the sanitized blueprint." }, 503);
+    }
 
     // Record in D1 marketplace_listings
     await env.PLATFORM_DB.prepare(
       `INSERT INTO marketplace_listings (
         id, space_type_id, tenant_id, author_name, name, description,
         category, tags_json, pricing, price_cents, pricing_model, royalty_share_bps,
-        blueprint_r2_key, blueprint_json, status, security_review_status, safety_score,
-        published_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?, datetime('now'))
+        blueprint_r2_key, blueprint_json, monetization_model, minimum_month_one_cents, author_user_id,
+        status, security_review_status, safety_score, published_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?, datetime('now'))
       ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
         description = excluded.description,
@@ -322,6 +337,9 @@ export function registerMarketplaceRoutes(app: Hono<any>): void { // eslint-disa
       body.royaltyShareBps ?? 0,
       r2Key,
       blueprintJsonStr,
+      monetizationModel,
+      minimumMonthOneCents,
+      identity.userId,
       audit.security_review_status,
       audit.safety_score
     ).run();
@@ -447,7 +465,7 @@ export function registerMarketplaceRoutes(app: Hono<any>): void { // eslint-disa
 
     if (!listing) return c.json({ error_code: "not_found", message: "Template not found" }, 404);
 
-    // 1. Settle the revenue split (80% creator, 20% platform)
+    // 1. Settle the initial charge using fixed-license or marketplace attribution economics
     const settlement = await settleTemplateSale(env.PLATFORM_DB, {
       listingId: listing.id,
       buyerTenantId: identity.tenantId,
@@ -455,6 +473,7 @@ export function registerMarketplaceRoutes(app: Hono<any>): void { // eslint-disa
       creatorTenantId: listing.tenant_id,
       grossCents: listing.price_cents ?? 0,
       pricingModel: listing.pricing_model ?? "one_time",
+      attributionChannel: (listing.pricing_model ?? "one_time") === "one_time" ? "FIXED_ONE_OFF" : "MARKETPLACE_ORGANIC",
     });
 
     // 2. Instantiate new Business Space from Template Blueprint

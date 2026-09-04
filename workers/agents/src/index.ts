@@ -5304,6 +5304,9 @@ app.get("/templates", async (c) => {
   return c.json({
     templates: LAUNCHPAD_TEMPLATES.map((t) => ({
       id: t.id,
+      blueprint_id: t.blueprint_id,
+      monthly_price_cents: t.monthly_price_cents,
+      approval_mode: t.approval_mode ?? (t.template_mode === "vertical_cowork" ? "always_ask" : "yolo"),
       name: t.name,
       description: t.description,
       template_mode: t.template_mode ?? "autonomous_venture",
