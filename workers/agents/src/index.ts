@@ -52,7 +52,7 @@ import { listDirectory, resolveConnectTarget, curatedLogos } from "./connectors/
 import { isChannelType, getAdapter, twilioWhatsappAdapter, type ChannelType } from "./launchpad/channels.js";
 import {
   isPairableChannel, issuePairingToken, consumePairingToken, buildPairing,
-  extractPairingToken, PAIRING_TTL_SECONDS, type PairableChannel,
+  extractPairingToken, PAIRING_TTL_SECONDS, registerProjectChannelWebhook, type PairableChannel,
 } from "./launchpad/channel-pairing.js";
 import {
   agentMailConfigured, createInbox, createInboundWebhook, sendFromInbox,
@@ -3799,7 +3799,10 @@ async function bindPairedChannel(
  */
 async function startPairing(
   env: AgentsEnv,
-  ticket: { spaceId: string; tenantId: string; channel: PairableChannel; projectId?: string | undefined; userId: string }
+  ticket: {
+    spaceId: string; tenantId: string; channel: PairableChannel; projectId?: string | undefined;
+    userId: string; ownerUserId?: string | undefined; privateExecutiveSessionId?: string | undefined;
+  }
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   const pairing = buildPairing(env, ticket.channel, "cp_" + "0".repeat(32));
   // Check configuration BEFORE minting a token, so a channel we can't pair doesn't leave a
@@ -3908,13 +3911,20 @@ app.post("/channels/platform-inbound/:channel", async (c) => {
   if (!space || space.status !== "active") return c.json({ ok: true, skipped: "space_inactive" });
 
   try {
-    const stub = await getAgentDOForSpace(c.env, paired.tenantId, paired.spaceId, "naelao-agent", c.get("requestId"));
+    // A project-bound platform channel has its own DO actor.  The project id is deliberately
+    // part of the DO identity, rather than merely request metadata, so it cannot share the
+    // Space Assistant's private executive memory or financial ledgers.
+    const actorId = paired.projectId
+      ? registerProjectChannelWebhook(paired.spaceId, paired.projectId, channel).actorId
+      : `private-executive:${paired.spaceId}:${paired.tenantId}`;
+    const stub = await getAgentDOForSpace(c.env, paired.tenantId, paired.spaceId, actorId, c.get("requestId"));
     await stub.fetch(new Request(`http://agent-do/channels/${channel}/inbound`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         raw,
         projectId: paired.projectId ?? undefined,
+        sessionId: paired.projectId ? undefined : `private-executive:${paired.spaceId}:${paired.tenantId}`,
         spaceId: paired.spaceId,
         tenantId: paired.tenantId,
         apiKey: "",
@@ -4124,7 +4134,13 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
   ).bind(spaceId, channel).first<{ project_id: string | null }>();
 
   try {
-    const stub = await getAgentDOForSpace(c.env, space.tenant_id, spaceId, "naelao-agent", c.get("requestId"));
+    // Channel links with a project binding wake a physically separate DO actor.  Do not use the
+    // parent `naelao-agent` and hope downstream code honours projectId: its SQLite holds the
+    // private executive state, including financial-ledger context.
+    const actorId = link?.project_id
+      ? registerProjectChannelWebhook(spaceId, link.project_id, channel as PairableChannel).actorId
+      : "naelao-agent";
+    const stub = await getAgentDOForSpace(c.env, space.tenant_id, spaceId, actorId, c.get("requestId"));
     await stub.fetch(new Request(`http://agent-do/channels/${channel}/inbound`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -4523,8 +4539,14 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
         message: "Email is provisioned automatically — there is nothing to pair.",
       }, 400);
     }
+    // QR pairing is the owner's private executive channel, never a public project webhook.
+    // Project channels are registered through the signed webhook path below and receive a
+    // distinct actor identity.  Accepting project_id here would let a QR scan bridge those two
+    // security domains.
+    if (body.project_id) throw badRequest("QR pairing is only available for the private Space Assistant; register a project webhook separately");
     const { status, body: out } = await startPairing(c.env, {
-      spaceId, tenantId, channel, projectId: body.project_id, userId,
+      spaceId, tenantId, channel, userId, ownerUserId: userId,
+      privateExecutiveSessionId: `private-executive:${spaceId}:${tenantId}`,
     });
     return c.json(out, status as 200 | 503);
   }
@@ -4558,13 +4580,18 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
      ON CONFLICT (space_id, channel) DO UPDATE SET enabled = 1, project_id = excluded.project_id`
   ).bind(spaceId, tenantId, channel, body.project_id ?? null).run();
 
+  const projectWebhook = body.project_id && isPairableChannel(channel)
+    ? registerProjectChannelWebhook(spaceId, body.project_id, channel)
+    : null;
   return c.json({
     connected: true,
     channel,
     project_id: body.project_id ?? null,
     // The owner still has to paste this into the provider's own dashboard — returning it is the
     // difference between "connected" and "actually receiving messages".
-    webhook_url: `${(c.env.PUBLIC_AGENTS_URL ?? "").replace(/\/$/, "")}/channels/${channel}/inbound/${spaceId}`,
+    webhook_url: projectWebhook
+      ? `${(c.env.PUBLIC_AGENTS_URL ?? "").replace(/\/$/, "")}${projectWebhook.webhookPath}`
+      : `${(c.env.PUBLIC_AGENTS_URL ?? "").replace(/\/$/, "")}/channels/${channel}/inbound/${spaceId}`,
   }, 201);
 });
 
