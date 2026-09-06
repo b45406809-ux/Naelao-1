@@ -1065,6 +1065,56 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_tasks_thread ON tasks(thread_id) WHERE thread_id IS NOT NULL;
     `,
   },
+  {
+    version: 40,
+    description: "projects created_by_user_id and project_members role expansion",
+    up: `
+      ALTER TABLE projects ADD COLUMN created_by_user_id TEXT;
+
+      CREATE TABLE IF NOT EXISTS project_members_new (
+        project_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner', 'admin', 'editor', 'member', 'viewer')),
+        assistant_mode TEXT NOT NULL DEFAULT 'inherit' CHECK (assistant_mode IN ('inherit','read_only','none')),
+        added_at TEXT NOT NULL DEFAULT (datetime('now')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (project_id, user_id)
+      );
+      INSERT OR IGNORE INTO project_members_new (project_id, user_id, role, assistant_mode, added_at, created_at)
+      SELECT project_id, user_id,
+        CASE WHEN role IN ('owner', 'admin', 'editor', 'member', 'viewer') THEN role ELSE 'member' END,
+        assistant_mode,
+        added_at,
+        added_at
+      FROM project_members;
+      DROP TABLE project_members;
+      ALTER TABLE project_members_new RENAME TO project_members;
+      CREATE INDEX IF NOT EXISTS idx_pm_user ON project_members(user_id);
+
+      UPDATE projects SET created_by_user_id = created_by WHERE created_by_user_id IS NULL AND created_by IS NOT NULL;
+    `,
+  },
+  {
+    version: 41,
+    description: "project_anchored_workflows table",
+    up: `
+      CREATE TABLE IF NOT EXISTS project_anchored_workflows (
+        id TEXT PRIMARY KEY,
+        space_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        workflow_class TEXT NOT NULL CHECK (workflow_class IN ('COMPANY_AUTOMATION', 'VERTICAL_EXTENSION', 'EPHEMERAL_TASK')),
+        title TEXT NOT NULL,
+        script_path TEXT NOT NULL,
+        trigger_type TEXT NOT NULL,
+        trigger_spec TEXT,
+        status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'PAUSED', 'DISABLED')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_paw_proj ON project_anchored_workflows(project_id, workflow_class);
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -1181,6 +1231,21 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private ensureInit(): void {
     if (this.initialized) return;
     applyMigrations(this.ctx.storage as never, MIGRATIONS);
+    try {
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS project_members (
+          project_id TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner', 'admin', 'editor', 'member', 'viewer')),
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          PRIMARY KEY (project_id, user_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_pm_user ON project_members(user_id);
+      `);
+    } catch { /* table may already exist */ }
+    try {
+      this.ctx.storage.sql.exec("ALTER TABLE projects ADD COLUMN created_by_user_id TEXT;");
+    } catch { /* column may already exist */ }
     this.initialized = true;
   }
 
@@ -1347,11 +1412,23 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // GET /projects/:id — single project (incl. customer-bot config)
       const projectIdMatch = url.pathname.match(/^\/projects\/([^/]+)$/);
       if (method === "GET" && projectIdMatch?.[1]) {
-        return this.getProject(projectIdMatch[1]);
+        const viewerId = url.searchParams.get("viewer_id") ?? url.searchParams.get("user_id") ?? request.headers.get("x-naelao-user-id");
+        return this.getProject(projectIdMatch[1], viewerId);
+      }
+      // PATCH /projects/:id/visibility — update project visibility
+      const projVisibilityMatch = url.pathname.match(/^\/projects\/([^/]+)\/visibility$/);
+      if (method === "PATCH" && projVisibilityMatch?.[1]) {
+        return this.updateProjectVisibility(projVisibilityMatch[1], request);
       }
       // PATCH /projects/:id — configure kind / execution_ceiling / channel_config / spend cap
       if (method === "PATCH" && projectIdMatch?.[1]) {
         return this.updateProject(projectIdMatch[1], request);
+      }
+      // GET /projects/:id/workspace/files* — project workspace file access check
+      const wsFileMatch = url.pathname.match(/^\/projects\/([^/]+)\/(?:workspace\/files|workspace-file)(?:\/.*)?$/);
+      if (method === "GET" && wsFileMatch?.[1]) {
+        const viewerId = url.searchParams.get("viewer_id") ?? url.searchParams.get("user_id") ?? request.headers.get("x-naelao-user-id");
+        return this.readWorkspaceFile(wsFileMatch[1], viewerId);
       }
       // ── project_members (§A1.17 Phase T1 — real per-project ACL) ───────────────
       const projectMembersMatch = url.pathname.match(/^\/projects\/([^/]+)\/members$/);
@@ -1686,6 +1763,28 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // GET /cross-space-check?user_id=&requesting_space_id=&target_space_id=&grant_type=
       if (method === "GET" && url.pathname === "/cross-space-check") {
         return this.checkCrossSpace(url.searchParams);
+      }
+
+      // ── project_anchored_workflows endpoints ──────────────────────────────────
+      const projWorkflowsMatch = url.pathname.match(/^\/projects\/([^/]+)\/workflows$/);
+      if (method === "GET" && projWorkflowsMatch?.[1]) {
+        return this.listProjectWorkflows(projWorkflowsMatch[1], url.searchParams);
+      }
+      if (method === "POST" && projWorkflowsMatch?.[1]) {
+        return this.registerProjectWorkflow(request, projWorkflowsMatch[1]);
+      }
+      if (method === "GET" && url.pathname === "/project-workflows") {
+        const projectId = url.searchParams.get("project_id");
+        if (projectId) {
+          return this.listProjectWorkflows(projectId, url.searchParams);
+        }
+        return this.listCompanyAutomations(url.searchParams);
+      }
+      if (method === "POST" && url.pathname === "/project-workflows") {
+        return this.registerProjectWorkflow(request);
+      }
+      if (method === "GET" && url.pathname === "/company-automations") {
+        return this.listCompanyAutomations(url.searchParams);
       }
 
       return Response.json(
@@ -2621,35 +2720,32 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // or the space's own owner/admin (checkCrossSpace's existing owner-override precedent) —
   // 'public' projects (and every project, when no viewer_id is given — internal/legacy callers
   // that predate visibility) are unaffected.
-  private listProjects(params: URLSearchParams): Response {
+  public listProjects(params: URLSearchParams): Response {
     const spaceId = params.get("space_id") ?? "";
-    const viewerId = params.get("viewer_id") ?? "";
-    const rows = queryAll<{
-      id: string; space_id: string; name: string; description: string; status: string;
-      default_agent_id: string | null; max_threads: number; allowed_agent_ids: string | null;
-      visibility: string; created_by: string | null; created_at: string; last_activity_at: string | null;
-      kind: string; is_singleton_kind: number;
-    }>(
-      this.ctx.storage.sql as never,
-      // F-40: `kind` is surfaced so the frontend project-page shell can mount the natively-built
-      // panel for that kind (WalletLedgerPanel etc.) via a switch at the mount point.
-      //
-      // ORDER BY created_at DESC (newest first) — this used to omit DESC entirely, which both
-      // sorted OLDEST-first (the opposite of the "recents" ordering the Sessions list already
-      // uses, ORDER BY updated_at DESC) and never actually used idx_projects_space's own
-      // (space_id, created_at DESC) index, which was built expecting exactly this direction. The
-      // reported symptom — a project a person just created/uses looking "lost" in the sidebar's
-      // collapsed-to-a-few list (item 66) — is exactly what oldest-first ordering produces, since
-      // the newest, most relevant project is the one most likely to be hidden behind "show more".
-      // Migration v37 closed the gap this comment used to describe: last_activity_at (touched by
-      // appendMessage on every thread-linked message write — ordinary project chat AND consult
-      // subthreads alike) now takes precedence over created_at, so a project an assistant just
-      // consulted an agent about really does come back to the top, not just one a human typed in.
-      "SELECT id, space_id, name, description, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at, last_activity_at, kind, is_singleton_kind FROM projects WHERE space_id = ? AND status != 'archived' ORDER BY COALESCE(last_activity_at, created_at) DESC",
-      spaceId
-    );
+    const viewerId = params.get("viewer_id") ?? params.get("user_id") ?? "";
+    const rows = spaceId
+      ? queryAll<{
+          id: string; space_id: string; name: string; description: string; status: string;
+          default_agent_id: string | null; max_threads: number; allowed_agent_ids: string | null;
+          visibility: string; created_by: string | null; created_by_user_id: string | null; created_at: string; last_activity_at: string | null;
+          kind: string; is_singleton_kind: number;
+        }>(
+          this.ctx.storage.sql as never,
+          "SELECT id, space_id, name, description, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_by_user_id, created_at, last_activity_at, kind, is_singleton_kind FROM projects WHERE space_id = ? AND status != 'archived' ORDER BY COALESCE(last_activity_at, created_at) DESC",
+          spaceId
+        )
+      : queryAll<{
+          id: string; space_id: string; name: string; description: string; status: string;
+          default_agent_id: string | null; max_threads: number; allowed_agent_ids: string | null;
+          visibility: string; created_by: string | null; created_by_user_id: string | null; created_at: string; last_activity_at: string | null;
+          kind: string; is_singleton_kind: number;
+        }>(
+          this.ctx.storage.sql as never,
+          "SELECT id, space_id, name, description, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_by_user_id, created_at, last_activity_at, kind, is_singleton_kind FROM projects WHERE status != 'archived' ORDER BY COALESCE(last_activity_at, created_at) DESC"
+        );
+    const isAdmin = viewerId ? this.isSpaceOwnerOrAdmin(viewerId, spaceId) : false;
     const visible = viewerId
-      ? rows.filter((r) => r.visibility !== "private" || this.getProjectMemberRole(r.id, viewerId) !== null || this.isSpaceOwnerOrAdmin(viewerId))
+      ? rows.filter((r) => isAdmin || r.visibility !== "private" || this.getProjectMemberRole(r.id, viewerId) !== null)
       : rows;
     return Response.json({
       data: visible.map((r) => ({ ...r, allowed_agent_ids: safeJsonParseAgentIds(r.allowed_agent_ids) })),
@@ -2657,11 +2753,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     });
   }
 
-  private async createProject(request: Request): Promise<Response> {
+  public async createProject(request: Request): Promise<Response> {
     const body = await request.json<{
       space_id: string; name: string; description?: string; tenant_id?: string;
       default_agent_id?: string; max_threads?: number; allowed_agent_ids?: string[];
-      visibility?: "public" | "private"; created_by?: string; kind?: string;
+      visibility?: "public" | "private"; created_by?: string; created_by_user_id?: string; kind?: string;
       /** Set ONLY by the spaces worker's own POST /spaces/:spaceId/projects handler, derived from
        *  the verified absence of an authenticated caller (no x-naelao-user-id) — never read from
        *  a client body field. True for the provisioner's seedWallet call and other genuinely
@@ -2681,6 +2777,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const bindingError = SpaceDO.validateAgentBinding(body.default_agent_id, body.allowed_agent_ids);
     if (bindingError) return Response.json({ error_code: "bad_request", message: bindingError }, { status: 400 });
 
+    const creatorId = body.created_by_user_id || body.created_by;
+    const visibility = body.visibility ?? "public";
+
     // F-33/F-35: `kind` support (default 'workspace', unchanged for existing callers). Validate
     // against the Business Feature Projects registry; role-gate feature kinds; stamp
     // is_singleton_kind so the DB partial unique index (F-32) is the real singleton guarantee.
@@ -2694,19 +2793,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // Role check BEFORE the singleton check, so a non-privileged member gets "not allowed"
       // rather than leaking whether a singleton of this kind already exists. The creator's
       // space-level role is authoritative (created_by → space_members).
-      //
-      // Fail CLOSED on a missing created_by: it must NEVER itself imply privilege. Only the
-      // explicit, server-derived system_caller marker (see the field's own doc comment above —
-      // never a client-suppliable value) may create a feature-kind project without a resolvable
-      // creator, matching the provisioner's seedWallet call. Any other caller with no created_by
-      // is denied outright, so a future route that forwards a client body into createProject
-      // without forcing created_by can never silently inherit owner-level privilege.
-      if (!body.created_by) {
+      if (!creatorId) {
         if (!body.system_caller) {
           return Response.json({ error_code: "forbidden", message: `Creating a '${kind}' project requires a resolvable creator` }, { status: 403 });
         }
       } else {
-        const callerRole = queryOne<{ role: string }>(this.ctx.storage.sql as never, "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?", body.space_id, body.created_by)?.role ?? "";
+        const callerRole = queryOne<{ role: string }>(this.ctx.storage.sql as never, "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?", body.space_id, creatorId)?.role ?? "";
         if (!roleMeetsMinimum(callerRole, featureKind.minCreationRole)) {
           return Response.json({ error_code: "forbidden", message: `Creating a '${kind}' project requires at least the '${featureKind.minCreationRole}' role` }, { status: 403 });
         }
@@ -2730,10 +2822,6 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const alreadyExisted = !!queryOne<{ id: string }>(
       this.ctx.storage.sql as never, "SELECT id FROM projects WHERE space_id = ? AND name = ?", body.space_id, body.name
     );
-    // Space collaboration (A1.8): before creating a genuinely new project, check for a
-    // likely-duplicate among the space's existing active projects (name similarity, not just
-    // exact match). This is a HEADS-UP, never a block — the member's project is still created;
-    // the space is informed so an admin/assistant can reconcile ("this already exists").
     let possibleDuplicates: Array<{ id: string; name: string }> = [];
     if (!alreadyExisted) {
       const activeProjects = queryAll<{ id: string; name: string }>(
@@ -2751,16 +2839,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     try {
       execute(
         this.ctx.storage.sql as never,
-        `INSERT INTO projects (id, space_id, name, description, status, kind, is_singleton_kind, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at)
-         VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO projects (id, space_id, name, description, status, kind, is_singleton_kind, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_by_user_id, created_at)
+         VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(space_id, name) DO NOTHING`,
         id, body.space_id, body.name, body.description ?? "", kind, isSingletonKind, body.default_agent_id ?? null,
-        body.max_threads ?? 0, allowedAgentIdsJson, body.visibility ?? "private", body.created_by ?? null, now
+        body.max_threads ?? 0, allowedAgentIdsJson, visibility, creatorId ?? null, creatorId ?? null, now
       );
     } catch (err) {
-      // F-32: the partial unique index (space_id, kind) WHERE is_singleton_kind=1 fired — a
-      // concurrent create raced past the pre-check above. Translate to the same 409 with the
-      // winner's id so the caller gets a real constraint guarantee, not just an app-level check.
       if (isSingletonKind && /UNIQUE|constraint/i.test((err as Error).message)) {
         const existing = queryOne<{ id: string }>(
           this.ctx.storage.sql as never,
@@ -2773,37 +2858,26 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
     const row = queryOne<{
       id: string; name: string; status: string; default_agent_id: string | null;
-      max_threads: number; allowed_agent_ids: string | null; visibility: string; created_by: string | null; created_at: string;
+      max_threads: number; allowed_agent_ids: string | null; visibility: string; created_by: string | null; created_by_user_id: string | null; created_at: string;
     }>(
       this.ctx.storage.sql as never,
-      "SELECT id, name, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at FROM projects WHERE space_id = ? AND name = ?",
+      "SELECT id, name, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_by_user_id, created_at FROM projects WHERE space_id = ? AND name = ?",
       body.space_id, body.name
     );
-    // The creator is always an implicit project_members owner — so a private project the creator
-    // just made is immediately visible to them in listProjects' viewer_id filter, without a
-    // separate follow-up call.
-    if (!alreadyExisted && row && body.created_by) {
+    // Auto-insert (project_id, created_by, 'owner') into project_members
+    if (row && creatorId) {
       execute(
         this.ctx.storage.sql as never,
-        `INSERT INTO project_members (project_id, user_id, role, added_at) VALUES (?, ?, 'owner', ?)
-         ON CONFLICT(project_id, user_id) DO NOTHING`,
-        row.id, body.created_by, now
+        `INSERT INTO project_members (project_id, user_id, role, assistant_mode, added_at, created_at) VALUES (?, ?, 'owner', 'inherit', ?, ?)
+         ON CONFLICT(project_id, user_id) DO UPDATE SET role = 'owner'`,
+        row.id, creatorId, now, now
       );
     }
     if (!alreadyExisted && row) {
       const tenantId = body.tenant_id ?? request.headers.get("x-naelao-tenant-id") ?? "";
-      // Awaited (not fire-and-forget) — same reasoning as mirrorThread elsewhere in this
-      // build: an un-awaited promise can be abandoned mid-flight once this response is sent
-      // and the DO's request context is free to tear down. fireMatchingTriggers is itself
-      // best-effort/non-throwing, so this never fails project creation.
       await this.fireMatchingTriggers({ type: "project.created", space_id: body.space_id, project_id: row.id, occurred_at: Date.now() }, tenantId);
-      // §A1.17 Phase V: live-sync this to any connected client — never blocks/fails project
-      // creation (broadcastSpaceEvent is itself best-effort/non-throwing).
       await broadcastSpaceEvent(this.env, tenantId, body.space_id, "project.created", { project_id: row.id, name: row.name });
       if (possibleDuplicates.length > 0) {
-        // A builder can wire this event to a no-code trigger (e.g. a notifications script) to
-        // actually broadcast the heads-up to the space's admin/assistant — the dedup detection
-        // itself never assumes a specific notification channel.
         await this.fireMatchingTriggers(
           {
             type: "project.possible_duplicate",
@@ -2818,16 +2892,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
     const responseRow = row
       ? { ...row, allowed_agent_ids: safeJsonParseAgentIds(row.allowed_agent_ids) }
-      : { id, name: body.name, status: "active", default_agent_id: body.default_agent_id ?? null, max_threads: body.max_threads ?? 0, allowed_agent_ids: body.allowed_agent_ids ?? null, created_at: now };
+      : { id, name: body.name, status: "active", default_agent_id: body.default_agent_id ?? null, max_threads: body.max_threads ?? 0, allowed_agent_ids: body.allowed_agent_ids ?? null, visibility, created_by: creatorId ?? null, created_by_user_id: creatorId ?? null, created_at: now };
     return Response.json(
-      // `created` distinguishes a genuine insert from the `ON CONFLICT(space_id, name) DO NOTHING`
-      // no-op on a name collision — this endpoint always returned 201 either way, with no field a
-      // caller could use to tell them apart. Real, previously-documented-but-unfixed bug: a
-      // template's bootstrap (seedTemplateProjects) runs both at provision time AND again when an
-      // end user finishes the onboarding wizard (bootstrap/complete) — the second pass's project
-      // "creates" all silently succeeded as no-ops, and since `res.ok` was true either way, the
-      // caller had no way to skip re-seeding a starter thread for each one, producing exactly two
-      // starter threads per templated project. `created` is what closes that for real.
       { ...responseRow, possible_duplicates: possibleDuplicates, created: !alreadyExisted },
       { status: 201 }
     );
@@ -2889,14 +2955,64 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   // ── Customer-bot project config (no-code, admin-configured) ─────────────────
-  private getProject(projectId: string): Response {
+  public getProject(projectId: string, viewerId?: string | null, bypassAcl = false): Response {
     const row = queryOne<{
       id: string; space_id: string; name: string; description: string; status: string;
       kind: string; execution_ceiling: number; daily_spend_cap_credits: number; channel_config: string;
-      default_agent_id: string | null; max_threads: number; allowed_agent_ids: string | null; created_at: string;
+      default_agent_id: string | null; max_threads: number; allowed_agent_ids: string | null;
+      visibility: string; created_by: string | null; created_by_user_id: string | null; created_at: string;
     }>(this.ctx.storage.sql as never, "SELECT * FROM projects WHERE id = ?", projectId);
     if (!row) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+
+    if (!bypassAcl && row.visibility === "private") {
+      const isMember = viewerId ? this.getProjectMemberRole(projectId, viewerId) !== null : false;
+      const isAdmin = viewerId ? this.isSpaceOwnerOrAdmin(viewerId, row.space_id) : false;
+      if (!isMember && !isAdmin) {
+        return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+      }
+    }
+
     return Response.json({ ...row, channel_config: safeJsonParseObj(row.channel_config), allowed_agent_ids: safeJsonParseAgentIds(row.allowed_agent_ids) });
+  }
+
+  public readWorkspaceFile(projectId: string, viewerId?: string | null): Response {
+    const project = queryOne<{ id: string; space_id: string; visibility: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT id, space_id, visibility FROM projects WHERE id = ?",
+      projectId
+    );
+    if (!project) {
+      return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+    }
+    if (project.visibility === "private") {
+      const isMember = viewerId ? this.getProjectMemberRole(projectId, viewerId) !== null : false;
+      const isAdmin = viewerId ? this.isSpaceOwnerOrAdmin(viewerId, project.space_id) : false;
+      if (!isMember && !isAdmin) {
+        return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+      }
+    }
+    return Response.json({ ok: true, project_id: projectId });
+  }
+
+  public async updateProjectVisibility(projectId: string, request: Request): Promise<Response> {
+    const body = await request.json<{ visibility?: string; user_id?: string }>().catch(() => ({}) as Record<string, never>);
+    if (!body.visibility || (body.visibility !== "public" && body.visibility !== "private")) {
+      return Response.json({ error_code: "bad_request", message: "visibility must be 'public' or 'private'" }, { status: 400 });
+    }
+    const project = queryOne<{ id: string; space_id: string; visibility: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT id, space_id, visibility FROM projects WHERE id = ?",
+      projectId
+    );
+    if (!project) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+
+    execute(
+      this.ctx.storage.sql as never,
+      "UPDATE projects SET visibility = ? WHERE id = ?",
+      body.visibility,
+      projectId
+    );
+    return Response.json({ id: projectId, visibility: body.visibility });
   }
 
   private async updateProject(projectId: string, request: Request): Promise<Response> {
@@ -3023,11 +3139,20 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     // the query string (see the spaces-worker route's comment for why not a header/body field).
     const patchTenantId = new URL(request.url).searchParams.get("tenant_id") ?? "";
     await broadcastSpaceEvent(this.env, patchTenantId, existing.space_id, "project.updated", { project_id: projectId });
-    return this.getProject(projectId);
+    return this.getProject(projectId, undefined, true);
   }
 
-  private isSpaceOwnerOrAdmin(userId: string): boolean {
+  private isSpaceOwnerOrAdmin(userId: string, spaceId?: string): boolean {
     if (!userId) return false;
+    if (spaceId) {
+      const row = queryOne<{ role: string }>(
+        this.ctx.storage.sql as never,
+        "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?",
+        spaceId,
+        userId
+      );
+      if (row?.role === "owner" || row?.role === "admin") return true;
+    }
     const row = queryOne<{ role: string }>(this.ctx.storage.sql as never, "SELECT role FROM space_members WHERE user_id = ?", userId);
     return row?.role === "owner" || row?.role === "admin";
   }
@@ -3037,31 +3162,31 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // can add/remove, viewer cannot (enforced by the caller passing `actingRole`, resolved from
   // this SAME table one level up, mirroring how `requireBusinessMembership` resolves a role
   // before checking it against a per-route minimum).
-  private listProjectMembers(projectId: string): Response {
-    const rows = queryAll<{ project_id: string; user_id: string; role: string; added_at: string }>(
+  public listProjectMembers(projectId: string): Response {
+    const rows = queryAll<{ project_id: string; user_id: string; role: string; added_at?: string; created_at?: string }>(
       this.ctx.storage.sql as never,
-      "SELECT * FROM project_members WHERE project_id = ? ORDER BY added_at",
+      "SELECT * FROM project_members WHERE project_id = ? ORDER BY COALESCE(created_at, added_at)",
       projectId
     );
     return Response.json({ data: rows, count: rows.length });
   }
 
-  private getProjectMemberRole(projectId: string, userId: string): "owner" | "editor" | "viewer" | null {
+  public getProjectMemberRole(projectId: string, userId: string): "owner" | "admin" | "editor" | "member" | "viewer" | null {
     if (!userId) return null;
     const row = queryOne<{ role: string }>(
       this.ctx.storage.sql as never,
       "SELECT role FROM project_members WHERE project_id = ? AND user_id = ?",
       projectId, userId
     );
-    return (row?.role as "owner" | "editor" | "viewer" | undefined) ?? null;
+    return (row?.role as "owner" | "admin" | "editor" | "member" | "viewer" | undefined) ?? null;
   }
 
-  private async addProjectMember(projectId: string, request: Request): Promise<Response> {
+  public async addProjectMember(projectId: string, request: Request): Promise<Response> {
     const body = await request.json<{ user_id?: string; role?: string; assistant_mode?: string }>().catch(() => ({}) as Record<string, never>);
     if (!body.user_id) return Response.json({ error_code: "bad_request", message: "user_id is required" }, { status: 400 });
-    const role = body.role ?? "viewer";
-    if (!["owner", "editor", "viewer"].includes(role)) {
-      return Response.json({ error_code: "bad_request", message: "role must be one of owner, editor, viewer" }, { status: 400 });
+    const role = body.role ?? "member";
+    if (!["owner", "admin", "editor", "member", "viewer"].includes(role)) {
+      return Response.json({ error_code: "bad_request", message: "role must be one of owner, admin, editor, member, viewer" }, { status: 400 });
     }
     // F-36: per (project, user) clamp on what an assistant acting ON BEHALF OF this user may do.
     const assistantMode = body.assistant_mode ?? "inherit";
@@ -3070,13 +3195,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
     const project = queryOne<{ id: string }>(this.ctx.storage.sql as never, "SELECT id FROM projects WHERE id = ?", projectId);
     if (!project) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+    const now = new Date().toISOString();
     execute(
       this.ctx.storage.sql as never,
-      `INSERT INTO project_members (project_id, user_id, role, assistant_mode, added_at) VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO project_members (project_id, user_id, role, assistant_mode, added_at, created_at) VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(project_id, user_id) DO UPDATE SET role = excluded.role, assistant_mode = excluded.assistant_mode`,
-      projectId, body.user_id, role, assistantMode, new Date().toISOString()
+      projectId, body.user_id, role, assistantMode, now, now
     );
-    return Response.json({ project_id: projectId, user_id: body.user_id, role, assistant_mode: assistantMode }, { status: 201 });
+    return Response.json({ project_id: projectId, user_id: body.user_id, role, assistant_mode: assistantMode, created_at: now }, { status: 201 });
   }
 
   /**
@@ -3107,7 +3233,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return row.role as "owner" | "editor" | "viewer";
   }
 
-  private removeProjectMember(projectId: string, userId: string): Response {
+  public removeProjectMember(projectId: string, userId: string): Response {
     execute(this.ctx.storage.sql as never, "DELETE FROM project_members WHERE project_id = ? AND user_id = ?", projectId, userId);
     return Response.json({ removed: true });
   }
@@ -4621,18 +4747,32 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // listing hides them (thread_kind != 'primary') so a project's builder-facing thread list
   // isn't flooded by a 16-way sub-agent fan-out or a busy WhatsApp bot; a project can opt in
   // via show_sub_threads, or any caller can ask for them explicitly via include_sub_threads.
-  private listThreads(params: URLSearchParams): Response {
+  public listThreads(params: URLSearchParams): Response {
     const spaceId = params.get("space_id") ?? "";
     const projectId = params.get("project_id");
+    const viewerId = params.get("viewer_id") ?? params.get("user_id") ?? "";
     const parentThreadId = params.get("parent_thread_id");
     let showSubThreads = params.get("include_sub_threads") === "true";
-    if (!showSubThreads && projectId) {
-      const project = queryOne<{ show_sub_threads: number }>(
+
+    if (projectId) {
+      const project = queryOne<{ id: string; space_id: string; visibility: string; show_sub_threads: number }>(
         this.ctx.storage.sql as never,
-        "SELECT show_sub_threads FROM projects WHERE id = ?",
+        "SELECT id, space_id, visibility, show_sub_threads FROM projects WHERE id = ?",
         projectId
       );
-      showSubThreads = project?.show_sub_threads === 1;
+      if (!project) {
+        return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+      }
+      if (project.visibility === "private") {
+        const isMember = viewerId ? this.getProjectMemberRole(projectId, viewerId) !== null : false;
+        const isAdmin = viewerId ? this.isSpaceOwnerOrAdmin(viewerId, project.space_id) : false;
+        if (!isMember && !isAdmin) {
+          return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+        }
+      }
+      if (!showSubThreads) {
+        showSubThreads = project.show_sub_threads === 1;
+      }
     }
 
     const clauses = ["space_id = ?"];
@@ -4640,6 +4780,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (projectId) {
       clauses.push("project_id = ?");
       args.push(projectId);
+    } else if (viewerId && !this.isSpaceOwnerOrAdmin(viewerId, spaceId)) {
+      clauses.push("(project_id IS NULL OR project_id IN (SELECT id FROM projects WHERE visibility = 'public' OR id IN (SELECT project_id FROM project_members WHERE user_id = ?)))");
+      args.push(viewerId);
     }
     // An explicit parent_thread_id ask (the shell's "show what the assistant discussed with the
     // agent about this thread" panel, or the assistant's own thread.list op) is always answered
@@ -5371,5 +5514,115 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       console.error("[SpaceDO] checkCrossSpace UNEXPECTED ERROR — defaulting to DENIED", err);
       return Response.json({ permitted: false, reason: "Permission check failed; access denied as a safety default.", grant_type: null });
     }
+  }
+
+  // ── Project-Anchored Workflows (Chunk 04) ──────────────────────────────────
+  public async registerProjectWorkflow(request: Request, explicitProjectId?: string): Promise<Response> {
+    const body = await request.json<{
+      id?: string;
+      space_id?: string;
+      project_id?: string;
+      workflow_class: "COMPANY_AUTOMATION" | "VERTICAL_EXTENSION" | "EPHEMERAL_TASK";
+      title: string;
+      script_path: string;
+      trigger_type: string;
+      trigger_spec?: string | Record<string, unknown> | null;
+      status?: "ACTIVE" | "PAUSED" | "DISABLED";
+    }>().catch(() => ({}) as Record<string, never>);
+
+    const projectId = explicitProjectId || body.project_id;
+    const spaceId = body.space_id || (projectId ? queryOne<{ space_id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT space_id FROM projects WHERE id = ?",
+      projectId
+    )?.space_id : undefined);
+
+    if (!projectId || !spaceId || !body.title || !body.script_path || !body.trigger_type || !body.workflow_class) {
+      return Response.json(
+        { error_code: "bad_request", message: "space_id, project_id, workflow_class, title, script_path, and trigger_type are required" },
+        { status: 400 }
+      );
+    }
+
+    if (!["COMPANY_AUTOMATION", "VERTICAL_EXTENSION", "EPHEMERAL_TASK"].includes(body.workflow_class)) {
+      return Response.json(
+        { error_code: "bad_request", message: "workflow_class must be 'COMPANY_AUTOMATION', 'VERTICAL_EXTENSION', or 'EPHEMERAL_TASK'" },
+        { status: 400 }
+      );
+    }
+
+    const id = body.id || crypto.randomUUID();
+    const triggerSpecStr = body.trigger_spec
+      ? (typeof body.trigger_spec === "string" ? body.trigger_spec : JSON.stringify(body.trigger_spec))
+      : null;
+    const status = body.status || "ACTIVE";
+    const now = new Date().toISOString();
+
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO project_anchored_workflows (
+         id, space_id, project_id, workflow_class, title, script_path, trigger_type, trigger_spec, status, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         title = excluded.title,
+         script_path = excluded.script_path,
+         trigger_type = excluded.trigger_type,
+         trigger_spec = excluded.trigger_spec,
+         status = excluded.status,
+         updated_at = excluded.updated_at`,
+      id, spaceId, projectId, body.workflow_class, body.title, body.script_path, body.trigger_type, triggerSpecStr, status, now, now
+    );
+
+    const row = queryOne(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM project_anchored_workflows WHERE id = ?",
+      id
+    );
+
+    return Response.json(row, { status: 201 });
+  }
+
+  public listProjectWorkflows(projectId: string, params?: URLSearchParams): Response {
+    const workflowClass = params?.get("workflow_class");
+    const status = params?.get("status");
+    const clauses = ["project_id = ?"];
+    const args: unknown[] = [projectId];
+    if (workflowClass) {
+      clauses.push("workflow_class = ?");
+      args.push(workflowClass);
+    }
+    if (status) {
+      clauses.push("status = ?");
+      args.push(status);
+    }
+
+    const rows = queryAll(
+      this.ctx.storage.sql as never,
+      `SELECT * FROM project_anchored_workflows WHERE ${clauses.join(" AND ")} ORDER BY created_at DESC`,
+      ...args
+    );
+    return Response.json({ data: rows, count: rows.length });
+  }
+
+  public listCompanyAutomations(params?: URLSearchParams): Response {
+    const spaceId = params?.get("space_id");
+    const status = params?.get("status");
+    const clauses = ["workflow_class = 'COMPANY_AUTOMATION'"];
+    const args: unknown[] = [];
+    if (spaceId) {
+      clauses.push("space_id = ?");
+      args.push(spaceId);
+    }
+    if (status) {
+      clauses.push("status = ?");
+      args.push(status);
+    }
+
+    const rows = queryAll(
+      this.ctx.storage.sql as never,
+      `SELECT * FROM project_anchored_workflows WHERE ${clauses.join(" AND ")} ORDER BY created_at DESC`,
+      ...args
+    );
+    return Response.json({ data: rows, count: rows.length });
   }
 }

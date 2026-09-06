@@ -776,7 +776,7 @@ app.post("/spaces/:spaceId/projects", async (c) => {
   const identity = getCallerIdentity(c);
   const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
-  const body = await c.req.json<{ name: string; description?: string; visibility?: "public" | "private" }>().catch(() => ({ name: "" }));
+  const body = await c.req.json<{ name: string; description?: string; visibility?: "public" | "private"; created_by_user_id?: string }>().catch(() => ({ name: "" }));
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   // system_caller is computed from the verified absence of an authenticated identity (no
   // x-naelao-user-id) — NOT read from the client's own JSON body — and placed after `...body` so
@@ -784,9 +784,10 @@ app.post("/spaces/:spaceId/projects", async (c) => {
   // already ensures this route is only reachable via the router (which always sets
   // x-naelao-user-id for a real session) or a genuine internal caller (the provisioner, which
   // never does) — see SpaceDO.createProject's fail-closed feature-kind gate.
+  const creatorId = identity.userId || body.created_by_user_id || undefined;
   const res = await forwardToSpaceDO(
     stub, "/projects", "POST",
-    JSON.stringify({ ...body, space_id: spaceId, tenant_id: tenantId, created_by: identity.userId || undefined, system_caller: !identity.userId })
+    JSON.stringify({ ...body, space_id: spaceId, tenant_id: tenantId, created_by: creatorId, created_by_user_id: creatorId, system_caller: !creatorId })
   );
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
@@ -797,6 +798,8 @@ app.use("/spaces/:spaceId/projects/:projectId/members", requireInternalHmac((c) 
 app.use("/spaces/:spaceId/projects/:projectId/members", requireBusinessMembership({ GET: "member", POST: "admin" }));
 app.use("/spaces/:spaceId/projects/:projectId/members/:userId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/projects/:projectId/members/:userId", requireBusinessMembership({ DELETE: "admin" }));
+app.use("/spaces/:spaceId/projects/:projectId/visibility", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/visibility", requireBusinessMembership({ PATCH: "admin" }));
 app.use("/spaces/:spaceId/projects/:projectId/activate-thread", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/projects/:projectId/activate-thread", requireBusinessMembership({ POST: "member" }));
 
@@ -824,6 +827,25 @@ app.delete("/spaces/:spaceId/projects/:projectId/members/:userId", async (c) => 
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(userId)}`, "DELETE");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.patch("/spaces/:spaceId/projects/:projectId/visibility", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const identity = getCallerIdentity(c);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const body = await c.req.json<{ visibility?: "public" | "private" }>().catch(() => ({}) as Record<string, never>);
+  if (!body.visibility || (body.visibility !== "public" && body.visibility !== "private")) {
+    return c.json({ error_code: "bad_request", message: "visibility must be 'public' or 'private'" }, 400);
+  }
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(
+    stub,
+    `/projects/${encodeURIComponent(projectId)}/visibility?tenant_id=${encodeURIComponent(tenantId)}`,
+    "PATCH",
+    JSON.stringify({ visibility: body.visibility, user_id: identity.userId })
+  );
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
@@ -876,15 +898,27 @@ app.use("/spaces/:spaceId/projects/:projectId/workspace/files", requireInternalH
 app.use("/spaces/:spaceId/projects/:projectId/workspace/files", requireBusinessMembership({ GET: "member" }));
 app.get("/spaces/:spaceId/projects/:projectId/workspace/files", async (c) => {
   const { spaceId, projectId } = c.req.param();
+  const identity = getCallerIdentity(c);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const viewerParam = identity.userId ? `?viewer_id=${encodeURIComponent(identity.userId)}` : "";
+  const checkRes = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/workspace/files${viewerParam}`, "GET");
+  if (!checkRes.ok) {
+    return new Response(checkRes.body, { status: checkRes.status, headers: { "content-type": "application/json" } });
+  }
   if (!c.env.SCRIPTS_R2) return c.json({ data: [], count: 0, unavailable: true });
   const prefix = workspaceKeyPrefix(spaceId, projectId);
+  const includeInternal = c.req.query("include_internal") === "true";
   const files: Array<{ path: string; size: number; uploaded: string }> = [];
   let cursor: string | undefined;
   do {
     const list = await c.env.SCRIPTS_R2.list({ prefix, ...(cursor ? { cursor } : {}), limit: 1000 });
     for (const obj of list.objects) {
       if (obj.key.endsWith("/.keep")) continue;
-      files.push({ path: obj.key.slice(prefix.length), size: obj.size, uploaded: obj.uploaded.toISOString() });
+      const relative = obj.key.slice(prefix.length);
+      if (!includeInternal && relative.startsWith(".avos/")) continue;
+      files.push({ path: relative, size: obj.size, uploaded: obj.uploaded.toISOString() });
       if (files.length >= WORKSPACE_MAX_FILES) break;
     }
     cursor = list.truncated && files.length < WORKSPACE_MAX_FILES ? list.cursor : undefined;
@@ -897,6 +931,15 @@ app.use("/spaces/:spaceId/projects/:projectId/workspace/files/*", requireInterna
 app.use("/spaces/:spaceId/projects/:projectId/workspace/files/*", requireBusinessMembership({ GET: "member" }));
 app.get("/spaces/:spaceId/projects/:projectId/workspace/files/*", async (c) => {
   const { spaceId, projectId } = c.req.param();
+  const identity = getCallerIdentity(c);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const viewerParam = identity.userId ? `?viewer_id=${encodeURIComponent(identity.userId)}` : "";
+  const checkRes = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/workspace/files${viewerParam}`, "GET");
+  if (!checkRes.ok) {
+    return new Response(checkRes.body, { status: checkRes.status, headers: { "content-type": "application/json" } });
+  }
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Workspace storage not configured" }, 503);
   const prefix = workspaceKeyPrefix(spaceId, projectId);
   const rest = c.req.path.split("/workspace/files/")[1] ?? "";
@@ -958,10 +1001,12 @@ app.all("/spaces/:spaceId/projects/:projectId/memory/*", async (c) => {
 // renders these as form fields, never as a code editor.
 app.get("/spaces/:spaceId/projects/:projectId", async (c) => {
   const { spaceId, projectId } = c.req.param();
-  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  const identity = getCallerIdentity(c);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
-  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}`, "GET");
+  const viewerParam = identity.userId ? `?viewer_id=${encodeURIComponent(identity.userId)}` : "";
+  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}${viewerParam}`, "GET");
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
@@ -2535,9 +2580,11 @@ app.use("/spaces/:spaceId/threads/:threadId", requireInternalHmac((c) => (c as u
 app.use("/spaces/:spaceId/threads/:threadId", requireBusinessMembership({ GET: "member" }));
 app.get("/spaces/:spaceId/threads", async (c) => {
   const spaceId = c.req.param("spaceId");
-  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  const identity = getCallerIdentity(c);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const qs = new URLSearchParams({ space_id: spaceId });
+  if (identity.userId) qs.set("viewer_id", identity.userId);
   const projectId = c.req.query("project_id");
   if (projectId) qs.set("project_id", projectId);
   const includeSubThreads = c.req.query("include_sub_threads");

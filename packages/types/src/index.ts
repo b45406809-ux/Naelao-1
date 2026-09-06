@@ -184,3 +184,7 @@ export interface BaseEnv {
   PLATFORM_SECRET: string;
   ENVIRONMENT: "development" | "staging" | "production";
 }
+
+// ── Space Hierarchy types ───────────────────────────────────────────────────
+export * from "./space-hierarchy";
+export * from "./project-automations";

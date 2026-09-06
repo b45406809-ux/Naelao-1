@@ -102,6 +102,10 @@ bucket_name = "naelao-exports"
 binding = "SCRIPTS_R2"
 bucket_name = "naelao-agent-scripts"
 
+[[artifacts]]
+binding = "AGENT_REPOS"
+namespace = "naelao-git-mesh"
+
 # KV for caching SpaceType manifests (TTL 1h — provisioner reads this before hitting the DO)
 [[kv_namespaces]]
 binding = "NAELAO_CONFIG_KV"
