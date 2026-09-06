@@ -1,0 +1,45 @@
+name: Run AVOS Phase
+
+on:
+  workflow_dispatch:
+    inputs:
+      phase_number:
+        description: 'Phase number to implement (1 to 8)'
+        required: true
+        default: '1'
+
+jobs:
+  implement-phase:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Configure Git Committer
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Install Runtime Dependencies
+        run: |
+          npm install @google/genai repomix
+
+      - name: Execute Phase Runner
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PHASE_NUMBER: ${{ github.event.inputs.phase_number }}
+        run: |
+          node scripts/run-phase.mjs
