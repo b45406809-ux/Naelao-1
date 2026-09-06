@@ -1065,6 +1065,56 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_tasks_thread ON tasks(thread_id) WHERE thread_id IS NOT NULL;
     `,
   },
+  {
+    version: 40,
+    description: "projects created_by_user_id and project_members role expansion",
+    up: `
+      ALTER TABLE projects ADD COLUMN created_by_user_id TEXT;
+
+      CREATE TABLE IF NOT EXISTS project_members_new (
+        project_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner', 'admin', 'editor', 'member', 'viewer')),
+        assistant_mode TEXT NOT NULL DEFAULT 'inherit' CHECK (assistant_mode IN ('inherit','read_only','none')),
+        added_at TEXT NOT NULL DEFAULT (datetime('now')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (project_id, user_id)
+      );
+      INSERT OR IGNORE INTO project_members_new (project_id, user_id, role, assistant_mode, added_at, created_at)
+      SELECT project_id, user_id,
+        CASE WHEN role IN ('owner', 'admin', 'editor', 'member', 'viewer') THEN role ELSE 'member' END,
+        assistant_mode,
+        added_at,
+        added_at
+      FROM project_members;
+      DROP TABLE project_members;
+      ALTER TABLE project_members_new RENAME TO project_members;
+      CREATE INDEX IF NOT EXISTS idx_pm_user ON project_members(user_id);
+
+      UPDATE projects SET created_by_user_id = created_by WHERE created_by_user_id IS NULL AND created_by IS NOT NULL;
+    `,
+  },
+  {
+    version: 41,
+    description: "project_anchored_workflows table",
+    up: `
+      CREATE TABLE IF NOT EXISTS project_anchored_workflows (
+        id TEXT PRIMARY KEY,
+        space_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        workflow_class TEXT NOT NULL CHECK (workflow_class IN ('COMPANY_AUTOMATION', 'VERTICAL_EXTENSION', 'EPHEMERAL_TASK')),
+        title TEXT NOT NULL,
+        script_path TEXT NOT NULL,
+        trigger_type TEXT NOT NULL,
+        trigger_spec TEXT,
+        status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'PAUSED', 'DISABLED')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_paw_proj ON project_anchored_workflows(project_id, workflow_class);
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -1713,6 +1763,28 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // GET /cross-space-check?user_id=&requesting_space_id=&target_space_id=&grant_type=
       if (method === "GET" && url.pathname === "/cross-space-check") {
         return this.checkCrossSpace(url.searchParams);
+      }
+
+      // ── project_anchored_workflows endpoints ──────────────────────────────────
+      const projWorkflowsMatch = url.pathname.match(/^\/projects\/([^/]+)\/workflows$/);
+      if (method === "GET" && projWorkflowsMatch?.[1]) {
+        return this.listProjectWorkflows(projWorkflowsMatch[1], url.searchParams);
+      }
+      if (method === "POST" && projWorkflowsMatch?.[1]) {
+        return this.registerProjectWorkflow(request, projWorkflowsMatch[1]);
+      }
+      if (method === "GET" && url.pathname === "/project-workflows") {
+        const projectId = url.searchParams.get("project_id");
+        if (projectId) {
+          return this.listProjectWorkflows(projectId, url.searchParams);
+        }
+        return this.listCompanyAutomations(url.searchParams);
+      }
+      if (method === "POST" && url.pathname === "/project-workflows") {
+        return this.registerProjectWorkflow(request);
+      }
+      if (method === "GET" && url.pathname === "/company-automations") {
+        return this.listCompanyAutomations(url.searchParams);
       }
 
       return Response.json(
@@ -5444,54 +5516,113 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
   }
 
-    // tasks prebuilt is what's expected to read it before marking a task IN_PROGRESS).
-    version: 39,
-    description: "tasks — a per-project task DAG (dependencies + status), for multi-agent coordination",
-    up: `
-      CREATE TABLE IF NOT EXISTS tasks (
-        id             TEXT PRIMARY KEY,
-        space_id       TEXT NOT NULL,
-        project_id     TEXT,
-        thread_id      TEXT,
-        title          TEXT NOT NULL,
-        status         TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'in_progress', 'completed', 'blocked', 'cancelled')),
-        dependencies   TEXT NOT NULL DEFAULT '[]',
-        assigned_agent TEXT,
-        created_at     TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
-      );
-      CREATE INDEX IF NOT EXISTS idx_tasks_space_project ON tasks(space_id, project_id, status);
-      CREATE INDEX IF NOT EXISTS idx_tasks_thread ON tasks(thread_id) WHERE thread_id IS NOT NULL;
-    `,
-  },
-  {
-    version: 40,
-    description: "projects created_by_user_id and project_members role expansion",
-    up: `
-      ALTER TABLE projects ADD COLUMN created_by_user_id TEXT;
+  // ── Project-Anchored Workflows (Chunk 04) ──────────────────────────────────
+  public async registerProjectWorkflow(request: Request, explicitProjectId?: string): Promise<Response> {
+    const body = await request.json<{
+      id?: string;
+      space_id?: string;
+      project_id?: string;
+      workflow_class: "COMPANY_AUTOMATION" | "VERTICAL_EXTENSION" | "EPHEMERAL_TASK";
+      title: string;
+      script_path: string;
+      trigger_type: string;
+      trigger_spec?: string | Record<string, unknown> | null;
+      status?: "ACTIVE" | "PAUSED" | "DISABLED";
+    }>().catch(() => ({}) as Record<string, never>);
 
-      CREATE TABLE IF NOT EXISTS project_members_new (
-        project_id TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner', 'admin', 'editor', 'member', 'viewer')),
-        assistant_mode TEXT NOT NULL DEFAULT 'inherit' CHECK (assistant_mode IN ('inherit','read_only','none')),
-        added_at TEXT NOT NULL DEFAULT (datetime('now')),
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        PRIMARY KEY (project_id, user_id)
-      );
-      INSERT OR IGNORE INTO project_members_new (project_id, user_id, role, assistant_mode, added_at, created_at)
-      SELECT project_id, user_id,
-        CASE WHEN role IN ('owner', 'admin', 'editor', 'member', 'viewer') THEN role ELSE 'member' END,
-        assistant_mode,
-        added_at,
-        added_at
-      FROM project_members;
-      DROP TABLE project_members;
-      ALTER TABLE project_members_new RENAME TO project_members;
-      CREATE INDEX IF NOT EXISTS idx_pm_user ON project_members(user_id);
+    const projectId = explicitProjectId || body.project_id;
+    const spaceId = body.space_id || (projectId ? queryOne<{ space_id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT space_id FROM projects WHERE id = ?",
+      projectId
+    )?.space_id : undefined);
 
-      UPDATE projects SET created_by_user_id = created_by WHERE created_by_user_id IS NULL AND created_by IS NOT NULL;
-    `,
-  },
-];
+    if (!projectId || !spaceId || !body.title || !body.script_path || !body.trigger_type || !body.workflow_class) {
+      return Response.json(
+        { error_code: "bad_request", message: "space_id, project_id, workflow_class, title, script_path, and trigger_type are required" },
+        { status: 400 }
+      );
+    }
+
+    if (!["COMPANY_AUTOMATION", "VERTICAL_EXTENSION", "EPHEMERAL_TASK"].includes(body.workflow_class)) {
+      return Response.json(
+        { error_code: "bad_request", message: "workflow_class must be 'COMPANY_AUTOMATION', 'VERTICAL_EXTENSION', or 'EPHEMERAL_TASK'" },
+        { status: 400 }
+      );
+    }
+
+    const id = body.id || crypto.randomUUID();
+    const triggerSpecStr = body.trigger_spec
+      ? (typeof body.trigger_spec === "string" ? body.trigger_spec : JSON.stringify(body.trigger_spec))
+      : null;
+    const status = body.status || "ACTIVE";
+    const now = new Date().toISOString();
+
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO project_anchored_workflows (
+         id, space_id, project_id, workflow_class, title, script_path, trigger_type, trigger_spec, status, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         title = excluded.title,
+         script_path = excluded.script_path,
+         trigger_type = excluded.trigger_type,
+         trigger_spec = excluded.trigger_spec,
+         status = excluded.status,
+         updated_at = excluded.updated_at`,
+      id, spaceId, projectId, body.workflow_class, body.title, body.script_path, body.trigger_type, triggerSpecStr, status, now, now
+    );
+
+    const row = queryOne(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM project_anchored_workflows WHERE id = ?",
+      id
+    );
+
+    return Response.json(row, { status: 201 });
+  }
+
+  public listProjectWorkflows(projectId: string, params?: URLSearchParams): Response {
+    const workflowClass = params?.get("workflow_class");
+    const status = params?.get("status");
+    const clauses = ["project_id = ?"];
+    const args: unknown[] = [projectId];
+    if (workflowClass) {
+      clauses.push("workflow_class = ?");
+      args.push(workflowClass);
+    }
+    if (status) {
+      clauses.push("status = ?");
+      args.push(status);
+    }
+
+    const rows = queryAll(
+      this.ctx.storage.sql as never,
+      `SELECT * FROM project_anchored_workflows WHERE ${clauses.join(" AND ")} ORDER BY created_at DESC`,
+      ...args
+    );
+    return Response.json({ data: rows, count: rows.length });
+  }
+
+  public listCompanyAutomations(params?: URLSearchParams): Response {
+    const spaceId = params?.get("space_id");
+    const status = params?.get("status");
+    const clauses = ["workflow_class = 'COMPANY_AUTOMATION'"];
+    const args: unknown[] = [];
+    if (spaceId) {
+      clauses.push("space_id = ?");
+      args.push(spaceId);
+    }
+    if (status) {
+      clauses.push("status = ?");
+      args.push(status);
+    }
+
+    const rows = queryAll(
+      this.ctx.storage.sql as never,
+      `SELECT * FROM project_anchored_workflows WHERE ${clauses.join(" AND ")} ORDER BY created_at DESC`,
+      ...args
+    );
+    return Response.json({ data: rows, count: rows.length });
+  }
 }
