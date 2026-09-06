@@ -44,16 +44,32 @@ export async function resolveEndUserBusinessRole(
     const space = await db.prepare("SELECT parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'")
       .bind(spaceId).first<{ parent_space_id: string | null }>();
     if (!space) return null;
+    
+    // Check direct membership first
+    const directMembership = await db.prepare(
+      "SELECT role FROM business_memberships WHERE business_space_id = ? AND end_user_id = ? AND status = 'active'"
+    ).bind(spaceId, endUserId).first<{ role: string }>();
+
+    if (directMembership) {
+      return directMembership.role as BusinessRole;
+    }
+
     if (!space.parent_space_id) {
       // The product root — resolveProductEndUserClaims already proved a valid session scoped to
       // exactly this space, so "member" is safe here (this is the Phase B behavior, unchanged).
       return "member";
     }
-    const membership = await db.prepare(
+
+    // Downward Oversight inheritance: Check if user has admin/owner/member role in parent_space_id
+    const parentMembership = await db.prepare(
       "SELECT role FROM business_memberships WHERE business_space_id = ? AND end_user_id = ? AND status = 'active'"
-    ).bind(spaceId, endUserId).first<{ role: string }>();
-    if (!membership) return null;
-    return membership.role as BusinessRole;
+    ).bind(space.parent_space_id, endUserId).first<{ role: string }>();
+
+    if (parentMembership && (parentMembership.role === "admin" || parentMembership.role === "owner" || parentMembership.role === "member")) {
+      return parentMembership.role as BusinessRole;
+    }
+
+    return null;
   } catch {
     return null;
   }
@@ -104,11 +120,25 @@ export async function resolveWalletAccessRole(
       .bind(spaceId).first<{ parent_space_id: string | null }>();
     if (!space) return null;
     if (!space.parent_space_id) return null; // product root: builder-only, never a product_end_user
+    
     const membership = await db.prepare(
       "SELECT role FROM business_memberships WHERE business_space_id = ? AND end_user_id = ? AND status = 'active'"
     ).bind(spaceId, endUserId).first<{ role: string }>();
-    if (!membership) return null;
-    return membership.role as BusinessRole;
+
+    if (membership) {
+      return membership.role as BusinessRole;
+    }
+
+    // Check parent inheritance for wallet
+    const parentMembership = await db.prepare(
+      "SELECT role FROM business_memberships WHERE business_space_id = ? AND end_user_id = ? AND status = 'active'"
+    ).bind(space.parent_space_id, endUserId).first<{ role: string }>();
+
+    if (parentMembership && (parentMembership.role === "admin" || parentMembership.role === "owner" || parentMembership.role === "member")) {
+      return parentMembership.role as BusinessRole;
+    }
+
+    return null;
   } catch {
     return null;
   }
