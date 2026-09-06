@@ -84,6 +84,10 @@ max_instances = 5
 binding = "SCRIPTS_R2"
 bucket_name = "naelao-agent-scripts"
 
+[[artifacts]]
+binding = "AGENT_REPOS"
+namespace = "naelao-git-mesh"
+
 # Vectorize index for script.find semantic search (spec §16). Optional — the engine
 # degrades to a tag/text scan when absent.
 [[vectorize]]
