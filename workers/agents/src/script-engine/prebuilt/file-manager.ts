@@ -15,7 +15,14 @@ function bucket(ctx: PrebuiltOpContext): R2Bucket {
 function key(ctx: PrebuiltOpContext, path: string): string {
   const clean = String(path).replace(/^\/+/, "");
   if (clean.includes("..")) throw new Error(`Path traversal rejected: ${path}`);
+  if (!argsIncludeInternal(ctx) && clean.startsWith(".avos/")) {
+    throw new Error(`Access to internal AVOS namespace (.avos/) is restricted`);
+  }
   return `${workspacePrefix(ctx.env)}${clean}`;
+}
+function argsIncludeInternal(ctx: PrebuiltOpContext): boolean {
+  // If needed, check if context flags allow internal access; by default exclude .avos/
+  return false;
 }
 function reqStr(args: Record<string, unknown>, name: string): string {
   const v = args[name];

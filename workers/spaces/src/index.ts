@@ -909,13 +909,16 @@ app.get("/spaces/:spaceId/projects/:projectId/workspace/files", async (c) => {
   }
   if (!c.env.SCRIPTS_R2) return c.json({ data: [], count: 0, unavailable: true });
   const prefix = workspaceKeyPrefix(spaceId, projectId);
+  const includeInternal = c.req.query("include_internal") === "true";
   const files: Array<{ path: string; size: number; uploaded: string }> = [];
   let cursor: string | undefined;
   do {
     const list = await c.env.SCRIPTS_R2.list({ prefix, ...(cursor ? { cursor } : {}), limit: 1000 });
     for (const obj of list.objects) {
       if (obj.key.endsWith("/.keep")) continue;
-      files.push({ path: obj.key.slice(prefix.length), size: obj.size, uploaded: obj.uploaded.toISOString() });
+      const relative = obj.key.slice(prefix.length);
+      if (!includeInternal && relative.startsWith(".avos/")) continue;
+      files.push({ path: relative, size: obj.size, uploaded: obj.uploaded.toISOString() });
       if (files.length >= WORKSPACE_MAX_FILES) break;
     }
     cursor = list.truncated && files.length < WORKSPACE_MAX_FILES ? list.cursor : undefined;

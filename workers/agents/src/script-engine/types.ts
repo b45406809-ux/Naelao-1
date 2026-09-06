@@ -878,3 +878,26 @@ export function workspacePrefix(env: Pick<ScriptEngineEnv, "spaceId" | "projectI
     ? `spaces/${env.spaceId}/projects/${env.projectId}/workspace/`
     : `spaces/${env.spaceId}/workspace/`;
 }
+
+/** Helper returning the base user-facing workspace prefix R2 path. */
+export function getWorkspacePath(spaceId: string, projectId?: string): string {
+  return projectId
+    ? `spaces/${spaceId}/projects/${projectId}/workspace/`
+    : `spaces/${spaceId}/workspace/`;
+}
+
+/** Helper returning the internal AVOS system meta-state R2 prefix path. */
+export function getAvosInternalPath(spaceId: string, projectId?: string): string {
+  return projectId
+    ? `spaces/${spaceId}/projects/${projectId}/.avos/`
+    : `spaces/${spaceId}/.avos/`;
+}
+
+/** Authoritative AVOS internal file path conventions. */
+export const AVOS_PATH_CONVENTIONS = {
+  sharedSkills: ".avos/shared/skills/",
+  sharedWorkflows: ".avos/shared/workflows/",
+  agentSoul: (agentId: string) => `.avos/agents/${agentId}/SOUL.md`,
+  agentMemory: (agentId: string) => `.avos/agents/${agentId}/memory.json`,
+  agentScratchpad: (agentId: string) => `.avos/agents/${agentId}/scratchpad/`,
+};
