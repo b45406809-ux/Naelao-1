@@ -190,3 +190,9 @@ export * from "./space-hierarchy";
 export * from "./project-automations";
 export * from "./credentials";
 export * from "./connectors";
+export * from "./dag";
+export * from "./mini-agi";
+export * from "./knowledge";
+export * from "./mcp-mesh";
+
+

@@ -15,6 +15,7 @@ import { createBusinessForEndUser } from "./business-create.js";
 import { loadTemplateCatalog, loadShellCatalog } from "./template-catalog.js";
 import { registerBusinessRoutes } from "./business-routes.js";
 import { ALLOWED_MODELS, isAllowedModel, isValidEffortLevel, isPersonalPlanTier, PERSONAL_PLAN_LIMITS, type PersonalPlanTier } from "@naelao/billing-core";
+import { mcpMeshApp } from "./routes/mcp-mesh-routes.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { LockDO } from "./do/LockDO.js";
@@ -4496,6 +4497,7 @@ registerBuilderRoutes(app);
 registerProductEndUserRoutes(app);
 // Three-Tier Platform Model, Phase C (docs/spec-appendix A1.17) — businesses, space switcher, invites.
 registerBusinessRoutes(app);
+app.route("/", mcpMeshApp);
 
 app.onError((err, c) => errorResponse(err, c.get("requestId") ?? "unknown"));
 

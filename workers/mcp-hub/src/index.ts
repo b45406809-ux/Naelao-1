@@ -2,6 +2,8 @@
 import { Hono } from "hono";
 import { errorResponse, requestId, requireInternalHmac, mintInternalToken } from "@naelao/http";
 import { checkSsrf } from "@naelao/security";
+import { getDOName } from "@naelao/crypto";
+import { McpJsonRpcRequest, McpJsonRpcResponse, McpMeshEndpointManifest } from "@naelao/types";
 
 export interface Env {
   ENVIRONMENT: string;
@@ -16,23 +18,17 @@ export interface Env {
    *  never leaves this worker. Optional: when unset and a connector has no BYO credential, calls
    *  degrade honestly with `provider_not_configured`. */
   COMPOSIO_API_KEY?: string;
-  /** VERIFIED (2026-07, against Pipedream's own docs): Pipedream's REST API is OAuth
-   *  client_credentials-only — there is no "simple API key" the way Composio has one. Naelao's
-   *  ONE Pipedream OAuth client id/secret (workers/agents/src/connectors/pipedream.ts holds the
-   *  canonical implementation of the token exchange this worker mirrors below — kept in sync by
-   *  hand, same precedent as the reserved-capability lists above). */
-  PIPEDREAM_CLIENT_ID?: string;
-  PIPEDREAM_CLIENT_SECRET?: string;
-  /** "development" or "production", required on every Pipedream Connect call. Defaults below. */
-  PIPEDREAM_ENVIRONMENT?: string;
-  /** OAuth2 connectors ("Connect with Whop" etc.): buildAuthHeaders proactively refreshes a
-   *  near-expiry access token by calling this internal endpoint — only the agents worker holds
-   *  the connector's OAuth client secret, so refresh logic lives there, not here. */
   AGENTS_WORKER?: Fetcher;
-  /** Meters a call that rode on Naelao's OWN platform provider key (not the builder's BYO
-   *  credential) so it bills the builder's org rather than being an open, unattributed platform
-   *  cost sink. Optional/best-effort — degrades to unmetered (not unblocked) when unwired. */
   BILLING_WORKER?: Fetcher;
+  SPACE_DO?: DurableObjectNamespace;
+}
+
+async function spaceDoStub(env: Env, spaceId: string, tenantId: string) {
+  if (!env.SPACE_DO) {
+    throw new Error("SPACE_DO binding is required");
+  }
+  const doId = env.SPACE_DO.idFromName(await getDOName("space", spaceId, tenantId, env.PLATFORM_SECRET));
+  return env.SPACE_DO.get(doId);
 }
 
 /** Meter a tool call that resolved to Naelao's platform provider key (never a builder's own BYO
@@ -106,7 +102,7 @@ async function generateCredentialToken(platformSecret: string, spaceId: string, 
   return `t=${timestamp},aid=${agentId},v1=${hex}`;
 }
 
-type ConnectorProvider = "direct" | "composio" | "pipedream";
+type ConnectorProvider = "direct" | "composio" | "project";
 
 export interface McpServer {
   id: string;
@@ -118,7 +114,7 @@ export interface McpServer {
   auth_secret_name: string | null; // references space_credentials table
   enabled: number; // 0 or 1 (D1 stores booleans as integers)
   connector_provider: ConnectorProvider;
-  /** Provider's opaque connection reference (Composio connected_account_id / Pipedream user_id). Never the underlying OAuth token. */
+  /** Provider's opaque connection reference (Composio connected_account_id / Project ID). Never the underlying OAuth token. */
   provider_connection_id: string | null;
   created_at: string;
   updated_at: string;
@@ -198,83 +194,7 @@ async function composioListTools(
   return { tools: data.items ?? [] };
 }
 
-// Module-scoped OAuth access-token cache — mirrors connectors/pipedream.ts's own cache (a soft
-// optimization only; a cold isolate simply refetches, never relied on for correctness).
-const pipedreamTokenCache = new Map<string, { accessToken: string; expiresAt: number }>();
 
-/** Exchanges Naelao's platform Pipedream OAuth client for a short-lived (1hr) access token —
- *  Pipedream's REST API accepts NOTHING else, confirmed against their own docs (no static API
- *  key path exists, unlike Composio's x-api-key). Never throws to its caller; a failed exchange
- *  degrades to the same provider_not_configured/credential_error path a missing key already
- *  takes. */
-async function getPipedreamAccessToken(clientId: string, clientSecret: string): Promise<string | null> {
-  const cached = pipedreamTokenCache.get(clientId);
-  if (cached && cached.expiresAt > Date.now() + 30_000) return cached.accessToken;
-  try {
-    const resp = await fetch("https://api.pipedream.com/v1/oauth/token", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ grant_type: "client_credentials", client_id: clientId, client_secret: clientSecret }),
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!resp.ok) return null;
-    const json = await resp.json<{ access_token?: string; expires_in?: number }>();
-    if (!json.access_token) return null;
-    pipedreamTokenCache.set(clientId, { accessToken: json.access_token, expiresAt: Date.now() + (json.expires_in ?? 3600) * 1000 });
-    return json.access_token;
-  } catch {
-    return null;
-  }
-}
-
-async function pipedreamToolCall(
-  connectionId: string,
-  actionName: string,
-  input: Record<string, unknown>,
-  accessToken: string,
-  environment: string
-): Promise<ProviderToolCallResult> {
-  // Pipedream Connect execute-action endpoint. `accessToken` is a real OAuth access token
-  // (client_credentials-derived), never a static key — see getPipedreamAccessToken above.
-  const resp = await fetch(
-    `https://api.pipedream.com/v1/connect/actions/${encodeURIComponent(actionName)}/run`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${accessToken}`,
-        "x-pd-environment": environment,
-        "x-pd-end-user-id": connectionId,
-      },
-      body: JSON.stringify({ inputs: input }),
-      signal: AbortSignal.timeout(30_000),
-    }
-  );
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => "");
-    return { error: `Pipedream returned ${resp.status}: ${text.slice(0, 200)}` };
-  }
-  const data = await resp.json<{ data?: unknown; error?: string }>();
-  if (data.error) return { error: data.error };
-  return { result: data.data };
-}
-
-async function pipedreamListTools(
-  connectionId: string,
-  accessToken: string,
-  environment: string
-): Promise<{ tools: unknown[] }> {
-  const resp = await fetch(
-    `https://api.pipedream.com/v1/connect/components/actions?end_user_id=${encodeURIComponent(connectionId)}`,
-    {
-      headers: { "Authorization": `Bearer ${accessToken}`, "x-pd-environment": environment },
-      signal: AbortSignal.timeout(15_000),
-    }
-  );
-  if (!resp.ok) return { tools: [] };
-  const data = await resp.json<{ data?: unknown[] }>();
-  return { tools: data.data ?? [] };
-}
 
 function validateEnv(env: Env): void {
   if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
@@ -475,15 +395,8 @@ async function resolveProviderApiKey(server: McpServer, env: Env, agentId: strin
 
   if (server.connector_provider === "composio") {
     if (env.COMPOSIO_API_KEY) return { ok: true, apiKey: env.COMPOSIO_API_KEY, source: "platform" };
-  } else if (env.PIPEDREAM_CLIENT_ID && env.PIPEDREAM_CLIENT_SECRET) {
-    // Pipedream has no static platform key — resolve to a live OAuth access token instead
-    // (client_credentials-only per its own docs; see getPipedreamAccessToken above).
-    const accessToken = await getPipedreamAccessToken(env.PIPEDREAM_CLIENT_ID, env.PIPEDREAM_CLIENT_SECRET);
-    if (accessToken) return { ok: true, apiKey: accessToken, source: "platform" };
-    return {
-      ok: false, status: 502, errorCode: "provider_auth_failed",
-      message: "Pipedream OAuth token exchange failed (check PIPEDREAM_CLIENT_ID/PIPEDREAM_CLIENT_SECRET)",
-    };
+  } else if (server.connector_provider === "project") {
+    return { ok: true, apiKey: "", source: "byo" };
   }
   return {
     ok: false, status: 503, errorCode: "provider_not_configured",
@@ -522,8 +435,8 @@ app.post("/v1/spaces/:spaceId/mcp-servers", async (c) => {
   }>();
 
   const connectorProvider: ConnectorProvider = body.connector_provider ?? "direct";
-  if (!["direct", "composio", "pipedream"].includes(connectorProvider)) {
-    return c.json({ error_code: "bad_request", message: "connector_provider must be 'direct', 'composio', or 'pipedream'" }, 400);
+  if (!["direct", "composio", "project"].includes(connectorProvider)) {
+    return c.json({ error_code: "bad_request", message: "connector_provider must be 'direct', 'composio', or 'project'" }, 400);
   }
 
   // For provider-routed connectors a url is optional (the provider resolves the endpoint);
@@ -554,8 +467,8 @@ app.post("/v1/spaces/:spaceId/mcp-servers", async (c) => {
     }
   }
 
-  if ((connectorProvider === "composio" || connectorProvider === "pipedream") && !body.provider_connection_id) {
-    return c.json({ error_code: "bad_request", message: "provider_connection_id is required for Composio/Pipedream connectors" }, 400);
+  if ((connectorProvider === "composio" || connectorProvider === "project") && !body.provider_connection_id) {
+    return c.json({ error_code: "bad_request", message: "provider_connection_id is required for Composio/Project connectors" }, 400);
   }
 
   const id = crypto.randomUUID();
@@ -641,7 +554,7 @@ app.get("/v1/spaces/:spaceId/mcp-servers/:serverId/tools", async (c) => {
   // Provider-routed connectors skip direct SSRF/credential checks and go through the provider API.
   // G-BF02: key resolution is BYO-credential-first, then Naelao's platform key — see
   // resolveProviderApiKey.
-  if (server.connector_provider === "composio" || server.connector_provider === "pipedream") {
+  if (server.connector_provider === "composio") {
     const keyRes = await resolveProviderApiKey(server, c.env, c.req.header("x-naelao-agent-id") ?? "mcp-hub");
     if (!keyRes.ok) {
       return c.json({ error_code: keyRes.errorCode, message: keyRes.message }, keyRes.status);
@@ -649,10 +562,27 @@ app.get("/v1/spaces/:spaceId/mcp-servers/:serverId/tools", async (c) => {
     if (!server.provider_connection_id) {
       return c.json({ error_code: "bad_request", message: "Provider connection_id missing" }, 400);
     }
-    if (server.connector_provider === "composio") {
-      return c.json(await composioListTools(server.provider_connection_id, keyRes.apiKey));
+    return c.json(await composioListTools(server.provider_connection_id, keyRes.apiKey));
+  }
+
+  if (server.connector_provider === "project") {
+    const targetProjectId = server.provider_connection_id;
+    if (!targetProjectId) {
+      return c.json({ error_code: "bad_request", message: "Target project ID missing" }, 400);
     }
-    return c.json(await pipedreamListTools(server.provider_connection_id, keyRes.apiKey, c.env.PIPEDREAM_ENVIRONMENT ?? "development"));
+    const { tenantId } = getCallerIdentity(c);
+    const spaceDO = await spaceDoStub(c.env, spaceId, tenantId);
+    const manifestRes = await spaceDO.fetch(`http://space-do/internal/projects/${targetProjectId}/mcp-manifest`, {
+      headers: {
+        "x-naelao-caller-id": c.req.header("x-naelao-agent-id") ?? "anonymous",
+        "x-naelao-tenant-id": tenantId
+      }
+    });
+    if (!manifestRes.ok) {
+      return c.json({ error_code: "mcp_discovery_failed", message: "Failed to resolve project MCP manifest" }, manifestRes.status as any);
+    }
+    const manifest = await manifestRes.json<McpMeshEndpointManifest>();
+    return c.json({ tools: manifest.tools });
   }
 
   // S0.5: re-validate at CALL TIME, not just registration — a hostname that resolved to a
@@ -745,7 +675,7 @@ app.post("/v1/spaces/:spaceId/mcp-servers/:serverId/tools/call", async (c) => {
 
   // Provider-routed connectors skip SSRF/credential checks — route through provider API.
   // G-BF02: key resolution is BYO-credential-first, then Naelao's platform key.
-  if (server.connector_provider === "composio" || server.connector_provider === "pipedream") {
+  if (server.connector_provider === "composio") {
     const keyRes = await resolveProviderApiKey(server, c.env, c.req.header("x-naelao-agent-id") ?? "mcp-hub");
     if (!keyRes.ok) {
       return c.json({ error_code: keyRes.errorCode, message: keyRes.message }, keyRes.status);
@@ -756,16 +686,39 @@ app.post("/v1/spaces/:spaceId/mcp-servers/:serverId/tools/call", async (c) => {
     if (keyRes.source === "platform") {
       c.executionCtx.waitUntil(recordPlatformKeyUsage(c.env, tenantId, spaceId, server.connector_provider ?? "unknown"));
     }
-    let providerResult: ProviderToolCallResult;
-    if (server.connector_provider === "composio") {
-      providerResult = await composioToolCall(server.provider_connection_id, body.tool_name, body.input, keyRes.apiKey);
-    } else {
-      providerResult = await pipedreamToolCall(server.provider_connection_id, body.tool_name, body.input, keyRes.apiKey, c.env.PIPEDREAM_ENVIRONMENT ?? "development");
-    }
+    const providerResult = await composioToolCall(server.provider_connection_id, body.tool_name, body.input, keyRes.apiKey);
     if (providerResult.error) {
       return c.json({ error_code: "upstream_error", message: providerResult.error }, 502);
     }
     return c.json({ result: providerResult.result });
+  }
+
+  if (server.connector_provider === "project") {
+    const targetProjectId = server.provider_connection_id;
+    if (!targetProjectId) {
+      return c.json({ error_code: "bad_request", message: "Target project ID missing" }, 400);
+    }
+    const spaceDO = await spaceDoStub(c.env, spaceId, tenantId);
+    const rpcPayload: McpJsonRpcRequest = {
+      jsonrpc: "2.0",
+      id: crypto.randomUUID(),
+      method: "tools/call",
+      params: { name: body.tool_name, arguments: body.input }
+    };
+    const res = await spaceDO.fetch(`http://space-do/internal/projects/${targetProjectId}/mcp-execute`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-caller-id": c.req.header("x-naelao-agent-id") ?? "anonymous",
+        "x-naelao-tenant-id": tenantId
+      },
+      body: JSON.stringify(rpcPayload)
+    });
+    const responseData = await res.json<McpJsonRpcResponse>();
+    if (responseData.error) {
+      return c.json({ error_code: "tool_error", message: responseData.error.message }, 422);
+    }
+    return c.json({ result: responseData.result });
   }
 
   // S0.5: re-validate at CALL TIME, not just registration — see the tools/list handler above.
@@ -818,6 +771,101 @@ app.post("/v1/spaces/:spaceId/mcp-servers/:serverId/tools/call", async (c) => {
   }
   return c.json({ result: result.result });
 });
+
+/**
+ * JIT Tool Dispatcher:
+ * Resolves Composio 3rd-party SaaS connectors and internal project mesh tools.
+ */
+app.post("/v1/tools/execute", async (c) => {
+  const { serverName, toolName, parameters, actingUserId, spaceId } = await c.req.json<{
+    serverName: string;
+    toolName: string;
+    parameters: Record<string, any>;
+    actingUserId?: string;
+    spaceId: string;
+  }>();
+
+  // 1. Check for Reserved Money-In Capabilities (Security Rule)
+  const isReserved = ["charge", "refund", "payout", "transfer"].some(k => toolName.toLowerCase().includes(k));
+  if (isReserved && serverName !== "commerce") {
+    return c.json({
+      ok: false,
+      error: `Security Violation: Action '${toolName}' is reserved exclusively for the verified commerce subsystem.`
+    }, 403);
+  }
+
+  // 2. Route Composio Hosted Connectors (Google, Slack, Instagram, GitHub)
+  if (serverName.startsWith("composio_") || serverName === "gmail" || serverName === "github") {
+    return await executeComposioTool({
+      toolName,
+      parameters,
+      actingUserId,
+      spaceId,
+      env: c.env
+    }, c);
+  }
+
+  // 3. Inter-Project Mesh Execution (Routing to Project MCP endpoints)
+  if (serverName.startsWith("project_")) {
+    const targetProjectId = serverName.replace("project_", "");
+    const { tenantId } = getCallerIdentity(c);
+    const spaceDO = await spaceDoStub(c.env, spaceId, tenantId);
+
+    const rpcPayload: McpJsonRpcRequest = {
+      jsonrpc: "2.0",
+      id: Date.now(),
+      method: "tools/call",
+      params: { name: toolName, arguments: parameters }
+    };
+
+    const res = await spaceDO.fetch(`http://space-do/internal/projects/${targetProjectId}/mcp-execute`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-caller-id": actingUserId || "system",
+        "x-naelao-tenant-id": tenantId
+      },
+      body: JSON.stringify(rpcPayload)
+    });
+
+    const responseData = await res.json<McpJsonRpcResponse>();
+    if (responseData.error) {
+      return c.json({ ok: false, error: responseData.error.message }, 400);
+    }
+    return c.json({ ok: true, output: responseData.result });
+  }
+
+  return c.json({ ok: false, error: `Unrecognized server provider: '${serverName}'` }, 400);
+});
+
+/**
+ * Executes a tool against Composio's API using the edge-vaulted credentials.
+ */
+async function executeComposioTool(opts: any, c: any) {
+  const composioKey = c.env.COMPOSIO_API_KEY;
+  if (!composioKey) {
+    return c.json({ ok: false, error: "Composio provider not configured on this platform." }, 503);
+  }
+
+  const server = await c.env.PLATFORM_DB.prepare(
+    "SELECT provider_connection_id FROM mcp_servers WHERE space_id = ? AND connector_provider = 'composio' AND enabled = 1 LIMIT 1"
+  ).bind(opts.spaceId).first<{ provider_connection_id: string | null }>();
+
+  if (!server || !server.provider_connection_id) {
+    return c.json({
+      ok: false,
+      needs_connection: true,
+      error: `Integration '${opts.toolName}' requires connecting an account. Please complete connection dialog.`
+    }, 402);
+  }
+
+  const providerResult = await composioToolCall(server.provider_connection_id, opts.toolName, opts.parameters, composioKey);
+  if (providerResult.error) {
+    return c.json({ ok: false, error: providerResult.error }, 400);
+  }
+
+  return c.json({ ok: true, output: providerResult.result });
+}
 
 app.onError((err, c) => errorResponse(err, c.get("requestId") ?? "unknown"));
 
