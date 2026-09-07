@@ -18,6 +18,8 @@ import {
   SanitizedRetrievalResult 
 } from "@naelao/types";
 import { wrapInUntrustedEnvelope } from "@naelao/security";
+import { CohereParse5Client } from "./parse5Ingestion";
+
 
 
 // ── Environment ───────────────────────────────────────────────────────────────
@@ -45,6 +47,7 @@ interface KnowledgeEnv {
   // watch this worker's own KB_BUCKET at the `autorag/` prefix this file writes mirror docs to —
   // no separate bucket binding is introduced.
   AUTORAG_KB_INSTANCE?: string;
+  COHERE_API_KEY?: string;
 }
 
 /** R2 key for the whole-document mirror AutoRAG indexes (one file per doc, not per-chunk —
@@ -576,9 +579,122 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
   }
 });
 
-// ── DELETE /spaces/:spaceId/kb/documents/:docId ───────────────────────────────
+// ── POST /spaces/:spaceId/kb/documents/ingest-enterprise ───────────────────
 
-app.delete("/spaces/:spaceId/kb/documents/:docId", async (c) => {
+app.post("/spaces/:spaceId/kb/documents/ingest-enterprise", async (c) => {
+  const tenantId = requireTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const formData = await c.req.formData();
+  const file = formData.get("file") as File | null;
+  const title = (formData.get("title") as string) || file?.name || "Untitled Enterprise Document";
+  const projectId = (formData.get("project_id") as string) || null;
+  const minRoleRank = parseInt((formData.get("min_role_rank") as string) || "1", 10);
+  const visibility = (formData.get("visibility") as string) || "public";
+
+  if (!file) {
+    return c.json({ error: "Missing required 'file' binary field in multipart form" }, 400);
+  }
+
+  const cohereKey = c.env.COHERE_API_KEY;
+  if (!cohereKey) {
+    return c.json({ error: "COHERE_API_KEY is not configured on this environment" }, 503);
+  }
+
+  const arrayBuffer = await file.arrayBuffer();
+  const parser = new CohereParse5Client(cohereKey);
+
+  let parseResult;
+  try {
+    parseResult = await parser.parseDocumentToMarkdown(arrayBuffer);
+  } catch (err: any) {
+    return c.json({ error: "Parse 5 processing failed", details: err.message }, 502);
+  }
+
+  const r2Key = projectId 
+    ? `spaces/${spaceId}/projects/${projectId}/documents/${parseResult.docId}.md`
+    : `spaces/${spaceId}/documents/${parseResult.docId}.md`;
+
+  await c.env.KB_BUCKET.put(r2Key, parseResult.markdown, {
+    customMetadata: {
+      docId: parseResult.docId,
+      title,
+      spaceId,
+      projectId: projectId ?? "",
+      pageCount: String(parseResult.pageCount),
+      tablesDetected: String(parseResult.tablesDetected)
+    }
+  });
+
+  const chunks = parseResult.markdown.split(/\n(?=##?\s)/);
+  if (chunks.length === 0 || (chunks.length === 1 && chunks[0]!.trim() === "")) {
+    chunks[0] = parseResult.markdown;
+  }
+
+  const allEmbedResults = await embedBatch(c.env.AI, chunks.map(chunk => chunk.slice(0, 1000)));
+
+  const vectorUpserts: VectorizeVector[] = [];
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i]!;
+    const embedResult = allEmbedResults[i];
+    if (!embedResult) continue;
+
+    const chunkRecord: ChunkRecord = {
+      docId: parseResult.docId,
+      chunkIndex: i,
+      content: chunk,
+      spaceId,
+      tenantId,
+    };
+    await c.env.KB_BUCKET.put(
+      chunkR2Key(spaceId, projectId, parseResult.docId, i),
+      JSON.stringify(chunkRecord),
+    );
+
+    const vectorMetadata: ChunkVectorMetadata = {
+      space_id: spaceId,
+      project_id: projectId ?? SPACE_WIDE_PROJECT_SENTINEL,
+      min_role_rank: minRoleRank,
+      role_bitmask: 0x0001,
+      doc_id: parseResult.docId,
+      title: `${title} (Part ${i + 1})`,
+      text: chunk,
+      visibility,
+    };
+
+    vectorUpserts.push({
+      id: `${parseResult.docId}_chunk_${i}`,
+      values: embedResult.embedding,
+      metadata: vectorMetadata as unknown as Record<string, VectorizeMetadata>,
+    });
+  }
+
+  const VECTOR_BATCH_SIZE = 100;
+  for (let i = 0; i < vectorUpserts.length; i += VECTOR_BATCH_SIZE) {
+    const batch = vectorUpserts.slice(i, i + VECTOR_BATCH_SIZE);
+    await c.env.KB_VECTORS.upsert(batch);
+  }
+
+  const now = new Date().toISOString();
+  await c.env.PLATFORM_DB.prepare(
+    `INSERT INTO kb_documents
+       (id, space_id, tenant_id, project_id, title, source_url, content_type, status, chunk_count, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'pdf', 'indexed', ?, ?, ?)`
+  )
+    .bind(parseResult.docId, spaceId, tenantId, projectId, title, null, chunks.length, now, now)
+    .run();
+
+  return c.json({
+    ok: true,
+    docId: parseResult.docId,
+    title,
+    r2Key,
+    pageCount: parseResult.pageCount,
+    tablesDetected: parseResult.tablesDetected,
+    chunkCount: chunks.length,
+    durationMs: parseResult.durationMs
+  }, 201);
+});
+
   const tenantId = requireTenant(c);
   const spaceId = c.req.param("spaceId");
   const docId = c.req.param("docId");

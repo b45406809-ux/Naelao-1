@@ -192,4 +192,6 @@ export * from "./credentials";
 export * from "./connectors";
 export * from "./dag";
 export * from "./mini-agi";
+export * from "./knowledge";
+
 
