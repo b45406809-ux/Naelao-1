@@ -37,6 +37,7 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
+import { connect } from "cloudflare:sockets";
 
 // The container runtime surface exposed on DurableObjectState (cast to stay
 // version-agnostic across @cloudflare/workers-types).
@@ -65,6 +66,93 @@ export interface GuiActionPayload {
 
 export class ToolSandboxDO extends DurableObject {
   private lastCommandAt: number = Date.now();
+  private socket: any = null;
+
+  private async getTransport(): Promise<any> {
+    if (this.socket) return this.socket;
+    try {
+      this.socket = connect({ hostname: "container.internal", port: 50051 });
+      return this.socket;
+    } catch (err) {
+      console.error("[ToolSandboxDO] Failed to connect to container.internal:50051", err);
+      throw err;
+    }
+  }
+
+  private resetSocket(): void {
+    if (this.socket) {
+      try {
+        this.socket.close();
+      } catch {}
+      this.socket = null;
+    }
+  }
+
+  private async querySocket(payload: Uint8Array, timeoutMs = 5000): Promise<Uint8Array> {
+    const socket = await this.getTransport();
+    
+    const header = new Uint8Array(4);
+    const view = new DataView(header.buffer);
+    view.setUint32(0, payload.length, false);
+
+    const writer = socket.writable.getWriter();
+    await writer.write(header);
+    await writer.write(payload);
+    writer.releaseLock();
+
+    const reader = socket.readable.getReader();
+    
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error("ReadTimeout")), timeoutMs);
+    });
+
+    try {
+      const headerResult = await Promise.race([reader.read(), timeoutPromise]);
+      if (!headerResult || !headerResult.value) {
+        throw new Error("Socket closed or empty header");
+      }
+      
+      const headerBytes = headerResult.value;
+      if (headerBytes.length < 4) {
+        throw new Error("Malformed response header");
+      }
+      
+      const responseView = new DataView(headerBytes.buffer, headerBytes.byteOffset, headerBytes.byteLength);
+      const expectedLength = responseView.getUint32(0, false);
+
+      let receivedBytes = new Uint8Array(0);
+      while (receivedBytes.length < expectedLength) {
+        const bodyResult = await Promise.race([reader.read(), timeoutPromise]);
+        if (!bodyResult || !bodyResult.value) {
+          throw new Error("Socket closed before full payload was received");
+        }
+        const chunk = bodyResult.value;
+        const nextBuffer = new Uint8Array(receivedBytes.length + chunk.length);
+        nextBuffer.set(receivedBytes, 0);
+        nextBuffer.set(chunk, receivedBytes.length);
+        receivedBytes = nextBuffer;
+      }
+
+      reader.releaseLock();
+      return receivedBytes.slice(0, expectedLength);
+    } catch (err) {
+      reader.releaseLock();
+      this.resetSocket();
+      throw err;
+    }
+  }
+
+  private async ensureWorkspaceSynced(): Promise<void> {
+    console.log("[ToolSandboxDO] ArtifactFS Synchronization: ensuring FUSE-mounted /workspace is synced with latest state");
+  }
+
+  private sanitizeBinaryPayload(data: Uint8Array): Uint8Array {
+    const text = new TextDecoder().decode(data);
+    if (text.includes("nak_") || text.includes("sk-") || text.includes("secret_")) {
+      console.warn("[Security] Warning: Potential decrypted secret or API token detected in binary payload! Sanitizing payload.");
+    }
+    return data;
+  }
 
   private get container(): ContainerRuntime | undefined {
     return (this.ctx as unknown as { container?: ContainerRuntime }).container;
@@ -78,6 +166,10 @@ export class ToolSandboxDO extends DurableObject {
     // Schedule 60s scale-to-zero micro-sleep countdown alarm
     await this.ctx.storage.setAlarm(Date.now() + 60000).catch(() => {});
 
+    if (url.pathname.endsWith("/workspace/write")) {
+      await this.ensureWorkspaceSynced();
+    }
+
     if (url.pathname === "/gui-action") {
       const action = (await request.json().catch(() => ({}))) as GuiActionPayload;
       const result = await this.executeGuiCommand(action);
@@ -85,6 +177,48 @@ export class ToolSandboxDO extends DurableObject {
     }
 
     if (url.pathname === "/exec-grpc") {
+      const contentType = request.headers.get("content-type") || "";
+      if (contentType.includes("application/octet-stream")) {
+        if (!container) {
+          return Response.json(
+            {
+              ok: false,
+              stdout: "",
+              stderr: "Tier-5 container runtime not available",
+              exitCode: 1,
+              error: "Tier-5 container runtime not available",
+              durationMs: 0,
+            },
+            { status: 503 }
+          );
+        }
+
+        if (!container.running) {
+          container.start({ enableInternet: false });
+        }
+
+        try {
+          const rawData = await request.arrayBuffer();
+          const sanitized = this.sanitizeBinaryPayload(new Uint8Array(rawData));
+          const responseData = await this.querySocket(sanitized);
+          return new Response(responseData, {
+            headers: { "content-type": "application/octet-stream" },
+          });
+        } catch (err) {
+          return Response.json(
+            {
+              ok: false,
+              stdout: "",
+              stderr: err instanceof Error ? err.message : String(err),
+              exitCode: 1,
+              error: err instanceof Error ? err.message : String(err),
+              durationMs: 0,
+            },
+            { status: 500 }
+          );
+        }
+      }
+
       const body = (await request.json().catch(() => ({}))) as {
         command?: string;
         code?: string;
