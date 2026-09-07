@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { applyMigrations, queryAll, queryOne, execute } from "@naelao/db";
 import type { Migration } from "@naelao/db";
-import type { MessageRole } from "@naelao/types";
+import type { MessageRole, ThreadTier, ThreadKind, AvosThread, CreateThreadParams, ListThreadsQuery, ThreadElevationStatus } from "@naelao/types";
 import {
   selectMatchingRules, evaluateCondition, buildFireParams,
   findPossibleDuplicateProjects, isPresenceFresh, PRESENCE_FRESHNESS_WINDOW_MS,
@@ -1115,6 +1115,86 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_paw_proj ON project_anchored_workflows(project_id, workflow_class);
     `,
   },
+  {
+    version: 42,
+    description: "project_connector_bindings table for logical connector alias matrix",
+    up: `
+      CREATE TABLE IF NOT EXISTS project_connector_bindings (
+        project_id TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        logical_alias TEXT NOT NULL,
+        mapped_connection_id TEXT NOT NULL,
+        connection_type TEXT NOT NULL,
+        custom_config_json TEXT DEFAULT '{}',
+        updated_by TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (project_id, entity_id, logical_alias)
+      );
+    `,
+  },
+  {
+    version: 43,
+    description: "4-tier thread hierarchy and provenance columns",
+    up: `
+      CREATE TABLE IF NOT EXISTS threads_v2 (
+        id TEXT PRIMARY KEY,
+        space_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        tier INTEGER NOT NULL DEFAULT 1,
+        thread_kind TEXT NOT NULL DEFAULT 'team_room',
+        title TEXT NOT NULL,
+        bound_branch_name TEXT,
+        associated_task_id TEXT,
+        session_id TEXT,
+        parent_thread_id TEXT,
+        is_simulation_only INTEGER NOT NULL DEFAULT 0,
+        created_by_user_id TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived', 'completed')),
+        metadata_json TEXT DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      INSERT OR IGNORE INTO threads_v2 (
+        id, space_id, project_id, tier, thread_kind, title,
+        bound_branch_name, associated_task_id, session_id, parent_thread_id,
+        is_simulation_only, created_by_user_id, status, metadata_json, created_at, updated_at
+      )
+      SELECT
+        id,
+        space_id,
+        COALESCE(project_id, ''),
+        1,
+        CASE
+          WHEN thread_kind = 'sub_agent' THEN 'system_consult'
+          WHEN thread_kind = 'primary' THEN 'team_room'
+          ELSE COALESCE(thread_kind, 'team_room')
+        END,
+        COALESCE(title, 'Untitled'),
+        NULL,
+        NULL,
+        session_id,
+        parent_thread_id,
+        0,
+        COALESCE(user_id, ''),
+        CASE
+          WHEN status IN ('active', 'archived', 'completed') THEN status
+          ELSE 'active'
+        END,
+        '{}',
+        created_at,
+        updated_at
+      FROM threads;
+
+      DROP TABLE threads;
+      ALTER TABLE threads_v2 RENAME TO threads;
+
+      CREATE INDEX IF NOT EXISTS idx_threads_proj_tier ON threads(project_id, tier, status);
+      CREATE INDEX IF NOT EXISTS idx_threads_creator_kind ON threads(created_by_user_id, thread_kind);
+      CREATE INDEX IF NOT EXISTS idx_threads_session ON threads(session_id);
+      CREATE INDEX IF NOT EXISTS idx_threads_parent ON threads(parent_thread_id);
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -1260,6 +1340,50 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     } catch { /* table may already exist */ }
     try {
       this.ctx.storage.sql.exec("ALTER TABLE projects ADD COLUMN created_by_user_id TEXT;");
+    } catch { /* column may already exist */ }
+    try {
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS threads (
+          id TEXT PRIMARY KEY,
+          space_id TEXT NOT NULL,
+          project_id TEXT NOT NULL,
+          tier INTEGER NOT NULL DEFAULT 1,
+          thread_kind TEXT NOT NULL DEFAULT 'team_room',
+          title TEXT NOT NULL,
+          bound_branch_name TEXT,
+          associated_task_id TEXT,
+          session_id TEXT,
+          parent_thread_id TEXT,
+          is_simulation_only INTEGER NOT NULL DEFAULT 0,
+          created_by_user_id TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived', 'completed')),
+          metadata_json TEXT DEFAULT '{}',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_threads_proj_tier ON threads(project_id, tier, status);
+        CREATE INDEX IF NOT EXISTS idx_threads_creator_kind ON threads(created_by_user_id, thread_kind);
+        CREATE INDEX IF NOT EXISTS idx_threads_session ON threads(session_id);
+        CREATE INDEX IF NOT EXISTS idx_threads_parent ON threads(parent_thread_id);
+      `);
+    } catch { /* table may already exist */ }
+    try {
+      this.ctx.storage.sql.exec("ALTER TABLE threads ADD COLUMN tier INTEGER NOT NULL DEFAULT 1;");
+    } catch { /* column may already exist */ }
+    try {
+      this.ctx.storage.sql.exec("ALTER TABLE threads ADD COLUMN bound_branch_name TEXT;");
+    } catch { /* column may already exist */ }
+    try {
+      this.ctx.storage.sql.exec("ALTER TABLE threads ADD COLUMN associated_task_id TEXT;");
+    } catch { /* column may already exist */ }
+    try {
+      this.ctx.storage.sql.exec("ALTER TABLE threads ADD COLUMN is_simulation_only INTEGER NOT NULL DEFAULT 0;");
+    } catch { /* column may already exist */ }
+    try {
+      this.ctx.storage.sql.exec("ALTER TABLE threads ADD COLUMN created_by_user_id TEXT;");
+    } catch { /* column may already exist */ }
+    try {
+      this.ctx.storage.sql.exec("ALTER TABLE threads ADD COLUMN metadata_json TEXT DEFAULT '{}';");
     } catch { /* column may already exist */ }
     this.initialized = true;
   }
@@ -1721,19 +1845,76 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
 
       // ── threads (spec-canonical; sub-agent/channel mirrors are ordinary subthreads) ────
+      // Phase 5 Chunk 01: Elevation status and project-scoped 4-tier threads
+      const projElevationMatch = url.pathname.match(/^\/projects\/([^/]+)\/elevation-status$/);
+      if (method === "GET" && projElevationMatch?.[1]) {
+        const status = await this.getProjectElevationStatus(projElevationMatch[1]);
+        return Response.json(status);
+      }
+
+      const projThreadsListMatch = url.pathname.match(/^\/projects\/([^/]+)\/threads\/list$/);
+      if (method === "POST" && projThreadsListMatch?.[1]) {
+        const query = await request.json<ListThreadsQuery>();
+        const threads = await this.listThreads({
+          ...query,
+          projectId: projThreadsListMatch[1],
+        });
+        return Response.json(threads);
+      }
+
+      const projThreadsCreateMatch = url.pathname.match(/^\/projects\/([^/]+)\/threads\/create$/);
+      if (method === "POST" && projThreadsCreateMatch?.[1]) {
+        const body = await request.json<CreateThreadParams>();
+        const created = await this.createThread({
+          ...body,
+          projectId: projThreadsCreateMatch[1],
+        });
+        return Response.json(created, { status: 201 });
+      }
+
+      const projThreadsDirectMatch = url.pathname.match(/^\/projects\/([^/]+)\/threads$/);
+      if (projThreadsDirectMatch?.[1]) {
+        if (method === "POST") {
+          const body = await request.json<CreateThreadParams>();
+          const created = await this.createThread({
+            ...body,
+            projectId: projThreadsDirectMatch[1],
+          });
+          return Response.json(created, { status: 201 });
+        }
+        if (method === "GET") {
+          const query: ListThreadsQuery = {
+            projectId: projThreadsDirectMatch[1],
+            tier: url.searchParams.get("tier") ? (parseInt(url.searchParams.get("tier")!, 10) as any) : undefined,
+            threadKind: (url.searchParams.get("thread_kind") as any) || undefined,
+            parentThreadId: url.searchParams.get("parent_thread_id") || undefined,
+            includeSystem: url.searchParams.get("include_system") === "true",
+            includeArchived: url.searchParams.get("include_archived") === "true",
+            callerUserId: url.searchParams.get("user_id") || url.searchParams.get("caller_user_id") || "",
+          };
+          const threads = await this.listThreads(query);
+          return Response.json(threads);
+        }
+      }
+
       // GET /threads?space_id=&project_id=&include_sub_threads=
       if (method === "GET" && url.pathname === "/threads") {
-        return this.listThreads(url.searchParams);
+        return this.listThreadsLegacy(url.searchParams);
       }
       // POST /threads — also used (idempotently) by NaelaoAgentDO to mirror a sub-agent
       // spawn or a channel session as a browsable subthread.
       if (method === "POST" && url.pathname === "/threads") {
-        return this.createThread(request);
+        return this.createThreadLegacy(request);
       }
       // GET /threads/:id
       const threadIdMatch = url.pathname.match(/^\/threads\/([^/]+)$/);
       if (method === "GET" && threadIdMatch?.[1]) {
-        return this.getThread(threadIdMatch[1]);
+        try {
+          const thread = this.getThread(threadIdMatch[1]);
+          return Response.json(thread);
+        } catch {
+          return Response.json({ error_code: "not_found", message: "Thread not found" }, { status: 404 });
+        }
       }
       // PATCH /threads/:id — rename and/or archive (there is no hard delete — see updateThread).
       if (method === "PATCH" && threadIdMatch?.[1]) {
@@ -4765,13 +4946,170 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return this.getAgentPolicy(spaceId, agentId);
   }
 
-  // ── Threads (spec-canonical) ─────────────────────────────────────────────────
-  // A sub-agent run or a channel conversation mirrors in here as an ordinary thread —
-  // thread_kind='sub_agent'/'channel' plus parent_thread_id, not a separate concept. Default
-  // listing hides them (thread_kind != 'primary') so a project's builder-facing thread list
-  // isn't flooded by a 16-way sub-agent fan-out or a busy WhatsApp bot; a project can opt in
-  // via show_sub_threads, or any caller can ask for them explicitly via include_sub_threads.
-  public listThreads(params: URLSearchParams): Response {
+  // ── Threads (spec-canonical & Phase 5 4-Tier Hierarchy) ────────────────────
+  public async getProjectElevationStatus(projectId: string): Promise<ThreadElevationStatus> {
+    const memberCountRow = (this.ctx.storage.sql.exec(`
+      SELECT COUNT(*) as count FROM project_members WHERE project_id = ?
+    `, projectId).toArray()[0] || {}) as { count?: number };
+
+    const memberCount = memberCountRow.count ?? 0;
+    const isCockpitMode = memberCount <= 1;
+
+    return {
+      projectId,
+      isCockpitMode,
+      memberCount,
+      directMainWritesAllowed: isCockpitMode,
+      activeTiers: isCockpitMode ? [1, 2] : [1, 2, 3, 4],
+    };
+  }
+
+  public get spaceId(): string {
+    const root = queryOne<{ id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT id FROM spaces WHERE parent_id IS NULL LIMIT 1"
+    );
+    if (root?.id) return root.id;
+    const anySpace = queryOne<{ space_id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT space_id FROM spaces LIMIT 1"
+    );
+    if (anySpace?.space_id) return anySpace.space_id;
+    const fromThreads = queryOne<{ space_id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT space_id FROM threads LIMIT 1"
+    );
+    return fromThreads?.space_id ?? "";
+  }
+
+  private mapThreadRow(r: any): AvosThread {
+    return {
+      id: r.id,
+      spaceId: r.space_id,
+      projectId: r.project_id,
+      tier: (r.tier ?? 1) as ThreadTier,
+      threadKind: (r.thread_kind ?? "team_room") as ThreadKind,
+      title: r.title ?? "Untitled",
+      boundBranchName: r.bound_branch_name ?? undefined,
+      associatedTaskId: r.associated_task_id ?? undefined,
+      sessionId: r.session_id ?? undefined,
+      parentThreadId: r.parent_thread_id ?? undefined,
+      isSimulationOnly: Boolean(r.is_simulation_only),
+      createdByUserId: r.created_by_user_id ?? r.user_id ?? "",
+      status: (r.status ?? "active") as "active" | "archived" | "completed",
+      metadataJson: r.metadata_json ?? "{}",
+      createdAt: r.created_at ?? new Date().toISOString(),
+      updatedAt: r.updated_at ?? new Date().toISOString(),
+    };
+  }
+
+  public getThread(threadId: string): AvosThread {
+    const row = this.ctx.storage.sql.exec("SELECT * FROM threads WHERE id = ?", threadId).one();
+    if (!row) {
+      throw new Error(`Thread not found: ${threadId}`);
+    }
+    return this.mapThreadRow(row);
+  }
+
+  public async createThread(params: CreateThreadParams): Promise<AvosThread> {
+    const threadId = `th_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const tier = params.tier ?? (params.threadKind === "private_scratchpad" ? 4 : params.threadKind === "task_workstation" ? 2 : params.threadKind === "system_consult" ? 3 : 1);
+    const threadKind = params.threadKind ?? (tier === 4 ? "private_scratchpad" : tier === 2 ? "task_workstation" : tier === 3 ? "system_consult" : "team_room");
+    const isSimulationOnly = tier === 4 ? 1 : (params.isSimulationOnly ? 1 : 0);
+
+    const project = queryOne<{ space_id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT space_id FROM projects WHERE id = ?",
+      params.projectId
+    );
+    const spaceId = project?.space_id ?? (params as any).spaceId ?? this.spaceId;
+
+    this.ctx.storage.sql.exec(`
+      INSERT INTO threads (
+        id, space_id, project_id, tier, thread_kind, title,
+        bound_branch_name, associated_task_id, session_id, parent_thread_id,
+        is_simulation_only, created_by_user_id, status, metadata_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, datetime('now'), datetime('now'))
+    `,
+      threadId,
+      spaceId,
+      params.projectId,
+      tier,
+      threadKind,
+      params.title,
+      params.boundBranchName ?? null,
+      params.associatedTaskId ?? null,
+      params.sessionId ?? null,
+      params.parentThreadId ?? null,
+      isSimulationOnly,
+      params.createdByUserId,
+      JSON.stringify(params.metadata ?? {})
+    );
+
+    return this.getThread(threadId);
+  }
+
+  public async listThreads(query: ListThreadsQuery): Promise<AvosThread[]> {
+    const includeSystem = query.includeSystem ?? false;
+    const includeArchived = query.includeArchived ?? false;
+
+    const project = queryOne<{ space_id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT space_id FROM projects WHERE id = ?",
+      query.projectId
+    );
+    const spaceId = project?.space_id || this.spaceId;
+
+    let sql = `
+      SELECT * FROM threads 
+      WHERE project_id = ?
+    `;
+    const binds: any[] = [query.projectId];
+
+    if (spaceId) {
+      sql = `
+        SELECT * FROM threads 
+        WHERE space_id = ? AND project_id = ?
+      `;
+      binds.unshift(spaceId);
+    }
+
+    if (!includeArchived) {
+      sql += ` AND status = 'active'`;
+    }
+
+    if (query.tier) {
+      sql += ` AND tier = ?`;
+      binds.push(query.tier);
+    }
+
+    if (query.threadKind) {
+      sql += ` AND thread_kind = ?`;
+      binds.push(query.threadKind);
+    }
+
+    if (query.parentThreadId) {
+      sql += ` AND parent_thread_id = ?`;
+      binds.push(query.parentThreadId);
+    }
+
+    // Tier 4 Privacy Rule: Users can ONLY see their own private scratchpads
+    sql += ` AND (tier != 4 OR created_by_user_id = ?)`;
+    binds.push(query.callerUserId);
+
+    // Tier 3 System Consult Rule: Hidden unless explicitly requested
+    if (!includeSystem) {
+      sql += ` AND thread_kind NOT IN ('system_consult', 'heartbeat_wake')`;
+    }
+
+    sql += ` ORDER BY created_at DESC`;
+
+    const rows = this.ctx.storage.sql.exec(sql, ...binds).toArray();
+    return rows.map(r => this.mapThreadRow(r));
+  }
+
+  // Legacy listThreads for GET /threads
+  public listThreadsLegacy(params: URLSearchParams): Response {
     const spaceId = params.get("space_id") ?? "";
     const projectId = params.get("project_id");
     const viewerId = params.get("viewer_id") ?? params.get("user_id") ?? "";
@@ -4808,15 +5146,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       clauses.push("(project_id IS NULL OR project_id IN (SELECT id FROM projects WHERE visibility = 'public' OR id IN (SELECT project_id FROM project_members WHERE user_id = ?)))");
       args.push(viewerId);
     }
-    // An explicit parent_thread_id ask (the shell's "show what the assistant discussed with the
-    // agent about this thread" panel, or the assistant's own thread.list op) is always answered
-    // in full regardless of the project's show_sub_threads default — the caller named exactly
-    // which subthreads it wants, not "give me everything hidden by default".
     if (parentThreadId) {
       clauses.push("parent_thread_id = ?");
       args.push(parentThreadId);
     } else if (!showSubThreads) {
-      clauses.push("thread_kind = 'primary'");
+      clauses.push("thread_kind IN ('primary', 'team_room')");
     }
 
     const rows = queryAll(
@@ -4827,28 +5161,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ data: rows, count: rows.length });
   }
 
-  /**
-   * projects.max_threads (0 = unlimited) caps how many "real" conversations a project hosts at
-   * once — primary threads and channel sessions, deliberately NOT sub_agent fan-out (that's
-   * already bounded by MAX_SUB_AGENTS_PER_SPAWN/ConcurrencyDO, and counting ephemeral
-   * orchestration threads toward a builder-facing limit would be surprising). Only archived
-   * threads don't count, so archiving old conversations reopens room under the cap.
-   */
-  private isThreadLimitReached(projectId: string | null | undefined, kind: string): boolean {
-    if (!projectId || kind === "sub_agent") return false;
-    const project = queryOne<{ max_threads: number }>(
-      this.ctx.storage.sql as never, "SELECT max_threads FROM projects WHERE id = ?", projectId
-    );
-    if (!project || project.max_threads <= 0) return false;
-    const countRow = queryOne<{ n: number }>(
-      this.ctx.storage.sql as never,
-      "SELECT COUNT(*) as n FROM threads WHERE project_id = ? AND status = 'active' AND thread_kind IN ('primary','channel')",
-      projectId
-    );
-    return (countRow?.n ?? 0) >= project.max_threads;
-  }
-
-  private async createThread(request: Request): Promise<Response> {
+  // Legacy createThread for POST /threads
+  private async createThreadLegacy(request: Request): Promise<Response> {
     const body = await request.json<{
       id?: string;
       space_id: string;
@@ -5725,44 +6039,4 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     );
     return Response.json({ data: rows, count: rows.length });
   }
-
-      {
-        version: 41,
-        description: "project_anchored_workflows table",
-        up: `
-          CREATE TABLE IF NOT EXISTS project_anchored_workflows (
-            id TEXT PRIMARY KEY,
-            space_id TEXT NOT NULL,
-            project_id TEXT NOT NULL,
-            workflow_class TEXT NOT NULL CHECK (workflow_class IN ('COMPANY_AUTOMATION', 'VERTICAL_EXTENSION', 'EPHEMERAL_TASK')),
-            title TEXT NOT NULL,
-            script_path TEXT NOT NULL,
-            trigger_type TEXT NOT NULL,
-            trigger_spec TEXT,
-            status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'PAUSED', 'DISABLED')),
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
-          );
-          CREATE INDEX IF NOT EXISTS idx_paw_proj ON project_anchored_workflows(project_id, workflow_class);
-        `,
-      },
-      {
-        version: 42,
-        description: "project_connector_bindings table for logical connector alias matrix",
-        up: `
-          CREATE TABLE IF NOT EXISTS project_connector_bindings (
-            project_id TEXT NOT NULL,
-            entity_id TEXT NOT NULL,
-            logical_alias TEXT NOT NULL,
-            mapped_connection_id TEXT NOT NULL,
-            connection_type TEXT NOT NULL,
-            custom_config_json TEXT DEFAULT '{}',
-            updated_by TEXT NOT NULL,
-            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-            PRIMARY KEY (project_id, entity_id, logical_alias)
-          );
-        `,
-      },
-    ];
 }
