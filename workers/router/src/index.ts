@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, Context, Next } from "hono";
 import { requestId, jwtAuth, errorResponse, unauthorized, mintInternalToken } from "@naelao/http";
 import { signHmac } from "@naelao/crypto";
 import type { NaelaoJwtClaims } from "@naelao/types";
@@ -105,7 +105,36 @@ declare module "hono" {
     // the SAME round trip as its nak_... key so the approval-gate middleware below never needs
     // a second call just to find out whether this request needs to be gated.
     agentApproval?: { mode: "always_ask" | "yolo"; autoApproved: string[] };
+    hopCount?: number;
   }
+}
+
+// Middleware to prevent infinite agent/automation loops
+export async function ouroborosCircuitBreaker(c: Context, next: Next) {
+  const hopHeader = c.req.header("x-avos-hop-count");
+  let hopCount = 0;
+
+  if (hopHeader) {
+    hopCount = parseInt(hopHeader, 10);
+    if (isNaN(hopCount) || hopCount < 0) {
+      return c.json({ error: "Invalid x-avos-hop-count header" }, 400);
+    }
+  }
+
+  // Hard limit: No task can be delegated or re-triggered more than 2 times.
+  const MAX_HOPS = 2;
+  if (hopCount > MAX_HOPS) {
+    console.warn(`[CIRCUIT BREAKER] Request blocked. Hop count ${hopCount} exceeds limit of ${MAX_HOPS}. Path: ${c.req.path}`);
+    return c.json({ 
+      error: "circuit_breaker_tripped",
+      message: `Maximum automated hop depth of ${MAX_HOPS} reached. To prevent infinite loops, this action has been halted.` 
+    }, 429);
+  }
+
+  // Store the current hop count in context for downstream services
+  c.set("hopCount", hopCount);
+  
+  await next();
 }
 
 // G-A11: Validate required secrets at startup
@@ -221,6 +250,7 @@ app.use("*", async (c, next) => {
   c.res = new Response(c.res.body, { status: c.res.status, statusText: c.res.statusText, headers: freshHeaders });
   return;
 });
+app.use("*", ouroborosCircuitBreaker);
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
 
@@ -272,8 +302,13 @@ app.all("/v1/auth/*", async (c) => {
 app.all("/v1/connectors/:platform/webhook/:spaceId", async (c) => {
   const u = new URL(c.req.url);
   u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
+  const headers = new Headers(c.req.raw.headers);
+  const hopCount = c.get("hopCount");
+  if (hopCount !== undefined) {
+    headers.set("x-avos-hop-count", String(hopCount));
+  }
   return c.env.AGENTS_WORKER.fetch(
-    new Request(u.toString(), { method: c.req.method, headers: c.req.raw.headers, body: c.req.raw.body })
+    new Request(u.toString(), { method: c.req.method, headers, body: c.req.raw.body })
   );
 });
 
@@ -284,8 +319,13 @@ app.all("/v1/connectors/:platform/webhook/:spaceId", async (c) => {
 app.all("/v1/connectors/:platform/oauth/callback", async (c) => {
   const u = new URL(c.req.url);
   u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
+  const headers = new Headers(c.req.raw.headers);
+  const hopCount = c.get("hopCount");
+  if (hopCount !== undefined) {
+    headers.set("x-avos-hop-count", String(hopCount));
+  }
   return c.env.AGENTS_WORKER.fetch(
-    new Request(u.toString(), { method: c.req.method, headers: c.req.raw.headers, body: c.req.raw.body })
+    new Request(u.toString(), { method: c.req.method, headers, body: c.req.raw.body })
   );
 });
 
@@ -295,8 +335,13 @@ app.all("/v1/connectors/:platform/oauth/callback", async (c) => {
 app.all("/v1/connectors/:platform/provider-connect/callback", async (c) => {
   const u = new URL(c.req.url);
   u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
+  const headers = new Headers(c.req.raw.headers);
+  const hopCount = c.get("hopCount");
+  if (hopCount !== undefined) {
+    headers.set("x-avos-hop-count", String(hopCount));
+  }
   return c.env.AGENTS_WORKER.fetch(
-    new Request(u.toString(), { method: c.req.method, headers: c.req.raw.headers, body: c.req.raw.body })
+    new Request(u.toString(), { method: c.req.method, headers, body: c.req.raw.body })
   );
 });
 
@@ -307,8 +352,13 @@ app.all("/v1/connectors/:platform/provider-connect/callback", async (c) => {
 app.all("/v1/channels/:channel/inbound/:spaceId", async (c) => {
   const u = new URL(c.req.url);
   u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
+  const headers = new Headers(c.req.raw.headers);
+  const hopCount = c.get("hopCount");
+  if (hopCount !== undefined) {
+    headers.set("x-avos-hop-count", String(hopCount));
+  }
   return c.env.AGENTS_WORKER.fetch(
-    new Request(u.toString(), { method: c.req.method, headers: c.req.raw.headers, body: c.req.raw.body })
+    new Request(u.toString(), { method: c.req.method, headers, body: c.req.raw.body })
   );
 });
 
@@ -320,15 +370,25 @@ app.all("/v1/channels/:channel/inbound/:spaceId", async (c) => {
 app.all("/v1/channels/platform-inbound/:channel", async (c) => {
   const u = new URL(c.req.url);
   u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
+  const headers = new Headers(c.req.raw.headers);
+  const hopCount = c.get("hopCount");
+  if (hopCount !== undefined) {
+    headers.set("x-avos-hop-count", String(hopCount));
+  }
   return c.env.AGENTS_WORKER.fetch(
-    new Request(u.toString(), { method: c.req.method, headers: c.req.raw.headers, body: c.req.raw.body })
+    new Request(u.toString(), { method: c.req.method, headers, body: c.req.raw.body })
   );
 });
 app.all("/v1/channels/pair-callback/:channel", async (c) => {
   const u = new URL(c.req.url);
   u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
+  const headers = new Headers(c.req.raw.headers);
+  const hopCount = c.get("hopCount");
+  if (hopCount !== undefined) {
+    headers.set("x-avos-hop-count", String(hopCount));
+  }
   return c.env.AGENTS_WORKER.fetch(
-    new Request(u.toString(), { method: c.req.method, headers: c.req.raw.headers, body: c.req.raw.body })
+    new Request(u.toString(), { method: c.req.method, headers, body: c.req.raw.body })
   );
 });
 
@@ -1010,6 +1070,7 @@ async function proxyTo(
   claims: NaelaoJwtClaims | undefined,
   req: Request,
   platformSecret: string,
+  hopCount?: number,
 ): Promise<Response> {
   const headers = new Headers(req.headers);
   // B2 fix: strip client-supplied identity/internal headers UNCONDITIONALLY before setting
@@ -1029,6 +1090,16 @@ async function proxyTo(
   // (`?end_user_id=`), same precedent as the SSE stream endpoint's ?session_token=&end_user_id=
   // — so stripping the header here doesn't break their intended, documented usage.
   headers.delete("x-naelao-end-user-id");
+
+  if (hopCount !== undefined) {
+    headers.set("x-avos-hop-count", String(hopCount));
+  } else {
+    const existingHop = req.headers.get("x-avos-hop-count");
+    if (existingHop) {
+      headers.set("x-avos-hop-count", existingHop);
+    }
+  }
+
   const ts = Date.now().toString();
   if (claims) {
     headers.set("x-naelao-tenant-id", claims.tid);
@@ -1258,4 +1329,192 @@ app.notFound((c) => {
 
 export default {
   fetch: app.fetch,
+
+// Eval suites (G-Q03 / §A1 Harness Excellence HX3) → eval worker.
+//
+// Builder-only, tenant-scoped: every query in that worker filters on the tenant_id proxyTo sets
+// from verified claims, and the worker itself is workers_dev=false so this is its only ingress.
+// It had NO router route at all until now — meaning the benchmark runner
+// (infra/scripts/run-eval-suite.mjs) had never actually been able to reach a deployment, and the
+// worker's own routes were registered under /v1 (which proxyTo strips), so they could not have
+// matched even if a route had existed. Both fixed together.
+api.all("/evals", async (c) => proxyTo(c.env.EVAL_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount")));
+api.all("/evals/*", async (c) => proxyTo(c.env.EVAL_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount")));
+
+// Knowledge (KB) → knowledge worker
+// S0.1: For product_end_user callers, verify business membership first.
+api.all("/spaces/:spaceId/kb/*", async (c) => {
+  const claims = c.get("claims") as NaelaoJwtClaims | undefined;
+  if (claims?.role === "product_end_user") {
+    const spaceId = c.req.param("spaceId");
+    const endUserId = claims.sub;
+    const token = await mintInternalToken(c.env.PLATFORM_SECRET, claims.tid);
+    const res = await c.env.SPACES_WORKER.fetch(
+      new Request(`http://spaces/internal/business-role?spaceId=${encodeURIComponent(spaceId)}&endUserId=${encodeURIComponent(endUserId)}`, {
+        method: "GET",
+        headers: { "x-naelao-tenant-id": claims.tid, "x-naelao-internal-token": token },
+      })
+    );
+    if (!res.ok) {
+      return c.json({ error_code: "forbidden", message: "Not a member of this business" }, 403);
+    }
+  }
+  return proxyTo(c.env.KNOWLEDGE_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount"));
+});
+
+// Credentials (per-user / per-space / privileged-override hierarchy) → credentials worker.
+// Never proxy /internal/* here — internal credential resolution is service-binding-only.
+api.all("/spaces/:spaceId/credentials", async (c) =>
+  proxyTo(c.env.CREDENTIALS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount"))
+);
+api.all("/spaces/:spaceId/credentials/:credId", async (c) =>
+  proxyTo(c.env.CREDENTIALS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount"))
+);
+
+// Three-Tier Platform Model, Phase 6: found and fixed a real routing mismatch here — every
+// /spaces/:spaceId/sessions/* request was sent to AGENTS_WORKER, but session CREATE and
+// message GET/POST are implemented in the SPACES worker (forwarded to SpaceDO, gated by
+// requireInternalHmac — see workers/spaces/src/index.ts's SpaceDO session proxy comment).
+// AGENTS_WORKER only implements the agent-run sub-paths (kicking off/polling/streaming the
+// actual reasoning loop) and approvals — never session/message CRUD itself. Previously this
+// meant startSession()/getMessages()/sendMessage()'s first step 404'd even once auth was fixed.
+// The more specific agent/approvals sub-paths are registered FIRST so they win over the general
+// catch-all below.
+api.all("/spaces/:spaceId/sessions/:sessionId/agent/*", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount"))
+);
+api.all("/spaces/:spaceId/sessions/:sessionId/approvals/*", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount"))
+);
+api.all("/spaces/:spaceId/sessions/:sessionId/approvals", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount"))
+);
+// §A1.27: context-window usage UI + pre-send compaction — implemented on the agents worker
+// (reuses NaelaoAgentDO/getAgentDOForSpace), so these two need the same explicit-before-catch-all
+// registration the agent/approvals sub-paths above needed, or they'd silently fall through to the
+// generic sessions/* catch-all below and 404 against SPACES_WORKER (which doesn't implement them).
+api.all("/spaces/:spaceId/sessions/:sessionId/context-usage", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount"))
+);
+api.all("/spaces/:spaceId/sessions/:sessionId/compact", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount"))
+);
+// §A1 connector default-vs-personal switch — same explicit-before-catch-all registration as
+// context-usage/compact above (implemented on the agents worker, would otherwise silently fall
+// through to the generic sessions/* catch-all and 404 against SPACES_WORKER).
+api.all("/spaces/:spaceId/sessions/:sessionId/connector-mode", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount"))
+);
+// Chat uploads (files attached in this conversation, read directly by the agent — see the
+// agents-worker route's own header for how this differs from knowledge-base ingestion). Same
+// explicit-before-catch-all registration as every other agents-worker sub-path above.
+api.all("/spaces/:spaceId/sessions/:sessionId/uploads/*", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount"))
+);
+api.all("/spaces/:spaceId/sessions/:sessionId/uploads", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount"))
+);
+
+// Session + message CRUD (session create/get, message get/post, feedback) → spaces worker,
+// which owns this via SpaceDO. proxyTo already mints the x-naelao-internal-token
+// requireInternalHmac checks there, using claims.tid (the product's owning tenant for a
+// product_end_user, or the real tenant for a Team collaborator) — no separate gate needed here.
+api.all("/spaces/:spaceId/sessions/*", async (c) =>
+  proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount"))
+);
+api.all("/spaces/:spaceId/sessions", async (c) =>
+  proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount"))
+);
+
+// First-run bootstrap (create projects + run setup scripts) → agents worker
+api.all("/spaces/:spaceId/bootstrap/*", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount"))
+);
+
+// Apply a customer-bot project template (WhatsApp/Discord/email support bot) → agents worker
+// (it composes the call across the spaces worker's project endpoints + seeds starter rules).
+api.all("/spaces/:spaceId/projects/from-template", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount"))
+);
+
+// Customer-bot channel observability + human-takeover admin control → agents worker
+// (proxies straight through to the space's agent DO).
+api.all("/spaces/:spaceId/channels/*", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount"))
+);
+
+// WS-2: Space Assistant surface read-only panels (Memory/Channels/Sub-agents/Files) → agents
+// worker, which owns the NaelaoAgentDO forwarding + R2 workspace listing for these.
+api.all("/spaces/:spaceId/assistant/*", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount"))
+);
+
+// Spaces CRUD → spaces worker
+// F15: this catch-all MUST be registered AFTER every specific /spaces/:spaceId/... route
+// above. Hono dispatches to the first matching handler in registration order, and none of
+// the proxy handlers call next() — so if this were registered first (as it originally was),
+// it would swallow every /spaces/:spaceId/kb, /credentials, /sessions, /bootstrap,
+// /projects/from-template, and /channels request before the specific routes ever got a look.
+api.all("/spaces/*", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount")));
+api.all("/spaces", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount")));
+
+// Reseller / partner endpoints → spaces worker (G-AS34/G-AS35)
+api.all("/reseller/*", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount")));
+api.all("/reseller", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount")));
+
+// F-1: Builder Dashboard API (/builder/products*, /builder/api-keys*, /builder/space-types,
+// /builder/billing, /builder/payouts, …) → spaces worker (registerBuilderRoutes). Authenticated
+// with the builder JWT (this is inside the `api` group), so proxyTo mints the internal token from
+// verified claims. Without this route the ENTIRE builder dashboard 404'd — every management tab
+// (create product, users, analytics, pricing, domain, payouts) was dead.
+api.all("/builder/*", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount")));
+api.all("/builder", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount")));
+
+// Go-live audit F2: the builder's OWN platform subscription surface (billing worker's
+// /billing/subscription plan+quota, /billing/checkout upgrade, /billing/portal) was never
+// proxied here at all — apps/dashboard's Settings page calls getBillingSubscription()/
+// createBillingCheckout() against these paths and every call 404'd at the router, so a builder
+// could neither see their plan nor upgrade off free (which now gates free_tier_eligible templates,
+// G-BF08 — a builder stuck on free had no in-product way out). These are builder-authenticated
+// (the billing worker reads x-naelao-tenant-id set by proxyTo from the validated JWT; the worker
+// is shielded by workers_dev=false so the header can't be spoofed by a direct caller). Proxied as
+// three EXPLICIT routes rather than a blanket /billing/* on purpose: /billing/usage and every
+// /internal/* billing route are requireInternalHmac-gated for service callers only and must NOT
+// become reachable by an ordinary authenticated builder.
+const proxyBilling = async (c: { env: Env; get: (k: any) => any; req: { raw: Request } }) =>
+  c.env.BILLING_WORKER
+    ? proxyTo(c.env.BILLING_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount"))
+    : new Response(JSON.stringify({ error_code: "billing_unavailable", message: "Billing worker not configured" }), { status: 503, headers: { "content-type": "application/json" } });
+api.all("/billing/subscription", proxyBilling);
+api.all("/billing/checkout", proxyBilling);
+api.all("/billing/portal", proxyBilling);
+// Whop business wallet (dashboard's own direct path — builder JWT, not the shell's
+// business-membership wrapper above). Same explicit-not-blanket rule as above. The billing
+// worker's own requireInternalHmac gate verifies the token proxyTo mints from validated JWT
+// claims, and its guard() additionally enforces owner/admin role (where required) + space-tenant
+// ownership.
+api.all("/billing/whop-wallet/balance", proxyBilling);
+api.all("/billing/whop-wallet/transactions", proxyBilling);
+api.all("/billing/whop-wallet/destinations", proxyBilling);
+api.all("/billing/whop-wallet/payouts", proxyBilling);
+
+// Founder roadmap catalog (space types + templates, dev-only) → agents worker.
+// (/product/* and /business/* used to proxy here too, for the retired BusinessDO/ProductDO
+// Whop-niche runtime — removed alongside those DOs.)
+api.all("/catalog/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount")));
+
+// External-platform connectors (catalogue + connect flow) → agents worker.
+api.all("/connectors/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount")));
+api.all("/connectors", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount")));
+
+// Federated template learning (promote / inherit shared skills) → agents worker.
+api.all("/skills/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount")));
+api.all("/templates/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount")));
+
+// Multi-channel gateway connect flow (authenticated; the public inbound webhook is registered
+// above, before the JWT gate) → agents worker.
+api.all("/channels/:channel/connect", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount")));
+
+// Customer-bot project template catalogue → agents worker.
+api.all("/project-templates", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, c.get("hopCount")));
 } satisfies ExportedHandler<Env>;
