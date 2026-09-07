@@ -1435,6 +1435,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         return this.handleScriptRun(request);
       }
 
+      // POST /delegated/run — delegated task run with cryptographic verification
+      if (method === "POST" && url.pathname === "/delegated/run") {
+        return this.handleDelegatedRun(request);
+      }
+
       // POST /script/resume — continue a run that suspended at a HITL gate, now that a human
       // has answered. See handleResumeRun for why re-entering the loop is the correct (and only
       // hibernation-safe) shape here.
@@ -1797,18 +1802,48 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   // The authoritative script-first agent model (spec appendix ~6672k). Loads the agent's
   // 4-file config from R2, then runs OBSERVE→FINGERPRINT→FIND→GATE→EXECUTE→VERIFY→DISTILL.
 
-  private buildScriptEngineEnv(spaceId: string, agentId: string, tenantId: string, userId?: string, projectId?: string, sessionId?: string): ScriptEngineEnv | null {
+  buildScriptEngineEnv(
+    spaceIdOrOptions: string | { spaceId?: string; agentId?: string; tenantId?: string; userId?: string; actingUserId?: string; actingRoleRank?: number; projectId?: string; sessionId?: string },
+    agentId?: string,
+    tenantId?: string,
+    userId?: string,
+    projectId?: string,
+    sessionId?: string
+  ): ScriptEngineEnv | null {
+    let sId: string;
+    let aId: string;
+    let tId: string;
+    let uId: string | undefined;
+    let pId: string | undefined;
+    let sessId: string | undefined;
+
+    if (typeof spaceIdOrOptions === "object" && spaceIdOrOptions !== null) {
+      sId = spaceIdOrOptions.spaceId ?? "";
+      aId = spaceIdOrOptions.agentId ?? "naelao-agent";
+      tId = spaceIdOrOptions.tenantId ?? "";
+      uId = spaceIdOrOptions.actingUserId ?? spaceIdOrOptions.userId;
+      pId = spaceIdOrOptions.projectId;
+      sessId = spaceIdOrOptions.sessionId;
+    } else {
+      sId = spaceIdOrOptions;
+      aId = agentId ?? "naelao-agent";
+      tId = tenantId ?? "";
+      uId = userId;
+      pId = projectId;
+      sessId = sessionId;
+    }
+
     if (!this.env.SCRIPTS_R2) return null;
     const env: ScriptEngineEnv = {
       scriptsBucket: this.env.SCRIPTS_R2,
-      spaceId,
-      agentId,
-      tenantId,
+      spaceId: sId,
+      agentId: aId,
+      tenantId: tId,
       platformSecret: this.env.PLATFORM_SECRET,
-      ...(userId ? { userId } : {}),
+      ...(uId ? { userId: uId } : {}),
       // Project-scoped workspace (every thread's agent in a project shares one R2 filesystem)
       // vs. the Space Assistant's space-wide workspace — see workspacePrefix() in types.ts.
-      ...(projectId ? { projectId } : {}),
+      ...(pId ? { projectId: pId } : {}),
     };
     if (this.env.SCRIPTS_VECTORIZE) {
       env.vectorIndex = this.env.SCRIPTS_VECTORIZE as unknown as NonNullable<ScriptEngineEnv["vectorIndex"]>;
@@ -7000,5 +7035,121 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     };
   }
 
+  get agentId(): string {
+    return "naelao-agent";
+  }
+
+  getAgentMinimumRoleRank(agentId?: string): number {
+    const id = (agentId || this.agentId || "").toLowerCase();
+    if (id.includes("dev") || id.includes("code") || id.includes("ops") || id.includes("admin")) {
+      return 3;
+    }
+    return 2;
+  }
+
+  async handleDelegatedRun(request: Request): Promise<Response> {
+    const body = await request.json() as { 
+      taskDescription: string; 
+      delegationToken: string;
+      spaceId?: string;
+      tenantId?: string;
+      sessionId?: string;
+    };
+
+    // 1. Verify the Delegation Token
+    const verifiedPayload = await this.verifyTaskToken(body.delegationToken, this.env.PLATFORM_SECRET);
+    
+    if (!verifiedPayload) {
+      return new Response(JSON.stringify({ error: "Invalid or expired delegation token. Potential Privilege Escalation blocked." }), { status: 403 });
+    }
+
+    // 2. Validate Originating Human Role against Agent's Minimum Required Rank
+    // E.g., DevBot requires Rank 3 (Editor). If Charlie (Rank 1) initiated, block it!
+    const requiredRank = this.getAgentMinimumRoleRank(); // e.g., 3
+    
+    if (verifiedPayload.initiatingRoleRank < requiredRank) {
+      console.warn(`🚨 Trojan Delegation Blocked: User ${verifiedPayload.initiatingUserId} attempted to use ${this.agentId} to bypass RBAC.`);
+      return new Response(JSON.stringify({ 
+        error: `Delegation blocked: Initiating user lacks clearance (Requires Rank ${requiredRank}, got Rank ${verifiedPayload.initiatingRoleRank}).` 
+      }), { status: 403 });
+    }
+
+    // 3. Mount the environment using the INITIATING human's identity, NOT the delegating bot's identity
+    const safeEnv = this.buildScriptEngineEnv({
+      actingUserId: verifiedPayload.initiatingUserId,
+      actingRoleRank: verifiedPayload.initiatingRoleRank,
+      projectId: verifiedPayload.projectId,
+      spaceId: body.spaceId,
+      tenantId: body.tenantId,
+      agentId: verifiedPayload.targetRole || this.agentId,
+      sessionId: body.sessionId,
+    });
+
+    // 4. Proceed with Execution
+    return await this.executeScriptRun(body.taskDescription, safeEnv, {
+      sessionId: body.sessionId,
+    });
+  }
+
+  async executeScriptRun(taskDescription: string, env: ScriptEngineEnv | null, options: Record<string, unknown> = {}): Promise<Response> {
+    const spaceId = env?.spaceId ?? "";
+    const agentId = env?.agentId ?? this.agentId;
+    const tenantId = env?.tenantId ?? "";
+    const sessionId = (options.sessionId as string) ?? `delegated-${Date.now()}`;
+
+    const scriptRunRequest = new Request("http://agent-do/script/run", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-space-id": spaceId,
+        "x-naelao-tenant-id": tenantId,
+        ...(env?.userId ? { "x-naelao-user-id": env.userId } : {}),
+      },
+      body: JSON.stringify({
+        goal: taskDescription,
+        spaceId,
+        agentId,
+        tenantId,
+        sessionId,
+        userId: env?.userId,
+        projectId: env?.projectId,
+        ...options,
+      }),
+    });
+    return this.handleScriptRun(scriptRunRequest);
+  }
+
+  async verifyTaskToken(token: string, secret: string): Promise<any | null> {
+    try {
+      const [payloadB64, sigB64] = token.split(".");
+      const encoder = new TextEncoder();
+      
+      const keyMaterial = await crypto.subtle.importKey(
+        "raw",
+        encoder.encode(secret),
+        { name: "HMAC", hash: "SHA-256" },
+        false,
+        ["verify"]
+      );
+
+      const signatureBytes = Uint8Array.from(atob(sigB64.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+      
+      const isValid = await crypto.subtle.verify("HMAC", keyMaterial, signatureBytes, encoder.encode(payloadB64));
+      
+      if (!isValid) return null;
+
+      const payload = JSON.parse(atob(payloadB64));
+      if (Math.floor(Date.now() / 1000) > payload.exp) return null; // Expired
+
+      return payload;
+    } catch {
+      return null;
+    }
+  }
+
   // §A1.17 Phase HX1 — persist a script-native run's structured trace (runScriptLoop's
+
+    // Execution ladder Tiers 2-5 (code-runner.ts) — degrades tier-by-tier when a binding
+    // LOADER / BROWSER_WORKER / TOOL_SANDBOX) is absent; Tier 1 (R2) never needs this.
+    const sessionState = this.getShellSessionState(sessId);
 }
