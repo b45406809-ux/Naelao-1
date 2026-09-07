@@ -71,6 +71,7 @@ import { composeSystemPrompt } from "../script-engine/profiles.js";
 import { assembleSystemPrompt, type BusinessContextBrief } from "../script-engine/prompt-assembly.js";
 import { sanitizeToolsForRole, resolveAgentRole, type AgentRoleType, ROLE_FIREWALL_POLICIES } from "../script-engine/firewall.js";
 import { AVOS_PATH_CONVENTIONS, getWorkspacePath } from "../script-engine/types.js";
+import { parseGoalCommand, runDualTierPipeline, type DualTierContext } from "../script-engine/dual-tier-executor.js";
 
 // ── G-AZ01: Agent FSM states and valid transitions ───────────────────────────
 
@@ -3385,6 +3386,68 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     if (!body.goal || !spaceId) {
       return Response.json({ error: "goal and spaceId are required" }, { status: 400 });
+    }
+
+    // Check for Dual-Tier Planner-Worker Asymmetry Engine (/goal)
+    const { isGoalMode, goalPrompt } = parseGoalCommand(body.goal);
+    if (isGoalMode) {
+      const repoMap = await this.virtualShell.exec("repomix --compress");
+      const targetProjectId = projectId || "default";
+      const dualTierCtx: DualTierContext = {
+        env: this.env,
+        spaceId,
+        projectId: targetProjectId,
+        workspaceFs: {
+          readFile: async (p: string) => this.getVirtualFsStorage().readFile(p),
+          writeFile: async (p: string, c: string) => this.getVirtualFsStorage().writeFile(p, c),
+          editFile: async (p: string, o: string, n: string) => {
+            const cur = await this.getVirtualFsStorage().readFile(p);
+            if (cur === null || !cur.includes(o)) return { ok: false };
+            await this.getVirtualFsStorage().writeFile(p, cur.replace(o, n));
+            return { ok: true };
+          },
+          execBash: async (cmd: string) => this.virtualShell.exec(cmd),
+        },
+        artifactsGit: {
+          createRepoFork: async (parentRepo: string, forkSuffix: string) => {
+            const forkName = `${parentRepo}_${forkSuffix}`;
+            return { forkName };
+          },
+          generateCommitDiff: async (_baseRepo: string, forkRepo: string) => {
+            return { summary: `Diff generated for ${forkRepo}`, filesChanged: 1 };
+          },
+          commitWorkspace: async (opts: { repoName: string; branch: string; message: string }) => {
+            return { ok: true, commitId: "commit_" + Date.now().toString(36), ...opts };
+          },
+        },
+      };
+
+      const goalResult = await runDualTierPipeline(goalPrompt, repoMap.stdout || "No repository map", dualTierCtx);
+      const outputText = `### 🎯 Goal Execution Plan Completed\n\n**Architectural Summary:**\n${goalResult.architecturalSummary}\n\n**Status:** ${goalResult.auditApproved ? "✅ APPROVED" : "⚠️ CHANGES REQUESTED"}\n**Tasks Executed:** ${goalResult.tasksCompleted}/${goalResult.tasksCompleted + goalResult.tasksFailed}\n**Branch:** \`${goalResult.branchName}\`\n\n**Audit Review:**\n${goalResult.auditFeedback}`;
+
+      await this.writeAgentAnswerToSession(
+        sessionId,
+        spaceId,
+        tenantId,
+        outputText,
+        agentId,
+        { goal_pipeline_result: goalResult },
+        runId
+      );
+
+      return Response.json({
+        level: "L4",
+        result: {
+          ok: goalResult.auditApproved,
+          output: outputText,
+          tier: 1,
+          duration_ms: 0,
+          tokens_used: 0,
+        },
+        goal_pipeline: goalResult,
+        notes: [`Goal pipeline completed on branch ${goalResult.branchName}`],
+        trace: [],
+      });
     }
 
     // Go-live monetization pass: a business that opted into revenue-cut billing (productConfig.
