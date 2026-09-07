@@ -16,6 +16,57 @@
 /** Execution tier a script declares (the orchestrator routes script.run by this). */
 export type ExecutionTier = 1 | 2 | 3 | 4 | 5 | 6;
 
+export interface AvosFsRuntime {
+  read: (filePath: string, opts?: { offset?: number; limit?: number }) => Promise<{ content: string; totalLines: number }>;
+  edit: (filePath: string, oldString: string, newString: string) => Promise<{ ok: boolean; message: string }>;
+  write: (filePath: string, content: string) => Promise<{ ok: boolean; bytesWritten: number }>;
+  grep: (pattern: string, path?: string) => Promise<Array<{ file: string; line: number; text: string }>>;
+  glob: (pattern: string) => Promise<string[]>;
+}
+
+export interface AvosProjectRuntime {
+  id: string;
+  getJournal: () => Promise<any>;
+  updateJournal: (status: string) => Promise<{ ok: boolean }>;
+  createTask: (title: string) => Promise<{ ok: boolean }>;
+  listThreads: () => Promise<Array<{ id: string; title: string }>>;
+  postMessage: (threadId: string, text: string) => Promise<{ ok: boolean }>;
+}
+
+export interface AvosSpaceRuntime {
+  id: string;
+  createProject: (name: string, kind: string, templateId?: string) => Promise<{ id: string; name: string }>;
+  listProjects: () => Promise<Array<{ id: string; name: string; kind: string }>>;
+  getWalletBalance: () => Promise<{ balance_cents: number; currency: string }>;
+  sendNotification: (title: string, body: string) => Promise<{ ok: boolean }>;
+}
+
+export interface AvosVaultRuntime {
+  fetchWithAuth: (url: string, opts: { credentialName: string; method?: string; body?: any; headers?: Record<string, string> }) => Promise<Response>;
+}
+
+export interface AvosMcpRuntime {
+  call: (server: string, tool: string, params: Record<string, any>) => Promise<any>;
+  listTools: (server: string) => Promise<Array<{ name: string; description: string }>>;
+}
+
+export interface AvosBrowserRuntime {
+  navigate: (url: string) => Promise<{ title: string; textContent: string }>;
+  click: (selector: string) => Promise<{ ok: boolean }>;
+  type: (selector: string, text: string) => Promise<{ ok: boolean }>;
+  extract: (selector: string) => Promise<string[]>;
+}
+
+export interface AvosRuntimeContext {
+  fs: AvosFsRuntime;
+  project?: AvosProjectRuntime;
+  space?: AvosSpaceRuntime;
+  vault: AvosVaultRuntime;
+  mcp: AvosMcpRuntime;
+  browser: AvosBrowserRuntime;
+  runSkill: (skillName: string, args: Record<string, any>) => Promise<any>;
+}
+
 export interface HypervisorRouteResult {
   tier: ExecutionTier;
   binary: string;

@@ -38,7 +38,14 @@ import {
 import { createTracer } from "@naelao/tracing";
 import { GatewayReasoner, WorkersAIEmbedder } from "../script-engine/reasoner.js";
 import { resolveAssistantApprovalPlan, type AssistantEffectiveRole } from "../script-engine/assistant-access.js";
-import { buildCodeRunner, type WorkerLoaderBinding } from "../script-engine/code-runner.js";
+import {
+  buildCodeRunner,
+  type WorkerLoaderBinding,
+  VirtualPosixShell,
+  ArtifactsGitService,
+  buildRuntimeContext,
+  type VirtualFsStorage,
+} from "../script-engine/code-runner.js";
 import { initMemorySchema, buildMemoryStore, runMemoryMaintenance } from "../script-engine/memory-os.js";
 import { buildProjectMemoryStore, buildHybridMemoryStore } from "../script-engine/project-memory-client.js";
 import {
@@ -987,6 +994,8 @@ export interface AgentDOEnv {
 
 export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   private initialized = false;
+  private virtualShell!: VirtualPosixShell;
+  private artifactsGit!: ArtifactsGitService;
 
   private ensureInit(): void {
     if (this.initialized) return;
@@ -1355,6 +1364,20 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         updated_at        INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
       )
     `);
+
+    // Virtual workspace files storage for VirtualPosixShell
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS workspace_files (
+        path        TEXT PRIMARY KEY,
+        content     TEXT NOT NULL,
+        hash        TEXT NOT NULL,
+        size_bytes  INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
+      )
+    `);
+
+    this.virtualShell = new VirtualPosixShell(this.getVirtualFsStorage());
+    this.artifactsGit = new ArtifactsGitService(this.env);
 
     this.initialized = true;
   }
@@ -6876,6 +6899,69 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     );
 
     return Response.json({ id: runId, status: "cancelled", updatedAt: now });
+  }
+
+  async runAgentCodeMode(
+    scriptCode: string,
+    args: Record<string, any>,
+    options: { spaceId: string; projectId?: string; actingUserId?: string; scope: "SPACE_WIDE" | "PROJECT_BOUND" }
+  ) {
+    this.ensureInit();
+
+    const ctx = buildRuntimeContext(
+      this.env,
+      options.scope,
+      options.spaceId,
+      options.projectId,
+      options.actingUserId,
+      this.virtualShell,
+      this.artifactsGit
+    );
+
+    const codeRunner = buildCodeRunner({
+      loader: this.env.LOADER,
+      browserWorker: this.env.BROWSER_WORKER,
+      mcpHubWorker: this.env.MCP_HUB,
+      platformSecret: this.env.PLATFORM_SECRET,
+      toolSandbox: this.env.TOOL_SANDBOX,
+    });
+
+    return await codeRunner.run({
+      name: "agent_codemode_run",
+      code: scriptCode,
+      tier: 2,
+      args,
+      spaceId: options.spaceId,
+      projectId: options.projectId,
+      ctx,
+    });
+  }
+
+  private getVirtualFsStorage(): VirtualFsStorage {
+    return {
+      readFile: async (p: string) => {
+        const row = (this.ctx.storage.sql
+          .exec("SELECT content FROM workspace_files WHERE path = ?", p)
+          .toArray() as unknown as Array<{ content: string }>)[0];
+        return row?.content ?? null;
+      },
+      writeFile: async (p: string, data: string) => {
+        this.ctx.storage.sql.exec(
+          "INSERT OR REPLACE INTO workspace_files (path, content, hash, size_bytes, updated_at) VALUES (?, ?, ?, ?, ?)",
+          p, data, "sha256_placeholder", data.length, Date.now()
+        );
+      },
+      listFiles: async (_prefix?: string) => {
+        const rows = this.ctx.storage.sql
+          .exec("SELECT path FROM workspace_files")
+          .toArray() as unknown as Array<{ path: string }>;
+        return rows.map((r) => r.path);
+      },
+      deleteFile: async (p: string) => {
+        const result = this.ctx.storage.sql.exec("DELETE FROM workspace_files WHERE path = ?", p);
+        return result.rowsWritten > 0;
+      },
+    };
   }
 
   // §A1.17 Phase HX1 — persist a script-native run's structured trace (runScriptLoop's
