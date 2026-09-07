@@ -15,6 +15,7 @@
 // See resolveCredential() below and infra/migrations/0040_space_credentials.sql +
 // infra/migrations/0069_credential_sharing_and_product_tier.sql.
 import { badRequest, errorResponse, forbidden, mintInternalToken, notFound, requestId, requireInternalHmac } from "@naelao/http";
+import { VaultCredential, RunResolutionContext } from "@naelao/types";
 import { Hono } from "hono";
 
 // ── Env ───────────────────────────────────────────────────────────────────────
@@ -256,6 +257,66 @@ function isPrivileged(role: string): boolean {
 }
 
 // ── Credential hierarchy: row shape + resolution ─────────────────────────────
+
+/**
+ * Resolves the correct credential row based on the 3-Tier strict hierarchy.
+ * WARNING: Never return the decrypted value directly to untrusted scripts!
+ */
+export async function resolveCredentialForRun(
+  db: D1Database,
+  spaceId: string,
+  credentialName: string,
+  runContext: RunResolutionContext
+): Promise<VaultCredential> {
+  // Rule 1: Background Crons / System Sweeps
+  // Crons have no acting user. They CANNOT access USER_PERSONAL credentials.
+  if (runContext.isSystemCron && !runContext.actingUserId) {
+    const cred = await fetchCredential(db, spaceId, credentialName, "SPACE_SHARED");
+    if (!cred) throw new Error(`Missing SPACE_SHARED credential: ${credentialName}`);
+    return cred;
+  }
+
+  // Rule 2: User-Personal Match
+  // If an acting user is present, check if THEY own a personal credential first.
+  if (runContext.actingUserId) {
+    const personalCred = await fetchCredential(db, spaceId, credentialName, "USER_PERSONAL", runContext.actingUserId);
+    if (personalCred) return personalCred;
+  }
+
+  // Rule 3: Project-Bound Match
+  if (runContext.projectId) {
+    const projectCred = await fetchCredential(db, spaceId, credentialName, "PROJECT_BOUND", undefined, runContext.projectId);
+    if (projectCred) return projectCred;
+  }
+
+  // Rule 4: Space-Shared Fallback
+  const sharedCred = await fetchCredential(db, spaceId, credentialName, "SPACE_SHARED");
+  if (sharedCred) return sharedCred;
+
+  throw new Error(`Credential not found or access denied: ${credentialName}`);
+}
+
+async function fetchCredential(
+  db: D1Database,
+  spaceId: string,
+  name: string,
+  scope: string,
+  ownerUserId?: string,
+  boundProjectId?: string
+): Promise<VaultCredential | null> {
+  let query = `SELECT * FROM space_credentials WHERE space_id = ? AND name = ? AND scope = ?`;
+  const params: any[] = [spaceId, name, scope];
+
+  if (ownerUserId) {
+    query += ` AND owner_user_id = ?`;
+    params.push(ownerUserId);
+  } else if (boundProjectId) {
+    query += ` AND bound_project_id = ?`;
+    params.push(boundProjectId);
+  }
+
+  return await db.prepare(query).bind(...params).first<VaultCredential>();
+}
 
 interface CredentialRow {
   id: string;

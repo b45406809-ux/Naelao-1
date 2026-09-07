@@ -17,32 +17,46 @@
 export type ExecutionTier = 1 | 2 | 3 | 4 | 5 | 6;
 
 export interface AvosFsRuntime {
-  read: (filePath: string, opts?: { offset?: number; limit?: number }) => Promise<{ content: string; totalLines: number }>;
-  edit: (filePath: string, oldString: string, newString: string) => Promise<{ ok: boolean; message: string }>;
-  write: (filePath: string, content: string) => Promise<{ ok: boolean; bytesWritten: number }>;
-  grep: (pattern: string, path?: string) => Promise<Array<{ file: string; line: number; text: string }>>;
-  glob: (pattern: string) => Promise<string[]>;
+  read: (path: string, opts?: { offset?: number; limit?: number }) => Promise<{ content: string; totalLines: number }>;
+  write: (path: string, content: string) => Promise<{ ok: boolean; bytesWritten?: number }>;
+  edit: (path: string, oldStr: string, newStr: string) => Promise<{ ok: boolean; message?: string }>;
+  grep: (pattern: string, path?: string) => Promise<{ matches: Array<{ file: string; line: number; text: string }> }>;
+  glob: (pattern: string) => Promise<{ files: string[] }>;
 }
 
 export interface AvosProjectRuntime {
   id: string;
-  getJournal: () => Promise<any>;
-  updateJournal: (status: string) => Promise<{ ok: boolean }>;
-  createTask: (title: string) => Promise<{ ok: boolean }>;
-  listThreads: () => Promise<Array<{ id: string; title: string }>>;
-  postMessage: (threadId: string, text: string) => Promise<{ ok: boolean }>;
+  getJournal: () => Promise<{ tasks: Array<{ id: string; title: string; status: string }> } | any>;
+  updateTaskStatus?: (taskId: string, status: "PENDING" | "IN_PROGRESS" | "COMPLETED") => Promise<{ ok: boolean }>;
+  updateJournal?: (status: string) => Promise<{ ok: boolean }>;
+  createTask?: (title: string) => Promise<{ ok: boolean }>;
+  listThreads?: () => Promise<Array<{ id: string; title: string }>>;
+  postMessage?: (threadId: string, text: string) => Promise<{ ok: boolean }>;
 }
 
 export interface AvosSpaceRuntime {
   id: string;
-  createProject: (name: string, kind: string, templateId?: string) => Promise<{ id: string; name: string }>;
-  listProjects: () => Promise<Array<{ id: string; name: string; kind: string }>>;
-  getWalletBalance: () => Promise<{ balance_cents: number; currency: string }>;
-  sendNotification: (title: string, body: string) => Promise<{ ok: boolean }>;
+  getWalletBalance: () => Promise<{ balance_cents: number; currency?: string }>;
+  createProject?: (name: string, kind: string, templateId?: string) => Promise<{ id: string; name: string }>;
+  listProjects?: () => Promise<Array<{ id: string; name: string; kind: string }>>;
+  sendNotification?: (title: string, body: string) => Promise<{ ok: boolean }>;
 }
 
 export interface AvosVaultRuntime {
   fetchWithAuth: (url: string, opts: { credentialName: string; method?: string; body?: any; headers?: Record<string, string> }) => Promise<Response>;
+}
+
+export interface AvosCliRuntime {
+  exec: (command: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
+  register: (name: string, def: { description: string; subcommands: Record<string, string>; handlerCode: string }) => Promise<{ ok: boolean }>;
+  extend: (name: string, subcommand: string, handlerSnippet: string) => Promise<{ ok: boolean }>;
+  formatTable: (data: Array<Record<string, any>>) => string;
+}
+
+export interface AvosConnectorsRuntime {
+  use: (logicalAlias: string) => Promise<any>;
+  isConnected: (platform: string) => Promise<boolean>;
+  requestConnectionDialog: (platforms: string[], opts: { reason: string }) => never;
 }
 
 export interface AvosMcpRuntime {
@@ -51,20 +65,73 @@ export interface AvosMcpRuntime {
 }
 
 export interface AvosBrowserRuntime {
-  navigate: (url: string) => Promise<{ title: string; textContent: string }>;
-  click: (selector: string) => Promise<{ ok: boolean }>;
-  type: (selector: string, text: string) => Promise<{ ok: boolean }>;
-  extract: (selector: string) => Promise<string[]>;
+  scrape?: (url: string, selector?: string) => Promise<{ content: string; title: string }>;
+  navigate?: (url: string) => Promise<{ title: string; textContent: string }>;
+  click?: (selector: string) => Promise<{ ok: boolean }>;
+  type?: (selector: string, text: string) => Promise<{ ok: boolean }>;
+  extract?: (selector: string) => Promise<string[]>;
 }
 
 export interface AvosRuntimeContext {
-  fs: AvosFsRuntime;
-  project?: AvosProjectRuntime;
-  space?: AvosSpaceRuntime;
-  vault: AvosVaultRuntime;
-  mcp: AvosMcpRuntime;
-  browser: AvosBrowserRuntime;
-  runSkill: (skillName: string, args: Record<string, any>) => Promise<any>;
+  // 1. Filesystem (Backed by ArtifactFS / DO SQLite)
+  fs: {
+    read: (path: string, opts?: { offset?: number; limit?: number }) => Promise<{ content: string; totalLines: number }>;
+    write: (path: string, content: string) => Promise<{ ok: boolean }>;
+    edit: (path: string, oldStr: string, newStr: string) => Promise<{ ok: boolean }>;
+    grep: (pattern: string, path?: string) => Promise<{ matches: Array<{ file: string; line: number; text: string }> }>;
+    glob: (pattern: string) => Promise<{ files: string[] }>;
+  };
+
+  // 2. Zero-Leak Vault (Outbound Worker Edge Egress)
+  vault: {
+    fetchWithAuth: (url: string, opts: { credentialName: string; method?: string; body?: any; headers?: Record<string, string> }) => Promise<Response>;
+  };
+
+  // 3. Virtual CLI Bus
+  cli?: {
+    exec: (command: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
+    register: (name: string, def: { description: string; subcommands: Record<string, string>; handlerCode: string }) => Promise<{ ok: boolean }>;
+    extend: (name: string, subcommand: string, handlerSnippet: string) => Promise<{ ok: boolean }>;
+    formatTable: (data: Array<Record<string, any>>) => string;
+  };
+
+  // 4. Decoupled Connectors (Composio/OAuth Wrappers)
+  connectors?: {
+    use: (logicalAlias: string) => Promise<any>;
+    isConnected: (platform: string) => Promise<boolean>;
+    requestConnectionDialog: (platforms: string[], opts: { reason: string }) => never; // Emits MCP-UI and throws
+  };
+
+  // 5. Browser & Vision Senses
+  browser?: {
+    scrape: (url: string, selector?: string) => Promise<{ content: string; title: string }>;
+    navigate?: (url: string) => Promise<{ title: string; textContent: string }>;
+    click?: (selector: string) => Promise<{ ok: boolean }>;
+    type?: (selector: string, text: string) => Promise<{ ok: boolean }>;
+    extract?: (selector: string) => Promise<string[]>;
+  };
+
+  // 6. Project & Space Coordination
+  project?: {
+    id: string;
+    getJournal: () => Promise<{ tasks: Array<{ id: string; title: string; status: string }> } | any>;
+    updateTaskStatus?: (taskId: string, status: "PENDING" | "IN_PROGRESS" | "COMPLETED") => Promise<{ ok: boolean }>;
+    updateJournal?: (status: string) => Promise<{ ok: boolean }>;
+    createTask?: (title: string) => Promise<{ ok: boolean }>;
+    listThreads?: () => Promise<Array<{ id: string; title: string }>>;
+    postMessage?: (threadId: string, text: string) => Promise<{ ok: boolean }>;
+  };
+
+  space?: {
+    id: string;
+    getWalletBalance: () => Promise<{ balance_cents: number; currency?: string }>;
+    createProject?: (name: string, kind: string, templateId?: string) => Promise<{ id: string; name: string }>;
+    listProjects?: () => Promise<Array<{ id: string; name: string; kind: string }>>;
+    sendNotification?: (title: string, body: string) => Promise<{ ok: boolean }>;
+  };
+
+  mcp?: AvosMcpRuntime;
+  runSkill?: (skillName: string, args: Record<string, any>) => Promise<any>;
 }
 
 export interface HypervisorRouteResult {

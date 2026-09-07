@@ -188,3 +188,4 @@ export interface BaseEnv {
 // ── Space Hierarchy types ───────────────────────────────────────────────────
 export * from "./space-hierarchy";
 export * from "./project-automations";
+export * from "./credentials";
