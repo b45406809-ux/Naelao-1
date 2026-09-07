@@ -17,6 +17,7 @@
 import { badRequest, errorResponse, forbidden, mintInternalToken, notFound, requestId, requireInternalHmac } from "@naelao/http";
 import { VaultCredential, RunResolutionContext } from "@naelao/types";
 import { Hono } from "hono";
+import { scrubOutboundPayload } from "../../../packages/security/src/dlp";
 
 // ── Env ───────────────────────────────────────────────────────────────────────
 
@@ -773,6 +774,119 @@ app.post("/v1/internal/spaces/:spaceId/credentials/:name/plaintext", async (c) =
 
   return c.json({ name: row.name, value, scope: row.scope, is_override: Boolean(row.is_override), resolved_tier: tier });
 });
+
+// Public domains that must be strictly audited for PII exfiltration.
+const PUBLIC_CONSUMER_DOMAINS = ["api.twitter.com", "discord.com/api", "graph.instagram.com"];
+
+export async function proxyOutboundRequestWithAuth(
+  envOrUrl: any,
+  urlOrOpts: any,
+  optsOrCallerContext: any,
+  maybeCallerContext?: any
+) {
+  let env: CredentialsEnv;
+  let url: string;
+  let opts: { credentialName: string; method?: string; body?: any; headers?: Record<string, string> };
+  let callerContext: { spaceId: string; tenantId: string; userId: string; role: string };
+
+  if (typeof envOrUrl === "string") {
+    url = envOrUrl;
+    opts = urlOrOpts;
+    callerContext = optsOrCallerContext;
+    env = (callerContext as any).env || (globalThis as any).MINIFLARE_ENV || {};
+  } else {
+    env = envOrUrl;
+    url = urlOrOpts;
+    opts = optsOrCallerContext;
+    callerContext = maybeCallerContext;
+  }
+
+  const targetUrl = new URL(url);
+  const isPublicDomain = PUBLIC_CONSUMER_DOMAINS.some(d => targetUrl.hostname.endsWith(d) || targetUrl.pathname.includes(d));
+
+  let finalBody = opts.body;
+
+  // 1. Egress DLP Scan for Public Connectors
+  if (isPublicDomain && opts.body) {
+    const stringifiedBody = typeof opts.body === "string" ? opts.body : JSON.stringify(opts.body);
+    const dlpResult = scrubOutboundPayload(stringifiedBody);
+
+    if (!dlpResult.isClean) {
+      throw new Error(
+        `403 Forbidden: Outbound payload blocked by DLP policy. Detected sensitive data: ${dlpResult.flaggedCategories.join(", ")}.`
+      );
+    }
+  }
+
+  // 2. Resolve Credential securely
+  const resolved = await resolveCredential(
+    env.PLATFORM_DB,
+    callerContext.spaceId,
+    callerContext.tenantId,
+    opts.credentialName,
+    callerContext.userId
+  );
+
+  if (!resolved || "notFoundReason" in resolved) {
+    throw new Error(`401 Unauthorized: Credential '${opts.credentialName}' not found or insufficient scope.`);
+  }
+
+  const { row } = resolved;
+  const rootHex = resolveRootKeyHex(env, row.key_version);
+  const decryptedValue = await decrypt(row.encrypted_value, row.iv, rootHex, row.space_id);
+
+  // 3. Inject credential into headers at network boundary
+  const headers = new Headers(opts.headers || {});
+  headers.set("Authorization", `Bearer ${decryptedValue}`);
+
+  // 4. Dispatch the request
+  return await fetch(targetUrl.toString(), {
+    method: opts.method || "GET",
+    headers,
+    body: finalBody
+  });
+}
+
+export async function authorizeConnectorCall(
+  env: CredentialsEnv,
+  params: {
+    spaceId: string;
+    tenantId: string;
+    userId: string;
+    credentialName: string;
+    connectorDomain: string;
+    payload?: string;
+  }
+): Promise<{ authorized: boolean; reason?: string }> {
+  const isPublicDomain = PUBLIC_CONSUMER_DOMAINS.some(d => params.connectorDomain.endsWith(d));
+  
+  if (isPublicDomain && params.payload) {
+    const dlpResult = scrubOutboundPayload(params.payload);
+    if (!dlpResult.isClean) {
+      return {
+        authorized: false,
+        reason: `Outbound payload blocked by DLP policy. Detected sensitive data: ${dlpResult.flaggedCategories.join(", ")}.`
+      };
+    }
+  }
+
+  const resolved = await resolveCredential(
+    env.PLATFORM_DB,
+    params.spaceId,
+    params.tenantId,
+    params.credentialName,
+    params.userId
+  );
+
+  if (!resolved || "notFoundReason" in resolved) {
+    return {
+      authorized: false,
+      reason: `Credential '${params.credentialName}' not found or insufficient scope.`
+    };
+  }
+
+  return { authorized: true };
+}
 
 // ── Error handler ─────────────────────────────────────────────────────────────
 app.onError((err, c) => errorResponse(err, c.get("requestId") ?? "unknown"));
