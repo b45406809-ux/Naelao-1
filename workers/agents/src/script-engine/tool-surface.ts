@@ -239,6 +239,50 @@ export function applyToolResultLimit(output: unknown, params: Record<string, unk
   return output;
 }
 
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  scope: "SPACE_SHARED" | "PROJECT_BOUND" | "USER_PERSONAL";
+  ownerUserId?: string; // Populated only if scope is USER_PERSONAL
+  parameters: Record<string, any>;
+}
+
+/**
+ * Applies hardware-level stripping of tool schemas based on the thread tier and caller identity.
+ * This guarantees zero-leakage of personal integrations in multi-player rooms.
+ */
+export function assembleToolSchemasForThread(
+  allTools: ToolDefinition[],
+  threadKind: "primary" | "task_workstation" | "private_scratchpad" | "system_consult",
+  actingUserId: string
+): ToolDefinition[] {
+  
+  return allTools.filter(tool => {
+    // 1. Space-Shared and Project-Bound tools are universally accessible in the workspace
+    if (tool.scope === "SPACE_SHARED" || tool.scope === "PROJECT_BOUND") {
+      return true;
+    }
+
+    // 2. USER_PERSONAL tool filtering
+    if (tool.scope === "USER_PERSONAL") {
+      // Rule A: Personal tools are strictly forbidden in Public Channels (Tier 1 & 2)
+      if (threadKind !== "private_scratchpad") {
+        return false; // Physically stripped from context
+      }
+
+      // Rule B: Even in a Private Scratchpad (Tier 4), you can only see YOUR personal tools.
+      // Bob cannot execute a tool bound to Alice's personal account.
+      if (tool.ownerUserId === actingUserId) {
+        return true;
+      }
+      
+      return false;
+    }
+
+    return false;
+  });
+}
+
 export class ScriptToolSurface {
   private readonly library: SkillLibrary;
   private readonly ops: Map<string, { op: PrebuiltOp; prebuilt: PrebuiltScript }>;
