@@ -1,7 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
 import { applyMigrations, queryAll, queryOne, execute } from "@naelao/db";
 import type { Migration } from "@naelao/db";
-import type { MessageRole, ThreadTier, ThreadKind, AvosThread, CreateThreadParams, ListThreadsQuery, ThreadElevationStatus } from "@naelao/types";
+import type { MessageRole, ThreadTier, ThreadKind, AvosThread, CreateThreadParams, ListThreadsQuery, ThreadElevationStatus, PullRequestRecord, FileDiffEntry, PullRequestStatus } from "@naelao/types";
+
 import {
   selectMatchingRules, evaluateCondition, buildFireParams,
   findPossibleDuplicateProjects, isPresenceFresh, PRESENCE_FRESHNESS_WINDOW_MS,
@@ -1451,14 +1452,44 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           content TEXT NOT NULL,
           hash TEXT NOT NULL,
           size_bytes INTEGER NOT NULL,
+          branch TEXT NOT NULL DEFAULT 'main',
           updated_at TEXT NOT NULL DEFAULT (datetime('now')),
           updated_by TEXT NOT NULL DEFAULT '',
-          PRIMARY KEY (project_id, path)
+          PRIMARY KEY (project_id, path, branch)
         );
         CREATE INDEX IF NOT EXISTS idx_workspace_files_proj ON workspace_files(project_id);
       `);
     } catch { /* table may already exist */ }
+    try {
+      this.ctx.storage.sql.exec("ALTER TABLE workspace_files ADD COLUMN branch TEXT NOT NULL DEFAULT 'main';");
+    } catch { /* column may already exist */ }
+    try {
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS pull_requests (
+          id TEXT PRIMARY KEY,
+          space_id TEXT NOT NULL,
+          project_id TEXT NOT NULL,
+          source_branch TEXT NOT NULL,
+          target_branch TEXT NOT NULL DEFAULT 'main',
+          title TEXT NOT NULL,
+          reasoning_summary TEXT NOT NULL,
+          diff_manifest_json TEXT NOT NULL,
+          total_additions INTEGER NOT NULL DEFAULT 0,
+          total_deletions INTEGER NOT NULL DEFAULT 0,
+          author_user_id TEXT,
+          author_agent_id TEXT,
+          status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'MERGED', 'REJECTED', 'CHANGES_REQUESTED')),
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          merged_at TEXT,
+          merged_by_user_id TEXT,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_pr_lookup ON pull_requests(project_id, status);
+        CREATE INDEX IF NOT EXISTS idx_pr_branch ON pull_requests(project_id, source_branch);
+      `);
+    } catch { /* table may already exist */ }
     this.initialized = true;
+
   }
 
   override async fetch(request: Request): Promise<Response> {
@@ -2082,6 +2113,102 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       if (method === "PUT" && bindingMatch?.[1] && bindingMatch?.[2] && bindingMatch?.[3]) {
         return this.setConnectorBindingRequest(bindingMatch[1], bindingMatch[2], decodeURIComponent(bindingMatch[3]), request);
+      }
+
+      // ── Pull Requests & Code Review endpoints ────────────────────────────
+      const projPrCreateMatch = url.pathname.match(/^\/projects\/([^/]+)\/pull-requests\/create$/);
+      if (method === "POST" && projPrCreateMatch?.[1]) {
+        const body = await request.json<{
+          source_branch?: string;
+          sourceBranch?: string;
+          target_branch?: string;
+          targetBranch?: string;
+          title: string;
+          reasoning_summary?: string;
+          reasoningSummary?: string;
+          author_user_id?: string;
+          authorUserId?: string;
+          author_agent_id?: string;
+          authorAgentId?: string;
+        }>();
+        const res = await this.createPullRequest({
+          projectId: projPrCreateMatch[1],
+          sourceBranch: body.sourceBranch ?? body.source_branch ?? "feature",
+          targetBranch: body.targetBranch ?? body.target_branch ?? "main",
+          title: body.title,
+          reasoningSummary: body.reasoningSummary ?? body.reasoning_summary ?? "",
+          authorUserId: body.authorUserId ?? body.author_user_id,
+          authorAgentId: body.authorAgentId ?? body.author_agent_id,
+        });
+        return Response.json(res, { status: 201 });
+      }
+
+      const projPrsMatch = url.pathname.match(/^\/projects\/([^/]+)\/pull-requests$/);
+      if (projPrsMatch?.[1]) {
+        if (method === "GET") {
+          const status = url.searchParams.get("status") || undefined;
+          const prs = await this.listPullRequests(projPrsMatch[1], status);
+          return Response.json({ data: prs, count: prs.length });
+        }
+        if (method === "POST") {
+          const body = await request.json<{
+            source_branch?: string;
+            sourceBranch?: string;
+            target_branch?: string;
+            targetBranch?: string;
+            title: string;
+            reasoning_summary?: string;
+            reasoningSummary?: string;
+            author_user_id?: string;
+            authorUserId?: string;
+            author_agent_id?: string;
+            authorAgentId?: string;
+          }>();
+          const res = await this.createPullRequest({
+            projectId: projPrsMatch[1],
+            sourceBranch: body.sourceBranch ?? body.source_branch ?? "feature",
+            targetBranch: body.targetBranch ?? body.target_branch ?? "main",
+            title: body.title,
+            reasoningSummary: body.reasoningSummary ?? body.reasoning_summary ?? "",
+            authorUserId: body.authorUserId ?? body.author_user_id,
+            authorAgentId: body.authorAgentId ?? body.author_agent_id,
+          });
+          return Response.json(res, { status: 201 });
+        }
+      }
+
+      const prMergeMatch = url.pathname.match(/^\/pull-requests\/([^/]+)\/merge$/);
+      if (method === "POST" && prMergeMatch?.[1]) {
+        const body = await request.json<{ merged_by_user_id?: string; mergedByUserId?: string }>().catch(() => ({}) as Record<string, any>);
+        const mergedBy = body.mergedByUserId ?? body.merged_by_user_id ?? request.headers.get("x-naelao-user-id") ?? "system";
+        const result = await this.mergePullRequest(prMergeMatch[1], mergedBy);
+        return Response.json(result);
+      }
+
+      const prGetMatch = url.pathname.match(/^\/pull-requests\/([^/]+)$/);
+      if (method === "GET" && prGetMatch?.[1]) {
+        const row = (this.ctx.storage.sql.exec("SELECT * FROM pull_requests WHERE id = ?", prGetMatch[1]).toArray()[0] || null) as any;
+        if (!row) {
+          return Response.json({ error_code: "not_found", message: "Pull Request not found" }, { status: 404 });
+        }
+        return Response.json({
+          id: row.id,
+          spaceId: row.space_id,
+          projectId: row.project_id,
+          sourceBranch: row.source_branch,
+          targetBranch: row.target_branch,
+          title: row.title,
+          reasoningSummary: row.reasoning_summary,
+          diffManifest: JSON.parse(row.diff_manifest_json || "[]"),
+          totalAdditions: row.total_additions,
+          totalDeletions: row.total_deletions,
+          authorUserId: row.author_user_id,
+          authorAgentId: row.author_agent_id,
+          status: row.status,
+          createdAt: row.created_at,
+          mergedAt: row.merged_at,
+          mergedByUserId: row.merged_by_user_id,
+        });
       }
 
       // ── project_anchored_workflows endpoints ──────────────────────────────────
@@ -6127,6 +6254,269 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     });
 
     return Response.json({ ok: true, project_id: projectId, entity_id: entityId, logical_alias: logicalAlias });
+  }
+
+  // ── Pull Request Lifecycle Methods ───────────────────────────────────────
+  /**
+   * Opens a new Pull Request comparing a feature/task branch against main.
+   */
+  async createPullRequest(params: {
+    projectId: string;
+    sourceBranch: string;
+    targetBranch?: string;
+    title: string;
+    reasoningSummary: string;
+    authorUserId?: string;
+    authorAgentId?: string;
+  }): Promise<{ ok: boolean; pullRequest: PullRequestRecord }> {
+    const prId = `pr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const targetBranch = params.targetBranch || "main";
+
+    // 1. Fetch file trees from DO SQLite workspace_files for source and target branches
+    let sourceFiles: Array<{ path: string; content: string; hash: string }> = [];
+    let targetFiles: Array<{ path: string; content: string; hash: string }> = [];
+
+    try {
+      sourceFiles = this.ctx.storage.sql.exec(
+        "SELECT path, content, hash FROM workspace_files WHERE project_id = ? AND branch = ?",
+        params.projectId,
+        params.sourceBranch
+      ).toArray() as Array<{ path: string; content: string; hash: string }>;
+    } catch {
+      sourceFiles = this.ctx.storage.sql.exec(
+        "SELECT path, content, hash FROM workspace_files WHERE project_id = ?",
+        params.projectId
+      ).toArray() as Array<{ path: string; content: string; hash: string }>;
+    }
+
+    try {
+      targetFiles = this.ctx.storage.sql.exec(
+        "SELECT path, content, hash FROM workspace_files WHERE project_id = ? AND branch = ?",
+        params.projectId,
+        targetBranch
+      ).toArray() as Array<{ path: string; content: string; hash: string }>;
+    } catch {
+      targetFiles = [];
+    }
+
+    const targetMap = new Map(targetFiles.map((f) => [f.path, f]));
+    const diffManifest: FileDiffEntry[] = [];
+    let totalAdditions = 0;
+    let totalDeletions = 0;
+
+    for (const src of sourceFiles) {
+      const tgt = targetMap.get(src.path);
+      if (!tgt) {
+        // Newly created file
+        const lines = src.content ? src.content.split("\n").length : 0;
+        diffManifest.push({
+          path: src.path,
+          status: "CREATED",
+          additions: lines,
+          deletions: 0,
+          patch: `+ [New File: ${lines} lines]`,
+          newContent: src.content,
+        });
+        totalAdditions += lines;
+      } else if (tgt.hash !== src.hash) {
+        // Modified file
+        const srcLines = src.content ? src.content.split("\n") : [];
+        const tgtLines = tgt.content ? tgt.content.split("\n") : [];
+        const added = Math.max(0, srcLines.length - tgtLines.length);
+        const deleted = Math.max(0, tgtLines.length - srcLines.length);
+        diffManifest.push({
+          path: src.path,
+          status: "MODIFIED",
+          additions: added || 1,
+          deletions: deleted || 0,
+          patch: `@@ -1,${tgtLines.length} +1,${srcLines.length} @@`,
+          oldContent: tgt.content,
+          newContent: src.content,
+        });
+        totalAdditions += (added || 1);
+        totalDeletions += (deleted || 0);
+      }
+    }
+
+    // Check for deleted files
+    const sourceMap = new Map(sourceFiles.map((f) => [f.path, f]));
+    for (const tgt of targetFiles) {
+      if (!sourceMap.has(tgt.path)) {
+        const lines = tgt.content ? tgt.content.split("\n").length : 0;
+        diffManifest.push({
+          path: tgt.path,
+          status: "DELETED",
+          additions: 0,
+          deletions: lines,
+          patch: `- [Deleted File: ${lines} lines]`,
+          oldContent: tgt.content,
+        });
+        totalDeletions += lines;
+      }
+    }
+
+    const spaceId = queryOne<{ space_id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT space_id FROM projects WHERE id = ?",
+      params.projectId
+    )?.space_id || this.spaceId;
+
+    // 2. Insert Pull Request Record into SQLite
+    this.ctx.storage.sql.exec(
+      `INSERT INTO pull_requests (
+        id, space_id, project_id, source_branch, target_branch,
+        title, reasoning_summary, diff_manifest_json, total_additions,
+        total_deletions, author_user_id, author_agent_id, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN')`,
+      prId,
+      spaceId,
+      params.projectId,
+      params.sourceBranch,
+      targetBranch,
+      params.title,
+      params.reasoningSummary,
+      JSON.stringify(diffManifest),
+      totalAdditions,
+      totalDeletions,
+      params.authorUserId || null,
+      params.authorAgentId || null
+    );
+
+    const prRecord: PullRequestRecord = {
+      id: prId,
+      spaceId,
+      projectId: params.projectId,
+      sourceBranch: params.sourceBranch,
+      targetBranch,
+      title: params.title,
+      reasoningSummary: params.reasoningSummary,
+      diffManifest,
+      totalAdditions,
+      totalDeletions,
+      authorUserId: params.authorUserId,
+      authorAgentId: params.authorAgentId,
+      status: "OPEN",
+      createdAt: new Date().toISOString(),
+    };
+
+    return { ok: true, pullRequest: prRecord };
+  }
+
+  /**
+   * Atomically merges an approved Pull Request into main workspace files.
+   */
+  async mergePullRequest(prId: string, mergedByUserId: string): Promise<{ ok: boolean; message: string }> {
+    const pr = this.ctx.storage.sql.exec(
+      "SELECT * FROM pull_requests WHERE id = ? AND status = 'OPEN'",
+      prId
+    ).toArray()[0] as any;
+
+    if (!pr) {
+      throw new Error(`Pull Request '${prId}' not found or already merged/closed.`);
+    }
+
+    // Atomic transaction: copy branch files to target_branch (main) and update status
+    this.ctx.storage.transactionSync(() => {
+      // 1. Delete target branch files that were removed in source branch
+      let sourceFiles: Array<{ path: string }> = [];
+      try {
+        sourceFiles = this.ctx.storage.sql.exec(
+          "SELECT path FROM workspace_files WHERE project_id = ? AND branch = ?",
+          pr.project_id,
+          pr.source_branch
+        ).toArray() as Array<{ path: string }>;
+      } catch {
+        sourceFiles = this.ctx.storage.sql.exec(
+          "SELECT path FROM workspace_files WHERE project_id = ?",
+          pr.project_id
+        ).toArray() as Array<{ path: string }>;
+      }
+      const sourcePaths = new Set(sourceFiles.map((f) => f.path));
+
+      let targetFiles: Array<{ path: string }> = [];
+      try {
+        targetFiles = this.ctx.storage.sql.exec(
+          "SELECT path FROM workspace_files WHERE project_id = ? AND branch = ?",
+          pr.project_id,
+          pr.target_branch
+        ).toArray() as Array<{ path: string }>;
+      } catch {
+        targetFiles = [];
+      }
+
+      for (const tgt of targetFiles) {
+        if (!sourcePaths.has(tgt.path)) {
+          this.ctx.storage.sql.exec(
+            "DELETE FROM workspace_files WHERE project_id = ? AND branch = ? AND path = ?",
+            pr.project_id,
+            pr.target_branch,
+            tgt.path
+          );
+        }
+      }
+
+      // 2. Overwrite / insert source files into target branch
+      try {
+        this.ctx.storage.sql.exec(
+          `INSERT OR REPLACE INTO workspace_files (project_id, branch, path, content, hash, size_bytes, updated_at, updated_by)
+           SELECT project_id, ?, path, content, hash, size_bytes, datetime('now'), ?
+           FROM workspace_files WHERE project_id = ? AND branch = ?`,
+          pr.target_branch,
+          mergedByUserId,
+          pr.project_id,
+          pr.source_branch
+        );
+      } catch {
+        this.ctx.storage.sql.exec(
+          `INSERT OR REPLACE INTO workspace_files (project_id, path, content, hash, size_bytes, updated_at, updated_by)
+           SELECT project_id, path, content, hash, size_bytes, datetime('now'), ?
+           FROM workspace_files WHERE project_id = ?`,
+          mergedByUserId,
+          pr.project_id
+        );
+      }
+
+      // 3. Mark PR as MERGED
+      this.ctx.storage.sql.exec(
+        "UPDATE pull_requests SET status = 'MERGED', merged_at = datetime('now'), merged_by_user_id = ? WHERE id = ?",
+        mergedByUserId,
+        prId
+      );
+    });
+
+    return { ok: true, message: `Successfully merged PR #${prId} into ${pr.target_branch}.` };
+  }
+
+  /**
+   * List Pull Requests for a project.
+   */
+  async listPullRequests(projectId: string, status?: string): Promise<PullRequestRecord[]> {
+    const sql = status
+      ? "SELECT * FROM pull_requests WHERE project_id = ? AND status = ? ORDER BY created_at DESC"
+      : "SELECT * FROM pull_requests WHERE project_id = ? ORDER BY created_at DESC";
+
+    const rows = status
+      ? this.ctx.storage.sql.exec(sql, projectId, status).toArray()
+      : this.ctx.storage.sql.exec(sql, projectId).toArray();
+
+    return rows.map((r: any) => ({
+      id: r.id,
+      spaceId: r.space_id,
+      projectId: r.project_id,
+      sourceBranch: r.source_branch,
+      targetBranch: r.target_branch,
+      title: r.title,
+      reasoningSummary: r.reasoning_summary,
+      diffManifest: JSON.parse(r.diff_manifest_json || "[]"),
+      totalAdditions: r.total_additions,
+      totalDeletions: r.total_deletions,
+      authorUserId: r.author_user_id,
+      authorAgentId: r.author_agent_id,
+      status: r.status as PullRequestStatus,
+      createdAt: r.created_at,
+      mergedAt: r.merged_at,
+      mergedByUserId: r.merged_by_user_id,
+    }));
   }
 
   // ── Project-Anchored Workflows (Chunk 04) ──────────────────────────────────

@@ -1,4 +1,7 @@
+import type { BranchDivergenceStatus, RepoDiffSummary } from "@naelao/types";
+
 export interface ArtifactsRepository {
+
   id: string;
   name: string;
   remoteUrl?: string;
@@ -22,7 +25,7 @@ export interface ArtifactsEnv {
     create(name: string): Promise<ArtifactsRepository>;
     get(name: string): Promise<ArtifactsRepository>;
     fork(parentNameOrOpts: string | { source: string; name: string }, forkName?: string): Promise<ArtifactsRepository>;
-    compare?(baseName: string, forkName: string): Promise<RepoDiffSummary>;
+    compare?(baseName: string | { base: string; head: string }, forkName?: string): Promise<any>;
   };
 }
 
@@ -133,4 +136,60 @@ export class ArtifactsGitService {
     await repo.fastForward(targetCommitSha);
     return { ok: true, restoredCommit: targetCommitSha, branch };
   }
+
+  /**
+   * Calculates how many commits a branch is behind upstream main,
+   * and checks whether active files collide.
+   */
+  async getDivergenceStatus(repoName: string, branchName: string, baseBranch: string = "main"): Promise<BranchDivergenceStatus> {
+    const baseRepo = await this.env.AGENT_REPOS.get(repoName);
+    const branchRepo = await this.env.AGENT_REPOS.get(`${repoName}_fork_${branchName}`);
+
+    let diff: any = { behindCount: 0, aheadCount: 0, hasConflict: false, conflicts: [], files: [] };
+    if (this.env.AGENT_REPOS.compare) {
+      diff = await this.env.AGENT_REPOS.compare({
+        base: baseRepo.head,
+        head: branchRepo.head,
+      });
+    }
+
+    const changedFiles = (diff.files || []).map((f: any) => f.path || f);
+
+    return {
+      branchName,
+      baseBranch,
+      commitsBehind: diff.behindCount || 0,
+      commitsAhead: diff.aheadCount || 0,
+      baseHeadCommit: baseRepo.head,
+      branchHeadCommit: branchRepo.head,
+      hasConflict: diff.hasConflict || false,
+      conflictingFiles: diff.conflicts || diff.conflictingFiles || [],
+    };
+  }
+
+  /**
+   * Rebase a feature branch onto main if no conflicting files exist.
+   */
+  async rebaseOntoMain(repoName: string, branchName: string): Promise<{ ok: boolean; rebased: boolean; reason?: string }> {
+    const status = await this.getDivergenceStatus(repoName, branchName);
+
+    if (status.commitsBehind === 0) {
+      return { ok: true, rebased: false, reason: "Branch is already up to date with main." };
+    }
+
+    if (status.hasConflict || status.conflictingFiles.length > 0) {
+      return {
+        ok: false,
+        rebased: false,
+        reason: `Rebase collision detected on: ${status.conflictingFiles.join(", ")}. Manual review required.`,
+      };
+    }
+
+    // Fast-forward rebase
+    const branchRepo = await this.env.AGENT_REPOS.get(`${repoName}_fork_${branchName}`);
+    await branchRepo.fastForward(status.baseHeadCommit);
+
+    return { ok: true, rebased: true };
+  }
 }
+
