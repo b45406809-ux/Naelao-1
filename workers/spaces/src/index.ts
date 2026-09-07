@@ -620,8 +620,9 @@ app.all("/spaces/:spaceId/sessions*", async (c) => {
 //    wholesaler's DB — so the parent is never over-populated.
 
 /** Get the SpaceDO stub for a (spaceId, tenantId), HMAC-named to prevent enumeration. */
-async function spaceDoStub(env: Env, spaceId: string, tenantId: string) {
-  const doId = env.SPACE_DO.idFromName(await getDOName("space", spaceId, tenantId, env.PLATFORM_SECRET));
+async function spaceDoStub(env: Env, spaceId: string, tenantId?: string) {
+  const resolvedTenantId = tenantId || (await env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?").bind(spaceId).first<{ tenant_id: string }>())?.tenant_id || "";
+  const doId = env.SPACE_DO.idFromName(await getDOName("space", spaceId, resolvedTenantId, env.PLATFORM_SECRET));
   return env.SPACE_DO.get(doId);
 }
 
@@ -678,12 +679,16 @@ async function forwardToSpaceDO(
   stub: ReturnType<Env["SPACE_DO"]["get"]>,
   path: string,
   method: string,
-  body?: BodyInit | null,
+  body?: any,
 ): Promise<Response> {
+  const serializedBody = body !== undefined && body !== null && typeof body === "object" && !(body instanceof Uint8Array || body instanceof ArrayBuffer || body instanceof ReadableStream || body instanceof FormData || body instanceof URLSearchParams)
+    ? JSON.stringify(body)
+    : (body as BodyInit | null | undefined);
+
   return stub.fetch(new Request(`http://space-do${path}`, {
     method,
     headers: { "content-type": "application/json" },
-    ...(body !== undefined && body !== null ? { body, duplex: "half" as const } : {}),
+    ...(serializedBody !== undefined && serializedBody !== null ? { body: serializedBody, duplex: "half" as const } : {}),
   }));
 }
 
@@ -2565,6 +2570,64 @@ app.post("/internal/agent-keys/verify", async (c) => {
   const verified = await res.json<{ valid: boolean; agent_id?: string; approval_mode?: string; auto_approved_actions?: string[] }>();
   if (!verified.valid) return c.json({ valid: false });
   return c.json({ ...verified, tenant_id: space.tenant_id });
+});
+
+// ── Phase 5 Chunk 01: Project Elevation Status & 4-Tier Threads ─────────────
+// 1. Check Project Elevation Mode
+app.get("/spaces/:spaceId/projects/:projectId/elevation-status", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const caller = getCallerIdentity(c);
+  const spaceDO = await spaceDoStub(c.env, spaceId, caller.tenantId);
+  const status = await (await forwardToSpaceDO(spaceDO, `/projects/${projectId}/elevation-status`, "GET")).json();
+  return c.json({ ok: true, elevation: status });
+});
+
+// 2. List Threads with 4-Tier & Privacy Filtering
+app.get("/spaces/:spaceId/projects/:projectId/threads", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const caller = getCallerIdentity(c);
+  const tier = c.req.query("tier") ? parseInt(c.req.query("tier")!, 10) : undefined;
+  const threadKind = c.req.query("thread_kind") as any;
+  const includeSystem = c.req.query("include_system") === "true";
+  const parentThreadId = c.req.query("parent_thread_id");
+
+  const spaceDO = await spaceDoStub(c.env, spaceId, caller.tenantId);
+  const queryPayload = {
+    projectId,
+    tier,
+    threadKind,
+    parentThreadId,
+    includeSystem,
+    callerUserId: caller.userId
+  };
+
+  const response = await forwardToSpaceDO(spaceDO, `/projects/${projectId}/threads/list`, "POST", queryPayload);
+  return c.json(await response.json());
+});
+
+// 3. Create Thread
+app.post("/spaces/:spaceId/projects/:projectId/threads", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const caller = getCallerIdentity(c);
+  const body = await c.req.json();
+
+  const spaceDO = await spaceDoStub(c.env, spaceId, caller.tenantId);
+  const threadParams = {
+    projectId,
+    title: body.title,
+    tier: body.tier,
+    threadKind: body.threadKind,
+    boundBranchName: body.boundBranchName,
+    associatedTaskId: body.associatedTaskId,
+    sessionId: body.sessionId,
+    parentThreadId: body.parentThreadId,
+    isSimulationOnly: body.isSimulationOnly,
+    createdByUserId: caller.userId,
+    metadata: body.metadata
+  };
+
+  const response = await forwardToSpaceDO(spaceDO, `/projects/${projectId}/threads/create`, "POST", threadParams);
+  return c.json(await response.json(), 201);
 });
 
 // Threads (spec-canonical). A sub-agent spawn or a channel session mirrors in here as a

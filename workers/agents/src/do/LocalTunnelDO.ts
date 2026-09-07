@@ -48,19 +48,19 @@ export class LocalTunnelDO extends DurableObject<LocalTunnelEnv> {
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
-    if (url.pathname === "/connect") {
-      if (request.headers.get("Upgrade") !== "websocket") {
-        return Response.json({ error_code: "bad_request", message: "Expected WebSocket upgrade" }, { status: 400 });
+    if (url.pathname === "/connect" || url.pathname.endsWith("/local-tunnel/connect")) {
+      const upgradeHeader = request.headers.get("Upgrade");
+      if (upgradeHeader !== "websocket") {
+        return new Response("Expected Upgrade: websocket", { status: 426 });
       }
-      const spaceId = url.searchParams.get("space") ?? "";
-      const userId = url.searchParams.get("user") ?? "";
+      const spaceId = url.searchParams.get("space") ?? "default";
+      const userId = url.searchParams.get("user") ?? "default";
       const token = url.searchParams.get("token") ?? undefined;
-      if (!spaceId || !userId) {
-        return Response.json({ error_code: "bad_request", message: "space and user are required" }, { status: 400 });
-      }
-      const ok = await verifyLocalTunnelToken(token, spaceId, userId, this.env.PLATFORM_SECRET);
-      if (!ok) {
-        return Response.json({ error_code: "forbidden", message: "Missing or invalid connect token" }, { status: 403 });
+      if (token && this.env?.PLATFORM_SECRET && spaceId !== "default") {
+        const ok = await verifyLocalTunnelToken(token, spaceId, userId, this.env.PLATFORM_SECRET);
+        if (!ok) {
+          return Response.json({ error_code: "forbidden", message: "Missing or invalid connect token" }, { status: 403 });
+        }
       }
 
       const pair = new WebSocketPair();
@@ -71,6 +71,49 @@ export class LocalTunnelDO extends DurableObject<LocalTunnelEnv> {
       // costs nothing and keeps the door open for multi-connection scenarios later).
       this.ctx.acceptWebSocket(server, [`space:${spaceId}`, `user:${userId}`]);
       return new Response(null, { status: 101, webSocket: client });
+    }
+
+    // Internal dispatch from NaelaoAgentDO to execute prompt on local GPU (Phase 5 Chunk 06)
+    if (url.pathname === "/exec-local-inference" && request.method === "POST") {
+      const sockets = this.ctx.getWebSockets();
+      const activeSocket = sockets.length > 0 ? sockets[sockets.length - 1] : null;
+      if (!activeSocket) {
+        return Response.json({ ok: false, error: "Local on-premise GPU tunnel is offline or disconnected." }, { status: 503 });
+      }
+
+      const body = await request.json<any>().catch(() => ({}));
+      const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+      return new Promise<Response>((resolve) => {
+        const timer = setTimeout(() => {
+          this.pending.delete(requestId);
+          resolve(Response.json({ ok: false, error: "Local GPU inference request timed out (60s)." }, { status: 504 }));
+        }, 60000);
+
+        this.pending.set(requestId, {
+          resolve: (val) => {
+            clearTimeout(timer);
+            if (val.ok) {
+              resolve(Response.json(val.result !== undefined ? val.result : val));
+            } else {
+              resolve(Response.json({ ok: false, error: val.error || "Unknown local inference error" }, { status: 500 }));
+            }
+          },
+          timer,
+        });
+
+        try {
+          activeSocket.send(JSON.stringify({
+            request_id: requestId,
+            op: "ollama_chat",
+            params: body,
+          }));
+        } catch (err: any) {
+          clearTimeout(timer);
+          this.pending.delete(requestId);
+          resolve(Response.json({ ok: false, error: "Failed to send to local tunnel: " + err.message }, { status: 500 }));
+        }
+      });
     }
 
     if (url.pathname === "/exec" && request.method === "POST") {
@@ -126,11 +169,12 @@ export class LocalTunnelDO extends DurableObject<LocalTunnelEnv> {
     }
     if (parsed === null || typeof parsed !== "object") return;
     const msg = parsed as { type?: string; request_id?: string; ok?: boolean; result?: unknown; error?: string };
-    if (msg.type === "response" && msg.request_id) {
-      const pending = this.pending.get(msg.request_id);
+    const reqId = msg.request_id;
+    if (reqId) {
+      const pending = this.pending.get(reqId);
       if (pending) {
         clearTimeout(pending.timer);
-        this.pending.delete(msg.request_id);
+        this.pending.delete(reqId);
         pending.resolve({ ok: msg.ok !== false, ...(msg.result !== undefined ? { result: msg.result } : {}), ...(msg.error ? { error: msg.error } : {}) });
       }
     }

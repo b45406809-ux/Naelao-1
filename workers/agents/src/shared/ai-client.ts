@@ -687,3 +687,71 @@ export async function callWorkersAI(
   }
   return "";
 }
+
+// ── Vertical Model Curation & Air-Gapped Compliance (Phase 5 Chunk 06) ────────
+
+export interface VerticalModelPolicy {
+  mode: "whitelist_only" | "all_allowed";
+  allowedModelIds: string[];
+  defaultModelId: string;
+  lockedByCompliancePolicy: boolean;
+  airGappedOnly: boolean;
+}
+
+/**
+ * Validates whether a requested model complies with the vertical space's security policy.
+ * Fails closed if policy is violated.
+ */
+export function validateModelRequest(
+  requestedModel: string,
+  policy?: VerticalModelPolicy
+): { valid: boolean; reason?: string } {
+  if (!policy) {
+    return { valid: true };
+  }
+
+  // 1. Air-Gapped Enforcement
+  if (policy.airGappedOnly) {
+    const isLocalTunnel = requestedModel.startsWith("local/") || requestedModel.startsWith("ollama/");
+    if (!isLocalTunnel) {
+      return {
+        valid: false,
+        reason: "Air-Gapped Policy Violation: Cloud AI models are strictly prohibited. Only local on-premise GPU runners are permitted."
+      };
+    }
+  }
+
+  if (policy.mode !== "whitelist_only") {
+    return { valid: true };
+  }
+
+  // 2. Whitelist Check
+  const isWhitelisted = 
+    policy.allowedModelIds.includes(requestedModel) ||
+    (requestedModel.startsWith("custom/") && policy.allowedModelIds.some(m => m.startsWith("custom/"))) ||
+    (requestedModel.startsWith("local/") && policy.allowedModelIds.some(m => m.startsWith("local/")));
+
+  if (!isWhitelisted) {
+    return {
+      valid: false,
+      reason: `Compliance Violation: Model '${requestedModel}' is not certified for this vertical space. Permitted models: [${policy.allowedModelIds.join(", ")}]`
+    };
+  }
+
+  return { valid: true };
+}
+
+/**
+ * Resolves custom LoRA adapter weights if requested model uses custom namespace.
+ */
+export function resolveLoraAdapter(modelName: string, spaceId: string) {
+  if (modelName.startsWith("custom/")) {
+    const cleanSlug = modelName.replace("custom/", "");
+    return {
+      baseModel: "@cf/meta/llama-3.1-8b-instruct",
+      adapterId: `lora_${spaceId}_${cleanSlug}`
+    };
+  }
+  return { baseModel: modelName, adapterId: null };
+}
+

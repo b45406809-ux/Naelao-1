@@ -1,7 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
 import { applyMigrations, queryAll, queryOne, execute } from "@naelao/db";
 import type { Migration } from "@naelao/db";
-import type { MessageRole } from "@naelao/types";
+import type { MessageRole, ThreadTier, ThreadKind, AvosThread, CreateThreadParams, ListThreadsQuery, ThreadElevationStatus, PullRequestRecord, FileDiffEntry, PullRequestStatus, TaskStatus, ProjectTask, TaskLeaseClaimResult, SemanticDeduplicationResult } from "@naelao/types";
+
 import {
   selectMatchingRules, evaluateCondition, buildFireParams,
   findPossibleDuplicateProjects, isPresenceFresh, PRESENCE_FRESHNESS_WINDOW_MS,
@@ -9,6 +10,26 @@ import {
 } from "@naelao/events";
 import type { TriggerRule, TriggerCondition, EventEnvelope, ConditionContext } from "@naelao/events";
 import { mintInternalToken, broadcastSpaceEvent } from "@naelao/http";
+import { WorkspaceMutationEvent } from "@naelao/types";
+
+export async function broadcastSpaceMutation(
+  wsHubNamespace: DurableObjectNamespace,
+  spaceId: string,
+  mutation: WorkspaceMutationEvent
+) {
+  try {
+    const id = wsHubNamespace.idFromName(spaceId);
+    const stub = wsHubNamespace.get(id);
+    await stub.fetch("https://internal/broadcast", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "workspace.mutation", payload: mutation })
+    });
+  } catch (err) {
+    console.warn("Failed to broadcast space mutation via WsHubDO:", err);
+  }
+}
+
 
 function todaySpendKey(): string {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
@@ -87,6 +108,47 @@ function rowToTriggerRule(row: EventTriggerRow): TriggerRule {
     enabled: row.enabled === 1,
     priority: row.priority,
   };
+}
+
+export interface OccWriteParams {
+  projectId: string;
+  path: string;
+  newContent: string;
+  expectedBaseHash: string;
+  updatedBy: string;
+}
+
+export interface OccWriteResult {
+  ok: boolean;
+  newHash: string;
+  sizeBytes: number;
+  updatedAt: string;
+}
+
+export class OccConflictError extends Error {
+  public code = "OCC_CONFLICT";
+  constructor(
+    public filePath: string,
+    public expectedHash: string,
+    public currentHash: string,
+    public currentContent: string
+  ) {
+    super(
+      `OCC Conflict: File '${filePath}' was modified by another thread. ` +
+      `Expected base hash '${expectedHash.slice(0, 8)}', but found '${currentHash.slice(0, 8)}'. ` +
+      `Re-read the latest line numbers before applying patch.`
+    );
+    this.name = "OccConflictError";
+  }
+}
+
+// Compute SHA-256 hex string from text buffer
+export async function computeSha256(content: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(content);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 // ── Schema migrations ────────────────────────────────────────────────────────
@@ -1115,6 +1177,166 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_paw_proj ON project_anchored_workflows(project_id, workflow_class);
     `,
   },
+  {
+    version: 42,
+    description: "project_connector_bindings table for logical connector alias matrix",
+    up: `
+      CREATE TABLE IF NOT EXISTS project_connector_bindings (
+        project_id TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        logical_alias TEXT NOT NULL,
+        mapped_connection_id TEXT NOT NULL,
+        connection_type TEXT NOT NULL,
+        custom_config_json TEXT DEFAULT '{}',
+        updated_by TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (project_id, entity_id, logical_alias)
+      );
+    `,
+  },
+  {
+    version: 43,
+    description: "4-tier thread hierarchy and provenance columns",
+    up: `
+      CREATE TABLE IF NOT EXISTS threads_v2 (
+        id TEXT PRIMARY KEY,
+        space_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        tier INTEGER NOT NULL DEFAULT 1,
+        thread_kind TEXT NOT NULL DEFAULT 'team_room',
+        title TEXT NOT NULL,
+        bound_branch_name TEXT,
+        associated_task_id TEXT,
+        session_id TEXT,
+        parent_thread_id TEXT,
+        is_simulation_only INTEGER NOT NULL DEFAULT 0,
+        created_by_user_id TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived', 'completed')),
+        metadata_json TEXT DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      INSERT OR IGNORE INTO threads_v2 (
+        id, space_id, project_id, tier, thread_kind, title,
+        bound_branch_name, associated_task_id, session_id, parent_thread_id,
+        is_simulation_only, created_by_user_id, status, metadata_json, created_at, updated_at
+      )
+      SELECT
+        id,
+        space_id,
+        COALESCE(project_id, ''),
+        1,
+        CASE
+          WHEN thread_kind = 'sub_agent' THEN 'system_consult'
+          WHEN thread_kind = 'primary' THEN 'team_room'
+          ELSE COALESCE(thread_kind, 'team_room')
+        END,
+        COALESCE(title, 'Untitled'),
+        NULL,
+        NULL,
+        session_id,
+        parent_thread_id,
+        0,
+        COALESCE(user_id, ''),
+        CASE
+          WHEN status IN ('active', 'archived', 'completed') THEN status
+          ELSE 'active'
+        END,
+        '{}',
+        created_at,
+        updated_at
+      FROM threads;
+
+      DROP TABLE threads;
+      ALTER TABLE threads_v2 RENAME TO threads;
+
+      CREATE INDEX IF NOT EXISTS idx_threads_proj_tier ON threads(project_id, tier, status);
+      CREATE INDEX IF NOT EXISTS idx_threads_creator_kind ON threads(created_by_user_id, thread_kind);
+      CREATE INDEX IF NOT EXISTS idx_threads_session ON threads(session_id);
+      CREATE INDEX IF NOT EXISTS idx_threads_parent ON threads(parent_thread_id);
+    `,
+  },
+  {
+    version: 44,
+    description: "workspace_files with OCC hash and size_bytes",
+    up: `
+      CREATE TABLE IF NOT EXISTS workspace_files (
+        project_id TEXT NOT NULL,
+        path TEXT NOT NULL,
+        content TEXT NOT NULL,
+        hash TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_by TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (project_id, path)
+      );
+      CREATE INDEX IF NOT EXISTS idx_workspace_files_proj ON workspace_files(project_id);
+    `,
+  },
+  {
+    version: 45,
+    description: "provenance_ledger and project_on_call_leads",
+    up: `
+      CREATE TABLE IF NOT EXISTS provenance_ledger (
+        id TEXT PRIMARY KEY,
+        space_id TEXT NOT NULL,
+        project_id TEXT,
+        action_id TEXT NOT NULL,
+        human_user_id TEXT NOT NULL,
+        jwt_session_id TEXT NOT NULL,
+        assistant_id TEXT NOT NULL,
+        agent_executor_id TEXT NOT NULL,
+        action_type TEXT NOT NULL,
+        action_payload_hash TEXT NOT NULL,
+        git_commit_sha TEXT,
+        gatekeeper_token_hash TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_prov_space ON provenance_ledger(space_id, project_id);
+      CREATE INDEX IF NOT EXISTS idx_prov_user ON provenance_ledger(human_user_id);
+      CREATE INDEX IF NOT EXISTS idx_prov_action ON provenance_ledger(action_id);
+
+      CREATE TABLE IF NOT EXISTS project_on_call_leads (
+        project_id TEXT PRIMARY KEY,
+        space_id TEXT NOT NULL,
+        lead_user_id TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+      );
+    `,
+  },
+  {
+    version: 46,
+    description: "space_compliance_policy table for vertical model whitelisting and air-gapped locks",
+    up: `
+      CREATE TABLE IF NOT EXISTS space_compliance_policy (
+        id TEXT PRIMARY KEY DEFAULT 'current',
+        mode TEXT NOT NULL DEFAULT 'all_allowed' CHECK (mode IN ('whitelist_only', 'all_allowed')),
+        allowed_model_ids_json TEXT NOT NULL DEFAULT '[]',
+        default_model_id TEXT NOT NULL DEFAULT '@cf/meta/llama-3.3-70b-instruct',
+        locked_by_compliance INTEGER NOT NULL DEFAULT 0,
+        air_gapped_only INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `,
+  },
+  {
+    version: 47,
+    description: "user_workspace_preferences table for Progressive Disclosure UI Governance",
+    up: `
+      CREATE TABLE IF NOT EXISTS user_workspace_preferences (
+        user_id TEXT NOT NULL,
+        space_id TEXT NOT NULL,
+        ui_mode TEXT NOT NULL DEFAULT 'business_mode' CHECK (ui_mode IN ('business_mode', 'developer_mode')),
+        show_bot_heartbeats INTEGER NOT NULL DEFAULT 0,
+        show_git_commit_graphs INTEGER NOT NULL DEFAULT 0,
+        show_token_meters INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (user_id, space_id)
+      );
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -1261,7 +1483,175 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     try {
       this.ctx.storage.sql.exec("ALTER TABLE projects ADD COLUMN created_by_user_id TEXT;");
     } catch { /* column may already exist */ }
+    try {
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS threads (
+          id TEXT PRIMARY KEY,
+          space_id TEXT NOT NULL,
+          project_id TEXT NOT NULL,
+          tier INTEGER NOT NULL DEFAULT 1,
+          thread_kind TEXT NOT NULL DEFAULT 'team_room',
+          title TEXT NOT NULL,
+          bound_branch_name TEXT,
+          associated_task_id TEXT,
+          session_id TEXT,
+          parent_thread_id TEXT,
+          is_simulation_only INTEGER NOT NULL DEFAULT 0,
+          created_by_user_id TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived', 'completed')),
+          metadata_json TEXT DEFAULT '{}',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_threads_proj_tier ON threads(project_id, tier, status);
+        CREATE INDEX IF NOT EXISTS idx_threads_creator_kind ON threads(created_by_user_id, thread_kind);
+        CREATE INDEX IF NOT EXISTS idx_threads_session ON threads(session_id);
+        CREATE INDEX IF NOT EXISTS idx_threads_parent ON threads(parent_thread_id);
+      `);
+    } catch { /* table may already exist */ }
+    try {
+      this.ctx.storage.sql.exec("ALTER TABLE threads ADD COLUMN tier INTEGER NOT NULL DEFAULT 1;");
+    } catch { /* column may already exist */ }
+    try {
+      this.ctx.storage.sql.exec("ALTER TABLE threads ADD COLUMN bound_branch_name TEXT;");
+    } catch { /* column may already exist */ }
+    try {
+      this.ctx.storage.sql.exec("ALTER TABLE threads ADD COLUMN associated_task_id TEXT;");
+    } catch { /* column may already exist */ }
+    try {
+      this.ctx.storage.sql.exec("ALTER TABLE threads ADD COLUMN is_simulation_only INTEGER NOT NULL DEFAULT 0;");
+    } catch { /* column may already exist */ }
+    try {
+      this.ctx.storage.sql.exec("ALTER TABLE threads ADD COLUMN created_by_user_id TEXT;");
+    } catch { /* column may already exist */ }
+    try {
+      this.ctx.storage.sql.exec("ALTER TABLE threads ADD COLUMN metadata_json TEXT DEFAULT '{}';");
+    } catch { /* column may already exist */ }
+    try {
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS workspace_files (
+          project_id TEXT NOT NULL,
+          path TEXT NOT NULL,
+          content TEXT NOT NULL,
+          hash TEXT NOT NULL,
+          size_bytes INTEGER NOT NULL,
+          branch TEXT NOT NULL DEFAULT 'main',
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_by TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY (project_id, path, branch)
+        );
+        CREATE INDEX IF NOT EXISTS idx_workspace_files_proj ON workspace_files(project_id);
+      `);
+    } catch { /* table may already exist */ }
+    try {
+      this.ctx.storage.sql.exec("ALTER TABLE workspace_files ADD COLUMN branch TEXT NOT NULL DEFAULT 'main';");
+    } catch { /* column may already exist */ }
+    try {
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS pull_requests (
+          id TEXT PRIMARY KEY,
+          space_id TEXT NOT NULL,
+          project_id TEXT NOT NULL,
+          source_branch TEXT NOT NULL,
+          target_branch TEXT NOT NULL DEFAULT 'main',
+          title TEXT NOT NULL,
+          reasoning_summary TEXT NOT NULL,
+          diff_manifest_json TEXT NOT NULL,
+          total_additions INTEGER NOT NULL DEFAULT 0,
+          total_deletions INTEGER NOT NULL DEFAULT 0,
+          author_user_id TEXT,
+          author_agent_id TEXT,
+          status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'MERGED', 'REJECTED', 'CHANGES_REQUESTED')),
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          merged_at TEXT,
+          merged_by_user_id TEXT,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_pr_lookup ON pull_requests(project_id, status);
+        CREATE INDEX IF NOT EXISTS idx_pr_branch ON pull_requests(project_id, source_branch);
+      `);
+    } catch { /* table may already exist */ }
+    try {
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS project_tasks (
+          id TEXT PRIMARY KEY,
+          space_id TEXT NOT NULL,
+          project_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          description TEXT,
+          status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'CLAIMED', 'IN_PROGRESS', 'IN_REVIEW', 'COMPLETED', 'BLOCKED_AWAITING_HUMAN', 'NEEDS_ALIGNMENT')),
+          claimed_by_user_id TEXT,
+          claimed_by_agent_id TEXT,
+          branch_name TEXT,
+          lease_expires_at TEXT,
+          deliberation_round INTEGER NOT NULL DEFAULT 0,
+          semantic_embedding_json TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_pt_lookup ON project_tasks(project_id, status);
+        CREATE INDEX IF NOT EXISTS idx_pt_lease ON project_tasks(lease_expires_at);
+      `);
+    } catch { /* table may already exist */ }
+    try {
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS provenance_ledger (
+          id TEXT PRIMARY KEY,
+          space_id TEXT NOT NULL,
+          project_id TEXT,
+          action_id TEXT NOT NULL,
+          human_user_id TEXT NOT NULL,
+          jwt_session_id TEXT NOT NULL,
+          assistant_id TEXT NOT NULL,
+          agent_executor_id TEXT NOT NULL,
+          action_type TEXT NOT NULL,
+          action_payload_hash TEXT NOT NULL,
+          git_commit_sha TEXT,
+          gatekeeper_token_hash TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_prov_space ON provenance_ledger(space_id, project_id);
+        CREATE INDEX IF NOT EXISTS idx_prov_user ON provenance_ledger(human_user_id);
+        CREATE INDEX IF NOT EXISTS idx_prov_action ON provenance_ledger(action_id);
+
+        CREATE TABLE IF NOT EXISTS project_on_call_leads (
+          project_id TEXT PRIMARY KEY,
+          space_id TEXT NOT NULL,
+          lead_user_id TEXT NOT NULL,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+      `);
+    } catch { /* tables may already exist */ }
+    try {
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS space_compliance_policy (
+          id TEXT PRIMARY KEY DEFAULT 'current',
+          mode TEXT NOT NULL DEFAULT 'all_allowed' CHECK (mode IN ('whitelist_only', 'all_allowed')),
+          allowed_model_ids_json TEXT NOT NULL DEFAULT '[]',
+          default_model_id TEXT NOT NULL DEFAULT '@cf/meta/llama-3.3-70b-instruct',
+          locked_by_compliance INTEGER NOT NULL DEFAULT 0,
+          air_gapped_only INTEGER NOT NULL DEFAULT 0,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+      `);
+    } catch { /* table may already exist */ }
+    try {
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS user_workspace_preferences (
+          user_id TEXT NOT NULL,
+          space_id TEXT NOT NULL,
+          ui_mode TEXT NOT NULL DEFAULT 'business_mode' CHECK (ui_mode IN ('business_mode', 'developer_mode')),
+          show_bot_heartbeats INTEGER NOT NULL DEFAULT 0,
+          show_git_commit_graphs INTEGER NOT NULL DEFAULT 0,
+          show_token_meters INTEGER NOT NULL DEFAULT 0,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          PRIMARY KEY (user_id, space_id)
+        );
+      `);
+    } catch { /* table may already exist */ }
     this.initialized = true;
+
   }
 
   override async fetch(request: Request): Promise<Response> {
@@ -1440,10 +1830,51 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return this.updateProject(projectIdMatch[1], request);
       }
       // GET /projects/:id/workspace/files* — project workspace file access check
-      const wsFileMatch = url.pathname.match(/^\/projects\/([^/]+)\/(?:workspace\/files|workspace-file)(?:\/.*)?$/);
+      const wsFileMatch = url.pathname.match(/^\/projects\/([^/]+)\/(?:workspace\/files|workspace-file)(?:\/(.*))?$/);
       if (method === "GET" && wsFileMatch?.[1]) {
         const viewerId = url.searchParams.get("viewer_id") ?? url.searchParams.get("user_id") ?? request.headers.get("x-naelao-user-id");
-        return this.readWorkspaceFile(wsFileMatch[1], viewerId);
+        const filePath = url.searchParams.get("path") || (wsFileMatch[2] ? decodeURIComponent(wsFileMatch[2]) : undefined);
+        return this.readWorkspaceFile(wsFileMatch[1], viewerId, filePath);
+      }
+      // POST /projects/:id/workspace/files/occ — atomic OCC file update
+      const wsFileOccMatch = url.pathname.match(/^\/projects\/([^/]+)\/workspace\/files\/occ$/);
+      if (method === "POST" && wsFileOccMatch?.[1]) {
+        const body = await request.json<{
+          path?: string;
+          newContent?: string;
+          content?: string;
+          expectedBaseHash?: string;
+          expected_base_hash?: string;
+          updatedBy?: string;
+          updated_by?: string;
+        }>().catch(() => ({}) as Record<string, any>);
+
+        if (!body.path) {
+          return Response.json({ error_code: "bad_request", message: "path is required" }, { status: 400 });
+        }
+
+        try {
+          const result = await this.updateWorkspaceFileOcc({
+            projectId: wsFileOccMatch[1],
+            path: body.path,
+            newContent: body.newContent ?? body.content ?? "",
+            expectedBaseHash: body.expectedBaseHash ?? body.expected_base_hash ?? "",
+            updatedBy: body.updatedBy ?? body.updated_by ?? request.headers.get("x-naelao-user-id") ?? "system",
+          });
+          return Response.json(result);
+        } catch (err: any) {
+          if (err instanceof OccConflictError || err?.code === "OCC_CONFLICT") {
+            return Response.json({
+              error_code: "occ_conflict",
+              message: err.message,
+              file_path: err.filePath,
+              expected_hash: err.expectedHash,
+              current_hash: err.currentHash,
+              current_content: err.currentContent,
+            }, { status: 409 });
+          }
+          throw err;
+        }
       }
       // ── project_members (§A1.17 Phase T1 — real per-project ACL) ───────────────
       const projectMembersMatch = url.pathname.match(/^\/projects\/([^/]+)\/members$/);
@@ -1721,19 +2152,76 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
 
       // ── threads (spec-canonical; sub-agent/channel mirrors are ordinary subthreads) ────
+      // Phase 5 Chunk 01: Elevation status and project-scoped 4-tier threads
+      const projElevationMatch = url.pathname.match(/^\/projects\/([^/]+)\/elevation-status$/);
+      if (method === "GET" && projElevationMatch?.[1]) {
+        const status = await this.getProjectElevationStatus(projElevationMatch[1]);
+        return Response.json(status);
+      }
+
+      const projThreadsListMatch = url.pathname.match(/^\/projects\/([^/]+)\/threads\/list$/);
+      if (method === "POST" && projThreadsListMatch?.[1]) {
+        const query = await request.json<ListThreadsQuery>();
+        const threads = await this.listThreads({
+          ...query,
+          projectId: projThreadsListMatch[1],
+        });
+        return Response.json(threads);
+      }
+
+      const projThreadsCreateMatch = url.pathname.match(/^\/projects\/([^/]+)\/threads\/create$/);
+      if (method === "POST" && projThreadsCreateMatch?.[1]) {
+        const body = await request.json<CreateThreadParams>();
+        const created = await this.createThread({
+          ...body,
+          projectId: projThreadsCreateMatch[1],
+        });
+        return Response.json(created, { status: 201 });
+      }
+
+      const projThreadsDirectMatch = url.pathname.match(/^\/projects\/([^/]+)\/threads$/);
+      if (projThreadsDirectMatch?.[1]) {
+        if (method === "POST") {
+          const body = await request.json<CreateThreadParams>();
+          const created = await this.createThread({
+            ...body,
+            projectId: projThreadsDirectMatch[1],
+          });
+          return Response.json(created, { status: 201 });
+        }
+        if (method === "GET") {
+          const query: ListThreadsQuery = {
+            projectId: projThreadsDirectMatch[1],
+            tier: url.searchParams.get("tier") ? (parseInt(url.searchParams.get("tier")!, 10) as any) : undefined,
+            threadKind: (url.searchParams.get("thread_kind") as any) || undefined,
+            parentThreadId: url.searchParams.get("parent_thread_id") || undefined,
+            includeSystem: url.searchParams.get("include_system") === "true",
+            includeArchived: url.searchParams.get("include_archived") === "true",
+            callerUserId: url.searchParams.get("user_id") || url.searchParams.get("caller_user_id") || "",
+          };
+          const threads = await this.listThreads(query);
+          return Response.json(threads);
+        }
+      }
+
       // GET /threads?space_id=&project_id=&include_sub_threads=
       if (method === "GET" && url.pathname === "/threads") {
-        return this.listThreads(url.searchParams);
+        return this.listThreadsLegacy(url.searchParams);
       }
       // POST /threads — also used (idempotently) by NaelaoAgentDO to mirror a sub-agent
       // spawn or a channel session as a browsable subthread.
       if (method === "POST" && url.pathname === "/threads") {
-        return this.createThread(request);
+        return this.createThreadLegacy(request);
       }
       // GET /threads/:id
       const threadIdMatch = url.pathname.match(/^\/threads\/([^/]+)$/);
       if (method === "GET" && threadIdMatch?.[1]) {
-        return this.getThread(threadIdMatch[1]);
+        try {
+          const thread = this.getThread(threadIdMatch[1]);
+          return Response.json(thread);
+        } catch {
+          return Response.json({ error_code: "not_found", message: "Thread not found" }, { status: 404 });
+        }
       }
       // PATCH /threads/:id — rename and/or archive (there is no hard delete — see updateThread).
       if (method === "PATCH" && threadIdMatch?.[1]) {
@@ -1789,7 +2277,162 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return this.setConnectorBindingRequest(bindingMatch[1], bindingMatch[2], decodeURIComponent(bindingMatch[3]), request);
       }
 
-      // ── project_anchored_workflows endpoints ──────────────────────────────────
+      // ── Pull Requests & Code Review endpoints ────────────────────────────
+      const projPrCreateMatch = url.pathname.match(/^\/projects\/([^/]+)\/pull-requests\/create$/);
+      if (method === "POST" && projPrCreateMatch?.[1]) {
+        const body = await request.json<{
+          source_branch?: string;
+          sourceBranch?: string;
+          target_branch?: string;
+          targetBranch?: string;
+          title: string;
+          reasoning_summary?: string;
+          reasoningSummary?: string;
+          author_user_id?: string;
+          authorUserId?: string;
+          author_agent_id?: string;
+          authorAgentId?: string;
+        }>();
+        const res = await this.createPullRequest({
+          projectId: projPrCreateMatch[1],
+          sourceBranch: body.sourceBranch ?? body.source_branch ?? "feature",
+          targetBranch: body.targetBranch ?? body.target_branch ?? "main",
+          title: body.title,
+          reasoningSummary: body.reasoningSummary ?? body.reasoning_summary ?? "",
+          authorUserId: body.authorUserId ?? body.author_user_id,
+          authorAgentId: body.authorAgentId ?? body.author_agent_id,
+        });
+        return Response.json(res, { status: 201 });
+      }
+
+      const projPrsMatch = url.pathname.match(/^\/projects\/([^/]+)\/pull-requests$/);
+      if (projPrsMatch?.[1]) {
+        if (method === "GET") {
+          const status = url.searchParams.get("status") || undefined;
+          const prs = await this.listPullRequests(projPrsMatch[1], status);
+          return Response.json({ data: prs, count: prs.length });
+        }
+        if (method === "POST") {
+          const body = await request.json<{
+            source_branch?: string;
+            sourceBranch?: string;
+            target_branch?: string;
+            targetBranch?: string;
+            title: string;
+            reasoning_summary?: string;
+            reasoningSummary?: string;
+            author_user_id?: string;
+            authorUserId?: string;
+            author_agent_id?: string;
+            authorAgentId?: string;
+          }>();
+          const res = await this.createPullRequest({
+            projectId: projPrsMatch[1],
+            sourceBranch: body.sourceBranch ?? body.source_branch ?? "feature",
+            targetBranch: body.targetBranch ?? body.target_branch ?? "main",
+            title: body.title,
+            reasoningSummary: body.reasoningSummary ?? body.reasoning_summary ?? "",
+            authorUserId: body.authorUserId ?? body.author_user_id,
+            authorAgentId: body.authorAgentId ?? body.author_agent_id,
+          });
+          return Response.json(res, { status: 201 });
+        }
+      }
+
+      const prMergeMatch = url.pathname.match(/^\/pull-requests\/([^/]+)\/merge$/);
+      if (method === "POST" && prMergeMatch?.[1]) {
+        const body = await request.json<{ merged_by_user_id?: string; mergedByUserId?: string }>().catch(() => ({}) as Record<string, any>);
+        const mergedBy = body.mergedByUserId ?? body.merged_by_user_id ?? request.headers.get("x-naelao-user-id") ?? "system";
+        const result = await this.mergePullRequest(prMergeMatch[1], mergedBy);
+        return Response.json(result);
+      }
+
+      const prGetMatch = url.pathname.match(/^\/pull-requests\/([^/]+)$/);
+      if (method === "GET" && prGetMatch?.[1]) {
+        const row = (this.ctx.storage.sql.exec("SELECT * FROM pull_requests WHERE id = ?", prGetMatch[1]).toArray()[0] || null) as any;
+        if (!row) {
+          return Response.json({ error_code: "not_found", message: "Pull Request not found" }, { status: 404 });
+        }
+        return Response.json({
+          id: row.id,
+          spaceId: row.space_id,
+          projectId: row.project_id,
+          sourceBranch: row.source_branch,
+          targetBranch: row.target_branch,
+          title: row.title,
+          reasoningSummary: row.reasoning_summary,
+          diffManifest: JSON.parse(row.diff_manifest_json || "[]"),
+          totalAdditions: row.total_additions,
+          totalDeletions: row.total_deletions,
+          authorUserId: row.author_user_id,
+          authorAgentId: row.author_agent_id,
+          status: row.status,
+          createdAt: row.created_at,
+          mergedAt: row.merged_at,
+          mergedByUserId: row.merged_by_user_id,
+        });
+      }
+
+      // ── Multi-Assistant Task Leases & Governance endpoints (Phase 5 Chunk 04) ──
+      const projActiveTasksMatch = url.pathname.match(/^\/projects\/([^/]+)\/tasks\/active$/);
+      if (method === "GET" && projActiveTasksMatch?.[1]) {
+        const tasks = await this.listActiveTasksForProject(projActiveTasksMatch[1]);
+        return Response.json(tasks);
+      }
+
+      const projClaimLeaseMatch = url.pathname.match(/^\/projects\/([^/]+)\/tasks\/claim-lease$/);
+      if (method === "POST" && projClaimLeaseMatch?.[1]) {
+        const body = await request.json<{
+          taskId?: string;
+          task_id?: string;
+          userId?: string;
+          user_id?: string;
+          agentId?: string;
+          agent_id?: string;
+          branchName?: string;
+          branch_name?: string;
+          ttlMinutes?: number;
+          ttl_minutes?: number;
+        }>().catch(() => ({}) as any);
+        const res = await this.claimTaskLease({
+          projectId: projClaimLeaseMatch[1],
+          taskId: body.taskId || body.task_id || "",
+          userId: body.userId || body.user_id || request.headers.get("x-naelao-user-id") || "",
+          agentId: body.agentId || body.agent_id || "naelao-agent",
+          branchName: body.branchName || body.branch_name || "main",
+          ttlMinutes: body.ttlMinutes || body.ttl_minutes,
+        });
+        return Response.json(res);
+      }
+
+      const taskDelibMatch = url.pathname.match(/^\/tasks\/([^/]+)\/increment-deliberation$/);
+      if (method === "POST" && taskDelibMatch?.[1]) {
+        const res = await this.incrementDeliberationRound(taskDelibMatch[1]);
+        return Response.json(res);
+      }
+
+      const taskCompleteMatch = url.pathname.match(/^\/tasks\/([^/]+)\/complete$/);
+      if (method === "POST" && taskCompleteMatch?.[1]) {
+        const body = await request.json<{ finalStatus?: "COMPLETED" | "IN_REVIEW"; final_status?: "COMPLETED" | "IN_REVIEW" }>().catch(() => ({}) as any);
+        const res = await this.completeTask(taskCompleteMatch[1], body.finalStatus || body.final_status);
+        return Response.json(res);
+      }
+
+      const projTasksCreateMatch = url.pathname.match(/^\/projects\/([^/]+)\/tasks(?:\/create)?$/);
+      if (method === "POST" && projTasksCreateMatch?.[1]) {
+        const body = await request.json<any>().catch(() => ({}) as any);
+        const created = await this.createProjectTask({
+          id: body.id,
+          projectId: projTasksCreateMatch[1],
+          spaceId: body.spaceId || body.space_id,
+          title: body.title || "Untitled Task",
+          description: body.description,
+          semanticEmbedding: body.semanticEmbedding || body.semantic_embedding,
+        });
+        return Response.json(created, { status: 201 });
+      }
+
+      // ── Project-Anchored Workflows (Chunk 04) ──────────────────────────────────
       const projWorkflowsMatch = url.pathname.match(/^\/projects\/([^/]+)\/workflows$/);
       if (method === "GET" && projWorkflowsMatch?.[1]) {
         return this.listProjectWorkflows(projWorkflowsMatch[1], url.searchParams);
@@ -1809,6 +2452,99 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       if (method === "GET" && url.pathname === "/company-automations") {
         return this.listCompanyAutomations(url.searchParams);
+      }
+
+      // ── Provenance Ledger & On-Call Leads (Phase 5 Chunk 05) ───────────────────
+      const provRecordMatch = url.pathname.match(/^(?:\/internal)?\/provenance\/record$/);
+      if (method === "POST" && provRecordMatch) {
+        const body = await request.json<any>();
+        const entry: ProvenanceEntry = {
+          id: body.id || `prov_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          spaceId: body.spaceId || body.space_id,
+          projectId: body.projectId || body.project_id,
+          actionId: body.actionId || body.action_id || `act_${Date.now()}`,
+          humanUserId: body.humanUserId || body.human_user_id || "",
+          jwtSessionId: body.jwtSessionId || body.jwt_session_id || "",
+          assistantId: body.assistantId || body.assistant_id || "naelao-agent",
+          agentExecutorId: body.agentExecutorId || body.agent_executor_id || "naelao-agent",
+          actionType: body.actionType || body.action_type || "UNKNOWN",
+          payloadJson: body.payloadJson ?? body.payload_json ?? body.payload ?? {},
+          gitCommitSha: body.gitCommitSha || body.git_commit_sha,
+          gatekeeperTokenHash: body.gatekeeperTokenHash || body.gatekeeper_token_hash,
+        };
+        await this.recordProvenanceEntry(entry);
+        return Response.json({ ok: true, id: entry.id }, { status: 201 });
+      }
+
+      const provListMatch = url.pathname.match(/^(?:\/internal)?\/provenance$/);
+      if (method === "GET" && provListMatch) {
+        const spaceId = url.searchParams.get("space_id");
+        const projectId = url.searchParams.get("project_id");
+        const actionId = url.searchParams.get("action_id");
+        const humanUserId = url.searchParams.get("human_user_id");
+
+        const clauses: string[] = [];
+        const args: any[] = [];
+        if (spaceId) { clauses.push("space_id = ?"); args.push(spaceId); }
+        if (projectId) { clauses.push("project_id = ?"); args.push(projectId); }
+        if (actionId) { clauses.push("action_id = ?"); args.push(actionId); }
+        if (humanUserId) { clauses.push("human_user_id = ?"); args.push(humanUserId); }
+
+        const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+        const rows = this.ctx.storage.sql.exec(
+          `SELECT * FROM provenance_ledger ${where} ORDER BY created_at DESC LIMIT 100`,
+          ...args
+        ).toArray();
+        return Response.json({ data: rows, count: rows.length });
+      }
+
+      const onCallMatch = url.pathname.match(/^\/projects\/([^/]+)\/on-call-lead$/);
+      if (onCallMatch?.[1]) {
+        if (method === "GET") {
+          const leadUserId = await this.getOnCallLead(onCallMatch[1]);
+          return Response.json({ project_id: onCallMatch[1], lead_user_id: leadUserId });
+        }
+        if (method === "POST" || method === "PUT") {
+          const body = await request.json<{ lead_user_id?: string; leadUserId?: string; space_id?: string; spaceId?: string }>();
+          const leadUserId = body.leadUserId || body.lead_user_id || "";
+          const spaceId = body.spaceId || body.space_id || this.spaceId;
+          await this.setOnCallLead(onCallMatch[1], spaceId, leadUserId);
+          return Response.json({ ok: true, project_id: onCallMatch[1], lead_user_id: leadUserId });
+        }
+      }
+
+      const dagCompleteMatch = url.pathname.match(/^\/projects\/([^/]+)\/dag-complete$/);
+      if (method === "GET" && dagCompleteMatch?.[1]) {
+        const isComplete = await this.checkProjectDagComplete(dagCompleteMatch[1]);
+        return Response.json({ project_id: dagCompleteMatch[1], complete: isComplete });
+      }
+
+      // ── Vertical Model Curation & Air-Gapped Engine (Phase 5 Chunk 06) ────────
+      if ((url.pathname === "/compliance-policy" || url.pathname.endsWith("/compliance-policy")) && method === "GET") {
+        return Response.json(this.getCompliancePolicy());
+      }
+      if ((url.pathname === "/compliance-policy" || url.pathname.endsWith("/compliance-policy")) && (method === "PUT" || method === "PATCH" || method === "POST")) {
+        return this.handleUpdateCompliancePolicy(request);
+      }
+
+      // ── Progressive Disclosure & UI Governance Preferences ────────────────────
+      const prefMatch = url.pathname.match(/^\/spaces\/([^/]+)\/preferences$/);
+      if (prefMatch?.[1]) {
+        const spaceId = prefMatch[1];
+        const userId = url.searchParams.get("user_id") || request.headers.get("x-naelao-user-id") || "default-user";
+        if (method === "GET") {
+          return Response.json(await this.getUserPreferencesDO(userId, spaceId));
+        }
+        if (method === "PUT" || method === "PATCH" || method === "POST") {
+          const body = await request.json<any>().catch(() => ({}));
+          const res = await this.setUserPreferencesDO(userId, spaceId, {
+            uiMode: body.uiMode || body.ui_mode,
+            showBotHeartbeats: body.showBotHeartbeats ?? body.show_bot_heartbeats,
+            showGitCommitGraphs: body.showGitCommitGraphs ?? body.show_git_commit_graphs,
+            showTokenMeters: body.showTokenMeters ?? body.show_token_meters,
+          });
+          return Response.json(res);
+        }
       }
 
       return Response.json(
@@ -2999,7 +3735,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ ...row, channel_config: safeJsonParseObj(row.channel_config), allowed_agent_ids: safeJsonParseAgentIds(row.allowed_agent_ids) });
   }
 
-  public readWorkspaceFile(projectId: string, viewerId?: string | null): Response {
+  public readWorkspaceFile(projectId: string, viewerId?: string | null, filePath?: string): Response {
     const project = queryOne<{ id: string; space_id: string; visibility: string }>(
       this.ctx.storage.sql as never,
       "SELECT id, space_id, visibility FROM projects WHERE id = ?",
@@ -3015,7 +3751,92 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
       }
     }
+    if (filePath) {
+      const file = queryOne<{ path: string; content: string; hash: string; size_bytes: number; updated_at: string; updated_by: string }>(
+        this.ctx.storage.sql as never,
+        "SELECT path, content, hash, size_bytes, updated_at, updated_by FROM workspace_files WHERE project_id = ? AND path = ?",
+        projectId, filePath
+      );
+      if (file) {
+        return Response.json(file);
+      }
+      return Response.json({ error_code: "not_found", message: `File not found: ${filePath}` }, { status: 404 });
+    }
     return Response.json({ ok: true, project_id: projectId });
+  }
+
+  /**
+   * Performs an atomic Compare-And-Swap (CAS) write to the SQLite virtual filesystem.
+   * Fails closed with an OccConflictError if the base hash has drifted.
+   */
+  async updateWorkspaceFileOcc(params: OccWriteParams): Promise<OccWriteResult> {
+    const { projectId, path, newContent, expectedBaseHash, updatedBy } = params;
+    const newHash = await computeSha256(newContent);
+    const sizeBytes = new TextEncoder().encode(newContent).length;
+    const nowIso = new Date().toISOString();
+
+    const writeResult = this.ctx.storage.transactionSync(() => {
+      // 1. Check if the file exists
+      const existing = (this.ctx.storage.sql.exec(
+        "SELECT path, content, hash FROM workspace_files WHERE project_id = ? AND path = ?",
+        projectId,
+        path
+      ).toArray() as unknown as Array<{ path: string; content: string; hash: string }>)[0];
+
+      // 2. If creating a brand new file
+      if (!existing) {
+        if (expectedBaseHash && expectedBaseHash !== "NEW_FILE" && expectedBaseHash !== "") {
+          throw new OccConflictError(path, expectedBaseHash, "NOT_FOUND", "");
+        }
+
+        this.ctx.storage.sql.exec(
+          `INSERT INTO workspace_files (project_id, path, content, hash, size_bytes, updated_at, updated_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          projectId, path, newContent, newHash, sizeBytes, nowIso, updatedBy
+        );
+
+        return { ok: true, newHash, sizeBytes, updatedAt: nowIso };
+      }
+
+      // 3. File exists: Verify expected base hash matches existing hash
+      if (existing.hash !== expectedBaseHash) {
+        throw new OccConflictError(path, expectedBaseHash, existing.hash, existing.content);
+      }
+
+      // 4. Atomic CAS Update
+      const result = this.ctx.storage.sql.exec(
+        `UPDATE workspace_files 
+         SET content = ?, hash = ?, size_bytes = ?, updated_at = ?, updated_by = ?
+         WHERE project_id = ? AND path = ? AND hash = ?`,
+        newContent, newHash, sizeBytes, nowIso, updatedBy, projectId, path, expectedBaseHash
+      );
+
+      if (result.rowsWritten === 0) {
+        throw new OccConflictError(path, expectedBaseHash, existing.hash, existing.content);
+      }
+
+      return { ok: true, newHash, sizeBytes, updatedAt: nowIso };
+    });
+
+    // Best-effort live event broadcast
+    try {
+      const project = queryOne<{ space_id: string }>(
+        this.ctx.storage.sql as never,
+        "SELECT space_id FROM projects WHERE id = ?",
+        projectId
+      );
+      if (project?.space_id) {
+        void broadcastSpaceEvent(this.env, "", project.space_id, "workspace.file_changed", {
+          project_id: projectId,
+          path,
+          hash: newHash,
+          size_bytes: sizeBytes,
+          updated_by: updatedBy,
+        });
+      }
+    } catch { /* best-effort */ }
+
+    return writeResult;
   }
 
   public async updateProjectVisibility(projectId: string, request: Request): Promise<Response> {
@@ -4765,13 +5586,170 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return this.getAgentPolicy(spaceId, agentId);
   }
 
-  // ── Threads (spec-canonical) ─────────────────────────────────────────────────
-  // A sub-agent run or a channel conversation mirrors in here as an ordinary thread —
-  // thread_kind='sub_agent'/'channel' plus parent_thread_id, not a separate concept. Default
-  // listing hides them (thread_kind != 'primary') so a project's builder-facing thread list
-  // isn't flooded by a 16-way sub-agent fan-out or a busy WhatsApp bot; a project can opt in
-  // via show_sub_threads, or any caller can ask for them explicitly via include_sub_threads.
-  public listThreads(params: URLSearchParams): Response {
+  // ── Threads (spec-canonical & Phase 5 4-Tier Hierarchy) ────────────────────
+  public async getProjectElevationStatus(projectId: string): Promise<ThreadElevationStatus> {
+    const memberCountRow = (this.ctx.storage.sql.exec(`
+      SELECT COUNT(*) as count FROM project_members WHERE project_id = ?
+    `, projectId).toArray()[0] || {}) as { count?: number };
+
+    const memberCount = memberCountRow.count ?? 0;
+    const isCockpitMode = memberCount <= 1;
+
+    return {
+      projectId,
+      isCockpitMode,
+      memberCount,
+      directMainWritesAllowed: isCockpitMode,
+      activeTiers: isCockpitMode ? [1, 2] : [1, 2, 3, 4],
+    };
+  }
+
+  public get spaceId(): string {
+    const root = queryOne<{ id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT id FROM spaces WHERE parent_id IS NULL LIMIT 1"
+    );
+    if (root?.id) return root.id;
+    const anySpace = queryOne<{ space_id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT space_id FROM spaces LIMIT 1"
+    );
+    if (anySpace?.space_id) return anySpace.space_id;
+    const fromThreads = queryOne<{ space_id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT space_id FROM threads LIMIT 1"
+    );
+    return fromThreads?.space_id ?? "";
+  }
+
+  private mapThreadRow(r: any): AvosThread {
+    return {
+      id: r.id,
+      spaceId: r.space_id,
+      projectId: r.project_id,
+      tier: (r.tier ?? 1) as ThreadTier,
+      threadKind: (r.thread_kind ?? "team_room") as ThreadKind,
+      title: r.title ?? "Untitled",
+      boundBranchName: r.bound_branch_name ?? undefined,
+      associatedTaskId: r.associated_task_id ?? undefined,
+      sessionId: r.session_id ?? undefined,
+      parentThreadId: r.parent_thread_id ?? undefined,
+      isSimulationOnly: Boolean(r.is_simulation_only),
+      createdByUserId: r.created_by_user_id ?? r.user_id ?? "",
+      status: (r.status ?? "active") as "active" | "archived" | "completed",
+      metadataJson: r.metadata_json ?? "{}",
+      createdAt: r.created_at ?? new Date().toISOString(),
+      updatedAt: r.updated_at ?? new Date().toISOString(),
+    };
+  }
+
+  public getThread(threadId: string): AvosThread {
+    const row = this.ctx.storage.sql.exec("SELECT * FROM threads WHERE id = ?", threadId).one();
+    if (!row) {
+      throw new Error(`Thread not found: ${threadId}`);
+    }
+    return this.mapThreadRow(row);
+  }
+
+  public async createThread(params: CreateThreadParams): Promise<AvosThread> {
+    const threadId = `th_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const tier = params.tier ?? (params.threadKind === "private_scratchpad" ? 4 : params.threadKind === "task_workstation" ? 2 : params.threadKind === "system_consult" ? 3 : 1);
+    const threadKind = params.threadKind ?? (tier === 4 ? "private_scratchpad" : tier === 2 ? "task_workstation" : tier === 3 ? "system_consult" : "team_room");
+    const isSimulationOnly = tier === 4 ? 1 : (params.isSimulationOnly ? 1 : 0);
+
+    const project = queryOne<{ space_id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT space_id FROM projects WHERE id = ?",
+      params.projectId
+    );
+    const spaceId = project?.space_id ?? (params as any).spaceId ?? this.spaceId;
+
+    this.ctx.storage.sql.exec(`
+      INSERT INTO threads (
+        id, space_id, project_id, tier, thread_kind, title,
+        bound_branch_name, associated_task_id, session_id, parent_thread_id,
+        is_simulation_only, created_by_user_id, status, metadata_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, datetime('now'), datetime('now'))
+    `,
+      threadId,
+      spaceId,
+      params.projectId,
+      tier,
+      threadKind,
+      params.title,
+      params.boundBranchName ?? null,
+      params.associatedTaskId ?? null,
+      params.sessionId ?? null,
+      params.parentThreadId ?? null,
+      isSimulationOnly,
+      params.createdByUserId,
+      JSON.stringify(params.metadata ?? {})
+    );
+
+    return this.getThread(threadId);
+  }
+
+  public async listThreads(query: ListThreadsQuery): Promise<AvosThread[]> {
+    const includeSystem = query.includeSystem ?? false;
+    const includeArchived = query.includeArchived ?? false;
+
+    const project = queryOne<{ space_id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT space_id FROM projects WHERE id = ?",
+      query.projectId
+    );
+    const spaceId = project?.space_id || this.spaceId;
+
+    let sql = `
+      SELECT * FROM threads 
+      WHERE project_id = ?
+    `;
+    const binds: any[] = [query.projectId];
+
+    if (spaceId) {
+      sql = `
+        SELECT * FROM threads 
+        WHERE space_id = ? AND project_id = ?
+      `;
+      binds.unshift(spaceId);
+    }
+
+    if (!includeArchived) {
+      sql += ` AND status = 'active'`;
+    }
+
+    if (query.tier) {
+      sql += ` AND tier = ?`;
+      binds.push(query.tier);
+    }
+
+    if (query.threadKind) {
+      sql += ` AND thread_kind = ?`;
+      binds.push(query.threadKind);
+    }
+
+    if (query.parentThreadId) {
+      sql += ` AND parent_thread_id = ?`;
+      binds.push(query.parentThreadId);
+    }
+
+    // Tier 4 Privacy Rule: Users can ONLY see their own private scratchpads
+    sql += ` AND (tier != 4 OR created_by_user_id = ?)`;
+    binds.push(query.callerUserId);
+
+    // Tier 3 System Consult Rule: Hidden unless explicitly requested
+    if (!includeSystem) {
+      sql += ` AND thread_kind NOT IN ('system_consult', 'heartbeat_wake')`;
+    }
+
+    sql += ` ORDER BY created_at DESC`;
+
+    const rows = this.ctx.storage.sql.exec(sql, ...binds).toArray();
+    return rows.map(r => this.mapThreadRow(r));
+  }
+
+  // Legacy listThreads for GET /threads
+  public listThreadsLegacy(params: URLSearchParams): Response {
     const spaceId = params.get("space_id") ?? "";
     const projectId = params.get("project_id");
     const viewerId = params.get("viewer_id") ?? params.get("user_id") ?? "";
@@ -4808,15 +5786,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       clauses.push("(project_id IS NULL OR project_id IN (SELECT id FROM projects WHERE visibility = 'public' OR id IN (SELECT project_id FROM project_members WHERE user_id = ?)))");
       args.push(viewerId);
     }
-    // An explicit parent_thread_id ask (the shell's "show what the assistant discussed with the
-    // agent about this thread" panel, or the assistant's own thread.list op) is always answered
-    // in full regardless of the project's show_sub_threads default — the caller named exactly
-    // which subthreads it wants, not "give me everything hidden by default".
     if (parentThreadId) {
       clauses.push("parent_thread_id = ?");
       args.push(parentThreadId);
     } else if (!showSubThreads) {
-      clauses.push("thread_kind = 'primary'");
+      clauses.push("thread_kind IN ('primary', 'team_room')");
     }
 
     const rows = queryAll(
@@ -4827,28 +5801,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ data: rows, count: rows.length });
   }
 
-  /**
-   * projects.max_threads (0 = unlimited) caps how many "real" conversations a project hosts at
-   * once — primary threads and channel sessions, deliberately NOT sub_agent fan-out (that's
-   * already bounded by MAX_SUB_AGENTS_PER_SPAWN/ConcurrencyDO, and counting ephemeral
-   * orchestration threads toward a builder-facing limit would be surprising). Only archived
-   * threads don't count, so archiving old conversations reopens room under the cap.
-   */
-  private isThreadLimitReached(projectId: string | null | undefined, kind: string): boolean {
-    if (!projectId || kind === "sub_agent") return false;
-    const project = queryOne<{ max_threads: number }>(
-      this.ctx.storage.sql as never, "SELECT max_threads FROM projects WHERE id = ?", projectId
-    );
-    if (!project || project.max_threads <= 0) return false;
-    const countRow = queryOne<{ n: number }>(
-      this.ctx.storage.sql as never,
-      "SELECT COUNT(*) as n FROM threads WHERE project_id = ? AND status = 'active' AND thread_kind IN ('primary','channel')",
-      projectId
-    );
-    return (countRow?.n ?? 0) >= project.max_threads;
-  }
-
-  private async createThread(request: Request): Promise<Response> {
+  // Legacy createThread for POST /threads
+  private async createThreadLegacy(request: Request): Promise<Response> {
     const body = await request.json<{
       id?: string;
       space_id: string;
@@ -5616,6 +6570,269 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ ok: true, project_id: projectId, entity_id: entityId, logical_alias: logicalAlias });
   }
 
+  // ── Pull Request Lifecycle Methods ───────────────────────────────────────
+  /**
+   * Opens a new Pull Request comparing a feature/task branch against main.
+   */
+  async createPullRequest(params: {
+    projectId: string;
+    sourceBranch: string;
+    targetBranch?: string;
+    title: string;
+    reasoningSummary: string;
+    authorUserId?: string;
+    authorAgentId?: string;
+  }): Promise<{ ok: boolean; pullRequest: PullRequestRecord }> {
+    const prId = `pr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const targetBranch = params.targetBranch || "main";
+
+    // 1. Fetch file trees from DO SQLite workspace_files for source and target branches
+    let sourceFiles: Array<{ path: string; content: string; hash: string }> = [];
+    let targetFiles: Array<{ path: string; content: string; hash: string }> = [];
+
+    try {
+      sourceFiles = this.ctx.storage.sql.exec(
+        "SELECT path, content, hash FROM workspace_files WHERE project_id = ? AND branch = ?",
+        params.projectId,
+        params.sourceBranch
+      ).toArray() as Array<{ path: string; content: string; hash: string }>;
+    } catch {
+      sourceFiles = this.ctx.storage.sql.exec(
+        "SELECT path, content, hash FROM workspace_files WHERE project_id = ?",
+        params.projectId
+      ).toArray() as Array<{ path: string; content: string; hash: string }>;
+    }
+
+    try {
+      targetFiles = this.ctx.storage.sql.exec(
+        "SELECT path, content, hash FROM workspace_files WHERE project_id = ? AND branch = ?",
+        params.projectId,
+        targetBranch
+      ).toArray() as Array<{ path: string; content: string; hash: string }>;
+    } catch {
+      targetFiles = [];
+    }
+
+    const targetMap = new Map(targetFiles.map((f) => [f.path, f]));
+    const diffManifest: FileDiffEntry[] = [];
+    let totalAdditions = 0;
+    let totalDeletions = 0;
+
+    for (const src of sourceFiles) {
+      const tgt = targetMap.get(src.path);
+      if (!tgt) {
+        // Newly created file
+        const lines = src.content ? src.content.split("\n").length : 0;
+        diffManifest.push({
+          path: src.path,
+          status: "CREATED",
+          additions: lines,
+          deletions: 0,
+          patch: `+ [New File: ${lines} lines]`,
+          newContent: src.content,
+        });
+        totalAdditions += lines;
+      } else if (tgt.hash !== src.hash) {
+        // Modified file
+        const srcLines = src.content ? src.content.split("\n") : [];
+        const tgtLines = tgt.content ? tgt.content.split("\n") : [];
+        const added = Math.max(0, srcLines.length - tgtLines.length);
+        const deleted = Math.max(0, tgtLines.length - srcLines.length);
+        diffManifest.push({
+          path: src.path,
+          status: "MODIFIED",
+          additions: added || 1,
+          deletions: deleted || 0,
+          patch: `@@ -1,${tgtLines.length} +1,${srcLines.length} @@`,
+          oldContent: tgt.content,
+          newContent: src.content,
+        });
+        totalAdditions += (added || 1);
+        totalDeletions += (deleted || 0);
+      }
+    }
+
+    // Check for deleted files
+    const sourceMap = new Map(sourceFiles.map((f) => [f.path, f]));
+    for (const tgt of targetFiles) {
+      if (!sourceMap.has(tgt.path)) {
+        const lines = tgt.content ? tgt.content.split("\n").length : 0;
+        diffManifest.push({
+          path: tgt.path,
+          status: "DELETED",
+          additions: 0,
+          deletions: lines,
+          patch: `- [Deleted File: ${lines} lines]`,
+          oldContent: tgt.content,
+        });
+        totalDeletions += lines;
+      }
+    }
+
+    const spaceId = queryOne<{ space_id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT space_id FROM projects WHERE id = ?",
+      params.projectId
+    )?.space_id || this.spaceId;
+
+    // 2. Insert Pull Request Record into SQLite
+    this.ctx.storage.sql.exec(
+      `INSERT INTO pull_requests (
+        id, space_id, project_id, source_branch, target_branch,
+        title, reasoning_summary, diff_manifest_json, total_additions,
+        total_deletions, author_user_id, author_agent_id, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN')`,
+      prId,
+      spaceId,
+      params.projectId,
+      params.sourceBranch,
+      targetBranch,
+      params.title,
+      params.reasoningSummary,
+      JSON.stringify(diffManifest),
+      totalAdditions,
+      totalDeletions,
+      params.authorUserId || null,
+      params.authorAgentId || null
+    );
+
+    const prRecord: PullRequestRecord = {
+      id: prId,
+      spaceId,
+      projectId: params.projectId,
+      sourceBranch: params.sourceBranch,
+      targetBranch,
+      title: params.title,
+      reasoningSummary: params.reasoningSummary,
+      diffManifest,
+      totalAdditions,
+      totalDeletions,
+      authorUserId: params.authorUserId,
+      authorAgentId: params.authorAgentId,
+      status: "OPEN",
+      createdAt: new Date().toISOString(),
+    };
+
+    return { ok: true, pullRequest: prRecord };
+  }
+
+  /**
+   * Atomically merges an approved Pull Request into main workspace files.
+   */
+  async mergePullRequest(prId: string, mergedByUserId: string): Promise<{ ok: boolean; message: string }> {
+    const pr = this.ctx.storage.sql.exec(
+      "SELECT * FROM pull_requests WHERE id = ? AND status = 'OPEN'",
+      prId
+    ).toArray()[0] as any;
+
+    if (!pr) {
+      throw new Error(`Pull Request '${prId}' not found or already merged/closed.`);
+    }
+
+    // Atomic transaction: copy branch files to target_branch (main) and update status
+    this.ctx.storage.transactionSync(() => {
+      // 1. Delete target branch files that were removed in source branch
+      let sourceFiles: Array<{ path: string }> = [];
+      try {
+        sourceFiles = this.ctx.storage.sql.exec(
+          "SELECT path FROM workspace_files WHERE project_id = ? AND branch = ?",
+          pr.project_id,
+          pr.source_branch
+        ).toArray() as Array<{ path: string }>;
+      } catch {
+        sourceFiles = this.ctx.storage.sql.exec(
+          "SELECT path FROM workspace_files WHERE project_id = ?",
+          pr.project_id
+        ).toArray() as Array<{ path: string }>;
+      }
+      const sourcePaths = new Set(sourceFiles.map((f) => f.path));
+
+      let targetFiles: Array<{ path: string }> = [];
+      try {
+        targetFiles = this.ctx.storage.sql.exec(
+          "SELECT path FROM workspace_files WHERE project_id = ? AND branch = ?",
+          pr.project_id,
+          pr.target_branch
+        ).toArray() as Array<{ path: string }>;
+      } catch {
+        targetFiles = [];
+      }
+
+      for (const tgt of targetFiles) {
+        if (!sourcePaths.has(tgt.path)) {
+          this.ctx.storage.sql.exec(
+            "DELETE FROM workspace_files WHERE project_id = ? AND branch = ? AND path = ?",
+            pr.project_id,
+            pr.target_branch,
+            tgt.path
+          );
+        }
+      }
+
+      // 2. Overwrite / insert source files into target branch
+      try {
+        this.ctx.storage.sql.exec(
+          `INSERT OR REPLACE INTO workspace_files (project_id, branch, path, content, hash, size_bytes, updated_at, updated_by)
+           SELECT project_id, ?, path, content, hash, size_bytes, datetime('now'), ?
+           FROM workspace_files WHERE project_id = ? AND branch = ?`,
+          pr.target_branch,
+          mergedByUserId,
+          pr.project_id,
+          pr.source_branch
+        );
+      } catch {
+        this.ctx.storage.sql.exec(
+          `INSERT OR REPLACE INTO workspace_files (project_id, path, content, hash, size_bytes, updated_at, updated_by)
+           SELECT project_id, path, content, hash, size_bytes, datetime('now'), ?
+           FROM workspace_files WHERE project_id = ?`,
+          mergedByUserId,
+          pr.project_id
+        );
+      }
+
+      // 3. Mark PR as MERGED
+      this.ctx.storage.sql.exec(
+        "UPDATE pull_requests SET status = 'MERGED', merged_at = datetime('now'), merged_by_user_id = ? WHERE id = ?",
+        mergedByUserId,
+        prId
+      );
+    });
+
+    return { ok: true, message: `Successfully merged PR #${prId} into ${pr.target_branch}.` };
+  }
+
+  /**
+   * List Pull Requests for a project.
+   */
+  async listPullRequests(projectId: string, status?: string): Promise<PullRequestRecord[]> {
+    const sql = status
+      ? "SELECT * FROM pull_requests WHERE project_id = ? AND status = ? ORDER BY created_at DESC"
+      : "SELECT * FROM pull_requests WHERE project_id = ? ORDER BY created_at DESC";
+
+    const rows = status
+      ? this.ctx.storage.sql.exec(sql, projectId, status).toArray()
+      : this.ctx.storage.sql.exec(sql, projectId).toArray();
+
+    return rows.map((r: any) => ({
+      id: r.id,
+      spaceId: r.space_id,
+      projectId: r.project_id,
+      sourceBranch: r.source_branch,
+      targetBranch: r.target_branch,
+      title: r.title,
+      reasoningSummary: r.reasoning_summary,
+      diffManifest: JSON.parse(r.diff_manifest_json || "[]"),
+      totalAdditions: r.total_additions,
+      totalDeletions: r.total_deletions,
+      authorUserId: r.author_user_id,
+      authorAgentId: r.author_agent_id,
+      status: r.status as PullRequestStatus,
+      createdAt: r.created_at,
+      mergedAt: r.merged_at,
+      mergedByUserId: r.merged_by_user_id,
+    }));
+  }
+
   // ── Project-Anchored Workflows (Chunk 04) ──────────────────────────────────
   public async registerProjectWorkflow(request: Request, explicitProjectId?: string): Promise<Response> {
     const body = await request.json<{
@@ -5726,43 +6943,412 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ data: rows, count: rows.length });
   }
 
-      {
-        version: 41,
-        description: "project_anchored_workflows table",
-        up: `
-          CREATE TABLE IF NOT EXISTS project_anchored_workflows (
-            id TEXT PRIMARY KEY,
-            space_id TEXT NOT NULL,
-            project_id TEXT NOT NULL,
-            workflow_class TEXT NOT NULL CHECK (workflow_class IN ('COMPANY_AUTOMATION', 'VERTICAL_EXTENSION', 'EPHEMERAL_TASK')),
-            title TEXT NOT NULL,
-            script_path TEXT NOT NULL,
-            trigger_type TEXT NOT NULL,
-            trigger_spec TEXT,
-            status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'PAUSED', 'DISABLED')),
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
-          );
-          CREATE INDEX IF NOT EXISTS idx_paw_proj ON project_anchored_workflows(project_id, workflow_class);
-        `,
-      },
-      {
-        version: 42,
-        description: "project_connector_bindings table for logical connector alias matrix",
-        up: `
-          CREATE TABLE IF NOT EXISTS project_connector_bindings (
-            project_id TEXT NOT NULL,
-            entity_id TEXT NOT NULL,
-            logical_alias TEXT NOT NULL,
-            mapped_connection_id TEXT NOT NULL,
-            connection_type TEXT NOT NULL,
-            custom_config_json TEXT DEFAULT '{}',
-            updated_by TEXT NOT NULL,
-            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-            PRIMARY KEY (project_id, entity_id, logical_alias)
-          );
-        `,
-      },
-    ];
+  // ── Multi-Assistant Task Leases & Governance Methods (Phase 5 Chunk 04) ──
+  /**
+   * Attempts to claim a task lease atomically.
+   * Succeeds only if the task is OPEN or its prior lease has expired (15-min crash TTL).
+   */
+  async claimTaskLease(params: {
+    taskId: string;
+    projectId: string;
+    userId: string;
+    agentId: string;
+    branchName: string;
+    ttlMinutes?: number;
+  }): Promise<TaskLeaseClaimResult> {
+    const ttl = params.ttlMinutes || 15;
+
+    // Atomic CAS Update in DO SQLite
+    const result = this.ctx.storage.sql.exec(`
+      UPDATE project_tasks
+      SET status = 'CLAIMED',
+          claimed_by_user_id = ?,
+          claimed_by_agent_id = ?,
+          branch_name = ?,
+          lease_expires_at = datetime('now', '+${ttl} minutes'),
+          updated_at = datetime('now')
+      WHERE id = ? 
+        AND project_id = ?
+        AND (status = 'OPEN' OR lease_expires_at < datetime('now'))
+    `, params.userId, params.agentId, params.branchName, params.taskId, params.projectId);
+
+    if (result.rowsWritten === 1) {
+      return {
+        granted: true,
+        taskId: params.taskId,
+        currentStatus: "CLAIMED",
+        claimedByUserId: params.userId,
+        claimedByAgentId: params.agentId,
+        branchName: params.branchName
+      };
+    }
+
+    // If lease failed, fetch current owner details for spectator routing
+    const currentTask = this.ctx.storage.sql.exec(
+      `SELECT * FROM project_tasks WHERE id = ?`,
+      params.taskId
+    ).toArray()[0] as any;
+
+    return {
+      granted: false,
+      taskId: params.taskId,
+      currentStatus: (currentTask?.status as TaskStatus) || "IN_PROGRESS",
+      claimedByUserId: currentTask?.claimed_by_user_id,
+      claimedByAgentId: currentTask?.claimed_by_agent_id,
+      branchName: currentTask?.branch_name,
+      leaseExpiresAt: currentTask?.lease_expires_at
+    };
+  }
+
+  /**
+   * Increments the deliberation round on inter-agent reviews.
+   * If deliberation exceeds 2 rounds, halts execution to prevent token burn.
+   */
+  async incrementDeliberationRound(taskId: string): Promise<{ blockedForHuman: boolean; round: number }> {
+    const task = this.ctx.storage.sql.exec(
+      `SELECT deliberation_round FROM project_tasks WHERE id = ?`,
+      taskId
+    ).toArray()[0] as any;
+
+    const nextRound = (task?.deliberation_round || 0) + 1;
+
+    if (nextRound > 2) {
+      this.ctx.storage.sql.exec(`
+        UPDATE project_tasks 
+        SET status = 'BLOCKED_AWAITING_HUMAN', deliberation_round = ?, updated_at = datetime('now')
+        WHERE id = ?
+      `, nextRound, taskId);
+
+      return { blockedForHuman: true, round: nextRound };
+    }
+
+    this.ctx.storage.sql.exec(`
+      UPDATE project_tasks 
+      SET deliberation_round = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `, nextRound, taskId);
+
+    return { blockedForHuman: false, round: nextRound };
+  }
+
+  /**
+   * Releases or completes a task lease.
+   */
+  async completeTask(taskId: string, finalStatus: "COMPLETED" | "IN_REVIEW" = "COMPLETED") {
+    this.ctx.storage.sql.exec(`
+      UPDATE project_tasks
+      SET status = ?, lease_expires_at = NULL, updated_at = datetime('now')
+      WHERE id = ?
+    `, finalStatus, taskId);
+    return { ok: true, taskId, status: finalStatus };
+  }
+
+  /**
+   * Retrieves all active tasks with their embeddings for semantic deduplication.
+   */
+  async listActiveTasksForProject(projectId: string): Promise<any[]> {
+    return this.ctx.storage.sql.exec(`
+      SELECT * FROM project_tasks 
+      WHERE project_id = ? AND status IN ('OPEN', 'CLAIMED', 'IN_PROGRESS', 'NEEDS_ALIGNMENT')
+      ORDER BY created_at DESC
+    `, projectId).toArray() as any[];
+  }
+
+  /**
+   * Creates or registers a new project task.
+   */
+  async createProjectTask(params: {
+    id?: string;
+    projectId: string;
+    spaceId?: string;
+    title: string;
+    description?: string;
+    semanticEmbedding?: number[];
+  }): Promise<ProjectTask> {
+    const taskId = params.id || `task_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const spaceId = params.spaceId || queryOne<{ space_id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT space_id FROM projects WHERE id = ?",
+      params.projectId
+    )?.space_id || this.spaceId;
+    const embeddingJson = params.semanticEmbedding ? JSON.stringify(params.semanticEmbedding) : null;
+
+    this.ctx.storage.sql.exec(`
+      INSERT INTO project_tasks (
+        id, space_id, project_id, title, description, status,
+        semantic_embedding_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'OPEN', ?, datetime('now'), datetime('now'))
+      ON CONFLICT(id) DO UPDATE SET
+        title = excluded.title,
+        description = excluded.description,
+        semantic_embedding_json = COALESCE(excluded.semantic_embedding_json, project_tasks.semantic_embedding_json),
+        updated_at = datetime('now')
+    `, taskId, spaceId, params.projectId, params.title, params.description || null, embeddingJson);
+
+    const row = this.ctx.storage.sql.exec(`SELECT * FROM project_tasks WHERE id = ?`, taskId).toArray()[0] as any;
+    return this.mapProjectTaskRow(row);
+  }
+
+  private mapProjectTaskRow(r: any): ProjectTask {
+    return {
+      id: r.id,
+      projectId: r.project_id,
+      spaceId: r.space_id,
+      title: r.title,
+      description: r.description ?? undefined,
+      status: r.status as TaskStatus,
+      claimedByUserId: r.claimed_by_user_id ?? null,
+      claimedByAgentId: r.claimed_by_agent_id ?? null,
+      branchName: r.branch_name ?? null,
+      leaseExpiresAt: r.lease_expires_at ?? null,
+      deliberationRound: r.deliberation_round ?? 0,
+      semanticEmbedding: r.semantic_embedding_json ? JSON.parse(r.semantic_embedding_json) : undefined,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    };
+  }
+
+  // ── Cryptographic Provenance Ledger & On-Call Routing (Phase 5 Chunk 05) ──
+  async recordProvenanceEntry(entry: ProvenanceEntry): Promise<void> {
+    const payloadString = JSON.stringify(entry.payloadJson);
+    const payloadHash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(payloadString))
+      .then((buf) => Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join(""));
+
+    this.ctx.storage.sql.exec(`
+      INSERT INTO provenance_ledger (
+        id, space_id, project_id, action_id, human_user_id, jwt_session_id,
+        assistant_id, agent_executor_id, action_type, action_payload_hash,
+        git_commit_sha, gatekeeper_token_hash
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+      entry.id,
+      entry.spaceId,
+      entry.projectId || null,
+      entry.actionId,
+      entry.humanUserId,
+      entry.jwtSessionId,
+      entry.assistantId,
+      entry.agentExecutorId,
+      entry.actionType,
+      payloadHash,
+      entry.gitCommitSha || null,
+      entry.gatekeeperTokenHash || null
+    );
+  }
+
+  async getOnCallLead(projectId: string): Promise<string | null> {
+    const row = this.ctx.storage.sql.exec(
+      "SELECT lead_user_id FROM project_on_call_leads WHERE project_id = ?",
+      projectId
+    ).toArray()[0] as { lead_user_id: string } | undefined;
+
+    return row?.lead_user_id || null;
+  }
+
+  async setOnCallLead(projectId: string, spaceId: string, leadUserId: string): Promise<void> {
+    this.ctx.storage.sql.exec(`
+      INSERT INTO project_on_call_leads (project_id, space_id, lead_user_id, updated_at)
+      VALUES (?, ?, ?, datetime('now'))
+      ON CONFLICT(project_id) DO UPDATE SET
+        lead_user_id = excluded.lead_user_id,
+        updated_at = datetime('now')
+    `, projectId, spaceId, leadUserId);
+  }
+
+  async checkProjectDagComplete(projectId: string): Promise<boolean> {
+    const stats = this.ctx.storage.sql.exec(`
+      SELECT 
+        COUNT(*) as total,
+        SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) as completed
+      FROM project_tasks WHERE project_id = ?
+    `, projectId).toArray()[0] as { total: number; completed: number } | undefined;
+
+    if (!stats || stats.total === 0) return false;
+    return stats.completed >= stats.total;
+  }
+
+  // ── Vertical Model Curation & Air-Gapped Engine Compliance Methods (Phase 5 Chunk 06) ──
+  public getCompliancePolicy(): VerticalModelPolicy {
+    const rows = this.ctx.storage.sql.exec(
+      "SELECT * FROM space_compliance_policy WHERE id = 'current'"
+    ).toArray() as any[];
+
+    const row = rows[0];
+    if (!row) {
+      return {
+        mode: "all_allowed",
+        allowedModelIds: [],
+        defaultModelId: "@cf/meta/llama-3.3-70b-instruct",
+        lockedByCompliancePolicy: false,
+        airGappedOnly: false,
+      };
+    }
+
+    return {
+      mode: (row.mode as "whitelist_only" | "all_allowed") || "all_allowed",
+      allowedModelIds: safeJsonParseArr(row.allowed_model_ids_json) as string[],
+      defaultModelId: row.default_model_id || "@cf/meta/llama-3.3-70b-instruct",
+      lockedByCompliancePolicy: Boolean(row.locked_by_compliance),
+      airGappedOnly: Boolean(row.air_gapped_only),
+    };
+  }
+
+  public updateCompliancePolicy(policy: Partial<VerticalModelPolicy>): VerticalModelPolicy {
+    const current = this.getCompliancePolicy();
+    const mode = policy.mode ?? current.mode;
+    const allowedModelIds = policy.allowedModelIds ?? current.allowedModelIds;
+    const defaultModelId = policy.defaultModelId ?? current.defaultModelId;
+    const lockedByCompliance = policy.lockedByCompliancePolicy !== undefined
+      ? policy.lockedByCompliancePolicy
+      : current.lockedByCompliancePolicy;
+    const airGappedOnly = policy.airGappedOnly !== undefined
+      ? policy.airGappedOnly
+      : current.airGappedOnly;
+
+    this.ctx.storage.sql.exec(`
+      INSERT INTO space_compliance_policy (id, mode, allowed_model_ids_json, default_model_id, locked_by_compliance, air_gapped_only, updated_at)
+      VALUES ('current', ?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(id) DO UPDATE SET
+        mode = excluded.mode,
+        allowed_model_ids_json = excluded.allowed_model_ids_json,
+        default_model_id = excluded.default_model_id,
+        locked_by_compliance = excluded.locked_by_compliance,
+        air_gapped_only = excluded.air_gapped_only,
+        updated_at = datetime('now')
+    `,
+      mode,
+      JSON.stringify(allowedModelIds),
+      defaultModelId,
+      lockedByCompliance ? 1 : 0,
+      airGappedOnly ? 1 : 0
+    );
+
+    return this.getCompliancePolicy();
+  }
+
+  async setUserPreferencesDO(
+    userId: string,
+    spaceId: string,
+    prefs: { uiMode?: string; showBotHeartbeats?: boolean; showGitCommitGraphs?: boolean; showTokenMeters?: boolean }
+  ) {
+    const existing = this.ctx.storage.sql.exec(
+      "SELECT * FROM user_workspace_preferences WHERE user_id = ? AND space_id = ?",
+      userId,
+      spaceId
+    ).toArray()[0] as any || {
+      ui_mode: "business_mode",
+      show_bot_heartbeats: 0,
+      show_git_commit_graphs: 0,
+      show_token_meters: 0
+    };
+
+    const uiMode = prefs.uiMode ?? existing.ui_mode;
+    const showHeartbeats = prefs.showBotHeartbeats !== undefined ? (prefs.showBotHeartbeats ? 1 : 0) : existing.show_bot_heartbeats;
+    const showGit = prefs.showGitCommitGraphs !== undefined ? (prefs.showGitCommitGraphs ? 1 : 0) : existing.show_git_commit_graphs;
+    const showTokens = prefs.showTokenMeters !== undefined ? (prefs.showTokenMeters ? 1 : 0) : existing.show_token_meters;
+
+    this.ctx.storage.sql.exec(
+      `INSERT OR REPLACE INTO user_workspace_preferences 
+       (user_id, space_id, ui_mode, show_bot_heartbeats, show_git_commit_graphs, show_token_meters, updated_at) 
+       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
+      userId,
+      spaceId,
+      uiMode,
+      showHeartbeats,
+      showGit,
+      showTokens
+    );
+
+    return {
+      userId,
+      spaceId,
+      uiMode,
+      showBotHeartbeats: showHeartbeats === 1,
+      showGitCommitGraphs: showGit === 1,
+      showTokenMeters: showTokens === 1
+    };
+  }
+
+  async getUserPreferencesDO(userId: string, spaceId: string) {
+    const row = this.ctx.storage.sql.exec(
+      "SELECT * FROM user_workspace_preferences WHERE user_id = ? AND space_id = ?",
+      userId,
+      spaceId
+    ).toArray()[0] as any;
+
+    if (!row) {
+      return {
+        userId,
+        spaceId,
+        uiMode: "business_mode",
+        showBotHeartbeats: false,
+        showGitCommitGraphs: false,
+        showTokenMeters: false
+      };
+    }
+
+    return {
+      userId,
+      spaceId,
+      uiMode: row.ui_mode,
+      showBotHeartbeats: row.show_bot_heartbeats === 1,
+      showGitCommitGraphs: row.show_git_commit_graphs === 1,
+      showTokenMeters: row.show_token_meters === 1
+    };
+  }
+
+  private async handleUpdateCompliancePolicy(request: Request): Promise<Response> {
+    const callerRole = request.headers.get("x-naelao-role");
+    const callerUserId = request.headers.get("x-naelao-user-id");
+    if (callerUserId && callerRole !== "internal") {
+      const isOwnerOrAdmin = this.isSpaceOwnerOrAdmin(callerUserId);
+      if (!isOwnerOrAdmin) {
+        return Response.json(
+          { error_code: "forbidden", message: "Only space owners or admins can modify compliance policy" },
+          { status: 403 }
+        );
+      }
+    }
+
+    const body = await request.json<Partial<VerticalModelPolicy> & {
+      allowed_model_ids?: string[];
+      default_model_id?: string;
+      locked_by_compliance?: boolean;
+      air_gapped_only?: boolean;
+    }>().catch(() => ({}) as any);
+
+    const updated = this.updateCompliancePolicy({
+      mode: body.mode,
+      allowedModelIds: body.allowedModelIds ?? body.allowed_model_ids,
+      defaultModelId: body.defaultModelId ?? body.default_model_id,
+      lockedByCompliancePolicy: body.lockedByCompliancePolicy ?? body.locked_by_compliance,
+      airGappedOnly: body.airGappedOnly ?? body.air_gapped_only,
+    });
+
+    return Response.json(updated);
+  }
 }
+
+export interface VerticalModelPolicy {
+  mode: "whitelist_only" | "all_allowed";
+  allowedModelIds: string[];
+  defaultModelId: string;
+  lockedByCompliancePolicy: boolean;
+  airGappedOnly: boolean;
+}
+
+export interface ProvenanceEntry {
+  id: string;
+  spaceId: string;
+  projectId?: string;
+  actionId: string;
+  humanUserId: string;
+  jwtSessionId: string;
+  assistantId: string;
+  agentExecutorId: string;
+  actionType: string;
+  payloadJson: any;
+  gitCommitSha?: string;
+  gatekeeperTokenHash?: string;
+}
+

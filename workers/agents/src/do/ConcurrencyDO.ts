@@ -28,6 +28,7 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
+import type { DurableObjectState } from "cloudflare:workers";
 
 const SWEEP_INTERVAL_MS = 5 * 60 * 1000; // spec: "auto-release abandoned slots" via DO Alarms
 const DEFAULT_TTL_MS = 30 * 60 * 1000; // a slot no one explicitly releases within 30m is stale
@@ -36,23 +37,137 @@ export interface ConcurrencyDOEnv {
   PLATFORM_SECRET?: string;
 }
 
+export interface LockAcquireRequest {
+  key: string;              // e.g. "file:space_102:proj_dev:src/Header.astro"
+  holderId: string;         // e.g. "thread_102_agent_dev"
+  ttlMs?: number;           // Defaults to 30,000ms (30 seconds)
+}
+
+export interface LockAcquireResult {
+  granted: boolean;
+  key: string;
+  holderId: string;
+  expiresAtMs: number;
+  remainingTtlMs?: number;
+}
+
 export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
   private initialized = false;
 
+  constructor(ctx: DurableObjectState, env: ConcurrencyDOEnv) {
+    super(ctx, env);
+    this.ensureInit();
+  }
+
   private ensureInit(): void {
     if (this.initialized) return;
-    this.ctx.storage.sql.exec(`
-      CREATE TABLE IF NOT EXISTS slots (
-        key         TEXT NOT NULL,
-        holder_id   TEXT NOT NULL,
-        acquired_at INTEGER NOT NULL,
-        expires_at  INTEGER NOT NULL,
-        PRIMARY KEY (key, holder_id)
-      )
-    `);
-    this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_slots_key ON slots(key)`);
-    this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_slots_expires ON slots(expires_at)`);
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS slots (
+          key         TEXT NOT NULL,
+          holder_id   TEXT NOT NULL,
+          acquired_at INTEGER NOT NULL,
+          expires_at  INTEGER NOT NULL,
+          PRIMARY KEY (key, holder_id)
+        )
+      `);
+      this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_slots_key ON slots(key)`);
+      this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_slots_expires ON slots(expires_at)`);
+
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS distributed_locks (
+          lock_key TEXT PRIMARY KEY,
+          holder_id TEXT NOT NULL,
+          expires_at_ms INTEGER NOT NULL,
+          created_at_ms INTEGER NOT NULL
+        )
+      `);
+      this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_locks_expiry ON distributed_locks(expires_at_ms)`);
+    });
     this.initialized = true;
+  }
+
+  async acquireLock(req: LockAcquireRequest): Promise<LockAcquireResult> {
+    this.ensureInit();
+    const { key, holderId, ttlMs = 30000 } = req;
+    const now = Date.now();
+    const expiresAt = now + ttlMs;
+
+    const result = this.ctx.storage.transactionSync(() => {
+      // 1. Fetch current lock status
+      const existing = (this.ctx.storage.sql.exec(
+        "SELECT lock_key, holder_id, expires_at_ms FROM distributed_locks WHERE lock_key = ?",
+        key
+      ).toArray() as unknown as Array<{ lock_key: string; holder_id: string; expires_at_ms: number }>)[0];
+
+      // 2. If locked and not expired by a DIFFERENT holder -> DENIED
+      if (existing && existing.expires_at_ms > now && existing.holder_id !== holderId) {
+        return {
+          granted: false,
+          key,
+          holderId: existing.holder_id,
+          expiresAtMs: existing.expires_at_ms,
+          remainingTtlMs: existing.expires_at_ms - now,
+        };
+      }
+
+      // 3. Grant lock (Insert or renew)
+      this.ctx.storage.sql.exec(
+        `INSERT OR REPLACE INTO distributed_locks (lock_key, holder_id, expires_at_ms, created_at_ms)
+         VALUES (?, ?, ?, ?)`,
+        key, holderId, expiresAt, now
+      );
+
+      return {
+        granted: true,
+        key,
+        holderId,
+        expiresAtMs: expiresAt,
+      };
+    });
+
+    if (result.granted) {
+      // Schedule automated alarm to clean expired locks
+      await this.ctx.storage.setAlarm(now + ttlMs + 1000);
+    }
+
+    return result;
+  }
+
+  async releaseLock(key: string, holderId: string): Promise<{ released: boolean }> {
+    this.ensureInit();
+    return this.ctx.storage.transactionSync(() => {
+      const existing = (this.ctx.storage.sql.exec(
+        "SELECT holder_id FROM distributed_locks WHERE lock_key = ?",
+        key
+      ).toArray() as unknown as Array<{ holder_id: string }>)[0];
+
+      if (!existing || existing.holder_id !== holderId) {
+        return { released: false };
+      }
+
+      this.ctx.storage.sql.exec("DELETE FROM distributed_locks WHERE lock_key = ?", key);
+      return { released: true };
+    });
+  }
+
+  async getLockStatus(key: string): Promise<{ isLocked: boolean; holderId?: string; remainingTtlMs?: number }> {
+    this.ensureInit();
+    const now = Date.now();
+    const existing = (this.ctx.storage.sql.exec(
+      "SELECT holder_id, expires_at_ms FROM distributed_locks WHERE lock_key = ?",
+      key
+    ).toArray() as unknown as Array<{ holder_id: string; expires_at_ms: number }>)[0];
+
+    if (!existing || existing.expires_at_ms <= now) {
+      return { isLocked: false };
+    }
+
+    return {
+      isLocked: true,
+      holderId: existing.holder_id,
+      remainingTtlMs: existing.expires_at_ms - now,
+    };
   }
 
   override async fetch(request: Request): Promise<Response> {
@@ -72,6 +187,21 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
       }
       if (request.method === "GET" && url.pathname === "/status") {
         return this.handleStatus(url.searchParams.get("key") ?? "");
+      }
+      if (request.method === "POST" && (url.pathname === "/lock/acquire" || url.pathname === "/lock-acquire")) {
+        const body = await request.json<LockAcquireRequest>().catch(() => ({}) as LockAcquireRequest);
+        const result = await this.acquireLock(body);
+        return Response.json(result);
+      }
+      if (request.method === "POST" && (url.pathname === "/lock/release" || url.pathname === "/lock-release")) {
+        const body = await request.json<{ key?: string; holderId?: string; holder_id?: string }>().catch(() => ({}) as any);
+        const result = await this.releaseLock(body.key ?? "", body.holderId ?? body.holder_id ?? "");
+        return Response.json(result);
+      }
+      if (request.method === "GET" && (url.pathname === "/lock/status" || url.pathname === "/lock-status")) {
+        const key = url.searchParams.get("key") ?? "";
+        const result = await this.getLockStatus(key);
+        return Response.json(result);
       }
       return Response.json({ error_code: "not_found" }, { status: 404 });
     } catch (err) {
@@ -141,7 +271,11 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
   // Scenario" closed.
   override async alarm(): Promise<void> {
     this.ensureInit();
-    this.ctx.storage.sql.exec(`DELETE FROM slots WHERE expires_at < ?`, Date.now());
+    const now = Date.now();
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(`DELETE FROM slots WHERE expires_at < ?`, now);
+      this.ctx.storage.sql.exec(`DELETE FROM distributed_locks WHERE expires_at_ms <= ?`, now);
+    });
     await this.ctx.storage.setAlarm(Date.now() + SWEEP_INTERVAL_MS);
   }
 }
