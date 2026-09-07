@@ -14,7 +14,108 @@
  */
 
 /** Execution tier a script declares (the orchestrator routes script.run by this). */
-export type ExecutionTier = 1 | 2 | 3 | 4 | 5;
+export type ExecutionTier = 1 | 2 | 3 | 4 | 5 | 6;
+
+export interface HypervisorRouteResult {
+  tier: ExecutionTier;
+  binary: string;
+  args: string[];
+  requiresContainer: boolean;
+  requiresBrowser: boolean;
+  requiresWorkflow: boolean;
+  suggestedBackend: "v8_isolate" | "kitesurf" | "chromium" | "workflow" | "container";
+}
+
+export interface MinimalistToolParams {
+  command?: string;
+  filePath?: string;
+  offset?: number;
+  limit?: number;
+  oldString?: string;
+  newString?: string;
+  action?: "navigate" | "click" | "type" | "screenshot";
+  url?: string;
+  selector?: string;
+  text?: string;
+  targetRole?: string;
+  taskDescription?: string;
+  contextFiles?: string[];
+}
+
+export const MINIMALIST_AGENT_TOOLS = {
+  Bash: {
+    description:
+      "Universal command-line execution interface. Runs shell utilities, scripts, virtual CLIs, and build/compilation dispatches with automated hypervisor routing.",
+    parameters: {
+      type: "object",
+      properties: {
+        command: { type: "string", description: "The bash command or shell script line to execute." },
+      },
+      required: ["command"],
+    },
+  },
+  Read: {
+    description:
+      "Line-numbered windowed file inspection. Supports line offsets and limits for context-window-safe inspection.",
+    parameters: {
+      type: "object",
+      properties: {
+        filePath: { type: "string", description: "Relative or absolute path to the file to inspect." },
+        offset: { type: "number", description: "Starting line number (1-based, optional)." },
+        limit: { type: "number", description: "Maximum number of lines to read (optional)." },
+      },
+      required: ["filePath"],
+    },
+  },
+  Edit: {
+    description:
+      "Exact AST or string search-and-replace block edits. Forces surgical patching to prevent full-file rewrites.",
+    parameters: {
+      type: "object",
+      properties: {
+        filePath: { type: "string", description: "Path to the file to edit." },
+        oldString: { type: "string", description: "Exact block of text to replace." },
+        newString: { type: "string", description: "Replacement text to substitute in place of oldString." },
+      },
+      required: ["filePath", "oldString", "newString"],
+    },
+  },
+  Browser: {
+    description:
+      "Web navigation, DOM accessibility tree extraction, form interactions, and visual screenshot capture.",
+    parameters: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["navigate", "click", "type", "screenshot"],
+          description: "Action to perform in the browser.",
+        },
+        url: { type: "string", description: "Target URL to navigate to (required for navigate)." },
+        selector: { type: "string", description: "CSS or XPath selector for click or type interactions." },
+        text: { type: "string", description: "Text to type into the target element." },
+      },
+      required: ["action"],
+    },
+  },
+  Delegate: {
+    description:
+      "Structured JSON-RPC task delegation to subagents or specialized sibling assistants.",
+    parameters: {
+      type: "object",
+      properties: {
+        targetRole: { type: "string", description: "Role or specialty of the target subagent." },
+        taskDescription: { type: "string", description: "Detailed task instructions for the delegated agent." },
+        contextFiles: {
+          type: "array",
+          items: { type: "string" },
+          description: "List of relevant workspace file paths to attach.",
+        },
+      },
+      required: ["targetRole", "taskDescription"],
+    },
+  },
+} as const;
 
 /** Domains an observe/action script can target. Open-ended by design. */
 export type ScriptDomain =
