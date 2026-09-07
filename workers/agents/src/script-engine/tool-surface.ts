@@ -33,6 +33,7 @@ import { buildOperationMap, type PrebuiltOp, type PrebuiltScript } from "./prebu
 import { assertNoReservedViolation } from "./reserved-capabilities.js";
 import { isReadSafeOperation } from "./assistant-access.js";
 import { executeBrowserTool } from "./prebuilt/browser-use.js";
+import { executeVirtualBashShim } from "./prebuilt/virtual-cli-router.js";
 
 /** Plain edit distance — used only to rank "did you mean" suggestions by how close a guess
  *  actually is, never for anything security-relevant. Op names are short (well under 40 chars),
@@ -492,6 +493,15 @@ export class ScriptToolSurface {
    */
   async handleToolCall(toolName: string, params: Record<string, any>, ctx: any) {
     if (toolName === "Bash") {
+      // 1. Check virtual CLI shims or JIT-registered commands first
+      const shimResult = await executeVirtualBashShim(params.command || "", ctx).catch((err) => {
+        return { stdout: "", stderr: err.message, exitCode: 127 };
+      });
+
+      if (shimResult && shimResult.exitCode !== 127) {
+        return shimResult;
+      }
+
       const route = resolveExecutionTier(params.command || "");
 
       // Dispatch based on solved hypervisor route
@@ -860,4 +870,54 @@ export class ScriptToolSurface {
     await this.library.recordOutcome(name, result.ok, result.error);
     return result;
   }
+}
+
+export function buildCliSdkContext(doStorage: any, spaceId: string, projectId?: string, agentId: string = "system") {
+  return {
+    /**
+     * Registers a new custom virtual CLI binary in the workspace.
+     */
+    register: async (commandName: string, def: { description: string; subcommands: Record<string, string>; handlerCode: string }) => {
+      const id = `vcli_${Date.now()}_${Math.random().toString(36).slice(2,7)}`;
+      doStorage.sql.exec(`
+        INSERT INTO virtual_cli_commands (id, space_id, project_id, command_name, description, subcommands_manifest_json, handler_code, created_by_agent_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(space_id, project_id, command_name) DO UPDATE SET 
+          description = excluded.description,
+          subcommands_manifest_json = excluded.subcommands_manifest_json,
+          handler_code = excluded.handler_code,
+          version = version + 1,
+          updated_at = datetime('now')
+      `, id, spaceId, projectId || null, commandName, def.description, JSON.stringify(def.subcommands), def.handlerCode, agentId);
+      
+      return { ok: true, message: `Virtual CLI '${commandName}' registered successfully. You can now use it via Bash.` };
+    },
+
+    /**
+     * Helper to format raw JSON arrays into beautiful terminal-style ASCII tables.
+     */
+    formatTable: (data: Array<Record<string, any>>, columns?: string[]) => {
+      if (!data || data.length === 0) return "No data found.";
+      const keys = columns || Object.keys(data[0]);
+      
+      // Calculate column widths
+      const colWidths = keys.map(key => {
+        const maxDataLen = Math.max(...data.map(row => String(row[key] || "").length));
+        return Math.max(key.length, maxDataLen);
+      });
+
+      // Build row string
+      const buildRow = (rowVals: string[]) => 
+        "│ " + rowVals.map((val, i) => String(val).padEnd(colWidths[i], " ")).join(" │ ") + " │";
+
+      const topBorder = "┌─" + colWidths.map(w => "─".repeat(w)).join("─┬─") + "─┐";
+      const midBorder = "├─" + colWidths.map(w => "─".repeat(w)).join("─┼─") + "─┤";
+      const botBorder = "└─" + colWidths.map(w => "─".repeat(w)).join("─┴─") + "─┘";
+
+      const header = buildRow(keys);
+      const rows = data.map(d => buildRow(keys.map(k => String(d[k] || ""))));
+
+      return [topBorder, header, midBorder, ...rows, botBorder].join("\n");
+    }
+  };
 }

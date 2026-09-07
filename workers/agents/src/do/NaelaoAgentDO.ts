@@ -66,6 +66,8 @@ import {
   MAX_CONCURRENT_SUB_AGENT_TREES,
 } from "../script-engine/sub-agent-output.js";
 
+import { buildCliSdkContext } from "../script-engine/tool-surface.js";
+
 // ── G-AZ01: Agent FSM states and valid transitions ───────────────────────────
 
 type AgentFsmState =
@@ -1376,6 +1378,30 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       )
     `);
 
+    // JIT-synthesized custom virtual CLIs
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS virtual_cli_commands (
+        id TEXT PRIMARY KEY,
+        space_id TEXT NOT NULL,
+        project_id TEXT,                   -- NULL for space-wide CLIs, TEXT for project-bound
+        command_name TEXT NOT NULL,        -- e.g. "shopify", "linear", "hubspot"
+        description TEXT NOT NULL,
+        subcommands_manifest_json TEXT,    -- e.g. { "products list": "List inventory" }
+        handler_code TEXT NOT NULL,        -- The raw TypeScript handler
+        version INTEGER NOT NULL DEFAULT 1,
+        created_by_agent_id TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+
+    try {
+      this.ctx.storage.sql.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_virtual_cli_cmd 
+        ON virtual_cli_commands(space_id, project_id, command_name);
+      `);
+    } catch { /* exists */ }
+
     this.virtualShell = new VirtualPosixShell(this.getVirtualFsStorage());
     this.artifactsGit = new ArtifactsGitService(this.env);
 
@@ -1941,8 +1967,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     });
     env.codeRunner = {
       run: async (params) => {
+        const runCtx = params.ctx || {};
+        runCtx.storage = runCtx.storage || this.ctx.storage;
+        runCtx.env = runCtx.env || { spaceId, projectId, agentId };
+        runCtx.cli = runCtx.cli || buildCliSdkContext(this.ctx.storage, spaceId, projectId, agentId);
         return baseCodeRunner.run({
           ...params,
+          ctx: runCtx,
           sessionState: params.sessionState || sessionState,
         });
       },
@@ -6917,6 +6948,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       this.virtualShell,
       this.artifactsGit
     );
+
+    // Decorate with JIT and CLI helpers
+    ctx.storage = this.ctx.storage;
+    ctx.env = ctx.env || { spaceId: options.spaceId, projectId: options.projectId, agentId: "naelao-agent" };
+    ctx.cli = buildCliSdkContext(this.ctx.storage, options.spaceId, options.projectId, "naelao-agent");
 
     const codeRunner = buildCodeRunner({
       loader: this.env.LOADER,
