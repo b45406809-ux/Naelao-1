@@ -57,7 +57,7 @@ function cleanJsonText(raw: string): string {
 /**
  * Step 1: Frontier Planner constructs the Task DAG
  */
-export async function planArchitectureWithFrontier(
+export async function planGoalWithFrontier(
   goalPrompt: string,
   repoMap: string,
   env: any
@@ -145,7 +145,7 @@ ${repoMap}`;
 /**
  * Step 2: Open Edge Worker executes an isolated task slice
  */
-export async function executeSubtaskWithEdgeWorker(
+export async function executeSubtaskSlice(
   subtask: SubtaskPlanItem,
   fileSlices: Record<string, string>,
   ctx: DualTierContext
@@ -216,7 +216,6 @@ Rules:
         }
       }
     } catch {
-      // Direct write fallback for first target file if single block output
       if (subtask.targetFiles[0] && outputText.length > 20) {
         await ctx.workspaceFs.writeFile(subtask.targetFiles[0], outputText);
       }
@@ -240,6 +239,10 @@ Rules:
     };
   }
 }
+
+// Keep backward compatibility alias
+export const planArchitectureWithFrontier = planGoalWithFrontier;
+export const executeSubtaskWithEdgeWorker = executeSubtaskSlice;
 
 /**
  * Step 3: Frontier Reviewer audits the cumulative diff

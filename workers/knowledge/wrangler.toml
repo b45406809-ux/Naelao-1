@@ -30,6 +30,14 @@ bucket_name = "naelao-kb"
 binding = "KB_VECTORS"
 index_name = "naelao-kb-vectors"
 
+[vectorize.metadata_indexes]
+space_id = "string"
+project_id = "string"
+min_role_rank = "number"
+scope = "string"
+bot_id = "string"
+owner_user_id = "string"
+
 [[vectorize]]
 binding = "SEMANTIC_CACHE_VECTORS"
 index_name = "naelao-semantic-cache"

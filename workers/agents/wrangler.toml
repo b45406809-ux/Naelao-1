@@ -94,6 +94,14 @@ namespace = "naelao-git-mesh"
 binding = "SCRIPTS_VECTORIZE"
 index_name = "naelao-agent-scripts"
 
+[vectorize.metadata_indexes]
+space_id = "string"
+project_id = "string"
+min_role_rank = "number"
+scope = "string"
+bot_id = "string"
+owner_user_id = "string"
+
 # Vectorize index for the Memory OS semantic layer (episodic facts promoted to long-term
 # semantic memory, queried by embedding + user_id filter). Separate vector space/lifecycle
 # from the skill-library index above.
