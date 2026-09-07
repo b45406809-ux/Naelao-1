@@ -183,11 +183,11 @@ export interface ApiResponse<T> {
 export interface BaseEnv {
   PLATFORM_SECRET: string;
   ENVIRONMENT: "development" | "staging" | "production";
+}
 
 export * from "./threads.js";
 export * from "./pull-requests.js";
-
-}
+export * from "./project-tasks.js";
 
 // ── Space Hierarchy types ───────────────────────────────────────────────────
 export * from "./space-hierarchy";
@@ -199,5 +199,6 @@ export * from "./mini-agi";
 export * from "./knowledge";
 export * from "./mcp-mesh";
 export * from "./threads";
+export * from "./project-tasks";
 
 

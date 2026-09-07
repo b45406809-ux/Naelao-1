@@ -72,6 +72,7 @@ import { assembleSystemPrompt, type BusinessContextBrief } from "../script-engin
 import { sanitizeToolsForRole, resolveAgentRole, type AgentRoleType, ROLE_FIREWALL_POLICIES } from "../script-engine/firewall.js";
 import { AVOS_PATH_CONVENTIONS, getWorkspacePath } from "../script-engine/types.js";
 import { parseGoalCommand, planGoalWithFrontier, executeSubtaskSlice } from "../script-engine/dual-tier-executor.js";
+import type { SemanticDeduplicationResult, ProjectTask, TaskLeaseClaimResult, TaskStatus } from "@naelao/types";
 
 // ── G-AZ01: Agent FSM states and valid transitions ───────────────────────────
 
@@ -7348,4 +7349,121 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return null;
     }
   }
+
+  // ── Semantic Deduplication & Sponsor Alignment Gate (Phase 5 Chunk 04) ──
+  /**
+   * Evaluates incoming user prompt against active tasks to prevent duplicate code branches.
+   */
+  async evaluateSemanticTaskDeduplication(
+    projectId: string,
+    userPrompt: string,
+    callingUserId: string,
+    spaceDoStub: any
+  ): Promise<SemanticDeduplicationResult> {
+    // 1. Compute prompt embedding using Workers AI bge-small-en-v1.5
+    let queryEmbedding: number[] = [];
+    try {
+      const embedRes = await (this.env as any).AI.run("@cf/baai/bge-small-en-v1.5", {
+        text: [userPrompt]
+      });
+      queryEmbedding = embedRes.data?.[0] || [];
+    } catch {
+      // Degrade gracefully if embeddings unavailable
+      return { isDuplicate: false };
+    }
+
+    if (!queryEmbedding || queryEmbedding.length === 0) {
+      return { isDuplicate: false };
+    }
+
+    // 2. Fetch active tasks from SpaceDO
+    let activeTasks: any[] = [];
+    try {
+      if (typeof spaceDoStub.listActiveTasksForProject === "function") {
+        activeTasks = await spaceDoStub.listActiveTasksForProject(projectId);
+      } else {
+        const resp = await spaceDoStub.fetch(`http://internal/projects/${projectId}/tasks/active`);
+        activeTasks = await resp.json() as any[];
+      }
+    } catch {
+      return { isDuplicate: false };
+    }
+
+    // 3. Check for high semantic collision (Cosine Similarity > 0.85)
+    for (const task of activeTasks) {
+      if (!task.semantic_embedding_json && !task.semanticEmbedding) continue;
+      const taskEmbedding = task.semantic_embedding_json 
+        ? JSON.parse(task.semantic_embedding_json) 
+        : task.semanticEmbedding;
+      if (!Array.isArray(taskEmbedding) || taskEmbedding.length === 0) continue;
+
+      const similarity = calculateCosineSimilarity(queryEmbedding, taskEmbedding);
+
+      if (similarity > 0.85) {
+        return {
+          isDuplicate: true,
+          existingTask: task,
+          similarityScore: similarity,
+          message: `Task already underway by user '${task.claimed_by_user_id || task.claimedByUserId}' on branch '${task.branch_name || task.branchName}'.`
+        };
+      }
+    }
+
+    return { isDuplicate: false };
+  }
+
+  /**
+   * Detects contradictory architectural directives and triggers an RFC Alignment Gate.
+   */
+  async checkSponsorAlignment(
+    newDirective: string,
+    projectId: string,
+    spaceDoStub: any
+  ): Promise<{ hasConflict: boolean; rfcTitle?: string; conflictingDirectives?: string[] }> {
+    const architecturalKeywords = ["auth", "database", "orm", "framework", "schema", "router", "state"];
+    const isArchitectural = architecturalKeywords.some(kw => newDirective.toLowerCase().includes(kw));
+
+    if (!isArchitectural) {
+      return { hasConflict: false };
+    }
+
+    let activeTasks: any[] = [];
+    try {
+      if (typeof spaceDoStub.listActiveTasksForProject === "function") {
+        activeTasks = await spaceDoStub.listActiveTasksForProject(projectId);
+      } else {
+        const resp = await spaceDoStub.fetch(`http://internal/projects/${projectId}/tasks/active`);
+        activeTasks = await resp.json() as any[];
+      }
+    } catch {
+      return { hasConflict: false };
+    }
+
+    const conflictingTask = activeTasks.find((t: any) => 
+      architecturalKeywords.some(kw => (t.title || "").toLowerCase().includes(kw) && (t.title || "").toLowerCase() !== newDirective.toLowerCase())
+    );
+
+    if (conflictingTask) {
+      return {
+        hasConflict: true,
+        rfcTitle: `RFC: Resolve Architectural Direction for ${projectId}`,
+        conflictingDirectives: [conflictingTask.title, newDirective]
+      };
+    }
+
+    return { hasConflict: false };
+  }
+}
+
+function calculateCosineSimilarity(vecA: number[], vecB: number[]): number {
+  let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
+  const len = Math.min(vecA.length, vecB.length);
+  for (let i = 0; i < len; i++) {
+    dotProduct += vecA[i] * vecB[i];
+    normA += vecA[i] * vecA[i];
+    normB += vecB[i] * vecB[i];
+  }
+  return normA === 0 || normB === 0 ? 0 : dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
 }

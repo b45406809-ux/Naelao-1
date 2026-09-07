@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { applyMigrations, queryAll, queryOne, execute } from "@naelao/db";
 import type { Migration } from "@naelao/db";
-import type { MessageRole, ThreadTier, ThreadKind, AvosThread, CreateThreadParams, ListThreadsQuery, ThreadElevationStatus, PullRequestRecord, FileDiffEntry, PullRequestStatus } from "@naelao/types";
+import type { MessageRole, ThreadTier, ThreadKind, AvosThread, CreateThreadParams, ListThreadsQuery, ThreadElevationStatus, PullRequestRecord, FileDiffEntry, PullRequestStatus, TaskStatus, ProjectTask, TaskLeaseClaimResult, SemanticDeduplicationResult } from "@naelao/types";
 
 import {
   selectMatchingRules, evaluateCondition, buildFireParams,
@@ -1488,6 +1488,29 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         CREATE INDEX IF NOT EXISTS idx_pr_branch ON pull_requests(project_id, source_branch);
       `);
     } catch { /* table may already exist */ }
+    try {
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS project_tasks (
+          id TEXT PRIMARY KEY,
+          space_id TEXT NOT NULL,
+          project_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          description TEXT,
+          status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'CLAIMED', 'IN_PROGRESS', 'IN_REVIEW', 'COMPLETED', 'BLOCKED_AWAITING_HUMAN', 'NEEDS_ALIGNMENT')),
+          claimed_by_user_id TEXT,
+          claimed_by_agent_id TEXT,
+          branch_name TEXT,
+          lease_expires_at TEXT,
+          deliberation_round INTEGER NOT NULL DEFAULT 0,
+          semantic_embedding_json TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_pt_lookup ON project_tasks(project_id, status);
+        CREATE INDEX IF NOT EXISTS idx_pt_lease ON project_tasks(lease_expires_at);
+      `);
+    } catch { /* table may already exist */ }
     this.initialized = true;
 
   }
@@ -2211,7 +2234,66 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         });
       }
 
-      // ── project_anchored_workflows endpoints ──────────────────────────────────
+      // ── Multi-Assistant Task Leases & Governance endpoints (Phase 5 Chunk 04) ──
+      const projActiveTasksMatch = url.pathname.match(/^\/projects\/([^/]+)\/tasks\/active$/);
+      if (method === "GET" && projActiveTasksMatch?.[1]) {
+        const tasks = await this.listActiveTasksForProject(projActiveTasksMatch[1]);
+        return Response.json(tasks);
+      }
+
+      const projClaimLeaseMatch = url.pathname.match(/^\/projects\/([^/]+)\/tasks\/claim-lease$/);
+      if (method === "POST" && projClaimLeaseMatch?.[1]) {
+        const body = await request.json<{
+          taskId?: string;
+          task_id?: string;
+          userId?: string;
+          user_id?: string;
+          agentId?: string;
+          agent_id?: string;
+          branchName?: string;
+          branch_name?: string;
+          ttlMinutes?: number;
+          ttl_minutes?: number;
+        }>().catch(() => ({}) as any);
+        const res = await this.claimTaskLease({
+          projectId: projClaimLeaseMatch[1],
+          taskId: body.taskId || body.task_id || "",
+          userId: body.userId || body.user_id || request.headers.get("x-naelao-user-id") || "",
+          agentId: body.agentId || body.agent_id || "naelao-agent",
+          branchName: body.branchName || body.branch_name || "main",
+          ttlMinutes: body.ttlMinutes || body.ttl_minutes,
+        });
+        return Response.json(res);
+      }
+
+      const taskDelibMatch = url.pathname.match(/^\/tasks\/([^/]+)\/increment-deliberation$/);
+      if (method === "POST" && taskDelibMatch?.[1]) {
+        const res = await this.incrementDeliberationRound(taskDelibMatch[1]);
+        return Response.json(res);
+      }
+
+      const taskCompleteMatch = url.pathname.match(/^\/tasks\/([^/]+)\/complete$/);
+      if (method === "POST" && taskCompleteMatch?.[1]) {
+        const body = await request.json<{ finalStatus?: "COMPLETED" | "IN_REVIEW"; final_status?: "COMPLETED" | "IN_REVIEW" }>().catch(() => ({}) as any);
+        const res = await this.completeTask(taskCompleteMatch[1], body.finalStatus || body.final_status);
+        return Response.json(res);
+      }
+
+      const projTasksCreateMatch = url.pathname.match(/^\/projects\/([^/]+)\/tasks(?:\/create)?$/);
+      if (method === "POST" && projTasksCreateMatch?.[1]) {
+        const body = await request.json<any>().catch(() => ({}) as any);
+        const created = await this.createProjectTask({
+          id: body.id,
+          projectId: projTasksCreateMatch[1],
+          spaceId: body.spaceId || body.space_id,
+          title: body.title || "Untitled Task",
+          description: body.description,
+          semanticEmbedding: body.semanticEmbedding || body.semantic_embedding,
+        });
+        return Response.json(created, { status: 201 });
+      }
+
+      // ── Project-Anchored Workflows (Chunk 04) ──────────────────────────────────
       const projWorkflowsMatch = url.pathname.match(/^\/projects\/([^/]+)\/workflows$/);
       if (method === "GET" && projWorkflowsMatch?.[1]) {
         return this.listProjectWorkflows(projWorkflowsMatch[1], url.searchParams);
@@ -6627,5 +6709,170 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       ...args
     );
     return Response.json({ data: rows, count: rows.length });
+  }
+
+  // ── Multi-Assistant Task Leases & Governance Methods (Phase 5 Chunk 04) ──
+  /**
+   * Attempts to claim a task lease atomically.
+   * Succeeds only if the task is OPEN or its prior lease has expired (15-min crash TTL).
+   */
+  async claimTaskLease(params: {
+    taskId: string;
+    projectId: string;
+    userId: string;
+    agentId: string;
+    branchName: string;
+    ttlMinutes?: number;
+  }): Promise<TaskLeaseClaimResult> {
+    const ttl = params.ttlMinutes || 15;
+
+    // Atomic CAS Update in DO SQLite
+    const result = this.ctx.storage.sql.exec(`
+      UPDATE project_tasks
+      SET status = 'CLAIMED',
+          claimed_by_user_id = ?,
+          claimed_by_agent_id = ?,
+          branch_name = ?,
+          lease_expires_at = datetime('now', '+${ttl} minutes'),
+          updated_at = datetime('now')
+      WHERE id = ? 
+        AND project_id = ?
+        AND (status = 'OPEN' OR lease_expires_at < datetime('now'))
+    `, params.userId, params.agentId, params.branchName, params.taskId, params.projectId);
+
+    if (result.rowsWritten === 1) {
+      return {
+        granted: true,
+        taskId: params.taskId,
+        currentStatus: "CLAIMED",
+        claimedByUserId: params.userId,
+        claimedByAgentId: params.agentId,
+        branchName: params.branchName
+      };
+    }
+
+    // If lease failed, fetch current owner details for spectator routing
+    const currentTask = this.ctx.storage.sql.exec(
+      `SELECT * FROM project_tasks WHERE id = ?`,
+      params.taskId
+    ).toArray()[0] as any;
+
+    return {
+      granted: false,
+      taskId: params.taskId,
+      currentStatus: (currentTask?.status as TaskStatus) || "IN_PROGRESS",
+      claimedByUserId: currentTask?.claimed_by_user_id,
+      claimedByAgentId: currentTask?.claimed_by_agent_id,
+      branchName: currentTask?.branch_name,
+      leaseExpiresAt: currentTask?.lease_expires_at
+    };
+  }
+
+  /**
+   * Increments the deliberation round on inter-agent reviews.
+   * If deliberation exceeds 2 rounds, halts execution to prevent token burn.
+   */
+  async incrementDeliberationRound(taskId: string): Promise<{ blockedForHuman: boolean; round: number }> {
+    const task = this.ctx.storage.sql.exec(
+      `SELECT deliberation_round FROM project_tasks WHERE id = ?`,
+      taskId
+    ).toArray()[0] as any;
+
+    const nextRound = (task?.deliberation_round || 0) + 1;
+
+    if (nextRound > 2) {
+      this.ctx.storage.sql.exec(`
+        UPDATE project_tasks 
+        SET status = 'BLOCKED_AWAITING_HUMAN', deliberation_round = ?, updated_at = datetime('now')
+        WHERE id = ?
+      `, nextRound, taskId);
+
+      return { blockedForHuman: true, round: nextRound };
+    }
+
+    this.ctx.storage.sql.exec(`
+      UPDATE project_tasks 
+      SET deliberation_round = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `, nextRound, taskId);
+
+    return { blockedForHuman: false, round: nextRound };
+  }
+
+  /**
+   * Releases or completes a task lease.
+   */
+  async completeTask(taskId: string, finalStatus: "COMPLETED" | "IN_REVIEW" = "COMPLETED") {
+    this.ctx.storage.sql.exec(`
+      UPDATE project_tasks
+      SET status = ?, lease_expires_at = NULL, updated_at = datetime('now')
+      WHERE id = ?
+    `, finalStatus, taskId);
+    return { ok: true, taskId, status: finalStatus };
+  }
+
+  /**
+   * Retrieves all active tasks with their embeddings for semantic deduplication.
+   */
+  async listActiveTasksForProject(projectId: string): Promise<any[]> {
+    return this.ctx.storage.sql.exec(`
+      SELECT * FROM project_tasks 
+      WHERE project_id = ? AND status IN ('OPEN', 'CLAIMED', 'IN_PROGRESS', 'NEEDS_ALIGNMENT')
+      ORDER BY created_at DESC
+    `, projectId).toArray() as any[];
+  }
+
+  /**
+   * Creates or registers a new project task.
+   */
+  async createProjectTask(params: {
+    id?: string;
+    projectId: string;
+    spaceId?: string;
+    title: string;
+    description?: string;
+    semanticEmbedding?: number[];
+  }): Promise<ProjectTask> {
+    const taskId = params.id || `task_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const spaceId = params.spaceId || queryOne<{ space_id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT space_id FROM projects WHERE id = ?",
+      params.projectId
+    )?.space_id || this.spaceId;
+    const embeddingJson = params.semanticEmbedding ? JSON.stringify(params.semanticEmbedding) : null;
+
+    this.ctx.storage.sql.exec(`
+      INSERT INTO project_tasks (
+        id, space_id, project_id, title, description, status,
+        semantic_embedding_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'OPEN', ?, datetime('now'), datetime('now'))
+      ON CONFLICT(id) DO UPDATE SET
+        title = excluded.title,
+        description = excluded.description,
+        semantic_embedding_json = COALESCE(excluded.semantic_embedding_json, project_tasks.semantic_embedding_json),
+        updated_at = datetime('now')
+    `, taskId, spaceId, params.projectId, params.title, params.description || null, embeddingJson);
+
+    const row = this.ctx.storage.sql.exec(`SELECT * FROM project_tasks WHERE id = ?`, taskId).toArray()[0] as any;
+    return this.mapProjectTaskRow(row);
+  }
+
+  private mapProjectTaskRow(r: any): ProjectTask {
+    return {
+      id: r.id,
+      projectId: r.project_id,
+      spaceId: r.space_id,
+      title: r.title,
+      description: r.description ?? undefined,
+      status: r.status as TaskStatus,
+      claimedByUserId: r.claimed_by_user_id ?? null,
+      claimedByAgentId: r.claimed_by_agent_id ?? null,
+      branchName: r.branch_name ?? null,
+      leaseExpiresAt: r.lease_expires_at ?? null,
+      deliberationRound: r.deliberation_round ?? 0,
+      semanticEmbedding: r.semantic_embedding_json ? JSON.parse(r.semantic_embedding_json) : undefined,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    };
   }
 }
