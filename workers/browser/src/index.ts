@@ -30,11 +30,16 @@ interface BrowserAction {
 // which is what the fallback exists for.
 type BrowserEngine = "auto" | "chromium" | "kitesurf";
 
-interface NavigateRequest {
+interface BrowserTaskRequest {
   url: string;
+  action?: "navigate" | "click" | "type" | "screenshot" | "extract";
   actions?: BrowserAction[];
+  selector?: string;
+  text?: string;
   take_screenshot?: boolean;
+  takeScreenshot?: boolean;
   extract_links?: boolean;
+  requiresWebGL?: boolean;
   engine?: BrowserEngine;
 }
 
@@ -55,15 +60,7 @@ app.use("/v1/*", async (c, next) => {
   return next();
 });
 
-/** Launches a real browser instance via the real @cloudflare/puppeteer package.
- *
- *  NOTE on a previously-broken call here: this used to cast `c.env.BROWSER` itself to a fake
- *  `{ launch(browser): Promise<...> }` shape and call `.launch()` ON the binding, passing the
- *  same binding back to itself as an argument — the binding only ever implements `fetch()`, it
- *  has no `.launch` method of its own. The real contract (confirmed against the published
- *  @cloudflare/puppeteer 1.3.0 types) is `puppeteer.launch(endpoint, options?)`, where `puppeteer`
- *  is the imported package's own default export and `endpoint` is the binding passed as data —
- *  never the other way around. */
+/** Launches a real browser instance via the real @cloudflare/puppeteer package. */
 async function launchBrowser(env: Env, engine: "chromium" | "kitesurf"): Promise<Browser> {
   const options: WorkersLaunchOptions = engine === "kitesurf" ? { browser: "kitesurf" } : {};
   return puppeteer.launch(env.BROWSER, options);
@@ -71,14 +68,23 @@ async function launchBrowser(env: Env, engine: "chromium" | "kitesurf"): Promise
 
 async function runNavigation(
   browser: Browser,
-  body: NavigateRequest
-): Promise<{ url: string; text: string; links: string[]; screenshot_base64?: string }> {
+  body: BrowserTaskRequest
+): Promise<{ url: string; title?: string; textContent?: string; text: string; links: string[]; screenshot_base64?: string; screenshotBase64?: string }> {
   let page: Page | undefined;
   try {
     page = await browser.newPage();
     await page.goto(body.url, { waitUntil: "networkidle0", timeout: 30000 });
+    const title = await page.title();
 
-    for (const action of body.actions ?? []) {
+    // Normalise actions / single action
+    const actions: BrowserAction[] = body.actions ? [...body.actions] : [];
+    if (body.action === "click" && body.selector) {
+      actions.push({ type: "click", selector: body.selector });
+    } else if (body.action === "type" && body.selector && body.text) {
+      actions.push({ type: "type", selector: body.selector, text: body.text });
+    }
+
+    for (const action of actions) {
       if (action.type === "click" && action.selector) {
         await page.click(action.selector);
       } else if (action.type === "type" && action.selector && action.text) {
@@ -90,7 +96,7 @@ async function runNavigation(
       }
     }
 
-    const text = (await page.evaluate("document.body.innerText")) as string;
+    const textContent = (await page.evaluate("document.body.innerText")) as string;
 
     let links: string[] = [];
     if (body.extract_links) {
@@ -100,14 +106,21 @@ async function runNavigation(
     }
 
     let screenshot_base64: string | undefined;
-    if (body.take_screenshot) {
-      // Buffer.toString("base64") rather than spreading the bytes through String.fromCharCode —
-      // the spread form risks "Maximum call stack size exceeded" on a large screenshot buffer.
-      const bytes = await page.screenshot({ type: "png", fullPage: false });
+    const shouldScreenshot = body.take_screenshot || body.takeScreenshot || body.action === "screenshot";
+    if (shouldScreenshot) {
+      const bytes = await page.screenshot({ type: "png", fullPage: true });
       screenshot_base64 = Buffer.from(bytes).toString("base64");
     }
 
-    return { url: body.url, text: typeof text === "string" ? text.slice(0, 50000) : "", links, ...(screenshot_base64 ? { screenshot_base64 } : {}) };
+    const trimmedText = typeof textContent === "string" ? textContent.slice(0, 50000) : "";
+    return {
+      url: body.url,
+      title,
+      textContent: trimmedText,
+      text: trimmedText,
+      links,
+      ...(screenshot_base64 ? { screenshot_base64, screenshotBase64: screenshot_base64 } : {})
+    };
   } finally {
     if (page) {
       try { await page.close(); } catch { /* ignore */ }
@@ -115,51 +128,80 @@ async function runNavigation(
   }
 }
 
-app.post("/v1/browser/navigate", async (c) => {
-  const body = await c.req.json<NavigateRequest>();
-  if (!body.url) return c.json({ error_code: "bad_request", message: "url required" }, 400);
+async function handleBrowserRequest(env: Env, body: BrowserTaskRequest) {
+  if (!body.url) throw new Error("url required");
 
-  // F13: literal-only blocklist missed DNS rebinding (a hostname registered to resolve to
-  // 169.254.169.254 etc.) — checkSsrf resolves the hostname via DoH and checks resolved IPs too.
+  // SSRF check
   const ssrf = await checkSsrf(body.url);
   if (ssrf.blocked) {
-    return c.json({ error_code: "forbidden", message: `SSRF blocked: ${ssrf.reason}` }, 403);
+    throw new Error(`SSRF blocked: ${ssrf.reason}`);
   }
 
   const requested = body.engine ?? "auto";
-  const wantKitesurfFirst = requested === "auto" || requested === "kitesurf";
+  const needsHeavyChromium = body.take_screenshot || body.takeScreenshot || body.requiresWebGL || requested === "chromium";
+  const wantKitesurfFirst = requested === "auto" && !needsHeavyChromium;
   const firstEngine: "chromium" | "kitesurf" = wantKitesurfFirst ? "kitesurf" : "chromium";
 
   let browser: Browser | undefined;
   try {
-    browser = await launchBrowser(c.env, firstEngine);
+    browser = await launchBrowser(env, firstEngine);
     const result = await runNavigation(browser, body);
-    return c.json({ ...result, engine_used: firstEngine });
+    return {
+      success: true,
+      engineUsed: firstEngine,
+      ...result
+    };
   } catch (err) {
-    // Only "auto" retries on the OTHER engine — an explicit request for one engine or the other
-    // does exactly what was asked and reports the real failure, rather than silently substituting
-    // a different engine than the caller chose.
     if (requested === "auto" && firstEngine === "kitesurf") {
       try {
         if (browser) { try { await browser.close(); } catch { /* ignore */ } browser = undefined; }
-        browser = await launchBrowser(c.env, "chromium");
+        browser = await launchBrowser(env, "chromium");
         const result = await runNavigation(browser, body);
-        return c.json({ ...result, engine_used: "chromium", kitesurf_fallback: true, kitesurf_fallback_reason: String((err as Error)?.message ?? err) });
+        return {
+          success: true,
+          engineUsed: "chromium" as const,
+          kitesurf_fallback: true,
+          kitesurf_fallback_reason: String((err as Error)?.message ?? err),
+          ...result
+        };
       } catch (fallbackErr) {
-        console.error("[browser] Navigation failed on both kitesurf and chromium:", fallbackErr);
-        return c.json({ error_code: "browser_error", message: String((fallbackErr as Error)?.message ?? fallbackErr) }, 500);
+        throw new Error(String((fallbackErr as Error)?.message ?? fallbackErr));
       }
     }
-    console.error("[browser] Navigation failed:", err);
-    return c.json({ error_code: "browser_error", message: String((err as Error)?.message ?? err) }, 500);
+    throw new Error(String((err as Error)?.message ?? err));
   } finally {
     if (browser) {
       try { await browser.close(); } catch { /* ignore */ }
     }
   }
+}
+
+app.post("/v1/browser/navigate", async (c) => {
+  const body = await c.req.json<BrowserTaskRequest>();
+  try {
+    const res = await handleBrowserRequest(c.env, body);
+    return c.json(res);
+  } catch (err: any) {
+    const msg = err?.message || String(err);
+    const code = msg.includes("SSRF blocked") ? 403 : 500;
+    return c.json({ error_code: code === 403 ? "forbidden" : "browser_error", message: msg }, code);
+  }
 });
 
-// Health check (no auth required for load balancer)
+// Alias for browser task endpoint requested in spec
+app.post("/browser-task", async (c) => {
+  const body = await c.req.json<BrowserTaskRequest>();
+  try {
+    const res = await handleBrowserRequest(c.env, body);
+    return c.json(res);
+  } catch (err: any) {
+    const msg = err?.message || String(err);
+    const code = msg.includes("SSRF blocked") ? 403 : 500;
+    return c.json({ success: false, error: msg }, code);
+  }
+});
+
+// Health check
 app.get("/health", (c) => c.json({ ok: true, service: "browser" }));
 
 app.onError((err, c) => errorResponse(err, c.get("requestId") ?? "unknown"));

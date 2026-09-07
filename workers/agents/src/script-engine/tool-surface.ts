@@ -24,12 +24,15 @@ import type {
   ScriptDomain,
   ExecutionTier,
 } from "./types.js";
+import { MINIMALIST_AGENT_TOOLS } from "./types.js";
+import { resolveExecutionTier } from "./execution-ladder.js";
 import { SkillLibrary } from "./skill-library.js";
 import { scriptFind, indexScriptEmbedding, removeScriptEmbedding } from "./script-find.js";
 import { runStoredScript } from "./execution-ladder.js";
 import { buildOperationMap, type PrebuiltOp, type PrebuiltScript } from "./prebuilt/index.js";
 import { assertNoReservedViolation } from "./reserved-capabilities.js";
 import { isReadSafeOperation } from "./assistant-access.js";
+import { executeBrowserTool } from "./prebuilt/browser-use.js";
 
 /** Plain edit distance — used only to rank "did you mean" suggestions by how close a guess
  *  actually is, never for anything security-relevant. Op names are short (well under 40 chars),
@@ -448,6 +451,87 @@ export class ScriptToolSurface {
         `a project owner/editor must make this change (or adjust their assistant_mode).`
       );
     }
+  }
+
+  /**
+   * Compiles the minimalist tool surface exposed to the LLM context window.
+   * Strips bloated MCP schemas and heavy tier definitions.
+   */
+  static getMinimalistToolDeclarations() {
+    return [
+      {
+        name: "Bash",
+        description: MINIMALIST_AGENT_TOOLS.Bash.description,
+        parameters: MINIMALIST_AGENT_TOOLS.Bash.parameters,
+      },
+      {
+        name: "Read",
+        description: MINIMALIST_AGENT_TOOLS.Read.description,
+        parameters: MINIMALIST_AGENT_TOOLS.Read.parameters,
+      },
+      {
+        name: "Edit",
+        description: MINIMALIST_AGENT_TOOLS.Edit.description,
+        parameters: MINIMALIST_AGENT_TOOLS.Edit.parameters,
+      },
+      {
+        name: "Browser",
+        description: MINIMALIST_AGENT_TOOLS.Browser.description,
+        parameters: MINIMALIST_AGENT_TOOLS.Browser.parameters,
+      },
+      {
+        name: "Delegate",
+        description: MINIMALIST_AGENT_TOOLS.Delegate.description,
+        parameters: MINIMALIST_AGENT_TOOLS.Delegate.parameters,
+      },
+    ];
+  }
+
+  /**
+   * Route tool execution based on the Hypervisor decision.
+   */
+  async handleToolCall(toolName: string, params: Record<string, any>, ctx: any) {
+    if (toolName === "Bash") {
+      const route = resolveExecutionTier(params.command || "");
+
+      // Dispatch based on solved hypervisor route
+      if (route.requiresBrowser) {
+        const action = route.args.includes("--screenshot") ? "screenshot" : "navigate";
+        const url = route.args.find(arg => arg.startsWith("http")) || "";
+        return await executeBrowserTool({ action, url, engine: route.suggestedBackend }, ctx);
+      }
+
+      if (route.tier === 6) {
+        return await ctx.container.exec(params.command);
+      }
+      if (route.tier === 4 || route.tier === 5) {
+        return await executeBrowserTool({ action: "navigate", url: route.args.find(arg => arg.startsWith("http")) || "", engine: route.suggestedBackend }, ctx);
+      }
+      if (route.tier === 3) {
+        return await ctx.workflows.scheduleFromCommand(params.command);
+      }
+
+      // Tier 1 & 2: In-Isolate Virtual POSIX Shell (just-bash)
+      return await ctx.virtualShell.exec(params.command);
+    }
+
+    if (toolName === "Read") {
+      return await ctx.fs.read(params.filePath, { offset: params.offset, limit: params.limit });
+    }
+
+    if (toolName === "Edit") {
+      return await ctx.fs.edit(params.filePath, params.oldString, params.newString);
+    }
+
+    if (toolName === "Browser") {
+      return await executeBrowserTool(params, ctx);
+    }
+
+    if (toolName === "Delegate") {
+      return await ctx.agent.delegateTask(params.targetRole, params.taskDescription, params.contextFiles);
+    }
+
+    throw new Error(`Unknown tool primitive: ${toolName}`);
   }
 
   // ── script.create ──────────────────────────────────────────────────────────

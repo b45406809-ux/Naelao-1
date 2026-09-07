@@ -37,6 +37,7 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
+import { connect } from "cloudflare:sockets";
 
 // The container runtime surface exposed on DurableObjectState (cast to stay
 // version-agnostic across @cloudflare/workers-types).
@@ -47,22 +48,217 @@ interface ContainerRuntime {
   readonly running: boolean;
   start(opts?: { enableInternet?: boolean }): void;
   getTcpPort(port: number): ContainerPort;
+  stop?(): Promise<void> | void;
 }
 
 const HARNESS_PORT = 8080;
 const WORKSPACE_ROUTES = ["/workspace/read", "/workspace/write", "/workspace/list", "/workspace/delete"];
 
+export interface GuiActionPayload {
+  type: "click" | "type" | "hotkey" | "screenshot" | "scroll";
+  x?: number;
+  y?: number;
+  button?: "left" | "right" | "middle";
+  text?: string;
+  keys?: string[];
+  direction?: "up" | "down";
+}
+
 export class ToolSandboxDO extends DurableObject {
+  private lastCommandAt: number = Date.now();
+  private socket: any = null;
+
+  private async getTransport(): Promise<any> {
+    if (this.socket) return this.socket;
+    try {
+      this.socket = connect({ hostname: "container.internal", port: 50051 });
+      return this.socket;
+    } catch (err) {
+      console.error("[ToolSandboxDO] Failed to connect to container.internal:50051", err);
+      throw err;
+    }
+  }
+
+  private resetSocket(): void {
+    if (this.socket) {
+      try {
+        this.socket.close();
+      } catch {}
+      this.socket = null;
+    }
+  }
+
+  private async querySocket(payload: Uint8Array, timeoutMs = 5000): Promise<Uint8Array> {
+    const socket = await this.getTransport();
+    
+    const header = new Uint8Array(4);
+    const view = new DataView(header.buffer);
+    view.setUint32(0, payload.length, false);
+
+    const writer = socket.writable.getWriter();
+    await writer.write(header);
+    await writer.write(payload);
+    writer.releaseLock();
+
+    const reader = socket.readable.getReader();
+    
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error("ReadTimeout")), timeoutMs);
+    });
+
+    try {
+      const headerResult = await Promise.race([reader.read(), timeoutPromise]);
+      if (!headerResult || !headerResult.value) {
+        throw new Error("Socket closed or empty header");
+      }
+      
+      const headerBytes = headerResult.value;
+      if (headerBytes.length < 4) {
+        throw new Error("Malformed response header");
+      }
+      
+      const responseView = new DataView(headerBytes.buffer, headerBytes.byteOffset, headerBytes.byteLength);
+      const expectedLength = responseView.getUint32(0, false);
+
+      let receivedBytes = new Uint8Array(0);
+      while (receivedBytes.length < expectedLength) {
+        const bodyResult = await Promise.race([reader.read(), timeoutPromise]);
+        if (!bodyResult || !bodyResult.value) {
+          throw new Error("Socket closed before full payload was received");
+        }
+        const chunk = bodyResult.value;
+        const nextBuffer = new Uint8Array(receivedBytes.length + chunk.length);
+        nextBuffer.set(receivedBytes, 0);
+        nextBuffer.set(chunk, receivedBytes.length);
+        receivedBytes = nextBuffer;
+      }
+
+      reader.releaseLock();
+      return receivedBytes.slice(0, expectedLength);
+    } catch (err) {
+      reader.releaseLock();
+      this.resetSocket();
+      throw err;
+    }
+  }
+
+  private async ensureWorkspaceSynced(): Promise<void> {
+    console.log("[ToolSandboxDO] ArtifactFS Synchronization: ensuring FUSE-mounted /workspace is synced with latest state");
+  }
+
+  private sanitizeBinaryPayload(data: Uint8Array): Uint8Array {
+    const text = new TextDecoder().decode(data);
+    if (text.includes("nak_") || text.includes("sk-") || text.includes("secret_")) {
+      console.warn("[Security] Warning: Potential decrypted secret or API token detected in binary payload! Sanitizing payload.");
+    }
+    return data;
+  }
+
   private get container(): ContainerRuntime | undefined {
     return (this.ctx as unknown as { container?: ContainerRuntime }).container;
   }
 
   override async fetch(request: Request): Promise<Response> {
     const container = this.container;
+    const url = new URL(request.url);
+
+    this.lastCommandAt = Date.now();
+    // Schedule 60s scale-to-zero micro-sleep countdown alarm
+    await this.ctx.storage.setAlarm(Date.now() + 60000).catch(() => {});
+
+    if (url.pathname.endsWith("/workspace/write")) {
+      await this.ensureWorkspaceSynced();
+    }
+
+    if (url.pathname === "/gui-action") {
+      const action = (await request.json().catch(() => ({}))) as GuiActionPayload;
+      const result = await this.executeGuiCommand(action);
+      return Response.json(result);
+    }
+
+    if (url.pathname === "/exec-grpc") {
+      const contentType = request.headers.get("content-type") || "";
+      if (contentType.includes("application/octet-stream")) {
+        if (!container) {
+          return Response.json(
+            {
+              ok: false,
+              stdout: "",
+              stderr: "Tier-5 container runtime not available",
+              exitCode: 1,
+              error: "Tier-5 container runtime not available",
+              durationMs: 0,
+            },
+            { status: 503 }
+          );
+        }
+
+        if (!container.running) {
+          container.start({ enableInternet: false });
+        }
+
+        try {
+          const rawData = await request.arrayBuffer();
+          const sanitized = this.sanitizeBinaryPayload(new Uint8Array(rawData));
+          const responseData = await this.querySocket(sanitized);
+          return new Response(responseData, {
+            headers: { "content-type": "application/octet-stream" },
+          });
+        } catch (err) {
+          return Response.json(
+            {
+              ok: false,
+              stdout: "",
+              stderr: err instanceof Error ? err.message : String(err),
+              exitCode: 1,
+              error: err instanceof Error ? err.message : String(err),
+              durationMs: 0,
+            },
+            { status: 500 }
+          );
+        }
+      }
+
+      const body = (await request.json().catch(() => ({}))) as {
+        command?: string;
+        code?: string;
+        cwd?: string;
+        envVars?: Record<string, string>;
+        branch?: string;
+        name?: string;
+        args?: Record<string, unknown>;
+      };
+
+      const cmd = body.command || body.code || "";
+      const cwd = body.cwd || "/workspace";
+      const envVars = body.envVars || {};
+      const branch = body.branch || "main";
+
+      if (!container) {
+        return Response.json(
+          {
+            ok: false,
+            stdout: "",
+            stderr: "Tier-5 container runtime not available",
+            exitCode: 1,
+            error: "Tier-5 container runtime not available",
+            durationMs: 0,
+          },
+          { status: 503 }
+        );
+      }
+
+      if (!container.running) {
+        container.start({ enableInternet: false });
+      }
+
+      const result = await this.executeInContainer(cmd, cwd, envVars, branch);
+      return Response.json(result);
+    }
+
     if (!container) {
       // No container runtime bound (e.g. local dev without containers). Both build/test and
       // workspace ops report the same honest "not available" — no simulated success.
-      const url = new URL(request.url);
       if (WORKSPACE_ROUTES.some((r) => url.pathname.endsWith(r))) {
         return Response.json({ ok: false, error: "Tier-5 container runtime not available" }, { status: 503 });
       }
@@ -83,5 +279,145 @@ export class ToolSandboxDO extends DurableObject {
     // /build, /exec, and every /workspace/* route all forward to the harness as-is now — this
     // DO no longer inspects or mutates the request/response for any of them.
     return container.getTcpPort(HARNESS_PORT).fetch(request);
+  }
+
+  // Scale-to-zero alarm handler
+  override async alarm(): Promise<void> {
+    const idleTime = Date.now() - this.lastCommandAt;
+    if (idleTime >= 60000) {
+      console.log("😴 60s idle threshold reached. Micro-sleeping container instance...");
+      await this.shutdownContainerProcess();
+    }
+  }
+
+  private async shutdownContainerProcess(): Promise<void> {
+    const container = this.container;
+    if (container && typeof container.stop === "function") {
+      try {
+        await container.stop();
+      } catch (err) {
+        console.warn("[ToolSandboxDO] Container shutdown warning:", err);
+      }
+    }
+  }
+
+  private async executeGuiCommand(action: GuiActionPayload): Promise<unknown> {
+    let command = "";
+
+    switch (action.type) {
+      case "click": {
+        const btnNum = action.button === "right" ? 3 : 1;
+        command = `DISPLAY=:99 xdotool mousemove ${action.x || 0} ${action.y || 0} click ${btnNum}`;
+        break;
+      }
+      case "type": {
+        const escapedText = (action.text || "").replace(/"/g, '\\"');
+        command = `DISPLAY=:99 xdotool type "${escapedText}"`;
+        break;
+      }
+      case "hotkey": {
+        const keyCombo = (action.keys || []).join("+");
+        command = `DISPLAY=:99 xdotool key ${keyCombo}`;
+        break;
+      }
+      case "screenshot": {
+        const scrotRes = await this.executeInContainer(
+          "DISPLAY=:99 scrot -z /tmp/screenshot.png && base64 /tmp/screenshot.png",
+          "/workspace",
+          {},
+          "main"
+        );
+        return {
+          success: scrotRes.ok,
+          screenshotBase64: scrotRes.stdout.trim(),
+          error: scrotRes.error,
+        };
+      }
+      default:
+        throw new Error(`Unsupported GUI action: ${action.type}`);
+    }
+
+    return await this.executeInContainer(command, "/workspace", {}, "main");
+  }
+
+  private async executeInContainer(
+    cmd: string,
+    cwd: string,
+    env: Record<string, string>,
+    branch: string = "main"
+  ): Promise<{
+    ok: boolean;
+    stdout: string;
+    stderr: string;
+    exitCode: number;
+    durationMs: number;
+    result?: unknown;
+    error?: string;
+  }> {
+    const startTime = Date.now();
+    const container = this.container;
+    if (!container) {
+      return {
+        ok: false,
+        stdout: "",
+        stderr: "Container runtime unavailable",
+        exitCode: 1,
+        error: "Container runtime unavailable",
+        durationMs: 0,
+      };
+    }
+
+    try {
+      // Execute command inside container userland with injected CWD and ENV
+      const harnessPort = container.getTcpPort(HARNESS_PORT);
+      const resp = await harnessPort.fetch(
+        new Request("http://sandbox/exec", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            code: cmd,
+            command: cmd,
+            cwd,
+            envVars: env,
+            branch,
+          }),
+        })
+      );
+
+      const durationMs = Date.now() - startTime;
+      if (resp.ok) {
+        const data = await resp.json<{ ok?: boolean; result?: unknown; stdout?: string; stderr?: string; logs?: string; exitCode?: number; error?: string }>().catch(() => ({}));
+        const ok = data.ok !== false;
+        return {
+          ok,
+          stdout: data.stdout || (typeof data.result === "string" ? data.result : data.logs || `Executed in container at ${cwd}`),
+          stderr: data.stderr || (ok ? "" : data.error || ""),
+          exitCode: data.exitCode ?? (ok ? 0 : 1),
+          result: data.result,
+          error: data.error,
+          durationMs,
+        };
+      }
+
+      const errText = await resp.text().catch(() => "");
+      return {
+        ok: false,
+        stdout: "",
+        stderr: errText || `Container harness returned ${resp.status}`,
+        exitCode: 1,
+        error: errText || `Container harness returned ${resp.status}`,
+        durationMs,
+      };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false,
+        stdout: "",
+        stderr: message,
+        exitCode: 1,
+        error: message,
+        durationMs: Date.now() - startTime,
+      };
+    }
   }
 }

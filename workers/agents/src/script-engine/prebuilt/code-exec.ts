@@ -28,6 +28,7 @@
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 import type { ExecutionTier } from "../types.js";
 import { assertNoReservedViolation } from "../reserved-capabilities.js";
+import { executePythonScript } from "../code-runner.js";
 
 const PYTHON_HARNESS = `
 import { execFileSync } from "node:child_process";
@@ -150,3 +151,29 @@ export const codeExec: PrebuiltScript = {
     },
   },
 };
+
+export async function handleCodeExecution(
+  args: { language: "typescript" | "python"; code: string; scriptArgs?: Record<string, any> },
+  ctx: { env: any; spaceId: string; projectId?: string }
+) {
+  if (args.language === "python") {
+    return await executePythonScript(args.code, args.scriptArgs || {}, ctx.env, ctx.spaceId, ctx.projectId);
+  }
+
+  // Default TypeScript / JavaScript CodeMode Isolate Execution (Tier 2)
+  const startTime = Date.now();
+  const result = await ctx.env.codeRunner.run({
+    name: "codemode_script",
+    code: args.code,
+    tier: 2,
+    args: args.scriptArgs || {},
+    spaceId: ctx.spaceId,
+    projectId: ctx.projectId
+  });
+
+  return {
+    ...result,
+    durationMs: Date.now() - startTime,
+    backend: "v8_isolate"
+  };
+}

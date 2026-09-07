@@ -14,7 +14,159 @@
  */
 
 /** Execution tier a script declares (the orchestrator routes script.run by this). */
-export type ExecutionTier = 1 | 2 | 3 | 4 | 5;
+export type ExecutionTier = 1 | 2 | 3 | 4 | 5 | 6;
+
+export interface AvosFsRuntime {
+  read: (filePath: string, opts?: { offset?: number; limit?: number }) => Promise<{ content: string; totalLines: number }>;
+  edit: (filePath: string, oldString: string, newString: string) => Promise<{ ok: boolean; message: string }>;
+  write: (filePath: string, content: string) => Promise<{ ok: boolean; bytesWritten: number }>;
+  grep: (pattern: string, path?: string) => Promise<Array<{ file: string; line: number; text: string }>>;
+  glob: (pattern: string) => Promise<string[]>;
+}
+
+export interface AvosProjectRuntime {
+  id: string;
+  getJournal: () => Promise<any>;
+  updateJournal: (status: string) => Promise<{ ok: boolean }>;
+  createTask: (title: string) => Promise<{ ok: boolean }>;
+  listThreads: () => Promise<Array<{ id: string; title: string }>>;
+  postMessage: (threadId: string, text: string) => Promise<{ ok: boolean }>;
+}
+
+export interface AvosSpaceRuntime {
+  id: string;
+  createProject: (name: string, kind: string, templateId?: string) => Promise<{ id: string; name: string }>;
+  listProjects: () => Promise<Array<{ id: string; name: string; kind: string }>>;
+  getWalletBalance: () => Promise<{ balance_cents: number; currency: string }>;
+  sendNotification: (title: string, body: string) => Promise<{ ok: boolean }>;
+}
+
+export interface AvosVaultRuntime {
+  fetchWithAuth: (url: string, opts: { credentialName: string; method?: string; body?: any; headers?: Record<string, string> }) => Promise<Response>;
+}
+
+export interface AvosMcpRuntime {
+  call: (server: string, tool: string, params: Record<string, any>) => Promise<any>;
+  listTools: (server: string) => Promise<Array<{ name: string; description: string }>>;
+}
+
+export interface AvosBrowserRuntime {
+  navigate: (url: string) => Promise<{ title: string; textContent: string }>;
+  click: (selector: string) => Promise<{ ok: boolean }>;
+  type: (selector: string, text: string) => Promise<{ ok: boolean }>;
+  extract: (selector: string) => Promise<string[]>;
+}
+
+export interface AvosRuntimeContext {
+  fs: AvosFsRuntime;
+  project?: AvosProjectRuntime;
+  space?: AvosSpaceRuntime;
+  vault: AvosVaultRuntime;
+  mcp: AvosMcpRuntime;
+  browser: AvosBrowserRuntime;
+  runSkill: (skillName: string, args: Record<string, any>) => Promise<any>;
+}
+
+export interface HypervisorRouteResult {
+  tier: ExecutionTier;
+  binary: string;
+  args: string[];
+  requiresContainer: boolean;
+  requiresBrowser: boolean;
+  requiresWorkflow: boolean;
+  suggestedBackend: "v8_isolate" | "kitesurf" | "chromium" | "workflow" | "container";
+}
+
+export interface MinimalistToolParams {
+  command?: string;
+  filePath?: string;
+  offset?: number;
+  limit?: number;
+  oldString?: string;
+  newString?: string;
+  action?: "navigate" | "click" | "type" | "screenshot";
+  url?: string;
+  selector?: string;
+  text?: string;
+  targetRole?: string;
+  taskDescription?: string;
+  contextFiles?: string[];
+}
+
+export const MINIMALIST_AGENT_TOOLS = {
+  Bash: {
+    description:
+      "Universal command-line execution interface. Runs shell utilities, scripts, virtual CLIs, and build/compilation dispatches with automated hypervisor routing.",
+    parameters: {
+      type: "object",
+      properties: {
+        command: { type: "string", description: "The bash command or shell script line to execute." },
+      },
+      required: ["command"],
+    },
+  },
+  Read: {
+    description:
+      "Line-numbered windowed file inspection. Supports line offsets and limits for context-window-safe inspection.",
+    parameters: {
+      type: "object",
+      properties: {
+        filePath: { type: "string", description: "Relative or absolute path to the file to inspect." },
+        offset: { type: "number", description: "Starting line number (1-based, optional)." },
+        limit: { type: "number", description: "Maximum number of lines to read (optional)." },
+      },
+      required: ["filePath"],
+    },
+  },
+  Edit: {
+    description:
+      "Exact AST or string search-and-replace block edits. Forces surgical patching to prevent full-file rewrites.",
+    parameters: {
+      type: "object",
+      properties: {
+        filePath: { type: "string", description: "Path to the file to edit." },
+        oldString: { type: "string", description: "Exact block of text to replace." },
+        newString: { type: "string", description: "Replacement text to substitute in place of oldString." },
+      },
+      required: ["filePath", "oldString", "newString"],
+    },
+  },
+  Browser: {
+    description:
+      "Web navigation, DOM accessibility tree extraction, form interactions, and visual screenshot capture.",
+    parameters: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["navigate", "click", "type", "screenshot"],
+          description: "Action to perform in the browser.",
+        },
+        url: { type: "string", description: "Target URL to navigate to (required for navigate)." },
+        selector: { type: "string", description: "CSS or XPath selector for click or type interactions." },
+        text: { type: "string", description: "Text to type into the target element." },
+      },
+      required: ["action"],
+    },
+  },
+  Delegate: {
+    description:
+      "Structured JSON-RPC task delegation to subagents or specialized sibling assistants.",
+    parameters: {
+      type: "object",
+      properties: {
+        targetRole: { type: "string", description: "Role or specialty of the target subagent." },
+        taskDescription: { type: "string", description: "Detailed task instructions for the delegated agent." },
+        contextFiles: {
+          type: "array",
+          items: { type: "string" },
+          description: "List of relevant workspace file paths to attach.",
+        },
+      },
+      required: ["targetRole", "taskDescription"],
+    },
+  },
+} as const;
 
 /** Domains an observe/action script can target. Open-ended by design. */
 export type ScriptDomain =

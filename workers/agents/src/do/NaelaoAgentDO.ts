@@ -38,7 +38,14 @@ import {
 import { createTracer } from "@naelao/tracing";
 import { GatewayReasoner, WorkersAIEmbedder } from "../script-engine/reasoner.js";
 import { resolveAssistantApprovalPlan, type AssistantEffectiveRole } from "../script-engine/assistant-access.js";
-import { buildCodeRunner, type WorkerLoaderBinding } from "../script-engine/code-runner.js";
+import {
+  buildCodeRunner,
+  type WorkerLoaderBinding,
+  VirtualPosixShell,
+  ArtifactsGitService,
+  buildRuntimeContext,
+  type VirtualFsStorage,
+} from "../script-engine/code-runner.js";
 import { initMemorySchema, buildMemoryStore, runMemoryMaintenance } from "../script-engine/memory-os.js";
 import { buildProjectMemoryStore, buildHybridMemoryStore } from "../script-engine/project-memory-client.js";
 import {
@@ -104,6 +111,12 @@ interface AgentRunRow {
 }
 
 // ── ReAct step types ─────────────────────────────────────────────────────────
+
+export interface ShellSessionState {
+  cwd: string;                   // e.g. "src/components"
+  envVars: Record<string, string>; // e.g. { NODE_ENV: "production" }
+  activeGitBranch: string;       // e.g. "feature-darkmode"
+}
 
 interface ReactStep {
   iteration: number;
@@ -981,6 +994,8 @@ export interface AgentDOEnv {
 
 export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   private initialized = false;
+  private virtualShell!: VirtualPosixShell;
+  private artifactsGit!: ArtifactsGitService;
 
   private ensureInit(): void {
     if (this.initialized) return;
@@ -1339,6 +1354,31 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // calls), without needing a WebSocket/SSE channel.
     try { this.ctx.storage.sql.exec(`ALTER TABLE sub_agents ADD COLUMN progress_note TEXT`); } catch { /* exists */ }
 
+    // 4-Dimension State Sync — shell session state
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS shell_session_state (
+        session_id        TEXT PRIMARY KEY,
+        cwd               TEXT NOT NULL DEFAULT '',
+        env_vars_json     TEXT NOT NULL DEFAULT '{}',
+        active_git_branch TEXT NOT NULL DEFAULT 'main',
+        updated_at        INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
+      )
+    `);
+
+    // Virtual workspace files storage for VirtualPosixShell
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS workspace_files (
+        path        TEXT PRIMARY KEY,
+        content     TEXT NOT NULL,
+        hash        TEXT NOT NULL,
+        size_bytes  INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
+      )
+    `);
+
+    this.virtualShell = new VirtualPosixShell(this.getVirtualFsStorage());
+    this.artifactsGit = new ArtifactsGitService(this.env);
+
     this.initialized = true;
   }
 
@@ -1612,6 +1652,92 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
   }
 
+  // ── Shell Session State & 4-Dimension State Synchronization ────────────────
+  private sessionState: ShellSessionState = {
+    cwd: "",
+    envVars: {},
+    activeGitBranch: "main",
+  };
+
+  getShellSessionState(sessionId?: string): ShellSessionState {
+    this.ensureInit();
+    if (sessionId) {
+      try {
+        const rows = this.ctx.storage.sql.exec(
+          `SELECT cwd, env_vars_json, active_git_branch FROM shell_session_state WHERE session_id = ?`,
+          sessionId
+        ).toArray() as unknown as Array<{ cwd: string; env_vars_json: string; active_git_branch: string }>;
+        const row = rows[0];
+        if (row) {
+          let envVars: Record<string, string> = {};
+          try { envVars = JSON.parse(row.env_vars_json); } catch { /* default empty */ }
+          return {
+            cwd: row.cwd || "",
+            envVars,
+            activeGitBranch: row.active_git_branch || "main",
+          };
+        }
+      } catch { /* fallback */ }
+    }
+    return { ...this.sessionState };
+  }
+
+  saveShellSessionState(sessionId: string, state: ShellSessionState): void {
+    this.ensureInit();
+    this.sessionState = { ...state };
+    try {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO shell_session_state (session_id, cwd, env_vars_json, active_git_branch, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(session_id) DO UPDATE SET cwd = excluded.cwd, env_vars_json = excluded.env_vars_json, active_git_branch = excluded.active_git_branch, updated_at = excluded.updated_at`,
+        sessionId,
+        state.cwd,
+        JSON.stringify(state.envVars),
+        state.activeGitBranch,
+        Date.now()
+      );
+    } catch { /* best-effort */ }
+  }
+
+  updateShellSession(command: string, sessionId?: string): string {
+    const trimmed = command.trim();
+    const current = this.getShellSessionState(sessionId);
+
+    if (trimmed.startsWith("cd ")) {
+      const targetDir = trimmed.replace(/^cd\s+/, "").trim();
+      current.cwd = targetDir === "." ? "" : targetDir.replace(/^\/+/, "");
+      if (sessionId) this.saveShellSessionState(sessionId, current);
+      else this.sessionState = { ...current };
+      return `✔ Changed directory to /workspace/${current.cwd}`;
+    }
+
+    if (trimmed.startsWith("export ")) {
+      const [key, val] = trimmed.replace(/^export\s+/, "").split("=");
+      if (key && val) {
+        current.envVars[key.trim()] = val.trim().replace(/^['"]|['"]$/g, "");
+        if (sessionId) this.saveShellSessionState(sessionId, current);
+        else this.sessionState = { ...current };
+        return `✔ Set environment variable ${key.trim()}=${val.trim()}`;
+      }
+    }
+
+    if (trimmed.startsWith("git checkout -b ") || trimmed.startsWith("git checkout ") || trimmed.startsWith("git switch ")) {
+      const branchName = trimmed.split(/\s+/).pop()?.trim();
+      if (branchName && !branchName.startsWith("-")) {
+        current.activeGitBranch = branchName;
+        if (sessionId) this.saveShellSessionState(sessionId, current);
+        else this.sessionState = { ...current };
+        return `✔ Switched to branch ${branchName}`;
+      }
+    }
+
+    return "";
+  }
+
+  getSessionState(sessionId?: string): ShellSessionState {
+    return this.getShellSessionState(sessionId);
+  }
+
   // ── Alarm handler: timeout watchdog ─────────────────────────────────────
   override async alarm(): Promise<void> {
     this.ensureInit();
@@ -1645,7 +1771,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   // The authoritative script-first agent model (spec appendix ~6672k). Loads the agent's
   // 4-file config from R2, then runs OBSERVE→FINGERPRINT→FIND→GATE→EXECUTE→VERIFY→DISTILL.
 
-  private buildScriptEngineEnv(spaceId: string, agentId: string, tenantId: string, userId?: string, projectId?: string): ScriptEngineEnv | null {
+  private buildScriptEngineEnv(spaceId: string, agentId: string, tenantId: string, userId?: string, projectId?: string, sessionId?: string): ScriptEngineEnv | null {
     if (!this.env.SCRIPTS_R2) return null;
     const env: ScriptEngineEnv = {
       scriptsBucket: this.env.SCRIPTS_R2,
@@ -1805,13 +1931,22 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     // Execution ladder Tiers 2-5 (code-runner.ts) — degrades tier-by-tier when a binding
     // (LOADER / BROWSER_WORKER / TOOL_SANDBOX) is absent; Tier 1 (R2) never needs this.
-    env.codeRunner = buildCodeRunner({
+    const sessionState = this.getShellSessionState(sessionId);
+    const baseCodeRunner = buildCodeRunner({
       ...(this.env.LOADER ? { loader: this.env.LOADER } : {}),
       ...(this.env.BROWSER_WORKER ? { browserWorker: this.env.BROWSER_WORKER } : {}),
       ...(this.env.MCP_HUB ? { mcpHubWorker: this.env.MCP_HUB } : {}),
       ...(this.env.PLATFORM_SECRET ? { platformSecret: this.env.PLATFORM_SECRET } : {}),
       ...(this.env.TOOL_SANDBOX ? { toolSandbox: this.env.TOOL_SANDBOX } : {}),
     });
+    env.codeRunner = {
+      run: async (params) => {
+        return baseCodeRunner.run({
+          ...params,
+          sessionState: params.sessionState || sessionState,
+        });
+      },
+    };
 
     // §A1.17 Phase R: the container half of the explicit multi-workspace model — same
     // per-project addressing as code-runner.ts's runContainer (a project's threads share one
@@ -3212,7 +3347,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       );
     }
 
-    const engineEnv = this.buildScriptEngineEnv(spaceId, agentId, tenantId, userId, projectId);
+    const engineEnv = this.buildScriptEngineEnv(spaceId, agentId, tenantId, userId, projectId, sessionId);
     if (!engineEnv) {
       return Response.json({ error: "script engine unavailable: SCRIPTS_R2 not bound" }, { status: 503 });
     }
@@ -6471,6 +6606,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
   // ── GET /runs/:runId ──────────────────────────────────────────────────────
 
+  private async dispatchGuiAction(sandboxStub: DurableObjectStub, action: import("./ToolSandboxDO.js").GuiActionPayload): Promise<unknown> {
+    const resp = await sandboxStub.fetch("http://internal/gui-action", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(action),
+    });
+    return resp.json();
+  }
+
   private handleGetRun(runId: string): Response {
     // §A1 Harness Excellence (chat UI parity): a script-native run (handleScriptRun, the default
     // dispatch path since item 47's cutover) writes NO `agent_runs` row — that table is legacy-
@@ -6756,4 +6900,69 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     return Response.json({ id: runId, status: "cancelled", updatedAt: now });
   }
+
+  async runAgentCodeMode(
+    scriptCode: string,
+    args: Record<string, any>,
+    options: { spaceId: string; projectId?: string; actingUserId?: string; scope: "SPACE_WIDE" | "PROJECT_BOUND" }
+  ) {
+    this.ensureInit();
+
+    const ctx = buildRuntimeContext(
+      this.env,
+      options.scope,
+      options.spaceId,
+      options.projectId,
+      options.actingUserId,
+      this.virtualShell,
+      this.artifactsGit
+    );
+
+    const codeRunner = buildCodeRunner({
+      loader: this.env.LOADER,
+      browserWorker: this.env.BROWSER_WORKER,
+      mcpHubWorker: this.env.MCP_HUB,
+      platformSecret: this.env.PLATFORM_SECRET,
+      toolSandbox: this.env.TOOL_SANDBOX,
+    });
+
+    return await codeRunner.run({
+      name: "agent_codemode_run",
+      code: scriptCode,
+      tier: 2,
+      args,
+      spaceId: options.spaceId,
+      projectId: options.projectId,
+      ctx,
+    });
+  }
+
+  private getVirtualFsStorage(): VirtualFsStorage {
+    return {
+      readFile: async (p: string) => {
+        const row = (this.ctx.storage.sql
+          .exec("SELECT content FROM workspace_files WHERE path = ?", p)
+          .toArray() as unknown as Array<{ content: string }>)[0];
+        return row?.content ?? null;
+      },
+      writeFile: async (p: string, data: string) => {
+        this.ctx.storage.sql.exec(
+          "INSERT OR REPLACE INTO workspace_files (path, content, hash, size_bytes, updated_at) VALUES (?, ?, ?, ?, ?)",
+          p, data, "sha256_placeholder", data.length, Date.now()
+        );
+      },
+      listFiles: async (_prefix?: string) => {
+        const rows = this.ctx.storage.sql
+          .exec("SELECT path FROM workspace_files")
+          .toArray() as unknown as Array<{ path: string }>;
+        return rows.map((r) => r.path);
+      },
+      deleteFile: async (p: string) => {
+        const result = this.ctx.storage.sql.exec("DELETE FROM workspace_files WHERE path = ?", p);
+        return result.rowsWritten > 0;
+      },
+    };
+  }
+
+  // §A1.17 Phase HX1 — persist a script-native run's structured trace (runScriptLoop's
 }

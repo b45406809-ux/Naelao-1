@@ -27,7 +27,127 @@
  * it is pure R2 and must always work even with no runner wired.
  */
 
-import type { ExecutionTier, ScriptEngineEnv, ScriptRunResult, StoredScript } from "./types.js";
+import type { ExecutionTier, HypervisorRouteResult, ScriptEngineEnv, ScriptRunResult, StoredScript } from "./types.js";
+import { executeBrowserTool } from "./prebuilt/browser-use.js";
+
+/**
+ * List of heavy native build, compilation, and system binaries that
+ * MUST run inside a Tier 6 Linux Container sandbox.
+ */
+export const TIER_6_CONTAINER_BINARIES = new Set([
+  "npm",
+  "pnpm",
+  "yarn",
+  "cargo",
+  "rustc",
+  "gcc",
+  "g++",
+  "make",
+  "cmake",
+  "docker",
+  "pip",
+  "python",
+  "python3",
+  "go",
+  "swift",
+  "javac",
+  "java",
+  "dotnet",
+]);
+
+/**
+ * Detects if a Python script imports native C-extensions that require
+ * a full Linux kernel / Docker container.
+ */
+export function requiresNativeCExtensions(script: string): boolean {
+  const nativeLibs = ["torch", "cv2", "tensorflow", "scipy_c", "libraw", "cuda", "pyautogui"];
+  return nativeLibs.some((lib) => script.includes(`import ${lib}`) || script.includes(`from ${lib}`));
+}
+
+/**
+ * Inspects a terminal command string and resolves the optimal execution tier,
+ * targeting the cheapest and fastest compute primitive on Cloudflare.
+ */
+export function resolveExecutionTier(command: string): HypervisorRouteResult {
+  const trimmed = command.trim();
+  const parts = trimmed.split(/\s+/);
+  const binary = parts[0] || "";
+  const subCommand = parts[1] || "";
+  const fullCommandPrefix = `${binary} ${subCommand}`.trim();
+
+  // 1. Check for Heavy Tier 6 Container Compilation / Native Commands
+  if (
+    TIER_6_CONTAINER_BINARIES.has(binary) ||
+    trimmed.startsWith("npm run") ||
+    trimmed.startsWith("npm install") ||
+    trimmed.startsWith("pip install") ||
+    trimmed.startsWith("cargo build") ||
+    trimmed.startsWith("go build")
+  ) {
+    // Exception: Lightweight in-isolate Pyodide python executions without native C-extensions
+    if ((binary === "python" || binary === "python3") && !requiresNativeCExtensions(trimmed)) {
+      return {
+        tier: 2,
+        binary,
+        args: parts.slice(1),
+        requiresContainer: false,
+        requiresBrowser: false,
+        requiresWorkflow: false,
+        suggestedBackend: "v8_isolate",
+      };
+    }
+
+    return {
+      tier: 6,
+      binary,
+      args: parts.slice(1),
+      requiresContainer: true,
+      requiresBrowser: false,
+      requiresWorkflow: false,
+      suggestedBackend: "container",
+    };
+  }
+
+  // 2. Check for Tier 4 & Tier 5 Browser Navigation Commands
+  if (binary === "browse" || binary === "scrape" || binary === "kitesurf" || binary === "puppeteer") {
+    const isVisualQa =
+      trimmed.includes("--screenshot") || trimmed.includes("--webgl") || trimmed.includes("--canvas") || trimmed.includes("--visual");
+    const tier: ExecutionTier = isVisualQa ? 5 : 4;
+    return {
+      tier,
+      binary,
+      args: parts.slice(1),
+      requiresContainer: false,
+      requiresBrowser: true,
+      requiresWorkflow: false,
+      suggestedBackend: isVisualQa ? "chromium" : "kitesurf",
+    };
+  }
+
+  // 3. Check for Tier 3 Dynamic Workflows & Cron Schedulers
+  if (binary === "schedule" || binary === "workflow" || binary === "cron") {
+    return {
+      tier: 3,
+      binary,
+      args: parts.slice(1),
+      requiresContainer: false,
+      requiresBrowser: false,
+      requiresWorkflow: true,
+      suggestedBackend: "workflow",
+    };
+  }
+
+  // 4. Default: Tier 1/2 In-Memory V8 Isolate / Virtual POSIX Shell (just-bash)
+  return {
+    tier: 2,
+    binary,
+    args: parts.slice(1),
+    requiresContainer: false,
+    requiresBrowser: false,
+    requiresWorkflow: false,
+    suggestedBackend: "v8_isolate",
+  };
+}
 
 /** Run a stored script (agent-distilled / authored code) at its declared tier. */
 export async function runStoredScript(
@@ -141,13 +261,13 @@ export async function runStoredScript(
 
 /** Human-readable tier description (for logs/observability). */
 export function tierLabel(tier: ExecutionTier): string {
-  return (
-    {
-      1: "T1 direct-R2",
-      2: "T2 v8-isolate",
-      3: "T3 npm-isolate",
-      4: "T4 browser",
-      5: "T5 container",
-    } as const
-  )[tier];
+  const labels: Record<ExecutionTier, string> = {
+    1: "T1 direct-R2",
+    2: "T2 v8-isolate",
+    3: "T3 workflow",
+    4: "T4 browser-kitesurf",
+    5: "T5 browser-chromium",
+    6: "T6 container-sandbox",
+  };
+  return labels[tier] ?? `T${tier}`;
 }
