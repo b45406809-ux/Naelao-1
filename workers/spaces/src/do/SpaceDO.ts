@@ -89,6 +89,47 @@ function rowToTriggerRule(row: EventTriggerRow): TriggerRule {
   };
 }
 
+export interface OccWriteParams {
+  projectId: string;
+  path: string;
+  newContent: string;
+  expectedBaseHash: string;
+  updatedBy: string;
+}
+
+export interface OccWriteResult {
+  ok: boolean;
+  newHash: string;
+  sizeBytes: number;
+  updatedAt: string;
+}
+
+export class OccConflictError extends Error {
+  public code = "OCC_CONFLICT";
+  constructor(
+    public filePath: string,
+    public expectedHash: string,
+    public currentHash: string,
+    public currentContent: string
+  ) {
+    super(
+      `OCC Conflict: File '${filePath}' was modified by another thread. ` +
+      `Expected base hash '${expectedHash.slice(0, 8)}', but found '${currentHash.slice(0, 8)}'. ` +
+      `Re-read the latest line numbers before applying patch.`
+    );
+    this.name = "OccConflictError";
+  }
+}
+
+// Compute SHA-256 hex string from text buffer
+export async function computeSha256(content: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(content);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 // ── Schema migrations ────────────────────────────────────────────────────────
 const MIGRATIONS: Migration[] = [
   {
@@ -1195,6 +1236,23 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_threads_parent ON threads(parent_thread_id);
     `,
   },
+  {
+    version: 44,
+    description: "workspace_files with OCC hash and size_bytes",
+    up: `
+      CREATE TABLE IF NOT EXISTS workspace_files (
+        project_id TEXT NOT NULL,
+        path TEXT NOT NULL,
+        content TEXT NOT NULL,
+        hash TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_by TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (project_id, path)
+      );
+      CREATE INDEX IF NOT EXISTS idx_workspace_files_proj ON workspace_files(project_id);
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -1385,6 +1443,21 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     try {
       this.ctx.storage.sql.exec("ALTER TABLE threads ADD COLUMN metadata_json TEXT DEFAULT '{}';");
     } catch { /* column may already exist */ }
+    try {
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS workspace_files (
+          project_id TEXT NOT NULL,
+          path TEXT NOT NULL,
+          content TEXT NOT NULL,
+          hash TEXT NOT NULL,
+          size_bytes INTEGER NOT NULL,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_by TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY (project_id, path)
+        );
+        CREATE INDEX IF NOT EXISTS idx_workspace_files_proj ON workspace_files(project_id);
+      `);
+    } catch { /* table may already exist */ }
     this.initialized = true;
   }
 
@@ -1564,10 +1637,51 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return this.updateProject(projectIdMatch[1], request);
       }
       // GET /projects/:id/workspace/files* — project workspace file access check
-      const wsFileMatch = url.pathname.match(/^\/projects\/([^/]+)\/(?:workspace\/files|workspace-file)(?:\/.*)?$/);
+      const wsFileMatch = url.pathname.match(/^\/projects\/([^/]+)\/(?:workspace\/files|workspace-file)(?:\/(.*))?$/);
       if (method === "GET" && wsFileMatch?.[1]) {
         const viewerId = url.searchParams.get("viewer_id") ?? url.searchParams.get("user_id") ?? request.headers.get("x-naelao-user-id");
-        return this.readWorkspaceFile(wsFileMatch[1], viewerId);
+        const filePath = url.searchParams.get("path") || (wsFileMatch[2] ? decodeURIComponent(wsFileMatch[2]) : undefined);
+        return this.readWorkspaceFile(wsFileMatch[1], viewerId, filePath);
+      }
+      // POST /projects/:id/workspace/files/occ — atomic OCC file update
+      const wsFileOccMatch = url.pathname.match(/^\/projects\/([^/]+)\/workspace\/files\/occ$/);
+      if (method === "POST" && wsFileOccMatch?.[1]) {
+        const body = await request.json<{
+          path?: string;
+          newContent?: string;
+          content?: string;
+          expectedBaseHash?: string;
+          expected_base_hash?: string;
+          updatedBy?: string;
+          updated_by?: string;
+        }>().catch(() => ({}) as Record<string, any>);
+
+        if (!body.path) {
+          return Response.json({ error_code: "bad_request", message: "path is required" }, { status: 400 });
+        }
+
+        try {
+          const result = await this.updateWorkspaceFileOcc({
+            projectId: wsFileOccMatch[1],
+            path: body.path,
+            newContent: body.newContent ?? body.content ?? "",
+            expectedBaseHash: body.expectedBaseHash ?? body.expected_base_hash ?? "",
+            updatedBy: body.updatedBy ?? body.updated_by ?? request.headers.get("x-naelao-user-id") ?? "system",
+          });
+          return Response.json(result);
+        } catch (err: any) {
+          if (err instanceof OccConflictError || err?.code === "OCC_CONFLICT") {
+            return Response.json({
+              error_code: "occ_conflict",
+              message: err.message,
+              file_path: err.filePath,
+              expected_hash: err.expectedHash,
+              current_hash: err.currentHash,
+              current_content: err.currentContent,
+            }, { status: 409 });
+          }
+          throw err;
+        }
       }
       // ── project_members (§A1.17 Phase T1 — real per-project ACL) ───────────────
       const projectMembersMatch = url.pathname.match(/^\/projects\/([^/]+)\/members$/);
@@ -3180,7 +3294,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ ...row, channel_config: safeJsonParseObj(row.channel_config), allowed_agent_ids: safeJsonParseAgentIds(row.allowed_agent_ids) });
   }
 
-  public readWorkspaceFile(projectId: string, viewerId?: string | null): Response {
+  public readWorkspaceFile(projectId: string, viewerId?: string | null, filePath?: string): Response {
     const project = queryOne<{ id: string; space_id: string; visibility: string }>(
       this.ctx.storage.sql as never,
       "SELECT id, space_id, visibility FROM projects WHERE id = ?",
@@ -3196,7 +3310,92 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
       }
     }
+    if (filePath) {
+      const file = queryOne<{ path: string; content: string; hash: string; size_bytes: number; updated_at: string; updated_by: string }>(
+        this.ctx.storage.sql as never,
+        "SELECT path, content, hash, size_bytes, updated_at, updated_by FROM workspace_files WHERE project_id = ? AND path = ?",
+        projectId, filePath
+      );
+      if (file) {
+        return Response.json(file);
+      }
+      return Response.json({ error_code: "not_found", message: `File not found: ${filePath}` }, { status: 404 });
+    }
     return Response.json({ ok: true, project_id: projectId });
+  }
+
+  /**
+   * Performs an atomic Compare-And-Swap (CAS) write to the SQLite virtual filesystem.
+   * Fails closed with an OccConflictError if the base hash has drifted.
+   */
+  async updateWorkspaceFileOcc(params: OccWriteParams): Promise<OccWriteResult> {
+    const { projectId, path, newContent, expectedBaseHash, updatedBy } = params;
+    const newHash = await computeSha256(newContent);
+    const sizeBytes = new TextEncoder().encode(newContent).length;
+    const nowIso = new Date().toISOString();
+
+    const writeResult = this.ctx.storage.transactionSync(() => {
+      // 1. Check if the file exists
+      const existing = (this.ctx.storage.sql.exec(
+        "SELECT path, content, hash FROM workspace_files WHERE project_id = ? AND path = ?",
+        projectId,
+        path
+      ).toArray() as unknown as Array<{ path: string; content: string; hash: string }>)[0];
+
+      // 2. If creating a brand new file
+      if (!existing) {
+        if (expectedBaseHash && expectedBaseHash !== "NEW_FILE" && expectedBaseHash !== "") {
+          throw new OccConflictError(path, expectedBaseHash, "NOT_FOUND", "");
+        }
+
+        this.ctx.storage.sql.exec(
+          `INSERT INTO workspace_files (project_id, path, content, hash, size_bytes, updated_at, updated_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          projectId, path, newContent, newHash, sizeBytes, nowIso, updatedBy
+        );
+
+        return { ok: true, newHash, sizeBytes, updatedAt: nowIso };
+      }
+
+      // 3. File exists: Verify expected base hash matches existing hash
+      if (existing.hash !== expectedBaseHash) {
+        throw new OccConflictError(path, expectedBaseHash, existing.hash, existing.content);
+      }
+
+      // 4. Atomic CAS Update
+      const result = this.ctx.storage.sql.exec(
+        `UPDATE workspace_files 
+         SET content = ?, hash = ?, size_bytes = ?, updated_at = ?, updated_by = ?
+         WHERE project_id = ? AND path = ? AND hash = ?`,
+        newContent, newHash, sizeBytes, nowIso, updatedBy, projectId, path, expectedBaseHash
+      );
+
+      if (result.rowsWritten === 0) {
+        throw new OccConflictError(path, expectedBaseHash, existing.hash, existing.content);
+      }
+
+      return { ok: true, newHash, sizeBytes, updatedAt: nowIso };
+    });
+
+    // Best-effort live event broadcast
+    try {
+      const project = queryOne<{ space_id: string }>(
+        this.ctx.storage.sql as never,
+        "SELECT space_id FROM projects WHERE id = ?",
+        projectId
+      );
+      if (project?.space_id) {
+        void broadcastSpaceEvent(this.env, "", project.space_id, "workspace.file_changed", {
+          project_id: projectId,
+          path,
+          hash: newHash,
+          size_bytes: sizeBytes,
+          updated_by: updatedBy,
+        });
+      }
+    } catch { /* best-effort */ }
+
+    return writeResult;
   }
 
   public async updateProjectVisibility(projectId: string, request: Request): Promise<Response> {
