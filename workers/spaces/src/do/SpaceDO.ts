@@ -1254,6 +1254,38 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_workspace_files_proj ON workspace_files(project_id);
     `,
   },
+  {
+    version: 45,
+    description: "provenance_ledger and project_on_call_leads",
+    up: `
+      CREATE TABLE IF NOT EXISTS provenance_ledger (
+        id TEXT PRIMARY KEY,
+        space_id TEXT NOT NULL,
+        project_id TEXT,
+        action_id TEXT NOT NULL,
+        human_user_id TEXT NOT NULL,
+        jwt_session_id TEXT NOT NULL,
+        assistant_id TEXT NOT NULL,
+        agent_executor_id TEXT NOT NULL,
+        action_type TEXT NOT NULL,
+        action_payload_hash TEXT NOT NULL,
+        git_commit_sha TEXT,
+        gatekeeper_token_hash TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_prov_space ON provenance_ledger(space_id, project_id);
+      CREATE INDEX IF NOT EXISTS idx_prov_user ON provenance_ledger(human_user_id);
+      CREATE INDEX IF NOT EXISTS idx_prov_action ON provenance_ledger(action_id);
+
+      CREATE TABLE IF NOT EXISTS project_on_call_leads (
+        project_id TEXT PRIMARY KEY,
+        space_id TEXT NOT NULL,
+        lead_user_id TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+      );
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -1511,6 +1543,35 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         CREATE INDEX IF NOT EXISTS idx_pt_lease ON project_tasks(lease_expires_at);
       `);
     } catch { /* table may already exist */ }
+    try {
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS provenance_ledger (
+          id TEXT PRIMARY KEY,
+          space_id TEXT NOT NULL,
+          project_id TEXT,
+          action_id TEXT NOT NULL,
+          human_user_id TEXT NOT NULL,
+          jwt_session_id TEXT NOT NULL,
+          assistant_id TEXT NOT NULL,
+          agent_executor_id TEXT NOT NULL,
+          action_type TEXT NOT NULL,
+          action_payload_hash TEXT NOT NULL,
+          git_commit_sha TEXT,
+          gatekeeper_token_hash TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_prov_space ON provenance_ledger(space_id, project_id);
+        CREATE INDEX IF NOT EXISTS idx_prov_user ON provenance_ledger(human_user_id);
+        CREATE INDEX IF NOT EXISTS idx_prov_action ON provenance_ledger(action_id);
+
+        CREATE TABLE IF NOT EXISTS project_on_call_leads (
+          project_id TEXT PRIMARY KEY,
+          space_id TEXT NOT NULL,
+          lead_user_id TEXT NOT NULL,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+      `);
+    } catch { /* tables may already exist */ }
     this.initialized = true;
 
   }
@@ -2313,6 +2374,71 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       if (method === "GET" && url.pathname === "/company-automations") {
         return this.listCompanyAutomations(url.searchParams);
+      }
+
+      // ── Provenance Ledger & On-Call Leads (Phase 5 Chunk 05) ───────────────────
+      const provRecordMatch = url.pathname.match(/^(?:\/internal)?\/provenance\/record$/);
+      if (method === "POST" && provRecordMatch) {
+        const body = await request.json<any>();
+        const entry: ProvenanceEntry = {
+          id: body.id || `prov_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          spaceId: body.spaceId || body.space_id,
+          projectId: body.projectId || body.project_id,
+          actionId: body.actionId || body.action_id || `act_${Date.now()}`,
+          humanUserId: body.humanUserId || body.human_user_id || "",
+          jwtSessionId: body.jwtSessionId || body.jwt_session_id || "",
+          assistantId: body.assistantId || body.assistant_id || "naelao-agent",
+          agentExecutorId: body.agentExecutorId || body.agent_executor_id || "naelao-agent",
+          actionType: body.actionType || body.action_type || "UNKNOWN",
+          payloadJson: body.payloadJson ?? body.payload_json ?? body.payload ?? {},
+          gitCommitSha: body.gitCommitSha || body.git_commit_sha,
+          gatekeeperTokenHash: body.gatekeeperTokenHash || body.gatekeeper_token_hash,
+        };
+        await this.recordProvenanceEntry(entry);
+        return Response.json({ ok: true, id: entry.id }, { status: 201 });
+      }
+
+      const provListMatch = url.pathname.match(/^(?:\/internal)?\/provenance$/);
+      if (method === "GET" && provListMatch) {
+        const spaceId = url.searchParams.get("space_id");
+        const projectId = url.searchParams.get("project_id");
+        const actionId = url.searchParams.get("action_id");
+        const humanUserId = url.searchParams.get("human_user_id");
+
+        const clauses: string[] = [];
+        const args: any[] = [];
+        if (spaceId) { clauses.push("space_id = ?"); args.push(spaceId); }
+        if (projectId) { clauses.push("project_id = ?"); args.push(projectId); }
+        if (actionId) { clauses.push("action_id = ?"); args.push(actionId); }
+        if (humanUserId) { clauses.push("human_user_id = ?"); args.push(humanUserId); }
+
+        const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+        const rows = this.ctx.storage.sql.exec(
+          `SELECT * FROM provenance_ledger ${where} ORDER BY created_at DESC LIMIT 100`,
+          ...args
+        ).toArray();
+        return Response.json({ data: rows, count: rows.length });
+      }
+
+      const onCallMatch = url.pathname.match(/^\/projects\/([^/]+)\/on-call-lead$/);
+      if (onCallMatch?.[1]) {
+        if (method === "GET") {
+          const leadUserId = await this.getOnCallLead(onCallMatch[1]);
+          return Response.json({ project_id: onCallMatch[1], lead_user_id: leadUserId });
+        }
+        if (method === "POST" || method === "PUT") {
+          const body = await request.json<{ lead_user_id?: string; leadUserId?: string; space_id?: string; spaceId?: string }>();
+          const leadUserId = body.leadUserId || body.lead_user_id || "";
+          const spaceId = body.spaceId || body.space_id || this.spaceId;
+          await this.setOnCallLead(onCallMatch[1], spaceId, leadUserId);
+          return Response.json({ ok: true, project_id: onCallMatch[1], lead_user_id: leadUserId });
+        }
+      }
+
+      const dagCompleteMatch = url.pathname.match(/^\/projects\/([^/]+)\/dag-complete$/);
+      if (method === "GET" && dagCompleteMatch?.[1]) {
+        const isComplete = await this.checkProjectDagComplete(dagCompleteMatch[1]);
+        return Response.json({ project_id: dagCompleteMatch[1], complete: isComplete });
       }
 
       return Response.json(
@@ -6875,4 +7001,79 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       updatedAt: r.updated_at,
     };
   }
+
+  // ── Cryptographic Provenance Ledger & On-Call Routing (Phase 5 Chunk 05) ──
+  async recordProvenanceEntry(entry: ProvenanceEntry): Promise<void> {
+    const payloadString = JSON.stringify(entry.payloadJson);
+    const payloadHash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(payloadString))
+      .then((buf) => Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join(""));
+
+    this.ctx.storage.sql.exec(`
+      INSERT INTO provenance_ledger (
+        id, space_id, project_id, action_id, human_user_id, jwt_session_id,
+        assistant_id, agent_executor_id, action_type, action_payload_hash,
+        git_commit_sha, gatekeeper_token_hash
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+      entry.id,
+      entry.spaceId,
+      entry.projectId || null,
+      entry.actionId,
+      entry.humanUserId,
+      entry.jwtSessionId,
+      entry.assistantId,
+      entry.agentExecutorId,
+      entry.actionType,
+      payloadHash,
+      entry.gitCommitSha || null,
+      entry.gatekeeperTokenHash || null
+    );
+  }
+
+  async getOnCallLead(projectId: string): Promise<string | null> {
+    const row = this.ctx.storage.sql.exec(
+      "SELECT lead_user_id FROM project_on_call_leads WHERE project_id = ?",
+      projectId
+    ).toArray()[0] as { lead_user_id: string } | undefined;
+
+    return row?.lead_user_id || null;
+  }
+
+  async setOnCallLead(projectId: string, spaceId: string, leadUserId: string): Promise<void> {
+    this.ctx.storage.sql.exec(`
+      INSERT INTO project_on_call_leads (project_id, space_id, lead_user_id, updated_at)
+      VALUES (?, ?, ?, datetime('now'))
+      ON CONFLICT(project_id) DO UPDATE SET
+        lead_user_id = excluded.lead_user_id,
+        updated_at = datetime('now')
+    `, projectId, spaceId, leadUserId);
+  }
+
+  async checkProjectDagComplete(projectId: string): Promise<boolean> {
+    const stats = this.ctx.storage.sql.exec(`
+      SELECT 
+        COUNT(*) as total,
+        SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) as completed
+      FROM project_tasks WHERE project_id = ?
+    `, projectId).toArray()[0] as { total: number; completed: number } | undefined;
+
+    if (!stats || stats.total === 0) return false;
+    return stats.completed >= stats.total;
+  }
 }
+
+export interface ProvenanceEntry {
+  id: string;
+  spaceId: string;
+  projectId?: string;
+  actionId: string;
+  humanUserId: string;
+  jwtSessionId: string;
+  assistantId: string;
+  agentExecutorId: string;
+  actionType: string;
+  payloadJson: any;
+  gitCommitSha?: string;
+  gatekeeperTokenHash?: string;
+}
+
