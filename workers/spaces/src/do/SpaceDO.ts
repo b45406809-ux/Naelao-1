@@ -1286,6 +1286,21 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 46,
+    description: "space_compliance_policy table for vertical model whitelisting and air-gapped locks",
+    up: `
+      CREATE TABLE IF NOT EXISTS space_compliance_policy (
+        id TEXT PRIMARY KEY DEFAULT 'current',
+        mode TEXT NOT NULL DEFAULT 'all_allowed' CHECK (mode IN ('whitelist_only', 'all_allowed')),
+        allowed_model_ids_json TEXT NOT NULL DEFAULT '[]',
+        default_model_id TEXT NOT NULL DEFAULT '@cf/meta/llama-3.3-70b-instruct',
+        locked_by_compliance INTEGER NOT NULL DEFAULT 0,
+        air_gapped_only INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -1572,6 +1587,19 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         );
       `);
     } catch { /* tables may already exist */ }
+    try {
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS space_compliance_policy (
+          id TEXT PRIMARY KEY DEFAULT 'current',
+          mode TEXT NOT NULL DEFAULT 'all_allowed' CHECK (mode IN ('whitelist_only', 'all_allowed')),
+          allowed_model_ids_json TEXT NOT NULL DEFAULT '[]',
+          default_model_id TEXT NOT NULL DEFAULT '@cf/meta/llama-3.3-70b-instruct',
+          locked_by_compliance INTEGER NOT NULL DEFAULT 0,
+          air_gapped_only INTEGER NOT NULL DEFAULT 0,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+      `);
+    } catch { /* table may already exist */ }
     this.initialized = true;
 
   }
@@ -2439,6 +2467,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "GET" && dagCompleteMatch?.[1]) {
         const isComplete = await this.checkProjectDagComplete(dagCompleteMatch[1]);
         return Response.json({ project_id: dagCompleteMatch[1], complete: isComplete });
+      }
+
+      // ── Vertical Model Curation & Air-Gapped Engine (Phase 5 Chunk 06) ────────
+      if ((url.pathname === "/compliance-policy" || url.pathname.endsWith("/compliance-policy")) && method === "GET") {
+        return Response.json(this.getCompliancePolicy());
+      }
+      if ((url.pathname === "/compliance-policy" || url.pathname.endsWith("/compliance-policy")) && (method === "PUT" || method === "PATCH" || method === "POST")) {
+        return this.handleUpdateCompliancePolicy(request);
       }
 
       return Response.json(
@@ -7060,6 +7096,104 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (!stats || stats.total === 0) return false;
     return stats.completed >= stats.total;
   }
+
+  // ── Vertical Model Curation & Air-Gapped Engine Compliance Methods (Phase 5 Chunk 06) ──
+  public getCompliancePolicy(): VerticalModelPolicy {
+    const rows = this.ctx.storage.sql.exec(
+      "SELECT * FROM space_compliance_policy WHERE id = 'current'"
+    ).toArray() as any[];
+
+    const row = rows[0];
+    if (!row) {
+      return {
+        mode: "all_allowed",
+        allowedModelIds: [],
+        defaultModelId: "@cf/meta/llama-3.3-70b-instruct",
+        lockedByCompliancePolicy: false,
+        airGappedOnly: false,
+      };
+    }
+
+    return {
+      mode: (row.mode as "whitelist_only" | "all_allowed") || "all_allowed",
+      allowedModelIds: safeJsonParseArr(row.allowed_model_ids_json) as string[],
+      defaultModelId: row.default_model_id || "@cf/meta/llama-3.3-70b-instruct",
+      lockedByCompliancePolicy: Boolean(row.locked_by_compliance),
+      airGappedOnly: Boolean(row.air_gapped_only),
+    };
+  }
+
+  public updateCompliancePolicy(policy: Partial<VerticalModelPolicy>): VerticalModelPolicy {
+    const current = this.getCompliancePolicy();
+    const mode = policy.mode ?? current.mode;
+    const allowedModelIds = policy.allowedModelIds ?? current.allowedModelIds;
+    const defaultModelId = policy.defaultModelId ?? current.defaultModelId;
+    const lockedByCompliance = policy.lockedByCompliancePolicy !== undefined
+      ? policy.lockedByCompliancePolicy
+      : current.lockedByCompliancePolicy;
+    const airGappedOnly = policy.airGappedOnly !== undefined
+      ? policy.airGappedOnly
+      : current.airGappedOnly;
+
+    this.ctx.storage.sql.exec(`
+      INSERT INTO space_compliance_policy (id, mode, allowed_model_ids_json, default_model_id, locked_by_compliance, air_gapped_only, updated_at)
+      VALUES ('current', ?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(id) DO UPDATE SET
+        mode = excluded.mode,
+        allowed_model_ids_json = excluded.allowed_model_ids_json,
+        default_model_id = excluded.default_model_id,
+        locked_by_compliance = excluded.locked_by_compliance,
+        air_gapped_only = excluded.air_gapped_only,
+        updated_at = datetime('now')
+    `,
+      mode,
+      JSON.stringify(allowedModelIds),
+      defaultModelId,
+      lockedByCompliance ? 1 : 0,
+      airGappedOnly ? 1 : 0
+    );
+
+    return this.getCompliancePolicy();
+  }
+
+  private async handleUpdateCompliancePolicy(request: Request): Promise<Response> {
+    const callerRole = request.headers.get("x-naelao-role");
+    const callerUserId = request.headers.get("x-naelao-user-id");
+    if (callerUserId && callerRole !== "internal") {
+      const isOwnerOrAdmin = this.isSpaceOwnerOrAdmin(callerUserId);
+      if (!isOwnerOrAdmin) {
+        return Response.json(
+          { error_code: "forbidden", message: "Only space owners or admins can modify compliance policy" },
+          { status: 403 }
+        );
+      }
+    }
+
+    const body = await request.json<Partial<VerticalModelPolicy> & {
+      allowed_model_ids?: string[];
+      default_model_id?: string;
+      locked_by_compliance?: boolean;
+      air_gapped_only?: boolean;
+    }>().catch(() => ({}) as any);
+
+    const updated = this.updateCompliancePolicy({
+      mode: body.mode,
+      allowedModelIds: body.allowedModelIds ?? body.allowed_model_ids,
+      defaultModelId: body.defaultModelId ?? body.default_model_id,
+      lockedByCompliancePolicy: body.lockedByCompliancePolicy ?? body.locked_by_compliance,
+      airGappedOnly: body.airGappedOnly ?? body.air_gapped_only,
+    });
+
+    return Response.json(updated);
+  }
+}
+
+export interface VerticalModelPolicy {
+  mode: "whitelist_only" | "all_allowed";
+  allowedModelIds: string[];
+  defaultModelId: string;
+  lockedByCompliancePolicy: boolean;
+  airGappedOnly: boolean;
 }
 
 export interface ProvenanceEntry {
