@@ -11,6 +11,14 @@ import { chunkText, embedText, embedBatch, bm25Score, reciprocalRankFusion } fro
 import { checkSsrf } from "@naelao/security";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { moderateInput } from "@naelao/llm-gateway";
+import { 
+  ROLE_HIERARCHY_RANK, 
+  MemberRole, 
+  ChunkVectorMetadata, 
+  SanitizedRetrievalResult 
+} from "@naelao/types";
+import { wrapInUntrustedEnvelope } from "@naelao/security";
+
 
 // ── Environment ───────────────────────────────────────────────────────────────
 
@@ -244,7 +252,13 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     throw badRequest(`content_type must be one of: text, url, code, pdf`);
   }
 
+  const minRole = (body as any).minRole || "member";
+  const minRoleRank = ROLE_HIERARCHY_RANK[minRole as MemberRole] ?? 2;
+  const roleBitmask = (body as any).roleBitmask ?? 0x0001;
+  const visibility = (body as any).visibility || "public";
+
   // Enforce 1MB content limit
+
   const MAX_CONTENT_CHARS = 1_048_576;
   if (body.content.length > MAX_CONTENT_CHARS) {
     throw badRequest(`content exceeds maximum size of 1MB (${MAX_CONTENT_CHARS} chars)`);
@@ -345,21 +359,26 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
       // Prepare Vectorize vector. project_id always set (never omitted) — Vectorize's flat
       // $eq filter can't distinguish "field absent" from "field present," so the space-wide
       // sentinel (empty string) makes filtering exact both ways (see SPACE_WIDE_PROJECT_SENTINEL).
+      const vectorMetadata: ChunkVectorMetadata = {
+        space_id: spaceId,
+        project_id: projectId ?? SPACE_WIDE_PROJECT_SENTINEL,
+        min_role_rank: minRoleRank,
+        role_bitmask: roleBitmask,
+        doc_id: docId,
+        title: body.title.trim(),
+        text: chunk,
+        visibility,
+      };
+
       vectorUpserts.push({
         id: `${docId}_chunk_${i}`,
         values: embedResult.embedding,
-        metadata: {
-          space_id: spaceId,
-          project_id: projectId ?? SPACE_WIDE_PROJECT_SENTINEL,
-          doc_id: docId,
-          chunk_index: i,
-          title: body.title.trim(),
-          content_preview: chunk.slice(0, 200),
-        },
+        metadata: vectorMetadata as unknown as Record<string, VectorizeMetadata>,
       });
     }
 
     // Upsert vectors in batches (Vectorize has limits per upsert call)
+
     const VECTOR_BATCH_SIZE = 100;
     for (let i = 0; i < vectorUpserts.length; i += VECTOR_BATCH_SIZE) {
       const batch = vectorUpserts.slice(i, i + VECTOR_BATCH_SIZE);
@@ -639,6 +658,8 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
   // AutoRAG isn't configured on this worker, even if the caller asked for it — never a hard
   // error for an unconfigured optional integration.
   const useAutoRag = url.searchParams.get("retrieval_mode") === "autorag" && Boolean(c.env.AUTORAG_KB_INSTANCE);
+  const userRoleQuery = (url.searchParams.get("user_role") ?? "viewer") as MemberRole;
+  const userRank = ROLE_HIERARCHY_RANK[userRoleQuery] ?? 1;
 
   if (!query || query.trim().length === 0) {
     throw badRequest("q parameter is required");
@@ -647,8 +668,9 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
   // Ownership already verified by the "/spaces/:spaceId/kb/*" gate above (F8) — the cache key
   // still folds tenantId (and now project_id) in as defense-in-depth so a future refactor of
   // that gate can't reintroduce a cross-tenant/cross-project cache-serving path.
-  const cacheHash = await sha256Hex(tenantId + ":" + query + spaceId + ":" + (projectId ?? "") + ":" + (useAutoRag ? "autorag" : "legacy"));
+  const cacheHash = await sha256Hex(tenantId + ":" + query + spaceId + ":" + (projectId ?? "") + ":" + userRoleQuery + ":" + (useAutoRag ? "autorag" : "legacy"));
   const cacheKey = `kbcache:${cacheHash}`;
+
 
   const cached = await c.env.KB_CACHE.get(cacheKey);
   if (cached) {
@@ -701,11 +723,16 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
 
   const denseResponse = await c.env.KB_VECTORS.query(queryEmbed.embedding, {
     topK: topK * 2,
-    filter: { space_id: { $eq: spaceId }, project_id: { $eq: projectId ?? SPACE_WIDE_PROJECT_SENTINEL } },
+    filter: { 
+      space_id: { $eq: spaceId }, 
+      project_id: { $eq: projectId ?? SPACE_WIDE_PROJECT_SENTINEL },
+      min_role_rank: { $lte: userRank }
+    },
     returnMetadata: "indexed",
   });
 
   const denseMatches = denseResponse.matches ?? [];
+
 
   // Build dense results for RRF (id = vector id like "{docId}_chunk_{i}")
   const denseForRrf = denseMatches.map(m => ({ id: m.id, score: m.score ?? 0 }));
@@ -759,8 +786,11 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
     const chunkIndex = parts.length === 2 ? parseInt(parts[1] ?? "0", 10) : 0;
 
     const rawContent = chunkInfo?.content ?? "";
-    // Wrap content in XML tags for prompt injection protection
-    const wrappedContent = `<kb_content>${rawContent}</kb_content>`;
+    const meta = (denseMatches.find(m => m.id === item.id)?.metadata as unknown) as ChunkVectorMetadata | undefined;
+    const minRank = meta?.min_role_rank;
+
+    // Wrap content in XML semantic boundary envelope for prompt injection protection & ACL visibility
+    const wrappedContent = wrapInUntrustedEnvelope(item.id, rawContent, { minRank, docId });
 
     return {
       chunk_id: item.id,
@@ -772,6 +802,7 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
       sparse_score: sparseScoreMap.get(item.id) ?? 0,
     };
   });
+
 
   // ── Cache results (G-BE02: safeKvPut validates size before write) ────────
   //
