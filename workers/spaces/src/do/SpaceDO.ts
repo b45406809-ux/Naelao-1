@@ -1233,6 +1233,21 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     applyMigrations(this.ctx.storage as never, MIGRATIONS);
     try {
       this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS project_connector_bindings (
+          project_id TEXT NOT NULL,
+          entity_id TEXT NOT NULL,
+          logical_alias TEXT NOT NULL,
+          mapped_connection_id TEXT NOT NULL,
+          connection_type TEXT NOT NULL,
+          custom_config_json TEXT DEFAULT '{}',
+          updated_by TEXT NOT NULL,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          PRIMARY KEY (project_id, entity_id, logical_alias)
+        );
+      `);
+    } catch { /* table may already exist */ }
+    try {
+      this.ctx.storage.sql.exec(`
         CREATE TABLE IF NOT EXISTS project_members (
           project_id TEXT NOT NULL,
           user_id TEXT NOT NULL,
@@ -1763,6 +1778,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // GET /cross-space-check?user_id=&requesting_space_id=&target_space_id=&grant_type=
       if (method === "GET" && url.pathname === "/cross-space-check") {
         return this.checkCrossSpace(url.searchParams);
+      }
+
+      // ── Project Connector Bindings (Logical Connector Alias Matrix) ────────────
+      const bindingMatch = url.pathname.match(/^\/projects\/([^/]+)\/bindings\/([^/]+)\/([^/]+)$/);
+      if (method === "GET" && bindingMatch?.[1] && bindingMatch?.[2] && bindingMatch?.[3]) {
+        return this.getConnectorBindingResponse(bindingMatch[1], bindingMatch[2], decodeURIComponent(bindingMatch[3]));
+      }
+      if (method === "PUT" && bindingMatch?.[1] && bindingMatch?.[2] && bindingMatch?.[3]) {
+        return this.setConnectorBindingRequest(bindingMatch[1], bindingMatch[2], decodeURIComponent(bindingMatch[3]), request);
       }
 
       // ── project_anchored_workflows endpoints ──────────────────────────────────
@@ -5516,6 +5540,82 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
   }
 
+  async setConnectorBinding(params: {
+    projectId: string;
+    entityId: string;
+    logicalAlias: string;
+    mappedConnectionId: string;
+    connectionType: string;
+    customConfigJson?: string;
+    updatedBy: string;
+  }) {
+    this.ctx.storage.sql.exec(`
+      INSERT INTO project_connector_bindings 
+      (project_id, entity_id, logical_alias, mapped_connection_id, connection_type, custom_config_json, updated_by, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(project_id, entity_id, logical_alias) DO UPDATE SET
+        mapped_connection_id = excluded.mapped_connection_id,
+        connection_type = excluded.connection_type,
+        custom_config_json = excluded.custom_config_json,
+        updated_by = excluded.updated_by,
+        updated_at = datetime('now')
+    `, params.projectId, params.entityId, params.logicalAlias, params.mappedConnectionId, params.connectionType, params.customConfigJson ?? "{}", params.updatedBy);
+    return { ok: true };
+  }
+
+  async getConnectorBinding(projectId: string, entityId: string, logicalAlias: string): Promise<any | null> {
+    const row = this.ctx.storage.sql.exec(`
+      SELECT * FROM project_connector_bindings 
+      WHERE project_id = ? AND entity_id = ? AND logical_alias = ?
+    `, projectId, entityId, logicalAlias).one();
+    
+    if (!row) return null;
+    return {
+      projectId: row.project_id,
+      entityId: row.entity_id,
+      logicalAlias: row.logical_alias,
+      mappedConnectionId: row.mapped_connection_id,
+      connectionType: row.connection_type,
+      customConfigJson: row.custom_config_json,
+      updatedBy: row.updated_by,
+      updatedAt: row.updated_at
+    };
+  }
+
+  private async getConnectorBindingResponse(projectId: string, entityId: string, logicalAlias: string): Promise<Response> {
+    const binding = await this.getConnectorBinding(projectId, entityId, logicalAlias);
+    if (!binding) {
+      return Response.json({ error_code: "not_found", message: "Connector binding not found" }, { status: 404 });
+    }
+    return Response.json(binding);
+  }
+
+  private async setConnectorBindingRequest(projectId: string, entityId: string, logicalAlias: string, request: Request): Promise<Response> {
+    const body = await request.json<{
+      mapped_connection_id: string;
+      connection_type: string;
+      custom_config_json?: string;
+      updated_by?: string;
+    }>().catch(() => ({}) as Record<string, any>);
+
+    if (!body.mapped_connection_id || !body.connection_type) {
+      return Response.json({ error_code: "bad_request", message: "mapped_connection_id and connection_type are required" }, { status: 400 });
+    }
+
+    const updatedBy = body.updated_by || request.headers.get("x-naelao-user-id") || "system";
+    await this.setConnectorBinding({
+      projectId,
+      entityId,
+      logicalAlias,
+      mappedConnectionId: body.mapped_connection_id,
+      connectionType: body.connection_type,
+      customConfigJson: body.custom_config_json ?? "{}",
+      updatedBy,
+    });
+
+    return Response.json({ ok: true, project_id: projectId, entity_id: entityId, logical_alias: logicalAlias });
+  }
+
   // ── Project-Anchored Workflows (Chunk 04) ──────────────────────────────────
   public async registerProjectWorkflow(request: Request, explicitProjectId?: string): Promise<Response> {
     const body = await request.json<{
@@ -5625,4 +5725,44 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     );
     return Response.json({ data: rows, count: rows.length });
   }
+
+      {
+        version: 41,
+        description: "project_anchored_workflows table",
+        up: `
+          CREATE TABLE IF NOT EXISTS project_anchored_workflows (
+            id TEXT PRIMARY KEY,
+            space_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            workflow_class TEXT NOT NULL CHECK (workflow_class IN ('COMPANY_AUTOMATION', 'VERTICAL_EXTENSION', 'EPHEMERAL_TASK')),
+            title TEXT NOT NULL,
+            script_path TEXT NOT NULL,
+            trigger_type TEXT NOT NULL,
+            trigger_spec TEXT,
+            status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'PAUSED', 'DISABLED')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+          );
+          CREATE INDEX IF NOT EXISTS idx_paw_proj ON project_anchored_workflows(project_id, workflow_class);
+        `,
+      },
+      {
+        version: 42,
+        description: "project_connector_bindings table for logical connector alias matrix",
+        up: `
+          CREATE TABLE IF NOT EXISTS project_connector_bindings (
+            project_id TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            logical_alias TEXT NOT NULL,
+            mapped_connection_id TEXT NOT NULL,
+            connection_type TEXT NOT NULL,
+            custom_config_json TEXT DEFAULT '{}',
+            updated_by TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (project_id, entity_id, logical_alias)
+          );
+        `,
+      },
+    ];
 }

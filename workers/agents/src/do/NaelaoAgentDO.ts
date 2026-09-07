@@ -66,6 +66,9 @@ import {
   MAX_CONCURRENT_SUB_AGENT_TREES,
 } from "../script-engine/sub-agent-output.js";
 
+import { buildCliSdkContext } from "../script-engine/tool-surface.js";
+import { composeSystemPrompt } from "../script-engine/profiles.js";
+
 // ── G-AZ01: Agent FSM states and valid transitions ───────────────────────────
 
 type AgentFsmState =
@@ -1376,6 +1379,30 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       )
     `);
 
+    // JIT-synthesized custom virtual CLIs
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS virtual_cli_commands (
+        id TEXT PRIMARY KEY,
+        space_id TEXT NOT NULL,
+        project_id TEXT,                   -- NULL for space-wide CLIs, TEXT for project-bound
+        command_name TEXT NOT NULL,        -- e.g. "shopify", "linear", "hubspot"
+        description TEXT NOT NULL,
+        subcommands_manifest_json TEXT,    -- e.g. { "products list": "List inventory" }
+        handler_code TEXT NOT NULL,        -- The raw TypeScript handler
+        version INTEGER NOT NULL DEFAULT 1,
+        created_by_agent_id TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+
+    try {
+      this.ctx.storage.sql.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_virtual_cli_cmd 
+        ON virtual_cli_commands(space_id, project_id, command_name);
+      `);
+    } catch { /* exists */ }
+
     this.virtualShell = new VirtualPosixShell(this.getVirtualFsStorage());
     this.artifactsGit = new ArtifactsGitService(this.env);
 
@@ -1407,6 +1434,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // POST /script/run — script-first loop (authoritative agent model)
       if (method === "POST" && url.pathname === "/script/run") {
         return this.handleScriptRun(request);
+      }
+
+      // POST /delegated/run — delegated task run with cryptographic verification
+      if (method === "POST" && url.pathname === "/delegated/run") {
+        return this.handleDelegatedRun(request);
       }
 
       // POST /script/resume — continue a run that suspended at a HITL gate, now that a human
@@ -1771,18 +1803,48 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   // The authoritative script-first agent model (spec appendix ~6672k). Loads the agent's
   // 4-file config from R2, then runs OBSERVE→FINGERPRINT→FIND→GATE→EXECUTE→VERIFY→DISTILL.
 
-  private buildScriptEngineEnv(spaceId: string, agentId: string, tenantId: string, userId?: string, projectId?: string, sessionId?: string): ScriptEngineEnv | null {
+  buildScriptEngineEnv(
+    spaceIdOrOptions: string | { spaceId?: string; agentId?: string; tenantId?: string; userId?: string; actingUserId?: string; actingRoleRank?: number; projectId?: string; sessionId?: string },
+    agentId?: string,
+    tenantId?: string,
+    userId?: string,
+    projectId?: string,
+    sessionId?: string
+  ): ScriptEngineEnv | null {
+    let sId: string;
+    let aId: string;
+    let tId: string;
+    let uId: string | undefined;
+    let pId: string | undefined;
+    let sessId: string | undefined;
+
+    if (typeof spaceIdOrOptions === "object" && spaceIdOrOptions !== null) {
+      sId = spaceIdOrOptions.spaceId ?? "";
+      aId = spaceIdOrOptions.agentId ?? "naelao-agent";
+      tId = spaceIdOrOptions.tenantId ?? "";
+      uId = spaceIdOrOptions.actingUserId ?? spaceIdOrOptions.userId;
+      pId = spaceIdOrOptions.projectId;
+      sessId = spaceIdOrOptions.sessionId;
+    } else {
+      sId = spaceIdOrOptions;
+      aId = agentId ?? "naelao-agent";
+      tId = tenantId ?? "";
+      uId = userId;
+      pId = projectId;
+      sessId = sessionId;
+    }
+
     if (!this.env.SCRIPTS_R2) return null;
     const env: ScriptEngineEnv = {
       scriptsBucket: this.env.SCRIPTS_R2,
-      spaceId,
-      agentId,
-      tenantId,
+      spaceId: sId,
+      agentId: aId,
+      tenantId: tId,
       platformSecret: this.env.PLATFORM_SECRET,
-      ...(userId ? { userId } : {}),
+      ...(uId ? { userId: uId } : {}),
       // Project-scoped workspace (every thread's agent in a project shares one R2 filesystem)
       // vs. the Space Assistant's space-wide workspace — see workspacePrefix() in types.ts.
-      ...(projectId ? { projectId } : {}),
+      ...(pId ? { projectId: pId } : {}),
     };
     if (this.env.SCRIPTS_VECTORIZE) {
       env.vectorIndex = this.env.SCRIPTS_VECTORIZE as unknown as NonNullable<ScriptEngineEnv["vectorIndex"]>;
@@ -1941,8 +2003,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     });
     env.codeRunner = {
       run: async (params) => {
+        const runCtx = params.ctx || {};
+        runCtx.storage = runCtx.storage || this.ctx.storage;
+        runCtx.env = runCtx.env || { spaceId, projectId, agentId };
+        runCtx.cli = runCtx.cli || buildCliSdkContext(this.ctx.storage, spaceId, projectId, agentId);
         return baseCodeRunner.run({
           ...params,
+          ctx: runCtx,
           sessionState: params.sessionState || sessionState,
         });
       },
@@ -3426,6 +3493,22 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
 
     const tools = new ScriptToolSurface(engineEnv, config.scripts.prebuilt);
+
+    // 1. Generate the Zero-Turn Catalog
+    const zeroTurnCatalog = await ScriptToolSurface.generateZeroTurnCatalog(
+      this.ctx.storage,
+      this.getVirtualFsStorage(),
+      spaceId,
+      projectId
+    );
+
+    // 2. Compose the final system prompt
+    const enrichedSystemPrompt = composeSystemPrompt(
+      config.systemPrompt || "",
+      body.businessContext ? JSON.stringify(body.businessContext, null, 2) : "",
+      zeroTurnCatalog
+    );
+
     // A sub-agent spawned mid-task inherits the SAME project scoping as its parent — it's
     // conceptually a subthread of the same project, not a different workspace. Built after
     // `tools` (§A1.17 Phase J's workflow.create/run ops need it to author/re-run stored
@@ -3453,7 +3536,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ...(reasoningRequest ? { reasoning: reasoningRequest } : {}),
       // The agent's OWN identity and instructions. Loaded from R2 on every run since the script
       // engine was built, and never once handed to the model — see ReasonerDeps.agentPrompt.
-      ...(config.systemPrompt ? { agentPrompt: config.systemPrompt } : {}),
+      ...(enrichedSystemPrompt ? { agentPrompt: enrichedSystemPrompt } : {}),
       // WHICH business this run is for. Resolved by index.ts from the space row it already
       // fetches; omitted entirely when the caller never resolved one.
       ...(body.businessContext ? { businessContext: body.businessContext } : {}),
@@ -5501,6 +5584,22 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // Same structural-config-first, agents.md-parse-fallback precedence as handleScriptRun above.
     const requiresApprovalFor = config.requiresApprovalFor ?? [...parseRequiresApprovalFor(config.agentsMd)];
     const tools = new ScriptToolSurface(engineEnv, config.scripts.prebuilt);
+
+    // 1. Generate the Zero-Turn Catalog
+    const zeroTurnCatalog = await ScriptToolSurface.generateZeroTurnCatalog(
+      this.ctx.storage,
+      this.getVirtualFsStorage(),
+      spaceId,
+      undefined
+    );
+
+    // 2. Compose the final system prompt
+    const enrichedSystemPrompt = composeSystemPrompt(
+      config.systemPrompt || "",
+      body.businessContext ? JSON.stringify(body.businessContext, null, 2) : "",
+      zeroTurnCatalog
+    );
+
     const model = body.model ?? DEFAULT_WORKING_MODEL;
     // Step 28: same BYOK override as the interactive path — a customer messaging a business on a
     // channel is answered on the business's own Gemini/Groq key when it has one.
@@ -5513,7 +5612,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       fallbacks: this.resolveFailoverChain(model, body.apiKey ?? ""),
       // Same gap as the interactive path: a customer messaging a business on Slack/WhatsApp was
       // being answered by a model that had never been told what business it was answering for.
-      ...(config.systemPrompt ? { agentPrompt: config.systemPrompt } : {}),
+      ...(enrichedSystemPrompt ? { agentPrompt: enrichedSystemPrompt } : {}),
       // WHICH business this run is for. Resolved by index.ts from the space row it already
       // fetches; omitted entirely when the caller never resolved one.
       ...(body.businessContext ? { businessContext: body.businessContext } : {}),
@@ -6918,6 +7017,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       this.artifactsGit
     );
 
+    // Decorate with JIT and CLI helpers
+    ctx.storage = this.ctx.storage;
+    ctx.env = ctx.env || { spaceId: options.spaceId, projectId: options.projectId, agentId: "naelao-agent" };
+    ctx.cli = buildCliSdkContext(this.ctx.storage, options.spaceId, options.projectId, "naelao-agent");
+
     const codeRunner = buildCodeRunner({
       loader: this.env.LOADER,
       browserWorker: this.env.BROWSER_WORKER,
@@ -6964,5 +7068,121 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     };
   }
 
+  get agentId(): string {
+    return "naelao-agent";
+  }
+
+  getAgentMinimumRoleRank(agentId?: string): number {
+    const id = (agentId || this.agentId || "").toLowerCase();
+    if (id.includes("dev") || id.includes("code") || id.includes("ops") || id.includes("admin")) {
+      return 3;
+    }
+    return 2;
+  }
+
+  async handleDelegatedRun(request: Request): Promise<Response> {
+    const body = await request.json() as { 
+      taskDescription: string; 
+      delegationToken: string;
+      spaceId?: string;
+      tenantId?: string;
+      sessionId?: string;
+    };
+
+    // 1. Verify the Delegation Token
+    const verifiedPayload = await this.verifyTaskToken(body.delegationToken, this.env.PLATFORM_SECRET);
+    
+    if (!verifiedPayload) {
+      return new Response(JSON.stringify({ error: "Invalid or expired delegation token. Potential Privilege Escalation blocked." }), { status: 403 });
+    }
+
+    // 2. Validate Originating Human Role against Agent's Minimum Required Rank
+    // E.g., DevBot requires Rank 3 (Editor). If Charlie (Rank 1) initiated, block it!
+    const requiredRank = this.getAgentMinimumRoleRank(); // e.g., 3
+    
+    if (verifiedPayload.initiatingRoleRank < requiredRank) {
+      console.warn(`🚨 Trojan Delegation Blocked: User ${verifiedPayload.initiatingUserId} attempted to use ${this.agentId} to bypass RBAC.`);
+      return new Response(JSON.stringify({ 
+        error: `Delegation blocked: Initiating user lacks clearance (Requires Rank ${requiredRank}, got Rank ${verifiedPayload.initiatingRoleRank}).` 
+      }), { status: 403 });
+    }
+
+    // 3. Mount the environment using the INITIATING human's identity, NOT the delegating bot's identity
+    const safeEnv = this.buildScriptEngineEnv({
+      actingUserId: verifiedPayload.initiatingUserId,
+      actingRoleRank: verifiedPayload.initiatingRoleRank,
+      projectId: verifiedPayload.projectId,
+      spaceId: body.spaceId,
+      tenantId: body.tenantId,
+      agentId: verifiedPayload.targetRole || this.agentId,
+      sessionId: body.sessionId,
+    });
+
+    // 4. Proceed with Execution
+    return await this.executeScriptRun(body.taskDescription, safeEnv, {
+      sessionId: body.sessionId,
+    });
+  }
+
+  async executeScriptRun(taskDescription: string, env: ScriptEngineEnv | null, options: Record<string, unknown> = {}): Promise<Response> {
+    const spaceId = env?.spaceId ?? "";
+    const agentId = env?.agentId ?? this.agentId;
+    const tenantId = env?.tenantId ?? "";
+    const sessionId = (options.sessionId as string) ?? `delegated-${Date.now()}`;
+
+    const scriptRunRequest = new Request("http://agent-do/script/run", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-space-id": spaceId,
+        "x-naelao-tenant-id": tenantId,
+        ...(env?.userId ? { "x-naelao-user-id": env.userId } : {}),
+      },
+      body: JSON.stringify({
+        goal: taskDescription,
+        spaceId,
+        agentId,
+        tenantId,
+        sessionId,
+        userId: env?.userId,
+        projectId: env?.projectId,
+        ...options,
+      }),
+    });
+    return this.handleScriptRun(scriptRunRequest);
+  }
+
+  async verifyTaskToken(token: string, secret: string): Promise<any | null> {
+    try {
+      const [payloadB64, sigB64] = token.split(".");
+      const encoder = new TextEncoder();
+      
+      const keyMaterial = await crypto.subtle.importKey(
+        "raw",
+        encoder.encode(secret),
+        { name: "HMAC", hash: "SHA-256" },
+        false,
+        ["verify"]
+      );
+
+      const signatureBytes = Uint8Array.from(atob(sigB64.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+      
+      const isValid = await crypto.subtle.verify("HMAC", keyMaterial, signatureBytes, encoder.encode(payloadB64));
+      
+      if (!isValid) return null;
+
+      const payload = JSON.parse(atob(payloadB64));
+      if (Math.floor(Date.now() / 1000) > payload.exp) return null; // Expired
+
+      return payload;
+    } catch {
+      return null;
+    }
+  }
+
   // §A1.17 Phase HX1 — persist a script-native run's structured trace (runScriptLoop's
+
+    // Execution ladder Tiers 2-5 (code-runner.ts) — degrades tier-by-tier when a binding
+    // LOADER / BROWSER_WORKER / TOOL_SANDBOX) is absent; Tier 1 (R2) never needs this.
+    const sessionState = this.getShellSessionState(sessId);
 }

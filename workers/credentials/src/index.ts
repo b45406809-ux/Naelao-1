@@ -15,7 +15,10 @@
 // See resolveCredential() below and infra/migrations/0040_space_credentials.sql +
 // infra/migrations/0069_credential_sharing_and_product_tier.sql.
 import { badRequest, errorResponse, forbidden, mintInternalToken, notFound, requestId, requireInternalHmac } from "@naelao/http";
+import { VaultCredential, RunResolutionContext } from "@naelao/types";
 import { Hono } from "hono";
+import { scrubOutboundPayload } from "../../../packages/security/src/dlp";
+import { verifyEphemeralGrant } from "../../../packages/security/src/crypto";
 
 // ── Env ───────────────────────────────────────────────────────────────────────
 
@@ -256,6 +259,66 @@ function isPrivileged(role: string): boolean {
 }
 
 // ── Credential hierarchy: row shape + resolution ─────────────────────────────
+
+/**
+ * Resolves the correct credential row based on the 3-Tier strict hierarchy.
+ * WARNING: Never return the decrypted value directly to untrusted scripts!
+ */
+export async function resolveCredentialForRun(
+  db: D1Database,
+  spaceId: string,
+  credentialName: string,
+  runContext: RunResolutionContext
+): Promise<VaultCredential> {
+  // Rule 1: Background Crons / System Sweeps
+  // Crons have no acting user. They CANNOT access USER_PERSONAL credentials.
+  if (runContext.isSystemCron && !runContext.actingUserId) {
+    const cred = await fetchCredential(db, spaceId, credentialName, "SPACE_SHARED");
+    if (!cred) throw new Error(`Missing SPACE_SHARED credential: ${credentialName}`);
+    return cred;
+  }
+
+  // Rule 2: User-Personal Match
+  // If an acting user is present, check if THEY own a personal credential first.
+  if (runContext.actingUserId) {
+    const personalCred = await fetchCredential(db, spaceId, credentialName, "USER_PERSONAL", runContext.actingUserId);
+    if (personalCred) return personalCred;
+  }
+
+  // Rule 3: Project-Bound Match
+  if (runContext.projectId) {
+    const projectCred = await fetchCredential(db, spaceId, credentialName, "PROJECT_BOUND", undefined, runContext.projectId);
+    if (projectCred) return projectCred;
+  }
+
+  // Rule 4: Space-Shared Fallback
+  const sharedCred = await fetchCredential(db, spaceId, credentialName, "SPACE_SHARED");
+  if (sharedCred) return sharedCred;
+
+  throw new Error(`Credential not found or access denied: ${credentialName}`);
+}
+
+async function fetchCredential(
+  db: D1Database,
+  spaceId: string,
+  name: string,
+  scope: string,
+  ownerUserId?: string,
+  boundProjectId?: string
+): Promise<VaultCredential | null> {
+  let query = `SELECT * FROM space_credentials WHERE space_id = ? AND name = ? AND scope = ?`;
+  const params: any[] = [spaceId, name, scope];
+
+  if (ownerUserId) {
+    query += ` AND owner_user_id = ?`;
+    params.push(ownerUserId);
+  } else if (boundProjectId) {
+    query += ` AND bound_project_id = ?`;
+    params.push(boundProjectId);
+  }
+
+  return await db.prepare(query).bind(...params).first<VaultCredential>();
+}
 
 interface CredentialRow {
   id: string;
@@ -712,6 +775,213 @@ app.post("/v1/internal/spaces/:spaceId/credentials/:name/plaintext", async (c) =
 
   return c.json({ name: row.name, value, scope: row.scope, is_override: Boolean(row.is_override), resolved_tier: tier });
 });
+
+// Public domains that must be strictly audited for PII exfiltration.
+const PUBLIC_CONSUMER_DOMAINS = ["api.twitter.com", "discord.com/api", "graph.instagram.com"];
+
+/**
+ * Core outbound proxy method with Silent Auth Rot Recovery.
+ * Injects secrets at the edge and handles proactive OAuth refresh if a 401 occurs.
+ */
+export async function executeOutboundWithRefresh(
+  url: string,
+  opts: any,
+  credentialRecord: any,
+  env: any,
+  refreshOAuthTokenFn?: (provider: string, refreshToken: string, env: any) => Promise<{ accessToken: string; refreshToken?: string }>,
+  updateVaultCredentialFn?: (credentialId: string, newTokens: any, env: any) => Promise<void>
+): Promise<Response> {
+  const headers = new Headers(opts.headers || {});
+  headers.set("Authorization", `Bearer ${credentialRecord.accessToken || credentialRecord.value}`);
+
+  let response = await fetch(url, { ...opts, headers });
+
+  // 1. Silent Auth Rot Recovery
+  if (response.status === 401 && credentialRecord.refreshToken && refreshOAuthTokenFn && updateVaultCredentialFn) {
+    console.warn(`[Vault] 401 Unauthorized caught for ${credentialRecord.name}. Attempting proactive refresh...`);
+    
+    try {
+      const newTokens = await refreshOAuthTokenFn(credentialRecord.provider, credentialRecord.refreshToken, env);
+      await updateVaultCredentialFn(credentialRecord.id, newTokens, env);
+      
+      headers.set("Authorization", `Bearer ${newTokens.accessToken}`);
+      response = await fetch(url, { ...opts, headers });
+      
+      console.log(`[Vault] Successfully refreshed token and retried request for ${credentialRecord.name}.`);
+    } catch (refreshErr) {
+      console.error(`[Vault] Token refresh failed for ${credentialRecord.name}:`, refreshErr);
+    }
+  }
+
+  return response;
+}
+
+export async function proxyOutboundRequestWithAuth(
+  envOrUrl: any,
+  urlOrOpts: any,
+  optsOrCallerContext: any,
+  maybeCallerContext?: any
+) {
+  let env: CredentialsEnv;
+  let url: string;
+  let opts: { credentialName: string; method?: string; body?: any; headers?: Record<string, string>; refreshToken?: string; provider?: string };
+  let callerContext: { spaceId: string; tenantId: string; userId: string; role: string };
+
+  if (typeof envOrUrl === "string") {
+    url = envOrUrl;
+    opts = urlOrOpts;
+    callerContext = optsOrCallerContext;
+    env = (callerContext as any).env || (globalThis as any).MINIFLARE_ENV || {};
+  } else {
+    env = envOrUrl;
+    url = urlOrOpts;
+    opts = optsOrCallerContext;
+    callerContext = maybeCallerContext;
+  }
+
+  const targetUrl = new URL(url);
+  const isPublicDomain = PUBLIC_CONSUMER_DOMAINS.some(d => targetUrl.hostname.endsWith(d) || targetUrl.pathname.includes(d));
+
+  let finalBody = opts.body;
+
+  // 1. Egress DLP Scan for Public Connectors
+  if (isPublicDomain && opts.body) {
+    const stringifiedBody = typeof opts.body === "string" ? opts.body : JSON.stringify(opts.body);
+    const dlpResult = scrubOutboundPayload(stringifiedBody);
+
+    if (!dlpResult.isClean) {
+      throw new Error(
+        `403 Forbidden: Outbound payload blocked by DLP policy. Detected sensitive data: ${dlpResult.flaggedCategories.join(", ")}.`
+      );
+    }
+  }
+
+  // 2. Resolve Credential securely
+  const resolved = await resolveCredential(
+    env.PLATFORM_DB,
+    callerContext.spaceId,
+    callerContext.tenantId,
+    opts.credentialName,
+    callerContext.userId
+  );
+
+  if (!resolved || "notFoundReason" in resolved) {
+    throw new Error(`401 Unauthorized: Credential '${opts.credentialName}' not found or insufficient scope.`);
+  }
+
+  const { row } = resolved;
+  const rootHex = resolveRootKeyHex(env, row.key_version);
+  const decryptedValue = await decrypt(row.encrypted_value, row.iv, rootHex, row.space_id);
+
+  // 3. Execute via outbound with refresh proxy
+  const credentialRecord = {
+    id: row.id,
+    name: row.name,
+    accessToken: decryptedValue,
+    refreshToken: opts.refreshToken,
+    provider: opts.provider
+  };
+
+  return await executeOutboundWithRefresh(
+    targetUrl.toString(),
+    {
+      method: opts.method || "GET",
+      headers: opts.headers,
+      body: finalBody
+    },
+    credentialRecord,
+    env
+  );
+}
+
+export async function authorizeConnectorCall(
+  envOrConnectorId: any,
+  paramsOrBotConfig: any,
+  userIdOrCallingUserId?: any,
+  credentialNameOrEphemeralGrant?: any,
+  maybeConnectorDomain?: any,
+  maybePayload?: string
+): Promise<any> {
+  // Support both legacy signature and new signature
+  if (typeof envOrConnectorId === "string" && typeof paramsOrBotConfig === "object") {
+    // New signature: authorizeConnectorCall(requestedConnectorId, botConfig, callingUserId, ephemeralGrantToken)
+    const requestedConnectorId = envOrConnectorId;
+    const botConfig = paramsOrBotConfig;
+    const callingUserId = userIdOrCallingUserId;
+    const ephemeralGrantToken = credentialNameOrEphemeralGrant;
+
+    // Fetch connector or resolve
+    const resolved = await resolveCredential(
+      botConfig.db,
+      botConfig.spaceId,
+      botConfig.tenantId,
+      requestedConnectorId,
+      callingUserId
+    );
+
+    if (resolved && !("notFoundReason" in resolved)) {
+      const { row } = resolved;
+      const rootHex = resolveRootKeyHex(botConfig, row.key_version);
+      const decrypted = await decrypt(row.encrypted_value, row.iv, rootHex, row.space_id);
+      return { authorized: true, credential: decrypted };
+    }
+
+    if (ephemeralGrantToken) {
+      const grant = await verifyEphemeralGrant(ephemeralGrantToken, botConfig.PLATFORM_SECRET || botConfig.platformSecret);
+      if (grant.valid && grant.payload.crd === requestedConnectorId) {
+        const fallbackResolved = await resolveCredential(
+          botConfig.db,
+          botConfig.spaceId,
+          botConfig.tenantId,
+          requestedConnectorId,
+          grant.payload.sub
+        );
+        if (fallbackResolved && !("notFoundReason" in fallbackResolved)) {
+          const { row } = fallbackResolved;
+          const rootHex = resolveRootKeyHex(botConfig, row.key_version);
+          const decrypted = await decrypt(row.encrypted_value, row.iv, rootHex, row.space_id);
+          console.log(`[Vault] Ephemeral grant accepted for personal credential.`);
+          return { authorized: true, credential: decrypted };
+        }
+      }
+      throw new Error(`Invalid or expired ephemeral grant: ${grant.reason}`);
+    }
+
+    throw new Error(`Security Violation: User '${callingUserId}' cannot invoke actions using personal connection without an ephemeral grant.`);
+  }
+
+  // Legacy signature: authorizeConnectorCall(env, params)
+  const env = envOrConnectorId;
+  const params = paramsOrBotConfig;
+  const isPublicDomain = PUBLIC_CONSUMER_DOMAINS.some(d => params.connectorDomain?.endsWith(d));
+  
+  if (isPublicDomain && params.payload) {
+    const dlpResult = scrubOutboundPayload(params.payload);
+    if (!dlpResult.isClean) {
+      return {
+        authorized: false,
+        reason: `Outbound payload blocked by DLP policy. Detected sensitive data: ${dlpResult.flaggedCategories.join(", ")}.`
+      };
+    }
+  }
+
+  const resolved = await resolveCredential(
+    env.PLATFORM_DB,
+    params.spaceId,
+    params.tenantId,
+    params.credentialName,
+    params.userId
+  );
+
+  if (!resolved || "notFoundReason" in resolved) {
+    return {
+      authorized: false,
+      reason: `Credential '${params.credentialName}' not found or insufficient scope.`
+    };
+  }
+
+  return { authorized: true };
+}
 
 // ── Error handler ─────────────────────────────────────────────────────────────
 app.onError((err, c) => errorResponse(err, c.get("requestId") ?? "unknown"));

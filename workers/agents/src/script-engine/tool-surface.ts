@@ -24,7 +24,7 @@ import type {
   ScriptDomain,
   ExecutionTier,
 } from "./types.js";
-import { MINIMALIST_AGENT_TOOLS } from "./types.js";
+import { MINIMALIST_AGENT_TOOLS, getAvosInternalPath } from "./types.js";
 import { resolveExecutionTier } from "./execution-ladder.js";
 import { SkillLibrary } from "./skill-library.js";
 import { scriptFind, indexScriptEmbedding, removeScriptEmbedding } from "./script-find.js";
@@ -33,6 +33,7 @@ import { buildOperationMap, type PrebuiltOp, type PrebuiltScript } from "./prebu
 import { assertNoReservedViolation } from "./reserved-capabilities.js";
 import { isReadSafeOperation } from "./assistant-access.js";
 import { executeBrowserTool } from "./prebuilt/browser-use.js";
+import { executeVirtualBashShim } from "./prebuilt/virtual-cli-router.js";
 
 /** Plain edit distance — used only to rank "did you mean" suggestions by how close a guess
  *  actually is, never for anything security-relevant. Op names are short (well under 40 chars),
@@ -236,6 +237,50 @@ export function applyToolResultLimit(output: unknown, params: Record<string, unk
     };
   }
   return output;
+}
+
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  scope: "SPACE_SHARED" | "PROJECT_BOUND" | "USER_PERSONAL";
+  ownerUserId?: string; // Populated only if scope is USER_PERSONAL
+  parameters: Record<string, any>;
+}
+
+/**
+ * Applies hardware-level stripping of tool schemas based on the thread tier and caller identity.
+ * This guarantees zero-leakage of personal integrations in multi-player rooms.
+ */
+export function assembleToolSchemasForThread(
+  allTools: ToolDefinition[],
+  threadKind: "primary" | "task_workstation" | "private_scratchpad" | "system_consult",
+  actingUserId: string
+): ToolDefinition[] {
+  
+  return allTools.filter(tool => {
+    // 1. Space-Shared and Project-Bound tools are universally accessible in the workspace
+    if (tool.scope === "SPACE_SHARED" || tool.scope === "PROJECT_BOUND") {
+      return true;
+    }
+
+    // 2. USER_PERSONAL tool filtering
+    if (tool.scope === "USER_PERSONAL") {
+      // Rule A: Personal tools are strictly forbidden in Public Channels (Tier 1 & 2)
+      if (threadKind !== "private_scratchpad") {
+        return false; // Physically stripped from context
+      }
+
+      // Rule B: Even in a Private Scratchpad (Tier 4), you can only see YOUR personal tools.
+      // Bob cannot execute a tool bound to Alice's personal account.
+      if (tool.ownerUserId === actingUserId) {
+        return true;
+      }
+      
+      return false;
+    }
+
+    return false;
+  });
 }
 
 export class ScriptToolSurface {
@@ -492,6 +537,15 @@ export class ScriptToolSurface {
    */
   async handleToolCall(toolName: string, params: Record<string, any>, ctx: any) {
     if (toolName === "Bash") {
+      // 1. Check virtual CLI shims or JIT-registered commands first
+      const shimResult = await executeVirtualBashShim(params.command || "", ctx).catch((err) => {
+        return { stdout: "", stderr: err.message, exitCode: 127 };
+      });
+
+      if (shimResult && shimResult.exitCode !== 127) {
+        return shimResult;
+      }
+
       const route = resolveExecutionTier(params.command || "");
 
       // Dispatch based on solved hypervisor route
@@ -532,6 +586,65 @@ export class ScriptToolSurface {
     }
 
     throw new Error(`Unknown tool primitive: ${toolName}`);
+  }
+
+  /**
+   * Generates a markdown-formatted catalog of all JIT-synthesized Virtual CLIs
+   * and distilled skills available in the current workspace.
+   * Fails gracefully if tables or directories do not exist yet.
+   */
+  static async generateZeroTurnCatalog(
+    doStorage: any, 
+    workspaceFs: any, 
+    spaceId: string, 
+    projectId?: string
+  ): Promise<string> {
+    let catalog = "\n# INSTALLED WORKSPACE COMMANDS & SKILLS\n";
+    catalog += "The following custom commands and scripts have been synthesized and are available via the `Bash` tool:\n\n";
+    
+    let hasItems = false;
+
+    // 1. Fetch JIT Virtual CLIs from SQLite
+    try {
+      const virtualClis = doStorage.sql.exec(
+        "SELECT command_name, description FROM virtual_cli_commands WHERE space_id = ?", 
+        spaceId
+      ).toArray();
+
+      if (virtualClis && virtualClis.length > 0) {
+        hasItems = true;
+        catalog += "## Virtual CLIs\n";
+        virtualClis.forEach((cli: any) => {
+          catalog += `- \`${cli.command_name}\`: ${cli.description}\n`;
+        });
+        catalog += "\n";
+      }
+    } catch (err) {
+      // Table might not exist yet if no CLI has been registered. Ignore.
+    }
+
+    // 2. Fetch Distilled Skills from Workspace (.avos/shared/skills/)
+    try {
+      const skillsPath = `${getAvosInternalPath(spaceId, projectId)}shared/skills/`;
+      const skills = await workspaceFs.listFiles(skillsPath); 
+      
+      const tsFiles = skills.filter((f: string) => f.endsWith(".ts"));
+      
+      if (tsFiles.length > 0) {
+        hasItems = true;
+        catalog += "## Distilled Skills\n";
+        tsFiles.forEach((file: string) => {
+          // Inform the agent it can execute this via standard Node/Bash
+          catalog += `- \`Bash("node ${file}")\`: Executable shared skill module.\n`;
+        });
+        catalog += "\n";
+      }
+    } catch (err) {
+      // Directory might not exist yet. Ignore.
+    }
+
+    // If nothing is installed yet, return an empty string to save prompt tokens
+    return hasItems ? catalog : "";
   }
 
   // ── script.create ──────────────────────────────────────────────────────────
@@ -860,4 +973,54 @@ export class ScriptToolSurface {
     await this.library.recordOutcome(name, result.ok, result.error);
     return result;
   }
+}
+
+export function buildCliSdkContext(doStorage: any, spaceId: string, projectId?: string, agentId: string = "system") {
+  return {
+    /**
+     * Registers a new custom virtual CLI binary in the workspace.
+     */
+    register: async (commandName: string, def: { description: string; subcommands: Record<string, string>; handlerCode: string }) => {
+      const id = `vcli_${Date.now()}_${Math.random().toString(36).slice(2,7)}`;
+      doStorage.sql.exec(`
+        INSERT INTO virtual_cli_commands (id, space_id, project_id, command_name, description, subcommands_manifest_json, handler_code, created_by_agent_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(space_id, project_id, command_name) DO UPDATE SET 
+          description = excluded.description,
+          subcommands_manifest_json = excluded.subcommands_manifest_json,
+          handler_code = excluded.handler_code,
+          version = version + 1,
+          updated_at = datetime('now')
+      `, id, spaceId, projectId || null, commandName, def.description, JSON.stringify(def.subcommands), def.handlerCode, agentId);
+      
+      return { ok: true, message: `Virtual CLI '${commandName}' registered successfully. You can now use it via Bash.` };
+    },
+
+    /**
+     * Helper to format raw JSON arrays into beautiful terminal-style ASCII tables.
+     */
+    formatTable: (data: Array<Record<string, any>>, columns?: string[]) => {
+      if (!data || data.length === 0) return "No data found.";
+      const keys = columns || Object.keys(data[0]);
+      
+      // Calculate column widths
+      const colWidths = keys.map(key => {
+        const maxDataLen = Math.max(...data.map(row => String(row[key] || "").length));
+        return Math.max(key.length, maxDataLen);
+      });
+
+      // Build row string
+      const buildRow = (rowVals: string[]) => 
+        "│ " + rowVals.map((val, i) => String(val).padEnd(colWidths[i], " ")).join(" │ ") + " │";
+
+      const topBorder = "┌─" + colWidths.map(w => "─".repeat(w)).join("─┬─") + "─┐";
+      const midBorder = "├─" + colWidths.map(w => "─".repeat(w)).join("─┼─") + "─┤";
+      const botBorder = "└─" + colWidths.map(w => "─".repeat(w)).join("─┴─") + "─┘";
+
+      const header = buildRow(keys);
+      const rows = data.map(d => buildRow(keys.map(k => String(d[k] || ""))));
+
+      return [topBorder, header, midBorder, ...rows, botBorder].join("\n");
+    }
+  };
 }
