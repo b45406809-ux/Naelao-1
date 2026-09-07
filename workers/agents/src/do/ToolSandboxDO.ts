@@ -53,6 +53,16 @@ interface ContainerRuntime {
 const HARNESS_PORT = 8080;
 const WORKSPACE_ROUTES = ["/workspace/read", "/workspace/write", "/workspace/list", "/workspace/delete"];
 
+export interface GuiActionPayload {
+  type: "click" | "type" | "hotkey" | "screenshot" | "scroll";
+  x?: number;
+  y?: number;
+  button?: "left" | "right" | "middle";
+  text?: string;
+  keys?: string[];
+  direction?: "up" | "down";
+}
+
 export class ToolSandboxDO extends DurableObject {
   private lastCommandAt: number = Date.now();
 
@@ -67,6 +77,12 @@ export class ToolSandboxDO extends DurableObject {
     this.lastCommandAt = Date.now();
     // Schedule 60s scale-to-zero micro-sleep countdown alarm
     await this.ctx.storage.setAlarm(Date.now() + 60000).catch(() => {});
+
+    if (url.pathname === "/gui-action") {
+      const action = (await request.json().catch(() => ({}))) as GuiActionPayload;
+      const result = await this.executeGuiCommand(action);
+      return Response.json(result);
+    }
 
     if (url.pathname === "/exec-grpc") {
       const body = (await request.json().catch(() => ({}))) as {
@@ -149,6 +165,45 @@ export class ToolSandboxDO extends DurableObject {
         console.warn("[ToolSandboxDO] Container shutdown warning:", err);
       }
     }
+  }
+
+  private async executeGuiCommand(action: GuiActionPayload): Promise<unknown> {
+    let command = "";
+
+    switch (action.type) {
+      case "click": {
+        const btnNum = action.button === "right" ? 3 : 1;
+        command = `DISPLAY=:99 xdotool mousemove ${action.x || 0} ${action.y || 0} click ${btnNum}`;
+        break;
+      }
+      case "type": {
+        const escapedText = (action.text || "").replace(/"/g, '\\"');
+        command = `DISPLAY=:99 xdotool type "${escapedText}"`;
+        break;
+      }
+      case "hotkey": {
+        const keyCombo = (action.keys || []).join("+");
+        command = `DISPLAY=:99 xdotool key ${keyCombo}`;
+        break;
+      }
+      case "screenshot": {
+        const scrotRes = await this.executeInContainer(
+          "DISPLAY=:99 scrot -z /tmp/screenshot.png && base64 /tmp/screenshot.png",
+          "/workspace",
+          {},
+          "main"
+        );
+        return {
+          success: scrotRes.ok,
+          screenshotBase64: scrotRes.stdout.trim(),
+          error: scrotRes.error,
+        };
+      }
+      default:
+        throw new Error(`Unsupported GUI action: ${action.type}`);
+    }
+
+    return await this.executeInContainer(command, "/workspace", {}, "main");
   }
 
   private async executeInContainer(

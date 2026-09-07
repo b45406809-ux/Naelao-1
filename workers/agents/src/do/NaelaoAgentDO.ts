@@ -6583,6 +6583,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
   // ── GET /runs/:runId ──────────────────────────────────────────────────────
 
+  private async dispatchGuiAction(sandboxStub: DurableObjectStub, action: import("./ToolSandboxDO.js").GuiActionPayload): Promise<unknown> {
+    const resp = await sandboxStub.fetch("http://internal/gui-action", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(action),
+    });
+    return resp.json();
+  }
+
   private handleGetRun(runId: string): Response {
     // §A1 Harness Excellence (chat UI parity): a script-native run (handleScriptRun, the default
     // dispatch path since item 47's cutover) writes NO `agent_runs` row — that table is legacy-
@@ -6868,4 +6877,6 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     return Response.json({ id: runId, status: "cancelled", updatedAt: now });
   }
+
+  // §A1.17 Phase HX1 — persist a script-native run's structured trace (runScriptLoop's
 }
