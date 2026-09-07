@@ -18,13 +18,6 @@
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 
-interface BrowserAction {
-  type: "click" | "type" | "wait" | "scroll";
-  selector?: string;
-  text?: string;
-  ms?: number;
-}
-
 type BrowserEngine = "auto" | "chromium" | "kitesurf";
 
 /** Only forwards `engine` when the agent actually specified one, so the naelao-browser worker's
@@ -43,13 +36,59 @@ export async function run(args, ctx) {
 }
 `;
 
+export async function executeBrowserPrebuilt(
+  args: { action?: string; url?: string; selector?: string; text?: string; engine?: string; takeScreenshot?: boolean; take_screenshot?: boolean; actions?: any[]; extract_links?: boolean },
+  ctx: PrebuiltOpContext
+) {
+  const browserWorkerUrl = ctx.env.BROWSER_ROUTER_SERVICE || "http://internal/browser-task";
+
+  const response = await fetch(browserWorkerUrl, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(ctx.env.PLATFORM_SECRET ? { "x-naelao-internal-token": ctx.env.PLATFORM_SECRET } : {})
+    },
+    body: JSON.stringify({
+      url: args.url,
+      action: args.action || "navigate",
+      actions: args.actions,
+      selector: args.selector,
+      text: args.text,
+      engine: args.engine || "auto",
+      take_screenshot: args.take_screenshot ?? args.takeScreenshot,
+      extract_links: args.extract_links
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Browser execution failed with status ${response.status}`);
+  }
+
+  const result = await response.json() as any;
+  return {
+    ok: true,
+    engineUsed: result.engineUsed,
+    title: result.title,
+    content: (result.textContent || result.text || "").slice(0, 4000), // Trim to protect LLM context window
+    links: result.links || [],
+    screenshotCaptured: !!(result.screenshotBase64 || result.screenshot_base64),
+    ...(result.screenshotBase64 || result.screenshot_base64 ? { screenshotBase64: result.screenshotBase64 || result.screenshot_base64 } : {})
+  };
+}
+
 async function navigate(
   ctx: PrebuiltOpContext,
-  body: { url: string; actions?: BrowserAction[]; take_screenshot?: boolean; extract_links?: boolean; engine?: BrowserEngine }
+  body: { url: string; action?: string; actions?: any[]; take_screenshot?: boolean; takeScreenshot?: boolean; extract_links?: boolean; engine?: BrowserEngine; selector?: string; text?: string }
 ): Promise<unknown> {
-  if (!ctx.env.codeRunner) {
-    return { ok: false, reason: "Tier 4 (browser) unavailable: no code runner configured in this environment" };
+  // Try direct browser service fetch first if configured, or delegate to codeRunner
+  try {
+    return await executeBrowserPrebuilt(body, ctx);
+  } catch (err) {
+    if (!ctx.env.codeRunner) {
+      throw err;
+    }
   }
+
   const result = await ctx.env.codeRunner.run({
     name: "browser-use.navigate",
     code: BROWSER_HARNESS,
@@ -69,21 +108,24 @@ export const browserUse: PrebuiltScript = {
   domain: "browser",
   requires_tier: 4,
   operations: {
-    "browser.navigate": (a, c) => navigate(c, { url: String(a["url"] ?? ""), ...engineArg(a) }),
+    "browser.navigate": (a, c) => navigate(c, { url: String(a["url"] ?? ""), action: "navigate", ...engineArg(a) }),
     "browser.click": (a, c) =>
       navigate(c, {
         url: String(a["url"] ?? ""),
-        actions: [{ type: "click", selector: String(a["selector"] ?? "") }],
+        action: "click",
+        selector: String(a["selector"] ?? ""),
         ...engineArg(a),
       }),
     "browser.type": (a, c) =>
       navigate(c, {
         url: String(a["url"] ?? ""),
-        actions: [{ type: "type", selector: String(a["selector"] ?? ""), text: String(a["text"] ?? "") }],
+        action: "type",
+        selector: String(a["selector"] ?? ""),
+        text: String(a["text"] ?? ""),
         ...engineArg(a),
       }),
     "browser.extract": (a, c) =>
-      navigate(c, { url: String(a["url"] ?? ""), extract_links: a["extract_links"] !== false, ...engineArg(a) }),
-    "browser.screenshot": (a, c) => navigate(c, { url: String(a["url"] ?? ""), take_screenshot: true, ...engineArg(a) }),
+      navigate(c, { url: String(a["url"] ?? ""), action: "extract", extract_links: a["extract_links"] !== false, ...engineArg(a) }),
+    "browser.screenshot": (a, c) => navigate(c, { url: String(a["url"] ?? ""), action: "screenshot", take_screenshot: true, ...engineArg(a) }),
   },
 };
