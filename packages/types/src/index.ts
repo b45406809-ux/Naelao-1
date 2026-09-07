@@ -193,5 +193,6 @@ export * from "./connectors";
 export * from "./dag";
 export * from "./mini-agi";
 export * from "./knowledge";
+export * from "./mcp-mesh";
 
 
