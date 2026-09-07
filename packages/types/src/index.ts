@@ -189,6 +189,27 @@ export * from "./threads.js";
 export * from "./pull-requests.js";
 export * from "./project-tasks.js";
 export * from "./multiplayer-presence.js";
+export interface ModelRaceCandidate {
+  modelId: string;
+  branchName: string;
+  maxSteps?: number;
+}
+
+export interface ModelRaceResultItem {
+  modelId: string;
+  branch: string;
+  success: boolean;
+  testExitCode: number;
+  durationMs: number;
+  tokenSpend: number;
+  error?: string;
+}
+
+export interface ModelBenchmarkLeaderboard {
+  winner: ModelRaceResultItem;
+  leaderboard: ModelRaceResultItem[];
+  executedAt: string;
+}
 
 // ── Space Hierarchy types ───────────────────────────────────────────────────
 export * from "./space-hierarchy";
