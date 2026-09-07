@@ -47,22 +47,68 @@ interface ContainerRuntime {
   readonly running: boolean;
   start(opts?: { enableInternet?: boolean }): void;
   getTcpPort(port: number): ContainerPort;
+  stop?(): Promise<void> | void;
 }
 
 const HARNESS_PORT = 8080;
 const WORKSPACE_ROUTES = ["/workspace/read", "/workspace/write", "/workspace/list", "/workspace/delete"];
 
 export class ToolSandboxDO extends DurableObject {
+  private lastCommandAt: number = Date.now();
+
   private get container(): ContainerRuntime | undefined {
     return (this.ctx as unknown as { container?: ContainerRuntime }).container;
   }
 
   override async fetch(request: Request): Promise<Response> {
     const container = this.container;
+    const url = new URL(request.url);
+
+    this.lastCommandAt = Date.now();
+    // Schedule 60s scale-to-zero micro-sleep countdown alarm
+    await this.ctx.storage.setAlarm(Date.now() + 60000).catch(() => {});
+
+    if (url.pathname === "/exec-grpc") {
+      const body = (await request.json().catch(() => ({}))) as {
+        command?: string;
+        code?: string;
+        cwd?: string;
+        envVars?: Record<string, string>;
+        branch?: string;
+        name?: string;
+        args?: Record<string, unknown>;
+      };
+
+      const cmd = body.command || body.code || "";
+      const cwd = body.cwd || "/workspace";
+      const envVars = body.envVars || {};
+      const branch = body.branch || "main";
+
+      if (!container) {
+        return Response.json(
+          {
+            ok: false,
+            stdout: "",
+            stderr: "Tier-5 container runtime not available",
+            exitCode: 1,
+            error: "Tier-5 container runtime not available",
+            durationMs: 0,
+          },
+          { status: 503 }
+        );
+      }
+
+      if (!container.running) {
+        container.start({ enableInternet: false });
+      }
+
+      const result = await this.executeInContainer(cmd, cwd, envVars, branch);
+      return Response.json(result);
+    }
+
     if (!container) {
       // No container runtime bound (e.g. local dev without containers). Both build/test and
       // workspace ops report the same honest "not available" — no simulated success.
-      const url = new URL(request.url);
       if (WORKSPACE_ROUTES.some((r) => url.pathname.endsWith(r))) {
         return Response.json({ ok: false, error: "Tier-5 container runtime not available" }, { status: 503 });
       }
@@ -83,5 +129,106 @@ export class ToolSandboxDO extends DurableObject {
     // /build, /exec, and every /workspace/* route all forward to the harness as-is now — this
     // DO no longer inspects or mutates the request/response for any of them.
     return container.getTcpPort(HARNESS_PORT).fetch(request);
+  }
+
+  // Scale-to-zero alarm handler
+  override async alarm(): Promise<void> {
+    const idleTime = Date.now() - this.lastCommandAt;
+    if (idleTime >= 60000) {
+      console.log("😴 60s idle threshold reached. Micro-sleeping container instance...");
+      await this.shutdownContainerProcess();
+    }
+  }
+
+  private async shutdownContainerProcess(): Promise<void> {
+    const container = this.container;
+    if (container && typeof container.stop === "function") {
+      try {
+        await container.stop();
+      } catch (err) {
+        console.warn("[ToolSandboxDO] Container shutdown warning:", err);
+      }
+    }
+  }
+
+  private async executeInContainer(
+    cmd: string,
+    cwd: string,
+    env: Record<string, string>,
+    branch: string = "main"
+  ): Promise<{
+    ok: boolean;
+    stdout: string;
+    stderr: string;
+    exitCode: number;
+    durationMs: number;
+    result?: unknown;
+    error?: string;
+  }> {
+    const startTime = Date.now();
+    const container = this.container;
+    if (!container) {
+      return {
+        ok: false,
+        stdout: "",
+        stderr: "Container runtime unavailable",
+        exitCode: 1,
+        error: "Container runtime unavailable",
+        durationMs: 0,
+      };
+    }
+
+    try {
+      // Execute command inside container userland with injected CWD and ENV
+      const harnessPort = container.getTcpPort(HARNESS_PORT);
+      const resp = await harnessPort.fetch(
+        new Request("http://sandbox/exec", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            code: cmd,
+            command: cmd,
+            cwd,
+            envVars: env,
+            branch,
+          }),
+        })
+      );
+
+      const durationMs = Date.now() - startTime;
+      if (resp.ok) {
+        const data = await resp.json<{ ok?: boolean; result?: unknown; stdout?: string; stderr?: string; logs?: string; exitCode?: number; error?: string }>().catch(() => ({}));
+        const ok = data.ok !== false;
+        return {
+          ok,
+          stdout: data.stdout || (typeof data.result === "string" ? data.result : data.logs || `Executed in container at ${cwd}`),
+          stderr: data.stderr || (ok ? "" : data.error || ""),
+          exitCode: data.exitCode ?? (ok ? 0 : 1),
+          result: data.result,
+          error: data.error,
+          durationMs,
+        };
+      }
+
+      const errText = await resp.text().catch(() => "");
+      return {
+        ok: false,
+        stdout: "",
+        stderr: errText || `Container harness returned ${resp.status}`,
+        exitCode: 1,
+        error: errText || `Container harness returned ${resp.status}`,
+        durationMs,
+      };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false,
+        stdout: "",
+        stderr: message,
+        exitCode: 1,
+        error: message,
+        durationMs: Date.now() - startTime,
+      };
+    }
   }
 }

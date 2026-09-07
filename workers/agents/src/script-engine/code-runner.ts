@@ -80,6 +80,55 @@ export interface CodeRunnerOptions {
   containerTimeoutMs?: number;
 }
 
+export interface CodeRunnerRunOptions {
+  name: string;
+  code: string;
+  tier: 1 | 2 | 3 | 4 | 5 | 6;
+  args?: Record<string, unknown>;
+  spaceId: string;
+  agentId?: string;
+  tenantId?: string;
+  projectId?: string;
+  sessionState?: { cwd: string; envVars: Record<string, string>; branch?: string; activeGitBranch?: string };
+}
+
+export class CodeRunner {
+  constructor(private opts: CodeRunnerOptions) {}
+
+  async run(opts: CodeRunnerRunOptions): Promise<ScriptRunResult> {
+    if (opts.tier === 5 || opts.tier === 6) {
+      return runContainer(this.opts, {
+        name: opts.name,
+        code: opts.code,
+        args: opts.args || {},
+        spaceId: opts.spaceId,
+        agentId: opts.agentId || "naelao-agent",
+        projectId: opts.projectId,
+        sessionState: opts.sessionState,
+      });
+    }
+    if (opts.tier === 2 || opts.tier === 3 || opts.tier === 4) {
+      return runIsolate(this.opts, {
+        name: opts.name,
+        code: opts.code,
+        tier: opts.tier,
+        args: opts.args || {},
+        spaceId: opts.spaceId,
+        agentId: opts.agentId || "naelao-agent",
+        tenantId: opts.tenantId || "",
+        projectId: opts.projectId,
+      });
+    }
+    return {
+      ok: false,
+      error: `Tier ${opts.tier} has no codeRunner backend (Tier 1 must be handled in-process)`,
+      tier: opts.tier,
+      duration_ms: 0,
+      tokens_used: 0,
+    };
+  }
+}
+
 const DEFAULT_ISOLATE_TIMEOUT_MS = 15_000;
 const DEFAULT_CONTAINER_TIMEOUT_MS = 60_000;
 const ISOLATE_COMPAT_DATE = "2024-12-01";
@@ -387,7 +436,16 @@ async function runIsolate(
 
 async function runContainer(
   opts: CodeRunnerOptions,
-  params: { name: string; code: string; args: Record<string, unknown>; spaceId: string; agentId: string; projectId?: string; containerImage?: string }
+  params: {
+    name: string;
+    code: string;
+    args: Record<string, unknown>;
+    spaceId: string;
+    agentId: string;
+    projectId?: string;
+    containerImage?: string;
+    sessionState?: { cwd: string; envVars: Record<string, string>; branch?: string; activeGitBranch?: string };
+  }
 ): Promise<ScriptRunResult> {
   const started = Date.now();
 
@@ -435,31 +493,59 @@ async function runContainer(
 async function runContainerRequest(
   stub: DurableObjectStub,
   opts: CodeRunnerOptions,
-  params: { name: string; code: string; args: Record<string, unknown>; spaceId: string; agentId: string; projectId?: string },
+  params: {
+    name: string;
+    code: string;
+    args: Record<string, unknown>;
+    spaceId: string;
+    agentId: string;
+    projectId?: string;
+    sessionState?: { cwd: string; envVars: Record<string, string>; branch?: string; activeGitBranch?: string };
+  },
   started: number
 ): Promise<ScriptRunResult> {
   const controller = new AbortController();
   const timeoutMs = opts.containerTimeoutMs ?? DEFAULT_CONTAINER_TIMEOUT_MS;
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const cwd = params.sessionState?.cwd ? `/workspace/${params.sessionState.cwd.replace(/^\/+/, "")}` : "/workspace";
+  const envVars = params.sessionState?.envVars ?? {};
+  const branch = params.sessionState?.branch || params.sessionState?.activeGitBranch || "main";
+
   try {
     const resp = await stub.fetch(
-      new Request("http://sandbox/exec", {
+      new Request("http://sandbox/exec-grpc", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           name: params.name,
+          command: params.code,
           code: params.code,
           args: params.args,
+          cwd,
+          envVars,
+          branch,
           spaceId: params.spaceId,
           ...(params.projectId ? { projectId: params.projectId } : {}),
         }),
         signal: controller.signal,
       })
     );
-    const body = await resp.json<{ ok: boolean; result?: unknown; error?: string; logs?: string }>();
+    const body = await resp.json<{
+      ok?: boolean;
+      result?: unknown;
+      error?: string;
+      logs?: string;
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+    }>();
+    const isOk = resp.ok && body.ok !== false;
+    const output = body.result !== undefined ? body.result : body.stdout;
+    const errorMsg = body.error || (isOk ? undefined : body.stderr || `container returned ${resp.status}`);
     return {
-      ok: resp.ok && body.ok,
-      ...(resp.ok && body.ok ? { output: body.result } : { error: body.error ?? `container returned ${resp.status}` }),
+      ok: isOk,
+      ...(isOk && output !== undefined ? { output } : {}),
+      ...(errorMsg ? { error: errorMsg } : {}),
       tier: 5,
       duration_ms: Date.now() - started,
       tokens_used: 0,
@@ -492,7 +578,7 @@ function hashCode(s: string): string {
 export function buildCodeRunner(opts: CodeRunnerOptions): TieredCodeRunner {
   return {
     async run(params) {
-      if (params.tier === 5) return runContainer(opts, params);
+      if (params.tier === 5 || params.tier === 6) return runContainer(opts, params);
       if (params.tier === 2 || params.tier === 3 || params.tier === 4) return runIsolate(opts, params);
       return {
         ok: false,
