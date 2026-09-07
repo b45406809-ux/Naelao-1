@@ -6,6 +6,8 @@ export interface McpUiAction {
   props: Record<string, any>;
 }
 
+export type McpUiCard = McpUiAction;
+
 /**
  * Emits an interactive UI card instructing the frontend to fork the current conversation
  * into a Tier 4 Private Scratchpad so the user can safely utilize personal credentials.
@@ -33,28 +35,25 @@ export function emitPrivacyBridgeCard(
 }
 
 /**
- * Emits an interactive UI card requesting a single-use ephemeral action grant.
- * Used when a user wants a bot to perform one quick action with their credentials 
- * without leaving the public channel.
+ * Emits an interactive card requesting a 15-second ephemeral grant from the credential owner.
+ * Only the owner specified in `ownerUserId` will see the 'Authorize' button in the frontend.
  */
-export function emitEphemeralActionGrantCard(
-  actionName: string,
-  targetResource: string,
-  reasoning: string
-): McpUiAction {
+export function emitEphemeralGrantCard(
+  actionName: string, 
+  credentialName: string, 
+  ownerUserId: string
+): McpUiCard {
   return {
     type: "mcp_ui_card",
     component: "EphemeralGrantCard",
     props: {
-      title: "🔐 One-Time Action Authorization",
-      message: `The agent is requesting permission to use your Personal Credentials for a single action in this channel.`,
-      actionDetails: {
-        action: actionName,
-        target: targetResource,
-        reason: reasoning
-      },
-      approveLabel: "✅ Authorize 1-Time Action",
-      denyLabel: "❌ Deny"
+      ownerUserId: ownerUserId,
+      credentialName: credentialName,
+      actionName: actionName,
+      title: "🔒 Personal Integration Required",
+      message: `The agent is requesting 1-time permission to use your Personal ${credentialName} to perform: ${actionName}.`,
+      actionLabel: "Authorize 1-Time Action (15s Window)",
+      fallbackLabel: "Continue in Private Scratchpad"
     }
   };
 }

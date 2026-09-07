@@ -18,6 +18,7 @@ import { badRequest, errorResponse, forbidden, mintInternalToken, notFound, requ
 import { VaultCredential, RunResolutionContext } from "@naelao/types";
 import { Hono } from "hono";
 import { scrubOutboundPayload } from "../../../packages/security/src/dlp";
+import { verifyEphemeralGrant } from "../../../packages/security/src/crypto";
 
 // ── Env ───────────────────────────────────────────────────────────────────────
 
@@ -778,6 +779,43 @@ app.post("/v1/internal/spaces/:spaceId/credentials/:name/plaintext", async (c) =
 // Public domains that must be strictly audited for PII exfiltration.
 const PUBLIC_CONSUMER_DOMAINS = ["api.twitter.com", "discord.com/api", "graph.instagram.com"];
 
+/**
+ * Core outbound proxy method with Silent Auth Rot Recovery.
+ * Injects secrets at the edge and handles proactive OAuth refresh if a 401 occurs.
+ */
+export async function executeOutboundWithRefresh(
+  url: string,
+  opts: any,
+  credentialRecord: any,
+  env: any,
+  refreshOAuthTokenFn?: (provider: string, refreshToken: string, env: any) => Promise<{ accessToken: string; refreshToken?: string }>,
+  updateVaultCredentialFn?: (credentialId: string, newTokens: any, env: any) => Promise<void>
+): Promise<Response> {
+  const headers = new Headers(opts.headers || {});
+  headers.set("Authorization", `Bearer ${credentialRecord.accessToken || credentialRecord.value}`);
+
+  let response = await fetch(url, { ...opts, headers });
+
+  // 1. Silent Auth Rot Recovery
+  if (response.status === 401 && credentialRecord.refreshToken && refreshOAuthTokenFn && updateVaultCredentialFn) {
+    console.warn(`[Vault] 401 Unauthorized caught for ${credentialRecord.name}. Attempting proactive refresh...`);
+    
+    try {
+      const newTokens = await refreshOAuthTokenFn(credentialRecord.provider, credentialRecord.refreshToken, env);
+      await updateVaultCredentialFn(credentialRecord.id, newTokens, env);
+      
+      headers.set("Authorization", `Bearer ${newTokens.accessToken}`);
+      response = await fetch(url, { ...opts, headers });
+      
+      console.log(`[Vault] Successfully refreshed token and retried request for ${credentialRecord.name}.`);
+    } catch (refreshErr) {
+      console.error(`[Vault] Token refresh failed for ${credentialRecord.name}:`, refreshErr);
+    }
+  }
+
+  return response;
+}
+
 export async function proxyOutboundRequestWithAuth(
   envOrUrl: any,
   urlOrOpts: any,
@@ -786,7 +824,7 @@ export async function proxyOutboundRequestWithAuth(
 ) {
   let env: CredentialsEnv;
   let url: string;
-  let opts: { credentialName: string; method?: string; body?: any; headers?: Record<string, string> };
+  let opts: { credentialName: string; method?: string; body?: any; headers?: Record<string, string>; refreshToken?: string; provider?: string };
   let callerContext: { spaceId: string; tenantId: string; userId: string; role: string };
 
   if (typeof envOrUrl === "string") {
@@ -835,30 +873,87 @@ export async function proxyOutboundRequestWithAuth(
   const rootHex = resolveRootKeyHex(env, row.key_version);
   const decryptedValue = await decrypt(row.encrypted_value, row.iv, rootHex, row.space_id);
 
-  // 3. Inject credential into headers at network boundary
-  const headers = new Headers(opts.headers || {});
-  headers.set("Authorization", `Bearer ${decryptedValue}`);
+  // 3. Execute via outbound with refresh proxy
+  const credentialRecord = {
+    id: row.id,
+    name: row.name,
+    accessToken: decryptedValue,
+    refreshToken: opts.refreshToken,
+    provider: opts.provider
+  };
 
-  // 4. Dispatch the request
-  return await fetch(targetUrl.toString(), {
-    method: opts.method || "GET",
-    headers,
-    body: finalBody
-  });
+  return await executeOutboundWithRefresh(
+    targetUrl.toString(),
+    {
+      method: opts.method || "GET",
+      headers: opts.headers,
+      body: finalBody
+    },
+    credentialRecord,
+    env
+  );
 }
 
 export async function authorizeConnectorCall(
-  env: CredentialsEnv,
-  params: {
-    spaceId: string;
-    tenantId: string;
-    userId: string;
-    credentialName: string;
-    connectorDomain: string;
-    payload?: string;
+  envOrConnectorId: any,
+  paramsOrBotConfig: any,
+  userIdOrCallingUserId?: any,
+  credentialNameOrEphemeralGrant?: any,
+  maybeConnectorDomain?: any,
+  maybePayload?: string
+): Promise<any> {
+  // Support both legacy signature and new signature
+  if (typeof envOrConnectorId === "string" && typeof paramsOrBotConfig === "object") {
+    // New signature: authorizeConnectorCall(requestedConnectorId, botConfig, callingUserId, ephemeralGrantToken)
+    const requestedConnectorId = envOrConnectorId;
+    const botConfig = paramsOrBotConfig;
+    const callingUserId = userIdOrCallingUserId;
+    const ephemeralGrantToken = credentialNameOrEphemeralGrant;
+
+    // Fetch connector or resolve
+    const resolved = await resolveCredential(
+      botConfig.db,
+      botConfig.spaceId,
+      botConfig.tenantId,
+      requestedConnectorId,
+      callingUserId
+    );
+
+    if (resolved && !("notFoundReason" in resolved)) {
+      const { row } = resolved;
+      const rootHex = resolveRootKeyHex(botConfig, row.key_version);
+      const decrypted = await decrypt(row.encrypted_value, row.iv, rootHex, row.space_id);
+      return { authorized: true, credential: decrypted };
+    }
+
+    if (ephemeralGrantToken) {
+      const grant = await verifyEphemeralGrant(ephemeralGrantToken, botConfig.PLATFORM_SECRET || botConfig.platformSecret);
+      if (grant.valid && grant.payload.crd === requestedConnectorId) {
+        const fallbackResolved = await resolveCredential(
+          botConfig.db,
+          botConfig.spaceId,
+          botConfig.tenantId,
+          requestedConnectorId,
+          grant.payload.sub
+        );
+        if (fallbackResolved && !("notFoundReason" in fallbackResolved)) {
+          const { row } = fallbackResolved;
+          const rootHex = resolveRootKeyHex(botConfig, row.key_version);
+          const decrypted = await decrypt(row.encrypted_value, row.iv, rootHex, row.space_id);
+          console.log(`[Vault] Ephemeral grant accepted for personal credential.`);
+          return { authorized: true, credential: decrypted };
+        }
+      }
+      throw new Error(`Invalid or expired ephemeral grant: ${grant.reason}`);
+    }
+
+    throw new Error(`Security Violation: User '${callingUserId}' cannot invoke actions using personal connection without an ephemeral grant.`);
   }
-): Promise<{ authorized: boolean; reason?: string }> {
-  const isPublicDomain = PUBLIC_CONSUMER_DOMAINS.some(d => params.connectorDomain.endsWith(d));
+
+  // Legacy signature: authorizeConnectorCall(env, params)
+  const env = envOrConnectorId;
+  const params = paramsOrBotConfig;
+  const isPublicDomain = PUBLIC_CONSUMER_DOMAINS.some(d => params.connectorDomain?.endsWith(d));
   
   if (isPublicDomain && params.payload) {
     const dlpResult = scrubOutboundPayload(params.payload);
