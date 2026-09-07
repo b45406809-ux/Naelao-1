@@ -28,6 +28,7 @@
  */
 
 import type { ExecutionTier, HypervisorRouteResult, ScriptEngineEnv, ScriptRunResult, StoredScript } from "./types.js";
+import { executeBrowserTool } from "./prebuilt/browser-use.js";
 
 /**
  * List of heavy native build, compilation, and system binaries that
@@ -110,7 +111,7 @@ export function resolveExecutionTier(command: string): HypervisorRouteResult {
   // 2. Check for Tier 4 & Tier 5 Browser Navigation Commands
   if (binary === "browse" || binary === "scrape" || binary === "kitesurf" || binary === "puppeteer") {
     const isVisualQa =
-      trimmed.includes("--screenshot") || trimmed.includes("--webgl") || trimmed.includes("--canvas");
+      trimmed.includes("--screenshot") || trimmed.includes("--webgl") || trimmed.includes("--canvas") || trimmed.includes("--visual");
     const tier: ExecutionTier = isVisualQa ? 5 : 4;
     return {
       tier,

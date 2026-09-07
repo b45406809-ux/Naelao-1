@@ -32,6 +32,7 @@ import { runStoredScript } from "./execution-ladder.js";
 import { buildOperationMap, type PrebuiltOp, type PrebuiltScript } from "./prebuilt/index.js";
 import { assertNoReservedViolation } from "./reserved-capabilities.js";
 import { isReadSafeOperation } from "./assistant-access.js";
+import { executeBrowserTool } from "./prebuilt/browser-use.js";
 
 /** Plain edit distance — used only to rank "did you mean" suggestions by how close a guess
  *  actually is, never for anything security-relevant. Op names are short (well under 40 chars),
@@ -494,11 +495,17 @@ export class ScriptToolSurface {
       const route = resolveExecutionTier(params.command || "");
 
       // Dispatch based on solved hypervisor route
+      if (route.requiresBrowser) {
+        const action = route.args.includes("--screenshot") ? "screenshot" : "navigate";
+        const url = route.args.find(arg => arg.startsWith("http")) || "";
+        return await executeBrowserTool({ action, url, engine: route.suggestedBackend }, ctx);
+      }
+
       if (route.tier === 6) {
         return await ctx.container.exec(params.command);
       }
       if (route.tier === 4 || route.tier === 5) {
-        return await ctx.browser.exec(params.command, { engine: route.suggestedBackend });
+        return await executeBrowserTool({ action: "navigate", url: route.args.find(arg => arg.startsWith("http")) || "", engine: route.suggestedBackend }, ctx);
       }
       if (route.tier === 3) {
         return await ctx.workflows.scheduleFromCommand(params.command);
@@ -517,7 +524,7 @@ export class ScriptToolSurface {
     }
 
     if (toolName === "Browser") {
-      return await ctx.browser.executeAction(params);
+      return await executeBrowserTool(params, ctx);
     }
 
     if (toolName === "Delegate") {
