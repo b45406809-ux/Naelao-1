@@ -1,6 +1,7 @@
 // WebSocket Gateway via Durable Object — one WsHubDO per tenant, manages live WS connections
 // Dashboard clients connect to receive live session/agent events.
 import { DurableObject } from "cloudflare:workers";
+import { MultiplayerPresencePayload, WorkspaceMutationEvent } from "@naelao/types";
 
 interface Env {
   ENVIRONMENT: string;
@@ -46,8 +47,10 @@ interface WsSessionMeta {
 
 interface BroadcastBody {
   spaceId?: string;
-  event: string;
-  data: unknown;
+  event?: string;
+  type?: string;
+  data?: unknown;
+  payload?: unknown;
 }
 
 // WsHubDO — one DO per tenant. Manages all WebSocket connections for that tenant.
@@ -55,9 +58,14 @@ interface BroadcastBody {
 // and connections are preserved across hibernation cycles.
 export class WsHubDO extends DurableObject<Env> {
   // In-memory session map — only valid while the DO is active (not hibernated).
-  // DO hibernation kills in-memory state; however WebSocket connections themselves
-  // survive hibernation via the Hibernation API (acceptWebSocket).
   private sessions = new Map<WebSocket, WsSessionMeta>();
+  private presenceMap = new Map<string, MultiplayerPresencePayload>();
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    // Enable WebSocket Hibernation auto-response for pings/pongs
+    this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponse("ping", "pong"));
+  }
 
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -111,16 +119,16 @@ export class WsHubDO extends DurableObject<Env> {
       }
 
       const body = await request.json<BroadcastBody>();
-      const payload = JSON.stringify({ event: body.event, data: body.data });
+      const eventName = body.event ?? body.type ?? "workspace.broadcast";
+      const eventData = body.data ?? body.payload ?? {};
+      const payload = JSON.stringify({ event: eventName, data: eventData, type: eventName, payload: eventData });
       const targetSpaceId = body.spaceId;
 
       // Re-hydrate sessions from the Hibernation API if the DO woke from sleep
       const activeSockets = this.ctx.getWebSockets();
       for (const ws of activeSockets) {
-        // When woken via hibernation, re-populate in-memory map from websocket attachment
         if (!this.sessions.has(ws)) {
           const attached = this.ctx.getTags(ws);
-          // Tags format: ["tenantId:<tid>", "spaceId:<sid>"]
           const tenantTag = attached.find((t) => t.startsWith("tenantId:")) ?? "";
           const spaceTag = attached.find((t) => t.startsWith("spaceId:")) ?? undefined;
           const restoredMeta: WsSessionMeta = {
@@ -155,33 +163,68 @@ export class WsHubDO extends DurableObject<Env> {
 
   // Hibernation API handlers — called by CF when the DO wakes for a WebSocket event
   override webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): void {
-    // Clients can send ping frames; echo back a pong
     if (typeof message === "string") {
-      let parsed: unknown;
+      let parsed: any;
       try {
         parsed = JSON.parse(message);
       } catch {
         ws.send(JSON.stringify({ error: "invalid_json" }));
         return;
       }
-      if (
-        parsed !== null &&
-        typeof parsed === "object" &&
-        "type" in parsed &&
-        (parsed as { type: unknown }).type === "ping"
-      ) {
-        ws.send(JSON.stringify({ type: "pong" }));
+
+      if (parsed !== null && typeof parsed === "object") {
+        if (parsed.type === "ping") {
+          ws.send(JSON.stringify({ type: "pong" }));
+          return;
+        }
+
+        if (parsed.type === "presence.update" && parsed.payload) {
+          const presence: MultiplayerPresencePayload = parsed.payload;
+          this.presenceMap.set(presence.userId, { ...presence, lastHeartbeat: Date.now() });
+          this.broadcast(ws, { type: "presence.state", presences: Array.from(this.presenceMap.values()) });
+          return;
+        }
+
+        if (parsed.type === "workspace.mutation" && parsed.payload) {
+          const mutation: WorkspaceMutationEvent = parsed.payload;
+          this.broadcast(ws, { type: "workspace.broadcast", mutation });
+          return;
+        }
       }
     }
   }
 
   override webSocketClose(ws: WebSocket, _code: number, _reason: string, _wasClean: boolean): void {
     this.sessions.delete(ws);
+    for (const [userId, presence] of this.presenceMap.entries()) {
+      if (Date.now() - presence.lastHeartbeat > 30000) {
+        this.presenceMap.delete(userId);
+      }
+    }
+    this.broadcast(ws, { type: "presence.state", presences: Array.from(this.presenceMap.values()) });
   }
 
   override webSocketError(ws: WebSocket, _error: unknown): void {
     this.sessions.delete(ws);
   }
+
+  private broadcast(excludeWs: WebSocket | null, message: any): void {
+    const serialized = JSON.stringify(message);
+    const activeSockets = this.ctx.getWebSockets();
+    for (const ws of activeSockets) {
+      if (ws !== excludeWs) {
+        try {
+          ws.send(serialized);
+        } catch {
+          this.sessions.delete(ws);
+        }
+      }
+    }
+  }
+}
+
+class WebSocketRequestResponse {
+  constructor(public request: string, public response: string) {}
 }
 
 // Main worker — routes WebSocket upgrades and broadcast calls to the per-tenant WsHubDO
@@ -203,11 +246,9 @@ export default {
       );
     }
 
-    // One DO per tenant — stable DO name derived from tenantId
     const doId = env.WS_HUB.idFromName(`ws:${tenantId}`);
     const stub = env.WS_HUB.get(doId);
 
-    // Forward the request to the DO, preserving all headers and body
     return stub.fetch(request);
   },
 } satisfies ExportedHandler<Env>;

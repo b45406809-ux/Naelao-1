@@ -10,6 +10,26 @@ import {
 } from "@naelao/events";
 import type { TriggerRule, TriggerCondition, EventEnvelope, ConditionContext } from "@naelao/events";
 import { mintInternalToken, broadcastSpaceEvent } from "@naelao/http";
+import { WorkspaceMutationEvent } from "@naelao/types";
+
+export async function broadcastSpaceMutation(
+  wsHubNamespace: DurableObjectNamespace,
+  spaceId: string,
+  mutation: WorkspaceMutationEvent
+) {
+  try {
+    const id = wsHubNamespace.idFromName(spaceId);
+    const stub = wsHubNamespace.get(id);
+    await stub.fetch("https://internal/broadcast", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "workspace.mutation", payload: mutation })
+    });
+  } catch (err) {
+    console.warn("Failed to broadcast space mutation via WsHubDO:", err);
+  }
+}
+
 
 function todaySpendKey(): string {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)

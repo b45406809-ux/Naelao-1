@@ -188,6 +188,7 @@ export interface BaseEnv {
 export * from "./threads.js";
 export * from "./pull-requests.js";
 export * from "./project-tasks.js";
+export * from "./multiplayer-presence.js";
 
 // ── Space Hierarchy types ───────────────────────────────────────────────────
 export * from "./space-hierarchy";
@@ -200,5 +201,6 @@ export * from "./knowledge";
 export * from "./mcp-mesh";
 export * from "./threads";
 export * from "./project-tasks";
+export * from "./multiplayer-presence";
 
 
