@@ -67,6 +67,7 @@ import {
 } from "../script-engine/sub-agent-output.js";
 
 import { buildCliSdkContext } from "../script-engine/tool-surface.js";
+import { composeSystemPrompt } from "../script-engine/profiles.js";
 
 // ── G-AZ01: Agent FSM states and valid transitions ───────────────────────────
 
@@ -3492,6 +3493,22 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
 
     const tools = new ScriptToolSurface(engineEnv, config.scripts.prebuilt);
+
+    // 1. Generate the Zero-Turn Catalog
+    const zeroTurnCatalog = await ScriptToolSurface.generateZeroTurnCatalog(
+      this.ctx.storage,
+      this.getVirtualFsStorage(),
+      spaceId,
+      projectId
+    );
+
+    // 2. Compose the final system prompt
+    const enrichedSystemPrompt = composeSystemPrompt(
+      config.systemPrompt || "",
+      body.businessContext ? JSON.stringify(body.businessContext, null, 2) : "",
+      zeroTurnCatalog
+    );
+
     // A sub-agent spawned mid-task inherits the SAME project scoping as its parent — it's
     // conceptually a subthread of the same project, not a different workspace. Built after
     // `tools` (§A1.17 Phase J's workflow.create/run ops need it to author/re-run stored
@@ -3519,7 +3536,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ...(reasoningRequest ? { reasoning: reasoningRequest } : {}),
       // The agent's OWN identity and instructions. Loaded from R2 on every run since the script
       // engine was built, and never once handed to the model — see ReasonerDeps.agentPrompt.
-      ...(config.systemPrompt ? { agentPrompt: config.systemPrompt } : {}),
+      ...(enrichedSystemPrompt ? { agentPrompt: enrichedSystemPrompt } : {}),
       // WHICH business this run is for. Resolved by index.ts from the space row it already
       // fetches; omitted entirely when the caller never resolved one.
       ...(body.businessContext ? { businessContext: body.businessContext } : {}),
@@ -5567,6 +5584,22 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // Same structural-config-first, agents.md-parse-fallback precedence as handleScriptRun above.
     const requiresApprovalFor = config.requiresApprovalFor ?? [...parseRequiresApprovalFor(config.agentsMd)];
     const tools = new ScriptToolSurface(engineEnv, config.scripts.prebuilt);
+
+    // 1. Generate the Zero-Turn Catalog
+    const zeroTurnCatalog = await ScriptToolSurface.generateZeroTurnCatalog(
+      this.ctx.storage,
+      this.getVirtualFsStorage(),
+      spaceId,
+      undefined
+    );
+
+    // 2. Compose the final system prompt
+    const enrichedSystemPrompt = composeSystemPrompt(
+      config.systemPrompt || "",
+      body.businessContext ? JSON.stringify(body.businessContext, null, 2) : "",
+      zeroTurnCatalog
+    );
+
     const model = body.model ?? DEFAULT_WORKING_MODEL;
     // Step 28: same BYOK override as the interactive path — a customer messaging a business on a
     // channel is answered on the business's own Gemini/Groq key when it has one.
@@ -5579,7 +5612,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       fallbacks: this.resolveFailoverChain(model, body.apiKey ?? ""),
       // Same gap as the interactive path: a customer messaging a business on Slack/WhatsApp was
       // being answered by a model that had never been told what business it was answering for.
-      ...(config.systemPrompt ? { agentPrompt: config.systemPrompt } : {}),
+      ...(enrichedSystemPrompt ? { agentPrompt: enrichedSystemPrompt } : {}),
       // WHICH business this run is for. Resolved by index.ts from the space row it already
       // fetches; omitted entirely when the caller never resolved one.
       ...(body.businessContext ? { businessContext: body.businessContext } : {}),

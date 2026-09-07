@@ -1022,3 +1022,23 @@ ${BASE_AGENTS_MD}`,
 export function launchpadProfiles(): Array<{ agentId: string; config: AgentConfig }> {
   return LAUNCHPAD_CORE_AGENTS.map(launchpadAgentToProfile);
 }
+
+export function composeSystemPrompt(
+  baseIdentity: string, 
+  businessContext: string, 
+  zeroTurnCatalog: string
+): string {
+  return `
+${baseIdentity}
+
+# BUSINESS CONTEXT
+${businessContext}
+
+${zeroTurnCatalog}
+
+# OPERATING RULES
+You have access to a high-speed development environment. 
+Use the 'Bash' tool to execute any installed workspace commands or scripts listed above.
+Do not attempt to reinstall or recreate them if they are already listed.
+`.trim();
+}

@@ -24,7 +24,7 @@ import type {
   ScriptDomain,
   ExecutionTier,
 } from "./types.js";
-import { MINIMALIST_AGENT_TOOLS } from "./types.js";
+import { MINIMALIST_AGENT_TOOLS, getAvosInternalPath } from "./types.js";
 import { resolveExecutionTier } from "./execution-ladder.js";
 import { SkillLibrary } from "./skill-library.js";
 import { scriptFind, indexScriptEmbedding, removeScriptEmbedding } from "./script-find.js";
@@ -586,6 +586,65 @@ export class ScriptToolSurface {
     }
 
     throw new Error(`Unknown tool primitive: ${toolName}`);
+  }
+
+  /**
+   * Generates a markdown-formatted catalog of all JIT-synthesized Virtual CLIs
+   * and distilled skills available in the current workspace.
+   * Fails gracefully if tables or directories do not exist yet.
+   */
+  static async generateZeroTurnCatalog(
+    doStorage: any, 
+    workspaceFs: any, 
+    spaceId: string, 
+    projectId?: string
+  ): Promise<string> {
+    let catalog = "\n# INSTALLED WORKSPACE COMMANDS & SKILLS\n";
+    catalog += "The following custom commands and scripts have been synthesized and are available via the `Bash` tool:\n\n";
+    
+    let hasItems = false;
+
+    // 1. Fetch JIT Virtual CLIs from SQLite
+    try {
+      const virtualClis = doStorage.sql.exec(
+        "SELECT command_name, description FROM virtual_cli_commands WHERE space_id = ?", 
+        spaceId
+      ).toArray();
+
+      if (virtualClis && virtualClis.length > 0) {
+        hasItems = true;
+        catalog += "## Virtual CLIs\n";
+        virtualClis.forEach((cli: any) => {
+          catalog += `- \`${cli.command_name}\`: ${cli.description}\n`;
+        });
+        catalog += "\n";
+      }
+    } catch (err) {
+      // Table might not exist yet if no CLI has been registered. Ignore.
+    }
+
+    // 2. Fetch Distilled Skills from Workspace (.avos/shared/skills/)
+    try {
+      const skillsPath = `${getAvosInternalPath(spaceId, projectId)}shared/skills/`;
+      const skills = await workspaceFs.listFiles(skillsPath); 
+      
+      const tsFiles = skills.filter((f: string) => f.endsWith(".ts"));
+      
+      if (tsFiles.length > 0) {
+        hasItems = true;
+        catalog += "## Distilled Skills\n";
+        tsFiles.forEach((file: string) => {
+          // Inform the agent it can execute this via standard Node/Bash
+          catalog += `- \`Bash("node ${file}")\`: Executable shared skill module.\n`;
+        });
+        catalog += "\n";
+      }
+    } catch (err) {
+      // Directory might not exist yet. Ignore.
+    }
+
+    // If nothing is installed yet, return an empty string to save prompt tokens
+    return hasItems ? catalog : "";
   }
 
   // ── script.create ──────────────────────────────────────────────────────────
