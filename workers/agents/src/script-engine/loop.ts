@@ -39,6 +39,46 @@ import { FIND_CONFIDENCE_FLOOR } from "./script-find.js";
 import { assessSkillHealth, isSafeToAutoRun } from "./skill-health.js";
 import { applyPlanOp } from "./prebuilt/plan.js";
 import type { PlanState } from "./types.js";
+import { ArtifactsGitService } from "../services/ArtifactsGitService.js";
+
+export interface TurnCommitContext {
+  artifactsGit: ArtifactsGitService;
+  repoName: string;
+  branch: string;
+  turnIndex: number;
+  agentRole: string;
+  goal: string;
+  rationale: string;
+  taskId?: string;
+}
+
+/**
+ * Commits current workspace state into Cloudflare Artifacts (Zig-WASM Git in DO)
+ * with structured reasoning metadata after an agent completes a turn.
+ */
+export async function commitTurnState(ctx: TurnCommitContext) {
+  const commitMessage = `turn(${ctx.turnIndex}): ${ctx.goal.slice(0, 50)}
+
+--AVOS-METADATA--
+author: "${ctx.agentRole}"
+goal: "${ctx.goal}"
+rationale: "${ctx.rationale}"
+task_id: "${ctx.taskId || "none"}"
+timestamp: "${new Date().toISOString()}"
+`;
+
+  try {
+    const repo = await (ctx.artifactsGit as any).env.AGENT_REPOS.get(ctx.repoName);
+    // Stage all changes in workspace and commit
+    return await repo.commit({
+      branch: ctx.branch,
+      message: commitMessage,
+    });
+  } catch (err: any) {
+    console.warn(`⚠️ Failed to commit turn state to Artifacts: ${err.message}`);
+    return { ok: false, error: err.message };
+  }
+}
 
 /**
  * Rebuild the run's plan from its recorded history — used at the start of a RESUMED run, where the
@@ -1097,6 +1137,20 @@ export async function runScriptLoop(
             ok: result.ok, detail: result.error, params: decision.params,
             ...(result.ok ? { output: formatToolOutput(result.output) } : {}),
           });
+
+          // Turn-by-turn Git Time Machine commit
+          if (result.ok && (env as any).artifactsGit && (env as any).projectId) {
+            void commitTurnState({
+              artifactsGit: (env as any).artifactsGit,
+              repoName: `proj_${(env as any).projectId}`,
+              branch: (env as any).activeGitBranch || "main",
+              turnIndex: step + 1,
+              agentRole: (env as any).agentId || "agent",
+              goal: opts.goal,
+              rationale: reasoner.lastNarration || reasoner.lastThinking || decision.name,
+              taskId: runId,
+            }).catch(() => {});
+          }
           // The real outcome, recorded for the repeat guard above — see its own comment for why
           // this must never be assumed to be a success.
           attemptedCalls.set(callKey, {
