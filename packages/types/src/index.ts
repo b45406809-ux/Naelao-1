@@ -223,5 +223,6 @@ export * from "./mcp-mesh";
 export * from "./threads";
 export * from "./project-tasks";
 export * from "./multiplayer-presence";
+export * from "./progressive-disclosure";
 
 

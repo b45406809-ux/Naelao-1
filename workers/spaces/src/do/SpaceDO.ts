@@ -1321,6 +1321,22 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 47,
+    description: "user_workspace_preferences table for Progressive Disclosure UI Governance",
+    up: `
+      CREATE TABLE IF NOT EXISTS user_workspace_preferences (
+        user_id TEXT NOT NULL,
+        space_id TEXT NOT NULL,
+        ui_mode TEXT NOT NULL DEFAULT 'business_mode' CHECK (ui_mode IN ('business_mode', 'developer_mode')),
+        show_bot_heartbeats INTEGER NOT NULL DEFAULT 0,
+        show_git_commit_graphs INTEGER NOT NULL DEFAULT 0,
+        show_token_meters INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (user_id, space_id)
+      );
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -1617,6 +1633,20 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           locked_by_compliance INTEGER NOT NULL DEFAULT 0,
           air_gapped_only INTEGER NOT NULL DEFAULT 0,
           updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+      `);
+    } catch { /* table may already exist */ }
+    try {
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS user_workspace_preferences (
+          user_id TEXT NOT NULL,
+          space_id TEXT NOT NULL,
+          ui_mode TEXT NOT NULL DEFAULT 'business_mode' CHECK (ui_mode IN ('business_mode', 'developer_mode')),
+          show_bot_heartbeats INTEGER NOT NULL DEFAULT 0,
+          show_git_commit_graphs INTEGER NOT NULL DEFAULT 0,
+          show_token_meters INTEGER NOT NULL DEFAULT 0,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          PRIMARY KEY (user_id, space_id)
         );
       `);
     } catch { /* table may already exist */ }
@@ -2495,6 +2525,26 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       if ((url.pathname === "/compliance-policy" || url.pathname.endsWith("/compliance-policy")) && (method === "PUT" || method === "PATCH" || method === "POST")) {
         return this.handleUpdateCompliancePolicy(request);
+      }
+
+      // ── Progressive Disclosure & UI Governance Preferences ────────────────────
+      const prefMatch = url.pathname.match(/^\/spaces\/([^/]+)\/preferences$/);
+      if (prefMatch?.[1]) {
+        const spaceId = prefMatch[1];
+        const userId = url.searchParams.get("user_id") || request.headers.get("x-naelao-user-id") || "default-user";
+        if (method === "GET") {
+          return Response.json(await this.getUserPreferencesDO(userId, spaceId));
+        }
+        if (method === "PUT" || method === "PATCH" || method === "POST") {
+          const body = await request.json<any>().catch(() => ({}));
+          const res = await this.setUserPreferencesDO(userId, spaceId, {
+            uiMode: body.uiMode || body.ui_mode,
+            showBotHeartbeats: body.showBotHeartbeats ?? body.show_bot_heartbeats,
+            showGitCommitGraphs: body.showGitCommitGraphs ?? body.show_git_commit_graphs,
+            showTokenMeters: body.showTokenMeters ?? body.show_token_meters,
+          });
+          return Response.json(res);
+        }
       }
 
       return Response.json(
@@ -7174,6 +7224,77 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     );
 
     return this.getCompliancePolicy();
+  }
+
+  async setUserPreferencesDO(
+    userId: string,
+    spaceId: string,
+    prefs: { uiMode?: string; showBotHeartbeats?: boolean; showGitCommitGraphs?: boolean; showTokenMeters?: boolean }
+  ) {
+    const existing = this.ctx.storage.sql.exec(
+      "SELECT * FROM user_workspace_preferences WHERE user_id = ? AND space_id = ?",
+      userId,
+      spaceId
+    ).toArray()[0] as any || {
+      ui_mode: "business_mode",
+      show_bot_heartbeats: 0,
+      show_git_commit_graphs: 0,
+      show_token_meters: 0
+    };
+
+    const uiMode = prefs.uiMode ?? existing.ui_mode;
+    const showHeartbeats = prefs.showBotHeartbeats !== undefined ? (prefs.showBotHeartbeats ? 1 : 0) : existing.show_bot_heartbeats;
+    const showGit = prefs.showGitCommitGraphs !== undefined ? (prefs.showGitCommitGraphs ? 1 : 0) : existing.show_git_commit_graphs;
+    const showTokens = prefs.showTokenMeters !== undefined ? (prefs.showTokenMeters ? 1 : 0) : existing.show_token_meters;
+
+    this.ctx.storage.sql.exec(
+      `INSERT OR REPLACE INTO user_workspace_preferences 
+       (user_id, space_id, ui_mode, show_bot_heartbeats, show_git_commit_graphs, show_token_meters, updated_at) 
+       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
+      userId,
+      spaceId,
+      uiMode,
+      showHeartbeats,
+      showGit,
+      showTokens
+    );
+
+    return {
+      userId,
+      spaceId,
+      uiMode,
+      showBotHeartbeats: showHeartbeats === 1,
+      showGitCommitGraphs: showGit === 1,
+      showTokenMeters: showTokens === 1
+    };
+  }
+
+  async getUserPreferencesDO(userId: string, spaceId: string) {
+    const row = this.ctx.storage.sql.exec(
+      "SELECT * FROM user_workspace_preferences WHERE user_id = ? AND space_id = ?",
+      userId,
+      spaceId
+    ).toArray()[0] as any;
+
+    if (!row) {
+      return {
+        userId,
+        spaceId,
+        uiMode: "business_mode",
+        showBotHeartbeats: false,
+        showGitCommitGraphs: false,
+        showTokenMeters: false
+      };
+    }
+
+    return {
+      userId,
+      spaceId,
+      uiMode: row.ui_mode,
+      showBotHeartbeats: row.show_bot_heartbeats === 1,
+      showGitCommitGraphs: row.show_git_commit_graphs === 1,
+      showTokenMeters: row.show_token_meters === 1
+    };
   }
 
   private async handleUpdateCompliancePolicy(request: Request): Promise<Response> {
