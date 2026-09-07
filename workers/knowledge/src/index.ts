@@ -7,7 +7,17 @@
 
 import { Hono } from "hono";
 import { requestId, errorResponse, notFound, badRequest, unauthorized, internalError, safeKvPut, requireInternalHmac } from "@naelao/http";
-import { chunkText, embedText, embedBatch, bm25Score, reciprocalRankFusion } from "@naelao/rag";
+import {
+  chunkText,
+  embedText,
+  embedBatch,
+  bm25Score,
+  reciprocalRankFusion,
+  EdgeBM25,
+  buildCitationBadges,
+  appendCitationFootnotes,
+  RankedDocument
+} from "@naelao/rag";
 import { checkSsrf } from "@naelao/security";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { moderateInput } from "@naelao/llm-gateway";
@@ -933,6 +943,199 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
   }
 
   return c.json({ data: results, cached: false, retrieval_mode: "legacy" });
+});
+
+// ── POST /spaces/:spaceId/search ──────────────────────────────────────────────
+// G-X12: Google Search AI Mode at the Edge with Hybrid RRF & Citations
+
+app.use("/spaces/:spaceId/search", requireInternalHmac((c) => (c as unknown as { env: KnowledgeEnv }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/search", async (c, next) => {
+  const tenantId = requireTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const owned = await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId);
+  if (!owned) throw notFound("Space not found");
+  await next();
+});
+
+app.post("/spaces/:spaceId/search", async (c) => {
+  const startTime = Date.now();
+  const spaceId = c.req.param("spaceId");
+  
+  const body = await c.req.json<{
+    query: string;
+    project_id?: string;
+    projectId?: string;
+    roleRank?: number;
+    role_rank?: number;
+    user_role?: string;
+  }>().catch(() => ({} as any));
+
+  const query = (body.query ?? "").trim();
+  const projectId = body.project_id ?? body.projectId ?? null;
+  
+  let roleRank = body.roleRank ?? body.role_rank;
+  if (roleRank === undefined && body.user_role) {
+    roleRank = ROLE_HIERARCHY_RANK[body.user_role as MemberRole] ?? 1;
+  }
+  if (roleRank === undefined) {
+    roleRank = 1;
+  }
+
+  if (!query) {
+    return c.json({ error: "Missing search query" }, 400);
+  }
+
+  // ── STEP 1: SUB-50ms SEMANTIC CACHE CHECK ─────────────────────────────────
+  const queryEmbed = await embedText(c.env.AI, query);
+  const queryVector = queryEmbed.embedding;
+
+  const cacheMatch = await c.env.SEMANTIC_CACHE_VECTORS.query(queryVector, {
+    topK: 1,
+    filter: { space_id: spaceId }
+  });
+
+  if (cacheMatch.matches && cacheMatch.matches.length > 0 && (cacheMatch.matches[0].score ?? 0) > 0.96) {
+    const cachedPayload = await c.env.SEMANTIC_CACHE_KV.get(cacheMatch.matches[0].id, "json") as any;
+    if (cachedPayload) {
+      return c.json({
+        answer: cachedPayload.answer,
+        citations: cachedPayload.citations,
+        source: "SEMANTIC_CACHE",
+        latencyMs: Date.now() - startTime
+      });
+    }
+  }
+
+  // ── STEP 2: DENSE VECTOR RETRIEVAL (Vectorize with Mini-AGI Pre-Filter) ───
+  const denseResults = await c.env.KB_VECTORS.query(queryVector, {
+    topK: 12,
+    filter: {
+      space_id: spaceId,
+      project_id: projectId ? { $eq: projectId } : { $eq: SPACE_WIDE_PROJECT_SENTINEL },
+      min_role_rank: { $lte: Number(roleRank) }
+    },
+    returnMetadata: "indexed"
+  });
+
+  const denseDocs: RankedDocument[] = (denseResults.matches ?? []).map((m: any) => ({
+    id: m.id,
+    docId: m.metadata?.doc_id || "",
+    title: m.metadata?.title || "Untitled Document",
+    text: m.metadata?.text || m.metadata?.content_preview || "",
+    sourceUrl: m.metadata?.source_url
+  }));
+
+  // ── STEP 3: SPARSE IN-MEMORY BM25 RETRIEVAL ──────────────────────────────
+  const bm25 = new EdgeBM25(denseDocs);
+  const sparseScores = bm25.score(query);
+
+  // ── STEP 4: RECIPROCAL RANK FUSION (RRF k=60) ─────────────────────────────
+  const fusedDocs = reciprocalRankFusion(denseDocs, sparseScores, denseDocs, 60);
+  const topChunks = fusedDocs.slice(0, 5);
+
+  // Check confidence threshold: fallback to live web grounding if results are thin
+  const highestRrfScore = topChunks[0]?.score || 0;
+  let webGroundingUsed = false;
+  let webGroundingResults: RankedDocument[] = [];
+
+  if (topChunks.length === 0 || highestRrfScore < 0.012) {
+    webGroundingUsed = true;
+    if (c.env.TAVILY_API_KEY) {
+      try {
+        const resp = await fetch("https://api.tavily.com/search", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            api_key: c.env.TAVILY_API_KEY,
+            query,
+            max_results: 5,
+            search_depth: "basic",
+            include_answer: false,
+          }),
+        });
+        if (resp.ok) {
+          const data = await resp.json<{ results?: Array<{ title?: string; url?: string; content?: string }> }>();
+          if (data.results && data.results.length > 0) {
+            webGroundingResults = data.results.map((r, i) => ({
+              id: `web_${i}`,
+              docId: `web_${i}`,
+              title: r.title || "Web Search Result",
+              text: r.content || "",
+              sourceUrl: r.url
+            }));
+          }
+        }
+      } catch (err) {
+        console.error("Web search grounding failed:", err);
+      }
+    }
+  }
+
+  // ── STEP 5: GENERATE GROUNDED ANSWER WITH CITATIONS ───────────────────────
+  const finalChunks = webGroundingResults.length > 0 ? webGroundingResults : topChunks;
+  const citations = buildCitationBadges(finalChunks);
+  const contextPassages = finalChunks
+    .map((chunk, idx) => `[${idx + 1}] Source: ${chunk.title}\n${chunk.text}`)
+    .join("\n\n");
+
+  const prompt = `You are an accurate, cited research specialist. Answer the user prompt using ONLY the provided sources.
+Anchor statements with [1], [2] footnotes matching the sources. If unsure, state what cannot be verified.
+
+USER QUERY: ${query}
+
+CONTEXT SOURCES:
+${contextPassages || "No local sources found."}`;
+
+  let rawAnswer = "";
+  try {
+    const completion = await c.env.AI.run("@cf/meta/llama-3.3-70b-instruct", {
+      messages: [
+        { role: "system", content: "You provide verified factual answers with numbered footnote citations." },
+        { role: "user", content: prompt }
+      ]
+    });
+    rawAnswer = (completion as any).response || "";
+  } catch (err) {
+    try {
+      const completion = await c.env.AI.run("@cf/meta/llama-3-8b-instruct", {
+        messages: [
+          { role: "system", content: "You provide verified factual answers with numbered footnote citations." },
+          { role: "user", content: prompt }
+        ]
+      });
+      rawAnswer = (completion as any).response || "";
+    } catch (innerErr) {
+      rawAnswer = "Unable to synthesize answer due to model limits.";
+    }
+  }
+
+  const finalAnswerWithFootnotes = appendCitationFootnotes(rawAnswer, citations);
+
+  // ── STEP 6: STORE IN SEMANTIC CACHE (Background Async) ────────────────────
+  const cacheKey = `cache_${spaceId}_${Date.now()}`;
+  c.executionCtx.waitUntil((async () => {
+    try {
+      await c.env.SEMANTIC_CACHE_KV.put(cacheKey, JSON.stringify({
+        answer: finalAnswerWithFootnotes,
+        citations
+      }), { expirationTtl: 86400 * 7 }); // 7-day TTL
+
+      await c.env.SEMANTIC_CACHE_VECTORS.upsert([{
+        id: cacheKey,
+        values: queryVector,
+        metadata: { space_id: spaceId }
+      }]);
+    } catch (err) {
+      console.error("Semantic cache write failed:", err);
+    }
+  })());
+
+  return c.json({
+    answer: finalAnswerWithFootnotes,
+    citations,
+    source: webGroundingUsed && webGroundingResults.length > 0 ? "LIVE_WEB_GROUNDING" : "HYBRID_RAG",
+    latencyMs: Date.now() - startTime
+  });
 });
 
 // ── G-AZ19: Semantic Response Cache ──────────────────────────────────────────
