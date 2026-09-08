@@ -1,135 +1,106 @@
-"use client";
+import React from "react";
+import { GadgetViewportHost } from "./viewports/GadgetViewportHost";
 
-import * as React from "react";
-import { Button } from "@naelao/ui";
-import {
-  getBusinessWallet, listWorkspaceFiles, readWorkspaceFile,
-  type Project, type BusinessWallet, type WorkspaceFile, type WorkspaceFileContent,
-} from "@/lib/api";
-import { FileViewer } from "@/components/FileViewer";
-
-type Creds = { sessionToken: string; endUserId: string };
-
-function money(cents: number, currency = "USD"): string {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency, minimumFractionDigits: 2 }).format(cents / 100);
+interface Project {
+  id: string;
+  name: string;
+  kind: string;
+  viewportUrl?: string;
+  description?: string;
 }
 
-// F-40: WalletLedgerPanel — the natively-built panel for kind='wallet'. Looks like a bank-account
-// ledger (balance + lifetime cuts + transactions), NOT a generic registry-driven component.
-function WalletLedgerPanel({ spaceId, creds }: { spaceId: string; creds: Creds }) {
-  const [wallet, setWallet] = React.useState<BusinessWallet | null>(null);
-  const [loading, setLoading] = React.useState(true);
-  React.useEffect(() => {
-    getBusinessWallet(spaceId, creds).then(setWallet).catch(() => setWallet(null)).finally(() => setLoading(false));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spaceId]);
-  if (loading) return <p style={{ color: "var(--text3)", fontSize: 13 }}>Loading wallet…</p>;
-  if (!wallet) return <p style={{ color: "var(--text3)", fontSize: 13 }}>Wallet unavailable.</p>;
-  return (
-    <div className="settings-block">
-      <div className="settings-row">
-        <div>
-          <div className="settings-row-label">Available to grow the business</div>
-          <div className="settings-row-sub">Your AI only spends money this business has earned.</div>
-        </div>
-        <div style={{ textAlign: "right" }}>
-          <div className="settings-row-label">{money(wallet.available_balance_cents, wallet.currency)}</div>
-          <div className="settings-row-sub">{wallet.currency}</div>
-        </div>
-      </div>
-      <div className="settings-row">
-        <div>
-          <div className="settings-row-label">Lifetime earned</div>
-          <div className="settings-row-sub">{wallet.lifetime.order_count} settled order(s)</div>
-        </div>
-        <div style={{ textAlign: "right" }}>
-          <div className="settings-row-label">{money(wallet.lifetime.gross_cents)} gross</div>
-          <div className="settings-row-sub">
-            {money(wallet.lifetime.naelao_cut_cents)} Naelao cut
-            {wallet.lifetime.builder_cut_cents > 0 ? ` · ${money(wallet.lifetime.builder_cut_cents)} builder cut` : ""}
-          </div>
-        </div>
-      </div>
-      {wallet.transactions.slice(0, 10).map((t) => (
-        <div className="settings-row" key={t.id}>
-          <div>
-            <div className="settings-row-label">{t.reason.replace(/_/g, " ")}</div>
-            <div className="settings-row-sub">{new Date(t.created_at).toLocaleString()}</div>
-          </div>
-          <div style={{ textAlign: "right" }}>
-            <div className="settings-row-label">{t.delta_cents >= 0 ? "+" : ""}{money(t.delta_cents)}</div>
-            <div className="settings-row-sub">bal {money(t.balance_after_cents)}</div>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
+interface Session {
+  gatekeeperToken: string;
+  user?: {
+    name?: string;
+    email?: string;
+  };
 }
 
-// F-39 UI: read-only workspace file viewer — lists a project's R2 artifacts; clicking an .html file
-// previews it in a sandboxed iframe, other text shows inline.
-function WorkspaceFilesPanel({ spaceId, projectId, creds }: { spaceId: string; projectId: string; creds: Creds }) {
-  const [files, setFiles] = React.useState<WorkspaceFile[]>([]);
-  const [loading, setLoading] = React.useState(true);
-  const [open, setOpen] = React.useState<WorkspaceFileContent | null>(null);
-  React.useEffect(() => {
-    listWorkspaceFiles(spaceId, projectId, creds).then(setFiles).catch(() => setFiles([])).finally(() => setLoading(false));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spaceId, projectId]);
+interface ProjectKindPanelProps {
+  project: Project;
+  session: Session;
+}
 
-  async function openFile(path: string) {
-    try { setOpen(await readWorkspaceFile(spaceId, projectId, path, creds)); }
-    catch { setOpen({ path, content: "(could not read file)" }); }
+export function ProjectKindPanel({ project, session }: ProjectKindPanelProps) {
+  // If the project has a Tier 2 Gadget assigned, use the Pluggable Host
+  if (project.viewportUrl) {
+    return (
+      <GadgetViewportHost 
+        src={project.viewportUrl} 
+        projectId={project.id}
+        token={session.gatekeeperToken} 
+      />
+    );
   }
 
-  if (loading) return <p style={{ color: "var(--text3)", fontSize: 13 }}>Loading files…</p>;
-  if (files.length === 0) return <p style={{ color: "var(--text3)", fontSize: 13 }}>No files in this project's workspace yet — your agent's generated artifacts appear here.</p>;
-  return (
-    <>
-      <div className="settings-block">
-        {files.map((f) => (
-          <div className="settings-row" key={f.path}>
-            <div>
-              <div className="settings-row-label">{f.path}</div>
-              <div className="settings-row-sub">{(f.size / 1024).toFixed(1)} KB · {new Date(f.uploaded).toLocaleDateString()}</div>
-            </div>
-            <Button size="sm" variant="ghost" onClick={() => openFile(f.path)}>View</Button>
-          </div>
-        ))}
-      </div>
-      {open && (
-        <div className="settings-block" style={{ marginTop: 12, padding: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <strong style={{ fontSize: 13 }}>{open.path}</strong>
-            <Button size="sm" variant="ghost" onClick={() => setOpen(null)}>Close</Button>
-          </div>
-          {/* Step 4: multi-format viewer (PDF, images, Word/Excel, text/html/markdown/csv). */}
-          <FileViewer file={open} />
-        </div>
-      )}
-    </>
-  );
+  // Fallback to standard File Explorer / Readme if no Gadget is installed
+  return <DefaultWorkspaceView project={project} />;
 }
 
-/**
- * F-40: the mount point. A SWITCH on project.kind (never a data-driven interchangeable lookup) —
- * each kind's panel is its own purpose-built component. A kind with no panel yet renders nothing
- * (the shared project shell alone), which is the expected incremental-build path. The Files viewer
- * (F-39) is shown for every kind since every project has a workspace.
- */
-export function ProjectKindPanel({ project, spaceId, creds }: { project: Project; spaceId: string; creds: Creds }) {
+function DefaultWorkspaceView({ project }: { project: Project }) {
   return (
-    <>
-      {project.kind === "wallet" && (
-        <>
-          <div className="section-label">Wallet</div>
-          <WalletLedgerPanel spaceId={spaceId} creds={creds} />
-        </>
-      )}
-      {/* Additional kind panels (storefront, crm, ...) mount here one at a time — see F-40. */}
+    <div className="flex flex-col h-full bg-slate-900 border border-slate-800 rounded-lg overflow-hidden text-slate-100">
+      {/* Header */}
+      <div className="px-6 py-4 border-b border-slate-800 bg-slate-950 flex justify-between items-center">
+        <div>
+          <h2 className="text-lg font-semibold text-white">{project.name}</h2>
+          <p className="text-xs text-slate-400 font-mono mt-0.5">Project ID: {project.id}</p>
+        </div>
+        <span className="px-2.5 py-1 text-xs font-semibold bg-slate-800 border border-slate-700 text-slate-300 rounded-full font-mono uppercase">
+          {project.kind}
+        </span>
+      </div>
 
-      <div className="section-label" style={{ marginTop: 24 }}>Files</div>
-      <WorkspaceFilesPanel spaceId={spaceId} projectId={project.id} creds={creds} />
-    </>
+      {/* Content Area */}
+      <div className="flex-1 p-6 overflow-y-auto space-y-6">
+        <div className="bg-slate-950 border border-slate-800 rounded-lg p-5">
+          <h3 className="text-sm font-semibold text-slate-200 mb-2">Workspace Information</h3>
+          <p className="text-sm text-slate-400 leading-relaxed">
+            {project.description || "Welcome to your default project workspace. No viewport plugin is currently configured. You can interact with this project via the terminal, files panel, or register a custom pluggable viewport."}
+          </p>
+        </div>
+
+        {/* Mock File Explorer Fallback */}
+        <div className="space-y-3">
+          <h3 className="text-sm font-semibold text-slate-300">Default File Explorer</h3>
+          <div className="bg-slate-950 border border-slate-800 rounded-lg divide-y divide-slate-800/60 font-mono text-xs">
+            <div className="flex items-center justify-between p-3 hover:bg-slate-900/50 transition">
+              <div className="flex items-center gap-2">
+                <svg className="h-4 w-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <span>README.md</span>
+              </div>
+              <span className="text-slate-500">1.2 KB</span>
+            </div>
+            <div className="flex items-center justify-between p-3 hover:bg-slate-900/50 transition">
+              <div className="flex items-center gap-2">
+                <svg className="h-4 w-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <span>project.config.json</span>
+              </div>
+              <span className="text-slate-500">420 B</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Integration Instructions */}
+        <div className="bg-indigo-950/20 border border-indigo-900/50 rounded-lg p-5">
+          <div className="flex gap-3">
+            <svg className="h-5 w-5 text-indigo-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <div>
+              <h4 className="text-sm font-semibold text-indigo-300">Custom Viewport Plugin Dev Tip</h4>
+              <p className="text-xs text-indigo-200/70 mt-1 leading-relaxed">
+                To link a visual editor to this workspace, register a Tier 2 Gadget instance with the SpaceDO database. The pluggable viewport engine will automatically pick up the gadget and load its custom dashboard layout.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
