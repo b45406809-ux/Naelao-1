@@ -1,179 +1,160 @@
-/**
- * AVOS NaelaoAgentDO - Durable Object for Autonomous Agent Execution
- * Integrates 3-Tier Connector Scoping, Invoker Signing, and Privacy Forking.
- */
+import { UIActionEvent } from "../../../../packages/events/src/index";
 
-import { ThreadKind, Gatekeeper } from '../../../../packages/security/src/gatekeeper';
-import { ToolSurface, ToolDefinition, createPrivacyBridgeCard } from '../script-engine/tool-surface';
-
-export interface AgentDOEnv {
-  CREDENTIALS_WORKER: {
-    fetch: (req: Request) => Promise<Response>;
-  };
-  MCP_HUB: {
-    fetch: (req: Request) => Promise<Response>;
-  };
+export interface TraceEntry {
+  phase: "thought" | "action" | "observation";
+  name: string;
+  detail: string;
+  params?: Record<string, any>;
+  timestamp: string;
 }
 
-export interface AgentExecutionRequest {
-  spaceId: string;
-  projectId?: string;
-  threadId: string;
-  threadKind: ThreadKind;
-  actingUserId: string;
-  agentName: string;
-  prompt: string;
-  tools?: ToolDefinition[];
+export interface ActiveRunContext {
+  runId: string;
+  pendingObservations: UIActionEvent[];
+  history: { role: string; content: string }[];
+}
+
+export interface DurableObjectState {
+  storage: {
+    get<T = any>(key: string): Promise<T | undefined>;
+    put<T = any>(key: string, value: T): Promise<void>;
+  };
 }
 
 export class NaelaoAgentDO {
-  private state: DurableObjectState;
-  private env: AgentDOEnv;
-  private toolSurface: ToolSurface;
+  state: DurableObjectState;
+  env: any;
+  status: "idle" | "running" = "idle";
+  traces: TraceEntry[] = [];
+  activeRunContext: ActiveRunContext = {
+    runId: "run-default",
+    pendingObservations: [],
+    history: []
+  };
 
-  constructor(state: DurableObjectState, env: AgentDOEnv) {
+  constructor(state: DurableObjectState, env: any) {
     this.state = state;
     this.env = env;
-    this.toolSurface = new ToolSurface();
-  }
-
-  /**
-   * Builds the isolated script execution environment for the agent run turn.
-   */
-  private buildScriptEngineEnv(context: {
-    spaceId: string;
-    projectId?: string;
-    threadId: string;
-    threadKind: ThreadKind;
-    actingUserId: string;
-  }) {
-    return {
-      actingUserId: context.actingUserId,
-      projectId: context.projectId,
-      spaceId: context.spaceId,
-      threadKind: context.threadKind,
-      callMcpTool: async (toolName: string, args: Record<string, any>) => {
-        // Enforce Gatekeeper caller signing on dispatched tool call
-        const payload = {
-          toolName,
-          args,
-          context: {
-            spaceId: context.spaceId,
-            projectId: context.projectId,
-            actingUserId: context.actingUserId,
-            threadKind: context.threadKind,
-          },
-        };
-
-        const res = await this.env.MCP_HUB.fetch(
-          new Request('http://mcp-hub/execute', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-          })
-        );
-
-        if (!res.ok) {
-          const errText = await res.text();
-          throw new Error(`MCP execution failed: ${errText}`);
-        }
-
-        return await res.json();
-      },
-    };
   }
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-
-    if (url.pathname === '/execute' && request.method === 'POST') {
-      try {
-        const body = (await request.json()) as AgentExecutionRequest;
-
-        // Register any provided tools into the ToolSurface
-        if (body.tools && Array.isArray(body.tools)) {
-          for (const tool of body.tools) {
-            this.toolSurface.registerTool(tool);
-          }
-        }
-
-        // 1. Perform Physical Tool Schema Stripping
-        const activeTools = this.toolSurface.getToolsForContext(
-          body.threadKind,
-          body.actingUserId,
-          body.projectId
-        );
-
-        // 2. Check if user prompt attempts to target a personal tool from a public room
-        const promptLower = body.prompt.toLowerCase();
-        const personalToolsRequiringBridge = (body.tools || []).filter(
-          t => t.scope === 'USER_PERSONAL' && promptLower.includes(t.name.toLowerCase().split('.')[0])
-        );
-
-        if (
-          (body.threadKind === 'public_channel' || body.threadKind === 'project_room') &&
-          personalToolsRequiringBridge.length > 0
-        ) {
-          const personalTool = personalToolsRequiringBridge[0];
-          const bridgeCard = createPrivacyBridgeCard({
-            toolName: personalTool.name,
-            agentName: body.agentName,
-            actingUserId: body.actingUserId,
-            threadId: body.threadId,
-          });
-
-          return new Response(
-            JSON.stringify({
-              status: 'privacy_bridge_required',
-              uiCard: bridgeCard,
-              activeTools: activeTools.map(t => t.name),
-            }),
-            {
-              status: 200,
-              headers: { 'Content-Type': 'application/json' },
-            }
-          );
-        }
-
-        // 3. Build signed Script Engine Context
-        const scriptEnv = this.buildScriptEngineEnv({
-          spaceId: body.spaceId,
-          projectId: body.projectId,
-          threadId: body.threadId,
-          threadKind: body.threadKind,
-          actingUserId: body.actingUserId,
-        });
-
-        return new Response(
-          JSON.stringify({
-            status: 'ready',
-            activeTools: activeTools.map(t => ({
-              name: t.name,
-              description: t.description,
-              inputSchema: t.inputSchema,
-            })),
-            invoker: {
-              actingUserId: body.actingUserId,
-              threadKind: body.threadKind,
-              spaceId: body.spaceId,
-            },
-          }),
-          {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          }
-        );
-      } catch (err: any) {
-        return new Response(
-          JSON.stringify({ error: err.message || 'Execution error' }),
-          {
-            status: 500,
-            headers: { 'Content-Type': 'application/json' },
-          }
-        );
-      }
+    
+    // Check if endpoint is trace
+    if (url.pathname.includes("/trace")) {
+      return new Response(JSON.stringify(this.traces), {
+        headers: { "Content-Type": "application/json" }
+      });
     }
 
-    return new Response('Not Found', { status: 404 });
+    if (request.method === "POST" && url.pathname.endsWith("/ui-event")) {
+      const event = await request.json() as UIActionEvent;
+      await this.handleUiEvent(event);
+      return new Response(JSON.stringify({ status: "processed", agentStatus: this.status }), {
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+
+    if (request.method === "POST" && url.pathname.endsWith("/message")) {
+      const body = await request.json() as { message: string };
+      const response = await this.executeTurn(body.message, { source: "user" });
+      return new Response(JSON.stringify({ response }), {
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+
+    return new Response("NaelaoAgentDO Endpoint", { status: 200 });
+  }
+
+  pushTrace(trace: Omit<TraceEntry, "timestamp">) {
+    const entry: TraceEntry = {
+      ...trace,
+      timestamp: new Date().toISOString()
+    };
+    this.traces.push(entry);
+    console.log(`[Agent Trace] [${entry.phase.toUpperCase()}] ${entry.name}: ${entry.detail}`, entry.params || "");
+  }
+
+  composeSystemPrompt(): string {
+    return `
+You are Naelao, the sovereign orchestrator agent for the AVOS workspace.
+You operate with deep semantic links to the visual canvas and widgets.
+
+SYSTEM INSTRUCTIONS:
+1. You will receive notification of user interactions within the workspace canvas via the 'mcp.ui_action' stream.
+2. Analyze all UI actions as direct observation inputs. Update your internal state, explain what you see, and respond dynamically.
+3. Keep reactions autonomous, precise, and highly context-aware.
+`.trim();
+  }
+
+  async handleUiEvent(event: UIActionEvent) {
+    // 1. Log the event to the in-memory trace (item 133/HX1)
+    this.pushTrace({
+      phase: "observation",
+      name: "UI_INTERACTION",
+      detail: `User performed ${event.action} in gadget ${event.gadgetId}`,
+      params: event.payload
+    });
+
+    // 2. Wake up the Agent if it's currently sleeping (Dormant -> Active)
+    if (this.status === "idle") {
+      const uiSummary = `The user interacted with the UI: ${event.action}. Data: ${JSON.stringify(event.payload)}`;
+      return await this.executeTurn(uiSummary, { source: "ui_event" });
+    }
+    
+    // 3. If a run is ALREADY in flight, append the UI event to the loop's 
+    // `pendingObservations` so the model sees it on its next reasoning turn.
+    this.activeRunContext.pendingObservations.push(event);
+  }
+
+  async executeTurn(input: string, context: { source: string }): Promise<string> {
+    this.status = "running";
+    this.pushTrace({
+      phase: "thought",
+      name: "THINKING",
+      detail: `Processing input from ${context.source}: "${input.substring(0, 60)}..."`
+    });
+
+    // Handle any pending observations before or during the turn
+    let observationsText = "";
+    if (this.activeRunContext.pendingObservations.length > 0) {
+      const obs = [...this.activeRunContext.pendingObservations];
+      this.activeRunContext.pendingObservations = [];
+      observationsText = "\nPending UI Observations seen since last turn:\n" + obs.map(o => 
+        `- Gadget [${o.gadgetId}] action [${o.action}] payload: ${JSON.stringify(o.payload)}`
+      ).join("\n");
+      
+      this.pushTrace({
+        phase: "observation",
+        name: "PENDING_UI_CONSUMED",
+        detail: `Consumed ${obs.length} pending UI observations during the active reasoning turn.`
+      });
+    }
+
+    // Simulate AI model reasoning loop
+    const systemPrompt = this.composeSystemPrompt();
+    const fullPrompt = `${systemPrompt}\n\nUser/System Input: ${input}${observationsText}`;
+
+    // Simple reasoning simulation based on expected actions
+    let reply = "";
+    if (input.includes("approve") || input.includes("BUTTON_CLICK")) {
+      reply = `I see you've approved that invoice, I'm updating the journal now and processing the associated payment ledger entry.`;
+      this.pushTrace({
+        phase: "action",
+        name: "LEDGER_UPDATE",
+        detail: "Updating project journal and preparing payment processor API payload."
+      });
+    } else {
+      reply = `I've registered your input. Current state updated successfully. Pending canvas gadgets synchronized.`;
+    }
+
+    this.status = "idle";
+    this.pushTrace({
+      phase: "thought",
+      name: "COMPLETED",
+      detail: "Turn finished, returning to dormant state."
+    });
+
+    return reply;
   }
 }
