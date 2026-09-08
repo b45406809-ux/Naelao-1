@@ -187,4 +187,36 @@ export class MicroAppDO {
       headers: { "Content-Type": "application/json" },
     });
   }
+
+import { generateMcpHandlerForGadget } from "../engine/AutoMcpFactory";
+
+export class MicroAppDO extends DurableObject {
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const gadgetId = this.ctx.id.toString(); // Resolved via Tier-3 naming
+
+    // 1. Route: Inbound Workspace Events (Ingestion)
+    if (url.pathname === "/events/ingest") {
+      const event = await request.json() as { type: string; filePath: string; content: string };
+      await this.processWorkspaceChange(event);
+      return new Response(JSON.stringify({ ok: true }));
+    }
+
+    // 2. Route: Stateless MCP v2 Endpoint
+    if (url.pathname === "/mcp") {
+      const handler = generateMcpHandlerForGadget(gadgetId, this.ctx.storage);
+      return handler(request);
+    }
+
+    // 3. Fallback: Standard Micro-App UI/API (T1/T2)
+    return new Response("Not Found", { status: 404 });
+  }
+
+  private async processWorkspaceChange(event: any) {
+    // 1. Identify File Type (Code vs Data)
+    // 2. Run Parser (Wasm Tree-sitter or CSV Stream)
+    // 3. Perform atomic upsert into private DO Facet SQLite
+    console.log(`Indexing ${event.filePath}...`);
+  }
+}
 }
