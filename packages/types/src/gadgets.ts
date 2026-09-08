@@ -60,3 +60,43 @@ export interface GadgetRosterItem {
   microAppDoName: string;
   microAppDoId: string;
 }
+
+// Gatekeeper Capability Token Types (Phase 6 Chunk 12)
+export type GatekeeperResourceType = "sqlite_db" | "notifications" | "slack" | "mcp_tool" | "storage_bucket";
+export type GatekeeperOperation = "read" | "write" | "delete" | "execute" | "notify";
+
+export interface GatekeeperGrant {
+  resource: GatekeeperResourceType;
+  target: string; // e.g. "table:app_records" or "slack:#warehouse-alerts"
+  operations: GatekeeperOperation[];
+  constraints?: {
+    rateLimitPerMinute?: number;
+    maxAmountCents?: number;
+  };
+}
+
+export interface GatekeeperCapabilityPayload {
+  appId: string;
+  gadgetInstanceId: string;
+  spaceId: string;
+  projectId?: string;
+  creatorUserId: string;
+  creatorRoleRank: number; // 1: Viewer -> 2: Member -> 3: Editor -> 4: Admin -> 5: Owner
+  grants: GatekeeperGrant[];
+  issuedAt: number;  // Epoch milliseconds
+  expiresAt: number; // Epoch milliseconds
+}
+
+export interface GatekeeperTokenRequest {
+  requestedGrants?: GatekeeperGrant[];
+  ttlSeconds?: number; // Optional custom TTL, capped at 86400 (24h)
+}
+
+export interface GatekeeperTokenResponse {
+  ok: boolean;
+  token: string;
+  gadgetInstanceId: string;
+  spaceId: string;
+  expiresAt: string; // ISO-8601 string
+  grantedCapabilities: GatekeeperGrant[];
+}
