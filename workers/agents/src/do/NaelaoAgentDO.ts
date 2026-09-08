@@ -1,4 +1,5 @@
 import { DynamicUiWidget } from "@avos/types";
+import { ScriptToolSurface } from "../script-engine/tool-surface";
 
 export class NaelaoAgentDO {
   private ctx: DurableObjectState;
@@ -37,6 +38,12 @@ export class NaelaoAgentDO {
       const body: any = await request.json();
       await this.handleUiAction(body);
       return Response.json({ success: true });
+    }
+
+    if (request.method === "POST" && url.pathname.endsWith("/initialize-run")) {
+      const body: any = await request.json();
+      const result = await this.initializeRunContext(body);
+      return Response.json({ success: true, activeGadgetCounts: result.activeGadgetCounts });
     }
 
     return new Response("NaelaoAgentDO Active (MCP-UI)", { status: 200 });
@@ -103,6 +110,42 @@ export class NaelaoAgentDO {
       type: "agent_reasoning_step",
       event: reasoningEvent,
     });
+  }
+
+  async initializeRunContext(runConfig: { spaceId: string; projectId?: string; userId?: string }) {
+    // 1. Fetch space actor stub
+    const spaceDO = this.getSpaceDOStub(runConfig.spaceId);
+
+    // 2. Discover active gadgets for this project/user
+    const discoveredGadgets = await spaceDO.listGadgetInstancesForRun(
+      runConfig.projectId,
+      runConfig.userId
+    );
+
+    // 3. Register discovered gadget MCP endpoints into tool surface
+    const toolSurface = new ScriptToolSurface();
+    await toolSurface.registerDiscoveredGadgetTools(discoveredGadgets, {
+      mcpHub: this.env.MCP_HUB || {
+        listToolsOverInternalRpc: async () => ({ tools: [] }),
+        callToolOverInternalRpc: async () => ({})
+      },
+      spaceId: runConfig.spaceId
+    });
+
+    return { toolSurface, activeGadgetCounts: discoveredGadgets.length };
+  }
+
+  private getSpaceDOStub(spaceId: string) {
+    if (this.env?.SPACE_DO) {
+      const id = this.env.SPACE_DO.idFromString(spaceId);
+      return this.env.SPACE_DO.get(id);
+    }
+    // Mock / fallback stub for tests
+    return {
+      listGadgetInstancesForRun: async (projectId?: string, userId?: string) => {
+        return [];
+      }
+    };
   }
 
   private broadcastToFrontend(message: any) {

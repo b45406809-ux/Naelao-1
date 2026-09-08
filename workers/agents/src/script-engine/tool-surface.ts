@@ -5,6 +5,21 @@
 
 import { ThreadKind } from '../../../packages/security/src/gatekeeper';
 
+export interface DiscoveredGadgetEndpoint {
+  instanceId: string;
+  manifestId: string;
+  tier: 1 | 2 | 3;
+  internalMcpUrl: string; // e.g. "http://internal/spaces/s1/gadgets/g102/mcp"
+}
+
+export interface GadgetMcpToolMap {
+  qualifiedToolName: string; // "mcp.gadget_g102.find_callers"
+  instanceId: string;
+  originalToolName: string;  // "find_callers"
+  description: string;
+  inputSchema: Record<string, any>;
+}
+
 export type ToolScope = 'SPACE_SHARED' | 'PROJECT_BOUND' | 'USER_PERSONAL';
 
 export interface ToolParameterSchema {
@@ -126,5 +141,72 @@ export class ToolSurface {
   isPersonalTool(toolName: string): boolean {
     const tool = this.tools.get(toolName);
     return tool?.scope === 'USER_PERSONAL';
+  }
+}
+
+export class ScriptToolSurface extends ToolSurface {
+  private gadgetMcpTools = new Map<string, { internalMcpUrl: string; toolName: string }>();
+  private operations = new Map<string, any>();
+
+  /**
+   * Queries each discovered gadget's /mcp discovery endpoint and registers
+   * its tools into the agent's available tool operations map.
+   */
+  async registerDiscoveredGadgetTools(
+    gadgets: DiscoveredGadgetEndpoint[],
+    ctx: { mcpHub: any; spaceId: string }
+  ): Promise<void> {
+    for (const gadget of gadgets) {
+      try {
+        // Query the gadget's auto-generated MCP v2 tool list
+        const mcpResponse = await ctx.mcpHub.listToolsOverInternalRpc({
+          endpointUrl: gadget.internalMcpUrl,
+          spaceId: ctx.spaceId
+        });
+
+        if (mcpResponse && Array.isArray(mcpResponse.tools)) {
+          for (const tool of mcpResponse.tools) {
+            const qualifiedName = `mcp.gadget_${gadget.instanceId}.${tool.name}`;
+
+            this.gadgetMcpTools.set(qualifiedName, {
+              internalMcpUrl: gadget.internalMcpUrl,
+              toolName: tool.name
+            });
+
+            // Register qualified operation in tool surface
+            this.registerOperation(qualifiedName, {
+              description: `[Gadget: ${gadget.manifestId}] ${tool.description}`,
+              parameters: tool.inputSchema || { type: "object", properties: {} },
+              handler: async (args: Record<string, any>) => {
+                return await ctx.mcpHub.callToolOverInternalRpc({
+                  endpointUrl: gadget.internalMcpUrl,
+                  toolName: tool.name,
+                  arguments: args,
+                  spaceId: ctx.spaceId
+                });
+              }
+            });
+
+            // Also register as standard ToolDefinition so filterToolsByThreadScope can see it
+            this.registerTool({
+              name: qualifiedName,
+              description: `[Gadget: ${gadget.manifestId}] ${tool.description}`,
+              scope: gadget.tier === 1 ? 'USER_PERSONAL' : 'SPACE_SHARED',
+              inputSchema: tool.inputSchema || { type: "object", properties: {} }
+            });
+          }
+        }
+      } catch (err: any) {
+        console.warn(`⚠️ Failed to register MCP tools for gadget '${gadget.instanceId}':`, err.message);
+      }
+    }
+  }
+
+  private registerOperation(name: string, opConfig: any) {
+    this.operations.set(name, opConfig);
+  }
+
+  getOperation(name: string) {
+    return this.operations.get(name);
   }
 }
