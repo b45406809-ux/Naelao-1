@@ -1,199 +1,75 @@
-export interface DurableObjectState {
-  id: { toString(): string };
-  storage: {
-    get(key: string): Promise<any>;
-    put(key: string, value: any): Promise<void>;
-    sql: {
-      exec(sql: string, ...args: any[]): { toArray(): any[] };
-    };
-  };
-  blockConcurrencyWhile(callback: () => Promise<void>): Promise<void>;
-}
+import { AVOS_PROJECT_KINDS } from '../../../../packages/events/src/business-feature-kinds';
 
-import { AutomationWatchdog } from "../../../agents/src/workflows/AutomationWatchdog";
+export interface Env {
+  // Define environment bindings here if needed
+}
 
 export class SpaceDO {
   state: DurableObjectState;
-  env: any;
-  spaceId: string;
+  env: Env;
 
-  constructor(state: DurableObjectState, env: any) {
+  constructor(state: DurableObjectState, env: Env) {
     this.state = state;
     this.env = env;
-    this.spaceId = state.id.toString();
-    
-    // Initialize DB tables inside blockConcurrencyWhile to guarantee readiness
-    this.state.blockConcurrencyWhile(async () => {
-      await this.initDatabase();
-    });
-  }
-
-  async initDatabase() {
-    try {
-      this.state.storage.sql.exec(`
-        CREATE TABLE IF NOT EXISTS projects (
-          id TEXT PRIMARY KEY,
-          name TEXT,
-          kind TEXT,
-          default_viewport_id TEXT
-        );
-      `);
-      this.state.storage.sql.exec(`
-        CREATE TABLE IF NOT EXISTS gadget_instances (
-          id TEXT PRIMARY KEY,
-          project_id TEXT,
-          manifest_id TEXT,
-          tier INTEGER
-        );
-      `);
-    } catch (e) {
-      console.warn("SQL interface not available or failed inside SpaceDO, using fallback key-value storage", e);
-    }
   }
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
 
-    if (path.startsWith("/project/")) {
-      const projectId = path.split("/")[2];
-      if (request.method === "GET") {
-        const project = await this.getProject(projectId);
-        return new Response(JSON.stringify(project), {
-          headers: { 
-            "Content-Type": "application/json",
-            "Access-Control-Allow-Origin": "*"
-          }
+    try {
+      if (path === "/create-project" && request.method === "POST") {
+        const body: any = await request.json();
+        const project = await this.createProject(body);
+        return new Response(JSON.stringify({ success: true, project }), {
+          headers: { "Content-Type": "application/json" }
         });
       }
-    }
 
-    return new Response("Not Found", { status: 404 });
+      if (path === "/get-projects" && request.method === "GET") {
+        const projects = await this.getProjects();
+        return new Response(JSON.stringify({ success: true, projects }), {
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+
+      return new Response("Not Found", { status: 404 });
+    } catch (err: any) {
+      return new Response(JSON.stringify({ success: false, error: err.message }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
   }
 
-  async getProject(projectId: string) {
-    let project: any = null;
-    try {
-      const rows = this.state.storage.sql.exec(
-        "SELECT * FROM projects WHERE id = ?",
-        projectId
-      ).toArray();
-      if (rows.length > 0) {
-        project = rows[0];
-      }
-    } catch (e) {
-      // Fallback in-memory/storage query
-      project = await this.state.storage.get(`project:${projectId}`);
+  async createProject(params: { id?: string; name: string; kind: string }) {
+    if (!params.name) {
+      throw new Error("Project name is required");
+    }
+    if (!params.kind) {
+      throw new Error("Project kind is required");
+    }
+    if (!AVOS_PROJECT_KINDS[params.kind]) {
+      throw new Error(`Invalid project kind: ${params.kind}`);
     }
 
-    if (!project) {
-      // Return a default mock project for demonstration and resilience
-      project = {
-        id: projectId,
-        name: "Mock Enterprise Studio Project",
-        kind: "doc_studio",
-        default_viewport_id: "doc-studio-gadget"
-      };
-    }
-
-    // Resolve dynamic pluggable viewport
-    const viewportUrl = await this.resolveProjectViewport(projectId);
+    const projects: any[] = (await this.state.storage.get("projects")) || [];
     
-    return {
-      ...project,
-      viewportUrl
+    const newProject = {
+      id: params.id || `proj_${Math.random().toString(36).substr(2, 9)}`,
+      name: params.name,
+      kind: params.kind,
+      createdAt: new Date().toISOString(),
+      config: AVOS_PROJECT_KINDS[params.kind]
     };
+
+    projects.push(newProject);
+    await this.state.storage.put("projects", projects);
+
+    return newProject;
   }
 
-  async resolveProjectViewport(projectId: string): Promise<string> {
-    let manifestId = "default-viewport-gadget";
-    try {
-      // Lookup the Tier 2 Gadget Instance bound to this project
-      const gadgetRows = this.state.storage.sql.exec(
-        "SELECT manifest_id FROM gadget_instances WHERE project_id = ? AND tier = 2", 
-        projectId
-      ).toArray();
-      
-      if (gadgetRows.length > 0 && gadgetRows[0].manifest_id) {
-        manifestId = gadgetRows[0].manifest_id;
-      } else {
-        const storedManifestId = await this.state.storage.get(`gadget:${projectId}:tier2`);
-        if (storedManifestId) {
-          manifestId = storedManifestId as string;
-        }
-      }
-    } catch (e) {
-      // Fallback
-      manifestId = "doc-studio-gadget";
-    }
-    
-    // Construct the secure, authenticated Gadget URL
-    // Format: https://{spaceId}-{projectId}-{manifestId}.avos.apps/app
-    return `https://${this.spaceId}-${projectId}-${manifestId}.avos.apps/app`;
+  async getProjects() {
+    return (await this.state.storage.get("projects")) || [];
   }
-
-  async constructor(state: DurableObjectState, env: any) {
-    this.ctx = state;
-    this.env = env;
-    this.sql = state.storage.sql;
-    this.initTables();
-    // Schedule initial audit alarm on startup
-    this.setAuditAlarm().catch(() => {});
-  }
-
-  async setAuditAlarm() {
-    await this.ctx.storage.setAlarm(Date.now() + 1000 * 60 * 60 * 6);
-  }
-
-  async alarm() {
-    const watchdog = new AutomationWatchdog(this);
-    await watchdog.runAuditPass();
-    // Reset alarm for another 6 hours
-    await this.setAuditAlarm();
-  }
-
-  async postToTeamRoom(projectId: string, card: { type: string; body: string; actions: string[] }) {
-    // Broadcast incident card as a team room message or event
-    await this.broadcastEvent({
-      type: 'AUTOMATION_INCIDENT_REPORTED',
-      payload: { projectId, card },
-      timestamp: Date.now()
-    });
-  }
-
-  async broadcastEvent(event: any) {
-    // Broadcast via WebSockets or internal state listeners if present
-    if (this.sessions) {
-      const data = JSON.stringify(event);
-      for (const session of this.sessions) {
-        try {
-          session.socket.send(data);
-        } catch (e) {
-          // Ignore closed sessions
-        }
-      }
-    }
-  }
-
-  initTables() {
-
-    this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS project_anchored_workflows (
-        id TEXT PRIMARY KEY,
-        project_id TEXT,
-        status TEXT,
-        next_run_at INTEGER,
-        updated_at INTEGER
-      )
-    `);
-
-    this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS workflow_incidents (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        job_id TEXT,
-        kind TEXT,
-        message TEXT,
-        created_at INTEGER
-      )
-    `);
 }

@@ -1,104 +1,173 @@
-import React from "react";
-import { GadgetViewportHost } from "./viewports/GadgetViewportHost";
+import React from 'react';
+import { AVOS_PROJECT_KINDS } from '../../../../packages/events/src/business-feature-kinds';
 
-interface Project {
-  id: string;
-  name: string;
-  kind: string;
-  viewportUrl?: string;
-  description?: string;
-}
+// Fallback/Mock Canvas Components for the Registry
+const CodeWorkspaceCanvas = ({ projectId, ladderTier, domainPrompt }: any) => (
+  <div className="p-4 bg-slate-900 text-slate-100 rounded border border-slate-700">
+    <h3 className="font-semibold text-lg text-emerald-400">Code Workspace Canvas</h3>
+    <p className="text-sm text-slate-400 mb-2">Project: <span className="font-mono text-white">{projectId}</span></p>
+    <div className="bg-slate-950 p-2 rounded font-mono text-xs mb-3">
+      Allowed Ladder Tiers: {ladderTier.join(', ')}
+    </div>
+    <div className="text-xs text-slate-300 bg-slate-800 p-2 rounded max-h-24 overflow-y-auto">
+      <strong>System Prompt:</strong> {domainPrompt}
+    </div>
+  </div>
+);
 
-interface Session {
-  gatekeeperToken: string;
-  user?: {
-    name?: string;
-    email?: string;
-  };
-}
+const DocumentRedlineCanvas = ({ projectId, ladderTier, domainPrompt }: any) => (
+  <div className="p-4 bg-stone-900 text-stone-100 rounded border border-stone-700">
+    <h3 className="font-semibold text-lg text-amber-400">Document Redline Canvas</h3>
+    <p className="text-sm text-stone-400 mb-2">Project ID: <span className="font-mono text-white">{projectId}</span></p>
+    <div className="text-xs text-stone-300 bg-stone-850 p-2 rounded mb-3">
+      <strong>System Prompt:</strong> {domainPrompt}
+    </div>
+  </div>
+);
 
-interface ProjectKindPanelProps {
-  project: Project;
-  session: Session;
-}
+const VoiceAgentCanvas = ({ projectId, ladderTier, domainPrompt }: any) => (
+  <div className="p-4 bg-zinc-900 text-zinc-100 rounded border border-zinc-700">
+    <h3 className="font-semibold text-lg text-cyan-400">Voice Phone Desk Canvas</h3>
+    <p className="text-sm text-zinc-400 mb-2">Continuous Mode • Project ID: <span className="font-mono text-white">{projectId}</span></p>
+    <div className="text-xs text-zinc-300 bg-zinc-850 p-2 rounded mb-3">
+      <strong>System Prompt:</strong> {domainPrompt}
+    </div>
+  </div>
+);
 
-export function ProjectKindPanel({ project, session }: ProjectKindPanelProps) {
-  // If the project has a Tier 2 Gadget assigned, use the Pluggable Host
-  if (project.viewportUrl) {
+const ModelStudioCanvas = ({ projectId, ladderTier, domainPrompt }: any) => (
+  <div className="p-4 bg-purple-950 text-purple-100 rounded border border-purple-800">
+    <h3 className="font-semibold text-lg text-purple-400">Model Customization Canvas</h3>
+    <p className="text-sm text-purple-300 mb-2">Project ID: <span className="font-mono text-white">{projectId}</span></p>
+    <div className="text-xs text-purple-200 bg-purple-900 p-2 rounded mb-3">
+      <strong>System Prompt:</strong> {domainPrompt}
+    </div>
+  </div>
+);
+
+const CustomerBotCanvas = ({ projectId, ladderTier, domainPrompt }: any) => (
+  <div className="p-4 bg-indigo-950 text-indigo-100 rounded border border-indigo-800">
+    <h3 className="font-semibold text-lg text-indigo-400">Customer Support Desk Canvas</h3>
+    <p className="text-sm text-indigo-300 mb-2">Continuous Mode • Project ID: <span className="font-mono text-white">{projectId}</span></p>
+    <div className="text-xs text-indigo-200 bg-indigo-900 p-2 rounded mb-3">
+      <strong>System Prompt:</strong> {domainPrompt}
+    </div>
+  </div>
+);
+
+const GrowthEngineCanvas = ({ projectId, ladderTier, domainPrompt }: any) => (
+  <div className="p-4 bg-teal-950 text-teal-100 rounded border border-teal-800">
+    <h3 className="font-semibold text-lg text-teal-400">Growth & Marketing Canvas</h3>
+    <p className="text-sm text-teal-300 mb-2">Project ID: <span className="font-mono text-white">{projectId}</span></p>
+    <div className="text-xs text-teal-200 bg-teal-900 p-2 rounded mb-3">
+      <strong>System Prompt:</strong> {domainPrompt}
+    </div>
+  </div>
+);
+
+const AppStudioCanvas = ({ projectId, ladderTier, domainPrompt }: any) => (
+  <div className="p-4 bg-blue-950 text-blue-100 rounded border border-blue-800">
+    <h3 className="font-semibold text-lg text-blue-400">No-Code Application Canvas</h3>
+    <p className="text-sm text-blue-300 mb-2">Project ID: <span className="font-mono text-white">{projectId}</span></p>
+    <div className="text-xs text-blue-200 bg-blue-900 p-2 rounded mb-3">
+      <strong>System Prompt:</strong> {domainPrompt}
+    </div>
+  </div>
+);
+
+// Fallback registry matching viewportComponent names to React components
+export const ViewportRegistry: Record<string, React.ComponentType<any>> = {
+  CodeWorkspaceCanvas,
+  DocumentRedlineCanvas,
+  VoiceAgentCanvas,
+  ModelStudioCanvas,
+  CustomerBotCanvas,
+  GrowthEngineCanvas,
+  AppStudioCanvas
+};
+
+export function ProjectKindPanel({ project }: { project: any }) {
+  if (!project) {
+    return <div className="p-4 text-rose-500">No active project selected.</div>;
+  }
+
+  const kindKey = project.kind || "product_dev";
+  const kind = AVOS_PROJECT_KINDS[kindKey];
+
+  if (!kind) {
     return (
-      <GadgetViewportHost 
-        src={project.viewportUrl} 
-        projectId={project.id}
-        token={session.gatekeeperToken} 
-      />
+      <div className="p-4 bg-red-950 text-red-200 rounded border border-red-800">
+        <h3 className="font-bold">Error: Unsupported Project Kind</h3>
+        <p className="text-sm text-red-300">The project kind &apos;{kindKey}&apos; is not registered in the system.</p>
+      </div>
     );
   }
 
-  // Fallback to standard File Explorer / Readme if no Gadget is installed
-  return <DefaultWorkspaceView project={project} />;
-}
+  // Resolve the dynamic component
+  const Viewport = ViewportRegistry[kind.viewportComponent] || CodeWorkspaceCanvas;
 
-function DefaultWorkspaceView({ project }: { project: Project }) {
   return (
-    <div className="flex flex-col h-full bg-slate-900 border border-slate-800 rounded-lg overflow-hidden text-slate-100">
-      {/* Header */}
-      <div className="px-6 py-4 border-b border-slate-800 bg-slate-950 flex justify-between items-center">
+    <div className="viewport-container border border-slate-700 bg-slate-900/50 rounded-xl overflow-hidden p-6 shadow-xl space-y-6">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-4">
         <div>
-          <h2 className="text-lg font-semibold text-white">{project.name}</h2>
-          <p className="text-xs text-slate-400 font-mono mt-0.5">Project ID: {project.id}</p>
+          <span className="text-xs uppercase font-semibold tracking-wider text-indigo-400 bg-indigo-950 px-2.5 py-1 rounded-full border border-indigo-900">
+            {kind.lifecycle} Lifecycle
+          </span>
+          <h2 className="text-2xl font-bold text-white mt-2">{kind.label}</h2>
+          <p className="text-slate-400 text-sm mt-1">{kind.description}</p>
         </div>
-        <span className="px-2.5 py-1 text-xs font-semibold bg-slate-800 border border-slate-700 text-slate-300 rounded-full font-mono uppercase">
-          {project.kind}
-        </span>
+        
+        <div className="flex flex-col items-end gap-1.5">
+          <span className="text-xs text-slate-400">Execution Ladder Ceiling:</span>
+          <div className="flex gap-1">
+            {[1, 2, 3, 4, 5, 6].map((tier) => {
+              const isAllowed = kind.allowedLadderTiers.includes(tier);
+              return (
+                <span
+                  key={tier}
+                  className={`text-xs font-bold w-6 h-6 flex items-center justify-center rounded-full transition-all duration-200 ${
+                    isAllowed 
+                      ? "bg-emerald-500 text-slate-950 ring-2 ring-emerald-400/30" 
+                      : "bg-slate-800 text-slate-600 line-through"
+                  }`}
+                  title={isAllowed ? `Tier T${tier} Authorized` : `Tier T${tier} Forbidden`}
+                >
+                  T{tier}
+                </span>
+              );
+            })}
+          </div>
+        </div>
       </div>
 
-      {/* Content Area */}
-      <div className="flex-1 p-6 overflow-y-auto space-y-6">
-        <div className="bg-slate-950 border border-slate-800 rounded-lg p-5">
-          <h3 className="text-sm font-semibold text-slate-200 mb-2">Workspace Information</h3>
-          <p className="text-sm text-slate-400 leading-relaxed">
-            {project.description || "Welcome to your default project workspace. No viewport plugin is currently configured. You can interact with this project via the terminal, files panel, or register a custom pluggable viewport."}
+      {/* Main Viewport Content Block */}
+      <div className="my-4">
+        <Viewport 
+          projectId={project.id}
+          ladderTier={kind.allowedLadderTiers} 
+          domainPrompt={kind.domainSystemPrompt}
+        />
+      </div>
+
+      {/* Meta Specs Panel */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs bg-slate-950/60 p-4 rounded-lg border border-slate-800/80">
+        <div>
+          <h4 className="font-semibold text-slate-300 uppercase tracking-wider mb-2">System Linter Rules</h4>
+          {kind.linterRules.length > 0 ? (
+            <ul className="list-disc list-inside text-slate-400 space-y-1">
+              {kind.linterRules.map((rule) => (
+                <li key={rule} className="font-mono text-amber-400/90">{rule}</li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-slate-500 italic">No static analyses rules enforced for this kind.</p>
+          )}
+        </div>
+        <div>
+          <h4 className="font-semibold text-slate-300 uppercase tracking-wider mb-2">Default Runtime Casing</h4>
+          <p className="text-slate-400 font-mono">
+            {kind.defaultContainer || "serverless_edge_v8"}
           </p>
-        </div>
-
-        {/* Mock File Explorer Fallback */}
-        <div className="space-y-3">
-          <h3 className="text-sm font-semibold text-slate-300">Default File Explorer</h3>
-          <div className="bg-slate-950 border border-slate-800 rounded-lg divide-y divide-slate-800/60 font-mono text-xs">
-            <div className="flex items-center justify-between p-3 hover:bg-slate-900/50 transition">
-              <div className="flex items-center gap-2">
-                <svg className="h-4 w-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-                <span>README.md</span>
-              </div>
-              <span className="text-slate-500">1.2 KB</span>
-            </div>
-            <div className="flex items-center justify-between p-3 hover:bg-slate-900/50 transition">
-              <div className="flex items-center gap-2">
-                <svg className="h-4 w-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-                <span>project.config.json</span>
-              </div>
-              <span className="text-slate-500">420 B</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Integration Instructions */}
-        <div className="bg-indigo-950/20 border border-indigo-900/50 rounded-lg p-5">
-          <div className="flex gap-3">
-            <svg className="h-5 w-5 text-indigo-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-            <div>
-              <h4 className="text-sm font-semibold text-indigo-300">Custom Viewport Plugin Dev Tip</h4>
-              <p className="text-xs text-indigo-200/70 mt-1 leading-relaxed">
-                To link a visual editor to this workspace, register a Tier 2 Gadget instance with the SpaceDO database. The pluggable viewport engine will automatically pick up the gadget and load its custom dashboard layout.
-              </p>
-            </div>
-          </div>
         </div>
       </div>
     </div>
