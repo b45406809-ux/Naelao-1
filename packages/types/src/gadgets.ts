@@ -100,3 +100,44 @@ export interface GatekeeperTokenResponse {
   expiresAt: string; // ISO-8601 string
   grantedCapabilities: GatekeeperGrant[];
 }
+
+/**
+ * Storage Quota Constants (In Bytes)
+ */
+export const GADGET_STORAGE_LIMITS = {
+  /** Hard storage ceiling per MicroAppDO Facet (50 Megabytes) */
+  MAX_DO_FACET_BYTES: 52_428_800, // 50 * 1024 * 1024
+
+  /** Soft storage warning threshold (40 Megabytes / 80%) */
+  WARNING_DO_FACET_BYTES: 41_943_040, // 40 * 1024 * 1024
+
+  /** Default alarm idle hibernation window (14 Days in Milliseconds) */
+  HIBERNATION_IDLE_MS: 14 * 24 * 60 * 60 * 1000 // 1,209,600,000 ms
+} as const;
+
+/**
+ * Storage Usage Metrics for a Gadget Instance
+ */
+export interface GadgetStorageStats {
+  instanceId: string;
+  usedBytes: number;
+  maxBytes: number;
+  usedPercentage: number;
+  pageCount: number;
+  pageSize: number;
+  isNearLimit: boolean;
+  isQuotaExceeded: boolean;
+  lastAccessedAt: string;
+  nextScheduledVacuumAt?: string;
+}
+
+/**
+ * Error response payload when quota is exceeded
+ */
+export interface GadgetQuotaExceededError {
+  error_code: "storage_quota_exceeded";
+  message: string;
+  currentBytes: number;
+  maxBytes: number;
+  instanceId: string;
+}

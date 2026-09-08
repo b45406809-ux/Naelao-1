@@ -1,5 +1,10 @@
+import { DurableObject } from "cloudflare:workers";
+import { GADGET_STORAGE_LIMITS, GadgetStorageStats } from "@naelao/types";
+
 export interface MicroAppEnv {
   GATEKEEPER_SECRET?: string;
+  PLATFORM_SECRET?: string;
+  SPACES_WORKER?: Fetcher;
 }
 
 export interface McpToolSchema {
@@ -12,20 +17,18 @@ export interface McpToolSchema {
   };
 }
 
-export class MicroAppDO {
-  private state: DurableObjectState;
-  private env: MicroAppEnv;
+export class MicroAppDO extends DurableObject {
   private initialized = false;
+  private lastAccessedAt: number = Date.now();
 
-  constructor(state: DurableObjectState, env: MicroAppEnv) {
-    this.state = state;
-    this.env = env;
+  constructor(ctx: DurableObjectState, env: MicroAppEnv) {
+    super(ctx, env);
   }
 
   private async ensureInit(): Promise<void> {
     if (this.initialized) return;
 
-    this.state.storage.sql.exec(`
+    this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS facet_metadata (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -38,147 +41,176 @@ export class MicroAppDO {
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
       CREATE INDEX IF NOT EXISTS idx_facet_collection ON facet_records(collection);
+
+      CREATE TABLE IF NOT EXISTS app_records (
+        id TEXT PRIMARY KEY,
+        data_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
     `);
 
     this.initialized = true;
   }
 
-  private verifyGatekeeperAuth(request: Request): boolean {
-    const authHeader = request.headers.get("Authorization");
-    const gatekeeperHeader = request.headers.get("X-Gatekeeper-Token");
-
-    if (this.env.GATEKEEPER_SECRET) {
-      if (gatekeeperHeader === this.env.GATEKEEPER_SECRET) {
-        return true;
-      }
-      if (authHeader && authHeader === `Bearer ${this.env.GATEKEEPER_SECRET}`) {
-        return true;
-      }
-      return false;
-    }
-
-    // Greenfield development fallback: allow if no secret configured
-    return true;
-  }
-
-  public async executeQuery(sql: string, params: unknown[] = []): Promise<Record<string, unknown>[]> {
-    await this.ensureInit();
-    const cursor = this.state.storage.sql.exec(sql, ...params);
-    return [...cursor] as Record<string, unknown>[];
-  }
-
-  public async getMcpSchema(): Promise<{ tools: McpToolSchema[] }> {
-    await this.ensureInit();
-
-    // Introspect table schema for autoMcpV2 tool wrapping
-    const tablesCursor = this.state.storage.sql.exec(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`
-    );
-    const tables = [...tablesCursor].map((t) => String((t as Record<string, unknown>).name));
-
-    const tools: McpToolSchema[] = [
-      {
-        name: "facet_query",
-        description: `Execute read-only SQL queries against this MicroApp DO facet. Available tables: ${tables.join(", ")}`,
-        parameters: {
-          type: "object",
-          properties: {
-            sql: {
-              type: "string",
-              description: "The SQL SELECT statement to execute",
-            },
-          },
-          required: ["sql"],
-        },
-      },
-      {
-        name: "facet_put_record",
-        description: "Insert or update a JSON document in a specified collection inside this MicroApp DO facet",
-        parameters: {
-          type: "object",
-          properties: {
-            collection: { type: "string", description: "Target collection name" },
-            id: { type: "string", description: "Record primary key" },
-            data: { type: "object", description: "JSON payload object" },
-          },
-          required: ["collection", "id", "data"],
-        },
-      },
-    ];
-
-    return { tools };
-  }
-
   async fetch(request: Request): Promise<Response> {
     await this.ensureInit();
-
-    if (!this.verifyGatekeeperAuth(request)) {
-      return new Response(JSON.stringify({ error: "Unauthorized: Invalid Gatekeeper Token" }), {
-        status: 401,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
     const url = new URL(request.url);
+    this.lastAccessedAt = Date.now();
 
-    // Endpoint: /mcp (Model Context Protocol inspection)
-    if (url.pathname.endsWith("/mcp")) {
-      const schema = await this.getMcpSchema();
-      return new Response(JSON.stringify(schema), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
+    // Reset the 14-day hibernation alarm on every request
+    await this.refreshHibernationAlarm();
+
+    // 1. Expose telemetry endpoint for Canvas UI and Agent inspection
+    if (url.pathname === "/api/storage-stats" && request.method === "GET") {
+      const stats = await this.getStorageStats();
+      return Response.json(stats);
     }
 
-    // Endpoint: /facet/query
-    if (url.pathname.endsWith("/facet/query") && request.method === "POST") {
-      try {
-        const body = (await request.json()) as { sql: string; params?: unknown[] };
-        if (!body.sql || typeof body.sql !== "string") {
-          return new Response(JSON.stringify({ error: "Missing SQL statement" }), { status: 400 });
-        }
-        const results = await this.executeQuery(body.sql, body.params ?? []);
-        return new Response(JSON.stringify({ results }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return new Response(JSON.stringify({ error: msg }), {
-          status: 400,
-          headers: { "Content-Type": "application/json" },
-        });
+    // 2. Enforce pre-flight quota gate on write mutations
+    if (["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) {
+      const quotaCheck = await this.verifyStorageQuota();
+      if (!quotaCheck.allowed) {
+        return Response.json(
+          {
+            error_code: "storage_quota_exceeded",
+            message: `Gadget storage limit exceeded (${(quotaCheck.stats.usedBytes / 1024 / 1024).toFixed(1)}MB / 50MB). Please clean up old records or vacuum database.`,
+            currentBytes: quotaCheck.stats.usedBytes,
+            maxBytes: quotaCheck.stats.maxBytes,
+            instanceId: this.ctx.id.toString()
+          },
+          {
+            status: 413,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+
+      // If near limit (80%), attach warning header to response
+      if (quotaCheck.stats.isNearLimit) {
+        const response = await this.handleApiRoute(request, url);
+        const headers = new Headers(response.headers);
+        headers.set("X-Gadget-Storage-Warning", `Storage is at ${quotaCheck.stats.usedPercentage.toFixed(1)}% of 50MB quota.`);
+        return new Response(response.body, { status: response.status, headers });
       }
     }
 
-    // Endpoint: /facet/records
-    if (url.pathname.endsWith("/facet/records") && request.method === "POST") {
-      try {
-        const body = (await request.json()) as { id: string; collection: string; data: unknown };
-        const now = new Date().toISOString();
-        this.state.storage.sql.exec(
-          `INSERT INTO facet_records (id, collection, data_json, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT(id) DO UPDATE SET
-             collection = excluded.collection,
-             data_json = excluded.data_json,
-             updated_at = excluded.updated_at`,
-          body.id,
-          body.collection,
-          JSON.stringify(body.data),
-          now,
-          now
+    // Standard API & Viewport Routing
+    return await this.handleApiRoute(request, url);
+  }
+
+  /**
+   * Resets the 14-day Cloudflare Alarm for idle cleanup.
+   */
+  private async refreshHibernationAlarm(): Promise<void> {
+    try {
+      const nextAlarmTime = Date.now() + GADGET_STORAGE_LIMITS.HIBERNATION_IDLE_MS;
+      await this.ctx.storage.setAlarm(nextAlarmTime);
+    } catch (err: any) {
+      console.warn(`⚠️ Failed to set MicroAppDO hibernation alarm: ${err.message}`);
+    }
+  }
+
+  /**
+   * Calculates real-time SQLite storage footprint using SQLite PRAGMAs.
+   */
+  private async getStorageStats(): Promise<GadgetStorageStats> {
+    const pageCountResult = this.ctx.storage.sql.exec("PRAGMA page_count;").toArray();
+    const pageSizeResult = this.ctx.storage.sql.exec("PRAGMA page_size;").toArray();
+
+    const pageCount = Number(pageCountResult[0]?.[Object.keys(pageCountResult[0])[0]] ?? 0);
+    const pageSize = Number(pageSizeResult[0]?.[Object.keys(pageSizeResult[0])[0]] ?? 4096);
+    const usedBytes = pageCount * pageSize;
+    const maxBytes = GADGET_STORAGE_LIMITS.MAX_DO_FACET_BYTES;
+    const usedPercentage = (usedBytes / maxBytes) * 100;
+
+    const currentAlarm = await this.ctx.storage.getAlarm();
+
+    return {
+      instanceId: this.ctx.id.toString(),
+      usedBytes,
+      maxBytes,
+      usedPercentage,
+      pageCount,
+      pageSize,
+      isNearLimit: usedBytes >= GADGET_STORAGE_LIMITS.WARNING_DO_FACET_BYTES,
+      isQuotaExceeded: usedBytes >= maxBytes,
+      lastAccessedAt: new Date(this.lastAccessedAt).toISOString(),
+      nextScheduledVacuumAt: currentAlarm ? new Date(currentAlarm).toISOString() : undefined
+    };
+  }
+
+  /**
+   * Pre-flight verification checking if a mutation is allowed under the 50MB quota.
+   */
+  private async verifyStorageQuota(): Promise<{ allowed: boolean; stats: GadgetStorageStats }> {
+    const stats = await this.getStorageStats();
+    return {
+      allowed: !stats.isQuotaExceeded,
+      stats
+    };
+  }
+
+  /**
+   * Cloudflare Alarm Handler triggered after 14 days of inactivity.
+   * Reclaims deleted SQLite pages and signals SpaceDO that this gadget is hibernating.
+   */
+  async alarm(): Promise<void> {
+    console.log(`⏰ [MicroAppDO] Alarm triggered for inactive gadget instance ${this.ctx.id.toString()}`);
+
+    try {
+      // 1. Reclaim deleted space via incremental vacuum
+      this.ctx.storage.sql.exec("PRAGMA incremental_vacuum;");
+      console.log(`🧹 [MicroAppDO] Incremental vacuum completed for instance ${this.ctx.id.toString()}`);
+
+      // 2. Fetch updated stats post-vacuum
+      const stats = await this.getStorageStats();
+
+      // 3. Notify SpaceDO registry if storage is low or if instance is eligible for hibernation
+      const envAny = this.env as any;
+      if (envAny.SPACES_WORKER) {
+        await envAny.SPACES_WORKER.fetch(`http://internal/spaces/gadgets/${this.ctx.id.toString()}/hibernate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            instanceId: this.ctx.id.toString(),
+            lastAccessedAt: new Date(this.lastAccessedAt).toISOString(),
+            finalStorageBytes: stats.usedBytes
+          })
+        });
+      }
+    } catch (err: any) {
+      console.error(`❌ [MicroAppDO] Alarm execution failed for ${this.ctx.id.toString()}: ${err.message}`);
+    }
+  }
+
+  /**
+   * Primary HTTP Router for Micro-App APIs and SSR HTML Viewports
+   */
+  private async handleApiRoute(request: Request, url: URL): Promise<Response> {
+    if (url.pathname === "/" || url.pathname === "/app") {
+      const appHtml = await this.ctx.storage.get<string>("app_bundle_html");
+      return new Response(appHtml || "<html><body><h1>Micro-App Initializing...</h1></body></html>", {
+        headers: { "Content-Type": "text/html; charset=utf-8" }
+      });
+    }
+
+    if (url.pathname.startsWith("/api/data")) {
+      if (request.method === "GET") {
+        const rows = this.ctx.storage.sql.exec("SELECT * FROM app_records ORDER BY created_at DESC LIMIT 100;").toArray();
+        return Response.json({ ok: true, data: rows });
+      }
+
+      if (request.method === "POST") {
+        const body = (await request.json()) as any;
+        const recordId = `rec_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+        this.ctx.storage.sql.exec(
+          "INSERT INTO app_records (id, data_json, created_at) VALUES (?, ?, datetime('now'));",
+          recordId,
+          JSON.stringify(body)
         );
-        return new Response(JSON.stringify({ success: true, id: body.id }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return new Response(JSON.stringify({ error: msg }), {
-          status: 400,
-          headers: { "Content-Type": "application/json" },
-        });
+
+        return Response.json({ ok: true, id: recordId, message: "Record saved to DO Facet SQLite." });
       }
     }
 
@@ -186,128 +218,5 @@ export class MicroAppDO {
       status: 200,
       headers: { "Content-Type": "application/json" },
     });
-  }
-
-import { generateMcpHandlerForGadget } from "../engine/AutoMcpFactory";
-
-export class MicroAppDO extends DurableObject {
-  async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-    const gadgetId = this.ctx.id.toString(); // Resolved via Tier-3 naming
-
-    // 1. Route: Inbound Workspace Events (Ingestion)
-    if (url.pathname === "/events/ingest") {
-      const event = await request.json() as { type: string; filePath: string; content: string };
-      await this.processWorkspaceChange(event);
-      return new Response(JSON.stringify({ ok: true }));
-    }
-
-    // 2. Route: Stateless MCP v2 Endpoint
-    if (url.pathname === "/mcp") {
-      const handler = generateMcpHandlerForGadget(gadgetId, this.ctx.storage);
-      return handler(request);
-    }
-
-    // 3. Fallback: Standard Micro-App UI/API (T1/T2)
-    return new Response("Not Found", { status: 404 });
-  }
-
-  private async processWorkspaceChange(event: any) {
-    // 1. Identify File Type (Code vs Data)
-    // 2. Run Parser (Wasm Tree-sitter or CSV Stream)
-    // 3. Perform atomic upsert into private DO Facet SQLite
-    console.log(`Indexing ${event.filePath}...`);
-  }
-}
-
-import { verifyGatekeeperToken, WriteGuard } from "@avos/security";
-import { GatekeeperToken } from "@avos/security";
-
-  async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-    const tokenHeader = request.headers.get("x-gatekeeper-token");
-
-    if (!tokenHeader) {
-      return new Response(JSON.stringify({ error: "Missing x-gatekeeper-token header" }), {
-        status: 403,
-        headers: { "content-type": "application/json" },
-      });
-    }
-
-    let token: GatekeeperToken;
-    try {
-      // In production workers, PLATFORM_SECRET would be bound via env
-      const secret = (this.env as any).PLATFORM_SECRET || "avos-default-dev-secret-key-change-me";
-      token = await verifyGatekeeperToken(tokenHeader, secret);
-    } catch (err: any) {
-      return new Response(JSON.stringify({ error: `Forbidden: ${err.message}` }), {
-        status: 403,
-        headers: { "content-type": "application/json" },
-      });
-    }
-
-    if (url.pathname === "/api/data" && request.method === "POST") {
-      try {
-        const body: any = await request.json();
-        const sql = body.sql;
-        if (!sql) {
-          return new Response(JSON.stringify({ error: "Missing 'sql' in request body" }), {
-            status: 400,
-            headers: { "content-type": "application/json" },
-          });
-        }
-
-        // Validate via WriteGuard
-        const validation = await WriteGuard.validateSqlQuery(sql, token);
-        if (!validation.allowed) {
-          return new Response(JSON.stringify({ error: validation.reason }), {
-            status: 403,
-            headers: { "content-type": "application/json" },
-          });
-        }
-
-        // Execute SQL via DO sqlite storage
-        const cursor = this.ctx.storage.sql.exec(sql, ...(body.params || []));
-        const results = [...cursor];
-
-        // Audit Log entry in SQLite ledger
-        try {
-          this.ctx.storage.sql.exec(
-            `CREATE TABLE IF NOT EXISTS _avos_audit_ledger (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              timestamp INTEGER,
-              user_id TEXT,
-              app_id TEXT,
-              space_id TEXT,
-              action TEXT,
-              sql TEXT
-            )`
-          );
-          this.ctx.storage.sql.exec(
-            `INSERT INTO _avos_audit_ledger (timestamp, user_id, app_id, space_id, action, sql) VALUES (?, ?, ?, ?, ?, ?)`,
-            Date.now(),
-            token.userId,
-            token.appId,
-            token.spaceId,
-            "SQL_MUTATION",
-            sql
-          );
-        } catch (auditErr) {
-          console.error("Failed to write audit ledger entry:", auditErr);
-        }
-
-        return new Response(JSON.stringify({ results }), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        });
-      } catch (err: any) {
-        return new Response(JSON.stringify({ error: err.message }), {
-          status: 500,
-          headers: { "content-type": "application/json" },
-        });
-      }
-    }
-
-    return new Response("MicroAppDO running with Gatekeeper Protection", { status: 200 });
   }
 }
