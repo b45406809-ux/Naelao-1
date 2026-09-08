@@ -10,6 +10,8 @@ export interface DurableObjectState {
   blockConcurrencyWhile(callback: () => Promise<void>): Promise<void>;
 }
 
+import { AutomationWatchdog } from "../../../agents/src/workflows/AutomationWatchdog";
+
 export class SpaceDO {
   state: DurableObjectState;
   env: any;
@@ -129,4 +131,69 @@ export class SpaceDO {
     // Format: https://{spaceId}-{projectId}-{manifestId}.avos.apps/app
     return `https://${this.spaceId}-${projectId}-${manifestId}.avos.apps/app`;
   }
+
+  async constructor(state: DurableObjectState, env: any) {
+    this.ctx = state;
+    this.env = env;
+    this.sql = state.storage.sql;
+    this.initTables();
+    // Schedule initial audit alarm on startup
+    this.setAuditAlarm().catch(() => {});
+  }
+
+  async setAuditAlarm() {
+    await this.ctx.storage.setAlarm(Date.now() + 1000 * 60 * 60 * 6);
+  }
+
+  async alarm() {
+    const watchdog = new AutomationWatchdog(this);
+    await watchdog.runAuditPass();
+    // Reset alarm for another 6 hours
+    await this.setAuditAlarm();
+  }
+
+  async postToTeamRoom(projectId: string, card: { type: string; body: string; actions: string[] }) {
+    // Broadcast incident card as a team room message or event
+    await this.broadcastEvent({
+      type: 'AUTOMATION_INCIDENT_REPORTED',
+      payload: { projectId, card },
+      timestamp: Date.now()
+    });
+  }
+
+  async broadcastEvent(event: any) {
+    // Broadcast via WebSockets or internal state listeners if present
+    if (this.sessions) {
+      const data = JSON.stringify(event);
+      for (const session of this.sessions) {
+        try {
+          session.socket.send(data);
+        } catch (e) {
+          // Ignore closed sessions
+        }
+      }
+    }
+  }
+
+  initTables() {
+
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS project_anchored_workflows (
+        id TEXT PRIMARY KEY,
+        project_id TEXT,
+        status TEXT,
+        next_run_at INTEGER,
+        updated_at INTEGER
+      )
+    `);
+
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS workflow_incidents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id TEXT,
+        kind TEXT,
+        message TEXT,
+        created_at INTEGER
+      )
+    `);
 }
