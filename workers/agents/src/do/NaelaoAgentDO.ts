@@ -1,160 +1,118 @@
-import { UIActionEvent } from "../../../../packages/events/src/index";
-
-export interface TraceEntry {
-  phase: "thought" | "action" | "observation";
-  name: string;
-  detail: string;
-  params?: Record<string, any>;
-  timestamp: string;
-}
-
-export interface ActiveRunContext {
-  runId: string;
-  pendingObservations: UIActionEvent[];
-  history: { role: string; content: string }[];
-}
-
-export interface DurableObjectState {
-  storage: {
-    get<T = any>(key: string): Promise<T | undefined>;
-    put<T = any>(key: string, value: T): Promise<void>;
-  };
-}
+import { DynamicUiWidget } from "@avos/types";
 
 export class NaelaoAgentDO {
-  state: DurableObjectState;
-  env: any;
-  status: "idle" | "running" = "idle";
-  traces: TraceEntry[] = [];
-  activeRunContext: ActiveRunContext = {
-    runId: "run-default",
-    pendingObservations: [],
-    history: []
-  };
+  private ctx: DurableObjectState;
+  private env: any;
+  private sessions: Set<WebSocket> = new Set();
 
-  constructor(state: DurableObjectState, env: any) {
-    this.state = state;
+  constructor(ctx: DurableObjectState, env: any) {
+    this.ctx = ctx;
     this.env = env;
+
+    // Initialize SQLite storage for thread messages and UI state persistence
+    this.ctx.blockConcurrencyWhile(async () => {
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS thread_messages (
+          id TEXT PRIMARY KEY,
+          thread_id TEXT NOT NULL,
+          role TEXT NOT NULL,
+          content TEXT NOT NULL,
+          ui_payload TEXT,
+          created_at INTEGER NOT NULL
+        );
+      `);
+    });
   }
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    
-    // Check if endpoint is trace
-    if (url.pathname.includes("/trace")) {
-      return new Response(JSON.stringify(this.traces), {
-        headers: { "Content-Type": "application/json" }
-      });
+    if (url.pathname.endsWith("/ws")) {
+      const pair = new WebSocketPair();
+      const [client, server] = [pair[0], pair[1]];
+      this.handleWebSocket(server);
+      return new Response(null, { status: 101, webSocket: client });
     }
 
-    if (request.method === "POST" && url.pathname.endsWith("/ui-event")) {
-      const event = await request.json() as UIActionEvent;
-      await this.handleUiEvent(event);
-      return new Response(JSON.stringify({ status: "processed", agentStatus: this.status }), {
-        headers: { "Content-Type": "application/json" }
-      });
+    if (request.method === "POST" && url.pathname.endsWith("/ui-action")) {
+      const body: any = await request.json();
+      await this.handleUiAction(body);
+      return Response.json({ success: true });
     }
 
-    if (request.method === "POST" && url.pathname.endsWith("/message")) {
-      const body = await request.json() as { message: string };
-      const response = await this.executeTurn(body.message, { source: "user" });
-      return new Response(JSON.stringify({ response }), {
-        headers: { "Content-Type": "application/json" }
-      });
-    }
-
-    return new Response("NaelaoAgentDO Endpoint", { status: 200 });
+    return new Response("NaelaoAgentDO Active (MCP-UI)", { status: 200 });
   }
 
-  pushTrace(trace: Omit<TraceEntry, "timestamp">) {
-    const entry: TraceEntry = {
-      ...trace,
-      timestamp: new Date().toISOString()
+  private handleWebSocket(ws: WebSocket) {
+    ws.accept();
+    this.sessions.add(ws);
+
+    ws.addEventListener("message", async (event) => {
+      try {
+        const data = JSON.parse(typeof event.data === "string" ? event.data : "{}");
+        if (data.type === "mcp.ui_action") {
+          await this.handleUiAction(data);
+        }
+      } catch (err) {
+        console.error("Failed to parse WebSocket message:", err);
+      }
+    });
+
+    ws.addEventListener("close", () => {
+      this.sessions.delete(ws);
+    });
+  }
+
+  async sendUiWidget(threadId: string, widget: DynamicUiWidget) {
+    const id = crypto.randomUUID();
+    const createdAt = Date.now();
+
+    // 1. Persist widget state to thread memory for re-rendering on reload
+    this.ctx.storage.sql.exec(
+      "INSERT INTO thread_messages (id, thread_id, role, content, ui_payload, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      id,
+      threadId,
+      "assistant",
+      `Rendered widget: ${widget.component}`,
+      JSON.stringify(widget),
+      createdAt
+    );
+
+    // 2. Stream event over WebSocket to frontend
+    this.broadcastToFrontend({
+      type: "stream_ui_widget",
+      threadId,
+      widget,
+    });
+  }
+
+  async handleUiAction(payload: { callbackId: string; action: string; data: any }) {
+    console.log("Handling MCP-UI action from client:", payload);
+
+    // Route event back into the agent's reasoning queue as a fresh tool-output
+    const reasoningEvent = {
+      type: "tool_output",
+      source: "mcp_ui",
+      callbackId: payload.callbackId,
+      action: payload.action,
+      data: payload.data,
+      timestamp: Date.now(),
     };
-    this.traces.push(entry);
-    console.log(`[Agent Trace] [${entry.phase.toUpperCase()}] ${entry.name}: ${entry.detail}`, entry.params || "");
+
+    // Broadcast acknowledgment or next agent step
+    this.broadcastToFrontend({
+      type: "agent_reasoning_step",
+      event: reasoningEvent,
+    });
   }
 
-  composeSystemPrompt(): string {
-    return `
-You are Naelao, the sovereign orchestrator agent for the AVOS workspace.
-You operate with deep semantic links to the visual canvas and widgets.
-
-SYSTEM INSTRUCTIONS:
-1. You will receive notification of user interactions within the workspace canvas via the 'mcp.ui_action' stream.
-2. Analyze all UI actions as direct observation inputs. Update your internal state, explain what you see, and respond dynamically.
-3. Keep reactions autonomous, precise, and highly context-aware.
-`.trim();
-  }
-
-  async handleUiEvent(event: UIActionEvent) {
-    // 1. Log the event to the in-memory trace (item 133/HX1)
-    this.pushTrace({
-      phase: "observation",
-      name: "UI_INTERACTION",
-      detail: `User performed ${event.action} in gadget ${event.gadgetId}`,
-      params: event.payload
-    });
-
-    // 2. Wake up the Agent if it's currently sleeping (Dormant -> Active)
-    if (this.status === "idle") {
-      const uiSummary = `The user interacted with the UI: ${event.action}. Data: ${JSON.stringify(event.payload)}`;
-      return await this.executeTurn(uiSummary, { source: "ui_event" });
+  private broadcastToFrontend(message: any) {
+    const payload = JSON.stringify(message);
+    for (const ws of this.sessions) {
+      try {
+        ws.send(payload);
+      } catch {
+        this.sessions.delete(ws);
+      }
     }
-    
-    // 3. If a run is ALREADY in flight, append the UI event to the loop's 
-    // `pendingObservations` so the model sees it on its next reasoning turn.
-    this.activeRunContext.pendingObservations.push(event);
-  }
-
-  async executeTurn(input: string, context: { source: string }): Promise<string> {
-    this.status = "running";
-    this.pushTrace({
-      phase: "thought",
-      name: "THINKING",
-      detail: `Processing input from ${context.source}: "${input.substring(0, 60)}..."`
-    });
-
-    // Handle any pending observations before or during the turn
-    let observationsText = "";
-    if (this.activeRunContext.pendingObservations.length > 0) {
-      const obs = [...this.activeRunContext.pendingObservations];
-      this.activeRunContext.pendingObservations = [];
-      observationsText = "\nPending UI Observations seen since last turn:\n" + obs.map(o => 
-        `- Gadget [${o.gadgetId}] action [${o.action}] payload: ${JSON.stringify(o.payload)}`
-      ).join("\n");
-      
-      this.pushTrace({
-        phase: "observation",
-        name: "PENDING_UI_CONSUMED",
-        detail: `Consumed ${obs.length} pending UI observations during the active reasoning turn.`
-      });
-    }
-
-    // Simulate AI model reasoning loop
-    const systemPrompt = this.composeSystemPrompt();
-    const fullPrompt = `${systemPrompt}\n\nUser/System Input: ${input}${observationsText}`;
-
-    // Simple reasoning simulation based on expected actions
-    let reply = "";
-    if (input.includes("approve") || input.includes("BUTTON_CLICK")) {
-      reply = `I see you've approved that invoice, I'm updating the journal now and processing the associated payment ledger entry.`;
-      this.pushTrace({
-        phase: "action",
-        name: "LEDGER_UPDATE",
-        detail: "Updating project journal and preparing payment processor API payload."
-      });
-    } else {
-      reply = `I've registered your input. Current state updated successfully. Pending canvas gadgets synchronized.`;
-    }
-
-    this.status = "idle";
-    this.pushTrace({
-      phase: "thought",
-      name: "COMPLETED",
-      detail: "Turn finished, returning to dormant state."
-    });
-
-    return reply;
   }
 }
