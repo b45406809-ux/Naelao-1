@@ -1,135 +1,175 @@
-"use client";
+import React from 'react';
+import { AVOS_PROJECT_KINDS } from '../../../../packages/events/src/business-feature-kinds';
 
-import * as React from "react";
-import { Button } from "@naelao/ui";
-import {
-  getBusinessWallet, listWorkspaceFiles, readWorkspaceFile,
-  type Project, type BusinessWallet, type WorkspaceFile, type WorkspaceFileContent,
-} from "@/lib/api";
-import { FileViewer } from "@/components/FileViewer";
-
-type Creds = { sessionToken: string; endUserId: string };
-
-function money(cents: number, currency = "USD"): string {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency, minimumFractionDigits: 2 }).format(cents / 100);
-}
-
-// F-40: WalletLedgerPanel — the natively-built panel for kind='wallet'. Looks like a bank-account
-// ledger (balance + lifetime cuts + transactions), NOT a generic registry-driven component.
-function WalletLedgerPanel({ spaceId, creds }: { spaceId: string; creds: Creds }) {
-  const [wallet, setWallet] = React.useState<BusinessWallet | null>(null);
-  const [loading, setLoading] = React.useState(true);
-  React.useEffect(() => {
-    getBusinessWallet(spaceId, creds).then(setWallet).catch(() => setWallet(null)).finally(() => setLoading(false));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spaceId]);
-  if (loading) return <p style={{ color: "var(--text3)", fontSize: 13 }}>Loading wallet…</p>;
-  if (!wallet) return <p style={{ color: "var(--text3)", fontSize: 13 }}>Wallet unavailable.</p>;
-  return (
-    <div className="settings-block">
-      <div className="settings-row">
-        <div>
-          <div className="settings-row-label">Available to grow the business</div>
-          <div className="settings-row-sub">Your AI only spends money this business has earned.</div>
-        </div>
-        <div style={{ textAlign: "right" }}>
-          <div className="settings-row-label">{money(wallet.available_balance_cents, wallet.currency)}</div>
-          <div className="settings-row-sub">{wallet.currency}</div>
-        </div>
-      </div>
-      <div className="settings-row">
-        <div>
-          <div className="settings-row-label">Lifetime earned</div>
-          <div className="settings-row-sub">{wallet.lifetime.order_count} settled order(s)</div>
-        </div>
-        <div style={{ textAlign: "right" }}>
-          <div className="settings-row-label">{money(wallet.lifetime.gross_cents)} gross</div>
-          <div className="settings-row-sub">
-            {money(wallet.lifetime.naelao_cut_cents)} Naelao cut
-            {wallet.lifetime.builder_cut_cents > 0 ? ` · ${money(wallet.lifetime.builder_cut_cents)} builder cut` : ""}
-          </div>
-        </div>
-      </div>
-      {wallet.transactions.slice(0, 10).map((t) => (
-        <div className="settings-row" key={t.id}>
-          <div>
-            <div className="settings-row-label">{t.reason.replace(/_/g, " ")}</div>
-            <div className="settings-row-sub">{new Date(t.created_at).toLocaleString()}</div>
-          </div>
-          <div style={{ textAlign: "right" }}>
-            <div className="settings-row-label">{t.delta_cents >= 0 ? "+" : ""}{money(t.delta_cents)}</div>
-            <div className="settings-row-sub">bal {money(t.balance_after_cents)}</div>
-          </div>
-        </div>
-      ))}
+// Fallback/Mock Canvas Components for the Registry
+const CodeWorkspaceCanvas = ({ projectId, ladderTier, domainPrompt }: any) => (
+  <div className="p-4 bg-slate-900 text-slate-100 rounded border border-slate-700">
+    <h3 className="font-semibold text-lg text-emerald-400">Code Workspace Canvas</h3>
+    <p className="text-sm text-slate-400 mb-2">Project: <span className="font-mono text-white">{projectId}</span></p>
+    <div className="bg-slate-950 p-2 rounded font-mono text-xs mb-3">
+      Allowed Ladder Tiers: {ladderTier.join(', ')}
     </div>
-  );
-}
+    <div className="text-xs text-slate-300 bg-slate-800 p-2 rounded max-h-24 overflow-y-auto">
+      <strong>System Prompt:</strong> {domainPrompt}
+    </div>
+  </div>
+);
 
-// F-39 UI: read-only workspace file viewer — lists a project's R2 artifacts; clicking an .html file
-// previews it in a sandboxed iframe, other text shows inline.
-function WorkspaceFilesPanel({ spaceId, projectId, creds }: { spaceId: string; projectId: string; creds: Creds }) {
-  const [files, setFiles] = React.useState<WorkspaceFile[]>([]);
-  const [loading, setLoading] = React.useState(true);
-  const [open, setOpen] = React.useState<WorkspaceFileContent | null>(null);
-  React.useEffect(() => {
-    listWorkspaceFiles(spaceId, projectId, creds).then(setFiles).catch(() => setFiles([])).finally(() => setLoading(false));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spaceId, projectId]);
+const DocumentRedlineCanvas = ({ projectId, ladderTier, domainPrompt }: any) => (
+  <div className="p-4 bg-stone-900 text-stone-100 rounded border border-stone-700">
+    <h3 className="font-semibold text-lg text-amber-400">Document Redline Canvas</h3>
+    <p className="text-sm text-stone-400 mb-2">Project ID: <span className="font-mono text-white">{projectId}</span></p>
+    <div className="text-xs text-stone-300 bg-stone-850 p-2 rounded mb-3">
+      <strong>System Prompt:</strong> {domainPrompt}
+    </div>
+  </div>
+);
 
-  async function openFile(path: string) {
-    try { setOpen(await readWorkspaceFile(spaceId, projectId, path, creds)); }
-    catch { setOpen({ path, content: "(could not read file)" }); }
+const VoiceAgentCanvas = ({ projectId, ladderTier, domainPrompt }: any) => (
+  <div className="p-4 bg-zinc-900 text-zinc-100 rounded border border-zinc-700">
+    <h3 className="font-semibold text-lg text-cyan-400">Voice Phone Desk Canvas</h3>
+    <p className="text-sm text-zinc-400 mb-2">Continuous Mode • Project ID: <span className="font-mono text-white">{projectId}</span></p>
+    <div className="text-xs text-zinc-300 bg-zinc-850 p-2 rounded mb-3">
+      <strong>System Prompt:</strong> {domainPrompt}
+    </div>
+  </div>
+);
+
+const ModelStudioCanvas = ({ projectId, ladderTier, domainPrompt }: any) => (
+  <div className="p-4 bg-purple-950 text-purple-100 rounded border border-purple-800">
+    <h3 className="font-semibold text-lg text-purple-400">Model Customization Canvas</h3>
+    <p className="text-sm text-purple-300 mb-2">Project ID: <span className="font-mono text-white">{projectId}</span></p>
+    <div className="text-xs text-purple-200 bg-purple-900 p-2 rounded mb-3">
+      <strong>System Prompt:</strong> {domainPrompt}
+    </div>
+  </div>
+);
+
+const CustomerBotCanvas = ({ projectId, ladderTier, domainPrompt }: any) => (
+  <div className="p-4 bg-indigo-950 text-indigo-100 rounded border border-indigo-800">
+    <h3 className="font-semibold text-lg text-indigo-400">Customer Support Desk Canvas</h3>
+    <p className="text-sm text-indigo-300 mb-2">Continuous Mode • Project ID: <span className="font-mono text-white">{projectId}</span></p>
+    <div className="text-xs text-indigo-200 bg-indigo-900 p-2 rounded mb-3">
+      <strong>System Prompt:</strong> {domainPrompt}
+    </div>
+  </div>
+);
+
+const GrowthEngineCanvas = ({ projectId, ladderTier, domainPrompt }: any) => (
+  <div className="p-4 bg-teal-950 text-teal-100 rounded border border-teal-800">
+    <h3 className="font-semibold text-lg text-teal-400">Growth & Marketing Canvas</h3>
+    <p className="text-sm text-teal-300 mb-2">Project ID: <span className="font-mono text-white">{projectId}</span></p>
+    <div className="text-xs text-teal-200 bg-teal-900 p-2 rounded mb-3">
+      <strong>System Prompt:</strong> {domainPrompt}
+    </div>
+  </div>
+);
+
+const AppStudioCanvas = ({ projectId, ladderTier, domainPrompt }: any) => (
+  <div className="p-4 bg-blue-950 text-blue-100 rounded border border-blue-800">
+    <h3 className="font-semibold text-lg text-blue-400">No-Code Application Canvas</h3>
+    <p className="text-sm text-blue-300 mb-2">Project ID: <span className="font-mono text-white">{projectId}</span></p>
+    <div className="text-xs text-blue-200 bg-blue-900 p-2 rounded mb-3">
+      <strong>System Prompt:</strong> {domainPrompt}
+    </div>
+  </div>
+);
+
+// Fallback registry matching viewportComponent names to React components
+export const ViewportRegistry: Record<string, React.ComponentType<any>> = {
+  CodeWorkspaceCanvas,
+  DocumentRedlineCanvas,
+  VoiceAgentCanvas,
+  ModelStudioCanvas,
+  CustomerBotCanvas,
+  GrowthEngineCanvas,
+  AppStudioCanvas
+};
+
+export function ProjectKindPanel({ project }: { project: any }) {
+  if (!project) {
+    return <div className="p-4 text-rose-500">No active project selected.</div>;
   }
 
-  if (loading) return <p style={{ color: "var(--text3)", fontSize: 13 }}>Loading files…</p>;
-  if (files.length === 0) return <p style={{ color: "var(--text3)", fontSize: 13 }}>No files in this project's workspace yet — your agent's generated artifacts appear here.</p>;
-  return (
-    <>
-      <div className="settings-block">
-        {files.map((f) => (
-          <div className="settings-row" key={f.path}>
-            <div>
-              <div className="settings-row-label">{f.path}</div>
-              <div className="settings-row-sub">{(f.size / 1024).toFixed(1)} KB · {new Date(f.uploaded).toLocaleDateString()}</div>
-            </div>
-            <Button size="sm" variant="ghost" onClick={() => openFile(f.path)}>View</Button>
-          </div>
-        ))}
+  const kindKey = project.kind || "product_dev";
+  const kind = AVOS_PROJECT_KINDS[kindKey];
+
+  if (!kind) {
+    return (
+      <div className="p-4 bg-red-950 text-red-200 rounded border border-red-800">
+        <h3 className="font-bold">Error: Unsupported Project Kind</h3>
+        <p className="text-sm text-red-300">The project kind &apos;{kindKey}&apos; is not registered in the system.</p>
       </div>
-      {open && (
-        <div className="settings-block" style={{ marginTop: 12, padding: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <strong style={{ fontSize: 13 }}>{open.path}</strong>
-            <Button size="sm" variant="ghost" onClick={() => setOpen(null)}>Close</Button>
-          </div>
-          {/* Step 4: multi-format viewer (PDF, images, Word/Excel, text/html/markdown/csv). */}
-          <FileViewer file={open} />
-        </div>
-      )}
-    </>
-  );
-}
+    );
+  }
 
-/**
- * F-40: the mount point. A SWITCH on project.kind (never a data-driven interchangeable lookup) —
- * each kind's panel is its own purpose-built component. A kind with no panel yet renders nothing
- * (the shared project shell alone), which is the expected incremental-build path. The Files viewer
- * (F-39) is shown for every kind since every project has a workspace.
- */
-export function ProjectKindPanel({ project, spaceId, creds }: { project: Project; spaceId: string; creds: Creds }) {
+  // Resolve the dynamic component
+  const Viewport = ViewportRegistry[kind.viewportComponent] || CodeWorkspaceCanvas;
+
   return (
-    <>
-      {project.kind === "wallet" && (
-        <>
-          <div className="section-label">Wallet</div>
-          <WalletLedgerPanel spaceId={spaceId} creds={creds} />
-        </>
-      )}
-      {/* Additional kind panels (storefront, crm, ...) mount here one at a time — see F-40. */}
+    <div className="viewport-container border border-slate-700 bg-slate-900/50 rounded-xl overflow-hidden p-6 shadow-xl space-y-6">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-4">
+        <div>
+          <span className="text-xs uppercase font-semibold tracking-wider text-indigo-400 bg-indigo-950 px-2.5 py-1 rounded-full border border-indigo-900">
+            {kind.lifecycle} Lifecycle
+          </span>
+          <h2 className="text-2xl font-bold text-white mt-2">{kind.label}</h2>
+          <p className="text-slate-400 text-sm mt-1">{kind.description}</p>
+        </div>
+        
+        <div className="flex flex-col items-end gap-1.5">
+          <span className="text-xs text-slate-400">Execution Ladder Ceiling:</span>
+          <div className="flex gap-1">
+            {[1, 2, 3, 4, 5, 6].map((tier) => {
+              const isAllowed = kind.allowedLadderTiers.includes(tier);
+              return (
+                <span
+                  key={tier}
+                  className={`text-xs font-bold w-6 h-6 flex items-center justify-center rounded-full transition-all duration-200 ${
+                    isAllowed 
+                      ? "bg-emerald-500 text-slate-950 ring-2 ring-emerald-400/30" 
+                      : "bg-slate-800 text-slate-600 line-through"
+                  }`}
+                  title={isAllowed ? `Tier T${tier} Authorized` : `Tier T${tier} Forbidden`}
+                >
+                  T{tier}
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      </div>
 
-      <div className="section-label" style={{ marginTop: 24 }}>Files</div>
-      <WorkspaceFilesPanel spaceId={spaceId} projectId={project.id} creds={creds} />
-    </>
+      {/* Main Viewport Content Block */}
+      <div className="my-4">
+        <Viewport 
+          projectId={project.id}
+          ladderTier={kind.allowedLadderTiers} 
+          domainPrompt={kind.domainSystemPrompt}
+        />
+      </div>
+
+      {/* Meta Specs Panel */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs bg-slate-950/60 p-4 rounded-lg border border-slate-800/80">
+        <div>
+          <h4 className="font-semibold text-slate-300 uppercase tracking-wider mb-2">System Linter Rules</h4>
+          {kind.linterRules.length > 0 ? (
+            <ul className="list-disc list-inside text-slate-400 space-y-1">
+              {kind.linterRules.map((rule) => (
+                <li key={rule} className="font-mono text-amber-400/90">{rule}</li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-slate-500 italic">No static analyses rules enforced for this kind.</p>
+          )}
+        </div>
+        <div>
+          <h4 className="font-semibold text-slate-300 uppercase tracking-wider mb-2">Default Runtime Casing</h4>
+          <p className="text-slate-400 font-mono">
+            {kind.defaultContainer || "serverless_edge_v8"}
+          </p>
+        </div>
+      </div>
+    </div>
   );
 }

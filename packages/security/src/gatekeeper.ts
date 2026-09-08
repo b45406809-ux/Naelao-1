@@ -1,106 +1,99 @@
-// packages/security/src/gatekeeper.ts
+/**
+ * AVOS Security Gatekeeper
+ * Enforces 3-Tier Connector Scoping and Credential Access Isolation.
+ */
 
-export interface GatekeeperGrant {
-  resource: string; // e.g., "sqlite_db", "slack_channel"
-  target: string;   // e.g., "table:bug_reports", "#engineering"
-  operations: Array<"read" | "write" | "delete" | "execute">;
-}
+export type ConnectorScope = 'space' | 'project' | 'user';
+export type ThreadKind = 'public_channel' | 'project_room' | 'direct_message' | 'private_scratchpad';
 
-export interface GatekeeperCapabilityPayload {
-  appId: string;
+export interface SecurityContext {
   spaceId: string;
-  creatorUserId: string;
-  grants: GatekeeperGrant[];
-  expiresAt: number; // Unix timestamp
-  nonce: string;
+  projectId?: string;
+  actingUserId?: string;
+  threadKind: ThreadKind;
 }
 
-export interface GatekeeperToken {
-  payload: GatekeeperCapabilityPayload;
-  signature: string; // Base64 encoded HMAC-SHA256
+export interface CredentialClaim {
+  id: string;
+  spaceId: string;
+  name: string;
+  scope: ConnectorScope;
+  projectId?: string | null;
+  userId?: string | null;
+  value: string;
 }
 
-/**
- * Mints an unforgeable capability token for cross-subspace or cross-agent delegation.
- */
-export async function mintGatekeeperToken(
-  payload: Omit<GatekeeperCapabilityPayload, "nonce">,
-  platformSecret: string
-): Promise<string> {
-  const fullPayload: GatekeeperCapabilityPayload = {
-    ...payload,
-    nonce: crypto.randomUUID()
-  };
+export class Gatekeeper {
+  /**
+   * Validates if the given security context is permitted to access a credential
+   * with the specified ownership scope.
+   */
+  static isCredentialAccessAllowed(
+    context: SecurityContext,
+    credential: Pick<CredentialClaim, 'spaceId' | 'scope' | 'projectId' | 'userId'>
+  ): boolean {
+    // 1. Space isolation: Must strictly belong to the same space
+    if (context.spaceId !== credential.spaceId) {
+      return false;
+    }
 
-  const payloadString = JSON.stringify(fullPayload);
-  
-  const encoder = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(platformSecret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
+    // 2. Scope-specific authorization checks
+    switch (credential.scope) {
+      case 'user': {
+        // User-Personal credentials require:
+        // a) Execution must be in a private scratchpad or authorized direct context
+        // b) The acting user must strictly match the credential owner
+        if (context.threadKind !== 'private_scratchpad' && context.threadKind !== 'direct_message') {
+          return false;
+        }
+        if (!context.actingUserId || !credential.userId) {
+          return false;
+        }
+        return context.actingUserId === credential.userId;
+      }
 
-  const signatureBuffer = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    encoder.encode(payloadString)
-  );
+      case 'project': {
+        // Project-Bound credentials require matching project ID
+        if (!context.projectId || !credential.projectId) {
+          return false;
+        }
+        return context.projectId === credential.projectId;
+      }
 
-  const signatureBase64 = btoa(String.fromCharCode(...new Uint8Array(signatureBuffer)));
-  
-  // Return format: Base64Url(payload).Signature
-  const payloadBase64Url = btoa(payloadString).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-  return `${payloadBase64Url}.${signatureBase64}`;
-}
+      case 'space': {
+        // Space-Shared credentials are valid for any authorized caller in this space
+        return true;
+      }
 
-/**
- * Verifies a Gatekeeper token and checks for expiration.
- */
-export async function verifyGatekeeperToken(
-  tokenString: string,
-  platformSecret: string
-): Promise<GatekeeperCapabilityPayload> {
-  const [payloadBase64Url, signatureBase64] = tokenString.split(".");
-  if (!payloadBase64Url || !signatureBase64) {
-    throw new Error("Invalid Gatekeeper token format.");
+      default:
+        return false;
+    }
   }
 
-  // Restore Base64 formatting
-  let base64 = payloadBase64Url.replace(/-/g, '+').replace(/_/g, '/');
-  while (base64.length % 4) base64 += '=';
-  
-  const payloadString = atob(base64);
-  const payload: GatekeeperCapabilityPayload = JSON.parse(payloadString);
-
-  // Expiration Check
-  if (Date.now() > payload.expiresAt) {
-    throw new Error(`Gatekeeper Violation: Token expired at ${new Date(payload.expiresAt).toISOString()}`);
+  /**
+   * Asserts access and throws a deterministic SecurityError if unauthorized.
+   */
+  static assertCredentialAccess(
+    context: SecurityContext,
+    credential: Pick<CredentialClaim, 'spaceId' | 'scope' | 'projectId' | 'userId'>
+  ): void {
+    if (!this.isCredentialAccessAllowed(context, credential)) {
+      throw new Error(
+        `[Gatekeeper] Access Denied: Caller (user=${context.actingUserId ?? 'anon'}, project=${context.projectId ?? 'none'}, threadKind=${context.threadKind}) ` +
+        `is not authorized to access ${credential.scope}-scoped credential in space ${context.spaceId}.`
+      );
+    }
   }
 
-  const encoder = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(platformSecret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["verify"]
-  );
-
-  const signatureBuffer = Uint8Array.from(atob(signatureBase64), c => c.charCodeAt(0));
-
-  const isValid = await crypto.subtle.verify(
-    "HMAC",
-    key,
-    signatureBuffer,
-    encoder.encode(payloadString)
-  );
-
-  if (!isValid) {
-    throw new Error("Gatekeeper Violation: Cryptographic signature mismatch. Token is forged or altered.");
+  /**
+   * Prevents user identity impersonation or cross-user credential theft in MCP hub calls.
+   */
+  static validateToolExecutionCaller(
+    invokerUserId: string | undefined,
+    targetUserId: string | undefined
+  ): boolean {
+    if (!targetUserId) return true; // Target is space/project bound
+    if (!invokerUserId) return false; // Unauthenticated caller requesting personal tool
+    return invokerUserId === targetUserId;
   }
-
-  return payload;
 }

@@ -1637,6 +1637,77 @@ async function fetchRunOrTaskStatus(
 // One route with an `action` field rather than a /continue + /dismiss pair: a dynamic segment
 // followed by a static suffix is the shape that has repeatedly corrupted Hono's router here.
 
+// ── POST /spaces/:spaceId/sessions/:sessionId/widget-response ─────────────────
+// Receives structured user input from generative in-chat UI widgets and injects
+// the payload directly into the agent's reasoning loop as an observation.
+app.post("/spaces/:spaceId/sessions/:sessionId/widget-response", async (c) => {
+  const tenantId = await requireVerifiedTenant(c);
+  const { userId } = getCallerIdentity(c);
+  const spaceId = c.req.param("spaceId");
+  const sessionId = c.req.param("sessionId");
+
+  // Validate space ownership
+  const space = await c.env.PLATFORM_DB.prepare(
+    "SELECT id FROM spaces WHERE id = ? AND tenant_id = ?"
+  )
+    .bind(spaceId, tenantId)
+    .first<{ id: string }>();
+  if (!space) throw notFound("Space");
+
+  let body: {
+    widgetId?: string;
+    widgetType?: string;
+    action?: string;
+    payload?: Record<string, any>;
+    timestamp?: string;
+  };
+  try {
+    body = await c.req.json();
+  } catch {
+    throw badRequest("Request body must be valid JSON");
+  }
+
+  if (!body?.widgetId || !body?.action) {
+    throw badRequest("Fields 'widgetId' and 'action' are required");
+  }
+
+  // 1. Resolve NaelaoAgentDO for this session
+  const agentStub = await getAgentDO(c.env, tenantId, sessionId, c.get("requestId"));
+
+  // 2. Inject observation payload into DO
+  const doResponse = await agentStub.fetch(new Request("http://agent-do/inject-observation", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-naelao-tenant-id": tenantId,
+      ...(userId ? { "x-naelao-user-id": userId } : {}),
+    },
+    body: JSON.stringify({
+      type: "widget_response",
+      data: {
+        ...body,
+        sessionId,
+        spaceId,
+        userId,
+        timestamp: body.timestamp || new Date().toISOString(),
+      },
+    }),
+  }));
+
+  if (!doResponse.ok) {
+    const errText = await doResponse.text().catch(() => "Unknown DO error");
+    return c.json({ error_code: "do_injection_failed", message: `Failed to inject widget observation: ${errText}` }, 500);
+  }
+
+  return c.json({
+    ok: true,
+    sessionId,
+    widgetId: body.widgetId,
+    status: "processing",
+    message: "Widget response successfully injected into agent reasoning loop",
+  });
+});
+
 app.get("/spaces/:spaceId/sessions/:sessionId/agent/interrupted", async (c) => {
   const tenantId = await requireVerifiedTenant(c);
   const { spaceId, sessionId } = c.req.param();

@@ -23,6 +23,7 @@
 // The web studio's price list lives with its skills, so the storefront the assistant provisions
 // and the skill that quotes a job read the SAME numbers.
 import { DEFAULT_WORKING_MODEL } from "@naelao/billing-core";
+import type { BusinessBlueprint } from "@naelao/types";
 import { WEBDEV_TIERS } from "./webdev-skills.js";
 
 /** An agent definition exactly in the §11 shape (stored in SpaceDO.agent_definitions). */
@@ -1003,3 +1004,21 @@ export function validateLaunchpadSpaceType(st: LaunchpadSpaceType = LAUNCHPAD_SP
 
 // Fail fast at import if the SpaceType is malformed.
 validateLaunchpadSpaceType();
+
+/**
+ * Resolve runtime behavior configuration for a business blueprint depending on its operating mode:
+ * - "autonomous_venture" (The AI Operator): proactive unattended crons, yolo approvals
+ * - "vertical_cowork" (Harvey AI for X): human-in-the-loop, strict citations, doc redline/audit retention
+ */
+export function resolveTemplateRuntimeBehavior(blueprint: BusinessBlueprint) {
+  const isCowork = blueprint.templateMode === "vertical_cowork";
+
+  return {
+    operatingMode: blueprint.templateMode,
+    defaultAutonomy: isCowork ? "always_ask" : "yolo",
+    enableProactiveCrons: !isCowork, // Autonomous ventures run background crons; cowork studios wait for human turns
+    enforceCitations: isCowork ? (blueprint.coworkConfig?.enforceCitationFootnotes ?? true) : false,
+    auditRetentionDays: isCowork ? (blueprint.coworkConfig?.auditLogRetentionDays ?? 365) : 30,
+    defaultViewport: isCowork ? (blueprint.coworkConfig?.defaultViewport ?? "DocumentRedlineCanvas") : "CodeWorkspaceCanvas"
+  };
+}
