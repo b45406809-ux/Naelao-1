@@ -7568,4 +7568,35 @@ function calculateCosineSimilarity(vecA: number[], vecB: number[]): number {
     normB += vecB[i] * vecB[i];
   }
   return normA === 0 || normB === 0 ? 0 : dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+
+import { verifyGatekeeperToken, mintGatekeeperToken } from "@avos/security";
+import { GatekeeperToken } from "@avos/security";
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const tokenHeader = request.headers.get("x-gatekeeper-token");
+
+    if (!tokenHeader) {
+      return new Response(JSON.stringify({ error: "Missing x-gatekeeper-token header for Agent DO" }), {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    let token: GatekeeperToken;
+    try {
+      const secret = (this.env as any).PLATFORM_SECRET || "avos-default-dev-secret-key-change-me";
+      token = await verifyGatekeeperToken(tokenHeader, secret);
+    } catch (err: any) {
+      return new Response(JSON.stringify({ error: `Agent Forbidden: ${err.message}` }), {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    return new Response(JSON.stringify({ status: "NaelaoAgentDO operational", appId: token.appId }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }
 }

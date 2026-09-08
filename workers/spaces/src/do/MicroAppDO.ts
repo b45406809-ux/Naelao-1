@@ -219,4 +219,95 @@ export class MicroAppDO extends DurableObject {
     console.log(`Indexing ${event.filePath}...`);
   }
 }
+
+import { verifyGatekeeperToken, WriteGuard } from "@avos/security";
+import { GatekeeperToken } from "@avos/security";
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const tokenHeader = request.headers.get("x-gatekeeper-token");
+
+    if (!tokenHeader) {
+      return new Response(JSON.stringify({ error: "Missing x-gatekeeper-token header" }), {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    let token: GatekeeperToken;
+    try {
+      // In production workers, PLATFORM_SECRET would be bound via env
+      const secret = (this.env as any).PLATFORM_SECRET || "avos-default-dev-secret-key-change-me";
+      token = await verifyGatekeeperToken(tokenHeader, secret);
+    } catch (err: any) {
+      return new Response(JSON.stringify({ error: `Forbidden: ${err.message}` }), {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    if (url.pathname === "/api/data" && request.method === "POST") {
+      try {
+        const body: any = await request.json();
+        const sql = body.sql;
+        if (!sql) {
+          return new Response(JSON.stringify({ error: "Missing 'sql' in request body" }), {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          });
+        }
+
+        // Validate via WriteGuard
+        const validation = await WriteGuard.validateSqlQuery(sql, token);
+        if (!validation.allowed) {
+          return new Response(JSON.stringify({ error: validation.reason }), {
+            status: 403,
+            headers: { "content-type": "application/json" },
+          });
+        }
+
+        // Execute SQL via DO sqlite storage
+        const cursor = this.ctx.storage.sql.exec(sql, ...(body.params || []));
+        const results = [...cursor];
+
+        // Audit Log entry in SQLite ledger
+        try {
+          this.ctx.storage.sql.exec(
+            `CREATE TABLE IF NOT EXISTS _avos_audit_ledger (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              timestamp INTEGER,
+              user_id TEXT,
+              app_id TEXT,
+              space_id TEXT,
+              action TEXT,
+              sql TEXT
+            )`
+          );
+          this.ctx.storage.sql.exec(
+            `INSERT INTO _avos_audit_ledger (timestamp, user_id, app_id, space_id, action, sql) VALUES (?, ?, ?, ?, ?, ?)`,
+            Date.now(),
+            token.userId,
+            token.appId,
+            token.spaceId,
+            "SQL_MUTATION",
+            sql
+          );
+        } catch (auditErr) {
+          console.error("Failed to write audit ledger entry:", auditErr);
+        }
+
+        return new Response(JSON.stringify({ results }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      } catch (err: any) {
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { "content-type": "application/json" },
+        });
+      }
+    }
+
+    return new Response("MicroAppDO running with Gatekeeper Protection", { status: 200 });
+  }
 }
