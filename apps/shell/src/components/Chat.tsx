@@ -1,6 +1,100 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { GenerativeWidget } from "./ui/GenerativeWidget";
 import type { DynamicUiWidget } from "@avos/types";
+
+export interface WidgetComponentProps {
+  widgetId: string;
+  widgetType: string;
+  data: Record<string, any>;
+  onWidgetSubmit: (action: string, payload: Record<string, any>) => Promise<void>;
+}
+
+export function ChatWidgetWrapper({
+  spaceId = "default-space",
+  sessionId = "default-session",
+  widgetId,
+  widgetType,
+  data,
+}: {
+  spaceId?: string;
+  sessionId?: string;
+  widgetId: string;
+  widgetType: string;
+  data: Record<string, any>;
+}) {
+  const handleWidgetSubmit = useCallback(
+    async (action: string, payload: Record<string, any>) => {
+      try {
+        console.log(`📤 Submitting widget response for [${widgetId}]: ${action}`, payload);
+
+        window.dispatchEvent(
+          new CustomEvent("mcp:ui_action", {
+            detail: { callbackId: widgetId, action, data: payload },
+          })
+        );
+
+        if (typeof fetch !== "undefined") {
+          await fetch(`/spaces/${spaceId}/sessions/${sessionId}/widget-response`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              widgetId,
+              widgetType,
+              action,
+              payload,
+              timestamp: new Date().toISOString(),
+            }),
+          }).catch((e) => console.warn("API fetch error for widget response:", e));
+        }
+
+        console.log(`✅ Widget response for [${widgetId}] processed successfully.`);
+      } catch (err) {
+        console.error(`❌ Failed to submit widget response:`, err);
+      }
+    },
+    [spaceId, sessionId, widgetId, widgetType]
+  );
+
+  return (
+    <div className="in-chat-widget-container" data-widget-id={widgetId}>
+      <DynamicWidgetRenderer
+        widgetId={widgetId}
+        widgetType={widgetType}
+        data={data}
+        onSubmit={handleWidgetSubmit}
+      />
+    </div>
+  );
+}
+
+export function DynamicWidgetRenderer({
+  widgetId,
+  widgetType,
+  data,
+  onSubmit,
+}: {
+  widgetId: string;
+  widgetType: string;
+  data: any;
+  onSubmit: (action: string, payload: any) => Promise<void>;
+}) {
+  return (
+    <div className="p-3 bg-zinc-100 dark:bg-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-700 space-y-2">
+      <div className="text-xs font-semibold text-zinc-500 uppercase tracking-wide">
+        {widgetType || "Interactive Widget"}
+      </div>
+      {data?.title && <div className="text-sm font-medium">{data.title}</div>}
+      {data?.description && <div className="text-xs text-zinc-600 dark:text-zinc-400">{data.description}</div>}
+      <button
+        type="button"
+        className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium transition-colors"
+        onClick={() => onSubmit("SUBMIT", { selectedValue: data?.defaultValue || "confirmed", widgetId })}
+      >
+        Submit Response
+      </button>
+    </div>
+  );
+}
 
 interface ChatMessage {
   id: string;

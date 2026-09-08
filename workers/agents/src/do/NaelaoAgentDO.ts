@@ -5,6 +5,8 @@ export class NaelaoAgentDO {
   private ctx: DurableObjectState;
   private env: any;
   private sessions: Set<WebSocket> = new Set();
+  private isProcessing: boolean = false;
+  private sessionId?: string;
 
   constructor(ctx: DurableObjectState, env: any) {
     this.ctx = ctx;
@@ -21,6 +23,14 @@ export class NaelaoAgentDO {
           ui_payload TEXT,
           created_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS session_messages (
+          id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          role TEXT NOT NULL,
+          content TEXT NOT NULL,
+          metadata_json TEXT,
+          created_at TEXT NOT NULL
+        );
       `);
     });
   }
@@ -32,6 +42,12 @@ export class NaelaoAgentDO {
       const [client, server] = [pair[0], pair[1]];
       this.handleWebSocket(server);
       return new Response(null, { status: 101, webSocket: client });
+    }
+
+    if (request.method === "POST" && (url.pathname.endsWith("/inject-observation") || url.pathname === "/inject-observation")) {
+      const body: any = await request.json();
+      await this.handleObservationInjection(body);
+      return Response.json({ ok: true });
     }
 
     if (request.method === "POST" && url.pathname.endsWith("/ui-action")) {
@@ -110,6 +126,73 @@ export class NaelaoAgentDO {
       type: "agent_reasoning_step",
       event: reasoningEvent,
     });
+  }
+
+  /**
+   * Appends an observation turn to the active session transcript and wakes
+   * the agent REPL reasoning loop if dormant.
+   */
+  async handleObservationInjection(event: { type: string; data: any }) {
+    if (event.type === "widget_response") {
+      const widgetData = event.data;
+
+      // Format as structured XML observation for LLM context window
+      const observationXml = `<widget_response id="${widgetData.widgetId}" type="${widgetData.widgetType || "dynamic_ui"}" action="${widgetData.action}">
+${JSON.stringify(widgetData.payload || widgetData.data || {}, null, 2)}
+</widget_response>`;
+
+      const msgId = crypto.randomUUID();
+      const targetSessionId = widgetData.sessionId || widgetData.threadId || this.sessionId || "default";
+
+      // 1. Append observation to DO SQLite session messages
+      this.ctx.storage.sql.exec(
+        `INSERT INTO session_messages (id, session_id, role, content, metadata_json, created_at)
+         VALUES (?, ?, 'observation', ?, ?, datetime('now'))`,
+        msgId,
+        targetSessionId,
+        observationXml,
+        JSON.stringify(widgetData)
+      );
+
+      // 2. Also record in thread_messages for UI continuity
+      this.ctx.storage.sql.exec(
+        `INSERT INTO thread_messages (id, thread_id, role, content, ui_payload, created_at)
+         VALUES (?, ?, 'observation', ?, ?, ?)`,
+        msgId,
+        targetSessionId,
+        observationXml,
+        JSON.stringify(widgetData),
+        Date.now()
+      );
+
+      // 3. Broadcast to frontend stream
+      this.broadcastToFrontend({
+        type: "observation_injected",
+        observation: observationXml,
+        widgetData,
+      });
+
+      // 4. Trigger active agent execution turn if not currently processing
+      if (!this.isProcessing) {
+        this.ctx.waitUntil(this.triggerReasoningTurn(`Received user input from widget '${widgetData.widgetId}'`));
+      }
+    }
+  }
+
+  private async triggerReasoningTurn(reason: string) {
+    this.isProcessing = true;
+    try {
+      this.broadcastToFrontend({
+        type: "agent_reasoning_step",
+        event: {
+          type: "reasoning_wake",
+          reason,
+          timestamp: Date.now(),
+        },
+      });
+    } finally {
+      this.isProcessing = false;
+    }
   }
 
   async initializeRunContext(runConfig: { spaceId: string; projectId?: string; userId?: string }) {
