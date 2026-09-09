@@ -139,6 +139,12 @@ export class SpaceDO {
         });
       }
 
+      if (path === "/idempotency/check" && request.method === "POST") {
+        const body = await request.json() as { provider: string; eventId: string; payloadStr: string };
+        const isFresh = await this.checkAndRecordIdempotency(body.provider, body.eventId, body.payloadStr);
+        return Response.json({ isFresh });
+      }
+
       return new Response("Not Found", { status: 404 });
     } catch (err: any) {
       return new Response(JSON.stringify({ success: false, error: err.message }), {
@@ -289,6 +295,47 @@ export class SpaceDO {
     `, now, exitCode, now, id);
     return { ok: true };
   }
+
+  /**
+   * Atomic deduplication check using SHA-256 payload hash.
+   * Returns true if the event is fresh, or false if it is a duplicate replay.
+   */
+  async checkAndRecordIdempotency(provider: string, eventId: string, payloadStr: string): Promise<boolean> {
+    const spaceId = (this.state.id as any).toString ? (this.state.id as any).toString() : "space";
+    const encoder = new TextEncoder();
+    const data = encoder.encode(`${provider}:${eventId}:${payloadStr}`);
+    const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+    const hash = [...new Uint8Array(hashBuffer)]
+      .map(b => b.toString(16).padStart(2, "0"))
+      .join("");
+
+    // Clean entries older than 24 hours to prevent unbounded table growth
+    this.state.storage.sql.exec(`
+      DELETE FROM webhook_idempotency_records 
+      WHERE processed_at < datetime('now', '-1 day')
+    `);
+
+    // Check if hash was already processed
+    const existing = this.state.storage.sql.exec(
+      `SELECT 1 FROM webhook_idempotency_records WHERE hash = ?`, 
+      hash
+    ).toArray();
+
+    if (existing.length > 0) {
+      return false; // Duplicate replay detected
+    }
+
+    // Insert fresh hash record
+    this.state.storage.sql.exec(
+      `INSERT INTO webhook_idempotency_records (hash, provider, event_id, space_id) VALUES (?, ?, ?, ?)`,
+      hash, 
+      provider, 
+      eventId, 
+      spaceId
+    );
+
+    return true; // Fresh event, execution permitted
+  }
   async listGadgetInstancesForRun(projectId?: string, userId?: string) {
     try {
       const sql = `
@@ -318,4 +365,35 @@ export class SpaceDO {
       return [];
     }
   }
+
+          CREATE TABLE IF NOT EXISTS space_workflows_registry (
+             id TEXT PRIMARY KEY,
+             space_id TEXT NOT NULL,
+             project_id TEXT,
+             workflow_class TEXT NOT NULL CHECK (workflow_class IN ('COMPANY_AUTOMATION', 'VERTICAL_EXTENSION', 'EPHEMERAL_TASK')),
+             title TEXT NOT NULL,
+             description TEXT NOT NULL DEFAULT '',
+             plugin_id TEXT,
+             script_path TEXT NOT NULL,
+             trigger_type TEXT NOT NULL CHECK (trigger_type IN ('cron', 'webhook', 'event_queue', 'on_demand', 'git_push')),
+             trigger_spec TEXT,
+             funding_source TEXT NOT NULL DEFAULT 'PROJECT_CAP' CHECK (funding_source IN ('COMPANY_WALLET', 'PROJECT_CAP', 'USER_CREDITS')),
+             alert_channel TEXT NOT NULL DEFAULT 'PROJECT_TEAM_ROOM' CHECK (alert_channel IN ('FOUNDER_TELEGRAM', 'PROJECT_TEAM_ROOM', 'THREAD_RECEIPT_ONLY')),
+             status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'PAUSED', 'DISABLED')),
+             last_run_at TEXT,
+             last_exit_code INTEGER,
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+           );
+           CREATE INDEX IF NOT EXISTS idx_swr_lookup ON space_workflows_registry(space_id, project_id, workflow_class);
+
+           -- SQLite Table for Webhook Event Deduplication in SpaceDO
+           CREATE TABLE IF NOT EXISTS webhook_idempotency_records (
+             hash TEXT PRIMARY KEY,
+             provider TEXT NOT NULL,
+             event_id TEXT NOT NULL,
+             space_id TEXT NOT NULL,
+             processed_at TEXT NOT NULL DEFAULT (datetime('now'))
+           );
+           CREATE INDEX IF NOT EXISTS idx_wir_time ON webhook_idempotency_records(processed_at);
 }

@@ -72,6 +72,14 @@ service = "naelao-credentials"
 binding = "BILLING_WORKER"
 service = "naelao-billing"
 
+# Cloudflare Queue Consumer for Inbound Webhooks
+[[queues.consumers]]
+queue = "naelao-inbound-automations"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 3
+dead_letter_queue = "naelao-automations-dlq"
+
 [env.staging]
 name = "naelao-router-staging"
 vars = { ENVIRONMENT = "staging", CORS_ALLOWLIST = "https://staging-dashboard.naelao.com,https://staging-portal.naelao.com,https://staging-app.naelao.com", PRODUCT_SHELL_URL = "https://staging-app.naelao.com" }
