@@ -170,7 +170,7 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
     };
   }
 
-  override async fetch(request: Request): Promise<Response> {
+  override   async fetch(request: Request): Promise<Response> {
     this.ensureInit();
     // First-ever slot creation on a fresh DO instance schedules the sweep; subsequent calls
     // are no-ops (setAlarm is idempotent-by-overwrite, but we only need one recurring cadence).
@@ -179,6 +179,10 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
 
     const url = new URL(request.url);
     try {
+      if (request.method === "GET" && url.pathname === "/pacer/permit") {
+        const permit = await this.acquireRatePermit();
+        return Response.json(permit);
+      }
       if (request.method === "POST" && url.pathname === "/acquire") {
         return this.handleAcquire(request);
       }
@@ -264,6 +268,35 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
   private countActive(key: string): number {
     const rows = this.ctx.storage.sql.exec(`SELECT COUNT(*) AS c FROM slots WHERE key = ?`, key).toArray() as Array<{ c: number }>;
     return rows[0]?.c ?? 0;
+  }
+
+  private lastLeakTime = Date.now();
+  private availableTokens = 5;
+  private readonly maxCapacity = 5;
+  private readonly fillRatePerSecond = 5; // Enforces a ceiling of 5 requests/second
+
+  /**
+   * Evaluates available tokens and grants or delays requests to downstream APIs.
+   */
+  async acquireRatePermit(): Promise<{ granted: boolean; retryAfterMs?: number }> {
+    const now = Date.now();
+    const elapsedSeconds = (now - this.lastLeakTime) / 1000;
+    
+    // Replenish tokens based on elapsed time
+    this.availableTokens = Math.min(
+      this.maxCapacity, 
+      this.availableTokens + elapsedSeconds * this.fillRatePerSecond
+    );
+    this.lastLeakTime = now;
+
+    if (this.availableTokens >= 1) {
+      this.availableTokens -= 1;
+      return { granted: true };
+    }
+
+    // Calculate time until next token becomes available
+    const waitMs = Math.ceil(((1 - this.availableTokens) / this.fillRatePerSecond) * 1000);
+    return { granted: false, retryAfterMs: Math.max(waitMs, 100) };
   }
 
   // Deadlock fix: reclaim any slot whose TTL lapsed without an explicit release (holder

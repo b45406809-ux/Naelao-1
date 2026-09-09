@@ -228,6 +228,11 @@ app.all("/spaces/:spaceId/micro-apps/:slug/*", async (c) => {
     const msg = err instanceof Error ? err.message : String(err);
     return c.json({ error: msg }, 400);
   }
+
+import { webhookAdminRouter } from "./routes/webhook-admin-routes";
+
+app.route("/", webhookAdminRouter);
+
 });
 
 export default app;

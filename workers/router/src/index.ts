@@ -145,7 +145,11 @@ function validateEnv(env: Env): void {
   }
 }
 
-const app = new Hono<{ Bindings: Env }>();
+import { webhookRouter } from "./webhooks";
+
+// Mount public webhook ingress gateway (unauthenticated / signature-verified)
+app.route("/", webhookRouter);
+
 
 // Security audit follow-up: CORS_ALLOWLIST was one static platform-wide env var — fine for the
 // two fixed platform frontends (dashboard, portal) but can't scale to arbitrary per-builder
