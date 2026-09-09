@@ -29,7 +29,7 @@ export class SpaceDO {
           CREATE TABLE IF NOT EXISTS space_workflows_registry (
             id TEXT PRIMARY KEY,
             space_id TEXT NOT NULL,
-            project_id TEXT,
+            project_id TEXT NOT NULL,
             workflow_class TEXT NOT NULL CHECK (workflow_class IN ('COMPANY_AUTOMATION', 'VERTICAL_EXTENSION', 'EPHEMERAL_TASK')),
             title TEXT NOT NULL,
             description TEXT NOT NULL DEFAULT '',
@@ -46,6 +46,31 @@ export class SpaceDO {
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
           );
           CREATE INDEX IF NOT EXISTS idx_swr_lookup ON space_workflows_registry(space_id, project_id, workflow_class);
+
+          CREATE TABLE IF NOT EXISTS webhook_idempotency_records (
+            hash TEXT PRIMARY KEY,
+            provider TEXT NOT NULL,
+            event_id TEXT NOT NULL,
+            space_id TEXT NOT NULL,
+            processed_at TEXT NOT NULL DEFAULT (datetime('now'))
+          );
+          CREATE INDEX IF NOT EXISTS idx_wir_time ON webhook_idempotency_records(processed_at);
+
+          CREATE TABLE IF NOT EXISTS customer_conversations (
+            id TEXT PRIMARY KEY,
+            space_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            customer_identifier TEXT NOT NULL,
+            channel TEXT NOT NULL,
+            role TEXT NOT NULL CHECK (role IN ('customer', 'bot', 'human_agent')),
+            content TEXT NOT NULL,
+            sentiment TEXT CHECK (sentiment IN ('POSITIVE', 'NEUTRAL', 'FRUSTRATED', 'ANGRY')),
+            metadata_json TEXT DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+          );
+          CREATE INDEX IF NOT EXISTS idx_cc_session ON customer_conversations(session_id, created_at);
+          CREATE INDEX IF NOT EXISTS idx_cc_cust ON customer_conversations(customer_identifier);
         `);
       } catch (e) {
         console.warn("SQLite initialization skipped/failed in SpaceDO", e);
@@ -143,6 +168,24 @@ export class SpaceDO {
         const body = await request.json() as { provider: string; eventId: string; payloadStr: string };
         const isFresh = await this.checkAndRecordIdempotency(body.provider, body.eventId, body.payloadStr);
         return Response.json({ isFresh });
+      }
+
+      if (path === "/customer-conversations/append" && request.method === "POST") {
+        const body: any = await request.json();
+        const result = await this.appendCustomerMessage(body);
+        return new Response(JSON.stringify(result), {
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+
+      if (path === "/customer-conversations/history" && request.method === "GET") {
+        const sessionId = url.searchParams.get("session_id") || "";
+        const limitStr = url.searchParams.get("limit") || "10";
+        const limit = parseInt(limitStr, 10) || 10;
+        const history = await this.getCustomerConversationHistory(sessionId, limit);
+        return new Response(JSON.stringify(history), {
+          headers: { "Content-Type": "application/json" }
+        });
       }
 
       return new Response("Not Found", { status: 404 });
@@ -366,34 +409,46 @@ export class SpaceDO {
     }
   }
 
-          CREATE TABLE IF NOT EXISTS space_workflows_registry (
-             id TEXT PRIMARY KEY,
-             space_id TEXT NOT NULL,
-             project_id TEXT,
-             workflow_class TEXT NOT NULL CHECK (workflow_class IN ('COMPANY_AUTOMATION', 'VERTICAL_EXTENSION', 'EPHEMERAL_TASK')),
-             title TEXT NOT NULL,
-             description TEXT NOT NULL DEFAULT '',
-             plugin_id TEXT,
-             script_path TEXT NOT NULL,
-             trigger_type TEXT NOT NULL CHECK (trigger_type IN ('cron', 'webhook', 'event_queue', 'on_demand', 'git_push')),
-             trigger_spec TEXT,
-             funding_source TEXT NOT NULL DEFAULT 'PROJECT_CAP' CHECK (funding_source IN ('COMPANY_WALLET', 'PROJECT_CAP', 'USER_CREDITS')),
-             alert_channel TEXT NOT NULL DEFAULT 'PROJECT_TEAM_ROOM' CHECK (alert_channel IN ('FOUNDER_TELEGRAM', 'PROJECT_TEAM_ROOM', 'THREAD_RECEIPT_ONLY')),
-             status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'PAUSED', 'DISABLED')),
-             last_run_at TEXT,
-             last_exit_code INTEGER,
-             created_at TEXT NOT NULL DEFAULT (datetime('now')),
-             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-           );
-           CREATE INDEX IF NOT EXISTS idx_swr_lookup ON space_workflows_registry(space_id, project_id, workflow_class);
+  async appendCustomerMessage(record: {
+    spaceId: string;
+    projectId: string;
+    sessionId: string;
+    customerIdentifier: string;
+    channel: string;
+    role: "customer" | "bot" | "human_agent";
+    content: string;
+    sentiment?: string;
+    metadata?: Record<string, any>;
+  }): Promise<{ ok: boolean; id: string }> {
+    const id = `cmsg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    this.state.storage.sql.exec(`
+      INSERT INTO customer_conversations (
+        id, space_id, project_id, session_id, customer_identifier, channel, role, content, sentiment, metadata_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    `,
+      id,
+      record.spaceId,
+      record.projectId,
+      record.sessionId,
+      record.customerIdentifier,
+      record.channel,
+      record.role,
+      record.content,
+      record.sentiment || null,
+      JSON.stringify(record.metadata || {})
+    );
+    return { ok: true, id };
+  }
 
-           -- SQLite Table for Webhook Event Deduplication in SpaceDO
-           CREATE TABLE IF NOT EXISTS webhook_idempotency_records (
-             hash TEXT PRIMARY KEY,
-             provider TEXT NOT NULL,
-             event_id TEXT NOT NULL,
-             space_id TEXT NOT NULL,
-             processed_at TEXT NOT NULL DEFAULT (datetime('now'))
-           );
-           CREATE INDEX IF NOT EXISTS idx_wir_time ON webhook_idempotency_records(processed_at);
+  async getCustomerConversationHistory(sessionId: string, limit: number = 10): Promise<Array<{ role: string; content: string }>> {
+    const rows = this.state.storage.sql.exec(
+      `SELECT role, content FROM customer_conversations
+       WHERE session_id = ?
+       ORDER BY created_at ASC
+       LIMIT ?`,
+      sessionId,
+      limit
+    ).toArray() as Array<{ role: string; content: string }>;
+    return rows;
+  }
 }
