@@ -4,5 +4,8 @@ export * from "./subagent-context";
 export * from "./customer-bot";
 export * from "./scheduled-jobs";
 export * from "./calendar";
+export * from "./marketplace";
+export * from "./recipe";
+export * from "./market-radar";
 
 

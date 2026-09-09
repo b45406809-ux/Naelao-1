@@ -154,3 +154,94 @@ export async function loadShellCatalog(env: TemplateCatalogEnv): Promise<ShellCa
     return empty;
   }
 }
+
+import { TemplateCatalogEntry, TemplateCatalogEnv } from "./template-catalog";
+import { AutomationRecipeManifest } from "@naelao/types";
+
+export * from "./template-catalog";
+
+export const SYSTEM_AUTOMATION_RECIPES: AutomationRecipeManifest[] = [
+  {
+    id: "recipe_shopify_fulfillment_v1",
+    name: "Shopify Order-to-Fulfillment Pipeline",
+    description: "Automatically syncs new Shopify orders, verifies inventory in a private SQLite gadget, and dispatches SMS updates via Twilio.",
+    category: "COMMERCE",
+    authorUserId: "system_naelao",
+    requiredConnectors: ["shopify", "twilio"],
+    webhookConfig: {
+      provider: "shopify",
+      suggestedSlug: "shopify-order-created",
+      signatureHeaderName: "x-shopify-hmac-sha256"
+    },
+    bundledWorkflow: {
+      id: "wf_shopify_fulfill",
+      name: "Shopify Fulfillment Workflow",
+      scriptPath: "/.avos/shared/workflows/shopify-fulfillment.ts"
+    },
+    bundledGadget: {
+      gadgetId: "gadget_fulfillment_ledger",
+      purpose: "Tracks order processing states and fulfillment logs",
+      initialSqlSchema: `
+        CREATE TABLE IF NOT EXISTS fulfillment_records (
+          id TEXT PRIMARY KEY,
+          order_id TEXT NOT NULL,
+          customer_email TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'PENDING',
+          tracking_number TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+      `
+    }
+  },
+  {
+    id: "recipe_stripe_dispute_sentinel_v1",
+    name: "Stripe Dispute Evidence Compiler",
+    description: "Listens for Stripe chargeback webhooks, pulls relevant contract records via Cohere Parse 5 R2 storage, and compiles evidentiary defense packets.",
+    category: "FINANCE",
+    authorUserId: "system_naelao",
+    requiredConnectors: ["stripe"],
+    webhookConfig: {
+      provider: "stripe",
+      suggestedSlug: "stripe-charge-dispute",
+      signatureHeaderName: "stripe-signature"
+    },
+    bundledWorkflow: {
+      id: "wf_stripe_dispute",
+      name: "Stripe Dispute Workflow",
+      scriptPath: "/.avos/shared/workflows/stripe-dispute.ts"
+    },
+    bundledGadget: {
+      gadgetId: "gadget_dispute_audit_log",
+      purpose: "Maintains timeline of submitted dispute evidence",
+      initialSqlSchema: `
+        CREATE TABLE IF NOT EXISTS dispute_packets (
+          id TEXT PRIMARY KEY,
+          dispute_id TEXT NOT NULL,
+          charge_id TEXT NOT NULL,
+          amount_cents INTEGER NOT NULL,
+          evidence_summary TEXT,
+          status TEXT NOT NULL DEFAULT 'EVIDENCE_REQUIRED',
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+      `
+    }
+  },
+  {
+    id: "recipe_github_issue_scaffolder_v1",
+    name: "GitHub Issue-to-Branch Scaffolder",
+    description: "When a new GitHub issue is labeled 'agent-task', spins up a Cloudflare Artifacts Git branch, runs DevOperator to patch code, and opens a Pull Request.",
+    category: "ENGINEERING",
+    authorUserId: "system_naelao",
+    requiredConnectors: ["github"],
+    webhookConfig: {
+      provider: "github",
+      suggestedSlug: "github-issue-labeled",
+      signatureHeaderName: "x-hub-signature-256"
+    },
+    bundledWorkflow: {
+      id: "wf_github_scaffold",
+      name: "GitHub Issue Scaffolding Workflow",
+      scriptPath: "/.avos/shared/workflows/github-scaffold.ts"
+    }
+  }
+];
