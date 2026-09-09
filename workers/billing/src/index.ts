@@ -14,6 +14,7 @@ import {
 import { Hono } from "hono";
 import { checkQuota, checkWindowedQuota, recordUsageEvent, getUsageSummary } from "./quota.js";
 import { handleLemonSqueezyWebhook, recordPlatformPlanSubscription, grantPersonalPlanPurchase } from "./lemon-squeezy.js";
+import { settleTemplateSubscriptionPayment } from "./settlement.js";
 import { createLsProductVariant, lsProductsConfig } from "./ls-products.js";
 import { registerWhopWalletRoutes, handleWhopWebhook, renderPayoutApprovalPage, confirmPayoutApproval, routeWhopWalletCheckout, getSubMerchant } from "./whop-wallet.js";
 import { createBusinessWhopOAuthCheckout } from "./whop-oauth-billing.js";
@@ -1172,6 +1173,18 @@ app.post("/webhooks/lemon-squeezy", async (c) => {
     // No agents worker bound (local dev without full stack) — still return 200
     return c.json({ ok: true, skipped: true, reason: "AGENTS_WORKER not bound" });
   }
+  const clonedReq = c.req.raw.clone();
+  try {
+    const rawText = await clonedReq.text();
+    const eventJson = JSON.parse(rawText);
+    const eventName = eventJson?.meta?.event_name || eventJson?.event_name;
+    const spaceId = eventJson?.data?.attributes?.custom_data?.space_id || eventJson?.meta?.custom_data?.space_id;
+    const totalCents = eventJson?.data?.attributes?.total || eventJson?.data?.attributes?.subtotal;
+    if ((eventName === "order_created" || eventName === "subscription_payment_success") && spaceId && typeof totalCents === "number") {
+      await settleTemplateSubscriptionPayment(c.env.PLATFORM_DB, spaceId, totalCents);
+    }
+  } catch {}
+
   return handleLemonSqueezyWebhook(c.req.raw, {
     ...(c.env.LEMON_SQUEEZY_WEBHOOK_SECRET ? { LEMON_SQUEEZY_WEBHOOK_SECRET: c.env.LEMON_SQUEEZY_WEBHOOK_SECRET } : {}),
     ...(c.env.LEMON_SQUEEZY_API_KEY ? { LEMON_SQUEEZY_API_KEY: c.env.LEMON_SQUEEZY_API_KEY } : {}),
