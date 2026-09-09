@@ -1,5 +1,5 @@
 import { AVOS_PROJECT_KINDS } from '../../../../packages/events/src/business-feature-kinds';
-import type { AvosWorkflowDefinition, WorkflowClass, WorkflowFundingSource, WorkflowAlertChannel } from "@naelao/types";
+import type { AvosWorkflowDefinition, WorkflowClass, WorkflowFundingSource, WorkflowAlertChannel, SpaceExportSnapshot } from "@naelao/types";
 import { evaluateUserBudget, type UserBudgetEnvelope } from "@naelao/billing-core";
 
 export interface Env {
@@ -90,6 +90,30 @@ export class SpaceDO {
             currency TEXT NOT NULL DEFAULT 'USD',
             reason TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
+          );
+
+          CREATE TABLE IF NOT EXISTS workspace_files (
+            path TEXT PRIMARY KEY,
+            content TEXT,
+            size_bytes INTEGER DEFAULT 0
+          );
+
+          CREATE TABLE IF NOT EXISTS space_credentials (
+            credential_name TEXT NOT NULL,
+            service_name TEXT NOT NULL DEFAULT 'custom'
+          );
+
+          CREATE TABLE IF NOT EXISTS knowledge_documents (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL
+          );
+
+          CREATE TABLE IF NOT EXISTS project_tasks (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'ACTIVE'
           );
         `);
       } catch (e) {
@@ -229,6 +253,16 @@ export class SpaceDO {
           Boolean(body.isClass1Automation)
         );
         return new Response(JSON.stringify(result), {
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+
+      if (path === "/export-space-state" && request.method === "POST") {
+        const body: any = await request.json().catch(() => ({}));
+        const snapshot = await this.exportSpaceState({
+          includeKnowledge: body.includeKnowledge !== false
+        });
+        return new Response(JSON.stringify({ success: true, snapshot }), {
           headers: { "Content-Type": "application/json" }
         });
       }
@@ -630,5 +664,85 @@ export class SpaceDO {
       return (this.state.storage as any).transactionSync(runInTx);
     }
     return runInTx();
+  }
+
+  async exportSpaceState(options: { includeKnowledge: boolean }): Promise<SpaceExportSnapshot> {
+    const spaceId = this.state.id.toString();
+
+    // 1. Fetch space settings / template mode
+    let templateMode: "autonomous_venture" | "vertical_cowork" = "autonomous_venture";
+    try {
+      const spaceMeta = this.state.storage.sql.exec(
+        "SELECT id, config_json FROM spaces WHERE id = ?",
+        spaceId
+      ).toArray()[0] as any;
+      if (spaceMeta?.config_json) {
+        const config = JSON.parse(spaceMeta.config_json || "{}");
+        if (config.templateMode) templateMode = config.templateMode;
+      }
+    } catch {}
+
+    // 2. Fetch all active projects
+    let projects: any[] = [];
+    try {
+      projects = this.state.storage.sql.exec(
+        "SELECT id, name, slug, kind, visibility FROM projects WHERE status = 'active'"
+      ).toArray();
+    } catch {}
+    if (!projects || projects.length === 0) {
+      const kvProjects = (await this.state.storage.get("projects")) as any[] || [];
+      projects = kvProjects.map(p => ({
+        id: p.id,
+        name: p.name,
+        slug: p.slug || p.id,
+        kind: p.kind,
+        visibility: p.visibility || "private"
+      }));
+    }
+
+    // 3. Fetch workspace files (Sanitize: exclude .env and internal credentials, <= 2MB)
+    let filesRows: any[] = [];
+    try {
+      filesRows = this.state.storage.sql.exec(
+        "SELECT path, content, size_bytes FROM workspace_files WHERE path NOT LIKE '%.env%' AND path NOT LIKE '%.local%' AND size_bytes <= 2000000"
+      ).toArray() as any[];
+    } catch {}
+
+    // 4. Fetch declared credential names (never the keys!)
+    let credRows: any[] = [];
+    try {
+      credRows = this.state.storage.sql.exec(
+        "SELECT DISTINCT credential_name, service_name FROM space_credentials"
+      ).toArray() as any[];
+    } catch {}
+
+    // 5. Fetch knowledge seeds if requested
+    let knowledgeDocs: Array<{ title: string; content: string }> = [];
+    if (options.includeKnowledge) {
+      try {
+        const kbRows = this.state.storage.sql.exec(
+          "SELECT title, content FROM knowledge_documents LIMIT 50"
+        ).toArray() as any[];
+        knowledgeDocs = kbRows.map(r => ({ title: r.title, content: r.content }));
+      } catch {}
+    }
+
+    // 6. Fetch active goals from Project Journal
+    let taskRows: any[] = [];
+    try {
+      taskRows = this.state.storage.sql.exec(
+        "SELECT id, project_id, title FROM project_tasks WHERE status != 'ARCHIVED'"
+      ).toArray() as any[];
+    } catch {}
+
+    return {
+      spaceId,
+      templateMode,
+      projects,
+      workspaceFiles: filesRows.map(f => ({ path: f.path, content: f.content, sizeBytes: f.size_bytes || 0 })),
+      credentialsDeclared: credRows.map(c => ({ name: c.credential_name, service: c.service_name || "custom" })),
+      knowledgeDocs,
+      taskGoals: taskRows.map(t => ({ id: t.id, title: t.title, projectId: t.project_id }))
+    };
   }
 }
