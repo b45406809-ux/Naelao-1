@@ -5,5 +5,6 @@ export * from "./customer-bot";
 export * from "./scheduled-jobs";
 export * from "./calendar";
 export * from "./marketplace";
+export * from "./recipe";
 
 
