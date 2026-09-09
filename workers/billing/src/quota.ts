@@ -423,3 +423,23 @@ export async function checkWindowedQuota(
   const monthlyCurrent = monthlyIdx >= 0 ? usages[monthlyIdx]! : await getCurrentUsageForWindow(kv, db, orgId, metric, "month");
   return { allowed: true, current: monthlyCurrent, limit: limitForWindow("month") ?? 0, window: "month" };
 }
+
+export async function checkUserBudgetBeforeRun(
+  spaceDO: DurableObjectStub,
+  userId: string,
+  estimatedCredits: number,
+  isClass1Automation: boolean = false
+): Promise<{ allowed: boolean; reason?: string; remainingCredits: number }> {
+  const res = await spaceDO.fetch("http://internal/budget/check", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ userId, estimatedCredits, isClass1Automation })
+  });
+
+  if (!res.ok) {
+    return { allowed: false, reason: "BUDGET_LOOKUP_FAILED", remainingCredits: 0 };
+  }
+
+  return (await res.json()) as { allowed: boolean; reason?: string; remainingCredits: number };
+}
+

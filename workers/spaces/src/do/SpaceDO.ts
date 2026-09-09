@@ -1,5 +1,6 @@
 import { AVOS_PROJECT_KINDS } from '../../../../packages/events/src/business-feature-kinds';
 import type { AvosWorkflowDefinition, WorkflowClass, WorkflowFundingSource, WorkflowAlertChannel } from "@naelao/types";
+import { evaluateUserBudget, type UserBudgetEnvelope } from "@naelao/billing-core";
 
 export interface Env {
   // Define environment bindings here if needed
@@ -71,6 +72,25 @@ export class SpaceDO {
           );
           CREATE INDEX IF NOT EXISTS idx_cc_session ON customer_conversations(session_id, created_at);
           CREATE INDEX IF NOT EXISTS idx_cc_cust ON customer_conversations(customer_identifier);
+
+          CREATE TABLE IF NOT EXISTS space_user_budget_envelopes (
+            user_id TEXT PRIMARY KEY,
+            daily_credit_allowance INTEGER NOT NULL DEFAULT 500,
+            credits_spent_today INTEGER NOT NULL DEFAULT 0,
+            hard_stop_enabled INTEGER NOT NULL DEFAULT 1,
+            warned_at_eighty INTEGER NOT NULL DEFAULT 0,
+            reset_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+          );
+
+          CREATE TABLE IF NOT EXISTS wallet_ledger (
+            id TEXT PRIMARY KEY,
+            space_id TEXT NOT NULL,
+            delta_cents INTEGER NOT NULL,
+            currency TEXT NOT NULL DEFAULT 'USD',
+            reason TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+          );
         `);
       } catch (e) {
         console.warn("SQLite initialization skipped/failed in SpaceDO", e);
@@ -184,6 +204,31 @@ export class SpaceDO {
         const limit = parseInt(limitStr, 10) || 10;
         const history = await this.getCustomerConversationHistory(sessionId, limit);
         return new Response(JSON.stringify(history), {
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+
+      if (path === "/budget/check" && request.method === "POST") {
+        const body: any = await request.json();
+        const result = await this.checkUserBudgetEnvelope(
+          body.userId,
+          body.estimatedCredits ?? body.requestedCredits ?? 0,
+          Boolean(body.isClass1Automation)
+        );
+        return new Response(JSON.stringify(result), {
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+
+      if (path === "/budget/debit" && request.method === "POST") {
+        const body: any = await request.json();
+        const result = await this.recordUserBudgetDebit(
+          body.userId,
+          body.creditsSpent ?? 0,
+          body.reason ?? "",
+          Boolean(body.isClass1Automation)
+        );
+        return new Response(JSON.stringify(result), {
           headers: { "Content-Type": "application/json" }
         });
       }
@@ -450,5 +495,140 @@ export class SpaceDO {
       limit
     ).toArray() as Array<{ role: string; content: string }>;
     return rows;
+  }
+
+  async checkUserBudgetEnvelope(
+    userId: string,
+    requestedCredits: number,
+    isClass1Automation: boolean = false
+  ): Promise<{ allowed: boolean; reason?: string; remainingCredits: number }> {
+    const nowIso = new Date().toISOString();
+    const spaceId = this.state.id.toString();
+
+    // 1. Fetch or initialize user budget envelope
+    let rows = this.state.storage.sql.exec(
+      `SELECT * FROM space_user_budget_envelopes WHERE user_id = ?`,
+      userId
+    ).toArray() as any[];
+    let row = rows[0];
+
+    if (!row) {
+      const nextDay = new Date(Date.now() + 86400000).toISOString();
+      this.state.storage.sql.exec(
+        `INSERT INTO space_user_budget_envelopes 
+         (user_id, daily_credit_allowance, credits_spent_today, hard_stop_enabled, warned_at_eighty, reset_at)
+         VALUES (?, 500, 0, 1, 0, ?)`,
+        userId,
+        nextDay
+      );
+      row = {
+        user_id: userId,
+        daily_credit_allowance: 500,
+        credits_spent_today: 0,
+        hard_stop_enabled: 1,
+        warned_at_eighty: 0,
+        reset_at: nextDay
+      };
+    }
+
+    // 2. Check if daily window has rolled over
+    if (nowIso >= row.reset_at) {
+      const nextReset = new Date(Date.now() + 86400000).toISOString();
+      this.state.storage.sql.exec(
+        `UPDATE space_user_budget_envelopes 
+         SET credits_spent_today = 0, warned_at_eighty = 0, reset_at = ?, updated_at = datetime('now')
+         WHERE user_id = ?`,
+        nextReset,
+        userId
+      );
+      row.credits_spent_today = 0;
+      row.warned_at_eighty = 0;
+      row.reset_at = nextReset;
+    }
+
+    // 3. Fetch current liquid wallet balance (in credits = cents)
+    const balanceRow = this.state.storage.sql.exec(
+      `SELECT COALESCE(SUM(delta_cents), 0) as balance_cents FROM wallet_ledger WHERE currency = 'USD'`
+    ).toArray()[0] as any;
+    const walletBalanceCredits = balanceRow ? Number(balanceRow.balance_cents) : 0;
+
+    // 4. Evaluate via pure billing-core logic
+    const envelope: UserBudgetEnvelope = {
+      spaceId,
+      userId: row.user_id,
+      dailyCreditAllowance: Number(row.daily_credit_allowance),
+      creditsSpentToday: Number(row.credits_spent_today),
+      hardStopEnabled: Boolean(row.hard_stop_enabled),
+      warnedAtEighty: Boolean(row.warned_at_eighty),
+      resetAt: row.reset_at
+    };
+
+    const evalResult = evaluateUserBudget(envelope, requestedCredits, walletBalanceCredits, isClass1Automation);
+
+    if (!evalResult.allowed) {
+      return {
+        allowed: false,
+        reason: evalResult.reason,
+        remainingCredits: evalResult.remainingUserCredits
+      };
+    }
+
+    // 5. If 80% threshold reached, record warning flag
+    if (evalResult.requiresSoftWarning) {
+      this.state.storage.sql.exec(
+        `UPDATE space_user_budget_envelopes SET warned_at_eighty = 1 WHERE user_id = ?`,
+        userId
+      );
+    }
+
+    return {
+      allowed: true,
+      remainingCredits: evalResult.remainingUserCredits
+    };
+  }
+
+  async recordUserBudgetDebit(
+    userId: string,
+    creditsSpent: number,
+    reason: string,
+    isClass1Automation: boolean = false
+  ): Promise<{ ok: boolean; balanceRemaining: number }> {
+    const runInTx = () => {
+      if (!isClass1Automation) {
+        this.state.storage.sql.exec(
+          `UPDATE space_user_budget_envelopes 
+           SET credits_spent_today = credits_spent_today + ?, updated_at = datetime('now')
+           WHERE user_id = ?`,
+          creditsSpent,
+          userId
+        );
+      }
+
+      // Record negative debit in wallet ledger
+      const debitCents = -Math.abs(creditsSpent);
+      const spaceId = this.state.id.toString();
+      this.state.storage.sql.exec(
+        `INSERT INTO wallet_ledger (id, space_id, delta_cents, currency, reason, created_at)
+         VALUES (?, ?, ?, 'USD', ?, datetime('now'))`,
+        `wld_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        spaceId,
+        debitCents,
+        `[${isClass1Automation ? "SYSTEM_AUTOMATION" : `USER:${userId}`}] ${reason}`
+      );
+
+      const balanceRow = this.state.storage.sql.exec(
+        `SELECT COALESCE(SUM(delta_cents), 0) as balance_cents FROM wallet_ledger WHERE currency = 'USD'`
+      ).toArray()[0] as any;
+
+      return {
+        ok: true,
+        balanceRemaining: balanceRow ? Number(balanceRow.balance_cents) : 0
+      };
+    };
+
+    if (typeof (this.state.storage as any).transactionSync === "function") {
+      return (this.state.storage as any).transactionSync(runInTx);
+    }
+    return runInTx();
   }
 }

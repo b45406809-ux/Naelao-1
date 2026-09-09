@@ -256,3 +256,4 @@ export function infraTimeToCredits(resourceType: InfraResourceType, durationMs: 
 export * from "./model-benchmarks.js";
 export * from "./effort.js";
 export * from "./personal-plan.js";
+export * from "./budget-envelope.js";
