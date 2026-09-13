@@ -17,7 +17,9 @@ export const LAUNCHPAD_MANIFEST: NaelaoSpaceTypeManifestV2 = {
 
   agentEnvironment: {
     defaultExecutionTier: "isolate",
-    containerIdleTimeoutMs: 600_000, // 10 min idle
+    // AVOS compute arbitrage: native containers scale to zero after one minute. The runtime
+    // coordinator refreshes this lease while work is active; SpaceType overrides are forbidden.
+    containerIdleTimeoutMs: 60_000,
     loopModel: "task-completion",
     alwaysLoadedSkills: ["web-search", "knowledge-base", "notifications"],
     disabledSkills: [],

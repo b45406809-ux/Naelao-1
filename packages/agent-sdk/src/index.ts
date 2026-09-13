@@ -125,3 +125,8 @@ export async function executeTool(
 export function createSpaceSDK(client: NaelaoClient, spaceId: string): SpaceSDK {
   return new SpaceSDK(client, spaceId);
 }
+
+// Launchpad is the platform's single SpaceType. These runtime primitives are deliberately
+// exported from the SDK rather than a SpaceType-specific package so authored scripts and the
+// Launchpad shell use the exact same contracts as the workers.
+export * from "./launchpad-runtime.js";
