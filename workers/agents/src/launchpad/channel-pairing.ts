@@ -36,6 +36,75 @@ export interface PairingTicket {
   projectId?: string | undefined;
   /** Who started the pairing — recorded so a binding is attributable. */
   userId: string;
+  /**
+   * The verified owner identity for the private Space Assistant.  Kept separate from userId so
+   * old tickets can be read during a rolling deploy, while new tickets make the security boundary
+   * explicit.
+   */
+  ownerUserId?: string | undefined;
+  /** The only executive conversation this pairing may wake. Never a project session. */
+  privateExecutiveSessionId?: string | undefined;
+}
+
+/** A project webhook is a different trust domain from the owner's private assistant chat. */
+export interface ProjectWebhookRegistration {
+  spaceId: string;
+  projectId: string;
+  channel: PairableChannel;
+  /** Stable, project-scoped actor identity; it can never resolve to the space assistant DO. */
+  actorId: string;
+  webhookPath: string;
+}
+
+/**
+ * Produce the only supported project webhook target. The signed ingress remains space-addressed
+ * because providers sign that exact URL; the project id is recorded in its registration and the
+ * actor name, never trusted from an inbound request body.
+ */
+export function registerProjectChannelWebhook(
+  spaceId: string,
+  projectId: string,
+  channel: PairableChannel,
+): ProjectWebhookRegistration {
+  if (!spaceId || !projectId) throw new Error("spaceId and projectId are required for a project webhook");
+  const encodedProjectId = encodeURIComponent(projectId);
+  return {
+    spaceId,
+    projectId,
+    channel,
+    actorId: `project-channel:${spaceId}:${projectId}`,
+    // The signed ingress remains space-addressed (providers sign that exact URL); the binding
+    // selects this actor, rather than trusting a project id supplied by an external sender.
+    webhookPath: `/channels/${channel}/inbound/${encodeURIComponent(spaceId)}?project_id=${encodedProjectId}`,
+  };
+}
+
+export type ProjectLifecycle = "finite" | "continuous";
+export interface StandardProjectKind {
+  id: "product_dev" | "doc_studio" | "voice_agent" | "customer_bot" | "model_studio" | "growth_engine" | "app_studio";
+  canvas: "CodeWorkspaceCanvas" | "DocumentRedlineCanvas" | "VoiceAgentCanvas" | "SupportTicketsCanvas" | "ModelStudioCanvas" | "GrowthFunnelCanvas" | "AppStudioCanvas";
+  allowedTiers: readonly (1 | 2 | 3 | 4 | 5 | 6)[];
+  lifecycle: ProjectLifecycle;
+  runtime?: string;
+  requiredVerification?: "phone_number";
+  safeToolsOnly?: boolean;
+  storage?: string;
+  linters?: readonly string[];
+}
+
+/** Canonical, complete Project Kind directory used by Launchpad clients and provisioners. */
+export const STANDARD_PROJECT_KINDS: readonly StandardProjectKind[] = [
+  { id: "product_dev", canvas: "CodeWorkspaceCanvas", allowedTiers: [1, 2, 3, 4, 5, 6], runtime: "Node/Linux container", lifecycle: "finite" },
+  { id: "doc_studio", canvas: "DocumentRedlineCanvas", allowedTiers: [1, 2], linters: ["Delaware", "HIPAA"], lifecycle: "finite" },
+  { id: "voice_agent", canvas: "VoiceAgentCanvas", allowedTiers: [1, 2], requiredVerification: "phone_number", lifecycle: "continuous" },
+  { id: "customer_bot", canvas: "SupportTicketsCanvas", allowedTiers: [1, 2], safeToolsOnly: true, lifecycle: "continuous" },
+  { id: "model_studio", canvas: "ModelStudioCanvas", allowedTiers: [1, 2, 6], runtime: "CUDA/Python", lifecycle: "finite" },
+  { id: "growth_engine", canvas: "GrowthFunnelCanvas", allowedTiers: [1, 2, 3, 4, 5], runtime: "Kitesurf/Chromium", lifecycle: "continuous" },
+  { id: "app_studio", canvas: "AppStudioCanvas", allowedTiers: [1, 2], storage: "DO Facet SQLite DBs", lifecycle: "finite" },
+] as const;
+
+export function getStandardProjectKind(id: string): StandardProjectKind | null {
+  return STANDARD_PROJECT_KINDS.find((kind) => kind.id === id) ?? null;
 }
 
 /**

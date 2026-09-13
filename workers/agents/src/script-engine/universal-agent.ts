@@ -39,18 +39,21 @@ export function assembleUniversalAgent(
   // Layer 1: Immutable Kernel (Claude Code REPL discipline, Edit AST, compaction, exit-0)
   // Layer 2: Live Enterprise Identity (BusinessContext)
   // Layer 3: Archetype Role & Mission (manifest.prompts.systemPrompt)
-  // Layer 4: Founder Custom Directives (manifest.prompts.userCustomInstructions)
+  // Layer 4: Founder Custom Directives (manifest.prompts.userCustomDirectives)
   const systemPrompt = composeSystemPrompt(
-    manifest.prompts.systemPrompt,
+    `${manifest.prompts.systemPrompt}
+
+# AGENT SOUL
+${manifest.prompts.soulMarkdown}`,
     businessContext,
-    manifest.prompts.userCustomInstructions
+    manifest.prompts.userCustomDirectives
   );
 
   // 2. Physical Capability Firewall (Tool Stripping)
-  const sanitizedTools = sanitizePrebuiltListForRole(
-    manifest.role,
-    manifest.capabilities.enabledPrebuilts
-  );
+  // The role firewall is enforced before the model sees tools. Native compilation is never
+  // granted by a prompt: Tier 6 requires both a CUSTOM role and the explicit runtime flag.
+  const requestedTools = manifest.runtime.allowNativeCompilation ? ["code-exec"] : [];
+  const sanitizedTools = sanitizePrebuiltListForRole(manifest.role, requestedTools);
 
   // 3. Filesystem Scoping Boundary
   const workspacePath =
@@ -59,11 +62,11 @@ export function assembleUniversalAgent(
       : `spaces/${spaceId ?? "default"}/projects/${manifest.projectId ?? "p1"}/workspace/`;
 
   // 4. Execution Ceiling Clamp
-  const maxRoleTier = manifest.role ? (MAX_TIER_BY_ROLE[manifest.role] ?? 5) : 5;
-  const effectiveMaxTier = Math.min(
-    manifest.capabilities.maxTier || 5,
-    maxRoleTier
-  ) as 1 | 2 | 3 | 4 | 5;
+  const maxRoleTier = MAX_TIER_BY_ROLE[manifest.role] ?? 1;
+  const requestedTier = manifest.runtime.allowNativeCompilation
+    ? manifest.runtime.maxLadderTier
+    : Math.min(manifest.runtime.maxLadderTier, 5);
+  const effectiveMaxTier = Math.min(requestedTier, maxRoleTier) as 1 | 2 | 3 | 4 | 5 | 6;
 
   return {
     systemPrompt,
@@ -91,13 +94,18 @@ export function agentConfigToManifest(
   }
 ): UniversalAgentManifest {
   if (config.manifest) {
+    const stored = config.manifest as UniversalAgentManifest & { capabilities?: { maxTier?: number }; prompts: UniversalAgentManifest["prompts"] & { instructions?: string; userCustomInstructions?: string }; triggers?: { proactiveHeartbeat?: boolean; reactiveToThreads?: boolean } };
+    // R2 manifests written before the unified contract are upgraded at read time, so every
+    // NaelaoAgentDO turn receives one canonical manifest shape.
+    if (stored.runtime) return { ...stored, prompts: { ...stored.prompts, userCustomDirectives: config.userCustomInstructions ?? stored.prompts.userCustomDirectives } };
     return {
-      ...config.manifest,
-      prompts: {
-        ...config.manifest.prompts,
-        userCustomInstructions:
-          config.userCustomInstructions ?? config.manifest.prompts.userCustomInstructions,
-      },
+      ...stored,
+      avatar: "assistant",
+      role: (stored.role as string) === "ARCHITECT_DELEGATE" ? "SPACE_ORCHESTRATOR" : stored.role,
+      prompts: { systemPrompt: stored.prompts.systemPrompt, soulMarkdown: stored.prompts.instructions ?? "", userCustomDirectives: config.userCustomInstructions ?? stored.prompts.userCustomInstructions },
+      runtime: { pinnedModelId: "default", maxLadderTier: (stored.capabilities?.maxTier ?? 5) as 1 | 2 | 3 | 4 | 5 | 6, allowNativeCompilation: false },
+      autonomy: { ...stored.autonomy, requiresElicitationFor: (stored.autonomy as unknown as { requiresApprovalFor?: string[] }).requiresApprovalFor ?? [] },
+      triggers: { hasStandingExecutiveCron: stored.triggers?.proactiveHeartbeat ?? false, reactiveToMentions: stored.triggers?.reactiveToThreads ?? true, reactiveToWebhooks: false },
     };
   }
 
@@ -106,41 +114,43 @@ export function agentConfigToManifest(
     if (agentId.includes("support") || agentId.includes("customer")) role = "CUSTOMER_SUPPORT";
     else if (agentId.includes("growth") || agentId.includes("marketing") || agentId.includes("sales"))
       role = "GROWTH_OPERATOR";
-    else if (agentId.includes("architect")) role = "ARCHITECT_DELEGATE";
+    else if (agentId.includes("architect") || agentId === "naelao-agent") role = "SPACE_ORCHESTRATOR";
     else if (agentId.includes("dev") || agentId.includes("code")) role = "DEV_OPERATOR";
     else role = "CUSTOM";
   }
 
   const scope: AgentScope =
     options?.scope ?? (options?.projectId ? "PROJECT_BOUND" : "SPACE_WIDE");
-  const maxTier = (MAX_TIER_BY_ROLE[role] ?? 5) as 1 | 2 | 3 | 4 | 5;
+  const maxTier = (MAX_TIER_BY_ROLE[role] ?? 5) as 1 | 2 | 3 | 4 | 5 | 6;
 
   return {
     id: agentId,
     name: name || (agentId === "naelao-agent" ? "Space Assistant" : agentId),
+    avatar: "assistant",
     scope,
     projectId: options?.projectId,
     role,
     prompts: {
       systemPrompt: config.systemPrompt,
-      instructions: config.agentsMd,
-      userCustomInstructions: config.userCustomInstructions,
+      soulMarkdown: config.agentsMd,
+      userCustomDirectives: config.userCustomInstructions,
     },
-    capabilities: {
-      enabledPrebuilts: config.scripts.prebuilt,
-      installedPlugins: [],
-      maxTier,
+    runtime: {
+      pinnedModelId: "default",
+      maxLadderTier: maxTier,
+      allowNativeCompilation: false,
     },
     autonomy: {
       approvalMode:
         options?.approvalMode ??
         (scope === "SPACE_WIDE" ? "always_ask" : "gate_unless_listed"),
       autoApprovedActions: options?.autoApprovedActions ?? [],
-      requiresApprovalFor: config.requiresApprovalFor ?? [],
+      requiresElicitationFor: config.requiresApprovalFor ?? [],
     },
     triggers: {
-      proactiveHeartbeat: scope === "SPACE_WIDE",
-      reactiveToThreads: true,
+      hasStandingExecutiveCron: scope === "SPACE_WIDE",
+      reactiveToMentions: true,
+      reactiveToWebhooks: scope === "SPACE_WIDE",
     },
   };
 }

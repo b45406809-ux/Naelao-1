@@ -37,7 +37,7 @@
 import type { ApprovalMode } from "./loop.js";
 
 export type AssistantEffectiveRole = "owner" | "editor" | "viewer";
-export type AgentArchetypeRole = "DEV_OPERATOR" | "GROWTH_OPERATOR" | "CUSTOMER_SUPPORT" | "ARCHITECT_DELEGATE" | "CUSTOM";
+export type AgentArchetypeRole = "SPACE_ORCHESTRATOR" | "DEV_OPERATOR" | "GROWTH_OPERATOR" | "CUSTOMER_SUPPORT" | "LEGAL_AUDITOR" | "ARCHITECT_DELEGATE" | "CUSTOM";
 
 /**
  * Physical Capability Firewall Matrix:
@@ -56,8 +56,14 @@ export const ALLOWED_SCRIPTS_BY_ROLE: Record<Exclude<AgentArchetypeRole, "CUSTOM
   CUSTOMER_SUPPORT: [
     "knowledge-base", "memory", "conversation", "notifications"
   ],
+  SPACE_ORCHESTRATOR: [
+    "memory", "fabric", "wiki", "project-journal", "sub-agent", "dynamic-workflow", "workspace-admin", "conversation"
+  ],
   ARCHITECT_DELEGATE: [
     "memory", "fabric", "wiki", "project-journal", "sub-agent", "dynamic-workflow", "workspace-admin", "conversation"
+  ],
+  LEGAL_AUDITOR: [
+    "knowledge-base", "memory", "conversation", "file-manager", "artifacts", "project-journal"
   ]
 };
 
@@ -65,8 +71,10 @@ export const MAX_TIER_BY_ROLE: Record<AgentArchetypeRole, number> = {
   DEV_OPERATOR: 5,       // Isolate -> Container
   GROWTH_OPERATOR: 4,    // Isolate -> Browser (Containers strictly blocked)
   CUSTOMER_SUPPORT: 1,   // Pure memory/RAG only (Zero isolate shell, zero containers)
-  ARCHITECT_DELEGATE: 2, // Orchestration workflows only (Zero direct file/code exec)
-  CUSTOM: 5,             // User-configured ceiling
+  SPACE_ORCHESTRATOR: 2, // Orchestration workflows only (Zero direct file/code exec)
+  ARCHITECT_DELEGATE: 2, // legacy persisted role, normalized to SPACE_ORCHESTRATOR by the kernel
+  LEGAL_AUDITOR: 2,      // Citation and document work; no native compilation
+  CUSTOM: 6,             // User-configured ceiling
 };
 
 /**

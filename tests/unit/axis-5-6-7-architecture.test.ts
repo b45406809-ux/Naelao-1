@@ -147,7 +147,7 @@ describe("Axis 5: Permissioned Vector RAG & Indirect Prompt Injection Firewall",
 
 describe("Axis 6: Multi-Agent Concurrency & Conflict-Free Code Editing", () => {
   it("enforces 4-tier collaboration model boundaries and @mention dispatch", () => {
-    expect(canWriteToWorkspace(1)).toBe(true);  // Tier 1: Team Room
+    expect(canWriteToWorkspace(1)).toBe(false); // Tier 1: Team Room changes land via PR
     expect(canWriteToWorkspace(2)).toBe(true);  // Tier 2: Task Workstations
     expect(canWriteToWorkspace(3)).toBe(false); // Tier 3: System Consult Lanes
     expect(canWriteToWorkspace(4)).toBe(false); // Tier 4: Private Scratchpad
@@ -157,8 +157,8 @@ describe("Axis 6: Multi-Agent Concurrency & Conflict-Free Code Editing", () => {
     expect(dispatch.isMentioned("DevAgent")).toBe(true);
     expect(dispatch.isMentioned("SupportBot")).toBe(false);
 
-    // Tier 1 requires @mention to activate
-    expect(shouldAgentRespondInTier(1, "DevAgent", "General discussion without mention")).toBe(false);
+    // Tier 1 smart-routes unmentioned discussion to the lead agent.
+    expect(shouldAgentRespondInTier(1, "DevAgent", "General discussion without mention")).toBe(true);
     expect(shouldAgentRespondInTier(1, "DevAgent", "Hey @DevAgent can you run the tests?")).toBe(true);
 
     // Tier 4 scratchpad is private 1-on-1: triggers without mention
@@ -186,6 +186,12 @@ describe("Axis 6: Multi-Agent Concurrency & Conflict-Free Code Editing", () => {
     expect(() => {
       applyAstPatchAtomic(modifiedFile, patch);
     }).toThrow(ConcurrencyConflictError);
+  });
+
+  it("uses canonical SHA-256 checkpoints, including UTF-8 content", () => {
+    expect(computeContentHash("")).toBe("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    expect(computeContentHash("hello")).toBe("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+    expect(computeContentHash("✓")).toBe("1dabba21cdad44541f6b15796f8d22978fc7ea10c46aeceeeeb66c23b3ac7604");
   });
 
   it("manages distributed file mutexes with lexicographical ordering and TTL", () => {

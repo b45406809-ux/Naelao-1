@@ -61,6 +61,8 @@ export interface BusinessFeatureKind {
   allowedLadderTiers?: number[];
   /** Domain linting and validation rules running in V8 isolate. */
   linterRules?: string[];
+  /** Finite projects release compute once their deliverable has been certified. */
+  lifecycle?: "finite" | "continuous";
 }
 
 /**
@@ -338,9 +340,12 @@ export const BUSINESS_FEATURE_KIND_REGISTRY: readonly BusinessFeatureKind[] = [
     autoProvisionable: false,
     prebuiltScripts: ["file-manager", "artifacts", "knowledge-base", "code-exec"],
     viewportComponent: "ModelStudioCanvas",
-    domainSystemPrompt: "You are an Auto-Researcher ML Engineer. Your goal is to parse company documentation, synthesize clean training/eval pairs, evaluate model accuracy, and register fine-tuned models for the company.",
-    allowedLadderTiers: [1, 2, 5],
+    domainSystemPrompt: `You are an Auto-Researcher Machine Learning Engineer.
+Your mission is to audit company documents, synthesize high-quality JSONL instruction datasets,
+validate test splits, run LoRA fine-tuning benchmarks, and deploy certified custom models.`,
+    allowedLadderTiers: [1, 2, 6],
     linterRules: ["jsonl-format-check", "dataset-leakage-guard", "pii-scrubber"],
+    lifecycle: "finite",
   },
   {
     kind: "app_studio",
@@ -377,6 +382,11 @@ Rules:
 
 export const VOICE_AGENT_KIND: BusinessFeatureKind = BUSINESS_FEATURE_KIND_REGISTRY.find(
   (k) => k.kind === "voice_agent"
+)!;
+
+/** The concrete Model Studio manifest for project provisioners and the shell. */
+export const MODEL_STUDIO_KIND: BusinessFeatureKind = BUSINESS_FEATURE_KIND_REGISTRY.find(
+  (k) => k.kind === "model_studio"
 )!;
 
 export const APP_STUDIO_KIND: BusinessFeatureKind = BUSINESS_FEATURE_KIND_REGISTRY.find(

@@ -28,6 +28,7 @@ import { checkSsrf } from "@naelao/security";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { moderateInput } from "@naelao/llm-gateway";
 import { createMcpHandler } from "@naelao/tool-runtime";
+import { parseR2DocumentWithParse5 } from "./parse5Ingestion.js";
 
 // ── Environment ───────────────────────────────────────────────────────────────
 
@@ -49,6 +50,8 @@ interface KnowledgeEnv {
   // free — never the BYO-key `space_credentials` model. Optional: when unset, `search`/`extract`
   // report `configured:false` and `fetch` (a keyless SSRF-guarded GET) still works.
   TAVILY_API_KEY?: string;
+  /** Cohere Parse 5 key. Kept optional so standard text KB ingestion remains available. */
+  COHERE_API_KEY?: string;
   // §A1.19 (AutoRAG/AI Search): the AutoRAG instance name backing an opt-in retrieval mode
   // alongside the existing hand-built dense+BM25+RRF hybrid pipeline (default, unchanged).
   // Optional — when unset, `retrieval_mode=autorag` requests fall back to the legacy pipeline
@@ -90,6 +93,45 @@ interface ChunkRecord {
 // `IS NULL` works — an empty string is used as the "space-wide" sentinel so a project-scoped
 // query and a space-wide query never accidentally match each other.
 const SPACE_WIDE_PROJECT_SENTINEL = "";
+
+/** Verified roles are converted before the Vectorize request; never accept a client-supplied rank. */
+const ROLE_RANK: Record<string, number> = { viewer: 1, member: 2, developer: 2, editor: 3, admin: 4, executive: 4, owner: 5 };
+
+export interface PermissionedKnowledgeUser {
+  id: string;
+  roleRank: number;
+  bitmask: number;
+}
+
+/**
+ * Permission filtering belongs in Vectorize, before nearest-neighbour ranking.  In particular,
+ * do not widen this query and discard records after it returns: result density itself is a
+ * classification side channel. `bitmask` is carried in the verified identity for the next
+ * principal-index expansion; current role-restricted documents are represented by their minimum
+ * rank in Vectorize metadata.
+ */
+export async function searchPermissionedKnowledge(
+  vectorize: VectorizeIndex,
+  queryVector: number[],
+  spaceId: string,
+  user: PermissionedKnowledgeUser,
+  activeProjectId?: string,
+) {
+  return vectorize.query(queryVector, {
+    topK: 6,
+    filter: {
+      space_id: { $eq: spaceId },
+      project_id: { $eq: activeProjectId ?? SPACE_WIDE_PROJECT_SENTINEL },
+      min_role_rank: { $lte: user.roleRank },
+    } as never,
+    returnMetadata: "indexed",
+  });
+}
+
+/** Wrap retrieved text as untrusted data; it may inform an answer but cannot issue instructions. */
+export function untrustedContextEnvelope(content: string): string {
+  return `<context_chunk trust="untrusted">${content.replace(/<\/??context_chunk[^>]*>/gi, "")}</context_chunk>`;
+}
 
 // ── Hono app ──────────────────────────────────────────────────────────────────
 
@@ -242,6 +284,29 @@ app.get("/spaces/:spaceId/kb/documents", async (c) => {
     .all();
 
   return c.json({ data: results, count: results.length, limit, offset });
+});
+
+// ── POST /spaces/:spaceId/kb/parse5-ingest ───────────────────────────────────
+// Reads source bytes from the private KB bucket, persists Parse 5 Markdown as the durable
+// workspace-file representation, then feeds that same Markdown into the normal AI Search path.
+app.post("/spaces/:spaceId/kb/parse5-ingest", async (c) => {
+  const tenantId = requireTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const body = await c.req.json<{ r2_key?: string; title?: string; file_name?: string; content_type?: string; project_id?: string }>();
+  if (!body.r2_key || !body.title) throw badRequest("r2_key and title are required");
+  const source = await c.env.KB_BUCKET.get(body.r2_key);
+  if (!source) throw notFound("Source document not found in R2");
+  const parsed = await parseR2DocumentWithParse5(c.env, await source.arrayBuffer(), body.content_type ?? source.httpMetadata?.contentType ?? "application/pdf", body.file_name ?? body.title);
+  const workspaceKey = `workspace-files/${spaceId}/${body.project_id ?? "_space"}/${crypto.randomUUID()}.md`;
+  await c.env.KB_BUCKET.put(workspaceKey, parsed.markdown, { httpMetadata: { contentType: "text/markdown; charset=utf-8" } });
+  const headers = new Headers(c.req.raw.headers);
+  headers.set("content-type", "application/json");
+  headers.set("x-naelao-tenant-id", tenantId);
+  const indexed = await app.request(`http://knowledge/spaces/${spaceId}/kb/documents`, {
+    method: "POST", headers,
+    body: JSON.stringify({ title: body.title, content: parsed.markdown, content_type: "pdf", project_id: body.project_id, source_url: `r2://${workspaceKey}` }),
+  }, c.env, c.executionCtx);
+  return new Response(indexed.body, { status: indexed.status, headers: indexed.headers });
 });
 
 // ── POST /spaces/:spaceId/kb/documents ────────────────────────────────────────
@@ -744,7 +809,7 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
           chunk_id: d.filename ?? `autorag_${i}`,
           doc_id: (d.filename ?? "").split("/").pop()?.replace(/\.md$/, "") ?? "",
           chunk_index: 0,
-          content: `<kb_content>${rawContent}</kb_content>`,
+          content: untrustedContextEnvelope(rawContent),
           score: d.score ?? 1 - i / Math.max(1, (res.data?.length ?? 1)),
           dense_score: d.score ?? 0,
           sparse_score: 0,
@@ -761,13 +826,17 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
   }
 
   // ── Dense retrieval (Vectorize) ───────────────────────────────────────────
+  // These headers are supplied by the authenticated gateway. They construct the index
+  // pre-filter; authorization is never a post-ranking decision.
+  const callerUserId = c.req.header("x-naelao-user-id") ?? "";
+  const callerRole = (c.req.header("x-naelao-user-role") ?? "member").toLowerCase();
+  const callerRoleRank = ROLE_RANK[callerRole] ?? 0;
+  if (!callerUserId || callerRoleRank === 0) return c.json({ error_code: "unauthorized" }, 401);
   const queryEmbed = await embedText(c.env.AI, query.trim());
 
-  const denseResponse = await c.env.KB_VECTORS.query(queryEmbed.embedding, {
-    topK: topK * 2,
-    filter: { space_id: { $eq: spaceId }, project_id: { $eq: projectId ?? SPACE_WIDE_PROJECT_SENTINEL } },
-    returnMetadata: "indexed",
-  });
+  const denseResponse = await searchPermissionedKnowledge(c.env.KB_VECTORS, queryEmbed.embedding, spaceId, {
+    id: callerUserId, roleRank: callerRoleRank, bitmask: 0,
+  }, projectId ?? undefined);
 
   const denseMatches = denseResponse.matches ?? [];
 
@@ -775,8 +844,6 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
   const denseForRrf = denseMatches.map(m => ({ id: m.id, score: m.score ?? 0 }));
 
   // ── Sparse retrieval (BM25) with ACL Clearance Check ───────────────────────
-  const callerUserId = c.req.header("x-naelao-user-id") ?? url.searchParams.get("user_id") ?? "";
-  const callerRole = (c.req.header("x-naelao-user-role") ?? url.searchParams.get("user_role") ?? url.searchParams.get("role") ?? "member").toLowerCase();
   const isSuperUser = callerRole === "owner" || callerRole === "admin";
 
   // Fetch chunk content from R2 for all dense candidates to run BM25 and verify ACLs
@@ -850,7 +917,7 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
       access: "verified",
       similarityScore: item.score,
     });
-    const wrappedContent = `<kb_content>${rawContent}</kb_content>`;
+    const wrappedContent = untrustedContextEnvelope(rawContent);
 
     return {
       chunk_id: item.id,

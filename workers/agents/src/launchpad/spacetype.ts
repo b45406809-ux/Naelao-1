@@ -152,8 +152,12 @@ export interface CoworkConfig {
     | "WalletLedgerPanel"
     | "CodeWorkspace";
   citationVerificationRequired?: boolean;
-  collaborationMode?: "realtime_crdt" | "interactive_session";
+  /** Native SpaceDO SHA-256 compare-and-swap; CRDTs are intentionally unsupported. */
+  collaborationMode?: "native_occ" | "interactive_session";
+  /** Citation footnotes are enforced for vertical desks. */
+  enforceCitationFootnotes?: boolean;
   auditLogRetentionDays?: number;
+  airGappedModeAvailable?: boolean;
 }
 
 /** Configuration for mobile channels (Telegram, WhatsApp, Slack, etc.) attached to a template */
@@ -176,8 +180,12 @@ export interface LaunchpadTemplate {
   id: string;
   name: string;
   description: string;
+  /** Canonical marketplace blueprint identity, when this is a packaged vertical desk. */
+  blueprint_id?: string;
+  monthly_price_cents?: number;
+  approval_mode?: "always_ask" | "gate_unless_listed" | "yolo";
   /** Operating Mode: Autonomous Venture vs. Vertical Cowork Studio ("Harvey AI for X") */
-  template_mode?: "autonomous_venture" | "vertical_cowork";
+  template_mode: "autonomous_venture" | "vertical_cowork";
   /** Category taxonomy (LEGAL, FINANCE, HEALTHCARE, AGENCY, MICRO_SAAS, ENGINEERING, etc.) */
   category?: "LEGAL" | "FINANCE" | "HEALTHCARE" | "AGENCY" | "MICRO_SAAS" | "ENGINEERING" | "COMMERCE" | "COMMUNITY" | string;
   /** Cowork studio configuration when template_mode === "vertical_cowork" */
@@ -482,6 +490,7 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     // G-1/G-3 growth layer: a Creator Store sells content — product images and social posts are
     // the highest-leverage "click Install" recommendation for this template's onboarding.
     connectors: ["higgsfield", "twitter", "instagram"],
+    template_mode: "autonomous_venture",
     free_tier_eligible: true,
     // Whop-first rollout (CLAUDE.md Phase F): Whop Seller is the only live template at launch;
     // this one is fully built but deliberately gated coming_soon until the wider rollout.
@@ -512,6 +521,7 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     skills: ["web-search", "email-tool", "commerce"],
     // G-1 growth layer: cross-post issue highlights to build the free list.
     connectors: ["twitter", "linkedin"],
+    template_mode: "autonomous_venture",
     free_tier_eligible: true,
     // Whop-first rollout (CLAUDE.md Phase F): gated coming_soon until the wider rollout.
     coming_soon: true,
@@ -534,6 +544,7 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     description: "Small software product. Agents handle tier-1 support, billing questions, and onboarding.",
     agents: ["launchpad-support-v1", "launchpad-fulfillment-v1"],
     skills: ["commerce", "email-tool", "crm-tool"],
+    template_mode: "autonomous_venture",
     free_tier_eligible: false,
     // Whop-first rollout (CLAUDE.md Phase F): gated coming_soon until the wider rollout.
     coming_soon: true,
@@ -553,6 +564,7 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     description: "Productized service delivery. Agents scope projects, generate deliverables, and manage client communication.",
     agents: ["launchpad-content-v1", "launchpad-support-v1"],
     skills: ["email-tool", "file-manager", "web-search"],
+    template_mode: "autonomous_venture",
     free_tier_eligible: false,
     // Whop-first rollout (CLAUDE.md Phase F): gated coming_soon until the wider rollout.
     coming_soon: true,
@@ -570,6 +582,7 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     description: "Online community with coaching calls. Agents answer member questions between sessions and create learning materials.",
     agents: ["launchpad-support-v1", "launchpad-content-v1"],
     skills: ["email-tool", "web-search", "file-manager"],
+    template_mode: "autonomous_venture",
     free_tier_eligible: true,
     // Whop-first rollout (CLAUDE.md Phase F): gated coming_soon until the wider rollout.
     coming_soon: true,
@@ -597,6 +610,7 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     // the growth-layer "click Install" onboarding for real (content + social marketing) alongside
     // the required Whop connection.
     connectors: ["whop", "higgsfield", "twitter", "instagram", "tiktok"],
+    template_mode: "autonomous_venture",
     free_tier_eligible: false,
     bootstrap: {
       prompts: [
@@ -1127,6 +1141,9 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
   // ── Vertical Cowork Blueprints ("Harvey AI / Hebbia for X") ────────────────
   {
     id: "lexpulse-legal-cowork",
+    blueprint_id: "tpl_lexpulse_legal_v1",
+    monthly_price_cents: 29900,
+    approval_mode: "always_ask",
     name: "LexPulse Legal Studio (Harvey / Legora Competitor)",
     description:
       "Collaborative AI cowork studio for boutique law firms, corporate legal counsel, and paralegals. Interactive contract redlining, NDA risk detection, discovery synthesis, and regulatory compliance.",
@@ -1159,7 +1176,8 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     cowork_config: {
       defaultViewport: "DocumentRedlineCanvas",
       citationVerificationRequired: true,
-      collaborationMode: "realtime_crdt",
+      collaborationMode: "native_occ",
+      enforceCitationFootnotes: true,
       auditLogRetentionDays: 365,
     },
     blueprint_projects: [
@@ -1226,6 +1244,9 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
   },
   {
     id: "capforge-pe-cowork",
+    blueprint_id: "tpl_capforge_pe_v1",
+    monthly_price_cents: 29900,
+    approval_mode: "always_ask",
     name: "CapForge PE & M&A Studio (Hebbia / Tegus Competitor)",
     description:
       "Assistive research and financial modeling studio for VC, private equity, and family offices. Deep SEC 10-K RAG, footnote reconciliation, investment memo drafting, and live valuation comp sheets.",
@@ -1257,7 +1278,8 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     cowork_config: {
       defaultViewport: "SpreadsheetFormulaGrid",
       citationVerificationRequired: true,
-      collaborationMode: "realtime_crdt",
+      collaborationMode: "native_occ",
+      enforceCitationFootnotes: true,
       auditLogRetentionDays: 180,
     },
     blueprint_projects: [
@@ -1308,6 +1330,9 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
   },
   {
     id: "clinica-ehr-cowork",
+    blueprint_id: "tpl_clinica_ehr_v1",
+    monthly_price_cents: 24900,
+    approval_mode: "always_ask",
     name: "Clinica AI Practice & Clinical EHR Cowork",
     description:
       "HIPAA-conscious clinical documentation assistant for clinics, dental practices, and physical therapists. Ambient audio to structured SOAP notes, ICD-10/CPT coding suggestions, and pre-auth appeals.",
@@ -1339,8 +1364,10 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     cowork_config: {
       defaultViewport: "ClinicalSoapEditor",
       citationVerificationRequired: true,
-      collaborationMode: "realtime_crdt",
+      collaborationMode: "native_occ",
+      enforceCitationFootnotes: true,
       auditLogRetentionDays: 365,
+      airGappedModeAvailable: true,
     },
     blueprint_projects: [
       {
@@ -1389,6 +1416,9 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
   },
   {
     id: "acubuild-arch-cowork",
+    blueprint_id: "tpl_acubuild_const_v1",
+    monthly_price_cents: 24900,
+    approval_mode: "always_ask",
     name: "AcuBuild Architecture & Engineering Studio",
     description:
       "Plan inspection, municipal code compliance, and subcontractor bid leveling cowork studio for architects, structural engineers, and general contractors. IBC 2024 compliance checking and change order tracking.",
@@ -1419,7 +1449,8 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     cowork_config: {
       defaultViewport: "PlanSpecCanvas",
       citationVerificationRequired: true,
-      collaborationMode: "realtime_crdt",
+      collaborationMode: "native_occ",
+      enforceCitationFootnotes: true,
       auditLogRetentionDays: 180,
     },
     blueprint_projects: [
@@ -1579,3 +1610,5 @@ export const ARCHITECTURE_COWORK_BLUEPRINT: LaunchpadTemplate = getLaunchpadTemp
 // Fail fast at import if the SpaceType is malformed.
 validateLaunchpadSpaceType();
 
+
+export { VERTICAL_COWORK_BLUEPRINTS, getVerticalCoworkBlueprint } from "./vertical-cowork-blueprints.js";
