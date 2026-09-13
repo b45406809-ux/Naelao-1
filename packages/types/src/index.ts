@@ -211,7 +211,17 @@ export interface CollaborationLaneConfig {
   description?: string;
   visibility: "public_to_project" | "internal_system" | "strictly_private";
   interactionModel: "humans_and_at_mentions" | "feature_dag_and_at_mentions" | "internal_specialist_consult" | "private_direct_unmentioned";
-  workspaceWritePermission: "full_execution" | "coordination_only" | "read_only_simulation";
+  /**
+   * The collaboration lane's write boundary.  A Team Room may propose changes,
+   * but it must never write a shared checkout directly: its changes are
+   * reviewed as a PR.  Task workstations are the only lanes that can apply a
+   * CAS-checked patch, and then only to their dedicated branch.
+   */
+  workspaceWritePermission:
+    | "branch_pr_only"
+    | "occ_branch_patch"
+    | "coordination_only"
+    | "read_only_simulation";
   requiresAtMentionForAgents: boolean;
   canMutateFilesystem: boolean;
 }
