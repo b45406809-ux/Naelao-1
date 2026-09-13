@@ -1065,6 +1065,23 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_tasks_thread ON tasks(thread_id) WHERE thread_id IS NOT NULL;
     `,
   },
+  {
+    version: 40,
+    description: "event triggers become project-only automation",
+    up: `
+      DELETE FROM event_triggers WHERE project_id IS NULL;
+      CREATE TABLE event_triggers_v40 (
+        id TEXT PRIMARY KEY, space_id TEXT NOT NULL, project_id TEXT NOT NULL,
+        event_type TEXT NOT NULL, condition TEXT NOT NULL DEFAULT '{"type":"always"}',
+        script_name TEXT NOT NULL, params TEXT NOT NULL DEFAULT '{}', enabled INTEGER NOT NULL DEFAULT 1,
+        priority INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO event_triggers_v40 SELECT * FROM event_triggers;
+      DROP TABLE event_triggers;
+      ALTER TABLE event_triggers_v40 RENAME TO event_triggers;
+      CREATE INDEX idx_event_triggers_lookup ON event_triggers(space_id, project_id, event_type, enabled, priority DESC);
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -1351,6 +1368,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const projectIdMatch = url.pathname.match(/^\/projects\/([^/]+)$/);
       if (method === "GET" && projectIdMatch?.[1]) {
         return this.getProject(projectIdMatch[1]);
+      }
+      const automationAccessMatch = url.pathname.match(/^\/projects\/([^/]+)\/automation-access$/);
+      if (method === "GET" && automationAccessMatch?.[1]) {
+        return this.getAutomationAccess(automationAccessMatch[1], url.searchParams);
       }
       // PATCH /projects/:id — configure kind / execution_ceiling / channel_config / spend cap
       if (method === "PATCH" && projectIdMatch?.[1]) {
@@ -2900,6 +2921,20 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }>(this.ctx.storage.sql as never, "SELECT * FROM projects WHERE id = ?", projectId);
     if (!row) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
     return Response.json({ ...row, channel_config: safeJsonParseObj(row.channel_config), allowed_agent_ids: safeJsonParseAgentIds(row.allowed_agent_ids) });
+  }
+
+  private getAutomationAccess(projectId: string, params: URLSearchParams): Response {
+    const spaceId = params.get("space_id") ?? "";
+    const userId = params.get("user_id") ?? "";
+    const project = queryOne<{ space_id: string; status: string }>(this.ctx.storage.sql as never,
+      "SELECT space_id, status FROM projects WHERE id = ?", projectId);
+    if (!project || project.space_id !== spaceId || project.status !== "active") {
+      return Response.json({ error_code: "not_found", message: "Project not found in this space" }, { status: 404 });
+    }
+    const role = this.getProjectMemberRole(projectId, userId);
+    const allowed = params.get("space_manager") === "1" || this.isSpaceOwnerOrAdmin(userId) || role === "owner" || role === "editor";
+    if (!allowed) return Response.json({ error_code: "forbidden", message: "Caller cannot manage this project" }, { status: 403 });
+    return Response.json({ project_id: projectId, space_id: spaceId, can_manage: true });
   }
 
   private async updateProject(projectId: string, request: Request): Promise<Response> {
@@ -4689,7 +4724,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       id?: string;
       space_id: string;
       user_id?: string;
-      project_id?: string;
+      project_id: string;
       title?: string;
       parent_thread_id?: string;
       thread_kind?: "primary" | "sub_agent" | "channel";
@@ -4931,8 +4966,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       priority?: number;
     }>().catch(() => ({}) as Record<string, never>);
 
-    if (!body.space_id || !body.event_type || !body.script_name) {
-      return Response.json({ error_code: "bad_request", message: "space_id, event_type, and script_name are required" }, { status: 400 });
+    if (!body.space_id || !body.project_id || !body.event_type || !body.script_name) {
+      return Response.json({ error_code: "bad_request", message: "space_id, project_id, event_type, and script_name are required" }, { status: 400 });
+    }
+    const project = queryOne<{ space_id: string; status: string }>(this.ctx.storage.sql as never,
+      "SELECT space_id, status FROM projects WHERE id = ?", body.project_id);
+    if (!project || project.space_id !== body.space_id || project.status !== "active") {
+      return Response.json({ error_code: "not_found", message: "Project not found in this space" }, { status: 404 });
     }
 
     const id = crypto.randomUUID();
@@ -4941,12 +4981,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       this.ctx.storage.sql as never,
       `INSERT INTO event_triggers (id, space_id, project_id, event_type, condition, script_name, params, enabled, priority, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-      id, body.space_id, body.project_id ?? null, body.event_type,
+      id, body.space_id, body.project_id, body.event_type,
       JSON.stringify(body.condition ?? { type: "always" }), body.script_name,
       JSON.stringify(body.params ?? {}), body.priority ?? 0, now
     );
     return Response.json(
-      { id, space_id: body.space_id, project_id: body.project_id ?? null, event_type: body.event_type, script_name: body.script_name, created_at: now },
+      { id, space_id: body.space_id, project_id: body.project_id, event_type: body.event_type, script_name: body.script_name, created_at: now },
       { status: 201 }
     );
   }

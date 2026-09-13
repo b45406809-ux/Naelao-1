@@ -25,6 +25,10 @@ queue = "naelao-channel-sessions"
 binding = "AGENTS_WORKER"
 service = "naelao-agents"
 
+[[services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"
+
 [vars]
 ENVIRONMENT = "development"
 
@@ -35,9 +39,17 @@ vars = { ENVIRONMENT = "staging" }
 binding = "AGENTS_WORKER"
 service = "naelao-agents"
 
+[[env.staging.services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"
+
 [env.production]
 vars = { ENVIRONMENT = "production" }
 
 [[env.production.services]]
 binding = "AGENTS_WORKER"
 service = "naelao-agents"
+
+[[env.production.services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"

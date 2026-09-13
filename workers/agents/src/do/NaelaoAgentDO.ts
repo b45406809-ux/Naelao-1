@@ -1846,12 +1846,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const workflowBinding = this.env.AGENT_SCRIPT_WORKFLOW;
       env.workflowRunner = {
         start: async (params) => {
+          if (!params.projectId) throw new Error("projectId is required for workflow execution");
           const instance = await workflowBinding.create({
             params: {
               spaceId: params.spaceId,
               tenantId: params.tenantId,
               agentId: params.agentId,
-              ...(params.projectId ? { projectId: params.projectId } : {}),
+              projectId: params.projectId,
               scriptName: params.name,
               params: params.args,
             },

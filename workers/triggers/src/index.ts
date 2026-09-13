@@ -8,12 +8,14 @@ interface Env {
   SESSIONS_QUEUE: Queue;
   /** Direct service binding to agents worker — cron triggers call /script/run (spec §9). */
   AGENTS_WORKER?: Fetcher;
+  SPACES_WORKER: Fetcher;
 }
 
 interface TriggerRow {
   id: string;
   space_id: string;
   tenant_id: string;
+  project_id: string;
   name: string;
   trigger_type: string;
   cron_expr: string | null;
@@ -28,7 +30,7 @@ function validateEnv(env: Env): void {
 }
 
 function getCallerIdentity(c: { req: { header: (h: string) => string | undefined } }) {
-  return { tenantId: c.req.header("x-naelao-tenant-id") ?? "" };
+  return { tenantId: c.req.header("x-naelao-tenant-id") ?? "", userId: c.req.header("x-naelao-user-id") ?? "" };
 }
 
 const app = new Hono<{ Bindings: Env }>();
@@ -59,17 +61,26 @@ app.post("/v1/triggers", async (c) => {
     cron_expr?: string;
     event_type?: string;
     message_template: string;
+    project_id: string;
   }>();
-  if (!body.name || !body.space_id || !body.trigger_type || !body.message_template) {
-    return c.json({ error_code: "bad_request", message: "name, space_id, trigger_type, message_template required" }, 400);
+  if (!body.name || !body.space_id || !body.project_id || !body.trigger_type || !body.message_template) {
+    return c.json({ error_code: "bad_request", message: "name, space_id, project_id, trigger_type, message_template required" }, 400);
   }
+  const { userId } = getCallerIdentity(c);
+  if (!userId) return c.json({ error_code: "unauthorized", message: "Missing user" }, 401);
+  const internalToken = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
+  const access = await c.env.SPACES_WORKER.fetch(new Request(
+    `http://spaces-worker/internal/spaces/${encodeURIComponent(body.space_id)}/projects/${encodeURIComponent(body.project_id)}/automation-access`,
+    { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-user-id": userId, "x-naelao-internal-token": internalToken } }
+  ));
+  if (!access.ok) return new Response(access.body, { status: access.status, headers: { "content-type": "application/json" } });
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   await c.env.PLATFORM_DB.prepare(
-    `INSERT INTO triggers (id, space_id, tenant_id, name, trigger_type, cron_expr, event_type, message_template, enabled, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`
-  ).bind(id, body.space_id, tenantId, body.name, body.trigger_type, body.cron_expr ?? null, body.event_type ?? null, body.message_template, now, now).run();
-  return c.json({ id, name: body.name, trigger_type: body.trigger_type, enabled: true, created_at: now }, 201);
+    `INSERT INTO triggers (id, space_id, tenant_id, project_id, name, trigger_type, cron_expr, event_type, message_template, enabled, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`
+  ).bind(id, body.space_id, tenantId, body.project_id, body.name, body.trigger_type, body.cron_expr ?? null, body.event_type ?? null, body.message_template, now, now).run();
+  return c.json({ id, project_id: body.project_id, name: body.name, trigger_type: body.trigger_type, enabled: true, created_at: now }, 201);
 });
 
 app.patch("/v1/triggers/:id", async (c) => {
@@ -130,6 +141,7 @@ export default {
               },
               body: JSON.stringify({
                 goal: trigger.message_template,
+                projectId: trigger.project_id,
                 sessionId: `cron-${trigger.id}-${Date.now()}`,
                 context: { trigger: "schedule", trigger_id: trigger.id, cron_expr: trigger.cron_expr },
               }),
@@ -140,6 +152,7 @@ export default {
           await env.SESSIONS_QUEUE.send({
             type: "space_trigger",
             spaceId: trigger.space_id,
+            projectId: trigger.project_id,
             tenantId: trigger.tenant_id,
             message: trigger.message_template,
           });
