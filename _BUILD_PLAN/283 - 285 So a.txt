@@ -1,0 +1,157 @@
+283 - 285
+So a user can just configure a voice project and in journal and other configurations can set it for ai receptionist and connect a vallender for booking etc and the number (won't work without it if the voice project kind or customer bot. And crons for when to call etc and project prompts on what you do etc I want it to be like setting up voice agents in grok or Vapi etc 
+Setting up a **`kind: "voice_agent"`** project can be designed to match the polished, no-code dashboard experience of **Vapi, Retell AI, or Grok Voice**, while running 100% serverlessly on Cloudflare's edge with **`@cloudflare/voice`**.
+Users can configure the entire phone desk visually through a **Vapi-style Project Canvas** or by simply **chatting with the agent in a management thread** [1.1.2, 1.2.1].
+---
+### 1. The Vapi-Style Voice Studio Architecture
+```
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                   VOICE AGENT PROJECT CANVAS (`apps/shell`)                           │
+├───────────────────┬────────────────────────────────────────────────────────────────────────────────────┤
+│ 1. Telephony Line │ 🟢 **Live Number: +1 (305) 555-0199** [Verified & Active]                          │
+│    (Required)     │ • Inbound: Enabled  │  Outbound: Enabled  │  Fallback: +1 (305) 999-1234 (Dr. Smith)   │
+├───────────────────┼────────────────────────────────────────────────────────────────────────────────────┤
+│ 2. Voice & Tone   │ • Voice Model: **Cartesia Sonic (Warm Female)**  │  Speed: **1.05x**               │
+│                   │ • Greeting: *"Thank you for calling Miami Dental. How can I help you today?"*      │
+│                   │ • Interruption Sensitivity: **High (Instant Barge-in on speech)**                  │
+├───────────────────┼────────────────────────────────────────────────────────────────────────────────────┤
+│ 3. Shared State   │ • Connected Calendar: **[ Space-Shared Clinic Calendar (SpaceDO) ]**              │
+│    & Knowledge    │ • Booking Rules: 30-min slots, 15-min buffer, Business Hours: 9 AM - 6 PM          │
+│                   │ • Knowledge Grounding: Auto-indexes FAQs, Accepted Insurances & Fee Schedule Docs │
+├───────────────────┼────────────────────────────────────────────────────────────────────────────────────┤
+│ 4. Outbound Crons │ • ⏰ **Scheduled Reminder Calls:** `cron: "0 10 * * *"` (Daily at 10 AM)          │
+│    & Campaigns    │ • Trigger: Auto-calls tomorrow's booked clients for 1-minute confirmation voice call│
+└───────────────────┴────────────────────────────────────────────────────────────────────────────────────┘
+```
+---
+### 2. The 5 Core Configuration Modules
+#### Module 1: The Phone Line Gate (Mandatory for Call Execution)
+The project status remains **`AWAITING_TELEPHONY`** and will not start call listeners until a number is bound:
+* **Option A (1-Click Purchase):** User clicks *"Get a Phone Number"*, picks an area code (`305 - Miami`), and Cloudflare’s `@cloudflare/voice-twilio` adapter provisions the number in 3 seconds.
+* **Option B (BYO Twilio/Plivo):** User pastes their Twilio/Plivo SID & Auth token in project settings.
+* **Option C (Call Forwarding):** User enters their existing clinic number and copies the SIP forwarding target.
+#### Module 2: Voice Persona & Interruption Tuning (Vapi-Style)
+Users configure the natural acoustics of the call:
+* **TTS Provider & Voice ID:** Deepgram Aura, Cartesia Sonic, or ElevenLabs Flash running at Cloudflare's edge.
+* **Barge-in / Interruption Sensitivity:** When a caller interrupts with *"Wait, let me check my card"*, the AI cuts its speech synthesis immediately within 50ms.
+* **Greeting Message & First Turn Rules:** Whether the AI speaks first or waits for the caller to say *"Hello"*.
+#### Module 3: Instant Calendar & Knowledge Base Linking
+* **Shared State Booking:** Checking `[x] Enable Calendar Booking` automatically injects the `calendar.check_availability` and `calendar.book_slot` tools into the voice session.
+* **Zero Hallucination Grounding:** When a caller asks *"Do you take Medicare?"*, Cloudflare AI Search fetches the clinic's insurance docs and injects the verified answer into the voice agent's sentence stream [1.1.2, 1.1.9].
+#### Module 4: Outbound Campaigns & Scheduled Crons
+The project allows scheduling automated outbound phone calls using **Tier 3 Dynamic Workflows & Crons**:
+* **24-Hour Appointment Confirmation:** At 10:00 AM daily, a Cloudflare Workflow queries `SpaceDO.space_calendar` for tomorrow's appointments and calls each patient:
+  > *"Hi John! This is Miami Dental calling to confirm your 3:00 PM appointment with Dr. Smith tomorrow. Can you make it?"*
+* **Lead Follow-Up Calls:** Automatically triggers an outbound call 5 minutes after a lead submits a web form.
+#### Module 5: Human Transfer & Emergency Escalation
+* If a caller says *"This is a medical emergency"* or asks for a human 3 times, the agent executes `transfer_call({ destination: "+13059991234" })` and connects the line directly to Dr. Smith's cell phone.
+---
+### 3. Dual Configuration: No-Code UI vs. Natural Language Chat
+Users can configure the voice project in two ways:
+#### Way 1: Visual Form in Project Settings (`apps/shell`)
+Sliders for speed, dropdowns for voices, and checkboxes for calendar rules.
+#### Way 2: Chatting with the Agent in a Management Thread
+Because our agent uses the **Claude Code REPL engine**, a user can open the project management thread and type [1.1.2]:
+```
+User: 
+"Set our greeting to 'Hello, thanks for calling Apex Law. How can we direct your call?'. 
+Add a rule that if someone mentions 'personal injury', transfer them immediately to 
+Sarah at +1-555-0144. Also schedule a cron every Monday at 9 AM to call our active case leads."
+```
+The agent executes `voice_desk.configure` and updates the project's **`voice_agent_config.json`** in the SQLite virtual filesystem in **1 turn**:
+```typescript
+// workers/agents/src/script-engine/prebuilt/voice-desk.ts
+export interface VoiceAgentProjectConfig {
+  telephony: {
+    phoneNumber: string;
+    carrier: "twilio" | "plivo" | "cloudflare_calls";
+    transferFallbackNumber?: string;
+  };
+  voice: {
+    provider: "cartesia" | "deepgram" | "elevenlabs";
+    voiceId: string;
+    speed: number;
+    bargeInSensitivity: "low" | "medium" | "high";
+    greeting: string;
+  };
+  prompt: {
+    systemPrompt: string;
+    businessHours: string;
+    emergencyRules: string;
+  };
+  tools: {
+    enableCalendarBooking: boolean;
+    enableKbFaqSearch: boolean;
+    enableCallTransfer: boolean;
+  };
+  scheduledOutboundCampaigns?: Array<{
+    name: string;
+    cron: string; // e.g. "0 10 * * *"
+    leadSource: "space_calendar" | "leads_csv";
+    scriptName: string;
+  }>;
+}
+```
+---
+### 4. Implementation: Outbound Cron Calling Workflow
+When a scheduled cron fires for an outbound calling campaign, it runs via **Cloudflare Workflows (`OutboundCallWorkflow.ts`)**:
+```typescript
+// workers/agents/src/workflows/OutboundCallWorkflow.ts
+import { WorkflowEntrypoint, WorkflowStep, WorkflowEvent } from "cloudflare:workers";
+export class OutboundCallWorkflow extends WorkflowEntrypoint<Env, { spaceId: string; projectId: string }> {
+  async run(event: WorkflowEvent<{ spaceId: string; projectId: string }>, step: WorkflowStep) {
+    const { spaceId, projectId } = event.payload;
+    // Step 1: Query SpaceDO calendar for tomorrow's appointments
+    const appointmentsToConfirm = await step.do("fetch-tomorrow-schedule", async () => {
+      const spaceDO = await spaceDoStub(this.env, spaceId);
+      const res = await spaceDO.fetch(`http://internal/calendar/tomorrow-appointments?project_id=${projectId}`);
+      return (await res.json()) as Array<{ id: string; clientName: string; clientPhone: string; time: string }>;
+    });
+    // Step 2: Dispatch outbound calls sequentially at edge
+    for (const apt of appointmentsToConfirm) {
+      await step.do(`call-${apt.id}`, async () => {
+        // Dispatch call via @cloudflare/voice-twilio adapter
+        return await this.env.VOICE_ADAPTER.makeOutboundCall({
+          fromNumber: "+13055550199",
+          toNumber: apt.clientPhone,
+          agentSystemPrompt: `You are confirming an appointment for ${apt.clientName} tomorrow at ${apt.time}.`,
+          greeting: `Hi ${apt.clientName}, this is Miami Dental calling to confirm your appointment tomorrow at ${apt.time}.`
+        });
+      });
+      
+      // 30-second pacing between calls
+      await step.sleep(`pace-${apt.id}`, "30 seconds");
+    }
+  }
+}
+```
+---
+### 5. What the Customer Call Log Shows in the Dashboard
+When an inbound or outbound call finishes, a **`voice_call` thread** is auto-created in the project:
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 📞 CALL SESSION: John Doe (+1 305-987-6543)                                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 🟢 Duration: **2m 14s**  │  Sentiment: **Positive**  │  Status: **Resolved**│
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 🎵 **Audio Recording:** [ ▶ Play (02:14) ]  [ ⬇ Download MP3 ]              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 🤖 **AI Summary & Intent:**                                                 │
+│ • **Caller Intent:** Booked routine dental cleaning.                        │
+│ • **Action Executed:** Committed 3:00 PM Thursday slot to `space_calendar`.  │
+│ • **Insurance Verified:** Delta Dental Premier (in-network).                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 📜 **Full Spoken Transcript:**                                              │
+│ • [00:01] **AI:** "Thank you for calling Miami Dental. How can I help you?" │
+│ • [00:04] **John:** "Hi, do you have any openings this Thursday afternoon?"│
+│ • [00:08] **AI:** "Yes! Dr. Smith has a 3:00 PM opening. Shall I book it?" │
+│ • [00:12] **John:** "Yes, please. My name is John Doe."                     │
+│ • [00:16] **AI:** "All set, John! You're booked for Thursday at 3:00 PM."  │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+---
+### Summary of What This Establishes:
+1. **Vapi/Grok-Style Simplicity:** Complete visual and natural language control over greetings, system prompts, voices, interruption sensitivity, and business hours.
+2. **Strict Telephony Guard:** The project explicitly requires an active phone line (1-click platform number or BYO Twilio) to receive/make calls.
+3. **Automated Outbound Crons:** Workflows handle appointment reminder campaigns and lead follow-up calls automatically.
+4. **Cross-Project Shared Calendar Integration:** Appointments booked over the phone commit atomically into **`SpaceDO` SQLite**, instantly visible to the doctor's document workstation and the founder's WhatsApp morning briefing.

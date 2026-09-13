@@ -1,0 +1,325 @@
+265 - 270
+What if a $150 plan user goes to $20 plan we should count the times they use $20 plans if it reaches 6 then after that if they goe to $20 plan again we don't give developer any communication if they go to higher plan we start giving them this way if a user changes plans everyonth we just count how many times the had the $20 plan
+This is a clean solution. Tracking **cumulative cycles per tier** (a **Per-Tier Lifetime Quota**) completely eliminates plan-hopping and subscription gaming.
+Whether a customer stays on a $20 plan for 6 consecutive months, or hops back and forth between $150 and $20 over two years, the system simply checks: **"Has this developer already collected their 6 commission payouts for the $20 tier on this account?"**
+---
+### 1. The Plan-Hopping Timeline (How the State Machine Works)
+```
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                              CUSTOMER LIFECYCLE WITH PLAN SWITCHING                                    │
+├─────────┬────────────────┬──────────────────────────┬──────────────────────┬───────────────────────────┤
+│ Month   │ Customer Plan  │ Tier Counter State       │ Developer Payout     │ Notes                     │
+├─────────┼────────────────┼──────────────────────────┼──────────────────────┼───────────────────────────┤
+│ Month 1 │ **$150 (Pro)** │ Pro: 1 (Lifetime)        │ **$60.00 (40%)**     │ Lifetime tier.            │
+├─────────┼────────────────┼──────────────────────────┼──────────────────────┼───────────────────────────┤
+│ Month 2 │ **$20 (Entry)**│ Entry Count: **1 of 6**  │ **$8.00 (40%)**      │ 1st $20 commission paid.  │
+├─────────┼────────────────┼──────────────────────────┼──────────────────────┼───────────────────────────┤
+│ Month 3 │ **$150 (Pro)** │ Pro: 2 (Lifetime)        │ **$60.00 (40%)**     │ Back on Pro = full cut.   │
+├─────────┼────────────────┼──────────────────────────┼──────────────────────┼───────────────────────────┤
+│ Month 4 │ **$20 (Entry)**│ Entry Count: **2 of 6**  │ **$8.00 (40%)**      │ 2nd $20 commission paid.  │
+├─────────┼────────────────┼──────────────────────────┼──────────────────────┼───────────────────────────┤
+│ ...     │ ...            │ ...                      │ ...                  │ ...                       │
+├─────────┼────────────────┼──────────────────────────┼──────────────────────┼───────────────────────────┤
+│ Month 8 │ **$20 (Entry)**│ Entry Count: **6 of 6**  │ **$8.00 (40%)**      │ **Final $20 commission.** │
+├─────────┼────────────────┼──────────────────────────┼──────────────────────┼───────────────────────────┤
+│ Month 9 │ **$20 (Entry)**│ Entry Count: **7 (CAP)** │ **$0.00 (0%)**       │ **Platform gets 100%.**   │
+├─────────┼────────────────┼──────────────────────────┼──────────────────────┼───────────────────────────┤
+│ Month 10│ **$150 (Pro)** │ Pro: 3 (Lifetime)        │ **$60.00 (40%)**     │ **Commission resumes!**   │
+└─────────┴────────────────┴──────────────────────────┴──────────────────────┴───────────────────────────┘
+```
+---
+### 2. D1 Database Schema: Per-Tier Cumulative Counters
+In `PLATFORM_DB` (D1), store explicit counters for each tier on the subscription record:
+```sql
+-- Subscription tracking with per-tier cumulative quotas
+CREATE TABLE IF NOT EXISTS template_subscriptions (
+  id TEXT PRIMARY KEY,
+  space_id TEXT NOT NULL UNIQUE,
+  template_id TEXT NOT NULL,
+  developer_user_id TEXT NOT NULL,
+  attribution_channel TEXT NOT NULL CHECK (attribution_channel IN ('DEVELOPER_REFERRAL', 'MARKETPLACE_ORGANIC', 'FIXED_ONE_OFF')),
+  
+  -- Cumulative Tier Usage Counters
+  cycles_paid_entry_tier INTEGER NOT NULL DEFAULT 0,  -- Capped at 6 max for plans <= $25
+  cycles_paid_growth_tier INTEGER NOT NULL DEFAULT 0, -- Capped at 12 max for plans $26 - $100
+  cycles_paid_pro_tier INTEGER NOT NULL DEFAULT 0,    -- Unlimited for plans >= $150
+  
+  last_billed_plan_price_cents INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+```
+---
+### 3. The Settlement Engine Implementation
+In `workers/billing/src/settlement.ts`, evaluate the tier quota on every invoice payment webhook:
+```typescript
+// workers/billing/src/settlement.ts
+export async function settleTemplateSubscriptionPayment(
+  db: D1Database,
+  spaceId: string,
+  grossCents: number
+) {
+  // 1. Fetch active subscription record
+  const sub = await db.prepare(`
+    SELECT * FROM template_subscriptions WHERE space_id = ? AND status = 'active'
+  `).bind(spaceId).first() as any;
+  if (!sub) return;
+  const planPriceUsd = grossCents / 100;
+  let isCommissionEligible = false;
+  // 2. Evaluate & Increment Per-Tier Quota
+  if (planPriceUsd <= 25) {
+    // Entry Tier ($20/mo): Maximum 6 Paid Cycles
+    const newEntryCount = sub.cycles_paid_entry_tier + 1;
+    await db.prepare(`
+      UPDATE template_subscriptions 
+      SET cycles_paid_entry_tier = ?, last_billed_plan_price_cents = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).bind(newEntryCount, grossCents, sub.id).run();
+    // Eligible ONLY if this is cycle 1 through 6
+    isCommissionEligible = newEntryCount <= 6;
+  } else if (planPriceUsd < 150) {
+    // Growth Tier ($50/mo): Maximum 12 Paid Cycles
+    const newGrowthCount = sub.cycles_paid_growth_tier + 1;
+    await db.prepare(`
+      UPDATE template_subscriptions 
+      SET cycles_paid_growth_tier = ?, last_billed_plan_price_cents = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).bind(newGrowthCount, grossCents, sub.id).run();
+    // Eligible ONLY if this is cycle 1 through 12
+    isCommissionEligible = newGrowthCount <= 12;
+  } else {
+    // Pro Tier ($150+/mo): LIFETIME UNLIMITED
+    const newProCount = sub.cycles_paid_pro_tier + 1;
+    await db.prepare(`
+      UPDATE template_subscriptions 
+      SET cycles_paid_pro_tier = ?, last_billed_plan_price_cents = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).bind(newProCount, grossCents, sub.id).run();
+    isCommissionEligible = true; // Always eligible!
+  }
+  // 3. Compute Split
+  let developerRate = 0.0;
+  if (isCommissionEligible) {
+    if (sub.attribution_channel === "DEVELOPER_REFERRAL") {
+      developerRate = 0.40; // 40% (Developer referred)
+    } else if (sub.attribution_channel === "MARKETPLACE_ORGANIC") {
+      developerRate = 0.20; // 20% (Marketplace organic)
+    }
+  }
+  const developerCutCents = Math.round(grossCents * developerRate);
+  const platformCutCents = grossCents - developerCutCents;
+  // 4. Record in Ledger
+  const period = new Date().toISOString().slice(0, 7);
+  await db.prepare(`
+    INSERT INTO developer_earnings_ledger (
+      id, developer_user_id, space_id, event_type, gross_cents, developer_cut_cents, platform_cut_cents, period
+    ) VALUES (?, ?, ?, 'subscription_cut', ?, ?, ?, ?)
+  `).bind(
+    `earn_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    sub.developer_user_id,
+    spaceId,
+    grossCents,
+    developerCutCents,
+    platformCutCents,
+    period
+  ).run();
+}
+```
+---
+### 4. What the Developer Sees in the Partner Studio
+In `apps/shell`, the developer's dashboard shows the quota breakdown per client:
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 📊 CLIENT COMMISSION STATUS: **Acme Logistics Studio**                      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ • Current Active Plan: **$20.00 / month (Basic Intake)**                    │
+│ • Entry Tier Bounty: **6 of 6 Cycles Used (EXPIRED)** 🔴                    │
+│ • Current Monthly Developer Payout: **$0.00** (Platform receives 100%)       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 💡 **Partner Upgrade Opportunity:**                                         │
+│ This client has exhausted their $20 tier commission. If they upgrade to:    │
+│ • **$50 Growth Plan:** You unlock **12 fresh months @ $20.00/mo**!          │
+│ • **$150 Pro Plan:** You unlock **Lifetime Commissions @ $60.00/mo**!       │
+│                                                                             │
+│ [ ✉️ Send Upgrade Proposal to Client ]                                      │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+---
+### Why this design holds up:
+1. **Immune to Plan Switching:** A user can switch between plans every month; the system tracks the cumulative count per tier.
+2. **Re-Monetization on Upgrade:** The moment an expired $20 client upgrades to $150, the developer's commission resumes immediately.
+3. **Automated Upsell Drive:** Developers have a dashboard metric telling them which clients have exhausted their lower-tier quotas, motivating them to pitch higher-tier upgrades.
+Plus they can make template tiers lie x features of the template cannot be accessed by an $20 plan user and $150 plan user can access them but if made so the template becomes free so it's not sold on fixed prices and vice versa if they sell at fixed price once no more per plan access upgrades. This way it forces devs to add more features in templates in $150 dollar plans 
+This rule creates a **mutually exclusive monetization model** that solves the shovelware problem and aligns developer incentives with buyer value:
+* **Rule 1 (The Freemium Tiered Model):** If a developer wants to gate features between the $20, $50, and $150 tiers, **the template MUST be 100% free upfront to clone/install**. The developer earns purely through recurring subscription commissions as the business upgrades to unlock higher-tier capabilities.
+* **Rule 2 (The Fixed Buy-Out Model):** If a developer sells the template for a **fixed one-off price** (e.g., $99 upfront), **all features must be 100% unlocked forever**. They cannot charge upfront *and* gate features behind subscription walls.
+This gives buyers a frictionless way to try templates for free, while **forcing developers to build heavy, high-leverage enterprise features into the $150+ tiers** to earn lifetime recurring commissions.
+---
+### 1. The Binary Marketplace Model (Mutually Exclusive)
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                  THE TWO MARKETPLACE TEMPLATE PATHS                                     │
+├───────────────────────────────┬───────────────────────────────────────┬─────────────────────────────────┤
+│ Dimension                     │ Model A: Freemium Tiered SaaS Template │ Model B: Fixed One-Off License  │
+├───────────────────────────────┼───────────────────────────────────────┼─────────────────────────────────┤
+│ **Upfront Price to Install**  │ **$0.00 (Free to Install)**           │ **$49 – $499 One-Time Buy-Out** │
+├───────────────────────────────┼───────────────────────────────────────┼─────────────────────────────────┤
+│ **Feature Gating per Plan**   │ ✅ **YES (Granular per Plan Tier)**   │ ❌ **NO (100% Fully Unlocked)** │
+│                               │ • $20 Plan: Basic Features            │ All features open to whatever   │
+│                               │ • $50 Plan: Advanced Tools            │ base compute plan the user runs │
+│                               │ • $150 Plan: Enterprise Engine        │                                 │
+├───────────────────────────────┼───────────────────────────────────────┼─────────────────────────────────┤
+│ **Developer Payout**          │ **40% / 20% Recurring Commissions**   │ **100% of Upfront Sale**        │
+│                               │ (Lifetime on $150+; 6-12 mo on lower) │ (0% on monthly platform compute)│
+├───────────────────────────────┼───────────────────────────────────────┼─────────────────────────────────┤
+│ **Developer Incentive**       │ **Build killer $150 features** to     │ **Build turnkey, complete open  │
+│                               │ maximize recurring monthly upgrades.  │ templates** for instant cash.   │
+└───────────────────────────────┴───────────────────────────────────────┴─────────────────────────────────┘
+```
+---
+### 2. Concrete Example: Feature Gating in a Legal Cowork Template
+Here is how a legal developer structures a **Model A (Freemium Tiered)** template to drive upgrades:
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ ⚖️ TEMPLATE: "LexPulse Legal Cowork Studio" (Free to Install)                                           │
+├─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 🥉 **ENTRY TIER ($20 / month): Basic Intake & FAQ Desk**                                                │
+│ • Projects Included: `customer_bot` (Website Client Intake) + General Workspace.                        │
+│ • Toolset: Safe Knowledge Base RAG + Plain PDF export.                                                  │
+│ • Limitations: Max 200 contract queries/mo. No container builds. No redlining.                         │
+├─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 🥈 **GROWTH TIER ($50 / month): Active Case & Document Studio**                                         │
+│ • Unlocks Project: `doc_studio` (Side-by-Side Contract Redline Canvas).                                 │
+│ • Unlocks Plugins: Delaware Statutory Code Vector RAG + Clause Comparison.                             │
+│ • Limitations: Single-thread execution. Max 3 active cases.                                             │
+├─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 🥇 **PRO TIER ($150 / month): The Autonomous Firm & LoRA Auto-Researcher**                              │
+│ • Unlocks Project: `model_studio` (Fine-tune private LoRA model on firm's past M&A deals).             │
+│ • Unlocks Multi-Agent Parallel Sprints (Tier 6 Linux Container for heavy bulk document parsing).        │
+│ • Unlocks Tier 4 Private Scratchpads with Git Branching & 1-Click PR Merge.                             │
+│ • Unlocks Unlimited Case Workstations + 24/7 Mobile Partner Telegram Copilot.                           │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+---
+### 3. Declarative Blueprint Schema (`blueprint.json`)
+In `packages/types` and `workers/agents/src/launchpad/spacetype.ts`:
+```typescript
+export interface TemplateFeatureGating {
+  // Enforce Mutual Exclusivity:
+  monetizationModel: "FREEMIUM_TIERED_SAAS" | "FIXED_ONE_OFF_UNLOCKED";
+  
+  // Set ONLY when monetizationModel === "FIXED_ONE_OFF_UNLOCKED"
+  fixedPriceCents?: number; // e.g. 9900 ($99.00)
+  // Set ONLY when monetizationModel === "FREEMIUM_TIERED_SAAS" (Upfront is always $0)
+  tierAccessRules?: {
+    entryPlan: { // $20 / mo
+      allowedProjectKinds: string[]; // ["customer_bot", "workspace"]
+      allowedPlugins: string[];
+      maxExecutionTier: number;      // Tier 1 only
+      monthlyQueryAllowance: number; // e.g. 500
+    };
+    growthPlan: { // $50 / mo
+      allowedProjectKinds: string[]; // ["customer_bot", "workspace", "doc_studio"]
+      allowedPlugins: string[];      // ["plugin_legal_redline"]
+      maxExecutionTier: number;      // Tier 2 & 4 (Isolates + Kitesurf)
+      monthlyQueryAllowance: number;
+    };
+    proPlan: { // $150+ / mo (Full Power)
+      allowedProjectKinds: string[]; // ["customer_bot", "workspace", "doc_studio", "model_studio", "product_dev"]
+      allowedPlugins: string[];      // ["*"] (All plugins unlocked)
+      maxExecutionTier: number;      // Tier 6 (Full Container + LoRA Fine-Tuning + PR Branching)
+      monthlyQueryAllowance: number; // Unlimited
+    };
+  };
+}
+```
+---
+### 4. Hardware-Level Runtime Enforcement (`SpaceDO.ts` & `AgentFirewall`)
+When a user or agent attempts to use a feature locked to a higher plan, the runtime enforces the gate at the **Durable Object boundary**:
+```typescript
+// workers/spaces/src/do/SpaceDO.ts
+export function verifyFeatureAccess(
+  spaceCurrentPlanPriceUsd: number,
+  requestedProjectKind: string,
+  gatingRules?: TemplateFeatureGating
+) {
+  // If template is Fixed One-Off, everything is 100% unlocked
+  if (gatingRules?.monetizationModel === "FIXED_ONE_OFF_UNLOCKED") {
+    return { allowed: true };
+  }
+  const rules = gatingRules?.tierAccessRules;
+  if (!rules) return { allowed: true };
+  // Evaluate Plan Tier Clearance
+  if (spaceCurrentPlanPriceUsd < 50) {
+    // $20 Plan
+    if (!rules.entryPlan.allowedProjectKinds.includes(requestedProjectKind)) {
+      return {
+        allowed: false,
+        requiredPlan: "$50 Growth Plan or $150 Pro Plan",
+        reason: `The '${requestedProjectKind}' workstation is locked on your current plan.`
+      };
+    }
+  } else if (spaceCurrentPlanPriceUsd < 150) {
+    // $50 Plan
+    if (!rules.growthPlan.allowedProjectKinds.includes(requestedProjectKind)) {
+      return {
+        allowed: false,
+        requiredPlan: "$150 Pro Plan",
+        reason: `The '${requestedProjectKind}' workstation is exclusive to the $150 Pro Plan.`
+      };
+    }
+  }
+  return { allowed: true };
+}
+```
+---
+### 5. In-App Upgrade Experience in `apps/shell`
+When a user on the $20 plan clicks to open the **`Model Studio (Private LoRA Fine-Tuning)`** or **`Contract Redline Studio`**, the shell renders a focused upgrade modal:
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 🔒 UNLOCK PRO WORKSTATION                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ The **Model Studio (LoRA Fine-Tuning)** is an exclusive capability of the  │
+│ **$150 Pro Plan** for this template.                                        │
+│                                                                             │
+│ ✨ What the $150 Pro Plan unlocks:                                          │
+│ • 🧠 Train private LoRA models on your internal PDFs & company transcripts.  │
+│ • ⚡ Tier 6 Linux Container compilation with native Python & npm tools.      │
+│ • 🌿 Multi-branch Git scratchpads with 1-click team Pull Requests.          │
+│ • 📱 24/7 Mobile Partner Copilot on Telegram and WhatsApp.                  │
+│                                                                             │
+│ [ Upgrade to $150/mo Pro Plan ]                                  [ Cancel ] │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+When the user clicks **[Upgrade]**:
+1. Stripe/Lemon Squeezy upgrades their subscription to $150/month.
+2. The workstation unlocks instantly.
+3. The developer's partner ledger immediately transitions to **Lifetime $60.00/month recurring commissions**.
+---
+### 6. The Publishing Guard in the Partner Studio
+In `apps/shell`, the publishing form enforces the mutual exclusivity rule automatically:
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 🚀 PUBLISH TEMPLATE TO MARKETPLACE                                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ Choose your Distribution & Monetization Strategy:                           │
+│                                                                             │
+│ (x) 🔄 Tiered SaaS Template (Freemium)                                      │
+│     • Upfront Template Price: **$0.00 (Free to Install)**                   │
+│     • Configure what features unlock at $20, $50, and $150 plans.           │
+│     • You earn 40% recurring lifetime commissions on $150 upgrades.         │
+│                                                                             │
+│ ( ) 💵 Fixed-Price One-Off License (Buy-Out)                                │
+│     • Set One-Time Template Price: [ $99.00 ]                               │
+│     • You keep 100% ($99.00) upfront.                                       │
+│     • 🔒 *Feature gating is disabled: All template features unlocked.*      │
+│                                                                             │
+│ [ Publish Template ]                                                        │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+---
+### Why this structure works:
+1. **Accelerates Top-of-Funnel Installs:** Free upfront installation removes friction for buyers, driving high install volume for creators.
+2. **Forces High-Value Feature Development:** To earn recurring revenue, developers must build substantive capabilities for the $150 plan.
+3. **No Mixed Incentives:** Developers choose either an upfront one-off sale or a tiered subscription model, keeping pricing clear and predictable.

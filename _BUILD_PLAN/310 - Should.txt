@@ -1,0 +1,96 @@
+310 -
+Should all bot keep waking up coz some projects can be projects to do one task and finish no need for keeping on going. 
+How will bots know when to use user s connector account  or the company s shared 
+Does this architecture confuse non technical users 
+Here is the breakdown of **Project Sleep Cycles**, **Connector Account Intelligence**, and how to design the platform so **non-technical users never feel overwhelmed**.
+---
+# 1. Should All Bots Keep Waking Up? (Finite vs. Standing Projects)
+**No, absolutely not.** Running endless wake-ups on every project would waste tokens, clutter logs, and drain business wallets.
+Projects should have two distinct **Lifecycle Modes**:
+```
+┌─────────────────────────────────────────────────────────────┬─────────────────────────────────────────────────────────────┐
+│ 🏁 FINITE TASK PROJECTS (Build & Sleep)                     │ 🔄 STANDING / CONTINUOUS PROJECTS (Ongoing 24/7 Desks)      │
+├─────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────┤
+│ • **Examples:**                                             │ • **Examples:**                                             │
+│   - *"Build an MVP landing page"* (`product_dev`)           │   - *"24/7 WhatsApp Phone Desk"* (`customer_bot`)          │
+│   - *"Audit this 50-page M&A contract"* (`doc_studio`)      │   - *"Weekly B2B Lead Scraper"* (`growth_engine`)           │
+│   - *"Run one-off data migration"* (`ops_dispatcher`)       │   - *"Daily Revenue Review & Alerts"* (`wallet_vault`)      │
+│ • **Lifecycle:**                                            │ • **Lifecycle:**                                            │
+│   1. Agent executes the 4 tasks in the Project Journal.     │   1. Wakes up on schedules (`cron: "0 9 * * *"`), webhooks,│
+│   2. Once all tasks hit `COMPLETED`, **the bots SLEEP**.    │      or live customer phone calls.                          │
+│   3. All cron alarms are cleared. **DO hibernates at $0**.  │   2. Runs 24/7 background operational loops.                │
+│   4. Sits idle until a human types a new message.           │                                                             │
+└─────────────────────────────────────────────────────────────┴─────────────────────────────────────────────────────────────┘
+```
+#### How it works in the Codebase (`SpaceDO.ts`):
+* When creating a project, `projects.lifecycle` is set to either `'finite'` or `'continuous'`.
+* For `'finite'` projects, the moment the last task in `SpaceDO.tasks` transitions to `COMPLETED`:
+  1. The bot logs a final summary: *"All project tasks completed successfully."*
+  2. The Durable Object **clears all scheduled alarms** and enters dormant hibernation.
+---
+# 2. How Bots Know: Personal Account vs. Company Shared Account
+To make connector selection completely seamless and foolproof, the agent uses a **3-Layer Intent & Context Filter**:
+```
+                                  ┌──────────────────────────────────────────────┐
+                                  │             INCOMING USER PROMPT             │
+                                  └──────────────────────┬───────────────────────┘
+                                                         │
+                         ┌───────────────────────────────┴───────────────────────────────┐
+                         ▼                                                               ▼
+┌─────────────────────────────────────────────────────────────┐   ┌─────────────────────────────────────────────────────────────┐
+│ LAYER 1: THREAD CONTEXT DEFAULT                             │   │ LAYER 2: LINGUISTIC INTENT DETECTION                        │
+├─────────────────────────────────────────────────────────────┤   ├─────────────────────────────────────────────────────────────┤
+│ • In **Tier 4 Private Scratchpads / 1-on-1s:**              │   │ • *"My" words ──► Personal Account:                         │
+│   ➡️ Default = **Alice's Personal Account** (Gmail/Calendar) │   │   - *"Check my unread emails"*                              │
+│ • In **Tier 1/2 Public Team Rooms & Customer Bots:**        │   │   - *"Block 2 hours on my calendar for deep work"*          │
+│   ➡️ Default = **Company Shared Account** (Corporate Drive) │   │ • *"Our/Company" words ──► Company Shared:                  │
+│                                                             │   │   - *"Book client consultation on our schedule"*            │
+│                                                             │   │   - *"Post this update to our company Twitter"*             │
+└─────────────────────────────────────────────────────────────┘   └─────────────────────────────────────────────────────────────┘
+                                                         │
+                                                         ▼
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ LAYER 3: VISUAL SCOPE PILL IN THE UI (ComposerDock)                                                    │
+│ Right above the chat box, a small clickable pill shows the active account:                             │
+│ `[ 🔒 Using: Alice's Personal Gmail ]`  ──►  *(Click to switch to `[ 🏢 Company Shared Inbox ]`)*      │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+#### If Ambiguous, the Agent Asks Inline (Single-Click Card):
+If the user simply types *"Schedule a meeting for Friday at 3 PM"* with no context:
+The agent returns an inline decision card:
+> *"Where would you like me to book this meeting?"*  
+> `[ 👤 Alice's Personal Calendar ]` &nbsp; or &nbsp; `[ 🏢 Miami Dental Clinic Schedule ]`
+---
+# 3. Does This Architecture Confuse Non-Technical Users?
+**No, because non-technical users never see the underlying engineering.**
+Think of an iPhone: under the hood, it runs a 64-bit multi-core ARM CPU, a Mach kernel, virtual memory paging, and Unix file permissions. But the user only sees an **intuitive touchscreen with clean icons.**
+The platform applies the **"Iceberg Principle"**:
+```
+WHAT THE NON-TECHNICAL FOUNDER SEES (The 10% Surface — Simple & Beautiful)
+─────────────────────────────────────────────────────────────────────────────────────
+• A simple, friendly chat box (like texting a colleague on iMessage).
+• Clean buttons: [ Approve Design ], [ Book Appointment ], [ Launch Website ].
+• A live visual preview of their website or a calendar of their bookings.
+• A morning WhatsApp summary: "You made $450 in sales yesterday; 2 calls booked."
+═════════════════════════════════════════════════════════════════════════════════════
+WHAT RUNS SILENTLY UNDER THE HOOD (The 90% Submerged — Complete Engineering)
+─────────────────────────────────────────────────────────────────────────────────────
+• Cloudflare Artifacts Git repositories with SHA-256 commit trees.
+• V8 Isolates, Dynamic Worker Loaders, and FUSE-mounted Linux Container Sandboxes.
+• AST search-and-replace patching and optimistic concurrency control (OCC).
+• Vectorize ACL-partitioned semantic embeddings and prompt cache breakpoints.
+```
+---
+### Real-World Example: A Non-Technical Dentist vs. The Engine
+Look at how a non-technical dental clinic owner experiences the platform compared to what the engine is doing in the background:
+| What the Non-Technical Dentist Does | What the Platform Executes Invisibly Under the Hood |
+| :--- | :--- |
+| **1. Dentist clicks:** *"Launch 24/7 Receptionist Template"*. | • `GenesisEngine` provisions `SpaceDO`, creates D1 tables, registers WhatsApp webhooks, and seeds clinic FAQs into Vectorize in 3 seconds. |
+| **2. Dentist types:** *"Update our Friday hours to close at 2 PM instead of 5 PM."* | • Agent receives prompt, executes `patch_file` on `PROJECT.md` and calendar rules in Tier 1 SQLite FS, and creates commit `c_4f12`. |
+| **3. Dentist sees an alert in chat:** *"Your assistant updated the booking rules. Click here to review."* | • A visual Pull Request card renders. The dentist sees a simple green highlighted box (*"Friday: 9 AM - 2 PM"*). |
+| **4. Dentist clicks:** `[ Approve ]`. | • Cloudflare Artifacts fast-forwards the Git branch, `WsHubDO` broadcasts the merge over WebSockets, and the WhatsApp bot immediately uses the new hours. |
+---
+### Summary
+1. **Finite Projects Sleep Automatically:** Projects built for a single task (like building a website or auditing a contract) **shut down their alarms and sleep at $0 cost** the second the journal hits 100%.
+2. **Context-Aware Connector Selection:** The agent defaults to **Personal accounts in private 1-on-1s** and **Shared company accounts in public team channels**, with a clear visual pill in the chat bar.
+3. **Enterprise Power with Consumer Simplicity:** Non-technical users get a clean, human-friendly experience with simple buttons and previews, while all Git versioning, container promotions, and database isolations run invisibly at the edge.

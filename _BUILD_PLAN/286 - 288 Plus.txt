@@ -1,0 +1,159 @@
+286 - 288
+Plus billing how are we going to bill this whole platform it's user etc
+Here is the complete **Billing & Monetization Architecture** for the entire platform. 
+The system uses a **Hybrid Multi-Stream Model**:
+1. **SaaS Subscription Tiers** (Base access & capacity)
+2. **Unified Compute & AI Metering** (1 Credit = $0.01 consumption unit)
+3. **Marketplace & Transactional Take-Rates** (Downstream revenue cuts & developer royalties)
+This creates the **Self-Funding Business Loop**—where an autonomous venture uses its own customer revenue to pay for its edge compute and AI tokens, with remaining profits paid out to the owner.
+---
+# 1. The 3 Revenue Streams at a Glance
+```
+                                  ┌──────────────────────────────────────────────┐
+                                  │           AVOS BILLING ARCHITECTURE          │
+                                  └──────────────────────┬───────────────────────┘
+                                                         │
+         ┌───────────────────────────────────────────────┼───────────────────────────────────────────────┐
+         ▼                                               ▼                                               ▼
+┌─────────────────────────────────┐             ┌─────────────────────────────────┐             ┌─────────────────────────────────┐
+│ STREAM 1: SaaS Subscriptions    │             │ STREAM 2: Usage-Based Compute   │             │ STREAM 3: Transaction Take-Rate │
+├─────────────────────────────────┤             ├─────────────────────────────────┤             ├─────────────────────────────────┤
+│ • **Free Tier ($0/mo):** BYOK   │             │ Standardized Unit:              │ • **Storefront / Invoice Cut:** │
+│ • **Starter ($29/mo):** Solos   │             │ **1 Platform Credit = $0.01**   │   1.5% – 5.0% on client sales.  │
+│ • **Pro ($99–$150/mo):** Studio │             │ • LLM Tokens (if not BYOK)      │ • **Marketplace Template Split:**│
+│ • **Enterprise ($299–$499/mo):**│             │ • Container Hours (Tier 6)      │   40% dev referral / 20% organic│
+│   Multi-Department Holding Co.  │             │ • Voice Minutes (@cf/voice)     │   100% upfront on buy-outs.     │
+└─────────────────────────────────┘             └─────────────────────────────────┘             └─────────────────────────────────┘
+```
+---
+# 2. Stream 1: The SaaS Subscription Tiers
+```
+┌───────────────────────────────┬──────────────┬───────────────────────────────┬──────────────────────────────────────────┐
+│ Plan Tier                     │ Price        │ Included Workspaces & Limits  │ Unlocked Features & Capabilities         │
+├───────────────────────────────┼──────────────┼───────────────────────────────┼──────────────────────────────────────────┤
+│ **1. Free Tier (Hacker)**     │ **$0 / mo**  │ • 1 Business Workspace        │ • BYOK Only (Anthropic, Gemini, Groq)    │
+│ *(Top-of-Funnel Viral Onramp)*│              │ • 1 Project / 3 Threads       │ • Tier 1 SQLite FS + Tier 2 Isolates     │
+├───────────────────────────────┼──────────────┼───────────────────────────────┼──────────────────────────────────────────┤
+│ **2. Starter (Solo Builder)** │ **$29 / mo** │ • 3 Business Workspaces       │ • Includes $10/mo compute allowance      │
+│ *(Freelancers & Solopreneurs)*│              │ • Unlimited Threads           │ • Tier 3 Dynamic Workflows + Kitesurf    │
+│                               │              │ • 1 Custom Domain             │ • Personal WhatsApp/Telegram Assistant   │
+├───────────────────────────────┼──────────────┼───────────────────────────────┼──────────────────────────────────────────┤
+│ **3. Pro (Venture Studio)**   │ **$99 / mo** │ • 10 Business Workspaces      │ • Includes $35/mo compute allowance      │
+│ *(Agencies & Growth Startups)*│              │ • Unlimited Projects & Threads│ • Tier 5 Chromium + Tier 6 Containers    │
+│                               │              │ • 3 Sub-spaces (Departments)  │ • Model Studio (Private LoRA Training)   │
+│                               │              │ • 5 Team Member Seats         │ • Voice Calling Receptionists (@cf/voice)│
+│                               │              │                               │ • Artifacts PR Branching & Merging       │
+├───────────────────────────────┼──────────────┼───────────────────────────────┼──────────────────────────────────────────┤
+│ **4. Enterprise (Holding Co)**│ **$299+/mo** │ • Unlimited Sub-spaces        │ • Full White-Labeling (Zero AVOS badge)  │
+│ *(Corporates & Law/PE Firms)* │              │ • 25+ Team Member Seats       │ • Cloudflare for SaaS Custom SSL Apex    │
+│                               │              │ • Dedicated Phone Numbers     │ • 365-Day Audit Retention (HIPAA/SOC2)   │
+└───────────────────────────────┴──────────────┴───────────────────────────────┴──────────────────────────────────────────┘
+```
+---
+# 3. Stream 2: Usage-Based Metering (1 Credit = $0.01)
+Your codebase (`packages/billing-core/src/index.ts`) already has the unified credit unit: **`1 Credit = $0.01 USD (1 Cent)`**.
+### How Resources Consume Credits:
+```
+┌──────────────────────────────────────┬────────────────────────┬─────────────────────────────────────────────┐
+│ Resource Category                    │ Metered Rate           │ Billing Mechanism                           │
+├──────────────────────────────────────┼────────────────────────┼─────────────────────────────────────────────┤
+│ **LLM Tokens (Non-BYOK)**            │ Cost + 15% margin      │ `tokensToCredits(input, output, model)`     │
+│ **BYOK (Bring Your Own Key)**        │ **$0.00 / Token**      │ Zero token markup (Billed direct by vendor) │
+├──────────────────────────────────────┼────────────────────────┼─────────────────────────────────────────────┤
+│ **Tier 1: SQLite Virtual FS**        │ Free / Included        │ Sub-ms in DO storage                        │
+│ **Tier 2: V8 Isolate CodeMode**      │ 1 Credit per 100 runs  │ `$0.0001 / isolate execution`               │
+│ **Tier 3: Dynamic Workflows**        │ 1 Credit per 20 steps  │ `$0.0005 / workflow step`                   │
+│ **Tier 4: Kitesurf Agent Browser**   │ 1 Credit per 10 scrapes│ `$0.001 / DOM extraction`                   │
+│ **Tier 5: Headless Chromium**        │ 1 Credit per snapshot  │ `$0.01 / visual QA render`                  │
+│ **Tier 6: Linux Container Sandbox**  │ 5 Credits / active hr  │ `$0.05 / container compute hour`            │
+├──────────────────────────────────────┼────────────────────────┼─────────────────────────────────────────────┤
+│ **Voice Call Minutes (@cf/voice)**   │ 4 Credits / minute     │ `$0.04 / call minute` (STT + TTS + WebRTC)  │
+│ **Dedicated Phone Number Line**      │ 200 Credits / month    │ `$2.00 / month per active phone line`       │
+└──────────────────────────────────────┴────────────────────────┴─────────────────────────────────────────────┘
+```
+### Two Balance Types in the Codebase:
+1. **User Personal Balance (`ProductUserDO.credit_ledger`):** For individuals buying one-time credit packs ($10, $25, $50) to chat with the assistant.
+2. **Business Operating Wallet (`SpaceDO.wallet_ledger`):** For businesses funding ongoing container hours, background cron workflows, phone lines, and autonomous customer bots.
+---
+# 4. Stream 3: Marketplace & Downstream Take-Rates
+```
+                                  ┌──────────────────────────────────────────────┐
+                                  │        TRANSACTIONAL & REVENUE CUTS          │
+                                  └──────────────────────┬───────────────────────┘
+                                                         │
+                         ┌───────────────────────────────┴───────────────────────────────┐
+                         ▼                                                               ▼
+┌─────────────────────────────────────────────────────────────┐   ┌─────────────────────────────────────────────────────────────┐
+│ 🛒 DOWNSTREAM COMMERCE / INVOICE CUT                        │   │ 🧩 TEMPLATE MARKETPLACE REVENUE SPLIT                       │
+├─────────────────────────────────────────────────────────────┤   ├─────────────────────────────────────────────────────────────┤
+│ • **Digital Storefront Sales:** 5.0% fee on one-time items. │   │ • **Developer Referral (Direct Link):**                     │
+│ • **Client Invoices & Retainers:** 1.5% processing cut on   │   │   **40% to Dev / 60% to Platform**                          │
+│   Stripe Connect / Whop sub-merchant checkouts.             │   │ • **Organic Marketplace Discovery:**                        │
+│ • Fee is deducted automatically at transaction settlement.  │   │   **20% to Dev / 80% to Platform**                          │
+│                                                             │   │ • **Fixed One-Off License ($99):**                          │
+│                                                             │   │   **100% upfront to Dev / 0% on monthly compute**           │
+└─────────────────────────────────────────────────────────────┘   └─────────────────────────────────────────────────────────────┘
+```
+---
+# 5. The Self-Funding Autonomous Business Loop
+This is how an **AI-operated business pays for its own infrastructure** without the owner manually topping up cards:
+```
+[ Customer books a $500 WebDev project or $150 Cowork subscription ]
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 1. PAYMENT SETTLEMENT (Stripe Connect / Whop / Lemon Squeezy)               │
+│    • Gross Sale: +$150.00                                                   │
+│    • Platform Fee (5%): -$7.50                                              │
+│    • Net Settles to `SpaceDO.wallet_ledger`: **+$142.50**                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 2. AUTONOMOUS EXPENSE DEBITS (Real-Time Background Execution)               │
+│    • Dev Agent runs Tier 6 Container build (15m): -$0.02                    │
+│    • Voice Agent confirms appointment over phone (2m): -$0.08               │
+│    • Daily cron workflow runs: -$0.01                                       │
+│    • Running Wallet Balance: **$142.39**                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 3. OWNER PROFIT PAYOUT (1-Click Withdrawal)                                 │
+│    • Founder requests payout on Telegram: *"Withdraw $100 to my bank"*.     │
+│    • `business-wallet.ts` executes ACH/Crypto/Venmo withdrawal.             │
+│    • Net remaining buffer ($42.39) stays to fund future AI cycles.          │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+---
+# 6. How It Is Enforced in the Codebase
+### 1. Pre-Run Gatekeeper Check (`workers/agents/src/do/NaelaoAgentDO.ts`)
+Before an agent executes an expensive tool turn (container build or paid LLM inference), `enforceRunGates()` validates the balance:
+```typescript
+// Pre-flight check before spending compute:
+const isFunded = await checkProjectWallet(spaceId, tenantId);
+if (!isFunded.allowed) {
+  return Response.json({
+    error_code: "insufficient_credits",
+    message: "This business wallet has depleted its credits. Top up or let customer sales fund it."
+  }, { status: 402 });
+}
+```
+### 2. Post-Run Atomic Debit (`workers/agents/src/do/NaelaoAgentDO.ts`)
+When the run finishes:
+```typescript
+// Settle real LLM tokens and Cloudflare compute duration
+await settleRunBilling({
+  spaceId,
+  tokensUsed,
+  inputTokens,
+  outputTokens,
+  tier: executedTier,
+  durationMs: executionDuration
+});
+```
+### 3. Automated Payout & Reseller Rollup (`workers/billing/src/lemon-squeezy.ts`)
+When a template sale or storefront checkout succeeds:
+```typescript
+// Record developer/partner cut in reseller_ledger for monthly payout
+await recordBuilderRevenueShare(db, share, event, builderFeeCents, providerEventId, false);
+```
+---
+### Summary:
+1. **Predictable SaaS Revenue:** Base subscription plans ($29 to $299/mo) provide recurring MRR.
+2. **True Cost Protection with BYOK & Credits:** Users either bring their own AI keys ($0 token cost to you) or pay per-credit for edge compute, containers, and voice telephony.
+3. **Compounding Marketplace Margins:** You capture **60%–80% of recurring template subscriptions** and **1.5%–5% of all downstream customer sales** processed across the network.

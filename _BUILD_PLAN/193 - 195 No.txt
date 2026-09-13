@@ -1,0 +1,3 @@
+193 - 195
+No in the venture templates channels are  for the owner is to access their assistant on WhatsApp telegram etc just like in vertical cowork but for connecting whatapp bots discord bots telegram bits etc like those customer service automations let's keep them under projects of kind=customer bots users can configure such projects to do customer service automations and even the execution ladder for these projects is lower to avoid security threats. 
+With this I realize there should be more project kinds besides customer bots and using plugins each will have different UI plus there should be project templates for each kind 

@@ -1,0 +1,152 @@
+231
+This is a crucial requirement for enterprise and regulated industries (healthcare, legal, finance). 
+In a **Hospital Cowork space**, you cannot let staff accidentally select an unvetted general model that hallucinates drug interactions or violates HIPAA. In a **Law Firm Cowork space**, you only want models with high reasoning and strict citation capabilities, plus the firm’s private fine-tuned LoRA models.
+Here is how we configure **Vertical-Scoped Model Curation & Enforcement** across the blueprints, the server-side validator, and the UI model picker.
+---
+### 1. The Architecture of Vertical Model Curation
+```
+                                  ┌──────────────────────────────────────────────┐
+                                  │       PLATFORM FOUNDATION MODELS (All 20+)   │
+                                  │   Claude 3.7, Llama 3.3, Gemini, Groq, etc.  │
+                                  └──────────────────────┬───────────────────────┘
+                                                         │
+                         ┌───────────────────────────────┴───────────────────────────────┐
+                         ▼                                                               ▼
+┌─────────────────────────────────────────────────────────────┐   ┌─────────────────────────────────────────────────────────────┐
+│ 🏥 HOSPITAL COWORK TEMPLATE                                 │   │ ⚖️ LEGAL COWORK TEMPLATE                                    │
+│ `model_catalog: "HEALTHCARE_VETTED_ONLY"`                   │   │ `model_catalog: "LEGAL_HIGH_REASONING_ONLY"`                │
+├─────────────────────────────────────────────────────────────┤   ├─────────────────────────────────────────────────────────────┤
+│ 🔒 **Allowed Whitelist:**                                   │   │ 🔒 **Allowed Whitelist:**                                   │
+│ • `custom/hospital-clinical-llama8b-v1` (Trained on EHRs)   │   │ • `custom/lexpulse-delaware-legal-v2` (Trained on M&A)      │
+│ • `@cf/meta/llama-3.3-70b-instruct` (HIPAA-compliant BAA)   │   │ • `claude-3-7-sonnet` (Extended Reasoning & Citations)      │
+│                                                             │   │ • `openai/o3-mini` (Mathematical & Statutory Logic)         │
+├─────────────────────────────────────────────────────────────┤   ├─────────────────────────────────────────────────────────────┤
+│ 🚫 **Hidden / Blocked:**                                    │   │ 🚫 **Hidden / Blocked:**                                    │
+│ • Unvetted community models, general chatbots, un-BAA APIs. │   │ • Fast/loose conversational models without strict reasoning.│
+└─────────────────────────────────────────────────────────────┘   └─────────────────────────────────────────────────────────────┘
+```
+---
+### 2. Declarative Blueprint Schema (`blueprint.json` / `spacetype.ts`)
+In `packages/types` and `workers/agents/src/launchpad/spacetype.ts`, the blueprint explicitly declares its **curated model whitelist and lock status**:
+```typescript
+export interface VerticalModelPolicy {
+  // Mode: "whitelist_only" (hard filter) vs "all_allowed" (standard)
+  mode: "whitelist_only" | "all_allowed";
+  
+  // The exact allowed model IDs for this vertical
+  allowedModelIds: string[];
+  
+  // Default selected model on space creation
+  defaultModelId: string;
+  
+  // Can a space admin expand this list, or is it locked by compliance?
+  lockedByCompliancePolicy: boolean;
+  
+  // UI Custom Category Label
+  pickerHeaderLabel?: string; // e.g. "🏥 Clinically Vetted Models"
+}
+```
+#### Example 1: Hospital Cowork Blueprint Declaration
+```typescript
+export const HOSPITAL_COWORK_BLUEPRINT: BusinessBlueprint = {
+  id: "tpl_hospital_clinical_cowork_v1",
+  title: "Clinical Practice & Hospital Cowork Studio",
+  template_mode: "vertical_cowork",
+  
+  model_policy: {
+    mode: "whitelist_only",
+    pickerHeaderLabel: "🏥 HIPAA & Clinically Vetted Models",
+    defaultModelId: "custom/hospital-clinical-llama8b-v1",
+    lockedByCompliancePolicy: true, // Admin cannot accidentally enable unvetted models
+    allowedModelIds: [
+      "custom/hospital-clinical-llama8b-v1",     // Company's private fine-tuned model
+      "@cf/meta/llama-3.3-70b-instruct",        // Cloudflare enterprise BAA endpoint
+      "claude-3-7-sonnet-20250219"              // High-precision clinical research
+    ]
+  },
+  // Projects, viewports, knowledge seeds...
+};
+```
+---
+### 3. Server-Side Enforcement (The Compliance Gate)
+A compliance rule cannot just be a UI hiding trick. If someone tries to send an API request with an unallowed model via curl or the developer API, **the server must reject it**.
+In `workers/agents/src/index.ts` and `NaelaoAgentDO.ts`:
+```typescript
+// Inside /agent/run route (workers/agents/src/index.ts)
+export function validateModelForSpacePolicy(
+  requestedModel: string,
+  spaceModelPolicy?: VerticalModelPolicy
+): { valid: boolean; reason?: string } {
+  // If template has no restrictive policy, allow platform default allowlist
+  if (!spaceModelPolicy || spaceModelPolicy.mode !== "whitelist_only") {
+    return { valid: isAllowedModel(requestedModel) };
+  }
+  // Enforce the vertical whitelist strictly
+  const isWhitelisted = spaceModelPolicy.allowedModelIds.includes(requestedModel) || 
+                        (requestedModel.startsWith("custom/") && spaceModelPolicy.allowedModelIds.some(m => m.startsWith("custom/")));
+  if (!isWhitelisted) {
+    return {
+      valid: false,
+      reason: `Compliance Violation: Model '${requestedModel}' is not certified for this vertical space. Permitted models: [${spaceModelPolicy.allowedModelIds.join(", ")}]`
+    };
+  }
+  return { valid: true };
+}
+```
+---
+### 4. UI Experience in `ModelSelector.tsx`
+When a doctor or lawyer opens the **Model Selector (`ModelSelector.tsx`)** in their space, the dropdown **only renders their certified vertical models and private fine-tuned weights**:
+```
+┌─────────────────────────────────────────────────────────────┐
+│ 🏥 Clinically Vetted Models (Hospital Policy Locked):       │
+├─────────────────────────────────────────────────────────────┤
+│ • 🧠 Clinica Llama-8B v1.2 (Fine-Tuned on Hospital EHRs)  ⭐ │
+│ • ⚡ Llama 3.3 70B (Cloudflare HIPAA Edge Gateway)          │
+│ • 🔬 Claude 3.7 Sonnet (Clinical Research & Pharmacology)   │
+├─────────────────────────────────────────────────────────────┤
+│ 🔒 Other foundation models are disabled by space policy.    │
+└─────────────────────────────────────────────────────────────┘
+```
+#### The Filter Logic in `ModelSelector.tsx`:
+```typescript
+// apps/shell/src/components/ModelSelector.tsx
+export function ModelSelector({
+  spaceModelPolicy,
+  selectedModel,
+  onModelChange
+}: {
+  spaceModelPolicy?: VerticalModelPolicy;
+  selectedModel: string;
+  onModelChange: (model: string) => void;
+}) {
+  // Filter visible models by the template's policy
+  const visibleModels = useMemo(() => {
+    if (spaceModelPolicy?.mode === "whitelist_only") {
+      return ALLOWED_MODELS.filter(m => spaceModelPolicy.allowedModelIds.includes(m.id));
+    }
+    return ALLOWED_MODELS; // Standard spaces see full platform list
+  }, [spaceModelPolicy]);
+  return (
+    <div className="model-selector-dropdown">
+      <div className="dropdown-header">
+        {spaceModelPolicy?.pickerHeaderLabel || "Select Model for this Session"}
+      </div>
+      {visibleModels.map(m => (
+        <button
+          key={m.id}
+          className={`model-option ${selectedModel === m.id ? "active" : ""}`}
+          onClick={() => onModelChange(m.id)}
+        >
+          <span className="model-name">{m.name}</span>
+          <span className="model-badge">{m.badge}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+```
+---
+### Summary of Benefits
+1. **Compliance by Construction:** Hospital, legal, and financial cowork spaces guarantee that staff cannot accidentally route sensitive data through unapproved models.
+2. **Zero Clutter for Professionals:** A doctor or lawyer isn't confused by 20 generic coding or reasoning model names. They see **only the 2 or 3 models certified for their work**.
+3. **Elevates Private Fine-Tuned Models:** Puts the company’s own fine-tuned models (`kind: "model_studio"`) directly at the top of the list as the primary recommendation for that vertical.

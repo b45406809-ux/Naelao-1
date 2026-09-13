@@ -1,0 +1,148 @@
+301 - 303
+What about allowing companies to download and run models on local machine on ollama or other local llm models runner and connect ollama to their space
+This is one of the most requested features for **Enterprise, Legal, Defense, and Healthcare** clients: **The Local / Air-Gapped On-Premises AI Runner**.
+Many companies are legally prohibited (under HIPAA, GDPR, or defense contracts) from sending sensitive prompts over the internet to third-party AI APIs (Anthropic, OpenAI, Google). They also already have expensive on-premise hardware (Mac Studio M3/M4 Ultras, RTX 4090 workstations, or local NVIDIA H100 clusters) running **Ollama, vLLM, LM Studio, or llama.cpp**.
+Because your codebase **already has `LocalTunnelDO` (`workers/agents/src/do/LocalTunnelDO.ts`) and the `local-agent` daemon**, enabling local Ollama clusters to power their Cloudflare workspace is a natural extension of the architecture.
+---
+### 1. The Zero-Port Local Tunnel Architecture
+The technical challenge is that the company's Ollama instance is on their private office network (`http://localhost:11434`) behind corporate firewalls and NAT, while your agents run on Cloudflare Edge Durable Objects.
+Using your **`LocalTunnelDO` WebSocket Bridge**, the company opens an **outbound-only encrypted tunnel** without opening any firewall ports:
+```
+┌─────────────────────────────────────────────────────────────┐
+│                 COMPANY PRIVATE ON-PREM NETWORK             │
+│                                                             │
+│  [ Local GPU Cluster / Workstation ]                        │
+│  • Ollama / vLLM running on `http://localhost:11434`        │
+│  • Models: DeepSeek R1, Llama 3.3 70B, Qwen 2.5 Coder 32B   │
+│                 │                                           │
+│                 ▼                                           │
+│  [ AVOS Local Bridge Daemon (`npx avos-local`) ]            │
+│  • Connects outbound WebSocket to Cloudflare LocalTunnelDO  │
+└─────────────────┬───────────────────────────────────────────┘
+                  │
+                  ▼ (Encrypted WSS Connection with HMAC Token)
+┌─────────────────────────────────────────────────────────────┐
+│                    CLOUDFLARE EDGE RUNTIME                  │
+│                                                             │
+│  [ LocalTunnelDO (Durable Object) ]                         │
+│  • Routes OpenAI-compatible `/chat/completions` requests    │
+│    from the agent down to the company's local GPU.          │
+│                 ▲                                           │
+│                 │                                           │
+│  [ NaelaoAgentDO / Reasoner Loop ]                          │
+│  • Selects: `model: "local/ollama/qwen2.5-coder:32b"`       │
+│  • Zero prompts sent to external cloud AI vendors!          │
+└─────────────────────────────────────────────────────────────┘
+```
+---
+### 2. How the User Connects Ollama in 60 Seconds
+#### Step 1: Generate Connect Token in Settings
+In `apps/shell` under **Space Settings $\rightarrow$ Local AI Runners**, the admin clicks **[Connect Local Ollama / vLLM]**. The system mints a short-lived token:
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 🦙 CONNECT LOCAL OLLAMA / ON-PREMISE GPU                                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ Run this command in the terminal of your GPU machine:                       │
+│                                                                             │
+│ $ npx avos-local connect \                                                  │
+│     --url wss://agents.yourplatform.com \                                   │
+│     --space space_102 \                                                     │
+│     --token nlt_a1b2c3d4e5f6... \                                           │
+│     --ollama http://localhost:11434                                         │
+│                                                                             │
+│ 🟢 Status: [ Connected to Local Workstation (NVIDIA RTX 4090) ]             │
+│ 📦 Discovered Models: `llama3.3:70b`, `qwen2.5-coder:32b`, `deepseek-r1:8b`│
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+#### Step 2: Auto-Discovery into the Model Selector
+When the local daemon connects, it queries `GET http://localhost:11434/api/tags` and sends the list of installed local models to `SpaceDO`.
+The company's **Model Selector (`ModelSelector.tsx`)** automatically updates across all team threads:
+```
+┌─────────────────────────────────────────────────────────────┐
+│ 🔮 Select Model for this Session:                           │
+├─────────────────────────────────────────────────────────────┤
+│ 🖥️ ON-PREMISE LOCAL MODELS (Zero Cloud Egress)              │
+│ • 🦙 Llama 3.3 70B (Local GPU Workstation)      [Active]  🟢 │
+│ • 💻 Qwen 2.5 Coder 32B (On-Premises Ollama)               │
+│ • 🧠 DeepSeek R1 8B (Private Air-Gapped)                    │
+├─────────────────────────────────────────────────────────────┤
+│ 🌐 FOUNDATION CLOUD MODELS (Optional)                       │
+│ • Claude 3.7 Sonnet (Extended Reasoning)                    │
+│ • Llama 3.3 70B (Cloudflare Edge)                           │
+└─────────────────────────────────────────────────────────────┘
+```
+---
+### 3. Implementation: Routing Prompts to the Local Tunnel
+In `workers/agents/src/shared/ai-client.ts`, when a model starts with `local/` or `ollama/`, route the request through `LocalTunnelDO`:
+```typescript
+// workers/agents/src/shared/ai-client.ts
+export async function dispatchLocalModelInference(
+  modelName: string,
+  requestBody: any,
+  env: Env,
+  ctx: { spaceId: string; userId: string }
+) {
+  // 1. Get the LocalTunnelDO stub for this space and user
+  const tunnelDOId = env.LOCAL_TUNNEL.idFromName(`${ctx.spaceId}:${ctx.userId}`);
+  const tunnelDO = env.LOCAL_TUNNEL.get(tunnelDOId);
+  // 2. Format as standard OpenAI-compatible completions for Ollama
+  const cleanModel = modelName.replace(/^(local\/|ollama\/)/, "");
+  const payload = {
+    ...requestBody,
+    model: cleanModel
+  };
+  // 3. Dispatch through the WebSocket tunnel to the on-premise GPU
+  const response = await tunnelDO.fetch("http://internal/exec", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      op: "ollama_chat",
+      params: payload
+    })
+  });
+  return await response.json();
+}
+```
+---
+### 4. The Local Bridge Client (`packages/local-agent/index.mjs`)
+The small Node.js CLI daemon running on the company's GPU machine:
+```javascript
+// packages/local-agent/index.mjs
+import WebSocket from "ws";
+export async function startLocalOllamaBridge({ url, spaceId, token, ollamaUrl = "http://localhost:11434" }) {
+  const ws = new WebSocket(`${url}/local-tunnel/connect?space=${spaceId}&token=${token}`);
+  ws.on("open", () => console.log("✔ Connected to AVOS Edge Tunnel. Local Ollama is active."));
+  ws.on("message", async (data) => {
+    const request = JSON.parse(data.toString());
+    if (request.op === "ollama_chat") {
+      try {
+        // Forward prompt to local Ollama instance on localhost:11434
+        const ollamaRes = await fetch(`${ollamaUrl}/v1/chat/completions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(request.params)
+        });
+        const result = await ollamaRes.json();
+        ws.send(JSON.stringify({ request_id: request.request_id, ok: true, result }));
+      } catch (err) {
+        ws.send(JSON.stringify({ request_id: request.request_id, ok: false, error: err.message }));
+      }
+    }
+  });
+}
+```
+---
+### 5. Enterprise Security: The "Air-Gapped Space" Lock
+In **Space Settings**, enterprise admins can enable **`Air-Gapped Mode`**:
+```typescript
+export interface EnterpriseCompliancePolicy {
+  airGappedOnly: boolean; // When true: ALL cloud AI APIs (Anthropic/OpenAI/Workers AI) are blocked
+  allowedLocalTunnels: string[]; // Whitelisted on-prem GPU machine IDs
+}
+```
+* **The Guarantee:** If `airGappedOnly === true`, the router and `NaelaoAgentDO` **physically refuse** to dispatch calls to any external cloud URL. If the local Ollama machine goes offline, the system halts with a security alert rather than silently falling back to a cloud model.
+---
+### Summary of What This Adds:
+1. **Zero Data Egress:** Enterprise law firms and hospitals can run your entire platform while keeping 100% of their prompts and data on their own local GPU hardware.
+2. **Zero API Token Bills:** Companies pay for their base AVOS workspace subscription ($99–$299/mo) and run **unlimited millions of tokens for $0 on their own hardware**.
+3. **Reuses Existing Codebase Primitives:** Leverages your existing `LocalTunnelDO.ts` and `local-agent` daemon, requiring less than 50 lines of new code to bridge local Ollama to Cloudflare edge agents.

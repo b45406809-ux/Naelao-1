@@ -1,0 +1,136 @@
+187 - 189
+Since this is universal we have eto make sure our naelao agent is universal users canan sort of configure it or atleast the instructions and so the same way we differentiate space assistant and project agents
+To make the **Naelao Agent truly universal**, you do not write separate agent engines for different use cases. 
+Instead, you use **ONE universal execution kernel (`NaelaoAgentDO`)** and differentiate agents through a **Declarative Configuration Hierarchy**. 
+Whether an agent is the **Autonomous 24/7 CEO (Space Assistant)**, a **Focused Coding Specialist (Project Agent)**, or a **Custom User-Built Agent (e.g., a Tax Law Auditor)**, they all share the exact same REPL loop, token compressor, and memory engine. They only differ in **Scope, Instructions, Tool Surface, and Trigger Cadence**.
+---
+### 1. The 4-Layer Universal Prompt Hierarchy
+To make any agent configurable without breaking the underlying Claude Code tool-calling discipline, the system prompt is assembled dynamically from 4 distinct layers:
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 1. UNIVERSAL OPERATING KERNEL (Immutable Engine Directives)                 │
+│    • Universal Claude Code rules: Use `Edit` for AST search & replace.     │
+│    • Never rewrite full files. Line-numbered `Read` with offset/limit.      │
+│    • In-flight `compact_context` on milestone completion. Exit-0 squashing. │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 2. BUSINESS CONTEXT (Living Enterprise Identity)                            │
+│    • Name, offering, pricing tiers, and setup status:                       │
+│      "You are operating for 'LexPulse Legal' (B2B legal cowork, $49/mo)."   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 3. AGENT ARCHETYPE & DOMAIN ROLE (Template Specification)                   │
+│    • Primary mission and domain persona:                                    │
+│      "You are the Lead Edge Developer / Customer Support Specialist."       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 4. USER CUSTOM INSTRUCTIONS & OVERRIDES (User Configurable via UI)         │
+│    • The founder/user's custom tweaks:                                      │
+│      "Always use TypeScript + Tailwind dark mode. Keep messages concise."   │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+---
+### 2. The Universal Agent Configuration Model (`AgentManifest`)
+Every agent on the platform is defined by this single, declarative TypeScript configuration:
+```typescript
+export interface UniversalAgentManifest {
+  id: string;                      // e.g., "naelao-agent" (Assistant) or "custom_tax_auditor"
+  name: string;                    // "Space Assistant" or "Senior Tax Analyst"
+  
+  // 1. SCOPING & FILESYSTEM BOUNDARY
+  // Space Assistant = Space-wide (`spaces/{spaceId}/workspace/`)
+  // Project Agent   = Project-scoped (`spaces/{spaceId}/projects/{projectId}/workspace/`)
+  scope: "SPACE_WIDE" | "PROJECT_BOUND";
+  projectId?: string;
+  // 2. ARCHETYPE ROLE & CAPABILITY FIREWALL
+  role: "DEV_OPERATOR" | "GROWTH_OPERATOR" | "CUSTOMER_SUPPORT" | "ARCHITECT_DELEGATE" | "CUSTOM";
+  // 3. INSTRUCTION & PROMPT LAYERS
+  prompts: {
+    systemPrompt: string;          // Role definition & task framing
+    instructions: string;          // Operating guidelines (agents.md)
+    userCustomInstructions?: string; // Founder's custom prompt overrides from the UI
+  };
+  // 4. TOOLSET & EXECUTION LADDER CEILING
+  capabilities: {
+    enabledPrebuilts: string[];    // e.g. ["r2-workspace", "code-exec", "memory", "web-search"]
+    installedPlugins: string[];    // e.g. ["plugin_legal_redline", "plugin_seo_linter"]
+    maxTier: 1 | 2 | 3 | 4 | 5;    // 1 (Isolate) to 5 (Linux Container)
+  };
+  // 5. AUTONOMY & HITL APPROVAL POSTURE
+  autonomy: {
+    approvalMode: "always_ask" | "gate_unless_listed" | "yolo";
+    autoApprovedActions: string[];
+    requiresApprovalFor: string[];
+  };
+  // 6. TRIGGER CADENCE (Proactive vs. Reactive)
+  triggers: {
+    proactiveHeartbeat: boolean;   // true for Space Assistant, false for project agents
+    cronSchedule?: string;         // e.g. "0 9 * * *" for daily reports
+    reactiveToThreads: boolean;    // true for project agents responding to user chat
+  };
+}
+```
+---
+### 3. How the Same Engine Differentiates Every Agent
+| Dimension | 🏛️ Space Assistant ("The CEO") | ⚡ Project Agent ("Claude Code Operator") | 🛠️ User-Configured Custom Agent |
+| :--- | :--- | :--- | :--- |
+| **Workspace Scope** | **Space-Wide** (`/workspace/`) | **Project-Bound** (`/projects/P1/workspace/`) | **User Choice** (Space or Project) |
+| **Trigger Cadence** | **Proactive:** Hourly ticks, daily revenue review cron, webhook triage | **Reactive:** User chat turns, @mentions, project file change events | **Configurable:** Cron, Webhook, or Reactive Chat |
+| **Role & Persona** | Business Operator / Orchestrator | Domain Specialist (Dev, Growth, Support) | User-defined custom prompt & tone |
+| **Tool Surface** | `project.create`, `thread.send`, `business_diagnostics`, `wallet` | `Bash`, `Read`, `Edit`, `Grep`, `Glob`, Domain Viewport plugins | User selects from prebuilt library & plugins |
+| **Ladder Ceiling** | Tier 2 (Orchestration & Isolate) | Tier 5 (Full Container for Dev; Tier 1 for Support) | User configures Max Tier (1–5) |
+| **Default Autonomy** | `gate_unless_listed` or `yolo` | Configured per project template | User toggles `always_ask` vs `yolo` |
+---
+### 4. How Users Configure This in the UI (`apps/shell`)
+In your Product Shell UI, users have full visual control over this universal configuration without writing code:
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ ⚙️ CONFIGURE AGENT: "Senior Contract Auditor"                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 📝 Custom Directives & Prompt Overrides:                                    │
+│ ┌─────────────────────────────────────────────────────────────────────────┐ │
+│ │ Always check California civil code. Enforce mutual indemnity clauses.   │ │
+│ │ Keep answers bulleted and cite specific clause numbers.                 │ │
+│ └─────────────────────────────────────────────────────────────────────────┘ │
+│                                                                             │
+│ 🛠️ Enabled Capabilities & Plugins:                                         │
+│ [x] Document Redline Canvas  [x] Vectorize Legal Search  [ ] Shell Terminal │
+│                                                                             │
+│ 🔒 Execution Ceiling & Permissions:                                         │
+│ ( ) Tier 1: In-Memory / Safe Reads Only (Customer-Facing Safe)              │
+│ (x) Tier 2: Cloudflare Isolates & Web Search                                │
+│ ( ) Tier 5: Full Linux Container Sandbox (Heavy Code Compiles)              │
+│                                                                             │
+│ 🚦 Autonomy Posture:                                                        │
+│ [ Always Ask Permission ]   [ Auto-Approve Routine Reads ]   [ Fully Auto ] │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+#### How the DO Executes the Unified Config:
+```typescript
+// Inside NaelaoAgentDO.ts (Building the Universal Prompt & Toolset)
+function assembleUniversalAgent(manifest: UniversalAgentManifest, businessContext: BusinessContext) {
+  // 1. Assemble 4-Layer Dynamic System Prompt
+  const systemPrompt = [
+    // Layer 1: Universal Engine Kernel
+    BASE_CLAUDE_CODE_REPL_RULES,
+    // Layer 2: Live Business Identity
+    renderBusinessBrief(businessContext),
+    // Layer 3: Archetype Role
+    manifest.prompts.systemPrompt,
+    // Layer 4: User/Founder Custom Instructions
+    manifest.prompts.userCustomInstructions ? `\n# FOUNDER CUSTOM DIRECTIVES\n${manifest.prompts.userCustomInstructions}` : ""
+  ].join("\n\n");
+  // 2. Hardware-Level Tool Stripping (Physical Firewall)
+  const sanitizedTools = sanitizePrebuiltListForRole(
+    manifest.role, 
+    manifest.capabilities.enabledPrebuilts
+  );
+  // 3. Workspace Scoping
+  const workspacePath = manifest.scope === "SPACE_WIDE" 
+    ? `spaces/${spaceId}/workspace/`
+    : `spaces/${spaceId}/projects/${manifest.projectId}/workspace/`;
+  return { systemPrompt, sanitizedTools, workspacePath, maxTier: manifest.capabilities.maxTier };
+}
+```
+---
+### Summary of What This Achieves
+1. **Zero Fragmentation:** You maintain **one single codebase** for all agents. The same `NaelaoAgentDO` powers the autonomous CEO, the developer coding an Astro site, the 24/7 WhatsApp support bot, and the user's custom legal auditor.
+2. **Infinite Customizability:** Users and templates can tweak instructions, prompts, tools, and autonomy levels freely without ever touching backend code.
+3. **Hardened Security by Construction:** A user or template can never accidentally give a customer support bot terminal access, because the `AgentFirewall` physically strips the tools based on the manifest's declared role.

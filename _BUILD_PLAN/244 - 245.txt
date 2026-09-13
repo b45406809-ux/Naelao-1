@@ -1,0 +1,118 @@
+244 -  245
+https://blog.cloudflare.com/ai-search-easier/
+https://blog.cloudflare.com/mcp-v2/
+What can these add to our platform 
+These two Cloudflare releases—**Cloudflare AI Search** and **The Next Generation of MCP (MCP SDK v2 & Stateless Streamable HTTP)**—bring key architectural upgrades to our platform.
+They replace hundreds of lines of custom RAG, vector chunking, and brittle MCP proxy code with **native, managed edge primitives that are faster, cheaper, and more reliable**.
+---
+### 1. What Cloudflare AI Search Adds to AVOS
+Cloudflare **AI Search** replaces the need to manually build chunking, embedding, Vectorize indexing, and BM25 reranking pipelines. It provides automated RAG with built-in metadata filtering and zero-cost embeddings/reranking on Workers AI.
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                       CLOUDFLARE AI SEARCH IN AVOS                          │
+├──────────────────────────────────────┬──────────────────────────────────────┤
+│ Before (Custom Code We Wrote)        │ Now with Cloudflare AI Search        │
+├──────────────────────────────────────┼──────────────────────────────────────┤
+│ • 500 lines of custom chunking, BM25,│ • **Automated Continuous Ingestion:** │
+│   and RRF logic in `packages/rag`.   │   Auto-indexes R2 workspace files and│
+│ • Manual Vectorize upsert loops.     │   documents with zero pipeline code. │
+│ • Separate embedding costs per chunk.│ • **Free Embeddings & Reranking:**   │
+│ • Custom endpoint routing.           │   Built-in when using Workers AI.    │
+│                                      │ • **Native `/mcp` & `/search` APIs:**│
+│                                      │   Every KB automatically exposes an  │
+│                                      │   MCP server for any agent to query. │
+└──────────────────────────────────────┴──────────────────────────────────────┘
+```
+#### Key Capabilities It Unlocks for Our Platform:
+1. **Zero-Code Company Knowledge Base Ingestion:**  
+   When a company uploads 500 PDFs or Notion exports into a project, AI Search automatically parses, chunks, embeds, and indexes them in the background with **zero manual trigger code**.
+2. **Every Project Becomes a Search Engine with a Branded `/search` & `/mcp` URL:**  
+   When a user creates a project (e.g., a Legal Cowork or SaaS documentation site), Cloudflare AI Search automatically provisions:
+   * A public/private **`https://docs.customerbrand.com/search`** endpoint for users.
+   * A native **`https://docs.customerbrand.com/mcp`** endpoint that external coding agents (Claude Code, Cursor) can query directly.
+3. **Instant "Google Search AI Mode" with Native Citations:**  
+   AI Search includes hybrid search (dense semantic + keyword BM25) and built-in reranking out of the box, returning numbered citation footnotes with sub-second latency.
+---
+### 2. What Cloudflare MCP v2 Adds to AVOS
+The **Next-Gen MCP (2026-07-28 Spec & SDK v2)** fixes the exact failure mode you experienced earlier with Composio (infinite discovery loops and connection dropouts) by replacing stateful HTTP+SSE with **Stateless Streamable HTTP**.
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         CLOUDFLARE MCP v2 IN AVOS                           │
+├──────────────────────────────────────┬──────────────────────────────────────┤
+│ Old MCP (v1 / Legacy SSE)            │ Next-Gen MCP v2 (Streamable HTTP)    │
+├──────────────────────────────────────┼──────────────────────────────────────┤
+│ ❌ Fragile stateful SSE connections  │ ✅ **Stateless Streamable HTTP:**    │
+│    that timeout or disconnect mid-run│    Fast, scalable, and 83% smaller.  │
+│ ❌ Open streaming required for HITL  │ ✅ **Native Elicitation Protocol:**  │
+│    approval gates.                   │    Suspends cleanly without polling. │
+│ ❌ Bloated client-server packages.   │ ✅ **`createMcpHandler` Factory:**   │
+│ ❌ Heavy discovery loops.            │    Runs in Durable Objects & Workers.│
+└──────────────────────────────────────┴──────────────────────────────────────┘
+```
+#### Key Capabilities It Unlocks for Our Platform:
+1. **Turn Every AVOS Business Workspace into an External MCP Server:**  
+   Using the new `createMcpHandler`, every project in your platform can expose a stateless `/mcp` endpoint. A founder can open **Claude Desktop, Cursor, or Claude Code on their laptop**, plug in `https://api.yourplatform.com/spaces/space_102/mcp`, and interact directly with their AVOS business workspace.
+2. **Elicitation Without Open Streams (Native HITL Approvals):**  
+   In MCP v2, when a tool requires human approval (like sending a payout or deleting a file), the MCP server emits an **elicitation request**. The agent suspends cleanly without keeping an HTTP connection open or burning compute, and resumes the moment the founder approves on WhatsApp or the dashboard.
+3. **WebMCP: In-Browser Client-Side Tools:**  
+   Using Cloudflare's new **WebMCP**, the live website preview iframe in `ProjectKindPanel.tsx` can directly expose DOM inspection and styling tools inside the browser to the agent without network hops.
+---
+### 3. How to Integrate Both into Our Codebase
+#### Step A: Upgrade `workers/knowledge` to Cloudflare AI Search
+Instead of writing custom BM25 and vector math in `packages/rag`, bind AI Search directly in `wrangler.toml`:
+```toml
+# workers/knowledge/wrangler.toml
+[[ai_search]]
+binding = "COMPANY_SEARCH"
+instance = "avos-knowledge-vault"
+```
+And in `workers/knowledge/src/index.ts`:
+```typescript
+// Querying company knowledge in 1 line with built-in hybrid search & reranking
+const searchResults = await env.COMPANY_SEARCH.query({
+  query: userPrompt,
+  filter: { space_id: spaceId, project_id: activeProjectId },
+  topK: 6
+});
+```
+---
+#### Step B: Upgrade `workers/mcp-hub` to MCP SDK v2 (`createMcpHandler`)
+Refactor our MCP server creation using the new stateless handler:
+```typescript
+// workers/mcp-hub/src/index.ts
+import { createMcpHandler } from "@cloudflare/mcp";
+export default {
+  async fetch(request: Request, env: Env) {
+    const url = new URL(request.url);
+    // Expose stateless Streamable HTTP endpoint at /mcp
+    if (url.pathname.endsWith("/mcp")) {
+      return createMcpHandler({
+        tools: {
+          searchKnowledge: {
+            description: "Query company knowledge vault with AI Search",
+            parameters: { query: { type: "string" } },
+            execute: async ({ query }) => env.COMPANY_SEARCH.query({ query })
+          },
+          readWorkspaceFile: {
+            description: "Read a file from the project's SQLite virtual filesystem",
+            parameters: { filePath: { type: "string" } },
+            execute: async ({ filePath }) => env.SPACES_WORKER.readFile(filePath)
+          }
+        },
+        // Native MCP v2 Elicitation for Human Approvals
+        onElicitation: async (action, params) => {
+          return await env.HITL_APPROVAL_DO.requestApproval(action, params);
+        }
+      })(request);
+    }
+  }
+};
+```
+---
+### Summary of Impact:
+| Subsystem | What AI Search & MCP v2 Do |
+| :--- | :--- |
+| **Knowledge Base (`workers/knowledge`)** | Deletes 500+ lines of custom chunking/vector boilerplate. Gives every company **automated ingestion, free embeddings, and branded `/search` endpoints**. |
+| **Connector Layer (`workers/mcp-hub`)** | Upgrades from brittle legacy SSE to **Stateless Streamable HTTP (`/mcp`)**, cutting package size by 83% and making tool calls 25% faster. |
+| **Human Approvals (`HITLApprovalDO`)** | Replaces polling loops with **MCP v2 Elicitation**, pausing tasks without keeping workers awake. |
+| **External Interoperability** | Allows users to connect their AVOS projects directly to **Claude Desktop, Cursor, or ChatGPT** via a single `/mcp` URL. |

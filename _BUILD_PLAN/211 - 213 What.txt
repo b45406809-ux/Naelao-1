@@ -1,0 +1,182 @@
+211 - 213
+What about dynamic workflows these are for running long running tasks and even crons and so on add a tier 
+For the record and learn I want it to learn from video like the opensource GitHub repo 
+### 1. The Updated 6-Tier Cloudflare Execution Ladder
+Integrating **Dynamic Workflows** gives your platform durable, multi-day background execution without holding open expensive sockets or burning worker CPU while waiting on external systems or cron schedules:
+```
+                                  ┌─────────────────────────────────────────────────────────────┐
+                                  │ TIER 6: Sandboxed Linux Container (ToolSandboxDO / Ubuntu)  │
+                                  │ • Full OS userland: npm install, compilers, Python binaries │
+                                  └──────────────────────────────▲──────────────────────────────┘
+                                                                 │ (Promote if native compilation needed)
+                                  ┌──────────────────────────────┴──────────────────────────────┐
+                                  │ TIER 5: Full Headless Chromium (Puppeteer / Browser Render) │
+                                  │ • Heavy browser: Visual QA snapshots, WebGL, Canvas, Bot-Def│
+                                  └──────────────────────────────▲──────────────────────────────┘
+                                                                 │ (Promote if visual QA / WebGL needed)
+                                  ┌──────────────────────────────┴──────────────────────────────┐
+                                  │ TIER 4: Lightweight Agent Browser (Cloudflare Kitesurf)     │
+                                  │ • 3–7x cheaper/faster: DOM text extraction & form fills     │
+                                  └──────────────────────────────▲──────────────────────────────┘
+                                                                 │ (Promote if web navigation needed)
+                                  ┌──────────────────────────────┴──────────────────────────────┐
+                                  │ TIER 3: Dynamic Workflows (Cloudflare Workflows / Cron Hub) │
+                                  │ • Durable multi-step runs, hours/days execution, sleep/pause│
+                                  │ • Step retry boundaries, scheduled crons without awake DOs │
+                                  └──────────────────────────────▲──────────────────────────────┘
+                                                                 │ (Promote if task is long-running/durable)
+                                  ┌──────────────────────────────┴──────────────────────────────┐
+                                  │ TIER 2: Dynamic Worker Loader (V8 Isolate Shell / TS Script)│
+                                  │ • Pure code execution, HTTP fetches, MCP orchestration      │
+                                  └──────────────────────────────▲──────────────────────────────┘
+                                                                 │ (Promote if script logic needed)
+┌────────────────────────────────────────────────────────────────┴──────────────────────────────┐
+│ TIER 1: Direct In-Memory Virtual FS (@cloudflare/computer / DO SQLite)                        │
+│ • Sub-millisecond Read, Edit (AST Search & Replace), Grep, Glob, just-bash                    │
+└───────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+---
+### How Tier 3 (Dynamic Workflows) Functions
+When an agent needs to execute a task that spans multiple hours or requires scheduled checks (e.g., *"Monitor this government bidding portal every 6 hours and send a summary on Friday"*), running a synchronous loop inside a Durable Object would waste compute budget.
+Instead, the agent compiles the task into a **Cloudflare Workflow (`ScriptRunWorkflow.ts`)**:
+1. **Step Durability & State Checkpoints:** Each workflow step (`step.do(...)`) automatically serializes its output to Cloudflare storage. If an external API errors or rate-limits, only that step retries—the rest of the pipeline does not restart.
+2. **Dormant Sleeping (`step.sleep`):** The workflow can pause for hours or days at **$0 compute cost**, waking up at the exact timestamp required.
+3. **Cron Triggers Without Awake DOs:** Scheduled jobs trigger directly from Cloudflare’s workflow scheduler rather than an awake background worker.
+```typescript
+// workers/agents/src/workflows/DynamicTaskWorkflow.ts
+import { WorkflowEntrypoint, WorkflowStep, WorkflowEvent } from "cloudflare:workers";
+export class DynamicTaskWorkflow extends WorkflowEntrypoint<Env, { scriptName: string; args: any }> {
+  async run(event: WorkflowEvent<{ scriptName: string; args: any }>, step: WorkflowStep) {
+    // Step 1: Execute scraping pass (Tier 4 Kitesurf)
+    const rawData = await step.do("scrape-portal", async () => {
+      return await executeKitesurfScrape(event.payload.args.targetUrl);
+    });
+    // Step 2: Sleep for 6 hours (Zero compute cost during wait)
+    await step.sleep("wait-for-update-window", "6 hours");
+    // Step 3: Compare diff and dispatch report
+    await step.do("compile-and-notify", async () => {
+      return await compareAndSendReport(rawData);
+    });
+  }
+}
+```
+---
+### 2. The "Video-to-Skill" Engine (Learning from Video Demonstrations)
+Similar to open-source demonstration agents (like OpenAdapt, Show-Me-How, and Video2Code), this engine allows a founder or operator to **upload a screen recording (Loom / MP4 / WebM) of themselves performing any complex workflow**. 
+The AI watches the video, tracks mouse clicks, keystrokes, and URL changes, transcribes audio commentary, and **synthesizes a permanent, parameterized TypeScript skill in your `SkillLibrary`**.
+```
+[ User uploads a 60-second screen recording (e.g., navigating an obscure vendor portal) ]
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 1. MULTIMODAL VIDEO INGESTION & DECOMPOSITION                               │
+│    • Audio Track ──► Workers AI Whisper (Transcribes spoken explanation).   │
+│    • Video Track ──► Keyframe sampling on scene changes & click events.     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 2. ACTION RECOGNITION & CORRELATION (Multimodal Vision LLM)                │
+│    • Detects DOM bounding boxes, active input fields, and button clicks.    │
+│    • Correlates voice instructions ("I'm pasting the invoice number here"). │
+│    • Extracts structured event trace:                                       │
+│      [Navigate -> Input(selector) -> Click(button) -> Extract(table)].      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 3. PARAMETERIZATION & CODE SYNTHESIS                                        │
+│    • Replaces hardcoded values with dynamic arguments:                      │
+│      `const { invoiceId, vendorEmail } = args;`                             │
+│    • Generates clean TypeScript: `export async function run(args, ctx)`.    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 4. SANDBOX VERIFICATION & REGISTRATION                                      │
+│    • Tests the synthesized code in Tier 4 Kitesurf sandbox.                 │
+│    • Persists `SCRIPT.md` + `code.ts` into the space's R2 Skill Library.    │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+---
+### 3. Implementation: The Video Distillation Prebuilt Tool
+Add the `skill.distill_from_video` operation to `workers/agents/src/script-engine/prebuilt/skill-manager.ts`:
+```typescript
+// workers/agents/src/script-engine/prebuilt/skill-manager.ts
+import { generateObject, generateText } from "ai";
+import { z } from "zod";
+export async function distillSkillFromVideo(
+  args: Record<string, unknown>,
+  ctx: PrebuiltOpContext
+) {
+  const videoR2Key = args["videoPath"] as string;
+  const skillName = args["skillName"] as string;
+  const description = args["description"] as string || `Automated skill learned from video: ${skillName}`;
+  // 1. Fetch video from R2 Workspace
+  const bucket = ctx.env.workspaceBucket || ctx.env.scriptsBucket;
+  const videoObj = await bucket.get(videoR2Key);
+  if (!videoObj) throw new Error(`Video file not found in workspace: ${videoR2Key}`);
+  // 2. Multimodal Action Extraction Pipeline
+  // Extracts ordered action sequence: navigation targets, selectors, typed inputs, and assertions
+  const { object: actionSequence } = await generateObject({
+    model: ctx.env.AI_GATEWAY("claude-3-7-sonnet-20250219"),
+    schema: z.object({
+      parameters: z.array(z.object({
+        name: z.string(),
+        type: z.string(),
+        description: z.string()
+      })),
+      steps: z.array(z.object({
+        actionType: z.enum(["NAVIGATE", "CLICK", "TYPE", "EXTRACT", "ASSERT", "BASH"]),
+        target: z.string().describe("URL, CSS selector, or command"),
+        valueExpression: z.string().describe("Dynamic parameter or static value"),
+        description: z.string()
+      }))
+    }),
+    prompt: `Analyze this recorded demonstration of '${skillName}'. 
+Identify the parameterizable inputs, DOM interactions, and logic flow required to replicate this exact task programmatically.`
+  });
+  // 3. Synthesize clean, hardened TypeScript code using universal primitives
+  const synthesizedTypeScript = `
+/**
+* Auto-Distilled Skill: ${skillName}
+* ${description}
+*/
+export async function run(args: Record<string, any>, ctx: any) {
+  ${actionSequence.parameters.map(p => `const ${p.name} = args["${p.name}"];`).join("\n  ")}
+  // Replay synthesized action timeline
+  ${actionSequence.steps.map(s => {
+    if (s.actionType === "NAVIGATE") return `await ctx.run("browser.navigate", { url: "${s.target}" });`;
+    if (s.actionType === "TYPE") return `await ctx.run("browser.type", { selector: "${s.target}", text: ${s.valueExpression} });`;
+    if (s.actionType === "CLICK") return `await ctx.run("browser.click", { selector: "${s.target}" });`;
+    if (s.actionType === "BASH") return `await ctx.run("Bash", { command: ${s.valueExpression} });`;
+    return `// ${s.description}`;
+  }).join("\n  ")}
+  return { ok: true, message: "Successfully executed learned skill: ${skillName}" };
+}
+`;
+  // 4. Save to Authoritative Skill Library in R2
+  const skill = await ctx.env.skillLibrary.create({
+    name: skillName,
+    code: synthesizedTypeScript,
+    metadata: {
+      description,
+      domain: "automation",
+      requires_tier: 4, // Tier 4 (Kitesurf/Browser)
+      origin: "distilled",
+      stability_score: 1.0,
+      parameters: actionSequence.parameters
+    }
+  });
+  return {
+    ok: true,
+    skillName: skill.name,
+    version: 1,
+    parameters: actionSequence.parameters,
+    message: `✔ Successfully learned and registered skill '${skillName}' from video demonstration.`
+  };
+}
+```
+---
+### 4. Real-World Use Case: How a Founder Uses This
+1. **Record a 60-Second Video:**  
+   The user opens their screen recorder, navigates to their municipal zoning portal, filters by "Commercial Permits", downloads a CSV, and says:  
+   > *"I'm searching for new permits in Miami, downloading the report, and filtering out residential projects."*
+2. **Drop into Workspace:**  
+   They upload `permit_demo.mp4` into their `growth_engine` project.
+3. **AI Learns the Skill:**  
+   The user types in chat:  
+   > *"Learn a new skill called `scrape_miami_permits` from `permit_demo.mp4` and schedule it as a Tier 3 Dynamic Workflow every Monday."*
+4. **Autonomous Execution Forever:**  
+   The agent distills the video into `code.ts`, verifies it in Kitesurf, registers it as a reusable skill, and schedules it inside **Tier 3 Dynamic Workflows** to run every week without anyone touching a keyboard again.

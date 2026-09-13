@@ -1,0 +1,75 @@
+190 - 192
+We said user gets their own space/business assistant that they connect their own channels like WhatsApp or telegram etc should this also be there in non autonomous business templates the cowork templates
+**YES, absolutely.** In fact, having WhatsApp and Telegram connected to non-autonomous / vertical cowork spaces is **one of your biggest competitive advantages over Harvey AI, Legora, and Claude Cowork.**
+Products like Harvey AI or desktop Claude are **trapped on a desktop browser**. A lawyer walking into a courtroom, a doctor doing hospital rounds, an architect on a construction site, or an investment banker in a taxi cannot easily open a 15-inch laptop to check a document.
+Giving every professional a **personal WhatsApp / Telegram channel to their firm's Cowork Space** turns the system into an on-the-go **Executive Chief of Staff**.
+---
+### 1. The 3 Killer Use Cases for Channels in Cowork Mode
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    COWORK MODE: THE MOBILE FIRM COPILOT                     │
+│                                                                             │
+│ [ Professional's Phone (WhatsApp / Telegram) ]                              │
+│                 │                                                           │
+│                 ├──► 1. Instant Document & Case RAG (Query on-the-go)       │
+│                 ├──► 2. Voice-to-Workspace Ingestion (Audio / PDF uploads)  │
+│                 └──► 3. One-Tap HITL Approvals (Review drafts & alerts)     │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+#### A. Instant Document & Case RAG (On-the-Go Querying)
+* **Lawyer in a courtroom:** Texts Telegram:  
+  > *"@LexPulse, what was the exact indemnification liability cap we agreed to in Section 4.2 of the Acme draft?"*  
+  * The Space Assistant searches the project's Vectorize RAG/SQLite virtual filesystem and replies on Telegram in 2 seconds with the exact clause and citation.
+* **PE Associate in a board meeting:**  
+  > *"What was the EBITDA margin adjustment for Company X in the Q3 memo?"*  
+  * The Assistant queries the financial project model and returns the exact figure.
+#### B. Mobile Document & Audio Ingestion (Voice Memos & PDFs)
+* **Doctor on hospital rounds:** Sends a 30-second WhatsApp voice note describing patient symptoms. The Assistant transcribes it, formats it into a standard SOAP note, and saves it into the patient's project workspace.
+* **Architect on a job site:** Snaps a photo of a foundation beam on WhatsApp. The Assistant checks the photo notes against the project's municipal permit requirements.
+* **Consultant forwarding a deck:** Forwards a 20-page PDF pitch deck via Telegram. The Assistant ingests it, extracts the financials, and updates the deal project journal.
+#### C. Instant One-Tap HITL Approvals (Human-in-the-Loop)
+Instead of forcing the professional to sit at a desktop to approve work:
+* When a paralegal subagent finishes drafting an NDA or an SEC filing, the partner gets a WhatsApp alert:
+  > *"I completed the initial redline draft for the Vanguard NDA. Detected 1 risky indemnity clause. [Approve Draft] or reply with edits."*
+* The partner replies: *"Change liability to mutual, then proceed"*, and the agent applies the AST patch immediately.
+---
+### 2. How Channels Operate: Autonomous Mode vs. Cowork Mode
+The same scan-to-connect QR code and channel pairing infrastructure (`workers/agents/src/launchpad/channel-pairing.ts`) works in both modes, but with different audiences:
+```
+┌─────────────────────────────────────────────────────────────┬─────────────────────────────────────────────────────────────┐
+│ 🚀 AUTONOMOUS VENTURE MODE                                   │ 💼 VERTICAL COWORK / COPILOT MODE                           │
+├─────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────┤
+│ • **Audience:** Outside Public Customers.                   │ • **Audience:** Internal Firm Professionals & Partners.     │
+│ • **Role:** 24/7 AI Sales Receptionist & Support Desk.      │ • **Role:** Private Mobile Executive Copilot.               │
+│ • **Example:** Customers text WhatsApp to book a haircut    │ • **Example:** Lawyer texts Telegram to query case law      │
+│   or ask for pricing.                                       │   and review contract clauses.                              │
+│ • **Access Control:** Restricted via `AgentFirewall` to     │ • **Access Control:** Authenticated to the verified         │
+│   Tier 1 / RAG tools (cannot access code or files).         │   professional's project permissions.                       │
+│ • **Proactive Triggers:** Nightly revenue recaps & alerts.  │ • **Proactive Triggers:** Filing deadlines & urgent alerts. │
+└─────────────────────────────────────────────────────────────┴─────────────────────────────────────────────────────────────┘
+```
+---
+### 3. How to Configure This in the Blueprint (`blueprint.json`)
+In your declarative blueprint, you simply specify what role the channel plays:
+```typescript
+export interface BusinessBlueprint {
+  id: "tpl_legal_cowork_lexpulse";
+  title: "LexPulse Legal Cowork Studio";
+  template_mode: "vertical_cowork";
+  // Channel Configuration
+  channel_config: {
+    // In Cowork mode, the channel acts as the Private Partner Copilot
+    channel_role: "PRIVATE_EXECUTIVE_COPILOT"; // vs "PUBLIC_CUSTOMER_BOT"
+    allowedChannels: ["telegram", "whatsapp", "slack"];
+    enableVoiceMemoTranscription: true;
+    enableDocumentIngestion: true;
+    notifyOnPendingApprovals: true; // Pings Telegram when a draft is ready for review
+  };
+  // Pre-configured projects & knowledge seeds...
+}
+```
+---
+### Summary
+**Keep channel connectivity for ALL templates.** 
+* In **Autonomous Venture templates**, WhatsApp/Telegram is how **outside customers** talk to the business.
+* In **Vertical Cowork templates**, WhatsApp/Telegram is how **busy professionals** direct their AI firm and access their files from anywhere in the world.

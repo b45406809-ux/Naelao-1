@@ -1,0 +1,298 @@
+271 -  276
+shared states like a booking clients calender that all projects will see
+voice agents for customers calls like grok voice (cauld be a project kind) 
+then voice to text like in Claude like whipserflow
+note that instead of trying to build all these from scratch just use what's already there esp from cloudflare 
+Here is how we implement **Shared Cross-Project State (Global Calendar/Bookings)**, **Voice Calling Agents (Grok Voice style)**, and **Instant Voice-to-Text (WhisperFlow style)** by leveraging **Cloudflare’s built-in edge primitives** without building complex infrastructure from scratch.
+---
+# 1. Shared Cross-Project State (The Space-Wide Calendar & Ledger)
+While project files are isolated (`spaces/{spaceId}/projects/{projectId}/...`), business facts like **Customer Bookings, Appointments, and Client CRM Records** must be visible across **all projects and agents simultaneously**.
+Since **`SpaceDO`** is already the single authoritative state actor for the entire business space, we host the **Universal Shared State Plane** directly inside `SpaceDO`'s SQLite database.
+```
+                                  ┌──────────────────────────────────────────────┐
+                                  │       SPACE-WIDE SHARED STATE (SpaceDO)      │
+                                  │      `space_calendar` & `shared_crm_state`   │
+                                  └──────────────────────┬───────────────────────┘
+                                                         │
+         ┌───────────────────────────────────────────────┼───────────────────────────────────────────────┐
+         ▼ (Book 3:00 PM Slot)                           ▼ (Read Schedule)                               ▼ (Notify Client)
+┌─────────────────────────────────┐             ┌─────────────────────────────────┐             ┌─────────────────────────────────┐
+│ 📞 Voice Call / WhatsApp Bot    │             │ ⚖️ Legal / Dev Workstation      │             │ 🏛️ Space Assistant (CEO)       │
+│ Project: `customer_bot`         │             │ Project: `doc_studio`           │             │ (Space-Wide Oversight)          │
+├─────────────────────────────────┤             ├─────────────────────────────────┤             ├─────────────────────────────────┤
+│ Customer calls or texts:        │             │ Lawyer drafts contract:         │             │ Morning Digest via Telegram:    │
+│ "Book consultation for Friday." │             │ Sees Alice booked for Friday;   │             │ "You have 3 consultations       │
+│ Writes atomic slot to SpaceDO.  │             │ links client file to calendar.  │             │  booked for today on calendar." │
+└─────────────────────────────────┘             └─────────────────────────────────┘             └─────────────────────────────────┘
+```
+### Database Schema in `SpaceDO.ts`:
+```sql
+-- SpaceDO.ts SQLite Migration
+CREATE TABLE IF NOT EXISTS space_calendar_events (
+  id TEXT PRIMARY KEY,
+  space_id TEXT NOT NULL,
+  created_by_project_id TEXT, -- e.g. "customer_bot" or "voice_agent"
+  client_name TEXT NOT NULL,
+  client_contact TEXT NOT NULL, -- phone/email
+  event_type TEXT NOT NULL,     -- "consultation", "inspection", "support_call"
+  start_time TEXT NOT NULL,     -- ISO-8601 UTC
+  end_time TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'CONFIRMED' CHECK (status IN ('CONFIRMED', 'CANCELLED', 'RESCHEDULED')),
+  metadata_json TEXT DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+```
+### The Universal `ctx.space.calendar` SDK Method:
+Every project agent (Developer, Support, Voice Agent) can query or book slots in **1 turn**:
+```typescript
+// Any agent can run this inside Tier 2 CodeMode or tool calls:
+export async function bookClientAppointment(clientName: string, time: string, ctx: any) {
+  // 1. Check for double-booking across the whole business
+  const existing = await ctx.space.calendar.checkAvailability(time);
+  if (!existing.available) {
+    return { ok: false, error: "Slot already booked. Suggest alternate time." };
+  }
+  // 2. Atomically book slot in SpaceDO
+  await ctx.space.calendar.bookSlot({
+    clientName,
+    startTime: time,
+    eventType: "consultation"
+  });
+  // 3. WsHubDO automatically broadcasts `calendar.booked` to all UI dashboards!
+  return { ok: true, message: `Appointment confirmed for ${clientName} at ${time}.` };
+}
+```
+---
+# 2. `kind: "voice_agent"` (Grok Voice / Telephony Agent at the Edge)
+Instead of using expensive, complex third-party stacks, we build real-time duplex voice agents using **Cloudflare Calls (WebRTC SFU at the edge)** + **Cloudflare Workers AI**:
+```
+[ Customer Calls Inbound via Phone / WebRTC ]
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 1. AUDIO INGRESS (Cloudflare Calls / Twilio WebRTC Edge)                    │
+│    Ultra-low latency audio stream received directly at Cloudflare edge.     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 2. REAL-TIME SPEECH-TO-TEXT (Cloudflare Workers AI @cf/openai/whisper)      │
+│    Converts streaming user speech into text in sub-200ms.                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 3. ULTRA-FAST STREAMING LLM (Workers AI Llama 3.3 70B / Groq)               │
+│    Processes intent: "I want to schedule a dental cleaning for Thursday."   │
+│    Invokes `ctx.space.calendar.bookSlot()` atomically.                      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 4. STREAMING TEXT-TO-SPEECH (Edge TTS / Kokoro / Cartesia / ElevenLabs)     │
+│    Synthesizes natural audio stream back to the caller over WebRTC.         │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+### The `kind: "voice_agent"` Definition in `business-feature-kinds.ts`:
+```typescript
+export const VOICE_AGENT_KIND: BusinessFeatureKind = {
+  kind: "voice_agent",
+  label: "Voice Telephony & Call Desk",
+  description: "24/7 AI voice phone receptionist powered by Cloudflare Calls and WebRTC.",
+  singleton: false,
+  minCreationRole: "admin",
+  autoProvisionable: true,
+  viewportComponent: "VoiceAgentCanvas", // Call dashboard + real-time waveform
+  allowedLadderTiers: [1, 2],           // Safe RAG + Calendar tools only
+  domainSystemPrompt: `You are a professional Voice Receptionist speaking over a live phone call. 
+Rules:
+1. Speak in short, conversational sentences (1-2 sentences max per turn).
+2. Do not use markdown, emojis, or bullet points in your speech output.
+3. Check calendar availability and confirm bookings immediately.`
+};
+```
+### The UI Viewport (`VoiceAgentCanvas` in `ProjectKindPanel.tsx`):
+Renders a live call center dashboard showing active calls, real-time speech waveforms, live transcripts, and phone number routing settings.
+---
+# 3. Native Voice-to-Text in ComposerDock (WhisperFlow Style)
+To give users a voice dictation experience (like Claude or WhisperFlow) in the chat bar, **`apps/shell` captures audio directly from the browser microphone and transcribes it at the edge using Workers AI `@cf/openai/whisper` for $0 compute cost.**
+```
+[ User presses Mic icon 🎙️ in ComposerDock and speaks ]
+                          │
+                          ▼ (Browser MediaRecorder captures 5s audio chunk)
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 1. POST /api/voice/transcribe (To Cloudflare Router Worker)                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 2. RUN WORKERS AI WHISPER MODEL                                             │
+│    `const res = await env.AI.run("@cf/openai/whisper", { audio: buffer })` │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 3. INSTANT TRANSCRIPTION INSERTION                                          │
+│    The transcribed text automatically types into the chat message box!      │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+### Implementation:
+#### A. The Cloudflare Edge Transcription Route (`workers/router/src/index.ts`):
+```typescript
+// workers/router/src/index.ts
+app.post("/v1/voice/transcribe", async (c) => {
+  const formData = await c.req.formData();
+  const audioFile = formData.get("audio") as File;
+  if (!audioFile) return c.json({ error: "No audio payload" }, 400);
+  const arrayBuffer = await audioFile.arrayBuffer();
+  const audioBytes = [...new Uint8Array(arrayBuffer)];
+  // Run Cloudflare's edge-native Whisper model (Included in Workers AI)
+  const response = await c.env.AI.run("@cf/openai/whisper", {
+    audio: audioBytes
+  });
+  return c.json({ ok: true, text: response.text });
+});
+```
+#### B. The Microphone Button in `apps/shell/src/components/ComposerDock.tsx`:
+```tsx
+// Inside ComposerDock.tsx
+export function VoiceInputButton({ onTranscribed }: { onTranscribed: (text: string) => void }) {
+  const [recording, setRecording] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const startRecording = async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mediaRecorder = new MediaRecorder(stream);
+    const audioChunks: Blob[] = [];
+    mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
+    mediaRecorder.onstop = async () => {
+      const audioBlob = new Blob(audioChunks, { type: "audio/webm" });
+      const formData = new FormData();
+      formData.append("audio", audioBlob);
+      // Send to our Cloudflare edge Whisper endpoint
+      const res = await fetch("/v1/voice/transcribe", { method: "POST", body: formData });
+      const data = await res.json() as any;
+      if (data.text) onTranscribed(data.text);
+      setRecording(false);
+    };
+    mediaRecorder.start();
+    mediaRecorderRef.current = mediaRecorder;
+    setRecording(true);
+  };
+  const stopRecording = () => {
+    mediaRecorderRef.current?.stop();
+  };
+  return (
+    <button
+      type="button"
+      className={`dock-btn ${recording ? "recording-pulse" : ""}`}
+      onClick={recording ? stopRecording : startRecording}
+      title={recording ? "Click to stop recording" : "Voice dictation (WhisperFlow)"}
+      style={{ color: recording ? "var(--danger, #ef4444)" : "var(--text3)" }}
+    >
+      🎙️ {recording && <span style={{ fontSize: "11px", marginLeft: "4px" }}>Listening...</span>}
+    </button>
+  );
+}
+```
+---
+# 4. How the Entire Flow Works Together
+Here is a real-world scenario demonstrating how these three features connect across the platform:
+1. **Customer Inbound Voice Call (`kind: "voice_agent"`):**  
+   A client calls the clinic's phone number. The Cloudflare Calls edge agent answers, checks doctor availability, and books a 3:00 PM appointment for *"John Doe"*.
+2. **Atomic Shared State Write (`SpaceDO`):**  
+   The voice agent writes to `space_calendar_events`. Instantly, `WsHubDO` broadcasts the event.
+3. **Cross-Project Awareness (`doc_studio` & `ops_dispatcher`):**  
+   The clinic's doctor opens their **Document Studio (`doc_studio`)** workstation on desktop. The 3:00 PM appointment is already populated in their patient schedule panel.
+4. **Voice-to-Text Dictation (`ComposerDock`):**  
+   The doctor clicks the 🎙️ **Voice Button** in chat and says:  
+   > *"Draft John Doe's clinical pre-assessment chart for his 3:00 PM appointment."*  
+   Workers AI Whisper transcribes it in 300ms, and the AI medical agent begins co-drafting the file immediately.
+---
+### Summary of What This Adds:
+1. **Space-Wide Shared Calendar & State:** Hosted in `SpaceDO` SQLite; ensures that appointments, leads, and customer states are shared seamlessly across all project workstations without data silos.
+2. **`kind: "voice_agent"`:** Deploys 24/7 AI phone receptionists using Cloudflare Calls (WebRTC) and Workers AI with zero external server infrastructure.
+3. **Built-in Voice Dictation:** Adds native WhisperFlow-style voice-to-text directly inside the chat composer dock powered by Cloudflare's free edge Whisper model.
+B7t since we have space wide mcp connector there is no need that means every project has access to the same mcp calendar. But we have to let agents know difference between space shared connector vs space wide user connect vs project specific
+Establishing a clear **3-Tier Connector Scope Model** prevents cross-user account bleed and ensures the agent never books a public customer onto a founder’s personal calendar by accident.
+By annotating tool definitions with explicit **Scope Provenance**, the agent immediately understands whether a tool acts on behalf of the **Whole Company**, a **Specific Human Member**, or a **Single Project Container**.
+---
+### 1. The 3-Tier Connector Scope Taxonomy
+```
+                                  ┌──────────────────────────────────────────────┐
+                                  │           MCP CONNECTOR SCOPE MODEL          │
+                                  └──────────────────────┬───────────────────────┘
+                                                         │
+         ┌───────────────────────────────────────────────┼───────────────────────────────────────────────┐
+         ▼                                               ▼                                               ▼
+┌─────────────────────────────────┐             ┌─────────────────────────────────┐             ┌─────────────────────────────────┐
+│ 🏢 1. SPACE-SHARED CONNECTOR    │             │ 👤 2. USER-PERSONAL CONNECTOR   │             │ 📁 3. PROJECT-SPECIFIC CONNECTOR│
+│ `scope: "space_shared"`         │             │ `scope: "user_personal"`        │             │ `scope: "project_bound"`        │
+├─────────────────────────────────┤             ├─────────────────────────────────┤             ├─────────────────────────────────┤
+│ • **Owner:** Company / Business │             │ • **Owner:** Individual Member  │             │ • **Owner:** Specific Project   │
+│   (Connected once by Admin).    │             │   (Connected by Alice/Bob).     │             │   (e.g., Customer Bot project). │
+│ • **Examples:**                 │             │ • **Examples:**                 │             │ • **Examples:**                 │
+│   - Official Company Calendar   │             │   - Alice's Private Calendar    │             │   - Clinic WhatsApp Phone Number│
+│   - Corporate Stripe Treasury   │             │   - Bob's Personal GitHub Token │   - Discord Support Channel Bot │
+│   - Company-wide Slack Hub      │             │   - Sarah's Personal Gmail      │   - Specific Client Data Room   │
+│ • **Access:** Open to all       │             │ • **Access:** STRICTLY locked   │ • **Access:** Restricted ONLY   │
+│   company projects and agents.  │             │   to runs on that user's behalf.│   to threads inside this project│
+└─────────────────────────────────┘             └─────────────────────────────────┘             └─────────────────────────────────┘
+```
+---
+### 2. How the Agent Distinguishes Scopes in its Tool Schema
+Instead of giving the model an ambiguous tool like `create_calendar_event` with no provenance, the **Tool Surface (`tool-surface.ts`)** injects **explicit scope prefixes and descriptions**:
+```typescript
+// How tools are formatted in the Reasoner Prompt
+{
+  // 🏢 1. Space-Shared Tool (Default Company State)
+  "mcp.company_calendar.create_event": {
+    "scope": "BUSINESS_SHARED",
+    "description": "[Company Shared] Book event on the official company-wide schedule. Visible to all team members.",
+    "parameters": { "title": "string", "startTime": "string", "clientEmail": "string" }
+  },
+  // 👤 2. User-Personal Tool (Active only when acting for Alice)
+  "mcp.alice_calendar.create_event": {
+    "scope": "PERSONAL_USER",
+    "description": "[Personal: Alice] Book event directly on Alice's private calendar. Private to Alice.",
+    "parameters": { "title": "string", "startTime": "string" }
+  },
+  // 📁 3. Project-Specific Tool (Active only in Project: Customer Support Bot)
+  "mcp.inbound_support_bot.send_whatsapp": {
+    "scope": "PROJECT_BOUND",
+    "description": "[Project: Customer Bot] Send official WhatsApp message from the +1-800 clinic business number.",
+    "parameters": { "recipientPhone": "string", "message": "string" }
+  }
+}
+```
+---
+### 3. Clear Intent Decision Rules for the Agent
+Add these operating directives to the agent's invariant prompt (`profiles.ts` / `system-prompt.md`):
+```markdown
+# CONNECTOR SCOPE OPERATING RULES
+1. Public Client Bookings & Company Schedules:
+   - When an outside client or customer is booking an appointment, ALWAYS use the `[BUSINESS_SHARED]` calendar or project tool.
+   - Never book public customer appointments on an individual member's `[PERSONAL_USER]` calendar unless the user explicitly commands: "Book this on my personal calendar."
+2. Personal Tasks & 1-on-1 Consultations:
+   - When a signed-in team member says: "Block 2 hours on my calendar for deep work" or "Check my unread emails", select the `[PERSONAL_USER]` tool bound to that member.
+3. Project-Specific Telephony & Customer Desks:
+   - When sending WhatsApp/Discord replies to outside customers, ALWAYS use the `[PROJECT_BOUND]` connector matching that project.
+```
+---
+### 4. Hardware-Level Cryptographic Security (Zero Leaks)
+The security is not just an advisory prompt instruction; it is **enforced at the Cloudflare Worker credential boundary**:
+```typescript
+// workers/credentials/src/index.ts (resolveCredential hierarchy)
+export async function resolveCredentialForRun(
+  spaceId: string,
+  connectorName: string,
+  runContext: { actingUserId?: string; projectId?: string; isSystemCron?: boolean }
+) {
+  // RULE 1: System Crons & Heartbeats CANNOT access Personal Credentials
+  if (runContext.isSystemCron && !runContext.actingUserId) {
+    // Falls back strictly to Space-Shared row (scope = 'space')
+    return await fetchSpaceSharedCredential(spaceId, connectorName);
+  }
+  // RULE 2: Project-Bound Connectors are checked against project_id
+  if (runContext.projectId) {
+    const projectCred = await fetchProjectBoundCredential(spaceId, runContext.projectId, connectorName);
+    if (projectCred) return projectCred;
+  }
+  // RULE 3: Personal Credentials require exact matching User ID
+  if (runContext.actingUserId) {
+    const personalCred = await fetchUserPersonalCredential(spaceId, runContext.actingUserId, connectorName);
+    if (personalCred) return personalCred;
+  }
+  // Default fallback: Space-Shared Credential
+  return await fetchSpaceSharedCredential(spaceId, connectorName);
+}
+```
+---
+### Summary of What This Solves:
+1. **No Shared-Calendar Confusion:** The agent knows that `mcp.company_calendar` updates the **SpaceDO global calendar table** visible to all projects, while `mcp.personal_calendar` only touches the user's private schedule.
+2. **Prevents Autonomous Identity Hijacking:** An unattended 2:00 AM background cron cannot accidentally use Alice’s personal Gmail account to email a client, because personal credentials are cryptographically inaccessible without an active `actingUserId` session.
+3. **Clean Project Sandboxing:** Customer-facing WhatsApp numbers and Discord bots are bounded to their specific `customer_bot` projects, keeping company-wide and personal communication channels completely separated.

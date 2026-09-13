@@ -1,0 +1,121 @@
+196 - 198
+what if we add a project kind (finetuning/ training on company data) given huge chunk of docs it can use a small model to convert all that unstructured data to llm traing data and the agent is like autoresearcher agent it will finetune a model for the company then they can use it in the company s llm so after training and tests by the autoresearcher the model shows up in other models list and company members can use it. And since we use cloudflare we can leverage cloudflare s tech for all this like finetune,  infrarence hosting etc. 
+Adding a **`kind: "model_studio"` (Enterprise Fine-Tuning & Auto-Researcher)** project kind is a high-value enterprise capability.
+It transforms your platform from simply *prompting* models to allowing companies to **train, evaluate, and deploy their own proprietary AI models on their private company data**—all hosted serverlessly on Cloudflare using **Workers AI LoRA (Low-Rank Adaptation)**.
+---
+### 1. The End-to-End Auto-Researcher Pipeline
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    THE AUTO-RESEARCHER TRAINING ENGINE                      │
+│                                                                             │
+│ 1. [Ingestion]         Upload 500 PDFs, past tickets, Notion exports, docs  │
+│                               │                                             │
+│ 2. [Edge Synthesis]    Workers AI (Llama 3.2 3B) converts unstructured text │
+│                        into 10,000 high-quality JSONL instruction pairs:    │
+│                        `{"prompt": "...", "completion": "..."}`             │
+│                               │                                             │
+│ 3. [Auto-Researcher]   Agent optimizes hyperparameters & trains LoRA        │
+│                        adapter weights on Cloudflare Workers AI             │
+│                               │                                             │
+│ 4. [Automated Eval]    Runs benchmark test cases (Base 8B vs Fine-Tuned 8B) │
+│                        Verifies hallucination drop & accuracy gains         │
+│                               │                                             │
+│ 5. [Model Registry]    Model is registered as `custom/acme-support-v1`      │
+│                        Instantly appears in the Model Selector for team!    │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+---
+### 2. How Cloudflare Infrastructure Powers This at Low Cost
+You do not need a dedicated $10,000/month GPU server. You leverage Cloudflare’s native stack:
+1. **R2 Training Buckets:** The raw unstructured documents and the synthesized `dataset.jsonl` files live in your project's R2 workspace.
+2. **Workers AI Edge Synthesis:** Lightweight models (`@cf/meta/llama-3.2-3b-instruct`) run in parallel isolates to clean, deduplicate, and format raw text into clean training prompt-completion pairs.
+3. **Cloudflare Workers AI LoRA Adapters:** Instead of training a 70B model from scratch, the system trains a **LoRA adapter (typically 20MB–100MB)** on top of base models like Llama 3.1 8B. Cloudflare loads these adapters dynamically on their edge GPUs at inference time.
+4. **Cloudflare Workflows (`ModelTrainingWorkflow.ts`):** Manages the multi-hour training, loss-curve monitoring, and automated benchmark scoring without connection timeouts.
+5. **AI Gateway Integration:** Once registered, AI Gateway routes team prompts directly to the base model + custom LoRA adapter transparently.
+---
+### 3. The `kind: "model_studio"` Specification
+Add this to `packages/events/src/business-feature-kinds.ts`:
+```typescript
+export const MODEL_STUDIO_KIND: BusinessFeatureKind = {
+  kind: "model_studio",
+  label: "Model Training & Auto-Researcher Studio",
+  description: "Convert company documentation into synthetic training data, fine-tune custom LoRA models, and deploy to your team's model picker.",
+  singleton: false,
+  minCreationRole: "admin",
+  autoProvisionable: false,
+  viewportComponent: "ModelStudioCanvas", // Dedicated UI for dataset & loss curves
+  allowedLadderTiers: [1, 2, 5],           // Isolate data prep -> Container/GPU training
+  domainSystemPrompt: `You are an Auto-Researcher ML Engineer. 
+Your goal is to parse company documentation, synthesize clean training/eval pairs, 
+evaluate model accuracy, and register fine-tuned models for the company.`,
+  linterRules: ["jsonl-format-check", "dataset-leakage-guard", "pii-scrubber"]
+};
+```
+---
+### 4. The UI Canvas Viewport (`ModelStudioCanvas`)
+Inside `apps/shell/src/components/ProjectKindPanel.tsx`, projects of `kind: "model_studio"` render a dedicated **ML Research & Training Viewport**:
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 🧠 MODEL STUDIO: "Acme Customer Support Llama-8B (v1.2)"                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 📊 Training Status: [ COMPLETED & DEPLOYED ]       🎯 Eval Accuracy: 96.4% │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 📁 Dataset Pipeline:                                                        │
+│ • Raw Ingested Documents: 142 files (PDFs, Markdown, Zendesk CSVs)          │
+│ • Synthesized Training Pairs: 8,420 JSONL prompt-completion pairs           │
+│ • Validation Split: 1,000 test cases (Zero contamination)                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 📈 Training Loss Curve:                                                     │
+│   Loss: 2.4 ──► 1.8 ──► 1.1 ──► 0.42 (Converged at Epoch 3)                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 🧪 Side-by-Side Verification Playground:                                    │
+│ ┌──────────────────────────────────┬──────────────────────────────────────┐ │
+│ │ Base Llama 3.1 8B (Default)      │ Your Custom Fine-Tuned Model (v1.2)  │ │
+│ ├──────────────────────────────────┼──────────────────────────────────────┤ │
+│ │ "Our refund policy is generally  │ "Per Acme Policy #402, enterprise    │ │
+│ │  30 days depending on terms..."  │  subscriptions have a 14-day SLA..." │ │
+│ └──────────────────────────────────┴──────────────────────────────────────┘ │
+│                                                                             │
+│ [x] Published to Company Model Picker (Available across all team threads)   │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+---
+### 5. How Custom Models Appear in the Team's Model Selector
+Once the Auto-Researcher agent finishes training and passes evaluation benchmarks, it writes the custom model metadata into `SpaceDO` SQLite.
+The platform's **Model Selector (`ModelSelector.tsx`)** automatically merges platform models with the company's fine-tuned models:
+```
+┌─────────────────────────────────────────────────────────────┐
+│ 🔮 Select Model for this Session:                           │
+├─────────────────────────────────────────────────────────────┤
+│ 🌟 COMPANY FINE-TUNED MODELS (Private & Custom)             │
+│ • 🧠 Acme Support Llama-8B v1.2 (Trained on 140 docs)       │
+│ • ⚖️ Acme Legal Redline Specialist (Trained on M&A terms)   │
+├─────────────────────────────────────────────────────────────┤
+│ 🌐 FOUNDATION EDGE MODELS                                   │
+│ • Claude 3.7 Sonnet (Extended Reasoning)                    │
+│ • Llama 3.3 70B (Fast Edge Default)                         │
+│ • Gemini 1.5 Flash (BYOK)                                   │
+└─────────────────────────────────────────────────────────────┘
+```
+#### How the Reasoner Routes to the Custom Model:
+```typescript
+// Inside workers/agents/src/shared/ai-client.ts
+if (model.startsWith("custom/")) {
+  const loraAdapterId = resolveLoraIdFromSpace(model, ctx.spaceId);
+  
+  // Cloudflare Workers AI LoRA dynamic loading
+  return {
+    model: "@cf/meta/llama-3.1-8b-instruct",
+    lora: loraAdapterId // Injects company adapter weights at edge runtime!
+  };
+}
+```
+---
+### 6. Pre-Configured Templates for this Kind
+Users or enterprise admins can stamp ready-to-use **Model Studio Project Templates** in 1 click:
+1. 📋 **Support Desk Knowledge Distiller:** Converts messy customer service logs and FAQ PDFs into a dedicated Tier-1 support model with company tone.
+2. 📋 **Legal & Contract Clause Specialist:** Trains an 8B model to recognize non-standard liability terms based on the firm's past negotiated redlines.
+3. 📋 **Internal API & Codebase Assistant:** Ingests internal engineering docs and TypeScript SDKs to produce an internal developer autocomplete copilot.
+### Why this is a massive differentiator:
+* Traditional fine-tuning platforms (like Scale AI or bespoke Python scripts) require data engineering teams, GPU provisioning, and manual server deployments.
+* In your platform, a founder or team member simply **drags their files into the project**, and the **Auto-Researcher Agent handles data synthesis, LoRA fine-tuning on Cloudflare, and automated deployment** in one single workspace.
