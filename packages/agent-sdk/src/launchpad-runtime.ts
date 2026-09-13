@@ -1,0 +1,343 @@
+/**
+ * Launchpad workspace runtime (AVOS build plan features 1-20).
+ *
+ * This module contains policy and orchestration, while Cloudflare-specific implementations
+ * (Durable Object SQL, Artifacts, Browser Rendering, Workflows and Containers) are adapters.
+ * Keeping those seams explicit makes the rules testable and prevents scripts from selecting
+ * infrastructure or receiving credentials.
+ */
+
+export const LAUNCHPAD_SPACE_TYPE = "launchpad" as const;
+export const WORKSPACE_ROOT = "/workspace" as const;
+export const AVOS_ROOT = "/.avos" as const;
+export const CONTAINER_IDLE_TIMEOUT_MS = 60_000;
+
+export type SpaceDepth = 0 | 1;
+export type SpaceRole = "owner" | "admin" | "member";
+export type ProjectVisibility = "public" | "private";
+
+export interface LaunchpadSpace {
+  id: string;
+  type: typeof LAUNCHPAD_SPACE_TYPE;
+  depth: SpaceDepth;
+  parentId: string | null;
+}
+
+/** Enforces the finalized two-level hierarchy and the single-SpaceType decision. */
+export function defineLaunchpadSpace(
+  input: Omit<LaunchpadSpace, "type">
+): LaunchpadSpace {
+  if (input.depth === 0 && input.parentId !== null)
+    throw new Error("Root spaces cannot have a parent");
+  if (input.depth === 1 && !input.parentId)
+    throw new Error("Department spaces require a parent");
+  return { ...input, type: LAUNCHPAD_SPACE_TYPE };
+}
+
+export interface SpaceAccessSubject {
+  userId: string;
+  /** Membership in the requested space. */
+  role?: SpaceRole;
+  /** Role in the direct parent, when the requested space is a department. */
+  parentRole?: SpaceRole;
+}
+
+export type SpaceAction = "read" | "manage";
+
+/** Parent owners/admins oversee children; membership never flows upward or sideways. */
+export function canAccessSpace(
+  space: LaunchpadSpace,
+  subject: SpaceAccessSubject,
+  action: SpaceAction
+): boolean {
+  if (subject.role === "owner" || subject.role === "admin") return true;
+  if (action === "read" && subject.role === "member") return true;
+  return (
+    space.depth === 1 &&
+    (subject.parentRole === "owner" || subject.parentRole === "admin")
+  );
+}
+
+export interface ProjectAccess {
+  visibility: ProjectVisibility;
+  isSpaceMember: boolean;
+  projectRole?: "owner" | "editor" | "viewer";
+  isSpaceAdmin?: boolean;
+}
+
+/** A denied private project is intentionally indistinguishable from a missing project. */
+export function authorizeProject(
+  access: ProjectAccess
+): { allowed: true } | { allowed: false; status: 404 } {
+  const allowed =
+    access.isSpaceMember &&
+    (access.visibility === "public" ||
+      Boolean(access.projectRole) ||
+      access.isSpaceAdmin === true);
+  return allowed ? { allowed: true } : { allowed: false, status: 404 };
+}
+
+export interface ProjectAutomation {
+  id: string;
+  projectId: string;
+  kind: "workflow" | "cron";
+  entrypoint: string;
+}
+
+/** Automations cannot exist at the space root. */
+export function defineProjectAutomation(
+  input: ProjectAutomation
+): ProjectAutomation {
+  if (!input.projectId.trim())
+    throw new Error("Automation must be anchored to a project");
+  if (!input.entrypoint.trim())
+    throw new Error("Automation entrypoint is required");
+  return { ...input };
+}
+
+// ── Artifact repository and filesystem ──────────────────────────────────────
+
+export interface CommitMetadata {
+  agentRole: string;
+  userGoal: string;
+  taskId: string;
+  rationale: string;
+}
+
+export interface ArtifactCommit {
+  oid: string;
+  parentOid?: string;
+  message: string;
+  metadata: CommitMetadata;
+  createdAt: number;
+}
+
+/** Adapter implemented by the Artifacts Git Zig/WASM Durable Object. */
+export interface ArtifactRepository {
+  read(path: string): Promise<Uint8Array | null>;
+  write(path: string, value: Uint8Array): Promise<void>;
+  commit(message: string, metadata: CommitMetadata): Promise<ArtifactCommit>;
+  branch(name: string, fromOid?: string): Promise<void>;
+  checkout(ref: string): Promise<void>;
+  head(): Promise<string>;
+  diff(fromOid: string, toOid?: string): Promise<string>;
+}
+
+export function normalizeWorkspacePath(path: string): string {
+  const absolute = path.startsWith("/") ? path : `${WORKSPACE_ROOT}/${path}`;
+  const parts: string[] = [];
+  for (const part of absolute.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") parts.pop();
+    else parts.push(part);
+  }
+  const normalized = `/${parts.join("/")}`;
+  if (
+    normalized !== WORKSPACE_ROOT &&
+    !normalized.startsWith(`${WORKSPACE_ROOT}/`) &&
+    normalized !== AVOS_ROOT &&
+    !normalized.startsWith(`${AVOS_ROOT}/`)
+  ) {
+    throw new Error("Path must be inside /workspace or /.avos");
+  }
+  return normalized;
+}
+
+export function isGitTracked(path: string): boolean {
+  const normalized = normalizeWorkspacePath(path);
+  return (
+    normalized === WORKSPACE_ROOT || normalized.startsWith(`${WORKSPACE_ROOT}/`)
+  );
+}
+
+export interface ArtifactFS {
+  /** Metadata only; content is fetched by read(), providing lazy hydration. */
+  list(
+    path: string
+  ): Promise<Array<{ path: string; size: number; oid: string }>>;
+  read(path: string): Promise<Uint8Array | null>;
+  write(path: string, value: Uint8Array): Promise<void>;
+}
+
+export interface ShellState {
+  cwd: string;
+  env: Record<string, string>;
+  gitHead: string;
+  revision: number;
+}
+
+/** Optimistic four-dimensional state prevents an isolate/container split-brain. */
+export class WorkspaceStateCoordinator {
+  private state: ShellState;
+  constructor(initial: ShellState) {
+    this.state = { ...initial, env: { ...initial.env } };
+  }
+  snapshot(): Readonly<ShellState> {
+    return { ...this.state, env: { ...this.state.env } };
+  }
+  update(
+    expectedRevision: number,
+    patch: Partial<Omit<ShellState, "revision">>
+  ): Readonly<ShellState> {
+    if (expectedRevision !== this.state.revision)
+      throw new Error("workspace_state_conflict");
+    this.state = { ...this.state, ...patch, revision: expectedRevision + 1 };
+    return this.snapshot();
+  }
+}
+
+export function microForkName(taskId: string): string {
+  const safe = taskId
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-|-$/g, "");
+  if (!safe) throw new Error("A task id is required for a micro-fork");
+  return `avos/task/${safe}`;
+}
+
+export async function commitToolTurn(
+  repo: ArtifactRepository,
+  turn: number,
+  metadata: CommitMetadata
+): Promise<ArtifactCommit> {
+  return repo.commit(`turn ${turn}: ${metadata.userGoal}`, metadata);
+}
+
+// ── Invisible compute hypervisor ─────────────────────────────────────────────
+
+export type ComputeTier = 1 | 2 | 3 | 4 | 5 | 6;
+export type RuntimeTool = "Bash" | "Read" | "Edit" | "Browser" | "Delegate";
+
+export interface RuntimeIntent {
+  tool: RuntimeTool;
+  command?: string;
+  needsDurability?: boolean;
+  needsScreenshot?: boolean;
+  needsWebGL?: boolean;
+  needsNative?: boolean;
+  pythonImports?: string[];
+}
+
+export interface RuntimeRoute {
+  tier: ComputeTier;
+  engine: string;
+  reason: string;
+}
+
+const NATIVE_PYTHON = new Set([
+  "torch",
+  "tensorflow",
+  "cv2",
+  "numpy-native",
+  "scipy-native",
+]);
+
+/** Scripts describe needs; only the hypervisor selects the cheapest capable tier. */
+export function routeRuntime(intent: RuntimeIntent): RuntimeRoute {
+  if (
+    intent.needsNative ||
+    intent.pythonImports?.some((name) => NATIVE_PYTHON.has(name))
+  )
+    return {
+      tier: 6,
+      engine: "container",
+      reason: "native capability required",
+    };
+  if (intent.tool === "Browser") {
+    if (intent.needsScreenshot || intent.needsWebGL)
+      return {
+        tier: 5,
+        engine: "chromium",
+        reason: "visual browser capability required",
+      };
+    return { tier: 4, engine: "kitesurf", reason: "lightweight DOM browser" };
+  }
+  if (intent.needsDurability)
+    return {
+      tier: 3,
+      engine: "workflow",
+      reason: "durable or scheduled execution",
+    };
+  if (intent.tool === "Read" || intent.tool === "Edit")
+    return { tier: 1, engine: "artifact-vfs", reason: "filesystem operation" };
+  if (intent.pythonImports)
+    return { tier: 2, engine: "pyodide", reason: "WASM Python is sufficient" };
+  return { tier: 2, engine: "isolate-shell", reason: "in-isolate command" };
+}
+
+export interface ContainerLease {
+  projectId: string;
+  lastUsedAt: number;
+}
+export function shouldStopContainer(
+  lease: ContainerLease,
+  now = Date.now()
+): boolean {
+  return now - lease.lastUsedAt >= CONTAINER_IDLE_TIMEOUT_MS;
+}
+
+/** Persistent multiplexed transport used by container and virtual-display adapters. */
+export interface RuntimeBridge {
+  call<T>(
+    stream: string,
+    method: string,
+    payload: unknown,
+    signal?: { readonly aborted: boolean }
+  ): Promise<T>;
+}
+
+export interface VirtualDisplay {
+  capture(): Promise<Uint8Array>;
+  mouse(x: number, y: number, button?: "left" | "right"): Promise<void>;
+  type(text: string): Promise<void>;
+}
+
+// ── Universal script context ─────────────────────────────────────────────────
+
+export interface RuntimeContext {
+  fs: ArtifactFS;
+  project: {
+    id: string;
+    commitTurn(turn: number, metadata: CommitMetadata): Promise<ArtifactCommit>;
+  };
+  space: { id: string; depth: SpaceDepth };
+  vault: {
+    has(alias: string): Promise<boolean>;
+    request(alias: string): Promise<never>;
+  };
+  cli: { run(command: string, args?: string[]): Promise<unknown> };
+  browser: { navigate(url: string): Promise<unknown> };
+  connectors: {
+    call(alias: string, operation: string, input?: unknown): Promise<unknown>;
+  };
+}
+
+export interface RuntimeContextAdapters {
+  fs: ArtifactFS;
+  repo: ArtifactRepository;
+  vault: RuntimeContext["vault"];
+  cli: RuntimeContext["cli"];
+  browser: RuntimeContext["browser"];
+  connectors: RuntimeContext["connectors"];
+}
+
+export function createRuntimeContext(
+  space: LaunchpadSpace,
+  projectId: string,
+  adapters: RuntimeContextAdapters
+): RuntimeContext {
+  if (!projectId.trim()) throw new Error("Runtime context requires a project");
+  return Object.freeze({
+    fs: adapters.fs,
+    project: {
+      id: projectId,
+      commitTurn: (turn: number, metadata: CommitMetadata) =>
+        commitToolTurn(adapters.repo, turn, metadata),
+    },
+    space: { id: space.id, depth: space.depth },
+    vault: adapters.vault,
+    cli: adapters.cli,
+    browser: adapters.browser,
+    connectors: adapters.connectors,
+  });
+}
