@@ -1325,6 +1325,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && url.pathname === "/sub-spaces") {
         return this.createSubSpaceRow(request);
       }
+      if (method === "GET" && url.pathname === "/hierarchy-authorize") {
+        return this.authorizeHierarchy(url.searchParams);
+      }
       // GET /spaces/:id — fetch a single space row (meta)
       const spaceRowMatch = url.pathname.match(/^\/spaces\/([^/]+)$/);
       if (method === "GET" && spaceRowMatch?.[1]) {
@@ -5123,10 +5126,18 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       space_type: string;
       tenancy_mode?: "single" | "team" | "saas";
       agency_shell?: boolean;
+      parent_id?: string | null;
+      depth?: number;
       settings?: Record<string, unknown>;
     }>();
     if (!body.id || !body.name || !body.space_type) {
       return Response.json({ error_code: "bad_request", message: "id, name, space_type are required" }, { status: 400 });
+    }
+    if (body.space_type !== "launchpad") {
+      return Response.json({ error_code: "invalid_hierarchy", message: "Only Launchpad spaces are supported" }, { status: 400 });
+    }
+    if (body.parent_id || (body.depth !== undefined && body.depth !== 0)) {
+      return Response.json({ error_code: "invalid_hierarchy", message: "A root space cannot have a parent or non-zero depth" }, { status: 400 });
     }
     execute(
       this.ctx.storage.sql as never,
@@ -5183,10 +5194,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       return Response.json({ error_code: "not_found", message: "Parent space not found" }, { status: 404 });
     }
 
-    // Depth: platform reserves depth 3; sub-spaces cannot nest more than 2 levels (§49).
-    if (parent.depth >= 2) {
+    if (parent.space_type !== "launchpad") {
+      return Response.json({ error_code: "invalid_hierarchy", message: "Departments require a Launchpad parent" }, { status: 400 });
+    }
+    if (body.space_type && body.space_type !== "launchpad") {
+      return Response.json({ error_code: "invalid_hierarchy", message: "Only Launchpad departments are supported" }, { status: 400 });
+    }
+    // The hierarchy policy is exactly two levels: root plus direct departments.
+    if (parent.depth >= 1 || parent.parent_id !== null) {
       return Response.json(
-        { error_code: "max_depth_exceeded", message: "Sub-spaces cannot be nested more than 2 levels deep." },
+        { error_code: "max_depth_exceeded", message: "A department cannot have child spaces." },
         { status: 400 }
       );
     }
@@ -5269,6 +5286,37 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       agency_shell: row.agency_shell === 1,
       settings: (() => { try { return JSON.parse(row.settings) as unknown; } catch { return {}; } })(),
     };
+  }
+
+  /** Authoritative hierarchy RBAC. Membership is intentionally read only from the requested
+   * space and (for a direct department) its direct parent; it is never copied or inferred in the
+   * opposite direction, which prevents upward and sibling privilege propagation. */
+  private authorizeHierarchy(params: URLSearchParams): Response {
+    const userId = params.get("user_id") ?? "";
+    const targetId = params.get("target_space_id") ?? "";
+    if (!userId || !targetId) {
+      return Response.json({ permitted: false, reason: "user_id and target_space_id are required" }, { status: 400 });
+    }
+    const target = queryOne<SpaceRow>(this.ctx.storage.sql as never,
+      "SELECT * FROM spaces WHERE id = ? AND status != 'deleted'", targetId);
+    if (!target || target.space_type !== "launchpad" || (target.depth === 0) !== (target.parent_id === null)) {
+      return Response.json({ permitted: false, reason: "Target is not a valid Launchpad hierarchy space" }, { status: 404 });
+    }
+    const direct = queryOne<{ role: string }>(this.ctx.storage.sql as never,
+      "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?", target.id, userId);
+    if (direct && (direct.role === "owner" || direct.role === "admin")) {
+      return Response.json({ permitted: true, source_space_id: target.id, role: direct.role });
+    }
+    if (target.depth === 1 && target.parent_id) {
+      const parent = queryOne<SpaceRow>(this.ctx.storage.sql as never,
+        "SELECT * FROM spaces WHERE id = ? AND depth = 0 AND parent_id IS NULL AND status != 'deleted'", target.parent_id);
+      const inherited = parent && queryOne<{ role: string }>(this.ctx.storage.sql as never,
+        "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?", parent.id, userId);
+      if (inherited && (inherited.role === "owner" || inherited.role === "admin")) {
+        return Response.json({ permitted: true, source_space_id: parent.id, role: inherited.role });
+      }
+    }
+    return Response.json({ permitted: false, reason: "No administrative membership on the space or its direct parent" }, { status: 403 });
   }
 
   // ── cross-space grants (§49 checkPermission — fail closed) ───────────────────

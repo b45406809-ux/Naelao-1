@@ -95,6 +95,8 @@ app.post("/spaces", async (c) => {
     /** For Launchpad: the selected product template (e.g. "creator-store"). */
     template_id?: string;
     config_overrides?: Record<string, unknown>;
+    parent_space_id?: string;
+    depth?: number;
   }>();
 
   try {
@@ -103,6 +105,8 @@ app.post("/spaces", async (c) => {
       ...(userId ? { userId } : {}),
       name: body.name,
       spacetypeId: body.spacetype_id,
+      ...(body.parent_space_id ? { parentSpaceId: body.parent_space_id } : {}),
+      ...(body.depth !== undefined ? { depth: body.depth } : {}),
       ...(body.template_id ? { templateId: body.template_id } : {}),
       ...(body.config_overrides ? { configOverrides: body.config_overrides } : {}),
     });
@@ -2655,14 +2659,17 @@ app.get("/spaces/:spaceId/sub-spaces", async (c) => {
 // callers always inherit the parent space_type (force_parent_type) and can never pick a type.
 app.post("/spaces/:spaceId/sub-spaces", async (c) => {
   const spaceId = c.req.param("spaceId");
-  const { tenantId, role } = getCallerIdentity(c);
+  const { tenantId, userId } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
 
   // Resolve the product (D1) to gate on productConfig + know the parent space_type.
   const product = await c.env.PLATFORM_DB.prepare(
-    "SELECT spacetype_id, config_json, tenancy_mode FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'"
-  ).bind(spaceId, tenantId).first<{ spacetype_id: string; config_json: string | null; tenancy_mode: string }>();
+    "SELECT spacetype_id, config_json, tenancy_mode, depth, parent_space_id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'"
+  ).bind(spaceId, tenantId).first<{ spacetype_id: string; config_json: string | null; tenancy_mode: string; depth: number; parent_space_id: string | null }>();
   if (!product) throw notFound("Space");
+  if (product.spacetype_id !== "launchpad" || product.depth !== 0 || product.parent_space_id) {
+    return c.json({ error_code: "invalid_hierarchy", message: "Departments require a Launchpad root" }, 400);
+  }
 
   const pc = await loadEffectiveProductConfig(c.env, product.spacetype_id, product.config_json);
   if (pc?.userPermissions?.canCreateSubSpaces === false) {
@@ -2677,18 +2684,21 @@ app.post("/spaces/:spaceId/sub-spaces", async (c) => {
   }>();
   if (!body.name) return c.json({ error_code: "bad_request", message: "name is required" }, 400);
 
+  const parentId = body.parent_id ?? spaceId;
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const auth = await forwardToSpaceDO(stub, `/hierarchy-authorize?user_id=${encodeURIComponent(userId)}&target_space_id=${encodeURIComponent(parentId)}`, "GET");
+  if (!auth.ok) return c.json({ error_code: "forbidden", message: "Administrative membership is required" }, 403);
+
   // Builders (owner/admin) may select a type (subject to agency_shell rules in the DO);
   // end-user roles are forced to the parent's type.
-  const isBuilder = role === "owner" || role === "admin";
   const payload = {
-    parent_id: body.parent_id ?? spaceId,
+    parent_id: parentId,
     name: body.name,
     scenario_type: "organizational" as const,
-    ...(isBuilder && body.space_type ? { space_type: body.space_type } : { force_parent_type: true }),
+    ...(body.space_type ? { space_type: body.space_type } : { force_parent_type: true }),
     ...(body.settings ? { settings: body.settings } : {}),
   };
 
-  const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const res = await forwardToSpaceDO(stub, "/sub-spaces", "POST", JSON.stringify(payload));
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
@@ -2697,9 +2707,11 @@ app.post("/spaces/:spaceId/sub-spaces", async (c) => {
 app.patch("/spaces/:spaceId/sub-spaces/:subId", async (c) => {
   const spaceId = c.req.param("spaceId");
   const subId = c.req.param("subId");
-  const { tenantId } = getCallerIdentity(c);
+  const { tenantId, userId } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const auth = await forwardToSpaceDO(stub, `/hierarchy-authorize?user_id=${encodeURIComponent(userId)}&target_space_id=${encodeURIComponent(subId)}`, "GET");
+  if (!auth.ok) return c.json({ error_code: "forbidden", message: "Administrative membership is required" }, 403);
   const res = await forwardToSpaceDO(stub, `/spaces/${subId}`, "PATCH", c.req.raw.body);
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
