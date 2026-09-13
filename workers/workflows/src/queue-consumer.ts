@@ -30,6 +30,9 @@ export async function queue(
           break;
 
         case "kb.ingest":
+          if (typeof body.projectId !== "string" || !body.projectId) {
+            throw new Error("kb.ingest requires projectId");
+          }
           await env.KB_INGESTION.create({
             id: message.id,
             params: body,

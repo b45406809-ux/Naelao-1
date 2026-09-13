@@ -22,6 +22,7 @@ export interface IngestionParams {
   docId: string;
   spaceId: string;
   tenantId: string;
+  projectId: string;
   r2Key: string;      // Key in KB_BUCKET where raw content is staged
   title: string;
   contentType: string;
@@ -119,7 +120,7 @@ export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams
           {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ status: "processing" }),
+            body: JSON.stringify({ status: "processing", project_id: params.projectId }),
           },
         );
 
@@ -164,6 +165,7 @@ export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams
               chunks,
               spaceId: params.spaceId,
               tenantId: params.tenantId,
+              projectId: params.projectId,
               title: params.title,
               contentType: params.contentType,
             }),
@@ -187,7 +189,7 @@ export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams
           {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ status: "indexed", chunk_count: chunkCount }),
+            body: JSON.stringify({ status: "indexed", chunk_count: chunkCount, project_id: params.projectId }),
           },
         );
 
@@ -223,7 +225,7 @@ export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams
           {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ status: "failed", error: message }),
+            body: JSON.stringify({ status: "failed", error: message, project_id: params.projectId }),
           },
         );
       } catch (statusErr) {

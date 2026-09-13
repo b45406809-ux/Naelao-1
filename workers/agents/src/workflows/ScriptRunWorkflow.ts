@@ -19,7 +19,7 @@ export interface ScriptRunWorkflowParams {
   spaceId: string;
   tenantId: string;
   agentId?: string;
-  projectId?: string;
+  projectId: string;
   scriptName: string;
   params: Record<string, unknown>;
 }
