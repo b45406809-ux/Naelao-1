@@ -12,6 +12,18 @@ workers_dev = false
 binding = "ARTIFACT_BUCKET"
 bucket_name = "naelao-artifacts"
 
+[[r2_buckets]]
+binding = "REPOSITORY_OBJECTS"
+bucket_name = "naelao-repository-objects"
+
+[[durable_objects.bindings]]
+name = "REPOSITORY_DO"
+class_name = "RepositoryDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RepositoryDO"]
+
 [vars]
 ENVIRONMENT = "development"
 

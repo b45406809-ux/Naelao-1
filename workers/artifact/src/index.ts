@@ -12,6 +12,8 @@
 // directly), and a real LIST route (there wasn't one — a per-space artifact browser needs it).
 import { badRequest, errorResponse, notFound, requestId, requireInternalHmac } from "@naelao/http";
 import { Hono } from "hono";
+export { RepositoryDO } from "./RepositoryDO.js";
+import { repositoryName, assertSegment } from "./repository.js";
 
 // ── Env ───────────────────────────────────────────────────────────────────────
 
@@ -19,6 +21,8 @@ export interface ArtifactEnv {
   ENVIRONMENT: string;
   PLATFORM_SECRET: string;
   ARTIFACT_BUCKET: R2Bucket;
+  REPOSITORY_OBJECTS: R2Bucket;
+  REPOSITORY_DO: DurableObjectNamespace;
 }
 
 function validateEnv(env: ArtifactEnv): void {
@@ -57,6 +61,24 @@ app.use("*", async (c, next) => {
 
 app.use("/spaces/:spaceId/artifacts", requireInternalHmac((c) => (c as unknown as { env: ArtifactEnv }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/artifacts/*", requireInternalHmac((c) => (c as unknown as { env: ArtifactEnv }).env.PLATFORM_SECRET));
+
+// Repository operations are routed to exactly one Durable Object per tenant/space/project. The
+// caller cannot select a DO id or R2 prefix directly; both are derived from authenticated scope.
+app.use("/spaces/:spaceId/projects/:projectId/repository/*", requireInternalHmac((c) => (c as unknown as { env: ArtifactEnv }).env.PLATFORM_SECRET));
+app.all("/spaces/:spaceId/projects/:projectId/repository/:operation", async (c) => {
+  const scope = {
+    tenantId: assertSegment(requireTenant(c), "tenant"),
+    spaceId: assertSegment(c.req.param("spaceId"), "space"),
+    projectId: assertSegment(c.req.param("projectId"), "project"),
+  };
+  const stub = c.env.REPOSITORY_DO.get(c.env.REPOSITORY_DO.idFromName(repositoryName(scope)));
+  const source = new URL(c.req.url);
+  const target = new URL(`https://repository.internal/${c.req.param("operation")}`);
+  target.search = source.search;
+  const headers = new Headers(c.req.raw.headers);
+  headers.set("x-repository-scope", JSON.stringify(scope));
+  return stub.fetch(new Request(target, { method: c.req.method, headers, body: c.req.raw.body }));
+});
 
 // POST /spaces/:spaceId/artifacts — create an artifact. Accepts multipart/form-data (a 'file'
 // field) OR a JSON body — either {filename, content, content_type?} for plain text (the common
