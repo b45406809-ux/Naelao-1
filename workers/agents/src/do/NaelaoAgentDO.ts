@@ -176,6 +176,14 @@ const MAX_TOOL_CALLS_PER_RUN = 100;
 // G-N44: Max messages kept in context window (keeps first + most recent N-1)
 const MAX_CONTEXT_MESSAGES = 40;
 
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  }
+  return btoa(binary);
+}
+
 // P0-3: caller roles treated as "a builder using their own Space Assistant" for monthly LLM-usage
 // metering — deliberately excludes "product_end_user" (its own separate credit-balance gate) and
 // "agent" (Phase O API-key identity, a different pricing situation), and requires an EXPLICIT
@@ -1645,7 +1653,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   // The authoritative script-first agent model (spec appendix ~6672k). Loads the agent's
   // 4-file config from R2, then runs OBSERVE→FINGERPRINT→FIND→GATE→EXECUTE→VERIFY→DISTILL.
 
-  private buildScriptEngineEnv(spaceId: string, agentId: string, tenantId: string, userId?: string, projectId?: string): ScriptEngineEnv | null {
+  private buildScriptEngineEnv(spaceId: string, agentId: string, tenantId: string, userId?: string, projectId?: string, commitContext?: { goal: string; taskId: string; threadId: string }): ScriptEngineEnv | null {
     if (!this.env.SCRIPTS_R2) return null;
     const env: ScriptEngineEnv = {
       scriptsBucket: this.env.SCRIPTS_R2,
@@ -1846,12 +1854,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const workflowBinding = this.env.AGENT_SCRIPT_WORKFLOW;
       env.workflowRunner = {
         start: async (params) => {
+          if (!params.projectId) throw new Error("projectId is required for workflow execution");
           const instance = await workflowBinding.create({
             params: {
               spaceId: params.spaceId,
               tenantId: params.tenantId,
               agentId: params.agentId,
-              ...(params.projectId ? { projectId: params.projectId } : {}),
+              projectId: params.projectId,
               scriptName: params.name,
               params: params.args,
             },
@@ -1942,6 +1951,30 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         // announce it must not surface as a failed write.
         void (async () => {
           try {
+            // Mirror the changed file into the repository and create an auditable commit for
+            // this successful mutating tool turn. R2 workspace reads remain lazy; only the one
+            // path reported by the tool is fetched. A repository failure cannot retroactively
+            // make the already-completed workspace mutation false, so this is best-effort and
+            // emits its commit id when successful for one-click rollback in the thread UI.
+            if (this.env.ARTIFACT_WORKER && commitContext) {
+              const base = `http://artifact-worker/spaces/${spaceId}/projects/${projectId}/repository`;
+              const headers = await this.internalHeaders(tenantId, { "content-type": "application/json" });
+              await this.env.ARTIFACT_WORKER.fetch(new Request(`${base}/init`, { method: "POST", headers, body: "{}" }));
+              if (change.operation === "write") {
+                const object = await env.scriptsBucket.get(`spaces/${spaceId}/projects/${projectId}/workspace/${change.path}`);
+                if (object) await this.env.ARTIFACT_WORKER.fetch(new Request(`${base}/write`, { method: "PUT", headers, body: JSON.stringify({ path: change.path, content_base64: bytesToBase64(new Uint8Array(await object.arrayBuffer())) }) }));
+              } else {
+                await this.env.ARTIFACT_WORKER.fetch(new Request(`${base}/file`, { method: "DELETE", headers, body: JSON.stringify({ path: change.path }) }));
+              }
+              const commitResponse = await this.env.ARTIFACT_WORKER.fetch(new Request(`${base}/commit`, { method: "POST", headers, body: JSON.stringify({
+                message: `${change.operation} ${change.path}`,
+                metadata: { agent_role: agentId, user_goal: commitContext.goal, task_id: commitContext.taskId, rationale: `${change.operation} ${change.path}`, thread_id: commitContext.threadId, tool_turn_id: `${commitContext.taskId}:${change.path}:${Date.now()}` },
+              }) }));
+              if (commitResponse.ok) {
+                const committed = await commitResponse.json<{ commit_id: string }>();
+                await broadcastSpaceEvent(this.env, tenantId, spaceId, "repository.committed", { project_id: projectId, thread_id: commitContext.threadId, commit_id: committed.commit_id, rollback_commit_id: committed.commit_id });
+              }
+            }
             await spacesWorker.fetch(new Request(
               `http://spaces-worker/internal/spaces/${spaceId}/events/fire`,
               {
@@ -3212,7 +3245,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       );
     }
 
-    const engineEnv = this.buildScriptEngineEnv(spaceId, agentId, tenantId, userId, projectId);
+    const engineEnv = this.buildScriptEngineEnv(spaceId, agentId, tenantId, userId, projectId, { goal: body.goal, taskId: runId, threadId: sessionId });
     if (!engineEnv) {
       return Response.json({ error: "script engine unavailable: SCRIPTS_R2 not bound" }, { status: 503 });
     }

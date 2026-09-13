@@ -95,6 +95,8 @@ app.post("/spaces", async (c) => {
     /** For Launchpad: the selected product template (e.g. "creator-store"). */
     template_id?: string;
     config_overrides?: Record<string, unknown>;
+    parent_space_id?: string;
+    depth?: number;
   }>();
 
   try {
@@ -103,6 +105,8 @@ app.post("/spaces", async (c) => {
       ...(userId ? { userId } : {}),
       name: body.name,
       spacetypeId: body.spacetype_id,
+      ...(body.parent_space_id ? { parentSpaceId: body.parent_space_id } : {}),
+      ...(body.depth !== undefined ? { depth: body.depth } : {}),
       ...(body.template_id ? { templateId: body.template_id } : {}),
       ...(body.config_overrides ? { configOverrides: body.config_overrides } : {}),
     });
@@ -685,6 +689,30 @@ async function forwardToSpaceDO(
     ...(body !== undefined && body !== null ? { body, duplex: "half" as const } : {}),
   }));
 }
+
+async function requireManageableAutomationProject(c: any, spaceId: string, projectId: unknown): Promise<Response | null> {
+  if (typeof projectId !== "string" || !projectId.trim()) {
+    return c.json({ error_code: "bad_request", message: "project_id is required" }, 400);
+  }
+  const identity = getCallerIdentity(c);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
+  const businessRole = identity.role === "product_end_user" && identity.userId
+    ? await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, identity.userId)
+    : null;
+  const qs = new URLSearchParams({ space_id: spaceId, user_id: identity.userId ?? "" });
+  if (!identity.userId || businessRole === "admin" || businessRole === "owner") qs.set("space_manager", "1");
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const result = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/automation-access?${qs}`, "GET");
+  if (result.ok) return null;
+  const detail = await result.json<{ error_code?: string; message?: string }>().catch(() => ({} as { error_code?: string; message?: string }));
+  return c.json({ error_code: detail.error_code ?? "forbidden", message: detail.message ?? "Project access denied" }, result.status as 403 | 404);
+}
+
+app.use("/internal/spaces/:spaceId/projects/:projectId/automation-access", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.get("/internal/spaces/:spaceId/projects/:projectId/automation-access", async (c) => {
+  const denied = await requireManageableAutomationProject(c, c.req.param("spaceId"), c.req.param("projectId"));
+  return denied ?? c.json({ project_id: c.req.param("projectId"), can_manage: true });
+});
 
 // POST /spaces/:spaceId/registry — internal: seed/refresh the root space row.
 // Called by the provisioner (step 5b) with the manifest tenancy + agency_shell.
@@ -1862,7 +1890,9 @@ app.get("/spaces/:spaceId/presence", async (c) => {
 });
 
 // Event triggers (@naelao/events) — no-code "after X happens (thread created, project
-// created, ...), run script Y." project_id absent = space-wide.
+// created, ...), run script Y." Automation is always owned by a project.
+app.use("/spaces/:spaceId/event-triggers", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/event-triggers", requireBusinessMembership({ GET: "member", POST: "admin" }));
 app.get("/spaces/:spaceId/event-triggers", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
@@ -1879,7 +1909,9 @@ app.post("/spaces/:spaceId/event-triggers", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
-  const body = await c.req.json().catch(() => ({}));
+  const body = await c.req.json<{ project_id?: string }>().catch(() => ({} as { project_id?: string }));
+  const denied = await requireManageableAutomationProject(c, spaceId, body.project_id);
+  if (denied) return denied;
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const res = await forwardToSpaceDO(stub, "/event-triggers", "POST", JSON.stringify({ ...body, space_id: spaceId }));
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
@@ -2015,7 +2047,7 @@ app.post("/spaces/:spaceId/scheduled-jobs", async (c) => {
     cron_expression: string;
     script_name?: string;
     params?: Record<string, unknown>;
-    project_id?: string;
+    project_id: string;
     /** Which agent's own R2 config (system prompt, approval gates) to wake. Omitted = the
      *  Space Assistant ("naelao-agent"), same as before this field existed. */
     agent_id?: string;
@@ -2023,9 +2055,11 @@ app.post("/spaces/:spaceId/scheduled-jobs", async (c) => {
      *  firing script_name directly (see infra/migrations/0043). */
     goal?: string;
   }>().catch(() => ({}) as Record<string, never>);
-  if (!body.name || !body.cron_expression || (!body.script_name && !body.goal)) {
-    return c.json({ error_code: "bad_request", message: "name, cron_expression, and either script_name or goal are required" }, 400);
+  if (!body.name || !body.project_id || !body.cron_expression || (!body.script_name && !body.goal)) {
+    return c.json({ error_code: "bad_request", message: "name, project_id, cron_expression, and either script_name or goal are required" }, 400);
   }
+  const denied = await requireManageableAutomationProject(c, spaceId, body.project_id);
+  if (denied) return denied;
   const cronError = validateCronExpression(body.cron_expression);
   if (cronError) return c.json({ error_code: "bad_request", message: `Invalid cron_expression: ${cronError}` }, 400);
 
@@ -2035,18 +2069,18 @@ app.post("/spaces/:spaceId/scheduled-jobs", async (c) => {
     `INSERT INTO scheduled_jobs (id, space_id, tenant_id, project_id, name, cron_expression, script_name, params, agent_id, goal, enabled, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`
   ).bind(
-    id, spaceId, owned.tenantId, body.project_id ?? null, body.name, body.cron_expression,
+    id, spaceId, owned.tenantId, body.project_id, body.name, body.cron_expression,
     body.script_name ?? "", JSON.stringify(body.params ?? {}), body.agent_id ?? null, body.goal ?? null, now, now
   ).run();
 
-  await fireScheduledJobEvent(c.env, spaceId, owned.tenantId, "scheduled_job.created", id, body.project_id ?? null, {
+  await fireScheduledJobEvent(c.env, spaceId, owned.tenantId, "scheduled_job.created", id, body.project_id, {
     name: body.name,
     cron_expression: body.cron_expression,
   });
 
   return c.json({
     id, name: body.name, cron_expression: body.cron_expression, script_name: body.script_name ?? "",
-    project_id: body.project_id ?? null, agent_id: body.agent_id ?? null, goal: body.goal ?? null,
+    project_id: body.project_id, agent_id: body.agent_id ?? null, goal: body.goal ?? null,
     enabled: true, last_run_at: null, created_at: now,
   }, 201);
 });
@@ -2655,14 +2689,17 @@ app.get("/spaces/:spaceId/sub-spaces", async (c) => {
 // callers always inherit the parent space_type (force_parent_type) and can never pick a type.
 app.post("/spaces/:spaceId/sub-spaces", async (c) => {
   const spaceId = c.req.param("spaceId");
-  const { tenantId, role } = getCallerIdentity(c);
+  const { tenantId, userId } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
 
   // Resolve the product (D1) to gate on productConfig + know the parent space_type.
   const product = await c.env.PLATFORM_DB.prepare(
-    "SELECT spacetype_id, config_json, tenancy_mode FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'"
-  ).bind(spaceId, tenantId).first<{ spacetype_id: string; config_json: string | null; tenancy_mode: string }>();
+    "SELECT spacetype_id, config_json, tenancy_mode, depth, parent_space_id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'"
+  ).bind(spaceId, tenantId).first<{ spacetype_id: string; config_json: string | null; tenancy_mode: string; depth: number; parent_space_id: string | null }>();
   if (!product) throw notFound("Space");
+  if (product.spacetype_id !== "launchpad" || product.depth !== 0 || product.parent_space_id) {
+    return c.json({ error_code: "invalid_hierarchy", message: "Departments require a Launchpad root" }, 400);
+  }
 
   const pc = await loadEffectiveProductConfig(c.env, product.spacetype_id, product.config_json);
   if (pc?.userPermissions?.canCreateSubSpaces === false) {
@@ -2677,18 +2714,21 @@ app.post("/spaces/:spaceId/sub-spaces", async (c) => {
   }>();
   if (!body.name) return c.json({ error_code: "bad_request", message: "name is required" }, 400);
 
+  const parentId = body.parent_id ?? spaceId;
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const auth = await forwardToSpaceDO(stub, `/hierarchy-authorize?user_id=${encodeURIComponent(userId)}&target_space_id=${encodeURIComponent(parentId)}`, "GET");
+  if (!auth.ok) return c.json({ error_code: "forbidden", message: "Administrative membership is required" }, 403);
+
   // Builders (owner/admin) may select a type (subject to agency_shell rules in the DO);
   // end-user roles are forced to the parent's type.
-  const isBuilder = role === "owner" || role === "admin";
   const payload = {
-    parent_id: body.parent_id ?? spaceId,
+    parent_id: parentId,
     name: body.name,
     scenario_type: "organizational" as const,
-    ...(isBuilder && body.space_type ? { space_type: body.space_type } : { force_parent_type: true }),
+    ...(body.space_type ? { space_type: body.space_type } : { force_parent_type: true }),
     ...(body.settings ? { settings: body.settings } : {}),
   };
 
-  const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const res = await forwardToSpaceDO(stub, "/sub-spaces", "POST", JSON.stringify(payload));
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
@@ -2697,9 +2737,11 @@ app.post("/spaces/:spaceId/sub-spaces", async (c) => {
 app.patch("/spaces/:spaceId/sub-spaces/:subId", async (c) => {
   const spaceId = c.req.param("spaceId");
   const subId = c.req.param("subId");
-  const { tenantId } = getCallerIdentity(c);
+  const { tenantId, userId } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const auth = await forwardToSpaceDO(stub, `/hierarchy-authorize?user_id=${encodeURIComponent(userId)}&target_space_id=${encodeURIComponent(subId)}`, "GET");
+  if (!auth.ok) return c.json({ error_code: "forbidden", message: "Administrative membership is required" }, 403);
   const res = await forwardToSpaceDO(stub, `/spaces/${subId}`, "PATCH", c.req.raw.body);
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });

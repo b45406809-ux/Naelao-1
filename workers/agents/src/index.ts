@@ -5534,7 +5534,7 @@ app.onError((err, c) =>
 const SCHEDULED_JOB_MAX_CONSECUTIVE_FAILURES = 5;
 
 interface ScheduledJobRow {
-  id: string; space_id: string; tenant_id: string; project_id: string | null;
+  id: string; space_id: string; tenant_id: string; project_id: string;
   cron_expression: string; script_name: string; params: string; last_run_at: number | null;
   created_at: string; consecutive_failures: number;
   /** Which agent's own DO/config to wake. NULL = "naelao-agent" (the Space Assistant),
@@ -5557,18 +5557,19 @@ const SCHEDULED_JOB_RUN_HISTORY_LIMIT = 50;
  */
 async function recordScheduledJobRun(
   env: AgentsEnv,
-  row: { id: string; space_id: string; tenant_id: string },
+  row: { id: string; space_id: string; tenant_id: string; project_id: string },
   opts: { ok: boolean; error?: string; durationMs?: number; skippedBusy?: boolean; firedAt: number }
 ): Promise<void> {
   try {
     await env.PLATFORM_DB.prepare(
-      `INSERT INTO scheduled_job_runs (id, job_id, space_id, tenant_id, fired_at, ok, error, duration_ms, skipped_busy)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO scheduled_job_runs (id, job_id, space_id, tenant_id, project_id, fired_at, ok, error, duration_ms, skipped_busy)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(
       crypto.randomUUID(),
       row.id,
       row.space_id,
       row.tenant_id,
+      row.project_id,
       opts.firedAt,
       opts.ok ? 1 : 0,
       opts.error ? opts.error.slice(0, 2000) : null,
@@ -5716,13 +5717,13 @@ async function enqueueAgentTicks(env: AgentsEnv): Promise<void> {
     const now = Date.now();
     for (;;) {
       const { results: jobRows } = await env.PLATFORM_DB.prepare(
-        `SELECT sj.id, sj.space_id, sj.tenant_id, sj.cron_expression, sj.last_run_at, sj.created_at
+        `SELECT sj.id, sj.space_id, sj.tenant_id, sj.project_id, sj.cron_expression, sj.last_run_at, sj.created_at
            FROM scheduled_jobs sj
            JOIN spaces s ON s.id = sj.space_id AND s.status = 'active'
           WHERE sj.enabled = 1 AND sj.id > ?
           ORDER BY sj.id
           LIMIT ?`
-      ).bind(cursor, AGENT_TICKS_PAGE_SIZE).all<{ id: string; space_id: string; tenant_id: string; cron_expression: string; last_run_at: number | null; created_at: string }>();
+      ).bind(cursor, AGENT_TICKS_PAGE_SIZE).all<{ id: string; space_id: string; tenant_id: string; project_id: string; cron_expression: string; last_run_at: number | null; created_at: string }>();
       if (jobRows.length === 0) break;
       for (const row of jobRows) {
         try {
@@ -5745,7 +5746,7 @@ async function enqueueAgentTicks(env: AgentsEnv): Promise<void> {
           console.error(`[agent-ticks] cron check failed job=${row.id} space=${row.space_id}:`, (err as Error).message);
           await recordScheduledJobFailure(
             env,
-            { id: row.id, space_id: row.space_id, tenant_id: row.tenant_id, project_id: null, cron_expression: row.cron_expression, script_name: "", params: "{}", agent_id: null, goal: null, last_run_at: row.last_run_at, created_at: row.created_at, consecutive_failures: 0 },
+            { id: row.id, space_id: row.space_id, tenant_id: row.tenant_id, project_id: row.project_id, cron_expression: row.cron_expression, script_name: "", params: "{}", agent_id: null, goal: null, last_run_at: row.last_run_at, created_at: row.created_at, consecutive_failures: 0 },
             now,
             (err as Error).message
           );
