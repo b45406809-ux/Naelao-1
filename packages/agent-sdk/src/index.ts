@@ -1,11 +1,20 @@
 // Builder-facing SDK for programmatic Space/session access and agent tool building
 
-import type { NaelaoClient, ApiResult, Space, Session, Message } from "@naelao/client-sdk";
+import type {
+  ApiResult,
+  Message,
+  NaelaoClient,
+  Session,
+  Space,
+} from "@naelao/client-sdk";
 export type { Space, Session, Message, ApiResult };
 
 // ── Agent tool definition ────────────────────────────────────────────────────
 
-export interface AgentTool<TInput = Record<string, unknown>, TOutput = unknown> {
+export interface AgentTool<
+  TInput = Record<string, unknown>,
+  TOutput = unknown,
+> {
   name: string;
   description: string;
   inputSchema: JsonSchema;
@@ -22,12 +31,15 @@ export interface ToolContext {
 
 export interface JsonSchema {
   type: "object";
-  properties: Record<string, {
-    type: "string" | "number" | "boolean" | "array" | "object";
-    description?: string;
-    enum?: unknown[];
-    items?: JsonSchema;
-  }>;
+  properties: Record<
+    string,
+    {
+      type: "string" | "number" | "boolean" | "array" | "object";
+      description?: string;
+      enum?: unknown[];
+      items?: JsonSchema;
+    }
+  >;
   required?: string[];
   description?: string;
 }
@@ -41,13 +53,20 @@ export class SpaceSDK {
   ) {}
 
   async createSession(endUserId?: string): Promise<Session> {
-    const result = await this.client.sessions.create(this.spaceId, endUserId ? { end_user_id: endUserId } : {});
+    const result = await this.client.sessions.create(
+      this.spaceId,
+      endUserId ? { end_user_id: endUserId } : {}
+    );
     if ("error" in result) throw new Error(result.error.message);
     return result.data;
   }
 
   async sendMessage(sessionId: string, content: string): Promise<Message> {
-    const result = await this.client.messages.send(this.spaceId, sessionId, content);
+    const result = await this.client.messages.send(
+      this.spaceId,
+      sessionId,
+      content
+    );
     if ("error" in result) throw new Error(result.error.message);
     return result.data;
   }
@@ -80,7 +99,11 @@ export function defineTool<TInput = Record<string, unknown>, TOutput = unknown>(
 }
 
 // Convert AgentTool to the wire format expected by the platform's tool registry
-export function toolToRegistryFormat(tool: AgentTool, spaceId: string, tenantId: string) {
+export function toolToRegistryFormat(
+  tool: AgentTool,
+  spaceId: string,
+  tenantId: string
+) {
   return {
     space_id: spaceId,
     tenant_id: tenantId,
@@ -122,6 +145,15 @@ export async function executeTool(
 }
 
 // Create a SpaceSDK instance
-export function createSpaceSDK(client: NaelaoClient, spaceId: string): SpaceSDK {
+export function createSpaceSDK(
+  client: NaelaoClient,
+  spaceId: string
+): SpaceSDK {
   return new SpaceSDK(client, spaceId);
 }
+
+// Launchpad is the platform's single SpaceType. These runtime primitives are deliberately
+// exported from the SDK rather than a SpaceType-specific package so authored scripts and the
+// Launchpad shell use the exact same contracts as the workers.
+export * from "./launchpad-runtime.js";
+export * from "./avos-features.js";

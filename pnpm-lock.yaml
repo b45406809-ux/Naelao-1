@@ -515,6 +515,9 @@ importers:
 
   tests:
     devDependencies:
+      '@naelao/agent-sdk':
+        specifier: workspace:*
+        version: link:../packages/agent-sdk
       '@naelao/analytics-schema':
         specifier: workspace:*
         version: link:../packages/analytics-schema
