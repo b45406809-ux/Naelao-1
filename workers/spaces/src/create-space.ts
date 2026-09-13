@@ -176,6 +176,9 @@ export interface CreateSpaceParams {
   userId?: string;
   name: string;
   spacetypeId: string;
+  /** Launchpad hierarchy coordinates. Omit both for a root; departments must provide both. */
+  parentSpaceId?: string;
+  depth?: number;
   /** For Launchpad: the selected product template (e.g. "creator-store"). */
   templateId?: string;
   /** Three-Tier Platform Model: the platform-subdomain identity (migration 0044, unique). */
@@ -235,6 +238,37 @@ export async function deriveAvailableSlug(db: D1Database, name: string): Promise
 export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpaceParams): Promise<CreateSpaceResult> {
   if (!params.name || !params.spacetypeId) {
     throw new SpaceCreationError(400, "bad_request", "name and spacetype_id are required");
+  }
+
+  // Launchpad has one deliberately small hierarchy: product roots (depth 0) and their direct
+  // departments (depth 1). Do not trust a caller to describe ancestry: resolve the parent in D1
+  // and derive the stored depth from that authoritative row.
+  if (params.spacetypeId !== "launchpad") {
+    throw new SpaceCreationError(400, "invalid_hierarchy", "Only Launchpad spaces are supported");
+  }
+  const requestedDepth = params.depth ?? (params.parentSpaceId ? 1 : 0);
+  if (requestedDepth === 0 && params.parentSpaceId) {
+    throw new SpaceCreationError(400, "invalid_hierarchy", "A root space cannot have a parent");
+  }
+  if (requestedDepth === 1 && !params.parentSpaceId) {
+    throw new SpaceCreationError(400, "invalid_hierarchy", "A department must have a parent");
+  }
+  if (requestedDepth !== 0 && requestedDepth !== 1) {
+    throw new SpaceCreationError(400, "invalid_hierarchy", "Spaces may only be roots or direct departments");
+  }
+  let derivedDepth = 0;
+  if (params.parentSpaceId) {
+    const parent = await env.PLATFORM_DB.prepare(
+      "SELECT tenant_id, spacetype_id, depth, parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'"
+    ).bind(params.parentSpaceId).first<{ tenant_id: string; spacetype_id: string; depth: number; parent_space_id: string | null }>();
+    if (!parent || parent.tenant_id !== params.tenantId) {
+      // Deliberately do not disclose whether a parent in another tenant exists.
+      throw new SpaceCreationError(404, "parent_not_found", "Parent space not found");
+    }
+    if (parent.spacetype_id !== "launchpad" || parent.depth !== 0 || parent.parent_space_id) {
+      throw new SpaceCreationError(400, "invalid_hierarchy", "A department's parent must be a Launchpad root");
+    }
+    derivedDepth = parent.depth + 1;
   }
 
   if (params.configOverrides) {
@@ -315,9 +349,10 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
 
   try {
     await env.PLATFORM_DB.prepare(
-      `INSERT INTO spaces (id, tenant_id, spacetype_id, name, status, config_json, product_slug, created_at, updated_at, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(id, params.tenantId, params.spacetypeId, params.name, initialStatus, configJson, params.productSlug ?? null, now, now, params.userId ?? null).run();
+      `INSERT INTO spaces (id, tenant_id, spacetype_id, name, status, config_json, product_slug, parent_space_id, depth, created_at, updated_at, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(id, params.tenantId, params.spacetypeId, params.name, initialStatus, configJson, params.productSlug ?? null,
+      params.parentSpaceId ?? null, derivedDepth, now, now, params.userId ?? null).run();
   } catch (err) {
     if ((err as Error).message?.includes("UNIQUE")) {
       throw new SpaceCreationError(409, "conflict", "product_slug is already taken");
