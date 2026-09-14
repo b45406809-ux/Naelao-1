@@ -55,4 +55,29 @@ describe("Launchpad hierarchy policy", () => {
       tenantId: "tenant-a", name: "Intruder", spacetypeId: "launchpad", parentSpaceId: "foreign-root", depth: 1,
     })).rejects.toMatchObject({ status: 404, error_code: "parent_not_found" });
   });
+
+  it("returns an indistinguishable 404 for missing and unauthorized confidential projects", async () => {
+    const space = makeSpaceDO();
+    await call(space, "/spaces", "POST", { id: "root", name: "Root", space_type: "launchpad" });
+    await call(space, "/members", "POST", { space_id: "root", user_id: "owner", role: "owner" });
+    await call(space, "/members", "POST", { space_id: "root", user_id: "outsider", role: "member" });
+    const created = await call(space, "/projects", "POST", {
+      space_id: "root",
+      tenant_id: "tenant",
+      name: "Acquisition",
+      visibility: "private",
+      created_by: "owner",
+      system_caller: true,
+    });
+    expect(created.status).toBe(201);
+
+    const denied = await call(space, `/projects/${created.json.id}?viewer_id=outsider`);
+    const absent = await call(space, "/projects/does-not-exist?viewer_id=outsider");
+    expect(denied).toEqual(absent);
+    expect(denied).toEqual({
+      status: 404,
+      json: { error_code: "not_found", message: "Project not found" },
+    });
+    expect((await call(space, `/projects/${created.json.id}?viewer_id=owner`)).status).toBe(200);
+  });
 });

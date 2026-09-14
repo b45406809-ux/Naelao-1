@@ -30,6 +30,9 @@ describe("Launchpad workspace runtime", () => {
     expect(() =>
       defineLaunchpadSpace({ id: "bad", depth: 1, parentId: null })
     ).toThrow();
+    expect(() =>
+      defineLaunchpadSpace({ id: "grandchild", depth: 2 as 1, parentId: legal.id })
+    ).toThrow("root and one department level");
   });
 
   it("inherits administration downward but not ordinary membership", () => {
@@ -77,6 +80,10 @@ describe("Launchpad workspace runtime", () => {
     );
     expect(isGitTracked("/.avos/shared/skills/a.ts")).toBe(false);
     expect(() => normalizeWorkspacePath("/etc/passwd")).toThrow();
+    expect(() => normalizeWorkspacePath("/workspace/../.avos/secrets"))
+      .toThrow("cannot be mixed");
+    expect(() => normalizeWorkspacePath("/.avos/../workspace/source"))
+      .toThrow("cannot be mixed");
   });
 
   it("routes the six-tier ladder without exposing tier selection", () => {
