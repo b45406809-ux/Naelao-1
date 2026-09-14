@@ -13,6 +13,152 @@ export interface RetrievalResult {
   sparseScore: number;
 }
 
+/** Security scope used by the production grounded-search pipeline.  Every cache and index
+ * operation receives the complete scope; callers must never emulate isolation by filtering an
+ * already-ranked result set. */
+export interface RetrievalScope {
+  tenantId: string;
+  spaceId: string;
+  projectId: string;
+  roleRank: number;
+}
+
+export interface GroundedSearchHit {
+  id: string;
+  score: number;
+  content: string;
+  r2Key: string;
+  byteStart: number;
+  byteEnd: number;
+  lineStart?: number;
+  lineEnd?: number;
+  title?: string;
+}
+
+export interface GoogleModeSearchAdapters {
+  cache: {
+    lookup(
+      query: string,
+      scope: RetrievalScope,
+      now: number
+    ): Promise<{ expiresAt: number; hits: GroundedSearchHit[] } | null>;
+    store(
+      query: string,
+      scope: RetrievalScope,
+      hits: GroundedSearchHit[],
+      expiresAt: number
+    ): Promise<void>;
+  };
+  /** Implementations MUST apply scope as Vectorize metadata filters before scoring. */
+  dense(query: string, scope: RetrievalScope): Promise<GroundedSearchHit[]>;
+  sparse(query: string, scope: RetrievalScope): Promise<GroundedSearchHit[]>;
+  web(query: string, scope: RetrievalScope): Promise<GroundedSearchHit[]>;
+  emitTelemetry(event: GroundedSearchTelemetry): void | Promise<void>;
+  now?: () => number;
+}
+
+export interface GroundedSearchTelemetry {
+  tenantId: string;
+  spaceId: string;
+  projectId: string;
+  cacheHit: boolean;
+  liveGrounding: boolean;
+  confidence: number;
+  latencyMs: number;
+}
+
+export interface GoogleModeSearchResult {
+  hits: GroundedSearchHit[];
+  cacheHit: boolean;
+  liveGrounding: boolean;
+  confidence: number;
+  latencyMs: number;
+}
+
+/**
+ * Production orchestration for item 51. Dense and sparse candidates are fused with RRF(k=60).
+ * Low-confidence retrieval invokes live grounding; results are cached for one hour under the
+ * complete authorization scope. Telemetry is emitted on every exit, including cache hits.
+ */
+export async function googleModeSearch(
+  query: string,
+  scope: RetrievalScope,
+  adapters: GoogleModeSearchAdapters,
+  options: {
+    confidenceThreshold?: number;
+    cacheTtlMs?: number;
+    limit?: number;
+  } = {}
+): Promise<GoogleModeSearchResult> {
+  if (!query.trim()) throw new Error("query is required");
+  if (
+    !scope.tenantId ||
+    !scope.spaceId ||
+    !scope.projectId ||
+    !Number.isFinite(scope.roleRank)
+  ) {
+    throw new Error("complete tenant/space/project/role scope is required");
+  }
+  const now = adapters.now ?? Date.now;
+  const startedAt = now();
+  const cached = await adapters.cache.lookup(query, scope, startedAt);
+  if (cached && cached.expiresAt > startedAt) {
+    const result = {
+      hits: cached.hits,
+      cacheHit: true,
+      liveGrounding: false,
+      confidence: cached.hits[0]?.score ?? 0,
+      latencyMs: now() - startedAt,
+    };
+    await adapters.emitTelemetry({
+      ...scope,
+      cacheHit: true,
+      liveGrounding: false,
+      confidence: result.confidence,
+      latencyMs: result.latencyMs,
+    });
+    return result;
+  }
+
+  const [dense, sparse] = await Promise.all([
+    adapters.dense(query, scope),
+    adapters.sparse(query, scope),
+  ]);
+  const byId = new Map([...dense, ...sparse].map((hit) => [hit.id, hit]));
+  const fused = reciprocalRankFusion(dense, sparse, 60).flatMap(
+    ({ id, score }) => {
+      const candidate = byId.get(id);
+      return candidate ? [{ ...candidate, score }] : [];
+    }
+  );
+  const confidence = Math.max(dense[0]?.score ?? 0, sparse[0]?.score ?? 0);
+  const threshold = options.confidenceThreshold ?? 0.8;
+  const liveGrounding = confidence < threshold;
+  const web = liveGrounding ? await adapters.web(query, scope) : [];
+  const hits = [...fused, ...web].slice(0, options.limit ?? 10);
+  await adapters.cache.store(
+    query,
+    scope,
+    hits,
+    startedAt + (options.cacheTtlMs ?? 3_600_000)
+  );
+  const result = {
+    hits,
+    cacheHit: false,
+    liveGrounding,
+    confidence,
+    latencyMs: now() - startedAt,
+  };
+  await adapters.emitTelemetry({
+    ...scope,
+    cacheHit: false,
+    liveGrounding,
+    confidence,
+    latencyMs: result.latencyMs,
+  });
+  return result;
+}
+
 /**
  * Reciprocal Rank Fusion — standard RRF constant k=60.
  *
@@ -27,7 +173,7 @@ export interface RetrievalResult {
 export function reciprocalRankFusion(
   denseResults: Array<{ id: string; score: number }>,
   sparseResults: Array<{ id: string; score: number }>,
-  k = 60,
+  k = 60
 ): Array<{ id: string; score: number }> {
   const scoreMap = new Map<string, number>();
 
@@ -63,7 +209,7 @@ export function reciprocalRankFusion(
  */
 export function bm25Score(
   query: string,
-  documents: Array<{ id: string; content: string }>,
+  documents: Array<{ id: string; content: string }>
 ): Array<{ id: string; score: number }> {
   const queryTerms = tokenise(query);
   if (queryTerms.length === 0) return [];
@@ -113,7 +259,8 @@ export function bm25Score(
       const idf = Math.log((N - df + 0.5) / (df + 0.5) + 1);
 
       // TF component with length normalisation
-      const tfNorm = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * (docLength / avgdl)));
+      const tfNorm =
+        (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * (docLength / avgdl)));
 
       score += idf * tfNorm;
     }
@@ -129,17 +276,69 @@ export function bm25Score(
  */
 function tokenise(text: string): string[] {
   const STOPWORDS = new Set([
-    "a", "an", "the", "is", "it", "in", "on", "at", "to", "for", "of",
-    "and", "or", "but", "not", "with", "this", "that", "be", "are", "was",
-    "were", "as", "by", "from", "have", "has", "had", "do", "does", "did",
-    "will", "would", "could", "should", "may", "might", "can", "its", "their",
-    "there", "which", "who", "what", "when", "where", "how", "if", "then",
-    "so", "up", "out", "about", "into", "than", "more", "also", "been",
+    "a",
+    "an",
+    "the",
+    "is",
+    "it",
+    "in",
+    "on",
+    "at",
+    "to",
+    "for",
+    "of",
+    "and",
+    "or",
+    "but",
+    "not",
+    "with",
+    "this",
+    "that",
+    "be",
+    "are",
+    "was",
+    "were",
+    "as",
+    "by",
+    "from",
+    "have",
+    "has",
+    "had",
+    "do",
+    "does",
+    "did",
+    "will",
+    "would",
+    "could",
+    "should",
+    "may",
+    "might",
+    "can",
+    "its",
+    "their",
+    "there",
+    "which",
+    "who",
+    "what",
+    "when",
+    "where",
+    "how",
+    "if",
+    "then",
+    "so",
+    "up",
+    "out",
+    "about",
+    "into",
+    "than",
+    "more",
+    "also",
+    "been",
   ]);
 
   return text
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, " ")
     .split(/\s+/)
-    .filter(t => t.length > 1 && !STOPWORDS.has(t));
+    .filter((t) => t.length > 1 && !STOPWORDS.has(t));
 }
