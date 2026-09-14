@@ -4,6 +4,15 @@ Everything below is supplied at deploy time via `wrangler secret put` (never com
 code paths that use them are already built and degrade to a safe dev path when a secret is
 absent — so the full flow is testable end-to-end locally without any of these.
 
+## Knowledge ingestion and grounding
+
+Set `COHERE_API_KEY` on **`naelao-knowledge`** for PDF/layout-sensitive ingestion through
+Cohere `parse-v5.0`. Unlike an optional enhancement, a parse-required upload fails closed when
+the key is absent or Cohere rejects the request; the worker never indexes the unparsed request
+payload while claiming it was parsed. `TAVILY_API_KEY` remains optional and is used only when
+scoped internal retrieval falls below the configured confidence threshold. Rotate either key in
+staging first, run an ingestion/retrieval smoke journey, and then update production.
+
 ## Lemon Squeezy — the single money-in processor (all three payer classes)
 
 `api.lemonsqueezy.com` is reserved to Naelao's store (reserved-capability guard). Set these
