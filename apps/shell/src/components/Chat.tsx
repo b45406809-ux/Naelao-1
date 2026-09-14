@@ -68,6 +68,7 @@ import { InlineConnectorCard } from "./InlineConnectorCard";
 import { InlineArtifactCard } from "./InlineArtifactCard";
 import { UpgradeDialog } from "./UpgradeDialog";
 import { ComposerDock } from "./ComposerDock";
+import { CitationBadges } from "./CitationBadge";
 import type { InspectedElement } from "./HtmlPreviewFrame";
 import { useActiveSpace } from "@/lib/active-space-context";
 import type { ThreadSummary, ConsultedThread } from "@/lib/api";
@@ -1573,6 +1574,9 @@ export function Chat({
                         : <RevealText text={m.content} animate={m.justArrived} revealFrom={m.revealedPrefix} markdown />}
                     </div>
                   )}
+                  {m.role !== "user" && projectId && m.metadata?.citations?.length ? (
+                    <CitationBadges citations={m.metadata.citations} spaceId={spaceId} projectId={projectId} session={session} />
+                  ) : null}
                   {/* Copy on every message; edit only on the LAST thing you said — editing
                       something further back would silently discard every exchange after it, which
                       is a destructive act dressed up as a typo fix. Icons rather than labels, and
