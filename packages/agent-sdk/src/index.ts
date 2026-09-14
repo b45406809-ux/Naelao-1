@@ -156,4 +156,7 @@ export function createSpaceSDK(
 // exported from the SDK rather than a SpaceType-specific package so authored scripts and the
 // Launchpad shell use the exact same contracts as the workers.
 export * from "./launchpad-runtime.js";
+export * from "./canvas-runtime.js";
+export * from "./workflow-taxonomy.js";
+export * from "./extensions.js";
 export * from "./avos-features.js";
