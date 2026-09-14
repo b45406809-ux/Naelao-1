@@ -22,6 +22,28 @@ stable locations from which to generate unified diffs. Generated authority extra
 outputs live under `.repomix-cache/`, which is intentionally ignored because they are reproducible
 and very large.
 
+## What prompts the model
+
+`repomix/prompts/` contains one explicit implementation prompt per batch. The preparation script
+places that prompt first, followed by the exact plan/source map and the authoritative excerpts.
+Each prompt requires an item-by-item authority reconciliation, implementation ledger, complete
+unified diffs, deployment operations, realistic verification, and an honest release ledger. It
+also forbids ellipses, pseudo-code, TODO-only stubs, UI placeholders, and success-only mocks.
+
+The precedence is intentional and reflects the actual chronology requested for this hand-off:
+
+1. repository state is evidence, not authority;
+2. `CLAUDE.md` is the older baseline;
+3. expanded gaps and Appendix A1 supply relevant constraints;
+4. linked conversation files are newer than `CLAUDE.md` and override it on conflict;
+5. each `Origin & Transition` trail is read left-to-right, with its rightmost/final conversation
+   decision winning.
+
+The complete available ordinary conversation files and explicitly named JSON chunks are included,
+not summarized. Large later reference documents are selected by relevant blocks so production code
+and tests still fit the model window; the prompt tells the model that these extracts do not replace
+the named sources.
+
 Each run has a 1,000,000-token hard budget, leaving roughly 45,000 tokens for the AI Studio system
 prompt and generated diff. If a future source file pushes a batch over budget, Repomix exits
 non-zero rather than silently truncating it. Run `npx --yes repomix@1.18.0 --config <config>
@@ -55,19 +77,19 @@ Measured with Repomix 1.18.0 and the `o200k_base` tokenizer on this commit:
 
 | Pack | Files | Tokens |
 |---|---:|---:|
-| 01 foundation/storage | 245 | 777,336 |
-| 02 runtime/vault/CLI | 248 | 733,230 |
-| 03 connectors/delegation | 224 | 798,613 |
-| 04 agent/memory/context | 252 | 995,943 |
-| 05 retrieval/citations/MCP | 204 | 717,547 |
-| 06 threads/artifact concurrency | 272 | 948,133 |
-| 07 task/provenance/presence | 235 | 840,228 |
-| 08 model policy/air-gap/sleep | 227 | 887,897 |
-| 09 canvas/extensions/widgets | 256 | 982,971 |
-| 10 workflows/webhooks/scheduling | 258 | 843,082 |
-| 11 voice/customer channels | 281 | 909,460 |
-| 12 billing/export | 259 | 986,549 |
-| 13 marketplace/distribution | 293 | 795,425 |
+| 01 foundation/storage | 245 | 778,586 |
+| 02 runtime/vault/CLI | 248 | 742,702 |
+| 03 connectors/delegation | 224 | 799,789 |
+| 04 agent/memory/context | 252 | 997,041 |
+| 05 retrieval/citations/MCP | 204 | 718,655 |
+| 06 threads/artifact concurrency | 272 | 949,225 |
+| 07 task/provenance/presence | 235 | 841,354 |
+| 08 model policy/air-gap/sleep | 227 | 888,952 |
+| 09 canvas/extensions/widgets | 256 | 984,131 |
+| 10 workflows/webhooks/scheduling | 258 | 844,311 |
+| 11 voice/customer channels | 281 | 910,561 |
+| 12 billing/export | 259 | 987,654 |
+| 13 marketplace/distribution | 293 | 796,545 |
 
 These are deliberately below the configured 1,000,000-token guard. Pack 04 is the tightest; if
 the agent kernel grows, split items 39–42 from 43–46 rather than removing Memory OS or its tests.
