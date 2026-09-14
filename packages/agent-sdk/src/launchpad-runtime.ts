@@ -27,6 +27,10 @@ export interface LaunchpadSpace {
 export function defineLaunchpadSpace(
   input: Omit<LaunchpadSpace, "type">
 ): LaunchpadSpace {
+  // Keep the runtime check even though SpaceDepth is a union: JSON and database values cross
+  // this boundary without TypeScript's protection.
+  if (input.depth !== 0 && input.depth !== 1)
+    throw new Error("Launchpad spaces are limited to a root and one department level");
   if (input.depth === 0 && input.parentId !== null)
     throw new Error("Root spaces cannot have a parent");
   if (input.depth === 1 && !input.parentId)
@@ -125,6 +129,14 @@ export interface ArtifactRepository {
 
 export function normalizeWorkspacePath(path: string): string {
   const absolute = path.startsWith("/") ? path : `${WORKSPACE_ROOT}/${path}`;
+  const requestedRoot =
+    absolute === WORKSPACE_ROOT || absolute.startsWith(`${WORKSPACE_ROOT}/`)
+      ? WORKSPACE_ROOT
+      : absolute === AVOS_ROOT || absolute.startsWith(`${AVOS_ROOT}/`)
+        ? AVOS_ROOT
+        : null;
+  if (!requestedRoot)
+    throw new Error("Path must be inside /workspace or /.avos");
   const parts: string[] = [];
   for (const part of absolute.split("/")) {
     if (!part || part === ".") continue;
@@ -132,14 +144,13 @@ export function normalizeWorkspacePath(path: string): string {
     else parts.push(part);
   }
   const normalized = `/${parts.join("/")}`;
+  // Reject traversal that starts in one namespace and normalizes into the other. Merely
+  // checking the final path made `/workspace/../.avos/...` a namespace-confusion bypass.
   if (
-    normalized !== WORKSPACE_ROOT &&
-    !normalized.startsWith(`${WORKSPACE_ROOT}/`) &&
-    normalized !== AVOS_ROOT &&
-    !normalized.startsWith(`${AVOS_ROOT}/`)
-  ) {
-    throw new Error("Path must be inside /workspace or /.avos");
-  }
+    normalized !== requestedRoot &&
+    !normalized.startsWith(`${requestedRoot}/`)
+  )
+    throw new Error("Workspace and AVOS namespaces cannot be mixed");
   return normalized;
 }
 

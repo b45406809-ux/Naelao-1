@@ -986,10 +986,14 @@ app.all("/spaces/:spaceId/projects/:projectId/memory/*", async (c) => {
 // renders these as form fields, never as a code editor.
 app.get("/spaces/:spaceId/projects/:projectId", async (c) => {
   const { spaceId, projectId } = c.req.param();
-  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  const identity = getCallerIdentity(c);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
-  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}`, "GET");
+  // The SpaceDO owns the confidential-project ACL. The viewer comes only from router-verified
+  // identity headers, never from a query parameter supplied by the client.
+  const viewer = encodeURIComponent(identity.userId);
+  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}?viewer_id=${viewer}`, "GET");
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 

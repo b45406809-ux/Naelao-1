@@ -1367,7 +1367,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // GET /projects/:id — single project (incl. customer-bot config)
       const projectIdMatch = url.pathname.match(/^\/projects\/([^/]+)$/);
       if (method === "GET" && projectIdMatch?.[1]) {
-        return this.getProject(projectIdMatch[1]);
+        return this.getProject(projectIdMatch[1], url.searchParams);
       }
       const automationAccessMatch = url.pathname.match(/^\/projects\/([^/]+)\/automation-access$/);
       if (method === "GET" && automationAccessMatch?.[1]) {
@@ -2913,13 +2913,28 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   // ── Customer-bot project config (no-code, admin-configured) ─────────────────
-  private getProject(projectId: string): Response {
+  private getProject(projectId: string, params?: URLSearchParams): Response {
     const row = queryOne<{
       id: string; space_id: string; name: string; description: string; status: string;
       kind: string; execution_ceiling: number; daily_spend_cap_credits: number; channel_config: string;
-      default_agent_id: string | null; max_threads: number; allowed_agent_ids: string | null; created_at: string;
+      default_agent_id: string | null; max_threads: number; allowed_agent_ids: string | null;
+      visibility: string; created_by: string | null; created_at: string;
     }>(this.ctx.storage.sql as never, "SELECT * FROM projects WHERE id = ?", projectId);
     if (!row) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+    // Internal mutation paths call this without params to serialize the row they just changed;
+    // all externally routed reads supply a server-derived viewer_id.
+    const viewerId = params?.get("viewer_id") ?? "";
+    if (
+      params !== undefined &&
+      row.visibility === "private" &&
+      (!viewerId ||
+        (this.getProjectMemberRole(projectId, viewerId) === null &&
+          !this.isSpaceOwnerOrAdmin(viewerId)))
+    ) {
+      // Deliberately identical to a missing id: callers cannot use status, body, or wording as
+      // an existence oracle for confidential workstations.
+      return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+    }
     return Response.json({ ...row, channel_config: safeJsonParseObj(row.channel_config), allowed_agent_ids: safeJsonParseAgentIds(row.allowed_agent_ids) });
   }
 
