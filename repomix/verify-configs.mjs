@@ -44,14 +44,37 @@ for (const [index, file] of files.entries()) {
   const promptPath = `repomix/prompts/batch-${String(index + 1).padStart(2, "0")}-items-${from}-${to}.md`;
   const prompt = await readFile(promptPath, "utf8");
   for (const required of [
-    "override it when they conflict",
-    "Origin & Transition",
-    "Unified diffs",
-    "Migration/deployment operations",
-    "Release ledger",
+    "This prompt is self-contained",
+    "Final resolved implementation specification",
+    "Final behavior:",
+    "Production acceptance contract:",
+    "Retained implementation constraints:",
+    "PHASE_STATUS: CONTINUE",
+    "PHASE_STATUS: COMPLETE",
   ]) {
     if (!prompt.includes(required))
       throw new Error(`${promptPath} omits prompt contract: ${required}`);
+  }
+  for (let item = from; item <= to; item++) {
+    const heading = `### ${item}. `;
+    const itemStart = prompt.indexOf(heading);
+    if (itemStart < 0) {
+      throw new Error(`${promptPath} omits detailed plan item ${item}`);
+    }
+    const nextHeading = prompt.indexOf("\n### ", itemStart + heading.length);
+    const itemSpec = prompt.slice(
+      itemStart,
+      nextHeading < 0 ? undefined : nextHeading
+    );
+    for (const required of [
+      "**Final behavior:**",
+      "**Production acceptance contract:**",
+      "**Retained implementation constraints:**",
+    ]) {
+      if (!itemSpec.includes(required)) {
+        throw new Error(`${promptPath} item ${item} omits ${required}`);
+      }
+    }
   }
   for (const boundary of [
     "workers/router/**",

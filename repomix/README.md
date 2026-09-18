@@ -10,6 +10,7 @@ shared-contract boundaries so each model turn can implement and verify a real ve
 From the repository root:
 
 ```bash
+node repomix/build-prompts.mjs
 node repomix/prepare-authority-context.mjs
 for config in repomix/batch-*.json; do
   npx --yes repomix@1.18.0 --token-budget 1000000 --config "$config"
@@ -24,13 +25,15 @@ and very large.
 
 ## What prompts the model
 
-`repomix/prompts/` contains one explicit implementation prompt per batch. The preparation script
-places that prompt first, followed by the exact plan/source map and the authoritative excerpts.
-Each prompt requires an item-by-item authority reconciliation, implementation ledger, complete
-unified diffs, deployment operations, realistic verification, and an honest release ledger. It
-also forbids ellipses, pseudo-code, TODO-only stubs, UI placeholders, and success-only mocks.
+`repomix/prompts/` contains one self-contained implementation prompt per batch. The build script
+has already read the chronological design material and folds the final feature definition,
+retained dependent constraints, production ingress/persistence expectations, and required
+verification into each numbered item. The implementation model is explicitly told not to reread
+or cite the planning archive. Each prompt requires complete unified diffs, deployment operations,
+realistic verification, and an honest release ledger, and forbids ellipses, pseudo-code,
+TODO-only stubs, UI placeholders, and success-only mocks.
 
-The precedence is intentional and reflects the actual chronology requested for this hand-off:
+The prompt compiler applies this chronology before the implementation model sees the prompt:
 
 1. repository state is evidence, not authority;
 2. `CLAUDE.md` is the older baseline;
@@ -39,10 +42,22 @@ The precedence is intentional and reflects the actual chronology requested for t
 5. each `Origin & Transition` trail is read left-to-right, with its rightmost/final conversation
    decision winning.
 
-The complete available ordinary conversation files and explicitly named JSON chunks are included,
-not summarized. Large later reference documents are selected by relevant blocks so production code
-and tests still fit the model window; the prompt tells the model that these extracts do not replace
-the named sources.
+The generated prompt contains the resolved result rather than the design journey. Earlier passages
+are retained only when they supply implementation constraints on which the final feature still
+depends; the finalized behavior remains normative if wording conflicts.
+
+## Automated sequential implementation
+
+`run-phase.mjs` executes the selected batches in numeric order. For every phase it regenerates the
+current Repomix pack, rotates through comma-separated Gemini API keys and models on quota/transient
+failure, validates and applies an AI-produced unified diff, supports bounded continuation turns,
+runs the configured verification command, and commits the phase before generating the next pack.
+Responses and patches are retained in ignored `.phase-runs/` for debugging.
+
+The `Implement full plan with rotating AI models` workflow runs all 13 phases in one job by
+default, pushes an accumulator branch, and opens a pull request. Configure the repository secret
+`GEMINI_API_KEYS` as one key or a comma-separated rotation. Workflow inputs can restrict the phase
+range, model list, continuation ceiling, and verification command.
 
 Each run has a 1,000,000-token hard budget, leaving roughly 45,000 tokens for the AI Studio system
 prompt and generated diff. If a future source file pushes a batch over budget, Repomix exits
@@ -77,19 +92,19 @@ Measured with Repomix 1.18.0 and the `o200k_base` tokenizer on this commit:
 
 | Pack | Files | Tokens |
 |---|---:|---:|
-| 01 foundation/storage | 245 | 778,586 |
-| 02 runtime/vault/CLI | 248 | 742,702 |
-| 03 connectors/delegation | 224 | 799,789 |
-| 04 agent/memory/context | 252 | 997,041 |
-| 05 retrieval/citations/MCP | 204 | 718,655 |
-| 06 threads/artifact concurrency | 272 | 949,225 |
-| 07 task/provenance/presence | 235 | 841,354 |
-| 08 model policy/air-gap/sleep | 227 | 888,952 |
-| 09 canvas/extensions/widgets | 256 | 984,131 |
-| 10 workflows/webhooks/scheduling | 258 | 844,311 |
-| 11 voice/customer channels | 281 | 910,561 |
-| 12 billing/export | 259 | 987,654 |
-| 13 marketplace/distribution | 293 | 796,545 |
+| 01 foundation/storage | 246 | 650,401 |
+| 02 runtime/vault/CLI | 250 | 682,138 |
+| 03 connectors/delegation | 225 | 749,529 |
+| 04 agent/memory/context | 252 | 872,547 |
+| 05 retrieval/citations/MCP | 205 | 655,183 |
+| 06 threads/artifact concurrency | 273 | 935,236 |
+| 07 task/provenance/presence | 236 | 763,616 |
+| 08 model policy/air-gap/sleep | 228 | 820,151 |
+| 09 canvas/extensions/widgets | 257 | 895,154 |
+| 10 workflows/webhooks/scheduling | 259 | 704,542 |
+| 11 voice/customer channels | 282 | 807,120 |
+| 12 billing/export | 260 | 871,948 |
+| 13 marketplace/distribution | 294 | 792,406 |
 
-These are deliberately below the configured 1,000,000-token guard. Pack 04 is the tightest; if
-the agent kernel grows, split items 39–42 from 43–46 rather than removing Memory OS or its tests.
+These are deliberately below the configured 1,000,000-token guard. Pack 06 is the tightest; if
+the collaboration surface grows, split items 55–57 from 58–60 rather than removing concurrency or rebase tests.
