@@ -7,7 +7,7 @@
 
 import { Hono } from "hono";
 import { requestId, errorResponse, notFound, badRequest, unauthorized, internalError, safeKvPut, requireInternalHmac } from "@naelao/http";
-import { chunkText, embedText, embedBatch, bm25Score, reciprocalRankFusion } from "@naelao/rag";
+import { chunkText, embedText, embedBatch, googleModeSearch, verifyCitationCoordinate, type GroundedSearchHit, type RetrievalScope } from "@naelao/rag";
 import { checkSsrf } from "@naelao/security";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { moderateInput } from "@naelao/llm-gateway";
@@ -37,6 +37,12 @@ interface KnowledgeEnv {
   // watch this worker's own KB_BUCKET at the `autorag/` prefix this file writes mirror docs to —
   // no separate bucket binding is introduced.
   AUTORAG_KB_INSTANCE?: string;
+  /** Cohere Parse is mandatory for binary/layout-sensitive ingestion. It intentionally has no
+   * fallback to pretending the model ran: callers receive a service-unavailable failure. */
+  COHERE_API_KEY?: string;
+  RETRIEVAL_POLICY_VERSION?: string;
+  RETRIEVAL_CONFIDENCE_THRESHOLD?: string;
+  KNOWLEDGE_ANALYTICS?: AnalyticsEngineDataset;
 }
 
 /** R2 key for the whole-document mirror AutoRAG indexes (one file per doc, not per-chunk —
@@ -53,6 +59,17 @@ interface ChunkRecord {
   content: string;
   spaceId: string;
   tenantId: string;
+  projectId: string;
+  visibility: "project" | "space";
+  requiredRoleRank: number;
+  chunkId: string;
+  contentHash: string;
+  sourceFreshness: string;
+  headingPath: string[];
+  byteStart: number;
+  byteEnd: number;
+  lineStart: number;
+  lineEnd: number;
 }
 
 // WS-4: Vectorize metadata can't filter on a genuinely absent field the same way SQL's
@@ -90,6 +107,38 @@ async function verifySpaceOwnership(db: D1Database, spaceId: string, tenantId: s
     .bind(spaceId, tenantId)
     .first();
   return row !== null;
+}
+
+const ROLE_RANK: Record<string, number> = { product_end_user: 0, viewer: 10, member: 20, developer: 30, admin: 40, owner: 50, builder: 50 };
+
+function effectiveRoleRank(c: { req: { header: (h: string) => string | undefined } }): number {
+  const role = c.req.header("x-naelao-role") ?? "";
+  const rank = ROLE_RANK[role];
+  if (rank === undefined) throw unauthorized("Effective role is unavailable");
+  return rank;
+}
+
+/** Project authorization is deliberately independent from space ownership. The canonical
+ * project ACL is owned by SpaceDO; until a read-only binding is introduced, the mirrored D1
+ * project ACL is the fail-closed authority used by this worker. */
+async function authorizeProject(db: D1Database, scope: RetrievalScope, userId: string): Promise<boolean> {
+  if (!scope.projectId || !userId) return false;
+  try {
+    const access = await db.prepare(
+      `SELECT visibility, role_rank FROM project_access
+       WHERE project_id = ? AND user_id = ? AND tenant_id = ? AND space_id = ?`
+    ).bind(scope.projectId, userId, scope.tenantId, scope.spaceId)
+      .first<{ visibility: string; role_rank: number }>();
+    return Boolean(access && access.role_rank >= 0);
+  } catch {
+    // Schema/service-policy failures must never widen access.
+    return false;
+  }
+}
+
+function contextEnvelope(hit: GroundedSearchHit): string {
+  const content = hit.content.replace(/<\/context_chunk>/gi, "&lt;/context_chunk&gt;");
+  return `<context_chunk id="${hit.id.replace(/[^a-zA-Z0-9_-]/g, "")}" trust="untrusted">${content}</context_chunk>`;
 }
 
 // ── G-BD01: KB content sanitization — strip HTML/XML and scan for injection ───
@@ -142,29 +191,50 @@ function chunkR2Key(spaceId: string, projectId: string | null | undefined, docId
   return `kb/${spaceId}/${projectId ?? "_space"}/${docId}/chunk_${index}.json`;
 }
 
+function citationR2Key(spaceId: string, projectId: string | null | undefined, docId: string, index: number): string {
+  return `kb/${spaceId}/${projectId ?? "_space"}/${docId}/chunk_${index}.txt`;
+}
+
 function docR2Prefix(spaceId: string, projectId: string | null | undefined, docId: string): string {
   return `kb/${spaceId}/${projectId ?? "_space"}/${docId}/`;
 }
 
-// ── Helper: read chunk content from R2 ───────────────────────────────────────
+async function parseWithCohere(env: KnowledgeEnv, content: string, contentType: string): Promise<string> {
+  if (!env.COHERE_API_KEY) throw Object.assign(new Error("Cohere Parse is not configured"), { status: 503 });
+  const response = await fetch("https://api.cohere.com/v2/parse", {
+    method: "POST",
+    headers: { authorization: `Bearer ${env.COHERE_API_KEY}`, "content-type": "application/json" },
+    body: JSON.stringify({ model: "parse-v5.0", document: { content, content_type: contentType }, output_format: "markdown" }),
+  });
+  if (!response.ok) throw Object.assign(new Error(`Cohere Parse failed (${response.status})`), { status: 502 });
+  const parsed = await response.json<{ text?: string; markdown?: string; document?: { text?: string } }>();
+  const text = parsed.markdown ?? parsed.text ?? parsed.document?.text;
+  if (!text) throw Object.assign(new Error("Cohere Parse returned no document text"), { status: 502 });
+  return text;
+}
 
-async function readChunkFromR2(
-  bucket: R2Bucket,
-  spaceId: string,
-  projectId: string | null | undefined,
-  docId: string,
-  chunkIndex: number,
-): Promise<ChunkRecord | null> {
-  const obj = await bucket.get(chunkR2Key(spaceId, projectId, docId, chunkIndex));
-  if (!obj) return null;
-  const text = await obj.text();
-  return JSON.parse(text) as ChunkRecord;
+function chunkCoordinates(document: string, chunks: string[]): Array<{ byteStart: number; byteEnd: number; lineStart: number; lineEnd: number }> {
+  const encoder = new TextEncoder();
+  let cursor = 0;
+  return chunks.map((chunk) => {
+    const characterStart = document.indexOf(chunk, cursor);
+    const start = characterStart < 0 ? cursor : characterStart;
+    const end = start + chunk.length;
+    cursor = end;
+    return {
+      byteStart: encoder.encode(document.slice(0, start)).byteLength,
+      byteEnd: encoder.encode(document.slice(0, end)).byteLength,
+      lineStart: document.slice(0, start).split("\n").length,
+      lineEnd: document.slice(0, end).split("\n").length,
+    };
+  });
 }
 
 // A1.16.10 (layer-3 backstop, bucket A): KB is a server-side agent tool, never called
 // client-side (confirmed neither apps/widget nor apps/portal ever reaches /kb/*) — safe to
 // gate broadly.
 app.use("/spaces/:spaceId/kb/*", requireInternalHmac((c) => (c as unknown as { env: KnowledgeEnv }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/citations/*", requireInternalHmac((c) => (c as unknown as { env: KnowledgeEnv }).env.PLATFORM_SECRET));
 
 // F8: requireInternalHmac only authenticates the CALLING WORKER, not the tenant the request
 // is acting on behalf of. A compromised/malicious agent script belonging to tenant A can still
@@ -227,8 +297,15 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     /** WS-4: optional — isolates this document to a single project's own KB, distinct from the
      *  space-wide default (omitted/null). */
     project_id?: string;
+    required_role_rank?: number;
   }>();
   const projectId = body.project_id ?? null;
+  const requiredRoleRank = Math.max(0, Math.min(body.required_role_rank ?? 0, 50));
+  if (projectId) {
+    const scope = { tenantId, spaceId, projectId, roleRank: effectiveRoleRank(c) };
+    const userId = c.req.header("x-naelao-user-id") ?? "";
+    if (!(await authorizeProject(c.env.PLATFORM_DB, scope, userId))) throw notFound("Project not found");
+  }
 
   // Validate required fields
   if (!body.title || typeof body.title !== "string" || body.title.trim().length === 0) {
@@ -294,7 +371,8 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
 
   try {
     // ── G-BD01: Sanitize content — strip HTML, detect injection patterns ────
-    const { sanitized: sanitizedContent, injectionDetected } = sanitizeKbContent(body.content);
+    const parsedContent = contentType === "pdf" ? await parseWithCohere(c.env, body.content, contentType) : body.content;
+    const { sanitized: sanitizedContent, injectionDetected } = sanitizeKbContent(parsedContent);
     if (injectionDetected) {
       // Flag in DB but do NOT reject — builders may legitimately document attacks
       await c.env.PLATFORM_DB.prepare(
@@ -310,6 +388,7 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
       // Content too short to chunk — treat as one chunk
       chunks.push(sanitizedContent.trim());
     }
+    const coordinates = chunkCoordinates(sanitizedContent, chunks);
 
     // ── Embedding (batch, 50 chunks per CF AI call) ─────────────────────────
     const EMBED_BATCH_SIZE = 50;
@@ -327,7 +406,10 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
       const embedResult = allEmbedResults[i];
-      if (chunk === undefined || embedResult === undefined) continue;
+      const coordinate = coordinates[i];
+      if (chunk === undefined || embedResult === undefined || coordinate === undefined) continue;
+      const chunkId = `${docId}_chunk_${i}`;
+      const contentHash = await sha256Hex(chunk);
 
       // Store chunk content in R2
       const chunkRecord: ChunkRecord = {
@@ -336,27 +418,58 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
         content: chunk,
         spaceId,
         tenantId,
+        projectId: projectId ?? SPACE_WIDE_PROJECT_SENTINEL,
+        visibility: projectId ? "project" : "space",
+        requiredRoleRank,
+        chunkId,
+        contentHash,
+        sourceFreshness: now,
+        headingPath: [],
+        ...coordinate,
       };
       await c.env.KB_BUCKET.put(
         chunkR2Key(spaceId, projectId, docId, i),
         JSON.stringify(chunkRecord),
       );
+      await c.env.KB_BUCKET.put(citationR2Key(spaceId, projectId, docId, i), chunk, {
+        customMetadata: { contentHash, tenantId, spaceId, projectId: projectId ?? SPACE_WIDE_PROJECT_SENTINEL },
+      });
 
       // Prepare Vectorize vector. project_id always set (never omitted) — Vectorize's flat
       // $eq filter can't distinguish "field absent" from "field present," so the space-wide
       // sentinel (empty string) makes filtering exact both ways (see SPACE_WIDE_PROJECT_SENTINEL).
       vectorUpserts.push({
-        id: `${docId}_chunk_${i}`,
+        id: chunkId,
         values: embedResult.embedding,
         metadata: {
           space_id: spaceId,
+          tenant_id: tenantId,
           project_id: projectId ?? SPACE_WIDE_PROJECT_SENTINEL,
+          visibility: projectId ? "project" : "space",
+          required_role_rank: requiredRoleRank,
           doc_id: docId,
+          chunk_id: chunkId,
+          content_hash: contentHash,
+          source_freshness: now,
+          byte_start: coordinate.byteStart,
+          byte_end: coordinate.byteEnd,
+          line_start: coordinate.lineStart,
+          line_end: coordinate.lineEnd,
           chunk_index: i,
           title: body.title.trim(),
           content_preview: chunk.slice(0, 200),
         },
       });
+      await c.env.PLATFORM_DB.prepare(
+        `INSERT INTO kb_chunks
+         (id, tenant_id, space_id, project_id, document_id, chunk_index, content, content_hash,
+          visibility, required_role_rank, source_freshness, heading_path, r2_key,
+          byte_start, byte_end, line_start, line_end, created_at, deleted_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, NULL)`
+      ).bind(chunkId, tenantId, spaceId, projectId ?? SPACE_WIDE_PROJECT_SENTINEL, docId, i,
+        chunk, contentHash, projectId ? "project" : "space", requiredRoleRank, now,
+        citationR2Key(spaceId, projectId, docId, i), 0, new TextEncoder().encode(chunk).byteLength,
+        coordinate.lineStart, coordinate.lineEnd, now).run();
     }
 
     // Upsert vectors in batches (Vectorize has limits per upsert call)
@@ -402,6 +515,7 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
       .run()
       .catch(() => {/* best-effort */});
 
+    if (err && typeof err === "object" && "status" in err) throw err;
     throw internalError(`Document ingestion failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 });
@@ -479,6 +593,9 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
         await c.env.KB_VECTORS.deleteByIds(oldVectorIds.slice(i, i + VECTOR_DELETE_BATCH));
       }
     }
+    await c.env.PLATFORM_DB.prepare(
+      "DELETE FROM kb_chunks WHERE document_id=? AND tenant_id=? AND space_id=? AND project_id=?"
+    ).bind(docId, tenantId, spaceId, projectId ?? SPACE_WIDE_PROJECT_SENTINEL).run();
 
     // Delete old R2 chunks
     const prefix = docR2Prefix(spaceId, projectId, docId);
@@ -495,6 +612,8 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
     // Re-chunk and re-embed
     const chunks = chunkText(newContent);
     if (chunks.length === 0) chunks.push(newContent.trim());
+    const coordinates = chunkCoordinates(newContent, chunks);
+    const indexedAt = new Date().toISOString();
 
     const EMBED_BATCH_SIZE = 50;
     const allEmbedResults: Array<{ embedding: number[]; tokenCount: number }> = [];
@@ -507,19 +626,37 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
       const embedResult = allEmbedResults[i];
-      if (chunk === undefined || embedResult === undefined) continue;
+      const coordinate = coordinates[i];
+      if (chunk === undefined || embedResult === undefined || coordinate === undefined) continue;
+      const chunkId = `${docId}_chunk_${i}`;
+      const contentHash = await sha256Hex(chunk);
 
       await c.env.KB_BUCKET.put(
         chunkR2Key(spaceId, projectId, docId, i),
-        JSON.stringify({ docId, chunkIndex: i, content: chunk, spaceId, tenantId } satisfies ChunkRecord)
+        JSON.stringify({ docId, chunkIndex: i, content: chunk, spaceId, tenantId,
+          projectId: projectId ?? SPACE_WIDE_PROJECT_SENTINEL, visibility: projectId ? "project" : "space",
+          requiredRoleRank: 0, chunkId, contentHash, sourceFreshness: indexedAt, headingPath: [], ...coordinate } satisfies ChunkRecord)
       );
+      await c.env.KB_BUCKET.put(citationR2Key(spaceId, projectId, docId, i), chunk, {
+        customMetadata: { contentHash, tenantId, spaceId, projectId: projectId ?? SPACE_WIDE_PROJECT_SENTINEL },
+      });
+      await c.env.PLATFORM_DB.prepare(
+        `INSERT INTO kb_chunks (id,tenant_id,space_id,project_id,document_id,chunk_index,content,
+         content_hash,visibility,required_role_rank,source_freshness,heading_path,r2_key,byte_start,
+         byte_end,line_start,line_end,created_at,deleted_at) VALUES (?,?,?,?,?,?,?,?,?,0,?,'[]',?,?,?,?,?,?,NULL)`
+      ).bind(chunkId, tenantId, spaceId, projectId ?? SPACE_WIDE_PROJECT_SENTINEL, docId, i, chunk,
+        contentHash, projectId ? "project" : "space", indexedAt, citationR2Key(spaceId, projectId, docId, i),
+        0, new TextEncoder().encode(chunk).byteLength, coordinate.lineStart, coordinate.lineEnd, indexedAt).run();
 
       vectorUpserts.push({
-        id: `${docId}_chunk_${i}`,
+        id: chunkId,
         values: embedResult.embedding,
         metadata: {
           space_id: spaceId,
+          tenant_id: tenantId,
           project_id: projectId ?? SPACE_WIDE_PROJECT_SENTINEL,
+          required_role_rank: 0,
+          content_hash: contentHash,
           doc_id: docId,
           chunk_index: i,
           title: newTitle,
@@ -619,8 +756,46 @@ app.delete("/spaces/:spaceId/kb/documents/:docId", async (c) => {
   )
     .bind(docId)
     .run();
+  await c.env.PLATFORM_DB.prepare(
+    "DELETE FROM kb_chunks WHERE document_id=? AND tenant_id=? AND space_id=? AND project_id=?"
+  ).bind(docId, tenantId, spaceId, doc.project_id ?? SPACE_WIDE_PROJECT_SENTINEL).run();
 
   return new Response(null, { status: 204 });
+});
+
+// Canonical citation resolver. Neither model nor browser supplies an R2 key: the key and range
+// are loaded from the immutable chunk record after tenant/project/role authorization.
+app.get("/spaces/:spaceId/projects/:projectId/citations/:documentId/:chunkId", async (c) => {
+  const tenantId = requireTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const projectId = c.req.param("projectId");
+  const userId = c.req.header("x-naelao-user-id") ?? "";
+  const roleRank = effectiveRoleRank(c);
+  const scope = { tenantId, spaceId, projectId, roleRank };
+  if (!(await authorizeProject(c.env.PLATFORM_DB, scope, userId))) throw notFound("Citation not found");
+  const row = await c.env.PLATFORM_DB.prepare(
+    `SELECT id, document_id, r2_key, content_hash, byte_start, byte_end, line_start, line_end
+     FROM kb_chunks WHERE id=? AND document_id=? AND tenant_id=? AND space_id=? AND project_id=?
+       AND required_role_rank<=? AND deleted_at IS NULL`
+  ).bind(c.req.param("chunkId"), c.req.param("documentId"), tenantId, spaceId, projectId, roleRank)
+    .first<Record<string, unknown>>();
+  if (!row) throw notFound("Citation not found");
+  const head = await c.env.KB_BUCKET.head(String(row.r2_key));
+  if (!head) throw notFound("Citation not found");
+  const coordinate = verifyCitationCoordinate({ r2Key: String(row.r2_key), byteStart: Number(row.byte_start),
+    byteEnd: Number(row.byte_end), lineStart: Number(row.line_start), lineEnd: Number(row.line_end) },
+    { r2Key: String(row.r2_key), size: head.size, lineCount: Number(row.line_end) });
+  if (head.customMetadata?.contentHash !== String(row.content_hash)) throw notFound("Citation not found");
+  const object = await c.env.KB_BUCKET.get(coordinate.r2Key, {
+    range: { offset: coordinate.byteStart, length: coordinate.byteEnd - coordinate.byteStart },
+  });
+  if (!object) throw notFound("Citation not found");
+  const content = await object.text();
+  if (await sha256Hex(content) !== String(row.content_hash)) throw notFound("Citation not found");
+  return c.json({ citation: { version: 1, identity: `${row.document_id}:${row.id}:${row.content_hash}`,
+    document_id: row.document_id, chunk_id: row.id, content_hash: row.content_hash,
+    byte_start: coordinate.byteStart, byte_end: coordinate.byteEnd, line_start: coordinate.lineStart,
+    line_end: coordinate.lineEnd }, content });
 });
 
 // ── GET /spaces/:spaceId/kb/search ────────────────────────────────────────────
@@ -644,148 +819,107 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
     throw badRequest("q parameter is required");
   }
 
-  // Ownership already verified by the "/spaces/:spaceId/kb/*" gate above (F8) — the cache key
-  // still folds tenantId (and now project_id) in as defense-in-depth so a future refactor of
-  // that gate can't reintroduce a cross-tenant/cross-project cache-serving path.
-  const cacheHash = await sha256Hex(tenantId + ":" + query + spaceId + ":" + (projectId ?? "") + ":" + (useAutoRag ? "autorag" : "legacy"));
-  const cacheKey = `kbcache:${cacheHash}`;
-
-  const cached = await c.env.KB_CACHE.get(cacheKey);
-  if (cached) {
-    return c.json({ data: JSON.parse(cached), cached: true });
+  const roleRank = effectiveRoleRank(c);
+  const userId = c.req.header("x-naelao-user-id") ?? "";
+  const scope: RetrievalScope = {
+    tenantId,
+    spaceId,
+    projectId: projectId ?? SPACE_WIDE_PROJECT_SENTINEL,
+    roleRank,
+  };
+  if (projectId && !(await authorizeProject(c.env.PLATFORM_DB, scope, userId))) {
+    // Conceal absent and inaccessible private projects identically.
+    throw notFound("Project not found");
   }
-
-  if (useAutoRag) {
-    try {
-      const ai = c.env.AI as unknown as {
-        autorag(name: string): {
-          search(args: { query: string; max_num_results?: number; filters?: unknown }): Promise<{
-            data?: Array<{ filename?: string; score?: number; content?: Array<{ text?: string }> }>;
-          }>;
-        };
-      };
-      const instance = ai.autorag(c.env.AUTORAG_KB_INSTANCE as string);
-      const res = await instance.search({
-        query: query.trim(),
-        max_num_results: topK,
-        // AutoRAG is configured to watch this worker's own KB_BUCKET at the `autorag/` prefix
-        // (see autoragKbKey) — filenames there already encode space/project, so a metadata
-        // filter further narrows results to this exact space+project (defense in depth, same
-        // isolation guarantee the legacy path's Vectorize filter already provides).
-        filters: { type: "eq", key: "folder", value: `autorag/${spaceId}/${projectId ?? "_space"}/` },
-      });
-      const results = (res.data ?? []).map((d, i) => {
-        const rawContent = (d.content ?? []).map((c2) => c2.text ?? "").join("\n");
-        return {
-          chunk_id: d.filename ?? `autorag_${i}`,
-          doc_id: (d.filename ?? "").split("/").pop()?.replace(/\.md$/, "") ?? "",
-          chunk_index: 0,
-          content: `<kb_content>${rawContent}</kb_content>`,
-          score: d.score ?? 1 - i / Math.max(1, (res.data?.length ?? 1)),
-          dense_score: d.score ?? 0,
-          sparse_score: 0,
-        };
-      });
-      // Same rule as the legacy path below: never cache an empty result.
-      if (results.length > 0) {
-        await safeKvPut(c.env.KB_CACHE, cacheKey, JSON.stringify(results), { expirationTtl: 3600 });
-      }
-      return c.json({ data: results, cached: false, retrieval_mode: "autorag" });
-    } catch {
-      // Best-effort — fall through to the legacy hybrid pipeline below rather than erroring.
-    }
-  }
-
-  // ── Dense retrieval (Vectorize) ───────────────────────────────────────────
-  const queryEmbed = await embedText(c.env.AI, query.trim());
-
-  const denseResponse = await c.env.KB_VECTORS.query(queryEmbed.embedding, {
-    topK: topK * 2,
-    filter: { space_id: { $eq: spaceId }, project_id: { $eq: projectId ?? SPACE_WIDE_PROJECT_SENTINEL } },
-    returnMetadata: "indexed",
+  const policyVersion = c.env.RETRIEVAL_POLICY_VERSION ?? "1";
+  const mode = useAutoRag ? "autorag" : "hybrid";
+  const namespace = `${tenantId}:${spaceId}:${scope.projectId}:${roleRank}:${mode}:${policyVersion}`;
+  const telemetry: Record<string, number> = {};
+  const timed = async <T>(name: string, operation: () => Promise<T>): Promise<T> => {
+    const started = performance.now();
+    try { return await operation(); }
+    finally { telemetry[name] = performance.now() - started; }
+  };
+  const rowToHit = (row: Record<string, unknown>, score: number): GroundedSearchHit => ({
+    id: String(row.id), score, content: String(row.content), r2Key: String(row.r2_key),
+    byteStart: Number(row.byte_start), byteEnd: Number(row.byte_end),
+    lineStart: Number(row.line_start), lineEnd: Number(row.line_end), title: String(row.title ?? ""),
   });
-
-  const denseMatches = denseResponse.matches ?? [];
-
-  // Build dense results for RRF (id = vector id like "{docId}_chunk_{i}")
-  const denseForRrf = denseMatches.map(m => ({ id: m.id, score: m.score ?? 0 }));
-
-  // ── Sparse retrieval (BM25) ───────────────────────────────────────────────
-  // Fetch chunk content from R2 for all dense candidates to run BM25 over them
-  const chunkContents: Array<{ id: string; content: string; docId: string; chunkIndex: number }> = [];
-
-  await Promise.all(
-    denseMatches.map(async (match) => {
-      // Vector ID format: "{docId}_chunk_{i}"
-      const parts = match.id.split("_chunk_");
-      if (parts.length !== 2) return;
-      const [matchDocId, chunkIdxStr] = parts as [string, string];
-      const chunkIndex = parseInt(chunkIdxStr, 10);
-      if (isNaN(chunkIndex)) return;
-
-      const chunkRecord = await readChunkFromR2(c.env.KB_BUCKET, spaceId, projectId, matchDocId, chunkIndex);
-      if (!chunkRecord) return;
-
-      chunkContents.push({
-        id: match.id,
-        content: chunkRecord.content,
-        docId: matchDocId,
-        chunkIndex,
+  const result = await googleModeSearch(query.trim(), scope, {
+    now: Date.now,
+    cache: {
+      lookup: async (q, _scope, nowMs) => timed("cache_lookup_ms", async () => {
+        const key = `grounded:${await sha256Hex(`${namespace}:${q}`)}`;
+        const value = await c.env.KB_CACHE.get(key, "json") as { createdAt: number; expiresAt: number; hits: GroundedSearchHit[] } | null;
+        if (!value) return null;
+        if (value.expiresAt <= nowMs || value.createdAt > nowMs) { await c.env.KB_CACHE.delete(key); return null; }
+        return value;
+      }),
+      store: async (q, _scope, hits, expiresAt) => {
+        if (!hits.length) return;
+        const key = `grounded:${await sha256Hex(`${namespace}:${q}`)}`;
+        await safeKvPut(c.env.KB_CACHE, key, JSON.stringify({ createdAt: Date.now(), expiresAt, hits }), { expirationTtl: 3600 });
+      },
+    },
+    dense: async (q, scoped) => timed("dense_search_ms", async () => {
+      const embedded = await timed("embedding_ms", () => embedText(c.env.AI, q));
+      const found = await c.env.KB_VECTORS.query(embedded.embedding, {
+        topK: topK * 2,
+        filter: {
+          tenant_id: { $eq: scoped.tenantId }, space_id: { $eq: scoped.spaceId },
+          project_id: { $eq: scoped.projectId }, required_role_rank: { $lte: scoped.roleRank },
+        },
+        returnMetadata: "indexed",
       });
-    })
-  );
+      const ids = (found.matches ?? []).map((m) => m.id);
+      if (!ids.length) return [];
+      const placeholders = ids.map(() => "?").join(",");
+      const rows = await c.env.PLATFORM_DB.prepare(
+        `SELECT k.*, d.title FROM kb_chunks k JOIN kb_documents d ON d.id=k.document_id
+         WHERE k.id IN (${placeholders}) AND k.tenant_id=? AND k.space_id=? AND k.project_id=?
+           AND k.required_role_rank<=? AND k.deleted_at IS NULL`
+      ).bind(...ids, scoped.tenantId, scoped.spaceId, scoped.projectId, scoped.roleRank).all<Record<string, unknown>>();
+      const byId = new Map(rows.results.map((row) => [String(row.id), row]));
+      return (found.matches ?? []).flatMap((match) => {
+        const row = byId.get(match.id); return row ? [rowToHit(row, match.score ?? 0)] : [];
+      });
+    }),
+    // Sparse retrieval searches the entire authorized FTS corpus, never only dense candidates.
+    sparse: async (q, scoped) => timed("sparse_search_ms", async () => {
+      const rows = await c.env.PLATFORM_DB.prepare(
+        `SELECT k.*, d.title, bm25(kb_chunks_fts) AS rank FROM kb_chunks_fts f
+         JOIN kb_chunks k ON k.rowid=f.rowid JOIN kb_documents d ON d.id=k.document_id
+         WHERE kb_chunks_fts MATCH ? AND k.tenant_id=? AND k.space_id=? AND k.project_id=?
+           AND k.required_role_rank<=? AND k.deleted_at IS NULL ORDER BY rank LIMIT ?`
+      ).bind(q, scoped.tenantId, scoped.spaceId, scoped.projectId, scoped.roleRank, topK * 2).all<Record<string, unknown>>();
+      return rows.results.map((row, index) => rowToHit(row, 1 / (index + 1)));
+    }),
+    web: async (q, scoped) => timed("web_grounding_ms", async () => {
+      if (!c.env.TAVILY_API_KEY) return [];
+      const response = await fetch(TAVILY_SEARCH_URL, { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ api_key: c.env.TAVILY_API_KEY, query: q, max_results: Math.min(topK, 5), search_depth: "basic" }) });
+      if (!response.ok) return [];
+      // Web excerpts stay external/untrusted until separately ingested. They deliberately receive
+      // no fake internal R2 coordinates or citation identity.
+      const data = await response.json<{ results?: TavilyResult[] }>();
+      return (data.results ?? []).map((item, index) => ({ id: `web:${index}`, score: item.score ?? 0,
+        content: item.content ?? "", r2Key: "", byteStart: 0, byteEnd: 0, title: item.title ?? "" }));
+    }),
+    emitTelemetry: (event) => {
+      const payload = { ...event, ...telemetry, retrieval_mode: mode, result_count: 0 };
+      c.env.KNOWLEDGE_ANALYTICS?.writeDataPoint({ blobs: [tenantId, spaceId, scope.projectId, JSON.stringify(payload)], doubles: [event.latencyMs, event.confidence] });
+      console.log(JSON.stringify({ event: "knowledge.retrieval", ...payload }));
+    },
+  }, { confidenceThreshold: Number(c.env.RETRIEVAL_CONFIDENCE_THRESHOLD ?? "0.8"), limit: topK });
 
-  // Score all fetched chunks with BM25
-  const sparseForRrf = bm25Score(
-    query,
-    chunkContents.map(c => ({ id: c.id, content: c.content })),
-  );
-
-  // ── Reciprocal Rank Fusion ─────────────────────────────────────────────────
-  const fused = reciprocalRankFusion(denseForRrf, sparseForRrf);
-
-  // Take top topK from fused list
-  const topFused = fused.slice(0, topK);
-
-  // ── Build final result objects ────────────────────────────────────────────
-  const contentMap = new Map(chunkContents.map(c => [c.id, c]));
-  const denseScoreMap = new Map(denseForRrf.map(r => [r.id, r.score]));
-  const sparseScoreMap = new Map(sparseForRrf.map(r => [r.id, r.score]));
-
-  const results = topFused.map((item) => {
-    const chunkInfo = contentMap.get(item.id);
-    const parts = item.id.split("_chunk_");
-    const docId = parts[0] ?? item.id;
-    const chunkIndex = parts.length === 2 ? parseInt(parts[1] ?? "0", 10) : 0;
-
-    const rawContent = chunkInfo?.content ?? "";
-    // Wrap content in XML tags for prompt injection protection
-    const wrappedContent = `<kb_content>${rawContent}</kb_content>`;
-
-    return {
-      chunk_id: item.id,
-      doc_id: docId,
-      chunk_index: chunkIndex,
-      content: wrappedContent,
-      score: item.score,
-      dense_score: denseScoreMap.get(item.id) ?? 0,
-      sparse_score: sparseScoreMap.get(item.id) ?? 0,
-    };
-  });
-
-  // ── Cache results (G-BE02: safeKvPut validates size before write) ────────
-  //
-  // Only a NON-empty result is cached. An empty one usually means the vectors are not indexed
-  // yet — Vectorize indexes asynchronously — and caching that for an hour makes a document
-  // someone just uploaded invisible long after it became searchable. Seen live: a search run
-  // seconds after an upload cached the miss, and every later search returned `cached: true` with
-  // nothing in it, which reads exactly like ingestion is broken when it is not. A miss is cheap
-  // to recompute; a wrong "there is nothing here" is not.
-  if (results.length > 0) {
-    await safeKvPut(c.env.KB_CACHE, cacheKey, JSON.stringify(results), { expirationTtl: 3600 });
-  }
-
-  return c.json({ data: results, cached: false, retrieval_mode: "legacy" });
+  const data = result.hits.map((hit) => ({
+    chunk_id: hit.id, content: contextEnvelope(hit), score: hit.score,
+    citation: hit.r2Key ? { document_id: hit.id.split("_chunk_")[0], chunk_id: hit.id,
+      content_hash: undefined, byte_start: hit.byteStart, byte_end: hit.byteEnd,
+      line_start: hit.lineStart, line_end: hit.lineEnd } : null,
+  }));
+  return c.json({ data, cached: result.cacheHit, retrieval_mode: mode, confidence: result.confidence,
+    live_grounding: result.liveGrounding, latency_ms: result.latencyMs });
 });
 
 // ── G-AZ19: Semantic Response Cache ──────────────────────────────────────────
