@@ -1085,6 +1085,12 @@ api.all("/spaces/:spaceId/kb/*", async (c) => {
   return proxyTo(c.env.KNOWLEDGE_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET);
 });
 
+// Authenticated, service-bound citation resolution must win over the generic spaces catch-all.
+// The knowledge worker independently repeats project authorization and derives the R2 key.
+api.get("/spaces/:spaceId/projects/:projectId/citations/:documentId/:chunkId", async (c) =>
+  proxyTo(c.env.KNOWLEDGE_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+
 // Credentials (per-user / per-space / privileged-override hierarchy) → credentials worker.
 // Never proxy /internal/* here — internal credential resolution is service-binding-only.
 api.all("/spaces/:spaceId/credentials", async (c) =>

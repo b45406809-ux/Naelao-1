@@ -511,7 +511,7 @@ export function buildMemoryStore(opts: MemoryOSOptions): MemoryStore {
         )
         .toArray() as WikiStoreRow[];
       const results = new Map<string, WikiArticle>();
-      for (const r of rows) results.set(`${r.user_id} ${r.concept}`, toWikiArticle(r));
+      for (const r of rows) results.set(`${r.user_id}\0${r.concept}`, toWikiArticle(r));
 
       // Optional semantic assist: AutoRAG matches concept names by meaning, not just substring —
       // useful for a query like "what's our refund window" finding a concept named
@@ -524,13 +524,13 @@ export function buildMemoryStore(opts: MemoryOSOptions): MemoryStore {
           const hits = await opts.autoRag.search(query.text, { topK: limit });
           for (const hit of hits) {
             if (results.size >= limit) break;
-            const key1 = `${userId} ${hit.concept}`;
-            const key2 = `${UNSCOPED} ${hit.concept}`;
+            const key1 = `${userId}\0${hit.concept}`;
+            const key2 = `${UNSCOPED}\0${hit.concept}`;
             if (results.has(key1) || results.has(key2)) continue;
             const hydrated = opts.sql
               .exec(`SELECT * FROM wiki_store WHERE user_id IN (?, ?) AND concept = ? LIMIT 1`, userId, UNSCOPED, hit.concept)
               .toArray() as WikiStoreRow[];
-            if (hydrated[0]) results.set(`${hydrated[0].user_id} ${hydrated[0].concept}`, toWikiArticle(hydrated[0]));
+            if (hydrated[0]) results.set(`${hydrated[0].user_id}\0${hydrated[0].concept}`, toWikiArticle(hydrated[0]));
           }
         } catch {
           /* AutoRAG assist is best-effort — the SQLite LIKE search above already ran */

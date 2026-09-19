@@ -1,5 +1,7 @@
 # AVOS Finalized Feature Plan
 
+> **2026-09 authoritative delta:** After resolving each item’s Origin & Transition trail, apply `_BUILD_PLAN/EVOLUTIONARY_ARCHITECTURAL_CHANGELOG.md`. It is newer than every archived conversation, the master blueprint, expanded gaps, Appendix A1, and `CLAUDE.md`; it overrides conflicts while retaining compatible dependencies. The implementation batches are the 67 dependency-ordered micro-phases in `repomix/phases.json`, not the older broad phase headings below.
+
 ## How to navigate the source conversations
 
 The feature list below is reproduced verbatim from the final model response in `AVOS Master Architectural Blueprint 1.json`. Use each feature’s **Origin & Transition** line as its source trail:
