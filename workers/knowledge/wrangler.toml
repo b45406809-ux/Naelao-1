@@ -14,6 +14,8 @@ workers_dev = false
 #                      here so every agent gets web search for free (like Claude/ChatGPT bundle
 #                      it) — never the BYO-key space_credentials model. Optional: when unset,
 #                      web-search `search`/`extract` report configured:false; `fetch` still works.
+#   COHERE_API_KEY   — required for PDF/layout ingestion through Cohere parse-v5.0. Ingestion
+#                      fails closed when a parse-required document is submitted without it.
 
 [ai]
 binding = "AI"
@@ -38,6 +40,10 @@ index_name = "naelao-semantic-cache"
 binding = "SEMANTIC_CACHE_KV"
 id = "10ca4ecaba3e40deaf7e7cb53ed7c5cf"
 
+[[analytics_engine_datasets]]
+binding = "KNOWLEDGE_ANALYTICS"
+dataset = "naelao_knowledge_retrieval"
+
 [[d1_databases]]
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"
@@ -45,9 +51,11 @@ database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 
 [vars]
 ENVIRONMENT = "development"
+RETRIEVAL_POLICY_VERSION = "1"
+RETRIEVAL_CONFIDENCE_THRESHOLD = "0.8"
 
 [env.staging]
-vars = { ENVIRONMENT = "staging" }
+vars = { ENVIRONMENT = "staging", RETRIEVAL_POLICY_VERSION = "1", RETRIEVAL_CONFIDENCE_THRESHOLD = "0.8" }
 
 [env.production]
-vars = { ENVIRONMENT = "production" }
+vars = { ENVIRONMENT = "production", RETRIEVAL_POLICY_VERSION = "1", RETRIEVAL_CONFIDENCE_THRESHOLD = "0.8" }

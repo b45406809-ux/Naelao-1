@@ -1,0 +1,742 @@
+{
+  "schema_version": 2,
+  "target_input_tokens": 48000,
+  "hard_input_tokens": 64000,
+  "phases": [
+    {
+      "phase": 1,
+      "from": 1,
+      "to": 2,
+      "focus": "Plan items 1–2",
+      "prompt": "repomix/prompts/batch-01-items-1-2.md",
+      "macro_profile": 1,
+      "depends_on": []
+    },
+    {
+      "phase": 2,
+      "from": 3,
+      "to": 4,
+      "focus": "Plan items 3–4",
+      "prompt": "repomix/prompts/batch-02-items-3-4.md",
+      "macro_profile": 1,
+      "depends_on": [
+        1
+      ]
+    },
+    {
+      "phase": 3,
+      "from": 5,
+      "to": 6,
+      "focus": "Plan items 5–6",
+      "prompt": "repomix/prompts/batch-03-items-5-6.md",
+      "macro_profile": 1,
+      "depends_on": [
+        2
+      ]
+    },
+    {
+      "phase": 4,
+      "from": 7,
+      "to": 8,
+      "focus": "Plan items 7–8",
+      "prompt": "repomix/prompts/batch-04-items-7-8.md",
+      "macro_profile": 1,
+      "depends_on": [
+        3
+      ]
+    },
+    {
+      "phase": 5,
+      "from": 9,
+      "to": 10,
+      "focus": "Plan items 9–10",
+      "prompt": "repomix/prompts/batch-05-items-9-10.md",
+      "macro_profile": 1,
+      "depends_on": [
+        4
+      ]
+    },
+    {
+      "phase": 6,
+      "from": 11,
+      "to": 12,
+      "focus": "Plan items 11–12",
+      "prompt": "repomix/prompts/batch-06-items-11-12.md",
+      "macro_profile": 1,
+      "depends_on": [
+        5
+      ]
+    },
+    {
+      "phase": 7,
+      "from": 13,
+      "to": 14,
+      "focus": "Plan items 13–14",
+      "prompt": "repomix/prompts/batch-07-items-13-14.md",
+      "macro_profile": 1,
+      "depends_on": [
+        6
+      ]
+    },
+    {
+      "phase": 8,
+      "from": 15,
+      "to": 16,
+      "focus": "Plan items 15–16",
+      "prompt": "repomix/prompts/batch-08-items-15-16.md",
+      "macro_profile": 1,
+      "depends_on": [
+        7
+      ]
+    },
+    {
+      "phase": 9,
+      "from": 17,
+      "to": 18,
+      "focus": "Plan items 17–18",
+      "prompt": "repomix/prompts/batch-09-items-17-18.md",
+      "macro_profile": 1,
+      "depends_on": [
+        8
+      ]
+    },
+    {
+      "phase": 10,
+      "from": 19,
+      "to": 19,
+      "focus": "Plan items 19–19",
+      "prompt": "repomix/prompts/batch-10-items-19-19.md",
+      "macro_profile": 1,
+      "depends_on": [
+        9
+      ]
+    },
+    {
+      "phase": 11,
+      "from": 20,
+      "to": 21,
+      "focus": "Plan items 20–21",
+      "prompt": "repomix/prompts/batch-11-items-20-21.md",
+      "macro_profile": 2,
+      "depends_on": [
+        10
+      ]
+    },
+    {
+      "phase": 12,
+      "from": 22,
+      "to": 23,
+      "focus": "Plan items 22–23",
+      "prompt": "repomix/prompts/batch-12-items-22-23.md",
+      "macro_profile": 2,
+      "depends_on": [
+        11
+      ]
+    },
+    {
+      "phase": 13,
+      "from": 24,
+      "to": 24,
+      "focus": "Plan items 24–24",
+      "prompt": "repomix/prompts/batch-13-items-24-24.md",
+      "macro_profile": 2,
+      "depends_on": [
+        12
+      ]
+    },
+    {
+      "phase": 14,
+      "from": 25,
+      "to": 26,
+      "focus": "Plan items 25–26",
+      "prompt": "repomix/prompts/batch-14-items-25-26.md",
+      "macro_profile": 3,
+      "depends_on": [
+        13
+      ]
+    },
+    {
+      "phase": 15,
+      "from": 27,
+      "to": 28,
+      "focus": "Plan items 27–28",
+      "prompt": "repomix/prompts/batch-15-items-27-28.md",
+      "macro_profile": 3,
+      "depends_on": [
+        14
+      ]
+    },
+    {
+      "phase": 16,
+      "from": 29,
+      "to": 30,
+      "focus": "Plan items 29–30",
+      "prompt": "repomix/prompts/batch-16-items-29-30.md",
+      "macro_profile": 3,
+      "depends_on": [
+        15
+      ]
+    },
+    {
+      "phase": 17,
+      "from": 31,
+      "to": 32,
+      "focus": "Plan items 31–32",
+      "prompt": "repomix/prompts/batch-17-items-31-32.md",
+      "macro_profile": 3,
+      "depends_on": [
+        16
+      ]
+    },
+    {
+      "phase": 18,
+      "from": 33,
+      "to": 34,
+      "focus": "Plan items 33–34",
+      "prompt": "repomix/prompts/batch-18-items-33-34.md",
+      "macro_profile": 3,
+      "depends_on": [
+        17
+      ]
+    },
+    {
+      "phase": 19,
+      "from": 35,
+      "to": 36,
+      "focus": "Plan items 35–36",
+      "prompt": "repomix/prompts/batch-19-items-35-36.md",
+      "macro_profile": 3,
+      "depends_on": [
+        18
+      ]
+    },
+    {
+      "phase": 20,
+      "from": 37,
+      "to": 38,
+      "focus": "Plan items 37–38",
+      "prompt": "repomix/prompts/batch-20-items-37-38.md",
+      "macro_profile": 3,
+      "depends_on": [
+        19
+      ]
+    },
+    {
+      "phase": 21,
+      "from": 39,
+      "to": 40,
+      "focus": "Plan items 39–40",
+      "prompt": "repomix/prompts/batch-21-items-39-40.md",
+      "macro_profile": 4,
+      "depends_on": [
+        20
+      ]
+    },
+    {
+      "phase": 22,
+      "from": 41,
+      "to": 42,
+      "focus": "Plan items 41–42",
+      "prompt": "repomix/prompts/batch-22-items-41-42.md",
+      "macro_profile": 4,
+      "depends_on": [
+        21
+      ]
+    },
+    {
+      "phase": 23,
+      "from": 43,
+      "to": 44,
+      "focus": "Plan items 43–44",
+      "prompt": "repomix/prompts/batch-23-items-43-44.md",
+      "macro_profile": 4,
+      "depends_on": [
+        22
+      ]
+    },
+    {
+      "phase": 24,
+      "from": 45,
+      "to": 46,
+      "focus": "Plan items 45–46",
+      "prompt": "repomix/prompts/batch-24-items-45-46.md",
+      "macro_profile": 4,
+      "depends_on": [
+        23
+      ]
+    },
+    {
+      "phase": 25,
+      "from": 47,
+      "to": 48,
+      "focus": "Plan items 47–48",
+      "prompt": "repomix/prompts/batch-25-items-47-48.md",
+      "macro_profile": 5,
+      "depends_on": [
+        24
+      ]
+    },
+    {
+      "phase": 26,
+      "from": 49,
+      "to": 50,
+      "focus": "Plan items 49–50",
+      "prompt": "repomix/prompts/batch-26-items-49-50.md",
+      "macro_profile": 5,
+      "depends_on": [
+        25
+      ]
+    },
+    {
+      "phase": 27,
+      "from": 51,
+      "to": 52,
+      "focus": "Plan items 51–52",
+      "prompt": "repomix/prompts/batch-27-items-51-52.md",
+      "macro_profile": 5,
+      "depends_on": [
+        26
+      ]
+    },
+    {
+      "phase": 28,
+      "from": 53,
+      "to": 54,
+      "focus": "Plan items 53–54",
+      "prompt": "repomix/prompts/batch-28-items-53-54.md",
+      "macro_profile": 5,
+      "depends_on": [
+        27
+      ]
+    },
+    {
+      "phase": 29,
+      "from": 55,
+      "to": 56,
+      "focus": "Plan items 55–56",
+      "prompt": "repomix/prompts/batch-29-items-55-56.md",
+      "macro_profile": 6,
+      "depends_on": [
+        28
+      ]
+    },
+    {
+      "phase": 30,
+      "from": 57,
+      "to": 58,
+      "focus": "Plan items 57–58",
+      "prompt": "repomix/prompts/batch-30-items-57-58.md",
+      "macro_profile": 6,
+      "depends_on": [
+        29
+      ]
+    },
+    {
+      "phase": 31,
+      "from": 59,
+      "to": 60,
+      "focus": "Plan items 59–60",
+      "prompt": "repomix/prompts/batch-31-items-59-60.md",
+      "macro_profile": 6,
+      "depends_on": [
+        30
+      ]
+    },
+    {
+      "phase": 32,
+      "from": 61,
+      "to": 62,
+      "focus": "Plan items 61–62",
+      "prompt": "repomix/prompts/batch-32-items-61-62.md",
+      "macro_profile": 7,
+      "depends_on": [
+        31
+      ]
+    },
+    {
+      "phase": 33,
+      "from": 63,
+      "to": 64,
+      "focus": "Plan items 63–64",
+      "prompt": "repomix/prompts/batch-33-items-63-64.md",
+      "macro_profile": 7,
+      "depends_on": [
+        32
+      ]
+    },
+    {
+      "phase": 34,
+      "from": 65,
+      "to": 66,
+      "focus": "Plan items 65–66",
+      "prompt": "repomix/prompts/batch-34-items-65-66.md",
+      "macro_profile": 7,
+      "depends_on": [
+        33
+      ]
+    },
+    {
+      "phase": 35,
+      "from": 67,
+      "to": 68,
+      "focus": "Plan items 67–68",
+      "prompt": "repomix/prompts/batch-35-items-67-68.md",
+      "macro_profile": 7,
+      "depends_on": [
+        34
+      ]
+    },
+    {
+      "phase": 36,
+      "from": 69,
+      "to": 70,
+      "focus": "Plan items 69–70",
+      "prompt": "repomix/prompts/batch-36-items-69-70.md",
+      "macro_profile": 7,
+      "depends_on": [
+        35
+      ]
+    },
+    {
+      "phase": 37,
+      "from": 71,
+      "to": 72,
+      "focus": "Plan items 71–72",
+      "prompt": "repomix/prompts/batch-37-items-71-72.md",
+      "macro_profile": 8,
+      "depends_on": [
+        36
+      ]
+    },
+    {
+      "phase": 38,
+      "from": 73,
+      "to": 74,
+      "focus": "Plan items 73–74",
+      "prompt": "repomix/prompts/batch-38-items-73-74.md",
+      "macro_profile": 8,
+      "depends_on": [
+        37
+      ]
+    },
+    {
+      "phase": 39,
+      "from": 75,
+      "to": 75,
+      "focus": "Plan items 75–75",
+      "prompt": "repomix/prompts/batch-39-items-75-75.md",
+      "macro_profile": 8,
+      "depends_on": [
+        38
+      ]
+    },
+    {
+      "phase": 40,
+      "from": 76,
+      "to": 77,
+      "focus": "Plan items 76–77",
+      "prompt": "repomix/prompts/batch-40-items-76-77.md",
+      "macro_profile": 9,
+      "depends_on": [
+        39
+      ]
+    },
+    {
+      "phase": 41,
+      "from": 78,
+      "to": 79,
+      "focus": "Plan items 78–79",
+      "prompt": "repomix/prompts/batch-41-items-78-79.md",
+      "macro_profile": 9,
+      "depends_on": [
+        40
+      ]
+    },
+    {
+      "phase": 42,
+      "from": 80,
+      "to": 81,
+      "focus": "Plan items 80–81",
+      "prompt": "repomix/prompts/batch-42-items-80-81.md",
+      "macro_profile": 9,
+      "depends_on": [
+        41
+      ]
+    },
+    {
+      "phase": 43,
+      "from": 82,
+      "to": 83,
+      "focus": "Plan items 82–83",
+      "prompt": "repomix/prompts/batch-43-items-82-83.md",
+      "macro_profile": 9,
+      "depends_on": [
+        42
+      ]
+    },
+    {
+      "phase": 44,
+      "from": 84,
+      "to": 85,
+      "focus": "Plan items 84–85",
+      "prompt": "repomix/prompts/batch-44-items-84-85.md",
+      "macro_profile": 9,
+      "depends_on": [
+        43
+      ]
+    },
+    {
+      "phase": 45,
+      "from": 86,
+      "to": 87,
+      "focus": "Plan items 86–87",
+      "prompt": "repomix/prompts/batch-45-items-86-87.md",
+      "macro_profile": 9,
+      "depends_on": [
+        44
+      ]
+    },
+    {
+      "phase": 46,
+      "from": 88,
+      "to": 89,
+      "focus": "Plan items 88–89",
+      "prompt": "repomix/prompts/batch-46-items-88-89.md",
+      "macro_profile": 10,
+      "depends_on": [
+        45
+      ]
+    },
+    {
+      "phase": 47,
+      "from": 90,
+      "to": 91,
+      "focus": "Plan items 90–91",
+      "prompt": "repomix/prompts/batch-47-items-90-91.md",
+      "macro_profile": 10,
+      "depends_on": [
+        46
+      ]
+    },
+    {
+      "phase": 48,
+      "from": 92,
+      "to": 93,
+      "focus": "Plan items 92–93",
+      "prompt": "repomix/prompts/batch-48-items-92-93.md",
+      "macro_profile": 10,
+      "depends_on": [
+        47
+      ]
+    },
+    {
+      "phase": 49,
+      "from": 94,
+      "to": 95,
+      "focus": "Plan items 94–95",
+      "prompt": "repomix/prompts/batch-49-items-94-95.md",
+      "macro_profile": 10,
+      "depends_on": [
+        48
+      ]
+    },
+    {
+      "phase": 50,
+      "from": 96,
+      "to": 97,
+      "focus": "Plan items 96–97",
+      "prompt": "repomix/prompts/batch-50-items-96-97.md",
+      "macro_profile": 10,
+      "depends_on": [
+        49
+      ]
+    },
+    {
+      "phase": 51,
+      "from": 98,
+      "to": 99,
+      "focus": "Plan items 98–99",
+      "prompt": "repomix/prompts/batch-51-items-98-99.md",
+      "macro_profile": 10,
+      "depends_on": [
+        50
+      ]
+    },
+    {
+      "phase": 52,
+      "from": 100,
+      "to": 101,
+      "focus": "Plan items 100–101",
+      "prompt": "repomix/prompts/batch-52-items-100-101.md",
+      "macro_profile": 10,
+      "depends_on": [
+        51
+      ]
+    },
+    {
+      "phase": 53,
+      "from": 102,
+      "to": 103,
+      "focus": "Plan items 102–103",
+      "prompt": "repomix/prompts/batch-53-items-102-103.md",
+      "macro_profile": 10,
+      "depends_on": [
+        52
+      ]
+    },
+    {
+      "phase": 54,
+      "from": 104,
+      "to": 105,
+      "focus": "Plan items 104–105",
+      "prompt": "repomix/prompts/batch-54-items-104-105.md",
+      "macro_profile": 11,
+      "depends_on": [
+        53
+      ]
+    },
+    {
+      "phase": 55,
+      "from": 106,
+      "to": 107,
+      "focus": "Plan items 106–107",
+      "prompt": "repomix/prompts/batch-55-items-106-107.md",
+      "macro_profile": 11,
+      "depends_on": [
+        54
+      ]
+    },
+    {
+      "phase": 56,
+      "from": 108,
+      "to": 109,
+      "focus": "Plan items 108–109",
+      "prompt": "repomix/prompts/batch-56-items-108-109.md",
+      "macro_profile": 11,
+      "depends_on": [
+        55
+      ]
+    },
+    {
+      "phase": 57,
+      "from": 110,
+      "to": 111,
+      "focus": "Plan items 110–111",
+      "prompt": "repomix/prompts/batch-57-items-110-111.md",
+      "macro_profile": 11,
+      "depends_on": [
+        56
+      ]
+    },
+    {
+      "phase": 58,
+      "from": 112,
+      "to": 113,
+      "focus": "Plan items 112–113",
+      "prompt": "repomix/prompts/batch-58-items-112-113.md",
+      "macro_profile": 12,
+      "depends_on": [
+        57
+      ]
+    },
+    {
+      "phase": 59,
+      "from": 114,
+      "to": 115,
+      "focus": "Plan items 114–115",
+      "prompt": "repomix/prompts/batch-59-items-114-115.md",
+      "macro_profile": 12,
+      "depends_on": [
+        58
+      ]
+    },
+    {
+      "phase": 60,
+      "from": 116,
+      "to": 117,
+      "focus": "Plan items 116–117",
+      "prompt": "repomix/prompts/batch-60-items-116-117.md",
+      "macro_profile": 12,
+      "depends_on": [
+        59
+      ]
+    },
+    {
+      "phase": 61,
+      "from": 118,
+      "to": 119,
+      "focus": "Plan items 118–119",
+      "prompt": "repomix/prompts/batch-61-items-118-119.md",
+      "macro_profile": 12,
+      "depends_on": [
+        60
+      ]
+    },
+    {
+      "phase": 62,
+      "from": 120,
+      "to": 121,
+      "focus": "Plan items 120–121",
+      "prompt": "repomix/prompts/batch-62-items-120-121.md",
+      "macro_profile": 13,
+      "depends_on": [
+        61
+      ]
+    },
+    {
+      "phase": 63,
+      "from": 122,
+      "to": 123,
+      "focus": "Plan items 122–123",
+      "prompt": "repomix/prompts/batch-63-items-122-123.md",
+      "macro_profile": 13,
+      "depends_on": [
+        62
+      ]
+    },
+    {
+      "phase": 64,
+      "from": 124,
+      "to": 125,
+      "focus": "Plan items 124–125",
+      "prompt": "repomix/prompts/batch-64-items-124-125.md",
+      "macro_profile": 13,
+      "depends_on": [
+        63
+      ]
+    },
+    {
+      "phase": 65,
+      "from": 126,
+      "to": 127,
+      "focus": "Plan items 126–127",
+      "prompt": "repomix/prompts/batch-65-items-126-127.md",
+      "macro_profile": 13,
+      "depends_on": [
+        64
+      ]
+    },
+    {
+      "phase": 66,
+      "from": 128,
+      "to": 129,
+      "focus": "Plan items 128–129",
+      "prompt": "repomix/prompts/batch-66-items-128-129.md",
+      "macro_profile": 13,
+      "depends_on": [
+        65
+      ]
+    },
+    {
+      "phase": 67,
+      "from": 130,
+      "to": 130,
+      "focus": "Plan items 130–130",
+      "prompt": "repomix/prompts/batch-67-items-130-130.md",
+      "macro_profile": 13,
+      "depends_on": [
+        66
+      ]
+    }
+  ]
+}

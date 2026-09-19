@@ -283,6 +283,9 @@ export interface Message {
     /** Step 5/7/11: artifacts the assistant CREATED during this run — rendered inline as a
      *  preview (iframe for HTML + download) at this turn, like Claude showing an artifact. */
     created_artifacts?: Array<{ artifact_id: string; filename: string; content_type?: string }>;
+    /** Versioned immutable citation events emitted by the agent stream. Ordinals are assigned
+     * once server-side and are never inferred from render order. */
+    citations?: Array<{ version: 1; ordinal: number; identity: string; document_id: string; chunk_id: string; label?: string }>;
   };
   /** CLIENT-ONLY, never persisted server-side: the "currently doing X" activity trail this run
    *  produced (observe/find/gate/reason/run/answer steps, live while the run was in flight — see
@@ -309,6 +312,15 @@ export interface Message {
    *  reveal animation would otherwise restart from empty and re-type text that was just read (the
    *  visible "snap" at stream completion). RevealText seeds itself with this instead. */
   revealedPrefix?: string;
+}
+
+export async function resolveCitation(
+  spaceId: string,
+  projectId: string,
+  citation: { document_id: string; chunk_id: string },
+  session: SessionCredentials
+): Promise<{ citation: Record<string, unknown>; content: string }> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/citations/${encodeURIComponent(citation.document_id)}/${encodeURIComponent(citation.chunk_id)}`, { session });
 }
 
 export interface ConsultedThread {
