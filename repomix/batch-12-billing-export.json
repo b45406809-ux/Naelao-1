@@ -4,7 +4,7 @@
     "maxFileSize": 5000000
   },
   "output": {
-    "filePath": ".repomix-cache/batch-12-billing-export.xml",
+    "filePath": "repomix/outputs/batch-12-billing-export.xml",
     "style": "xml",
     "parsableStyle": true,
     "fileSummary": true,
@@ -14,7 +14,7 @@
     "showLineNumbers": true,
     "copyToClipboard": false,
     "topFilesLength": 40,
-    "instructionFilePath": ".repomix-cache/authority-batch-12.md"
+    "instructionFilePath": "repomix/prompts/batch-12-items-112-119.md"
   },
   "include": [
     "package.json",
@@ -75,7 +75,10 @@
     "workers/spaces/wrangler.toml",
     "apps/dashboard/src/app/**/billing/**",
     "apps/dashboard/src/lib/**",
-    "apps/dashboard/package.json"
+    "apps/dashboard/package.json",
+    "workers/agents/src/do/TaskDO.ts",
+    "workers/agents/src/script-engine/prebuilt/sub-agent.ts",
+    "workers/agents/src/workflows/**"
   ],
   "ignore": {
     "useGitignore": true,

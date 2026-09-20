@@ -1,5 +1,20 @@
 # AI Studio implementation prompt — batch 06, plan items 55–60
 
+## Manual AI Studio hand-off contract
+
+Implement this batch against the repository snapshot embedded after this instruction. Return the
+implementation as **one complete unified Git diff** beginning with `diff --git`. Do not return a
+shell script, prose before the diff, a partial snippet, or Markdown fences. The downloaded response
+must be saved as `repomix/patches/batch-06.patch` and committed to
+the accumulator branch. That path triggers the repository's batch-application workflow, which
+validates and applies the patch, rebuilds the prompts, verifies the Repomix configuration, commits
+the resulting code, and publishes the next batch XML plus its prompt as a workflow artifact.
+
+The patch must not edit generated `repomix/outputs/` files, `.repomix-cache/`, or the downloaded
+patch itself. Include tests and configuration changes in the same diff. If the entire batch cannot
+fit, still return one apply-ready diff at an atomic verified boundary; the next downloaded patch
+for the same batch continues from the newly generated repository snapshot.
+
 ## Mission
 
 Implement every requirement below end to end on the current accumulator branch. The cohesive focus
@@ -7,6 +22,10 @@ is **Thread tiers, solo promotion, artifact CAS, locks, PRs, and rebases**. This
 constraints have already been extracted and reconciled into the final specification below.
 Do not seek or cite external design context. Repository code is evidence of current
 state, not evidence that a requirement is complete.
+
+When present, the **Final reconciled architectural changes** section is the newest authority in
+this prompt. Where it updates or replaces a numbered plan requirement or retained constraint,
+implement the new architecture and do not preserve the superseded behavior for compatibility.
 
 ## Non-negotiable production rules
 
@@ -875,23 +894,32 @@ export const checkAndReconcileUpstream = async (ctx: PrebuiltOpContext) => {
 | **Multi-Model Branch Races** | Fork 3 branches for 3 models in parallel; merge the winning benchmarked code. |
 | **AST-Aware Merge Resolver** | AI resolves Git merge conflicts automatically by understanding code syntax. |
 
+## Final reconciled architectural changes (newest authority)
+
+These are normative replacements, not optional context. Remove or migrate superseded behavior; do not implement both architectures.
+
+#### 4. Asymmetric Subagent Topology (Verbs vs. Nouns)
+* **This updates/replaces:** Over-engineering subagents into full mini-operating systems with their own thread trees, message schemas, and session managers.
+* **The New Architecture & Mental Model:** Subagents are **ephemeral execution functions ("verbs")**, while only the Parent Agent is a **persistent entity ("noun")** that owns threads and UI. Subagents run with a slimmed-down `SubagentContext` (`ai`, `fs`, `cli`, `vault`, `step`), perform their assigned task, return a clean JSON result to the parent, and dissolve.
+* **Key Invariant:** Subagents never create user-facing threads, manage WebSockets, or pollute the UI. The Parent Agent receives the subagent’s output and renders a single, compact **2-line Receipt Card**.
+
+#### 17. Generalization of `/workspace/` (Deliverable Canvas, Not Just Code)
+* **This updates/replaces:** The developer bias that Git and `/workspace/` are strictly for programming source code.
+* **The New Architecture & Mental Model:** `/workspace/` is the **Project Deliverable Canvas** regardless of file format. In legal projects, it holds contract suites (`.docx`, `.md`); in finance, it holds Excel models (`.xlsx`, `.csv`); in coding, it holds source code (`src/`). All executable agent machinery (skills, workflows, daemons) lives strictly in `/.avos/`.
+* **Key Invariant:** Cloudflare Artifacts (Git for Agents) versions any file type; Pull Request cards adapt to show spreadsheet cell deltas or document redlines.
+
 ## Required execution and response
 
 1. Convert every numbered specification above into a file/request-path checklist before editing.
 2. Implement in dependency order and reuse canonical workers/DOs rather than parallel helpers.
-3. Return complete apply-ready unified diffs for every changed, created, or deleted file. Do not use
+3. Return one complete apply-ready unified diff for every changed, created, or deleted file. Do not use
    ellipses, pseudo-code, TODO-only stubs, omitted boilerplate, or comments standing in for code.
 4. Include exact migration, provisioning, secret rotation, rollout/backfill, rollback, and staging
    smoke commands.
 5. Include exact test/typecheck/config-parity commands and the security/race assertions they prove.
 6. Finish with an item-by-item release ledger: IMPLEMENTED, PARTIAL, or MISSING with honest gaps.
 
-For automation, put exactly one machine-readable line before the first diff:
-`PHASE_STATUS: CONTINUE` when another implementation turn is required, or
-`PHASE_STATUS: COMPLETE` only when every numbered item and verification boundary is finished.
-Place all prose after the diff or in a separate `PHASE_NOTES` section. A COMPLETE response with no
-apply-ready diff is valid only when the current branch already satisfies and verifies every item.
-
 Do not silently omit an item. If one response cannot hold the implementation, stop only after an
-atomic, testable commit boundary and return a continuation prompt containing the remaining numbered
-specifications and current verification state. Never claim completion because code merely compiles.
+atomic, testable commit boundary. Never claim completion because code merely compiles. The response
+must start with `diff --git`; record verification notes in an added or updated repository file if
+they are necessary to preserve them.

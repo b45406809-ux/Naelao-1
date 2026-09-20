@@ -21,4 +21,5 @@ repomix-*.txt
 
 # Reproducible Repomix authority extracts and packed outputs
 .repomix-cache/
+repomix/outputs/
 .phase-runs/

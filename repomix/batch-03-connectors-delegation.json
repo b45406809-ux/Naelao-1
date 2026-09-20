@@ -4,7 +4,7 @@
     "maxFileSize": 5000000
   },
   "output": {
-    "filePath": ".repomix-cache/batch-03-connectors-delegation.xml",
+    "filePath": "repomix/outputs/batch-03-connectors-delegation.xml",
     "style": "xml",
     "parsableStyle": true,
     "fileSummary": true,
@@ -14,7 +14,7 @@
     "showLineNumbers": true,
     "copyToClipboard": false,
     "topFilesLength": 40,
-    "instructionFilePath": ".repomix-cache/authority-batch-3.md"
+    "instructionFilePath": "repomix/prompts/batch-03-items-25-38.md"
   },
   "include": [
     "package.json",
@@ -66,7 +66,13 @@
     "workers/agents/src/script-engine/prebuilt/connectors.ts",
     "workers/agents/src/do/NaelaoAgentDO.ts",
     "workers/connector-gumroad/**",
-    "workers/connector-whop/**"
+    "workers/connector-whop/**",
+    "workers/assistant/**",
+    "workers/agents/src/do/ConcurrencyDO.ts",
+    "workers/agents/src/script-engine/prebuilt/sub-agent.ts",
+    "workers/agents/src/workflows/**",
+    "apps/shell/src/app/p/[slug]/(shell)/connectors/**",
+    "apps/shell/src/lib/connectorActions.ts"
   ],
   "ignore": {
     "useGitignore": true,

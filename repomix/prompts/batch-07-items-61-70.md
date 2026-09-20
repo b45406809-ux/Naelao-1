@@ -1,5 +1,20 @@
 # AI Studio implementation prompt — batch 07, plan items 61–70
 
+## Manual AI Studio hand-off contract
+
+Implement this batch against the repository snapshot embedded after this instruction. Return the
+implementation as **one complete unified Git diff** beginning with `diff --git`. Do not return a
+shell script, prose before the diff, a partial snippet, or Markdown fences. The downloaded response
+must be saved as `repomix/patches/batch-07.patch` and committed to
+the accumulator branch. That path triggers the repository's batch-application workflow, which
+validates and applies the patch, rebuilds the prompts, verifies the Repomix configuration, commits
+the resulting code, and publishes the next batch XML plus its prompt as a workflow artifact.
+
+The patch must not edit generated `repomix/outputs/` files, `.repomix-cache/`, or the downloaded
+patch itself. Include tests and configuration changes in the same diff. If the entire batch cannot
+fit, still return one apply-ready diff at an atomic verified boundary; the next downloaded patch
+for the same batch continues from the newly generated repository snapshot.
+
 ## Mission
 
 Implement every requirement below end to end on the current accumulator branch. The cohesive focus
@@ -7,6 +22,10 @@ is **Task governance, provenance, model races, presence, and actor identity**. T
 constraints have already been extracted and reconciled into the final specification below.
 Do not seek or cite external design context. Repository code is evidence of current
 state, not evidence that a requirement is complete.
+
+When present, the **Final reconciled architectural changes** section is the newest authority in
+this prompt. Where it updates or replaces a numbered plan requirement or retained constraint,
+implement the new architecture and do not preserve the superseded behavior for compatibility.
 
 ## Non-negotiable production rules
 
@@ -758,23 +777,49 @@ batches, hard daily caps, STOP honored; never cold WhatsApp blasts, which violat
 Business Network (default-on anonymized sharing for free/growth, private-as-paid, PII/credentials/
 exact figures NEVER shared regardless of plan), and a deferred private-playbook bidding exchange.
 
+## Final reconciled architectural changes (newest authority)
+
+These are normative replacements, not optional context. Remove or migrate superseded behavior; do not implement both architectures.
+
+#### 1. The Universal Swarm Orchestrator Paradigm
+* **This updates/replaces:** The Grok Bot / Hermes "chatty coworker roster" model (where users manage 5 named avatars in a sidebar and act as middle-manager dispatchers).
+* **The New Architecture & Mental Model:** The user interacts with **ONE Sovereign Universal Agent (`NaelaoAgentDO`)** that acts as the **Lead Swarm Director** (modeled directly after Cursor’s SQLite benchmark swarm). When given a goal (`/goal` or natural language), the Universal Agent does not engage in conversational roleplay; it deconstructs the objective into a clean Task DAG in `SpaceDO.tasks`, forks isolated Git branches on Cloudflare Artifacts, and dispatches tasks to ephemeral worker subagents.
+* **Key Invariant:** The human is strictly the **Outcome Definer & Final Approver**; the AI Lead is the **Orchestrator**. Humans never act as air-traffic controllers between bots.
+
+#### 5. One-to-Many Worker Assignment (The SR-EEO Protocol)
+* **This updates/replaces:** Assigning a single task to exactly one worker sequentially.
+* **The New Architecture & Mental Model:** Adopts the **Speculative Race with Early-Exit Oracle (SR-EEO)** protocol (grounded in Tencent’s *Agent Forest* and the *SEMAP* protocol). For critical tasks, the Orchestrator assigns a single task to $N$ parallel worker instances across isolated Cloudflare Artifacts branches (using different temperatures or prompt strategies).
+* **Key Invariant (Early-Exit Circuit):** The moment Worker A satisfies the deterministic test oracle (`exitCode === 0`), **Workers B and C are immediately terminated via abort signals**, saving ~65% of potential token and credit waste. The winning branch is fast-forward merged to `main`.
+
+#### 7. The 5 Credit Defense Envelopes (Anti-Bankruptcy Shields)
+* **This updates/replaces:** Unmetered swarm execution that risks burning a user's monthly credits on Day 1.
+* **The New Architecture & Mental Model:** Five non-negotiable financial guardrails:
+  1. *Model Tiering by Depth:* Depth 1 uses Frontier models (Claude 3.7/o3); Depth 2 uses cheap edge models (Llama 3.3 70B); Depth 3 uses **free edge models** (Qwen 2.5 Coder / Llama 3.2 3B in V8 at $0.00).
+  2. *Task Escrow Holds:* Tasks reserve a maximum credit envelope upfront (e.g. 30 credits). If exceeded, the tree pauses and requests approval.
+  3. *Plan-Based Parallelism Clamping:* $29 Starter plans run workers sequentially (no parallel races); Pro and Enterprise plans unlock multi-worker races.
+  4. *Early-Exit Token Reclaim:* Kills competing workers the instant one passes the test oracle.
+  5. *Daily Personal Budget Envelopes:* Clamps personal user assistants to max $3.00–$5.00/day from the shared corporate pool.
+
+#### 8. Multi-Assistant Shared Space Collision Defense
+* **This updates/replaces:** Chaotic multi-user spaces where Alice's assistant and Bob's assistant clash, duplicate work, and burn double credits.
+* **The New Architecture & Mental Model:** Enforces a 4-point coordination suite in `SpaceDO` SQLite:
+  * **Atomic Task Leases (`SpaceDO.tasks` CAS):** When an incident occurs, the first assistant to claim it wins an exclusive 15-minute lease; all sibling assistants abort immediately.
+  * **Sibling Spectator Mode:** Non-claiming assistants observe, avoid duplicate execution, and offer to audit the active assistant's Pull Request.
+  * **Semantic Intent Deduplication Gate:** An incoming prompt with $>0.85$ cosine similarity to an active task links the user to the existing branch instead of building it twice.
+  * **Sponsor Alignment RFC Gate:** Contradictory architectural orders freeze execution and surface an RFC discussion card in the Team Room before code is touched.
+
 ## Required execution and response
 
 1. Convert every numbered specification above into a file/request-path checklist before editing.
 2. Implement in dependency order and reuse canonical workers/DOs rather than parallel helpers.
-3. Return complete apply-ready unified diffs for every changed, created, or deleted file. Do not use
+3. Return one complete apply-ready unified diff for every changed, created, or deleted file. Do not use
    ellipses, pseudo-code, TODO-only stubs, omitted boilerplate, or comments standing in for code.
 4. Include exact migration, provisioning, secret rotation, rollout/backfill, rollback, and staging
    smoke commands.
 5. Include exact test/typecheck/config-parity commands and the security/race assertions they prove.
 6. Finish with an item-by-item release ledger: IMPLEMENTED, PARTIAL, or MISSING with honest gaps.
 
-For automation, put exactly one machine-readable line before the first diff:
-`PHASE_STATUS: CONTINUE` when another implementation turn is required, or
-`PHASE_STATUS: COMPLETE` only when every numbered item and verification boundary is finished.
-Place all prose after the diff or in a separate `PHASE_NOTES` section. A COMPLETE response with no
-apply-ready diff is valid only when the current branch already satisfies and verifies every item.
-
 Do not silently omit an item. If one response cannot hold the implementation, stop only after an
-atomic, testable commit boundary and return a continuation prompt containing the remaining numbered
-specifications and current verification state. Never claim completion because code merely compiles.
+atomic, testable commit boundary. Never claim completion because code merely compiles. The response
+must start with `diff --git`; record verification notes in an added or updated repository file if
+they are necessary to preserve them.

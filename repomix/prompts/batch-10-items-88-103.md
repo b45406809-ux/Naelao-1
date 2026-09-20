@@ -1,5 +1,20 @@
 # AI Studio implementation prompt — batch 10, plan items 88–103
 
+## Manual AI Studio hand-off contract
+
+Implement this batch against the repository snapshot embedded after this instruction. Return the
+implementation as **one complete unified Git diff** beginning with `diff --git`. Do not return a
+shell script, prose before the diff, a partial snippet, or Markdown fences. The downloaded response
+must be saved as `repomix/patches/batch-10.patch` and committed to
+the accumulator branch. That path triggers the repository's batch-application workflow, which
+validates and applies the patch, rebuilds the prompts, verifies the Repomix configuration, commits
+the resulting code, and publishes the next batch XML plus its prompt as a workflow artifact.
+
+The patch must not edit generated `repomix/outputs/` files, `.repomix-cache/`, or the downloaded
+patch itself. Include tests and configuration changes in the same diff. If the entire batch cannot
+fit, still return one apply-ready diff at an atomic verified boundary; the next downloaded patch
+for the same batch continues from the newly generated repository snapshot.
+
 ## Mission
 
 Implement every requirement below end to end on the current accumulator branch. The cohesive focus
@@ -7,6 +22,10 @@ is **Subagent workflows, webhook reliability, queues, replay, scheduling, and ca
 constraints have already been extracted and reconciled into the final specification below.
 Do not seek or cite external design context. Repository code is evidence of current
 state, not evidence that a requirement is complete.
+
+When present, the **Final reconciled architectural changes** section is the newest authority in
+this prompt. Where it updates or replaces a numbered plan requirement or retained constraint,
+implement the new architecture and do not preserve the superseded behavior for compatibility.
 
 ## Non-negotiable production rules
 
@@ -1050,23 +1069,83 @@ became a reserved rail). 1818/1818 suite green (13 new, 3 pre-existing owner-ema
 crashes fixed via try/catch wrapping), `pnpm turbo run typecheck` clean (75 tasks), dashboard +
 shell both verified via `next build`.
 
+## Final reconciled architectural changes (newest authority)
+
+These are normative replacements, not optional context. Remove or migrate superseded behavior; do not implement both architectures.
+
+#### 1. The Universal Swarm Orchestrator Paradigm
+* **This updates/replaces:** The Grok Bot / Hermes "chatty coworker roster" model (where users manage 5 named avatars in a sidebar and act as middle-manager dispatchers).
+* **The New Architecture & Mental Model:** The user interacts with **ONE Sovereign Universal Agent (`NaelaoAgentDO`)** that acts as the **Lead Swarm Director** (modeled directly after Cursor’s SQLite benchmark swarm). When given a goal (`/goal` or natural language), the Universal Agent does not engage in conversational roleplay; it deconstructs the objective into a clean Task DAG in `SpaceDO.tasks`, forks isolated Git branches on Cloudflare Artifacts, and dispatches tasks to ephemeral worker subagents.
+* **Key Invariant:** The human is strictly the **Outcome Definer & Final Approver**; the AI Lead is the **Orchestrator**. Humans never act as air-traffic controllers between bots.
+
+#### 3. Worker Runtime Bifurcation (Fast Isolate Actors vs. Durable Workflows)
+* **This updates/replaces:** The idea that *all* workers should be Cloudflare Dynamic Workflows (which introduced multi-second scheduling latency on simple queries).
+* **The New Architecture & Mental Model:** Workers are physically split across two engines based on latency requirements:
+  * **Prebuilt System Workers (The Executive Cabinet & Project Operators):** Run as **in-memory `NaelaoAgentDO` V8 Isolate Actors** over sub-millisecond Durable Object RPC (5ms–50ms response times) for interactive queries where the user or parent agent is actively waiting.
+  * **Custom Developer Subagents & Batch Sagas:** Run as **Tier 3 Cloudflare Dynamic Workflows** for multi-minute, multi-hour, or multi-day tasks requiring step durability, retries, and dormant sleeping (`step.sleep`).
+* **Key Invariant:** Any operation taking <30 seconds where a caller is waiting runs in-memory; long-running, multi-step batch tasks run as workflows.
+
+#### 4. Asymmetric Subagent Topology (Verbs vs. Nouns)
+* **This updates/replaces:** Over-engineering subagents into full mini-operating systems with their own thread trees, message schemas, and session managers.
+* **The New Architecture & Mental Model:** Subagents are **ephemeral execution functions ("verbs")**, while only the Parent Agent is a **persistent entity ("noun")** that owns threads and UI. Subagents run with a slimmed-down `SubagentContext` (`ai`, `fs`, `cli`, `vault`, `step`), perform their assigned task, return a clean JSON result to the parent, and dissolve.
+* **Key Invariant:** Subagents never create user-facing threads, manage WebSockets, or pollute the UI. The Parent Agent receives the subagent’s output and renders a single, compact **2-line Receipt Card**.
+
+#### 6. The Strict 3-Depth Delegation Ceiling
+* **This updates/replaces:** Unbounded recursive agent delegation where agents spawn agents indefinitely.
+* **The New Architecture & Mental Model:** Delegation depth is hard-capped at exactly 3:
+  * **Depth 1 (Lead Orchestrator):** Space Assistant or Project Lead (`NaelaoAgentDO`).
+  * **Depth 2 (Domain Sub-Planner):** Ephemeral workflow managing a major workstream (e.g. API refactor).
+  * **Depth 3 (Leaf Execution Worker):** Single-task isolate performing AST patching or running a test.
+* **Key Invariant:** Depth 3 leaf workers **physically lack the delegation tool** in their runtime SDK, making Depth 4 calls structurally impossible.
+
+#### 10. Durable Daemons (Fusing Micro-Apps with Dynamic Workflows)
+* **This updates/replaces:** Treating Micro-Apps (static UI/DB) and Dynamic Workflows (ephemeral cron/pipelines) as disconnected features.
+* **The New Architecture & Mental Model:** Combines a stateful DO Facet SQLite database with a continuous Cloudflare Workflow into a **Durable Daemon (or Active Service)**. Runs autonomously in the background across domains:
+  * *Code:* Plandex-style Wasm Tree-Sitter AST Symbol Indexer (`ext_tree_sitter_indexer`).
+  * *Finance:* General Ledger Double-Entry Reconciler (`gadget_ledger_reconciler`).
+  * *Legal:* Delaware Case Law & Statute Citation Grapher (`gadget_citation_matrix`).
+* **Key Invariant:** Daemons operate continuously in the background with zero CPU or token drag on active user chat sessions, auto-exposing `/mcp` endpoints to agents.
+
+#### 11. Dual-Role Dynamic Workflows (Company Automations vs. Agent Tasks)
+* **This updates/replaces:** Restricting Dynamic Workflows solely to "AI agent task execution."
+* **The New Architecture & Mental Model:** Workflows serve two distinct masters:
+  * *Agent Tasks:* Ephemeral, AI-heavy multi-step tasks.
+  * *Company Automations:* Standalone operational software pipelines (ETL batch ingestion, nightly billing reconciliations, SLA sentinels) that run without human presence, executing deterministic code for 90% of steps ($0.00005) and invoking AI models only for semantic anomalies.
+* **Key Invariant:** Workflows replace third-party enterprise automation suites (Zapier, Make, Temporal) natively on Cloudflare’s edge.
+
+#### 12. Visual No-Code Subagent Studio
+* **This updates/replaces:** Requiring users or developers to write complex TypeScript to create custom subagents.
+* **The New Architecture & Mental Model:** Non-technical operators build specialized subagents in `apps/shell` visually by selecting tools, skills, knowledge bases, and triggers from a checklist. Compiles into a declarative `NoCodeSubagentManifest` JSON executed by a pre-compiled `GenericSubagentWorkflow`.
+* **Key Invariant:** The builder UI is hardware-clamped to the creator's role rank; users cannot grant tools or knowledge bases they lack clearance to access.
+
+#### 14. Pluggable Space-Shared Calendar Connector (`primary_calendar`)
+* **This updates/replaces:** The isolated, hardcoded SQLite calendar table silo in `SpaceDO`.
+* **The New Architecture & Mental Model:** The calendar is formalized as a standardized, pluggable **Space-Shared MCP Connector** (`ctx.connectors.use("primary_calendar")`). Spaces bind to Google Workspace, Microsoft 365, CalDAV, or an Edge SQLite Fallback.
+* **Key Invariant (Edge Slot-Hold Mutex):** Voice agents acquire a 15-second reservation lock in `ConcurrencyDO` before calling external calendar APIs, eliminating double-booking race conditions during call spikes.
+
+#### 16. The 13-Point Automation Failure Defense Suite
+* **This updates/replaces:** Basic webhook catching that crashes under enterprise conditions.
+* **The New Architecture & Mental Model:** A comprehensive edge protection suite:
+  1. *Edge Tombstone Filter:* KV registry returning `410 Gone` on deleted webhooks and `204 No Content` on paused webhooks ($0 compute).
+  2. *Cloudflare Queues Buffering:* Absorbs massive webhook spikes (e.g. 10,000 Shopify orders) and paces worker execution.
+  3. *Time-Travel Replay Lake:* Raw webhooks archived in R2 for 14 days for 1-click debugging.
+  4. *Leaky-Bucket Outbound Pacer:* Throttles external API calls (max 5 req/s) in `ConcurrencyDO` to prevent third-party 429 bans.
+  5. *Payload Hash Idempotency:* Drops duplicate webhook replays via SQLite SHA-256 event hashes.
+  6. *Ouroboros Loop Circuit Breaker:* Halts recursive automation ping-pong loops via `x-avos-hop-count` headers.
+  7. *Lenient Zod Adapters:* Cheap edge models dynamically repair broken field mappings when third-party APIs update schemas.
+
 ## Required execution and response
 
 1. Convert every numbered specification above into a file/request-path checklist before editing.
 2. Implement in dependency order and reuse canonical workers/DOs rather than parallel helpers.
-3. Return complete apply-ready unified diffs for every changed, created, or deleted file. Do not use
+3. Return one complete apply-ready unified diff for every changed, created, or deleted file. Do not use
    ellipses, pseudo-code, TODO-only stubs, omitted boilerplate, or comments standing in for code.
 4. Include exact migration, provisioning, secret rotation, rollout/backfill, rollback, and staging
    smoke commands.
 5. Include exact test/typecheck/config-parity commands and the security/race assertions they prove.
 6. Finish with an item-by-item release ledger: IMPLEMENTED, PARTIAL, or MISSING with honest gaps.
 
-For automation, put exactly one machine-readable line before the first diff:
-`PHASE_STATUS: CONTINUE` when another implementation turn is required, or
-`PHASE_STATUS: COMPLETE` only when every numbered item and verification boundary is finished.
-Place all prose after the diff or in a separate `PHASE_NOTES` section. A COMPLETE response with no
-apply-ready diff is valid only when the current branch already satisfies and verifies every item.
-
 Do not silently omit an item. If one response cannot hold the implementation, stop only after an
-atomic, testable commit boundary and return a continuation prompt containing the remaining numbered
-specifications and current verification state. Never claim completion because code merely compiles.
+atomic, testable commit boundary. Never claim completion because code merely compiles. The response
+must start with `diff --git`; record verification notes in an added or updated repository file if
+they are necessary to preserve them.

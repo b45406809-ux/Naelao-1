@@ -11,7 +11,6 @@ From the repository root:
 
 ```bash
 node repomix/build-prompts.mjs
-node repomix/prepare-authority-context.mjs
 for config in repomix/batch-*.json; do
   npx --yes repomix@1.18.0 --token-budget 1000000 --config "$config"
 done
@@ -19,9 +18,31 @@ done
 
 Do **not** add `--compress`, `--remove-comments`, or `--remove-empty-lines`. Every configuration
 uses XML, full source, repository-relative paths and `showLineNumbers: true`, which gives AI Studio
-stable locations from which to generate unified diffs. Generated authority extracts and pack
-outputs live under `.repomix-cache/`, which is intentionally ignored because they are reproducible
-and very large.
+stable locations from which to generate unified diffs. Every config reads its tracked batch prompt
+directly, so an individual `npx repomix` command works in a clean checkout without first creating
+`.repomix-cache/authority-batch-*.md`. Pack outputs live under the ignored `repomix/outputs/`
+directory because they are reproducible and very large.
+
+## Manual AI Studio batch loop
+
+1. Run the **Generate Repomix batch** workflow described below, or generate a pack locally with
+   `npx --yes repomix@1.18.0 --token-budget 1000000 --config
+   repomix/batch-01-foundation-storage.json`.
+2. Download the workflow artifact. The XML already embeds the matching self-contained batch prompt
+   as its Repomix instruction, and the prompt is also included separately for convenience.
+3. Paste/upload the XML to Gemini AI Studio. Gemini is instructed to return one raw unified Git
+   diff beginning with `diff --git`.
+4. Download the response as `repomix/patches/batch-NN.patch` and commit that one file to the current
+   accumulator branch.
+5. The **Apply Gemini batch patch** workflow treats the upload as data rather than executable shell,
+   checks and applies it with `git apply`, regenerates and validates the prompts, commits the code,
+   and uploads the next batch XML and prompt. For batch 13 it emits a refreshed batch-13 pack so the
+   final repository state can be audited.
+
+If Gemini wraps the diff in a single `diff` Markdown fence, the applicator normalizes it. Do not
+upload a `.sh` file: accepting an AI-generated executable would let model output run arbitrary
+commands in GitHub Actions, whereas a unified patch is declarative, reviewable, and validated before
+application.
 
 ## What prompts the model
 
@@ -45,6 +66,13 @@ The prompt compiler applies this chronology before the implementation model sees
 The generated prompt contains the resolved result rather than the design journey. Earlier passages
 are retained only when they supply implementation constraints on which the final feature still
 depends; the finalized behavior remains normative if wording conflicts.
+
+`Update the batches.md` is the newest architectural authority. `build-prompts.mjs` assigns each
+reconciled change only to the batches that own its affected runtime, persistence, or user surface;
+cross-cutting changes are repeated where a later batch must enforce the same invariant. In every
+generated prompt, these changes explicitly override superseded plan text. `verify-configs.mjs`
+checks that all 18 changes reach every intended prompt, while each paired JSON pack includes the
+concrete implementation boundaries needed to act on them without pulling in unrelated subsystems.
 
 ## Automated sequential implementation
 
@@ -86,25 +114,10 @@ After each batch, run its included tests plus the complete typecheck/config-pari
 next pack the committed result, not an uncommitted patch, so its directory tree and line numbers
 describe the actual accumulator branch.
 
-## Verified pack sizes
+## Pack-size guard
 
-Measured with Repomix 1.18.0 and the `o200k_base` tokenizer on this commit:
-
-| Pack | Files | Tokens |
-|---|---:|---:|
-| 01 foundation/storage | 246 | 650,401 |
-| 02 runtime/vault/CLI | 250 | 682,138 |
-| 03 connectors/delegation | 225 | 749,529 |
-| 04 agent/memory/context | 252 | 872,547 |
-| 05 retrieval/citations/MCP | 205 | 655,183 |
-| 06 threads/artifact concurrency | 273 | 935,236 |
-| 07 task/provenance/presence | 236 | 763,616 |
-| 08 model policy/air-gap/sleep | 228 | 820,151 |
-| 09 canvas/extensions/widgets | 257 | 895,154 |
-| 10 workflows/webhooks/scheduling | 259 | 704,542 |
-| 11 voice/customer channels | 282 | 807,120 |
-| 12 billing/export | 260 | 871,948 |
-| 13 marketplace/distribution | 294 | 792,406 |
-
-These are deliberately below the configured 1,000,000-token guard. Pack 06 is the tightest; if
-the collaboration surface grows, split items 55–57 from 58–60 rather than removing concurrency or rebase tests.
+All 13 configurations are exercised with Repomix 1.18.0 and the `o200k_base` tokenizer. Both GitHub
+Actions workflows pass `--token-budget 1000000`, so a growing pack fails rather than producing a
+silently truncated hand-off. Use `--token-count-tree 5000` to identify growth and move a cohesive
+subsystem to an adjacent batch rather than removing its authorization, persistence, configuration,
+or tests.
