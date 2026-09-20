@@ -1,4 +1,4 @@
-import { readdir, readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 
 const expectedRanges = [
   [1, 19],
@@ -15,6 +15,26 @@ const expectedRanges = [
   [112, 119],
   [120, 130],
 ];
+const expectedDeltaBatches = new Map([
+  [1, [1, 4, 7, 10]],
+  [2, [3, 4, 12]],
+  [3, [4, 10]],
+  [4, [4, 6, 10]],
+  [5, [7]],
+  [6, [3, 10]],
+  [7, [7, 12]],
+  [8, [7]],
+  [9, [4, 9]],
+  [10, [9, 10]],
+  [11, [10]],
+  [12, [10]],
+  [13, [3]],
+  [14, [3, 10]],
+  [15, [11]],
+  [16, [10]],
+  [17, [1, 6, 9]],
+  [18, [9, 13]],
+]);
 const files = (await readdir("repomix"))
   .filter((name) => /^batch-\d{2}-.+\.json$/.test(name))
   .sort();
@@ -55,6 +75,18 @@ for (const [index, file] of files.entries()) {
     if (!prompt.includes(required))
       throw new Error(`${promptPath} omits prompt contract: ${required}`);
   }
+  const expectedDeltas = [...expectedDeltaBatches]
+    .filter(([, batches]) => batches.includes(index + 1))
+    .map(([delta]) => delta);
+  if (
+    expectedDeltas.length &&
+    !prompt.includes("Final reconciled architectural changes")
+  )
+    throw new Error(`${promptPath} omits its architectural delta section`);
+  for (const delta of expectedDeltas) {
+    if (!prompt.includes(`#### ${delta}. `))
+      throw new Error(`${promptPath} omits architectural delta ${delta}`);
+  }
   for (let item = from; item <= to; item++) {
     const heading = `### ${item}. `;
     const itemStart = prompt.indexOf(heading);
@@ -91,6 +123,14 @@ for (let index = 1; index < expectedRanges.length; index++) {
 }
 if (expectedRanges[0][0] !== 1 || expectedRanges.at(-1)[1] !== 130)
   throw new Error("Item ranges do not cover plan items 1–130");
+
+for (const delta of expectedDeltaBatches.keys()) {
+  const covered = files.some((_, index) =>
+    expectedDeltaBatches.get(delta)?.includes(index + 1)
+  );
+  if (!covered)
+    throw new Error(`Architectural delta ${delta} has no owning batch`);
+}
 
 console.log(
   `Verified ${files.length} full-source Repomix configs covering plan items 1–130.`

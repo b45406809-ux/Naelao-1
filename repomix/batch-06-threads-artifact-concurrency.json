@@ -56,7 +56,10 @@
     "tests/**/*lock*",
     "tests/**/*rebase*",
     "tests/**/*pull-request*",
-    "workers/threads/**"
+    "workers/threads/**",
+    "workers/agents/src/do/ConcurrencyDO.ts",
+    "apps/shell/src/components/FileViewer.tsx",
+    "apps/shell/src/components/InlineArtifactCard.tsx"
   ],
   "ignore": {
     "useGitignore": true,

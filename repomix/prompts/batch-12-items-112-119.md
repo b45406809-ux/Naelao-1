@@ -8,6 +8,10 @@ constraints have already been extracted and reconciled into the final specificat
 Do not seek or cite external design context. Repository code is evidence of current
 state, not evidence that a requirement is complete.
 
+When present, the **Final reconciled architectural changes** section is the newest authority in
+this prompt. Where it updates or replaces a numbered plan requirement or retained constraint,
+implement the new architecture and do not preserve the superseded behavior for compatibility.
+
 ## Non-negotiable production rules
 
 - Trace and use the real router → authorization → worker/Durable Object → scoped persistence or
@@ -858,6 +862,28 @@ Before any user-authored template goes live on the marketplace:
 1. **Physical Capability Validation:** Verify that templates declaring `CUSTOMER_SUPPORT` or `GROWTH` roles do not contain hidden bindings to Container Tier 5 or filesystem modification tools.
 2. **Deterministic Linter Pass:** Scan all `system_prompt.md`, `agents.md`, and seed files for credential exfiltration keywords, un-escaped script injection tags, or private network calls.
 3. **Isolated Sandbox Test:** A background Cloudflare Workflow boots the template in an isolated test DO, verifies that `npm test` and build checks pass, and computes an automated **Safety & Stability Rating**.
+
+## Final reconciled architectural changes (newest authority)
+
+These are normative replacements, not optional context. Remove or migrate superseded behavior; do not implement both architectures.
+
+#### 2. The Space Assistant "Executive Cabinet" Model
+* **This updates/replaces:** Bloating the Space Assistant with 50+ space tools, project tools, wallet APIs, and ACL methods in one giant prompt schema.
+* **The New Architecture & Mental Model:** The Space Assistant’s toolset is reduced to **one primary tool: `delegate_to_space_worker(worker_id, task)`**. It delegates specific administrative duties to specialized, internal space workers:
+  * `project_manager_worker`: Holds `project.create`, `project.archive`, and template instantiation.
+  * `treasury_worker`: Holds `wallet.get_balance`, `wallet.request_payout`, and billing audits.
+  * `identity_worker`: Holds `member.invite`, `role.set_rank`, and Gatekeeper capability tokens.
+  * `comms_worker`: Holds notifications and outbound alerts.
+* **Key Invariant:** Strict capability isolation. The Project Manager Worker physically cannot touch treasury balances; the Treasury Worker physically cannot touch project files or ACLs.
+
+#### 7. The 5 Credit Defense Envelopes (Anti-Bankruptcy Shields)
+* **This updates/replaces:** Unmetered swarm execution that risks burning a user's monthly credits on Day 1.
+* **The New Architecture & Mental Model:** Five non-negotiable financial guardrails:
+  1. *Model Tiering by Depth:* Depth 1 uses Frontier models (Claude 3.7/o3); Depth 2 uses cheap edge models (Llama 3.3 70B); Depth 3 uses **free edge models** (Qwen 2.5 Coder / Llama 3.2 3B in V8 at $0.00).
+  2. *Task Escrow Holds:* Tasks reserve a maximum credit envelope upfront (e.g. 30 credits). If exceeded, the tree pauses and requests approval.
+  3. *Plan-Based Parallelism Clamping:* $29 Starter plans run workers sequentially (no parallel races); Pro and Enterprise plans unlock multi-worker races.
+  4. *Early-Exit Token Reclaim:* Kills competing workers the instant one passes the test oracle.
+  5. *Daily Personal Budget Envelopes:* Clamps personal user assistants to max $3.00–$5.00/day from the shared corporate pool.
 
 ## Required execution and response
 

@@ -8,6 +8,10 @@ constraints have already been extracted and reconciled into the final specificat
 Do not seek or cite external design context. Repository code is evidence of current
 state, not evidence that a requirement is complete.
 
+When present, the **Final reconciled architectural changes** section is the newest authority in
+this prompt. Where it updates or replaces a numbered plan requirement or retained constraint,
+implement the new architecture and do not preserve the superseded behavior for compatibility.
+
 ## Non-negotiable production rules
 
 - Trace and use the real router → authorization → worker/Durable Object → scoped persistence or
@@ -911,6 +915,41 @@ To make any agent configurable without breaking the underlying Claude Code tool-
 | **Tool Surface** | `project.create`, `thread.send`, `business_diagnostics`, `wallet` | `Bash`, `Read`, `Edit`, `Grep`, `Glob`, Domain Viewport plugins | User selects from prebuilt library & plugins |
 | **Ladder Ceiling** | Tier 2 (Orchestration & Isolate) | Tier 5 (Full Container for Dev; Tier 1 for Support) | User configures Max Tier (1–5) |
 | **Default Autonomy** | `gate_unless_listed` or `yolo` | Configured per project template | User toggles `always_ask` vs `yolo` |
+
+## Final reconciled architectural changes (newest authority)
+
+These are normative replacements, not optional context. Remove or migrate superseded behavior; do not implement both architectures.
+
+#### 1. The Universal Swarm Orchestrator Paradigm
+* **This updates/replaces:** The Grok Bot / Hermes "chatty coworker roster" model (where users manage 5 named avatars in a sidebar and act as middle-manager dispatchers).
+* **The New Architecture & Mental Model:** The user interacts with **ONE Sovereign Universal Agent (`NaelaoAgentDO`)** that acts as the **Lead Swarm Director** (modeled directly after Cursor’s SQLite benchmark swarm). When given a goal (`/goal` or natural language), the Universal Agent does not engage in conversational roleplay; it deconstructs the objective into a clean Task DAG in `SpaceDO.tasks`, forks isolated Git branches on Cloudflare Artifacts, and dispatches tasks to ephemeral worker subagents.
+* **Key Invariant:** The human is strictly the **Outcome Definer & Final Approver**; the AI Lead is the **Orchestrator**. Humans never act as air-traffic controllers between bots.
+
+#### 2. The Space Assistant "Executive Cabinet" Model
+* **This updates/replaces:** Bloating the Space Assistant with 50+ space tools, project tools, wallet APIs, and ACL methods in one giant prompt schema.
+* **The New Architecture & Mental Model:** The Space Assistant’s toolset is reduced to **one primary tool: `delegate_to_space_worker(worker_id, task)`**. It delegates specific administrative duties to specialized, internal space workers:
+  * `project_manager_worker`: Holds `project.create`, `project.archive`, and template instantiation.
+  * `treasury_worker`: Holds `wallet.get_balance`, `wallet.request_payout`, and billing audits.
+  * `identity_worker`: Holds `member.invite`, `role.set_rank`, and Gatekeeper capability tokens.
+  * `comms_worker`: Holds notifications and outbound alerts.
+* **Key Invariant:** Strict capability isolation. The Project Manager Worker physically cannot touch treasury balances; the Treasury Worker physically cannot touch project files or ACLs.
+
+#### 3. Worker Runtime Bifurcation (Fast Isolate Actors vs. Durable Workflows)
+* **This updates/replaces:** The idea that *all* workers should be Cloudflare Dynamic Workflows (which introduced multi-second scheduling latency on simple queries).
+* **The New Architecture & Mental Model:** Workers are physically split across two engines based on latency requirements:
+  * **Prebuilt System Workers (The Executive Cabinet & Project Operators):** Run as **in-memory `NaelaoAgentDO` V8 Isolate Actors** over sub-millisecond Durable Object RPC (5ms–50ms response times) for interactive queries where the user or parent agent is actively waiting.
+  * **Custom Developer Subagents & Batch Sagas:** Run as **Tier 3 Cloudflare Dynamic Workflows** for multi-minute, multi-hour, or multi-day tasks requiring step durability, retries, and dormant sleeping (`step.sleep`).
+* **Key Invariant:** Any operation taking <30 seconds where a caller is waiting runs in-memory; long-running, multi-step batch tasks run as workflows.
+
+#### 4. Asymmetric Subagent Topology (Verbs vs. Nouns)
+* **This updates/replaces:** Over-engineering subagents into full mini-operating systems with their own thread trees, message schemas, and session managers.
+* **The New Architecture & Mental Model:** Subagents are **ephemeral execution functions ("verbs")**, while only the Parent Agent is a **persistent entity ("noun")** that owns threads and UI. Subagents run with a slimmed-down `SubagentContext` (`ai`, `fs`, `cli`, `vault`, `step`), perform their assigned task, return a clean JSON result to the parent, and dissolve.
+* **Key Invariant:** Subagents never create user-facing threads, manage WebSockets, or pollute the UI. The Parent Agent receives the subagent’s output and renders a single, compact **2-line Receipt Card**.
+
+#### 9. The Immutable AI Loop vs. Userspace Extensions
+* **This updates/replaces:** The idea that extensions or plugins can rewrite or replace the core agent REPL loop.
+* **The New Architecture & Mental Model:** The AI reasoning loop is the **sovereign kernel of AVOS (`NaelaoAgentDO`)** and is strictly immutable. Extensions run in **userspace** and are strictly additive. They provide background reference manuals (daemons), tools in `$PATH` (virtual CLIs), and UI monitors (viewports), but never hijack how the agent loops, reasons, or verifies.
+* **Key Invariant:** Extensions cannot bypass Gatekeepers, disable WriteGuard, or commit unreviewed code to `main`.
 
 ## Required execution and response
 

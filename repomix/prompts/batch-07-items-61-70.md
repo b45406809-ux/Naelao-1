@@ -8,6 +8,10 @@ constraints have already been extracted and reconciled into the final specificat
 Do not seek or cite external design context. Repository code is evidence of current
 state, not evidence that a requirement is complete.
 
+When present, the **Final reconciled architectural changes** section is the newest authority in
+this prompt. Where it updates or replaces a numbered plan requirement or retained constraint,
+implement the new architecture and do not preserve the superseded behavior for compatibility.
+
 ## Non-negotiable production rules
 
 - Trace and use the real router → authorization → worker/Durable Object → scoped persistence or
@@ -757,6 +761,37 @@ with opt-out + click-to-WhatsApp so the PROSPECT initiates the WhatsApp conversa
 batches, hard daily caps, STOP honored; never cold WhatsApp blasts, which violate Meta policy), the
 Business Network (default-on anonymized sharing for free/growth, private-as-paid, PII/credentials/
 exact figures NEVER shared regardless of plan), and a deferred private-playbook bidding exchange.
+
+## Final reconciled architectural changes (newest authority)
+
+These are normative replacements, not optional context. Remove or migrate superseded behavior; do not implement both architectures.
+
+#### 1. The Universal Swarm Orchestrator Paradigm
+* **This updates/replaces:** The Grok Bot / Hermes "chatty coworker roster" model (where users manage 5 named avatars in a sidebar and act as middle-manager dispatchers).
+* **The New Architecture & Mental Model:** The user interacts with **ONE Sovereign Universal Agent (`NaelaoAgentDO`)** that acts as the **Lead Swarm Director** (modeled directly after Cursor’s SQLite benchmark swarm). When given a goal (`/goal` or natural language), the Universal Agent does not engage in conversational roleplay; it deconstructs the objective into a clean Task DAG in `SpaceDO.tasks`, forks isolated Git branches on Cloudflare Artifacts, and dispatches tasks to ephemeral worker subagents.
+* **Key Invariant:** The human is strictly the **Outcome Definer & Final Approver**; the AI Lead is the **Orchestrator**. Humans never act as air-traffic controllers between bots.
+
+#### 5. One-to-Many Worker Assignment (The SR-EEO Protocol)
+* **This updates/replaces:** Assigning a single task to exactly one worker sequentially.
+* **The New Architecture & Mental Model:** Adopts the **Speculative Race with Early-Exit Oracle (SR-EEO)** protocol (grounded in Tencent’s *Agent Forest* and the *SEMAP* protocol). For critical tasks, the Orchestrator assigns a single task to $N$ parallel worker instances across isolated Cloudflare Artifacts branches (using different temperatures or prompt strategies).
+* **Key Invariant (Early-Exit Circuit):** The moment Worker A satisfies the deterministic test oracle (`exitCode === 0`), **Workers B and C are immediately terminated via abort signals**, saving ~65% of potential token and credit waste. The winning branch is fast-forward merged to `main`.
+
+#### 7. The 5 Credit Defense Envelopes (Anti-Bankruptcy Shields)
+* **This updates/replaces:** Unmetered swarm execution that risks burning a user's monthly credits on Day 1.
+* **The New Architecture & Mental Model:** Five non-negotiable financial guardrails:
+  1. *Model Tiering by Depth:* Depth 1 uses Frontier models (Claude 3.7/o3); Depth 2 uses cheap edge models (Llama 3.3 70B); Depth 3 uses **free edge models** (Qwen 2.5 Coder / Llama 3.2 3B in V8 at $0.00).
+  2. *Task Escrow Holds:* Tasks reserve a maximum credit envelope upfront (e.g. 30 credits). If exceeded, the tree pauses and requests approval.
+  3. *Plan-Based Parallelism Clamping:* $29 Starter plans run workers sequentially (no parallel races); Pro and Enterprise plans unlock multi-worker races.
+  4. *Early-Exit Token Reclaim:* Kills competing workers the instant one passes the test oracle.
+  5. *Daily Personal Budget Envelopes:* Clamps personal user assistants to max $3.00–$5.00/day from the shared corporate pool.
+
+#### 8. Multi-Assistant Shared Space Collision Defense
+* **This updates/replaces:** Chaotic multi-user spaces where Alice's assistant and Bob's assistant clash, duplicate work, and burn double credits.
+* **The New Architecture & Mental Model:** Enforces a 4-point coordination suite in `SpaceDO` SQLite:
+  * **Atomic Task Leases (`SpaceDO.tasks` CAS):** When an incident occurs, the first assistant to claim it wins an exclusive 15-minute lease; all sibling assistants abort immediately.
+  * **Sibling Spectator Mode:** Non-claiming assistants observe, avoid duplicate execution, and offer to audit the active assistant's Pull Request.
+  * **Semantic Intent Deduplication Gate:** An incoming prompt with $>0.85$ cosine similarity to an active task links the user to the existing branch instead of building it twice.
+  * **Sponsor Alignment RFC Gate:** Contradictory architectural orders freeze execution and surface an RFC discussion card in the Team Room before code is touched.
 
 ## Required execution and response
 

@@ -75,7 +75,10 @@
     "workers/spaces/wrangler.toml",
     "apps/dashboard/src/app/**/billing/**",
     "apps/dashboard/src/lib/**",
-    "apps/dashboard/package.json"
+    "apps/dashboard/package.json",
+    "workers/agents/src/do/TaskDO.ts",
+    "workers/agents/src/script-engine/prebuilt/sub-agent.ts",
+    "workers/agents/src/workflows/**"
   ],
   "ignore": {
     "useGitignore": true,

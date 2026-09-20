@@ -8,6 +8,10 @@ constraints have already been extracted and reconciled into the final specificat
 Do not seek or cite external design context. Repository code is evidence of current
 state, not evidence that a requirement is complete.
 
+When present, the **Final reconciled architectural changes** section is the newest authority in
+this prompt. Where it updates or replaces a numbered plan requirement or retained constraint,
+implement the new architecture and do not preserve the superseded behavior for compatibility.
+
 ## Non-negotiable production rules
 
 - Trace and use the real router → authorization → worker/Durable Object → scoped persistence or
@@ -972,6 +976,17 @@ At the top of the **Discover Page (`apps/shell/src/app/p/[slug]/(shell)/spaces/p
 1. **Eliminates Founder Hesitation:** Users don't need to brainstorm. The platform points at an active fire (a +118% search surge) and hands them the hose.
 2. **True Algorithmic Arbitrage:** Pairs **Cloudflare’s global internet traffic telemetry** with **instant serverless Edge compilation** to launch custom businesses at the exact moment market demand spikes.
 3. **High-Converting Discover Page:** The Discover page transforms from a static list of templates into a **real-time financial and market intelligence feed** that users check every single week to see what is trending.
+
+## Final reconciled architectural changes (newest authority)
+
+These are normative replacements, not optional context. Remove or migrate superseded behavior; do not implement both architectures.
+
+#### 18. Strict UI Bifurcation: Client Workspace ("Apple Clean") vs. Developer Foundry
+* **This updates/replaces:** Exposing technical knobs, model selectors, and tier sliders to non-technical business clients.
+* **The New Architecture & Mental Model:**
+  * **Client Workspace (`apps/shell`):** 85% of screen is the Work Viewport Canvas + clean command bar + 1-click action buttons. Zero technical knobs.
+  * **Developer Portal (`apps/partner-studio`):** The full engineering workbench where FDEs and template authors configure 6-tier ladder ceilings, tune Tree-Sitter daemons, wire workflows, and package blueprints.
+* **Key Invariant (Zero-Exposed-Machinery Rule):** Business clients never see model names, compute tiers, or raw Git merge markers.
 
 ## Required execution and response
 
