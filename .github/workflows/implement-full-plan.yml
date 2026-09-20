@@ -19,6 +19,14 @@ on:
         description: Maximum patch/continuation turns per phase
         required: true
         default: "12"
+      hard_input_tokens:
+        description: Maximum input tokens allowed per prompt slice
+        required: true
+        default: "400000"
+      max_file_size:
+        description: Maximum file size in bytes to include in full
+        required: true
+        default: "450000"
       verify_command:
         description: Command run before each phase commit
         required: true
@@ -42,6 +50,8 @@ jobs:
       GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
       OPENROUTER_API_KEYS: ${{ secrets.OPENROUTER_API_KEYS }}
       MAX_TURNS_PER_PHASE: ${{ inputs.max_turns_per_phase }}
+      HARD_INPUT_TOKENS: ${{ inputs.hard_input_tokens }}
+      MAX_FILE_SIZE: ${{ inputs.max_file_size }}
       PHASE_VERIFY_COMMAND: ${{ inputs.verify_command }}
       BRANCH_NAME: ai/full-plan-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
@@ -83,6 +93,8 @@ jobs:
           --end "${{ inputs.end_phase }}"
           --providers "${{ inputs.providers }}"
           --max-turns "${{ inputs.max_turns_per_phase }}"
+          --hard-tokens "${{ inputs.hard_input_tokens }}"
+          --max-file-size "${{ inputs.max_file_size }}"
           --verify "${{ inputs.verify_command }}"
 
       - name: Push accumulator branch
@@ -112,6 +124,8 @@ jobs:
           - Start phase: ${{ inputs.start_phase }}
           - End phase: ${{ inputs.end_phase }}
           - Providers: ${{ inputs.providers }}
+          - Hard token ceiling: ${{ inputs.hard_input_tokens }}
+          - Max file size budget: ${{ inputs.max_file_size }} bytes
           - Verification before every phase commit: `${{ inputs.verify_command }}`
 
           Each phase was regenerated from the preceding committed accumulator state. Review every
