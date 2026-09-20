@@ -50,25 +50,27 @@ async function run(cmd, args, options = {}) {
 
 const tokenEstimate = (s) => Math.ceil(s.length / 3.5);
 
+const IGNORED_PATTERNS = /(^|\/)(pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lockb|\.repomix-cache|\.phase-runs|dist|coverage|node_modules)\/|\.(lock|png|jpg|jpeg|gif|svg|ico|pdf|woff2?|map|min\.[a-z]+)$/i;
+const MANDATORY_FILES = ["package.json", "pnpm-workspace.yaml", "docs/requirements-trace-matrix.md"];
+
 async function inventory() {
-  return (await exec("git", ["ls-files"], { cwd: ROOT })).stdout.trim().split("\n");
+  const files = (await exec("git", ["ls-files"], { cwd: ROOT })).stdout.trim().split("\n");
+  return files.filter((f) => f && !IGNORED_PATTERNS.test(f));
 }
 
-async function chooseInitialFiles(prompt) {
-  const files = await inventory();
+async function chooseInitialFiles(prompt, files) {
   const terms = [...new Set(prompt.toLowerCase().match(/[a-z][a-z0-9_-]{4,}/g) || [])];
-  const mandatory = ["package.json", "pnpm-workspace.yaml", "docs/requirements-trace-matrix.md"];
   const scored = [];
 
   for (const file of files) {
-    if (/(^|\/)(node_modules|dist|coverage)\//.test(file) || /\.(png|jpg|gif|woff2?|pdf)$/.test(file)) continue;
+    if (IGNORED_PATTERNS.test(file)) continue;
     let size = 0;
     try {
       size = (await stat(new URL(file, import.meta.url))).size;
     } catch {
       continue;
     }
-    if (size > 250000) continue;
+    if (size > 40000) continue; // Skip single files larger than 40KB
     const low = file.toLowerCase();
     const score = terms.reduce((n, t) => n + (low.includes(t) ? 1 : 0), 0) + (low.includes("router") ? 1 : 0);
     if (score) scored.push({ file, size, score });
@@ -76,10 +78,10 @@ async function chooseInitialFiles(prompt) {
 
   scored.sort((a, b) => b.score - a.score || a.size - b.size);
   let bytes = 0;
-  const selected = [...mandatory];
+  const selected = MANDATORY_FILES.filter((f) => files.includes(f));
   for (const x of scored) {
     if (selected.includes(x.file)) continue;
-    if (bytes + x.size > 55000) continue;
+    if (bytes + x.size > 45000) continue; // Budget 45KB for initial discretionary files
     selected.push(x.file);
     bytes += x.size;
   }
@@ -100,24 +102,61 @@ async function makePack(phase, paths) {
 }
 
 function extractPatch(text) {
-  // Support ```diff, ```patch, ```git, and any trailing file specifiers on the code block declaration
   const fenced = [...text.matchAll(/```(?:diff|patch|git)[^\n]*\n([\s\S]*?)```/gi)].map((m) => m[1].trim()).filter(Boolean);
   if (fenced.length) return fenced.join("\n") + "\n";
 
-  // Fallback for raw diffs without fences: match standard git or unified diff prefixes
   const match = text.match(/(?:diff --git a\/|--- [ab]\/)/);
   if (!match) return "";
   return text.slice(match.index).split(/\n(?:PHASE_NOTES|RELEASE_LEDGER|VERIFICATION|CONTEXT_REQUEST):/i)[0].replace(/```\s*$/, "").trimEnd() + "\n";
 }
 
-function contextRequests(text, all) {
-  // Accommodate optional bolding or header hashes around CONTEXT_REQUEST:
+async function safeContextRequests(text, allInventory) {
   const block = text.match(/(?:^|\n)[#* \t]*CONTEXT_REQUEST[* \t]*:\s*\n([\s\S]*?)(?:\n[#* \t]*[A-Z_]+[* \t]*:|$)/i)?.[1] ?? "";
   const wanted = block
     .split("\n")
     .map((x) => x.replace(/^[-* \t]+|[`'"]/g, "").replace(/\s*\(.*?\)/, "").trim())
     .filter(Boolean);
-  return wanted.filter((x) => all.includes(x)).slice(0, 30);
+
+  const matched = wanted.filter((x) => allInventory.includes(x) && !IGNORED_PATTERNS.test(x));
+  const valid = [];
+  for (const file of matched) {
+    try {
+      const s = (await stat(new URL(file, import.meta.url))).size;
+      if (s <= 40000) {
+        valid.push(file);
+      } else {
+        console.warn(`[context] Skipping requested file ${file}: ${s} bytes exceeds 40KB limit`);
+      }
+    } catch {
+      continue;
+    }
+  }
+  return valid.slice(0, 15);
+}
+
+function buildPrompt(spec, inventoryText, pack) {
+  return `${spec}
+
+REPOSITORY PATH INVENTORY (request missing full files by exact path):
+${inventoryText}
+
+CURRENT FULL-SOURCE REPOMIX SLICE:
+${pack}
+
+RESPONSE FORMAT REQUIREMENTS:
+1. If required files are missing from the slice above, respond ONLY with:
+CONTEXT_REQUEST:
+path/to/file1
+path/to/file2
+
+2. Otherwise, declare status and provide standard apply-ready unified diffs:
+PHASE_STATUS: COMPLETE (or IN_PROGRESS)
+\`\`\`diff
+diff --git a/path/to/file b/path/to/file
+--- a/path/to/file
++++ b/path/to/file
+@@ ... @@
+\`\`\``;
 }
 
 async function call(model, key, prompt) {
@@ -184,39 +223,43 @@ async function request(prompt, phase, turn) {
 for (const phase of manifest.phases.slice(start - 1, end)) {
   console.log(`===== MICRO-PHASE ${phase.phase}/${manifest.phases.length}: items ${phase.from}-${phase.to} =====`);
   const spec = await readFile(new URL(phase.prompt, import.meta.url), "utf8");
-  const initial = await chooseInitialFiles(spec);
+  const fullInventory = await inventory();
+  const initial = await chooseInitialFiles(spec, fullInventory);
   let paths = initial.files;
   let complete = false;
   let changed = false;
 
   for (let turn = 1; turn <= maxTurns; turn++) {
-    const pack = await makePack(phase, paths);
-    const prompt = `${spec}
+    let pack = await makePack(phase, paths);
+    let prompt = buildPrompt(spec, initial.inventory, pack);
+    let estimatedTokens = tokenEstimate(prompt);
 
-REPOSITORY PATH INVENTORY (request missing full files by exact path):
-${initial.inventory}
+    // Auto-prune largest non-mandatory files if exceeding hard token limit
+    while (estimatedTokens > manifest.hard_input_tokens) {
+      const nonMandatory = paths.filter((p) => !MANDATORY_FILES.includes(p));
+      if (!nonMandatory.length) {
+        throw new Error(`Micro-phase ${phase.phase} mandatory files alone exceed ${manifest.hard_input_tokens} tokens`);
+      }
 
-CURRENT FULL-SOURCE REPOMIX SLICE:
-${pack}
+      let largestFile = nonMandatory[0];
+      let largestSize = 0;
+      for (const f of nonMandatory) {
+        try {
+          const s = (await stat(new URL(f, import.meta.url))).size;
+          if (s > largestSize) {
+            largestSize = s;
+            largestFile = f;
+          }
+        } catch {
+          // ignore
+        }
+      }
 
-RESPONSE FORMAT REQUIREMENTS:
-1. If required files are missing from the slice above, respond ONLY with:
-CONTEXT_REQUEST:
-path/to/file1
-path/to/file2
-
-2. Otherwise, declare status and provide standard apply-ready unified diffs:
-PHASE_STATUS: COMPLETE (or IN_PROGRESS)
-\`\`\`diff
-diff --git a/path/to/file b/path/to/file
---- a/path/to/file
-+++ b/path/to/file
-@@ ... @@
-\`\`\``;
-
-    const estimatedTokens = tokenEstimate(prompt);
-    if (estimatedTokens > manifest.hard_input_tokens) {
-      throw new Error(`Micro-phase ${phase.phase} slice is ${estimatedTokens} estimated tokens, above ${manifest.hard_input_tokens}`);
+      console.warn(`[prune] Prompt is ~${estimatedTokens} tokens (> ${manifest.hard_input_tokens}). Dropping ${largestFile} (${largestSize} bytes)...`);
+      paths = paths.filter((p) => p !== largestFile);
+      pack = await makePack(phase, paths);
+      prompt = buildPrompt(spec, initial.inventory, pack);
+      estimatedTokens = tokenEstimate(prompt);
     }
 
     console.log(`turn ${turn}: ~${estimatedTokens} input tokens, ${paths.length} files`);
@@ -229,10 +272,12 @@ diff --git a/path/to/file b/path/to/file
     const base = `.phase-runs/phase-${String(phase.phase).padStart(2, "0")}-turn-${turn}-${out.model.replace(/[^a-z0-9._-]/gi, "_")}`;
     await writeFile(new URL(`${base}.response.md`, import.meta.url), out.text);
 
-    const requestedPaths = contextRequests(out.text, initial.inventory.split("\n"));
+    const requestedPaths = await safeContextRequests(out.text, fullInventory);
     if (requestedPaths.length) {
-      console.log(`turn ${turn}: model requested ${requestedPaths.length} additional context files`);
-      paths = [...new Set([...paths, ...requestedPaths])];
+      console.log(`turn ${turn}: model requested ${requestedPaths.length} context files`);
+      const mandatory = MANDATORY_FILES.filter((f) => fullInventory.includes(f));
+      // Focus context on requested files plus mandatory files
+      paths = [...new Set([...mandatory, ...requestedPaths])];
       continue;
     }
 
@@ -272,4 +317,4 @@ diff --git a/path/to/file b/path/to/file
   } else {
     console.log(`dry-run ready (${changed ? "changed" : "no mutation"})`);
   }
- }
+                               }
