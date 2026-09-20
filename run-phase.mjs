@@ -17,6 +17,9 @@ const registry = JSON.parse(await readFile(new URL("repomix/provider-models.json
 const start = Number(value("--start", process.env.PHASE_START ?? 1));
 const end = Number(value("--end", process.env.PHASE_END ?? manifest.phases.length));
 const maxTurns = Number(value("--max-turns", process.env.MAX_TURNS_PER_PHASE ?? 12));
+// Defaults to 400k tokens if Gemini/OpenRouter present, or manifest value
+const hardInputTokens = Number(value("--hard-tokens", process.env.HARD_INPUT_TOKENS ?? 400000));
+const maxFileSizeBytes = Number(value("--max-file-size", process.env.MAX_FILE_SIZE ?? 450000));
 const verifyCommand = value("--verify", process.env.PHASE_VERIFY_COMMAND ?? "pnpm typecheck && pnpm test");
 const dryRun = argv.includes("--dry-run");
 
@@ -58,6 +61,33 @@ async function inventory() {
   return files.filter((f) => f && !IGNORED_PATTERNS.test(f));
 }
 
+// Generate an outline for oversized files so the LLM still gets structure and types
+function generateSkeleton(content) {
+  const lines = content.split("\n");
+  const result = [];
+  let inClass = false;
+  let braceDepth = 0;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    // Keep imports, exports, types, interfaces
+    if (/^(import|export\s+(type|interface)|type\s+|interface\s+)/.test(trimmed)) {
+      result.push(line);
+      continue;
+    }
+    // Keep class declarations and method signatures
+    if (/(class\s+\w+|constructor\(|async\s+\w+\(|\w+\([^)]*\)\s*[:{])/.test(trimmed)) {
+      result.push(line.replace(/\{[\s\S]*$/, "{ /* ... */ }"));
+      continue;
+    }
+    // Keep top-level constants / configs
+    if (/^(export\s+)?(const|let|var)\s+\w+/.test(trimmed) && trimmed.length < 120) {
+      result.push(line);
+    }
+  }
+  return `// === SKELETON OUTLINE (Full implementation omitted for size) ===\n` + result.slice(0, 300).join("\n");
+}
+
 async function chooseInitialFiles(prompt, files) {
   const terms = [...new Set(prompt.toLowerCase().match(/[a-z][a-z0-9_-]{4,}/g) || [])];
   const scored = [];
@@ -70,7 +100,7 @@ async function chooseInitialFiles(prompt, files) {
     } catch {
       continue;
     }
-    if (size > 40000) continue; // Skip single files larger than 40KB
+    if (size > maxFileSizeBytes) continue;
     const low = file.toLowerCase();
     const score = terms.reduce((n, t) => n + (low.includes(t) ? 1 : 0), 0) + (low.includes("router") ? 1 : 0);
     if (score) scored.push({ file, size, score });
@@ -81,7 +111,7 @@ async function chooseInitialFiles(prompt, files) {
   const selected = MANDATORY_FILES.filter((f) => files.includes(f));
   for (const x of scored) {
     if (selected.includes(x.file)) continue;
-    if (bytes + x.size > 45000) continue; // Budget 45KB for initial discretionary files
+    if (bytes + x.size > 80000) continue;
     selected.push(x.file);
     bytes += x.size;
   }
@@ -110,7 +140,7 @@ function extractPatch(text) {
   return text.slice(match.index).split(/\n(?:PHASE_NOTES|RELEASE_LEDGER|VERIFICATION|CONTEXT_REQUEST):/i)[0].replace(/```\s*$/, "").trimEnd() + "\n";
 }
 
-async function safeContextRequests(text, allInventory) {
+async function safeContextRequests(text, allInventory, outlinesMap) {
   const block = text.match(/(?:^|\n)[#* \t]*CONTEXT_REQUEST[* \t]*:\s*\n([\s\S]*?)(?:\n[#* \t]*[A-Z_]+[* \t]*:|$)/i)?.[1] ?? "";
   const wanted = block
     .split("\n")
@@ -122,10 +152,12 @@ async function safeContextRequests(text, allInventory) {
   for (const file of matched) {
     try {
       const s = (await stat(new URL(file, import.meta.url))).size;
-      if (s <= 40000) {
+      if (s <= maxFileSizeBytes) {
         valid.push(file);
       } else {
-        console.warn(`[context] Skipping requested file ${file}: ${s} bytes exceeds 40KB limit`);
+        console.warn(`[context] File ${file} (${s}B) exceeds ${maxFileSizeBytes}B limit. Providing skeleton outline instead.`);
+        const content = await readFile(new URL(file, import.meta.url), "utf8");
+        outlinesMap.set(file, generateSkeleton(content));
       }
     } catch {
       continue;
@@ -134,17 +166,19 @@ async function safeContextRequests(text, allInventory) {
   return valid.slice(0, 15);
 }
 
-function buildPrompt(spec, inventoryText, pack) {
-  return `${spec}
+function buildPrompt(spec, inventoryText, pack, outlinesMap, allowContextRequest) {
+  let outlinesSection = "";
+  if (outlinesMap.size > 0) {
+    outlinesSection = "\nLARGE FILES OUTLINE SKELETONS (structural reference):\n";
+    for (const [f, outline] of outlinesMap.entries()) {
+      outlinesSection += `\n--- ${f} ---\n${outline}\n`;
+    }
+  }
 
-REPOSITORY PATH INVENTORY (request missing full files by exact path):
-${inventoryText}
-
-CURRENT FULL-SOURCE REPOMIX SLICE:
-${pack}
-
-RESPONSE FORMAT REQUIREMENTS:
-1. If required files are missing from the slice above, respond ONLY with:
+  let formatRules = "";
+  if (allowContextRequest) {
+    formatRules = `RESPONSE FORMAT REQUIREMENTS:
+1. If essential source files are missing from the slice above, respond ONLY with:
 CONTEXT_REQUEST:
 path/to/file1
 path/to/file2
@@ -157,6 +191,28 @@ diff --git a/path/to/file b/path/to/file
 +++ b/path/to/file
 @@ ... @@
 \`\`\``;
+  } else {
+    formatRules = `RESPONSE FORMAT REQUIREMENTS:
+CONTEXT GATHERING IS COMPLETE. DO NOT RETURN CONTEXT_REQUEST.
+You MUST provide the implementation now using standard apply-ready unified diffs:
+PHASE_STATUS: COMPLETE (or IN_PROGRESS)
+\`\`\`diff
+diff --git a/path/to/file b/path/to/file
+--- a/path/to/file
++++ b/path/to/file
+@@ ... @@
+\`\`\``;
+  }
+
+  return `${spec}
+
+REPOSITORY PATH INVENTORY:
+${inventoryText}
+
+CURRENT FULL-SOURCE REPOMIX SLICE:
+${pack}
+${outlinesSection}
+${formatRules}`;
 }
 
 async function call(model, key, prompt) {
@@ -228,17 +284,21 @@ for (const phase of manifest.phases.slice(start - 1, end)) {
   let paths = initial.files;
   let complete = false;
   let changed = false;
+  const outlinesMap = new Map();
+  let contextRequestedOnce = false;
 
   for (let turn = 1; turn <= maxTurns; turn++) {
+    const allowContext = turn === 1 && !contextRequestedOnce;
+
     let pack = await makePack(phase, paths);
-    let prompt = buildPrompt(spec, initial.inventory, pack);
+    let prompt = buildPrompt(spec, initial.inventory, pack, outlinesMap, allowContext);
     let estimatedTokens = tokenEstimate(prompt);
 
-    // Auto-prune largest non-mandatory files if exceeding hard token limit
-    while (estimatedTokens > manifest.hard_input_tokens) {
+    // Auto-prune largest non-mandatory files if exceeding token ceiling
+    while (estimatedTokens > hardInputTokens) {
       const nonMandatory = paths.filter((p) => !MANDATORY_FILES.includes(p));
       if (!nonMandatory.length) {
-        throw new Error(`Micro-phase ${phase.phase} mandatory files alone exceed ${manifest.hard_input_tokens} tokens`);
+        throw new Error(`Micro-phase ${phase.phase} mandatory files alone exceed ${hardInputTokens} tokens`);
       }
 
       let largestFile = nonMandatory[0];
@@ -255,10 +315,10 @@ for (const phase of manifest.phases.slice(start - 1, end)) {
         }
       }
 
-      console.warn(`[prune] Prompt is ~${estimatedTokens} tokens (> ${manifest.hard_input_tokens}). Dropping ${largestFile} (${largestSize} bytes)...`);
+      console.warn(`[prune] Prompt is ~${estimatedTokens} tokens (> ${hardInputTokens}). Dropping ${largestFile} (${largestSize}B)...`);
       paths = paths.filter((p) => p !== largestFile);
       pack = await makePack(phase, paths);
-      prompt = buildPrompt(spec, initial.inventory, pack);
+      prompt = buildPrompt(spec, initial.inventory, pack, outlinesMap, allowContext);
       estimatedTokens = tokenEstimate(prompt);
     }
 
@@ -272,13 +332,15 @@ for (const phase of manifest.phases.slice(start - 1, end)) {
     const base = `.phase-runs/phase-${String(phase.phase).padStart(2, "0")}-turn-${turn}-${out.model.replace(/[^a-z0-9._-]/gi, "_")}`;
     await writeFile(new URL(`${base}.response.md`, import.meta.url), out.text);
 
-    const requestedPaths = await safeContextRequests(out.text, fullInventory);
-    if (requestedPaths.length) {
-      console.log(`turn ${turn}: model requested ${requestedPaths.length} context files`);
-      const mandatory = MANDATORY_FILES.filter((f) => fullInventory.includes(f));
-      // Focus context on requested files plus mandatory files
-      paths = [...new Set([...mandatory, ...requestedPaths])];
-      continue;
+    if (allowContext) {
+      const requestedPaths = await safeContextRequests(out.text, fullInventory, outlinesMap);
+      if (requestedPaths.length) {
+        console.log(`turn ${turn}: model requested ${requestedPaths.length} context files`);
+        contextRequestedOnce = true;
+        const mandatory = MANDATORY_FILES.filter((f) => fullInventory.includes(f));
+        paths = [...new Set([...mandatory, ...requestedPaths])];
+        continue;
+      }
     }
 
     const patch = extractPatch(out.text);
@@ -298,7 +360,7 @@ for (const phase of manifest.phases.slice(start - 1, end)) {
 
     if (!patch) {
       console.error(`\n=== UNEXPECTED MODEL OUTPUT (Phase ${phase.phase}, Turn ${turn}) ===\n${out.text}\n=======================================================\n`);
-      throw new Error(`Phase ${phase.phase} returned neither a context request nor a patch`);
+      throw new Error(`Phase ${phase.phase} returned neither an applicable patch nor complete status`);
     }
 
     paths = initial.files;
@@ -317,4 +379,4 @@ for (const phase of manifest.phases.slice(start - 1, end)) {
   } else {
     console.log(`dry-run ready (${changed ? "changed" : "no mutation"})`);
   }
-                               }
+         }
