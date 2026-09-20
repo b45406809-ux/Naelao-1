@@ -1,34 +1,30 @@
-name: Implement full plan with rotating AI models
+name: Implement full plan with Goal-Mode Agent
 
 on:
   workflow_dispatch:
     inputs:
       start_phase:
-        description: First micro-phase (1-67)
+        description: "First micro-phase (1-67)"
         required: true
         default: "1"
       end_phase:
-        description: Last micro-phase (1-67)
+        description: "Last micro-phase (1-67)"
         required: true
         default: "67"
       providers:
-        description: Comma-separated provider rotation
+        description: "Comma-separated provider rotation (ordered by priority)"
         required: true
-        default: "gemini,groq,openrouter"
+        default: "gemini,openrouter,groq"
       max_turns_per_phase:
-        description: Maximum patch/continuation turns per phase
+        description: "Maximum agent goal iterations per phase"
         required: true
-        default: "12"
-      hard_input_tokens:
-        description: Maximum input tokens allowed per prompt slice
+        default: "20"
+      compact_tokens:
+        description: "Base token threshold for auto-compaction"
         required: true
-        default: "400000"
-      max_file_size:
-        description: Maximum file size in bytes to include in full
-        required: true
-        default: "450000"
+        default: "45000"
       verify_command:
-        description: Command run before each phase commit
+        description: "Final verification command before commit"
         required: true
         default: "pnpm typecheck && pnpm test"
 
@@ -50,10 +46,9 @@ jobs:
       GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
       OPENROUTER_API_KEYS: ${{ secrets.OPENROUTER_API_KEYS }}
       MAX_TURNS_PER_PHASE: ${{ inputs.max_turns_per_phase }}
-      HARD_INPUT_TOKENS: ${{ inputs.hard_input_tokens }}
-      MAX_FILE_SIZE: ${{ inputs.max_file_size }}
+      COMPACT_TOKENS: ${{ inputs.compact_tokens }}
       PHASE_VERIFY_COMMAND: ${{ inputs.verify_command }}
-      BRANCH_NAME: ai/full-plan-${{ github.run_id }}-${{ github.run_attempt }}
+      BRANCH_NAME: ai/goal-mode-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -69,7 +64,11 @@ jobs:
           cache: pnpm
 
       - name: Validate API key configuration
-        run: test -n "$GEMINI_API_KEYS$GROQ_API_KEYS$OPENROUTER_API_KEYS" || { echo "At least one provider API key secret is required" >&2; exit 1; }
+        run: |
+          test -n "$GEMINI_API_KEYS$GROQ_API_KEYS$OPENROUTER_API_KEYS" || {
+            echo "::error::At least one provider API key secret is required (GEMINI_API_KEYS, GROQ_API_KEYS, or OPENROUTER_API_KEYS)" >&2
+            exit 1
+          }
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -80,27 +79,26 @@ jobs:
           git config user.email "naelao-plan-bot@users.noreply.github.com"
           git switch -c "$BRANCH_NAME"
 
-      - name: Compile and verify self-contained prompts
-        run: |
-          node repomix/build-prompts.mjs
-          node repomix/prepare-authority-context.mjs
-          node repomix/verify-configs.mjs
-
-      - name: Implement selected phases sequentially
+      - name: Run Autonomous Goal Agent
         run: >-
-          node run-phase.mjs
+          node goal-agent.mjs
           --start "${{ inputs.start_phase }}"
           --end "${{ inputs.end_phase }}"
           --providers "${{ inputs.providers }}"
           --max-turns "${{ inputs.max_turns_per_phase }}"
-          --hard-tokens "${{ inputs.hard_input_tokens }}"
-          --max-file-size "${{ inputs.max_file_size }}"
+          --compact-tokens "${{ inputs.compact_tokens }}"
           --verify "${{ inputs.verify_command }}"
 
       - name: Push accumulator branch
-        run: git push --set-upstream origin "$BRANCH_NAME"
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git add -A
+            git commit -m "chore: save in-progress phase runs [skip ci]" || true
+          fi
+          git push --set-upstream origin "$BRANCH_NAME" || true
 
-      - name: Upload model responses and patches
+      - name: Upload phase runs & logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -117,19 +115,15 @@ jobs:
           gh pr create \
             --base "${GITHUB_REF_NAME}" \
             --head "$BRANCH_NAME" \
-            --title "Implement plan phases ${{ inputs.start_phase }}-${{ inputs.end_phase }}" \
+            --title "Implement plan phases ${{ inputs.start_phase }}-${{ inputs.end_phase }} (Goal Mode)" \
             --body-file <(cat <<'EOF'
-          Automated sequential implementation using the self-contained Repomix phase prompts.
+          Automated sequential implementation via Goal-Mode Agent.
 
-          - Start phase: ${{ inputs.start_phase }}
-          - End phase: ${{ inputs.end_phase }}
-          - Providers: ${{ inputs.providers }}
-          - Hard token ceiling: ${{ inputs.hard_input_tokens }}
-          - Max file size budget: ${{ inputs.max_file_size }} bytes
-          - Verification before every phase commit: `${{ inputs.verify_command }}`
+          - Phases: ${{ inputs.start_phase }} through ${{ inputs.end_phase }}
+          - Model Providers: ${{ inputs.providers }}
+          - Verification: `${{ inputs.verify_command }}`
 
-          Each phase was regenerated from the preceding committed accumulator state. Review every
-          commit, migration, deployment binding, security boundary, and release-ledger update before
-          merging.
+          All micro-phases were implemented, verified, and committed iteratively using tool calling,
+          in-memory indexing, and automatic context compaction.
           EOF
           )
