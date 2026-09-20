@@ -4,7 +4,7 @@
     "maxFileSize": 5000000
   },
   "output": {
-    "filePath": ".repomix-cache/batch-13-marketplace-distribution.xml",
+    "filePath": "repomix/outputs/batch-13-marketplace-distribution.xml",
     "style": "xml",
     "parsableStyle": true,
     "fileSummary": true,
@@ -14,7 +14,7 @@
     "showLineNumbers": true,
     "copyToClipboard": false,
     "topFilesLength": 40,
-    "instructionFilePath": ".repomix-cache/authority-batch-13.md"
+    "instructionFilePath": "repomix/prompts/batch-13-items-120-130.md"
   },
   "include": [
     "package.json",
@@ -79,7 +79,8 @@
     "apps/shell/src/app/p/[slug]/(shell)/spaces/**",
     "apps/shell/src/lib/api.ts",
     "apps/shell/package.json",
-    "workers/synthetics/**"
+    "workers/synthetics/**",
+    "apps/dashboard/src/app/dashboard/products/**/configuration/**"
   ],
   "ignore": {
     "useGitignore": true,

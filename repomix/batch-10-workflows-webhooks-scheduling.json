@@ -4,7 +4,7 @@
     "maxFileSize": 5000000
   },
   "output": {
-    "filePath": ".repomix-cache/batch-10-workflows-webhooks-scheduling.xml",
+    "filePath": "repomix/outputs/batch-10-workflows-webhooks-scheduling.xml",
     "style": "xml",
     "parsableStyle": true,
     "fileSummary": true,
@@ -14,7 +14,7 @@
     "showLineNumbers": true,
     "copyToClipboard": false,
     "topFilesLength": 40,
-    "instructionFilePath": ".repomix-cache/authority-batch-10.md"
+    "instructionFilePath": "repomix/prompts/batch-10-items-88-103.md"
   },
   "include": [
     "package.json",
@@ -68,7 +68,12 @@
     "workers/spaces/src/index.ts",
     "workers/spaces/src/do/SpaceDO.ts",
     "workers/spaces/wrangler.toml",
-    "workers/sweeper/**"
+    "workers/sweeper/**",
+    "workers/agents/src/do/ConcurrencyDO.ts",
+    "workers/agents/src/connectors/**",
+    "packages/billing-core/**",
+    "apps/shell/src/app/p/[slug]/(shell)/workflows/**",
+    "apps/shell/src/components/AssistantDelegationCard.tsx"
   ],
   "ignore": {
     "useGitignore": true,

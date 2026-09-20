@@ -4,7 +4,7 @@
     "maxFileSize": 5000000
   },
   "output": {
-    "filePath": ".repomix-cache/batch-04-agent-memory-context.xml",
+    "filePath": "repomix/outputs/batch-04-agent-memory-context.xml",
     "style": "xml",
     "parsableStyle": true,
     "fileSummary": true,
@@ -14,7 +14,7 @@
     "showLineNumbers": true,
     "copyToClipboard": false,
     "topFilesLength": 40,
-    "instructionFilePath": ".repomix-cache/authority-batch-4.md"
+    "instructionFilePath": "repomix/prompts/batch-04-items-39-46.md"
   },
   "include": [
     "package.json",
@@ -55,7 +55,14 @@
     "workers/agents/package.json",
     "workers/assistant/**",
     "workers/feedback/**",
-    "workers/mini-agi/**"
+    "workers/mini-agi/**",
+    "workers/workflows/**",
+    "workers/agents/src/do/TaskDO.ts",
+    "workers/agents/src/do/ConcurrencyDO.ts",
+    "workers/agents/src/script-engine/prebuilt/**",
+    "workers/agents/src/script-engine/sub-agent-output.ts",
+    "packages/billing-core/**",
+    "apps/shell/src/components/AssistantDelegationCard.tsx"
   ],
   "ignore": {
     "useGitignore": true,

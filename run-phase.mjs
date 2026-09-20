@@ -95,15 +95,14 @@ function extractPatch(text) {
   if (startIndex < 0) return "";
   const tail = text.slice(startIndex);
   const notes = tail.search(/\n(?:PHASE_NOTES|RELEASE_LEDGER|VERIFICATION):/);
-  return (
-    (notes < 0 ? tail : tail.slice(0, notes)).replace(/```\s*$/, "").trimEnd() +
-    "\n"
-  );
+  return `${(notes < 0 ? tail : tail.slice(0, notes)).replace(/```\s*$/, "").trimEnd()}\n`;
 }
 
 function statusOf(text) {
+  // Manual-compatible prompts intentionally return only a raw diff. API responses
+  // may still opt into another turn with the legacy PHASE_STATUS marker.
   return (
-    text.match(/^PHASE_STATUS:\s*(CONTINUE|COMPLETE)\s*$/im)?.[1] ?? "CONTINUE"
+    text.match(/^PHASE_STATUS:\s*(CONTINUE|COMPLETE)\s*$/im)?.[1] ?? "COMPLETE"
   );
 }
 

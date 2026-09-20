@@ -4,7 +4,7 @@
     "maxFileSize": 5000000
   },
   "output": {
-    "filePath": ".repomix-cache/batch-09-canvas-extensions-widgets.xml",
+    "filePath": "repomix/outputs/batch-09-canvas-extensions-widgets.xml",
     "style": "xml",
     "parsableStyle": true,
     "fileSummary": true,
@@ -14,7 +14,7 @@
     "showLineNumbers": true,
     "copyToClipboard": false,
     "topFilesLength": 40,
-    "instructionFilePath": ".repomix-cache/authority-batch-9.md"
+    "instructionFilePath": "repomix/prompts/batch-09-items-76-87.md"
   },
   "include": [
     "package.json",
@@ -73,7 +73,13 @@
     "apps/shell/src/app/p/[slug]/(shell)/projects/**",
     "apps/shell/src/app/globals.css",
     "apps/shell/package.json",
-    "apps/shell/tsconfig.json"
+    "apps/shell/tsconfig.json",
+    "workers/artifact/**",
+    "apps/dashboard/src/app/dashboard/products/**/configuration/**",
+    "apps/dashboard/src/lib/**",
+    "apps/shell/src/components/FileViewer.tsx",
+    "apps/shell/src/components/InlineArtifactCard.tsx",
+    "apps/shell/src/components/AssistantSidePanels.tsx"
   ],
   "ignore": {
     "useGitignore": true,

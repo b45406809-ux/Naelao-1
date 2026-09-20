@@ -71,7 +71,6 @@ jobs:
       - name: Compile and verify self-contained prompts
         run: |
           node repomix/build-prompts.mjs
-          node repomix/prepare-authority-context.mjs
           node repomix/verify-configs.mjs
 
       - name: Implement selected phases sequentially

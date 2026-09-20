@@ -40,6 +40,29 @@ const batches = [
   ],
 ];
 
+// A cross-cutting transition may belong to several packs. Repeating its resolved
+// contract is safer than asking a later implementation turn to infer it.
+const architecturalDeltaBatches = new Map([
+  [1, [1, 4, 7, 10]],
+  [2, [3, 4, 12]],
+  [3, [4, 10]],
+  [4, [4, 6, 10]],
+  [5, [7]],
+  [6, [3, 10]],
+  [7, [7, 12]],
+  [8, [7]],
+  [9, [4, 9]],
+  [10, [9, 10]],
+  [11, [10]],
+  [12, [10]],
+  [13, [3]],
+  [14, [3, 10]],
+  [15, [11]],
+  [16, [10]],
+  [17, [1, 6, 9]],
+  [18, [9, 13]],
+]);
+
 const STOP_WORDS = new Set(
   "the a an and or to of in on for with from by as at is are be this that into via all per vs style level complete architecture system engine model native dynamic automated real actual".split(
     " "
@@ -53,6 +76,18 @@ function itemBlocks(plan) {
     title: match[2].trim(),
     text: plan
       .slice(match.index, matches[index + 1]?.index ?? plan.length)
+      .trim(),
+  }));
+}
+
+function architecturalDeltaBlocks(changelog) {
+  const matches = [...changelog.matchAll(/^#### (\d+)\. (.+)$/gm)];
+  return matches.map((match, index) => ({
+    number: Number(match[1]),
+    title: match[2].trim(),
+    text: changelog
+      .slice(match.index, matches[index + 1]?.index ?? changelog.length)
+      .replace(/\n---\s*[\s\S]*$/m, "")
       .trim(),
   }));
 }
@@ -155,6 +190,21 @@ function matrixRequirement(matrix, number) {
 function commonPrompt(batch, from, to, focus) {
   return `# AI Studio implementation prompt — batch ${String(batch).padStart(2, "0")}, plan items ${from}–${to}
 
+## Manual AI Studio hand-off contract
+
+Implement this batch against the repository snapshot embedded after this instruction. Return the
+implementation as **one complete unified Git diff** beginning with \`diff --git\`. Do not return a
+shell script, prose before the diff, a partial snippet, or Markdown fences. The downloaded response
+must be saved as \`repomix/patches/batch-${String(batch).padStart(2, "0")}.patch\` and committed to
+the accumulator branch. That path triggers the repository's batch-application workflow, which
+validates and applies the patch, rebuilds the prompts, verifies the Repomix configuration, commits
+the resulting code, and publishes the next batch XML plus its prompt as a workflow artifact.
+
+The patch must not edit generated \`repomix/outputs/\` files, \`.repomix-cache/\`, or the downloaded
+patch itself. Include tests and configuration changes in the same diff. If the entire batch cannot
+fit, still return one apply-ready diff at an atomic verified boundary; the next downloaded patch
+for the same batch continues from the newly generated repository snapshot.
+
 ## Mission
 
 Implement every requirement below end to end on the current accumulator branch. The cohesive focus
@@ -162,6 +212,10 @@ is **${focus}**. This prompt is self-contained: the feature definitions and reta
 constraints have already been extracted and reconciled into the final specification below.
 Do not seek or cite external design context. Repository code is evidence of current
 state, not evidence that a requirement is complete.
+
+When present, the **Final reconciled architectural changes** section is the newest authority in
+this prompt. Where it updates or replaces a numbered plan requirement or retained constraint,
+implement the new architecture and do not preserve the superseded behavior for compatibility.
 
 ## Non-negotiable production rules
 
@@ -196,40 +250,49 @@ function responseContract() {
 
 1. Convert every numbered specification above into a file/request-path checklist before editing.
 2. Implement in dependency order and reuse canonical workers/DOs rather than parallel helpers.
-3. Return complete apply-ready unified diffs for every changed, created, or deleted file. Do not use
+3. Return one complete apply-ready unified diff for every changed, created, or deleted file. Do not use
    ellipses, pseudo-code, TODO-only stubs, omitted boilerplate, or comments standing in for code.
 4. Include exact migration, provisioning, secret rotation, rollout/backfill, rollback, and staging
    smoke commands.
 5. Include exact test/typecheck/config-parity commands and the security/race assertions they prove.
 6. Finish with an item-by-item release ledger: IMPLEMENTED, PARTIAL, or MISSING with honest gaps.
 
-For automation, put exactly one machine-readable line before the first diff:
-\`PHASE_STATUS: CONTINUE\` when another implementation turn is required, or
-\`PHASE_STATUS: COMPLETE\` only when every numbered item and verification boundary is finished.
-Place all prose after the diff or in a separate \`PHASE_NOTES\` section. A COMPLETE response with no
-apply-ready diff is valid only when the current branch already satisfies and verifies every item.
-
 Do not silently omit an item. If one response cannot hold the implementation, stop only after an
-atomic, testable commit boundary and return a continuation prompt containing the remaining numbered
-specifications and current verification state. Never claim completion because code merely compiles.
+atomic, testable commit boundary. Never claim completion because code merely compiles. The response
+must start with \`diff --git\`; record verification notes in an added or updated repository file if
+they are necessary to preserve them.
 `;
 }
 
-const [plan, traceMatrix, avosRaw, claude, expandedHtml, appendix] =
-  await Promise.all([
-    readFile("_BUILD_PLAN/plan.md", "utf8"),
-    readFile("docs/requirements-trace-matrix.md", "utf8"),
-    readFile("_BUILD_PLAN/avos1.json", "utf8"),
-    readFile("CLAUDE.md", "utf8"),
-    readFile("naelao_expanded_gaps_resolved.html", "utf8"),
-    readFile(
-      "docs/spec-appendix/A1-script-agents-and-space-assistants.md",
-      "utf8"
-    ),
-  ]);
+const [
+  plan,
+  traceMatrix,
+  avosRaw,
+  claude,
+  expandedHtml,
+  appendix,
+  architecturalChangelog,
+] = await Promise.all([
+  readFile("_BUILD_PLAN/plan.md", "utf8"),
+  readFile("docs/requirements-trace-matrix.md", "utf8"),
+  readFile("_BUILD_PLAN/avos1.json", "utf8"),
+  readFile("CLAUDE.md", "utf8"),
+  readFile("naelao_expanded_gaps_resolved.html", "utf8"),
+  readFile(
+    "docs/spec-appendix/A1-script-agents-and-space-assistants.md",
+    "utf8"
+  ),
+  readFile("repomix/Update the batches.md", "utf8"),
+]);
 const avos = JSON.parse(avosRaw);
 const expanded = htmlToText(expandedHtml);
 const blocks = itemBlocks(plan);
+const deltaBlocks = architecturalDeltaBlocks(architecturalChangelog);
+if (deltaBlocks.length !== architecturalDeltaBatches.size) {
+  throw new Error(
+    `Expected ${architecturalDeltaBatches.size} architectural deltas, found ${deltaBlocks.length}`
+  );
+}
 await mkdir("repomix/prompts", { recursive: true });
 
 for (const [batchIndex, [from, to, focus]] of batches.entries()) {
@@ -263,6 +326,15 @@ for (const [batchIndex, [from, to, focus]] of batches.entries()) {
     if (unique.length) {
       prompt += `\n**Retained implementation constraints:**\n${unique.map((value) => `- ${value}`).join("\n")}\n`;
     }
+  }
+  const applicableDeltas = deltaBlocks.filter((delta) =>
+    architecturalDeltaBatches.get(delta.number)?.includes(batchIndex + 1)
+  );
+  if (applicableDeltas.length) {
+    prompt +=
+      "\n## Final reconciled architectural changes (newest authority)\n\nThese are normative replacements, not optional context. Remove or migrate superseded behavior; do not implement both architectures.\n\n";
+    prompt += applicableDeltas.map(({ text }) => text).join("\n\n");
+    prompt += "\n";
   }
   prompt += responseContract();
   prompt = prompt.replace(/[\t \u00a0]+$/gm, "");

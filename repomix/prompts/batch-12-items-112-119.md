@@ -1,5 +1,20 @@
 # AI Studio implementation prompt — batch 12, plan items 112–119
 
+## Manual AI Studio hand-off contract
+
+Implement this batch against the repository snapshot embedded after this instruction. Return the
+implementation as **one complete unified Git diff** beginning with `diff --git`. Do not return a
+shell script, prose before the diff, a partial snippet, or Markdown fences. The downloaded response
+must be saved as `repomix/patches/batch-12.patch` and committed to
+the accumulator branch. That path triggers the repository's batch-application workflow, which
+validates and applies the patch, rebuilds the prompts, verifies the Repomix configuration, commits
+the resulting code, and publishes the next batch XML plus its prompt as a workflow artifact.
+
+The patch must not edit generated `repomix/outputs/` files, `.repomix-cache/`, or the downloaded
+patch itself. Include tests and configuration changes in the same diff. If the entire batch cannot
+fit, still return one apply-ready diff at an atomic verified boundary; the next downloaded patch
+for the same batch continues from the newly generated repository snapshot.
+
 ## Mission
 
 Implement every requirement below end to end on the current accumulator branch. The cohesive focus
@@ -7,6 +22,10 @@ is **Credits, subscriptions, budgets, wallets, export, compilation, and security
 constraints have already been extracted and reconciled into the final specification below.
 Do not seek or cite external design context. Repository code is evidence of current
 state, not evidence that a requirement is complete.
+
+When present, the **Final reconciled architectural changes** section is the newest authority in
+this prompt. Where it updates or replaces a numbered plan requirement or retained constraint,
+implement the new architecture and do not preserve the superseded behavior for compatibility.
 
 ## Non-negotiable production rules
 
@@ -859,23 +878,40 @@ Before any user-authored template goes live on the marketplace:
 2. **Deterministic Linter Pass:** Scan all `system_prompt.md`, `agents.md`, and seed files for credential exfiltration keywords, un-escaped script injection tags, or private network calls.
 3. **Isolated Sandbox Test:** A background Cloudflare Workflow boots the template in an isolated test DO, verifies that `npm test` and build checks pass, and computes an automated **Safety & Stability Rating**.
 
+## Final reconciled architectural changes (newest authority)
+
+These are normative replacements, not optional context. Remove or migrate superseded behavior; do not implement both architectures.
+
+#### 2. The Space Assistant "Executive Cabinet" Model
+* **This updates/replaces:** Bloating the Space Assistant with 50+ space tools, project tools, wallet APIs, and ACL methods in one giant prompt schema.
+* **The New Architecture & Mental Model:** The Space Assistant’s toolset is reduced to **one primary tool: `delegate_to_space_worker(worker_id, task)`**. It delegates specific administrative duties to specialized, internal space workers:
+  * `project_manager_worker`: Holds `project.create`, `project.archive`, and template instantiation.
+  * `treasury_worker`: Holds `wallet.get_balance`, `wallet.request_payout`, and billing audits.
+  * `identity_worker`: Holds `member.invite`, `role.set_rank`, and Gatekeeper capability tokens.
+  * `comms_worker`: Holds notifications and outbound alerts.
+* **Key Invariant:** Strict capability isolation. The Project Manager Worker physically cannot touch treasury balances; the Treasury Worker physically cannot touch project files or ACLs.
+
+#### 7. The 5 Credit Defense Envelopes (Anti-Bankruptcy Shields)
+* **This updates/replaces:** Unmetered swarm execution that risks burning a user's monthly credits on Day 1.
+* **The New Architecture & Mental Model:** Five non-negotiable financial guardrails:
+  1. *Model Tiering by Depth:* Depth 1 uses Frontier models (Claude 3.7/o3); Depth 2 uses cheap edge models (Llama 3.3 70B); Depth 3 uses **free edge models** (Qwen 2.5 Coder / Llama 3.2 3B in V8 at $0.00).
+  2. *Task Escrow Holds:* Tasks reserve a maximum credit envelope upfront (e.g. 30 credits). If exceeded, the tree pauses and requests approval.
+  3. *Plan-Based Parallelism Clamping:* $29 Starter plans run workers sequentially (no parallel races); Pro and Enterprise plans unlock multi-worker races.
+  4. *Early-Exit Token Reclaim:* Kills competing workers the instant one passes the test oracle.
+  5. *Daily Personal Budget Envelopes:* Clamps personal user assistants to max $3.00–$5.00/day from the shared corporate pool.
+
 ## Required execution and response
 
 1. Convert every numbered specification above into a file/request-path checklist before editing.
 2. Implement in dependency order and reuse canonical workers/DOs rather than parallel helpers.
-3. Return complete apply-ready unified diffs for every changed, created, or deleted file. Do not use
+3. Return one complete apply-ready unified diff for every changed, created, or deleted file. Do not use
    ellipses, pseudo-code, TODO-only stubs, omitted boilerplate, or comments standing in for code.
 4. Include exact migration, provisioning, secret rotation, rollout/backfill, rollback, and staging
    smoke commands.
 5. Include exact test/typecheck/config-parity commands and the security/race assertions they prove.
 6. Finish with an item-by-item release ledger: IMPLEMENTED, PARTIAL, or MISSING with honest gaps.
 
-For automation, put exactly one machine-readable line before the first diff:
-`PHASE_STATUS: CONTINUE` when another implementation turn is required, or
-`PHASE_STATUS: COMPLETE` only when every numbered item and verification boundary is finished.
-Place all prose after the diff or in a separate `PHASE_NOTES` section. A COMPLETE response with no
-apply-ready diff is valid only when the current branch already satisfies and verifies every item.
-
 Do not silently omit an item. If one response cannot hold the implementation, stop only after an
-atomic, testable commit boundary and return a continuation prompt containing the remaining numbered
-specifications and current verification state. Never claim completion because code merely compiles.
+atomic, testable commit boundary. Never claim completion because code merely compiles. The response
+must start with `diff --git`; record verification notes in an added or updated repository file if
+they are necessary to preserve them.
