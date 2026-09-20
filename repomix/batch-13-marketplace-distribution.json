@@ -79,7 +79,8 @@
     "apps/shell/src/app/p/[slug]/(shell)/spaces/**",
     "apps/shell/src/lib/api.ts",
     "apps/shell/package.json",
-    "workers/synthetics/**"
+    "workers/synthetics/**",
+    "apps/dashboard/src/app/dashboard/products/**/configuration/**"
   ],
   "ignore": {
     "useGitignore": true,

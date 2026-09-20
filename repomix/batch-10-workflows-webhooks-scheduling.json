@@ -68,7 +68,12 @@
     "workers/spaces/src/index.ts",
     "workers/spaces/src/do/SpaceDO.ts",
     "workers/spaces/wrangler.toml",
-    "workers/sweeper/**"
+    "workers/sweeper/**",
+    "workers/agents/src/do/ConcurrencyDO.ts",
+    "workers/agents/src/connectors/**",
+    "packages/billing-core/**",
+    "apps/shell/src/app/p/[slug]/(shell)/workflows/**",
+    "apps/shell/src/components/AssistantDelegationCard.tsx"
   ],
   "ignore": {
     "useGitignore": true,

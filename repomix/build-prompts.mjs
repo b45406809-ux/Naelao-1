@@ -40,6 +40,29 @@ const batches = [
   ],
 ];
 
+// A cross-cutting transition may belong to several packs. Repeating its resolved
+// contract is safer than asking a later implementation turn to infer it.
+const architecturalDeltaBatches = new Map([
+  [1, [1, 4, 7, 10]],
+  [2, [3, 4, 12]],
+  [3, [4, 10]],
+  [4, [4, 6, 10]],
+  [5, [7]],
+  [6, [3, 10]],
+  [7, [7, 12]],
+  [8, [7]],
+  [9, [4, 9]],
+  [10, [9, 10]],
+  [11, [10]],
+  [12, [10]],
+  [13, [3]],
+  [14, [3, 10]],
+  [15, [11]],
+  [16, [10]],
+  [17, [1, 6, 9]],
+  [18, [9, 13]],
+]);
+
 const STOP_WORDS = new Set(
   "the a an and or to of in on for with from by as at is are be this that into via all per vs style level complete architecture system engine model native dynamic automated real actual".split(
     " "
@@ -53,6 +76,18 @@ function itemBlocks(plan) {
     title: match[2].trim(),
     text: plan
       .slice(match.index, matches[index + 1]?.index ?? plan.length)
+      .trim(),
+  }));
+}
+
+function architecturalDeltaBlocks(changelog) {
+  const matches = [...changelog.matchAll(/^#### (\d+)\. (.+)$/gm)];
+  return matches.map((match, index) => ({
+    number: Number(match[1]),
+    title: match[2].trim(),
+    text: changelog
+      .slice(match.index, matches[index + 1]?.index ?? changelog.length)
+      .replace(/\n---\s*[\s\S]*$/m, "")
       .trim(),
   }));
 }
@@ -163,6 +198,10 @@ constraints have already been extracted and reconciled into the final specificat
 Do not seek or cite external design context. Repository code is evidence of current
 state, not evidence that a requirement is complete.
 
+When present, the **Final reconciled architectural changes** section is the newest authority in
+this prompt. Where it updates or replaces a numbered plan requirement or retained constraint,
+implement the new architecture and do not preserve the superseded behavior for compatibility.
+
 ## Non-negotiable production rules
 
 - Trace and use the real router → authorization → worker/Durable Object → scoped persistence or
@@ -215,21 +254,35 @@ specifications and current verification state. Never claim completion because co
 `;
 }
 
-const [plan, traceMatrix, avosRaw, claude, expandedHtml, appendix] =
-  await Promise.all([
-    readFile("_BUILD_PLAN/plan.md", "utf8"),
-    readFile("docs/requirements-trace-matrix.md", "utf8"),
-    readFile("_BUILD_PLAN/avos1.json", "utf8"),
-    readFile("CLAUDE.md", "utf8"),
-    readFile("naelao_expanded_gaps_resolved.html", "utf8"),
-    readFile(
-      "docs/spec-appendix/A1-script-agents-and-space-assistants.md",
-      "utf8"
-    ),
-  ]);
+const [
+  plan,
+  traceMatrix,
+  avosRaw,
+  claude,
+  expandedHtml,
+  appendix,
+  architecturalChangelog,
+] = await Promise.all([
+  readFile("_BUILD_PLAN/plan.md", "utf8"),
+  readFile("docs/requirements-trace-matrix.md", "utf8"),
+  readFile("_BUILD_PLAN/avos1.json", "utf8"),
+  readFile("CLAUDE.md", "utf8"),
+  readFile("naelao_expanded_gaps_resolved.html", "utf8"),
+  readFile(
+    "docs/spec-appendix/A1-script-agents-and-space-assistants.md",
+    "utf8"
+  ),
+  readFile("repomix/Update the batches.md", "utf8"),
+]);
 const avos = JSON.parse(avosRaw);
 const expanded = htmlToText(expandedHtml);
 const blocks = itemBlocks(plan);
+const deltaBlocks = architecturalDeltaBlocks(architecturalChangelog);
+if (deltaBlocks.length !== architecturalDeltaBatches.size) {
+  throw new Error(
+    `Expected ${architecturalDeltaBatches.size} architectural deltas, found ${deltaBlocks.length}`
+  );
+}
 await mkdir("repomix/prompts", { recursive: true });
 
 for (const [batchIndex, [from, to, focus]] of batches.entries()) {
@@ -263,6 +316,15 @@ for (const [batchIndex, [from, to, focus]] of batches.entries()) {
     if (unique.length) {
       prompt += `\n**Retained implementation constraints:**\n${unique.map((value) => `- ${value}`).join("\n")}\n`;
     }
+  }
+  const applicableDeltas = deltaBlocks.filter((delta) =>
+    architecturalDeltaBatches.get(delta.number)?.includes(batchIndex + 1)
+  );
+  if (applicableDeltas.length) {
+    prompt +=
+      "\n## Final reconciled architectural changes (newest authority)\n\nThese are normative replacements, not optional context. Remove or migrate superseded behavior; do not implement both architectures.\n\n";
+    prompt += applicableDeltas.map(({ text }) => text).join("\n\n");
+    prompt += "\n";
   }
   prompt += responseContract();
   prompt = prompt.replace(/[\t \u00a0]+$/gm, "");

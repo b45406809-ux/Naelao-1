@@ -73,7 +73,13 @@
     "apps/shell/src/app/p/[slug]/(shell)/projects/**",
     "apps/shell/src/app/globals.css",
     "apps/shell/package.json",
-    "apps/shell/tsconfig.json"
+    "apps/shell/tsconfig.json",
+    "workers/artifact/**",
+    "apps/dashboard/src/app/dashboard/products/**/configuration/**",
+    "apps/dashboard/src/lib/**",
+    "apps/shell/src/components/FileViewer.tsx",
+    "apps/shell/src/components/InlineArtifactCard.tsx",
+    "apps/shell/src/components/AssistantSidePanels.tsx"
   ],
   "ignore": {
     "useGitignore": true,

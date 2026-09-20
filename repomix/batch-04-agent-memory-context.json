@@ -55,7 +55,14 @@
     "workers/agents/package.json",
     "workers/assistant/**",
     "workers/feedback/**",
-    "workers/mini-agi/**"
+    "workers/mini-agi/**",
+    "workers/workflows/**",
+    "workers/agents/src/do/TaskDO.ts",
+    "workers/agents/src/do/ConcurrencyDO.ts",
+    "workers/agents/src/script-engine/prebuilt/**",
+    "workers/agents/src/script-engine/sub-agent-output.ts",
+    "packages/billing-core/**",
+    "apps/shell/src/components/AssistantDelegationCard.tsx"
   ],
   "ignore": {
     "useGitignore": true,

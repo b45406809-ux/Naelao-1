@@ -8,6 +8,10 @@ constraints have already been extracted and reconciled into the final specificat
 Do not seek or cite external design context. Repository code is evidence of current
 state, not evidence that a requirement is complete.
 
+When present, the **Final reconciled architectural changes** section is the newest authority in
+this prompt. Where it updates or replaces a numbered plan requirement or retained constraint,
+implement the new architecture and do not preserve the superseded behavior for compatibility.
+
 ## Non-negotiable production rules
 
 - Trace and use the real router → authorization → worker/Durable Object → scoped persistence or
@@ -707,6 +711,15 @@ convention this file already uses twice elsewhere). Called from `handleScriptRun
 `runScriptLoop` resolves, before billing settlement — runs even on a failed result, since a
 failed run's trace is exactly what a builder (or the later skill-evolution job) needs to
 diagnose it. New `readRunTrace(runId)` reads it back ordered by `seq`.
+
+## Final reconciled architectural changes (newest authority)
+
+These are normative replacements, not optional context. Remove or migrate superseded behavior; do not implement both architectures.
+
+#### 15. Dual-Plane Customer Bot Architecture
+* **This updates/replaces:** Exposing main project agents directly to public chat channels or phone lines.
+* **The New Architecture & Mental Model:** Main project agents are strictly internal software/support ops architects. Outside customers on WhatsApp, Telegram, or phone lines communicate exclusively with **quarantined, ephemeral Dynamic Workflow Subagents** using a restricted `CustomerBotContext`.
+* **Key Invariant:** Customer bots have zero access to `Bash`, file-editing tools, Git Artifacts, or internal vault credentials, making prompt injection attacks against the infrastructure impossible.
 
 ## Required execution and response
 

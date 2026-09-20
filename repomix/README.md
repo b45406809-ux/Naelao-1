@@ -46,6 +46,13 @@ The generated prompt contains the resolved result rather than the design journey
 are retained only when they supply implementation constraints on which the final feature still
 depends; the finalized behavior remains normative if wording conflicts.
 
+`Update the batches.md` is the newest architectural authority. `build-prompts.mjs` assigns each
+reconciled change only to the batches that own its affected runtime, persistence, or user surface;
+cross-cutting changes are repeated where a later batch must enforce the same invariant. In every
+generated prompt, these changes explicitly override superseded plan text. `verify-configs.mjs`
+checks that all 18 changes reach every intended prompt, while each paired JSON pack includes the
+concrete implementation boundaries needed to act on them without pulling in unrelated subsystems.
+
 ## Automated sequential implementation
 
 `run-phase.mjs` executes the selected batches in numeric order. For every phase it regenerates the
@@ -92,19 +99,19 @@ Measured with Repomix 1.18.0 and the `o200k_base` tokenizer on this commit:
 
 | Pack | Files | Tokens |
 |---|---:|---:|
-| 01 foundation/storage | 246 | 650,401 |
-| 02 runtime/vault/CLI | 250 | 682,138 |
-| 03 connectors/delegation | 225 | 749,529 |
-| 04 agent/memory/context | 252 | 872,547 |
-| 05 retrieval/citations/MCP | 205 | 655,183 |
-| 06 threads/artifact concurrency | 273 | 935,236 |
-| 07 task/provenance/presence | 236 | 763,616 |
-| 08 model policy/air-gap/sleep | 228 | 820,151 |
-| 09 canvas/extensions/widgets | 257 | 895,154 |
-| 10 workflows/webhooks/scheduling | 259 | 704,542 |
-| 11 voice/customer channels | 282 | 807,120 |
-| 12 billing/export | 260 | 871,948 |
-| 13 marketplace/distribution | 294 | 792,406 |
+| 01 foundation/storage | 250 | 658,480 |
+| 02 runtime/vault/CLI | 251 | 682,848 |
+| 03 connectors/delegation | 237 | 773,048 |
+| 04 agent/memory/context | 280 | 938,612 |
+| 05 retrieval/citations/MCP | 206 | 655,893 |
+| 06 threads/artifact concurrency | 275 | 938,801 |
+| 07 task/provenance/presence | 253 | 847,597 |
+| 08 model policy/air-gap/sleep | 229 | 820,856 |
+| 09 canvas/extensions/widgets | 271 | 927,808 |
+| 10 workflows/webhooks/scheduling | 283 | 785,356 |
+| 11 voice/customer channels | 287 | 818,080 |
+| 12 billing/export | 266 | 885,465 |
+| 13 marketplace/distribution | 296 | 799,172 |
 
 These are deliberately below the configured 1,000,000-token guard. Pack 06 is the tightest; if
 the collaboration surface grows, split items 55–57 from 58–60 rather than removing concurrency or rebase tests.

@@ -8,6 +8,10 @@ constraints have already been extracted and reconciled into the final specificat
 Do not seek or cite external design context. Repository code is evidence of current
 state, not evidence that a requirement is complete.
 
+When present, the **Final reconciled architectural changes** section is the newest authority in
+this prompt. Where it updates or replaces a numbered plan requirement or retained constraint,
+implement the new architecture and do not preserve the superseded behavior for compatibility.
+
 ## Non-negotiable production rules
 
 - Trace and use the real router → authorization → worker/Durable Object → scoped persistence or

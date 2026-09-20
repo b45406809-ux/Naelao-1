@@ -1,5 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 
+// Keep this range list aligned with build-prompts.mjs and verify-configs.mjs.
+
 const batches = [
   [1, 19],
   [20, 24],

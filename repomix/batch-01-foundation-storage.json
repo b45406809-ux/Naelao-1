@@ -57,7 +57,10 @@
     "tests/**/*workspace*",
     "tests/**/*container*",
     "tests/**/*execution*",
-    "workers/auth/**"
+    "workers/auth/**",
+    "packages/agent-sdk/src/canvas-runtime.ts",
+    "apps/shell/src/components/FileViewer.tsx",
+    "apps/shell/src/components/InlineArtifactCard.tsx"
   ],
   "ignore": {
     "useGitignore": true,

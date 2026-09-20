@@ -8,6 +8,10 @@ constraints have already been extracted and reconciled into the final specificat
 Do not seek or cite external design context. Repository code is evidence of current
 state, not evidence that a requirement is complete.
 
+When present, the **Final reconciled architectural changes** section is the newest authority in
+this prompt. Where it updates or replaces a numbered plan requirement or retained constraint,
+implement the new architecture and do not preserve the superseded behavior for compatibility.
+
 ## Non-negotiable production rules
 
 - Trace and use the real router → authorization → worker/Durable Object → scoped persistence or
@@ -1140,6 +1144,35 @@ spaces/
   than a DO method; `Env` gained `BILLING_WORKER?: Fetcher` (the binding already exists in
   `wrangler.toml` under the `naelao-billing` service — it was just missing from this particular
   shared TypeScript interface, a real but narrow gap).
+
+## Final reconciled architectural changes (newest authority)
+
+These are normative replacements, not optional context. Remove or migrate superseded behavior; do not implement both architectures.
+
+#### 9. The Immutable AI Loop vs. Userspace Extensions
+* **This updates/replaces:** The idea that extensions or plugins can rewrite or replace the core agent REPL loop.
+* **The New Architecture & Mental Model:** The AI reasoning loop is the **sovereign kernel of AVOS (`NaelaoAgentDO`)** and is strictly immutable. Extensions run in **userspace** and are strictly additive. They provide background reference manuals (daemons), tools in `$PATH` (virtual CLIs), and UI monitors (viewports), but never hijack how the agent loops, reasons, or verifies.
+* **Key Invariant:** Extensions cannot bypass Gatekeepers, disable WriteGuard, or commit unreviewed code to `main`.
+
+#### 10. Durable Daemons (Fusing Micro-Apps with Dynamic Workflows)
+* **This updates/replaces:** Treating Micro-Apps (static UI/DB) and Dynamic Workflows (ephemeral cron/pipelines) as disconnected features.
+* **The New Architecture & Mental Model:** Combines a stateful DO Facet SQLite database with a continuous Cloudflare Workflow into a **Durable Daemon (or Active Service)**. Runs autonomously in the background across domains:
+  * *Code:* Plandex-style Wasm Tree-Sitter AST Symbol Indexer (`ext_tree_sitter_indexer`).
+  * *Finance:* General Ledger Double-Entry Reconciler (`gadget_ledger_reconciler`).
+  * *Legal:* Delaware Case Law & Statute Citation Grapher (`gadget_citation_matrix`).
+* **Key Invariant:** Daemons operate continuously in the background with zero CPU or token drag on active user chat sessions, auto-exposing `/mcp` endpoints to agents.
+
+#### 17. Generalization of `/workspace/` (Deliverable Canvas, Not Just Code)
+* **This updates/replaces:** The developer bias that Git and `/workspace/` are strictly for programming source code.
+* **The New Architecture & Mental Model:** `/workspace/` is the **Project Deliverable Canvas** regardless of file format. In legal projects, it holds contract suites (`.docx`, `.md`); in finance, it holds Excel models (`.xlsx`, `.csv`); in coding, it holds source code (`src/`). All executable agent machinery (skills, workflows, daemons) lives strictly in `/.avos/`.
+* **Key Invariant:** Cloudflare Artifacts (Git for Agents) versions any file type; Pull Request cards adapt to show spreadsheet cell deltas or document redlines.
+
+#### 18. Strict UI Bifurcation: Client Workspace ("Apple Clean") vs. Developer Foundry
+* **This updates/replaces:** Exposing technical knobs, model selectors, and tier sliders to non-technical business clients.
+* **The New Architecture & Mental Model:**
+  * **Client Workspace (`apps/shell`):** 85% of screen is the Work Viewport Canvas + clean command bar + 1-click action buttons. Zero technical knobs.
+  * **Developer Portal (`apps/partner-studio`):** The full engineering workbench where FDEs and template authors configure 6-tier ladder ceilings, tune Tree-Sitter daemons, wire workflows, and package blueprints.
+* **Key Invariant (Zero-Exposed-Machinery Rule):** Business clients never see model names, compute tiers, or raw Git merge markers.
 
 ## Required execution and response
 
