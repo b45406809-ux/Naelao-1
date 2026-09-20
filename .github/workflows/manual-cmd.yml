@@ -1,0 +1,52 @@
+name: Manual Command Runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: 'Enter the command to run (e.g., npx repomix)'
+        required: true
+        type: string
+
+jobs:
+  run-command:
+    runs-on: ubuntu-latest
+    
+    # Permission needed to push changes back to the repository
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Fetches the branch selected in the "Run workflow" dropdown
+          ref: ${{ github.ref }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-node-version: '20'
+
+      - name: Execute Custom Command
+        run: |
+          echo "Running: ${{ github.event.inputs.command }}"
+          ${{ github.event.inputs.command }}
+
+      - name: Commit and Push Changes
+        run: |
+          # Configure git with a generic GitHub Actions bot identity
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "41898282+github-actions[bot]@://github.com"
+          
+          # Stage all changes (created, modified, or deleted files)
+          git add .
+          
+          # Only commit and push if there are actual changes to prevent workflow failure
+          if ! git diff-index --quiet HEAD; then
+            git commit -m "chore: automated changes from manual command [skip ci]"
+            git push origin HEAD:${{ github.ref_name }}
+          else
+            echo "No changes detected. Skipping commit and push."
+          fi
+          
