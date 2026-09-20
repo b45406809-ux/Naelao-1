@@ -535,6 +535,7 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // /rules and /spend still don't match, matching the Phase B precedent for this same route family.
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/members(\/[^/]+)?$/,
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/activate-thread$/,
+  /^\/spaces\/([^/]+)\/projects\/([^/]+)\/tasks(?:\/[^/]+\/(?:claim|renew|complete))?$/,
   // Step 21: a customer-bot's no-code automation rules — now editable from the business's own
   // Automation dashboard by a business ADMIN (GET member / POST+DELETE admin, enforced by
   // requireBusinessMembership on the spaces worker; identity here, authorization there). Matches
@@ -1176,6 +1177,16 @@ api.all("/spaces/:spaceId/channels/*", async (c) =>
 // worker, which owns the NaelaoAgentDO forwarding + R2 workspace listing for these.
 api.all("/spaces/:spaceId/assistant/*", async (c) =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+
+// Task-governance routes must remain ahead of the generic spaces catch-all. SpaceDO owns the
+// authoritative transaction, while the router supplies only identity derived from verified
+// claims through proxyTo; lease holders are never accepted from browser JSON.
+api.all("/spaces/:spaceId/projects/:projectId/tasks", async (c) =>
+  proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+api.all("/spaces/:spaceId/projects/:projectId/tasks/*", async (c) =>
+  proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );
 
 // Spaces CRUD → spaces worker

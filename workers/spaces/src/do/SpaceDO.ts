@@ -1082,6 +1082,39 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_event_triggers_lookup ON event_triggers(space_id, project_id, event_type, enabled, priority DESC);
     `,
   },
+  {
+    version: 41,
+    description: "atomic task leases, spectators, intent and governance state",
+    up: `
+      ALTER TABLE tasks ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
+      ALTER TABLE tasks ADD COLUMN scope TEXT NOT NULL DEFAULT '{}';
+      ALTER TABLE tasks ADD COLUMN intent_embedding TEXT;
+      ALTER TABLE tasks ADD COLUMN sponsor_id TEXT;
+      ALTER TABLE tasks ADD COLUMN holder_id TEXT;
+      ALTER TABLE tasks ADD COLUMN lease_version INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE tasks ADD COLUMN lease_expires_at INTEGER;
+      ALTER TABLE tasks ADD COLUMN branch TEXT;
+      ALTER TABLE tasks ADD COLUMN terminal_result TEXT;
+      ALTER TABLE tasks ADD COLUMN state TEXT NOT NULL DEFAULT 'READY';
+      CREATE INDEX IF NOT EXISTS idx_tasks_active_lease
+        ON tasks(tenant_id, space_id, project_id, lease_expires_at)
+        WHERE holder_id IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS task_spectators (
+        tenant_id TEXT NOT NULL, space_id TEXT NOT NULL, project_id TEXT NOT NULL,
+        task_id TEXT NOT NULL, actor_id TEXT NOT NULL, joined_at INTEGER NOT NULL,
+        review_requested_at INTEGER,
+        PRIMARY KEY (task_id, actor_id)
+      );
+      CREATE TABLE IF NOT EXISTS task_lease_events (
+        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, space_id TEXT NOT NULL,
+        project_id TEXT NOT NULL, task_id TEXT NOT NULL, actor_id TEXT NOT NULL,
+        event_type TEXT NOT NULL, lease_version INTEGER NOT NULL, created_at INTEGER NOT NULL,
+        detail TEXT NOT NULL DEFAULT '{}'
+      );
+      CREATE INDEX IF NOT EXISTS idx_task_lease_events_task
+        ON task_lease_events(task_id, created_at);
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -1402,6 +1435,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const activateThreadMatch = url.pathname.match(/^\/projects\/([^/]+)\/activate-thread$/);
       if (method === "POST" && activateThreadMatch?.[1]) {
         return this.activateProjectThread(activateThreadMatch[1], request);
+      }
+      const tasksMatch = url.pathname.match(/^\/projects\/([^/]+)\/tasks$/);
+      if (method === "GET" && tasksMatch?.[1]) {
+        return this.listGovernedTasks(tasksMatch[1], url.searchParams);
+      }
+      if (method === "POST" && tasksMatch?.[1]) {
+        return this.createGovernedTask(tasksMatch[1], request);
+      }
+      const taskLeaseMatch = url.pathname.match(/^\/projects\/([^/]+)\/tasks\/([^/]+)\/(claim|renew|complete)$/);
+      if (method === "POST" && taskLeaseMatch?.[1] && taskLeaseMatch[2] && taskLeaseMatch[3]) {
+        return this.mutateTaskLease(taskLeaseMatch[1], taskLeaseMatch[2], taskLeaseMatch[3], request);
       }
       // ── Launchpad Wallet (kind='wallet' projects only) ─────────────────────────
       const walletBalanceMatch = url.pathname.match(/^\/projects\/([^/]+)\/wallet\/balance$/);
@@ -5429,6 +5473,83 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // GET /cross-space-check — THE CRITICAL PATH (§49). Default DENIED on any error.
   // A user gets access if they are a direct member of the target space, OR a valid
   // (unexpired, unrevoked) grant exists from the requesting space to the target.
+  private async scheduleTaskLeaseAlarm(): Promise<void> {
+    const next = queryOne<{ expires: number }>(
+      this.ctx.storage.sql as never,
+      "SELECT MIN(lease_expires_at) AS expires FROM tasks WHERE holder_id IS NOT NULL AND lease_expires_at IS NOT NULL"
+    );
+    if (next?.expires) await this.ctx.storage.setAlarm(Math.max(Date.now() + 1, next.expires));
+  }
+
+  private async createGovernedTask(projectId: string, request: Request): Promise<Response> {
+    const body = await request.json<{ tenant_id?: string; space_id?: string; actor_id?: string; title?: string; scope?: unknown; intent_embedding?: number[]; sponsor_id?: string; branch?: string }>().catch(() => ({}));
+    if (!body.tenant_id || !body.space_id || !body.actor_id || !body.title?.trim()) {
+      return Response.json({ error_code: "bad_request", message: "tenant_id, space_id, actor_id and title are required" }, { status: 400 });
+    }
+    const project = queryOne<{ space_id: string; status: string }>(this.ctx.storage.sql as never, "SELECT space_id, status FROM projects WHERE id = ?", projectId);
+    if (!project || project.space_id !== body.space_id || project.status !== "active") {
+      return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+    }
+    const id = crypto.randomUUID();
+    execute(this.ctx.storage.sql as never,
+      `INSERT INTO tasks (id, tenant_id, space_id, project_id, title, scope, intent_embedding, sponsor_id, branch, status, state, dependencies, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'READY', '[]', datetime('now'), datetime('now'))`,
+      id, body.tenant_id, body.space_id, projectId, body.title.trim(), JSON.stringify(body.scope ?? {}),
+      body.intent_embedding ? JSON.stringify(body.intent_embedding) : null, body.sponsor_id ?? body.actor_id, body.branch ?? null);
+    return Response.json({ id, project_id: projectId, state: "READY", lease_version: 0 }, { status: 201 });
+  }
+
+  private listGovernedTasks(projectId: string, params: URLSearchParams): Response {
+    const tenantId = params.get("tenant_id") ?? "";
+    const spaceId = params.get("space_id") ?? "";
+    if (!tenantId || !spaceId) return Response.json({ error_code: "bad_request", message: "tenant_id and space_id are required" }, { status: 400 });
+    const rows = [...this.ctx.storage.sql.exec(
+      "SELECT * FROM tasks WHERE tenant_id = ? AND space_id = ? AND project_id = ? ORDER BY created_at DESC LIMIT 200",
+      tenantId, spaceId, projectId
+    )];
+    return Response.json({ data: rows, count: rows.length });
+  }
+
+  private async mutateTaskLease(projectId: string, taskId: string, action: string, request: Request): Promise<Response> {
+    const body = await request.json<{ tenant_id?: string; space_id?: string; actor_id?: string; expected_version?: number; terminal_result?: unknown }>().catch(() => ({}));
+    if (!body.tenant_id || !body.space_id || !body.actor_id) return Response.json({ error_code: "bad_request", message: "tenant_id, space_id and actor_id are required" }, { status: 400 });
+    const now = Date.now();
+    const ttl = 15 * 60 * 1000;
+    const result = await this.ctx.storage.transaction(async () => {
+      const task = queryOne<{ holder_id: string | null; lease_version: number; lease_expires_at: number | null; state: string }>(this.ctx.storage.sql as never,
+        "SELECT holder_id, lease_version, lease_expires_at, state FROM tasks WHERE id = ? AND tenant_id = ? AND space_id = ? AND project_id = ?", taskId, body.tenant_id, body.space_id, projectId);
+      if (!task) return { status: 404, body: { error_code: "not_found", message: "Task not found" } };
+      if (action === "claim") {
+        if (task.holder_id && (task.lease_expires_at ?? 0) > now && task.holder_id !== body.actor_id) {
+          execute(this.ctx.storage.sql as never, "INSERT OR IGNORE INTO task_spectators (tenant_id, space_id, project_id, task_id, actor_id, joined_at) VALUES (?, ?, ?, ?, ?, ?)", body.tenant_id, body.space_id, projectId, taskId, body.actor_id, now);
+          return { status: 409, body: { error_code: "lease_conflict", mode: "spectator", holder_id: task.holder_id, lease_version: task.lease_version, lease_expires_at: task.lease_expires_at } };
+        }
+      } else if (task.holder_id !== body.actor_id || task.lease_expires_at === null || task.lease_expires_at <= now || body.expected_version !== task.lease_version) {
+        return { status: 409, body: { error_code: "stale_lease", message: "Current holder and expected lease version are required", lease_version: task.lease_version } };
+      }
+      const version = task.lease_version + 1;
+      if (action === "complete") {
+        execute(this.ctx.storage.sql as never, "UPDATE tasks SET holder_id = NULL, lease_expires_at = NULL, lease_version = ?, status = 'completed', state = 'COMPLETED', terminal_result = ?, updated_at = datetime('now') WHERE id = ?", version, JSON.stringify(body.terminal_result ?? null), taskId);
+      } else {
+        execute(this.ctx.storage.sql as never, "UPDATE tasks SET holder_id = ?, lease_expires_at = ?, lease_version = ?, status = 'in_progress', state = 'LEASED', updated_at = datetime('now') WHERE id = ?", body.actor_id, now + ttl, version, taskId);
+      }
+      execute(this.ctx.storage.sql as never, "INSERT INTO task_lease_events (id, tenant_id, space_id, project_id, task_id, actor_id, event_type, lease_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", crypto.randomUUID(), body.tenant_id, body.space_id, projectId, taskId, body.actor_id, action, version, now);
+      return { status: 200, body: { task_id: taskId, holder_id: action === "complete" ? null : body.actor_id, lease_version: version, lease_expires_at: action === "complete" ? null : now + ttl, state: action === "complete" ? "COMPLETED" : "LEASED" } };
+    });
+    await this.scheduleTaskLeaseAlarm();
+    return Response.json(result.body, { status: result.status as 200 | 404 | 409 });
+  }
+
+  override async alarm(): Promise<void> {
+    this.ensureInit();
+    const now = Date.now();
+    execute(this.ctx.storage.sql as never,
+      `UPDATE tasks SET holder_id = NULL, lease_expires_at = NULL, lease_version = lease_version + 1,
+       status = 'pending', state = 'READY', updated_at = datetime('now')
+       WHERE holder_id IS NOT NULL AND lease_expires_at <= ? AND state = 'LEASED'`, now);
+    await this.scheduleTaskLeaseAlarm();
+  }
+
   private checkCrossSpace(params: URLSearchParams): Response {
     const userId = params.get("user_id") ?? "";
     const requestingSpaceId = params.get("requesting_space_id") ?? "";
