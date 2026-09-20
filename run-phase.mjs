@@ -17,9 +17,8 @@ const registry = JSON.parse(await readFile(new URL("repomix/provider-models.json
 const start = Number(value("--start", process.env.PHASE_START ?? 1));
 const end = Number(value("--end", process.env.PHASE_END ?? manifest.phases.length));
 const maxTurns = Number(value("--max-turns", process.env.MAX_TURNS_PER_PHASE ?? 12));
-// Defaults to 400k tokens if Gemini/OpenRouter present, or manifest value
-const hardInputTokens = Number(value("--hard-tokens", process.env.HARD_INPUT_TOKENS ?? 400000));
-const maxFileSizeBytes = Number(value("--max-file-size", process.env.MAX_FILE_SIZE ?? 450000));
+const hardInputTokens = Number(value("--hard-tokens", process.env.HARD_INPUT_TOKENS ?? 600000));
+const maxFileSizeBytes = Number(value("--max-file-size", process.env.MAX_FILE_SIZE ?? 650000));
 const verifyCommand = value("--verify", process.env.PHASE_VERIFY_COMMAND ?? "pnpm typecheck && pnpm test");
 const dryRun = argv.includes("--dry-run");
 
@@ -61,26 +60,19 @@ async function inventory() {
   return files.filter((f) => f && !IGNORED_PATTERNS.test(f));
 }
 
-// Generate an outline for oversized files so the LLM still gets structure and types
 function generateSkeleton(content) {
   const lines = content.split("\n");
   const result = [];
-  let inClass = false;
-  let braceDepth = 0;
-
   for (const line of lines) {
     const trimmed = line.trim();
-    // Keep imports, exports, types, interfaces
     if (/^(import|export\s+(type|interface)|type\s+|interface\s+)/.test(trimmed)) {
       result.push(line);
       continue;
     }
-    // Keep class declarations and method signatures
     if (/(class\s+\w+|constructor\(|async\s+\w+\(|\w+\([^)]*\)\s*[:{])/.test(trimmed)) {
       result.push(line.replace(/\{[\s\S]*$/, "{ /* ... */ }"));
       continue;
     }
-    // Keep top-level constants / configs
     if (/^(export\s+)?(const|let|var)\s+\w+/.test(trimmed) && trimmed.length < 120) {
       result.push(line);
     }
@@ -131,13 +123,118 @@ async function makePack(phase, paths) {
   return readFile(new URL(base.output.filePath, import.meta.url), "utf8");
 }
 
+// Repair common LLM unified diff formatting mistakes
+function normalizePatch(text) {
+  const lines = text.split("\n");
+  const out = [];
+  let inHunk = false;
+  let oldLines = 0;
+  let newLines = 0;
+  let hunkHeaderIndex = -1;
+  let oldStart = 1;
+  let newStart = 1;
+
+  function commitHunk() {
+    if (hunkHeaderIndex >= 0) {
+      out[hunkHeaderIndex] = `@@ -${oldStart},${oldLines} +${newStart},${newLines} @@`;
+    }
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    if (line.startsWith("diff --git ") || line.startsWith("--- ") || line.startsWith("+++ ")) {
+      if (inHunk) {
+        commitHunk();
+        inHunk = false;
+      }
+      out.push(line);
+      continue;
+    }
+
+    const hunkMatch = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/);
+    if (hunkMatch) {
+      if (inHunk) commitHunk();
+      inHunk = true;
+      oldStart = hunkMatch[1];
+      newStart = hunkMatch[2];
+      oldLines = 0;
+      newLines = 0;
+      hunkHeaderIndex = out.length;
+      out.push(line); // placeholder, updated by commitHunk
+      continue;
+    }
+
+    if (inHunk) {
+      if (line.startsWith("+")) {
+        newLines++;
+        out.push(line);
+      } else if (line.startsWith("-")) {
+        oldLines++;
+        out.push(line);
+      } else if (line.startsWith(" ") || line === "") {
+        // Blank lines in hunks must have a leading space for unified diff standard
+        oldLines++;
+        newLines++;
+        out.push(line === "" ? " " : line);
+      } else if (line.startsWith("\\")) {
+        // "\ No newline at end of file"
+        out.push(line);
+      } else {
+        // Out of hunk or unknown line
+        commitHunk();
+        inHunk = false;
+        out.push(line);
+      }
+    } else {
+      out.push(line);
+    }
+  }
+
+  if (inHunk) commitHunk();
+  return out.join("\n").trimEnd() + "\n";
+}
+
 function extractPatch(text) {
   const fenced = [...text.matchAll(/```(?:diff|patch|git)[^\n]*\n([\s\S]*?)```/gi)].map((m) => m[1].trim()).filter(Boolean);
-  if (fenced.length) return fenced.join("\n") + "\n";
+  let raw = "";
+  if (fenced.length) {
+    raw = fenced.join("\n") + "\n";
+  } else {
+    const match = text.match(/(?:diff --git a\/|--- [ab]\/)/);
+    if (match) {
+      raw = text.slice(match.index).split(/\n(?:PHASE_NOTES|RELEASE_LEDGER|VERIFICATION|CONTEXT_REQUEST):/i)[0].replace(/```\s*$/, "").trimEnd() + "\n";
+    }
+  }
 
-  const match = text.match(/(?:diff --git a\/|--- [ab]\/)/);
-  if (!match) return "";
-  return text.slice(match.index).split(/\n(?:PHASE_NOTES|RELEASE_LEDGER|VERIFICATION|CONTEXT_REQUEST):/i)[0].replace(/```\s*$/, "").trimEnd() + "\n";
+  return raw ? normalizePatch(raw) : "";
+}
+
+async function applyPatchFile(patchPath) {
+  // Strategy 1: standard 3-way with recount and fix whitespace
+  try {
+    await run("git", ["apply", "--recount", "--3way", "--whitespace=fix", patchPath]);
+    return true;
+  } catch (e1) {
+    console.warn(`[git apply] Tier 1 failed (${e1.message?.trim()}). Trying ignore-whitespace...`);
+  }
+
+  // Strategy 2: ignore whitespace
+  try {
+    await run("git", ["apply", "--recount", "--ignore-whitespace", "--ignore-space-change", patchPath]);
+    return true;
+  } catch (e2) {
+    console.warn(`[git apply] Tier 2 failed (${e2.message?.trim()}). Trying GNU patch...`);
+  }
+
+  // Strategy 3: GNU patch fallback (handles fuzzy context lines far better)
+  try {
+    await run("patch", ["-p1", "--batch", "--forward", "-i", patchPath]);
+    return true;
+  } catch (e3) {
+    console.error(`[patch fallback] Tier 3 failed: ${e3.message}`);
+    throw new Error(`Failed to apply patch via git apply and GNU patch.\nError: ${e3.message}`);
+  }
 }
 
 async function safeContextRequests(text, allInventory, outlinesMap) {
@@ -155,7 +252,7 @@ async function safeContextRequests(text, allInventory, outlinesMap) {
       if (s <= maxFileSizeBytes) {
         valid.push(file);
       } else {
-        console.warn(`[context] File ${file} (${s}B) exceeds ${maxFileSizeBytes}B limit. Providing skeleton outline instead.`);
+        console.warn(`[context] File ${file} (${s}B) exceeds ${maxFileSizeBytes}B limit. Providing skeleton outline.`);
         const content = await readFile(new URL(file, import.meta.url), "utf8");
         outlinesMap.set(file, generateSkeleton(content));
       }
@@ -166,13 +263,18 @@ async function safeContextRequests(text, allInventory, outlinesMap) {
   return valid.slice(0, 15);
 }
 
-function buildPrompt(spec, inventoryText, pack, outlinesMap, allowContextRequest) {
+function buildPrompt(spec, inventoryText, pack, outlinesMap, allowContextRequest, patchErrorNote = "") {
   let outlinesSection = "";
   if (outlinesMap.size > 0) {
     outlinesSection = "\nLARGE FILES OUTLINE SKELETONS (structural reference):\n";
     for (const [f, outline] of outlinesMap.entries()) {
       outlinesSection += `\n--- ${f} ---\n${outline}\n`;
     }
+  }
+
+  let errorPrompt = "";
+  if (patchErrorNote) {
+    errorPrompt = `\nCRITICAL FIX REQUIRED: The previous patch failed to apply with error:\n${patchErrorNote}\nEnsure all modified files begin with "diff --git a/... b/...", all unchanged lines start with a single space, and exact line hunks match the current source.\n`;
   }
 
   let formatRules = "";
@@ -212,6 +314,7 @@ ${inventoryText}
 CURRENT FULL-SOURCE REPOMIX SLICE:
 ${pack}
 ${outlinesSection}
+${errorPrompt}
 ${formatRules}`;
 }
 
@@ -286,15 +389,15 @@ for (const phase of manifest.phases.slice(start - 1, end)) {
   let changed = false;
   const outlinesMap = new Map();
   let contextRequestedOnce = false;
+  let lastPatchError = "";
 
   for (let turn = 1; turn <= maxTurns; turn++) {
     const allowContext = turn === 1 && !contextRequestedOnce;
 
     let pack = await makePack(phase, paths);
-    let prompt = buildPrompt(spec, initial.inventory, pack, outlinesMap, allowContext);
+    let prompt = buildPrompt(spec, initial.inventory, pack, outlinesMap, allowContext, lastPatchError);
     let estimatedTokens = tokenEstimate(prompt);
 
-    // Auto-prune largest non-mandatory files if exceeding token ceiling
     while (estimatedTokens > hardInputTokens) {
       const nonMandatory = paths.filter((p) => !MANDATORY_FILES.includes(p));
       if (!nonMandatory.length) {
@@ -318,7 +421,7 @@ for (const phase of manifest.phases.slice(start - 1, end)) {
       console.warn(`[prune] Prompt is ~${estimatedTokens} tokens (> ${hardInputTokens}). Dropping ${largestFile} (${largestSize}B)...`);
       paths = paths.filter((p) => p !== largestFile);
       pack = await makePack(phase, paths);
-      prompt = buildPrompt(spec, initial.inventory, pack, outlinesMap, allowContext);
+      prompt = buildPrompt(spec, initial.inventory, pack, outlinesMap, allowContext, lastPatchError);
       estimatedTokens = tokenEstimate(prompt);
     }
 
@@ -347,18 +450,24 @@ for (const phase of manifest.phases.slice(start - 1, end)) {
     if (patch) {
       const pp = `${base}.patch`;
       await writeFile(new URL(pp, import.meta.url), patch);
-      await run("git", ["apply", "--check", "--whitespace=error-all", pp]);
-      await run("git", ["apply", "--3way", "--whitespace=fix", pp]);
-      changed = true;
+      try {
+        await applyPatchFile(pp);
+        changed = true;
+        lastPatchError = "";
+      } catch (err) {
+        console.warn(`[patch apply failed on turn ${turn}]: ${err.message}`);
+        lastPatchError = err.message;
+        continue; // Retry next turn with the error in the prompt
+      }
     }
 
     const isComplete = /(?:^|\n)[#* \t]*PHASE_STATUS[* \t]*:\s*COMPLETE/i.test(out.text);
-    if (isComplete) {
+    if (isComplete && !lastPatchError) {
       complete = true;
       break;
     }
 
-    if (!patch) {
+    if (!patch && !isComplete) {
       console.error(`\n=== UNEXPECTED MODEL OUTPUT (Phase ${phase.phase}, Turn ${turn}) ===\n${out.text}\n=======================================================\n`);
       throw new Error(`Phase ${phase.phase} returned neither an applicable patch nor complete status`);
     }
@@ -379,4 +488,4 @@ for (const phase of manifest.phases.slice(start - 1, end)) {
   } else {
     console.log(`dry-run ready (${changed ? "changed" : "no mutation"})`);
   }
-         }
+}
