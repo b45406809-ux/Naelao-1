@@ -1,9 +1,8 @@
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const matrix = readFileSync(
-  resolve(process.cwd(), "../docs/requirements-trace-matrix.md"),
+  new URL("../../docs/requirements-trace-matrix.md", import.meta.url),
   "utf8"
 );
 const rows = matrix.split("\n").filter((line) => /^\|\s*\d+\s*\|/.test(line));

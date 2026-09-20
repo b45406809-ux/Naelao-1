@@ -24,11 +24,20 @@ import remarkGfm from "remark-gfm";
  */
 
 const COMPONENTS = {
-  a: ({ href, children }: { href?: string | undefined; children?: React.ReactNode }) => (
-    <a href={href} target="_blank" rel="noopener noreferrer">
-      {children}
-    </a>
-  ),
+  a: ({
+    href,
+    children,
+  }: { href?: string | undefined; children?: React.ReactNode }) => {
+    // Citation URLs are immutable stream markers, not navigable bucket URLs. Chat mounts the
+    // authenticated CitationBadges resolver; Markdown only renders an inert escaped marker.
+    if (href?.startsWith("citation:"))
+      return <span className="citation-marker">{children}</span>;
+    return (
+      <a href={href} target="_blank" rel="noopener noreferrer">
+        {children}
+      </a>
+    );
+  },
 } as const;
 
 function MarkdownImpl({ text }: { text: string }): React.ReactElement {

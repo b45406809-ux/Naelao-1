@@ -1,0 +1,10 @@
+import { readdir, readFile } from "node:fs/promises";
+const manifest=JSON.parse(await readFile("repomix/phases.json","utf8"));
+if(manifest.schema_version!==2||manifest.target_input_tokens>48000||manifest.hard_input_tokens>64000) throw new Error("Micro-phase token guards are missing or too large");
+if(manifest.phases.length!==67) throw new Error(`Expected 67 micro-phases, found ${manifest.phases.length}`);
+let expected=1;
+for(const phase of manifest.phases){if(phase.from!==expected||phase.to<phase.from||phase.to>Math.min(130,expected+1))throw new Error(`Non-contiguous phase ${phase.phase}`);expected=phase.to+1;const prompt=await readFile(phase.prompt,"utf8");for(let item=phase.from;item<=phase.to;item++){const start=prompt.indexOf(`### ${item}. `);if(start<0)throw new Error(`${phase.prompt} omits item ${item}`);const end=prompt.indexOf("\n### ",start+5),part=prompt.slice(start,end<0?undefined:end);for(const mark of ["**Final behavior:**","**Production acceptance contract:**","**Retained implementation constraints:**"])if(!part.includes(mark))throw new Error(`${phase.prompt} item ${item} omits ${mark}`);}for(const mark of ["This prompt is self-contained","PHASE_STATUS: CONTINUE","PHASE_STATUS: COMPLETE"])if(!prompt.includes(mark))throw new Error(`${phase.prompt} omits ${mark}`);}
+if(expected!==131)throw new Error("Micro-phases do not cover 1-130");
+const configs=(await readdir("repomix")).filter(x=>/^batch-\d{2}-.+\.json$/.test(x)).sort();if(configs.length!==13)throw new Error("Expected 13 source profiles");for(const file of configs){const c=JSON.parse(await readFile(`repomix/${file}`,"utf8"));if(c.output.compress===true||c.output.removeComments!==false||c.output.removeEmptyLines!==false||c.output.showLineNumbers!==true)throw new Error(`${file} must retain line-numbered full source`);}
+const providers=JSON.parse(await readFile("repomix/provider-models.json","utf8"));for(const p of ["gemini","groq","openrouter"])if(!providers.providers[p]?.models?.length)throw new Error(`Missing ${p} model inventory`);
+console.log("Verified 67 dependency-ordered micro-phases covering items 1-130 and 3 provider rotations.");

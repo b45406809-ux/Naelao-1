@@ -827,6 +827,16 @@ app.use("/spaces/:spaceId/projects/:projectId/members/:userId", requireInternalH
 app.use("/spaces/:spaceId/projects/:projectId/members/:userId", requireBusinessMembership({ DELETE: "admin" }));
 app.use("/spaces/:spaceId/projects/:projectId/activate-thread", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/projects/:projectId/activate-thread", requireBusinessMembership({ POST: "member" }));
+app.use("/spaces/:spaceId/projects/:projectId/tasks", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/tasks/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/tasks", requireBusinessMembership({ GET: "member", POST: "member" }));
+app.use("/spaces/:spaceId/projects/:projectId/tasks/*", requireBusinessMembership({ POST: "member" }));
+app.use("/spaces/:spaceId/projects/:projectId/alert-owner", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/alert-owner", requireBusinessMembership({ GET: "member", PUT: "admin" }));
+app.use("/spaces/:spaceId/projects/:projectId/provenance", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/provenance/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/provenance", requireBusinessMembership({ GET: "member", POST: "member" }));
+app.use("/spaces/:spaceId/projects/:projectId/provenance/*", requireBusinessMembership({ GET: "member" }));
 
 app.get("/spaces/:spaceId/projects/:projectId/members", async (c) => {
   const { spaceId, projectId } = c.req.param();
@@ -852,6 +862,90 @@ app.delete("/spaces/:spaceId/projects/:projectId/members/:userId", async (c) => 
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(userId)}`, "DELETE");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+async function authorizeTaskProject(c: { env: Env; req: { param: (name?: string) => any; header: (name: string) => string | undefined } }) {
+  const { spaceId, projectId } = c.req.param();
+  const identity = getCallerIdentity(c);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
+  if (!tenantId || !identity.userId) return { response: Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 }) };
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const access = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}?space_id=${encodeURIComponent(spaceId)}&viewer_id=${encodeURIComponent(identity.userId)}`, "GET");
+  if (!access.ok) return { response: Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 }) };
+  return { stub, tenantId, identity, spaceId, projectId };
+}
+
+app.get("/spaces/:spaceId/projects/:projectId/tasks", async (c) => {
+  const auth = await authorizeTaskProject(c);
+  if ("response" in auth) return auth.response;
+  const res = await forwardToSpaceDO(auth.stub, `/projects/${encodeURIComponent(auth.projectId)}/tasks?tenant_id=${encodeURIComponent(auth.tenantId)}&space_id=${encodeURIComponent(auth.spaceId)}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.post("/spaces/:spaceId/projects/:projectId/tasks", async (c) => {
+  const auth = await authorizeTaskProject(c);
+  if ("response" in auth) return auth.response;
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}));
+  const res = await forwardToSpaceDO(auth.stub, `/projects/${encodeURIComponent(auth.projectId)}/tasks`, "POST", JSON.stringify({ ...body, tenant_id: auth.tenantId, space_id: auth.spaceId, actor_id: auth.identity.userId }));
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.post("/spaces/:spaceId/projects/:projectId/tasks/:taskId/:action", async (c) => {
+  const action = c.req.param("action");
+  if (!["claim", "renew", "complete", "request-review", "deliberate"].includes(action)) return c.json({ error_code: "not_found", message: "Not found" }, 404);
+  const auth = await authorizeTaskProject(c);
+  if ("response" in auth) return auth.response;
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}));
+  const path = `/projects/${encodeURIComponent(auth.projectId)}/tasks/${encodeURIComponent(c.req.param("taskId"))}/${action}`;
+  const res = await forwardToSpaceDO(auth.stub, path, "POST", JSON.stringify({ ...body, tenant_id: auth.tenantId, space_id: auth.spaceId, actor_id: auth.identity.userId }));
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.get("/spaces/:spaceId/projects/:projectId/tasks/:taskId/spectators", async (c) => {
+  const auth = await authorizeTaskProject(c);
+  if ("response" in auth) return auth.response;
+  const path = `/projects/${encodeURIComponent(auth.projectId)}/tasks/${encodeURIComponent(c.req.param("taskId"))}/spectators?tenant_id=${encodeURIComponent(auth.tenantId)}&space_id=${encodeURIComponent(auth.spaceId)}`;
+  const res = await forwardToSpaceDO(auth.stub, path, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.get("/spaces/:spaceId/projects/:projectId/alert-owner", async (c) => {
+  const auth = await authorizeTaskProject(c);
+  if ("response" in auth) return auth.response;
+  const res = await forwardToSpaceDO(auth.stub, `/projects/${encodeURIComponent(auth.projectId)}/alert-owner?tenant_id=${encodeURIComponent(auth.tenantId)}&space_id=${encodeURIComponent(auth.spaceId)}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.put("/spaces/:spaceId/projects/:projectId/alert-owner", async (c) => {
+  const auth = await authorizeTaskProject(c);
+  if ("response" in auth) return auth.response;
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}));
+  const res = await forwardToSpaceDO(auth.stub, `/projects/${encodeURIComponent(auth.projectId)}/alert-owner`, "PUT", JSON.stringify({ ...body, tenant_id: auth.tenantId, space_id: auth.spaceId, actor_id: auth.identity.userId }));
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.get("/spaces/:spaceId/projects/:projectId/provenance", async (c) => {
+  const auth = await authorizeTaskProject(c);
+  if ("response" in auth) return auth.response;
+  const source = new URL(c.req.raw.url);
+  const path = `/projects/${encodeURIComponent(auth.projectId)}/provenance?tenant_id=${encodeURIComponent(auth.tenantId)}&space_id=${encodeURIComponent(auth.spaceId)}&after=${encodeURIComponent(source.searchParams.get("after") ?? "0")}&limit=${encodeURIComponent(source.searchParams.get("limit") ?? "100")}`;
+  const res = await forwardToSpaceDO(auth.stub, path, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.get("/spaces/:spaceId/projects/:projectId/provenance/verify", async (c) => {
+  const auth = await authorizeTaskProject(c);
+  if ("response" in auth) return auth.response;
+  const res = await forwardToSpaceDO(auth.stub, `/projects/${encodeURIComponent(auth.projectId)}/provenance/verify?tenant_id=${encodeURIComponent(auth.tenantId)}&space_id=${encodeURIComponent(auth.spaceId)}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.post("/spaces/:spaceId/projects/:projectId/provenance", async (c) => {
+  const auth = await authorizeTaskProject(c);
+  if ("response" in auth) return auth.response;
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}));
+  const res = await forwardToSpaceDO(auth.stub, `/projects/${encodeURIComponent(auth.projectId)}/provenance`, "POST", JSON.stringify({ ...body, tenant_id: auth.tenantId, space_id: auth.spaceId, actor_id: auth.identity.userId }));
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 

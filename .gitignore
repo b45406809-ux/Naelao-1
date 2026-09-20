@@ -18,3 +18,7 @@ dist/
 repomix-*.xml
 repomix-*.md
 repomix-*.txt
+
+# Reproducible Repomix authority extracts and packed outputs
+.repomix-cache/
+.phase-runs/
