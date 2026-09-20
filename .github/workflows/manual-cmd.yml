@@ -11,7 +11,7 @@ on:
 jobs:
   run-command:
     runs-on: ubuntu-latest
-    
+
     # Permission needed to push changes back to the repository
     permissions:
       contents: write
@@ -20,28 +20,33 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          # Fetches the branch selected in the "Run workflow" dropdown
           ref: ${{ github.ref }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-node-version: '20'
+          node-version: '20'
 
       - name: Execute Custom Command
+        env:
+          USER_COMMAND: ${{ github.event.inputs.command }}
         run: |
-          echo "Running: ${{ github.event.inputs.command }}"
-          ${{ github.event.inputs.command }}
+          echo "Running: $USER_COMMAND"
+          eval "$USER_COMMAND"
 
       - name: Commit and Push Changes
         run: |
+          # Show modified/untracked files before staging (useful for debugging)
+          echo "=== Git Status Before Staging ==="
+          git status
+
           # Configure git with a generic GitHub Actions bot identity
           git config --local user.name "github-actions[bot]"
-          git config --local user.email "41898282+github-actions[bot]@://github.com"
-          
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           # Stage all changes (created, modified, or deleted files)
-          git add .
-          
+          git add -A
+
           # Only commit and push if there are actual changes to prevent workflow failure
           if ! git diff-index --quiet HEAD; then
             git commit -m "chore: automated changes from manual command [skip ci]"
@@ -49,4 +54,3 @@ jobs:
           else
             echo "No changes detected. Skipping commit and push."
           fi
-          
