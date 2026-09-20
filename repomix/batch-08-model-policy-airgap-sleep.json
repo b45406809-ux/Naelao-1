@@ -4,7 +4,7 @@
     "maxFileSize": 5000000
   },
   "output": {
-    "filePath": ".repomix-cache/batch-08-model-policy-airgap-sleep.xml",
+    "filePath": "repomix/outputs/batch-08-model-policy-airgap-sleep.xml",
     "style": "xml",
     "parsableStyle": true,
     "fileSummary": true,
@@ -14,7 +14,7 @@
     "showLineNumbers": true,
     "copyToClipboard": false,
     "topFilesLength": 40,
-    "instructionFilePath": ".repomix-cache/authority-batch-8.md"
+    "instructionFilePath": "repomix/prompts/batch-08-items-71-75.md"
   },
   "include": [
     "package.json",

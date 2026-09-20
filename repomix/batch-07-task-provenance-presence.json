@@ -4,7 +4,7 @@
     "maxFileSize": 5000000
   },
   "output": {
-    "filePath": ".repomix-cache/batch-07-task-provenance-presence.xml",
+    "filePath": "repomix/outputs/batch-07-task-provenance-presence.xml",
     "style": "xml",
     "parsableStyle": true,
     "fileSummary": true,
@@ -14,7 +14,7 @@
     "showLineNumbers": true,
     "copyToClipboard": false,
     "topFilesLength": 40,
-    "instructionFilePath": ".repomix-cache/authority-batch-7.md"
+    "instructionFilePath": "repomix/prompts/batch-07-items-61-70.md"
   },
   "include": [
     "package.json",

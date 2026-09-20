@@ -4,7 +4,7 @@
     "maxFileSize": 5000000
   },
   "output": {
-    "filePath": ".repomix-cache/batch-10-workflows-webhooks-scheduling.xml",
+    "filePath": "repomix/outputs/batch-10-workflows-webhooks-scheduling.xml",
     "style": "xml",
     "parsableStyle": true,
     "fileSummary": true,
@@ -14,7 +14,7 @@
     "showLineNumbers": true,
     "copyToClipboard": false,
     "topFilesLength": 40,
-    "instructionFilePath": ".repomix-cache/authority-batch-10.md"
+    "instructionFilePath": "repomix/prompts/batch-10-items-88-103.md"
   },
   "include": [
     "package.json",

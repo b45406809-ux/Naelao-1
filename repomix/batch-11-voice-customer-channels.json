@@ -4,7 +4,7 @@
     "maxFileSize": 5000000
   },
   "output": {
-    "filePath": ".repomix-cache/batch-11-voice-customer-channels.xml",
+    "filePath": "repomix/outputs/batch-11-voice-customer-channels.xml",
     "style": "xml",
     "parsableStyle": true,
     "fileSummary": true,
@@ -14,7 +14,7 @@
     "showLineNumbers": true,
     "copyToClipboard": false,
     "topFilesLength": 40,
-    "instructionFilePath": ".repomix-cache/authority-batch-11.md"
+    "instructionFilePath": "repomix/prompts/batch-11-items-104-111.md"
   },
   "include": [
     "package.json",

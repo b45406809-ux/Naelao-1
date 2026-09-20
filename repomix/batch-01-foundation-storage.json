@@ -4,7 +4,7 @@
     "maxFileSize": 5000000
   },
   "output": {
-    "filePath": ".repomix-cache/batch-01-foundation-storage.xml",
+    "filePath": "repomix/outputs/batch-01-foundation-storage.xml",
     "style": "xml",
     "parsableStyle": true,
     "fileSummary": true,
@@ -14,7 +14,7 @@
     "showLineNumbers": true,
     "copyToClipboard": false,
     "topFilesLength": 40,
-    "instructionFilePath": ".repomix-cache/authority-batch-1.md"
+    "instructionFilePath": "repomix/prompts/batch-01-items-1-19.md"
   },
   "include": [
     "package.json",

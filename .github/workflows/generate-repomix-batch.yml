@@ -1,0 +1,71 @@
+name: Generate Repomix batch
+
+on:
+  workflow_dispatch:
+    inputs:
+      batch:
+        description: Batch to package for Gemini AI Studio
+        required: true
+        default: "01"
+        type: choice
+        options:
+          - "01"
+          - "02"
+          - "03"
+          - "04"
+          - "05"
+          - "06"
+          - "07"
+          - "08"
+          - "09"
+          - "10"
+          - "11"
+          - "12"
+          - "13"
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out selected branch
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Compile and verify prompts
+        run: |
+          node repomix/build-prompts.mjs
+          node repomix/verify-configs.mjs
+
+      - name: Generate selected pack
+        id: pack
+        env:
+          BATCH: ${{ inputs.batch }}
+        run: |
+          set -euo pipefail
+          config="$(find repomix -maxdepth 1 -type f -name "batch-${BATCH}-*.json" -print)"
+          test -n "$config" && test "$(printf '%s\n' "$config" | wc -l)" -eq 1
+          npx --yes repomix@1.18.0 --token-budget 1000000 --config "$config"
+          node - "$config" <<'NODE' >> "$GITHUB_OUTPUT"
+          const fs = require("node:fs");
+          const config = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+          console.log(`output=${config.output.filePath}`);
+          console.log(`prompt=${config.output.instructionFilePath}`);
+          NODE
+
+      - name: Upload XML and standalone prompt
+        uses: actions/upload-artifact@v4
+        with:
+          name: repomix-batch-${{ inputs.batch }}-${{ github.run_id }}
+          path: |
+            ${{ steps.pack.outputs.output }}
+            ${{ steps.pack.outputs.prompt }}
+          if-no-files-found: error
+          retention-days: 14

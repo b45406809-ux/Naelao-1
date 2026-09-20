@@ -58,10 +58,15 @@ for (const [index, file] of files.entries()) {
     throw new Error(`${file} must emit parsable line-numbered XML`);
   if (config.tokenCount?.encoding !== "o200k_base")
     throw new Error(`${file} has the wrong AI Studio tokenizer`);
-  if (!output.instructionFilePath?.endsWith(`authority-batch-${index + 1}.md`))
-    throw new Error(`${file} is not paired with its authority trail`);
   const [from, to] = expectedRanges[index];
   const promptPath = `repomix/prompts/batch-${String(index + 1).padStart(2, "0")}-items-${from}-${to}.md`;
+  if (output.instructionFilePath !== promptPath)
+    throw new Error(`${file} is not paired with its tracked batch prompt`);
+  const expectedOutput = `repomix/outputs/${file.replace(/\.json$/, ".xml")}`;
+  if (output.filePath !== expectedOutput)
+    throw new Error(
+      `${file} must write its downloadable XML to ${expectedOutput}`
+    );
   const prompt = await readFile(promptPath, "utf8");
   for (const required of [
     "This prompt is self-contained",
@@ -69,8 +74,9 @@ for (const [index, file] of files.entries()) {
     "Final behavior:",
     "Production acceptance contract:",
     "Retained implementation constraints:",
-    "PHASE_STATUS: CONTINUE",
-    "PHASE_STATUS: COMPLETE",
+    "Manual AI Studio hand-off contract",
+    `repomix/patches/batch-${String(index + 1).padStart(2, "0")}.patch`,
+    "must start with `diff --git`",
   ]) {
     if (!prompt.includes(required))
       throw new Error(`${promptPath} omits prompt contract: ${required}`);
