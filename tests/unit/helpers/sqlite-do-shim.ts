@@ -27,9 +27,13 @@ export interface DOSqlStorage {
 export interface DOStorage {
   sql: DOSqlStorage;
   transactionSync<T>(closure: () => T): T;
+  transaction<T>(closure: () => Promise<T>): Promise<T>;
+  setAlarm(timestamp: number): Promise<void>;
+  getAlarm(): Promise<number | null>;
 }
 
 function buildStorage(db: InstanceType<typeof DatabaseSync>): DOStorage {
+  let alarm: number | null = null;
   const sql: DOSqlStorage = {
     exec(query: string, ...params: unknown[]) {
       const trimmed = query.trim();
@@ -71,6 +75,19 @@ function buildStorage(db: InstanceType<typeof DatabaseSync>): DOStorage {
         throw err;
       }
     },
+    async transaction<T>(closure: () => Promise<T>): Promise<T> {
+      db.exec("BEGIN");
+      try {
+        const result = await closure();
+        db.exec("COMMIT");
+        return result;
+      } catch (err) {
+        db.exec("ROLLBACK");
+        throw err;
+      }
+    },
+    async setAlarm(timestamp: number): Promise<void> { alarm = timestamp; },
+    async getAlarm(): Promise<number | null> { return alarm; },
   };
 }
 

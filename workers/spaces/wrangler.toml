@@ -18,6 +18,7 @@ ENVIRONMENT = "development"
 # an opaque token string buried in an email," which several real users did not manage to do. Now
 # set to the real, live Product Shell domain (see CLAUDE.md's Live Deployment Facts).
 PRODUCT_SHELL_URL = "https://naelao-shell.pages.dev"
+PROVENANCE_SIGNING_KEY_ID = "development-v1"
 
 # Cloudflare for SaaS custom-hostname provisioning (storefront custom domains).
 # Set the real values at deploy time as secrets:
@@ -139,7 +140,7 @@ service = "naelao-notifications"
 # wrangler does NOT merge [env.X].vars with the top-level [vars] block — it replaces it
 # entirely, so PRODUCT_SHELL_URL must be repeated here or it's undefined in staging. Override
 # with the real staging shell URL once one is deployed.
-vars = { ENVIRONMENT = "staging", PRODUCT_SHELL_URL = "" }
+vars = { ENVIRONMENT = "staging", PRODUCT_SHELL_URL = "", PROVENANCE_SIGNING_KEY_ID = "staging-v1" }
 
 [[env.staging.services]]
 binding = "BILLING_WORKER"
@@ -158,7 +159,7 @@ service = "naelao-notifications"
 # worker use bare `wrangler deploy` (top-level [vars]), not --env production (item 83's own
 # documented convention for naelao-agents applies here too) — kept in sync anyway so a future
 # --env production deploy doesn't silently regress to an empty PRODUCT_SHELL_URL.
-vars = { ENVIRONMENT = "production", PRODUCT_SHELL_URL = "https://naelao-shell.pages.dev" }
+vars = { ENVIRONMENT = "production", PRODUCT_SHELL_URL = "https://naelao-shell.pages.dev", PROVENANCE_SIGNING_KEY_ID = "production-v1" }
 
 [[env.production.services]]
 binding = "BILLING_WORKER"
@@ -171,3 +172,8 @@ service = "naelao-agents"
 [[env.production.services]]
 binding = "NOTIFICATIONS_WORKER"
 service = "naelao-notifications"
+
+# Required rotated secret for signed provenance checkpoints (set separately in every environment):
+#   wrangler secret put PROVENANCE_SIGNING_KEY
+# Key identifier is non-secret and must change whenever the signing key rotates.
+# Configure with environment-specific vars in deployed configuration.

@@ -25,6 +25,9 @@ export interface TreeEntry {
   path: string;
   oid: string;
   size: number;
+  /** SHA-256 over the exact file bytes. Git's SHA-1 oid remains the object identity, while this
+   * digest is the mandatory compare-and-swap authority for mutable workspace operations. */
+  sha256: string;
 }
 
 export interface CommitRecord {
@@ -102,4 +105,3 @@ export function commitBody(tree: string, parent: string | undefined, message: st
   lines.push("", message, "", `naelao-metadata ${JSON.stringify(metadata)}`);
   return encoder.encode(`${lines.join("\n")}\n`);
 }
-

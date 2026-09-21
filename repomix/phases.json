@@ -1,0 +1,317 @@
+{
+  "schema_version": 3,
+  "target_input_tokens": 32000,
+  "hard_input_tokens": 96000,
+  "phases": [
+    {
+      "phase": 1,
+      "slice_id": "slice-01",
+      "from": 1,
+      "to": 4,
+      "focus": "Hierarchy, isolation, and project-anchored automation",
+      "prompt": "repomix/prompts/batch-01-items-1-4.md",
+      "macro_profile": 1,
+      "depends_on": []
+    },
+    {
+      "phase": 2,
+      "slice_id": "slice-02",
+      "from": 5,
+      "to": 7,
+      "focus": "Artifact Git, isolate workspace, and namespace separation",
+      "prompt": "repomix/prompts/batch-02-items-5-7.md",
+      "macro_profile": 1,
+      "depends_on": [
+        1
+      ]
+    },
+    {
+      "phase": 3,
+      "slice_id": "slice-03",
+      "from": 8,
+      "to": 13,
+      "focus": "Execution ladder, hypervisor, synchronization, sleep, and Pyodide",
+      "prompt": "repomix/prompts/batch-03-items-8-13.md",
+      "macro_profile": 2,
+      "depends_on": [
+        2
+      ]
+    },
+    {
+      "phase": 4,
+      "slice_id": "slice-04",
+      "from": 14,
+      "to": 19,
+      "focus": "Browser/container bridge, forks, time machine, and blame",
+      "prompt": "repomix/prompts/batch-04-items-14-19.md",
+      "macro_profile": 2,
+      "depends_on": [
+        3
+      ]
+    },
+    {
+      "phase": 5,
+      "slice_id": "slice-05",
+      "from": 20,
+      "to": 24,
+      "focus": "Runtime SDK, vault, WriteGuard, and virtual CLI",
+      "prompt": "repomix/prompts/batch-05-items-20-24.md",
+      "macro_profile": 3,
+      "depends_on": [
+        4
+      ]
+    },
+    {
+      "phase": 6,
+      "slice_id": "slice-06",
+      "from": 25,
+      "to": 33,
+      "focus": "Connector aliases, authorization, channels, and delegation",
+      "prompt": "repomix/prompts/batch-06-items-25-33.md",
+      "macro_profile": 3,
+      "depends_on": [
+        5
+      ]
+    },
+    {
+      "phase": 7,
+      "slice_id": "slice-07",
+      "from": 34,
+      "to": 38,
+      "focus": "Skills, demonstrations, progressive disclosure, hooks, and DLP",
+      "prompt": "repomix/prompts/batch-07-items-34-38.md",
+      "macro_profile": 3,
+      "depends_on": [
+        6
+      ]
+    },
+    {
+      "phase": 8,
+      "slice_id": "slice-08",
+      "from": 39,
+      "to": 46,
+      "focus": "Universal kernel, role firewall, goals, memory, and compaction",
+      "prompt": "repomix/prompts/batch-08-items-39-46.md",
+      "macro_profile": 4,
+      "depends_on": [
+        7
+      ]
+    },
+    {
+      "phase": 9,
+      "slice_id": "slice-09",
+      "from": 47,
+      "to": 52,
+      "focus": "Scoped retrieval, Cohere ingestion, grounding, and citations",
+      "prompt": "repomix/prompts/batch-09-items-47-52.md",
+      "macro_profile": 5,
+      "depends_on": [
+        8
+      ]
+    },
+    {
+      "phase": 10,
+      "slice_id": "slice-10",
+      "from": 53,
+      "to": 54,
+      "focus": "Project MCP mesh and managed OAuth brokers",
+      "prompt": "repomix/prompts/batch-10-items-53-54.md",
+      "macro_profile": 5,
+      "depends_on": [
+        9
+      ]
+    },
+    {
+      "phase": 11,
+      "slice_id": "slice-11",
+      "from": 55,
+      "to": 56,
+      "focus": "Four thread tiers and lossless solo promotion",
+      "prompt": "repomix/prompts/batch-11-items-55-56.md",
+      "macro_profile": 6,
+      "depends_on": [
+        10
+      ]
+    },
+    {
+      "phase": 12,
+      "slice_id": "slice-12",
+      "from": 57,
+      "to": 60,
+      "focus": "Artifact CAS, locks, trusted PRs, and rebases",
+      "prompt": "repomix/prompts/batch-12-items-57-60.md",
+      "macro_profile": 6,
+      "depends_on": [
+        11
+      ]
+    },
+    {
+      "phase": 13,
+      "slice_id": "slice-13",
+      "from": 61,
+      "to": 66,
+      "focus": "Task leases, spectators, intent/RFC governance, and alerts",
+      "prompt": "repomix/prompts/batch-13-items-61-66.md",
+      "macro_profile": 7,
+      "depends_on": [
+        12
+      ]
+    },
+    {
+      "phase": 14,
+      "slice_id": "slice-14",
+      "from": 67,
+      "to": 70,
+      "focus": "Provenance, model races, presence, and invoker actors",
+      "prompt": "repomix/prompts/batch-14-items-67-70.md",
+      "macro_profile": 7,
+      "depends_on": [
+        13
+      ]
+    },
+    {
+      "phase": 15,
+      "slice_id": "slice-15",
+      "from": 71,
+      "to": 75,
+      "focus": "Model certification, LoRA, local inference, air-gap, and sleep",
+      "prompt": "repomix/prompts/batch-15-items-71-75.md",
+      "macro_profile": 8,
+      "depends_on": [
+        14
+      ]
+    },
+    {
+      "phase": 16,
+      "slice_id": "slice-16",
+      "from": 76,
+      "to": 79,
+      "focus": "Display modes and seven canvas kinds",
+      "prompt": "repomix/prompts/batch-16-items-76-79.md",
+      "macro_profile": 9,
+      "depends_on": [
+        15
+      ]
+    },
+    {
+      "phase": 17,
+      "slice_id": "slice-17",
+      "from": 80,
+      "to": 84,
+      "focus": "Extensions, gadgets, daemons, tree-sitter, and MCP exposure",
+      "prompt": "repomix/prompts/batch-17-items-80-84.md",
+      "macro_profile": 9,
+      "depends_on": [
+        16
+      ]
+    },
+    {
+      "phase": 18,
+      "slice_id": "slice-18",
+      "from": 85,
+      "to": 87,
+      "focus": "MCP-UI, safe widgets, and workflow classes",
+      "prompt": "repomix/prompts/batch-18-items-85-87.md",
+      "macro_profile": 9,
+      "depends_on": [
+        17
+      ]
+    },
+    {
+      "phase": 19,
+      "slice_id": "slice-19",
+      "from": 88,
+      "to": 91,
+      "focus": "Asymmetric subagents and durable workflow harness",
+      "prompt": "repomix/prompts/batch-19-items-88-91.md",
+      "macro_profile": 10,
+      "depends_on": [
+        18
+      ]
+    },
+    {
+      "phase": 20,
+      "slice_id": "slice-20",
+      "from": 92,
+      "to": 99,
+      "focus": "Authenticated automation ingress and failure defenses",
+      "prompt": "repomix/prompts/batch-20-items-92-99.md",
+      "macro_profile": 10,
+      "depends_on": [
+        19
+      ]
+    },
+    {
+      "phase": 21,
+      "slice_id": "slice-21",
+      "from": 100,
+      "to": 103,
+      "focus": "Scheduling, receipts, calendar connector, and slot mutex",
+      "prompt": "repomix/prompts/batch-21-items-100-103.md",
+      "macro_profile": 10,
+      "depends_on": [
+        20
+      ]
+    },
+    {
+      "phase": 22,
+      "slice_id": "slice-22",
+      "from": 104,
+      "to": 111,
+      "focus": "Voice, executive, and quarantined customer channels",
+      "prompt": "repomix/prompts/batch-22-items-104-111.md",
+      "macro_profile": 11,
+      "depends_on": [
+        21
+      ]
+    },
+    {
+      "phase": 23,
+      "slice_id": "slice-23",
+      "from": 112,
+      "to": 115,
+      "focus": "Credit metering, subscriptions, budgets, and self-funding",
+      "prompt": "repomix/prompts/batch-23-items-112-115.md",
+      "macro_profile": 12,
+      "depends_on": [
+        22
+      ]
+    },
+    {
+      "phase": 24,
+      "slice_id": "slice-24",
+      "from": 116,
+      "to": 119,
+      "focus": "Venture export, scrubbing, blueprint compilation, and security gate",
+      "prompt": "repomix/prompts/batch-24-items-116-119.md",
+      "macro_profile": 12,
+      "depends_on": [
+        23
+      ]
+    },
+    {
+      "phase": 25,
+      "slice_id": "slice-25",
+      "from": 120,
+      "to": 124,
+      "focus": "Marketplace recipes, tiers, pricing, and attribution",
+      "prompt": "repomix/prompts/batch-25-items-120-124.md",
+      "macro_profile": 13,
+      "depends_on": [
+        24
+      ]
+    },
+    {
+      "phase": 26,
+      "slice_id": "slice-26",
+      "from": 125,
+      "to": 130,
+      "focus": "Cycle ledgers, price floors, graduation, partner portal, and radar",
+      "prompt": "repomix/prompts/batch-26-items-125-130.md",
+      "macro_profile": 13,
+      "depends_on": [
+        25
+      ]
+    }
+  ]
+}

@@ -22,6 +22,20 @@ async function sha256Hex(input: string): Promise<string> {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+function canonicalJson(value: unknown): string {
+  if (value === undefined) return "null";
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const object = value as Record<string, unknown>;
+  return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(object[key])}`).join(",")}}`;
+}
+
+async function hmacHex(secret: string, value: string): Promise<string> {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value));
+  return [...new Uint8Array(signature)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 function safeJsonParseObj(text: string): Record<string, unknown> {
   try {
     const v = JSON.parse(text) as unknown;
@@ -1082,6 +1096,80 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_event_triggers_lookup ON event_triggers(space_id, project_id, event_type, enabled, priority DESC);
     `,
   },
+  {
+    version: 41,
+    description: "atomic task leases, spectators, intent and governance state",
+    up: `
+      ALTER TABLE tasks ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
+      ALTER TABLE tasks ADD COLUMN scope TEXT NOT NULL DEFAULT '{}';
+      ALTER TABLE tasks ADD COLUMN intent_embedding TEXT;
+      ALTER TABLE tasks ADD COLUMN sponsor_id TEXT;
+      ALTER TABLE tasks ADD COLUMN holder_id TEXT;
+      ALTER TABLE tasks ADD COLUMN lease_version INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE tasks ADD COLUMN lease_expires_at INTEGER;
+      ALTER TABLE tasks ADD COLUMN branch TEXT;
+      ALTER TABLE tasks ADD COLUMN terminal_result TEXT;
+      ALTER TABLE tasks ADD COLUMN state TEXT NOT NULL DEFAULT 'READY';
+      CREATE INDEX IF NOT EXISTS idx_tasks_active_lease
+        ON tasks(tenant_id, space_id, project_id, lease_expires_at)
+        WHERE holder_id IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS task_spectators (
+        tenant_id TEXT NOT NULL, space_id TEXT NOT NULL, project_id TEXT NOT NULL,
+        task_id TEXT NOT NULL, actor_id TEXT NOT NULL, joined_at INTEGER NOT NULL,
+        review_requested_at INTEGER,
+        PRIMARY KEY (task_id, actor_id)
+      );
+      CREATE TABLE IF NOT EXISTS task_lease_events (
+        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, space_id TEXT NOT NULL,
+        project_id TEXT NOT NULL, task_id TEXT NOT NULL, actor_id TEXT NOT NULL,
+        event_type TEXT NOT NULL, lease_version INTEGER NOT NULL, created_at INTEGER NOT NULL,
+        detail TEXT NOT NULL DEFAULT '{}'
+      );
+      CREATE INDEX IF NOT EXISTS idx_task_lease_events_task
+        ON task_lease_events(task_id, created_at);
+    `,
+  },
+  {
+    version: 42,
+    description: "task intent deduplication, sponsor RFCs, bounded deliberation, and alert ownership",
+    up: `
+      ALTER TABLE tasks ADD COLUMN deliberation_round INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE tasks ADD COLUMN similar_task_id TEXT;
+      CREATE TABLE IF NOT EXISTS task_rfcs (
+        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, space_id TEXT NOT NULL,
+        project_id TEXT NOT NULL, task_a_id TEXT NOT NULL, task_b_id TEXT NOT NULL,
+        sponsor_a_id TEXT NOT NULL, sponsor_b_id TEXT NOT NULL,
+        scope TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'RFC_FROZEN',
+        resolution_authority_id TEXT, resolution TEXT,
+        created_at INTEGER NOT NULL, resolved_at INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_task_rfcs_project
+        ON task_rfcs(tenant_id, space_id, project_id, state, created_at);
+      CREATE TABLE IF NOT EXISTS project_alert_owners (
+        tenant_id TEXT NOT NULL, space_id TEXT NOT NULL, project_id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL, updated_by TEXT NOT NULL, updated_at INTEGER NOT NULL
+      );
+    `,
+  },
+  {
+    version: 43,
+    description: "append-only cryptographic project provenance chain",
+    up: `
+      CREATE TABLE IF NOT EXISTS provenance_events (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE,
+        tenant_id TEXT NOT NULL, space_id TEXT NOT NULL, project_id TEXT NOT NULL,
+        human_trigger_id TEXT NOT NULL, invoker_id TEXT NOT NULL, assistant_actor_id TEXT NOT NULL,
+        executor_id TEXT NOT NULL, event_type TEXT NOT NULL, canonical_payload TEXT NOT NULL,
+        previous_hash TEXT NOT NULL, event_hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_provenance_scope ON provenance_events(tenant_id, space_id, project_id, sequence);
+      CREATE TABLE IF NOT EXISTS provenance_checkpoints (
+        sequence INTEGER PRIMARY KEY, tenant_id TEXT NOT NULL, space_id TEXT NOT NULL,
+        project_id TEXT NOT NULL, event_hash TEXT NOT NULL, signing_key_id TEXT NOT NULL,
+        signature TEXT NOT NULL, created_at INTEGER NOT NULL
+      );
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -1093,6 +1181,9 @@ export interface SpaceDOEnv {
   /** §A1.17 Phase V — naelao-ws-gateway, for live-syncing a mutation to a space's connected
    *  clients via WsHubDO. Optional: broadcastSpaceEvent degrades to a silent no-op when unbound. */
   WS_GATEWAY?: Fetcher;
+  NOTIFICATIONS_WORKER?: Fetcher;
+  PROVENANCE_SIGNING_KEY?: string;
+  PROVENANCE_SIGNING_KEY_ID?: string;
 }
 
 // Row types for internal use
@@ -1105,6 +1196,19 @@ interface SessionRow {
   metadata: string;
   created_at: string;
   updated_at: string;
+}
+
+interface GovernedTaskCreateBody {
+  tenant_id?: string; space_id?: string; actor_id?: string; title?: string; scope?: unknown;
+  intent_embedding?: number[]; sponsor_id?: string; branch?: string;
+}
+interface TaskLeaseBody { tenant_id?: string; space_id?: string; actor_id?: string; expected_version?: number; terminal_result?: unknown }
+interface ScopedTaskActorBody { tenant_id?: string; space_id?: string; actor_id?: string }
+interface AlertOwnerBody extends ScopedTaskActorBody { user_id?: string }
+interface DeliberationBody extends ScopedTaskActorBody { resolved?: boolean; resolution?: string }
+interface ProvenanceBody {
+  tenant_id?: string; space_id?: string; actor_id?: string; human_trigger_id?: string;
+  assistant_actor_id?: string; executor_id?: string; event_type?: string; payload?: unknown;
 }
 
 interface MessageRow {
@@ -1403,6 +1507,37 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && activateThreadMatch?.[1]) {
         return this.activateProjectThread(activateThreadMatch[1], request);
       }
+      const tasksMatch = url.pathname.match(/^\/projects\/([^/]+)\/tasks$/);
+      if (method === "GET" && tasksMatch?.[1]) {
+        return this.listGovernedTasks(tasksMatch[1], url.searchParams);
+      }
+      if (method === "POST" && tasksMatch?.[1]) {
+        return this.createGovernedTask(tasksMatch[1], request);
+      }
+      const taskLeaseMatch = url.pathname.match(/^\/projects\/([^/]+)\/tasks\/([^/]+)\/(claim|renew|complete)$/);
+      if (method === "POST" && taskLeaseMatch?.[1] && taskLeaseMatch[2] && taskLeaseMatch[3]) {
+        return this.mutateTaskLease(taskLeaseMatch[1], taskLeaseMatch[2], taskLeaseMatch[3], request);
+      }
+      const taskSpectatorsMatch = url.pathname.match(/^\/projects\/([^/]+)\/tasks\/([^/]+)\/spectators$/);
+      if (method === "GET" && taskSpectatorsMatch?.[1] && taskSpectatorsMatch[2]) {
+        return this.listTaskSpectators(taskSpectatorsMatch[1], taskSpectatorsMatch[2], url.searchParams);
+      }
+      const taskReviewMatch = url.pathname.match(/^\/projects\/([^/]+)\/tasks\/([^/]+)\/request-review$/);
+      if (method === "POST" && taskReviewMatch?.[1] && taskReviewMatch[2]) {
+        return this.requestTaskReview(taskReviewMatch[1], taskReviewMatch[2], request);
+      }
+      const taskDeliberateMatch = url.pathname.match(/^\/projects\/([^/]+)\/tasks\/([^/]+)\/deliberate$/);
+      if (method === "POST" && taskDeliberateMatch?.[1] && taskDeliberateMatch[2]) {
+        return this.recordDeliberation(taskDeliberateMatch[1], taskDeliberateMatch[2], request);
+      }
+      const alertOwnerMatch = url.pathname.match(/^\/projects\/([^/]+)\/alert-owner$/);
+      if (method === "GET" && alertOwnerMatch?.[1]) return this.getProjectAlertOwner(alertOwnerMatch[1], url.searchParams);
+      if (method === "PUT" && alertOwnerMatch?.[1]) return this.setProjectAlertOwner(alertOwnerMatch[1], request);
+      const provenanceMatch = url.pathname.match(/^\/projects\/([^/]+)\/provenance$/);
+      if (method === "POST" && provenanceMatch?.[1]) return this.appendProvenance(provenanceMatch[1], request);
+      if (method === "GET" && provenanceMatch?.[1]) return this.listProvenance(provenanceMatch[1], url.searchParams);
+      const provenanceVerifyMatch = url.pathname.match(/^\/projects\/([^/]+)\/provenance\/verify$/);
+      if (method === "GET" && provenanceVerifyMatch?.[1]) return this.verifyProvenance(provenanceVerifyMatch[1], url.searchParams);
       // ── Launchpad Wallet (kind='wallet' projects only) ─────────────────────────
       const walletBalanceMatch = url.pathname.match(/^\/projects\/([^/]+)\/wallet\/balance$/);
       if (method === "GET" && walletBalanceMatch?.[1]) {
@@ -5429,6 +5564,271 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // GET /cross-space-check — THE CRITICAL PATH (§49). Default DENIED on any error.
   // A user gets access if they are a direct member of the target space, OR a valid
   // (unexpired, unrevoked) grant exists from the requesting space to the target.
+  private async scheduleTaskLeaseAlarm(): Promise<void> {
+    const next = queryOne<{ expires: number }>(
+      this.ctx.storage.sql as never,
+      "SELECT MIN(lease_expires_at) AS expires FROM tasks WHERE holder_id IS NOT NULL AND lease_expires_at IS NOT NULL"
+    );
+    if (next?.expires) await this.ctx.storage.setAlarm(Math.max(Date.now() + 1, next.expires));
+  }
+
+  private async createGovernedTask(projectId: string, request: Request): Promise<Response> {
+    const body = await request.json<GovernedTaskCreateBody>().catch(() => ({} as GovernedTaskCreateBody));
+    if (!body.tenant_id || !body.space_id || !body.actor_id || !body.title?.trim()) {
+      return Response.json({ error_code: "bad_request", message: "tenant_id, space_id, actor_id and title are required" }, { status: 400 });
+    }
+    const project = queryOne<{ space_id: string; status: string }>(this.ctx.storage.sql as never, "SELECT space_id, status FROM projects WHERE id = ?", projectId);
+    if (!project || project.space_id !== body.space_id || project.status !== "active") {
+      return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+    }
+    if (body.intent_embedding && (body.intent_embedding.length === 0 || body.intent_embedding.length > 4096 || body.intent_embedding.some((value) => !Number.isFinite(value)))) {
+      return Response.json({ error_code: "bad_request", message: "intent_embedding must contain 1-4096 finite numbers" }, { status: 400 });
+    }
+    const id = crypto.randomUUID();
+    const scope = JSON.stringify(body.scope ?? {});
+    const active = queryAll<{
+      id: string; intent_embedding: string | null; sponsor_id: string | null; scope: string; title: string;
+    }>(this.ctx.storage.sql as never, `SELECT id, intent_embedding, sponsor_id, scope, title FROM tasks
+        WHERE tenant_id = ? AND space_id = ? AND project_id = ?
+          AND state IN ('READY','LEASED','RFC_FROZEN') AND intent_embedding IS NOT NULL`,
+      body.tenant_id, body.space_id, projectId);
+    let similar: { id: string; sponsor_id: string | null; scope: string; title: string; similarity: number } | undefined;
+    if (body.intent_embedding) {
+      for (const candidate of active) {
+        const vector = JSON.parse(candidate.intent_embedding ?? "[]") as number[];
+        const similarity = SpaceDO.cosineSimilarity(body.intent_embedding, vector);
+        if (similarity > 0.85 && (!similar || similarity > similar.similarity)) similar = { ...candidate, similarity };
+      }
+    }
+    const sponsor = body.sponsor_id ?? body.actor_id;
+    if (similar && (similar.sponsor_id === sponsor || similar.scope !== scope || similar.title.trim().toLowerCase() === body.title.trim().toLowerCase())) {
+      execute(this.ctx.storage.sql as never,
+        "INSERT OR IGNORE INTO task_spectators (tenant_id, space_id, project_id, task_id, actor_id, joined_at) VALUES (?, ?, ?, ?, ?, ?)",
+        body.tenant_id, body.space_id, projectId, similar.id, body.actor_id, Date.now());
+      return Response.json({ error_code: "similar_active_task", mode: "spectator", existing_task_id: similar.id, similarity: similar.similarity }, { status: 409 });
+    }
+    execute(this.ctx.storage.sql as never,
+      `INSERT INTO tasks (id, tenant_id, space_id, project_id, title, scope, intent_embedding, sponsor_id, branch, status, state, dependencies, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, '[]', datetime('now'), datetime('now'))`,
+      id, body.tenant_id, body.space_id, projectId, body.title.trim(), scope,
+      body.intent_embedding ? JSON.stringify(body.intent_embedding) : null, sponsor, body.branch ?? null,
+      similar ? "RFC_FROZEN" : "READY");
+    if (similar) {
+      const rfcId = crypto.randomUUID();
+      execute(this.ctx.storage.sql as never, "UPDATE tasks SET state = 'RFC_FROZEN', status = 'blocked', updated_at = datetime('now') WHERE id = ?", similar.id);
+      execute(this.ctx.storage.sql as never,
+        `INSERT INTO task_rfcs (id, tenant_id, space_id, project_id, task_a_id, task_b_id, sponsor_a_id, sponsor_b_id, scope, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, rfcId, body.tenant_id, body.space_id, projectId, similar.id, id,
+        similar.sponsor_id ?? "unknown", sponsor, scope, Date.now());
+      await broadcastSpaceEvent(this.env, body.tenant_id, body.space_id, "task.rfc_frozen", {
+        project_id: projectId, rfc_id: rfcId, scope: body.scope ?? {},
+        directives: [{ task_id: similar.id, title: similar.title, sponsor_id: similar.sponsor_id }, { task_id: id, title: body.title.trim(), sponsor_id: sponsor }],
+        resolution_authority: "designated_project_alert_owner",
+      });
+      return Response.json({ id, project_id: projectId, state: "RFC_FROZEN", rfc_id: rfcId, conflicting_task_id: similar.id, similarity: similar.similarity }, { status: 202 });
+    }
+    return Response.json({ id, project_id: projectId, state: "READY", lease_version: 0 }, { status: 201 });
+  }
+
+  private static cosineSimilarity(a: number[], b: number[]): number {
+    if (a.length !== b.length || a.length === 0) return 0;
+    let dot = 0, aa = 0, bb = 0;
+    for (let index = 0; index < a.length; index++) { dot += a[index]! * b[index]!; aa += a[index]! ** 2; bb += b[index]! ** 2; }
+    return aa === 0 || bb === 0 ? 0 : dot / Math.sqrt(aa * bb);
+  }
+
+  private listGovernedTasks(projectId: string, params: URLSearchParams): Response {
+    const tenantId = params.get("tenant_id") ?? "";
+    const spaceId = params.get("space_id") ?? "";
+    if (!tenantId || !spaceId) return Response.json({ error_code: "bad_request", message: "tenant_id and space_id are required" }, { status: 400 });
+    const rows = queryAll(this.ctx.storage.sql as never,
+      "SELECT * FROM tasks WHERE tenant_id = ? AND space_id = ? AND project_id = ? ORDER BY created_at DESC LIMIT 200",
+      tenantId, spaceId, projectId
+    );
+    return Response.json({ data: rows, count: rows.length });
+  }
+
+  private async mutateTaskLease(projectId: string, taskId: string, action: string, request: Request): Promise<Response> {
+    const body = await request.json<TaskLeaseBody>().catch(() => ({} as TaskLeaseBody));
+    if (!body.tenant_id || !body.space_id || !body.actor_id) return Response.json({ error_code: "bad_request", message: "tenant_id, space_id and actor_id are required" }, { status: 400 });
+    const now = Date.now();
+    const ttl = 15 * 60 * 1000;
+    const result = await this.ctx.storage.transaction(async () => {
+      const task = queryOne<{ holder_id: string | null; lease_version: number; lease_expires_at: number | null; state: string }>(this.ctx.storage.sql as never,
+        "SELECT holder_id, lease_version, lease_expires_at, state FROM tasks WHERE id = ? AND tenant_id = ? AND space_id = ? AND project_id = ?", taskId, body.tenant_id, body.space_id, projectId);
+      if (!task) return { status: 404, body: { error_code: "not_found", message: "Task not found" } };
+      if (action === "claim") {
+        if (task.holder_id && (task.lease_expires_at ?? 0) > now && task.holder_id !== body.actor_id) {
+          execute(this.ctx.storage.sql as never, "INSERT OR IGNORE INTO task_spectators (tenant_id, space_id, project_id, task_id, actor_id, joined_at) VALUES (?, ?, ?, ?, ?, ?)", body.tenant_id, body.space_id, projectId, taskId, body.actor_id, now);
+          return { status: 409, body: { error_code: "lease_conflict", mode: "spectator", holder_id: task.holder_id, lease_version: task.lease_version, lease_expires_at: task.lease_expires_at } };
+        }
+        if (task.state !== "READY" && !(task.state === "LEASED" && task.lease_expires_at !== null && task.lease_expires_at <= now)) {
+          return { status: 409, body: { error_code: "task_not_claimable", state: task.state } };
+        }
+      } else if (task.holder_id !== body.actor_id || task.lease_expires_at === null || task.lease_expires_at <= now || body.expected_version !== task.lease_version) {
+        return { status: 409, body: { error_code: "stale_lease", message: "Current holder and expected lease version are required", lease_version: task.lease_version } };
+      }
+      const version = task.lease_version + 1;
+      if (action === "complete") {
+        execute(this.ctx.storage.sql as never, "UPDATE tasks SET holder_id = NULL, lease_expires_at = NULL, lease_version = ?, status = 'completed', state = 'COMPLETED', terminal_result = ?, updated_at = datetime('now') WHERE id = ?", version, JSON.stringify(body.terminal_result ?? null), taskId);
+      } else {
+        execute(this.ctx.storage.sql as never, "UPDATE tasks SET holder_id = ?, lease_expires_at = ?, lease_version = ?, status = 'in_progress', state = 'LEASED', updated_at = datetime('now') WHERE id = ?", body.actor_id, now + ttl, version, taskId);
+      }
+      execute(this.ctx.storage.sql as never, "INSERT INTO task_lease_events (id, tenant_id, space_id, project_id, task_id, actor_id, event_type, lease_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", crypto.randomUUID(), body.tenant_id, body.space_id, projectId, taskId, body.actor_id, action, version, now);
+      return { status: 200, body: { task_id: taskId, holder_id: action === "complete" ? null : body.actor_id, lease_version: version, lease_expires_at: action === "complete" ? null : now + ttl, state: action === "complete" ? "COMPLETED" : "LEASED" } };
+    });
+    await this.scheduleTaskLeaseAlarm();
+    return Response.json(result.body, { status: result.status as 200 | 404 | 409 });
+  }
+
+  private listTaskSpectators(projectId: string, taskId: string, params: URLSearchParams): Response {
+    const tenantId = params.get("tenant_id") ?? "", spaceId = params.get("space_id") ?? "";
+    const task = queryOne<{ id: string }>(this.ctx.storage.sql as never,
+      "SELECT id FROM tasks WHERE id = ? AND tenant_id = ? AND space_id = ? AND project_id = ?", taskId, tenantId, spaceId, projectId);
+    if (!task) return Response.json({ error_code: "not_found", message: "Task not found" }, { status: 404 });
+    const data = queryAll(this.ctx.storage.sql as never, "SELECT actor_id, joined_at, review_requested_at FROM task_spectators WHERE task_id = ? ORDER BY joined_at", taskId);
+    return Response.json({ data, count: data.length });
+  }
+
+  private async requestTaskReview(projectId: string, taskId: string, request: Request): Promise<Response> {
+    const body = await request.json<ScopedTaskActorBody>().catch(() => ({} as ScopedTaskActorBody));
+    if (!body.tenant_id || !body.space_id || !body.actor_id) return Response.json({ error_code: "bad_request", message: "Scoped actor identity is required" }, { status: 400 });
+    const spectator = queryOne<{ actor_id: string }>(this.ctx.storage.sql as never,
+      `SELECT actor_id FROM task_spectators WHERE tenant_id = ? AND space_id = ? AND project_id = ? AND task_id = ? AND actor_id = ?`,
+      body.tenant_id, body.space_id, projectId, taskId, body.actor_id);
+    if (!spectator) return Response.json({ error_code: "not_found", message: "Task not found" }, { status: 404 });
+    const now = Date.now();
+    execute(this.ctx.storage.sql as never, "UPDATE task_spectators SET review_requested_at = COALESCE(review_requested_at, ?) WHERE task_id = ? AND actor_id = ?", now, taskId, body.actor_id);
+    await broadcastSpaceEvent(this.env, body.tenant_id, body.space_id, "task.review_requested", { project_id: projectId, task_id: taskId, spectator_id: body.actor_id });
+    return Response.json({ task_id: taskId, spectator_id: body.actor_id, review_requested_at: now });
+  }
+
+  private getProjectAlertOwner(projectId: string, params: URLSearchParams): Response {
+    const row = queryOne<{ user_id: string; updated_at: number }>(this.ctx.storage.sql as never,
+      "SELECT user_id, updated_at FROM project_alert_owners WHERE tenant_id = ? AND space_id = ? AND project_id = ?",
+      params.get("tenant_id") ?? "", params.get("space_id") ?? "", projectId);
+    if (!row) return Response.json({ error_code: "alert_owner_missing", message: "No designated project alert owner" }, { status: 503 });
+    return Response.json({ project_id: projectId, ...row });
+  }
+
+  private async setProjectAlertOwner(projectId: string, request: Request): Promise<Response> {
+    const body = await request.json<AlertOwnerBody>().catch(() => ({} as AlertOwnerBody));
+    if (!body.tenant_id || !body.space_id || !body.actor_id || !body.user_id) return Response.json({ error_code: "bad_request", message: "Scoped actor and user_id are required" }, { status: 400 });
+    const member = this.getProjectMemberRole(projectId, body.user_id);
+    if (!member) return Response.json({ error_code: "bad_request", message: "Alert owner must be a project member" }, { status: 400 });
+    const now = Date.now();
+    execute(this.ctx.storage.sql as never,
+      `INSERT INTO project_alert_owners (tenant_id, space_id, project_id, user_id, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(project_id) DO UPDATE SET tenant_id=excluded.tenant_id, space_id=excluded.space_id, user_id=excluded.user_id, updated_by=excluded.updated_by, updated_at=excluded.updated_at`,
+      body.tenant_id, body.space_id, projectId, body.user_id, body.actor_id, now);
+    return Response.json({ project_id: projectId, user_id: body.user_id, updated_at: now });
+  }
+
+  private async recordDeliberation(projectId: string, taskId: string, request: Request): Promise<Response> {
+    const body = await request.json<DeliberationBody>().catch(() => ({} as DeliberationBody));
+    if (!body.tenant_id || !body.space_id || !body.actor_id) return Response.json({ error_code: "bad_request", message: "Scoped actor identity is required" }, { status: 400 });
+    const task = queryOne<{ state: string; deliberation_round: number }>(this.ctx.storage.sql as never,
+      "SELECT state, deliberation_round FROM tasks WHERE id = ? AND tenant_id = ? AND space_id = ? AND project_id = ?", taskId, body.tenant_id, body.space_id, projectId);
+    if (!task) return Response.json({ error_code: "not_found", message: "Task not found" }, { status: 404 });
+    if (task.state !== "RFC_FROZEN") return Response.json({ error_code: "invalid_state", state: task.state }, { status: 409 });
+    if (body.resolved) {
+      if (!body.resolution?.trim()) return Response.json({ error_code: "bad_request", message: "resolution is required" }, { status: 400 });
+      execute(this.ctx.storage.sql as never, "UPDATE tasks SET state='READY', status='pending', updated_at=datetime('now') WHERE id = ?", taskId);
+      execute(this.ctx.storage.sql as never, "UPDATE task_rfcs SET state='RESOLVED', resolution_authority_id=?, resolution=?, resolved_at=? WHERE (task_a_id=? OR task_b_id=?) AND state='RFC_FROZEN'", body.actor_id, body.resolution.trim(), Date.now(), taskId, taskId);
+      return Response.json({ task_id: taskId, state: "READY", resolution: body.resolution.trim() });
+    }
+    const round = task.deliberation_round + 1;
+    if (round < 2) {
+      execute(this.ctx.storage.sql as never, "UPDATE tasks SET deliberation_round=?, updated_at=datetime('now') WHERE id=?", round, taskId);
+      return Response.json({ task_id: taskId, state: "RFC_FROZEN", deliberation_round: round });
+    }
+    const owner = queryOne<{ user_id: string }>(this.ctx.storage.sql as never,
+      "SELECT user_id FROM project_alert_owners WHERE tenant_id=? AND space_id=? AND project_id=?", body.tenant_id, body.space_id, projectId);
+    if (!owner) return Response.json({ error_code: "alert_owner_missing", message: "Cannot terminate deliberation without one designated project lead" }, { status: 503 });
+    execute(this.ctx.storage.sql as never, "UPDATE tasks SET deliberation_round=2, state='BLOCKED_AWAITING_HUMAN', status='blocked', updated_at=datetime('now') WHERE id=?", taskId);
+    await broadcastSpaceEvent(this.env, body.tenant_id, body.space_id, "task.blocked_awaiting_human", { project_id: projectId, task_id: taskId, designated_owner_id: owner.user_id, deliberation_round: 2 });
+    return Response.json({ task_id: taskId, state: "BLOCKED_AWAITING_HUMAN", deliberation_round: 2, designated_owner_id: owner.user_id });
+  }
+
+  private async appendProvenance(projectId: string, request: Request): Promise<Response> {
+    if (!this.env.PROVENANCE_SIGNING_KEY || !this.env.PROVENANCE_SIGNING_KEY_ID) {
+      return Response.json({ error_code: "provenance_unavailable", message: "Provenance signing policy is unavailable" }, { status: 503 });
+    }
+    const body = await request.json<ProvenanceBody>().catch(() => ({} as ProvenanceBody));
+    if (!body.tenant_id || !body.space_id || !body.actor_id || !body.human_trigger_id || !body.assistant_actor_id || !body.executor_id || !body.event_type) {
+      return Response.json({ error_code: "bad_request", message: "Complete scoped provenance identities are required" }, { status: 400 });
+    }
+    const project = queryOne<{ space_id: string }>(this.ctx.storage.sql as never, "SELECT space_id FROM projects WHERE id=?", projectId);
+    if (!project || project.space_id !== body.space_id) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+    const createdAt = Date.now(), eventId = crypto.randomUUID();
+    const result = await this.ctx.storage.transaction(async () => {
+      const prior = queryOne<{ event_hash: string }>(this.ctx.storage.sql as never,
+        "SELECT event_hash FROM provenance_events WHERE tenant_id=? AND space_id=? AND project_id=? ORDER BY sequence DESC LIMIT 1",
+        body.tenant_id!, body.space_id!, projectId);
+      const previousHash = prior?.event_hash ?? "0".repeat(64);
+      const canonicalPayload = canonicalJson({ event_id: eventId, tenant_id: body.tenant_id, space_id: body.space_id, project_id: projectId,
+        human_trigger_id: body.human_trigger_id, invoker_id: body.actor_id, assistant_actor_id: body.assistant_actor_id,
+        executor_id: body.executor_id, event_type: body.event_type, payload: body.payload ?? null, created_at: createdAt });
+      const eventHash = await sha256Hex(`${previousHash}\n${canonicalPayload}`);
+      execute(this.ctx.storage.sql as never,
+        `INSERT INTO provenance_events (event_id, tenant_id, space_id, project_id, human_trigger_id, invoker_id, assistant_actor_id, executor_id, event_type, canonical_payload, previous_hash, event_hash, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, eventId, body.tenant_id!, body.space_id!, projectId,
+        body.human_trigger_id!, body.actor_id!, body.assistant_actor_id!, body.executor_id!, body.event_type!, canonicalPayload, previousHash, eventHash, createdAt);
+      const row = queryOne<{ sequence: number }>(this.ctx.storage.sql as never, "SELECT sequence FROM provenance_events WHERE event_id=?", eventId)!;
+      let checkpoint: { signing_key_id: string; signature: string } | undefined;
+      if (row.sequence % 100 === 0) {
+        const signature = await hmacHex(this.env.PROVENANCE_SIGNING_KEY!, `${row.sequence}:${eventHash}`);
+        execute(this.ctx.storage.sql as never,
+          "INSERT INTO provenance_checkpoints (sequence, tenant_id, space_id, project_id, event_hash, signing_key_id, signature, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          row.sequence, body.tenant_id!, body.space_id!, projectId, eventHash, this.env.PROVENANCE_SIGNING_KEY_ID!, signature, createdAt);
+        checkpoint = { signing_key_id: this.env.PROVENANCE_SIGNING_KEY_ID!, signature };
+      }
+      return { sequence: row.sequence, event_id: eventId, event_hash: eventHash, previous_hash: previousHash, checkpoint };
+    });
+    return Response.json(result, { status: 201 });
+  }
+
+  private listProvenance(projectId: string, params: URLSearchParams): Response {
+    const tenantId = params.get("tenant_id") ?? "", spaceId = params.get("space_id") ?? "";
+    const after = Math.max(0, Number(params.get("after") ?? 0)), limit = Math.min(500, Math.max(1, Number(params.get("limit") ?? 100)));
+    const data = queryAll(this.ctx.storage.sql as never,
+      `SELECT sequence, event_id, human_trigger_id, invoker_id, assistant_actor_id, executor_id, event_type,
+              canonical_payload, previous_hash, event_hash, created_at
+       FROM provenance_events WHERE tenant_id=? AND space_id=? AND project_id=? AND sequence>? ORDER BY sequence LIMIT ?`,
+      tenantId, spaceId, projectId, after, limit);
+    return Response.json({ data, count: data.length });
+  }
+
+  private async verifyProvenance(projectId: string, params: URLSearchParams): Promise<Response> {
+    if (!this.env.PROVENANCE_SIGNING_KEY) return Response.json({ error_code: "provenance_unavailable" }, { status: 503 });
+    const tenantId = params.get("tenant_id") ?? "", spaceId = params.get("space_id") ?? "";
+    const events = queryAll<{ sequence: number; canonical_payload: string; previous_hash: string; event_hash: string }>(this.ctx.storage.sql as never,
+      "SELECT sequence, canonical_payload, previous_hash, event_hash FROM provenance_events WHERE tenant_id=? AND space_id=? AND project_id=? ORDER BY sequence", tenantId, spaceId, projectId);
+    let previous = "0".repeat(64);
+    for (const event of events) {
+      const calculated = await sha256Hex(`${previous}\n${event.canonical_payload}`);
+      if (event.previous_hash !== previous || event.event_hash !== calculated) return Response.json({ valid: false, invalid_sequence: event.sequence });
+      previous = event.event_hash;
+    }
+    const checkpoints = queryAll<{ sequence: number; event_hash: string; signing_key_id: string; signature: string }>(this.ctx.storage.sql as never,
+      "SELECT sequence, event_hash, signing_key_id, signature FROM provenance_checkpoints WHERE tenant_id=? AND space_id=? AND project_id=? ORDER BY sequence", tenantId, spaceId, projectId);
+    for (const checkpoint of checkpoints) {
+      const expected = await hmacHex(this.env.PROVENANCE_SIGNING_KEY, `${checkpoint.sequence}:${checkpoint.event_hash}`);
+      if (checkpoint.signature !== expected) return Response.json({ valid: false, invalid_checkpoint: checkpoint.sequence });
+    }
+    return Response.json({ valid: true, events: events.length, checkpoints: checkpoints.length, head_hash: previous });
+  }
+
+  override async alarm(): Promise<void> {
+    this.ensureInit();
+    const now = Date.now();
+    execute(this.ctx.storage.sql as never,
+      `UPDATE tasks SET holder_id = NULL, lease_expires_at = NULL, lease_version = lease_version + 1,
+       status = 'pending', state = 'READY', updated_at = datetime('now')
+       WHERE holder_id IS NOT NULL AND lease_expires_at <= ? AND state = 'LEASED'`, now);
+    await this.scheduleTaskLeaseAlarm();
+  }
+
   private checkCrossSpace(params: URLSearchParams): Response {
     const userId = params.get("user_id") ?? "";
     const requestingSpaceId = params.get("requesting_space_id") ?? "";

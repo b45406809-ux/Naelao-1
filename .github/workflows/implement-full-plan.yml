@@ -1,0 +1,133 @@
+name: Implement verified plan slices
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_slice:
+        description: First dependency-ordered vertical slice (1-26)
+        required: true
+        default: "1"
+      end_slice:
+        description: Last vertical slice (1-26); lower this for a review-sized milestone
+        required: true
+        default: "26"
+      implementation_model:
+        description: Qualified coding model (cross-model failover is deliberately disabled)
+        required: true
+        default: "gemini-2.5-flash"
+      review_model:
+        description: Independent diff reviewer model
+        required: true
+        default: "gemini-2.5-flash"
+      max_turns_per_slice:
+        description: Maximum context/implementation/repair turns per slice
+        required: true
+        default: "10"
+      full_verify_command:
+        description: Full verification at domain boundaries and final selected slice
+        required: true
+        default: "pnpm typecheck && pnpm test"
+
+concurrency:
+  group: implement-plan-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  BRANCH_NAME: ai/verified-plan-${{ github.run_id }}-${{ github.run_attempt }}
+
+jobs:
+  validate-runner:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: pnpm/action-setup@v4
+        with: { version: 9.12.0 }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Compile specifications and repository index
+        run: |
+          node repomix/build-prompts.mjs
+          node repomix/prepare-authority-context.mjs
+          node repomix/build-repository-index.mjs
+          node repomix/verify-configs.mjs
+      - name: Runner contract tests
+        run: >-
+          pnpm exec vitest run --config tests/vitest.config.ts
+          tests/unit/repomix/context-manifest.test.ts
+          tests/unit/repomix/repository-index.test.ts
+          tests/unit/requirements-trace-matrix.test.ts
+      - name: Token-bounded dry run
+        run: node run-phase.mjs --start 1 --end 26 --dry-run
+
+  implement:
+    needs: validate-runner
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+      IMPLEMENTATION_MODEL: ${{ inputs.implementation_model }}
+      REVIEW_MODEL: ${{ inputs.review_model }}
+      MAX_TURNS_PER_PHASE: ${{ inputs.max_turns_per_slice }}
+      PHASE_VERIFY_COMMAND: ${{ inputs.full_verify_command }}
+      PHASE_PUSH_REMOTE: origin
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: pnpm/action-setup@v4
+        with: { version: 9.12.0 }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Fail closed without Gemini keys
+        run: test -n "$GEMINI_API_KEYS" || { echo "GEMINI_API_KEYS is required" >&2; exit 1; }
+      - run: pnpm install --frozen-lockfile
+      - name: Create clean accumulator branch
+        run: |
+          test -z "$(git status --porcelain)"
+          git config user.name "naelao-plan-bot"
+          git config user.email "naelao-plan-bot@users.noreply.github.com"
+          git switch -c "$BRANCH_NAME"
+      - name: Compile verified inputs
+        run: |
+          node repomix/build-prompts.mjs
+          node repomix/prepare-authority-context.mjs
+          node repomix/verify-configs.mjs
+      - name: Scout, implement, verify, and independently review selected slices
+        run: >-
+          node run-phase.mjs
+          --start "${{ inputs.start_slice }}"
+          --end "${{ inputs.end_slice }}"
+          --model "${{ inputs.implementation_model }}"
+          --review-model "${{ inputs.review_model }}"
+          --max-turns "${{ inputs.max_turns_per_slice }}"
+          --verify "${{ inputs.full_verify_command }}"
+      - name: Push final accumulator state
+        run: git push --set-upstream origin "$BRANCH_NAME"
+      - name: Upload manifests, notebooks, responses, patches, and verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-plan-runs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .phase-runs/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Open milestone pull request
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr create \
+            --base "${GITHUB_REF_NAME}" \
+            --head "$BRANCH_NAME" \
+            --title "Implement verified plan slices ${{ inputs.start_slice }}-${{ inputs.end_slice }}" \
+            --body "Automated scout → dependency expansion → implementation → layered verification → independent review. Inspect the uploaded phase notebooks and every commit before merging."

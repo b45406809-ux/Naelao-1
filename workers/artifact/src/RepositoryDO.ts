@@ -20,6 +20,11 @@ function jsonError(message: string, status = 400): Response {
   return Response.json({ error: message }, { status });
 }
 
+async function sha256(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 export class RepositoryDO extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) { super(ctx, env); }
 
@@ -31,6 +36,16 @@ export class RepositoryDO extends DurableObject<Env> {
   private async putObject(scope: RepositoryScope, oid: string, bytes: Uint8Array): Promise<void> {
     const key = objectKey(scope, oid);
     if (!(await this.env.REPOSITORY_OBJECTS.head(key))) await this.env.REPOSITORY_OBJECTS.put(key, bytes, { customMetadata: { oid } });
+  }
+  private async entrySha256(scope: RepositoryScope, entry: TreeEntry): Promise<string> {
+    if (entry.sha256) return entry.sha256;
+    const object = await this.env.REPOSITORY_OBJECTS.get(objectKey(scope, entry.oid));
+    if (!object) throw new Error("Object missing");
+    const envelope = new Uint8Array(await object.arrayBuffer());
+    const separator = envelope.indexOf(0);
+    if (separator < 0) throw new Error("Invalid Git object envelope");
+    entry.sha256 = await sha256(envelope.slice(separator + 1));
+    return entry.sha256;
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -72,18 +87,29 @@ export class RepositoryDO extends DurableObject<Env> {
         const bytes = typeof body.content_base64 === "string"
           ? Uint8Array.from(atob(body.content_base64), (char) => char.charCodeAt(0))
           : new TextEncoder().encode(String(body.content ?? ""));
+        const current = state.worktrees[branch]![path];
+        if (current) {
+          const currentSha256 = await this.entrySha256(scope, current);
+          if (typeof body.base_sha256 !== "string") return Response.json({ error_code: "base_sha256_required", path, current_sha256: currentSha256 }, { status: 428 });
+          if (body.base_sha256 !== currentSha256) return Response.json({ error_code: "cas_conflict", path, expected_sha256: body.base_sha256, current_sha256: currentSha256, branch_head: state.refs[branch] }, { status: 409 });
+        }
+        const contentSha256 = await sha256(bytes);
         const blob = await encodeGitObject("blob", bytes);
         await this.putObject(scope, blob.oid, blob.bytes);
-        state.worktrees[branch]![path] = { path, oid: blob.oid, size: bytes.byteLength };
+        state.worktrees[branch]![path] = { path, oid: blob.oid, size: bytes.byteLength, sha256: contentSha256 };
         await this.save(state);
-        return Response.json({ path, oid: blob.oid, size: bytes.byteLength });
+        return Response.json({ path, oid: blob.oid, sha256: contentSha256, size: bytes.byteLength });
       }
       if (op === "file" && request.method === "DELETE") {
         const path = normalizePath(String(body.path ?? ""));
-        if (!state.worktrees[branch]![path]) return jsonError("File not found", 404);
+        const current = state.worktrees[branch]![path];
+        if (!current) return jsonError("File not found", 404);
+        const currentSha256 = await this.entrySha256(scope, current);
+        if (typeof body.base_sha256 !== "string") return Response.json({ error_code: "base_sha256_required", path, current_sha256: currentSha256 }, { status: 428 });
+        if (body.base_sha256 !== currentSha256) return Response.json({ error_code: "cas_conflict", path, expected_sha256: body.base_sha256, current_sha256: currentSha256, branch_head: state.refs[branch] }, { status: 409 });
         delete state.worktrees[branch]![path];
         await this.save(state);
-        return Response.json({ deleted: true, path });
+        return Response.json({ deleted: true, path, deleted_sha256: current.sha256 });
       }
       if (op === "commit" && request.method === "POST") {
         const expected = body.expected_head;

@@ -1,0 +1,276 @@
+# AI Studio implementation prompt — batch 26, plan items 125–130
+
+## Mission
+
+Implement every requirement below end to end on the current accumulator branch. The cohesive focus
+is **Cycle ledgers, price floors, graduation, partner portal, and radar**. This prompt is self-contained: the feature definitions and retained implementation
+constraints have already been extracted and reconciled into the final specification below.
+Do not seek or cite external design context. Repository code is evidence of current
+state, not evidence that a requirement is complete.
+
+## Non-negotiable production rules
+
+- Trace and use the real router → authorization → worker/Durable Object → scoped persistence or
+  binding → shell path. A helper, type, schema, comment, standalone endpoint, mock, or UI placeholder
+  is not an implementation.
+- Scope durable state and cache/index keys by every applicable tenant, space, project, invoker/user,
+  actor, extension/gadget, and policy version. Conceal inaccessible private resources exactly like
+  absent resources. Security-sensitive resolution fails closed.
+- Reauthorize immediately before external side effects, artifact commits, merges, connector calls,
+  workflow dispatch, and sibling-project calls. Preserve the original human invoker through every
+  delegation and background boundary.
+- Add migrations and identical development/staging/production Wrangler bindings, service bindings,
+  queues, workflows, R2/KV/Vectorize/Analytics resources, secrets documentation, rotations,
+  backfills, limits, alarms, and rollback behavior required by the feature.
+- Add the real shell experience where applicable, including loading, empty, error, unauthorized,
+  offline/reconnecting, spectator/frozen, air-gapped, and completed states. Treat model and source
+  data as untrusted; never execute supplied HTML, JavaScript, URLs, or expressions.
+- Add contract, isolation, race, replay, expiry, crash/hibernation, fail-closed, and router-to-worker
+  journeys using realistic Cloudflare behavior. Success-only mocks may not replace authorization,
+  transactions, bindings, namespace isolation, alarms, WebSockets, or Workflow behavior.
+- Update the requirements trace matrix only after verification. Mark an item IMPLEMENTED only when
+  every required production boundary and meaningful integration/E2E evidence exists.
+
+## Final resolved implementation specification
+
+## Newest cross-cutting architectural delta (overrides conflicts)
+
+# AVOS Evolutionary Architectural Changelog
+
+This is the authoritative architectural delta for plan items 1–130. These decisions postdate the source trails and `CLAUDE.md`; they override conflicts while retaining compatible implementation detail.
+
+## Final reconciled upgrades
+
+1. **Universal swarm orchestrator.** Replace the five-avatar coworker roster with one sovereign `NaelaoAgentDO` lead. It turns goals into `SpaceDO.tasks` DAGs, forks isolated Artifact branches, dispatches ephemeral workers, and leaves the human as outcome definer and final approver.
+2. **Executive Cabinet.** The Space Assistant primarily exposes `delegate_to_space_worker(worker_id, task)`. Isolated `project_manager_worker`, `treasury_worker`, `identity_worker`, and `comms_worker` receive mutually exclusive capabilities; no cabinet worker can cross its functional boundary.
+3. **Bifurcated runtime.** Interactive prebuilt operators taking under 30 seconds use in-memory `NaelaoAgentDO` V8 actor RPC. Custom developer agents and durable batch sagas use Cloudflare Dynamic Workflows with retries and sleeping.
+4. **Asymmetric topology.** Parent agents are persistent nouns owning threads and UI. Subagents are ephemeral verbs with only `ai`, `fs`, `cli`, `vault`, and `step`; they never create user threads or WebSockets and return one compact two-line receipt.
+5. **SR-EEO races.** Critical tasks may run N isolated speculative branches. The first candidate satisfying the deterministic oracle wins; all competitors receive abort signals immediately and only the winner enters the ordinary authorized merge path.
+6. **Three-depth ceiling.** Depth 1 is the lead, depth 2 a domain sub-planner, and depth 3 a leaf executor. Depth-3 runtimes do not receive any delegation capability, making depth 4 structurally impossible.
+7. **Five credit defenses.** Enforce model tiering by depth, up-front task escrow, plan-based parallelism, early-exit token reclaim, and daily personal budget envelopes. Starter executes sequentially; higher plans may enable races.
+8. **Shared-space collision defense.** Combine 15-minute atomic task leases, sibling spectator mode, >0.85 intent deduplication, and sponsor-conflict RFC freezes in authoritative `SpaceDO` storage.
+9. **Immutable kernel, userspace extensions.** Extensions may add manuals, virtual CLIs, daemons, and viewports but cannot replace the agent loop, bypass Gatekeepers or WriteGuard, or commit unreviewed code to `main`.
+10. **Durable daemons.** Pair project-scoped DO-facet SQLite state with resumable Workflows for AST indexing, finance reconciliation, and legal citation graphs. Daemons consume no active-chat CPU/tokens and expose approved project MCP tools only.
+11. **Dual-role workflows.** Dynamic Workflows support both ephemeral AI tasks and project-owned company automations. Deterministic steps remain deterministic and AI is invoked only for declared semantic work.
+12. **No-code subagent studio.** The shell builds declarative `NoCodeSubagentManifest` documents from authorized tools, skills, knowledge, and triggers; a precompiled `GenericSubagentWorkflow` executes them. Creators cannot grant permissions above their current role.
+13. **Logical connector aliases.** Code names semantic aliases such as `inbound_mail`; `SpaceDO` maps them to physical accounts. Rebinding never changes project source.
+14. **Pluggable `primary_calendar`.** Calendar access is a space-shared MCP connector supporting Google, Microsoft, CalDAV, or scoped SQLite fallback. Voice booking acquires a 15-second `ConcurrencyDO` slot hold before external calls.
+15. **Dual-plane customer bots.** Public WhatsApp, Telegram, and voice traffic reaches quarantined ephemeral Workflow agents with `CustomerBotContext`, never internal project agents. Customer contexts have no Bash, file mutation, Git Artifact, or internal-vault capability.
+16. **Automation failure defenses.** Production ingress includes KV tombstones, Queue buffering, 14-day R2 replay, a 5 req/s leaky-bucket pacer, SHA-256 idempotency, `x-avos-hop-count` recursion breaking, and lenient validated adapters. The remaining defenses already specified by the relevant plan items remain mandatory.
+17. **Deliverable canvas.** `/workspace/` versions every deliverable type, including code, documents, spreadsheets, and data; executable agent machinery remains under Git-ignored `/.avos/`. Review cards render type-aware diffs while bytes remain authoritative.
+18. **Strict UI bifurcation.** `apps/shell` is an Apple-clean client workspace with an 85% canvas, command bar, and one-click outcomes, with no model, compute-tier, or raw merge controls. `apps/partner-studio` is the technical foundry for ladder ceilings, daemons, workflows, and blueprint packaging.
+
+## Supersession rule
+
+Apply this delta after each item's complete Origin & Transition trail. If it conflicts with an earlier plan statement, this file wins. If it is silent, retain the earlier final decision. All authorization, tenant isolation, fail-closed policy, provenance, billing, deployment parity, and realistic end-to-end verification requirements remain in force.
+
+
+### 125. Cumulative Per-Tier Cycle Quotas
+
+**Final behavior:** $20 plans pay developer commissions for 6 cumulative months max ($48 cap); $50 plans pay for 12 months; $150+ plans pay lifetime recurring.
+
+**Production acceptance contract:**
+Expose the feature through its authenticated production ingress; persist scoped state in the authoritative worker or Durable Object; declare every required binding in development, staging, and production; connect the applicable shell surface; and prove the complete journey with non-trivial integration and isolation tests.
+
+**Retained implementation constraints:**
+- Required Fix Add memory usage checkpoints for memory-intensive operations: before processing a large file, check `process.memoryUsage().heapUsed`. If above 80MB, return 413 (payload too large) with a message asking the user to split the file. Log memory usage to Analytics Engine for capacity planning. Set the `max_chunk_size` for batch operations based on available memory headroom.
+- - **`packages/billing-core/src/providers/stripe.ts`** — fetch-based `StripeProvider`
+  (form-encoded, no SDK): `verifyWebhook` (Stripe-Signature `t=…,v1=…` HMAC, 5-min tolerance,
+  constant-time compare), `parseWebhookEvent` (checkout.session.completed → payment.success,
+  subscription.*, charge.refunded → refund.issued; folds the Connect event's `account` into
+  `metadata.stripe_account` and captures `payment_intent` — the ONE id shared between a
+  checkout event and its later refund event), `createCheckout` (ad-hoc `price_data`, direct
+  charge + application fee). Connect helpers: `createExpressAccount` / `createAccountLink` /
+  `getAccountStatus`. LS provider gained `lsListStores` / `lsCr
+- 1. **Universal swarm orchestrator.** Replace the five-avatar coworker roster with one sovereign `NaelaoAgentDO` lead. It turns goals into `SpaceDO.tasks` DAGs, forks isolated Artifact branches, dispatches ephemeral workers, and leaves the human as outcome definer and final approver.
+2. **Executive Cabinet.** The Space Assistant primarily exposes `delegate_to_space_worker(worker_id, task)`. Isolated `project_manager_worker`, `treasury_worker`, `identity_worker`, and `comms_worker` receive mutually exclusive capabilities; no cabinet worker can cross its functional boundary.
+3. **Bifurcated runtime.** Interactive prebuilt operators taking under 30 seconds use in-memory `NaelaoAgentDO` V8 actor RPC. Custom developer agents and durable batch sagas use Cloudflare Dynamic Workflows with retries and sleeping.
+4. **Asymmetric topology.** Parent agents are persistent nouns owning threads and UI. Subagents are ephemeral verbs with only `ai`, `fs`, `cli`, `vault`, and `step`; they never create user threads or WebSockets and return one compact two-line receipt.
+5. **SR-EEO races.** Critical tasks may run N isolated speculative branches. The first candidate satisfying the deterministic oracle wi
+- ### Why this design holds up:
+1. **Immune to Plan Switching:** A user can switch between plans every month; the system tracks the cumulative count per tier.
+2. **Re-Monetization on Upgrade:** The moment an expired $20 client upgrades to $150, the developer's commission resumes immediately.
+3. **Automated Upsell Drive:** Developers have a dashboard metric telling them which clients have exhausted their lower-tier quotas, motivating them to pitch higher-tier upgrades.
+Plus they can make template tiers lie x features of the template cannot be accessed by an $20 plan user and $150 plan user can access them but if made so the template becomes free so it's not sold on fixed prices and vice versa if they sell at fixed price once no more per plan access upgrades. This way it forces devs to add more features in templates in $150 dollar plans
+This rule creates a **mutually exclusive monetization
+
+### 126. Anti-Plan-Hopping D1 Ledger
+
+**Final behavior:** Tracks cumulative billing cycles per plan tier (`cycles_paid_entry_tier`), ensuring downgrading and upgrading cannot reset the commission clock.
+
+**Production acceptance contract:**
+Expose the feature through its authenticated production ingress; persist scoped state in the authoritative worker or Durable Object; declare every required binding in development, staging, and production; connect the applicable shell surface; and prove the complete journey with non-trivial integration and isolation tests.
+
+**Retained implementation constraints:**
+- `NaelaoAgentDO.enforceRunGates` gained a new `checkSessionBudget` branch, checked FIRST (ahead of
+every payer-specific gate) since it's session-scoped, not payer-scoped:
+- Under 80% of ceiling: run proceeds, no side effect.
+- 80-100%: run proceeds; fires `agent.session_budget_warning` through SpaceDO's already-existing
+  generic `/internal/events/fire` → `event_triggers` machinery (the SAME no-code mechanism every
+  other structural event uses — no new trigger type), and marks `warned_80` so it fires exactly
+  once per spending cycle.
+- At/past 100%: refuses the run (`402 session_budget_ceiling`) and reuses the HITL approval
+  mechanism (no new gate engine, per the plan's explicit direction)
+- 1. **Universal swarm orchestrator.** Replace the five-avatar coworker roster with one sovereign `NaelaoAgentDO` lead. It turns goals into `SpaceDO.tasks` DAGs, forks isolated Artifact branches, dispatches ephemeral workers, and leaves the human as outcome definer and final approver.
+2. **Executive Cabinet.** The Space Assistant primarily exposes `delegate_to_space_worker(worker_id, task)`. Isolated `project_manager_worker`, `treasury_worker`, `identity_worker`, and `comms_worker` receive mutually exclusive capabilities; no cabinet worker can cross its functional boundary.
+3. **Bifurcated runtime.** Interactive prebuilt operators taking under 30 seconds use in-memory `NaelaoAgentDO` V8 actor RPC. Custom developer agents and durable batch sagas use Cloudflare Dynamic Workflows with retries and sleeping.
+4. **Asymmetric topology.** Parent agents are persistent nouns owning threads and UI. Subagents are ephemeral verbs with only `ai`, `fs`, `cli`, `vault`, and `step`; they never create user threads or WebSockets and return one compact two-line receipt.
+5. **SR-EEO races.** Critical tasks may run N isolated speculative branches. The first candidate satisfying the deterministic oracle wi
+- Apply this delta after each item's complete Origin & Transition trail. If it conflicts with an earlier plan statement, this file wins. If it is silent, retain the earlier final decision. All authorization, tenant isolation, fail-closed policy, provenance, billing, deployment parity, and realistic end-to-end verification requirements remain in force.
+- ### 3. The Settlement Engine Implementation
+In `workers/billing/src/settlement.ts`, evaluate the tier quota on every invoice payment webhook:
+```typescript
+// workers/billing/src/settlement.ts
+export async function settleTemplateSubscriptionPayment(
+  db: D1Database,
+  spaceId: string,
+  grossCents: number
+) {
+  // 1. Fetch active subscription record
+  const sub = await db.prepare(`
+    SELECT * FROM template_subscriptions WHERE space_id = ? AND status = 'active'
+  `).bind(spaceId).first() as any;
+  if (!sub) return;
+  const planPriceUsd = grossCents / 100;
+  let isCommissionEligible = false;
+  // 2. Evaluate & Increment Per-Tier Quota
+  if (planPriceUsd <= 25) {
+    // Entry Tier ($20/mo): Maximum 6 Paid Cycles
+    const newEntryCount = sub.cycles_paid_entry_tier + 1;
+    await db.prepare(`
+      UPDATE template_subscriptions
+      SET cycles_paid_entry_tier = ?, last_billed_plan_price
+
+### 127. Dynamic First-Month Price Floor Formula Protection
+
+**Final behavior:** Enforces that Month 1 Price $\ge$ Base Plan Price $+$ $\sum$ Extension Wholesale Fees, guaranteeing platform and extension creators never lose money.
+
+**Production acceptance contract:**
+Expose the feature through its authenticated production ingress; persist scoped state in the authoritative worker or Durable Object; declare every required binding in development, staging, and production; connect the applicable shell surface; and prove the complete journey with non-trivial integration and isolation tests.
+
+**Retained implementation constraints:**
+- The Gap The Naelao billing model (spec §billing, the established specification BillingStrategy) prices builder plans around AI token consumption and feature access. It does not factor in: (1) Turso per-DB cost ($0.20-0.75/month per product DB, or per-user DB at 1M users = $200K/month). (2) Analytics Engine volume (up to $375K/month at 1M users as G-AC15). (3) R2 egress costs for file downloads, screenshots, and exports (typically $0.09/GB, significant for document-heavy spaces). (4) CF Container compute costs for code execution sandboxes. Naelao is currently selling token-based credits while silently absorbing all infrastructure costs, which are non-linear and will cause the platform to lose money at scale.
+- - ~~**Credential hierarchy**~~ — **BUILT** (see A1.16.5). Per-user (default) + per-space
+  (shared) + per-privileged-user overrides, in `workers/credentials`. Also closed a
+  pre-existing gap: `space_credentials` had no migration at all — the worker would have
+  thrown at runtime against a real D1.
+- **MCP as scripts**: agents never connect to MCP directly; they write/use scripts that wrap
+  MCP providers (Pipedream, Composio).
+- ~~**Member/seat billing**~~ — **BUILT** (see A1.16.4). Lemon Squeezy billing for a builder's
+  space-members (the third payer class): `/internal/seats/checkout` + LS-webhook
+  `recordSeatActivation` (member activated on paid seat) already existed; this pass added th
+- 1. **Universal swarm orchestrator.** Replace the five-avatar coworker roster with one sovereign `NaelaoAgentDO` lead. It turns goals into `SpaceDO.tasks` DAGs, forks isolated Artifact branches, dispatches ephemeral workers, and leaves the human as outcome definer and final approver.
+2. **Executive Cabinet.** The Space Assistant primarily exposes `delegate_to_space_worker(worker_id, task)`. Isolated `project_manager_worker`, `treasury_worker`, `identity_worker`, and `comms_worker` receive mutually exclusive capabilities; no cabinet worker can cross its functional boundary.
+3. **Bifurcated runtime.** Interactive prebuilt operators taking under 30 seconds use in-memory `NaelaoAgentDO` V8 actor RPC. Custom developer agents and durable batch sagas use Cloudflare Dynamic Workflows with retries and sleeping.
+4. **Asymmetric topology.** Parent agents are persistent nouns owning threads and UI. Subagents are ephemeral verbs with only `ai`, `fs`, `cli`, `vault`, and `step`; they never create user threads or WebSockets and return one compact two-line receipt.
+5. **SR-EEO races.** Critical tasks may run N isolated speculative branches. The first candidate satisfying the deterministic oracle wi
+- Apply this delta after each item's complete Origin & Transition trail. If it conflicts with an earlier plan statement, this file wins. If it is silent, retain the earlier final decision. All authorization, tenant isolation, fail-closed policy, provenance, billing, deployment parity, and realistic end-to-end verification requirements remain in force.
+
+### 128. FDE-to-Vertical-SaaS Graduation Pipeline
+
+**Final behavior:** 3-stage agency-to-software ladder: Consulting Embed ($5k–$25k setup) $\rightarrow$ Exporter $\rightarrow$ Scalable Marketplace Template (MRR).
+
+**Production acceptance contract:**
+Expose the feature through its authenticated production ingress; persist scoped state in the authoritative worker or Durable Object; declare every required binding in development, staging, and production; connect the applicable shell surface; and prove the complete journey with non-trivial integration and isolation tests.
+
+**Retained implementation constraints:**
+- 149. **A post-shipping pass over the SAME source list the 62-item plan came from
+     (`long running.txt`, Google Drive) — it had been updated with fresh reports from live use
+     AFTER those phases landed, so several items marked done were reported still broken. Ten real
+     defects found and fixed, most of them the "fixed on one path, missed the other" class this
+     file has now documented repeatedly.** Binary downloads corrupted (the knowledge worker read
+     every response as text, so a PDF landed as mojibake — now reads bytes once and returns
+     `encoding: "text"|"base64"`, refusing an oversized binary with 413 rather than truncating,
+     since half a PDF is corrupt rather than
+- The Gap When a Space Type author submits a template to the marketplace, it may contain: MCP tool bindings pointing to malicious external services, system prompts designed to override builder customizations, dangerous default RBAC configurations (e.g., all users get admin role), or embedded webhook URLs that exfiltrate data. There is no automated security validation pipeline before a Space Type is approved for listing.
+- New optional `MemoryOSOptions.wikiBucket` (a minimal `{put(key, value)}` interface, not a hard CF
+`R2Bucket` dependency — same rationale as the existing `VectorIndex`/`Embedder` minimal interfaces)
+and `MemoryOSOptions.autoRag` (`{search(query, {topK}): Promise<Array<{concept, score}>>}`).
+`upsertWikiConcept` mirrors each concept to R2 at
+`spaces/{spaceId}/memory/wiki/{userId || "_space"}/{concept-slug}.md` (best-effort — SQLite's
+`wiki_store` row is written first and is unaffected by a mirror-write failure). `searchWiki` first
+runs its existing SQLite LIKE-match (unchanged); if that doesn't already fill the requested `limit`
+and an `autoRag` gateway is configured, it ALSO queries AutoRAG fo
+
+### 129. Developer Partner Portal & White-Label Referral Links
+
+**Final behavior:** Dedicated workstation for partners to manage clients, track remaining commission cycles, and execute automated Stripe payouts.
+
+**Production acceptance contract:**
+Expose the feature through its authenticated production ingress; persist scoped state in the authoritative worker or Durable Object; declare every required binding in development, staging, and production; connect the applicable shell surface; and prove the complete journey with non-trivial integration and isolation tests.
+
+**Retained implementation constraints:**
+- 126. **Three more live-reported bugs, all root-caused to the SAME underlying gap: the reasoner's
+     "available_operations" field was a bare flat list of 60+ op names with no description or
+     grouping — plus two silent trace-persistence holes that hid real repeat/parked tool calls
+     from the activity table.**
+     - **The real root cause of "our API doesn't support programmatic thread creation or direct
+       in-thread chat messaging"** (item 125 shipped exactly that capability the same session).
+       `project-coordination` WAS wired into the assistant's prebuilt list and `tools.
+       availableOperations()` DID include `thread.create`/`thread.send_message` in the payload —
+
+- The Gap: Agencies building AI products for multiple clients using Naelao have no formal partner program. No agency-specific pricing, multi-client dashboard, or co-marketing exists. Agencies are the most efficient channel for SaaS platform growth but are treated identically to individual builders.
+ Required Fix: Launch Agency Partner Program: (1) Agency account type: single login, manages multiple "client workspaces" (G-AR50 workspace concept), consolidated billing; (2) Agency pricing: 30% discount on all plans for resale to clients; (3) Agency dashboard: client portfolio view with health scores, billing status, Space status; (4) White-label portal: agencies can rebrand Naelao dashboard with
+- - **Storefront/connect_revenue prebuilt scripts and per-template bootstrap wiring** (the plan's
+  WH4/WH7): the existing `storefront` prebuilt (Naelao-hosted catalog) and the `mcp-connector` +
+  `revenue-tracker` prebuilts already cover "connect a 3rd-party revenue source" — no new
+  connect_revenue mechanism was added on top, matching the reuse-don't-reinvent precedent this
+  codebase follows elsewhere. Per-template auto-creation of a `business_wallet` PROJECT at
+  bootstrap was not wired: `BUSINESS_FEATURE_KIND_REGISTRY.autoProvisionable` is (and was already,
+  independent of this pass) a documented-but-unconsumed field platform-wide — nothing reads it to
+  auto-create ANY feature-kind pro
+- 1. **Universal swarm orchestrator.** Replace the five-avatar coworker roster with one sovereign `NaelaoAgentDO` lead. It turns goals into `SpaceDO.tasks` DAGs, forks isolated Artifact branches, dispatches ephemeral workers, and leaves the human as outcome definer and final approver.
+2. **Executive Cabinet.** The Space Assistant primarily exposes `delegate_to_space_worker(worker_id, task)`. Isolated `project_manager_worker`, `treasury_worker`, `identity_worker`, and `comms_worker` receive mutually exclusive capabilities; no cabinet worker can cross its functional boundary.
+3. **Bifurcated runtime.** Interactive prebuilt operators taking under 30 seconds use in-memory `NaelaoAgentDO` V8 actor RPC. Custom developer agents and durable batch sagas use Cloudflare Dynamic Workflows with retries and sleeping.
+4. **Asymmetric topology.** Parent agents are persistent nouns owning threads and UI. Subagents are ephemeral verbs with only `ai`, `fs`, `cli`, `vault`, and `step`; they never create user threads or WebSockets and return one compact two-line receipt.
+5. **SR-EEO races.** Critical tasks may run N isolated speculative branches. The first candidate satisfying the deterministic oracle wi
+
+### 130. Discover Page Live Market Radar
+
+**Final behavior:** Queries Cloudflare Pipelines and Apache Iceberg on R2 to display the Top 5 High-Velocity Market Opportunities with 1-click launch buttons.
+
+**Production acceptance contract:**
+Expose the feature through its authenticated production ingress; persist scoped state in the authoritative worker or Durable Object; declare every required binding in development, staging, and production; connect the applicable shell surface; and prove the complete journey with non-trivial integration and isolation tests.
+
+**Retained implementation constraints:**
+- Required Fix: Build cross-Space discovery: at builder opt-in, Space listed in end-user discovery feed. Recommendation engine: embed user interaction topics, query Vectorize for Spaces with similar topic coverage. Display as "You might also like" panel in Space shell (configurable by builder: show/hide). Discovery click → Space landing page. Track discovery_click_rate and cross_space_activation_rate. Privacy: users can opt out of being included in recommendation signals.
+- **Deliberately NOT built this pass:** any specific image's Dockerfile/DO/persistence/wrangler
+binding (see the "why" note above — the very next incremental step, not silently dropped); a
+Container Manager UI (there is nothing real to click yet — an all-disabled marketplace page would
+be worse UX than no page; build it alongside the first live image); per-slot billing/metering
+(meaningless with zero running slots — the `billing_tier` field on each catalogue entry is the
+placeholder this will read from). Phase M (local-machine-as-container + Cowork Desktop) remains
+the one open item in this roadmap, and needs a native client app outside this repo before its
+server-side half has anything to tal
+- 1. **Universal swarm orchestrator.** Replace the five-avatar coworker roster with one sovereign `NaelaoAgentDO` lead. It turns goals into `SpaceDO.tasks` DAGs, forks isolated Artifact branches, dispatches ephemeral workers, and leaves the human as outcome definer and final approver.
+2. **Executive Cabinet.** The Space Assistant primarily exposes `delegate_to_space_worker(worker_id, task)`. Isolated `project_manager_worker`, `treasury_worker`, `identity_worker`, and `comms_worker` receive mutually exclusive capabilities; no cabinet worker can cross its functional boundary.
+3. **Bifurcated runtime.** Interactive prebuilt operators taking under 30 seconds use in-memory `NaelaoAgentDO` V8 actor RPC. Custom developer agents and durable batch sagas use Cloudflare Dynamic Workflows with retries and sleeping.
+4. **Asymmetric topology.** Parent agents are persistent nouns owning threads and UI. Subagents are ephemeral verbs with only `ai`, `fs`, `cli`, `vault`, and `step`; they never create user threads or WebSockets and return one compact two-line receipt.
+5. **SR-EEO races.** Critical tasks may run N isolated speculative branches. The first candidate satisfying the deterministic oracle wi
+- 295 - 297
+In discover page it should show top 5 trends or radar researchs on potential business to build (when in a autonomous business template ) think about there is something here
+This is a breakthrough product insight.
+The biggest reason aspiring founders and solo operators fail or hesitate isn't that they lack tools—**it's that they don't know *what* business to start today.** They suffer from "Blank Canvas Paralysis."
+By integrating **Cloudflare Radar Researcher** and **Pipelines/Iceberg streaming telemetry** directly into the **Discover Page**, you turn the platform into a **Live Opportunity Radar**.
+Instead of asking users to invent an idea, the platform presents the **Top 5 High-Velocity Market Opportunities of the Week**, backed by real internet traffic surges and low competitor density. With **1 click**, the user launches the entire business.
+
+## Required execution and response
+
+1. Convert every numbered specification above into a file/request-path checklist before editing.
+2. Implement in dependency order and reuse canonical workers/DOs rather than parallel helpers.
+3. Return complete apply-ready unified diffs for every changed, created, or deleted file. Do not use
+   ellipses, pseudo-code, TODO-only stubs, omitted boilerplate, or comments standing in for code.
+4. Include exact migration, provisioning, secret rotation, rollout/backfill, rollback, and staging
+   smoke commands.
+5. Include exact test/typecheck/config-parity commands and the security/race assertions they prove.
+6. Finish with an item-by-item release ledger: IMPLEMENTED, PARTIAL, or MISSING with honest gaps.
+
+For automation, put exactly one machine-readable line before the first diff:
+`PHASE_STATUS: CONTINUE` when another implementation turn is required, or
+`PHASE_STATUS: COMPLETE` only when every numbered item and verification boundary is finished.
+Place all prose after the diff or in a separate `PHASE_NOTES` section. A COMPLETE response with no
+apply-ready diff is valid only when the current branch already satisfies and verifies every item.
+
+Do not silently omit an item. If one response cannot hold the implementation, stop only after an
+atomic, testable commit boundary and return a continuation prompt containing the remaining numbered
+specifications and current verification state. Never claim completion because code merely compiles.
