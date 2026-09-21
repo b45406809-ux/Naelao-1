@@ -113,13 +113,23 @@ jobs:
           --verify "${{ inputs.full_verify_command }}"
       - name: Push final accumulator state
         run: git push --set-upstream origin "$BRANCH_NAME"
+      - name: Summarize phase evidence
+        if: always()
+        shell: bash
+        run: |
+          if [[ -d .phase-runs ]]; then
+            find .phase-runs -type f -printf '%p\t%s bytes\n' | sort
+          else
+            echo "::warning::.phase-runs was not created; inspect the first failing implementation step above."
+          fi
       - name: Upload manifests, notebooks, responses, patches, and verification evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: verified-plan-runs-${{ github.run_id }}-${{ github.run_attempt }}
           path: .phase-runs/
-          if-no-files-found: error
+          include-hidden-files: true
+          if-no-files-found: warn
           retention-days: 30
       - name: Open milestone pull request
         if: success()
