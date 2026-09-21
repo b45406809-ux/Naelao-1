@@ -11,14 +11,14 @@ on:
         description: Last vertical slice (1-26); lower this for a review-sized milestone
         required: true
         default: "26"
-      implementation_model:
-        description: Qualified coding model (cross-model failover is deliberately disabled)
+      implementation_models:
+        description: Capability-ordered Gemini 3.x coding-model rotation
         required: true
-        default: "gemini-2.5-flash"
-      review_model:
-        description: Independent diff reviewer model
+        default: "gemini-3.1-pro-preview,gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3-flash-preview,gemini-3.1-flash-lite"
+      review_models:
+        description: Capability-ordered Gemini 3.x independent-review rotation
         required: true
-        default: "gemini-2.5-flash"
+        default: "gemini-3.1-pro-preview,gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3-flash-preview,gemini-3.1-flash-lite"
       max_turns_per_slice:
         description: Maximum context/implementation/repair turns per slice
         required: true
@@ -29,7 +29,7 @@ on:
         default: "pnpm typecheck && pnpm test"
 
 concurrency:
-  group: implement-plan-${{ github.ref }}
+  group: implement-plan-accumulator
   cancel-in-progress: false
 
 permissions:
@@ -37,7 +37,7 @@ permissions:
   pull-requests: write
 
 env:
-  BRANCH_NAME: ai/verified-plan-${{ github.run_id }}-${{ github.run_attempt }}
+  BRANCH_NAME: ai/verified-plan-accumulator
 
 jobs:
   validate-runner:
@@ -63,6 +63,7 @@ jobs:
         run: >-
           pnpm exec vitest run --config tests/vitest.config.ts
           tests/unit/repomix/context-manifest.test.ts
+          tests/unit/repomix/gemini-models.test.ts
           tests/unit/repomix/repository-index.test.ts
           tests/unit/requirements-trace-matrix.test.ts
       - name: Token-bounded dry run
@@ -74,8 +75,8 @@ jobs:
     timeout-minutes: 360
     env:
       GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-      IMPLEMENTATION_MODEL: ${{ inputs.implementation_model }}
-      REVIEW_MODEL: ${{ inputs.review_model }}
+      GEMINI_MODELS: ${{ inputs.implementation_models }}
+      REVIEW_MODELS: ${{ inputs.review_models }}
       MAX_TURNS_PER_PHASE: ${{ inputs.max_turns_per_slice }}
       PHASE_VERIFY_COMMAND: ${{ inputs.full_verify_command }}
       PHASE_PUSH_REMOTE: origin
@@ -91,12 +92,17 @@ jobs:
       - name: Fail closed without Gemini keys
         run: test -n "$GEMINI_API_KEYS" || { echo "GEMINI_API_KEYS is required" >&2; exit 1; }
       - run: pnpm install --frozen-lockfile
-      - name: Create clean accumulator branch
+      - name: Resume or create the accumulator branch
         run: |
           test -z "$(git status --porcelain)"
           git config user.name "naelao-plan-bot"
           git config user.email "naelao-plan-bot@users.noreply.github.com"
-          git switch -c "$BRANCH_NAME"
+          if git ls-remote --exit-code --heads origin "$BRANCH_NAME" >/dev/null 2>&1; then
+            git fetch origin "$BRANCH_NAME"
+            git switch -C "$BRANCH_NAME" "origin/$BRANCH_NAME"
+          else
+            git switch -c "$BRANCH_NAME"
+          fi
       - name: Compile verified inputs
         run: |
           node repomix/build-prompts.mjs
@@ -107,8 +113,8 @@ jobs:
           node run-phase.mjs
           --start "${{ inputs.start_slice }}"
           --end "${{ inputs.end_slice }}"
-          --model "${{ inputs.implementation_model }}"
-          --review-model "${{ inputs.review_model }}"
+          --models "${{ inputs.implementation_models }}"
+          --review-models "${{ inputs.review_models }}"
           --max-turns "${{ inputs.max_turns_per_slice }}"
           --verify "${{ inputs.full_verify_command }}"
       - name: Push final accumulator state
@@ -136,8 +142,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh pr create \
-            --base "${GITHUB_REF_NAME}" \
-            --head "$BRANCH_NAME" \
-            --title "Implement verified plan slices ${{ inputs.start_slice }}-${{ inputs.end_slice }}" \
-            --body "Automated scout → dependency expansion → implementation → layered verification → independent review. Inspect the uploaded phase notebooks and every commit before merging."
+          if gh pr list --head "$BRANCH_NAME" --state open --json number --jq '.[0].number' | grep -q '[0-9]'; then
+            echo "An open accumulator pull request already exists; leaving it in place."
+          else
+            gh pr create \
+              --base "${GITHUB_REF_NAME}" \
+              --head "$BRANCH_NAME" \
+              --title "Implement verified plan slices ${{ inputs.start_slice }}-${{ inputs.end_slice }}" \
+              --body "Automated scout → dependency expansion → implementation → layered verification → independent review. Reruns resume this branch and skip slice completion commits already present."
+          fi

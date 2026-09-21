@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
 import { buildRepositoryIndex } from "./repomix/lib/repository-index.mjs";
 import { deterministicSeed, expandContextManifest, renderIndexForScout, sliceSource, validateContextManifest } from "./repomix/lib/context-manifest.mjs";
+import { availableTextModels, DEFAULT_GEMINI_3_MODELS, parseModelList, rankModels, retryDelayMs } from "./repomix/lib/gemini-models.mjs";
 
 const exec = promisify(execFile);
 const ROOT = new URL(".", import.meta.url).pathname;
@@ -14,13 +15,15 @@ const manifest = JSON.parse(await readFile(new URL("repomix/phases.json", import
 const start = Number(option("--start", process.env.PHASE_START ?? 1));
 const end = Number(option("--end", process.env.PHASE_END ?? manifest.phases.length));
 const maxTurns = Number(option("--max-turns", process.env.MAX_TURNS_PER_PHASE ?? 10));
-const model = option("--model", process.env.IMPLEMENTATION_MODEL ?? "gemini-2.5-flash");
-const reviewModel = option("--review-model", process.env.REVIEW_MODEL ?? model);
+const configuredModels = parseModelList(option("--models", option("--model", process.env.GEMINI_MODELS ?? process.env.IMPLEMENTATION_MODEL ?? DEFAULT_GEMINI_3_MODELS.join(","))));
+const configuredReviewModels = parseModelList(option("--review-models", option("--review-model", process.env.REVIEW_MODELS ?? process.env.REVIEW_MODEL ?? configuredModels.join(","))));
 const fullVerify = option("--verify", process.env.PHASE_VERIFY_COMMAND ?? "pnpm typecheck && pnpm test");
 const dryRun = argv.includes("--dry-run");
+const geminiApiBaseUrl = (process.env.GEMINI_API_BASE_URL ?? "https://generativelanguage.googleapis.com/v1beta").replace(/\/$/, "");
 const keys = (process.env.GEMINI_API_KEYS ?? process.env.GEMINI_API_KEY ?? "").split(",").map((key) => key.trim()).filter(Boolean);
 if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end > manifest.phases.length || start > end) throw new Error(`Select an inclusive slice range from 1-${manifest.phases.length}`);
 if (!dryRun && keys.length === 0) throw new Error("GEMINI_API_KEYS or GEMINI_API_KEY is required");
+if (!configuredModels.length || !configuredReviewModels.length) throw new Error("At least one text-capable Gemini 3.x model is required");
 await mkdir(resolve(ROOT, ".phase-runs"), { recursive: true });
 
 async function command(program, args, options = {}) {
@@ -54,11 +57,38 @@ function contextRequests(text, index) {
   const block = text.match(/CONTEXT_REQUEST:\s*\n([\s\S]*?)(?:\n[A-Z_]+:|$)/i)?.[1] ?? "";
   return [...new Set(block.split("\n").map((line) => line.replace(/^[-* ]+/, "").trim()).filter((path) => index.files[path]))].slice(0, 40);
 }
-async function callGemini(prompt, selectedModel, role, responseJson = false) {
+async function discoverModelPool(configured) {
+  if (dryRun) return rankModels(configured);
+  const discovered = [];
+  for (const key of keys) {
+    try {
+      const response = await fetch(`${geminiApiBaseUrl}/models?key=${encodeURIComponent(key)}`);
+      if (response.ok) discovered.push(...availableTextModels(await response.json()));
+    } catch { /* configured models remain the fail-closed fallback */ }
+  }
+  const pool = rankModels(configured, discovered);
+  if (!pool.length) throw new Error("No text-capable Gemini 3.x generateContent model is available");
+  return pool;
+}
+const implementationModels = await discoverModelPool(configuredModels);
+const reviewModels = await discoverModelPool(configuredReviewModels);
+console.log(`Gemini implementation rotation: ${implementationModels.join(", ")}`);
+console.log(`Gemini review rotation: ${reviewModels.join(", ")}`);
+const unavailableModels = new Set();
+const unavailableTargets = new Set();
+const unavailableModelKeys = new Map();
+
+async function callGemini(prompt, modelPool, role, responseJson = false) {
   let lastError;
-  for (let attempt = 0; attempt < keys.length * 3; attempt++) {
-    const key = keys[attempt % keys.length];
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(selectedModel)}:generateContent?key=${encodeURIComponent(key)}`, {
+  const attempts = Math.max(1, keys.length * modelPool.length * 2);
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const modelIndex = attempt % modelPool.length;
+    const keyIndex = Math.floor(attempt / modelPool.length) % keys.length;
+    const selectedModel = modelPool[modelIndex];
+    const target = `${keyIndex}:${selectedModel}`;
+    if (unavailableModels.has(selectedModel) || unavailableTargets.has(target)) continue;
+    const key = keys[keyIndex];
+    const response = await fetch(`${geminiApiBaseUrl}/models/${encodeURIComponent(selectedModel)}:generateContent?key=${encodeURIComponent(key)}`, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { temperature: role === "implementer" ? 0.1 : 0, maxOutputTokens: role === "implementer" ? 65_536 : 16_384, ...(responseJson ? { responseMimeType: "application/json" } : {}) } }),
     });
@@ -66,13 +96,19 @@ async function callGemini(prompt, selectedModel, role, responseJson = false) {
       const data = await response.json();
       const text = (data.candidates?.[0]?.content?.parts ?? []).map((part) => part.text ?? "").join("");
       if (text) return text;
-      lastError = new Error(`${role} returned no content`);
+      lastError = new Error(`${selectedModel} ${role} returned no content`);
     } else {
       const detail = (await response.text()).slice(0, 2_000);
       lastError = new Error(`${selectedModel} ${role} returned ${response.status}: ${detail}`);
-      if (![408, 429, 500, 502, 503, 504].includes(response.status)) throw lastError;
-      const retryAfter = Number(response.headers.get("retry-after") ?? 0);
-      await new Promise((resolveDelay) => setTimeout(resolveDelay, Math.max(retryAfter * 1000, Math.min(30_000, 2 ** attempt * 1000))));
+      if (response.status === 404 || response.status === 410) {
+        unavailableTargets.add(target);
+        const failedKeys = unavailableModelKeys.get(selectedModel) ?? new Set();
+        failedKeys.add(keyIndex); unavailableModelKeys.set(selectedModel, failedKeys);
+        if (failedKeys.size === keys.length) unavailableModels.add(selectedModel);
+      }
+      const delay = retryDelayMs(response.status, response.headers.get("retry-after"), attempt);
+      console.warn(`${lastError.message}\nRotating to the next Gemini 3.x model/key${delay ? ` after ${delay}ms` : ""}.`);
+      if (delay) await new Promise((resolveDelay) => setTimeout(resolveDelay, delay));
     }
   }
   throw lastError ?? new Error(`${role} failed`);
@@ -83,7 +119,7 @@ function compactIndex(index) {
 async function planContext(spec, index, phase) {
   const seed = deterministicSeed(spec, index, 50);
   const prompt = `You are the repository context scout for ${phase.slice_id}. Do not write code. Select the exact production files required to implement and verify the specification. Include router/auth ingress, authoritative worker or Durable Object, persistence/migrations, all environment bindings, shell UI when applicable, direct callers, and realistic tests. Return JSON only with arrays: read_files, edit_files, new_files, test_files, bindings, migrations, request_paths, commands, checklist; and an object symbols mapping large file paths to relevant exported/class/function names. Never invent an existing path.\n\nSPECIFICATION:\n${spec}\n\nHIGH-SIGNAL INDEX:\n${await renderIndexForScout(index, seed)}\n\nALL REPOSITORY PATHS:\n${compactIndex(index)}`;
-  const response = await callGemini(prompt, model, "scout", true);
+  const response = await callGemini(prompt, implementationModels, "scout", true);
   return validateContextManifest(parseJsonResponse(response), index);
 }
 function escapeXml(text) { return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"); }
@@ -140,12 +176,27 @@ function completionGates(verification, contextManifest, index) {
 async function reviewPhase(spec, contextManifest, notebook, base, verification) {
   const diff = (await exec("git", ["diff", "--no-ext-diff", base, "--"], { cwd: ROOT, maxBuffer: 32 * 1024 * 1024 })).stdout;
   const prompt = `Act as an independent production reviewer. Return JSON only: {"approved":boolean,"blocking_issues":[string],"missing_tests":[string],"security_findings":[string]}. Reject helpers/placeholders, missing router/auth/persistence/config/UI boundaries, unsafe migrations, weak mocks, or unsupported completion claims.\n\nSPEC:\n${spec}\n\nMANIFEST:\n${JSON.stringify(contextManifest)}\n\nNOTEBOOK:\n${JSON.stringify(notebook)}\n\nVERIFICATION:\n${JSON.stringify(verification)}\n\nDIFF:\n${diff.slice(0, 300_000)}`;
-  return parseJsonResponse(await callGemini(prompt, reviewModel, "reviewer", true));
+  return parseJsonResponse(await callGemini(prompt, reviewModels, "reviewer", true));
 }
 async function runFullVerification() { await command("bash", ["-lc", fullVerify]); }
+async function completedSlice(phase) {
+  const subject = `feat(plan): complete ${phase.slice_id} items ${phase.from}-${phase.to}`;
+  const result = await exec("git", ["log", "--format=%s", "--max-count=500"], { cwd: ROOT });
+  return result.stdout.split(/\r?\n/).includes(subject);
+}
+async function writeProgress() {
+  const subjects = new Set((await exec("git", ["log", "--format=%s", "--max-count=500"], { cwd: ROOT })).stdout.split(/\r?\n/));
+  const slices = manifest.phases.map((phase) => {
+    const subject = `feat(plan): complete ${phase.slice_id} items ${phase.from}-${phase.to}`;
+    return { slice_id: phase.slice_id, items: `${phase.from}-${phase.to}`, status: subjects.has(subject) ? "completed" : "pending", completion_commit_subject: subject };
+  });
+  await writeFile(resolve(ROOT, ".phase-runs", "progress.json"), `${JSON.stringify({ schema_version: 1, updated_at: new Date().toISOString(), slices }, null, 2)}\n`);
+}
+await writeProgress();
 
 for (const phase of manifest.phases.slice(start - 1, end)) {
   console.log(`\n===== ${phase.slice_id}: items ${phase.from}-${phase.to} — ${phase.focus} =====`);
+  if (!dryRun && await completedSlice(phase)) { console.log(`${phase.slice_id} is already committed; skipping.`); continue; }
   const phaseDir = resolve(ROOT, ".phase-runs", phase.slice_id); await mkdir(phaseDir, { recursive: true });
   const spec = await readFile(resolve(ROOT, phase.prompt), "utf8");
   const base = (await exec("git", ["rev-parse", "HEAD"], { cwd: ROOT })).stdout.trim();
@@ -164,7 +215,7 @@ for (const phase of manifest.phases.slice(start - 1, end)) {
     console.log(`turn ${turn}: ~${context.tokens} source/spec tokens across ${context.included.length} files`);
     if (dryRun) { approved = true; break; }
     const prompt = `${spec}\n\nAPPROVED CONTEXT MANIFEST:\n${JSON.stringify(contextManifest)}\n\nPERSISTENT PHASE NOTEBOOK:\n${JSON.stringify(notebook)}\n\n${context.xml}\n\nImplement the next atomic checklist boundary. If source is missing, return only CONTEXT_REQUEST with exact paths. Otherwise put PHASE_STATUS: CONTINUE or COMPLETE before complete unified diff blocks. Never change a file outside edit_files/new_files/test_files/migrations except docs/requirements-trace-matrix.md.`;
-    const response = await callGemini(prompt, model, "implementer");
+    const response = await callGemini(prompt, implementationModels, "implementer");
     await writeFile(resolve(phaseDir, `turn-${turn}.response.md`), response);
     const requested = contextRequests(response, index);
     if (requested.length) { paths = [...new Set([...paths, ...requested])]; notebook.inspected_files = [...new Set([...notebook.inspected_files, ...context.included])]; await writeFile(resolve(phaseDir, "state.json"), JSON.stringify(notebook, null, 2)); continue; }
@@ -212,6 +263,7 @@ for (const phase of manifest.phases.slice(start - 1, end)) {
   if ((await changedFiles(base)).length) {
     await command("git", ["add", "-A"]); await command("git", ["commit", "-m", `feat(plan): complete ${phase.slice_id} items ${phase.from}-${phase.to}`]);
     if (process.env.PHASE_PUSH_REMOTE) await command("git", ["push", "--set-upstream", process.env.PHASE_PUSH_REMOTE, "HEAD"]);
+    await writeProgress();
   }
 }
 console.log(`Completed slices ${start}-${end}.`);
