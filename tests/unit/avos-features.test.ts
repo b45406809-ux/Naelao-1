@@ -66,6 +66,38 @@ describe("AVOS action-space security", () => {
     });
   });
 
+  it("fails closed for malformed or ambiguous private connector bindings", () => {
+    expect(
+      () =>
+        new ConnectorBindingMatrix([
+          {
+            tenantId: "t",
+            alias: "mail",
+            connectorId: "personal",
+            scope: "user",
+            spaceId: "s",
+            grantedScopes: ["read"],
+          },
+        ])
+    ).toThrow("invalid_connector_binding");
+
+    const duplicate = {
+      tenantId: "t",
+      alias: "mail",
+      connectorId: "shared",
+      scope: "space" as const,
+      spaceId: "s",
+      grantedScopes: ["read"],
+    };
+    expect(
+      () =>
+        new ConnectorBindingMatrix([
+          duplicate,
+          { ...duplicate, connectorId: "other" },
+        ])
+    ).toThrow("ambiguous_connector_binding");
+  });
+
   it("requires a signed, scoped grant for destructive writes", async () => {
     expect(requiresMutationGrant("DROP TABLE users")).toBe(true);
     await expect(
@@ -99,6 +131,37 @@ describe("AVOS action-space security", () => {
         1_000
       )
     ).resolves.toBeUndefined();
+  });
+
+  it("rejects malformed, oversized, and schema-invalid mutation grants", async () => {
+    const requirement = {
+      subject: "u",
+      resource: "p",
+      action: "destructive_write",
+    };
+    await expect(
+      verifyCapabilityGrant("payload.!", "secret", requirement)
+    ).resolves.toBeNull();
+    await expect(
+      verifyCapabilityGrant(
+        `${"a".repeat(16_385)}.signature`,
+        "secret",
+        requirement
+      )
+    ).resolves.toBeNull();
+    const invalid = await mintCapabilityGrant(
+      {
+        subject: "u",
+        resources: ["p"],
+        actions: ["destructive_write"],
+        expiresAt: Number.NaN,
+        nonce: "n",
+      },
+      "secret"
+    );
+    await expect(
+      verifyCapabilityGrant(invalid, "secret", requirement)
+    ).resolves.toBeNull();
   });
 
   it("runs registered virtual commands and persists safe synthesized commands", async () => {

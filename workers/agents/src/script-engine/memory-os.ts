@@ -80,7 +80,9 @@ const PROMOTE_IMPORTANCE_FLOOR = 0.7;
 const PROMOTE_BATCH_SIZE = 25;
 const EPISODIC_RETENTION_CAP = 500; // unpromoted, sub-threshold rows kept per (space)
 const DECAY_TICK_MS = 24 * 60 * 60 * 1000; // a fact decays at most once per day of inactivity
-const SEMANTIC_SCORE_FLOOR = 0.72; // spec's surgicalRecall threshold
+// Hindsight memories cross a thread boundary only when similarity strictly exceeds 0.80.
+// Keep the comparison below as `<=` so the boundary itself is denied rather than rounded up.
+const SEMANTIC_SCORE_FLOOR = 0.8;
 const FABRIC_SCORE_FLOOR = 0.7; // spec's surgicalRecall threshold for Fabric specifically
 
 export function initMemorySchema(sql: SqlStorageLike): void {

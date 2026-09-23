@@ -151,3 +151,11 @@ flows. Never platform secrets:
    with `NEXT_PUBLIC_API_URL` including `/v1`.
 8. Optional but recommended before real traffic: `TAVILY_API_KEY` (agents advertise web search),
    CF-for-SaaS zone token (custom domains).
+# Batch 1–4 runtime and connector rollout
+
+The MCP hub requires `PLATFORM_SECRET` in every environment and uses the environment's
+`PLATFORM_DB` binding for logical connector aliases. Apply migration
+`0075_phase1_runtime_security.sql` before deploying the MCP hub or agents worker. Optional
+platform connector credentials (`COMPOSIO_API_KEY`, `PIPEDREAM_CLIENT_ID`, and
+`PIPEDREAM_CLIENT_SECRET`) must be installed with `wrangler secret put --env <environment>`;
+they must never be configured as plain Wrangler variables or passed into an isolate/container.

@@ -32,6 +32,32 @@ async function hmac(secret: string, value: string): Promise<string> {
   );
 }
 
+async function verifyHmac(
+  secret: string,
+  value: string,
+  signature: string
+): Promise<boolean> {
+  let bytes: Uint8Array;
+  try {
+    bytes = base64UrlToBytes(signature);
+  } catch {
+    return false;
+  }
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["verify"]
+  );
+  return crypto.subtle.verify(
+    "HMAC",
+    key,
+    new Uint8Array(bytes).buffer,
+    encoder.encode(value)
+  );
+}
+
 // Features 21, 25, 26, 28: credentials remain beyond the script boundary.
 export type ConnectorScope = "space" | "project" | "user";
 export interface ConnectorBinding {
@@ -46,7 +72,30 @@ export interface ConnectorBinding {
 }
 
 export class ConnectorBindingMatrix {
-  constructor(private readonly bindings: ConnectorBinding[]) {}
+  constructor(private readonly bindings: ConnectorBinding[]) {
+    const keys = new Set<string>();
+    for (const binding of bindings) {
+      if (
+        !binding.tenantId ||
+        !binding.spaceId ||
+        !binding.alias ||
+        !binding.connectorId ||
+        (binding.scope === "user" && !binding.userId) ||
+        (binding.scope === "project" && !binding.projectId)
+      )
+        throw new Error("invalid_connector_binding");
+      const key = [
+        binding.tenantId,
+        binding.spaceId,
+        binding.scope,
+        binding.projectId ?? "_",
+        binding.userId ?? "_",
+        binding.alias,
+      ].join(":");
+      if (keys.has(key)) throw new Error("ambiguous_connector_binding");
+      keys.add(key);
+    }
+  }
 
   resolve(
     alias: string,
@@ -66,11 +115,15 @@ export class ConnectorBindingMatrix {
     return (
       candidates.find(
         (binding) =>
-          binding.scope === "user" && binding.userId === context.userId
+          binding.scope === "user" &&
+          Boolean(context.userId) &&
+          binding.userId === context.userId
       ) ??
       candidates.find(
         (binding) =>
-          binding.scope === "project" && binding.projectId === context.projectId
+          binding.scope === "project" &&
+          Boolean(context.projectId) &&
+          binding.projectId === context.projectId
       ) ??
       candidates.find((binding) => binding.scope === "space") ??
       null
@@ -184,7 +237,8 @@ export async function verifyCapabilityGrant(
     !payload ||
     !signature ||
     extra ||
-    signature !== (await hmac(secret, payload))
+    payload.length > 16_384 ||
+    !(await verifyHmac(secret, payload, signature))
   )
     return null;
   let grant: CapabilityGrant;
@@ -198,7 +252,10 @@ export async function verifyCapabilityGrant(
   if (
     !Array.isArray(grant.resources) ||
     !Array.isArray(grant.actions) ||
-    !grant.nonce
+    typeof grant.subject !== "string" ||
+    typeof grant.nonce !== "string" ||
+    !grant.nonce ||
+    !Number.isSafeInteger(grant.expiresAt)
   )
     return null;
   if (grant.expiresAt <= now || grant.subject !== requirement.subject)

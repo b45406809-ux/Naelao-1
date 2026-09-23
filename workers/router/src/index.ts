@@ -623,6 +623,7 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // Composio "click Install" hosted-connect flow (G-1/G-3 growth layer): same admin-level write
   // gate as connect/oauth-start above (requireBusinessMembership on the spaces worker).
   /^\/spaces\/([^/]+)\/connectors\/provider-connect-start$/,
+  /^\/spaces\/([^/]+)\/connector-aliases(\/[^/]+)?$/,
   // Step 28: business-wide BYOK LLM keys — GET (member) shows which providers are wired, PUT
   // (admin) stores the business's own key, DELETE (admin) removes it. requireBusinessMembership on
   // the spaces worker is the real authorization; the KEY value never leaves the vault. A static
@@ -1132,6 +1133,12 @@ api.all("/spaces/:spaceId/sessions/:sessionId/compact", async (c) =>
 // context-usage/compact above (implemented on the agents worker, would otherwise silently fall
 // through to the generic sessions/* catch-all and 404 against SPACES_WORKER).
 api.all("/spaces/:spaceId/sessions/:sessionId/connector-mode", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+api.all("/spaces/:spaceId/connector-aliases/*", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+api.all("/spaces/:spaceId/connector-aliases", async (c) =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );
 // Chat uploads (files attached in this conversation, read directly by the agent — see the

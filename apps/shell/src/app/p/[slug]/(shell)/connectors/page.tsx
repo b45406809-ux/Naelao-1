@@ -31,6 +31,7 @@ import {
   consumeConnectorReturnMarker,
 } from "@/lib/connectorActions";
 import { AppCard, type AppCardModel } from "@/components/AppCard";
+import { ConnectorAliases } from "@/components/ConnectorAliases";
 
 type Tab = "popular" | "connected" | "az";
 
@@ -46,7 +47,7 @@ export default function ConnectorsPage() {
   const { activeSpaceId } = useActiveSpace();
   const { session } = useProductAuth();
   const { toast, show } = useToast();
-  const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
+  const creds = React.useMemo(() => session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null, [session?.session_token, session?.end_user_id]);
 
   const [connectors, setConnectors] = React.useState<ConnectorInfo[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -256,6 +257,8 @@ export default function ConnectorsPage() {
           app&apos;s own page — there is no API key to hunt down.
         </div>
       </div>
+
+      {creds && <ConnectorAliases spaceId={activeSpaceId} session={creds} connectors={connectors} onError={show} />}
 
       <div className="search-bar">
         <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="currentColor">

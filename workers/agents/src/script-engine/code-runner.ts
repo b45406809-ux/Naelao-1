@@ -179,8 +179,9 @@ export default {
       const mcpHeaders = () => ({
         "content-type": "application/json",
         "x-naelao-tenant-id": env.__MCP_TENANT__ || "",
-        "x-naelao-user-id": env.__MCP_AGENT__ || "",
+        "x-naelao-user-id": env.__MCP_USER__ || "",
         "x-naelao-agent-id": env.__MCP_AGENT__ || "",
+        "x-naelao-project-id": env.__MCP_PROJECT__ || "",
         "x-naelao-internal-token": env.__MCP_TOKEN__ || "",
       });
       const mcpFetch = async (path, init) => {
@@ -212,6 +213,18 @@ export default {
         call: async (server, tool, params) => {
           const id = await resolveServerId(server);
           return mcpFetch("/mcp-servers/" + id + "/tools/call", { method: "POST", body: { tool_name: tool, input: params || {} } });
+        },
+      };
+      ctx.connectors = {
+        call: async (alias, tool, params, requiredScopes) => {
+          const headers = mcpHeaders();
+          if (Array.isArray(requiredScopes) && requiredScopes.length) headers["x-naelao-required-scopes"] = requiredScopes.join(",");
+          const r = await env.__MCP_HUB__.fetch(new Request("http://mcp-hub/v1/spaces/" + env.__MCP_SPACE__ + "/connector-aliases/" + encodeURIComponent(alias) + "/tools/call", {
+            method: "POST", headers, body: JSON.stringify({ tool_name: tool, input: params || {} }),
+          }));
+          const body = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error((body && body.message) || ("connector alias call failed: " + r.status));
+          return body;
         },
       };
     }
@@ -252,6 +265,7 @@ async function runIsolate(
     spaceId: string;
     agentId: string;
     tenantId: string;
+    userId?: string;
     // Widened to accept (and, on auto-promotion, forward) the same optional fields
     // runContainer expects — absent for the overwhelming majority of Tier 2-4 calls.
     projectId?: string;
@@ -304,6 +318,8 @@ async function runIsolate(
     env.__MCP_TENANT__ = params.tenantId;
     env.__MCP_SPACE__ = params.spaceId;
     env.__MCP_AGENT__ = params.agentId;
+    env.__MCP_USER__ = params.userId ?? "";
+    env.__MCP_PROJECT__ = params.projectId ?? "";
   }
 
   // One isolate per (space, script, code revision) — never share isolates across spaces.

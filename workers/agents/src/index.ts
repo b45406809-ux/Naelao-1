@@ -6,7 +6,7 @@
 //   GET    /spaces/:spaceId/sessions/:sessionId/agent/runs/:runId  — get run status
 //   POST   /spaces/:spaceId/sessions/:sessionId/agent/runs/:runId/cancel
 
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { errorResponse, requestId, notFound, badRequest, unauthorized, forbidden, mintInternalToken, verifyInternalToken } from "@naelao/http";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { contextWindowForModel, isAllowedModel, ALLOWED_MODELS, DEFAULT_WORKING_MODEL, isValidReasoningLevel, capabilityForModel, isValidEffortLevel, type EffortLevel } from "@naelao/billing-core";
@@ -2542,6 +2542,46 @@ app.get("/connectors/status", async (c) => {
         : connectedNames.has(conn.id),
     })),
   });
+});
+
+async function connectorAliasHubRequest(c: Context<{ Bindings: AgentsEnv }>, path: string, init?: RequestInit): Promise<Response> {
+  const tenantId = await requireVerifiedTenant(c);
+  if (!c.env.MCP_HUB) return Response.json({ error_code: "unavailable", message: "Connector service unavailable" }, { status: 503 });
+  const { userId } = getCallerIdentity(c);
+  const headers = new Headers(init?.headers);
+  headers.set("content-type", "application/json");
+  headers.set("x-naelao-tenant-id", tenantId);
+  headers.set("x-naelao-user-id", userId);
+  headers.set("x-naelao-internal-token", await mintInternalToken(c.env.PLATFORM_SECRET, tenantId));
+  return c.env.MCP_HUB.fetch(new Request(`http://mcp-hub${path}`, { ...init, headers }));
+}
+
+app.get("/spaces/:spaceId/connector-aliases", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
+  return connectorAliasHubRequest(c, `/v1/spaces/${encodeURIComponent(spaceId)}/connector-aliases`);
+});
+
+app.post("/spaces/:spaceId/connector-aliases", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  if (!(await requireEndUserBusinessMembership(c, spaceId, "admin"))) throw forbidden("Business admin access required");
+  const body = await c.req.json<{ alias?: string; scope?: "space" | "project" | "user"; project_id?: string; connector_name?: string; granted_scopes?: string[] }>();
+  if (!body.connector_name) throw badRequest("connector_name is required");
+  const listed = await connectorAliasHubRequest(c, `/v1/spaces/${encodeURIComponent(spaceId)}/mcp-servers`);
+  if (!listed.ok) return listed;
+  const payload = await listed.json<{ data?: Array<{ id: string; name: string }> }>();
+  const server = (payload.data ?? []).find((entry) => entry.name === body.connector_name);
+  if (!server) return c.json({ error_code: "not_found", message: "Connected app not found" }, 404);
+  return connectorAliasHubRequest(c, `/v1/spaces/${encodeURIComponent(spaceId)}/connector-aliases`, {
+    method: "POST",
+    body: JSON.stringify({ alias: body.alias, scope: body.scope, project_id: body.project_id, server_id: server.id, granted_scopes: body.granted_scopes }),
+  });
+});
+
+app.delete("/spaces/:spaceId/connector-aliases/:aliasId", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  if (!(await requireEndUserBusinessMembership(c, spaceId, "admin"))) throw forbidden("Business admin access required");
+  return connectorAliasHubRequest(c, `/v1/spaces/${encodeURIComponent(spaceId)}/connector-aliases/${encodeURIComponent(c.req.param("aliasId"))}`, { method: "DELETE" });
 });
 
 /**

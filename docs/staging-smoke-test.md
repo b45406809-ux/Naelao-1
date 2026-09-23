@@ -134,3 +134,11 @@ Minimum required secrets (CF Workers Secrets, set via `wrangler secret put`):
 - [ ] CF AI Gateway dashboard shows real LLM calls in section 4
 - [ ] No uncaught 500s in CF Workers tail logs during the run
 - [ ] LS test-mode webhook log shows all expected events with correct idempotency
+# Batches 1–4 connector alias smoke test
+
+1. Connect an app in a staging business and create the `primary_inbox` logical alias.
+2. Run a script calling `ctx.connectors.call("primary_inbox", "list", {})` and confirm the MCP
+   receipt contains no credential value.
+3. Repeat with a missing OAuth scope and confirm an incremental reauthorization card is returned.
+4. Replay the call with another tenant's session and confirm `404`/denial without connector data.
+5. Send a nested SSN/private-key payload and confirm `egress_dlp_blocked` before upstream egress.

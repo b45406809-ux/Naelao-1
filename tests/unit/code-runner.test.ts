@@ -166,6 +166,24 @@ describe("code-runner — Tier 4 browser capability injection", () => {
 // resolves auth server-side — it receives only a short-lived (60s), tenant-scoped internal
 // token, minted in real TS before the isolate is constructed, never the platform secret itself.
 describe("code-runner — Tier 2 ctx.mcp capability injection (§A1.17 Phase I)", () => {
+  it("resolves logical aliases with the original human and project scope", async () => {
+    const hubSpy = vi.fn(async (req: Request) => {
+      expect(new URL(req.url).pathname).toContain("/connector-aliases/primary_inbox/tools/call");
+      expect(req.headers.get("x-naelao-user-id")).toBe("human-7");
+      expect(req.headers.get("x-naelao-project-id")).toBe("project9");
+      expect(req.headers.get("x-naelao-required-scopes")).toBe("mail.read");
+      return Response.json({ result: { messages: 2 } });
+    });
+    const runner = buildCodeRunner({ loader: fakeLoader(), mcpHubWorker: { fetch: hubSpy } as unknown as Fetcher, platformSecret: "shh" });
+    const result = await runner.run({
+      name: "alias-call",
+      code: `export async function run(args, ctx) { return ctx.connectors.call("primary_inbox", "messages.list", {}, ["mail.read"]); }`,
+      tier: 2, args: {}, spaceId: "space1", projectId: "project9", agentId: "agent1", userId: "human-7", tenantId: "tenant1",
+    });
+    expect(result.ok).toBe(true);
+    expect(result.output).toEqual({ result: { messages: 2 } });
+  });
+
   it("injects ctx.mcp proxied to the MCP_HUB binding with a verified internal token", async () => {
     const hubSpy = vi.fn(async (req: Request) => {
       const url = new URL(req.url);
