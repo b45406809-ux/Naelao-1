@@ -30,6 +30,8 @@ import { runStoredScript } from "./execution-ladder.js";
 import { buildOperationMap, type PrebuiltOp, type PrebuiltScript } from "./prebuilt/index.js";
 import { assertNoReservedViolation } from "./reserved-capabilities.js";
 import { isReadSafeOperation } from "./assistant-access.js";
+import { enforceWriteGuard, requiresMutationGrant } from "@naelao/agent-sdk";
+import { interceptPlatformCli } from "./virtual-cli.js";
 
 /** Plain edit distance — used only to rank "did you mean" suggestions by how close a guess
  *  actually is, never for anything security-relevant. Op names are short (well under 40 chars),
@@ -652,6 +654,28 @@ export class ScriptToolSurface {
 
   async run(name: string, params: Record<string, unknown> = {}): Promise<ScriptRunResult> {
     const started = Date.now();
+    const mutationIntent = name === "Bash"
+      ? String(params["commands"] ?? params["command"] ?? params["cmd"] ?? "")
+      : `${name} ${JSON.stringify(params)}`;
+    try {
+      await enforceWriteGuard(mutationIntent, this.env.mutationGrant, this.env.platformSecret ?? "", {
+        subject: this.env.humanInvokerId ?? "system",
+        resource: this.env.projectId ?? this.env.spaceId,
+      });
+      if (requiresMutationGrant(mutationIntent) && this.env.consumeMutationGrant && !(await this.env.consumeMutationGrant())) {
+        throw new Error("mutation_grant_replayed");
+      }
+    } catch {
+      return { ok: false, error: "destructive_mutation_denied", tier: 1, duration_ms: Date.now() - started, tokens_used: 0 };
+    }
+    if (name === "Bash") {
+      try {
+        const intercepted = interceptPlatformCli(mutationIntent);
+        if (intercepted) return this.run(intercepted.operation, intercepted.params);
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : "invalid_cli_command", tier: 2, duration_ms: Date.now() - started, tokens_used: 0 };
+      }
+    }
 
     // F-36 read-only clamp: a viewer-clamped run may execute only explicitly read-safe
     // prebuilt ops — never a stored script (arbitrary agent-authored code is assumed to

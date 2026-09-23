@@ -20,6 +20,7 @@ export { SkillLibrary, computeStabilityScore } from "./skill-library.js";
 export { scriptFind, indexScriptEmbedding, removeScriptEmbedding, FIND_CONFIDENCE_FLOOR } from "./script-find.js";
 export { runStoredScript, tierLabel } from "./execution-ladder.js";
 export { ScriptToolSurface } from "./tool-surface.js";
+export { interceptPlatformCli, parseCliWords } from "./virtual-cli.js";
 export { runObserve, observeFilesystem, observeApi } from "./observe.js";
 export {
   runScriptLoop,

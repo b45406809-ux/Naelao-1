@@ -2,6 +2,7 @@
 import { Hono } from "hono";
 import { errorResponse, requestId, requireInternalHmac, mintInternalToken } from "@naelao/http";
 import { checkSsrf } from "@naelao/security";
+import { scrubEgressPayload } from "@naelao/agent-sdk";
 
 export interface Env {
   ENVIRONMENT: string;
@@ -708,6 +709,95 @@ app.get("/v1/spaces/:spaceId/mcp-servers/:serverId/tools", async (c) => {
   return c.json({ tools: result.result?.tools ?? [] });
 });
 
+app.get("/v1/spaces/:spaceId/connector-aliases", async (c) => {
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const { results } = await c.env.PLATFORM_DB.prepare(
+    `SELECT id, alias, scope, project_id, user_id, server_id, granted_scopes_json, updated_at
+     FROM connector_aliases WHERE tenant_id=? AND space_id=? ORDER BY alias, scope`
+  ).bind(tenantId, c.req.param("spaceId")).all();
+  return c.json({ data: results });
+});
+
+app.post("/v1/spaces/:spaceId/connector-aliases", async (c) => {
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const spaceId = c.req.param("spaceId");
+  const body = await c.req.json<{ alias: string; scope: "space" | "project" | "user"; project_id?: string; user_id?: string; server_id: string; granted_scopes?: string[] }>();
+  if (!/^[a-z][a-z0-9_]{1,63}$/.test(body.alias ?? "") || !["space", "project", "user"].includes(body.scope)) {
+    return c.json({ error_code: "bad_request", message: "Invalid alias or scope" }, 400);
+  }
+  const callerUser = c.req.header("x-naelao-user-id") ?? "";
+  const userId = body.scope === "user" ? callerUser : null;
+  const projectId = body.scope === "project" ? body.project_id ?? null : null;
+  if ((body.scope === "user" && !userId) || (body.scope === "project" && !projectId)) {
+    return c.json({ error_code: "bad_request", message: "Requested scope identity is missing" }, 400);
+  }
+  const server = await c.env.PLATFORM_DB.prepare(
+    "SELECT id FROM mcp_servers WHERE id=? AND tenant_id=? AND space_id=? AND enabled=1"
+  ).bind(body.server_id, tenantId, spaceId).first();
+  if (!server) return c.json({ error_code: "not_found", message: "Connector not found" }, 404);
+  const scopes = [...new Set((body.granted_scopes ?? []).filter((s) => /^[a-z0-9:._-]{1,128}$/i.test(s)))];
+  const id = crypto.randomUUID();
+  try {
+    await c.env.PLATFORM_DB.prepare(
+      `INSERT INTO connector_aliases
+       (id,tenant_id,space_id,alias,scope,project_id,user_id,server_id,granted_scopes_json)
+       VALUES (?,?,?,?,?,?,?,?,?)`
+    ).bind(id, tenantId, spaceId, body.alias, body.scope, projectId, userId, body.server_id, JSON.stringify(scopes)).run();
+  } catch {
+    return c.json({ error_code: "conflict", message: "Alias already exists in this scope" }, 409);
+  }
+  return c.json({ id, alias: body.alias, scope: body.scope, project_id: projectId, user_id: userId, server_id: body.server_id, granted_scopes: scopes }, 201);
+});
+
+app.delete("/v1/spaces/:spaceId/connector-aliases/:aliasId", async (c) => {
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const result = await c.env.PLATFORM_DB.prepare(
+    "DELETE FROM connector_aliases WHERE id=? AND tenant_id=? AND space_id=?"
+  ).bind(c.req.param("aliasId"), tenantId, c.req.param("spaceId")).run();
+  return result.meta.changes === 1 ? c.json({ deleted: true }) : c.json({ error_code: "not_found", message: "Alias not found" }, 404);
+});
+
+// Resolve logical aliases on every call. Explicit personal/project scope never falls back to a
+// broader shared account, and every key includes tenant + space before narrower dimensions.
+app.post("/v1/spaces/:spaceId/connector-aliases/:alias/tools/call", async (c) => {
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const spaceId = c.req.param("spaceId");
+  const projectId = c.req.header("x-naelao-project-id") ?? "";
+  const userId = c.req.header("x-naelao-user-id") ?? "";
+  const requiredScope = c.req.header("x-naelao-connector-scope") ?? "";
+  if (requiredScope && !["space", "project", "user"].includes(requiredScope)) {
+    return c.json({ error_code: "bad_request", message: "Invalid connector scope" }, 400);
+  }
+  const row = await c.env.PLATFORM_DB.prepare(
+    `SELECT server_id, scope, granted_scopes_json FROM connector_aliases
+     WHERE tenant_id=? AND space_id=? AND alias=?
+       AND ((scope='user' AND user_id=?) OR (scope='project' AND project_id=?) OR scope='space')
+       AND (?='' OR scope=?)
+     ORDER BY CASE scope WHEN 'user' THEN 3 WHEN 'project' THEN 2 ELSE 1 END DESC LIMIT 1`
+  ).bind(tenantId, spaceId, c.req.param("alias"), userId, projectId, requiredScope, requiredScope)
+    .first<{ server_id: string; scope: string; granted_scopes_json: string }>();
+  if (!row) return c.json({ error_code: "not_found", message: "Connector alias not found in the requested scope" }, 404);
+  const requiredScopes = (c.req.header("x-naelao-required-scopes") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  const grantedScopes = new Set(JSON.parse(row.granted_scopes_json) as string[]);
+  const missingScopes = requiredScopes.filter((scope) => !grantedScopes.has(scope));
+  if (missingScopes.length) {
+    return c.json({
+      error_code: "incremental_reauthorization_required",
+      card: { type: "incremental_reauthorization", alias: c.req.param("alias"), missing_scopes: missingScopes },
+    }, 409);
+  }
+  const headers = new Headers(c.req.raw.headers);
+  headers.set("x-naelao-connector-scope", row.scope);
+  return app.fetch(new Request(
+    `https://mcp-hub.internal/v1/spaces/${encodeURIComponent(spaceId)}/mcp-servers/${encodeURIComponent(row.server_id)}/tools/call`,
+    { method: "POST", headers, body: await c.req.raw.text() }
+  ), c.env, c.executionCtx);
+});
+
 // POST /v1/spaces/:spaceId/mcp-servers/:serverId/tools/call — proxy a tool call to an MCP server
 // Internal: called by agent runtime
 app.post("/v1/spaces/:spaceId/mcp-servers/:serverId/tools/call", async (c) => {
@@ -741,6 +831,15 @@ app.post("/v1/spaces/:spaceId/mcp-servers/:serverId/tools/call", async (c) => {
       error_code: "reserved_capability",
       message: `Tool '${body.tool_name}' looks like a money-in capability, which is reserved to the prebuilt commerce script.`,
     }, 403);
+  }
+
+  // Scan the serialized structure at the final outbound boundary. Fail closed and never log
+  // payload contents; aliases and custom MCP URLs cannot bypass this centralized gate.
+  const dlp = scrubEgressPayload(body.input);
+  if (dlp.findings.length > 0) {
+    const findings = [...new Set(dlp.findings)];
+    console.warn("[mcp-hub] outbound DLP blocked", { tenantId, spaceId, serverId, toolName: body.tool_name, findings });
+    return c.json({ error_code: "egress_dlp_blocked", message: "Connector payload contains protected data and was not sent", findings }, 422);
   }
 
   // Provider-routed connectors skip SSRF/credential checks — route through provider API.

@@ -594,6 +594,9 @@ importers:
 
   workers/agents:
     dependencies:
+      '@naelao/agent-sdk':
+        specifier: workspace:*
+        version: link:../../packages/agent-sdk
       '@naelao/billing-core':
         specifier: workspace:*
         version: link:../../packages/billing-core
@@ -960,6 +963,9 @@ importers:
 
   workers/mcp-hub:
     dependencies:
+      '@naelao/agent-sdk':
+        specifier: workspace:*
+        version: link:../../packages/agent-sdk
       '@naelao/http':
         specifier: workspace:*
         version: link:../../packages/http
@@ -2380,6 +2386,7 @@ packages:
   '@xmldom/xmldom@0.8.14':
     resolution: {integrity: sha512-T4EDRUBVZYRldYApjEJiU0e1stYWaRAX7CuSnKzrpwdZKo53zGV8/pqfzV6FfwNl9YThD2OumQYvqtvjvgG7aQ==}
     engines: {node: '>=10.0.0'}
+    deprecated: this version has critical issues, please update to the latest version
 
   acorn-walk@8.3.2:
     resolution: {integrity: sha512-cjkyv4OtNCIeqhHrfS81QWXoCBPExR/J62oyEqepVw8WaQeSqpW2uhuLPh1m9eWhDuOo/jUXVTlifvesOWp/4A==}

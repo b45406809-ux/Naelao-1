@@ -7,8 +7,11 @@ import {
   isGitTracked,
   microForkName,
   normalizeWorkspacePath,
+  planEnvironmentHandoff,
   routeRuntime,
+  selectContainerBackend,
   shouldStopContainer,
+  validateCommitMetadata,
 } from "@naelao/agent-sdk";
 import { describe, expect, it } from "vitest";
 
@@ -120,5 +123,23 @@ describe("Launchpad workspace runtime", () => {
       "workspace_state_conflict"
     );
     expect(microForkName("Fix checkout #42")).toBe("avos/task/fix-checkout-42");
+  });
+
+  it("selects container backends and migrates only reproducible source state", () => {
+    expect(selectContainerBackend({ browserAvailable: true })).toBe("webcontainer");
+    expect(selectContainerBackend({ native: true })).toBe("cloudflare");
+    expect(selectContainerBackend({ gpu: true, localTunnelAuthorized: true })).toBe("local");
+    expect(() => selectContainerBackend({ gpu: true })).toThrow("not_authorized");
+    expect(planEnvironmentHandoff("webcontainer", "cloudflare", ["package.json", "package-lock.json", "src/a.ts"]))
+      .toMatchObject({ terminateSource: true, installCommand: "npm ci" });
+    expect(() => planEnvironmentHandoff("webcontainer", "cloudflare", ["package-lock.json", "node_modules/x.js"]))
+      .toThrow("dependency_tree_transfer_denied");
+  });
+
+  it("requires complete reasoning metadata for time-machine commits", () => {
+    expect(validateCommitMetadata({ agentRole: "developer", userGoal: "fix", taskId: "t1", rationale: "test first" }))
+      .toMatchObject({ taskId: "t1" });
+    expect(() => validateCommitMetadata({ agentRole: "", userGoal: "fix", taskId: "t1", rationale: "why" }))
+      .toThrow("commit_metadata_missing:agentRole");
   });
 });

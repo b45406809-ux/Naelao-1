@@ -67,6 +67,7 @@ import { InlineApprovalCard } from "./InlineApprovalCard";
 import { InlineConnectorCard } from "./InlineConnectorCard";
 import { InlineArtifactCard } from "./InlineArtifactCard";
 import { UpgradeDialog } from "./UpgradeDialog";
+import { SecurityBoundaryCard } from "./SecurityBoundaryCard";
 import { ComposerDock } from "./ComposerDock";
 import { CitationBadges } from "./CitationBadge";
 import type { InspectedElement } from "./HtmlPreviewFrame";
@@ -1756,7 +1757,9 @@ export function Chat({
           )}
           {error && (
             <div className="msg-row">
-              <div className="bubble" style={{ color: "#dc2626" }}>
+              {error === "destructive_mutation_denied" || error === "egress_dlp_blocked" ? (
+                <SecurityBoundaryCard code={error} />
+              ) : <div className="bubble" style={{ color: "#dc2626" }}>
                 {error}
                 {/* Show support contact for billing/credit errors so a stuck user always has
                     a path to a human — driven by manifest.legal.support_contact. */}
@@ -1768,7 +1771,7 @@ export function Chat({
                     </a>
                   </span>
                 )}
-              </div>
+              </div>}
             </div>
           )}
           {billingWall && (

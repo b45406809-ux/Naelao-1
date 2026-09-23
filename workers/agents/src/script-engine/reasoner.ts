@@ -63,6 +63,8 @@ export interface ReasonerDeps {
    * which was the literal truth.
    */
   agentPrompt?: string;
+  /** Highest-precedence, versioned human directives loaded from AGENTS.md. */
+  founderDirectives?: string;
   /**
    * WHICH business this run is for — its name, what it sells, and whether setup is finished.
    *
@@ -94,7 +96,7 @@ export function identityDigest(agentPrompt: string): string {
 /** Cap on the agent's own prompt, so an unusually long profile can't crowd out the observation,
  *  the candidates and the conversation on a small-window model. Generous — every profile in
  *  `profiles.ts` today is comfortably inside it. */
-const MAX_AGENT_PROMPT_CHARS = 12_000;
+const MAX_AGENT_PROMPT_CHARS = 10_000;
 
 /**
  * The business, written as prose for the system message rather than as a JSON field.
@@ -150,7 +152,7 @@ function projectBusinessForModel(business: BusinessContext): Omit<BusinessContex
  * it is the part that must be obeyed structurally, and recency helps format compliance on the
  * small open-weight models this platform runs on.
  */
-export function composeSystemPrompt(agentPrompt: string | undefined, business?: BusinessContext): string {
+export function composeSystemPrompt(agentPrompt: string | undefined, business?: BusinessContext, founderDirectives?: string): string {
   const own = (agentPrompt ?? "").trim();
   // The business belongs in the system message, not only in the payload.
   //
@@ -161,7 +163,7 @@ export function composeSystemPrompt(agentPrompt: string | undefined, business?: 
   // schemas, is not somewhere a 70B model reliably looks. It is carried in BOTH places for the
   // same reason the profile is: payload for completeness, system prompt for attention.
   const brief = business ? renderBusinessBrief(business) : "";
-  if (!own) return brief ? `${brief}\n\n---\n\n${DECISION_INSTRUCTIONS}` : DECISION_INSTRUCTIONS;
+  if (!own && !founderDirectives) return brief ? `${DECISION_INSTRUCTIONS}\n\n---\n\n${brief}` : DECISION_INSTRUCTIONS;
   const bounded = own.length > MAX_AGENT_PROMPT_CHARS ? `${own.slice(0, MAX_AGENT_PROMPT_CHARS)}…` : own;
   // Identity, protocol, then identity again in one line.
   //
@@ -174,23 +176,20 @@ export function composeSystemPrompt(agentPrompt: string | undefined, business?: 
   // and echoing the whole thing would double the system message rather than anchor it.
   const firstLine = bounded.split("\n").find((l) => l.trim())?.trim() ?? "";
   const opening = firstLine.length > 240 ? `${firstLine.slice(0, 240)}…` : firstLine;
+  const escapeLayer = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   return [
-    bounded,
-    // The business sits directly after the profile: the profile says what kind of agent this is,
-    // and this says which business that applies to. Both before the protocol, so the protocol
-    // still holds the format-compliance slot at the end.
-    ...(brief ? ["---", brief] : []),
-    "---",
-    DECISION_INSTRUCTIONS,
-    "---",
+    `<kernel>${escapeLayer(DECISION_INSTRUCTIONS)}</kernel>`,
+    `<business_context>${escapeLayer(brief)}</business_context>`,
+    `<soul>${escapeLayer(bounded)}</soul>`,
+    `<founder_directives>${escapeLayer((founderDirectives ?? "").trim())}</founder_directives>`,
     // The closing anchor now carries the business too, for exactly the reason it carries the
     // identity: it is the last thing read, and "which business" was being lost in the same place
     // "who am I" was.
     // The business's NAME only — never `kind`. The template id is an internal slug, and the first
     // live run with it here produced "Pixel Forge Studio, a Whop-webdev-agency", which reads to an
     // owner as jargon. `offering` already carries the human-readable version of the same fact.
-    `REMEMBER WHO YOU ARE: ${opening} Answer as that, always. The action schema above is how you reply, not what you are.` +
-      (business ? ` You are running ${business.name} — name it when you talk about it, and never answer as if you did not know which business this is.` : ""),
+    `REMEMBER WHO YOU ARE: ${escapeLayer(opening)} Answer as that, always. The action schema above is how you reply, not what you are.` +
+      (business ? ` You are running ${escapeLayer(business.name)} — name it when you talk about it, and never answer as if you did not know which business this is.` : ""),
   ].join("\n\n");
 }
 
@@ -864,7 +863,7 @@ export class GatewayReasoner implements Reasoner {
     const query = {
       model: this.deps.model ?? this.deps.ctx.model ?? "claude-haiku-4-5-20251001",
       max_tokens: 1500,
-      system: composeSystemPrompt(this.deps.agentPrompt, this.deps.businessContext),
+      system: composeSystemPrompt(this.deps.agentPrompt, this.deps.businessContext, this.deps.founderDirectives),
       messages: [{ role: "user", content: userContent }],
     };
 
