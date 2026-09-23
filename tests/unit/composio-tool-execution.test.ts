@@ -54,6 +54,14 @@ async function callTool(env: ReturnType<typeof makeEnv>, serverId: string, toolN
   );
 }
 
+async function aliasRequest(env: ReturnType<typeof makeEnv>, path: string, init: RequestInit = {}) {
+  const token = await mintInternalToken(PLATFORM_SECRET, "tenant-1");
+  return mcpHubWorker.fetch(new Request(`https://mcp-hub.naelao.com/v1/spaces/space-1/connector-aliases${path}`, {
+    ...init,
+    headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1", "x-naelao-user-id": "user-1", "x-naelao-internal-token": token, ...init.headers },
+  }), env as never, execCtx);
+}
+
 async function listTools(env: ReturnType<typeof makeEnv>, serverId: string) {
   const token = await mintInternalToken(PLATFORM_SECRET, "tenant-1");
   return mcpHubWorker.fetch(
@@ -68,6 +76,21 @@ const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; });
 
 describe("composio tool execution — real v3 API shape", () => {
+  it("creates, resolves, scope-checks, reauthorizes, and deletes connector aliases", async () => {
+    globalThis.fetch = (async () => Response.json({ data: { id: 9 }, successful: true })) as typeof fetch;
+    const env = makeEnv();
+    await seedComposioServer(env, "srv-alias");
+    const created = await aliasRequest(env, "", { method: "POST", body: JSON.stringify({ alias: "primary_inbox", scope: "user", server_id: "srv-alias", granted_scopes: ["mail:read"] }) });
+    expect(created.status).toBe(201);
+    const row = await created.json() as { id: string };
+    const missing = await aliasRequest(env, "/primary_inbox/tools/call", { method: "POST", headers: { "x-naelao-connector-scope": "user", "x-naelao-required-scopes": "mail:write" }, body: JSON.stringify({ tool_name: "MAIL_SEND", input: {} }) });
+    expect(missing.status).toBe(409);
+    expect(await missing.json()).toMatchObject({ error_code: "incremental_reauthorization_required", card: { missing_scopes: ["mail:write"] } });
+    const listed = await aliasRequest(env, "");
+    expect((await listed.json() as { data: unknown[] }).data).toHaveLength(1);
+    expect((await aliasRequest(env, `/${row.id}`, { method: "DELETE" })).status).toBe(200);
+  });
+
   it("blocks nested sensitive data before any provider request", async () => {
     const calls: unknown[] = [];
     globalThis.fetch = (async (...args: unknown[]) => { calls.push(args); return Response.json({ data: {} }); }) as typeof fetch;

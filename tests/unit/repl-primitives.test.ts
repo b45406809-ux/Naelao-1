@@ -8,7 +8,7 @@
 //     harness has to THROW, not return a normally-shaped failure object, or runTier()'s outer
 //     `if (!result.ok) throw` never fires and the loop reads a genuine failure as a success.
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { r2Workspace } from "../../workers/agents/src/script-engine/prebuilt/r2-workspace.js";
 import { codeExec } from "../../workers/agents/src/script-engine/prebuilt/code-exec.js";
 import { ScriptToolSurface } from "../../workers/agents/src/script-engine/tool-surface.js";
@@ -17,6 +17,7 @@ import { LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED } from "../../workers/agents/
 import type { PrebuiltOpContext } from "../../workers/agents/src/script-engine/prebuilt/index.js";
 import type { ScriptEngineEnv } from "../../workers/agents/src/script-engine/types.js";
 import { mintCapabilityGrant } from "@naelao/agent-sdk";
+import { interceptPlatformCli, parseCliWords } from "../../workers/agents/src/script-engine/virtual-cli.js";
 
 /** A fuller in-memory R2 fake than the size-guard test's own — this one actually supports
  *  prefix-scoped list(), which Grep/Glob need. */
@@ -86,6 +87,35 @@ describe("production WriteGuard wiring", () => {
     expect(accepted.error).not.toBe("destructive_mutation_denied");
     await expect(new ScriptToolSurface({ ...env, projectId: "other" }, ["code-exec"]).run("Bash", { commands: "rm -rf /workspace" }))
       .resolves.toMatchObject({ ok: false, error: "destructive_mutation_denied" });
+  });
+
+  it("fails closed when the durable nonce consumer reports a replay", async () => {
+    const mutationGrant = await mintCapabilityGrant({ subject: "u", resources: ["p"], actions: ["destructive_write"], expiresAt: Date.now() + 10_000, nonce: "used" }, "secret");
+    const env = makeCtx(makeR2(), { platformSecret: "secret", humanInvokerId: "u", projectId: "p", mutationGrant, consumeMutationGrant: async () => false }).env;
+    await expect(new ScriptToolSurface(env, ["code-exec"]).run("Bash", { commands: "rm -rf /workspace" }))
+      .resolves.toMatchObject({ ok: false, error: "destructive_mutation_denied" });
+  });
+});
+
+describe("terminal-native platform CLI", () => {
+  it("parses quotes without evaluating shell expansion", () => {
+    expect(parseCliWords('schedule --cron "0 2 * * *" nightly')).toEqual(["schedule", "--cron", "0 2 * * *", "nightly"]);
+    expect(() => parseCliWords("workflow run $(steal-secret)")).toThrow("unsafe_cli_syntax");
+  });
+
+  it("intercepts workflow, schedule, vision, and scoped extension commands", () => {
+    expect(interceptPlatformCli("workflow run nightly --detach")).toEqual({ operation: "workflow.run", params: { name: "nightly", params: {}, detach: true } });
+    expect(interceptPlatformCli('schedule --cron "0 2 * * *" nightly')).toEqual({ operation: "workflow.schedule", params: { cron: "0 2 * * *", name: "nightly" } });
+    expect(interceptPlatformCli("see https://example.test/dashboard")).toMatchObject({ operation: "browser.screenshot" });
+    expect(interceptPlatformCli("ext:reconcile --month jan")).toEqual({ operation: "reconcile", params: { argv: ["--month", "jan"] } });
+  });
+
+  it("dispatches through the same production operation and authorization surface", async () => {
+    const workflowRun = vi.fn(async (name: string) => ({ id: `wf:${name}` }));
+    const env = makeCtx(makeR2(), { orchestration: { workflowRun } }).env;
+    const result = await new ScriptToolSurface(env, ["dynamic-workflow"]).run("Bash", { command: "workflow run nightly --detach" });
+    expect(result).toMatchObject({ ok: true, output: { id: "wf:nightly" } });
+    expect(workflowRun).toHaveBeenCalledWith("nightly", {});
   });
 });
 

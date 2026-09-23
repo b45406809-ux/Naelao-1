@@ -36,6 +36,7 @@ import {
   type AgentConfig,
 } from "../script-engine/index.js";
 import { createTracer } from "@naelao/tracing";
+import { verifyCapabilityGrant } from "@naelao/agent-sdk";
 import { GatewayReasoner, WorkersAIEmbedder } from "../script-engine/reasoner.js";
 import { resolveAssistantApprovalPlan, type AssistantEffectiveRole } from "../script-engine/assistant-access.js";
 import { buildCodeRunner, type WorkerLoaderBinding } from "../script-engine/code-runner.js";
@@ -1665,6 +1666,29 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // Project-scoped workspace (every thread's agent in a project shares one R2 filesystem)
       // vs. the Space Assistant's space-wide workspace — see workspacePrefix() in types.ts.
       ...(projectId ? { projectId } : {}),
+    };
+    env.consumeMutationGrant = async () => {
+      if (!env.mutationGrant) return false;
+      const grant = await verifyCapabilityGrant(env.mutationGrant, this.env.PLATFORM_SECRET, {
+        subject: env.humanInvokerId ?? "system",
+        resource: projectId ?? spaceId,
+        action: "destructive_write",
+      });
+      if (!grant) return false;
+      this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS consumed_capability_nonces (
+        nonce TEXT PRIMARY KEY, subject_id TEXT NOT NULL, resource_id TEXT NOT NULL,
+        consumed_at TEXT NOT NULL, expires_at INTEGER NOT NULL
+      )`);
+      this.ctx.storage.sql.exec("DELETE FROM consumed_capability_nonces WHERE expires_at <= ?", Date.now());
+      try {
+        this.ctx.storage.sql.exec(
+          "INSERT INTO consumed_capability_nonces (nonce,subject_id,resource_id,consumed_at,expires_at) VALUES (?,?,?,?,?)",
+          grant.nonce, grant.subject, projectId ?? spaceId, new Date().toISOString(), grant.expiresAt
+        );
+        return true;
+      } catch {
+        return false;
+      }
     };
     if (this.env.SCRIPTS_VECTORIZE) {
       env.vectorIndex = this.env.SCRIPTS_VECTORIZE as unknown as NonNullable<ScriptEngineEnv["vectorIndex"]>;
@@ -3356,6 +3380,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // The agent's OWN identity and instructions. Loaded from R2 on every run since the script
       // engine was built, and never once handed to the model — see ReasonerDeps.agentPrompt.
       ...(config.systemPrompt ? { agentPrompt: config.systemPrompt } : {}),
+      ...(config.agentsMd ? { founderDirectives: config.agentsMd } : {}),
       // WHICH business this run is for. Resolved by index.ts from the space row it already
       // fetches; omitted entirely when the caller never resolved one.
       ...(body.businessContext ? { businessContext: body.businessContext } : {}),
