@@ -34,7 +34,11 @@ describe("Launchpad workspace runtime", () => {
       defineLaunchpadSpace({ id: "bad", depth: 1, parentId: null })
     ).toThrow();
     expect(() =>
-      defineLaunchpadSpace({ id: "grandchild", depth: 2 as 1, parentId: legal.id })
+      defineLaunchpadSpace({
+        id: "grandchild",
+        depth: 2 as 1,
+        parentId: legal.id,
+      })
     ).toThrow("root and one department level");
   });
 
@@ -83,10 +87,24 @@ describe("Launchpad workspace runtime", () => {
     );
     expect(isGitTracked("/.avos/shared/skills/a.ts")).toBe(false);
     expect(() => normalizeWorkspacePath("/etc/passwd")).toThrow();
-    expect(() => normalizeWorkspacePath("/workspace/../.avos/secrets"))
-      .toThrow("cannot be mixed");
-    expect(() => normalizeWorkspacePath("/.avos/../workspace/source"))
-      .toThrow("cannot be mixed");
+    expect(() => normalizeWorkspacePath("/workspace/../.avos/secrets")).toThrow(
+      "cannot be mixed"
+    );
+    expect(() => normalizeWorkspacePath("/.avos/../workspace/source")).toThrow(
+      "cannot be mixed"
+    );
+    expect(() =>
+      normalizeWorkspacePath("/workspace/%2e%2e/.avos/secrets")
+    ).toThrow("Encoded workspace path components");
+    expect(() =>
+      normalizeWorkspacePath("/workspace/%252e%252e%252f.avo%73/secrets")
+    ).toThrow("Encoded workspace path components");
+    expect(() =>
+      normalizeWorkspacePath("/workspace\\..\\.avos\\secrets")
+    ).toThrow("invalid characters");
+    expect(() =>
+      normalizeWorkspacePath("/workspace/report.csv\0ignored")
+    ).toThrow("invalid characters");
   });
 
   it("routes the six-tier ladder without exposing tier selection", () => {
@@ -126,20 +144,47 @@ describe("Launchpad workspace runtime", () => {
   });
 
   it("selects container backends and migrates only reproducible source state", () => {
-    expect(selectContainerBackend({ browserAvailable: true })).toBe("webcontainer");
+    expect(selectContainerBackend({ browserAvailable: true })).toBe(
+      "webcontainer"
+    );
     expect(selectContainerBackend({ native: true })).toBe("cloudflare");
-    expect(selectContainerBackend({ gpu: true, localTunnelAuthorized: true })).toBe("local");
-    expect(() => selectContainerBackend({ gpu: true })).toThrow("not_authorized");
-    expect(planEnvironmentHandoff("webcontainer", "cloudflare", ["package.json", "package-lock.json", "src/a.ts"]))
-      .toMatchObject({ terminateSource: true, installCommand: "npm ci" });
-    expect(() => planEnvironmentHandoff("webcontainer", "cloudflare", ["package-lock.json", "node_modules/x.js"]))
-      .toThrow("dependency_tree_transfer_denied");
+    expect(
+      selectContainerBackend({ gpu: true, localTunnelAuthorized: true })
+    ).toBe("local");
+    expect(() => selectContainerBackend({ gpu: true })).toThrow(
+      "not_authorized"
+    );
+    expect(
+      planEnvironmentHandoff("webcontainer", "cloudflare", [
+        "package.json",
+        "package-lock.json",
+        "src/a.ts",
+      ])
+    ).toMatchObject({ terminateSource: true, installCommand: "npm ci" });
+    expect(() =>
+      planEnvironmentHandoff("webcontainer", "cloudflare", [
+        "package-lock.json",
+        "node_modules/x.js",
+      ])
+    ).toThrow("dependency_tree_transfer_denied");
   });
 
   it("requires complete reasoning metadata for time-machine commits", () => {
-    expect(validateCommitMetadata({ agentRole: "developer", userGoal: "fix", taskId: "t1", rationale: "test first" }))
-      .toMatchObject({ taskId: "t1" });
-    expect(() => validateCommitMetadata({ agentRole: "", userGoal: "fix", taskId: "t1", rationale: "why" }))
-      .toThrow("commit_metadata_missing:agentRole");
+    expect(
+      validateCommitMetadata({
+        agentRole: "developer",
+        userGoal: "fix",
+        taskId: "t1",
+        rationale: "test first",
+      })
+    ).toMatchObject({ taskId: "t1" });
+    expect(() =>
+      validateCommitMetadata({
+        agentRole: "",
+        userGoal: "fix",
+        taskId: "t1",
+        rationale: "why",
+      })
+    ).toThrow("commit_metadata_missing:agentRole");
   });
 });

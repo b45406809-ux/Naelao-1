@@ -748,6 +748,10 @@ app.post("/v1/spaces/:spaceId/connector-aliases", async (c) => {
   } catch {
     return c.json({ error_code: "conflict", message: "Alias already exists in this scope" }, 409);
   }
+  await c.env.PLATFORM_DB.prepare(
+    `INSERT INTO connector_alias_audit (id,tenant_id,space_id,alias_id,alias,action,actor_id,project_id)
+     VALUES (?,?,?,?,?,'created',?,?)`
+  ).bind(crypto.randomUUID(), tenantId, spaceId, id, body.alias, callerUser || "system", projectId).run();
   return c.json({ id, alias: body.alias, scope: body.scope, project_id: projectId, user_id: userId, server_id: body.server_id, granted_scopes: scopes }, 201);
 });
 
@@ -773,23 +777,31 @@ app.post("/v1/spaces/:spaceId/connector-aliases/:alias/tools/call", async (c) =>
     return c.json({ error_code: "bad_request", message: "Invalid connector scope" }, 400);
   }
   const row = await c.env.PLATFORM_DB.prepare(
-    `SELECT server_id, scope, granted_scopes_json FROM connector_aliases
+    `SELECT id, server_id, scope, granted_scopes_json FROM connector_aliases
      WHERE tenant_id=? AND space_id=? AND alias=?
        AND ((scope='user' AND user_id=?) OR (scope='project' AND project_id=?) OR scope='space')
        AND (?='' OR scope=?)
      ORDER BY CASE scope WHEN 'user' THEN 3 WHEN 'project' THEN 2 ELSE 1 END DESC LIMIT 1`
   ).bind(tenantId, spaceId, c.req.param("alias"), userId, projectId, requiredScope, requiredScope)
-    .first<{ server_id: string; scope: string; granted_scopes_json: string }>();
+    .first<{ id: string; server_id: string; scope: string; granted_scopes_json: string }>();
   if (!row) return c.json({ error_code: "not_found", message: "Connector alias not found in the requested scope" }, 404);
   const requiredScopes = (c.req.header("x-naelao-required-scopes") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   const grantedScopes = new Set(JSON.parse(row.granted_scopes_json) as string[]);
   const missingScopes = requiredScopes.filter((scope) => !grantedScopes.has(scope));
   if (missingScopes.length) {
+    await c.env.PLATFORM_DB.prepare(
+      `INSERT INTO connector_alias_audit (id,tenant_id,space_id,alias_id,alias,action,actor_id,project_id)
+       VALUES (?,?,?,?,?,'scope_denied',?,?)`
+    ).bind(crypto.randomUUID(), tenantId, spaceId, row.id, c.req.param("alias"), userId || "system", projectId || null).run();
     return c.json({
       error_code: "incremental_reauthorization_required",
       card: { type: "incremental_reauthorization", alias: c.req.param("alias"), missing_scopes: missingScopes },
     }, 409);
   }
+  await c.env.PLATFORM_DB.prepare(
+    `INSERT INTO connector_alias_audit (id,tenant_id,space_id,alias_id,alias,action,actor_id,project_id)
+     VALUES (?,?,?,?,?,'called',?,?)`
+  ).bind(crypto.randomUUID(), tenantId, spaceId, row.id, c.req.param("alias"), userId || "system", projectId || null).run();
   const headers = new Headers(c.req.raw.headers);
   headers.set("x-naelao-connector-scope", row.scope);
   return app.fetch(new Request(

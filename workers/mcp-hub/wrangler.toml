@@ -53,6 +53,11 @@ PIPEDREAM_ENVIRONMENT = "development"
 [env.staging]
 vars = { ENVIRONMENT = "staging", PIPEDREAM_ENVIRONMENT = "development" }
 
+[[env.staging.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+
 [[env.staging.services]]
 binding = "CREDENTIALS_WORKER"
 service = "naelao-credentials"
@@ -67,6 +72,11 @@ service = "naelao-billing"
 
 [env.production]
 vars = { ENVIRONMENT = "production", PIPEDREAM_ENVIRONMENT = "production" }
+
+[[env.production.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 
 [[env.production.services]]
 binding = "CREDENTIALS_WORKER"

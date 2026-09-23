@@ -30,7 +30,9 @@ export function defineLaunchpadSpace(
   // Keep the runtime check even though SpaceDepth is a union: JSON and database values cross
   // this boundary without TypeScript's protection.
   if (input.depth !== 0 && input.depth !== 1)
-    throw new Error("Launchpad spaces are limited to a root and one department level");
+    throw new Error(
+      "Launchpad spaces are limited to a root and one department level"
+    );
   if (input.depth === 0 && input.parentId !== null)
     throw new Error("Root spaces cannot have a parent");
   if (input.depth === 1 && !input.parentId)
@@ -108,11 +110,14 @@ export interface CommitMetadata {
   rationale: string;
 }
 
-export function validateCommitMetadata(metadata: CommitMetadata): CommitMetadata {
+export function validateCommitMetadata(
+  metadata: CommitMetadata
+): CommitMetadata {
   for (const [field, value] of Object.entries(metadata)) {
     if (typeof value !== "string" || !value.trim())
       throw new Error(`commit_metadata_missing:${field}`);
-    if (value.length > 2_048) throw new Error(`commit_metadata_too_large:${field}`);
+    if (value.length > 2_048)
+      throw new Error(`commit_metadata_too_large:${field}`);
   }
   return Object.freeze({ ...metadata });
 }
@@ -137,6 +142,31 @@ export interface ArtifactRepository {
 }
 
 export function normalizeWorkspacePath(path: string): string {
+  if (
+    !path ||
+    path.includes("\\") ||
+    [...path].some((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return code <= 31 || code === 127;
+    })
+  )
+    throw new Error("Workspace path contains invalid characters");
+  // Adapters must receive one canonical representation. Reject encoded separators and dot
+  // segments rather than letting an HTTP/FUSE adapter decode them after this boundary check.
+  // Double decoding is intentionally covered as well (for example %252e%252e%252f).
+  let decoded = path;
+  for (let pass = 0; pass < 2; pass += 1) {
+    let next: string;
+    try {
+      next = decodeURIComponent(decoded);
+    } catch {
+      throw new Error("Workspace path contains invalid encoding");
+    }
+    if (next === decoded) break;
+    decoded = next;
+  }
+  if (decoded !== path && /(?:^|[\\/])\.\.?(?:[\\/]|$)|[\\/]/.test(decoded))
+    throw new Error("Encoded workspace path components are not allowed");
   const absolute = path.startsWith("/") ? path : `${WORKSPACE_ROOT}/${path}`;
   const requestedRoot =
     absolute === WORKSPACE_ROOT || absolute.startsWith(`${WORKSPACE_ROOT}/`)
@@ -302,12 +332,16 @@ export interface ContainerRequirements {
 }
 
 /** Selects a Tier 6 backend without exposing backend controls to the model. */
-export function selectContainerBackend(input: ContainerRequirements): ContainerBackend {
+export function selectContainerBackend(
+  input: ContainerRequirements
+): ContainerBackend {
   if (input.gpu) {
-    if (!input.localTunnelAuthorized) throw new Error("local_tunnel_not_authorized");
+    if (!input.localTunnelAuthorized)
+      throw new Error("local_tunnel_not_authorized");
     return "local";
   }
-  if (!input.native && !input.confidential && input.browserAvailable) return "webcontainer";
+  if (!input.native && !input.confidential && input.browserAvailable)
+    return "webcontainer";
   return "cloudflare";
 }
 
@@ -331,7 +365,13 @@ export function planEnvironmentHandoff(
     throw new Error("dependency_tree_transfer_denied");
   if (!normalized.some((path) => /\/package(?:-lock)?\.json$/.test(path)))
     throw new Error("handoff_lockfiles_required");
-  return { source, target, files: normalized, terminateSource: true, installCommand: "npm ci" };
+  return {
+    source,
+    target,
+    files: normalized,
+    terminateSource: true,
+    installCommand: "npm ci",
+  };
 }
 export function shouldStopContainer(
   lease: ContainerLease,

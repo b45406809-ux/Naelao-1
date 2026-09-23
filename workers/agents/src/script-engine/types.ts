@@ -389,6 +389,8 @@ export interface TieredCodeRunner {
      *  ctx.mcp loopback (mcp-hub is HMAC-gated) without ever exposing the platform secret itself
      *  to the isolate. */
     tenantId: string;
+    /** Original human invoker, preserved for user-private connector resolution. */
+    userId?: string;
     /** §A1.17 Phase K: which R2 workspace (see workspacePrefix()) a Tier 5 container syncs
      *  files with — project-scoped when set, space-scoped (the Space Assistant) when absent.
      *  Only consumed by Tier 5 today; Tiers 2-4 don't touch a filesystem. */

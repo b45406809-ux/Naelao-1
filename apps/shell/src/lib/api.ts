@@ -2227,6 +2227,30 @@ export async function getConnectorStatus(spaceId: string, session: SessionCreden
   return res.connectors ?? [];
 }
 
+export interface ConnectorAlias {
+  id: string;
+  alias: string;
+  scope: "space" | "project" | "user";
+  project_id: string | null;
+  user_id: string | null;
+  server_id: string;
+  granted_scopes_json: string;
+  updated_at: string;
+}
+
+export async function getConnectorAliases(spaceId: string, session: SessionCredentials): Promise<ConnectorAlias[]> {
+  const res = await apiFetch<{ data?: ConnectorAlias[] }>(`/v1/spaces/${spaceId}/connector-aliases`, { session });
+  return res.data ?? [];
+}
+
+export async function createConnectorAlias(spaceId: string, input: { alias: string; scope: "space" | "project" | "user"; connector_name: string; project_id?: string; granted_scopes?: string[] }, session: SessionCredentials): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/connector-aliases`, { method: "POST", body: JSON.stringify(input), session });
+}
+
+export async function deleteConnectorAlias(spaceId: string, aliasId: string, session: SessionCredentials): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/connector-aliases/${aliasId}`, { method: "DELETE", session });
+}
+
 /** One app from the full provider directory (every Composio toolkit + Pipedream app), as opposed
  *  to the curated catalogue `ConnectorInfo` describes. `curated_as` means we already ship a
  *  purpose-built connector for it — the UI should point there instead. */

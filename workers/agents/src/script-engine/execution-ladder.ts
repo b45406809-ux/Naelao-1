@@ -125,6 +125,7 @@ export async function runStoredScript(
       spaceId: env.spaceId,
       agentId: env.agentId,
       tenantId: env.tenantId,
+      ...(env.humanInvokerId ? { userId: env.humanInvokerId } : {}),
       ...(env.projectId ? { projectId: env.projectId } : {}),
       ...(script.metadata.container_image ? { containerImage: script.metadata.container_image } : {}),
     });

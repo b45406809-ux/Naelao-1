@@ -206,7 +206,8 @@ describe("memory-os — episodic notes + semantic recall", () => {
       query: vi.fn().mockResolvedValue({
         matches: [
           { id: "sem1", score: 0.9, metadata: { text: "long-term insight", userId: "alice" } },
-          { id: "sem2", score: 0.5, metadata: { text: "below floor, excluded" } }, // < 0.72 floor
+          { id: "sem2", score: 0.8, metadata: { text: "at floor, excluded" } },
+          { id: "sem3", score: 0.800_001, metadata: { text: "above floor, included", userId: "alice" } },
         ],
       }),
       deleteByIds: vi.fn(),
@@ -214,7 +215,8 @@ describe("memory-os — episodic notes + semantic recall", () => {
     const store = buildMemoryStore({ sql, spaceId: "space1", vectorIndex, embedder });
     const results = await store.recall({ userId: "alice", text: "insight" });
     expect(results.some((r) => r.layer === "semantic" && r.text === "long-term insight")).toBe(true);
-    expect(results.some((r) => r.text === "below floor, excluded")).toBe(false);
+    expect(results.some((r) => r.text === "at floor, excluded")).toBe(false);
+    expect(results.some((r) => r.text === "above floor, included")).toBe(true);
   });
 });
 

@@ -176,3 +176,9 @@ config needed to use it.
 
 `PLATFORM_SECRET`, `JWT_SECRET` (router/auth), `ANTHROPIC_API_KEY` (agents), Stripe keys
 (builder-plan billing alternative) — unchanged by this work.
+# Runtime connector secrets
+
+For staging and production, rotate `PLATFORM_SECRET` as a coordinated deployment of router,
+agents, credentials, security-gateway, and MCP hub. Install optional Composio/Pipedream secrets
+directly on the MCP hub. Verify an alias call succeeds and that an alias from another tenant
+returns `404` before promoting the deployment.
