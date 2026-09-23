@@ -22,6 +22,7 @@ const MIGRATIONS = [
   readFileSync(join(__dirname, "../../infra/migrations/0012_mcp_servers.sql"), "utf8"),
   readFileSync(join(__dirname, "../../infra/migrations/0037_mcp_servers_auth.sql"), "utf8"),
   readFileSync(join(__dirname, "../../infra/migrations/0060_mcp_server_connector_provider.sql"), "utf8"),
+  readFileSync(join(__dirname, "../../infra/migrations/0075_phase1_runtime_security.sql"), "utf8"),
 ];
 
 function makeEnv(overrides: Record<string, unknown> = {}) {
@@ -67,6 +68,17 @@ const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; });
 
 describe("composio tool execution — real v3 API shape", () => {
+  it("blocks nested sensitive data before any provider request", async () => {
+    const calls: unknown[] = [];
+    globalThis.fetch = (async (...args: unknown[]) => { calls.push(args); return Response.json({ data: {} }); }) as typeof fetch;
+    const env = makeEnv();
+    await seedComposioServer(env, "srv-dlp");
+    const res = await callTool(env, "srv-dlp", "DISCORD_SEND_MESSAGE", { nested: { ssn: "123-45-6789" } });
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({ error_code: "egress_dlp_blocked", findings: ["ssn"] });
+    expect(calls).toHaveLength(0);
+  });
+
   it("calls POST /api/v3/tools/execute/:tool_slug with connected_account_id + arguments, not the dead v2 path", async () => {
     const calls: { url: string; method: string; body: unknown; headers: Record<string, string> }[] = [];
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {

@@ -108,6 +108,15 @@ export interface CommitMetadata {
   rationale: string;
 }
 
+export function validateCommitMetadata(metadata: CommitMetadata): CommitMetadata {
+  for (const [field, value] of Object.entries(metadata)) {
+    if (typeof value !== "string" || !value.trim())
+      throw new Error(`commit_metadata_missing:${field}`);
+    if (value.length > 2_048) throw new Error(`commit_metadata_too_large:${field}`);
+  }
+  return Object.freeze({ ...metadata });
+}
+
 export interface ArtifactCommit {
   oid: string;
   parentOid?: string;
@@ -211,7 +220,9 @@ export async function commitToolTurn(
   turn: number,
   metadata: CommitMetadata
 ): Promise<ArtifactCommit> {
-  return repo.commit(`turn ${turn}: ${metadata.userGoal}`, metadata);
+  if (!Number.isSafeInteger(turn) || turn < 0) throw new Error("invalid_turn");
+  const verified = validateCommitMetadata(metadata);
+  return repo.commit(`turn ${turn}: ${verified.userGoal}`, verified);
 }
 
 // ── Invisible compute hypervisor ─────────────────────────────────────────────
@@ -279,6 +290,48 @@ export function routeRuntime(intent: RuntimeIntent): RuntimeRoute {
 export interface ContainerLease {
   projectId: string;
   lastUsedAt: number;
+}
+
+export type ContainerBackend = "webcontainer" | "cloudflare" | "local";
+export interface ContainerRequirements {
+  native?: boolean;
+  gpu?: boolean;
+  confidential?: boolean;
+  browserAvailable?: boolean;
+  localTunnelAuthorized?: boolean;
+}
+
+/** Selects a Tier 6 backend without exposing backend controls to the model. */
+export function selectContainerBackend(input: ContainerRequirements): ContainerBackend {
+  if (input.gpu) {
+    if (!input.localTunnelAuthorized) throw new Error("local_tunnel_not_authorized");
+    return "local";
+  }
+  if (!input.native && !input.confidential && input.browserAvailable) return "webcontainer";
+  return "cloudflare";
+}
+
+export interface EnvironmentHandoff {
+  source: ContainerBackend;
+  target: ContainerBackend;
+  files: string[];
+  terminateSource: boolean;
+  installCommand: "npm ci";
+}
+
+/** Only source and lockfiles cross runtime boundaries; dependency trees never do. */
+export function planEnvironmentHandoff(
+  source: ContainerBackend,
+  target: ContainerBackend,
+  files: string[]
+): EnvironmentHandoff {
+  if (source === target) throw new Error("handoff_requires_distinct_backends");
+  const normalized = files.map(normalizeWorkspacePath);
+  if (normalized.some((path) => /(^|\/)node_modules(\/|$)/.test(path)))
+    throw new Error("dependency_tree_transfer_denied");
+  if (!normalized.some((path) => /\/package(?:-lock)?\.json$/.test(path)))
+    throw new Error("handoff_lockfiles_required");
+  return { source, target, files: normalized, terminateSource: true, installCommand: "npm ci" };
 }
 export function shouldStopContainer(
   lease: ContainerLease,
