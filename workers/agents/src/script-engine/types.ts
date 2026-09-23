@@ -805,6 +805,9 @@ export interface ScriptEngineEnv {
    *  @naelao/http. Optional so environments that never make such a call (most script tests)
    *  don't need to supply it. */
   platformSecret?: string;
+  /** Signed grant and immutable human subject for destructive operations. */
+  mutationGrant?: string;
+  humanInvokerId?: string;
   /** The end-user this run is on behalf of (set per /script/run call). Scopes the user model
    *  (Memory OS) and per-(channel,user) sessions. Absent for space-level/system-triggered runs. */
   userId?: string;

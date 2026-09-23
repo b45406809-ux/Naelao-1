@@ -3184,6 +3184,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
        *  own stored productConfig.modelConfig.progressiveToolDisclosure; defaults to false/full
        *  disclosure when neither is set, so every existing run is unaffected. */
       progressiveToolDisclosure?: boolean;
+      mutationGrant?: string;
     }>();
 
     // Also accept spaceId / agentId / tenantId from internal request headers (set by billing/triggers)
@@ -3249,6 +3250,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!engineEnv) {
       return Response.json({ error: "script engine unavailable: SCRIPTS_R2 not bound" }, { status: 503 });
     }
+    engineEnv.humanInvokerId = userId ?? "system";
+    const mutationGrant = request.headers.get("x-naelao-mutation-grant") ?? body.mutationGrant;
+    if (mutationGrant) engineEnv.mutationGrant = mutationGrant;
     // §A1 connector default-vs-personal switch: read once per run, best-effort — a failure or an
     // empty map both mean "resolve as business" (today's implicit default), never blocks the run.
     engineEnv.connectorAccountMode = await this.fetchConnectorAccountMode(spaceId, sessionId, tenantId);

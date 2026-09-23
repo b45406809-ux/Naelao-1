@@ -10,6 +10,7 @@
     "deploy:production": "wrangler deploy --env production"
   },
   "dependencies": {
+    "@naelao/agent-sdk": "workspace:*",
     "@naelao/types": "workspace:*",
     "@naelao/http": "workspace:*",
     "@naelao/security": "workspace:*",

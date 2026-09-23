@@ -16,6 +16,7 @@ import { isReadSafeOperation } from "../../workers/agents/src/script-engine/assi
 import { LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED } from "../../workers/agents/src/script-engine/profiles.js";
 import type { PrebuiltOpContext } from "../../workers/agents/src/script-engine/prebuilt/index.js";
 import type { ScriptEngineEnv } from "../../workers/agents/src/script-engine/types.js";
+import { mintCapabilityGrant } from "@naelao/agent-sdk";
 
 /** A fuller in-memory R2 fake than the size-guard test's own — this one actually supports
  *  prefix-scoped list(), which Grep/Glob need. */
@@ -70,6 +71,23 @@ const Edit = r2Workspace.operations["Edit"]!;
 const Write = r2Workspace.operations["Write"]!;
 const Grep = r2Workspace.operations["Grep"]!;
 const Glob = r2Workspace.operations["Glob"]!;
+
+describe("production WriteGuard wiring", () => {
+  it("denies destructive Bash without a resource-bound grant", async () => {
+    const env = makeCtx(makeR2(), { platformSecret: "secret", humanInvokerId: "u", projectId: "p" }).env;
+    await expect(new ScriptToolSurface(env, ["code-exec"]).run("Bash", { commands: "rm -rf /workspace" }))
+      .resolves.toMatchObject({ ok: false, error: "destructive_mutation_denied" });
+  });
+
+  it("accepts a matching signed grant and rejects it for another project", async () => {
+    const mutationGrant = await mintCapabilityGrant({ subject: "u", resources: ["p"], actions: ["destructive_write"], expiresAt: Date.now() + 10_000, nonce: "n" }, "secret");
+    const env = makeCtx(makeR2(), { platformSecret: "secret", humanInvokerId: "u", projectId: "p", mutationGrant }).env;
+    const accepted = await new ScriptToolSurface(env, ["code-exec"]).run("Bash", { commands: "rm -rf /workspace" });
+    expect(accepted.error).not.toBe("destructive_mutation_denied");
+    await expect(new ScriptToolSurface({ ...env, projectId: "other" }, ["code-exec"]).run("Bash", { commands: "rm -rf /workspace" }))
+      .resolves.toMatchObject({ ok: false, error: "destructive_mutation_denied" });
+  });
+});
 
 describe("Read — line-windowed view", () => {
   it("returns line-numbered content for a small file", async () => {

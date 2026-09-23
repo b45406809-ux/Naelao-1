@@ -35,6 +35,7 @@ async function hmac(secret: string, value: string): Promise<string> {
 // Features 21, 25, 26, 28: credentials remain beyond the script boundary.
 export type ConnectorScope = "space" | "project" | "user";
 export interface ConnectorBinding {
+  tenantId: string;
   alias: string;
   connectorId: string;
   scope: ConnectorScope;
@@ -49,11 +50,18 @@ export class ConnectorBindingMatrix {
 
   resolve(
     alias: string,
-    context: { spaceId: string; projectId?: string; userId?: string }
+    context: {
+      tenantId: string;
+      spaceId: string;
+      projectId?: string;
+      userId?: string;
+    }
   ): ConnectorBinding | null {
     const candidates = this.bindings.filter(
       (binding) =>
-        binding.alias === alias && binding.spaceId === context.spaceId
+        binding.alias === alias &&
+        binding.tenantId === context.tenantId &&
+        binding.spaceId === context.spaceId
     );
     return (
       candidates.find(
@@ -124,7 +132,28 @@ const DESTRUCTIVE_PATTERNS = [
 ];
 
 export function requiresMutationGrant(command: string): boolean {
-  return DESTRUCTIVE_PATTERNS.some((pattern) => pattern.test(command));
+  const candidates = [command];
+  try {
+    candidates.push(decodeURIComponent(command));
+  } catch {
+    /* malformed input remains suspicious below */
+  }
+  for (const token of command.split(/\s+/)) {
+    if (/^[A-Za-z0-9+/]{12,}={0,2}$/.test(token)) {
+      try {
+        candidates.push(
+          new TextDecoder().decode(
+            Uint8Array.from(atob(token), (c) => c.charCodeAt(0))
+          )
+        );
+      } catch {
+        /* not base64 */
+      }
+    }
+  }
+  return candidates.some((candidate) =>
+    DESTRUCTIVE_PATTERNS.some((pattern) => pattern.test(candidate))
+  );
 }
 
 export interface CapabilityGrant {
@@ -158,9 +187,20 @@ export async function verifyCapabilityGrant(
     signature !== (await hmac(secret, payload))
   )
     return null;
-  const grant = JSON.parse(
-    new TextDecoder().decode(base64UrlToBytes(payload))
-  ) as CapabilityGrant;
+  let grant: CapabilityGrant;
+  try {
+    grant = JSON.parse(
+      new TextDecoder().decode(base64UrlToBytes(payload))
+    ) as CapabilityGrant;
+  } catch {
+    return null;
+  }
+  if (
+    !Array.isArray(grant.resources) ||
+    !Array.isArray(grant.actions) ||
+    !grant.nonce
+  )
+    return null;
   if (grant.expiresAt <= now || grant.subject !== requirement.subject)
     return null;
   if (
@@ -199,9 +239,30 @@ export interface VirtualCommandStore {
   put(name: string, source: string): Promise<void>;
 }
 
+export interface VirtualCliScope {
+  tenantId: string;
+  spaceId: string;
+  projectId?: string;
+  userId?: string;
+}
+
 export class VirtualCli {
   private readonly commands = new Map<string, VirtualCommandHandler>();
-  constructor(private readonly store?: VirtualCommandStore) {}
+  constructor(
+    private readonly store?: VirtualCommandStore,
+    private readonly scope?: VirtualCliScope
+  ) {}
+  private storageName(name: string): string {
+    if (!this.scope) return name;
+    const { tenantId, spaceId, projectId = "_", userId = "_" } = this.scope;
+    if (
+      ![tenantId, spaceId, projectId, userId].every((v) =>
+        /^[A-Za-z0-9_-]+$/.test(v)
+      )
+    )
+      throw new Error("invalid_cli_scope");
+    return `${tenantId}:${spaceId}:${projectId}:${userId}:${name}`;
+  }
   register(name: string, handler: VirtualCommandHandler): void {
     if (!/^[a-z][a-z0-9_-]*$/i.test(name))
       throw new Error("invalid_command_name");
@@ -215,7 +276,7 @@ export class VirtualCli {
     if (source.length > 4_096 || /\b(eval|Function|import\s*\()\b/.test(source))
       throw new Error("unsafe_synthesized_command");
     this.register(name, handler);
-    await this.store?.put(name, source);
+    await this.store?.put(this.storageName(name), source);
   }
   async run(command: string, args: string[] = []): Promise<unknown> {
     const handler = this.commands.get(command);
@@ -278,6 +339,7 @@ export interface DelegationClaim extends CapabilityGrant {
   initiatorUserId: string;
   roleRank: number;
   parentTaskId?: string;
+  depth: number;
 }
 export async function mintDelegation(
   claim: DelegationClaim,
@@ -291,6 +353,8 @@ export function attenuateDelegation(
   child: Omit<DelegationClaim, "initiatorUserId" | "roleRank">
 ): DelegationClaim {
   if (
+    parent.depth >= 3 ||
+    child.depth !== parent.depth + 1 ||
     child.expiresAt > parent.expiresAt ||
     child.resources.some((value) => !parent.resources.includes(value)) ||
     child.actions.some((value) => !parent.actions.includes(value))
@@ -384,6 +448,17 @@ export function scrubEgress(value: string): {
   return { value: scrubbed, findings };
 }
 
+/** Serializes first so secrets hidden in nested connector payloads cannot bypass DLP. */
+export function scrubEgressPayload(value: unknown): {
+  value: unknown;
+  findings: string[];
+} {
+  const encoded = JSON.stringify(value);
+  if (encoded === undefined) throw new Error("egress_payload_not_serializable");
+  const result = scrubEgress(encoded);
+  return { value: JSON.parse(result.value), findings: result.findings };
+}
+
 // Features 40-41: deterministic prompt assembly and role firewall.
 export interface PromptLayers {
   kernel: string;
@@ -391,8 +466,20 @@ export interface PromptLayers {
   soul: string;
   founderDirectives: string;
 }
+function escapePromptLayer(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
 export function assembleSystemPrompt(layers: PromptLayers): string {
-  return `<kernel>${layers.kernel}</kernel>\n<business_context>${layers.business}</business_context>\n<soul>${layers.soul}</soul>\n<founder_directives>${layers.founderDirectives}</founder_directives>`;
+  return `<kernel>${escapePromptLayer(layers.kernel)}</kernel>\n<business_context>${escapePromptLayer(layers.business)}</business_context>\n<soul>${escapePromptLayer(layers.soul)}</soul>\n<founder_directives>${escapePromptLayer(layers.founderDirectives)}</founder_directives>`;
+}
+export function enforceAgentFirewall(
+  tool: string,
+  allowed: ReadonlySet<string>
+): void {
+  if (!allowed.has(tool)) throw new Error(`agent_firewall_denied:${tool}`);
 }
 export function applyAgentFirewall<T extends { name: string }>(
   tools: T[],
@@ -426,6 +513,30 @@ export function validateTaskDag(tasks: DagTask[]): void {
     visited.add(id);
   };
   for (const task of tasks) visit(task.id);
+}
+
+export function runnableDagTasks(tasks: DagTask[]): DagTask[] {
+  validateTaskDag(tasks);
+  const complete = new Set(
+    tasks.filter((task) => task.status === "complete").map((task) => task.id)
+  );
+  return tasks.filter(
+    (task) =>
+      task.status === "pending" &&
+      task.dependencies.every((id) => complete.has(id))
+  );
+}
+
+/** Hard worker envelope; callers cannot silently spill a planner transcript into workers. */
+export function enforceWorkerContext(text: string, maxTokens = 2_000): string {
+  if (!Number.isSafeInteger(maxTokens) || maxTokens < 1 || maxTokens > 2_000)
+    throw new Error("invalid_worker_token_budget");
+  const estimatedTokens = Math.ceil(
+    new TextEncoder().encode(text).byteLength / 4
+  );
+  if (estimatedTokens > maxTokens)
+    throw new Error("worker_context_budget_exceeded");
+  return text;
 }
 
 export interface MemoryChunk {

@@ -30,6 +30,7 @@ import { runStoredScript } from "./execution-ladder.js";
 import { buildOperationMap, type PrebuiltOp, type PrebuiltScript } from "./prebuilt/index.js";
 import { assertNoReservedViolation } from "./reserved-capabilities.js";
 import { isReadSafeOperation } from "./assistant-access.js";
+import { enforceWriteGuard } from "@naelao/agent-sdk";
 
 /** Plain edit distance — used only to rank "did you mean" suggestions by how close a guess
  *  actually is, never for anything security-relevant. Op names are short (well under 40 chars),
@@ -652,6 +653,17 @@ export class ScriptToolSurface {
 
   async run(name: string, params: Record<string, unknown> = {}): Promise<ScriptRunResult> {
     const started = Date.now();
+    const mutationIntent = name === "Bash"
+      ? String(params["commands"] ?? params["command"] ?? params["cmd"] ?? "")
+      : `${name} ${JSON.stringify(params)}`;
+    try {
+      await enforceWriteGuard(mutationIntent, this.env.mutationGrant, this.env.platformSecret ?? "", {
+        subject: this.env.humanInvokerId ?? "system",
+        resource: this.env.projectId ?? this.env.spaceId,
+      });
+    } catch {
+      return { ok: false, error: "destructive_mutation_denied", tier: 1, duration_ms: Date.now() - started, tokens_used: 0 };
+    }
 
     // F-36 read-only clamp: a viewer-clamped run may execute only explicitly read-safe
     // prebuilt ops — never a stored script (arbitrary agent-authored code is assumed to
