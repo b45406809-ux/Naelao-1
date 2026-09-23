@@ -1,5 +1,11 @@
 # Repomix hand-off for plan items 1–130
 
+> **Direct implementation:** use the three-task, fifteen-checkpoint plan in
+> [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md). It treats the batch prompts as feature
+> specifications, re-reads both later update authorities before every batch, and gives each update
+> document a final dedicated reconciliation pass. The AI Studio workflow below is retained only as
+> an alternative packaging path.
+
 The repository cannot be packed faithfully into one 1,045,000-token prompt: the authoritative
 source trail alone is larger than that before production code or tests are added. Use the thirteen
 dependency-ordered packs below. They overlap intentionally at security, router, persistence and
