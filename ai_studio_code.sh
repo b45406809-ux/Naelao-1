@@ -1,4 +1,4 @@
-cat << 'EOF' > repomix/patches/batch-01.patch
+cat << 'PATCH_EOF' > repomix/patches/batch-01.patch
 diff --git a/packages/agent-sdk/src/launchpad-runtime.test.ts b/packages/agent-sdk/src/launchpad-runtime.test.ts
 new file mode 100644
 index 0000000..7340b2b
@@ -419,7 +419,7 @@ index 45167ad..c8b00ba 100644
 +          res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, text: parsed.text ?? "" }));
 +          return;
 +        }
-+      }
+       }
        if (!parsed.code) { res.writeHead(400).end(JSON.stringify({ error: "code required" })); return; }
        const result = isExec
 diff --git a/workers/agents/src/do/LocalTunnelDO.test.ts b/workers/agents/src/do/LocalTunnelDO.test.ts
@@ -1673,4 +1673,4 @@ index 0000000..f95213b
 +    expect((await withGrant.json<{ permitted: boolean; grant_type: string }>())).toMatchObject({ permitted: true, grant_type: "read-knowledge" });
 +  });
 +});
-EOF
+PATCH_EOF
