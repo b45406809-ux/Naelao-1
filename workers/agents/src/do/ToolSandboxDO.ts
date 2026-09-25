@@ -50,25 +50,90 @@ interface ContainerRuntime {
 }
 
 const HARNESS_PORT = 8080;
-const WORKSPACE_ROUTES = ["/workspace/read", "/workspace/write", "/workspace/list", "/workspace/delete"];
+const WORKSPACE_ROUTES = [
+  "/workspace/read",
+  "/workspace/write",
+  "/workspace/list",
+  "/workspace/delete",
+];
+
+interface StoredShellState {
+  cwd: string;
+  env: Record<string, string>;
+  gitHead: string;
+  revision: number;
+}
 
 export class ToolSandboxDO extends DurableObject {
+  private lastUsedAt = Date.now();
+
   private get container(): ContainerRuntime | undefined {
     return (this.ctx as unknown as { container?: ContainerRuntime }).container;
   }
 
+  override async alarm(): Promise<void> {
+    const lastUsed =
+      (await this.ctx.storage.get<number>("last_used_at")) ?? this.lastUsedAt;
+    if (Date.now() - lastUsed >= 60_000) {
+      await this.ctx.storage.put("container_status", "stopped");
+    }
+  }
+
   override async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    this.lastUsedAt = Date.now();
+    await this.ctx.storage.put("last_used_at", this.lastUsedAt);
+    await this.ctx.storage.setAlarm(Date.now() + 60_000);
+
+    if (url.pathname === "/session/state" && request.method === "POST") {
+      const current = (await this.ctx.storage.get<StoredShellState>(
+        "shell_state"
+      )) ?? { cwd: "/workspace", env: {}, gitHead: "main", revision: 1 };
+      const body: {
+        expected_revision?: number;
+        patch?: Partial<StoredShellState>;
+      } = await request
+        .json<{
+          expected_revision?: number;
+          patch?: Partial<StoredShellState>;
+        }>()
+        .catch(() => ({}));
+      if (
+        body.expected_revision !== undefined &&
+        body.expected_revision !== current.revision
+      ) {
+        return Response.json(
+          { error: "workspace_state_conflict", revision: current.revision },
+          { status: 409 }
+        );
+      }
+      const next: StoredShellState = {
+        ...current,
+        ...(body.patch ?? {}),
+        env: { ...current.env, ...(body.patch?.env ?? {}) },
+        revision: current.revision + 1,
+      };
+      await this.ctx.storage.put("shell_state", next);
+      return Response.json(next);
+    }
+
     const container = this.container;
     if (!container) {
       // No container runtime bound (e.g. local dev without containers). Both build/test and
       // workspace ops report the same honest "not available" — no simulated success.
-      const url = new URL(request.url);
       if (WORKSPACE_ROUTES.some((r) => url.pathname.endsWith(r))) {
-        return Response.json({ ok: false, error: "Tier-5 container runtime not available" }, { status: 503 });
+        return Response.json(
+          { ok: false, error: "Tier-6 container runtime not available" },
+          { status: 503 }
+        );
       }
       return Response.json(
-        { built: false, tests_passed: false, logs: "Tier-5 container runtime not available" },
-        { status: 503 },
+        {
+          built: false,
+          tests_passed: false,
+          logs: "Tier-6 container runtime not available",
+        },
+        { status: 503 }
       );
     }
 
@@ -78,6 +143,7 @@ export class ToolSandboxDO extends DurableObject {
     // that depends on it.
     if (!container.running) {
       container.start({ enableInternet: false });
+      await this.ctx.storage.put("container_status", "running");
     }
 
     // /build, /exec, and every /workspace/* route all forward to the harness as-is now — this

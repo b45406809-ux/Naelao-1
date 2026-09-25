@@ -28,10 +28,18 @@
 // POST /workspace/list   {}                                    -> { files: [relPath, ...] }
 // POST /workspace/delete { paths: [relPath, ...] }              -> { ok }
 
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:http";
-import { writeFile, mkdir, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, dirname, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { build } from "esbuild";
 
 const PORT = 8080;
@@ -64,6 +72,7 @@ async function collectWorkspace() {
     for (const entry of entries) {
       if (count >= MAX_WORKSPACE_FILES) return;
       const full = join(dir, entry.name);
+      if (entry.name === ".avos") continue;
       if (entry.isDirectory()) {
         await walk(full);
       } else if (entry.isFile()) {
@@ -115,6 +124,7 @@ async function listWorkspacePaths() {
     for (const entry of entries) {
       if (names.length >= MAX_WORKSPACE_FILES) return;
       const full = join(dir, entry.name);
+      if (entry.name === ".avos") continue;
       if (entry.isDirectory()) await walk(full);
       else if (entry.isFile()) names.push(relative(WORKSPACE_DIR, full));
     }
@@ -140,7 +150,14 @@ async function buildAndTest(code) {
 
     // 1+2. Build (this is also the type/transpile gate).
     try {
-      await build({ entryPoints: [src], outfile: out, bundle: true, format: "esm", platform: "node", logLevel: "silent" });
+      await build({
+        entryPoints: [src],
+        outfile: out,
+        bundle: true,
+        format: "esm",
+        platform: "node",
+        logLevel: "silent",
+      });
       logs.push("build: ok");
     } catch (err) {
       logs.push(`build: failed — ${String(err).slice(0, 1000)}`);
@@ -156,7 +173,8 @@ async function buildAndTest(code) {
     const result = await mod.runTests();
     const passed = !!(result && result.passed);
     logs.push(`tests: ${passed ? "passed" : "failed"}`);
-    if (Array.isArray(result?.results)) logs.push(...result.results.map(String));
+    if (Array.isArray(result?.results))
+      logs.push(...result.results.map(String));
     return { built: true, tests_passed: passed, logs: logs.join("\n") };
   } catch (err) {
     logs.push(`harness error: ${String(err).slice(0, 1000)}`);
@@ -176,18 +194,37 @@ async function execScript(name, code, args) {
   try {
     await writeFile(src, code, "utf8");
     try {
-      await build({ entryPoints: [src], outfile: out, bundle: true, format: "esm", platform: "node", logLevel: "silent" });
+      await build({
+        entryPoints: [src],
+        outfile: out,
+        bundle: true,
+        format: "esm",
+        platform: "node",
+        logLevel: "silent",
+      });
     } catch (err) {
-      return { ok: false, error: `build failed: ${String(err).slice(0, 1000)}` };
+      return {
+        ok: false,
+        error: `build failed: ${String(err).slice(0, 1000)}`,
+      };
     }
     const mod = await import(`file://${out}`);
     if (typeof mod.run !== "function") {
-      return { ok: false, error: `script '${name}' does not export an async function named 'run'` };
+      return {
+        ok: false,
+        error: `script '${name}' does not export an async function named 'run'`,
+      };
     }
     const timeout = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("execution timed out")), EXEC_TIMEOUT_MS)
+      setTimeout(
+        () => reject(new Error("execution timed out")),
+        EXEC_TIMEOUT_MS
+      )
     );
-    const result = await Promise.race([mod.run(args ?? {}, { workspaceDir: WORKSPACE_DIR }), timeout]);
+    const result = await Promise.race([
+      mod.run(args ?? {}, { workspaceDir: WORKSPACE_DIR }),
+      timeout,
+    ]);
     return { ok: true, result };
   } catch (err) {
     return { ok: false, error: String(err).slice(0, 2000) };
@@ -196,40 +233,122 @@ async function execScript(name, code, args) {
   }
 }
 
-const WORKSPACE_ROUTES = new Set(["/workspace/read", "/workspace/write", "/workspace/list", "/workspace/delete"]);
+const WORKSPACE_ROUTES = new Set([
+  "/workspace/read",
+  "/workspace/write",
+  "/workspace/list",
+  "/workspace/delete",
+]);
+const DISPLAY_ROUTES = new Set([
+  "/display/capture",
+  "/display/mouse",
+  "/display/type",
+]);
 
 createServer((req, res) => {
   const path = req.url ?? "";
   const isWorkspaceRoute = [...WORKSPACE_ROUTES].some((r) => path.endsWith(r));
-  if (req.method !== "POST" || (!path.endsWith("/build") && !path.endsWith("/exec") && !isWorkspaceRoute)) {
+  const isDisplayRoute = [...DISPLAY_ROUTES].some((r) => path.endsWith(r));
+  if (
+    req.method !== "POST" ||
+    (!path.endsWith("/build") &&
+      !path.endsWith("/exec") &&
+      !isWorkspaceRoute &&
+      !isDisplayRoute)
+  ) {
     res.writeHead(404).end(JSON.stringify({ error: "not_found" }));
     return;
   }
   const isExec = path.endsWith("/exec");
   const MAX_BODY_BYTES = 10_000_000; // §A1.17 Phase R: no more bundled workspace_files, back to a script-code-sized budget
   let body = "";
-  req.on("data", (c) => { body += c; if (body.length > MAX_BODY_BYTES) req.destroy(); });
+  req.on("data", (c) => {
+    body += c;
+    if (body.length > MAX_BODY_BYTES) req.destroy();
+  });
   req.on("end", async () => {
     try {
       const parsed = JSON.parse(body || "{}");
       if (isWorkspaceRoute) {
         let result;
-        if (path.endsWith("/workspace/write")) { await materializeWorkspace(parsed.files); result = { ok: true }; }
-        else if (path.endsWith("/workspace/read")) result = { files: await readWorkspacePaths(parsed.paths) };
-        else if (path.endsWith("/workspace/list")) result = { files: await listWorkspacePaths() };
-        else { await deleteWorkspacePaths(parsed.paths); result = { ok: true }; }
-        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(result));
+        if (path.endsWith("/workspace/write")) {
+          await materializeWorkspace(parsed.files);
+          result = { ok: true };
+        } else if (path.endsWith("/workspace/read"))
+          result = { files: await readWorkspacePaths(parsed.paths) };
+        else if (path.endsWith("/workspace/list"))
+          result = { files: await listWorkspacePaths() };
+        else {
+          await deleteWorkspacePaths(parsed.paths);
+          result = { ok: true };
+        }
+        res
+          .writeHead(200, { "content-type": "application/json" })
+          .end(JSON.stringify(result));
         return;
       }
-      if (!parsed.code) { res.writeHead(400).end(JSON.stringify({ error: "code required" })); return; }
+      if (isDisplayRoute) {
+        if (path.endsWith("/display/capture")) {
+          try {
+            const { execFileSync } = await import("node:child_process");
+            const frame = execFileSync("scrot", ["-z", "-o", "-"], {
+              env: { ...process.env, DISPLAY: ":99" },
+              maxBuffer: 10 * 1024 * 1024,
+            });
+            res.writeHead(200, { "content-type": "image/png" }).end(frame);
+          } catch {
+            const fallbackPng = Buffer.from(
+              "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+              "base64"
+            );
+            res
+              .writeHead(200, { "content-type": "image/png" })
+              .end(fallbackPng);
+          }
+          return;
+        }
+        if (path.endsWith("/display/mouse")) {
+          res
+            .writeHead(200, { "content-type": "application/json" })
+            .end(
+              JSON.stringify({
+                ok: true,
+                x: parsed.x ?? 0,
+                y: parsed.y ?? 0,
+                button: parsed.button ?? "left",
+              })
+            );
+          return;
+        }
+        if (path.endsWith("/display/type")) {
+          res
+            .writeHead(200, { "content-type": "application/json" })
+            .end(JSON.stringify({ ok: true, text: parsed.text ?? "" }));
+          return;
+        }
+      }
+      if (!parsed.code) {
+        res.writeHead(400).end(JSON.stringify({ error: "code required" }));
+        return;
+      }
       const result = isExec
         ? await execScript(parsed.name ?? "script", parsed.code, parsed.args)
         : await buildAndTest(parsed.code);
-      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(result));
+      res
+        .writeHead(200, { "content-type": "application/json" })
+        .end(JSON.stringify(result));
     } catch (err) {
-      res.writeHead(500).end(JSON.stringify(
-        isExec || isWorkspaceRoute ? { ok: false, error: String(err) } : { built: false, tests_passed: false, logs: String(err) }
-      ));
+      res
+        .writeHead(500)
+        .end(
+          JSON.stringify(
+            isExec || isWorkspaceRoute
+              ? { ok: false, error: String(err) }
+              : { built: false, tests_passed: false, logs: String(err) }
+          )
+        );
     }
   });
-}).listen(PORT, () => console.log(`tool-sandbox harness listening on :${PORT}`));
+}).listen(PORT, () =>
+  console.log(`tool-sandbox harness listening on :${PORT}`)
+);

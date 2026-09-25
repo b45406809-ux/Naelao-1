@@ -27,7 +27,13 @@
  * it is pure R2 and must always work even with no runner wired.
  */
 
-import type { ExecutionTier, ScriptEngineEnv, ScriptRunResult, StoredScript } from "./types.js";
+import { executeVirtualShell } from "./r2-workspace.js";
+import type {
+  ExecutionTier,
+  ScriptEngineEnv,
+  ScriptRunResult,
+  StoredScript,
+} from "./types.js";
 
 /** Run a stored script (agent-distilled / authored code) at its declared tier. */
 export async function runStoredScript(
@@ -49,19 +55,9 @@ export async function runStoredScript(
   }
 
   if (tier === 1) {
-    // Tier 1 stored scripts are rare (most T1 work is a prebuilt op), but a stored T1
-    // script is a pure R2 transform. We do not eval arbitrary code in the DO isolate for
-    // safety; a T1 stored script must be expressed through prebuilt r2-workspace ops, so
-    // reaching here means the script was mis-tiered.
-    return {
-      ok: false,
-      error:
-        `Tier 1 stored-code execution is not supported in-process; express file work as ` +
-        `prebuilt r2-workspace ops or raise requires_tier to 2.`,
-      tier,
-      duration_ms: Date.now() - started,
-      tokens_used: 0,
-    };
+    const op =
+      (args["op"] as "read" | "write" | "delete" | "list" | "grep") || "read";
+    return executeVirtualShell(env, op, args);
   }
 
   // §A1.17 Phase J: a script tagged runtime:"workflow" dispatches to a durable CF Workflow
@@ -127,7 +123,9 @@ export async function runStoredScript(
       tenantId: env.tenantId,
       ...(env.humanInvokerId ? { userId: env.humanInvokerId } : {}),
       ...(env.projectId ? { projectId: env.projectId } : {}),
-      ...(script.metadata.container_image ? { containerImage: script.metadata.container_image } : {}),
+      ...(script.metadata.container_image
+        ? { containerImage: script.metadata.container_image }
+        : {}),
     });
   } catch (err) {
     return {
@@ -144,11 +142,12 @@ export async function runStoredScript(
 export function tierLabel(tier: ExecutionTier): string {
   return (
     {
-      1: "T1 direct-R2",
+      1: "T1 direct-vfs",
       2: "T2 v8-isolate",
-      3: "T3 npm-isolate",
-      4: "T4 browser",
-      5: "T5 container",
+      3: "T3 workflow",
+      4: "T4 kitesurf-browser",
+      5: "T5 chromium-browser",
+      6: "T6 container-sandbox",
     } as const
   )[tier];
 }
