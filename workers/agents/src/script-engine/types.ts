@@ -14,7 +14,7 @@
  */
 
 /** Execution tier a script declares (the orchestrator routes script.run by this). */
-export type ExecutionTier = 1 | 2 | 3 | 4 | 5;
+export type ExecutionTier = 1 | 2 | 3 | 4 | 5 | 6;
 
 /** Domains an observe/action script can target. Open-ended by design. */
 export type ScriptDomain =
@@ -68,7 +68,12 @@ export interface SkillHealth {
 export interface PatchRecord {
   version: number;
   created_at: number;
-  patch_type: "initial" | "minor_fix" | "re_derivation" | "split" | "failed_patch";
+  patch_type:
+    | "initial"
+    | "minor_fix"
+    | "re_derivation"
+    | "split"
+    | "failed_patch";
   reason: string;
   fingerprint_before?: string;
   fingerprint_after?: string;
@@ -327,7 +332,13 @@ export interface LoopResult {
     action_name: string;
     params: Record<string, unknown>;
     expires_at?: number;
-    steps_completed: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>;
+    steps_completed: Array<{
+      name: string;
+      params: Record<string, unknown>;
+      ok: boolean;
+      output?: unknown;
+      error?: string;
+    }>;
   };
   /**
    * Actions parked mid-run because they need a human, on a run that CARRIED ON around them and
@@ -343,7 +354,13 @@ export interface LoopResult {
     action_name: string;
     params: Record<string, unknown>;
     expires_at?: number;
-    steps_completed: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>;
+    steps_completed: Array<{
+      name: string;
+      params: Record<string, unknown>;
+      ok: boolean;
+      output?: unknown;
+      error?: string;
+    }>;
   }>;
   /**
    * The ungated work this run completed, on EVERY exit — success, failure or exhaustion.
@@ -352,7 +369,13 @@ export interface LoopResult {
    * offer was "start over", which redoes side effects that already happened. With this, a failure
    * is resumable: the caller checkpoints these steps and a Continue picks up from them.
    */
-  steps_completed?: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>;
+  steps_completed?: Array<{
+    name: string;
+    params: Record<string, unknown>;
+    ok: boolean;
+    output?: unknown;
+    error?: string;
+  }>;
 }
 
 // ── Engine bindings (dependency-injected so the engine is testable + DO-agnostic) ──────
@@ -364,11 +387,27 @@ export interface Embedder {
 
 /** Minimal Vectorize surface the engine needs (avoids a hard dep on the CF type). */
 export interface VectorIndex {
-  upsert(vectors: Array<{ id: string; values: number[]; metadata?: Record<string, unknown> }>): Promise<unknown>;
+  upsert(
+    vectors: Array<{
+      id: string;
+      values: number[];
+      metadata?: Record<string, unknown>;
+    }>
+  ): Promise<unknown>;
   query(
     vector: number[],
-    opts: { topK: number; filter?: Record<string, unknown>; returnMetadata?: boolean }
-  ): Promise<{ matches: Array<{ id: string; score: number; metadata?: Record<string, unknown> }> }>;
+    opts: {
+      topK: number;
+      filter?: Record<string, unknown>;
+      returnMetadata?: boolean;
+    }
+  ): Promise<{
+    matches: Array<{
+      id: string;
+      score: number;
+      metadata?: Record<string, unknown>;
+    }>;
+  }>;
   deleteByIds(ids: string[]): Promise<unknown>;
 }
 
@@ -478,7 +517,9 @@ export interface WorkflowRunner {
     tenantId: string;
     projectId?: string;
   }): Promise<{ id: string }>;
-  status(id: string): Promise<{ status: string; output?: unknown; error?: string }>;
+  status(
+    id: string
+  ): Promise<{ status: string; output?: unknown; error?: string }>;
 }
 
 // ── Memory OS (spec "Space Assistants — OpenClaw + CF Thinker + Memory OS", byte ~141822) ──
@@ -534,7 +575,9 @@ export interface MemoryStore {
     importance?: number;
   }): Promise<{ id: string }>;
   /** Surgical recall (spec "Pre-Flight Check"): structured facts + episodic + semantic, merged. */
-  recall(query: { userId?: string; text: string; limit?: number }): Promise<MemoryRecallResult[]>;
+  recall(query: { userId?: string; text: string; limit?: number }): Promise<
+    MemoryRecallResult[]
+  >;
   forget(id: string): Promise<void>;
 
   /**
@@ -542,20 +585,42 @@ export interface MemoryStore {
    * insights (spec: "Runs LLM-driven session extraction post-run"); the host calls this once
    * per completed run, not per message — see NaelaoAgentDO's handleScriptRun.
    */
-  recordFabric(entry: { userId?: string; sessionId: string; summary: string; keyInsights?: string[] }): Promise<{ id: string }>;
+  recordFabric(entry: {
+    userId?: string;
+    sessionId: string;
+    summary: string;
+    keyInsights?: string[];
+  }): Promise<{ id: string }>;
   /** spec's `fabric_recall` tool — matched + score-filtered (>0.70 floor) against past summaries. */
-  recallFabric(query: { userId?: string; text: string; limit?: number }): Promise<FabricEntry[]>;
+  recallFabric(query: {
+    userId?: string;
+    text: string;
+    limit?: number;
+  }): Promise<FabricEntry[]>;
   /** spec's `fabric_brief` tool — the N most recent cross-session summaries, no query needed. */
-  briefFabric(userId: string | undefined, limit?: number): Promise<FabricEntry[]>;
+  briefFabric(
+    userId: string | undefined,
+    limit?: number
+  ): Promise<FabricEntry[]>;
 
   /**
    * Layer 6 (LLM Wiki) — auto-curated concept/entity vault (spec: `wiki-continuous-ingest`).
    * Upsert is keyed on (userId, concept): re-stating a concept refreshes its definition rather
    * than duplicating it, the same merge behavior as Layer 3 structured facts.
    */
-  upsertWikiConcept(entry: { userId?: string; concept: string; definition: string; relationships?: string[] }): Promise<{ concept: string }>;
-  lookupWikiConcept(userId: string | undefined, concept: string): Promise<WikiArticle | null>;
-  searchWiki(query: { userId?: string; text: string; limit?: number }): Promise<WikiArticle[]>;
+  upsertWikiConcept(entry: {
+    userId?: string;
+    concept: string;
+    definition: string;
+    relationships?: string[];
+  }): Promise<{ concept: string }>;
+  lookupWikiConcept(
+    userId: string | undefined,
+    concept: string
+  ): Promise<WikiArticle | null>;
+  searchWiki(query: { userId?: string; text: string; limit?: number }): Promise<
+    WikiArticle[]
+  >;
 }
 
 /**
@@ -567,7 +632,17 @@ export interface MemoryStore {
  * generalized beyond its original sub-agent-tree-gating use.
  */
 export interface LockGateway {
-  acquire(params: { key: string; holderId: string; limit?: number; ttlMs?: number }): Promise<{ granted: boolean; active: number; limit?: number; degraded?: boolean }>;
+  acquire(params: {
+    key: string;
+    holderId: string;
+    limit?: number;
+    ttlMs?: number;
+  }): Promise<{
+    granted: boolean;
+    active: number;
+    limit?: number;
+    degraded?: boolean;
+  }>;
   release(params: { key: string; holderId: string }): Promise<void>;
   status(key: string): Promise<{ active: number }>;
 }
@@ -581,7 +656,11 @@ export interface LockGateway {
  * billed exactly like reasoner-driven tokens are, instead of being a free, unmetered LLM call.
  */
 export interface LlmCallerGateway {
-  callWithNativeWebSearch(args: { model: string; query: string; maxUses?: number | undefined }): Promise<{
+  callWithNativeWebSearch(args: {
+    model: string;
+    query: string;
+    maxUses?: number | undefined;
+  }): Promise<{
     answer: string;
     citations: Array<{ title?: string | undefined; url?: string | undefined }>;
     tokens_used: number;
@@ -594,7 +673,11 @@ export interface LlmCallerGateway {
    * Optional — a caller without it degrades to that op's non-LLM fallback rather than failing,
    * matching how every other optional gateway in this file behaves.
    */
-  complete?(args: { model: string; prompt: string; maxTokens?: number | undefined }): Promise<{
+  complete?(args: {
+    model: string;
+    prompt: string;
+    maxTokens?: number | undefined;
+  }): Promise<{
     text: string;
     tokens_used: number;
     input_tokens: number;
@@ -611,7 +694,11 @@ export interface LlmCallerGateway {
  * ever called; this interface has no opinion on what an op's params mean.
  */
 export interface LocalTunnelGateway {
-  exec(params: { userId: string; op: string; params: Record<string, unknown> }): Promise<{ ok: boolean; result?: unknown; error?: string }>;
+  exec(params: {
+    userId: string;
+    op: string;
+    params: Record<string, unknown>;
+  }): Promise<{ ok: boolean; result?: unknown; error?: string }>;
   status(userId: string): Promise<{ connected: boolean }>;
 }
 
@@ -656,7 +743,13 @@ export interface HITLGateway {
     actionName: string;
     actionInput: Record<string, unknown>;
     description: string;
-  }): Promise<{ approvalId: string; approved: boolean; pending?: boolean; expiresAt?: number; reason?: string }>;
+  }): Promise<{
+    approvalId: string;
+    approved: boolean;
+    pending?: boolean;
+    expiresAt?: number;
+    reason?: string;
+  }>;
 }
 
 /**
@@ -679,10 +772,19 @@ export interface HITLGateway {
  */
 export interface ActionLedger {
   /** The recorded result of this exact action, if it has already run under this key. */
-  lookup(key: string, actionName: string, paramsHash: string): Promise<ScriptRunResult | null>;
+  lookup(
+    key: string,
+    actionName: string,
+    paramsHash: string
+  ): Promise<ScriptRunResult | null>;
   /** Record an action that just executed. Never throws — a ledger write failure must not fail a
    *  run that already succeeded (the cost is a possible repeat on replay, not a lost result). */
-  record(key: string, actionName: string, paramsHash: string, result: ScriptRunResult): Promise<void>;
+  record(
+    key: string,
+    actionName: string,
+    paramsHash: string,
+    result: ScriptRunResult
+  ): Promise<void>;
 }
 
 /**
@@ -772,7 +874,10 @@ export interface ScriptEngineEnv {
    * Fire-and-forget by contract: the write has already succeeded by the time this is called, and
    * a listener failing must never turn it into a failure. Absent when the host wires no events.
    */
-  onWorkspaceChange?: (change: { path: string; operation: "write" | "delete" }) => void;
+  onWorkspaceChange?: (change: {
+    path: string;
+    operation: "write" | "delete";
+  }) => void;
   /** Runs the SAME Memory OS maintenance pass (decay/promote/prune) the client-driven
    *  POST .../sessions/:id/compact HTTP route triggers — as a tool the model itself can call mid-
    *  run (see the `memory` prebuilt's `memory.compact` op), not only from the shell UI. Present
@@ -880,7 +985,9 @@ export interface ScriptEngineEnv {
  * agent within the SAME project reads/writes the SAME filesystem (spec: a project is
  * workspace-scoped; threads within it share one R2 workspace).
  */
-export function workspacePrefix(env: Pick<ScriptEngineEnv, "spaceId" | "projectId">): string {
+export function workspacePrefix(
+  env: Pick<ScriptEngineEnv, "spaceId" | "projectId">
+): string {
   return env.projectId
     ? `spaces/${env.spaceId}/projects/${env.projectId}/workspace/`
     : `spaces/${env.spaceId}/workspace/`;

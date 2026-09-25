@@ -1,14 +1,26 @@
 import { DurableObject } from "cloudflare:workers";
-import { applyMigrations, queryAll, queryOne, execute } from "@naelao/db";
+import { applyMigrations, execute, queryAll, queryOne } from "@naelao/db";
 import type { Migration } from "@naelao/db";
-import type { MessageRole } from "@naelao/types";
 import {
-  selectMatchingRules, evaluateCondition, buildFireParams,
-  findPossibleDuplicateProjects, isPresenceFresh, PRESENCE_FRESHNESS_WINDOW_MS,
-  getBusinessFeatureKind, isKnownProjectKind, roleMeetsMinimum, isFailureKind,
+  PRESENCE_FRESHNESS_WINDOW_MS,
+  buildFireParams,
+  evaluateCondition,
+  findPossibleDuplicateProjects,
+  getBusinessFeatureKind,
+  isFailureKind,
+  isKnownProjectKind,
+  isPresenceFresh,
+  roleMeetsMinimum,
+  selectMatchingRules,
 } from "@naelao/events";
-import type { TriggerRule, TriggerCondition, EventEnvelope, ConditionContext } from "@naelao/events";
-import { mintInternalToken, broadcastSpaceEvent } from "@naelao/http";
+import type {
+  ConditionContext,
+  EventEnvelope,
+  TriggerCondition,
+  TriggerRule,
+} from "@naelao/events";
+import { broadcastSpaceEvent, mintInternalToken } from "@naelao/http";
+import type { MessageRole } from "@naelao/types";
 
 function todaySpendKey(): string {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
@@ -18,8 +30,13 @@ function todaySpendKey(): string {
  *  persisted, never the other way around. Small enough that a shared package isn't worth it
  *  (matches this codebase's existing precedent of small crypto helpers duplicated per-DO). */
 async function sha256Hex(input: string): Promise<string> {
-  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
-  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const buf = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(input)
+  );
+  return [...new Uint8Array(buf)]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 function safeJsonParseObj(text: string): Record<string, unknown> {
@@ -36,7 +53,9 @@ function safeJsonParseAgentIds(text: string | null): string[] | null {
   if (text === null) return null;
   try {
     const v = JSON.parse(text) as unknown;
-    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : null;
+    return Array.isArray(v)
+      ? v.filter((x): x is string => typeof x === "string")
+      : null;
   } catch {
     return null;
   }
@@ -54,7 +73,11 @@ function safeJsonParseArr(text: string): unknown[] {
 function safeJsonParseCondition(text: string): TriggerCondition {
   try {
     const v = JSON.parse(text) as unknown;
-    if (v && typeof v === "object" && typeof (v as { type?: unknown }).type === "string") {
+    if (
+      v &&
+      typeof v === "object" &&
+      typeof (v as { type?: unknown }).type === "string"
+    ) {
       return v as TriggerCondition;
     }
   } catch {
@@ -83,7 +106,11 @@ function rowToTriggerRule(row: EventTriggerRow): TriggerRule {
     ...(row.project_id ? { project_id: row.project_id } : {}),
     event_type: row.event_type,
     condition: safeJsonParseCondition(row.condition),
-    action: { type: "run_script", script_name: row.script_name, params: safeJsonParseObj(row.params) },
+    action: {
+      type: "run_script",
+      script_name: row.script_name,
+      params: safeJsonParseObj(row.params),
+    },
     enabled: row.enabled === 1,
     priority: row.priority,
   };
@@ -345,7 +372,8 @@ const MIGRATIONS: Migration[] = [
     //   - channel_config records which channel(s) are bound (the channel_links row in the
     //     agents worker's D1 carries the matching project_id — this is the SpaceDO side of
     //     that link, kept here because the project is what an admin configures/sees).
-    description: "customer-bot project config + project_rules (no-code triggers)",
+    description:
+      "customer-bot project config + project_rules (no-code triggers)",
     up: `
       ALTER TABLE projects ADD COLUMN kind TEXT NOT NULL DEFAULT 'workspace' CHECK (kind IN ('workspace','customer_bot'));
       ALTER TABLE projects ADD COLUMN execution_ceiling INTEGER NOT NULL DEFAULT 5 CHECK (execution_ceiling BETWEEN 1 AND 5);
@@ -379,7 +407,8 @@ const MIGRATIONS: Migration[] = [
     // an admin who wants to audit a project's whole sub-agent tree, or every channel session,
     // just flips show_sub_threads (or passes include_sub_threads=true) to see them inline,
     // nested under the thread that spawned/received them.
-    description: "thread hierarchy (parent_thread_id, thread_kind) + show_sub_threads config",
+    description:
+      "thread hierarchy (parent_thread_id, thread_kind) + show_sub_threads config",
     up: `
       ALTER TABLE threads ADD COLUMN parent_thread_id TEXT REFERENCES threads(id);
       ALTER TABLE threads ADD COLUMN thread_kind TEXT NOT NULL DEFAULT 'primary' CHECK (thread_kind IN ('primary','sub_agent','channel'));
@@ -402,7 +431,8 @@ const MIGRATIONS: Migration[] = [
     // auto_approved_actions; approval_mode='yolo' skips asking entirely. This inverts the
     // ordinary Naelao Agent's requires_approval_for allowlist (which gates a SPECIFIC list of
     // actions, everything else free) — see loop.ts's ApprovalMode.
-    description: "assistant_policy (Space Assistant approval mode + auto-approved actions)",
+    description:
+      "assistant_policy (Space Assistant approval mode + auto-approved actions)",
     up: `
       CREATE TABLE IF NOT EXISTS assistant_policy (
         space_id              TEXT PRIMARY KEY,
@@ -421,7 +451,8 @@ const MIGRATIONS: Migration[] = [
     // a project was created, ...). Always scoped to project_id (or space-wide when NULL) —
     // condition evaluation and target-thread resolution NEVER cross that boundary (an agent
     // cannot construct a trigger, or have one fire, against another project's threads).
-    description: "event_triggers (no-code lifecycle triggers, e.g. 'thread created -> compact the idle one')",
+    description:
+      "event_triggers (no-code lifecycle triggers, e.g. 'thread created -> compact the idle one')",
     up: `
       CREATE TABLE IF NOT EXISTS event_triggers (
         id            TEXT PRIMARY KEY,
@@ -447,7 +478,8 @@ const MIGRATIONS: Migration[] = [
     // heartbeat, not a WebSocket/DO-alarm system: one row per (space, user) recording where
     // they currently are; a caller-supplied freshness window (isPresenceFresh, @naelao/events)
     // decides who still counts as "active" — a crashed/closed client just ages out.
-    description: "presence (heartbeat-based, one row per space+user — who's active where)",
+    description:
+      "presence (heartbeat-based, one row per space+user — who's active where)",
     up: `
       CREATE TABLE IF NOT EXISTS presence (
         space_id      TEXT NOT NULL,
@@ -469,7 +501,8 @@ const MIGRATIONS: Migration[] = [
     // threads/projects in it share this single instance), so it's the correct single writer:
     // moving the authoritative tally here means every thread's spend against the same project
     // lands in the same row, serialized by the DO's single-threaded request handling.
-    description: "project_spend (authoritative per-project daily spend tally, single-writer)",
+    description:
+      "project_spend (authoritative per-project daily spend tally, single-writer)",
     up: `
       CREATE TABLE IF NOT EXISTS project_spend (
         project_id TEXT NOT NULL,
@@ -573,7 +606,8 @@ const MIGRATIONS: Migration[] = [
     // messages.author_type/author_id: so a thread bubble can say "Agent1" vs "Agent2" vs the
     // Space Assistant instead of every non-user message collapsing into a bare 'assistant' role —
     // the same field Phase T's @mention multi-agent replies key off of.
-    description: "agent_api_keys, agent_policy_overrides, messages.author_type/author_id",
+    description:
+      "agent_api_keys, agent_policy_overrides, messages.author_type/author_id",
     up: `
       CREATE TABLE IF NOT EXISTS agent_api_keys (
         id           TEXT PRIMARY KEY,
@@ -615,7 +649,8 @@ const MIGRATIONS: Migration[] = [
     // with no server-side link today, a documented pre-existing gap; a client acquires the lock
     // when a user opens/focuses a thread, which is both simpler and a more realistic UX than a
     // per-message check).
-    description: "project visibility + project_members ACL + exclusive-mode thread locking",
+    description:
+      "project visibility + project_members ACL + exclusive-mode thread locking",
     up: `
       ALTER TABLE projects ADD COLUMN visibility TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('public','private'));
       ALTER TABLE projects ADD COLUMN created_by TEXT;
@@ -700,7 +735,8 @@ const MIGRATIONS: Migration[] = [
     // SQLite can't widen an existing CHECK constraint via ALTER TABLE, so this rebuilds
     // `projects` with every column accumulated by migrations 1/12/13/18/19/23 preserved
     // byte-for-byte, only the `kind` CHECK widened to add 'wallet'.
-    description: "projects.kind widened to include 'wallet' + wallet_ledger (Launchpad Wallet)",
+    description:
+      "projects.kind widened to include 'wallet' + wallet_ledger (Launchpad Wallet)",
     up: `
       CREATE TABLE projects_new (
         id                      TEXT PRIMARY KEY,
@@ -762,7 +798,8 @@ const MIGRATIONS: Migration[] = [
     // accumulating ledger — a period's revenue can only grow as more of it completes, so the
     // latest observation is what matters for billing).
     version: 26,
-    description: "external_revenue_snapshots (Whop-native business revenue tracker)",
+    description:
+      "external_revenue_snapshots (Whop-native business revenue tracker)",
     up: `
       CREATE TABLE IF NOT EXISTS external_revenue_snapshots (
         id             TEXT PRIMARY KEY,
@@ -810,7 +847,8 @@ const MIGRATIONS: Migration[] = [
   },
   {
     version: 28,
-    description: "Business Feature Projects: projects.is_singleton_kind + drop kind CHECK (validate in app against BUSINESS_FEATURE_KIND_REGISTRY) + partial unique index for singleton kinds",
+    description:
+      "Business Feature Projects: projects.is_singleton_kind + drop kind CHECK (validate in app against BUSINESS_FEATURE_KIND_REGISTRY) + partial unique index for singleton kinds",
     up: `
       CREATE TABLE projects_new (
         id                      TEXT PRIMARY KEY,
@@ -853,7 +891,8 @@ const MIGRATIONS: Migration[] = [
   },
   {
     version: 29,
-    description: "project_members.assistant_mode — clamp an assistant's effective access when acting on behalf of a specific user (F-36)",
+    description:
+      "project_members.assistant_mode — clamp an assistant's effective access when acting on behalf of a specific user (F-36)",
     up: `
       ALTER TABLE project_members ADD COLUMN assistant_mode TEXT NOT NULL DEFAULT 'inherit'
         CHECK (assistant_mode IN ('inherit','read_only','none'));
@@ -861,7 +900,8 @@ const MIGRATIONS: Migration[] = [
   },
   {
     version: 30,
-    description: "external_revenue_snapshots: billed_cents (F-27 delta billing) + pending_checkout_at (F-31 in-flight-checkout guard)",
+    description:
+      "external_revenue_snapshots: billed_cents (F-27 delta billing) + pending_checkout_at (F-31 in-flight-checkout guard)",
     up: `
       -- F-27: how much of this period's cut has ACTUALLY been charged. A correction re-bills only
       -- max(0, cut(new_revenue) - billed_cents), never the full corrected figure.
@@ -885,7 +925,8 @@ const MIGRATIONS: Migration[] = [
     // productConfig.limits.sessionCreditCeiling, config_json's already-authoritative copy) —
     // only the running tally.
     version: 31,
-    description: "agent_signal_events (implicit signals) + session_spend (session token-budget guard)",
+    description:
+      "agent_signal_events (implicit signals) + session_spend (session token-budget guard)",
     up: `
       CREATE TABLE IF NOT EXISTS agent_signal_events (
         id           TEXT PRIMARY KEY,
@@ -918,7 +959,8 @@ const MIGRATIONS: Migration[] = [
     // new assistant<->agent consult subthreads, §A1.18/A1.34 thread model) without retrofitting
     // every pre-existing thread/session pair, which stays exactly as it was.
     version: 32,
-    description: "threads.session_id — links a structural thread to its chat session",
+    description:
+      "threads.session_id — links a structural thread to its chat session",
     up: `
       ALTER TABLE threads ADD COLUMN session_id TEXT;
       CREATE UNIQUE INDEX IF NOT EXISTS idx_threads_session ON threads(session_id) WHERE session_id IS NOT NULL;
@@ -933,7 +975,8 @@ const MIGRATIONS: Migration[] = [
     // expandable card at the exact point in the conversation where the delegation happened,
     // instead of only in a separate side panel with no correlation to any specific turn.
     version: 33,
-    description: "messages.metadata — carries structured per-message data (e.g. consulted_threads)",
+    description:
+      "messages.metadata — carries structured per-message data (e.g. consulted_threads)",
     up: `
       ALTER TABLE messages ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}';
     `,
@@ -945,7 +988,8 @@ const MIGRATIONS: Migration[] = [
     // (a business admin using the shell) and carries read/delivery state so the assistant's own
     // heartbeat sweep can tell "already seen" from "still needs escalating to a channel".
     version: 34,
-    description: "notifications — durable business-member inbox + delivery tracking for heartbeat escalation",
+    description:
+      "notifications — durable business-member inbox + delivery tracking for heartbeat escalation",
     up: `
       CREATE TABLE IF NOT EXISTS notifications (
         id            TEXT PRIMARY KEY,
@@ -974,7 +1018,8 @@ const MIGRATIONS: Migration[] = [
     // sessions.metadata — updateSession's PATCH replaces the whole metadata object, and a UI
     // toggle firing concurrently with, say, a title update would silently clobber one or the other.
     version: 35,
-    description: "connector_account_mode — per-session business-vs-personal connector preference",
+    description:
+      "connector_account_mode — per-session business-vs-personal connector preference",
     up: `
       CREATE TABLE IF NOT EXISTS connector_account_mode (
         session_id   TEXT NOT NULL,
@@ -997,7 +1042,8 @@ const MIGRATIONS: Migration[] = [
     // plus a failure_kind says everything a new event type would have, without SQLite's
     // can't-alter-a-CHECK-in-place rebuild (migrations 0052/0065 hit that; not worth it here).
     version: 36,
-    description: "agent_activity_log failure diagnostics — classification + ids to resume from",
+    description:
+      "agent_activity_log failure diagnostics — classification + ids to resume from",
     up: `
       ALTER TABLE agent_activity_log ADD COLUMN failure_kind TEXT;
       ALTER TABLE agent_activity_log ADD COLUMN session_id TEXT;
@@ -1015,7 +1061,8 @@ const MIGRATIONS: Migration[] = [
     // resolving the project via threads.project_id for the session, so this covers ordinary
     // project-thread chat and consult subthreads uniformly with no NaelaoAgentDO-side change.
     version: 37,
-    description: "projects.last_activity_at (touched on any thread-linked message) — recent ordering",
+    description:
+      "projects.last_activity_at (touched on any thread-linked message) — recent ordering",
     up: `
       ALTER TABLE projects ADD COLUMN last_activity_at TEXT;
     `,
@@ -1031,7 +1078,8 @@ const MIGRATIONS: Migration[] = [
     // (client_message_id NULL) don't collide with each other. Dedupe is per session, since ids are
     // minted client-side and only need to be unique within the conversation they belong to.
     version: 38,
-    description: "messages.client_message_id — idempotency key so a retried POST can't duplicate",
+    description:
+      "messages.client_message_id — idempotency key so a retried POST can't duplicate",
     up: `
       ALTER TABLE messages ADD COLUMN client_message_id TEXT;
       CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_client_id
@@ -1047,7 +1095,8 @@ const MIGRATIONS: Migration[] = [
     // table (never enforced as a real foreign key — D1/DO SQLite has no cross-row CHECK — the
     // `tasks` prebuilt script is what's expected to read it before marking a task IN_PROGRESS).
     version: 39,
-    description: "tasks — a per-project task DAG (dependencies + status), for multi-agent coordination",
+    description:
+      "tasks — a per-project task DAG (dependencies + status), for multi-agent coordination",
     up: `
       CREATE TABLE IF NOT EXISTS tasks (
         id             TEXT PRIMARY KEY,
@@ -1080,6 +1129,47 @@ const MIGRATIONS: Migration[] = [
       DROP TABLE event_triggers;
       ALTER TABLE event_triggers_v40 RENAME TO event_triggers;
       CREATE INDEX idx_event_triggers_lookup ON event_triggers(space_id, project_id, event_type, enabled, priority DESC);
+    `,
+  },
+  {
+    version: 41,
+    description: "expand execution_ceiling CHECK to support Tier 6 containers",
+    up: `
+      CREATE TABLE projects_v41 (
+        id                      TEXT PRIMARY KEY,
+        space_id                TEXT NOT NULL,
+        name                    TEXT NOT NULL,
+        description             TEXT NOT NULL DEFAULT '',
+        status                  TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived')),
+        created_at              TEXT NOT NULL DEFAULT (datetime('now')),
+        kind                    TEXT NOT NULL DEFAULT 'workspace',
+        execution_ceiling       INTEGER NOT NULL DEFAULT 5 CHECK (execution_ceiling BETWEEN 1 AND 6),
+        daily_spend_cap_credits INTEGER NOT NULL DEFAULT 0,
+        channel_config          TEXT NOT NULL DEFAULT '{}',
+        show_sub_threads        INTEGER NOT NULL DEFAULT 0,
+        default_agent_id        TEXT,
+        max_threads             INTEGER NOT NULL DEFAULT 0,
+        allowed_agent_ids       TEXT,
+        visibility              TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('public','private')),
+        created_by              TEXT,
+        exclusive_mode          INTEGER NOT NULL DEFAULT 0,
+        active_thread_id        TEXT,
+        active_thread_since     TEXT,
+        is_singleton_kind       INTEGER NOT NULL DEFAULT 0,
+        last_activity_at        TEXT
+      );
+      INSERT INTO projects_v41 SELECT
+        id, space_id, name, description, status, created_at, kind, execution_ceiling,
+        daily_spend_cap_credits, channel_config, show_sub_threads, default_agent_id, max_threads,
+        allowed_agent_ids, visibility, created_by, exclusive_mode, active_thread_id, active_thread_since,
+        is_singleton_kind, last_activity_at
+      FROM projects;
+      DROP TABLE projects;
+      ALTER TABLE projects_v41 RENAME TO projects;
+      CREATE INDEX idx_projects_space ON projects(space_id, created_at DESC);
+      CREATE UNIQUE INDEX idx_projects_space_name ON projects(space_id, name);
+      CREATE UNIQUE INDEX idx_projects_singleton_kind
+        ON projects(space_id, kind) WHERE is_singleton_kind = 1 AND status = 'active';
     `,
   },
 ];
@@ -1188,7 +1278,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   private cacheDeny(userId: string, spaceId: string): void {
-    this.denyCache.set(`deny:${userId}:${spaceId}`, Date.now() + DENY_CACHE_TTL_MS);
+    this.denyCache.set(
+      `deny:${userId}:${spaceId}`,
+      Date.now() + DENY_CACHE_TTL_MS
+    );
   }
 
   private invalidateUserCache(userId: string, spaceId: string): void {
@@ -1245,7 +1338,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return this.updateSession(request, sessionMatch[1]);
       }
       // §A1 connector default-vs-personal switch — GET/PATCH /sessions/:id/connector-mode
-      const connModeMatch = url.pathname.match(/^\/sessions\/([^/]+)\/connector-mode$/);
+      const connModeMatch = url.pathname.match(
+        /^\/sessions\/([^/]+)\/connector-mode$/
+      );
       if (method === "GET" && connModeMatch?.[1]) {
         return this.getConnectorMode(connModeMatch[1]);
       }
@@ -1291,7 +1386,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return this.createAgentDefinition(request);
       }
       // GET /agent-definitions/:id
-      const agentDefGetMatch = url.pathname.match(/^\/agent-definitions\/([^/]+)$/);
+      const agentDefGetMatch = url.pathname.match(
+        /^\/agent-definitions\/([^/]+)$/
+      );
       if (method === "GET" && agentDefGetMatch?.[1]) {
         return this.getAgentDefinition(agentDefGetMatch[1]);
       }
@@ -1317,7 +1414,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // always appends space_id to the forwarded query string, same as GET /members does)
       const memberMatch = url.pathname.match(/^\/members\/([^/]+)$/);
       if (method === "DELETE" && memberMatch?.[1]) {
-        return this.removeMember(memberMatch[1], url.searchParams.get("space_id") ?? "");
+        return this.removeMember(
+          memberMatch[1],
+          url.searchParams.get("space_id") ?? ""
+        );
       }
 
       // POST /internal/events/fire — let a caller OUTSIDE this DO (e.g. the agents worker's
@@ -1369,54 +1469,89 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "GET" && projectIdMatch?.[1]) {
         return this.getProject(projectIdMatch[1], url.searchParams);
       }
-      const automationAccessMatch = url.pathname.match(/^\/projects\/([^/]+)\/automation-access$/);
+      const automationAccessMatch = url.pathname.match(
+        /^\/projects\/([^/]+)\/automation-access$/
+      );
       if (method === "GET" && automationAccessMatch?.[1]) {
-        return this.getAutomationAccess(automationAccessMatch[1], url.searchParams);
+        return this.getAutomationAccess(
+          automationAccessMatch[1],
+          url.searchParams
+        );
       }
       // PATCH /projects/:id — configure kind / execution_ceiling / channel_config / spend cap
       if (method === "PATCH" && projectIdMatch?.[1]) {
         return this.updateProject(projectIdMatch[1], request);
       }
       // ── project_members (§A1.17 Phase T1 — real per-project ACL) ───────────────
-      const projectMembersMatch = url.pathname.match(/^\/projects\/([^/]+)\/members$/);
+      const projectMembersMatch = url.pathname.match(
+        /^\/projects\/([^/]+)\/members$/
+      );
       if (method === "GET" && projectMembersMatch?.[1]) {
         return this.listProjectMembers(projectMembersMatch[1]);
       }
       if (method === "POST" && projectMembersMatch?.[1]) {
         return this.addProjectMember(projectMembersMatch[1], request);
       }
-      const projectMemberIdMatch = url.pathname.match(/^\/projects\/([^/]+)\/members\/([^/]+)$/);
-      if (method === "DELETE" && projectMemberIdMatch?.[1] && projectMemberIdMatch?.[2]) {
-        return this.removeProjectMember(projectMemberIdMatch[1], projectMemberIdMatch[2]);
+      const projectMemberIdMatch = url.pathname.match(
+        /^\/projects\/([^/]+)\/members\/([^/]+)$/
+      );
+      if (
+        method === "DELETE" &&
+        projectMemberIdMatch?.[1] &&
+        projectMemberIdMatch?.[2]
+      ) {
+        return this.removeProjectMember(
+          projectMemberIdMatch[1],
+          projectMemberIdMatch[2]
+        );
       }
       // F-36: GET /projects/:id/assistant-access?user_id=U — the effective role an assistant has
       // in this project when acting on behalf of U (min of U's role and the assistant_mode clamp).
       // The agent side queries this before touching a project on a user's behalf.
-      const assistantAccessMatch = url.pathname.match(/^\/projects\/([^/]+)\/assistant-access$/);
+      const assistantAccessMatch = url.pathname.match(
+        /^\/projects\/([^/]+)\/assistant-access$/
+      );
       if (method === "GET" && assistantAccessMatch?.[1]) {
         const uid = url.searchParams.get("user_id") ?? "";
-        const effective = this.resolveAssistantEffectiveRole(assistantAccessMatch[1], uid);
-        return Response.json({ project_id: assistantAccessMatch[1], user_id: uid, effective_role: effective });
+        const effective = this.resolveAssistantEffectiveRole(
+          assistantAccessMatch[1],
+          uid
+        );
+        return Response.json({
+          project_id: assistantAccessMatch[1],
+          user_id: uid,
+          effective_role: effective,
+        });
       }
       // POST /projects/:id/activate-thread — hard exclusive-mode lock (§A1.17 Phase T3)
-      const activateThreadMatch = url.pathname.match(/^\/projects\/([^/]+)\/activate-thread$/);
+      const activateThreadMatch = url.pathname.match(
+        /^\/projects\/([^/]+)\/activate-thread$/
+      );
       if (method === "POST" && activateThreadMatch?.[1]) {
         return this.activateProjectThread(activateThreadMatch[1], request);
       }
       // ── Launchpad Wallet (kind='wallet' projects only) ─────────────────────────
-      const walletBalanceMatch = url.pathname.match(/^\/projects\/([^/]+)\/wallet\/balance$/);
+      const walletBalanceMatch = url.pathname.match(
+        /^\/projects\/([^/]+)\/wallet\/balance$/
+      );
       if (method === "GET" && walletBalanceMatch?.[1]) {
         return this.getWalletBalance(walletBalanceMatch[1]);
       }
-      const walletCreditMatch = url.pathname.match(/^\/projects\/([^/]+)\/wallet\/credit$/);
+      const walletCreditMatch = url.pathname.match(
+        /^\/projects\/([^/]+)\/wallet\/credit$/
+      );
       if (method === "POST" && walletCreditMatch?.[1]) {
         return this.creditWallet(walletCreditMatch[1], request);
       }
-      const walletDebitMatch = url.pathname.match(/^\/projects\/([^/]+)\/wallet\/debit$/);
+      const walletDebitMatch = url.pathname.match(
+        /^\/projects\/([^/]+)\/wallet\/debit$/
+      );
       if (method === "POST" && walletDebitMatch?.[1]) {
         return this.debitWallet(walletDebitMatch[1], request);
       }
-      const walletHistoryMatch = url.pathname.match(/^\/projects\/([^/]+)\/wallet\/history$/);
+      const walletHistoryMatch = url.pathname.match(
+        /^\/projects\/([^/]+)\/wallet\/history$/
+      );
       if (method === "GET" && walletHistoryMatch?.[1]) {
         return this.listWalletHistory(walletHistoryMatch[1], url.searchParams);
       }
@@ -1436,49 +1571,101 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "GET" && url.pathname === "/revenue-tracking") {
         return this.getExternalRevenue(url.searchParams);
       }
-      if (method === "POST" && url.pathname === "/revenue-tracking/mark-billed") {
+      if (
+        method === "POST" &&
+        url.pathname === "/revenue-tracking/mark-billed"
+      ) {
         return this.markRevenueBilled(request);
       }
-      if (method === "POST" && url.pathname === "/revenue-tracking/unmark-billed") {
+      if (
+        method === "POST" &&
+        url.pathname === "/revenue-tracking/unmark-billed"
+      ) {
         return this.markRevenueUnbilled(request);
       }
-      if (method === "POST" && url.pathname === "/revenue-tracking/mark-pending") {
+      if (
+        method === "POST" &&
+        url.pathname === "/revenue-tracking/mark-pending"
+      ) {
         return this.markRevenuePending(request);
       }
       // ── project-scoped Memory OS Layers 3/4/6 (§A1.17 Phase U) ─────────────────
-      const projFactsMatch = url.pathname.match(/^\/projects\/([^/]+)\/memory\/facts$/);
-      if (method === "POST" && projFactsMatch?.[1]) return this.rememberProjectFact(projFactsMatch[1], request);
-      if (method === "GET" && projFactsMatch?.[1]) return this.recallProjectFacts(projFactsMatch[1], url.searchParams);
-      const projFactIdMatch = url.pathname.match(/^\/projects\/([^/]+)\/memory\/facts\/([^/]+)$/);
-      if (method === "DELETE" && projFactIdMatch?.[1] && projFactIdMatch?.[2]) return this.deleteProjectFact(projFactIdMatch[1], projFactIdMatch[2]);
+      const projFactsMatch = url.pathname.match(
+        /^\/projects\/([^/]+)\/memory\/facts$/
+      );
+      if (method === "POST" && projFactsMatch?.[1])
+        return this.rememberProjectFact(projFactsMatch[1], request);
+      if (method === "GET" && projFactsMatch?.[1])
+        return this.recallProjectFacts(projFactsMatch[1], url.searchParams);
+      const projFactIdMatch = url.pathname.match(
+        /^\/projects\/([^/]+)\/memory\/facts\/([^/]+)$/
+      );
+      if (method === "DELETE" && projFactIdMatch?.[1] && projFactIdMatch?.[2])
+        return this.deleteProjectFact(projFactIdMatch[1], projFactIdMatch[2]);
 
-      const projFabricBriefMatch = url.pathname.match(/^\/projects\/([^/]+)\/memory\/fabric\/brief$/);
-      if (method === "GET" && projFabricBriefMatch?.[1]) return this.briefProjectFabric(projFabricBriefMatch[1], url.searchParams);
-      const projFabricMatch = url.pathname.match(/^\/projects\/([^/]+)\/memory\/fabric$/);
-      if (method === "POST" && projFabricMatch?.[1]) return this.recordProjectFabric(projFabricMatch[1], request);
-      if (method === "GET" && projFabricMatch?.[1]) return this.recallProjectFabric(projFabricMatch[1], url.searchParams);
+      const projFabricBriefMatch = url.pathname.match(
+        /^\/projects\/([^/]+)\/memory\/fabric\/brief$/
+      );
+      if (method === "GET" && projFabricBriefMatch?.[1])
+        return this.briefProjectFabric(
+          projFabricBriefMatch[1],
+          url.searchParams
+        );
+      const projFabricMatch = url.pathname.match(
+        /^\/projects\/([^/]+)\/memory\/fabric$/
+      );
+      if (method === "POST" && projFabricMatch?.[1])
+        return this.recordProjectFabric(projFabricMatch[1], request);
+      if (method === "GET" && projFabricMatch?.[1])
+        return this.recallProjectFabric(projFabricMatch[1], url.searchParams);
 
-      const projWikiConceptMatch = url.pathname.match(/^\/projects\/([^/]+)\/memory\/wiki\/([^/]+)$/);
-      if (method === "GET" && projWikiConceptMatch?.[1] && projWikiConceptMatch?.[2]) {
-        return this.lookupProjectWikiConcept(projWikiConceptMatch[1], decodeURIComponent(projWikiConceptMatch[2]));
+      const projWikiConceptMatch = url.pathname.match(
+        /^\/projects\/([^/]+)\/memory\/wiki\/([^/]+)$/
+      );
+      if (
+        method === "GET" &&
+        projWikiConceptMatch?.[1] &&
+        projWikiConceptMatch?.[2]
+      ) {
+        return this.lookupProjectWikiConcept(
+          projWikiConceptMatch[1],
+          decodeURIComponent(projWikiConceptMatch[2])
+        );
       }
-      const projWikiMatch = url.pathname.match(/^\/projects\/([^/]+)\/memory\/wiki$/);
-      if (method === "POST" && projWikiMatch?.[1]) return this.upsertProjectWikiConcept(projWikiMatch[1], request);
-      if (method === "GET" && projWikiMatch?.[1]) return this.searchProjectWiki(projWikiMatch[1], url.searchParams);
+      const projWikiMatch = url.pathname.match(
+        /^\/projects\/([^/]+)\/memory\/wiki$/
+      );
+      if (method === "POST" && projWikiMatch?.[1])
+        return this.upsertProjectWikiConcept(projWikiMatch[1], request);
+      if (method === "GET" && projWikiMatch?.[1])
+        return this.searchProjectWiki(projWikiMatch[1], url.searchParams);
       // ── project_rules (no-code "after customer says X" triggers) ──────────────
-      const projectRulesMatch = url.pathname.match(/^\/projects\/([^/]+)\/rules$/);
+      const projectRulesMatch = url.pathname.match(
+        /^\/projects\/([^/]+)\/rules$/
+      );
       if (method === "GET" && projectRulesMatch?.[1]) {
         return this.listProjectRules(projectRulesMatch[1]);
       }
       if (method === "POST" && projectRulesMatch?.[1]) {
         return this.createProjectRule(projectRulesMatch[1], request);
       }
-      const projectRuleIdMatch = url.pathname.match(/^\/projects\/([^/]+)\/rules\/([^/]+)$/);
-      if (method === "DELETE" && projectRuleIdMatch?.[1] && projectRuleIdMatch?.[2]) {
-        return this.deleteProjectRule(projectRuleIdMatch[1], projectRuleIdMatch[2]);
+      const projectRuleIdMatch = url.pathname.match(
+        /^\/projects\/([^/]+)\/rules\/([^/]+)$/
+      );
+      if (
+        method === "DELETE" &&
+        projectRuleIdMatch?.[1] &&
+        projectRuleIdMatch?.[2]
+      ) {
+        return this.deleteProjectRule(
+          projectRuleIdMatch[1],
+          projectRuleIdMatch[2]
+        );
       }
       // ── Authoritative per-project daily spend (F9) ─────────────────────────────
-      const projectSpendMatch = url.pathname.match(/^\/projects\/([^/]+)\/spend$/);
+      const projectSpendMatch = url.pathname.match(
+        /^\/projects\/([^/]+)\/spend$/
+      );
       if (method === "GET" && projectSpendMatch?.[1]) {
         return this.getProjectSpend(projectSpendMatch[1], url.searchParams);
       }
@@ -1543,34 +1730,51 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return await this.incrementSessionSpend(request);
       }
       // GET /session-spend/:sessionId — read the current tally (zeroed default if none yet).
-      const sessionSpendMatch = url.pathname.match(/^\/session-spend\/([^/]+)$/);
+      const sessionSpendMatch = url.pathname.match(
+        /^\/session-spend\/([^/]+)$/
+      );
       if (method === "GET" && sessionSpendMatch?.[1]) {
         return this.getSessionSpend(sessionSpendMatch[1]);
       }
       // POST /session-spend/:sessionId/continue — a human approved continuing past the ceiling;
       // resets the tally so the next cycle starts fresh (see NaelaoAgentDO's gate for why a
       // reset, not an ever-growing extension, is the right model here).
-      const sessionSpendContinueMatch = url.pathname.match(/^\/session-spend\/([^/]+)\/continue$/);
+      const sessionSpendContinueMatch = url.pathname.match(
+        /^\/session-spend\/([^/]+)\/continue$/
+      );
       if (method === "POST" && sessionSpendContinueMatch?.[1]) {
         return this.continueSessionSpend(sessionSpendContinueMatch[1]);
       }
       // POST /session-spend/:sessionId/mark-warned — idempotent single-fire flag so the 80%
       // warning event only fires once per spending cycle, not on every run past the threshold.
-      const sessionSpendWarnMatch = url.pathname.match(/^\/session-spend\/([^/]+)\/mark-warned$/);
+      const sessionSpendWarnMatch = url.pathname.match(
+        /^\/session-spend\/([^/]+)\/mark-warned$/
+      );
       if (method === "POST" && sessionSpendWarnMatch?.[1]) {
         return this.markSessionSpendWarned(sessionSpendWarnMatch[1]);
       }
       // ── Container Marketplace slots (§A1.17 Phase L) ───────────────────────────
-      const containerSlotsMatch = url.pathname.match(/^\/projects\/([^/]+)\/container-slots$/);
+      const containerSlotsMatch = url.pathname.match(
+        /^\/projects\/([^/]+)\/container-slots$/
+      );
       if (method === "GET" && containerSlotsMatch?.[1]) {
         return this.listContainerSlots(containerSlotsMatch[1]);
       }
       if (method === "POST" && containerSlotsMatch?.[1]) {
         return this.createContainerSlot(containerSlotsMatch[1], request);
       }
-      const containerSlotIdMatch = url.pathname.match(/^\/projects\/([^/]+)\/container-slots\/([^/]+)$/);
-      if (method === "DELETE" && containerSlotIdMatch?.[1] && containerSlotIdMatch?.[2]) {
-        return this.deleteContainerSlot(containerSlotIdMatch[1], containerSlotIdMatch[2]);
+      const containerSlotIdMatch = url.pathname.match(
+        /^\/projects\/([^/]+)\/container-slots\/([^/]+)$/
+      );
+      if (
+        method === "DELETE" &&
+        containerSlotIdMatch?.[1] &&
+        containerSlotIdMatch?.[2]
+      ) {
+        return this.deleteContainerSlot(
+          containerSlotIdMatch[1],
+          containerSlotIdMatch[2]
+        );
       }
 
       // ── Local-machine-as-container permission grants (§A1.17 Phase M) ─────────
@@ -1582,11 +1786,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         );
       }
       if (method === "POST" && url.pathname === "/local-grants") {
-        return this.createLocalGrant(url.searchParams.get("space_id") ?? "", request);
+        return this.createLocalGrant(
+          url.searchParams.get("space_id") ?? "",
+          request
+        );
       }
       const localGrantIdMatch = url.pathname.match(/^\/local-grants\/([^/]+)$/);
       if (method === "DELETE" && localGrantIdMatch?.[1]) {
-        return this.deleteLocalGrant(url.searchParams.get("space_id") ?? "", localGrantIdMatch[1]);
+        return this.deleteLocalGrant(
+          url.searchParams.get("space_id") ?? "",
+          localGrantIdMatch[1]
+        );
       }
 
       // ── Presence (space collaboration, A1.8) ───────────────────────────────────
@@ -1609,9 +1819,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && url.pathname === "/event-triggers") {
         return this.createEventTrigger(request);
       }
-      const eventTriggerIdMatch = url.pathname.match(/^\/event-triggers\/([^/]+)$/);
+      const eventTriggerIdMatch = url.pathname.match(
+        /^\/event-triggers\/([^/]+)$/
+      );
       if (method === "DELETE" && eventTriggerIdMatch?.[1]) {
-        return this.deleteEventTrigger(url.searchParams.get("space_id") ?? "", eventTriggerIdMatch[1]);
+        return this.deleteEventTrigger(
+          url.searchParams.get("space_id") ?? "",
+          eventTriggerIdMatch[1]
+        );
       }
 
       // ── Space Assistant approval policy ────────────────────────────────────────
@@ -1619,19 +1834,26 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return this.getAssistantPolicy(url.searchParams.get("space_id") ?? "");
       }
       if (method === "PATCH" && url.pathname === "/assistant-policy") {
-        return this.updateAssistantPolicy(url.searchParams.get("space_id") ?? "", request);
+        return this.updateAssistantPolicy(
+          url.searchParams.get("space_id") ?? "",
+          request
+        );
       }
 
       // ── Agent API keys (§A1.17 Phase O: "the same API a human can use, attributed to the
       // agent itself") ───────────────────────────────────────────────────────────
-      const agentKeysMatch = url.pathname.match(/^\/agents\/([^/]+)\/api-keys$/);
+      const agentKeysMatch = url.pathname.match(
+        /^\/agents\/([^/]+)\/api-keys$/
+      );
       if (method === "POST" && agentKeysMatch?.[1]) {
         return this.createAgentApiKey(agentKeysMatch[1]);
       }
       if (method === "GET" && agentKeysMatch?.[1]) {
         return this.listAgentApiKeys(agentKeysMatch[1]);
       }
-      const agentKeyIdMatch = url.pathname.match(/^\/agents\/([^/]+)\/api-keys\/([^/]+)$/);
+      const agentKeyIdMatch = url.pathname.match(
+        /^\/agents\/([^/]+)\/api-keys\/([^/]+)$/
+      );
       if (method === "DELETE" && agentKeyIdMatch?.[1] && agentKeyIdMatch?.[2]) {
         return this.revokeAgentApiKey(agentKeyIdMatch[1], agentKeyIdMatch[2]);
       }
@@ -1644,12 +1866,21 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
 
       // ── Per-agent approval policy override (falls back to assistant_policy when absent) ──
-      const agentPolicyMatch = url.pathname.match(/^\/agents\/([^/]+)\/policy$/);
+      const agentPolicyMatch = url.pathname.match(
+        /^\/agents\/([^/]+)\/policy$/
+      );
       if (method === "GET" && agentPolicyMatch?.[1]) {
-        return this.getAgentPolicy(url.searchParams.get("space_id") ?? "", agentPolicyMatch[1]);
+        return this.getAgentPolicy(
+          url.searchParams.get("space_id") ?? "",
+          agentPolicyMatch[1]
+        );
       }
       if (method === "PATCH" && agentPolicyMatch?.[1]) {
-        return this.updateAgentPolicy(url.searchParams.get("space_id") ?? "", agentPolicyMatch[1], request);
+        return this.updateAgentPolicy(
+          url.searchParams.get("space_id") ?? "",
+          agentPolicyMatch[1],
+          request
+        );
       }
 
       // ── threads (spec-canonical; sub-agent/channel mirrors are ordinary subthreads) ────
@@ -1835,7 +2066,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private listSessions(params: URLSearchParams): Response {
     const endUserId = params.get("end_user_id");
     const limit = Math.min(Math.max(Number(params.get("limit")) || 20, 1), 100);
-    const notThreadLinked = "id NOT IN (SELECT session_id FROM threads WHERE session_id IS NOT NULL)";
+    const notThreadLinked =
+      "id NOT IN (SELECT session_id FROM threads WHERE session_id IS NOT NULL)";
     // Heartbeat/cron-wake sessions (metadata.session_kind === "heartbeat") are deliberately kept
     // out of the ordinary recents list — the only two places they're meant to surface are here
     // with ?kind=heartbeat (the Sessions page's own filter tab) and the Heartbeats sidebar tab,
@@ -1856,18 +2088,19 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     // business membership (router hybrid-auth + product-session verify), so a heartbeat listing is
     // deliberately NOT scoped by end_user_id. Only the heartbeat branch drops the scope; ordinary
     // recents stay per-user exactly as before.
-    const rows = endUserId && !isHeartbeat
-      ? queryAll<SessionRow>(
-          this.ctx.storage.sql as never,
-          `SELECT * FROM sessions WHERE end_user_id = ? AND ${notThreadLinked} AND ${kindClause} ORDER BY updated_at DESC LIMIT ?`,
-          endUserId,
-          limit
-        )
-      : queryAll<SessionRow>(
-          this.ctx.storage.sql as never,
-          `SELECT * FROM sessions WHERE ${notThreadLinked} AND ${kindClause} ORDER BY updated_at DESC LIMIT ?`,
-          limit
-        );
+    const rows =
+      endUserId && !isHeartbeat
+        ? queryAll<SessionRow>(
+            this.ctx.storage.sql as never,
+            `SELECT * FROM sessions WHERE end_user_id = ? AND ${notThreadLinked} AND ${kindClause} ORDER BY updated_at DESC LIMIT ?`,
+            endUserId,
+            limit
+          )
+        : queryAll<SessionRow>(
+            this.ctx.storage.sql as never,
+            `SELECT * FROM sessions WHERE ${notThreadLinked} AND ${kindClause} ORDER BY updated_at DESC LIMIT ?`,
+            limit
+          );
     return Response.json({ data: rows, count: rows.length });
   }
 
@@ -1875,7 +2108,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private static readonly MAX_MESSAGE_CONTENT_BYTES = 131_072;
 
   // G-AX13: Token bucket rate limit check for a given end_user_id (10 msg/min default)
-  private checkUserRateLimit(userId: string): { allowed: boolean; retryAfterMs: number } {
+  private checkUserRateLimit(userId: string): {
+    allowed: boolean;
+    retryAfterMs: number;
+  } {
     const MSG_PER_MIN = 10;
     const capacity = MSG_PER_MIN;
     const ratePerSec = MSG_PER_MIN / 60;
@@ -1898,28 +2134,45 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const currentTokens = row?.tokens ?? capacity;
     const lastRefill = row?.last_refill_at ?? nowMs;
     const elapsedSec = Math.max(0, (nowMs - lastRefill) / 1000);
-    const refilled = Math.min(capacity, currentTokens + elapsedSec * ratePerSec);
+    const refilled = Math.min(
+      capacity,
+      currentTokens + elapsedSec * ratePerSec
+    );
 
     if (refilled < 1) {
       execute(
         this.ctx.storage.sql as never,
         `INSERT OR REPLACE INTO user_rate_limits (user_id, tokens, last_refill_at, capacity, rate_per_sec)
          VALUES (?, ?, ?, ?, ?)`,
-        userId, refilled, nowMs, capacity, ratePerSec
+        userId,
+        refilled,
+        nowMs,
+        capacity,
+        ratePerSec
       );
-      return { allowed: false, retryAfterMs: Math.ceil((1 - refilled) / ratePerSec * 1000) };
+      return {
+        allowed: false,
+        retryAfterMs: Math.ceil(((1 - refilled) / ratePerSec) * 1000),
+      };
     }
 
     execute(
       this.ctx.storage.sql as never,
       `INSERT OR REPLACE INTO user_rate_limits (user_id, tokens, last_refill_at, capacity, rate_per_sec)
        VALUES (?, ?, ?, ?, ?)`,
-      userId, refilled - 1, nowMs, capacity, ratePerSec
+      userId,
+      refilled - 1,
+      nowMs,
+      capacity,
+      ratePerSec
     );
     return { allowed: true, retryAfterMs: 0 };
   }
 
-  private async appendMessage(request: Request, sessionId: string): Promise<Response> {
+  private async appendMessage(
+    request: Request,
+    sessionId: string
+  ): Promise<Response> {
     const body = await request.json<{
       role: MessageRole;
       content: string;
@@ -1947,7 +2200,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const contentBytes = new TextEncoder().encode(body.content ?? "").length;
     if (contentBytes > SpaceDO.MAX_MESSAGE_CONTENT_BYTES) {
       return Response.json(
-        { error_code: "payload_too_large", message: `Message content exceeds ${SpaceDO.MAX_MESSAGE_CONTENT_BYTES} byte limit` },
+        {
+          error_code: "payload_too_large",
+          message: `Message content exceeds ${SpaceDO.MAX_MESSAGE_CONTENT_BYTES} byte limit`,
+        },
         { status: 413 }
       );
     }
@@ -1957,7 +2213,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const rl = this.checkUserRateLimit(body.end_user_id);
       if (!rl.allowed) {
         return Response.json(
-          { error_code: "rate_limited", message: "Too many messages — please slow down", retry_after_ms: rl.retryAfterMs },
+          {
+            error_code: "rate_limited",
+            message: "Too many messages — please slow down",
+            retry_after_ms: rl.retryAfterMs,
+          },
           { status: 429 }
         );
       }
@@ -2009,7 +2269,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     // write a second copy. Return the message that already exists instead, so the caller sees the
     // same 2xx it would have seen had the first response reached it.
     if (body.client_message_id) {
-      const existing = queryOne<{ id: string; role: string; author_type: string; author_id: string | null; created_at: string }>(
+      const existing = queryOne<{
+        id: string;
+        role: string;
+        author_type: string;
+        author_id: string | null;
+        created_at: string;
+      }>(
         this.ctx.storage.sql as never,
         "SELECT id, role, author_type, author_id, created_at FROM messages WHERE session_id = ? AND client_message_id = ?",
         sessionId,
@@ -2018,9 +2284,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (existing) {
         return Response.json(
           {
-            id: existing.id, session_id: sessionId, role: existing.role,
-            author_type: existing.author_type, author_id: existing.author_id,
-            created_at: existing.created_at, deduplicated: true,
+            id: existing.id,
+            session_id: sessionId,
+            role: existing.role,
+            author_type: existing.author_type,
+            author_id: existing.author_id,
+            created_at: existing.created_at,
+            deduplicated: true,
           },
           { status: 200 }
         );
@@ -2078,7 +2348,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
     return Response.json(
       {
-        id, session_id: sessionId, role: body.role, author_type: authorType, author_id: authorId, created_at: now,
+        id,
+        session_id: sessionId,
+        role: body.role,
+        author_type: authorType,
+        author_id: authorId,
+        created_at: now,
         ...(body.metadata ? { metadata: body.metadata } : {}),
       },
       { status: 201 }
@@ -2104,11 +2379,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
    * `end_user_id`, when present, is the caller's own verified id (the proxy derives it from
    * claims and never from the query string) — an end user may only truncate their own session.
    */
-  private truncateMessages(sessionId: string, params: URLSearchParams): Response {
+  private truncateMessages(
+    sessionId: string,
+    params: URLSearchParams
+  ): Response {
     const fromId = params.get("from");
     if (!fromId) {
       return Response.json(
-        { error_code: "invalid_request", message: "from (a message id) is required" },
+        {
+          error_code: "invalid_request",
+          message: "from (a message id) is required",
+        },
         { status: 400 }
       );
     }
@@ -2158,7 +2439,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     // instead of being silently clamped: that caller sums every message's length to report "% of
     // context used", and clamping made it UNDER-report on exactly the long conversations where the
     // number matters, which in turn suppressed the auto-compaction it drives.
-    const limit = Math.min(parseInt(params.get("limit") ?? "50"), 500);
+    const limit = Math.min(Number.parseInt(params.get("limit") ?? "50"), 500);
     const before = params.get("before");
     // `before` is a created_at timestamp, which is only millisecond-granular — several messages
     // written in the same millisecond share one value, so `created_at < before` drops every one of
@@ -2244,14 +2525,23 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     // rather than breaking the whole message list.
     const data = rows.map((r) => {
       let metadata: Record<string, unknown> = {};
-      try { metadata = JSON.parse((r as unknown as { metadata?: string }).metadata ?? "{}"); } catch { /* default {} */ }
+      try {
+        metadata = JSON.parse(
+          (r as unknown as { metadata?: string }).metadata ?? "{}"
+        );
+      } catch {
+        /* default {} */
+      }
       return { ...r, metadata };
     });
 
     return Response.json({ data, count: data.length });
   }
 
-  private async updateSession(request: Request, sessionId: string): Promise<Response> {
+  private async updateSession(
+    request: Request,
+    sessionId: string
+  ): Promise<Response> {
     const body = await request.json<{
       status?: string;
       metadata?: Record<string, unknown>;
@@ -2294,22 +2584,42 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ modes });
   }
 
-  private async setConnectorMode(request: Request, sessionId: string): Promise<Response> {
-    const body = await request.json<{ connector_id?: string; mode?: string }>().catch(() => null);
-    if (!body?.connector_id || (body.mode !== "business" && body.mode !== "personal")) {
-      return Response.json({ error_code: "bad_request", message: "connector_id and mode ('business'|'personal') are required" }, { status: 400 });
+  private async setConnectorMode(
+    request: Request,
+    sessionId: string
+  ): Promise<Response> {
+    const body = await request
+      .json<{ connector_id?: string; mode?: string }>()
+      .catch(() => null);
+    if (
+      !body?.connector_id ||
+      (body.mode !== "business" && body.mode !== "personal")
+    ) {
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "connector_id and mode ('business'|'personal') are required",
+        },
+        { status: 400 }
+      );
     }
     if (body.mode === "business") {
       // Business is the implicit default — delete rather than store a redundant row, so a fresh
       // read-out (getConnectorMode) and "was this ever switched" both stay simple.
-      execute(this.ctx.storage.sql as never, "DELETE FROM connector_account_mode WHERE session_id = ? AND connector_id = ?", sessionId, body.connector_id);
+      execute(
+        this.ctx.storage.sql as never,
+        "DELETE FROM connector_account_mode WHERE session_id = ? AND connector_id = ?",
+        sessionId,
+        body.connector_id
+      );
       return Response.json({ ok: true, mode: "business" });
     }
     execute(
       this.ctx.storage.sql as never,
       `INSERT INTO connector_account_mode (session_id, connector_id, mode) VALUES (?, ?, 'personal')
        ON CONFLICT(session_id, connector_id) DO UPDATE SET mode = 'personal', updated_at = datetime('now')`,
-      sessionId, body.connector_id
+      sessionId,
+      body.connector_id
     );
     return Response.json({ ok: true, mode: "personal" });
   }
@@ -2334,7 +2644,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     });
   }
 
-  private async putAgentState(request: Request, sessionId: string): Promise<Response> {
+  private async putAgentState(
+    request: Request,
+    sessionId: string
+  ): Promise<Response> {
     const body = await request.json<{
       current_fsm_state?: string;
       goal_stack?: unknown[];
@@ -2364,7 +2677,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const body = await request.json<{ user_id: string; space_id: string }>();
     if (!body.user_id || !body.space_id) {
       return Response.json(
-        { error_code: "bad_request", message: "user_id and space_id are required" },
+        {
+          error_code: "bad_request",
+          message: "user_id and space_id are required",
+        },
         { status: 400 }
       );
     }
@@ -2382,7 +2698,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private getUserMessages(params: URLSearchParams): Response {
     const userId = params.get("user_id");
     if (!userId) {
-      return Response.json({ error_code: "bad_request", message: "user_id is required" }, { status: 400 });
+      return Response.json(
+        { error_code: "bad_request", message: "user_id is required" },
+        { status: 400 }
+      );
     }
 
     const sessions = queryAll<{ id: string }>(
@@ -2412,7 +2731,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private eraseUserData(params: URLSearchParams): Response {
     const userId = params.get("user_id");
     if (!userId) {
-      return Response.json({ error_code: "bad_request", message: "user_id is required" }, { status: 400 });
+      return Response.json(
+        { error_code: "bad_request", message: "user_id is required" },
+        { status: 400 }
+      );
     }
 
     const sessions = queryAll<{ id: string }>(
@@ -2461,9 +2783,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     // a `DELETE FROM threads` here on the assumption the erasure is "incomplete".
 
     const erasedAt = new Date().toISOString();
-    console.log(`[gdpr][erasure] user=${userId} sessions=${sessionsDeleted} messages=${messagesDeleted} at=${erasedAt}`);
+    console.log(
+      `[gdpr][erasure] user=${userId} sessions=${sessionsDeleted} messages=${messagesDeleted} at=${erasedAt}`
+    );
 
-    return Response.json({ erased: true, sessions_deleted: sessionsDeleted, messages_deleted: messagesDeleted, erased_at: erasedAt });
+    return Response.json({
+      erased: true,
+      sessions_deleted: sessionsDeleted,
+      messages_deleted: messagesDeleted,
+      erased_at: erasedAt,
+    });
   }
 
   // ── agent_definitions methods ────────────────────────────────────────────────
@@ -2471,8 +2800,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private listAgentDefinitions(params: URLSearchParams): Response {
     const spaceId = params.get("space_id");
     interface AgentDefRow {
-      id: string; space_id: string; name: string; description: string;
-      config_json: string; version: number; enabled: number; created_at: string; updated_at: string;
+      id: string;
+      space_id: string;
+      name: string;
+      description: string;
+      config_json: string;
+      version: number;
+      enabled: number;
+      created_at: string;
+      updated_at: string;
     }
     const rows = spaceId
       ? queryAll<AgentDefRow>(
@@ -2484,7 +2820,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           this.ctx.storage.sql as never,
           "SELECT * FROM agent_definitions ORDER BY created_at ASC"
         );
-    return Response.json({ data: rows.map(r => ({ ...r, config: JSON.parse(r.config_json) as unknown })) });
+    return Response.json({
+      data: rows.map((r) => ({
+        ...r,
+        config: JSON.parse(r.config_json) as unknown,
+      })),
+    });
   }
 
   private async createAgentDefinition(request: Request): Promise<Response> {
@@ -2497,7 +2838,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }>();
     if (!body.space_id || !body.name || !body.config) {
       return Response.json(
-        { error_code: "bad_request", message: "space_id, name, and config are required" },
+        {
+          error_code: "bad_request",
+          message: "space_id, name, and config are required",
+        },
         { status: 400 }
       );
     }
@@ -2521,13 +2865,23 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       now,
       now
     );
-    return Response.json({ id, space_id: body.space_id, name: body.name, created_at: now }, { status: 201 });
+    return Response.json(
+      { id, space_id: body.space_id, name: body.name, created_at: now },
+      { status: 201 }
+    );
   }
 
   private getAgentDefinition(id: string): Response {
     interface AgentDefRow {
-      id: string; space_id: string; name: string; description: string;
-      config_json: string; version: number; enabled: number; created_at: string; updated_at: string;
+      id: string;
+      space_id: string;
+      name: string;
+      description: string;
+      config_json: string;
+      version: number;
+      enabled: number;
+      created_at: string;
+      updated_at: string;
     }
     const row = queryOne<AgentDefRow>(
       this.ctx.storage.sql as never,
@@ -2535,12 +2889,21 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       id
     );
     if (!row) {
-      return Response.json({ error_code: "not_found", message: "Agent definition not found" }, { status: 404 });
+      return Response.json(
+        { error_code: "not_found", message: "Agent definition not found" },
+        { status: 404 }
+      );
     }
-    return Response.json({ ...row, config: JSON.parse(row.config_json) as unknown });
+    return Response.json({
+      ...row,
+      config: JSON.parse(row.config_json) as unknown,
+    });
   }
 
-  private async updateAgentDefinition(id: string, request: Request): Promise<Response> {
+  private async updateAgentDefinition(
+    id: string,
+    request: Request
+  ): Promise<Response> {
     const body = await request.json<{
       name?: string;
       description?: string;
@@ -2569,7 +2932,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   private deleteAgentDefinition(id: string): Response {
-    execute(this.ctx.storage.sql as never, "DELETE FROM agent_definitions WHERE id = ?", id);
+    execute(
+      this.ctx.storage.sql as never,
+      "DELETE FROM agent_definitions WHERE id = ?",
+      id
+    );
     return Response.json({ deleted: true, id });
   }
 
@@ -2577,7 +2944,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
   private listMembers(params: URLSearchParams): Response {
     const spaceId = params.get("space_id");
-    interface MemberRow { space_id: string; user_id: string; role: string; joined_at: string; }
+    interface MemberRow {
+      space_id: string;
+      user_id: string;
+      role: string;
+      joined_at: string;
+    }
     const rows = spaceId
       ? queryAll<MemberRow>(
           this.ctx.storage.sql as never,
@@ -2589,10 +2961,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   private async addMember(request: Request): Promise<Response> {
-    const body = await request.json<{ space_id: string; user_id: string; role?: string }>();
+    const body = await request.json<{
+      space_id: string;
+      user_id: string;
+      role?: string;
+    }>();
     if (!body.space_id || !body.user_id) {
       return Response.json(
-        { error_code: "bad_request", message: "space_id and user_id are required" },
+        {
+          error_code: "bad_request",
+          message: "space_id and user_id are required",
+        },
         { status: 400 }
       );
     }
@@ -2606,7 +2985,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       body.role ?? "member",
       now
     );
-    return Response.json({ space_id: body.space_id, user_id: body.user_id, role: body.role ?? "member" }, { status: 201 });
+    return Response.json(
+      {
+        space_id: body.space_id,
+        user_id: body.user_id,
+        role: body.role ?? "member",
+      },
+      { status: 201 }
+    );
   }
 
   private removeMember(userId: string, spaceId: string): Response {
@@ -2615,7 +3001,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     // A1.16.9's threads/agent-definitions gating) — an unscoped delete removed a member from
     // EVERY space in that DO at once, not just the one the caller meant to remove them from.
     if (!spaceId) {
-      return Response.json({ error_code: "bad_request", message: "space_id is required" }, { status: 400 });
+      return Response.json(
+        { error_code: "bad_request", message: "space_id is required" },
+        { status: 400 }
+      );
     }
     execute(
       this.ctx.storage.sql as never,
@@ -2635,7 +3024,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     defaultAgentId: string | null | undefined,
     allowedAgentIds: string[] | null | undefined
   ): string | null {
-    if (defaultAgentId && allowedAgentIds && allowedAgentIds.length > 0 && !allowedAgentIds.includes(defaultAgentId)) {
+    if (
+      defaultAgentId &&
+      allowedAgentIds &&
+      allowedAgentIds.length > 0 &&
+      !allowedAgentIds.includes(defaultAgentId)
+    ) {
       return `default_agent_id '${defaultAgentId}' must be included in allowed_agent_ids`;
     }
     return null;
@@ -2649,10 +3043,20 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const spaceId = params.get("space_id") ?? "";
     const viewerId = params.get("viewer_id") ?? "";
     const rows = queryAll<{
-      id: string; space_id: string; name: string; description: string; status: string;
-      default_agent_id: string | null; max_threads: number; allowed_agent_ids: string | null;
-      visibility: string; created_by: string | null; created_at: string; last_activity_at: string | null;
-      kind: string; is_singleton_kind: number;
+      id: string;
+      space_id: string;
+      name: string;
+      description: string;
+      status: string;
+      default_agent_id: string | null;
+      max_threads: number;
+      allowed_agent_ids: string | null;
+      visibility: string;
+      created_by: string | null;
+      created_at: string;
+      last_activity_at: string | null;
+      kind: string;
+      is_singleton_kind: number;
     }>(
       this.ctx.storage.sql as never,
       // F-40: `kind` is surfaced so the frontend project-page shell can mount the natively-built
@@ -2673,19 +3077,34 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       spaceId
     );
     const visible = viewerId
-      ? rows.filter((r) => r.visibility !== "private" || this.getProjectMemberRole(r.id, viewerId) !== null || this.isSpaceOwnerOrAdmin(viewerId))
+      ? rows.filter(
+          (r) =>
+            r.visibility !== "private" ||
+            this.getProjectMemberRole(r.id, viewerId) !== null ||
+            this.isSpaceOwnerOrAdmin(viewerId)
+        )
       : rows;
     return Response.json({
-      data: visible.map((r) => ({ ...r, allowed_agent_ids: safeJsonParseAgentIds(r.allowed_agent_ids) })),
+      data: visible.map((r) => ({
+        ...r,
+        allowed_agent_ids: safeJsonParseAgentIds(r.allowed_agent_ids),
+      })),
       count: visible.length,
     });
   }
 
   private async createProject(request: Request): Promise<Response> {
     const body = await request.json<{
-      space_id: string; name: string; description?: string; tenant_id?: string;
-      default_agent_id?: string; max_threads?: number; allowed_agent_ids?: string[];
-      visibility?: "public" | "private"; created_by?: string; kind?: string;
+      space_id: string;
+      name: string;
+      description?: string;
+      tenant_id?: string;
+      default_agent_id?: string;
+      max_threads?: number;
+      allowed_agent_ids?: string[];
+      visibility?: "public" | "private";
+      created_by?: string;
+      kind?: string;
       /** Set ONLY by the spaces worker's own POST /spaces/:spaceId/projects handler, derived from
        *  the verified absence of an authenticated caller (no x-naelao-user-id) — never read from
        *  a client body field. True for the provisioner's seedWallet call and other genuinely
@@ -2694,23 +3113,61 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       system_caller?: boolean;
     }>();
     if (!body.space_id || !body.name) {
-      return Response.json({ error_code: "bad_request", message: "space_id and name are required" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "space_id and name are required",
+        },
+        { status: 400 }
+      );
     }
-    if (body.max_threads !== undefined && (!Number.isInteger(body.max_threads) || body.max_threads < 0)) {
-      return Response.json({ error_code: "bad_request", message: "max_threads must be a non-negative integer" }, { status: 400 });
+    if (
+      body.max_threads !== undefined &&
+      (!Number.isInteger(body.max_threads) || body.max_threads < 0)
+    ) {
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "max_threads must be a non-negative integer",
+        },
+        { status: 400 }
+      );
     }
-    if (body.visibility !== undefined && body.visibility !== "public" && body.visibility !== "private") {
-      return Response.json({ error_code: "bad_request", message: "visibility must be 'public' or 'private'" }, { status: 400 });
+    if (
+      body.visibility !== undefined &&
+      body.visibility !== "public" &&
+      body.visibility !== "private"
+    ) {
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "visibility must be 'public' or 'private'",
+        },
+        { status: 400 }
+      );
     }
-    const bindingError = SpaceDO.validateAgentBinding(body.default_agent_id, body.allowed_agent_ids);
-    if (bindingError) return Response.json({ error_code: "bad_request", message: bindingError }, { status: 400 });
+    const bindingError = SpaceDO.validateAgentBinding(
+      body.default_agent_id,
+      body.allowed_agent_ids
+    );
+    if (bindingError)
+      return Response.json(
+        { error_code: "bad_request", message: bindingError },
+        { status: 400 }
+      );
 
     // F-33/F-35: `kind` support (default 'workspace', unchanged for existing callers). Validate
     // against the Business Feature Projects registry; role-gate feature kinds; stamp
     // is_singleton_kind so the DB partial unique index (F-32) is the real singleton guarantee.
     const kind = body.kind ?? "workspace";
     if (!isKnownProjectKind(kind)) {
-      return Response.json({ error_code: "bad_request", message: `Unknown project kind '${kind}'` }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: `Unknown project kind '${kind}'`,
+        },
+        { status: 400 }
+      );
     }
     const featureKind = getBusinessFeatureKind(kind);
     let isSingletonKind = 0;
@@ -2727,12 +3184,30 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // without forcing created_by can never silently inherit owner-level privilege.
       if (!body.created_by) {
         if (!body.system_caller) {
-          return Response.json({ error_code: "forbidden", message: `Creating a '${kind}' project requires a resolvable creator` }, { status: 403 });
+          return Response.json(
+            {
+              error_code: "forbidden",
+              message: `Creating a '${kind}' project requires a resolvable creator`,
+            },
+            { status: 403 }
+          );
         }
       } else {
-        const callerRole = queryOne<{ role: string }>(this.ctx.storage.sql as never, "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?", body.space_id, body.created_by)?.role ?? "";
+        const callerRole =
+          queryOne<{ role: string }>(
+            this.ctx.storage.sql as never,
+            "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?",
+            body.space_id,
+            body.created_by
+          )?.role ?? "";
         if (!roleMeetsMinimum(callerRole, featureKind.minCreationRole)) {
-          return Response.json({ error_code: "forbidden", message: `Creating a '${kind}' project requires at least the '${featureKind.minCreationRole}' role` }, { status: 403 });
+          return Response.json(
+            {
+              error_code: "forbidden",
+              message: `Creating a '${kind}' project requires at least the '${featureKind.minCreationRole}' role`,
+            },
+            { status: 403 }
+          );
         }
       }
       isSingletonKind = featureKind.singleton ? 1 : 0;
@@ -2741,10 +3216,18 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const existing = queryOne<{ id: string }>(
           this.ctx.storage.sql as never,
           "SELECT id FROM projects WHERE space_id = ? AND kind = ? AND is_singleton_kind = 1 AND status = 'active'",
-          body.space_id, kind
+          body.space_id,
+          kind
         );
         if (existing) {
-          return Response.json({ error_code: "duplicate_singleton_project", message: `A '${kind}' project already exists for this space`, existing_project_id: existing.id }, { status: 409 });
+          return Response.json(
+            {
+              error_code: "duplicate_singleton_project",
+              message: `A '${kind}' project already exists for this space`,
+              existing_project_id: existing.id,
+            },
+            { status: 409 }
+          );
         }
       }
     }
@@ -2752,7 +3235,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     // Check BEFORE inserting — createProject is idempotent on (space_id, name), and
     // project.created should only fire on a genuinely NEW project, not a re-run of bootstrap.
     const alreadyExisted = !!queryOne<{ id: string }>(
-      this.ctx.storage.sql as never, "SELECT id FROM projects WHERE space_id = ? AND name = ?", body.space_id, body.name
+      this.ctx.storage.sql as never,
+      "SELECT id FROM projects WHERE space_id = ? AND name = ?",
+      body.space_id,
+      body.name
     );
     // Space collaboration (A1.8): before creating a genuinely new project, check for a
     // likely-duplicate among the space's existing active projects (name similarity, not just
@@ -2765,43 +3251,76 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         "SELECT id, name FROM projects WHERE space_id = ? AND status != 'archived'",
         body.space_id
       );
-      possibleDuplicates = findPossibleDuplicateProjects(body.name, activeProjects);
+      possibleDuplicates = findPossibleDuplicateProjects(
+        body.name,
+        activeProjects
+      );
     }
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
-    const allowedAgentIdsJson = body.allowed_agent_ids && body.allowed_agent_ids.length > 0
-      ? JSON.stringify(body.allowed_agent_ids)
-      : null;
+    const allowedAgentIdsJson =
+      body.allowed_agent_ids && body.allowed_agent_ids.length > 0
+        ? JSON.stringify(body.allowed_agent_ids)
+        : null;
     try {
       execute(
         this.ctx.storage.sql as never,
         `INSERT INTO projects (id, space_id, name, description, status, kind, is_singleton_kind, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at)
          VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(space_id, name) DO NOTHING`,
-        id, body.space_id, body.name, body.description ?? "", kind, isSingletonKind, body.default_agent_id ?? null,
-        body.max_threads ?? 0, allowedAgentIdsJson, body.visibility ?? "private", body.created_by ?? null, now
+        id,
+        body.space_id,
+        body.name,
+        body.description ?? "",
+        kind,
+        isSingletonKind,
+        body.default_agent_id ?? null,
+        body.max_threads ?? 0,
+        allowedAgentIdsJson,
+        body.visibility ?? "private",
+        body.created_by ?? null,
+        now
       );
     } catch (err) {
       // F-32: the partial unique index (space_id, kind) WHERE is_singleton_kind=1 fired — a
       // concurrent create raced past the pre-check above. Translate to the same 409 with the
       // winner's id so the caller gets a real constraint guarantee, not just an app-level check.
-      if (isSingletonKind && /UNIQUE|constraint/i.test((err as Error).message)) {
+      if (
+        isSingletonKind &&
+        /UNIQUE|constraint/i.test((err as Error).message)
+      ) {
         const existing = queryOne<{ id: string }>(
           this.ctx.storage.sql as never,
           "SELECT id FROM projects WHERE space_id = ? AND kind = ? AND is_singleton_kind = 1 AND status = 'active'",
-          body.space_id, kind
+          body.space_id,
+          kind
         );
-        return Response.json({ error_code: "duplicate_singleton_project", message: `A '${kind}' project already exists for this space`, existing_project_id: existing?.id }, { status: 409 });
+        return Response.json(
+          {
+            error_code: "duplicate_singleton_project",
+            message: `A '${kind}' project already exists for this space`,
+            existing_project_id: existing?.id,
+          },
+          { status: 409 }
+        );
       }
       throw err;
     }
     const row = queryOne<{
-      id: string; name: string; status: string; default_agent_id: string | null;
-      max_threads: number; allowed_agent_ids: string | null; visibility: string; created_by: string | null; created_at: string;
+      id: string;
+      name: string;
+      status: string;
+      default_agent_id: string | null;
+      max_threads: number;
+      allowed_agent_ids: string | null;
+      visibility: string;
+      created_by: string | null;
+      created_at: string;
     }>(
       this.ctx.storage.sql as never,
       "SELECT id, name, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at FROM projects WHERE space_id = ? AND name = ?",
-      body.space_id, body.name
+      body.space_id,
+      body.name
     );
     // The creator is always an implicit project_members owner — so a private project the creator
     // just made is immediately visible to them in listProjects' viewer_id filter, without a
@@ -2811,19 +3330,36 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         this.ctx.storage.sql as never,
         `INSERT INTO project_members (project_id, user_id, role, added_at) VALUES (?, ?, 'owner', ?)
          ON CONFLICT(project_id, user_id) DO NOTHING`,
-        row.id, body.created_by, now
+        row.id,
+        body.created_by,
+        now
       );
     }
     if (!alreadyExisted && row) {
-      const tenantId = body.tenant_id ?? request.headers.get("x-naelao-tenant-id") ?? "";
+      const tenantId =
+        body.tenant_id ?? request.headers.get("x-naelao-tenant-id") ?? "";
       // Awaited (not fire-and-forget) — same reasoning as mirrorThread elsewhere in this
       // build: an un-awaited promise can be abandoned mid-flight once this response is sent
       // and the DO's request context is free to tear down. fireMatchingTriggers is itself
       // best-effort/non-throwing, so this never fails project creation.
-      await this.fireMatchingTriggers({ type: "project.created", space_id: body.space_id, project_id: row.id, occurred_at: Date.now() }, tenantId);
+      await this.fireMatchingTriggers(
+        {
+          type: "project.created",
+          space_id: body.space_id,
+          project_id: row.id,
+          occurred_at: Date.now(),
+        },
+        tenantId
+      );
       // §A1.17 Phase V: live-sync this to any connected client — never blocks/fails project
       // creation (broadcastSpaceEvent is itself best-effort/non-throwing).
-      await broadcastSpaceEvent(this.env, tenantId, body.space_id, "project.created", { project_id: row.id, name: row.name });
+      await broadcastSpaceEvent(
+        this.env,
+        tenantId,
+        body.space_id,
+        "project.created",
+        { project_id: row.id, name: row.name }
+      );
       if (possibleDuplicates.length > 0) {
         // A builder can wire this event to a no-code trigger (e.g. a notifications script) to
         // actually broadcast the heads-up to the space's admin/assistant — the dedup detection
@@ -2834,15 +3370,29 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
             space_id: body.space_id,
             project_id: row.id,
             occurred_at: Date.now(),
-            payload: { new_project_name: row.name, candidates: possibleDuplicates },
+            payload: {
+              new_project_name: row.name,
+              candidates: possibleDuplicates,
+            },
           },
           tenantId
         );
       }
     }
     const responseRow = row
-      ? { ...row, allowed_agent_ids: safeJsonParseAgentIds(row.allowed_agent_ids) }
-      : { id, name: body.name, status: "active", default_agent_id: body.default_agent_id ?? null, max_threads: body.max_threads ?? 0, allowed_agent_ids: body.allowed_agent_ids ?? null, created_at: now };
+      ? {
+          ...row,
+          allowed_agent_ids: safeJsonParseAgentIds(row.allowed_agent_ids),
+        }
+      : {
+          id,
+          name: body.name,
+          status: "active",
+          default_agent_id: body.default_agent_id ?? null,
+          max_threads: body.max_threads ?? 0,
+          allowed_agent_ids: body.allowed_agent_ids ?? null,
+          created_at: now,
+        };
     return Response.json(
       // `created` distinguishes a genuine insert from the `ON CONFLICT(space_id, name) DO NOTHING`
       // no-op on a name collision — this endpoint always returned 201 either way, with no field a
@@ -2852,7 +3402,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // "creates" all silently succeeded as no-ops, and since `res.ok` was true either way, the
       // caller had no way to skip re-seeding a starter thread for each one, producing exactly two
       // starter threads per templated project. `created` is what closes that for real.
-      { ...responseRow, possible_duplicates: possibleDuplicates, created: !alreadyExisted },
+      {
+        ...responseRow,
+        possible_duplicates: possibleDuplicates,
+        created: !alreadyExisted,
+      },
       { status: 201 }
     );
   }
@@ -2862,22 +3416,46 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // has a project/thread open; listPresence filters by a freshness window so a closed tab or
   // crashed client just ages out rather than appearing present forever.
   private async heartbeatPresence(request: Request): Promise<Response> {
-    const body = await request.json<{ space_id: string; user_id: string; project_id?: string; thread_id?: string; tenant_id?: string }>();
+    const body = await request.json<{
+      space_id: string;
+      user_id: string;
+      project_id?: string;
+      thread_id?: string;
+      tenant_id?: string;
+    }>();
     if (!body.space_id || !body.user_id) {
-      return Response.json({ error_code: "bad_request", message: "space_id and user_id are required" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "space_id and user_id are required",
+        },
+        { status: 400 }
+      );
     }
     const now = Date.now();
     execute(
       this.ctx.storage.sql as never,
       `INSERT INTO presence (space_id, user_id, project_id, thread_id, last_seen_at) VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(space_id, user_id) DO UPDATE SET project_id = excluded.project_id, thread_id = excluded.thread_id, last_seen_at = excluded.last_seen_at`,
-      body.space_id, body.user_id, body.project_id ?? null, body.thread_id ?? null, now
+      body.space_id,
+      body.user_id,
+      body.project_id ?? null,
+      body.thread_id ?? null,
+      now
     );
     // §A1.17 Phase V: live-sync presence too — online/offline transitions appear live instead of
     // only on the next GET /presence poll. Best-effort, never blocks the heartbeat response.
-    await broadcastSpaceEvent(this.env, body.tenant_id ?? "", body.space_id, "presence.heartbeat", {
-      user_id: body.user_id, project_id: body.project_id ?? null, thread_id: body.thread_id ?? null,
-    });
+    await broadcastSpaceEvent(
+      this.env,
+      body.tenant_id ?? "",
+      body.space_id,
+      "presence.heartbeat",
+      {
+        user_id: body.user_id,
+        project_id: body.project_id ?? null,
+        thread_id: body.thread_id ?? null,
+      }
+    );
     // Opportunistic prune: presence's PK is (space_id, user_id), so a row only ever grows the
     // table when a NEW user heartbeats for the first time — but that row then lives forever
     // (isPresenceFresh only filters GET /presence, it never deletes). A space with high churn
@@ -2888,7 +3466,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     execute(
       this.ctx.storage.sql as never,
       "DELETE FROM presence WHERE space_id = ? AND last_seen_at < ?",
-      body.space_id, now - PRESENCE_PRUNE_CUTOFF_MS
+      body.space_id,
+      now - PRESENCE_PRUNE_CUTOFF_MS
     );
     return Response.json({ ok: true, last_seen_at: now });
   }
@@ -2897,30 +3476,64 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const spaceId = params.get("space_id") ?? "";
     const projectId = params.get("project_id");
     const rows = projectId
-      ? queryAll<{ user_id: string; project_id: string | null; thread_id: string | null; last_seen_at: number }>(
+      ? queryAll<{
+          user_id: string;
+          project_id: string | null;
+          thread_id: string | null;
+          last_seen_at: number;
+        }>(
           this.ctx.storage.sql as never,
           "SELECT user_id, project_id, thread_id, last_seen_at FROM presence WHERE space_id = ? AND project_id = ?",
-          spaceId, projectId
+          spaceId,
+          projectId
         )
-      : queryAll<{ user_id: string; project_id: string | null; thread_id: string | null; last_seen_at: number }>(
+      : queryAll<{
+          user_id: string;
+          project_id: string | null;
+          thread_id: string | null;
+          last_seen_at: number;
+        }>(
           this.ctx.storage.sql as never,
           "SELECT user_id, project_id, thread_id, last_seen_at FROM presence WHERE space_id = ?",
           spaceId
         );
     const now = Date.now();
     const active = rows.filter((r) => isPresenceFresh(r.last_seen_at, now));
-    return Response.json({ data: active, count: active.length, freshness_window_ms: PRESENCE_FRESHNESS_WINDOW_MS });
+    return Response.json({
+      data: active,
+      count: active.length,
+      freshness_window_ms: PRESENCE_FRESHNESS_WINDOW_MS,
+    });
   }
 
   // ── Customer-bot project config (no-code, admin-configured) ─────────────────
   private getProject(projectId: string, params?: URLSearchParams): Response {
     const row = queryOne<{
-      id: string; space_id: string; name: string; description: string; status: string;
-      kind: string; execution_ceiling: number; daily_spend_cap_credits: number; channel_config: string;
-      default_agent_id: string | null; max_threads: number; allowed_agent_ids: string | null;
-      visibility: string; created_by: string | null; created_at: string;
-    }>(this.ctx.storage.sql as never, "SELECT * FROM projects WHERE id = ?", projectId);
-    if (!row) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+      id: string;
+      space_id: string;
+      name: string;
+      description: string;
+      status: string;
+      kind: string;
+      execution_ceiling: number;
+      daily_spend_cap_credits: number;
+      channel_config: string;
+      default_agent_id: string | null;
+      max_threads: number;
+      allowed_agent_ids: string | null;
+      visibility: string;
+      created_by: string | null;
+      created_at: string;
+    }>(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM projects WHERE id = ?",
+      projectId
+    );
+    if (!row)
+      return Response.json(
+        { error_code: "not_found", message: "Project not found" },
+        { status: 404 }
+      );
     // Internal mutation paths call this without params to serialize the row they just changed;
     // all externally routed reads supply a server-derived viewer_id.
     const viewerId = params?.get("viewer_id") ?? "";
@@ -2933,82 +3546,172 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     ) {
       // Deliberately identical to a missing id: callers cannot use status, body, or wording as
       // an existence oracle for confidential workstations.
-      return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+      return Response.json(
+        { error_code: "not_found", message: "Project not found" },
+        { status: 404 }
+      );
     }
-    return Response.json({ ...row, channel_config: safeJsonParseObj(row.channel_config), allowed_agent_ids: safeJsonParseAgentIds(row.allowed_agent_ids) });
+    return Response.json({
+      ...row,
+      channel_config: safeJsonParseObj(row.channel_config),
+      allowed_agent_ids: safeJsonParseAgentIds(row.allowed_agent_ids),
+    });
   }
 
-  private getAutomationAccess(projectId: string, params: URLSearchParams): Response {
+  private getAutomationAccess(
+    projectId: string,
+    params: URLSearchParams
+  ): Response {
     const spaceId = params.get("space_id") ?? "";
     const userId = params.get("user_id") ?? "";
-    const project = queryOne<{ space_id: string; status: string }>(this.ctx.storage.sql as never,
-      "SELECT space_id, status FROM projects WHERE id = ?", projectId);
-    if (!project || project.space_id !== spaceId || project.status !== "active") {
-      return Response.json({ error_code: "not_found", message: "Project not found in this space" }, { status: 404 });
+    const project = queryOne<{ space_id: string; status: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT space_id, status FROM projects WHERE id = ?",
+      projectId
+    );
+    if (
+      !project ||
+      project.space_id !== spaceId ||
+      project.status !== "active"
+    ) {
+      return Response.json(
+        { error_code: "not_found", message: "Project not found in this space" },
+        { status: 404 }
+      );
     }
     const role = this.getProjectMemberRole(projectId, userId);
-    const allowed = params.get("space_manager") === "1" || this.isSpaceOwnerOrAdmin(userId) || role === "owner" || role === "editor";
-    if (!allowed) return Response.json({ error_code: "forbidden", message: "Caller cannot manage this project" }, { status: 403 });
-    return Response.json({ project_id: projectId, space_id: spaceId, can_manage: true });
+    const allowed =
+      params.get("space_manager") === "1" ||
+      this.isSpaceOwnerOrAdmin(userId) ||
+      role === "owner" ||
+      role === "editor";
+    if (!allowed)
+      return Response.json(
+        {
+          error_code: "forbidden",
+          message: "Caller cannot manage this project",
+        },
+        { status: 403 }
+      );
+    return Response.json({
+      project_id: projectId,
+      space_id: spaceId,
+      can_manage: true,
+    });
   }
 
-  private async updateProject(projectId: string, request: Request): Promise<Response> {
-    const body = await request.json<{
-      kind?: "workspace" | "customer_bot" | "wallet";
-      execution_ceiling?: number;
-      daily_spend_cap_credits?: number;
-      channel_config?: Record<string, unknown>;
-      name?: string;
-      description?: string;
-      show_sub_threads?: boolean;
-      status?: "active" | "archived";
-      /** Which agent runs here by default (template-seeded or admin-assigned). null clears it —
-       *  a project is never permanently bound to one agent; the builder/Space Assistant can
-       *  always reassign or unset it. */
-      default_agent_id?: string | null;
-      /** 0/omitted = unlimited. Caps "real" conversations (primary threads + channel
-       *  sessions) — never counts ephemeral sub-agent fan-out threads. */
-      max_threads?: number;
-      /** The thread-level "switch agent" allowlist. null/[] clears it (unrestricted — any
-       *  space agent). When set, default_agent_id (existing or in this same PATCH) must be
-       *  a member. */
-      allowed_agent_ids?: string[] | null;
-      /** §A1.17 Phase T1: 'private' (default) is visible only to project_members + the space's
-       *  own owner/admin; 'public' is visible to every space member. */
-      visibility?: "public" | "private";
-      /** §A1.17 Phase T3: opts a project into the hard single-active-thread lock. */
-      exclusive_mode?: boolean;
-    }>().catch(() => ({}) as Record<string, never>);
+  private async updateProject(
+    projectId: string,
+    request: Request
+  ): Promise<Response> {
+    const body = await request
+      .json<{
+        kind?: "workspace" | "customer_bot" | "wallet";
+        execution_ceiling?: number;
+        daily_spend_cap_credits?: number;
+        channel_config?: Record<string, unknown>;
+        name?: string;
+        description?: string;
+        show_sub_threads?: boolean;
+        status?: "active" | "archived";
+        /** Which agent runs here by default (template-seeded or admin-assigned). null clears it —
+         *  a project is never permanently bound to one agent; the builder/Space Assistant can
+         *  always reassign or unset it. */
+        default_agent_id?: string | null;
+        /** 0/omitted = unlimited. Caps "real" conversations (primary threads + channel
+         *  sessions) — never counts ephemeral sub-agent fan-out threads. */
+        max_threads?: number;
+        /** The thread-level "switch agent" allowlist. null/[] clears it (unrestricted — any
+         *  space agent). When set, default_agent_id (existing or in this same PATCH) must be
+         *  a member. */
+        allowed_agent_ids?: string[] | null;
+        /** §A1.17 Phase T1: 'private' (default) is visible only to project_members + the space's
+         *  own owner/admin; 'public' is visible to every space member. */
+        visibility?: "public" | "private";
+        /** §A1.17 Phase T3: opts a project into the hard single-active-thread lock. */
+        exclusive_mode?: boolean;
+      }>()
+      .catch(() => ({}) as Record<string, never>);
 
-    const existing = queryOne<{ id: string; space_id: string; default_agent_id: string | null; allowed_agent_ids: string | null }>(
-      this.ctx.storage.sql as never, "SELECT id, space_id, default_agent_id, allowed_agent_ids FROM projects WHERE id = ?", projectId
+    const existing = queryOne<{
+      id: string;
+      space_id: string;
+      default_agent_id: string | null;
+      allowed_agent_ids: string | null;
+    }>(
+      this.ctx.storage.sql as never,
+      "SELECT id, space_id, default_agent_id, allowed_agent_ids FROM projects WHERE id = ?",
+      projectId
     );
-    if (!existing) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+    if (!existing)
+      return Response.json(
+        { error_code: "not_found", message: "Project not found" },
+        { status: 404 }
+      );
 
-    if (body.max_threads !== undefined && (!Number.isInteger(body.max_threads) || body.max_threads < 0)) {
-      return Response.json({ error_code: "bad_request", message: "max_threads must be a non-negative integer" }, { status: 400 });
+    if (
+      body.max_threads !== undefined &&
+      (!Number.isInteger(body.max_threads) || body.max_threads < 0)
+    ) {
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "max_threads must be a non-negative integer",
+        },
+        { status: 400 }
+      );
     }
     // Cross-validate against the EFFECTIVE post-patch state, not just what's in this one PATCH
     // body — a caller might only send default_agent_id while allowed_agent_ids stays as
     // whatever's already stored (or vice versa).
-    const effectiveDefaultAgentId = body.default_agent_id !== undefined ? body.default_agent_id : existing.default_agent_id;
-    const effectiveAllowedAgentIds = body.allowed_agent_ids !== undefined ? body.allowed_agent_ids : safeJsonParseAgentIds(existing.allowed_agent_ids);
-    const bindingError = SpaceDO.validateAgentBinding(effectiveDefaultAgentId, effectiveAllowedAgentIds);
-    if (bindingError) return Response.json({ error_code: "bad_request", message: bindingError }, { status: 400 });
+    const effectiveDefaultAgentId =
+      body.default_agent_id !== undefined
+        ? body.default_agent_id
+        : existing.default_agent_id;
+    const effectiveAllowedAgentIds =
+      body.allowed_agent_ids !== undefined
+        ? body.allowed_agent_ids
+        : safeJsonParseAgentIds(existing.allowed_agent_ids);
+    const bindingError = SpaceDO.validateAgentBinding(
+      effectiveDefaultAgentId,
+      effectiveAllowedAgentIds
+    );
+    if (bindingError)
+      return Response.json(
+        { error_code: "bad_request", message: bindingError },
+        { status: 400 }
+      );
 
     if (body.status !== undefined) {
       if (body.status !== "active" && body.status !== "archived") {
-        return Response.json({ error_code: "bad_request", message: "status must be 'active' or 'archived'" }, { status: 400 });
+        return Response.json(
+          {
+            error_code: "bad_request",
+            message: "status must be 'active' or 'archived'",
+          },
+          { status: 400 }
+        );
       }
       // Archiving removes a project from listProjects and from dedup candidates (both filter
       // on status != 'archived') without deleting its threads/history.
-      execute(this.ctx.storage.sql as never, "UPDATE projects SET status = ? WHERE id = ?", body.status, projectId);
+      execute(
+        this.ctx.storage.sql as never,
+        "UPDATE projects SET status = ? WHERE id = ?",
+        body.status,
+        projectId
+      );
     }
     if (body.kind !== undefined) {
       // F-33: validate against the registry (not a hardcoded set) and stamp is_singleton_kind so
       // the singleton index applies even when kind is set via PATCH (the legacy seedWallet path).
       if (!isKnownProjectKind(body.kind)) {
-        return Response.json({ error_code: "bad_request", message: `Unknown project kind '${body.kind}'` }, { status: 400 });
+        return Response.json(
+          {
+            error_code: "bad_request",
+            message: `Unknown project kind '${body.kind}'`,
+          },
+          { status: 400 }
+        );
       }
       const fk = getBusinessFeatureKind(body.kind);
       const singleton = fk?.singleton ? 1 : 0;
@@ -3016,72 +3719,185 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const dup = queryOne<{ id: string }>(
           this.ctx.storage.sql as never,
           "SELECT id FROM projects WHERE space_id = ? AND kind = ? AND is_singleton_kind = 1 AND status = 'active' AND id != ?",
-          existing.space_id, body.kind, projectId
+          existing.space_id,
+          body.kind,
+          projectId
         );
         if (dup) {
-          return Response.json({ error_code: "duplicate_singleton_project", message: `A '${body.kind}' project already exists for this space`, existing_project_id: dup.id }, { status: 409 });
+          return Response.json(
+            {
+              error_code: "duplicate_singleton_project",
+              message: `A '${body.kind}' project already exists for this space`,
+              existing_project_id: dup.id,
+            },
+            { status: 409 }
+          );
         }
       }
       try {
-        execute(this.ctx.storage.sql as never, "UPDATE projects SET kind = ?, is_singleton_kind = ? WHERE id = ?", body.kind, singleton, projectId);
+        execute(
+          this.ctx.storage.sql as never,
+          "UPDATE projects SET kind = ?, is_singleton_kind = ? WHERE id = ?",
+          body.kind,
+          singleton,
+          projectId
+        );
       } catch (err) {
         if (singleton && /UNIQUE|constraint/i.test((err as Error).message)) {
-          const dup = queryOne<{ id: string }>(this.ctx.storage.sql as never, "SELECT id FROM projects WHERE space_id = ? AND kind = ? AND is_singleton_kind = 1 AND status = 'active' AND id != ?", existing.space_id, body.kind, projectId);
-          return Response.json({ error_code: "duplicate_singleton_project", message: `A '${body.kind}' project already exists for this space`, existing_project_id: dup?.id }, { status: 409 });
+          const dup = queryOne<{ id: string }>(
+            this.ctx.storage.sql as never,
+            "SELECT id FROM projects WHERE space_id = ? AND kind = ? AND is_singleton_kind = 1 AND status = 'active' AND id != ?",
+            existing.space_id,
+            body.kind,
+            projectId
+          );
+          return Response.json(
+            {
+              error_code: "duplicate_singleton_project",
+              message: `A '${body.kind}' project already exists for this space`,
+              existing_project_id: dup?.id,
+            },
+            { status: 409 }
+          );
         }
         throw err;
       }
     }
     if (body.execution_ceiling !== undefined) {
-      if (!Number.isInteger(body.execution_ceiling) || body.execution_ceiling < 1 || body.execution_ceiling > 5) {
-        return Response.json({ error_code: "bad_request", message: "execution_ceiling must be an integer 1-5" }, { status: 400 });
+      if (
+        !Number.isInteger(body.execution_ceiling) ||
+        body.execution_ceiling < 1 ||
+        body.execution_ceiling > 6
+      ) {
+        return Response.json(
+          {
+            error_code: "bad_request",
+            message: "execution_ceiling must be an integer 1-6",
+          },
+          { status: 400 }
+        );
       }
-      execute(this.ctx.storage.sql as never, "UPDATE projects SET execution_ceiling = ? WHERE id = ?", body.execution_ceiling, projectId);
+      execute(
+        this.ctx.storage.sql as never,
+        "UPDATE projects SET execution_ceiling = ? WHERE id = ?",
+        body.execution_ceiling,
+        projectId
+      );
     }
     if (body.daily_spend_cap_credits !== undefined) {
-      execute(this.ctx.storage.sql as never, "UPDATE projects SET daily_spend_cap_credits = ? WHERE id = ?", Math.max(0, body.daily_spend_cap_credits), projectId);
+      execute(
+        this.ctx.storage.sql as never,
+        "UPDATE projects SET daily_spend_cap_credits = ? WHERE id = ?",
+        Math.max(0, body.daily_spend_cap_credits),
+        projectId
+      );
     }
     if (body.channel_config !== undefined) {
-      execute(this.ctx.storage.sql as never, "UPDATE projects SET channel_config = ? WHERE id = ?", JSON.stringify(body.channel_config), projectId);
+      execute(
+        this.ctx.storage.sql as never,
+        "UPDATE projects SET channel_config = ? WHERE id = ?",
+        JSON.stringify(body.channel_config),
+        projectId
+      );
     }
     if (body.name !== undefined) {
-      execute(this.ctx.storage.sql as never, "UPDATE projects SET name = ? WHERE id = ?", body.name, projectId);
+      execute(
+        this.ctx.storage.sql as never,
+        "UPDATE projects SET name = ? WHERE id = ?",
+        body.name,
+        projectId
+      );
     }
     if (body.description !== undefined) {
-      execute(this.ctx.storage.sql as never, "UPDATE projects SET description = ? WHERE id = ?", body.description, projectId);
+      execute(
+        this.ctx.storage.sql as never,
+        "UPDATE projects SET description = ? WHERE id = ?",
+        body.description,
+        projectId
+      );
     }
     if (body.show_sub_threads !== undefined) {
-      execute(this.ctx.storage.sql as never, "UPDATE projects SET show_sub_threads = ? WHERE id = ?", body.show_sub_threads ? 1 : 0, projectId);
+      execute(
+        this.ctx.storage.sql as never,
+        "UPDATE projects SET show_sub_threads = ? WHERE id = ?",
+        body.show_sub_threads ? 1 : 0,
+        projectId
+      );
     }
     if (body.default_agent_id !== undefined) {
-      execute(this.ctx.storage.sql as never, "UPDATE projects SET default_agent_id = ? WHERE id = ?", body.default_agent_id, projectId);
+      execute(
+        this.ctx.storage.sql as never,
+        "UPDATE projects SET default_agent_id = ? WHERE id = ?",
+        body.default_agent_id,
+        projectId
+      );
     }
     if (body.max_threads !== undefined) {
-      execute(this.ctx.storage.sql as never, "UPDATE projects SET max_threads = ? WHERE id = ?", body.max_threads, projectId);
+      execute(
+        this.ctx.storage.sql as never,
+        "UPDATE projects SET max_threads = ? WHERE id = ?",
+        body.max_threads,
+        projectId
+      );
     }
     if (body.allowed_agent_ids !== undefined) {
-      const json = body.allowed_agent_ids && body.allowed_agent_ids.length > 0 ? JSON.stringify(body.allowed_agent_ids) : null;
-      execute(this.ctx.storage.sql as never, "UPDATE projects SET allowed_agent_ids = ? WHERE id = ?", json, projectId);
+      const json =
+        body.allowed_agent_ids && body.allowed_agent_ids.length > 0
+          ? JSON.stringify(body.allowed_agent_ids)
+          : null;
+      execute(
+        this.ctx.storage.sql as never,
+        "UPDATE projects SET allowed_agent_ids = ? WHERE id = ?",
+        json,
+        projectId
+      );
     }
     if (body.visibility !== undefined) {
       if (body.visibility !== "public" && body.visibility !== "private") {
-        return Response.json({ error_code: "bad_request", message: "visibility must be 'public' or 'private'" }, { status: 400 });
+        return Response.json(
+          {
+            error_code: "bad_request",
+            message: "visibility must be 'public' or 'private'",
+          },
+          { status: 400 }
+        );
       }
-      execute(this.ctx.storage.sql as never, "UPDATE projects SET visibility = ? WHERE id = ?", body.visibility, projectId);
+      execute(
+        this.ctx.storage.sql as never,
+        "UPDATE projects SET visibility = ? WHERE id = ?",
+        body.visibility,
+        projectId
+      );
     }
     if (body.exclusive_mode !== undefined) {
-      execute(this.ctx.storage.sql as never, "UPDATE projects SET exclusive_mode = ? WHERE id = ?", body.exclusive_mode ? 1 : 0, projectId);
+      execute(
+        this.ctx.storage.sql as never,
+        "UPDATE projects SET exclusive_mode = ? WHERE id = ?",
+        body.exclusive_mode ? 1 : 0,
+        projectId
+      );
     }
     // §A1.17 Phase V: live-sync — best-effort, never blocks the PATCH response. tenant_id rides
     // the query string (see the spaces-worker route's comment for why not a header/body field).
-    const patchTenantId = new URL(request.url).searchParams.get("tenant_id") ?? "";
-    await broadcastSpaceEvent(this.env, patchTenantId, existing.space_id, "project.updated", { project_id: projectId });
+    const patchTenantId =
+      new URL(request.url).searchParams.get("tenant_id") ?? "";
+    await broadcastSpaceEvent(
+      this.env,
+      patchTenantId,
+      existing.space_id,
+      "project.updated",
+      { project_id: projectId }
+    );
     return this.getProject(projectId);
   }
 
   private isSpaceOwnerOrAdmin(userId: string): boolean {
     if (!userId) return false;
-    const row = queryOne<{ role: string }>(this.ctx.storage.sql as never, "SELECT role FROM space_members WHERE user_id = ?", userId);
+    const row = queryOne<{ role: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT role FROM space_members WHERE user_id = ?",
+      userId
+    );
     return row?.role === "owner" || row?.role === "admin";
   }
 
@@ -3091,7 +3907,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // this SAME table one level up, mirroring how `requireBusinessMembership` resolves a role
   // before checking it against a per-route minimum).
   private listProjectMembers(projectId: string): Response {
-    const rows = queryAll<{ project_id: string; user_id: string; role: string; added_at: string }>(
+    const rows = queryAll<{
+      project_id: string;
+      user_id: string;
+      role: string;
+      added_at: string;
+    }>(
       this.ctx.storage.sql as never,
       "SELECT * FROM project_members WHERE project_id = ? ORDER BY added_at",
       projectId
@@ -3099,37 +3920,82 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ data: rows, count: rows.length });
   }
 
-  private getProjectMemberRole(projectId: string, userId: string): "owner" | "editor" | "viewer" | null {
+  private getProjectMemberRole(
+    projectId: string,
+    userId: string
+  ): "owner" | "editor" | "viewer" | null {
     if (!userId) return null;
     const row = queryOne<{ role: string }>(
       this.ctx.storage.sql as never,
       "SELECT role FROM project_members WHERE project_id = ? AND user_id = ?",
-      projectId, userId
+      projectId,
+      userId
     );
     return (row?.role as "owner" | "editor" | "viewer" | undefined) ?? null;
   }
 
-  private async addProjectMember(projectId: string, request: Request): Promise<Response> {
-    const body = await request.json<{ user_id?: string; role?: string; assistant_mode?: string }>().catch(() => ({}) as Record<string, never>);
-    if (!body.user_id) return Response.json({ error_code: "bad_request", message: "user_id is required" }, { status: 400 });
+  private async addProjectMember(
+    projectId: string,
+    request: Request
+  ): Promise<Response> {
+    const body = await request
+      .json<{ user_id?: string; role?: string; assistant_mode?: string }>()
+      .catch(() => ({}) as Record<string, never>);
+    if (!body.user_id)
+      return Response.json(
+        { error_code: "bad_request", message: "user_id is required" },
+        { status: 400 }
+      );
     const role = body.role ?? "viewer";
     if (!["owner", "editor", "viewer"].includes(role)) {
-      return Response.json({ error_code: "bad_request", message: "role must be one of owner, editor, viewer" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "role must be one of owner, editor, viewer",
+        },
+        { status: 400 }
+      );
     }
     // F-36: per (project, user) clamp on what an assistant acting ON BEHALF OF this user may do.
     const assistantMode = body.assistant_mode ?? "inherit";
     if (!["inherit", "read_only", "none"].includes(assistantMode)) {
-      return Response.json({ error_code: "bad_request", message: "assistant_mode must be one of inherit, read_only, none" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "assistant_mode must be one of inherit, read_only, none",
+        },
+        { status: 400 }
+      );
     }
-    const project = queryOne<{ id: string }>(this.ctx.storage.sql as never, "SELECT id FROM projects WHERE id = ?", projectId);
-    if (!project) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+    const project = queryOne<{ id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT id FROM projects WHERE id = ?",
+      projectId
+    );
+    if (!project)
+      return Response.json(
+        { error_code: "not_found", message: "Project not found" },
+        { status: 404 }
+      );
     execute(
       this.ctx.storage.sql as never,
       `INSERT INTO project_members (project_id, user_id, role, assistant_mode, added_at) VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(project_id, user_id) DO UPDATE SET role = excluded.role, assistant_mode = excluded.assistant_mode`,
-      projectId, body.user_id, role, assistantMode, new Date().toISOString()
+      projectId,
+      body.user_id,
+      role,
+      assistantMode,
+      new Date().toISOString()
     );
-    return Response.json({ project_id: projectId, user_id: body.user_id, role, assistant_mode: assistantMode }, { status: 201 });
+    return Response.json(
+      {
+        project_id: projectId,
+        user_id: body.user_id,
+        role,
+        assistant_mode: assistantMode,
+      },
+      { status: 201 }
+    );
   }
 
   /**
@@ -3142,12 +4008,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
    * callers pass userId="" and this returns null; the dispatch path then falls back to the
    * assistant's own base grant (documented at the enforcement point), NOT this per-user clamp.
    */
-  private resolveAssistantEffectiveRole(projectId: string, userId: string): "owner" | "editor" | "viewer" | null {
+  private resolveAssistantEffectiveRole(
+    projectId: string,
+    userId: string
+  ): "owner" | "editor" | "viewer" | null {
     if (!userId) return null; // no acting user — not this clamp's job (see doc above)
     const row = queryOne<{ role: string; assistant_mode: string }>(
       this.ctx.storage.sql as never,
       "SELECT role, assistant_mode FROM project_members WHERE project_id = ? AND user_id = ?",
-      projectId, userId
+      projectId,
+      userId
     );
     if (!row) {
       // U isn't a member — but the space owner/admin has implicit access, and an assistant acting
@@ -3161,7 +4031,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   private removeProjectMember(projectId: string, userId: string): Response {
-    execute(this.ctx.storage.sql as never, "DELETE FROM project_members WHERE project_id = ? AND user_id = ?", projectId, userId);
+    execute(
+      this.ctx.storage.sql as never,
+      "DELETE FROM project_members WHERE project_id = ? AND user_id = ?",
+      projectId,
+      userId
+    );
     return Response.json({ removed: true });
   }
 
@@ -3172,20 +4047,58 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // why message-level enforcement isn't wired), and a DIFFERENT thread trying to activate while
   // one is already active gets a 409 with who holds it, never a silent block — `take_over`
   // reassigns explicitly so this can never deadlock a project.
-  private async activateProjectThread(projectId: string, request: Request): Promise<Response> {
-    const body = await request.json<{ thread_id?: string; user_id?: string; take_over?: boolean; tenant_id?: string }>().catch(() => ({}) as Record<string, never>);
-    if (!body.thread_id) return Response.json({ error_code: "bad_request", message: "thread_id is required" }, { status: 400 });
-    const project = queryOne<{ id: string; space_id: string; exclusive_mode: number; active_thread_id: string | null; active_thread_since: string | null }>(
-      this.ctx.storage.sql as never, "SELECT id, space_id, exclusive_mode, active_thread_id, active_thread_since FROM projects WHERE id = ?", projectId
+  private async activateProjectThread(
+    projectId: string,
+    request: Request
+  ): Promise<Response> {
+    const body = await request
+      .json<{
+        thread_id?: string;
+        user_id?: string;
+        take_over?: boolean;
+        tenant_id?: string;
+      }>()
+      .catch(() => ({}) as Record<string, never>);
+    if (!body.thread_id)
+      return Response.json(
+        { error_code: "bad_request", message: "thread_id is required" },
+        { status: 400 }
+      );
+    const project = queryOne<{
+      id: string;
+      space_id: string;
+      exclusive_mode: number;
+      active_thread_id: string | null;
+      active_thread_since: string | null;
+    }>(
+      this.ctx.storage.sql as never,
+      "SELECT id, space_id, exclusive_mode, active_thread_id, active_thread_since FROM projects WHERE id = ?",
+      projectId
     );
-    if (!project) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+    if (!project)
+      return Response.json(
+        { error_code: "not_found", message: "Project not found" },
+        { status: 404 }
+      );
 
     if (!project.exclusive_mode) {
-      return Response.json({ exclusive_mode: false, activated: true, thread_id: body.thread_id });
+      return Response.json({
+        exclusive_mode: false,
+        activated: true,
+        thread_id: body.thread_id,
+      });
     }
-    if (project.active_thread_id && project.active_thread_id !== body.thread_id && !body.take_over) {
+    if (
+      project.active_thread_id &&
+      project.active_thread_id !== body.thread_id &&
+      !body.take_over
+    ) {
       return Response.json(
-        { error_code: "thread_locked", active_thread_id: project.active_thread_id, active_since: project.active_thread_since },
+        {
+          error_code: "thread_locked",
+          active_thread_id: project.active_thread_id,
+          active_since: project.active_thread_since,
+        },
         { status: 409 }
       );
     }
@@ -3193,12 +4106,29 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     execute(
       this.ctx.storage.sql as never,
       "UPDATE projects SET active_thread_id = ?, active_thread_since = ? WHERE id = ?",
-      body.thread_id, now, projectId
+      body.thread_id,
+      now,
+      projectId
     );
     // §A1.17 Phase V: live-sync the lock transition — a collaborator viewing this project sees
     // who just took it over without polling. Best-effort, never blocks the activation response.
-    await broadcastSpaceEvent(this.env, body.tenant_id ?? "", project.space_id, "thread.activated", { project_id: projectId, thread_id: body.thread_id, user_id: body.user_id ?? null });
-    return Response.json({ exclusive_mode: true, activated: true, thread_id: body.thread_id, active_since: now });
+    await broadcastSpaceEvent(
+      this.env,
+      body.tenant_id ?? "",
+      project.space_id,
+      "thread.activated",
+      {
+        project_id: projectId,
+        thread_id: body.thread_id,
+        user_id: body.user_id ?? null,
+      }
+    );
+    return Response.json({
+      exclusive_mode: true,
+      activated: true,
+      thread_id: body.thread_id,
+      active_since: now,
+    });
   }
 
   // ── Memory OS project-shared layers (§A1.17 Phase U) ────────────────────────
@@ -3209,21 +4139,37 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // fabric) but scoped by project_id instead of user_id — the agents-worker side composes this
   // with the local per-agent store via a hybrid MemoryStore (project-memory-client.ts).
 
-  private async rememberProjectFact(projectId: string, request: Request): Promise<Response> {
-    const body = await request.json<{ entity?: string; relation?: string; attribute?: string }>().catch(() => ({}) as Record<string, never>);
+  private async rememberProjectFact(
+    projectId: string,
+    request: Request
+  ): Promise<Response> {
+    const body = await request
+      .json<{ entity?: string; relation?: string; attribute?: string }>()
+      .catch(() => ({}) as Record<string, never>);
     if (!body.entity || !body.relation || !body.attribute) {
-      return Response.json({ error_code: "bad_request", message: "entity, relation, and attribute are required" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "entity, relation, and attribute are required",
+        },
+        { status: 400 }
+      );
     }
     const now = new Date().toISOString();
     const existing = queryOne<{ id: string }>(
-      this.ctx.storage.sql as never, "SELECT id FROM project_facts WHERE project_id = ? AND entity = ? AND relation = ?",
-      projectId, body.entity, body.relation
+      this.ctx.storage.sql as never,
+      "SELECT id FROM project_facts WHERE project_id = ? AND entity = ? AND relation = ?",
+      projectId,
+      body.entity,
+      body.relation
     );
     if (existing) {
       execute(
         this.ctx.storage.sql as never,
         "UPDATE project_facts SET attribute = ?, trust_score = 1.0, updated_at = ? WHERE id = ?",
-        body.attribute, now, existing.id
+        body.attribute,
+        now,
+        existing.id
       );
       return Response.json({ id: existing.id });
     }
@@ -3231,48 +4177,107 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     execute(
       this.ctx.storage.sql as never,
       "INSERT INTO project_facts (id, project_id, entity, relation, attribute, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      id, projectId, body.entity, body.relation, body.attribute, now, now
+      id,
+      projectId,
+      body.entity,
+      body.relation,
+      body.attribute,
+      now,
+      now
     );
     return Response.json({ id }, { status: 201 });
   }
 
-  private recallProjectFacts(projectId: string, params: URLSearchParams): Response {
+  private recallProjectFacts(
+    projectId: string,
+    params: URLSearchParams
+  ): Response {
     const q = params.get("q") ?? "";
-    const limit = Math.min(parseInt(params.get("limit") ?? "5", 10) || 5, 50);
+    const limit = Math.min(
+      Number.parseInt(params.get("limit") ?? "5", 10) || 5,
+      50
+    );
     const like = `%${q.replace(/[%_]/g, (c) => `\\${c}`)}%`;
-    const rows = queryAll<{ id: string; entity: string; relation: string; attribute: string; trust_score: number }>(
+    const rows = queryAll<{
+      id: string;
+      entity: string;
+      relation: string;
+      attribute: string;
+      trust_score: number;
+    }>(
       this.ctx.storage.sql as never,
       `SELECT id, entity, relation, attribute, trust_score FROM project_facts
        WHERE project_id = ? AND (entity LIKE ? ESCAPE '\\' OR relation LIKE ? ESCAPE '\\' OR attribute LIKE ? ESCAPE '\\')
        ORDER BY trust_score DESC LIMIT ?`,
-      projectId, like, like, like, limit
+      projectId,
+      like,
+      like,
+      like,
+      limit
     );
     return Response.json({ data: rows });
   }
 
   private deleteProjectFact(projectId: string, factId: string): Response {
-    execute(this.ctx.storage.sql as never, "DELETE FROM project_facts WHERE id = ? AND project_id = ?", factId, projectId);
+    execute(
+      this.ctx.storage.sql as never,
+      "DELETE FROM project_facts WHERE id = ? AND project_id = ?",
+      factId,
+      projectId
+    );
     return Response.json({ deleted: true });
   }
 
-  private async recordProjectFabric(projectId: string, request: Request): Promise<Response> {
-    const body = await request.json<{ session_id?: string; summary?: string; key_insights?: string[] }>().catch(() => ({}) as Record<string, never>);
+  private async recordProjectFabric(
+    projectId: string,
+    request: Request
+  ): Promise<Response> {
+    const body = await request
+      .json<{
+        session_id?: string;
+        summary?: string;
+        key_insights?: string[];
+      }>()
+      .catch(() => ({}) as Record<string, never>);
     if (!body.session_id || !body.summary) {
-      return Response.json({ error_code: "bad_request", message: "session_id and summary are required" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "session_id and summary are required",
+        },
+        { status: 400 }
+      );
     }
     const id = crypto.randomUUID();
     execute(
       this.ctx.storage.sql as never,
       "INSERT INTO project_fabric (id, project_id, session_id, summary, key_insights, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-      id, projectId, body.session_id, body.summary, JSON.stringify(body.key_insights ?? []), new Date().toISOString()
+      id,
+      projectId,
+      body.session_id,
+      body.summary,
+      JSON.stringify(body.key_insights ?? []),
+      new Date().toISOString()
     );
     return Response.json({ id }, { status: 201 });
   }
 
-  private recallProjectFabric(projectId: string, params: URLSearchParams): Response {
+  private recallProjectFabric(
+    projectId: string,
+    params: URLSearchParams
+  ): Response {
     const q = (params.get("q") ?? "").toLowerCase().trim();
-    const limit = Math.min(parseInt(params.get("limit") ?? "5", 10) || 5, 50);
-    const rows = queryAll<{ id: string; session_id: string; summary: string; key_insights: string; created_at: string }>(
+    const limit = Math.min(
+      Number.parseInt(params.get("limit") ?? "5", 10) || 5,
+      50
+    );
+    const rows = queryAll<{
+      id: string;
+      session_id: string;
+      summary: string;
+      key_insights: string;
+      created_at: string;
+    }>(
       this.ctx.storage.sql as never,
       "SELECT * FROM project_fabric WHERE project_id = ? ORDER BY created_at DESC LIMIT 100",
       projectId
@@ -3292,49 +4297,109 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       return { ...r, score };
     });
-    const data = scored.filter((r) => r.score > 0.7).sort((a, b) => b.score - a.score).slice(0, limit);
+    const data = scored
+      .filter((r) => r.score > 0.7)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit);
     return Response.json({ data });
   }
 
-  private briefProjectFabric(projectId: string, params: URLSearchParams): Response {
-    const limit = Math.min(parseInt(params.get("limit") ?? "5", 10) || 5, 50);
-    const rows = queryAll<{ id: string; session_id: string; summary: string; key_insights: string; created_at: string }>(
+  private briefProjectFabric(
+    projectId: string,
+    params: URLSearchParams
+  ): Response {
+    const limit = Math.min(
+      Number.parseInt(params.get("limit") ?? "5", 10) || 5,
+      50
+    );
+    const rows = queryAll<{
+      id: string;
+      session_id: string;
+      summary: string;
+      key_insights: string;
+      created_at: string;
+    }>(
       this.ctx.storage.sql as never,
       "SELECT * FROM project_fabric WHERE project_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
-      projectId, limit
+      projectId,
+      limit
     );
     return Response.json({ data: rows });
   }
 
-  private async upsertProjectWikiConcept(projectId: string, request: Request): Promise<Response> {
-    const body = await request.json<{ concept?: string; definition?: string; relationships?: string[] }>().catch(() => ({}) as Record<string, never>);
+  private async upsertProjectWikiConcept(
+    projectId: string,
+    request: Request
+  ): Promise<Response> {
+    const body = await request
+      .json<{
+        concept?: string;
+        definition?: string;
+        relationships?: string[];
+      }>()
+      .catch(() => ({}) as Record<string, never>);
     if (!body.concept || !body.definition) {
-      return Response.json({ error_code: "bad_request", message: "concept and definition are required" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "concept and definition are required",
+        },
+        { status: 400 }
+      );
     }
     execute(
       this.ctx.storage.sql as never,
       `INSERT INTO project_wiki (project_id, concept, definition, relationships, updated_at) VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(project_id, concept) DO UPDATE SET definition = excluded.definition, relationships = excluded.relationships, updated_at = excluded.updated_at`,
-      projectId, body.concept, body.definition, JSON.stringify(body.relationships ?? []), new Date().toISOString()
+      projectId,
+      body.concept,
+      body.definition,
+      JSON.stringify(body.relationships ?? []),
+      new Date().toISOString()
     );
     return Response.json({ concept: body.concept });
   }
 
-  private lookupProjectWikiConcept(projectId: string, concept: string): Response {
-    const row = queryOne<{ concept: string; definition: string; relationships: string; updated_at: string }>(
-      this.ctx.storage.sql as never, "SELECT * FROM project_wiki WHERE project_id = ? AND concept = ?", projectId, concept
+  private lookupProjectWikiConcept(
+    projectId: string,
+    concept: string
+  ): Response {
+    const row = queryOne<{
+      concept: string;
+      definition: string;
+      relationships: string;
+      updated_at: string;
+    }>(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM project_wiki WHERE project_id = ? AND concept = ?",
+      projectId,
+      concept
     );
     return Response.json({ data: row ?? null });
   }
 
-  private searchProjectWiki(projectId: string, params: URLSearchParams): Response {
+  private searchProjectWiki(
+    projectId: string,
+    params: URLSearchParams
+  ): Response {
     const q = params.get("q") ?? "";
-    const limit = Math.min(parseInt(params.get("limit") ?? "5", 10) || 5, 50);
+    const limit = Math.min(
+      Number.parseInt(params.get("limit") ?? "5", 10) || 5,
+      50
+    );
     const like = `%${q.replace(/[%_]/g, (c) => `\\${c}`)}%`;
-    const rows = queryAll<{ concept: string; definition: string; relationships: string; updated_at: string }>(
+    const rows = queryAll<{
+      concept: string;
+      definition: string;
+      relationships: string;
+      updated_at: string;
+    }>(
       this.ctx.storage.sql as never,
       `SELECT * FROM project_wiki WHERE project_id = ? AND (concept LIKE ? ESCAPE '\\' OR definition LIKE ? ESCAPE '\\') ORDER BY updated_at DESC LIMIT ?`,
-      projectId, like, like, limit
+      projectId,
+      like,
+      like,
+      limit
     );
     return Response.json({ data: rows });
   }
@@ -3343,46 +4408,87 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // Every agent-DO thread against a project (each its own NaelaoAgentDO instance) debits
   // through this one SpaceDO instead of keeping its own zero-based local tally — single
   // writer, so concurrent threads on the same customer-bot project share one real total.
-  private getProjectSpend(projectId: string, params: URLSearchParams): Response {
+  private getProjectSpend(
+    projectId: string,
+    params: URLSearchParams
+  ): Response {
     const project = queryOne<{ daily_spend_cap_credits: number }>(
-      this.ctx.storage.sql as never, "SELECT daily_spend_cap_credits FROM projects WHERE id = ?", projectId
+      this.ctx.storage.sql as never,
+      "SELECT daily_spend_cap_credits FROM projects WHERE id = ?",
+      projectId
     );
-    if (!project) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+    if (!project)
+      return Response.json(
+        { error_code: "not_found", message: "Project not found" },
+        { status: 404 }
+      );
     const day = params.get("day") ?? todaySpendKey();
     const row = queryOne<{ credits: number }>(
-      this.ctx.storage.sql as never, "SELECT credits FROM project_spend WHERE project_id = ? AND day = ?", projectId, day
+      this.ctx.storage.sql as never,
+      "SELECT credits FROM project_spend WHERE project_id = ? AND day = ?",
+      projectId,
+      day
     );
     const spentToday = row?.credits ?? 0;
     const cap = project.daily_spend_cap_credits;
-    return Response.json({ project_id: projectId, day, spent_today: spentToday, cap, capped: cap > 0 && spentToday >= cap });
+    return Response.json({
+      project_id: projectId,
+      day,
+      spent_today: spentToday,
+      cap,
+      capped: cap > 0 && spentToday >= cap,
+    });
   }
 
   // POST /projects/:projectId/spend { credits } — adds `credits` (if any) to today's tally and
   // returns the updated total. Called with credits=0 as a pure pre-run gate check, and again
   // post-run with the actual token cost — both trips serialized through this single DO, so
   // spend recorded by one thread is immediately visible to the next thread's gate check.
-  private async debitProjectSpend(projectId: string, request: Request): Promise<Response> {
+  private async debitProjectSpend(
+    projectId: string,
+    request: Request
+  ): Promise<Response> {
     const project = queryOne<{ daily_spend_cap_credits: number }>(
-      this.ctx.storage.sql as never, "SELECT daily_spend_cap_credits FROM projects WHERE id = ?", projectId
+      this.ctx.storage.sql as never,
+      "SELECT daily_spend_cap_credits FROM projects WHERE id = ?",
+      projectId
     );
-    if (!project) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
-    const body = await request.json<{ credits?: number }>().catch(() => ({}) as Record<string, never>);
-    const credits = typeof body.credits === "number" && body.credits > 0 ? body.credits : 0;
+    if (!project)
+      return Response.json(
+        { error_code: "not_found", message: "Project not found" },
+        { status: 404 }
+      );
+    const body = await request
+      .json<{ credits?: number }>()
+      .catch(() => ({}) as Record<string, never>);
+    const credits =
+      typeof body.credits === "number" && body.credits > 0 ? body.credits : 0;
     const day = todaySpendKey();
     if (credits > 0) {
       execute(
         this.ctx.storage.sql as never,
         `INSERT INTO project_spend (project_id, day, credits) VALUES (?, ?, ?)
          ON CONFLICT (project_id, day) DO UPDATE SET credits = credits + excluded.credits`,
-        projectId, day, credits
+        projectId,
+        day,
+        credits
       );
     }
     const row = queryOne<{ credits: number }>(
-      this.ctx.storage.sql as never, "SELECT credits FROM project_spend WHERE project_id = ? AND day = ?", projectId, day
+      this.ctx.storage.sql as never,
+      "SELECT credits FROM project_spend WHERE project_id = ? AND day = ?",
+      projectId,
+      day
     );
     const spentToday = row?.credits ?? 0;
     const cap = project.daily_spend_cap_credits;
-    return Response.json({ project_id: projectId, day, spent_today: spentToday, cap, capped: cap > 0 && spentToday >= cap });
+    return Response.json({
+      project_id: projectId,
+      day,
+      spent_today: spentToday,
+      cap,
+      capped: cap > 0 && spentToday >= cap,
+    });
   }
 
   // ── Builder observability surface (security audit follow-up) ───────────────
@@ -3391,37 +4497,58 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // write failure — see NaelaoAgentDO's logAgentActivity, which wraps every call in its own
   // best-effort try/catch, same posture as notifyApprovalRequested.
   private async recordAgentActivity(request: Request): Promise<Response> {
-    const body = await request.json<{
-      space_id: string;
-      project_id?: string | null;
-      thread_id?: string | null;
-      agent_id: string;
-      event_type: "run_completed" | "run_failed" | "approval_requested" | "approval_resolved" | "moderation_blocked";
-      summary?: string;
-      tokens_used?: number | null;
-      cost_credits?: number | null;
-      /** Classification from @naelao/events classifyFailure — set by the agent DO at the moment
-       *  of failure, so the diagnostics rollup never has to re-parse free text. */
-      failure_kind?: string | null;
-      /** The thread and run this happened in, so a reader can actually go and continue it. */
-      session_id?: string | null;
-      run_id?: string | null;
-      /** What woke this run: chat, heartbeat, scheduled_job, connector_poll, trigger. */
-      trigger_source?: string | null;
-    }>().catch(() => null);
+    const body = await request
+      .json<{
+        space_id: string;
+        project_id?: string | null;
+        thread_id?: string | null;
+        agent_id: string;
+        event_type:
+          | "run_completed"
+          | "run_failed"
+          | "approval_requested"
+          | "approval_resolved"
+          | "moderation_blocked";
+        summary?: string;
+        tokens_used?: number | null;
+        cost_credits?: number | null;
+        /** Classification from @naelao/events classifyFailure — set by the agent DO at the moment
+         *  of failure, so the diagnostics rollup never has to re-parse free text. */
+        failure_kind?: string | null;
+        /** The thread and run this happened in, so a reader can actually go and continue it. */
+        session_id?: string | null;
+        run_id?: string | null;
+        /** What woke this run: chat, heartbeat, scheduled_job, connector_poll, trigger. */
+        trigger_source?: string | null;
+      }>()
+      .catch(() => null);
     if (!body?.space_id || !body.agent_id || !body.event_type) {
-      return Response.json({ error_code: "bad_request", message: "space_id, agent_id, event_type are required" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "space_id, agent_id, event_type are required",
+        },
+        { status: 400 }
+      );
     }
     execute(
       this.ctx.storage.sql as never,
       `INSERT INTO agent_activity_log (id, space_id, project_id, thread_id, agent_id, event_type, summary, tokens_used, cost_credits,
                                        failure_kind, session_id, run_id, trigger_source)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      crypto.randomUUID(), body.space_id, body.project_id ?? null, body.thread_id ?? null,
-      body.agent_id, body.event_type, (body.summary ?? "").slice(0, 2000),
-      body.tokens_used ?? null, body.cost_credits ?? null,
+      crypto.randomUUID(),
+      body.space_id,
+      body.project_id ?? null,
+      body.thread_id ?? null,
+      body.agent_id,
+      body.event_type,
+      (body.summary ?? "").slice(0, 2000),
+      body.tokens_used ?? null,
+      body.cost_credits ?? null,
       isFailureKind(body.failure_kind) ? body.failure_kind : null,
-      body.session_id ?? null, body.run_id ?? null, body.trigger_source ?? null
+      body.session_id ?? null,
+      body.run_id ?? null,
+      body.trigger_source ?? null
     );
     return Response.json({ ok: true }, { status: 201 });
   }
@@ -3430,7 +4557,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // builder-only at the spaces-worker route (product_end_user callers never reach this).
   private listAgentActivity(params: URLSearchParams): Response {
     const projectId = params.get("project_id");
-    const limit = Math.min(Math.max(parseInt(params.get("limit") ?? "50", 10) || 50, 1), 200);
+    const limit = Math.min(
+      Math.max(Number.parseInt(params.get("limit") ?? "50", 10) || 50, 1),
+      200
+    );
     // failure_kind / event_type are the drill-down the diagnostics summary points at: the summary
     // says "4 tool_error failures in Lead Generation", and this is how the assistant then reads
     // those four rows specifically instead of paging the whole log looking for them.
@@ -3439,9 +4569,18 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
     const where: string[] = [];
     const binds: Array<string | number> = [];
-    if (projectId) { where.push("project_id = ?"); binds.push(projectId); }
-    if (failureKind && isFailureKind(failureKind)) { where.push("failure_kind = ?"); binds.push(failureKind); }
-    if (eventType) { where.push("event_type = ?"); binds.push(eventType); }
+    if (projectId) {
+      where.push("project_id = ?");
+      binds.push(projectId);
+    }
+    if (failureKind && isFailureKind(failureKind)) {
+      where.push("failure_kind = ?");
+      binds.push(failureKind);
+    }
+    if (eventType) {
+      where.push("event_type = ?");
+      binds.push(eventType);
+    }
     binds.push(limit);
 
     const rows = queryAll(
@@ -3461,23 +4600,32 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // token to ONLY the mark_read shape (see index.ts) — this method still checks defensively so a
   // bug at that layer can't turn into a forged notification.
   private async createOrActOnNotification(request: Request): Promise<Response> {
-    const body = await request.json<{
-      action?: string;
-      notification_id?: string;
-      space_id?: string;
-      project_id?: string | null;
-      kind?: string;
-      title?: string;
-      body?: string;
-      severity?: "info" | "warning" | "critical";
-      source_agent_id?: string | null;
-      related_id?: string | null;
-    }>().catch(() => null);
-    if (!body) return Response.json({ error_code: "bad_request", message: "Invalid body" }, { status: 400 });
+    const body = await request
+      .json<{
+        action?: string;
+        notification_id?: string;
+        space_id?: string;
+        project_id?: string | null;
+        kind?: string;
+        title?: string;
+        body?: string;
+        severity?: "info" | "warning" | "critical";
+        source_agent_id?: string | null;
+        related_id?: string | null;
+      }>()
+      .catch(() => null);
+    if (!body)
+      return Response.json(
+        { error_code: "bad_request", message: "Invalid body" },
+        { status: 400 }
+      );
 
     if (body.action === "mark_read") {
       if (!body.notification_id) {
-        return Response.json({ error_code: "bad_request", message: "notification_id is required" }, { status: 400 });
+        return Response.json(
+          { error_code: "bad_request", message: "notification_id is required" },
+          { status: 400 }
+        );
       }
       execute(
         this.ctx.storage.sql as never,
@@ -3493,7 +4641,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     // posture as mark_read.
     if (body.action === "mark_delivered") {
       if (!body.notification_id) {
-        return Response.json({ error_code: "bad_request", message: "notification_id is required" }, { status: 400 });
+        return Response.json(
+          { error_code: "bad_request", message: "notification_id is required" },
+          { status: 400 }
+        );
       }
       execute(
         this.ctx.storage.sql as never,
@@ -3504,16 +4655,28 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
 
     if (!body.space_id || !body.kind || !body.title) {
-      return Response.json({ error_code: "bad_request", message: "space_id, kind, title are required" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "space_id, kind, title are required",
+        },
+        { status: 400 }
+      );
     }
     const id = crypto.randomUUID();
     execute(
       this.ctx.storage.sql as never,
       `INSERT INTO notifications (id, space_id, project_id, kind, title, body, severity, source_agent_id, related_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      id, body.space_id, body.project_id ?? null, body.kind, body.title.slice(0, 300),
-      (body.body ?? "").slice(0, 2000), body.severity ?? "info",
-      body.source_agent_id ?? null, body.related_id ?? null
+      id,
+      body.space_id,
+      body.project_id ?? null,
+      body.kind,
+      body.title.slice(0, 300),
+      (body.body ?? "").slice(0, 2000),
+      body.severity ?? "info",
+      body.source_agent_id ?? null,
+      body.related_id ?? null
     );
     return Response.json({ ok: true, id }, { status: 201 });
   }
@@ -3531,29 +4694,46 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private listNotifications(params: URLSearchParams): Response {
     const status = params.get("status");
     const projectId = params.get("project_id");
-    const limit = Math.min(Math.max(parseInt(params.get("limit") ?? "50", 10) || 50, 1), 200);
+    const limit = Math.min(
+      Math.max(Number.parseInt(params.get("limit") ?? "50", 10) || 50, 1),
+      200
+    );
     if (params.get("undelivered_only") === "true") {
-      const staleMinutesRaw = parseInt(params.get("stale_after_minutes") ?? "15", 10);
-      const staleMinutes = Number.isFinite(staleMinutesRaw) && staleMinutesRaw >= 0 ? staleMinutesRaw : 15;
+      const staleMinutesRaw = Number.parseInt(
+        params.get("stale_after_minutes") ?? "15",
+        10
+      );
+      const staleMinutes =
+        Number.isFinite(staleMinutesRaw) && staleMinutesRaw >= 0
+          ? staleMinutesRaw
+          : 15;
       const rows = queryAll(
         this.ctx.storage.sql as never,
         `SELECT * FROM notifications
          WHERE status = 'unread' AND delivered_at IS NULL
            AND created_at <= datetime('now', ?)
          ORDER BY created_at ASC LIMIT ?`,
-        `-${staleMinutes} minutes`, limit
+        `-${staleMinutes} minutes`,
+        limit
       );
       return Response.json({ data: rows, count: rows.length });
     }
     const clauses: string[] = [];
     const args: unknown[] = [];
-    if (status) { clauses.push("status = ?"); args.push(status); }
-    if (projectId) { clauses.push("project_id = ?"); args.push(projectId); }
+    if (status) {
+      clauses.push("status = ?");
+      args.push(status);
+    }
+    if (projectId) {
+      clauses.push("project_id = ?");
+      args.push(projectId);
+    }
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
     const rows = queryAll(
       this.ctx.storage.sql as never,
       `SELECT * FROM notifications ${where} ORDER BY created_at DESC LIMIT ?`,
-      ...args, limit
+      ...args,
+      limit
     );
     return Response.json({ data: rows, count: rows.length });
   }
@@ -3567,17 +4747,33 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // something this codebase otherwise relies on and the row counts here are always small.
   private computeAgentSignals(params: URLSearchParams): Response {
     const projectId = params.get("project_id");
-    const windowHours = Math.min(Math.max(parseInt(params.get("window_hours") ?? "24", 10) || 24, 1), 24 * 30);
+    const windowHours = Math.min(
+      Math.max(
+        Number.parseInt(params.get("window_hours") ?? "24", 10) || 24,
+        1
+      ),
+      24 * 30
+    );
     const since = `datetime('now', '-${windowHours} hours')`;
 
     const rollup = projectId
-      ? queryAll<{ event_type: string; cnt: number; avg_cost: number | null; total_cost: number | null }>(
+      ? queryAll<{
+          event_type: string;
+          cnt: number;
+          avg_cost: number | null;
+          total_cost: number | null;
+        }>(
           this.ctx.storage.sql as never,
           `SELECT event_type, COUNT(*) as cnt, AVG(cost_credits) as avg_cost, SUM(cost_credits) as total_cost
            FROM agent_activity_log WHERE project_id = ? AND created_at >= ${since} GROUP BY event_type`,
           projectId
         )
-      : queryAll<{ event_type: string; cnt: number; avg_cost: number | null; total_cost: number | null }>(
+      : queryAll<{
+          event_type: string;
+          cnt: number;
+          avg_cost: number | null;
+          total_cost: number | null;
+        }>(
           this.ctx.storage.sql as never,
           `SELECT event_type, COUNT(*) as cnt, AVG(cost_credits) as avg_cost, SUM(cost_credits) as total_cost
            FROM agent_activity_log WHERE created_at >= ${since} GROUP BY event_type`
@@ -3618,7 +4814,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // scheduled_jobs binds new Date().toISOString() over its identical default, so the same
       // line there produced "…Z" + "Z" = NaN and silently disabled every schedule on the platform.
       const ms = Date.parse(row.created_at + "Z");
-      if (row.thread_id === prevThread && ms - prevMs <= REGEN_WINDOW_MS) regenerations++;
+      if (row.thread_id === prevThread && ms - prevMs <= REGEN_WINDOW_MS)
+        regenerations++;
       prevThread = row.thread_id;
       prevMs = ms;
     }
@@ -3654,11 +4851,22 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
    * with the business stops being a brief.
    */
   private computeAgentDiagnostics(params: URLSearchParams): Response {
-    const windowHours = Math.min(Math.max(parseInt(params.get("window_hours") ?? "24", 10) || 24, 1), 24 * 30);
+    const windowHours = Math.min(
+      Math.max(
+        Number.parseInt(params.get("window_hours") ?? "24", 10) || 24,
+        1
+      ),
+      24 * 30
+    );
     const since = `datetime('now', '-${windowHours} hours')`;
     const sql = this.ctx.storage.sql as never;
 
-    const byType = queryAll<{ event_type: string; cnt: number; tokens: number | null; credits: number | null }>(
+    const byType = queryAll<{
+      event_type: string;
+      cnt: number;
+      tokens: number | null;
+      credits: number | null;
+    }>(
       sql,
       `SELECT event_type, COUNT(*) as cnt, SUM(tokens_used) as tokens, SUM(cost_credits) as credits
          FROM agent_activity_log WHERE created_at >= ${since} GROUP BY event_type`
@@ -3685,7 +4893,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     // Where the work is, per project — including which projects are burning tokens without
     // finishing anything, which is exactly the "which project thread stopped and why" question.
     const projects = queryAll<{
-      project_id: string | null; completed: number; failed: number; tokens: number | null; credits: number | null;
+      project_id: string | null;
+      completed: number;
+      failed: number;
+      tokens: number | null;
+      credits: number | null;
     }>(
       sql,
       `SELECT project_id,
@@ -3701,15 +4913,24 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     // Project names, so the brief reads as "Lead Generation stalled" and not a bare uuid the
     // assistant would have to spend another call resolving.
     const nameById = new Map<string, string>();
-    for (const p of queryAll<{ id: string; name: string }>(sql, `SELECT id, name FROM projects`)) {
+    for (const p of queryAll<{ id: string; name: string }>(
+      sql,
+      `SELECT id, name FROM projects`
+    )) {
       nameById.set(p.id, p.name);
     }
 
     // The stalls worth resuming: the most recent failures that still name a thread. Capped hard —
     // this is a pointer list, not a log.
     const stalls = queryAll<{
-      project_id: string | null; thread_id: string | null; session_id: string | null; run_id: string | null;
-      failure_kind: string | null; summary: string; trigger_source: string | null; created_at: string;
+      project_id: string | null;
+      thread_id: string | null;
+      session_id: string | null;
+      run_id: string | null;
+      failure_kind: string | null;
+      summary: string;
+      trigger_source: string | null;
+      created_at: string;
       tokens_used: number | null;
     }>(
       sql,
@@ -3719,7 +4940,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         ORDER BY created_at DESC LIMIT 6`
     ).map((r) => ({
       project_id: r.project_id,
-      project_name: r.project_id ? nameById.get(r.project_id) ?? null : null,
+      project_name: r.project_id ? (nameById.get(r.project_id) ?? null) : null,
       thread_id: r.thread_id,
       session_id: r.session_id,
       run_id: r.run_id,
@@ -3734,20 +4955,30 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
     // How many wake-ups never got anywhere. A recurring "the heartbeat fired and immediately hit
     // a limit" pattern is invisible in a per-run view and obvious here.
-    const wakeFailures = queryAll<{ trigger_source: string | null; cnt: number }>(
+    const wakeFailures = queryAll<{
+      trigger_source: string | null;
+      cnt: number;
+    }>(
       sql,
       `SELECT trigger_source, COUNT(*) as cnt FROM agent_activity_log
         WHERE event_type = 'run_failed' AND created_at >= ${since}
           AND trigger_source IS NOT NULL AND trigger_source != 'chat'
         GROUP BY trigger_source ORDER BY cnt DESC LIMIT 5`
-    ).map((r) => ({ trigger: r.trigger_source ?? "unknown", failed_runs: r.cnt }));
+    ).map((r) => ({
+      trigger: r.trigger_source ?? "unknown",
+      failed_runs: r.cnt,
+    }));
 
-    const unreadNotifications = queryOne<{ cnt: number }>(
-      sql, `SELECT COUNT(*) as cnt FROM notifications WHERE status = 'unread'`
-    )?.cnt ?? 0;
-    const criticalUnread = queryOne<{ cnt: number }>(
-      sql, `SELECT COUNT(*) as cnt FROM notifications WHERE status = 'unread' AND severity = 'critical'`
-    )?.cnt ?? 0;
+    const unreadNotifications =
+      queryOne<{ cnt: number }>(
+        sql,
+        `SELECT COUNT(*) as cnt FROM notifications WHERE status = 'unread'`
+      )?.cnt ?? 0;
+    const criticalUnread =
+      queryOne<{ cnt: number }>(
+        sql,
+        `SELECT COUNT(*) as cnt FROM notifications WHERE status = 'unread' AND severity = 'critical'`
+      )?.cnt ?? 0;
 
     const runsCompleted = counts["run_completed"] ?? 0;
     const runsFailed = counts["run_failed"] ?? 0;
@@ -3759,28 +4990,38 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         total: runsTotal,
         completed: runsCompleted,
         failed: runsFailed,
-        error_rate: runsTotal > 0 ? Number((runsFailed / runsTotal).toFixed(3)) : 0,
+        error_rate:
+          runsTotal > 0 ? Number((runsFailed / runsTotal).toFixed(3)) : 0,
       },
       spend: { tokens_used: totalTokens, credits: totalCredits },
       approvals: {
         requested: counts["approval_requested"] ?? 0,
         resolved: counts["approval_resolved"] ?? 0,
         // A gap here means work is parked on a person who hasn't answered.
-        outstanding: Math.max(0, (counts["approval_requested"] ?? 0) - (counts["approval_resolved"] ?? 0)),
+        outstanding: Math.max(
+          0,
+          (counts["approval_requested"] ?? 0) -
+            (counts["approval_resolved"] ?? 0)
+        ),
       },
       moderation_blocked: counts["moderation_blocked"] ?? 0,
       failures_by_kind: failures,
       wake_failures: wakeFailures,
       projects: projects.map((p) => ({
         project_id: p.project_id,
-        name: p.project_id ? nameById.get(p.project_id) ?? null : "(space assistant)",
+        name: p.project_id
+          ? (nameById.get(p.project_id) ?? null)
+          : "(space assistant)",
         completed: p.completed,
         failed: p.failed,
         tokens_used: p.tokens ?? 0,
         credits: p.credits ?? 0,
       })),
       recent_stalls: stalls,
-      notifications: { unread: unreadNotifications, unread_critical: criticalUnread },
+      notifications: {
+        unread: unreadNotifications,
+        unread_critical: criticalUnread,
+      },
     });
   }
 
@@ -3797,12 +5038,22 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // "every tick that happened to run" — there is no record of a silent, work-free tick succeeding,
   // and this deliberately does not invent one.
   private computeBusinessAnalytics(params: URLSearchParams): Response {
-    const windowDays = params.get("window") === "30d" ? 30 : params.get("window") === "90d" ? 90 : 7;
+    const windowDays =
+      params.get("window") === "30d"
+        ? 30
+        : params.get("window") === "90d"
+          ? 90
+          : 7;
     const since = `datetime('now', '-${windowDays} days')`;
     const prevSince = `datetime('now', '-${windowDays * 2} days')`;
     const sql = this.ctx.storage.sql as never;
 
-    const byType = queryAll<{ event_type: string; cnt: number; tokens: number | null; credits: number | null }>(
+    const byType = queryAll<{
+      event_type: string;
+      cnt: number;
+      tokens: number | null;
+      credits: number | null;
+    }>(
       sql,
       `SELECT event_type, COUNT(*) as cnt, SUM(tokens_used) as tokens, SUM(cost_credits) as credits
          FROM agent_activity_log WHERE created_at >= ${since} GROUP BY event_type`
@@ -3821,21 +5072,29 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
     // Prior window, for the "vs last period" deltas the mockup's cards show — a real comparison,
     // not a fabricated percentage.
-    const prevCredits = queryOne<{ credits: number | null }>(
-      sql,
-      `SELECT SUM(cost_credits) as credits FROM agent_activity_log
+    const prevCredits =
+      queryOne<{ credits: number | null }>(
+        sql,
+        `SELECT SUM(cost_credits) as credits FROM agent_activity_log
         WHERE created_at >= ${prevSince} AND created_at < ${since}`
-    )?.credits ?? 0;
-    const prevRuns = queryOne<{ cnt: number }>(
-      sql,
-      `SELECT COUNT(*) as cnt FROM agent_activity_log
+      )?.credits ?? 0;
+    const prevRuns =
+      queryOne<{ cnt: number }>(
+        sql,
+        `SELECT COUNT(*) as cnt FROM agent_activity_log
         WHERE created_at >= ${prevSince} AND created_at < ${since} AND event_type IN ('run_completed','run_failed')`
-    )?.cnt ?? 0;
+      )?.cnt ?? 0;
 
     // Per-agent breakdown for the mockup's "Usage by Agent" table — runs/credits/success rate.
     // No avg-duration column exists on this table (nothing measures wall time per run today), so
     // this deliberately omits that field rather than fabricating one.
-    const byAgent = queryAll<{ agent_id: string; completed: number; failed: number; credits: number | null; tokens: number | null }>(
+    const byAgent = queryAll<{
+      agent_id: string;
+      completed: number;
+      failed: number;
+      credits: number | null;
+      tokens: number | null;
+    }>(
       sql,
       `SELECT agent_id,
               SUM(CASE WHEN event_type = 'run_completed' THEN 1 ELSE 0 END) as completed,
@@ -3848,43 +5107,65 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
     // Daily credit usage for the bar chart — one row per day even when a day had zero activity,
     // computed in application code rather than a SQL date-series generator DO SQLite doesn't have.
-    const dailyRows = queryAll<{ day: string; credits: number | null; runs: number }>(
+    const dailyRows = queryAll<{
+      day: string;
+      credits: number | null;
+      runs: number;
+    }>(
       sql,
       `SELECT substr(created_at, 1, 10) as day, SUM(cost_credits) as credits, COUNT(*) as runs
          FROM agent_activity_log
         WHERE created_at >= ${since} AND event_type IN ('run_completed','run_failed')
         GROUP BY day`
     );
-    const dailyByDay = new Map(dailyRows.map((r) => [r.day, { credits: r.credits ?? 0, runs: r.runs }]));
+    const dailyByDay = new Map(
+      dailyRows.map((r) => [r.day, { credits: r.credits ?? 0, runs: r.runs }])
+    );
     const daily: { day: string; credits: number; runs: number }[] = [];
     const bucketDays = Math.min(windowDays, 30); // cap the series at 30 points even for the 90d window
     const step = windowDays / bucketDays;
     for (let i = bucketDays - 1; i >= 0; i--) {
-      const d = new Date(Date.now() - Math.round(i * step) * 24 * 60 * 60 * 1000);
+      const d = new Date(
+        Date.now() - Math.round(i * step) * 24 * 60 * 60 * 1000
+      );
       const key = d.toISOString().slice(0, 10);
       const found = dailyByDay.get(key);
-      daily.push({ day: key, credits: found?.credits ?? 0, runs: found?.runs ?? 0 });
+      daily.push({
+        day: key,
+        credits: found?.credits ?? 0,
+        runs: found?.runs ?? 0,
+      });
     }
 
     // Heartbeat/scheduled wake-ups: failures by trigger, honestly labeled per the header comment
     // above (no fabricated "pass" count for a silent no-op tick).
-    const wakeFailures = queryAll<{ trigger_source: string | null; cnt: number }>(
+    const wakeFailures = queryAll<{
+      trigger_source: string | null;
+      cnt: number;
+    }>(
       sql,
       `SELECT trigger_source, COUNT(*) as cnt FROM agent_activity_log
         WHERE event_type = 'run_failed' AND created_at >= ${since}
           AND trigger_source IS NOT NULL AND trigger_source != 'chat'
         GROUP BY trigger_source ORDER BY cnt DESC LIMIT 8`
     ).map((r) => ({ trigger: r.trigger_source ?? "unknown", failed: r.cnt }));
-    const wakeCompleted = queryOne<{ cnt: number }>(
-      sql,
-      `SELECT COUNT(*) as cnt FROM agent_activity_log
+    const wakeCompleted =
+      queryOne<{ cnt: number }>(
+        sql,
+        `SELECT COUNT(*) as cnt FROM agent_activity_log
         WHERE event_type = 'run_completed' AND created_at >= ${since}
           AND trigger_source IS NOT NULL AND trigger_source != 'chat'`
-    )?.cnt ?? 0;
+      )?.cnt ?? 0;
     const wakeFailedTotal = wakeFailures.reduce((sum, w) => sum + w.failed, 0);
 
-    const projectsTotal = queryOne<{ cnt: number }>(sql, `SELECT COUNT(*) as cnt FROM projects WHERE status != 'archived'`)?.cnt ?? 0;
-    const threadsTotal = queryOne<{ cnt: number }>(sql, `SELECT COUNT(*) as cnt FROM threads`)?.cnt ?? 0;
+    const projectsTotal =
+      queryOne<{ cnt: number }>(
+        sql,
+        `SELECT COUNT(*) as cnt FROM projects WHERE status != 'archived'`
+      )?.cnt ?? 0;
+    const threadsTotal =
+      queryOne<{ cnt: number }>(sql, `SELECT COUNT(*) as cnt FROM threads`)
+        ?.cnt ?? 0;
 
     return Response.json({
       window_days: windowDays,
@@ -3892,12 +5173,21 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         total: runsTotal,
         completed: runsCompleted,
         failed: runsFailed,
-        success_rate: runsTotal > 0 ? Number((runsCompleted / runsTotal).toFixed(3)) : null,
-        vs_prior_period: prevRuns > 0 ? Number((((runsTotal - prevRuns) / prevRuns) * 100).toFixed(1)) : null,
+        success_rate:
+          runsTotal > 0 ? Number((runsCompleted / runsTotal).toFixed(3)) : null,
+        vs_prior_period:
+          prevRuns > 0
+            ? Number((((runsTotal - prevRuns) / prevRuns) * 100).toFixed(1))
+            : null,
       },
       credits: {
         used: totalCredits,
-        vs_prior_period: prevCredits > 0 ? Number((((totalCredits - prevCredits) / prevCredits) * 100).toFixed(1)) : null,
+        vs_prior_period:
+          prevCredits > 0
+            ? Number(
+                (((totalCredits - prevCredits) / prevCredits) * 100).toFixed(1)
+              )
+            : null,
       },
       tokens_used: totalTokens,
       by_agent: byAgent.map((a) => ({
@@ -3905,7 +5195,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         runs: a.completed + a.failed,
         completed: a.completed,
         failed: a.failed,
-        success_rate: (a.completed + a.failed) > 0 ? Number((a.completed / (a.completed + a.failed)).toFixed(3)) : null,
+        success_rate:
+          a.completed + a.failed > 0
+            ? Number((a.completed / (a.completed + a.failed)).toFixed(3))
+            : null,
         credits: a.credits ?? 0,
       })),
       daily,
@@ -3922,23 +5215,36 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // markers detected by @naelao/events' detectImplicitSignals against a run's goal text).
   // Mirrors recordAgentActivity's shape/posture exactly — never blocks the caller's own run.
   private async recordSignalEvent(request: Request): Promise<Response> {
-    const body = await request.json<{
-      space_id: string;
-      project_id?: string | null;
-      thread_id?: string | null;
-      agent_id: string;
-      signal_type: string;
-      detail?: string;
-    }>().catch(() => null);
+    const body = await request
+      .json<{
+        space_id: string;
+        project_id?: string | null;
+        thread_id?: string | null;
+        agent_id: string;
+        signal_type: string;
+        detail?: string;
+      }>()
+      .catch(() => null);
     if (!body?.space_id || !body.agent_id || !body.signal_type) {
-      return Response.json({ error_code: "bad_request", message: "space_id, agent_id, signal_type are required" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "space_id, agent_id, signal_type are required",
+        },
+        { status: 400 }
+      );
     }
     execute(
       this.ctx.storage.sql as never,
       `INSERT INTO agent_signal_events (id, space_id, project_id, thread_id, agent_id, signal_type, detail)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      crypto.randomUUID(), body.space_id, body.project_id ?? null, body.thread_id ?? null,
-      body.agent_id, body.signal_type, (body.detail ?? "").slice(0, 500)
+      crypto.randomUUID(),
+      body.space_id,
+      body.project_id ?? null,
+      body.thread_id ?? null,
+      body.agent_id,
+      body.signal_type,
+      (body.detail ?? "").slice(0, 500)
     );
     return Response.json({ ok: true }, { status: 201 });
   }
@@ -3947,16 +5253,26 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private listSignalEvents(params: URLSearchParams): Response {
     const projectId = params.get("project_id");
     const signalType = params.get("signal_type");
-    const limit = Math.min(Math.max(parseInt(params.get("limit") ?? "50", 10) || 50, 1), 200);
+    const limit = Math.min(
+      Math.max(Number.parseInt(params.get("limit") ?? "50", 10) || 50, 1),
+      200
+    );
     const clauses: string[] = [];
     const args: unknown[] = [];
-    if (projectId) { clauses.push("project_id = ?"); args.push(projectId); }
-    if (signalType) { clauses.push("signal_type = ?"); args.push(signalType); }
+    if (projectId) {
+      clauses.push("project_id = ?");
+      args.push(projectId);
+    }
+    if (signalType) {
+      clauses.push("signal_type = ?");
+      args.push(signalType);
+    }
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
     const rows = queryAll(
       this.ctx.storage.sql as never,
       `SELECT * FROM agent_signal_events ${where} ORDER BY created_at DESC LIMIT ?`,
-      ...args, limit
+      ...args,
+      limit
     );
     return Response.json({ data: rows, count: rows.length });
   }
@@ -3964,11 +5280,26 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // POST /session-spend — internal only: increments a session's cumulative credit tally.
   // Upsert rather than a blind INSERT since the same session accumulates across many runs.
   private async incrementSessionSpend(request: Request): Promise<Response> {
-    const body = await request.json<{
-      session_id: string; space_id: string; project_id?: string | null; credits: number;
-    }>().catch(() => null);
-    if (!body?.session_id || !body.space_id || typeof body.credits !== "number") {
-      return Response.json({ error_code: "bad_request", message: "session_id, space_id, credits are required" }, { status: 400 });
+    const body = await request
+      .json<{
+        session_id: string;
+        space_id: string;
+        project_id?: string | null;
+        credits: number;
+      }>()
+      .catch(() => null);
+    if (
+      !body?.session_id ||
+      !body.space_id ||
+      typeof body.credits !== "number"
+    ) {
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "session_id, space_id, credits are required",
+        },
+        { status: 400 }
+      );
     }
     execute(
       this.ctx.storage.sql as never,
@@ -3977,7 +5308,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
        ON CONFLICT(session_id) DO UPDATE SET
          credits_used = credits_used + excluded.credits_used,
          updated_at = datetime('now')`,
-      body.session_id, body.space_id, body.project_id ?? null, Math.max(0, Math.round(body.credits))
+      body.session_id,
+      body.space_id,
+      body.project_id ?? null,
+      Math.max(0, Math.round(body.credits))
     );
     return Response.json({ ok: true }, { status: 201 });
   }
@@ -3985,15 +5319,31 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // GET /session-spend/:sessionId — read the current tally; a session with no rows yet (never
   // ran, or the budget guard is off) reads as an honest zeroed default, not a 404.
   private getSessionSpend(sessionId: string): Response {
-    const row = queryOne<{ session_id: string; space_id: string; project_id: string | null; credits_used: number; warned_80: number; updated_at: string }>(
+    const row = queryOne<{
+      session_id: string;
+      space_id: string;
+      project_id: string | null;
+      credits_used: number;
+      warned_80: number;
+      updated_at: string;
+    }>(
       this.ctx.storage.sql as never,
       "SELECT * FROM session_spend WHERE session_id = ?",
       sessionId
     );
     if (!row) {
-      return Response.json({ session_id: sessionId, credits_used: 0, warned_80: false });
+      return Response.json({
+        session_id: sessionId,
+        credits_used: 0,
+        warned_80: false,
+      });
     }
-    return Response.json({ session_id: row.session_id, credits_used: row.credits_used, warned_80: row.warned_80 === 1, updated_at: row.updated_at });
+    return Response.json({
+      session_id: row.session_id,
+      credits_used: row.credits_used,
+      warned_80: row.warned_80 === 1,
+      updated_at: row.updated_at,
+    });
   }
 
   // POST /session-spend/:sessionId/continue — a human approved continuing past the ceiling.
@@ -4031,7 +5381,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // full custody-boundary writeup this feature keeps to.
   private requireWalletProject(projectId: string): { space_id: string } | null {
     const row = queryOne<{ space_id: string; kind: string }>(
-      this.ctx.storage.sql as never, "SELECT space_id, kind FROM projects WHERE id = ?", projectId
+      this.ctx.storage.sql as never,
+      "SELECT space_id, kind FROM projects WHERE id = ?",
+      projectId
     );
     if (!row || row.kind !== "wallet") return null;
     return { space_id: row.space_id };
@@ -4039,7 +5391,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
   private walletBalance(projectId: string): number {
     const row = queryOne<{ bal: number | null }>(
-      this.ctx.storage.sql as never, "SELECT SUM(delta_cents) AS bal FROM wallet_ledger WHERE project_id = ?", projectId
+      this.ctx.storage.sql as never,
+      "SELECT SUM(delta_cents) AS bal FROM wallet_ledger WHERE project_id = ?",
+      projectId
     );
     return row?.bal ?? 0;
   }
@@ -4063,14 +5417,33 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // the full 120k×cut on top of what was already collected. We only update revenue_cents/tracked_at
   // here — billed/billed_cents are owned by the mark-billed/unmark-billed payment webhooks.
   private async recordExternalRevenue(request: Request): Promise<Response> {
-    const body = await request.json<{ space_id?: string; period?: string; provider?: string; revenue_cents?: number }>()
+    const body = await request
+      .json<{
+        space_id?: string;
+        period?: string;
+        provider?: string;
+        revenue_cents?: number;
+      }>()
       .catch(() => ({}) as Record<string, never>);
     const spaceId = body.space_id ?? "";
     const period = body.period ?? "";
     const provider = body.provider ?? "whop";
-    const revenueCents = Number.isFinite(body.revenue_cents) ? Math.max(0, Math.round(body.revenue_cents!)) : NaN;
-    if (!spaceId || !/^\d{4}-\d{2}$/.test(period) || !Number.isFinite(revenueCents)) {
-      return Response.json({ error_code: "bad_request", message: "space_id, period ('YYYY-MM'), and revenue_cents are required" }, { status: 400 });
+    const revenueCents = Number.isFinite(body.revenue_cents)
+      ? Math.max(0, Math.round(body.revenue_cents!))
+      : Number.NaN;
+    if (
+      !spaceId ||
+      !/^\d{4}-\d{2}$/.test(period) ||
+      !Number.isFinite(revenueCents)
+    ) {
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message:
+            "space_id, period ('YYYY-MM'), and revenue_cents are required",
+        },
+        { status: 400 }
+      );
     }
 
     execute(
@@ -4082,40 +5455,103 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
        VALUES (?, ?, ?, ?, ?, 0, datetime('now'))
        ON CONFLICT(space_id, period, provider) DO UPDATE SET
          revenue_cents = excluded.revenue_cents, tracked_at = excluded.tracked_at`,
-      crypto.randomUUID(), spaceId, period, provider, revenueCents
+      crypto.randomUUID(),
+      spaceId,
+      period,
+      provider,
+      revenueCents
     );
     const row = queryOne<{ billed: number; billed_cents: number }>(
       this.ctx.storage.sql as never,
       "SELECT billed, billed_cents FROM external_revenue_snapshots WHERE space_id = ? AND period = ? AND provider = ?",
-      spaceId, period, provider
+      spaceId,
+      period,
+      provider
     );
-    return Response.json({ space_id: spaceId, period, provider, revenue_cents: revenueCents, billed: row?.billed === 1, billed_cents: row?.billed_cents ?? 0 }, { status: 201 });
+    return Response.json(
+      {
+        space_id: spaceId,
+        period,
+        provider,
+        revenue_cents: revenueCents,
+        billed: row?.billed === 1,
+        billed_cents: row?.billed_cents ?? 0,
+      },
+      { status: 201 }
+    );
   }
 
   private getExternalRevenue(params: URLSearchParams): Response {
     const spaceId = params.get("space_id") ?? "";
-    if (!spaceId) return Response.json({ error_code: "bad_request", message: "space_id is required" }, { status: 400 });
+    if (!spaceId)
+      return Response.json(
+        { error_code: "bad_request", message: "space_id is required" },
+        { status: 400 }
+      );
     const provider = params.get("provider") ?? "whop";
     const period = params.get("period");
 
     if (period) {
-      const row = queryOne<{ revenue_cents: number; billed: number; billed_cents: number; pending_checkout_at: string | null; tracked_at: string }>(
+      const row = queryOne<{
+        revenue_cents: number;
+        billed: number;
+        billed_cents: number;
+        pending_checkout_at: string | null;
+        tracked_at: string;
+      }>(
         this.ctx.storage.sql as never,
         "SELECT revenue_cents, billed, billed_cents, pending_checkout_at, tracked_at FROM external_revenue_snapshots WHERE space_id = ? AND period = ? AND provider = ?",
-        spaceId, period, provider
+        spaceId,
+        period,
+        provider
       );
-      if (!row) return Response.json({ space_id: spaceId, period, provider, revenue_cents: 0, billed: false, billed_cents: 0, pending_checkout_at: null, tracked_at: null });
-      return Response.json({ space_id: spaceId, period, provider, revenue_cents: row.revenue_cents, billed: row.billed === 1, billed_cents: row.billed_cents, pending_checkout_at: row.pending_checkout_at, tracked_at: row.tracked_at });
+      if (!row)
+        return Response.json({
+          space_id: spaceId,
+          period,
+          provider,
+          revenue_cents: 0,
+          billed: false,
+          billed_cents: 0,
+          pending_checkout_at: null,
+          tracked_at: null,
+        });
+      return Response.json({
+        space_id: spaceId,
+        period,
+        provider,
+        revenue_cents: row.revenue_cents,
+        billed: row.billed === 1,
+        billed_cents: row.billed_cents,
+        pending_checkout_at: row.pending_checkout_at,
+        tracked_at: row.tracked_at,
+      });
     }
 
-    const rows = queryAll<{ period: string; revenue_cents: number; billed: number; billed_cents: number; pending_checkout_at: string | null; tracked_at: string }>(
+    const rows = queryAll<{
+      period: string;
+      revenue_cents: number;
+      billed: number;
+      billed_cents: number;
+      pending_checkout_at: string | null;
+      tracked_at: string;
+    }>(
       this.ctx.storage.sql as never,
       "SELECT period, revenue_cents, billed, billed_cents, pending_checkout_at, tracked_at FROM external_revenue_snapshots WHERE space_id = ? AND provider = ? ORDER BY period DESC LIMIT 24",
-      spaceId, provider
+      spaceId,
+      provider
     );
     return Response.json({
-      space_id: spaceId, provider,
-      snapshots: rows.map((r) => ({ period: r.period, revenue_cents: r.revenue_cents, billed: r.billed === 1, billed_cents: r.billed_cents, pending_checkout_at: r.pending_checkout_at, tracked_at: r.tracked_at })),
+      space_id: spaceId,
+      provider,
+      snapshots: rows.map((r) => ({
+        period: r.period,
+        revenue_cents: r.revenue_cents,
+        billed: r.billed === 1,
+        billed_cents: r.billed_cents,
+        pending_checkout_at: r.pending_checkout_at,
+        tracked_at: r.tracked_at,
+      })),
       last_tracked_at: rows[0]?.tracked_at ?? null,
     });
   }
@@ -4125,13 +5561,27 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // (which upserts a REVENUE OBSERVATION) since this only ever flips the billed flag, never
   // touches revenue_cents. Idempotent: an already-billed period is a no-op.
   private async markRevenueBilled(request: Request): Promise<Response> {
-    const body = await request.json<{ space_id?: string; periods?: string[]; charges?: number[]; provider?: string }>()
+    const body = await request
+      .json<{
+        space_id?: string;
+        periods?: string[];
+        charges?: number[];
+        provider?: string;
+      }>()
       .catch(() => ({}) as Record<string, never>);
     const spaceId = body.space_id ?? "";
     const provider = body.provider ?? "whop";
-    const periods = Array.isArray(body.periods) ? body.periods.filter((p) => /^\d{4}-\d{2}$/.test(p)) : [];
+    const periods = Array.isArray(body.periods)
+      ? body.periods.filter((p) => /^\d{4}-\d{2}$/.test(p))
+      : [];
     if (!spaceId || periods.length === 0) {
-      return Response.json({ error_code: "bad_request", message: "space_id and at least one valid period are required" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "space_id and at least one valid period are required",
+        },
+        { status: 400 }
+      );
     }
     // F-27: `charges` (parallel to periods) is the delta actually charged for each period — ADDED
     // to billed_cents so a later correction bills only the new delta. A caller that omits charges
@@ -4139,62 +5589,100 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     // ceiling that's never re-billed). F-31: clear pending_checkout_at now that it's paid.
     const charges = Array.isArray(body.charges) ? body.charges : [];
     periods.forEach((period, i) => {
-      const charge = Number.isFinite(charges[i]) ? Math.max(0, Math.round(charges[i]!)) : null;
+      const charge = Number.isFinite(charges[i])
+        ? Math.max(0, Math.round(charges[i]!))
+        : null;
       if (charge !== null) {
         execute(
           this.ctx.storage.sql as never,
           "UPDATE external_revenue_snapshots SET billed = 1, billed_cents = billed_cents + ?, pending_checkout_at = NULL WHERE space_id = ? AND period = ? AND provider = ?",
-          charge, spaceId, period, provider
+          charge,
+          spaceId,
+          period,
+          provider
         );
       } else {
         execute(
           this.ctx.storage.sql as never,
           "UPDATE external_revenue_snapshots SET billed = 1, billed_cents = revenue_cents, pending_checkout_at = NULL WHERE space_id = ? AND period = ? AND provider = ?",
-          spaceId, period, provider
+          spaceId,
+          period,
+          provider
         );
       }
     });
-    return Response.json({ space_id: spaceId, provider, billed_periods: periods });
+    return Response.json({
+      space_id: spaceId,
+      provider,
+      billed_periods: periods,
+    });
   }
 
   // F-29: the inverse of markRevenueBilled — the billing worker calls this when a revenue-cut
   // surcharge payment is refunded, so the periods it covered revert to unbilled and become
   // re-billable on the next checkout. Idempotent: an already-unbilled period is a no-op.
   private async markRevenueUnbilled(request: Request): Promise<Response> {
-    const body = await request.json<{ space_id?: string; periods?: string[]; charges?: number[]; provider?: string }>()
+    const body = await request
+      .json<{
+        space_id?: string;
+        periods?: string[];
+        charges?: number[];
+        provider?: string;
+      }>()
       .catch(() => ({}) as Record<string, never>);
     const spaceId = body.space_id ?? "";
     const provider = body.provider ?? "whop";
-    const periods = Array.isArray(body.periods) ? body.periods.filter((p) => /^\d{4}-\d{2}$/.test(p)) : [];
+    const periods = Array.isArray(body.periods)
+      ? body.periods.filter((p) => /^\d{4}-\d{2}$/.test(p))
+      : [];
     if (!spaceId || periods.length === 0) {
-      return Response.json({ error_code: "bad_request", message: "space_id and at least one valid period are required" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "space_id and at least one valid period are required",
+        },
+        { status: 400 }
+      );
     }
     // F-27: reverse exactly the charge that was collected (billed_cents -= charge), so a refunded
     // surcharge re-opens only that much for re-billing — not the whole period from scratch. Legacy
     // callers (no charges) zero billed_cents. billed flips to 0 once nothing is left charged.
     const charges = Array.isArray(body.charges) ? body.charges : [];
     periods.forEach((period, i) => {
-      const charge = Number.isFinite(charges[i]) ? Math.max(0, Math.round(charges[i]!)) : null;
+      const charge = Number.isFinite(charges[i])
+        ? Math.max(0, Math.round(charges[i]!))
+        : null;
       if (charge !== null) {
         execute(
           this.ctx.storage.sql as never,
           "UPDATE external_revenue_snapshots SET billed_cents = MAX(0, billed_cents - ?) WHERE space_id = ? AND period = ? AND provider = ?",
-          charge, spaceId, period, provider
+          charge,
+          spaceId,
+          period,
+          provider
         );
       } else {
         execute(
           this.ctx.storage.sql as never,
           "UPDATE external_revenue_snapshots SET billed_cents = 0 WHERE space_id = ? AND period = ? AND provider = ?",
-          spaceId, period, provider
+          spaceId,
+          period,
+          provider
         );
       }
       execute(
         this.ctx.storage.sql as never,
         "UPDATE external_revenue_snapshots SET billed = CASE WHEN billed_cents > 0 THEN 1 ELSE 0 END WHERE space_id = ? AND period = ? AND provider = ?",
-        spaceId, period, provider
+        spaceId,
+        period,
+        provider
       );
     });
-    return Response.json({ space_id: spaceId, provider, unbilled_periods: periods });
+    return Response.json({
+      space_id: spaceId,
+      provider,
+      unbilled_periods: periods,
+    });
   }
 
   // F-31: mark periods as having an in-flight surcharge checkout (skipped for ~24h so two checkouts
@@ -4202,27 +5690,46 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // right after minting a checkout URL. Cleared on pay (mark-billed) or refund. A stale pending
   // (>24h) is treated as abandoned and re-billable by the checkout's own filter.
   private async markRevenuePending(request: Request): Promise<Response> {
-    const body = await request.json<{ space_id?: string; periods?: string[]; provider?: string }>()
+    const body = await request
+      .json<{ space_id?: string; periods?: string[]; provider?: string }>()
       .catch(() => ({}) as Record<string, never>);
     const spaceId = body.space_id ?? "";
     const provider = body.provider ?? "whop";
-    const periods = Array.isArray(body.periods) ? body.periods.filter((p) => /^\d{4}-\d{2}$/.test(p)) : [];
+    const periods = Array.isArray(body.periods)
+      ? body.periods.filter((p) => /^\d{4}-\d{2}$/.test(p))
+      : [];
     if (!spaceId || periods.length === 0) {
-      return Response.json({ error_code: "bad_request", message: "space_id and at least one valid period are required" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "space_id and at least one valid period are required",
+        },
+        { status: 400 }
+      );
     }
     for (const period of periods) {
       execute(
         this.ctx.storage.sql as never,
         "UPDATE external_revenue_snapshots SET pending_checkout_at = datetime('now') WHERE space_id = ? AND period = ? AND provider = ?",
-        spaceId, period, provider
+        spaceId,
+        period,
+        provider
       );
     }
-    return Response.json({ space_id: spaceId, provider, pending_periods: periods });
+    return Response.json({
+      space_id: spaceId,
+      provider,
+      pending_periods: periods,
+    });
   }
 
   private getWalletBalance(projectId: string): Response {
     const project = this.requireWalletProject(projectId);
-    if (!project) return Response.json({ error_code: "not_found", message: "Not a wallet project" }, { status: 404 });
+    if (!project)
+      return Response.json(
+        { error_code: "not_found", message: "Not a wallet project" },
+        { status: 404 }
+      );
     // `credited_cents` is what makes a NEVER-FUNDED wallet distinguishable from a DEPLETED one.
     // Both are a zero balance, and the run gate used to block on the balance alone — so a business
     // created five seconds ago, whose wallet is auto-provisioned empty by design, was refused all
@@ -4241,14 +5748,33 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     });
   }
 
-  private async creditWallet(projectId: string, request: Request): Promise<Response> {
+  private async creditWallet(
+    projectId: string,
+    request: Request
+  ): Promise<Response> {
     const project = this.requireWalletProject(projectId);
-    if (!project) return Response.json({ error_code: "not_found", message: "Not a wallet project" }, { status: 404 });
+    if (!project)
+      return Response.json(
+        { error_code: "not_found", message: "Not a wallet project" },
+        { status: 404 }
+      );
     const tenantId = new URL(request.url).searchParams.get("tenant_id") ?? "";
-    const body = await request.json<{ cents?: number; reason?: string; idempotency_key?: string; currency?: string }>()
+    const body = await request
+      .json<{
+        cents?: number;
+        reason?: string;
+        idempotency_key?: string;
+        currency?: string;
+      }>()
       .catch(() => ({}) as Record<string, never>);
     if (!Number.isFinite(body.cents) || (body.cents ?? 0) <= 0) {
-      return Response.json({ error_code: "bad_request", message: "cents must be a positive number" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "cents must be a positive number",
+        },
+        { status: 400 }
+      );
     }
     // walletBalance/getWalletBalance sum delta_cents across the whole ledger with no currency
     // filter — a single-currency ledger (USD only) is the only thing that's actually correct
@@ -4257,15 +5783,26 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     // outright with a clear error until multi-currency wallets are actually built (which would
     // need per-currency balances/gates, not just a per-row column).
     if (body.currency && body.currency !== "USD") {
-      return Response.json({ error_code: "unsupported_currency", message: "Wallet ledger is single-currency (USD) only" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "unsupported_currency",
+          message: "Wallet ledger is single-currency (USD) only",
+        },
+        { status: 400 }
+      );
     }
     if (body.idempotency_key) {
       const existing = queryOne<{ balance_after_cents: number }>(
         this.ctx.storage.sql as never,
         "SELECT balance_after_cents FROM wallet_ledger WHERE project_id = ? AND idempotency_key = ?",
-        projectId, body.idempotency_key
+        projectId,
+        body.idempotency_key
       );
-      if (existing) return Response.json({ balance_cents: existing.balance_after_cents, deduplicated: true });
+      if (existing)
+        return Response.json({
+          balance_cents: existing.balance_after_cents,
+          deduplicated: true,
+        });
     }
     const credit = Math.floor(body.cents!);
     const balanceAfter = this.walletBalance(projectId) + credit;
@@ -4273,72 +5810,157 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       this.ctx.storage.sql as never,
       `INSERT INTO wallet_ledger (id, project_id, space_id, delta_cents, currency, reason, balance_after_cents, idempotency_key)
        VALUES (?, ?, ?, ?, 'USD', ?, ?, ?)`,
-      crypto.randomUUID(), projectId, project.space_id, credit,
-      body.reason ?? "top_up", balanceAfter, body.idempotency_key ?? null
+      crypto.randomUUID(),
+      projectId,
+      project.space_id,
+      credit,
+      body.reason ?? "top_up",
+      balanceAfter,
+      body.idempotency_key ?? null
     );
     await this.fireMatchingTriggers(
-      { type: "wallet.credited", space_id: project.space_id, project_id: projectId, occurred_at: Date.now(), payload: { cents: credit, balance_cents: balanceAfter } },
+      {
+        type: "wallet.credited",
+        space_id: project.space_id,
+        project_id: projectId,
+        occurred_at: Date.now(),
+        payload: { cents: credit, balance_cents: balanceAfter },
+      },
       tenantId
     );
-    await broadcastSpaceEvent(this.env, tenantId, project.space_id, "wallet.credited", { project_id: projectId, balance_cents: balanceAfter });
+    await broadcastSpaceEvent(
+      this.env,
+      tenantId,
+      project.space_id,
+      "wallet.credited",
+      { project_id: projectId, balance_cents: balanceAfter }
+    );
     return Response.json({ balance_cents: balanceAfter }, { status: 201 });
   }
 
   // Fails CLOSED: an over-draw is rejected (402), never silently allowed to go negative — same
   // contract as ProductUserDO's /credits/deduct.
-  private async debitWallet(projectId: string, request: Request): Promise<Response> {
+  private async debitWallet(
+    projectId: string,
+    request: Request
+  ): Promise<Response> {
     const project = this.requireWalletProject(projectId);
-    if (!project) return Response.json({ error_code: "not_found", message: "Not a wallet project" }, { status: 404 });
+    if (!project)
+      return Response.json(
+        { error_code: "not_found", message: "Not a wallet project" },
+        { status: 404 }
+      );
     const tenantId = new URL(request.url).searchParams.get("tenant_id") ?? "";
-    const body = await request.json<{ cents?: number; reason?: string; idempotency_key?: string }>()
+    const body = await request
+      .json<{ cents?: number; reason?: string; idempotency_key?: string }>()
       .catch(() => ({}) as Record<string, never>);
     if (!Number.isFinite(body.cents) || (body.cents ?? 0) <= 0) {
-      return Response.json({ error_code: "bad_request", message: "cents must be a positive number" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "cents must be a positive number",
+        },
+        { status: 400 }
+      );
     }
     if (body.idempotency_key) {
       const existing = queryOne<{ balance_after_cents: number }>(
         this.ctx.storage.sql as never,
         "SELECT balance_after_cents FROM wallet_ledger WHERE project_id = ? AND idempotency_key = ?",
-        projectId, body.idempotency_key
+        projectId,
+        body.idempotency_key
       );
-      if (existing) return Response.json({ balance_cents: existing.balance_after_cents, deduplicated: true });
+      if (existing)
+        return Response.json({
+          balance_cents: existing.balance_after_cents,
+          deduplicated: true,
+        });
     }
     const debit = Math.ceil(body.cents!);
     const balance = this.walletBalance(projectId);
     if (debit > balance) {
-      return Response.json({ error_code: "insufficient_balance", balance_cents: balance }, { status: 402 });
+      return Response.json(
+        { error_code: "insufficient_balance", balance_cents: balance },
+        { status: 402 }
+      );
     }
     const balanceAfter = balance - debit;
     execute(
       this.ctx.storage.sql as never,
       `INSERT INTO wallet_ledger (id, project_id, space_id, delta_cents, currency, reason, balance_after_cents, idempotency_key)
        VALUES (?, ?, ?, ?, 'USD', ?, ?, ?)`,
-      crypto.randomUUID(), projectId, project.space_id, -debit, body.reason ?? "wallet_charge", balanceAfter, body.idempotency_key ?? null
+      crypto.randomUUID(),
+      projectId,
+      project.space_id,
+      -debit,
+      body.reason ?? "wallet_charge",
+      balanceAfter,
+      body.idempotency_key ?? null
     );
     await this.fireMatchingTriggers(
-      { type: "wallet.debited", space_id: project.space_id, project_id: projectId, occurred_at: Date.now(), payload: { cents: debit, balance_cents: balanceAfter, reason: body.reason ?? null } },
+      {
+        type: "wallet.debited",
+        space_id: project.space_id,
+        project_id: projectId,
+        occurred_at: Date.now(),
+        payload: {
+          cents: debit,
+          balance_cents: balanceAfter,
+          reason: body.reason ?? null,
+        },
+      },
       tenantId
     );
-    await broadcastSpaceEvent(this.env, tenantId, project.space_id, "wallet.debited", { project_id: projectId, balance_cents: balanceAfter });
+    await broadcastSpaceEvent(
+      this.env,
+      tenantId,
+      project.space_id,
+      "wallet.debited",
+      { project_id: projectId, balance_cents: balanceAfter }
+    );
     // Low-balance signal (fixed $5 threshold) — lets a builder wire a no-code trigger to prompt
     // a top-up before the wallet actually runs dry and starts rejecting debits.
     if (balanceAfter < 500) {
       await this.fireMatchingTriggers(
-        { type: "wallet.low_balance", space_id: project.space_id, project_id: projectId, occurred_at: Date.now(), payload: { balance_cents: balanceAfter } },
+        {
+          type: "wallet.low_balance",
+          space_id: project.space_id,
+          project_id: projectId,
+          occurred_at: Date.now(),
+          payload: { balance_cents: balanceAfter },
+        },
         tenantId
       );
     }
     return Response.json({ balance_cents: balanceAfter }, { status: 200 });
   }
 
-  private listWalletHistory(projectId: string, params: URLSearchParams): Response {
+  private listWalletHistory(
+    projectId: string,
+    params: URLSearchParams
+  ): Response {
     const project = this.requireWalletProject(projectId);
-    if (!project) return Response.json({ error_code: "not_found", message: "Not a wallet project" }, { status: 404 });
-    const limit = Math.min(parseInt(params.get("limit") ?? "50", 10) || 50, 200);
-    const rows = queryAll<{ id: string; delta_cents: number; currency: string; reason: string; balance_after_cents: number; created_at: string }>(
+    if (!project)
+      return Response.json(
+        { error_code: "not_found", message: "Not a wallet project" },
+        { status: 404 }
+      );
+    const limit = Math.min(
+      Number.parseInt(params.get("limit") ?? "50", 10) || 50,
+      200
+    );
+    const rows = queryAll<{
+      id: string;
+      delta_cents: number;
+      currency: string;
+      reason: string;
+      balance_after_cents: number;
+      created_at: string;
+    }>(
       this.ctx.storage.sql as never,
       "SELECT id, delta_cents, currency, reason, balance_after_cents, created_at FROM wallet_ledger WHERE project_id = ? ORDER BY created_at DESC LIMIT ?",
-      projectId, limit
+      projectId,
+      limit
     );
     return Response.json({ data: rows });
   }
@@ -4346,8 +5968,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // ── project_rules — no-code "after the customer says X, this happens" triggers ─────────
   private listProjectRules(projectId: string): Response {
     const rows = queryAll<{
-      id: string; project_id: string; trigger_pattern: string; action: string;
-      reply_text: string | null; script_name: string | null; enabled: number; priority: number; created_at: string;
+      id: string;
+      project_id: string;
+      trigger_pattern: string;
+      action: string;
+      reply_text: string | null;
+      script_name: string | null;
+      enabled: number;
+      priority: number;
+      created_at: string;
     }>(
       this.ctx.storage.sql as never,
       "SELECT * FROM project_rules WHERE project_id = ? ORDER BY priority DESC, created_at",
@@ -4356,29 +5985,66 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ data: rows, count: rows.length });
   }
 
-  private async createProjectRule(projectId: string, request: Request): Promise<Response> {
-    const project = queryOne<{ id: string; space_id: string }>(this.ctx.storage.sql as never, "SELECT id, space_id FROM projects WHERE id = ?", projectId);
-    if (!project) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+  private async createProjectRule(
+    projectId: string,
+    request: Request
+  ): Promise<Response> {
+    const project = queryOne<{ id: string; space_id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT id, space_id FROM projects WHERE id = ?",
+      projectId
+    );
+    if (!project)
+      return Response.json(
+        { error_code: "not_found", message: "Project not found" },
+        { status: 404 }
+      );
 
-    const body = await request.json<{
-      trigger_pattern: string;
-      action: "reply" | "run_script" | "human_takeover";
-      reply_text?: string;
-      script_name?: string;
-      priority?: number;
-    }>().catch(() => ({}) as Record<string, never>);
+    const body = await request
+      .json<{
+        trigger_pattern: string;
+        action: "reply" | "run_script" | "human_takeover";
+        reply_text?: string;
+        script_name?: string;
+        priority?: number;
+      }>()
+      .catch(() => ({}) as Record<string, never>);
 
     if (!body.trigger_pattern || !body.action) {
-      return Response.json({ error_code: "bad_request", message: "trigger_pattern and action are required" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "trigger_pattern and action are required",
+        },
+        { status: 400 }
+      );
     }
     if (!["reply", "run_script", "human_takeover"].includes(body.action)) {
-      return Response.json({ error_code: "bad_request", message: "action must be 'reply', 'run_script', or 'human_takeover'" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "action must be 'reply', 'run_script', or 'human_takeover'",
+        },
+        { status: 400 }
+      );
     }
     if (body.action === "reply" && !body.reply_text) {
-      return Response.json({ error_code: "bad_request", message: "reply_text is required when action is 'reply'" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "reply_text is required when action is 'reply'",
+        },
+        { status: 400 }
+      );
     }
     if (body.action === "run_script" && !body.script_name) {
-      return Response.json({ error_code: "bad_request", message: "script_name is required when action is 'run_script'" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "script_name is required when action is 'run_script'",
+        },
+        { status: 400 }
+      );
     }
 
     const id = crypto.randomUUID();
@@ -4387,13 +6053,35 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       this.ctx.storage.sql as never,
       `INSERT INTO project_rules (id, project_id, space_id, trigger_pattern, action, reply_text, script_name, enabled, priority, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-      id, projectId, project.space_id, body.trigger_pattern, body.action, body.reply_text ?? null, body.script_name ?? null, body.priority ?? 0, now
+      id,
+      projectId,
+      project.space_id,
+      body.trigger_pattern,
+      body.action,
+      body.reply_text ?? null,
+      body.script_name ?? null,
+      body.priority ?? 0,
+      now
     );
-    return Response.json({ id, project_id: projectId, trigger_pattern: body.trigger_pattern, action: body.action, created_at: now }, { status: 201 });
+    return Response.json(
+      {
+        id,
+        project_id: projectId,
+        trigger_pattern: body.trigger_pattern,
+        action: body.action,
+        created_at: now,
+      },
+      { status: 201 }
+    );
   }
 
   private deleteProjectRule(projectId: string, ruleId: string): Response {
-    execute(this.ctx.storage.sql as never, "DELETE FROM project_rules WHERE id = ? AND project_id = ?", ruleId, projectId);
+    execute(
+      this.ctx.storage.sql as never,
+      "DELETE FROM project_rules WHERE id = ? AND project_id = ?",
+      ruleId,
+      projectId
+    );
     return Response.json({ deleted: true });
   }
 
@@ -4407,7 +6095,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
   private listContainerSlots(projectId: string): Response {
     const rows = queryAll<{
-      id: string; project_id: string; image_id: string; slot_name: string; status: string; created_at: string; updated_at: string;
+      id: string;
+      project_id: string;
+      image_id: string;
+      slot_name: string;
+      status: string;
+      created_at: string;
+      updated_at: string;
     }>(
       this.ctx.storage.sql as never,
       "SELECT * FROM container_slots WHERE project_id = ? ORDER BY created_at",
@@ -4416,16 +6110,43 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ data: rows, count: rows.length });
   }
 
-  private async createContainerSlot(projectId: string, request: Request): Promise<Response> {
-    const project = queryOne<{ id: string; space_id: string }>(this.ctx.storage.sql as never, "SELECT id, space_id FROM projects WHERE id = ?", projectId);
-    if (!project) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+  private async createContainerSlot(
+    projectId: string,
+    request: Request
+  ): Promise<Response> {
+    const project = queryOne<{ id: string; space_id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT id, space_id FROM projects WHERE id = ?",
+      projectId
+    );
+    if (!project)
+      return Response.json(
+        { error_code: "not_found", message: "Project not found" },
+        { status: 404 }
+      );
 
-    const body = await request.json<{ image_id: string; slot_name?: string }>().catch(() => ({}) as Record<string, never>);
-    if (!body.image_id) return Response.json({ error_code: "bad_request", message: "image_id is required" }, { status: 400 });
+    const body = await request
+      .json<{ image_id: string; slot_name?: string }>()
+      .catch(() => ({}) as Record<string, never>);
+    if (!body.image_id)
+      return Response.json(
+        { error_code: "bad_request", message: "image_id is required" },
+        { status: 400 }
+      );
 
-    const existing = queryAll<{ id: string }>(this.ctx.storage.sql as never, "SELECT id FROM container_slots WHERE project_id = ?", projectId);
+    const existing = queryAll<{ id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT id FROM container_slots WHERE project_id = ?",
+      projectId
+    );
     if (existing.length >= SpaceDO.MAX_SLOTS_PER_PROJECT_HARD_CEILING) {
-      return Response.json({ error_code: "slot_limit_reached", message: `A project may not exceed ${SpaceDO.MAX_SLOTS_PER_PROJECT_HARD_CEILING} container slots` }, { status: 409 });
+      return Response.json(
+        {
+          error_code: "slot_limit_reached",
+          message: `A project may not exceed ${SpaceDO.MAX_SLOTS_PER_PROJECT_HARD_CEILING} container slots`,
+        },
+        { status: 409 }
+      );
     }
 
     const id = crypto.randomUUID();
@@ -4434,13 +6155,33 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       this.ctx.storage.sql as never,
       `INSERT INTO container_slots (id, project_id, space_id, image_id, slot_name, status, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, 'provisioning', ?, ?)`,
-      id, projectId, project.space_id, body.image_id, body.slot_name ?? "", now, now
+      id,
+      projectId,
+      project.space_id,
+      body.image_id,
+      body.slot_name ?? "",
+      now,
+      now
     );
-    return Response.json({ id, project_id: projectId, image_id: body.image_id, status: "provisioning", created_at: now }, { status: 201 });
+    return Response.json(
+      {
+        id,
+        project_id: projectId,
+        image_id: body.image_id,
+        status: "provisioning",
+        created_at: now,
+      },
+      { status: 201 }
+    );
   }
 
   private deleteContainerSlot(projectId: string, slotId: string): Response {
-    execute(this.ctx.storage.sql as never, "DELETE FROM container_slots WHERE id = ? AND project_id = ?", slotId, projectId);
+    execute(
+      this.ctx.storage.sql as never,
+      "DELETE FROM container_slots WHERE id = ? AND project_id = ?",
+      slotId,
+      projectId
+    );
     return Response.json({ deleted: true });
   }
 
@@ -4459,7 +6200,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // project_id NULL applies space-wide/to any project; one with project_id set applies only to
   // that project) — so a project-scoped panel sees the grants that would actually apply to a run
   // in that project, not a naive exact-match that would hide the space-wide ones.
-  private listLocalGrants(spaceId: string, filterUserId?: string, filterProjectId?: string): Response {
+  private listLocalGrants(
+    spaceId: string,
+    filterUserId?: string,
+    filterProjectId?: string
+  ): Response {
     const conditions = ["space_id = ?"];
     const params: unknown[] = [spaceId];
     if (filterUserId) {
@@ -4471,29 +6216,60 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       params.push(filterProjectId);
     }
     const rows = queryAll<{
-      id: string; space_id: string; project_id: string | null; user_id: string;
-      grant_type: string; directory: string | null; commands_json: string; created_at: string;
+      id: string;
+      space_id: string;
+      project_id: string | null;
+      user_id: string;
+      grant_type: string;
+      directory: string | null;
+      commands_json: string;
+      created_at: string;
     }>(
       this.ctx.storage.sql as never,
       `SELECT * FROM local_grants WHERE ${conditions.join(" AND ")} ORDER BY created_at`,
       ...params
     );
-    const data = rows.map((r) => ({ ...r, commands: JSON.parse(r.commands_json || "[]") as string[] }));
+    const data = rows.map((r) => ({
+      ...r,
+      commands: JSON.parse(r.commands_json || "[]") as string[],
+    }));
     return Response.json({ data, count: data.length });
   }
 
-  private async createLocalGrant(spaceId: string, request: Request): Promise<Response> {
+  private async createLocalGrant(
+    spaceId: string,
+    request: Request
+  ): Promise<Response> {
     const body = await request
-      .json<{ user_id: string; grant_type: string; directory?: string | null; commands?: string[]; project_id?: string | null }>()
+      .json<{
+        user_id: string;
+        grant_type: string;
+        directory?: string | null;
+        commands?: string[];
+        project_id?: string | null;
+      }>()
       .catch(() => ({}) as Record<string, never>);
     if (!body.user_id || !body.grant_type) {
-      return Response.json({ error_code: "bad_request", message: "user_id and grant_type are required" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "user_id and grant_type are required",
+        },
+        { status: 400 }
+      );
     }
 
-    const existing = queryAll<{ id: string }>(this.ctx.storage.sql as never, "SELECT id FROM local_grants WHERE space_id = ?", spaceId);
+    const existing = queryAll<{ id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT id FROM local_grants WHERE space_id = ?",
+      spaceId
+    );
     if (existing.length >= SpaceDO.MAX_LOCAL_GRANTS_PER_SPACE_HARD_CEILING) {
       return Response.json(
-        { error_code: "grant_limit_reached", message: `A space may not exceed ${SpaceDO.MAX_LOCAL_GRANTS_PER_SPACE_HARD_CEILING} local grants` },
+        {
+          error_code: "grant_limit_reached",
+          message: `A space may not exceed ${SpaceDO.MAX_LOCAL_GRANTS_PER_SPACE_HARD_CEILING} local grants`,
+        },
         { status: 409 }
       );
     }
@@ -4504,17 +6280,35 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       this.ctx.storage.sql as never,
       `INSERT INTO local_grants (id, space_id, project_id, user_id, grant_type, directory, commands_json, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      id, spaceId, body.project_id ?? null, body.user_id, body.grant_type, body.directory ?? null,
-      JSON.stringify(body.commands ?? []), now
+      id,
+      spaceId,
+      body.project_id ?? null,
+      body.user_id,
+      body.grant_type,
+      body.directory ?? null,
+      JSON.stringify(body.commands ?? []),
+      now
     );
     return Response.json(
-      { id, space_id: spaceId, project_id: body.project_id ?? null, user_id: body.user_id, grant_type: body.grant_type, created_at: now },
+      {
+        id,
+        space_id: spaceId,
+        project_id: body.project_id ?? null,
+        user_id: body.user_id,
+        grant_type: body.grant_type,
+        created_at: now,
+      },
       { status: 201 }
     );
   }
 
   private deleteLocalGrant(spaceId: string, grantId: string): Response {
-    execute(this.ctx.storage.sql as never, "DELETE FROM local_grants WHERE id = ? AND space_id = ?", grantId, spaceId);
+    execute(
+      this.ctx.storage.sql as never,
+      "DELETE FROM local_grants WHERE id = ? AND space_id = ?",
+      grantId,
+      spaceId
+    );
     return Response.json({ deleted: true });
   }
 
@@ -4524,41 +6318,77 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // yolo skips asking entirely. User-controlled, never settable by the assistant itself —
   // only this space-worker route (owner-authenticated) can change it.
   private getAssistantPolicy(spaceId: string): Response {
-    const row = queryOne<{ space_id: string; approval_mode: string; auto_approved_actions: string; updated_at: string }>(
+    const row = queryOne<{
+      space_id: string;
+      approval_mode: string;
+      auto_approved_actions: string;
+      updated_at: string;
+    }>(
       this.ctx.storage.sql as never,
       "SELECT * FROM assistant_policy WHERE space_id = ?",
       spaceId
     );
     if (!row) {
-      return Response.json({ space_id: spaceId, approval_mode: "always_ask", auto_approved_actions: [] });
+      return Response.json({
+        space_id: spaceId,
+        approval_mode: "always_ask",
+        auto_approved_actions: [],
+      });
     }
-    return Response.json({ ...row, auto_approved_actions: safeJsonParseArr(row.auto_approved_actions) });
+    return Response.json({
+      ...row,
+      auto_approved_actions: safeJsonParseArr(row.auto_approved_actions),
+    });
   }
 
-  private async updateAssistantPolicy(spaceId: string, request: Request): Promise<Response> {
-    const body = await request.json<{
-      approval_mode?: "always_ask" | "yolo";
-      auto_approved_actions?: string[];
-    }>().catch(() => ({}) as Record<string, never>);
+  private async updateAssistantPolicy(
+    spaceId: string,
+    request: Request
+  ): Promise<Response> {
+    const body = await request
+      .json<{
+        approval_mode?: "always_ask" | "yolo";
+        auto_approved_actions?: string[];
+      }>()
+      .catch(() => ({}) as Record<string, never>);
 
-    if (body.approval_mode !== undefined && body.approval_mode !== "always_ask" && body.approval_mode !== "yolo") {
-      return Response.json({ error_code: "bad_request", message: "approval_mode must be 'always_ask' or 'yolo'" }, { status: 400 });
+    if (
+      body.approval_mode !== undefined &&
+      body.approval_mode !== "always_ask" &&
+      body.approval_mode !== "yolo"
+    ) {
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "approval_mode must be 'always_ask' or 'yolo'",
+        },
+        { status: 400 }
+      );
     }
 
-    const existing = queryOne<{ approval_mode: string; auto_approved_actions: string }>(
+    const existing = queryOne<{
+      approval_mode: string;
+      auto_approved_actions: string;
+    }>(
       this.ctx.storage.sql as never,
       "SELECT approval_mode, auto_approved_actions FROM assistant_policy WHERE space_id = ?",
       spaceId
     );
-    const approvalMode = body.approval_mode ?? existing?.approval_mode ?? "always_ask";
-    const autoApproved = body.auto_approved_actions ?? (existing ? safeJsonParseArr(existing.auto_approved_actions) : []);
+    const approvalMode =
+      body.approval_mode ?? existing?.approval_mode ?? "always_ask";
+    const autoApproved =
+      body.auto_approved_actions ??
+      (existing ? safeJsonParseArr(existing.auto_approved_actions) : []);
     const now = new Date().toISOString();
 
     execute(
       this.ctx.storage.sql as never,
       `INSERT INTO assistant_policy (space_id, approval_mode, auto_approved_actions, updated_at) VALUES (?, ?, ?, ?)
        ON CONFLICT(space_id) DO UPDATE SET approval_mode = excluded.approval_mode, auto_approved_actions = excluded.auto_approved_actions, updated_at = excluded.updated_at`,
-      spaceId, approvalMode, JSON.stringify(autoApproved), now
+      spaceId,
+      approvalMode,
+      JSON.stringify(autoApproved),
+      now
     );
     return this.getAssistantPolicy(spaceId);
   }
@@ -4577,16 +6407,33 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     execute(
       this.ctx.storage.sql as never,
       `INSERT INTO agent_api_keys (id, agent_id, key_hash, key_prefix, created_at) VALUES (?, ?, ?, ?, ?)`,
-      id, agentId, keyHash, keyPrefix, now
+      id,
+      agentId,
+      keyHash,
+      keyPrefix,
+      now
     );
     return Response.json(
-      { id, agent_id: agentId, key: rawKey, key_prefix: keyPrefix, created_at: now },
+      {
+        id,
+        agent_id: agentId,
+        key: rawKey,
+        key_prefix: keyPrefix,
+        created_at: now,
+      },
       { status: 201 }
     );
   }
 
   private listAgentApiKeys(agentId: string): Response {
-    const rows = queryAll<{ id: string; agent_id: string; key_prefix: string; last_used_at: string | null; revoked_at: string | null; created_at: string }>(
+    const rows = queryAll<{
+      id: string;
+      agent_id: string;
+      key_prefix: string;
+      last_used_at: string | null;
+      revoked_at: string | null;
+      created_at: string;
+    }>(
       this.ctx.storage.sql as never,
       `SELECT id, agent_id, key_prefix, last_used_at, revoked_at, created_at FROM agent_api_keys WHERE agent_id = ? ORDER BY created_at DESC`,
       agentId
@@ -4598,7 +6445,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     execute(
       this.ctx.storage.sql as never,
       "UPDATE agent_api_keys SET revoked_at = ? WHERE id = ? AND agent_id = ? AND revoked_at IS NULL",
-      new Date().toISOString(), keyId, agentId
+      new Date().toISOString(),
+      keyId,
+      agentId
     );
     return Response.json({ revoked: true, id: keyId });
   }
@@ -4607,8 +6456,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
    *  auto_approved_actions? }. The approval-policy fields are folded into the SAME round trip
    *  the router already makes to verify the key, rather than a second call per request. */
   private async verifyAgentApiKey(request: Request): Promise<Response> {
-    const body = await request.json<{ space_id?: string; key?: string }>().catch(() => ({}) as Record<string, never>);
-    if (!body.key || !body.key.startsWith("nak_") || !body.space_id) return Response.json({ valid: false });
+    const body = await request
+      .json<{ space_id?: string; key?: string }>()
+      .catch(() => ({}) as Record<string, never>);
+    if (!body.key || !body.key.startsWith("nak_") || !body.space_id)
+      return Response.json({ valid: false });
     const keyHash = await sha256Hex(body.key);
     const row = queryOne<{ id: string; agent_id: string }>(
       this.ctx.storage.sql as never,
@@ -4616,7 +6468,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       keyHash
     );
     if (!row) return Response.json({ valid: false });
-    execute(this.ctx.storage.sql as never, "UPDATE agent_api_keys SET last_used_at = ? WHERE id = ?", new Date().toISOString(), row.id);
+    execute(
+      this.ctx.storage.sql as never,
+      "UPDATE agent_api_keys SET last_used_at = ? WHERE id = ?",
+      new Date().toISOString(),
+      row.id
+    );
     const policy = this.resolveAgentPolicy(body.space_id, row.agent_id);
     return Response.json({ valid: true, agent_id: row.agent_id, ...policy });
   }
@@ -4625,22 +6482,42 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
    *  exists, else the space-wide assistant_policy row, else the fail-closed default
    *  (always_ask, nothing pre-approved) — same three-step fallback fetchAssistantPolicy already
    *  documents for the Space Assistant itself. */
-  private resolveAgentPolicy(spaceId: string, agentId: string): { approval_mode: "always_ask" | "yolo"; auto_approved_actions: string[] } {
-    const override = queryOne<{ approval_mode: string; auto_approved_actions: string }>(
+  private resolveAgentPolicy(
+    spaceId: string,
+    agentId: string
+  ): { approval_mode: "always_ask" | "yolo"; auto_approved_actions: string[] } {
+    const override = queryOne<{
+      approval_mode: string;
+      auto_approved_actions: string;
+    }>(
       this.ctx.storage.sql as never,
       "SELECT approval_mode, auto_approved_actions FROM agent_policy_overrides WHERE space_id = ? AND agent_id = ?",
-      spaceId, agentId
+      spaceId,
+      agentId
     );
     if (override) {
-      return { approval_mode: override.approval_mode as "always_ask" | "yolo", auto_approved_actions: safeJsonParseArr(override.auto_approved_actions) as string[] };
+      return {
+        approval_mode: override.approval_mode as "always_ask" | "yolo",
+        auto_approved_actions: safeJsonParseArr(
+          override.auto_approved_actions
+        ) as string[],
+      };
     }
-    const spaceWide = queryOne<{ approval_mode: string; auto_approved_actions: string }>(
+    const spaceWide = queryOne<{
+      approval_mode: string;
+      auto_approved_actions: string;
+    }>(
       this.ctx.storage.sql as never,
       "SELECT approval_mode, auto_approved_actions FROM assistant_policy WHERE space_id = ?",
       spaceId
     );
     if (spaceWide) {
-      return { approval_mode: spaceWide.approval_mode as "always_ask" | "yolo", auto_approved_actions: safeJsonParseArr(spaceWide.auto_approved_actions) as string[] };
+      return {
+        approval_mode: spaceWide.approval_mode as "always_ask" | "yolo",
+        auto_approved_actions: safeJsonParseArr(
+          spaceWide.auto_approved_actions
+        ) as string[],
+      };
     }
     return { approval_mode: "always_ask", auto_approved_actions: [] };
   }
@@ -4650,20 +6527,44 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ space_id: spaceId, agent_id: agentId, ...policy });
   }
 
-  private async updateAgentPolicy(spaceId: string, agentId: string, request: Request): Promise<Response> {
-    const body = await request.json<{ approval_mode?: "always_ask" | "yolo"; auto_approved_actions?: string[] }>().catch(() => ({}) as Record<string, never>);
-    if (body.approval_mode !== undefined && body.approval_mode !== "always_ask" && body.approval_mode !== "yolo") {
-      return Response.json({ error_code: "bad_request", message: "approval_mode must be 'always_ask' or 'yolo'" }, { status: 400 });
+  private async updateAgentPolicy(
+    spaceId: string,
+    agentId: string,
+    request: Request
+  ): Promise<Response> {
+    const body = await request
+      .json<{
+        approval_mode?: "always_ask" | "yolo";
+        auto_approved_actions?: string[];
+      }>()
+      .catch(() => ({}) as Record<string, never>);
+    if (
+      body.approval_mode !== undefined &&
+      body.approval_mode !== "always_ask" &&
+      body.approval_mode !== "yolo"
+    ) {
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "approval_mode must be 'always_ask' or 'yolo'",
+        },
+        { status: 400 }
+      );
     }
     const existing = this.resolveAgentPolicy(spaceId, agentId);
     const approvalMode = body.approval_mode ?? existing.approval_mode;
-    const autoApproved = body.auto_approved_actions ?? existing.auto_approved_actions;
+    const autoApproved =
+      body.auto_approved_actions ?? existing.auto_approved_actions;
     const now = new Date().toISOString();
     execute(
       this.ctx.storage.sql as never,
       `INSERT INTO agent_policy_overrides (space_id, agent_id, approval_mode, auto_approved_actions, updated_at) VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(space_id, agent_id) DO UPDATE SET approval_mode = excluded.approval_mode, auto_approved_actions = excluded.auto_approved_actions, updated_at = excluded.updated_at`,
-      spaceId, agentId, approvalMode, JSON.stringify(autoApproved), now
+      spaceId,
+      agentId,
+      approvalMode,
+      JSON.stringify(autoApproved),
+      now
     );
     return this.getAgentPolicy(spaceId, agentId);
   }
@@ -4720,10 +6621,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
    * orchestration threads toward a builder-facing limit would be surprising). Only archived
    * threads don't count, so archiving old conversations reopens room under the cap.
    */
-  private isThreadLimitReached(projectId: string | null | undefined, kind: string): boolean {
+  private isThreadLimitReached(
+    projectId: string | null | undefined,
+    kind: string
+  ): boolean {
     if (!projectId || kind === "sub_agent") return false;
     const project = queryOne<{ max_threads: number }>(
-      this.ctx.storage.sql as never, "SELECT max_threads FROM projects WHERE id = ?", projectId
+      this.ctx.storage.sql as never,
+      "SELECT max_threads FROM projects WHERE id = ?",
+      projectId
     );
     if (!project || project.max_threads <= 0) return false;
     const countRow = queryOne<{ n: number }>(
@@ -4735,34 +6641,55 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   private async createThread(request: Request): Promise<Response> {
-    const body = await request.json<{
-      id?: string;
-      space_id: string;
-      user_id?: string;
-      project_id: string;
-      title?: string;
-      parent_thread_id?: string;
-      thread_kind?: "primary" | "sub_agent" | "channel";
-      channel?: string;
-      channel_session_id?: string;
-      tenant_id?: string;
-      session_id?: string;
-    }>().catch(() => ({}) as Record<string, never>);
+    const body = await request
+      .json<{
+        id?: string;
+        space_id: string;
+        user_id?: string;
+        project_id: string;
+        title?: string;
+        parent_thread_id?: string;
+        thread_kind?: "primary" | "sub_agent" | "channel";
+        channel?: string;
+        channel_session_id?: string;
+        tenant_id?: string;
+        session_id?: string;
+      }>()
+      .catch(() => ({}) as Record<string, never>);
     if (!body.space_id) {
-      return Response.json({ error_code: "bad_request", message: "space_id is required" }, { status: 400 });
+      return Response.json(
+        { error_code: "bad_request", message: "space_id is required" },
+        { status: 400 }
+      );
     }
     const kind = body.thread_kind ?? "primary";
     if (!["primary", "sub_agent", "channel"].includes(kind)) {
-      return Response.json({ error_code: "bad_request", message: "thread_kind must be 'primary', 'sub_agent', or 'channel'" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "thread_kind must be 'primary', 'sub_agent', or 'channel'",
+        },
+        { status: 400 }
+      );
     }
     const id = body.id ?? crypto.randomUUID();
     const now = new Date().toISOString();
-    const tenantId = body.tenant_id ?? request.headers.get("x-naelao-tenant-id") ?? "";
+    const tenantId =
+      body.tenant_id ?? request.headers.get("x-naelao-tenant-id") ?? "";
     // thread.created only fires for a genuinely NEW thread — never on the idempotent
     // update/re-mirror branches below (a webhook retry or a repeat mirrorThread() call must
     // not re-fire triggers for a thread that already existed).
     const fireCreated = (threadId: string, projectId: string | null) =>
-      this.fireMatchingTriggers({ type: "thread.created", space_id: body.space_id, ...(projectId ? { project_id: projectId } : {}), thread_id: threadId, occurred_at: Date.now() }, tenantId);
+      this.fireMatchingTriggers(
+        {
+          type: "thread.created",
+          space_id: body.space_id,
+          ...(projectId ? { project_id: projectId } : {}),
+          thread_id: threadId,
+          occurred_at: Date.now(),
+        },
+        tenantId
+      );
 
     if (body.channel_session_id) {
       // Idempotent on channel_session_id — a channel's inbound webhook retries safely and
@@ -4776,48 +6703,114 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         body.channel_session_id
       );
       if (existing) {
-        execute(this.ctx.storage.sql as never, "UPDATE threads SET updated_at = ? WHERE id = ?", now, existing.id);
-        const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM threads WHERE id = ?", existing.id);
+        execute(
+          this.ctx.storage.sql as never,
+          "UPDATE threads SET updated_at = ? WHERE id = ?",
+          now,
+          existing.id
+        );
+        const row = queryOne(
+          this.ctx.storage.sql as never,
+          "SELECT * FROM threads WHERE id = ?",
+          existing.id
+        );
         return Response.json(row, { status: 201 });
       }
       if (this.isThreadLimitReached(body.project_id, kind)) {
-        return Response.json({ error_code: "thread_limit_reached", message: "This project has reached its configured max_threads" }, { status: 409 });
+        return Response.json(
+          {
+            error_code: "thread_limit_reached",
+            message: "This project has reached its configured max_threads",
+          },
+          { status: 409 }
+        );
       }
       execute(
         this.ctx.storage.sql as never,
         `INSERT INTO threads (id, space_id, user_id, project_id, title, status, parent_thread_id, thread_kind, channel, channel_session_id, session_id, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`,
-        id, body.space_id, body.user_id ?? null, body.project_id ?? null, body.title ?? null,
-        body.parent_thread_id ?? null, kind, body.channel ?? null, body.channel_session_id, body.session_id ?? null, now, now
+        id,
+        body.space_id,
+        body.user_id ?? null,
+        body.project_id ?? null,
+        body.title ?? null,
+        body.parent_thread_id ?? null,
+        kind,
+        body.channel ?? null,
+        body.channel_session_id,
+        body.session_id ?? null,
+        now,
+        now
       );
       await fireCreated(id, body.project_id ?? null);
-      const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM threads WHERE id = ?", id);
+      const row = queryOne(
+        this.ctx.storage.sql as never,
+        "SELECT * FROM threads WHERE id = ?",
+        id
+      );
       return Response.json(row, { status: 201 });
     }
 
-    const existingById = queryOne<{ id: string }>(this.ctx.storage.sql as never, "SELECT id FROM threads WHERE id = ?", id);
+    const existingById = queryOne<{ id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT id FROM threads WHERE id = ?",
+      id
+    );
     if (existingById) {
-      execute(this.ctx.storage.sql as never, "UPDATE threads SET updated_at = ? WHERE id = ?", now, id);
+      execute(
+        this.ctx.storage.sql as never,
+        "UPDATE threads SET updated_at = ? WHERE id = ?",
+        now,
+        id
+      );
     } else {
       if (this.isThreadLimitReached(body.project_id, kind)) {
-        return Response.json({ error_code: "thread_limit_reached", message: "This project has reached its configured max_threads" }, { status: 409 });
+        return Response.json(
+          {
+            error_code: "thread_limit_reached",
+            message: "This project has reached its configured max_threads",
+          },
+          { status: 409 }
+        );
       }
       execute(
         this.ctx.storage.sql as never,
         `INSERT INTO threads (id, space_id, user_id, project_id, title, status, parent_thread_id, thread_kind, channel, channel_session_id, session_id, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`,
-        id, body.space_id, body.user_id ?? null, body.project_id ?? null, body.title ?? null,
-        body.parent_thread_id ?? null, kind, body.channel ?? null, body.channel_session_id ?? null, body.session_id ?? null, now, now
+        id,
+        body.space_id,
+        body.user_id ?? null,
+        body.project_id ?? null,
+        body.title ?? null,
+        body.parent_thread_id ?? null,
+        kind,
+        body.channel ?? null,
+        body.channel_session_id ?? null,
+        body.session_id ?? null,
+        now,
+        now
       );
       await fireCreated(id, body.project_id ?? null);
     }
-    const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM threads WHERE id = ?", id);
+    const row = queryOne(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM threads WHERE id = ?",
+      id
+    );
     return Response.json(row, { status: 201 });
   }
 
   private getThread(threadId: string): Response {
-    const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM threads WHERE id = ?", threadId);
-    if (!row) return Response.json({ error_code: "not_found", message: "Thread not found" }, { status: 404 });
+    const row = queryOne(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM threads WHERE id = ?",
+      threadId
+    );
+    if (!row)
+      return Response.json(
+        { error_code: "not_found", message: "Thread not found" },
+        { status: 404 }
+      );
     return Response.json(row);
   }
 
@@ -4830,13 +6823,36 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
    * does — `isThreadLimitReached` already treats an archived thread as not counting toward a
    * project's max_threads, so archiving genuinely frees up room the same way a real delete would.
    */
-  private async updateThread(threadId: string, request: Request): Promise<Response> {
-    const body = await request.json<{ title?: string; status?: "active" | "archived" }>().catch(() => ({}) as Record<string, never>);
-    if (body.status !== undefined && body.status !== "active" && body.status !== "archived") {
-      return Response.json({ error_code: "bad_request", message: "status must be 'active' or 'archived'" }, { status: 400 });
+  private async updateThread(
+    threadId: string,
+    request: Request
+  ): Promise<Response> {
+    const body = await request
+      .json<{ title?: string; status?: "active" | "archived" }>()
+      .catch(() => ({}) as Record<string, never>);
+    if (
+      body.status !== undefined &&
+      body.status !== "active" &&
+      body.status !== "archived"
+    ) {
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "status must be 'active' or 'archived'",
+        },
+        { status: 400 }
+      );
     }
-    const existing = queryOne<{ id: string }>(this.ctx.storage.sql as never, "SELECT id FROM threads WHERE id = ?", threadId);
-    if (!existing) return Response.json({ error_code: "not_found", message: "Thread not found" }, { status: 404 });
+    const existing = queryOne<{ id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT id FROM threads WHERE id = ?",
+      threadId
+    );
+    if (!existing)
+      return Response.json(
+        { error_code: "not_found", message: "Thread not found" },
+        { status: 404 }
+      );
 
     const sets: string[] = [];
     const args: unknown[] = [];
@@ -4849,13 +6865,27 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       args.push(body.status);
     }
     if (sets.length === 0) {
-      return Response.json({ error_code: "bad_request", message: "nothing to update — provide title and/or status" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "nothing to update — provide title and/or status",
+        },
+        { status: 400 }
+      );
     }
     sets.push("updated_at = ?");
     args.push(new Date().toISOString());
     args.push(threadId);
-    execute(this.ctx.storage.sql as never, `UPDATE threads SET ${sets.join(", ")} WHERE id = ?`, ...args);
-    const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM threads WHERE id = ?", threadId);
+    execute(
+      this.ctx.storage.sql as never,
+      `UPDATE threads SET ${sets.join(", ")} WHERE id = ?`,
+      ...args
+    );
+    const row = queryOne(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM threads WHERE id = ?",
+      threadId
+    );
     return Response.json(row);
   }
 
@@ -4864,7 +6894,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // move to in_progress is a business rule the `tasks` prebuilt script checks BEFORE calling
   // PATCH here (same separation project-coordination.ts's own validateModel/validateAgentId
   // already establish — a business rule lives with the agent-facing caller, not the store).
-  private static readonly TASK_STATUSES = ["pending", "in_progress", "completed", "blocked", "cancelled"] as const;
+  private static readonly TASK_STATUSES = [
+    "pending",
+    "in_progress",
+    "completed",
+    "blocked",
+    "cancelled",
+  ] as const;
 
   private listTasks(params: URLSearchParams): Response {
     const spaceId = params.get("space_id") ?? "";
@@ -4873,33 +6909,68 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const status = params.get("status");
     const clauses = ["space_id = ?"];
     const args: unknown[] = [spaceId];
-    if (projectId) { clauses.push("project_id = ?"); args.push(projectId); }
-    if (threadId) { clauses.push("thread_id = ?"); args.push(threadId); }
-    if (status) { clauses.push("status = ?"); args.push(status); }
+    if (projectId) {
+      clauses.push("project_id = ?");
+      args.push(projectId);
+    }
+    if (threadId) {
+      clauses.push("thread_id = ?");
+      args.push(threadId);
+    }
+    if (status) {
+      clauses.push("status = ?");
+      args.push(status);
+    }
     const rows = queryAll<{ dependencies: string }>(
       this.ctx.storage.sql as never,
       `SELECT * FROM tasks WHERE ${clauses.join(" AND ")} ORDER BY created_at ASC LIMIT 200`,
       ...args
     );
-    return Response.json({ data: rows.map((r) => ({ ...r, dependencies: safeJsonParseArr(r.dependencies) as string[] })), count: rows.length });
+    return Response.json({
+      data: rows.map((r) => ({
+        ...r,
+        dependencies: safeJsonParseArr(r.dependencies) as string[],
+      })),
+      count: rows.length,
+    });
   }
 
   private async createTask(request: Request): Promise<Response> {
-    const body = await request.json<{
-      id?: string;
-      space_id: string;
-      project_id?: string;
-      thread_id?: string;
-      title?: string;
-      status?: string;
-      dependencies?: string[];
-      assigned_agent?: string;
-    }>().catch(() => ({}) as Record<string, never>);
-    if (!body.space_id) return Response.json({ error_code: "bad_request", message: "space_id is required" }, { status: 400 });
-    if (!body.title) return Response.json({ error_code: "bad_request", message: "title is required" }, { status: 400 });
+    const body = await request
+      .json<{
+        id?: string;
+        space_id: string;
+        project_id?: string;
+        thread_id?: string;
+        title?: string;
+        status?: string;
+        dependencies?: string[];
+        assigned_agent?: string;
+      }>()
+      .catch(() => ({}) as Record<string, never>);
+    if (!body.space_id)
+      return Response.json(
+        { error_code: "bad_request", message: "space_id is required" },
+        { status: 400 }
+      );
+    if (!body.title)
+      return Response.json(
+        { error_code: "bad_request", message: "title is required" },
+        { status: 400 }
+      );
     const status = body.status ?? "pending";
-    if (!SpaceDO.TASK_STATUSES.includes(status as (typeof SpaceDO.TASK_STATUSES)[number])) {
-      return Response.json({ error_code: "bad_request", message: `status must be one of: ${SpaceDO.TASK_STATUSES.join(", ")}` }, { status: 400 });
+    if (
+      !SpaceDO.TASK_STATUSES.includes(
+        status as (typeof SpaceDO.TASK_STATUSES)[number]
+      )
+    ) {
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: `status must be one of: ${SpaceDO.TASK_STATUSES.join(", ")}`,
+        },
+        { status: 400 }
+      );
     }
     const id = body.id ?? crypto.randomUUID();
     const now = new Date().toISOString();
@@ -4907,47 +6978,129 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       this.ctx.storage.sql as never,
       `INSERT INTO tasks (id, space_id, project_id, thread_id, title, status, dependencies, assigned_agent, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      id, body.space_id, body.project_id ?? null, body.thread_id ?? null, body.title, status,
-      JSON.stringify(Array.isArray(body.dependencies) ? body.dependencies.map(String) : []),
-      body.assigned_agent ?? null, now, now
+      id,
+      body.space_id,
+      body.project_id ?? null,
+      body.thread_id ?? null,
+      body.title,
+      status,
+      JSON.stringify(
+        Array.isArray(body.dependencies) ? body.dependencies.map(String) : []
+      ),
+      body.assigned_agent ?? null,
+      now,
+      now
     );
-    const row = queryOne<{ dependencies: string }>(this.ctx.storage.sql as never, "SELECT * FROM tasks WHERE id = ?", id);
-    return Response.json({ ...row, dependencies: safeJsonParseArr(row!.dependencies) as string[] }, { status: 201 });
+    const row = queryOne<{ dependencies: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM tasks WHERE id = ?",
+      id
+    );
+    return Response.json(
+      { ...row, dependencies: safeJsonParseArr(row!.dependencies) as string[] },
+      { status: 201 }
+    );
   }
 
-  private async updateTask(taskId: string, request: Request): Promise<Response> {
-    const body = await request.json<{
-      title?: string;
-      status?: string;
-      dependencies?: string[];
-      assigned_agent?: string | null;
-    }>().catch(() => ({}) as Record<string, never>);
-    const existing = queryOne<{ id: string }>(this.ctx.storage.sql as never, "SELECT id FROM tasks WHERE id = ?", taskId);
-    if (!existing) return Response.json({ error_code: "not_found", message: "Task not found" }, { status: 404 });
-    if (body.status !== undefined && !SpaceDO.TASK_STATUSES.includes(body.status as (typeof SpaceDO.TASK_STATUSES)[number])) {
-      return Response.json({ error_code: "bad_request", message: `status must be one of: ${SpaceDO.TASK_STATUSES.join(", ")}` }, { status: 400 });
+  private async updateTask(
+    taskId: string,
+    request: Request
+  ): Promise<Response> {
+    const body = await request
+      .json<{
+        title?: string;
+        status?: string;
+        dependencies?: string[];
+        assigned_agent?: string | null;
+      }>()
+      .catch(() => ({}) as Record<string, never>);
+    const existing = queryOne<{ id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT id FROM tasks WHERE id = ?",
+      taskId
+    );
+    if (!existing)
+      return Response.json(
+        { error_code: "not_found", message: "Task not found" },
+        { status: 404 }
+      );
+    if (
+      body.status !== undefined &&
+      !SpaceDO.TASK_STATUSES.includes(
+        body.status as (typeof SpaceDO.TASK_STATUSES)[number]
+      )
+    ) {
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: `status must be one of: ${SpaceDO.TASK_STATUSES.join(", ")}`,
+        },
+        { status: 400 }
+      );
     }
     const sets: string[] = [];
     const args: unknown[] = [];
-    if (body.title !== undefined) { sets.push("title = ?"); args.push(body.title); }
-    if (body.status !== undefined) { sets.push("status = ?"); args.push(body.status); }
-    if (body.dependencies !== undefined) { sets.push("dependencies = ?"); args.push(JSON.stringify(body.dependencies.map(String))); }
-    if (body.assigned_agent !== undefined) { sets.push("assigned_agent = ?"); args.push(body.assigned_agent); }
+    if (body.title !== undefined) {
+      sets.push("title = ?");
+      args.push(body.title);
+    }
+    if (body.status !== undefined) {
+      sets.push("status = ?");
+      args.push(body.status);
+    }
+    if (body.dependencies !== undefined) {
+      sets.push("dependencies = ?");
+      args.push(JSON.stringify(body.dependencies.map(String)));
+    }
+    if (body.assigned_agent !== undefined) {
+      sets.push("assigned_agent = ?");
+      args.push(body.assigned_agent);
+    }
     if (sets.length === 0) {
-      return Response.json({ error_code: "bad_request", message: "nothing to update — provide title, status, dependencies, and/or assigned_agent" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message:
+            "nothing to update — provide title, status, dependencies, and/or assigned_agent",
+        },
+        { status: 400 }
+      );
     }
     sets.push("updated_at = ?");
     args.push(new Date().toISOString());
     args.push(taskId);
-    execute(this.ctx.storage.sql as never, `UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`, ...args);
-    const row = queryOne<{ dependencies: string }>(this.ctx.storage.sql as never, "SELECT * FROM tasks WHERE id = ?", taskId);
-    return Response.json({ ...row, dependencies: safeJsonParseArr(row!.dependencies) as string[] });
+    execute(
+      this.ctx.storage.sql as never,
+      `UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`,
+      ...args
+    );
+    const row = queryOne<{ dependencies: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM tasks WHERE id = ?",
+      taskId
+    );
+    return Response.json({
+      ...row,
+      dependencies: safeJsonParseArr(row!.dependencies) as string[],
+    });
   }
 
   private deleteTask(taskId: string): Response {
-    const existing = queryOne<{ id: string }>(this.ctx.storage.sql as never, "SELECT id FROM tasks WHERE id = ?", taskId);
-    if (!existing) return Response.json({ error_code: "not_found", message: "Task not found" }, { status: 404 });
-    execute(this.ctx.storage.sql as never, "DELETE FROM tasks WHERE id = ?", taskId);
+    const existing = queryOne<{ id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT id FROM tasks WHERE id = ?",
+      taskId
+    );
+    if (!existing)
+      return Response.json(
+        { error_code: "not_found", message: "Task not found" },
+        { status: 404 }
+      );
+    execute(
+      this.ctx.storage.sql as never,
+      "DELETE FROM tasks WHERE id = ?",
+      taskId
+    );
     return Response.json({ ok: true, deleted: taskId });
   }
 
@@ -4971,23 +7124,47 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   private async createEventTrigger(request: Request): Promise<Response> {
-    const body = await request.json<{
-      space_id: string;
-      project_id?: string;
-      event_type: string;
-      condition?: TriggerCondition;
-      script_name: string;
-      params?: Record<string, unknown>;
-      priority?: number;
-    }>().catch(() => ({}) as Record<string, never>);
+    const body = await request
+      .json<{
+        space_id: string;
+        project_id?: string;
+        event_type: string;
+        condition?: TriggerCondition;
+        script_name: string;
+        params?: Record<string, unknown>;
+        priority?: number;
+      }>()
+      .catch(() => ({}) as Record<string, never>);
 
-    if (!body.space_id || !body.project_id || !body.event_type || !body.script_name) {
-      return Response.json({ error_code: "bad_request", message: "space_id, project_id, event_type, and script_name are required" }, { status: 400 });
+    if (
+      !body.space_id ||
+      !body.project_id ||
+      !body.event_type ||
+      !body.script_name
+    ) {
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message:
+            "space_id, project_id, event_type, and script_name are required",
+        },
+        { status: 400 }
+      );
     }
-    const project = queryOne<{ space_id: string; status: string }>(this.ctx.storage.sql as never,
-      "SELECT space_id, status FROM projects WHERE id = ?", body.project_id);
-    if (!project || project.space_id !== body.space_id || project.status !== "active") {
-      return Response.json({ error_code: "not_found", message: "Project not found in this space" }, { status: 404 });
+    const project = queryOne<{ space_id: string; status: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT space_id, status FROM projects WHERE id = ?",
+      body.project_id
+    );
+    if (
+      !project ||
+      project.space_id !== body.space_id ||
+      project.status !== "active"
+    ) {
+      return Response.json(
+        { error_code: "not_found", message: "Project not found in this space" },
+        { status: 404 }
+      );
     }
 
     const id = crypto.randomUUID();
@@ -4996,18 +7173,36 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       this.ctx.storage.sql as never,
       `INSERT INTO event_triggers (id, space_id, project_id, event_type, condition, script_name, params, enabled, priority, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-      id, body.space_id, body.project_id, body.event_type,
-      JSON.stringify(body.condition ?? { type: "always" }), body.script_name,
-      JSON.stringify(body.params ?? {}), body.priority ?? 0, now
+      id,
+      body.space_id,
+      body.project_id,
+      body.event_type,
+      JSON.stringify(body.condition ?? { type: "always" }),
+      body.script_name,
+      JSON.stringify(body.params ?? {}),
+      body.priority ?? 0,
+      now
     );
     return Response.json(
-      { id, space_id: body.space_id, project_id: body.project_id, event_type: body.event_type, script_name: body.script_name, created_at: now },
+      {
+        id,
+        space_id: body.space_id,
+        project_id: body.project_id,
+        event_type: body.event_type,
+        script_name: body.script_name,
+        created_at: now,
+      },
       { status: 201 }
     );
   }
 
   private deleteEventTrigger(spaceId: string, triggerId: string): Response {
-    execute(this.ctx.storage.sql as never, "DELETE FROM event_triggers WHERE id = ? AND space_id = ?", triggerId, spaceId);
+    execute(
+      this.ctx.storage.sql as never,
+      "DELETE FROM event_triggers WHERE id = ? AND space_id = ?",
+      triggerId,
+      spaceId
+    );
     return Response.json({ deleted: true });
   }
 
@@ -5018,7 +7213,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
    * query can never see a different project's threads, so a project-scoped trigger can never
    * resolve (and therefore never fire against) a thread outside its own project.
    */
-  private resolveLastActiveOtherThread(spaceId: string, projectId: string | undefined, excludeThreadId: string): { id: string; updated_at_ms: number } | undefined {
+  private resolveLastActiveOtherThread(
+    spaceId: string,
+    projectId: string | undefined,
+    excludeThreadId: string
+  ): { id: string; updated_at_ms: number } | undefined {
     const clauses = ["space_id = ?", "id != ?", "thread_kind = 'primary'"];
     const args: unknown[] = [spaceId, excludeThreadId];
     if (projectId) {
@@ -5052,7 +7251,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
    */
   private async fireExternalEvent(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    const tenantId = request.headers.get("x-naelao-tenant-id") || url.searchParams.get("tenant_id") || "";
+    const tenantId =
+      request.headers.get("x-naelao-tenant-id") ||
+      url.searchParams.get("tenant_id") ||
+      "";
     const body = await request.json<{
       type: string;
       space_id: string;
@@ -5062,7 +7264,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       payload?: Record<string, unknown>;
     }>();
     if (!tenantId || !body.type || !body.space_id) {
-      return Response.json({ error_code: "bad_request", message: "type and space_id are required" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "type and space_id are required",
+        },
+        { status: 400 }
+      );
     }
     await this.fireMatchingTriggers(
       {
@@ -5085,19 +7293,28 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
    * work is entirely in whatever script the trigger names (@naelao/events: "the action is
    * always run_script, not a new action-type surface to keep in sync with the engine").
    */
-  private async fireMatchingTriggers(event: EventEnvelope, tenantId: string): Promise<void> {
+  private async fireMatchingTriggers(
+    event: EventEnvelope,
+    tenantId: string
+  ): Promise<void> {
     if (!this.env.AGENTS_WORKER || !tenantId) return;
     try {
       const rows = queryAll<EventTriggerRow>(
         this.ctx.storage.sql as never,
         "SELECT * FROM event_triggers WHERE space_id = ? AND event_type = ? AND enabled = 1",
-        event.space_id, event.type
+        event.space_id,
+        event.type
       );
       const rules = selectMatchingRules(rows.map(rowToTriggerRule), event);
-      for (const rule of rules.slice(0, 5)) { // bound worst-case fan-out per single event
+      for (const rule of rules.slice(0, 5)) {
+        // bound worst-case fan-out per single event
         let ctx: ConditionContext = {};
         if (rule.condition.type === "last_active_thread_idle") {
-          const other = this.resolveLastActiveOtherThread(event.space_id, rule.project_id ?? undefined, event.thread_id ?? "");
+          const other = this.resolveLastActiveOtherThread(
+            event.space_id,
+            rule.project_id ?? undefined,
+            event.thread_id ?? ""
+          );
           if (other) ctx = { lastActiveOtherThread: other };
         }
         const result = evaluateCondition(rule.condition, ctx);
@@ -5106,26 +7323,31 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         // B3 fix: the static "x-naelao-internal: spaces-trigger" string was forgeable by
         // anyone who could reach the agents worker directly. Mint the same HMAC token
         // naelao-router's proxyTo attaches, verified by requireInternalHmac on the target route.
-        const internalToken = await mintInternalToken(this.env.PLATFORM_SECRET, tenantId);
-        await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/triggers/fire", {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-naelao-tenant-id": tenantId,
-            "x-naelao-internal-token": internalToken,
-          },
-          body: JSON.stringify({
-            spaceId: event.space_id,
-            tenantId,
-            scriptName: rule.action.script_name,
-            params,
-            // The fired script inherits its trigger's own project scoping (e.g. so a
-            // project's compact script reads/writes that project's workspace, not the
-            // space-wide one) — never the event's, in case a space-wide trigger fires for a
-            // project-scoped event.
-            ...(rule.project_id ? { projectId: rule.project_id } : {}),
-          }),
-        }));
+        const internalToken = await mintInternalToken(
+          this.env.PLATFORM_SECRET,
+          tenantId
+        );
+        await this.env.AGENTS_WORKER.fetch(
+          new Request("http://agents-worker/internal/triggers/fire", {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-naelao-tenant-id": tenantId,
+              "x-naelao-internal-token": internalToken,
+            },
+            body: JSON.stringify({
+              spaceId: event.space_id,
+              tenantId,
+              scriptName: rule.action.script_name,
+              params,
+              // The fired script inherits its trigger's own project scoping (e.g. so a
+              // project's compact script reads/writes that project's workspace, not the
+              // space-wide one) — never the event's, in case a space-wide trigger fires for a
+              // project-scoped event.
+              ...(rule.project_id ? { projectId: rule.project_id } : {}),
+            }),
+          })
+        );
       }
     } catch {
       /* best-effort — a firing failure must never surface as a failure of the thing that happened */
@@ -5135,9 +7357,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // G-AO17: Record a prompt injection attempt for a user and check if they are now rate-limited.
   // Rate limit: 3 attempts within 1 hour triggers block.
   private async recordInjectionAttempt(request: Request): Promise<Response> {
-    const body = await request.json<{ end_user_id: string; space_id: string }>();
+    const body = await request.json<{
+      end_user_id: string;
+      space_id: string;
+    }>();
     if (!body.end_user_id) {
-      return Response.json({ error_code: "bad_request", message: "end_user_id is required" }, { status: 400 });
+      return Response.json(
+        { error_code: "bad_request", message: "end_user_id is required" },
+        { status: 400 }
+      );
     }
 
     const id = crypto.randomUUID();
@@ -5167,7 +7395,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       this.cacheDeny(body.end_user_id, body.space_id ?? "");
     }
 
-    return Response.json({ recorded: true, attempts_last_hour: count, rate_limited: rateLimited });
+    return Response.json({
+      recorded: true,
+      attempts_last_hour: count,
+      rate_limited: rateLimited,
+    });
   }
 
   // ── space registry / hierarchy methods (spec §10 SpaceDO + §49) ──────────────
@@ -5186,13 +7418,31 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       settings?: Record<string, unknown>;
     }>();
     if (!body.id || !body.name || !body.space_type) {
-      return Response.json({ error_code: "bad_request", message: "id, name, space_type are required" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "id, name, space_type are required",
+        },
+        { status: 400 }
+      );
     }
     if (body.space_type !== "launchpad") {
-      return Response.json({ error_code: "invalid_hierarchy", message: "Only Launchpad spaces are supported" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "invalid_hierarchy",
+          message: "Only Launchpad spaces are supported",
+        },
+        { status: 400 }
+      );
     }
     if (body.parent_id || (body.depth !== undefined && body.depth !== 0)) {
-      return Response.json({ error_code: "invalid_hierarchy", message: "A root space cannot have a parent or non-zero depth" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "invalid_hierarchy",
+          message: "A root space cannot have a parent or non-zero depth",
+        },
+        { status: 400 }
+      );
     }
     execute(
       this.ctx.storage.sql as never,
@@ -5212,7 +7462,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       JSON.stringify(body.settings ?? {}),
       new Date().toISOString()
     );
-    return Response.json({ id: body.id, depth: 0, status: "active" }, { status: 201 });
+    return Response.json(
+      { id: body.id, depth: 0, status: "active" },
+      { status: 201 }
+    );
   }
 
   private listSpaceRows(): Response {
@@ -5237,7 +7490,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       settings?: Record<string, unknown>;
     }>();
     if (!body.parent_id || !body.name) {
-      return Response.json({ error_code: "bad_request", message: "parent_id and name are required" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "parent_id and name are required",
+        },
+        { status: 400 }
+      );
     }
 
     const parent = queryOne<SpaceRow>(
@@ -5246,19 +7505,37 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       body.parent_id
     );
     if (!parent) {
-      return Response.json({ error_code: "not_found", message: "Parent space not found" }, { status: 404 });
+      return Response.json(
+        { error_code: "not_found", message: "Parent space not found" },
+        { status: 404 }
+      );
     }
 
     if (parent.space_type !== "launchpad") {
-      return Response.json({ error_code: "invalid_hierarchy", message: "Departments require a Launchpad parent" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "invalid_hierarchy",
+          message: "Departments require a Launchpad parent",
+        },
+        { status: 400 }
+      );
     }
     if (body.space_type && body.space_type !== "launchpad") {
-      return Response.json({ error_code: "invalid_hierarchy", message: "Only Launchpad departments are supported" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "invalid_hierarchy",
+          message: "Only Launchpad departments are supported",
+        },
+        { status: 400 }
+      );
     }
     // The hierarchy policy is exactly two levels: root plus direct departments.
     if (parent.depth >= 1 || parent.parent_id !== null) {
       return Response.json(
-        { error_code: "max_depth_exceeded", message: "A department cannot have child spaces." },
+        {
+          error_code: "max_depth_exceeded",
+          message: "A department cannot have child spaces.",
+        },
         { status: 400 }
       );
     }
@@ -5270,11 +7547,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       effectiveType = parent.space_type;
     } else if (body.space_type && body.space_type !== parent.space_type) {
       if (!parent.agency_shell) {
-        return Response.json({
-          error_code: "mixed_space_type_not_permitted",
-          message: `Mixed space types are only permitted when the parent space is an agency shell. ` +
-                   `Parent ${parent.id} is type '${parent.space_type}'.`,
-        }, { status: 400 });
+        return Response.json(
+          {
+            error_code: "mixed_space_type_not_permitted",
+            message:
+              `Mixed space types are only permitted when the parent space is an agency shell. ` +
+              `Parent ${parent.id} is type '${parent.space_type}'.`,
+          },
+          { status: 400 }
+        );
       }
       effectiveType = body.space_type;
     } else {
@@ -5283,7 +7564,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
     const id = body.id ?? crypto.randomUUID();
     const depth = parent.depth + 1;
-    const scenario = body.scenario_type ?? (parent.agency_shell ? "agency-child" : "organizational");
+    const scenario =
+      body.scenario_type ??
+      (parent.agency_shell ? "agency-child" : "organizational");
     const now = new Date().toISOString();
     execute(
       this.ctx.storage.sql as never,
@@ -5300,7 +7583,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       now
     );
     return Response.json(
-      { id, parent_id: parent.id, name: body.name, space_type: effectiveType, depth, scenario_type: scenario, status: "active", created_at: now },
+      {
+        id,
+        parent_id: parent.id,
+        name: body.name,
+        space_type: effectiveType,
+        depth,
+        scenario_type: scenario,
+        status: "active",
+        created_at: now,
+      },
       { status: 201 }
     );
   }
@@ -5311,14 +7603,31 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       "SELECT * FROM spaces WHERE id = ?",
       id
     );
-    if (!row) return Response.json({ error_code: "not_found", message: "Space not found" }, { status: 404 });
+    if (!row)
+      return Response.json(
+        { error_code: "not_found", message: "Space not found" },
+        { status: 404 }
+      );
     return Response.json(this.serializeSpaceRow(row));
   }
 
-  private async updateSpaceRow(id: string, request: Request): Promise<Response> {
-    const body = await request.json<{ status?: string; name?: string; settings?: Record<string, unknown> }>();
-    if (body.status && !["active", "suspended", "deleted"].includes(body.status)) {
-      return Response.json({ error_code: "bad_request", message: "Invalid status" }, { status: 400 });
+  private async updateSpaceRow(
+    id: string,
+    request: Request
+  ): Promise<Response> {
+    const body = await request.json<{
+      status?: string;
+      name?: string;
+      settings?: Record<string, unknown>;
+    }>();
+    if (
+      body.status &&
+      !["active", "suspended", "deleted"].includes(body.status)
+    ) {
+      return Response.json(
+        { error_code: "bad_request", message: "Invalid status" },
+        { status: 400 }
+      );
     }
     execute(
       this.ctx.storage.sql as never,
@@ -5339,7 +7648,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return {
       ...row,
       agency_shell: row.agency_shell === 1,
-      settings: (() => { try { return JSON.parse(row.settings) as unknown; } catch { return {}; } })(),
+      settings: (() => {
+        try {
+          return JSON.parse(row.settings) as unknown;
+        } catch {
+          return {};
+        }
+      })(),
     };
   }
 
@@ -5349,29 +7664,124 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private authorizeHierarchy(params: URLSearchParams): Response {
     const userId = params.get("user_id") ?? "";
     const targetId = params.get("target_space_id") ?? "";
+    const action =
+      params.get("action") ??
+      (params.get("requesting_space_id") || params.get("source_space_id")
+        ? "read"
+        : "manage");
+    const requestingSpaceId =
+      params.get("requesting_space_id") ?? params.get("source_space_id");
+
     if (!userId || !targetId) {
-      return Response.json({ permitted: false, reason: "user_id and target_space_id are required" }, { status: 400 });
+      return Response.json(
+        {
+          permitted: false,
+          reason: "user_id and target_space_id are required",
+          grant_type: null,
+        },
+        { status: 400 }
+      );
     }
-    const target = queryOne<SpaceRow>(this.ctx.storage.sql as never,
-      "SELECT * FROM spaces WHERE id = ? AND status != 'deleted'", targetId);
-    if (!target || target.space_type !== "launchpad" || (target.depth === 0) !== (target.parent_id === null)) {
-      return Response.json({ permitted: false, reason: "Target is not a valid Launchpad hierarchy space" }, { status: 404 });
+    const target = queryOne<SpaceRow>(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM spaces WHERE id = ? AND status != 'deleted'",
+      targetId
+    );
+    if (
+      !target ||
+      target.space_type !== "launchpad" ||
+      (target.depth === 0) !== (target.parent_id === null)
+    ) {
+      return Response.json(
+        {
+          permitted: false,
+          reason: "Target is not a valid Launchpad hierarchy space",
+        },
+        { status: 404 }
+      );
     }
-    const direct = queryOne<{ role: string }>(this.ctx.storage.sql as never,
-      "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?", target.id, userId);
-    if (direct && (direct.role === "owner" || direct.role === "admin")) {
-      return Response.json({ permitted: true, source_space_id: target.id, role: direct.role });
+    const direct = queryOne<{ role: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?",
+      target.id,
+      userId
+    );
+    if (
+      direct &&
+      (direct.role === "owner" ||
+        direct.role === "admin" ||
+        (action === "read" && direct.role === "member"))
+    ) {
+      return Response.json({
+        permitted: true,
+        source_space_id: target.id,
+        role: direct.role,
+      });
     }
     if (target.depth === 1 && target.parent_id) {
-      const parent = queryOne<SpaceRow>(this.ctx.storage.sql as never,
-        "SELECT * FROM spaces WHERE id = ? AND depth = 0 AND parent_id IS NULL AND status != 'deleted'", target.parent_id);
-      const inherited = parent && queryOne<{ role: string }>(this.ctx.storage.sql as never,
-        "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?", parent.id, userId);
-      if (inherited && (inherited.role === "owner" || inherited.role === "admin")) {
-        return Response.json({ permitted: true, source_space_id: parent.id, role: inherited.role });
+      const parent = queryOne<SpaceRow>(
+        this.ctx.storage.sql as never,
+        "SELECT * FROM spaces WHERE id = ? AND depth = 0 AND parent_id IS NULL AND status != 'deleted'",
+        target.parent_id
+      );
+      const inherited =
+        parent &&
+        queryOne<{ role: string }>(
+          this.ctx.storage.sql as never,
+          "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?",
+          parent.id,
+          userId
+        );
+      if (
+        inherited &&
+        (inherited.role === "owner" || inherited.role === "admin")
+      ) {
+        return Response.json({
+          permitted: true,
+          source_space_id: parent.id,
+          role: inherited.role,
+        });
       }
     }
-    return Response.json({ permitted: false, reason: "No administrative membership on the space or its direct parent" }, { status: 403 });
+    if (requestingSpaceId && requestingSpaceId !== target.id) {
+      const requesterRole = queryOne<{ role: string }>(
+        this.ctx.storage.sql as never,
+        "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?",
+        requestingSpaceId,
+        userId
+      );
+      if (requesterRole) {
+        const grant = queryOne<{ id: string; grant_type: string }>(
+          this.ctx.storage.sql as never,
+          `SELECT id, grant_type FROM cross_space_grants
+           WHERE granting_space_id = ? AND receiving_space_id = ?
+             AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)
+           LIMIT 1`,
+          target.id,
+          requestingSpaceId,
+          new Date().toISOString()
+        );
+        if (grant) {
+          const actionAllowed =
+            action === "read" || grant.grant_type === "full-access";
+          if (actionAllowed) {
+            return Response.json({
+              permitted: true,
+              source_space_id: requestingSpaceId,
+              grant_type: grant.grant_type,
+            });
+          }
+        }
+      }
+    }
+    return Response.json(
+      {
+        permitted: false,
+        reason:
+          "No administrative membership on the space or its direct parent",
+      },
+      { status: 403 }
+    );
   }
 
   // ── cross-space grants (§49 checkPermission — fail closed) ───────────────────
@@ -5384,18 +7794,42 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       granted_by: string;
       expires_at?: string;
     }>();
-    if (!body.granting_space_id || !body.receiving_space_id || !body.grant_type || !body.granted_by) {
-      return Response.json({ error_code: "bad_request", message: "granting_space_id, receiving_space_id, grant_type, granted_by are required" }, { status: 400 });
+    if (
+      !body.granting_space_id ||
+      !body.receiving_space_id ||
+      !body.grant_type ||
+      !body.granted_by
+    ) {
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message:
+            "granting_space_id, receiving_space_id, grant_type, granted_by are required",
+        },
+        { status: 400 }
+      );
     }
     if (body.granting_space_id === body.receiving_space_id) {
-      return Response.json({ error_code: "bad_request", message: "Cannot grant a space access to itself" }, { status: 400 });
+      return Response.json(
+        {
+          error_code: "bad_request",
+          message: "Cannot grant a space access to itself",
+        },
+        { status: 400 }
+      );
     }
     const id = crypto.randomUUID();
     execute(
       this.ctx.storage.sql as never,
       `INSERT INTO cross_space_grants (id, granting_space_id, receiving_space_id, grant_type, granted_by, granted_at, expires_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      id, body.granting_space_id, body.receiving_space_id, body.grant_type, body.granted_by, new Date().toISOString(), body.expires_at ?? null
+      id,
+      body.granting_space_id,
+      body.receiving_space_id,
+      body.grant_type,
+      body.granted_by,
+      new Date().toISOString(),
+      body.expires_at ?? null
     );
     return Response.json({ id, grant_type: body.grant_type }, { status: 201 });
   }
@@ -5408,7 +7842,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           `SELECT * FROM cross_space_grants
            WHERE (granting_space_id = ? OR receiving_space_id = ?) AND revoked_at IS NULL
            ORDER BY granted_at DESC`,
-          spaceId, spaceId
+          spaceId,
+          spaceId
         )
       : queryAll<CrossSpaceGrantRow>(
           this.ctx.storage.sql as never,
@@ -5421,7 +7856,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     execute(
       this.ctx.storage.sql as never,
       "UPDATE cross_space_grants SET revoked_at = ? WHERE id = ?",
-      new Date().toISOString(), id
+      new Date().toISOString(),
+      id
     );
     return Response.json({ revoked: true, id });
   }
@@ -5437,17 +7873,29 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
     try {
       if (!userId || !targetSpaceId) {
-        return Response.json({ permitted: false, reason: "user_id and target_space_id are required", grant_type: null }, { status: 400 });
+        return Response.json(
+          {
+            permitted: false,
+            reason: "user_id and target_space_id are required",
+            grant_type: null,
+          },
+          { status: 400 }
+        );
       }
 
       // Direct membership of the target space → permitted.
       const member = queryOne<{ role: string }>(
         this.ctx.storage.sql as never,
         "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?",
-        targetSpaceId, userId
+        targetSpaceId,
+        userId
       );
       if (member) {
-        return Response.json({ permitted: true, reason: `Direct member with role '${member.role}'.`, grant_type: null });
+        return Response.json({
+          permitted: true,
+          reason: `Direct member with role '${member.role}'.`,
+          grant_type: null,
+        });
       }
 
       // Valid cross-space grant from requesting → target.
@@ -5459,7 +7907,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
            AND (grant_type = ? OR grant_type = 'full-access')
            AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)
          LIMIT 1`,
-        targetSpaceId, requestingSpaceId, grantType, now
+        targetSpaceId,
+        requestingSpaceId,
+        grantType,
+        now
       );
       if (!grant) {
         return Response.json({
@@ -5468,11 +7919,22 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           grant_type: null,
         });
       }
-      return Response.json({ permitted: true, reason: `Cross-space grant '${grant.grant_type}' applies.`, grant_type: grant.grant_type });
+      return Response.json({
+        permitted: true,
+        reason: `Cross-space grant '${grant.grant_type}' applies.`,
+        grant_type: grant.grant_type,
+      });
     } catch (err) {
       // ANY unexpected error → DENIED. Never permit on error.
-      console.error("[SpaceDO] checkCrossSpace UNEXPECTED ERROR — defaulting to DENIED", err);
-      return Response.json({ permitted: false, reason: "Permission check failed; access denied as a safety default.", grant_type: null });
+      console.error(
+        "[SpaceDO] checkCrossSpace UNEXPECTED ERROR — defaulting to DENIED",
+        err
+      );
+      return Response.json({
+        permitted: false,
+        reason: "Permission check failed; access denied as a safety default.",
+        grant_type: null,
+      });
     }
   }
 }

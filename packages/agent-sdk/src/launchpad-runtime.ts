@@ -101,6 +101,32 @@ export function defineProjectAutomation(
   return { ...input };
 }
 
+export function requireManageableAutomationProject(params: {
+  spaceId: string;
+  projectId: string;
+  projectSpaceId: string;
+  projectStatus: string;
+  userRole?: string | null;
+  isSpaceAdmin?: boolean;
+}): { allowed: true } {
+  if (!params.projectId || !params.projectId.trim()) {
+    throw new Error("Automation must be anchored to a project");
+  }
+  if (
+    params.spaceId !== params.projectSpaceId ||
+    params.projectStatus !== "active"
+  ) {
+    throw new Error("project_not_found");
+  }
+  const allowed =
+    params.isSpaceAdmin === true ||
+    params.userRole === "owner" ||
+    params.userRole === "editor";
+  if (!allowed) {
+    throw new Error("insufficient_project_permission");
+  }
+  return { allowed: true };
+}
 // ── Artifact repository and filesystem ──────────────────────────────────────
 
 export interface CommitMetadata {
@@ -390,10 +416,118 @@ export interface RuntimeBridge {
   ): Promise<T>;
 }
 
+export class MultiplexedBridge implements RuntimeBridge {
+  private pending = new Map<
+    string,
+    {
+      resolve: (value: unknown) => void;
+      reject: (reason?: unknown) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
+
+  constructor(
+    private readonly sendRaw: (message: string) => void | Promise<void>,
+    private readonly timeoutMs = 30_000
+  ) {}
+
+  async call<T>(
+    stream: string,
+    method: string,
+    payload: unknown,
+    signal?: { readonly aborted: boolean }
+  ): Promise<T> {
+    if (signal?.aborted) throw new Error("aborted");
+    const id = crypto.randomUUID();
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`bridge_call_timeout:${stream}:${method}`));
+      }, this.timeoutMs);
+
+      this.pending.set(id, {
+        resolve: (value) => resolve(value as T),
+        reject,
+        timer,
+      });
+
+      Promise.resolve(
+        this.sendRaw(JSON.stringify({ id, stream, method, payload }))
+      ).catch((err) => {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(err);
+      });
+    });
+  }
+
+  handleMessage(raw: string): void {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    if (!parsed || typeof parsed !== "object" || !("id" in parsed)) return;
+    const msg = parsed;
+    if (!msg.id) return;
+    const pending = this.pending.get(msg.id);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pending.delete(msg.id);
+    if (msg.error) {
+      pending.reject(new Error(msg.error));
+    } else {
+      pending.resolve(msg.result);
+    }
+  }
+}
+
 export interface VirtualDisplay {
   capture(): Promise<Uint8Array>;
   mouse(x: number, y: number, button?: "left" | "right"): Promise<void>;
   type(text: string): Promise<void>;
+}
+
+export class ContainerVirtualDisplay implements VirtualDisplay {
+  private readonly baseUrl: string;
+
+  constructor(
+    endpointUrl: string,
+    private readonly fetchImpl: typeof fetch = fetch
+  ) {
+    this.baseUrl = endpointUrl.replace(/\/+$/, "");
+  }
+
+  async capture(): Promise<Uint8Array> {
+    const res = await this.fetchImpl(`${this.baseUrl}/display/capture`, {
+      method: "POST",
+    });
+    if (!res.ok) throw new Error(`display_capture_failed:${res.status}`);
+    return new Uint8Array(await res.arrayBuffer());
+  }
+
+  async mouse(
+    x: number,
+    y: number,
+    button: "left" | "right" = "left"
+  ): Promise<void> {
+    const res = await this.fetchImpl(`${this.baseUrl}/display/mouse`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ x, y, button }),
+    });
+    if (!res.ok) throw new Error(`display_mouse_failed:${res.status}`);
+  }
+
+  async type(text: string): Promise<void> {
+    const res = await this.fetchImpl(`${this.baseUrl}/display/type`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) throw new Error(`display_type_failed:${res.status}`);
+  }
 }
 
 // ── Universal script context ─────────────────────────────────────────────────
