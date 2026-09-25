@@ -134,8 +134,8 @@ index 0000000..7340b2b
 +    const p1 = bridge.call("terminal", "exec", { cmd: "echo 1" });
 +    const p2 = bridge.call("terminal", "exec", { cmd: "echo 2" });
 +
-+    const msg1 = JSON.parse(outbox[0]!);
-+    const msg2 = JSON.parse(outbox[1]!);
++    const msg1 = JSON.parse(outbox[0]);
++    const msg2 = JSON.parse(outbox[1]);
 +    expect(msg1.id).not.toBe(msg2.id);
 +
 +    bridge.handleMessage(JSON.stringify({ id: msg2.id, result: "two" }));
@@ -147,8 +147,8 @@ index 0000000..7340b2b
 +  });
 +
 +  it("dispatches virtual display actions and captures real frames", async () => {
-+    const calls: Array<{ url: string; body?: unknown }> = [];
-+    const mockFetch = async (url: RequestInfo | URL, init?: RequestInit) => {
++    const calls = [];
++    const mockFetch = async (url, init) => {
 +      calls.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : undefined });
 +      if (String(url).endsWith("/display/capture")) {
 +        return new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
@@ -156,7 +156,6 @@ index 0000000..7340b2b
 +      return new Response(JSON.stringify({ ok: true }));
 +    };
 +
-+    // @ts-expect-error test harness mock
 +    const display = new ContainerVirtualDisplay("https://container", mockFetch);
 +    const frame = await display.capture();
 +    expect(frame[0]).toBe(0x89);
@@ -166,12 +165,11 @@ index 0000000..7340b2b
 +    expect(calls.map((c) => c.url)).toEqual(["https://container/display/capture", "https://container/display/mouse", "https://container/display/type"]);
 +  });
 +});
-+
-diff --git a/packages/agent-sdk/src/launchpad-runtime.ts b/packages/agent-sdk/src/launchpad-runtime.ts
++diff --git a/packages/agent-sdk/src/launchpad-runtime.ts b/packages/agent-sdk/src/launchpad-runtime.ts
 index e54f9a1..95ab350 100644
 --- a/packages/agent-sdk/src/launchpad-runtime.ts
 +++ b/packages/agent-sdk/src/launchpad-runtime.ts
-@@ -93,6 +93,27 @@ export function defineProjectAutomation(
+@@ -99,6 +99,27 @@ export function defineProjectAutomation(
    if (!input.entrypoint.trim())
      throw new Error("Automation entrypoint is required");
    return { ...input };
@@ -201,41 +199,35 @@ index e54f9a1..95ab350 100644
  // ── Artifact repository and filesystem ──────────────────────────────────────
  
  export interface CommitMetadata {
-@@ -327,6 +348,61 @@ export interface RuntimeBridge {
+@@ -334,6 +355,61 @@ export interface RuntimeBridge {
+     signal?: { readonly aborted: boolean }
    ): Promise<T>;
  }
  
 +export class MultiplexedBridge implements RuntimeBridge {
-+  private pending = new Map<
-+    string,
-+    {
-+      resolve: (val: unknown) => void;
-+      reject: (err: unknown) => void;
-+      timer: ReturnType<typeof setTimeout>;
-+    }
-+  >();
++  private pending = new Map();
 +
 +  constructor(
-+    private readonly sendRaw: (message: string) => Promise<void> | void,
++    private readonly sendRaw,
 +    private readonly timeoutMs = 30_000
 +  ) {}
 +
-+  async call<T>(
-+    stream: string,
-+    method: string,
-+    payload: unknown,
-+    signal?: { readonly aborted: boolean }
-+  ): Promise<T> {
++  async call(
++    stream,
++    method,
++    payload,
++    signal
++  ) {
 +    if (signal?.aborted) throw new Error("aborted");
 +    const id = crypto.randomUUID();
-+    return new Promise<T>((resolve, reject) => {
++    return new Promise((resolve, reject) => {
 +      const timer = setTimeout(() => {
 +        this.pending.delete(id);
 +        reject(new Error(`bridge_call_timeout:${stream}:${method}`));
 +      }, this.timeoutMs);
 +
 +      this.pending.set(id, {
-+        resolve: resolve as (val: unknown) => void,
++        resolve,
 +        reject,
 +        timer,
 +      });
@@ -250,15 +242,15 @@ index e54f9a1..95ab350 100644
 +    });
 +  }
 +
-+  handleMessage(raw: string): void {
-+    let parsed: unknown;
++  handleMessage(raw) {
++    let parsed;
 +    try {
 +      parsed = JSON.parse(raw);
 +    } catch {
 +      return;
 +    }
 +    if (!parsed || typeof parsed !== "object" || !("id" in parsed)) return;
-+    const msg = parsed as { id?: string; result?: unknown; error?: string };
++    const msg = parsed;
 +    if (!msg.id) return;
 +    const pending = this.pending.get(msg.id);
 +    if (!pending) return;
@@ -273,21 +265,21 @@ index e54f9a1..95ab350 100644
 +}
 +
  export interface VirtualDisplay {
-@@ -333,6 +409,45 @@ export interface VirtualDisplay {
+@@ -340,6 +416,45 @@ export interface VirtualDisplay {
    type(text: string): Promise<void>;
  }
  
 +export class ContainerVirtualDisplay implements VirtualDisplay {
-+  private readonly baseUrl: string;
++  private readonly baseUrl;
 +
 +  constructor(
-+    endpointUrl: string,
-+    private readonly fetchImpl: typeof fetch = fetch
++    endpointUrl,
++    private readonly fetchImpl = fetch
 +  ) {
 +    this.baseUrl = endpointUrl.replace(/\/+$/, "");
 +  }
 +
-+  async capture(): Promise<Uint8Array> {
++  async capture() {
 +    const res = await this.fetchImpl(`${this.baseUrl}/display/capture`, {
 +      method: "POST",
 +    });
@@ -295,7 +287,7 @@ index e54f9a1..95ab350 100644
 +    return new Uint8Array(await res.arrayBuffer());
 +  }
 +
-+  async mouse(x: number, y: number, button: "left" | "right" = "left"): Promise<void> {
++  async mouse(x, y, button = "left") {
 +    const res = await this.fetchImpl(`${this.baseUrl}/display/mouse`, {
 +      method: "POST",
 +      headers: { "content-type": "application/json" },
@@ -304,7 +296,7 @@ index e54f9a1..95ab350 100644
 +    if (!res.ok) throw new Error(`display_mouse_failed:${res.status}`);
 +  }
 +
-+  async type(text: string): Promise<void> {
++  async type(text) {
 +    const res = await this.fetchImpl(`${this.baseUrl}/display/type`, {
 +      method: "POST",
 +      headers: { "content-type": "application/json" },
@@ -352,7 +344,7 @@ diff --git a/workers/agents/container/artifact-fs.test.mjs b/workers/agents/cont
 index 4b9b940..bb112a4 100644
 --- a/workers/agents/container/artifact-fs.test.mjs
 +++ b/workers/agents/container/artifact-fs.test.mjs
-@@ -28,3 +28,10 @@ describe("ArtifactFS", () => {
+@@ -27,3 +27,10 @@ describe("ArtifactFS", () => {
      expect(calls.slice(-2).map((v) => v[0])).toEqual(["https://repo/write", "https://repo/commit"]);
    });
 +
@@ -367,7 +359,7 @@ diff --git a/workers/agents/container/server.mjs b/workers/agents/container/serv
 index 45167ad..c8b00ba 100644
 --- a/workers/agents/container/server.mjs
 +++ b/workers/agents/container/server.mjs
-@@ -55,6 +55,7 @@ async function collectWorkspace() {
+@@ -67,6 +67,7 @@ async function collectWorkspace() {
      for (const entry of entries) {
        if (count >= MAX_WORKSPACE_FILES) return;
        const full = join(dir, entry.name);
@@ -375,7 +367,7 @@ index 45167ad..c8b00ba 100644
        if (entry.isDirectory()) {
          await walk(full);
        } else if (entry.isFile()) {
-@@ -95,6 +96,7 @@ async function listWorkspacePaths() {
+@@ -112,6 +113,7 @@ async function listWorkspacePaths() {
      for (const entry of entries) {
        if (names.length >= MAX_WORKSPACE_FILES) return;
        const full = join(dir, entry.name);
@@ -383,7 +375,7 @@ index 45167ad..c8b00ba 100644
        if (entry.isDirectory()) await walk(full);
        else if (entry.isFile()) names.push(relative(WORKSPACE_DIR, full));
      }
-@@ -164,8 +166,10 @@ async function execScript(name, code, args) {
+@@ -207,8 +209,10 @@ async function execScript(name, code, args) {
  const WORKSPACE_ROUTES = new Set(["/workspace/read", "/workspace/write", "/workspace/list", "/workspace/delete"]);
 +const DISPLAY_ROUTES = new Set(["/display/capture", "/display/mouse", "/display/type"]);
  
@@ -394,7 +386,7 @@ index 45167ad..c8b00ba 100644
 +  const isDisplayRoute = [...DISPLAY_ROUTES].some((r) => path.endsWith(r));
 +  if (req.method !== "POST" || (!path.endsWith("/build") && !path.endsWith("/exec") && !isWorkspaceRoute && !isDisplayRoute)) {
      res.writeHead(404).end(JSON.stringify({ error: "not_found" }));
-@@ -189,6 +193,26 @@ createServer((req, res) => {
+@@ -236,6 +240,26 @@ createServer((req, res) => {
          res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(result));
          return;
        }
@@ -418,7 +410,7 @@ index 45167ad..c8b00ba 100644
 +          res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, text: parsed.text ?? "" }));
 +          return;
 +        }
-       }
++      }
        if (!parsed.code) { res.writeHead(400).end(JSON.stringify({ error: "code required" })); return; }
        const result = isExec
 diff --git a/workers/agents/src/do/LocalTunnelDO.test.ts b/workers/agents/src/do/LocalTunnelDO.test.ts
@@ -432,9 +424,9 @@ index 0000000..7bb502a
 +
 +describe("LocalTunnelDO correlation and multiplexing", () => {
 +  it("prevents concurrent correlation IDs from crossing", async () => {
-+    const outbox: string[] = [];
++    const outbox = [];
 +    const mockWs = {
-+      send: (data: string) => outbox.push(data),
++      send: (data) => outbox.push(data),
 +      close: vi.fn(),
 +    };
 +
@@ -443,7 +435,6 @@ index 0000000..7bb502a
 +      acceptWebSocket: vi.fn(),
 +    };
 +
-+    // @ts-expect-error test harness mock
 +    const tunnel = new LocalTunnelDO(mockCtx, { PLATFORM_SECRET: "test-secret" });
 +
 +    const p1 = tunnel.fetch(
@@ -463,28 +454,25 @@ index 0000000..7bb502a
 +    );
 +
 +    expect(outbox.length).toBe(2);
-+    const msg1 = JSON.parse(outbox[0]!) as { request_id: string; params: { cmd: string } };
-+    const msg2 = JSON.parse(outbox[1]!) as { request_id: string; params: { cmd: string } };
++    const msg1 = JSON.parse(outbox[0]);
++    const msg2 = JSON.parse(outbox[1]);
 +
 +    expect(msg1.request_id).not.toBe(msg2.request_id);
 +    expect(msg1.params.cmd).toBe("task1");
 +    expect(msg2.params.cmd).toBe("task2");
 +
-+    // Simulate interleaved arrival of responses from client
 +    tunnel.webSocketMessage(
-+      // @ts-expect-error test harness mock
 +      mockWs,
 +      JSON.stringify({ type: "response", request_id: msg2.request_id, ok: true, result: { output: "result-2" } })
 +    );
 +    tunnel.webSocketMessage(
-+      // @ts-expect-error test harness mock
 +      mockWs,
 +      JSON.stringify({ type: "response", request_id: msg1.request_id, ok: true, result: { output: "result-1" } })
 +    );
 +
 +    const [res1, res2] = await Promise.all([p1, p2]);
-+    const body1 = await res1.json<{ ok: boolean; result: { output: string } }>();
-+    const body2 = await res2.json<{ ok: boolean; result: { output: string } }>();
++    const body1 = await res1.json();
++    const body2 = await res2.json();
 +
 +    expect(body1.result.output).toBe("result-1");
 +    expect(body2.result.output).toBe("result-2");
@@ -494,12 +482,10 @@ diff --git a/workers/agents/src/do/NaelaoAgentDO.ts b/workers/agents/src/do/Nael
 index f19ca1e..289db91 100644
 --- a/workers/agents/src/do/NaelaoAgentDO.ts
 +++ b/workers/agents/src/do/NaelaoAgentDO.ts
-@@ -1837,5 +1837,5 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
+@@ -1838,4 +1838,4 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    private static infraResourceTypeForTier(tier: number | string | undefined): import("@naelao/billing-core").InfraResourceType | undefined {
--    if (tier === 2 || tier === 3 || tier === 4) return "isolate";
--    if (tier === 5) return "container";
-+    if (tier === 2 || tier === 3 || tier === 4 || tier === 5) return "isolate";
-+    if (tier === 6) return "container";
+     if (tier === 2 || tier === 3 || tier === 4 || tier === 5) return "isolate";
+     if (tier === 6) return "container";
      return undefined;
    }
 diff --git a/workers/agents/src/do/ToolSandboxDO.test.ts b/workers/agents/src/do/ToolSandboxDO.test.ts
@@ -513,8 +499,8 @@ index 0000000..8ec0319
 +
 +describe("ToolSandboxDO Runtime and State Coordination", () => {
 +  function createTestSandbox() {
-+    const storage = new Map<string, unknown>();
-+    let alarmTime: number | null = null;
++    const storage = new Map();
++    let alarmTime = null;
 +    let containerRunning = false;
 +
 +    const mockContainer = {
@@ -525,7 +511,7 @@ index 0000000..8ec0319
 +        containerRunning = true;
 +      }),
 +      getTcpPort: () => ({
-+        fetch: async (req: Request) => {
++        fetch: async (req) => {
 +          const url = new URL(req.url);
 +          if (url.pathname.endsWith("/display/capture")) {
 +            return new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
@@ -544,14 +530,13 @@ index 0000000..8ec0319
 +    const mockCtx = {
 +      container: mockContainer,
 +      storage: {
-+        get: async (k: string) => storage.get(k),
-+        put: async (k: string, v: unknown) => { storage.set(k, v); },
-+        setAlarm: async (time: number) => { alarmTime = time; },
++        get: async (k) => storage.get(k),
++        put: async (k, v) => { storage.set(k, v); },
++        setAlarm: async (time) => { alarmTime = time; },
 +        deleteAlarm: async () => { alarmTime = null; },
 +      },
 +    };
 +
-+    // @ts-expect-error test harness mock
 +    const sandbox = new ToolSandboxDO(mockCtx, {});
 +    return { sandbox, storage, getAlarmTime: () => alarmTime, mockContainer };
 +  }
@@ -600,8 +585,7 @@ diff --git a/workers/agents/src/do/ToolSandboxDO.ts b/workers/agents/src/do/Tool
 index e502cf0..c19be88 100644
 --- a/workers/agents/src/do/ToolSandboxDO.ts
 +++ b/workers/agents/src/do/ToolSandboxDO.ts
-@@ -48,22 +48,53 @@ interface ContainerRuntime {
- const HARNESS_PORT = 8080;
+@@ -52,22 +52,53 @@ const HARNESS_PORT = 8080;
  const WORKSPACE_ROUTES = ["/workspace/read", "/workspace/write", "/workspace/list", "/workspace/delete"];
  
 +interface StoredShellState {
@@ -657,7 +641,7 @@ index e502cf0..c19be88 100644
          { status: 503 },
        );
      }
-@@ -75,3 +106,4 @@ export class ToolSandboxDO extends DurableObject {
+@@ -79,3 +110,4 @@ export class ToolSandboxDO extends DurableObject {
      if (!container.running) {
        container.start({ enableInternet: false });
 +      await this.ctx.storage.put("container_status", "running");
@@ -699,7 +683,7 @@ index ebe2fc2..36551b9 100644
      env.__BROWSER_TOKEN__ = opts.platformSecret ?? "";
 +    env.__BROWSER_ENGINE__ = params.tier === 4 ? "kitesurf" : "chromium";
    }
-@@ -353,15 +357,16 @@ async function runIsolate(
+@@ -354,15 +358,16 @@ async function runIsolate(
      // original isolate error, which is still more useful than a second "unavailable" on top of it.
 -    if (opts.toolSandbox && !aborted && ISOLATE_PROMOTION_ERROR_PATTERNS.some((p) => p.test(errMsg))) {
 -      console.warn(`[execution-ladder] auto-promoting '${params.name}' from Tier ${params.tier} to Tier 5 after: ${errMsg}`);
@@ -722,10 +706,8 @@ index ebe2fc2..36551b9 100644
 -      return { ...promoted, error: `Tier ${params.tier} failed (${errMsg}); auto-promoted to Tier 5, which also failed: ${promoted.error ?? "unknown error"}` };
 +      return { ...promoted, error: `Tier ${params.tier} failed (${errMsg}); auto-promoted to Tier 6, which also failed: ${promoted.error ?? "unknown error"}` };
      }
-@@ -382,6 +387,75 @@ async function runIsolate(
-   }
- }
- 
+@@ -384,3 +389,72 @@ async function runIsolate(
+ async function runContainer(
 +async function runBrowser(
 +  opts: CodeRunnerOptions,
 +  params: {
@@ -798,71 +780,45 @@ index ebe2fc2..36551b9 100644
 +  }
 +}
 +
- async function runContainer(
    opts: CodeRunnerOptions,
 -  params: { name: string; code: string; args: Record<string, unknown>; spaceId: string; agentId: string; projectId?: string; containerImage?: string }
 +  params: { name: string; code: string; args: Record<string, unknown>; spaceId: string; agentId: string; projectId?: string; containerImage?: string; tier?: ExecutionTier }
  ): Promise<ScriptRunResult> {
-   const started = Date.now();
- 
-@@ -393,7 +467,7 @@ async function runContainer(
-       return {
-         ok: false,
+@@ -395,3 +469,3 @@ async function runContainer(
          error: `Container image '${params.containerImage}' is not available in this environment yet`,
 -        tier: 5,
 +        tier: 6,
          duration_ms: Date.now() - started,
-         tokens_used: 0,
-       };
-@@ -402,14 +476,14 @@ async function runContainer(
-     // base sandbox) is documented here for whichever image lands it first.
-     const doId = namespace.idFromName(`slot:${params.containerImage}:${params.spaceId}:${params.projectId ?? "_assistant"}`);
+@@ -404,3 +478,3 @@ async function runContainer(
      const stub = namespace.get(doId);
 -    return runContainerRequest(stub, opts, params, started);
 +    return runContainerRequest(stub, opts, { ...params, tier: 6 }, started);
    }
- 
-   if (!opts.toolSandbox) {
-     return {
+@@ -410,3 +484,3 @@ async function runContainer(
        ok: false,
 -      error: "Tier 5 is unavailable: no ToolSandboxDO (TOOL_SANDBOX) binding configured",
 -      tier: 5,
 +      error: "Tier 6 is unavailable: no ToolSandboxDO (TOOL_SANDBOX) binding configured",
 +      tier: 6,
        duration_ms: Date.now() - started,
-       tokens_used: 0,
-     };
-@@ -421,7 +495,7 @@ async function runContainer(
-   // (projectId absent), analogous to workspacePrefix()'s space-scoped fallback.
-   const doId = opts.toolSandbox.idFromName(`sandbox:${params.spaceId}:${params.projectId ?? "_assistant"}`);
+@@ -423,3 +497,3 @@ async function runContainer(
    const stub = opts.toolSandbox.get(doId);
 -  return runContainerRequest(stub, opts, params, started);
 +  return runContainerRequest(stub, opts, { ...params, tier: 6 }, started);
  }
- 
- async function runContainerRequest(
-@@ -451,16 +525,16 @@ async function runContainerRequest(
-     return {
-       ok: resp.ok && body.ok,
+@@ -453,3 +527,3 @@ async function runContainerRequest(
        ...(resp.ok && body.ok ? { output: body.result } : { error: body.error ?? `container returned ${resp.status}` }),
 -      tier: 5,
 +      tier: 6,
        duration_ms: Date.now() - started,
-       tokens_used: 0,
-     };
-   } catch (err) {
-     const aborted = err instanceof Error && err.name === "AbortError";
-     return {
+@@ -460,3 +534,3 @@ async function runContainerRequest(
        ok: false,
 -      error: aborted ? "Tier 5 execution timed out" : String(err instanceof Error ? err.message : err),
 -      tier: 5,
 +      error: aborted ? "Tier 6 execution timed out" : String(err instanceof Error ? err.message : err),
 +      tier: 6,
        duration_ms: Date.now() - started,
-       tokens_used: 0,
-     };
-@@ -483,8 +557,13 @@ function hashCode(s: string): string {
- export function buildCodeRunner(opts: CodeRunnerOptions): TieredCodeRunner {
+@@ -558,8 +632,13 @@ export function buildCodeRunner(opts: CodeRunnerOptions): TieredCodeRunner {
    return {
      async run(params) {
 -      if (params.tier === 5) return runContainer(opts, params);
@@ -900,10 +856,10 @@ index 0000000..7c5be1b
 +  });
 +
 +  it("routes browser scripts to Kitesurf with fallback to Chromium", async () => {
-+    const calls: string[] = [];
++    const calls = [];
 +    const mockBrowserWorker = {
-+      fetch: vi.fn(async (req: Request) => {
-+        const body = await req.json<{ engine?: string }>();
++      fetch: vi.fn(async (req) => {
++        const body = await req.json();
 +        calls.push(body.engine ?? "unknown");
 +        if (body.engine === "kitesurf") {
 +          return Response.json({ message: "Unsupported DOM feature" }, { status: 400 });
@@ -913,7 +869,6 @@ index 0000000..7c5be1b
 +    };
 +
 +    const runner = buildCodeRunner({
-+      // @ts-expect-error mock fetcher
 +      browserWorker: mockBrowserWorker,
 +      platformSecret: "secret",
 +    });
@@ -937,17 +892,16 @@ index 0000000..7c5be1b
 +  });
 +
 +  it("auto-elevates directly to Chromium when screenshots or WebGL are required", async () => {
-+    const calls: string[] = [];
++    const calls = [];
 +    const mockBrowserWorker = {
-+      fetch: vi.fn(async (req: Request) => {
-+        const body = await req.json<{ engine?: string }>();
++      fetch: vi.fn(async (req) => {
++        const body = await req.json();
 +        calls.push(body.engine ?? "unknown");
 +        return Response.json({ ok: true, result: { screenshot: "png-data" } });
 +      }),
 +    };
 +
 +    const runner = buildCodeRunner({
-+      // @ts-expect-error mock fetcher
 +      browserWorker: mockBrowserWorker,
 +      platformSecret: "secret",
 +    });
@@ -968,8 +922,7 @@ index 0000000..7c5be1b
 +
 +  it("dispatches durable workflow scripts via workflowRunner", async () => {
 +    const startMock = vi.fn(async () => ({ id: "wf-123" }));
-+    const env: ScriptEngineEnv = {
-+      // @ts-expect-error partial env
++    const env = {
 +      scriptsBucket: {},
 +      spaceId: "s1",
 +      agentId: "a1",
@@ -980,7 +933,7 @@ index 0000000..7c5be1b
 +      },
 +    };
 +
-+    const script: StoredScript = {
++    const script = {
 +      metadata: {
 +        name: "sync-job",
 +        version: 1,
@@ -1014,15 +967,11 @@ diff --git a/workers/agents/src/script-engine/execution-ladder.ts b/workers/agen
 index e5ffbb2..a1835bc 100644
 --- a/workers/agents/src/script-engine/execution-ladder.ts
 +++ b/workers/agents/src/script-engine/execution-ladder.ts
-@@ -28,6 +28,7 @@
-  */
- 
- import type { ExecutionTier, ScriptEngineEnv, ScriptRunResult, StoredScript } from "./types.js";
+@@ -28,3 +28,4 @@ import type { ExecutionTier, ScriptEngineEnv, ScriptRunResult, StoredScript } f
 +import { executeVirtualShell } from "./r2-workspace.js";
  
  /** Run a stored script (agent-distilled / authored code) at its declared tier. */
- export async function runStoredScript(
-@@ -46,14 +47,8 @@ export async function runStoredScript(
+@@ -45,14 +46,8 @@ export async function runStoredScript(
    }
  
    if (tier === 1) {
@@ -1044,7 +993,7 @@ index e5ffbb2..a1835bc 100644
    }
  
    // §A1.17 Phase J: a script tagged runtime:"workflow" dispatches to a durable CF Workflow
-@@ -114,11 +109,12 @@ export async function runStoredScript(
+@@ -113,11 +108,12 @@ export function runStoredScript(
  export function tierLabel(tier: ExecutionTier): string {
    return (
      {
@@ -1076,33 +1025,30 @@ index 0000000..9df30df
 +  virtualFsRead,
 +  virtualFsWrite,
 +} from "./r2-workspace.js";
-+import type { ScriptEngineEnv } from "./types.js";
 +
-+function createMockEnv(): ScriptEngineEnv {
-+  const store = new Map<string, Uint8Array>();
++function createMockEnv() {
++  const store = new Map();
 +  const mockBucket = {
-+    get: async (key: string) => {
++    get: async (key) => {
 +      const data = store.get(key);
 +      return data ? { arrayBuffer: async () => data.buffer } : null;
 +    },
-+    put: async (key: string, value: Uint8Array) => {
++    put: async (key, value) => {
 +      store.set(key, value);
 +    },
-+    delete: async (key: string) => {
++    delete: async (key) => {
 +      store.delete(key);
 +    },
-+    list: async ({ prefix }: { prefix: string }) => {
++    list: async ({ prefix }) => {
 +      const objects = [...store.keys()]
 +        .filter((k) => k.startsWith(prefix))
-+        .map((key) => ({ key, size: store.get(key)!.byteLength }));
++        .map((key) => ({ key, size: store.get(key).byteLength }));
 +      return { objects, truncated: false };
 +    },
 +  };
 +
 +  return {
-+    // @ts-expect-error test mock bucket
 +    scriptsBucket: mockBucket,
-+    // @ts-expect-error test mock bucket
 +    workspaceBucket: mockBucket,
 +    spaceId: "space-1",
 +    projectId: "proj-1",
@@ -1256,16 +1202,15 @@ diff --git a/workers/artifact/src/RepositoryDO.ts b/workers/artifact/src/Reposit
 index ff21e1a..012b1d6 100644
 --- a/workers/artifact/src/RepositoryDO.ts
 +++ b/workers/artifact/src/RepositoryDO.ts
-@@ -107,6 +107,39 @@ export class RepositoryDO extends DurableObject<Env> {
-         state.worktrees[branch] = structuredClone(commit.entries); state.refs[branch] = commit.oid;
+@@ -110,3 +110,36 @@ export class RepositoryDO extends DurableObject<Env> {
          await this.save(state);
          return Response.json({ branch, commit_id: commit.oid });
        }
 +      if (op === "history" && request.method === "GET") {
-+        let currentOid: string | undefined = (url.searchParams.get("at") ?? state.refs[branch]) ?? undefined;
-+        const commits: CommitRecord[] = [];
++        let currentOid = (url.searchParams.get("at") ?? state.refs[branch]) ?? undefined;
++        const commits = [];
 +        while (currentOid && state.commits[currentOid]) {
-+          const rec = state.commits[currentOid]!;
++          const rec = state.commits[currentOid];
 +          commits.push(rec);
 +          currentOid = rec.parent;
 +        }
@@ -1273,10 +1218,10 @@ index ff21e1a..012b1d6 100644
 +      }
 +      if (op === "blame" && request.method === "GET") {
 +        const path = normalizePath(url.searchParams.get("path") ?? "");
-+        let currentOid: string | undefined = (url.searchParams.get("at") ?? state.refs[branch]) ?? undefined;
-+        const history: Array<{ oid: string; message: string; metadata: CommitRecord["metadata"]; createdAt: string }> = [];
++        let currentOid = (url.searchParams.get("at") ?? state.refs[branch]) ?? undefined;
++        const history = [];
 +        while (currentOid && state.commits[currentOid]) {
-+          const rec = state.commits[currentOid]!;
++          const rec = state.commits[currentOid];
 +          const parentOid = rec.parent ? state.commits[rec.parent]?.entries[path]?.oid : undefined;
 +          const currentFileOid = rec.entries[path]?.oid;
 +          if (currentFileOid && currentFileOid !== parentOid) {
@@ -1294,50 +1239,46 @@ index ff21e1a..012b1d6 100644
 +      }
 +      if (op === "head" && request.method === "GET") {
 +        return Response.json({ branch: state.head, commit_id: state.refs[state.head] });
-       }
++      }
        if (op === "cleanup" && request.method === "POST") {
-         const names = body.branch ? [String(body.branch)] : [...state.temporary];
 diff --git a/workers/artifact/src/repository.test.ts b/workers/artifact/src/repository.test.ts
 index e638e4a..b1c6d7a 100644
 --- a/workers/artifact/src/repository.test.ts
 +++ b/workers/artifact/src/repository.test.ts
-@@ -1,5 +1,6 @@
+@@ -1,3 +1,4 @@
  import { describe, expect, it } from "vitest";
  import { commitBody, encodeGitObject, objectKey, repositoryName, validateMetadata } from "./repository.js";
 +import { RepositoryDO } from "./RepositoryDO.js";
  
- const metadata = {
-   agent_role: "builder", user_goal: "ship it", task_id: "task-1", rationale: "implemented feature",
 @@ -34,4 +35,46 @@ describe("Git object and metadata encoding", () => {
    it("requires every rollback audit field", () => {
      expect(() => validateMetadata({ ...metadata, tool_turn_id: "" })).toThrow("metadata.tool_turn_id");
    });
 +
 +  it("supports turn-by-turn commits, zero-copy micro-forking, and reasoning blame", async () => {
-+    const storage = new Map<string, unknown>();
-+    const objects = new Map<string, Uint8Array>();
++    const storage = new Map();
++    const objects = new Map();
 +    const mockCtx = {
 +      storage: {
-+        get: async (k: string) => storage.get(k),
-+        put: async (k: string, v: unknown) => { storage.set(k, v); },
++        get: async (k) => storage.get(k),
++        put: async (k, v) => { storage.set(k, v); },
 +      },
 +    };
 +    const mockEnv = {
 +      REPOSITORY_OBJECTS: {
-+        head: async (k: string) => objects.has(k),
-+        put: async (k: string, v: Uint8Array) => { objects.set(k, v); },
-+        get: async (k: string) => ({ arrayBuffer: async () => objects.get(k)!.buffer }),
++        head: async (k) => objects.has(k),
++        put: async (k, v) => { objects.set(k, v); },
++        get: async (k) => ({ arrayBuffer: async () => objects.get(k).buffer }),
 +      },
 +    };
 +
-+    // @ts-expect-error test harness mock
 +    const repo = new RepositoryDO(mockCtx, mockEnv);
 +    const scopeHeaders = { "x-repository-scope": JSON.stringify({ tenantId: "t1", spaceId: "s1", projectId: "p1" }) };
 +
 +    await repo.fetch(new Request("https://repo/init", { method: "POST", headers: scopeHeaders }));
 +    await repo.fetch(new Request("https://repo/write", { method: "PUT", headers: scopeHeaders, body: JSON.stringify({ path: "README.md", content: "v1" }) }));
 +    const c1Res = await repo.fetch(new Request("https://repo/commit", { method: "POST", headers: scopeHeaders, body: JSON.stringify({ metadata }) }));
-+    const c1 = await c1Res.json<{ commit_id: string }>();
++    const c1 = await c1Res.json();
 +
 +    // Zero-copy fork
 +    const forkRes = await repo.fetch(new Request("https://repo/branch", { method: "POST", headers: scopeHeaders, body: JSON.stringify({ name: "scratchpad-1", from: c1.commit_id }) }));
@@ -1345,21 +1286,21 @@ index e638e4a..b1c6d7a 100644
 +
 +    // Blame
 +    const blameRes = await repo.fetch(new Request("https://repo/blame?path=README.md", { method: "GET", headers: scopeHeaders }));
-+    const blame = await blameRes.json<{ path: string; latest: { metadata: typeof metadata } }>();
++    const blame = await blameRes.json();
 +    expect(blame.latest.metadata.rationale).toBe("implemented feature");
 +
 +    // Rollback
 +    await repo.fetch(new Request("https://repo/write", { method: "PUT", headers: scopeHeaders, body: JSON.stringify({ path: "README.md", content: "v2" }) }));
 +    await repo.fetch(new Request("https://repo/rollback", { method: "POST", headers: scopeHeaders, body: JSON.stringify({ commit_id: c1.commit_id }) }));
 +    const treeRes = await repo.fetch(new Request("https://repo/tree", { method: "GET", headers: scopeHeaders }));
-+    expect((await treeRes.json<{ data: Array<{ path: string }> }>()).data[0]?.path).toBe("README.md");
++    expect((await treeRes.json()).data[0]?.path).toBe("README.md");
 +  });
  });
 diff --git a/workers/spaces/src/do/SpaceDO.ts b/workers/spaces/src/do/SpaceDO.ts
 index c6b96e9..714cf9e 100644
 --- a/workers/spaces/src/do/SpaceDO.ts
 +++ b/workers/spaces/src/do/SpaceDO.ts
-@@ -834,5 +834,42 @@ const MIGRATIONS: Migration[] = [
+@@ -833,3 +833,40 @@ const MIGRATIONS: Migration[] = [
        CREATE INDEX idx_event_triggers_lookup ON event_triggers(space_id, project_id, event_type, enabled, priority DESC);
      `,
    },
@@ -1405,9 +1346,7 @@ index c6b96e9..714cf9e 100644
 +    `,
 +  },
  ];
- 
- export interface SpaceDOEnv {
-@@ -1205,6 +1242,6 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
+@@ -1201,6 +1238,6 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
      if (body.execution_ceiling !== undefined) {
 -      if (!Number.isInteger(body.execution_ceiling) || body.execution_ceiling < 1 || body.execution_ceiling > 5) {
 -        return Response.json({ error_code: "bad_request", message: "execution_ceiling must be an integer 1-5" }, { status: 400 });
@@ -1416,7 +1355,7 @@ index c6b96e9..714cf9e 100644
        }
        execute(this.ctx.storage.sql as never, "UPDATE projects SET execution_ceiling = ? WHERE id = ?", body.execution_ceiling, projectId);
      }
-@@ -1485,3 +1522,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
+@@ -1492,3 +1529,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 -    if (!body.space_id || !body.event_type || !body.script_name) {
 -      return Response.json({ error_code: "bad_request", message: "space_id, event_type, and script_name are required" }, { status: 400 });
 +    if (!body.space_id || !body.project_id || !body.event_type || !body.script_name) {
@@ -1430,8 +1369,7 @@ index c6b96e9..714cf9e 100644
 +    if (!project || project.space_id !== body.space_id || project.status !== "active") {
 +      return Response.json({ error_code: "not_found", message: "Project not found in this space" }, { status: 404 });
      }
- 
-@@ -2188,8 +2233,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
+@@ -2188,8 +2233,33 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
    private authorizeHierarchy(params: URLSearchParams): Response {
      const userId = params.get("user_id") ?? "";
      const targetId = params.get("target_space_id") ?? "";
@@ -1444,7 +1382,8 @@ index c6b96e9..714cf9e 100644
      }
      const target = queryOne<SpaceRow>(this.ctx.storage.sql as never,
        "SELECT * FROM spaces WHERE id = ? AND status != 'deleted'", targetId);
-@@ -2198,7 +2246,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
+     if (!target || target.space_type !== "launchpad" || (target.depth === 0) !== (target.parent_id === null)) {
+       return Response.json({ permitted: false, reason: "Target is not a valid Launchpad hierarchy space" }, { status: 404 });
      }
      const direct = queryOne<{ role: string }>(this.ctx.storage.sql as never,
        "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?", target.id, userId);
@@ -1453,7 +1392,11 @@ index c6b96e9..714cf9e 100644
        return Response.json({ permitted: true, source_space_id: target.id, role: direct.role });
      }
      if (target.depth === 1 && target.parent_id) {
-@@ -2209,6 +2257,28 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
+       const parent = queryOne<SpaceRow>(this.ctx.storage.sql as never,
+         "SELECT * FROM spaces WHERE id = ? AND depth = 0 AND parent_id IS NULL AND status != 'deleted'", target.parent_id);
+       const inherited = parent && queryOne<{ role: string }>(this.ctx.storage.sql as never,
+         "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?", parent.id, userId);
+       if (inherited && (inherited.role === "owner" || inherited.role === "admin")) {
          return Response.json({ permitted: true, source_space_id: parent.id, role: inherited.role });
        }
      }
@@ -1479,10 +1422,9 @@ index c6b96e9..714cf9e 100644
 +          }
 +        }
 +      }
-     }
++    }
      return Response.json({ permitted: false, reason: "No administrative membership on the space or its direct parent" }, { status: 403 });
    }
- 
 diff --git a/workers/spaces/src/project-automation.test.ts b/workers/spaces/src/project-automation.test.ts
 new file mode 100644
 index 0000000..f670f5e
@@ -1537,26 +1479,25 @@ index 0000000..f670f5e
 +  });
 +
 +  it("rejects event trigger creation when project_id is absent or foreign in SpaceDO", async () => {
-+    const projects = new Map<string, { id: string; space_id: string; status: string }>();
++    const projects = new Map();
 +    const mockCtx = {
 +      storage: {
 +        sql: {
-+          exec(query: string, ...params: unknown[]) {
++          exec(query, ...params) {
 +            if (query.includes("FROM projects WHERE id = ?")) {
-+              const p = projects.get(params[0] as string);
++              const p = projects.get(params[0]);
 +              return { toArray: () => (p ? [p] : []) };
 +            }
 +            return { toArray: () => [] };
 +          },
 +        },
-+        transactionSync: <T>(fn: () => T) => fn(),
++        transactionSync: (fn) => fn(),
 +      },
 +    };
 +
 +    projects.set("proj-local", { id: "proj-local", space_id: "space-1", status: "active" });
 +    projects.set("proj-other", { id: "proj-other", space_id: "space-99", status: "active" });
 +
-+    // @ts-expect-error test harness mock
 +    const spaceDO = new SpaceDO(mockCtx, { PLATFORM_SECRET: "secret" });
 +
 +    const resMissing = await spaceDO.fetch(new Request("https://space-do/event-triggers", {
@@ -1585,24 +1526,24 @@ index 0000000..f95213b
 +
 +describe("Space Hierarchy & Isolation Policies", () => {
 +  function createTestDO() {
-+    const storage = new Map<string, unknown>();
-+    const rows = new Map<string, Array<Record<string, unknown>>>();
++    const storage = new Map();
++    const rows = new Map();
 +    const mockCtx = {
 +      storage: {
 +        sql: {
-+          exec(query: string, ...params: unknown[]) {
++          exec(query, ...params) {
 +            return {
 +              toArray: () => {
 +                if (query.includes("FROM spaces WHERE id = ?")) {
-+                  const id = params[0] as string;
++                  const id = params[0];
 +                  return (rows.get("spaces") ?? []).filter((r) => r.id === id);
 +                }
 +                if (query.includes("FROM space_members WHERE space_id = ? AND user_id = ?")) {
-+                  const [sid, uid] = params as [string, string];
++                  const [sid, uid] = params;
 +                  return (rows.get("space_members") ?? []).filter((r) => r.space_id === sid && r.user_id === uid);
 +                }
 +                if (query.includes("FROM cross_space_grants")) {
-+                  const [target, req] = params as [string, string];
++                  const [target, req] = params;
 +                  return (rows.get("cross_space_grants") ?? []).filter((r) => r.granting_space_id === target && r.receiving_space_id === req);
 +                }
 +                return [];
@@ -1610,13 +1551,12 @@ index 0000000..f95213b
 +            };
 +          },
 +        },
-+        transactionSync: <T>(fn: () => T) => fn(),
-+        get: async (k: string) => storage.get(k),
-+        put: async (k: string, v: unknown) => { storage.set(k, v); },
++        transactionSync: (fn) => fn(),
++        get: async (k) => storage.get(k),
++        put: async (k, v) => { storage.set(k, v); },
 +      },
 +    };
 +    return {
-+      // @ts-expect-error test harness mock
 +      spaceDO: new SpaceDO(mockCtx, { PLATFORM_SECRET: "sec" }),
 +      rows,
 +    };
@@ -1663,12 +1603,13 @@ index 0000000..f95213b
 +    ]);
 +
 +    const noGrant = await spaceDO.fetch(new Request("https://space-do/hierarchy-authorize?user_id=engineer&target_space_id=dept-legal&requesting_space_id=dept-dev"));
-+    expect((await noGrant.json<{ permitted: boolean }>()).permitted).toBe(false);
++    expect((await noGrant.json()).permitted).toBe(false);
 +
 +    rows.set("cross_space_grants", [
 +      { granting_space_id: "dept-legal", receiving_space_id: "dept-dev", grant_type: "read-knowledge", revoked_at: null, expires_at: null },
 +    ]);
 +    const withGrant = await spaceDO.fetch(new Request("https://space-do/hierarchy-authorize?user_id=engineer&target_space_id=dept-legal&requesting_space_id=dept-dev"));
-+    expect((await withGrant.json<{ permitted: boolean; grant_type: string }>())).toMatchObject({ permitted: true, grant_type: "read-knowledge" });
++    expect(await withGrant.json()).toMatchObject({ permitted: true, grant_type: "read-knowledge" });
 +  });
 +});
++
