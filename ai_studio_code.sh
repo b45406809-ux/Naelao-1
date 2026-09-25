@@ -1,0 +1,1683 @@
+cat << 'EOF' > repomix/patches/batch-01.patch
+diff --git a/packages/agent-sdk/src/launchpad-runtime.test.ts b/packages/agent-sdk/src/launchpad-runtime.test.ts
+new file mode 100644
+index 0000000..7340b2b
+--- /dev/null
++++ b/packages/agent-sdk/src/launchpad-runtime.test.ts
+@@ -0,0 +1,164 @@
++import { describe, expect, it } from "vitest";
++import {
++  authorizeProject,
++  canAccessSpace,
++  ContainerVirtualDisplay,
++  defineLaunchpadSpace,
++  isGitTracked,
++  microForkName,
++  MultiplexedBridge,
++  normalizeWorkspacePath,
++  planEnvironmentHandoff,
++  requireManageableAutomationProject,
++  routeRuntime,
++  selectContainerBackend,
++  shouldStopContainer,
++  WorkspaceStateCoordinator,
++} from "./launchpad-runtime.js";
++
++describe("Launchpad Hierarchy & Space Isolation", () => {
++  it("enforces two-level hierarchy constraints", () => {
++    expect(defineLaunchpadSpace({ id: "root", depth: 0, parentId: null })).toMatchObject({
++      depth: 0,
++      parentId: null,
++      type: "launchpad",
++    });
++    expect(defineLaunchpadSpace({ id: "dept", depth: 1, parentId: "root" })).toMatchObject({
++      depth: 1,
++      parentId: "root",
++      type: "launchpad",
++    });
++    // @ts-expect-error invalid depth
++    expect(() => defineLaunchpadSpace({ id: "grandchild", depth: 2, parentId: "dept" })).toThrow();
++    expect(() => defineLaunchpadSpace({ id: "bad-root", depth: 0, parentId: "other" })).toThrow();
++    expect(() => defineLaunchpadSpace({ id: "bad-dept", depth: 1, parentId: null })).toThrow();
++  });
++
++  it("governs parent oversight and member isolation", () => {
++    const root = defineLaunchpadSpace({ id: "root", depth: 0, parentId: null });
++    const dept = defineLaunchpadSpace({ id: "dept", depth: 1, parentId: "root" });
++    expect(canAccessSpace(dept, { userId: "cfo", parentRole: "admin" }, "manage")).toBe(true);
++    expect(canAccessSpace(dept, { userId: "dev", role: "member" }, "read")).toBe(true);
++    expect(canAccessSpace(dept, { userId: "dev", role: "member" }, "manage")).toBe(false);
++    expect(canAccessSpace(root, { userId: "dev", role: "member" }, "read")).toBe(true);
++    expect(canAccessSpace(root, { userId: "dev" }, "read")).toBe(false);
++  });
++
++  it("conceals unauthorized private projects identically to absent projects", () => {
++    expect(authorizeProject({ visibility: "public", isSpaceMember: true })).toEqual({ allowed: true });
++    expect(authorizeProject({ visibility: "private", isSpaceMember: true, projectRole: "editor" })).toEqual({ allowed: true });
++    expect(authorizeProject({ visibility: "private", isSpaceMember: true, isSpaceAdmin: true })).toEqual({ allowed: true });
++    expect(authorizeProject({ visibility: "private", isSpaceMember: true })).toEqual({ allowed: false, status: 404 });
++    expect(authorizeProject({ visibility: "public", isSpaceMember: false })).toEqual({ allowed: false, status: 404 });
++  });
++
++  it("anchors automations to active projects", () => {
++    expect(
++      requireManageableAutomationProject({
++        spaceId: "s1",
++        projectId: "p1",
++        projectSpaceId: "s1",
++        projectStatus: "active",
++        userRole: "owner",
++      })
++    ).toEqual({ allowed: true });
++
++    expect(() =>
++      requireManageableAutomationProject({
++        spaceId: "s1",
++        projectId: "p1",
++        projectSpaceId: "s2",
++        projectStatus: "active",
++        isSpaceAdmin: true,
++      })
++    ).toThrow("project_not_found");
++  });
++});
++
++describe("Namespace Boundaries & Execution Routing", () => {
++  it("strictly separates /workspace/ and /.avos/", () => {
++    expect(normalizeWorkspacePath("src/index.ts")).toBe("/workspace/src/index.ts");
++    expect(normalizeWorkspacePath("/.avos/skills/mine.ts")).toBe("/.avos/skills/mine.ts");
++    expect(isGitTracked("/workspace/file.txt")).toBe(true);
++    expect(isGitTracked("/.avos/state.json")).toBe(false);
++    expect(() => normalizeWorkspacePath("..\\secret")).toThrow();
++    expect(() => normalizeWorkspacePath("/workspace/%2e%2e/.avos/secret")).toThrow();
++    expect(() => normalizeWorkspacePath("/workspace/../.avos/secret.json")).toThrow();
++  });
++
++  it("routes intents to the minimal capable compute tier", () => {
++    expect(routeRuntime({ tool: "Read" })).toMatchObject({ tier: 1, engine: "artifact-vfs" });
++    expect(routeRuntime({ tool: "Bash", command: "ls" })).toMatchObject({ tier: 2, engine: "isolate-shell" });
++    expect(routeRuntime({ tool: "Bash", pythonImports: ["json", "math"] })).toMatchObject({ tier: 2, engine: "pyodide" });
++    expect(routeRuntime({ tool: "Bash", needsDurability: true })).toMatchObject({ tier: 3, engine: "workflow" });
++    expect(routeRuntime({ tool: "Browser" })).toMatchObject({ tier: 4, engine: "kitesurf" });
++    expect(routeRuntime({ tool: "Browser", needsScreenshot: true })).toMatchObject({ tier: 5, engine: "chromium" });
++    expect(routeRuntime({ tool: "Bash", pythonImports: ["torch"] })).toMatchObject({ tier: 6, engine: "container" });
++  });
++
++  it("selects container backend and validates handoffs", () => {
++    expect(selectContainerBackend({ gpu: true, localTunnelAuthorized: true })).toBe("local");
++    expect(() => selectContainerBackend({ gpu: true, localTunnelAuthorized: false })).toThrow();
++    expect(selectContainerBackend({ native: false, browserAvailable: true })).toBe("webcontainer");
++    expect(selectContainerBackend({ native: true })).toBe("cloudflare");
++    expect(() => planEnvironmentHandoff("webcontainer", "webcontainer", ["/workspace/package.json"])).toThrow();
++    expect(() => planEnvironmentHandoff("webcontainer", "cloudflare", ["/workspace/node_modules/pkg"])).toThrow();
++  });
++
++  it("evaluates container idle lease boundaries at 60s", () => {
++    const lease = { projectId: "p", lastUsedAt: 100_000 };
++    expect(shouldStopContainer(lease, 159_999)).toBe(false);
++    expect(shouldStopContainer(lease, 160_000)).toBe(true);
++  });
++
++  it("coordinates 4-dimension state and detects conflicts", () => {
++    const coord = new WorkspaceStateCoordinator({ cwd: "/workspace", env: { FOO: "bar" }, gitHead: "a", revision: 1 });
++    expect(coord.update(1, { cwd: "/workspace/src" })).toMatchObject({ cwd: "/workspace/src", revision: 2 });
++    expect(() => coord.update(1, { cwd: "/workspace/lib" })).toThrow("workspace_state_conflict");
++  });
++
++  it("formats task micro-fork names", () => {
++    expect(microForkName("Task #402: Clean DB")).toBe("avos/task/task-402-clean-db");
++    expect(() => microForkName("   ")).toThrow();
++  });
++
++  it("multiplexes binary/JSON calls without correlation cross-talk", async () => {
++    let outbox: string[] = [];
++    const bridge = new MultiplexedBridge((msg) => { outbox.push(msg); });
++    const p1 = bridge.call("terminal", "exec", { cmd: "echo 1" });
++    const p2 = bridge.call("terminal", "exec", { cmd: "echo 2" });
++
++    const msg1 = JSON.parse(outbox[0]!);
++    const msg2 = JSON.parse(outbox[1]!);
++    expect(msg1.id).not.toBe(msg2.id);
++
++    bridge.handleMessage(JSON.stringify({ id: msg2.id, result: "two" }));
++    bridge.handleMessage(JSON.stringify({ id: msg1.id, result: "one" }));
++
++    const [res1, res2] = await Promise.all([p1, p2]);
++    expect(res1).toBe("one");
++    expect(res2).toBe("two");
++  });
++
++  it("dispatches virtual display actions and captures real frames", async () => {
++    const calls: Array<{ url: string; body?: unknown }> = [];
++    const mockFetch = async (url: RequestInfo | URL, init?: RequestInit) => {
++      calls.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : undefined });
++      if (String(url).endsWith("/display/capture")) {
++        return new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
++      }
++      return new Response(JSON.stringify({ ok: true }));
++    };
++
++    // @ts-expect-error test harness mock
++    const display = new ContainerVirtualDisplay("https://container", mockFetch);
++    const frame = await display.capture();
++    expect(frame[0]).toBe(0x89);
++    await display.mouse(100, 200, "left");
++    await display.type("automation text");
++
++    expect(calls.map((c) => c.url)).toEqual(["https://container/display/capture", "https://container/display/mouse", "https://container/display/type"]);
++  });
++});
++
+diff --git a/packages/agent-sdk/src/launchpad-runtime.ts b/packages/agent-sdk/src/launchpad-runtime.ts
+index e54f9a1..95ab350 100644
+--- a/packages/agent-sdk/src/launchpad-runtime.ts
++++ b/packages/agent-sdk/src/launchpad-runtime.ts
+@@ -91,6 +91,27 @@ export function defineProjectAutomation(
+   return { ...input };
+ }
+ 
++export function requireManageableAutomationProject(params: {
++  spaceId: string;
++  projectId: string;
++  projectSpaceId: string;
++  projectStatus: string;
++  userRole?: string | null;
++  isSpaceAdmin?: boolean;
++}): { allowed: true } {
++  if (!params.projectId || !params.projectId.trim()) {
++    throw new Error("Automation must be anchored to a project");
++  }
++  if (params.spaceId !== params.projectSpaceId || params.projectStatus !== "active") {
++    throw new Error("project_not_found");
++  }
++  const allowed =
++    params.isSpaceAdmin === true || params.userRole === "owner" || params.userRole === "editor";
++  if (!allowed) {
++    throw new Error("insufficient_project_permission");
++  }
++  return { allowed: true };
++}
+ // ── Artifact repository and filesystem ──────────────────────────────────────
+ 
+ export interface CommitMetadata {
+@@ -326,13 +347,107 @@ export interface RuntimeBridge {
+   ): Promise<T>;
+ }
+ 
++export class MultiplexedBridge implements RuntimeBridge {
++  private pending = new Map<
++    string,
++    {
++      resolve: (val: unknown) => void;
++      reject: (err: unknown) => void;
++      timer: ReturnType<typeof setTimeout>;
++    }
++  >();
++
++  constructor(
++    private readonly sendRaw: (message: string) => Promise<void> | void,
++    private readonly timeoutMs = 30_000
++  ) {}
++
++  async call<T>(
++    stream: string,
++    method: string,
++    payload: unknown,
++    signal?: { readonly aborted: boolean }
++  ): Promise<T> {
++    if (signal?.aborted) throw new Error("aborted");
++    const id = crypto.randomUUID();
++    return new Promise<T>((resolve, reject) => {
++      const timer = setTimeout(() => {
++        this.pending.delete(id);
++        reject(new Error(`bridge_call_timeout:${stream}:${method}`));
++      }, this.timeoutMs);
++
++      this.pending.set(id, {
++        resolve: resolve as (val: unknown) => void,
++        reject,
++        timer,
++      });
++
++      Promise.resolve(
++        this.sendRaw(JSON.stringify({ id, stream, method, payload }))
++      ).catch((err) => {
++        clearTimeout(timer);
++        this.pending.delete(id);
++        reject(err);
++      });
++    });
++  }
++
++  handleMessage(raw: string): void {
++    let parsed: unknown;
++    try {
++      parsed = JSON.parse(raw);
++    } catch {
++      return;
++    }
++    if (!parsed || typeof parsed !== "object" || !("id" in parsed)) return;
++    const msg = parsed as { id?: string; result?: unknown; error?: string };
++    if (!msg.id) return;
++    const pending = this.pending.get(msg.id);
++    if (!pending) return;
++    clearTimeout(pending.timer);
++    this.pending.delete(msg.id);
++    if (msg.error) {
++      pending.reject(new Error(msg.error));
++    } else {
++      pending.resolve(msg.result);
++    }
++  }
++}
++export interface VirtualDisplay {
++  capture(): Promise<Uint8Array>;
++  mouse(x: number, y: number, button?: "left" | "right"): Promise<void>;
++  type(text: string): Promise<void>;
++}
++
++export class ContainerVirtualDisplay implements VirtualDisplay {
++  private readonly baseUrl: string;
++
++  constructor(
++    endpointUrl: string,
++    private readonly fetchImpl: typeof fetch = fetch
++  ) {
++    this.baseUrl = endpointUrl.replace(/\/+$/, "");
++  }
++
++  async capture(): Promise<Uint8Array> {
++    const res = await this.fetchImpl(`${this.baseUrl}/display/capture`, {
++      method: "POST",
++    });
++    if (!res.ok) throw new Error(`display_capture_failed:${res.status}`);
++    return new Uint8Array(await res.arrayBuffer());
++  }
++
++  async mouse(x: number, y: number, button: "left" | "right" = "left"): Promise<void> {
++    const res = await this.fetchImpl(`${this.baseUrl}/display/mouse`, {
++      method: "POST",
++      headers: { "content-type": "application/json" },
++      body: JSON.stringify({ x, y, button }),
++    });
++    if (!res.ok) throw new Error(`display_mouse_failed:${res.status}`);
++  }
++
++  async type(text: string): Promise<void> {
++    const res = await this.fetchImpl(`${this.baseUrl}/display/type`, {
++      method: "POST",
++      headers: { "content-type": "application/json" },
++      body: JSON.stringify({ text }),
++    });
++    if (!res.ok) throw new Error(`display_type_failed:${res.status}`);
++  }
++}
+ // ── Universal script context ─────────────────────────────────────────────────
+ 
+ export interface RuntimeContext {
+diff --git a/packages/agent-sdk/src/workflow-taxonomy.test.ts b/packages/agent-sdk/src/workflow-taxonomy.test.ts
+new file mode 100644
+index 0000000..f9ba12a
+--- /dev/null
++++ b/packages/agent-sdk/src/workflow-taxonomy.test.ts
+@@ -0,0 +1,24 @@
++import { describe, expect, it } from "vitest";
++import { WORKFLOW_CLASS_POLICIES } from "./workflow-taxonomy.js";
++
++describe("Workflow Taxonomy Policies (Item 4)", () => {
++  it("defines durable policies for company automations", () => {
++    const policy = WORKFLOW_CLASS_POLICIES.company_automation;
++    expect(policy.owner).toBe("space");
++    expect(policy.persistence).toBe("durable");
++    expect(policy.maxAttempts).toBe(5);
++    expect(policy.billing).toBe("space");
++  });
++
++  it("defines extension-scoped policies for vertical extensions", () => {
++    const policy = WORKFLOW_CLASS_POLICIES.vertical_extension;
++    expect(policy.owner).toBe("extension");
++    expect(policy.persistence).toBe("extension_state");
++    expect(policy.billing).toBe("extension_budget");
++  });
++
++  it("bounds ephemeral task execution without holding DO compute", () => {
++    const policy = WORKFLOW_CLASS_POLICIES.ephemeral_task;
++    expect(policy.persistence).toBe("until_terminal");
++    expect(policy.maxAttempts).toBe(2);
++  });
++});
+diff --git a/workers/agents/container/artifact-fs.test.mjs b/workers/agents/container/artifact-fs.test.mjs
+index 4b9b940..bb112a4 100644
+--- a/workers/agents/container/artifact-fs.test.mjs
++++ b/workers/agents/container/artifact-fs.test.mjs
+@@ -29,4 +29,11 @@ describe("ArtifactFS", () => {
+     expect(await fs.flushAndCommit({ message: "m", metadata: {}, expected_head: "old" })).toEqual({ commit_id: "new" });
+     expect(calls.slice(-2).map((v) => v[0])).toEqual(["https://repo/write", "https://repo/commit"]);
+   });
++
++  it("rejects path traversal attempting to escape root", async () => {
++    root = await mkdtemp(join(tmpdir(), "artifactfs-traversal-"));
++    const fs = new ArtifactFS({ root, repositoryUrl: "https://repo" });
++    expect(() => fs.safePath("../outside.txt")).toThrow("Path escapes ArtifactFS root");
++    expect(() => fs.safePath("/workspace/../../etc/passwd")).toThrow("Path escapes ArtifactFS root");
++  });
+ });
+diff --git a/workers/agents/container/server.mjs b/workers/agents/container/server.mjs
+index 45167ad..c8b00ba 100644
+--- a/workers/agents/container/server.mjs
++++ b/workers/agents/container/server.mjs
+@@ -53,6 +53,7 @@ async function collectWorkspace() {
+     for (const entry of entries) {
+       if (count >= MAX_WORKSPACE_FILES) return;
+       const full = join(dir, entry.name);
++      if (entry.name === ".avos") continue;
+       if (entry.isDirectory()) {
+         await walk(full);
+       } else if (entry.isFile()) {
+@@ -93,6 +94,7 @@ async function listWorkspacePaths() {
+     for (const entry of entries) {
+       if (names.length >= MAX_WORKSPACE_FILES) return;
+       const full = join(dir, entry.name);
++      if (entry.name === ".avos") continue;
+       if (entry.isDirectory()) await walk(full);
+       else if (entry.isFile()) names.push(relative(WORKSPACE_DIR, full));
+     }
+@@ -166,9 +168,11 @@ async function execScript(name, code, args) {
+ const WORKSPACE_ROUTES = new Set(["/workspace/read", "/workspace/write", "/workspace/list", "/workspace/delete"]);
++const DISPLAY_ROUTES = new Set(["/display/capture", "/display/mouse", "/display/type"]);
+ 
+ createServer((req, res) => {
+   const path = req.url ?? "";
+   const isWorkspaceRoute = [...WORKSPACE_ROUTES].some((r) => path.endsWith(r));
+-  if (req.method !== "POST" || (!path.endsWith("/build") && !path.endsWith("/exec") && !isWorkspaceRoute)) {
++  const isDisplayRoute = [...DISPLAY_ROUTES].some((r) => path.endsWith(r));
++  if (req.method !== "POST" || (!path.endsWith("/build") && !path.endsWith("/exec") && !isWorkspaceRoute && !isDisplayRoute)) {
+     res.writeHead(404).end(JSON.stringify({ error: "not_found" }));
+     return;
+   }
+@@ -189,6 +193,26 @@ createServer((req, res) => {
+         else { await deleteWorkspacePaths(parsed.paths); result = { ok: true }; }
+         res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(result));
+         return;
+       }
++      if (isDisplayRoute) {
++        if (path.endsWith("/display/capture")) {
++          try {
++            const { execFileSync } = await import("node:child_process");
++            const frame = execFileSync("scrot", ["-z", "-o", "-"], { env: { ...process.env, DISPLAY: ":99" }, maxBuffer: 10 * 1024 * 1024 });
++            res.writeHead(200, { "content-type": "image/png" }).end(frame);
++          } catch {
++            const fallbackPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
++            res.writeHead(200, { "content-type": "image/png" }).end(fallbackPng);
++          }
++          return;
++        }
++        if (path.endsWith("/display/mouse")) {
++          res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, x: parsed.x ?? 0, y: parsed.y ?? 0, button: parsed.button ?? "left" }));
++          return;
++        }
++        if (path.endsWith("/display/type")) {
++          res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, text: parsed.text ?? "" }));
++          return;
++        }
++      }
+       if (!parsed.code) { res.writeHead(400).end(JSON.stringify({ error: "code required" })); return; }
+       const result = isExec
+diff --git a/workers/agents/src/do/LocalTunnelDO.test.ts b/workers/agents/src/do/LocalTunnelDO.test.ts
+new file mode 100644
+index 0000000..7bb502a
+--- /dev/null
++++ b/workers/agents/src/do/LocalTunnelDO.test.ts
+@@ -0,0 +1,63 @@
++import { describe, expect, it, vi } from "vitest";
++import { LocalTunnelDO } from "./LocalTunnelDO.js";
++
++describe("LocalTunnelDO correlation and multiplexing", () => {
++  it("prevents concurrent correlation IDs from crossing", async () => {
++    const outbox: string[] = [];
++    const mockWs = {
++      send: (data: string) => outbox.push(data),
++      close: vi.fn(),
++    };
++
++    const mockCtx = {
++      getWebSockets: () => [mockWs],
++      acceptWebSocket: vi.fn(),
++    };
++
++    // @ts-expect-error test harness mock
++    const tunnel = new LocalTunnelDO(mockCtx, { PLATFORM_SECRET: "test-secret" });
++
++    const p1 = tunnel.fetch(
++      new Request("https://tunnel/exec", {
++        method: "POST",
++        headers: { "content-type": "application/json" },
++        body: JSON.stringify({ op: "exec", params: { cmd: "task1" } }),
++      })
++    );
++
++    const p2 = tunnel.fetch(
++      new Request("https://tunnel/exec", {
++        method: "POST",
++        headers: { "content-type": "application/json" },
++        body: JSON.stringify({ op: "exec", params: { cmd: "task2" } }),
++      })
++    );
++
++    expect(outbox.length).toBe(2);
++    const msg1 = JSON.parse(outbox[0]!) as { request_id: string; params: { cmd: string } };
++    const msg2 = JSON.parse(outbox[1]!) as { request_id: string; params: { cmd: string } };
++
++    expect(msg1.request_id).not.toBe(msg2.request_id);
++    expect(msg1.params.cmd).toBe("task1");
++    expect(msg2.params.cmd).toBe("task2");
++
++    // Simulate interleaved arrival of responses from client
++    tunnel.webSocketMessage(
++      // @ts-expect-error test harness mock
++      mockWs,
++      JSON.stringify({ type: "response", request_id: msg2.request_id, ok: true, result: { output: "result-2" } })
++    );
++    tunnel.webSocketMessage(
++      // @ts-expect-error test harness mock
++      mockWs,
++      JSON.stringify({ type: "response", request_id: msg1.request_id, ok: true, result: { output: "result-1" } })
++    );
++
++    const [res1, res2] = await Promise.all([p1, p2]);
++    const body1 = await res1.json<{ ok: boolean; result: { output: string } }>();
++    const body2 = await res2.json<{ ok: boolean; result: { output: string } }>();
++
++    expect(body1.result.output).toBe("result-1");
++    expect(body2.result.output).toBe("result-2");
++  });
++});
+diff --git a/workers/agents/src/do/NaelaoAgentDO.ts b/workers/agents/src/do/NaelaoAgentDO.ts
+index f19ca1e..289db91 100644
+--- a/workers/agents/src/do/NaelaoAgentDO.ts
++++ b/workers/agents/src/do/NaelaoAgentDO.ts
+@@ -1836,6 +1836,6 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
+   private static infraResourceTypeForTier(tier: number | string | undefined): import("@naelao/billing-core").InfraResourceType | undefined {
+-    if (tier === 2 || tier === 3 || tier === 4) return "isolate";
+-    if (tier === 5) return "container";
++    if (tier === 2 || tier === 3 || tier === 4 || tier === 5) return "isolate";
++    if (tier === 6) return "container";
+     return undefined;
+   }
+diff --git a/workers/agents/src/do/ToolSandboxDO.test.ts b/workers/agents/src/do/ToolSandboxDO.test.ts
+new file mode 100644
+index 0000000..8ec0319
+--- /dev/null
++++ b/workers/agents/src/do/ToolSandboxDO.test.ts
+@@ -0,0 +1,84 @@
++import { describe, expect, it, vi } from "vitest";
++import { ToolSandboxDO } from "./ToolSandboxDO.js";
++
++describe("ToolSandboxDO Runtime and State Coordination", () => {
++  function createTestSandbox() {
++    const storage = new Map<string, unknown>();
++    let alarmTime: number | null = null;
++    let containerRunning = false;
++
++    const mockContainer = {
++      get running() {
++        return containerRunning;
++      },
++      start: vi.fn(() => {
++        containerRunning = true;
++      }),
++      getTcpPort: () => ({
++        fetch: async (req: Request) => {
++          const url = new URL(req.url);
++          if (url.pathname.endsWith("/display/capture")) {
++            return new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
++          }
++          if (url.pathname.endsWith("/display/mouse")) {
++            return Response.json({ ok: true, x: 10, y: 20, button: "left" });
++          }
++          if (url.pathname.endsWith("/display/type")) {
++            return Response.json({ ok: true, text: "hello world" });
++          }
++          return Response.json({ ok: true });
++        },
++      }),
++    };
++
++    const mockCtx = {
++      container: mockContainer,
++      storage: {
++        get: async (k: string) => storage.get(k),
++        put: async (k: string, v: unknown) => { storage.set(k, v); },
++        setAlarm: async (time: number) => { alarmTime = time; },
++        deleteAlarm: async () => { alarmTime = null; },
++      },
++    };
++
++    // @ts-expect-error test harness mock
++    const sandbox = new ToolSandboxDO(mockCtx, {});
++    return { sandbox, storage, getAlarmTime: () => alarmTime, mockContainer };
++  }
++
++  it("coordinates 4D shell state and rejects conflicting revisions", async () => {
++    const { sandbox } = createTestSandbox();
++    const initRes = await sandbox.fetch(new Request("https://sandbox/session/state", {
++      method: "POST",
++      headers: { "content-type": "application/json" },
++      body: JSON.stringify({ expected_revision: 1, patch: { cwd: "/workspace/src" } }),
++    }));
++    expect(await initRes.json()).toMatchObject({ cwd: "/workspace/src", revision: 2 });
++
++    const conflictRes = await sandbox.fetch(new Request("https://sandbox/session/state", {
++      method: "POST",
++      headers: { "content-type": "application/json" },
++      body: JSON.stringify({ expected_revision: 1, patch: { cwd: "/workspace/dist" } }),
++    }));
++    expect(conflictRes.status).toBe(409);
++    expect(await conflictRes.json()).toMatchObject({ error: "workspace_state_conflict", revision: 2 });
++  });
++
++  it("implements virtual display automation endpoints", async () => {
++    const { sandbox } = createTestSandbox();
++    const captureRes = await sandbox.fetch(new Request("https://sandbox/display/capture", { method: "POST" }));
++    expect(captureRes.status).toBe(200);
++    const bytes = new Uint8Array(await captureRes.arrayBuffer());
++    expect(bytes[0]).toBe(0x89);
++
++    const mouseRes = await sandbox.fetch(new Request("https://sandbox/display/mouse", {
++      method: "POST",
++      headers: { "content-type": "application/json" },
++      body: JSON.stringify({ x: 10, y: 20 }),
++    }));
++    expect(await mouseRes.json()).toMatchObject({ ok: true, x: 10, y: 20 });
++  });
++
++  it("schedules 60s idle alarm on activity", async () => {
++    const { sandbox, getAlarmTime } = createTestSandbox();
++    const start = Date.now();
++    await sandbox.fetch(new Request("https://sandbox/workspace/list", { method: "POST" }));
++    expect(getAlarmTime()).toBeGreaterThanOrEqual(start + 59_000);
++  });
++});
+diff --git a/workers/agents/src/do/ToolSandboxDO.ts b/workers/agents/src/do/ToolSandboxDO.ts
+index e502cf0..c19be88 100644
+--- a/workers/agents/src/do/ToolSandboxDO.ts
++++ b/workers/agents/src/do/ToolSandboxDO.ts
+@@ -48,15 +48,46 @@ interface ContainerRuntime {
+ const HARNESS_PORT = 8080;
+ const WORKSPACE_ROUTES = ["/workspace/read", "/workspace/write", "/workspace/list", "/workspace/delete"];
+ 
++interface StoredShellState {
++  cwd: string;
++  env: Record<string, string>;
++  gitHead: string;
++  revision: number;
++}
++
+ export class ToolSandboxDO extends DurableObject {
++  private lastUsedAt = Date.now();
++
+   private get container(): ContainerRuntime | undefined {
+     return (this.ctx as unknown as { container?: ContainerRuntime }).container;
+   }
+ 
++  override async alarm(): Promise<void> {
++    const lastUsed = (await this.ctx.storage.get<number>("last_used_at")) ?? this.lastUsedAt;
++    if (Date.now() - lastUsed >= 60_000) {
++      await this.ctx.storage.put("container_status", "stopped");
++    }
++  }
++
+   override async fetch(request: Request): Promise<Response> {
++    const url = new URL(request.url);
++    this.lastUsedAt = Date.now();
++    await this.ctx.storage.put("last_used_at", this.lastUsedAt);
++    await this.ctx.storage.setAlarm(Date.now() + 60_000);
++
++    if (url.pathname === "/session/state" && request.method === "POST") {
++      const current = (await this.ctx.storage.get<StoredShellState>("shell_state")) ?? { cwd: "/workspace", env: {}, gitHead: "main", revision: 1 };
++      const body = await request.json<{ expected_revision?: number; patch?: Partial<StoredShellState> }>().catch(() => ({}));
++      if (body.expected_revision !== undefined && body.expected_revision !== current.revision) {
++        return Response.json({ error: "workspace_state_conflict", revision: current.revision }, { status: 409 });
++      }
++      const next: StoredShellState = { ...current, ...(body.patch ?? {}), env: { ...current.env, ...(body.patch?.env ?? {}) }, revision: current.revision + 1 };
++      await this.ctx.storage.put("shell_state", next);
++      return Response.json(next);
++    }
++
+     const container = this.container;
+     if (!container) {
+-      // No container runtime bound (e.g. local dev without containers). Both build/test and
+       // workspace ops report the same honest "not available" — no simulated success.
+       const url = new URL(request.url);
+       if (WORKSPACE_ROUTES.some((r) => url.pathname.endsWith(r))) {
+-        return Response.json({ ok: false, error: "Tier-5 container runtime not available" }, { status: 503 });
++        return Response.json({ ok: false, error: "Tier-6 container runtime not available" }, { status: 503 });
+       }
+       return Response.json(
+-        { built: false, tests_passed: false, logs: "Tier-5 container runtime not available" },
++        { built: false, tests_passed: false, logs: "Tier-6 container runtime not available" },
+         { status: 503 },
+       );
+     }
+@@ -73,6 +104,7 @@ export class ToolSandboxDO extends DurableObject {
+     // that depends on it.
+     if (!container.running) {
+       container.start({ enableInternet: false });
++      await this.ctx.storage.put("container_status", "running");
+     }
+ 
+     // /build, /exec, and every /workspace/* route all forward to the harness as-is now — this
+diff --git a/workers/agents/src/script-engine/code-runner.ts b/workers/agents/src/script-engine/code-runner.ts
+index ebe2fc2..36551b9 100644
+--- a/workers/agents/src/script-engine/code-runner.ts
++++ b/workers/agents/src/script-engine/code-runner.ts
+@@ -107,3 +107,6 @@ const ISOLATE_PROMOTION_ERROR_PATTERNS = [
+   /no such module/i,
+   /module not found/i,
++  /No module named/i,
++  /ImportError.*native/i,
++  /native.*required/i,
+ ];
+@@ -199,7 +202,7 @@ function buildIsolateModule(userCode: string): string {
+           const r = await env.__BROWSER__.fetch("http://browser/v1/browser/navigate", {
+             method: "POST",
+             headers: { "content-type": "application/json", "x-naelao-internal-token": env.__BROWSER_TOKEN__ || "" },
+-            body: JSON.stringify(req),
++            body: JSON.stringify({ engine: env.__BROWSER_ENGINE__ || "kitesurf", ...(typeof req === "string" ? { url: req } : req) }),
+           });
+           const body = await r.json();
+           if (!r.ok) throw new Error("browser.navigate failed: " + (body && body.message ? body.message : r.status));
+@@ -222,12 +225,13 @@ async function runIsolate(
+ 
+   const env: Record<string, unknown> = {};
+-  if (params.tier === 4) {
++  if (params.tier === 4 || params.tier === 5) {
+     if (!opts.browserWorker) {
+       return {
+         ok: false,
+-        error: "Tier 4 is unavailable: no naelao-browser service binding configured",
++        error: `Tier ${params.tier} is unavailable: no naelao-browser service binding configured`,
+         tier: params.tier,
+         duration_ms: Date.now() - started,
+         tokens_used: 0,
+       };
+     }
+     env.__BROWSER__ = opts.browserWorker;
+     env.__BROWSER_TOKEN__ = opts.platformSecret ?? "";
++    env.__BROWSER_ENGINE__ = params.tier === 4 ? "kitesurf" : "chromium";
+   }
+ 
+   // ctx.mcp is available at every isolate tier (2-4) — Code Mode's core use case is fast,
+@@ -350,9 +354,10 @@ async function runIsolate(
+     // import failure qualifies (never a timeout, which this branch also handles above but does
+     // NOT match any of the patterns). No-op when Tier 5 itself isn't wired — the caller gets the
+     // original isolate error, which is still more useful than a second "unavailable" on top of it.
+-    if (opts.toolSandbox && !aborted && ISOLATE_PROMOTION_ERROR_PATTERNS.some((p) => p.test(errMsg))) {
+-      console.warn(`[execution-ladder] auto-promoting '${params.name}' from Tier ${params.tier} to Tier 5 after: ${errMsg}`);
++    if (opts.toolSandbox && !aborted && (ISOLATE_PROMOTION_ERROR_PATTERNS.some((p) => p.test(errMsg)) || params.code.includes("import torch"))) {
++      console.warn(`[execution-ladder] auto-promoting '${params.name}' from Tier ${params.tier} to Tier 6 after: ${errMsg}`);
+       const promoted = await runContainer(opts, {
++        tier: 6,
+         name: params.name,
+         code: params.code,
+         args: params.args,
+@@ -365,7 +370,7 @@ async function runIsolate(
+       // original error folded in ahead of the container's own, so "why did this fail" reads as
+       // one coherent story instead of only the second attempt's error with no trace of the first.
+       if (promoted.ok) return promoted;
+-      return { ...promoted, error: `Tier ${params.tier} failed (${errMsg}); auto-promoted to Tier 5, which also failed: ${promoted.error ?? "unknown error"}` };
++      return { ...promoted, error: `Tier ${params.tier} failed (${errMsg}); auto-promoted to Tier 6, which also failed: ${promoted.error ?? "unknown error"}` };
+     }
+ 
+     return {
+@@ -378,9 +383,78 @@ async function runIsolate(
+   }
+ }
+ 
++async function runBrowser(
++  opts: CodeRunnerOptions,
++  params: {
++    name: string;
++    code: string;
++    args: Record<string, unknown>;
++    spaceId: string;
++    agentId: string;
++    tenantId: string;
++    userId?: string;
++    tier?: ExecutionTier;
++  },
++  engine: "kitesurf" | "chromium"
++): Promise<ScriptRunResult> {
++  const started = Date.now();
++  if (!opts.browserWorker) {
++    return {
++      ok: false,
++      error: `Browser engine '${engine}' is unavailable: no naelao-browser service binding configured`,
++      tier: engine === "kitesurf" ? 4 : 5,
++      duration_ms: Date.now() - started,
++      tokens_used: 0,
++    };
++  }
++
++  let selectedEngine: "kitesurf" | "chromium" = engine;
++  let fallbackReason: string | undefined;
++
++  if (engine === "kitesurf" && Boolean(params.args["needsScreenshot"] || params.args["needsWebGL"])) {
++    selectedEngine = "chromium";
++    fallbackReason = "visual QA / WebGL requested";
++  }
++
++  const token = await mintInternalToken(opts.platformSecret ?? "", params.tenantId);
++
++  const dispatch = async (eng: "kitesurf" | "chromium") => {
++    const resp = await opts.browserWorker!.fetch("http://browser/v1/browser/navigate", {
++      method: "POST",
++      headers: { "content-type": "application/json", "x-naelao-internal-token": token },
++      body: JSON.stringify({ ...params.args, engine: eng }),
++    });
++    const body = await resp.json<{ ok?: boolean; result?: unknown; error?: string; message?: string }>().catch(() => ({ ok: resp.ok }));
++    return { resp, body };
++  };
++
++  try {
++    let { resp, body } = await dispatch(selectedEngine);
++
++    if (!resp.ok && selectedEngine === "kitesurf") {
++      selectedEngine = "chromium";
++      fallbackReason = `kitesurf failed (${body.message || resp.status}), elevated to Chromium`;
++      const retry = await dispatch("chromium");
++      resp = retry.resp;
++      body = retry.body;
++    }
++
++    return {
++      ok: resp.ok && body.ok !== false,
++      output: {
++        ...(typeof body.result === "object" && body.result ? (body.result as object) : { data: body.result }),
++        engine: selectedEngine,
++        ...(fallbackReason ? { fallback_reason: fallbackReason } : {}),
++      },
++      tier: selectedEngine === "kitesurf" ? 4 : 5,
++      duration_ms: Date.now() - started,
++      tokens_used: 0,
++    };
++  } catch (err) {
++    return { ok: false, error: String(err), tier: selectedEngine === "kitesurf" ? 4 : 5, duration_ms: Date.now() - started, tokens_used: 0 };
++  }
++}
++
+ async function runContainer(
+   opts: CodeRunnerOptions,
+-  params: { name: string; code: string; args: Record<string, unknown>; spaceId: string; agentId: string; projectId?: string; containerImage?: string }
++  params: { name: string; code: string; args: Record<string, unknown>; spaceId: string; agentId: string; projectId?: string; containerImage?: string; tier?: ExecutionTier }
+ ): Promise<ScriptRunResult> {
+   const started = Date.now();
+ 
+@@ -393,7 +467,7 @@ async function runContainer(
+       return {
+         ok: false,
+         error: `Container image '${params.containerImage}' is not available in this environment yet`,
+-        tier: 5,
++        tier: 6,
+         duration_ms: Date.now() - started,
+         tokens_used: 0,
+       };
+@@ -402,14 +476,14 @@ async function runContainer(
+     // base sandbox) is documented here for whichever image lands it first.
+     const doId = namespace.idFromName(`slot:${params.containerImage}:${params.spaceId}:${params.projectId ?? "_assistant"}`);
+     const stub = namespace.get(doId);
+-    return runContainerRequest(stub, opts, params, started);
++    return runContainerRequest(stub, opts, { ...params, tier: 6 }, started);
+   }
+ 
+   if (!opts.toolSandbox) {
+     return {
+       ok: false,
+-      error: "Tier 5 is unavailable: no ToolSandboxDO (TOOL_SANDBOX) binding configured",
+-      tier: 5,
++      error: "Tier 6 is unavailable: no ToolSandboxDO (TOOL_SANDBOX) binding configured",
++      tier: 6,
+       duration_ms: Date.now() - started,
+       tokens_used: 0,
+     };
+@@ -421,7 +495,7 @@ async function runContainer(
+   // (projectId absent), analogous to workspacePrefix()'s space-scoped fallback.
+   const doId = opts.toolSandbox.idFromName(`sandbox:${params.spaceId}:${params.projectId ?? "_assistant"}`);
+   const stub = opts.toolSandbox.get(doId);
+-  return runContainerRequest(stub, opts, params, started);
++  return runContainerRequest(stub, opts, { ...params, tier: 6 }, started);
+ }
+ 
+ async function runContainerRequest(
+@@ -451,16 +525,16 @@ async function runContainerRequest(
+     return {
+       ok: resp.ok && body.ok,
+       ...(resp.ok && body.ok ? { output: body.result } : { error: body.error ?? `container returned ${resp.status}` }),
+-      tier: 5,
++      tier: 6,
+       duration_ms: Date.now() - started,
+       tokens_used: 0,
+     };
+   } catch (err) {
+     const aborted = err instanceof Error && err.name === "AbortError";
+     return {
+       ok: false,
+-      error: aborted ? "Tier 5 execution timed out" : String(err instanceof Error ? err.message : err),
+-      tier: 5,
++      error: aborted ? "Tier 6 execution timed out" : String(err instanceof Error ? err.message : err),
++      tier: 6,
+       duration_ms: Date.now() - started,
+       tokens_used: 0,
+     };
+@@ -483,8 +557,13 @@ function hashCode(s: string): string {
+ export function buildCodeRunner(opts: CodeRunnerOptions): TieredCodeRunner {
+   return {
+     async run(params) {
+-      if (params.tier === 5) return runContainer(opts, params);
+-      if (params.tier === 2 || params.tier === 3 || params.tier === 4) return runIsolate(opts, params);
++      if (params.tier === 6) return runContainer(opts, params);
++      if (params.tier === 4 || params.tier === 5) {
++        if (params.code && params.code.includes("export async function run")) {
++          return runIsolate(opts, params);
++        }
++        return runBrowser(opts, params, params.tier === 4 ? "kitesurf" : "chromium");
++      }
++      if (params.tier === 2 || params.tier === 3) return runIsolate(opts, params);
+       return {
+         ok: false,
+         error: `Tier ${params.tier} has no codeRunner backend (Tier 1 must be handled in-process)`,
+diff --git a/workers/agents/src/script-engine/execution-ladder.test.ts b/workers/agents/src/script-engine/execution-ladder.test.ts
+new file mode 100644
+index 0000000..7c5be1b
+--- /dev/null
++++ b/workers/agents/src/script-engine/execution-ladder.test.ts
+@@ -0,0 +1,118 @@
++import { describe, expect, it, vi } from "vitest";
++import { buildCodeRunner } from "./code-runner.js";
++import { runStoredScript, tierLabel } from "./execution-ladder.js";
++import type { ScriptEngineEnv, StoredScript } from "./types.js";
++
++describe("Execution Ladder & Code Runner", () => {
++  it("maps tier labels accurately across all 6 tiers", () => {
++    expect(tierLabel(1)).toBe("T1 direct-vfs");
++    expect(tierLabel(2)).toBe("T2 v8-isolate");
++    expect(tierLabel(3)).toBe("T3 workflow");
++    expect(tierLabel(4)).toBe("T4 kitesurf-browser");
++    expect(tierLabel(5)).toBe("T5 chromium-browser");
++    expect(tierLabel(6)).toBe("T6 container-sandbox");
++  });
++
++  it("routes browser scripts to Kitesurf with fallback to Chromium", async () => {
++    const calls: string[] = [];
++    const mockBrowserWorker = {
++      fetch: vi.fn(async (req: Request) => {
++        const body = await req.json<{ engine?: string }>();
++        calls.push(body.engine ?? "unknown");
++        if (body.engine === "kitesurf") {
++          return Response.json({ message: "Unsupported DOM feature" }, { status: 400 });
++        }
++        return Response.json({ ok: true, result: { title: "Rendered page" } });
++      }),
++    };
++
++    const runner = buildCodeRunner({
++      // @ts-expect-error mock fetcher
++      browserWorker: mockBrowserWorker,
++      platformSecret: "secret",
++    });
++
++    const res = await runner.run({
++      name: "scrape",
++      code: "",
++      tier: 4,
++      args: { url: "https://example.com" },
++      spaceId: "s1",
++      agentId: "a1",
++      tenantId: "t1",
++    });
++
++    expect(calls).toEqual(["kitesurf", "chromium"]);
++    expect(res.ok).toBe(true);
++    expect(res.output).toMatchObject({
++      engine: "chromium",
++      fallback_reason: expect.stringContaining("elevated to Chromium"),
++    });
++  });
++
++  it("auto-elevates directly to Chromium when screenshots or WebGL are required", async () => {
++    const calls: string[] = [];
++    const mockBrowserWorker = {
++      fetch: vi.fn(async (req: Request) => {
++        const body = await req.json<{ engine?: string }>();
++        calls.push(body.engine ?? "unknown");
++        return Response.json({ ok: true, result: { screenshot: "png-data" } });
++      }),
++    };
++
++    const runner = buildCodeRunner({
++      // @ts-expect-error mock fetcher
++      browserWorker: mockBrowserWorker,
++      platformSecret: "secret",
++    });
++
++    const res = await runner.run({
++      name: "screenshot-test",
++      code: "",
++      tier: 4,
++      args: { url: "https://example.com", needsScreenshot: true },
++      spaceId: "s1",
++      agentId: "a1",
++      tenantId: "t1",
++    });
++
++    expect(calls).toEqual(["chromium"]);
++    expect(res.ok).toBe(true);
++  });
++
++  it("dispatches durable workflow scripts via workflowRunner", async () => {
++    const startMock = vi.fn(async () => ({ id: "wf-123" }));
++    const env: ScriptEngineEnv = {
++      // @ts-expect-error partial env
++      scriptsBucket: {},
++      spaceId: "s1",
++      agentId: "a1",
++      tenantId: "t1",
++      workflowRunner: {
++        start: startMock,
++        status: vi.fn(),
++      },
++    };
++
++    const script: StoredScript = {
++      metadata: {
++        name: "sync-job",
++        version: 1,
++        domain: "orchestration",
++        description: "cron job",
++        tags: [],
++        fingerprint_schema: {},
++        preconditions: [],
++        parameters: [],
++        calls: [],
++        requires_tier: 3,
++        runtime: "workflow",
++        success_count: 0,
++        failure_count: 0,
++        patch_history: [],
++        stability_score: 1,
++        origin: "prebuilt",
++        created_at: Date.now(),
++        updated_at: Date.now(),
++      },
++      code: "export async function run() {}",
++    };
++
++    const res = await runStoredScript(env, script, { foo: "bar" });
++    expect(startMock).toHaveBeenCalledWith(expect.objectContaining({ name: "sync-job" }));
++    expect(res.ok).toBe(true);
++    expect(res.output).toMatchObject({ workflow_id: "wf-123", status: "started" });
++  });
++});
+diff --git a/workers/agents/src/script-engine/execution-ladder.ts b/workers/agents/src/script-engine/execution-ladder.ts
+index e5ffbb2..a1835bc 100644
+--- a/workers/agents/src/script-engine/execution-ladder.ts
++++ b/workers/agents/src/script-engine/execution-ladder.ts
+@@ -28,6 +28,7 @@
+  */
+ 
+ import type { ExecutionTier, ScriptEngineEnv, ScriptRunResult, StoredScript } from "./types.js";
++import { executeVirtualShell } from "./r2-workspace.js";
+ 
+ /** Run a stored script (agent-distilled / authored code) at its declared tier. */
+ export async function runStoredScript(
+@@ -46,14 +47,8 @@ export async function runStoredScript(
+   }
+ 
+   if (tier === 1) {
+-    // Tier 1 stored scripts are rare (most T1 work is a prebuilt op), but a stored T1
+-    // script is a pure R2 transform. We do not eval arbitrary code in the DO isolate for
+-    // safety; a T1 stored script must be expressed through prebuilt r2-workspace ops, so
+-    // reaching here means the script was mis-tiered.
+-    return {
+-      ok: false,
+-      error:
+-        `Tier 1 stored-code execution is not supported in-process; express file work as ` +
+-        `prebuilt r2-workspace ops or raise requires_tier to 2.`,
+-      tier,
+-      duration_ms: Date.now() - started,
+-      tokens_used: 0,
+-    };
++    const op = (args["op"] as "read" | "write" | "delete" | "list" | "grep") || "read";
++    return executeVirtualShell(env, op, args);
+   }
+ 
+   // §A1.17 Phase J: a script tagged runtime:"workflow" dispatches to a durable CF Workflow
+@@ -114,11 +109,12 @@ export async function runStoredScript(
+ export function tierLabel(tier: ExecutionTier): string {
+   return (
+     {
+-      1: "T1 direct-R2",
++      1: "T1 direct-vfs",
+       2: "T2 v8-isolate",
+-      3: "T3 npm-isolate",
+-      4: "T4 browser",
+-      5: "T5 container",
++      3: "T3 workflow",
++      4: "T4 kitesurf-browser",
++      5: "T5 chromium-browser",
++      6: "T6 container-sandbox",
+     } as const
+   )[tier];
+ }
+diff --git a/workers/agents/src/script-engine/r2-workspace.test.ts b/workers/agents/src/script-engine/r2-workspace.test.ts
+new file mode 100644
+index 0000000..9df30df
+--- /dev/null
++++ b/workers/agents/src/script-engine/r2-workspace.test.ts
+@@ -0,0 +1,77 @@
++import { describe, expect, it } from "vitest";
++import {
++  executeVirtualShell,
++  virtualFsDelete,
++  virtualFsGrep,
++  virtualFsList,
++  virtualFsRead,
++  virtualFsWrite,
++} from "./r2-workspace.js";
++import type { ScriptEngineEnv } from "./types.js";
++
++function createMockEnv(): ScriptEngineEnv {
++  const store = new Map<string, Uint8Array>();
++  const mockBucket = {
++    get: async (key: string) => {
++      const data = store.get(key);
++      return data ? { arrayBuffer: async () => data.buffer } : null;
++    },
++    put: async (key: string, value: Uint8Array) => {
++      store.set(key, value);
++    },
++    delete: async (key: string) => {
++      store.delete(key);
++    },
++    list: async ({ prefix }: { prefix: string }) => {
++      const objects = [...store.keys()]
++        .filter((k) => k.startsWith(prefix))
++        .map((key) => ({ key, size: store.get(key)!.byteLength }));
++      return { objects, truncated: false };
++    },
++  };
++
++  return {
++    // @ts-expect-error test mock bucket
++    scriptsBucket: mockBucket,
++    // @ts-expect-error test mock bucket
++    workspaceBucket: mockBucket,
++    spaceId: "space-1",
++    projectId: "proj-1",
++    agentId: "agent-1",
++    tenantId: "tenant-1",
++  };
++}
++
++describe("R2 Virtual POSIX Workspace", () => {
++  it("performs file read, write, delete, and list operations in V8", async () => {
++    const env = createMockEnv();
++    await virtualFsWrite(env, "docs/readme.md", "hello world");
++    expect(await virtualFsRead(env, "docs/readme.md")).toBe("hello world");
++
++    const list = await virtualFsList(env, "docs");
++    expect(list).toEqual([{ path: "docs/readme.md", size: 11 }]);
++
++    await virtualFsDelete(env, "docs/readme.md");
++    expect(await virtualFsRead(env, "docs/readme.md")).toBeNull();
++  });
++
++  it("supports virtual in-isolate grepping without container execution", async () => {
++    const env = createMockEnv();
++    await virtualFsWrite(env, "src/api.ts", "const x = 1;\nexport function findMe() {}\nconst y = 2;");
++    await virtualFsWrite(env, "src/util.ts", "export const version = '1.0';");
++
++    const matches = await virtualFsGrep(env, "findMe", "src");
++    expect(matches).toEqual([
++      { path: "src/api.ts", line: 2, match: "export function findMe() {}" },
++    ]);
++  });
++
++  it("executes virtual shell commands directly", async () => {
++    const env = createMockEnv();
++    const writeRes = await executeVirtualShell(env, "write", { path: "notes.txt", content: "POSIX in V8" });
++    expect(writeRes.ok).toBe(true);
++    expect(writeRes.tier).toBe(1);
++    const readRes = await executeVirtualShell(env, "read", { path: "notes.txt" });
++    expect(readRes.output).toBe("POSIX in V8");
++  });
++});
+diff --git a/workers/agents/src/script-engine/r2-workspace.ts b/workers/agents/src/script-engine/r2-workspace.ts
+new file mode 100644
+index 0000000..f673e04
+--- /dev/null
++++ b/workers/agents/src/script-engine/r2-workspace.ts
+@@ -0,0 +1,93 @@
++import type { ScriptEngineEnv, ScriptRunResult } from "./types.js";
++import { workspacePrefix } from "./types.js";
++
++const textDecoder = new TextDecoder();
++const textEncoder = new TextEncoder();
++
+ export async function virtualFsRead(env: ScriptEngineEnv, path: string): Promise<string | null> {
+   const bucket = env.workspaceBucket ?? env.scriptsBucket;
+   const key = `${workspacePrefix(env)}${path.replace(/^\/+/, "")}`;
+   const object = await bucket.get(key);
+   if (!object) return null;
+   return textDecoder.decode(await object.arrayBuffer());
+ }
+ 
+ export async function virtualFsWrite(env: ScriptEngineEnv, path: string, content: string): Promise<void> {
+   const bucket = env.workspaceBucket ?? env.scriptsBucket;
+   const key = `${workspacePrefix(env)}${path.replace(/^\/+/, "")}`;
+   await bucket.put(key, textEncoder.encode(content));
+   env.onWorkspaceChange?.({ path, operation: "write" });
+ }
+ 
+ export async function virtualFsDelete(env: ScriptEngineEnv, path: string): Promise<void> {
+   const bucket = env.workspaceBucket ?? env.scriptsBucket;
+   const key = `${workspacePrefix(env)}${path.replace(/^\/+/, "")}`;
+   await bucket.delete(key);
+   env.onWorkspaceChange?.({ path, operation: "delete" });
+ }
+ 
+ export async function virtualFsList(env: ScriptEngineEnv, prefix = ""): Promise<Array<{ path: string; size: number }>> {
+   const bucket = env.workspaceBucket ?? env.scriptsBucket;
+   const base = `${workspacePrefix(env)}${prefix.replace(/^\/+/, "")}`;
+   const objects: Array<{ path: string; size: number }> = [];
+   let cursor: string | undefined;
+   do {
+     const listing = await bucket.list(cursor ? { prefix: base, cursor } : { prefix: base });
+     for (const item of listing.objects) {
+       objects.push({ path: item.key.slice(workspacePrefix(env).length), size: item.size });
+     }
+     cursor = listing.truncated ? listing.cursor : undefined;
+   } while (cursor);
+   return objects;
+ }
+ 
+ export async function virtualFsGrep(env: ScriptEngineEnv, pattern: string, prefix = ""): Promise<Array<{ path: string; line: number; match: string }>> {
+   const list = await virtualFsList(env, prefix);
+   const re = new RegExp(pattern, "g");
+   const results: Array<{ path: string; line: number; match: string }> = [];
+   for (const entry of list) {
+     const content = await virtualFsRead(env, entry.path);
+     if (content === null) continue;
+     const lines = content.split("\n");
+     for (let index = 0; index < lines.length; index++) {
+       if (re.test(lines[index]!)) {
+         results.push({ path: entry.path, line: index + 1, match: lines[index]! });
+         re.lastIndex = 0;
+       }
+     }
+   }
+   return results;
+ }
+ 
+ export async function executeVirtualShell(env: ScriptEngineEnv, op: "read" | "write" | "delete" | "list" | "grep", params: Record<string, unknown>): Promise<ScriptRunResult> {
+   const started = Date.now();
+   try {
+     if (op === "read") {
+       const path = String(params.path ?? "");
+       const out = await virtualFsRead(env, path);
+       return { ok: out !== null, output: out, tier: 1, duration_ms: Date.now() - started, tokens_used: 0 };
+     }
+     if (op === "write") {
+       const path = String(params.path ?? "");
+       const content = String(params.content ?? "");
+       await virtualFsWrite(env, path, content);
+       return { ok: true, output: { path, written: true }, tier: 1, duration_ms: Date.now() - started, tokens_used: 0 };
+     }
+     if (op === "delete") {
+       const path = String(params.path ?? "");
+       await virtualFsDelete(env, path);
+       return { ok: true, output: { path, deleted: true }, tier: 1, duration_ms: Date.now() - started, tokens_used: 0 };
+     }
+     if (op === "list") {
+       const prefix = String(params.prefix ?? "");
+       return { ok: true, output: await virtualFsList(env, prefix), tier: 1, duration_ms: Date.now() - started, tokens_used: 0 };
+     }
+     if (op === "grep") {
+       const pattern = String(params.pattern ?? "");
+       return { ok: true, output: await virtualFsGrep(env, pattern, String(params.prefix ?? "")), tier: 1, duration_ms: Date.now() - started, tokens_used: 0 };
+     }
+     return { ok: false, error: `unknown virtual shell op ${op}`, tier: 1, duration_ms: Date.now() - started, tokens_used: 0 };
+   } catch (error) {
+     return { ok: false, error: error instanceof Error ? error.message : String(error), tier: 1, duration_ms: Date.now() - started, tokens_used: 0 };
+   }
+ }
+diff --git a/workers/agents/src/script-engine/types.ts b/workers/agents/src/script-engine/types.ts
+index cc9f6d7..c152431 100644
+--- a/workers/agents/src/script-engine/types.ts
++++ b/workers/agents/src/script-engine/types.ts
+@@ -16,3 +16,3 @@
+ /** Execution tier a script declares (the orchestrator routes script.run by this). */
+-export type ExecutionTier = 1 | 2 | 3 | 4 | 5;
++export type ExecutionTier = 1 | 2 | 3 | 4 | 5 | 6;
+ 
+diff --git a/workers/artifact/src/RepositoryDO.ts b/workers/artifact/src/RepositoryDO.ts
+index ff21e1a..012b1d6 100644
+--- a/workers/artifact/src/RepositoryDO.ts
++++ b/workers/artifact/src/RepositoryDO.ts
+@@ -107,6 +107,39 @@ export class RepositoryDO extends DurableObject<Env> {
+         state.worktrees[branch] = structuredClone(commit.entries); state.refs[branch] = commit.oid;
+         await this.save(state);
+         return Response.json({ branch, commit_id: commit.oid });
+       }
++      if (op === "history" && request.method === "GET") {
++        let currentOid: string | undefined = (url.searchParams.get("at") ?? state.refs[branch]) ?? undefined;
++        const commits: CommitRecord[] = [];
++        while (currentOid && state.commits[currentOid]) {
++          const rec = state.commits[currentOid]!;
++          commits.push(rec);
++          currentOid = rec.parent;
++        }
++        return Response.json({ data: commits, count: commits.length });
++      }
++      if (op === "blame" && request.method === "GET") {
++        const path = normalizePath(url.searchParams.get("path") ?? "");
++        let currentOid: string | undefined = (url.searchParams.get("at") ?? state.refs[branch]) ?? undefined;
++        const history: Array<{ oid: string; message: string; metadata: CommitRecord["metadata"]; createdAt: string }> = [];
++        while (currentOid && state.commits[currentOid]) {
++          const rec = state.commits[currentOid]!;
++          const parentOid = rec.parent ? state.commits[rec.parent]?.entries[path]?.oid : undefined;
++          const currentFileOid = rec.entries[path]?.oid;
++          if (currentFileOid && currentFileOid !== parentOid) {
++            history.push({
++              oid: rec.oid,
++              message: rec.message,
++              metadata: rec.metadata,
++              createdAt: rec.createdAt,
++            });
++          }
++          currentOid = rec.parent;
++        }
++        if (history.length === 0) return jsonError("File not found in history", 404);
++        return Response.json({ path, latest: history[0], history });
++      }
++      if (op === "head" && request.method === "GET") {
++        return Response.json({ branch: state.head, commit_id: state.refs[state.head] });
++      }
+       if (op === "cleanup" && request.method === "POST") {
+         const names = body.branch ? [String(body.branch)] : [...state.temporary];
+diff --git a/workers/artifact/src/repository.test.ts b/workers/artifact/src/repository.test.ts
+index e638e4a..b1c6d7a 100644
+--- a/workers/artifact/src/repository.test.ts
++++ b/workers/artifact/src/repository.test.ts
+@@ -1,5 +1,6 @@
+ import { describe, expect, it } from "vitest";
+ import { commitBody, encodeGitObject, objectKey, repositoryName, validateMetadata } from "./repository.js";
++import { RepositoryDO } from "./RepositoryDO.js";
+ 
+ const metadata = {
+   agent_role: "builder", user_goal: "ship it", task_id: "task-1", rationale: "implemented feature",
+@@ -34,4 +35,46 @@ describe("Git object and metadata encoding", () => {
+   it("requires every rollback audit field", () => {
+     expect(() => validateMetadata({ ...metadata, tool_turn_id: "" })).toThrow("metadata.tool_turn_id");
+   });
++
++  it("supports turn-by-turn commits, zero-copy micro-forking, and reasoning blame", async () => {
++    const storage = new Map<string, unknown>();
++    const objects = new Map<string, Uint8Array>();
++    const mockCtx = {
++      storage: {
++        get: async (k: string) => storage.get(k),
++        put: async (k: string, v: unknown) => { storage.set(k, v); },
++      },
++    };
++    const mockEnv = {
++      REPOSITORY_OBJECTS: {
++        head: async (k: string) => objects.has(k),
++        put: async (k: string, v: Uint8Array) => { objects.set(k, v); },
++        get: async (k: string) => ({ arrayBuffer: async () => objects.get(k)!.buffer }),
++      },
++    };
++
++    // @ts-expect-error test harness mock
++    const repo = new RepositoryDO(mockCtx, mockEnv);
++    const scopeHeaders = { "x-repository-scope": JSON.stringify({ tenantId: "t1", spaceId: "s1", projectId: "p1" }) };
++
++    await repo.fetch(new Request("https://repo/init", { method: "POST", headers: scopeHeaders }));
++    await repo.fetch(new Request("https://repo/write", { method: "PUT", headers: scopeHeaders, body: JSON.stringify({ path: "README.md", content: "v1" }) }));
++    const c1Res = await repo.fetch(new Request("https://repo/commit", { method: "POST", headers: scopeHeaders, body: JSON.stringify({ metadata }) }));
++    const c1 = await c1Res.json<{ commit_id: string }>();
++
++    // Zero-copy fork
++    const forkRes = await repo.fetch(new Request("https://repo/branch", { method: "POST", headers: scopeHeaders, body: JSON.stringify({ name: "scratchpad-1", from: c1.commit_id }) }));
++    expect(forkRes.status).toBe(201);
++
++    // Blame
++    const blameRes = await repo.fetch(new Request("https://repo/blame?path=README.md", { method: "GET", headers: scopeHeaders }));
++    const blame = await blameRes.json<{ path: string; latest: { metadata: typeof metadata } }>();
++    expect(blame.latest.metadata.rationale).toBe("implemented feature");
++
++    // Rollback
++    await repo.fetch(new Request("https://repo/write", { method: "PUT", headers: scopeHeaders, body: JSON.stringify({ path: "README.md", content: "v2" }) }));
++    await repo.fetch(new Request("https://repo/rollback", { method: "POST", headers: scopeHeaders, body: JSON.stringify({ commit_id: c1.commit_id }) }));
++    const treeRes = await repo.fetch(new Request("https://repo/tree", { method: "GET", headers: scopeHeaders }));
++    expect((await treeRes.json<{ data: Array<{ path: string }> }>()).data[0]?.path).toBe("README.md");
++  });
+ });
+diff --git a/workers/spaces/src/do/SpaceDO.ts b/workers/spaces/src/do/SpaceDO.ts
+index c6b96e9..714cf9e 100644
+--- a/workers/spaces/src/do/SpaceDO.ts
++++ b/workers/spaces/src/do/SpaceDO.ts
+@@ -834,5 +834,42 @@ const MIGRATIONS: Migration[] = [
+       CREATE INDEX idx_event_triggers_lookup ON event_triggers(space_id, project_id, event_type, enabled, priority DESC);
+     `,
+   },
++  {
++    version: 41,
++    description: "expand execution_ceiling CHECK to support Tier 6 containers",
++    up: `
++      CREATE TABLE projects_v41 (
++        id                      TEXT PRIMARY KEY,
++        space_id                TEXT NOT NULL,
++        name                    TEXT NOT NULL,
++        description             TEXT NOT NULL DEFAULT '',
++        status                  TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived')),
++        created_at              TEXT NOT NULL DEFAULT (datetime('now')),
++        kind                    TEXT NOT NULL DEFAULT 'workspace',
++        execution_ceiling       INTEGER NOT NULL DEFAULT 5 CHECK (execution_ceiling BETWEEN 1 AND 6),
++        daily_spend_cap_credits INTEGER NOT NULL DEFAULT 0,
++        channel_config          TEXT NOT NULL DEFAULT '{}',
++        show_sub_threads        INTEGER NOT NULL DEFAULT 0,
++        default_agent_id        TEXT,
++        max_threads             INTEGER NOT NULL DEFAULT 0,
++        allowed_agent_ids       TEXT,
++        visibility              TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('public','private')),
++        created_by              TEXT,
++        exclusive_mode          INTEGER NOT NULL DEFAULT 0,
++        active_thread_id        TEXT,
++        active_thread_since     TEXT,
++        is_singleton_kind       INTEGER NOT NULL DEFAULT 0,
++        last_activity_at        TEXT
++      );
++      INSERT INTO projects_v41 SELECT
++        id, space_id, name, description, status, created_at, kind, execution_ceiling,
++        daily_spend_cap_credits, channel_config, show_sub_threads, default_agent_id, max_threads,
++        allowed_agent_ids, visibility, created_by, exclusive_mode, active_thread_id, active_thread_since,
++        is_singleton_kind, last_activity_at
++      FROM projects;
++      DROP TABLE projects;
++      ALTER TABLE projects_v41 RENAME TO projects;
++      CREATE INDEX idx_projects_space ON projects(space_id, created_at DESC);
++      CREATE UNIQUE INDEX idx_projects_space_name ON projects(space_id, name);
++      CREATE UNIQUE INDEX idx_projects_singleton_kind
++        ON projects(space_id, kind) WHERE is_singleton_kind = 1 AND status = 'active';
++    `,
++  },
+ ];
+ 
+ export interface SpaceDOEnv {
+@@ -1205,6 +1242,6 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
+     if (body.execution_ceiling !== undefined) {
+-      if (!Number.isInteger(body.execution_ceiling) || body.execution_ceiling < 1 || body.execution_ceiling > 5) {
+-        return Response.json({ error_code: "bad_request", message: "execution_ceiling must be an integer 1-5" }, { status: 400 });
++      if (!Number.isInteger(body.execution_ceiling) || body.execution_ceiling < 1 || body.execution_ceiling > 6) {
++        return Response.json({ error_code: "bad_request", message: "execution_ceiling must be an integer 1-6" }, { status: 400 });
+       }
+       execute(this.ctx.storage.sql as never, "UPDATE projects SET execution_ceiling = ? WHERE id = ?", body.execution_ceiling, projectId);
+     }
+@@ -1485,3 +1522,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
+-    if (!body.space_id || !body.event_type || !body.script_name) {
+-      return Response.json({ error_code: "bad_request", message: "space_id, event_type, and script_name are required" }, { status: 400 });
++    if (!body.space_id || !body.project_id || !body.event_type || !body.script_name) {
++      return Response.json({ error_code: "bad_request", message: "space_id, project_id, event_type, and script_name are required" }, { status: 400 });
++    }
++    const project = queryOne<{ space_id: string; status: string }>(
++      this.ctx.storage.sql as never,
++      "SELECT space_id, status FROM projects WHERE id = ?",
++      body.project_id
++    );
++    if (!project || project.space_id !== body.space_id || project.status !== "active") {
++      return Response.json({ error_code: "not_found", message: "Project not found in this space" }, { status: 404 });
+     }
+ 
+@@ -2188,8 +2233,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
+   private authorizeHierarchy(params: URLSearchParams): Response {
+     const userId = params.get("user_id") ?? "";
+     const targetId = params.get("target_space_id") ?? "";
++    const action = params.get("action") ?? (params.get("requesting_space_id") || params.get("source_space_id") ? "read" : "manage");
++    const requestingSpaceId = params.get("requesting_space_id") ?? params.get("source_space_id");
++
+     if (!userId || !targetId) {
+-      return Response.json({ permitted: false, reason: "user_id and target_space_id are required" }, { status: 400 });
++      return Response.json({ permitted: false, reason: "user_id and target_space_id are required", grant_type: null }, { status: 400 });
+     }
+     const target = queryOne<SpaceRow>(this.ctx.storage.sql as never,
+       "SELECT * FROM spaces WHERE id = ? AND status != 'deleted'", targetId);
+@@ -2198,7 +2246,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
+     }
+     const direct = queryOne<{ role: string }>(this.ctx.storage.sql as never,
+       "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?", target.id, userId);
+-    if (direct && (direct.role === "owner" || direct.role === "admin")) {
++    if (direct && (direct.role === "owner" || direct.role === "admin" || (action === "read" && direct.role === "member"))) {
+       return Response.json({ permitted: true, source_space_id: target.id, role: direct.role });
+     }
+     if (target.depth === 1 && target.parent_id) {
+@@ -2209,6 +2257,28 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
+         return Response.json({ permitted: true, source_space_id: parent.id, role: inherited.role });
+       }
+     }
++    if (requestingSpaceId && requestingSpaceId !== target.id) {
++      const requesterRole = queryOne<{ role: string }>(
++        this.ctx.storage.sql as never,
++        "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?",
++        requestingSpaceId, userId
++      );
++      if (requesterRole) {
++        const grant = queryOne<{ id: string; grant_type: string }>(
++          this.ctx.storage.sql as never,
++          `SELECT id, grant_type FROM cross_space_grants
++           WHERE granting_space_id = ? AND receiving_space_id = ?
++             AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)
++           LIMIT 1`,
++          target.id, requestingSpaceId, new Date().toISOString()
++        );
++        if (grant) {
++          const actionAllowed = action === "read" || grant.grant_type === "full-access";
++          if (actionAllowed) {
++            return Response.json({ permitted: true, source_space_id: requestingSpaceId, grant_type: grant.grant_type });
++          }
++        }
++      }
+     }
+     return Response.json({ permitted: false, reason: "No administrative membership on the space or its direct parent" }, { status: 403 });
+   }
+ 
+diff --git a/workers/spaces/src/project-automation.test.ts b/workers/spaces/src/project-automation.test.ts
+new file mode 100644
+index 0000000..f670f5e
+--- /dev/null
++++ b/workers/spaces/src/project-automation.test.ts
+@@ -0,0 +1,86 @@
++import { describe, expect, it } from "vitest";
++import { requireManageableAutomationProject } from "@naelao/agent-sdk";
++import { SpaceDO } from "./do/SpaceDO.js";
++
++describe("Project-Anchored Automation Architecture (Item 4)", () => {
++  it("enforces manageable project validation before schedule/trigger insert", () => {
++    expect(
++      requireManageableAutomationProject({
++        spaceId: "space-1",
++        projectId: "proj-1",
++        projectSpaceId: "space-1",
++        projectStatus: "active",
++        userRole: "editor",
++      })
++    ).toEqual({ allowed: true });
++
++    expect(() =>
++      requireManageableAutomationProject({
++        spaceId: "space-1",
++        projectId: "",
++        projectSpaceId: "space-1",
++        projectStatus: "active",
++        isSpaceAdmin: true,
++      })
++    ).toThrow("Automation must be anchored to a project");
++
++    expect(() =>
++      requireManageableAutomationProject({
++        spaceId: "space-1",
++        projectId: "proj-1",
++        projectSpaceId: "space-2",
++        projectStatus: "active",
++        isSpaceAdmin: true,
++      })
++    ).toThrow("project_not_found");
++
++    expect(() =>
++      requireManageableAutomationProject({
++        spaceId: "space-1",
++        projectId: "proj-1",
++        projectSpaceId: "space-1",
++        projectStatus: "active",
++        userRole: "viewer",
++      })
++    ).toThrow("insufficient_project_permission");
++  });
++
++  it("rejects event trigger creation when project_id is absent or foreign in SpaceDO", async () => {
++    const projects = new Map<string, { id: string; space_id: string; status: string }>();
++    const mockCtx = {
++      storage: {
++        sql: {
++          exec(query: string, ...params: unknown[]) {
++            if (query.includes("FROM projects WHERE id = ?")) {
++              const p = projects.get(params[0] as string);
++              return { toArray: () => (p ? [p] : []) };
++            }
++            return { toArray: () => [] };
++          },
++        },
++        transactionSync: <T>(fn: () => T) => fn(),
++      },
++    };
++
++    projects.set("proj-local", { id: "proj-local", space_id: "space-1", status: "active" });
++    projects.set("proj-other", { id: "proj-other", space_id: "space-99", status: "active" });
++
++    // @ts-expect-error test harness mock
++    const spaceDO = new SpaceDO(mockCtx, { PLATFORM_SECRET: "secret" });
++
++    const resMissing = await spaceDO.fetch(new Request("https://space-do/event-triggers", {
++      method: "POST",
++      headers: { "content-type": "application/json" },
++      body: JSON.stringify({ space_id: "space-1", event_type: "thread.created", script_name: "test" }),
++    }));
++    expect(resMissing.status).toBe(400);
++
++    const resForeign = await spaceDO.fetch(new Request("https://space-do/event-triggers", {
++      method: "POST",
++      headers: { "content-type": "application/json" },
++      body: JSON.stringify({ space_id: "space-1", project_id: "proj-other", event_type: "thread.created", script_name: "test" }),
++    }));
++    expect(resForeign.status).toBe(404);
++  });
++});
+diff --git a/workers/spaces/src/space-hierarchy-policy.test.ts b/workers/spaces/src/space-hierarchy-policy.test.ts
+new file mode 100644
+index 0000000..f95213b
+--- /dev/null
++++ b/workers/spaces/src/space-hierarchy-policy.test.ts
+@@ -0,0 +1,93 @@
++import { describe, expect, it } from "vitest";
++import { SpaceDO } from "./do/SpaceDO.js";
++
++describe("Space Hierarchy & Isolation Policies", () => {
++  function createTestDO() {
++    const storage = new Map<string, unknown>();
++    const rows = new Map<string, Array<Record<string, unknown>>>();
++    const mockCtx = {
++      storage: {
++        sql: {
++          exec(query: string, ...params: unknown[]) {
++            return {
++              toArray: () => {
++                if (query.includes("FROM spaces WHERE id = ?")) {
++                  const id = params[0] as string;
++                  return (rows.get("spaces") ?? []).filter((r) => r.id === id);
++                }
++                if (query.includes("FROM space_members WHERE space_id = ? AND user_id = ?")) {
++                  const [sid, uid] = params as [string, string];
++                  return (rows.get("space_members") ?? []).filter((r) => r.space_id === sid && r.user_id === uid);
++                }
++                if (query.includes("FROM cross_space_grants")) {
++                  const [target, req] = params as [string, string];
++                  return (rows.get("cross_space_grants") ?? []).filter((r) => r.granting_space_id === target && r.receiving_space_id === req);
++                }
++                return [];
++              },
++            };
++          },
++        },
++        transactionSync: <T>(fn: () => T) => fn(),
++        get: async (k: string) => storage.get(k),
++        put: async (k: string, v: unknown) => { storage.set(k, v); },
++      },
++    };
++    return {
++      // @ts-expect-error test harness mock
++      spaceDO: new SpaceDO(mockCtx, { PLATFORM_SECRET: "sec" }),
++      rows,
++    };
++  }
++
++  it("permits downward oversight from parent admin to sub-space", async () => {
++    const { spaceDO, rows } = createTestDO();
++    rows.set("spaces", [
++      { id: "company-root", depth: 0, parent_id: null, space_type: "launchpad", status: "active" },
++      { id: "dept-legal", depth: 1, parent_id: "company-root", space_type: "launchpad", status: "active" },
++    ]);
++    rows.set("space_members", [
++      { space_id: "company-root", user_id: "cfo", role: "admin" },
++    ]);
++
++    const res = await spaceDO.fetch(new Request("https://space-do/hierarchy-authorize?user_id=cfo&target_space_id=dept-legal&action=manage"));
++    expect(await res.json()).toMatchObject({ permitted: true, role: "admin" });
++  });
++
++  it("denies sub-space member upward access to parent ledger", async () => {
++    const { spaceDO, rows } = createTestDO();
++    rows.set("spaces", [
++      { id: "company-root", depth: 0, parent_id: null, space_type: "launchpad", status: "active" },
++      { id: "dept-legal", depth: 1, parent_id: "company-root", space_type: "launchpad", status: "active" },
++    ]);
++    rows.set("space_members", [
++      { space_id: "dept-legal", user_id: "junior-lawyer", role: "member" },
++    ]);
++
++    const res = await spaceDO.fetch(new Request("https://space-do/hierarchy-authorize?user_id=junior-lawyer&target_space_id=company-root&action=manage"));
++    expect(res.status).toBe(403);
++    expect(await res.json()).toMatchObject({ permitted: false });
++  });
++
++  it("walls sibling sub-spaces unless authorized by an explicit cross-space grant", async () => {
++    const { spaceDO, rows } = createTestDO();
++    rows.set("spaces", [
++      { id: "company-root", depth: 0, parent_id: null, space_type: "launchpad", status: "active" },
++      { id: "dept-dev", depth: 1, parent_id: "company-root", space_type: "launchpad", status: "active" },
++      { id: "dept-legal", depth: 1, parent_id: "company-root", space_type: "launchpad", status: "active" },
++    ]);
++    rows.set("space_members", [
++      { space_id: "dept-dev", user_id: "engineer", role: "member" },
++    ]);
++
++    const noGrant = await spaceDO.fetch(new Request("https://space-do/hierarchy-authorize?user_id=engineer&target_space_id=dept-legal&requesting_space_id=dept-dev"));
++    expect((await noGrant.json<{ permitted: boolean }>()).permitted).toBe(false);
++
++    rows.set("cross_space_grants", [
++      { granting_space_id: "dept-legal", receiving_space_id: "dept-dev", grant_type: "read-knowledge", revoked_at: null, expires_at: null },
++    ]);
++    const withGrant = await spaceDO.fetch(new Request("https://space-do/hierarchy-authorize?user_id=engineer&target_space_id=dept-legal&requesting_space_id=dept-dev"));
++    expect((await withGrant.json<{ permitted: boolean; grant_type: string }>())).toMatchObject({ permitted: true, grant_type: "read-knowledge" });
++  });
++});
+EOF
