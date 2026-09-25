@@ -171,7 +171,9 @@ diff --git a/packages/agent-sdk/src/launchpad-runtime.ts b/packages/agent-sdk/sr
 index e54f9a1..95ab350 100644
 --- a/packages/agent-sdk/src/launchpad-runtime.ts
 +++ b/packages/agent-sdk/src/launchpad-runtime.ts
-@@ -91,6 +91,27 @@ export function defineProjectAutomation(
+@@ -93,6 +93,27 @@ export function defineProjectAutomation(
+   if (!input.entrypoint.trim())
+     throw new Error("Automation entrypoint is required");
    return { ...input };
  }
  
@@ -199,7 +201,7 @@ index e54f9a1..95ab350 100644
  // ── Artifact repository and filesystem ──────────────────────────────────────
  
  export interface CommitMetadata {
-@@ -326,13 +347,107 @@ export interface RuntimeBridge {
+@@ -327,6 +348,61 @@ export interface RuntimeBridge {
    ): Promise<T>;
  }
  
@@ -269,12 +271,12 @@ index e54f9a1..95ab350 100644
 +    }
 +  }
 +}
-+export interface VirtualDisplay {
-+  capture(): Promise<Uint8Array>;
-+  mouse(x: number, y: number, button?: "left" | "right"): Promise<void>;
-+  type(text: string): Promise<void>;
-+}
 +
+ export interface VirtualDisplay {
+@@ -333,6 +409,45 @@ export interface VirtualDisplay {
+   type(text: string): Promise<void>;
+ }
+ 
 +export class ContainerVirtualDisplay implements VirtualDisplay {
 +  private readonly baseUrl: string;
 +
@@ -311,6 +313,7 @@ index e54f9a1..95ab350 100644
 +    if (!res.ok) throw new Error(`display_type_failed:${res.status}`);
 +  }
 +}
++
  // ── Universal script context ─────────────────────────────────────────────────
  
  export interface RuntimeContext {
@@ -349,8 +352,7 @@ diff --git a/workers/agents/container/artifact-fs.test.mjs b/workers/agents/cont
 index 4b9b940..bb112a4 100644
 --- a/workers/agents/container/artifact-fs.test.mjs
 +++ b/workers/agents/container/artifact-fs.test.mjs
-@@ -29,4 +29,11 @@ describe("ArtifactFS", () => {
-     expect(await fs.flushAndCommit({ message: "m", metadata: {}, expected_head: "old" })).toEqual({ commit_id: "new" });
+@@ -28,3 +28,10 @@ describe("ArtifactFS", () => {
      expect(calls.slice(-2).map((v) => v[0])).toEqual(["https://repo/write", "https://repo/commit"]);
    });
 +
@@ -365,7 +367,7 @@ diff --git a/workers/agents/container/server.mjs b/workers/agents/container/serv
 index 45167ad..c8b00ba 100644
 --- a/workers/agents/container/server.mjs
 +++ b/workers/agents/container/server.mjs
-@@ -53,6 +53,7 @@ async function collectWorkspace() {
+@@ -55,6 +55,7 @@ async function collectWorkspace() {
      for (const entry of entries) {
        if (count >= MAX_WORKSPACE_FILES) return;
        const full = join(dir, entry.name);
@@ -373,7 +375,7 @@ index 45167ad..c8b00ba 100644
        if (entry.isDirectory()) {
          await walk(full);
        } else if (entry.isFile()) {
-@@ -93,6 +94,7 @@ async function listWorkspacePaths() {
+@@ -95,6 +96,7 @@ async function listWorkspacePaths() {
      for (const entry of entries) {
        if (names.length >= MAX_WORKSPACE_FILES) return;
        const full = join(dir, entry.name);
@@ -381,7 +383,7 @@ index 45167ad..c8b00ba 100644
        if (entry.isDirectory()) await walk(full);
        else if (entry.isFile()) names.push(relative(WORKSPACE_DIR, full));
      }
-@@ -166,9 +168,11 @@ async function execScript(name, code, args) {
+@@ -164,8 +166,10 @@ async function execScript(name, code, args) {
  const WORKSPACE_ROUTES = new Set(["/workspace/read", "/workspace/write", "/workspace/list", "/workspace/delete"]);
 +const DISPLAY_ROUTES = new Set(["/display/capture", "/display/mouse", "/display/type"]);
  
@@ -392,10 +394,7 @@ index 45167ad..c8b00ba 100644
 +  const isDisplayRoute = [...DISPLAY_ROUTES].some((r) => path.endsWith(r));
 +  if (req.method !== "POST" || (!path.endsWith("/build") && !path.endsWith("/exec") && !isWorkspaceRoute && !isDisplayRoute)) {
      res.writeHead(404).end(JSON.stringify({ error: "not_found" }));
-     return;
-   }
 @@ -189,6 +193,26 @@ createServer((req, res) => {
-         else { await deleteWorkspacePaths(parsed.paths); result = { ok: true }; }
          res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(result));
          return;
        }
@@ -495,7 +494,7 @@ diff --git a/workers/agents/src/do/NaelaoAgentDO.ts b/workers/agents/src/do/Nael
 index f19ca1e..289db91 100644
 --- a/workers/agents/src/do/NaelaoAgentDO.ts
 +++ b/workers/agents/src/do/NaelaoAgentDO.ts
-@@ -1836,6 +1836,6 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
+@@ -1837,5 +1837,5 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    private static infraResourceTypeForTier(tier: number | string | undefined): import("@naelao/billing-core").InfraResourceType | undefined {
 -    if (tier === 2 || tier === 3 || tier === 4) return "isolate";
 -    if (tier === 5) return "container";
@@ -601,7 +600,7 @@ diff --git a/workers/agents/src/do/ToolSandboxDO.ts b/workers/agents/src/do/Tool
 index e502cf0..c19be88 100644
 --- a/workers/agents/src/do/ToolSandboxDO.ts
 +++ b/workers/agents/src/do/ToolSandboxDO.ts
-@@ -48,15 +48,46 @@ interface ContainerRuntime {
+@@ -48,22 +48,53 @@ interface ContainerRuntime {
  const HARNESS_PORT = 8080;
  const WORKSPACE_ROUTES = ["/workspace/read", "/workspace/write", "/workspace/list", "/workspace/delete"];
  
@@ -645,9 +644,9 @@ index e502cf0..c19be88 100644
 +
      const container = this.container;
      if (!container) {
--      // No container runtime bound (e.g. local dev without containers). Both build/test and
+       // No container runtime bound (e.g. local dev without containers). Both build/test and
        // workspace ops report the same honest "not available" — no simulated success.
-       const url = new URL(request.url);
+-      const url = new URL(request.url);
        if (WORKSPACE_ROUTES.some((r) => url.pathname.endsWith(r))) {
 -        return Response.json({ ok: false, error: "Tier-5 container runtime not available" }, { status: 503 });
 +        return Response.json({ ok: false, error: "Tier-6 container runtime not available" }, { status: 503 });
@@ -658,14 +657,11 @@ index e502cf0..c19be88 100644
          { status: 503 },
        );
      }
-@@ -73,6 +104,7 @@ export class ToolSandboxDO extends DurableObject {
-     // that depends on it.
+@@ -75,3 +106,4 @@ export class ToolSandboxDO extends DurableObject {
      if (!container.running) {
        container.start({ enableInternet: false });
 +      await this.ctx.storage.put("container_status", "running");
      }
- 
-     // /build, /exec, and every /workspace/* route all forward to the harness as-is now — this
 diff --git a/workers/agents/src/script-engine/code-runner.ts b/workers/agents/src/script-engine/code-runner.ts
 index ebe2fc2..36551b9 100644
 --- a/workers/agents/src/script-engine/code-runner.ts
@@ -677,7 +673,7 @@ index ebe2fc2..36551b9 100644
 +  /ImportError.*native/i,
 +  /native.*required/i,
  ];
-@@ -199,7 +202,7 @@ function buildIsolateModule(userCode: string): string {
+@@ -200,7 +203,7 @@ function buildIsolateModule(userCode: string): string {
            const r = await env.__BROWSER__.fetch("http://browser/v1/browser/navigate", {
              method: "POST",
              headers: { "content-type": "application/json", "x-naelao-internal-token": env.__BROWSER_TOKEN__ || "" },
@@ -685,9 +681,7 @@ index ebe2fc2..36551b9 100644
 +            body: JSON.stringify({ engine: env.__BROWSER_ENGINE__ || "kitesurf", ...(typeof req === "string" ? { url: req } : req) }),
            });
            const body = await r.json();
-           if (!r.ok) throw new Error("browser.navigate failed: " + (body && body.message ? body.message : r.status));
-@@ -222,12 +225,13 @@ async function runIsolate(
- 
+@@ -223,13 +226,14 @@ async function runIsolate(
    const env: Record<string, unknown> = {};
 -  if (params.tier === 4) {
 +  if (params.tier === 4 || params.tier === 5) {
@@ -705,11 +699,7 @@ index ebe2fc2..36551b9 100644
      env.__BROWSER_TOKEN__ = opts.platformSecret ?? "";
 +    env.__BROWSER_ENGINE__ = params.tier === 4 ? "kitesurf" : "chromium";
    }
- 
-   // ctx.mcp is available at every isolate tier (2-4) — Code Mode's core use case is fast,
-@@ -350,9 +354,10 @@ async function runIsolate(
-     // import failure qualifies (never a timeout, which this branch also handles above but does
-     // NOT match any of the patterns). No-op when Tier 5 itself isn't wired — the caller gets the
+@@ -353,15 +357,16 @@ async function runIsolate(
      // original isolate error, which is still more useful than a second "unavailable" on top of it.
 -    if (opts.toolSandbox && !aborted && ISOLATE_PROMOTION_ERROR_PATTERNS.some((p) => p.test(errMsg))) {
 -      console.warn(`[execution-ladder] auto-promoting '${params.name}' from Tier ${params.tier} to Tier 5 after: ${errMsg}`);
@@ -720,16 +710,19 @@ index ebe2fc2..36551b9 100644
          name: params.name,
          code: params.code,
          args: params.args,
-@@ -365,7 +370,7 @@ async function runIsolate(
+         spaceId: params.spaceId,
+         agentId: params.agentId,
+         ...(params.projectId ? { projectId: params.projectId } : {}),
+       });
+       // A successful promotion's `output` is the script's own real return value — left exactly
+       // as runContainer produced it, never annotated. A FAILED promotion gets the isolate's
        // original error folded in ahead of the container's own, so "why did this fail" reads as
        // one coherent story instead of only the second attempt's error with no trace of the first.
        if (promoted.ok) return promoted;
 -      return { ...promoted, error: `Tier ${params.tier} failed (${errMsg}); auto-promoted to Tier 5, which also failed: ${promoted.error ?? "unknown error"}` };
 +      return { ...promoted, error: `Tier ${params.tier} failed (${errMsg}); auto-promoted to Tier 6, which also failed: ${promoted.error ?? "unknown error"}` };
      }
- 
-     return {
-@@ -378,9 +383,78 @@ async function runIsolate(
+@@ -382,6 +387,75 @@ async function runIsolate(
    }
  }
  
@@ -1163,93 +1156,93 @@ index 0000000..f673e04
 +const textDecoder = new TextDecoder();
 +const textEncoder = new TextEncoder();
 +
- export async function virtualFsRead(env: ScriptEngineEnv, path: string): Promise<string | null> {
-   const bucket = env.workspaceBucket ?? env.scriptsBucket;
-   const key = `${workspacePrefix(env)}${path.replace(/^\/+/, "")}`;
-   const object = await bucket.get(key);
-   if (!object) return null;
-   return textDecoder.decode(await object.arrayBuffer());
- }
- 
- export async function virtualFsWrite(env: ScriptEngineEnv, path: string, content: string): Promise<void> {
-   const bucket = env.workspaceBucket ?? env.scriptsBucket;
-   const key = `${workspacePrefix(env)}${path.replace(/^\/+/, "")}`;
-   await bucket.put(key, textEncoder.encode(content));
-   env.onWorkspaceChange?.({ path, operation: "write" });
- }
- 
- export async function virtualFsDelete(env: ScriptEngineEnv, path: string): Promise<void> {
-   const bucket = env.workspaceBucket ?? env.scriptsBucket;
-   const key = `${workspacePrefix(env)}${path.replace(/^\/+/, "")}`;
-   await bucket.delete(key);
-   env.onWorkspaceChange?.({ path, operation: "delete" });
- }
- 
- export async function virtualFsList(env: ScriptEngineEnv, prefix = ""): Promise<Array<{ path: string; size: number }>> {
-   const bucket = env.workspaceBucket ?? env.scriptsBucket;
-   const base = `${workspacePrefix(env)}${prefix.replace(/^\/+/, "")}`;
-   const objects: Array<{ path: string; size: number }> = [];
-   let cursor: string | undefined;
-   do {
-     const listing = await bucket.list(cursor ? { prefix: base, cursor } : { prefix: base });
-     for (const item of listing.objects) {
-       objects.push({ path: item.key.slice(workspacePrefix(env).length), size: item.size });
-     }
-     cursor = listing.truncated ? listing.cursor : undefined;
-   } while (cursor);
-   return objects;
- }
- 
- export async function virtualFsGrep(env: ScriptEngineEnv, pattern: string, prefix = ""): Promise<Array<{ path: string; line: number; match: string }>> {
-   const list = await virtualFsList(env, prefix);
-   const re = new RegExp(pattern, "g");
-   const results: Array<{ path: string; line: number; match: string }> = [];
-   for (const entry of list) {
-     const content = await virtualFsRead(env, entry.path);
-     if (content === null) continue;
-     const lines = content.split("\n");
-     for (let index = 0; index < lines.length; index++) {
-       if (re.test(lines[index]!)) {
-         results.push({ path: entry.path, line: index + 1, match: lines[index]! });
-         re.lastIndex = 0;
-       }
-     }
-   }
-   return results;
- }
- 
- export async function executeVirtualShell(env: ScriptEngineEnv, op: "read" | "write" | "delete" | "list" | "grep", params: Record<string, unknown>): Promise<ScriptRunResult> {
-   const started = Date.now();
-   try {
-     if (op === "read") {
-       const path = String(params.path ?? "");
-       const out = await virtualFsRead(env, path);
-       return { ok: out !== null, output: out, tier: 1, duration_ms: Date.now() - started, tokens_used: 0 };
-     }
-     if (op === "write") {
-       const path = String(params.path ?? "");
-       const content = String(params.content ?? "");
-       await virtualFsWrite(env, path, content);
-       return { ok: true, output: { path, written: true }, tier: 1, duration_ms: Date.now() - started, tokens_used: 0 };
-     }
-     if (op === "delete") {
-       const path = String(params.path ?? "");
-       await virtualFsDelete(env, path);
-       return { ok: true, output: { path, deleted: true }, tier: 1, duration_ms: Date.now() - started, tokens_used: 0 };
-     }
-     if (op === "list") {
-       const prefix = String(params.prefix ?? "");
-       return { ok: true, output: await virtualFsList(env, prefix), tier: 1, duration_ms: Date.now() - started, tokens_used: 0 };
-     }
-     if (op === "grep") {
-       const pattern = String(params.pattern ?? "");
-       return { ok: true, output: await virtualFsGrep(env, pattern, String(params.prefix ?? "")), tier: 1, duration_ms: Date.now() - started, tokens_used: 0 };
-     }
-     return { ok: false, error: `unknown virtual shell op ${op}`, tier: 1, duration_ms: Date.now() - started, tokens_used: 0 };
-   } catch (error) {
-     return { ok: false, error: error instanceof Error ? error.message : String(error), tier: 1, duration_ms: Date.now() - started, tokens_used: 0 };
-   }
- }
++export async function virtualFsRead(env: ScriptEngineEnv, path: string): Promise<string | null> {
++  const bucket = env.workspaceBucket ?? env.scriptsBucket;
++  const key = `${workspacePrefix(env)}${path.replace(/^\/+/, "")}`;
++  const object = await bucket.get(key);
++  if (!object) return null;
++  return textDecoder.decode(await object.arrayBuffer());
++}
++
++export async function virtualFsWrite(env: ScriptEngineEnv, path: string, content: string): Promise<void> {
++  const bucket = env.workspaceBucket ?? env.scriptsBucket;
++  const key = `${workspacePrefix(env)}${path.replace(/^\/+/, "")}`;
++  await bucket.put(key, textEncoder.encode(content));
++  env.onWorkspaceChange?.({ path, operation: "write" });
++}
++
++export async function virtualFsDelete(env: ScriptEngineEnv, path: string): Promise<void> {
++  const bucket = env.workspaceBucket ?? env.scriptsBucket;
++  const key = `${workspacePrefix(env)}${path.replace(/^\/+/, "")}`;
++  await bucket.delete(key);
++  env.onWorkspaceChange?.({ path, operation: "delete" });
++}
++
++export async function virtualFsList(env: ScriptEngineEnv, prefix = ""): Promise<Array<{ path: string; size: number }>> {
++  const bucket = env.workspaceBucket ?? env.scriptsBucket;
++  const base = `${workspacePrefix(env)}${prefix.replace(/^\/+/, "")}`;
++  const objects: Array<{ path: string; size: number }> = [];
++  let cursor: string | undefined;
++  do {
++    const listing = await bucket.list(cursor ? { prefix: base, cursor } : { prefix: base });
++    for (const item of listing.objects) {
++      objects.push({ path: item.key.slice(workspacePrefix(env).length), size: item.size });
++    }
++    cursor = listing.truncated ? listing.cursor : undefined;
++  } while (cursor);
++  return objects;
++}
++
++export async function virtualFsGrep(env: ScriptEngineEnv, pattern: string, prefix = ""): Promise<Array<{ path: string; line: number; match: string }>> {
++  const list = await virtualFsList(env, prefix);
++  const re = new RegExp(pattern, "g");
++  const results: Array<{ path: string; line: number; match: string }> = [];
++  for (const entry of list) {
++    const content = await virtualFsRead(env, entry.path);
++    if (content === null) continue;
++    const lines = content.split("\n");
++    for (let index = 0; index < lines.length; index++) {
++      if (re.test(lines[index]!)) {
++        results.push({ path: entry.path, line: index + 1, match: lines[index]! });
++        re.lastIndex = 0;
++      }
++    }
++  }
++  return results;
++}
++
++export async function executeVirtualShell(env: ScriptEngineEnv, op: "read" | "write" | "delete" | "list" | "grep", params: Record<string, unknown>): Promise<ScriptRunResult> {
++  const started = Date.now();
++  try {
++    if (op === "read") {
++      const path = String(params.path ?? "");
++      const out = await virtualFsRead(env, path);
++      return { ok: out !== null, output: out, tier: 1, duration_ms: Date.now() - started, tokens_used: 0 };
++    }
++    if (op === "write") {
++      const path = String(params.path ?? "");
++      const content = String(params.content ?? "");
++      await virtualFsWrite(env, path, content);
++      return { ok: true, output: { path, written: true }, tier: 1, duration_ms: Date.now() - started, tokens_used: 0 };
++    }
++    if (op === "delete") {
++      const path = String(params.path ?? "");
++      await virtualFsDelete(env, path);
++      return { ok: true, output: { path, deleted: true }, tier: 1, duration_ms: Date.now() - started, tokens_used: 0 };
++    }
++    if (op === "list") {
++      const prefix = String(params.prefix ?? "");
++      return { ok: true, output: await virtualFsList(env, prefix), tier: 1, duration_ms: Date.now() - started, tokens_used: 0 };
++    }
++    if (op === "grep") {
++      const pattern = String(params.pattern ?? "");
++      return { ok: true, output: await virtualFsGrep(env, pattern, String(params.prefix ?? "")), tier: 1, duration_ms: Date.now() - started, tokens_used: 0 };
++    }
++    return { ok: false, error: `unknown virtual shell op ${op}`, tier: 1, duration_ms: Date.now() - started, tokens_used: 0 };
++  } catch (error) {
++    return { ok: false, error: error instanceof Error ? error.message : String(error), tier: 1, duration_ms: Date.now() - started, tokens_used: 0 };
++  }
++}
 diff --git a/workers/agents/src/script-engine/types.ts b/workers/agents/src/script-engine/types.ts
 index cc9f6d7..c152431 100644
 --- a/workers/agents/src/script-engine/types.ts
@@ -1301,7 +1294,7 @@ index ff21e1a..012b1d6 100644
 +      }
 +      if (op === "head" && request.method === "GET") {
 +        return Response.json({ branch: state.head, commit_id: state.refs[state.head] });
-+      }
+       }
        if (op === "cleanup" && request.method === "POST") {
          const names = body.branch ? [String(body.branch)] : [...state.temporary];
 diff --git a/workers/artifact/src/repository.test.ts b/workers/artifact/src/repository.test.ts
