@@ -32,6 +32,8 @@
 │   ├── 316 - 318 But.txt
 │   ├── 319 - 320 What.txt
 │   └── prompts
+├── ai_studio_code (2).sh
+├── ai_studio_code.sh
 ├── apps
 │   ├── dashboard
 │   │   ├── next.config.mjs
@@ -295,6 +297,7 @@
 │   └── widget
 │       └── src
 │           └── naelao-chat.ts
+├── create_patch.js
 ├── docs
 │   └── spec-appendix
 ├── infra
@@ -400,7 +403,9 @@
 │   │       ├── canvas-runtime.ts
 │   │       ├── extensions.ts
 │   │       ├── index.ts
+│   │       ├── launchpad-runtime.test.ts
 │   │       ├── launchpad-runtime.ts
+│   │       ├── workflow-taxonomy.test.ts
 │   │       └── workflow-taxonomy.ts
 │   ├── analytics-schema
 │   │   └── src
@@ -528,7 +533,10 @@
 ├── repomix
 │   ├── apply-batch-patch.mjs
 │   ├── build-prompts.mjs
+│   ├── outputs
+│   │   └── batch-01-context.xml
 │   ├── patches
+│   │   └── batch-01.patch
 │   ├── prepare-authority-context.mjs
 │   ├── prompts
 │   └── verify-configs.mjs
@@ -563,9 +571,11 @@
     │   │   ├── do
     │   │   │   ├── ConcurrencyDO.ts
     │   │   │   ├── HITLApprovalDO.ts
+    │   │   │   ├── LocalTunnelDO.test.ts
     │   │   │   ├── LocalTunnelDO.ts
     │   │   │   ├── NaelaoAgentDO.ts
     │   │   │   ├── TaskDO.ts
+    │   │   │   ├── ToolSandboxDO.test.ts
     │   │   │   └── ToolSandboxDO.ts
     │   │   ├── env.ts
     │   │   ├── index.ts
@@ -587,6 +597,7 @@
     │   │   │   ├── code-runner.ts
     │   │   │   ├── container-catalogue.ts
     │   │   │   ├── conversation-context.ts
+    │   │   │   ├── execution-ladder.test.ts
     │   │   │   ├── execution-ladder.ts
     │   │   │   ├── federation.ts
     │   │   │   ├── fingerprint.ts
@@ -633,6 +644,8 @@
     │   │   │   ├── profiles.ts
     │   │   │   ├── project-journal.ts
     │   │   │   ├── project-memory-client.ts
+    │   │   │   ├── r2-workspace.test.ts
+    │   │   │   ├── r2-workspace.ts
     │   │   │   ├── reasoner.ts
     │   │   │   ├── reserved-capabilities.ts
     │   │   │   ├── script-find.ts
@@ -769,6 +782,8 @@
     │   │   ├── index.ts
     │   │   ├── launchpad-manifest.ts
     │   │   ├── product-end-user-routes.ts
+    │   │   ├── project-automation.test.ts
+    │   │   ├── space-hierarchy-policy.test.ts
     │   │   ├── template-catalog.ts
     │   │   └── tenancy.ts
     │   └── wrangler.toml
@@ -809,4 +824,4 @@
         │   └── index.ts
         └── wrangler.toml
 
-240 directories, 570 files
+241 directories, 584 files
