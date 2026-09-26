@@ -24,7 +24,9 @@ const SPACES_TABLE_SQL = `
     id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
     name TEXT NOT NULL DEFAULT '', spacetype_id TEXT NOT NULL DEFAULT 'launchpad',
     config_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')), created_by TEXT
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')), created_by TEXT,
+    parent_space_id TEXT, depth INTEGER NOT NULL DEFAULT 0, tenancy_mode TEXT NOT NULL DEFAULT 'team',
+    agency_shell INTEGER NOT NULL DEFAULT 0, scenario_type TEXT
   );
   CREATE TABLE orgs (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', owner_id TEXT NOT NULL DEFAULT '', plan_tier TEXT NOT NULL DEFAULT 'free');
   CREATE TABLE spacetypes (id TEXT PRIMARY KEY, schema_json TEXT);

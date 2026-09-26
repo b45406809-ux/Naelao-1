@@ -69,11 +69,11 @@ describe("code-runner — Tier 2/3 isolate execution", () => {
     expect(result.error).toContain("unavailable");
   });
 
-  it("Tier 5 (container) is routed separately and reports unavailable without a ToolSandboxDO binding", async () => {
+  it("Tier 6 (container) is routed separately and reports unavailable without a ToolSandboxDO binding", async () => {
     const runner = buildCodeRunner({ loader: fakeLoader() });
-    const result = await runner.run({ name: "x", code: "export async function run(){}", tier: 5, args: {}, spaceId: "s", agentId: "a", tenantId: "t" });
+    const result = await runner.run({ name: "x", code: "export async function run(){}", tier: 6, args: {}, spaceId: "s", agentId: "a", tenantId: "t" });
     expect(result.ok).toBe(false);
-    expect(result.error).toContain("Tier 5");
+    expect(result.error).toContain("Tier 6");
   });
 
   it("Tier 1 is rejected — execution-ladder.ts must handle it in-process, never via codeRunner", async () => {
@@ -296,7 +296,7 @@ describe("code-runner — Tier 2 ctx.mcp capability injection (§A1.17 Phase I)"
   });
 });
 
-describe("code-runner — Tier 5 container execution", () => {
+describe("code-runner — Tier 6 container execution", () => {
   it("forwards to the ToolSandboxDO's /exec route and returns its result", async () => {
     const fetchSpy = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, result: { stdout: "hi" } }), { status: 200 }));
     const toolSandbox = {
@@ -308,7 +308,7 @@ describe("code-runner — Tier 5 container execution", () => {
     const result = await runner.run({
       name: "code-exec.execute_bash",
       code: "export async function run(args){ return {stdout:'hi'} }",
-      tier: 5,
+      tier: 6,
       args: { commands: "echo hi" },
       spaceId: "space1",
       agentId: "agent1",
@@ -326,7 +326,7 @@ describe("code-runner — Tier 5 container execution", () => {
       get: vi.fn().mockReturnValue({ fetch: fetchSpy }),
     } as unknown as DurableObjectNamespace;
     const runner = buildCodeRunner({ toolSandbox });
-    const result = await runner.run({ name: "x", code: "bad code", tier: 5, args: {}, spaceId: "s", agentId: "a", tenantId: "t" });
+    const result = await runner.run({ name: "x", code: "bad code", tier: 6, args: {}, spaceId: "s", agentId: "a", tenantId: "t" });
     expect(result.ok).toBe(false);
     expect(result.error).toBe("build failed");
   });
@@ -339,8 +339,8 @@ describe("code-runner — Tier 5 container execution", () => {
     const toolSandbox = { idFromName, get: vi.fn().mockReturnValue({ fetch: fetchSpy }) } as unknown as DurableObjectNamespace;
     const runner = buildCodeRunner({ toolSandbox });
 
-    await runner.run({ name: "x", code: "c", tier: 5, args: {}, spaceId: "space1", agentId: "agent-A", tenantId: "t", projectId: "proj-1" });
-    await runner.run({ name: "x", code: "c", tier: 5, args: {}, spaceId: "space1", agentId: "agent-B", tenantId: "t", projectId: "proj-1" });
+    await runner.run({ name: "x", code: "c", tier: 6, args: {}, spaceId: "space1", agentId: "agent-A", tenantId: "t", projectId: "proj-1" });
+    await runner.run({ name: "x", code: "c", tier: 6, args: {}, spaceId: "space1", agentId: "agent-B", tenantId: "t", projectId: "proj-1" });
 
     expect(idFromName).toHaveBeenNthCalledWith(1, "sandbox:space1:proj-1");
     expect(idFromName).toHaveBeenNthCalledWith(2, "sandbox:space1:proj-1");
@@ -352,7 +352,7 @@ describe("code-runner — Tier 5 container execution", () => {
     const toolSandbox = { idFromName, get: vi.fn().mockReturnValue({ fetch: fetchSpy }) } as unknown as DurableObjectNamespace;
     const runner = buildCodeRunner({ toolSandbox });
 
-    await runner.run({ name: "x", code: "c", tier: 5, args: {}, spaceId: "space1", agentId: "naelao-agent", tenantId: "t" });
+    await runner.run({ name: "x", code: "c", tier: 6, args: {}, spaceId: "space1", agentId: "naelao-agent", tenantId: "t" });
 
     expect(idFromName).toHaveBeenCalledWith("sandbox:space1:_assistant");
   });
@@ -365,7 +365,7 @@ describe("code-runner — Tier 5 container execution", () => {
     } as unknown as DurableObjectNamespace;
     const runner = buildCodeRunner({ toolSandbox });
 
-    await runner.run({ name: "x", code: "c", tier: 5, args: { a: 1 }, spaceId: "space1", agentId: "agent1", tenantId: "t", projectId: "proj-1" });
+    await runner.run({ name: "x", code: "c", tier: 6, args: { a: 1 }, spaceId: "space1", agentId: "agent1", tenantId: "t", projectId: "proj-1" });
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const req = fetchSpy.mock.calls[0]![0] as Request;
@@ -377,7 +377,7 @@ describe("code-runner — Tier 5 container execution", () => {
 // §A1.17 Phase L: a script tagged with a Container Marketplace image routes to that image's OWN
 // binding, never the base sandbox — and fails closed (not silently falling back to the base
 // sandbox, which would run the script against the wrong image's compute) when unwired.
-describe("code-runner — Tier 5 Container Marketplace routing (§A1.17 Phase L)", () => {
+describe("code-runner — Tier 6 Container Marketplace routing (§A1.17 Phase L)", () => {
   it("fails closed with a clear message when the named image has no wired binding", async () => {
     const toolSandbox = {
       idFromName: vi.fn().mockReturnValue("do-id"),
@@ -386,7 +386,7 @@ describe("code-runner — Tier 5 Container Marketplace routing (§A1.17 Phase L)
     const runner = buildCodeRunner({ toolSandbox }); // no containerImages map at all
 
     const result = await runner.run({
-      name: "x", code: "c", tier: 5, args: {}, spaceId: "space1", agentId: "agent1", tenantId: "t",
+      name: "x", code: "c", tier: 6, args: {}, spaceId: "space1", agentId: "agent1", tenantId: "t",
       containerImage: "postgres-16",
     });
 
@@ -404,7 +404,7 @@ describe("code-runner — Tier 5 Container Marketplace routing (§A1.17 Phase L)
 
     const runner = buildCodeRunner({ toolSandbox, containerImages: { "postgres-16": postgresNamespace } });
     const result = await runner.run({
-      name: "postgres.query", code: "c", tier: 5, args: { sql: "select 1" }, spaceId: "space1", agentId: "agent1", tenantId: "t",
+      name: "postgres.query", code: "c", tier: 6, args: { sql: "select 1" }, spaceId: "space1", agentId: "agent1", tenantId: "t",
       projectId: "proj-1", containerImage: "postgres-16",
     });
 
@@ -417,7 +417,7 @@ describe("code-runner — Tier 5 Container Marketplace routing (§A1.17 Phase L)
 
 // AVOS plan, step 3 — an isolate has no real package manager, so a genuinely unresolved import
 // is a deterministic "this tier structurally cannot do this" signal; a plain timeout is not.
-describe("code-runner — Execution Ladder auto-promotion (Tier 2-4 -> Tier 5)", () => {
+describe("code-runner — Execution Ladder auto-promotion (Tier 2-4 -> Tier 6)", () => {
   function loaderThatThrows(message: string): WorkerLoaderBinding {
     return {
       get() {
@@ -434,7 +434,7 @@ describe("code-runner — Execution Ladder auto-promotion (Tier 2-4 -> Tier 5)",
     };
   }
 
-  it("promotes to Tier 5 and returns its output when the isolate fails with an unresolved import", async () => {
+  it("promotes to Tier 6 and returns its output when the isolate fails with an unresolved import", async () => {
     const fetchSpy = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, result: { installed: true } }), { status: 200 }));
     const toolSandbox = { idFromName: vi.fn().mockReturnValue("do-id"), get: vi.fn().mockReturnValue({ fetch: fetchSpy }) } as unknown as DurableObjectNamespace;
     const runner = buildCodeRunner({ loader: loaderThatThrows("Cannot find module 'pandas'"), toolSandbox });
@@ -445,7 +445,7 @@ describe("code-runner — Execution Ladder auto-promotion (Tier 2-4 -> Tier 5)",
 
     expect(result.ok).toBe(true);
     expect(result.output).toEqual({ installed: true });
-    expect(result.tier).toBe(5); // the promoted attempt's own tier, not the original 3
+    expect(result.tier).toBe(6); // the promoted attempt's own tier, not the original 3
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 

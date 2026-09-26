@@ -435,21 +435,36 @@ export class MultiplexedBridge implements RuntimeBridge {
     stream: string,
     method: string,
     payload: unknown,
-    signal?: { readonly aborted: boolean }
+    signal?: AbortSignal
   ): Promise<T> {
     if (signal?.aborted) throw new Error("aborted");
     const id = crypto.randomUUID();
     return new Promise<T>((resolve, reject) => {
+      const cleanup = () => signal?.removeEventListener("abort", onAbort);
+      const onAbort = () => {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        cleanup();
+        reject(new Error("aborted"));
+      };
       const timer = setTimeout(() => {
         this.pending.delete(id);
+        cleanup();
         reject(new Error(`bridge_call_timeout:${stream}:${method}`));
       }, this.timeoutMs);
 
       this.pending.set(id, {
-        resolve: (value) => resolve(value as T),
-        reject,
+        resolve: (value) => {
+          cleanup();
+          resolve(value as T);
+        },
+        reject: (reason) => {
+          cleanup();
+          reject(reason);
+        },
         timer,
       });
+      signal?.addEventListener("abort", onAbort, { once: true });
 
       Promise.resolve(
         this.sendRaw(JSON.stringify({ id, stream, method, payload }))
@@ -469,13 +484,13 @@ export class MultiplexedBridge implements RuntimeBridge {
       return;
     }
     if (!parsed || typeof parsed !== "object" || !("id" in parsed)) return;
-    const msg = parsed;
-    if (!msg.id) return;
+    const msg = parsed as Record<string, unknown>;
+    if (typeof msg.id !== "string" || !msg.id) return;
     const pending = this.pending.get(msg.id);
     if (!pending) return;
     clearTimeout(pending.timer);
     this.pending.delete(msg.id);
-    if (msg.error) {
+    if (typeof msg.error === "string" && msg.error) {
       pending.reject(new Error(msg.error));
     } else {
       pending.resolve(msg.result);
