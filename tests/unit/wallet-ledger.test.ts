@@ -66,6 +66,7 @@ describe("Launchpad Wallet ledger (SpaceDO, real migration chain)", () => {
     );
     expect(res.status).toBe(200);
     const getRes = await spacesWorker.fetch(req(`/spaces/space-1/projects/${projectId}`, h), env as never, execCtx);
+    expect(getRes.status).toBe(200);
     const project = await getRes.json() as { kind: string };
     expect(project.kind).toBe("wallet");
   });

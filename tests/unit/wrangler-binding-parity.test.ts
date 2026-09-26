@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // Regression guard for a real, live-confirmed production bug: workers/agents declared
 // `PLATFORM_DB: D1Database` on its Env interface and used it in 31 places (agent/run's model +
@@ -16,7 +17,7 @@ import { join } from "node:path";
 //
 // Sibling of wrangler-vars-parity.test.ts, which guards the vars-replacement bug class.
 
-const WORKERS_DIR = join(process.cwd(), "workers");
+const WORKERS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "workers");
 
 /** Bindings that are D1 databases in this codebase, by convention. Keyed by the binding NAME the
  *  code refers to, since that is what `c.env.X` resolves against. */

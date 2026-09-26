@@ -43,7 +43,10 @@ function makeEnv() {
   fakeDb.db.exec("INSERT INTO spaces (id, tenant_id, status, name, parent_space_id) VALUES ('biz-alice', 'tenant-1', 'active', 'Alice Biz', 'prod-root')");
   fakeDb.db.exec("INSERT INTO business_memberships (business_space_id, product_space_id, end_user_id, role, status) VALUES ('biz-alice', 'prod-root', 'alice', 'admin', 'active')");
   fakeDb.db.exec("INSERT INTO business_memberships (business_space_id, product_space_id, end_user_id, role, status) VALUES ('biz-alice', 'prod-root', 'alice-member', 'member', 'active')");
-  return { PLATFORM_SECRET, ENVIRONMENT: "test", PLATFORM_DB: fakeDb };
+  return { PLATFORM_SECRET, ENVIRONMENT: "test", PLATFORM_DB: fakeDb, SPACE_DO: {
+    idFromName: (name: string) => name,
+    get: () => ({ fetch: async () => Response.json({ project_id: "project-1", can_manage: true }) }),
+  } };
 }
 
 async function endUserHeaders(tenantId: string, endUserId: string): Promise<Record<string, string>> {
@@ -68,7 +71,7 @@ describe("scheduled-jobs POST — business membership gate", () => {
     const res = await spacesWorker.fetch(
       req("/spaces/biz-alice/scheduled-jobs", headers, {
         method: "POST",
-        body: JSON.stringify({ name: "Weekly review", cron_expression: "0 9 * * 1", goal: "Review the business" }),
+        body: JSON.stringify({ name: "Weekly review", cron_expression: "0 9 * * 1", goal: "Review the business", project_id: "project-1" }),
       }),
       env as never, execCtx
     );
@@ -81,7 +84,7 @@ describe("scheduled-jobs POST — business membership gate", () => {
     const res = await spacesWorker.fetch(
       req("/spaces/biz-alice/scheduled-jobs", headers, {
         method: "POST",
-        body: JSON.stringify({ name: "Sneaky cron", cron_expression: "0 9 * * *", goal: "x" }),
+        body: JSON.stringify({ name: "Sneaky cron", cron_expression: "0 9 * * *", goal: "x", project_id: "project-1" }),
       }),
       env as never, execCtx
     );
@@ -94,7 +97,7 @@ describe("scheduled-jobs POST — business membership gate", () => {
     const res = await spacesWorker.fetch(
       req("/spaces/biz-alice/scheduled-jobs", headers, {
         method: "POST",
-        body: JSON.stringify({ name: "Sneaky cron", cron_expression: "0 9 * * *", goal: "x" }),
+        body: JSON.stringify({ name: "Sneaky cron", cron_expression: "0 9 * * *", goal: "x", project_id: "project-1" }),
       }),
       env as never, execCtx
     );
@@ -107,7 +110,7 @@ describe("scheduled-jobs POST — business membership gate", () => {
     const res = await spacesWorker.fetch(
       req("/spaces/prod-root/scheduled-jobs", headers, {
         method: "POST",
-        body: JSON.stringify({ name: "Root cron", cron_expression: "0 9 * * *", goal: "x" }),
+        body: JSON.stringify({ name: "Root cron", cron_expression: "0 9 * * *", goal: "x", project_id: "project-1" }),
       }),
       env as never, execCtx
     );
@@ -121,7 +124,7 @@ describe("scheduled-jobs POST — business membership gate", () => {
     const res = await spacesWorker.fetch(
       req("/spaces/biz-alice/scheduled-jobs", builderHeaders, {
         method: "POST",
-        body: JSON.stringify({ name: "Builder cron", cron_expression: "0 9 * * *", goal: "x" }),
+        body: JSON.stringify({ name: "Builder cron", cron_expression: "0 9 * * *", goal: "x", project_id: "project-1" }),
       }),
       env as never, execCtx
     );
@@ -136,7 +139,7 @@ describe("scheduled-jobs PATCH/DELETE :jobId — business membership gate", () =
     const res = await spacesWorker.fetch(
       req("/spaces/biz-alice/scheduled-jobs", builderHeaders, {
         method: "POST",
-        body: JSON.stringify({ name: "Existing", cron_expression: "0 9 * * *", goal: "x" }),
+        body: JSON.stringify({ name: "Existing", cron_expression: "0 9 * * *", goal: "x", project_id: "project-1" }),
       }),
       env as never, execCtx
     );

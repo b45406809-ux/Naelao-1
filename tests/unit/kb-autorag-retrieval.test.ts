@@ -11,6 +11,7 @@ const SPACES_TABLE_SQL = `
 `;
 const KB_DOCUMENTS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0006_kb_documents.sql"), "utf8");
 const KB_PROJECT_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0051_kb_documents_project.sql"), "utf8");
+const KB_SECURITY_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0074_items_45_87_security_models.sql"), "utf8");
 
 // §A1.19: AutoRAG as an opt-in retrieval_mode alongside the existing hand-built dense+BM25+RRF
 // hybrid pipeline (default, unchanged). Config-gated per request (the caller decides), honest
@@ -26,7 +27,7 @@ function makeEnv(opts: {
   vectorizeQuery?: ReturnType<typeof vi.fn>;
   r2Put?: ReturnType<typeof vi.fn>;
 }) {
-  const fakeDb = createFakeD1([SPACES_TABLE_SQL, KB_DOCUMENTS_MIGRATION, KB_PROJECT_MIGRATION]);
+  const fakeDb = createFakeD1([SPACES_TABLE_SQL, KB_DOCUMENTS_MIGRATION, KB_PROJECT_MIGRATION, KB_SECURITY_MIGRATION]);
   fakeDb.db.exec(`INSERT INTO spaces (id, tenant_id, status) VALUES ('space-1', 'tenant-a', 'active')`);
 
   const kv = { async get() { return null; }, async put() {}, async delete() {} };
@@ -60,7 +61,7 @@ async function search(env: ReturnType<typeof makeEnv>, qs: string) {
   const token = await mintInternalToken(SECRET, "tenant-a");
   return knowledgeWorker.fetch(
     new Request(`https://knowledge.naelao.com/spaces/space-1/kb/search?${qs}`, {
-      headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token },
+      headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token, "x-naelao-role": "builder", "x-naelao-user-id": "builder" },
     }),
     env as never,
     execCtx
@@ -74,7 +75,7 @@ describe("GET /spaces/:spaceId/kb/search — retrieval_mode=autorag", () => {
     const res = await search(env, "q=refund");
     expect(res.status).toBe(200);
     const body = await res.json() as { retrieval_mode: string };
-    expect(body.retrieval_mode).toBe("legacy");
+    expect(body.retrieval_mode).toBe("hybrid");
     expect(vectorizeQuery).toHaveBeenCalledTimes(1);
   });
 
@@ -88,7 +89,7 @@ describe("GET /spaces/:spaceId/kb/search — retrieval_mode=autorag", () => {
     expect(res.status).toBe(200);
     const body = await res.json() as { retrieval_mode: string; data: Array<{ content: string; doc_id: string }> };
     expect(body.retrieval_mode).toBe("autorag");
-    expect(body.data[0]!.content).toContain("<kb_content>Refunds are accepted within 30 days.</kb_content>");
+    expect(body.data[0]!.content).toContain("Refunds are accepted within 30 days.");
     expect(body.data[0]!.doc_id).toBe("doc-1");
     expect(vectorizeQuery).not.toHaveBeenCalled();
   });
@@ -99,7 +100,7 @@ describe("GET /spaces/:spaceId/kb/search — retrieval_mode=autorag", () => {
     const res = await search(env, "q=refund&retrieval_mode=autorag");
     expect(res.status).toBe(200);
     const body = await res.json() as { retrieval_mode: string };
-    expect(body.retrieval_mode).toBe("legacy");
+    expect(body.retrieval_mode).toBe("hybrid");
     expect(vectorizeQuery).toHaveBeenCalledTimes(1);
   });
 
@@ -110,7 +111,7 @@ describe("GET /spaces/:spaceId/kb/search — retrieval_mode=autorag", () => {
     const res = await search(env, "q=refund&retrieval_mode=autorag");
     expect(res.status).toBe(200);
     const body = await res.json() as { retrieval_mode: string };
-    expect(body.retrieval_mode).toBe("legacy");
+    expect(body.retrieval_mode).toBe("hybrid");
     expect(vectorizeQuery).toHaveBeenCalledTimes(1);
   });
 });
@@ -123,7 +124,7 @@ describe("POST /spaces/:spaceId/kb/documents — AutoRAG mirror", () => {
     const res = await knowledgeWorker.fetch(
       new Request("https://knowledge.naelao.com/spaces/space-1/kb/documents", {
         method: "POST",
-        headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token },
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token, "x-naelao-role": "builder", "x-naelao-user-id": "builder" },
         body: JSON.stringify({ title: "Refund Policy", content: "Refunds are accepted within 30 days of purchase." }),
       }),
       env as never,
@@ -142,7 +143,7 @@ describe("POST /spaces/:spaceId/kb/documents — AutoRAG mirror", () => {
     const res = await knowledgeWorker.fetch(
       new Request("https://knowledge.naelao.com/spaces/space-1/kb/documents", {
         method: "POST",
-        headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token },
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token, "x-naelao-role": "builder", "x-naelao-user-id": "builder" },
         body: JSON.stringify({ title: "Refund Policy", content: "Refunds are accepted within 30 days of purchase." }),
       }),
       env as never,

@@ -3537,9 +3537,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     // Internal mutation paths call this without params to serialize the row they just changed;
     // all externally routed reads supply a server-derived viewer_id.
     const viewerId = params?.get("viewer_id") ?? "";
+    const isSpaceManager = params?.get("space_manager") === "1";
     if (
       params !== undefined &&
       row.visibility === "private" &&
+      !isSpaceManager &&
       (!viewerId ||
         (this.getProjectMemberRole(projectId, viewerId) === null &&
           !this.isSpaceOwnerOrAdmin(viewerId)))

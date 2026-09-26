@@ -16,10 +16,11 @@ const RUN_HISTORY_MIGRATION = readFileSync(
 
 function makeEnv() {
   const fakeDb = createFakeD1([RUN_HISTORY_MIGRATION]);
+  fakeDb.db.exec("ALTER TABLE scheduled_job_runs ADD COLUMN project_id TEXT NOT NULL DEFAULT 'project-1'");
   return { PLATFORM_DB: fakeDb } as unknown as AgentsEnv;
 }
 
-const ROW = { id: "job-1", space_id: "space-1", tenant_id: "tenant-1" };
+const ROW = { id: "job-1", space_id: "space-1", tenant_id: "tenant-1", project_id: "project-1" };
 
 function rawDb(env: AgentsEnv) {
   return (env as unknown as { PLATFORM_DB: { db: { prepare(sql: string): { all(): unknown[] } } } }).PLATFORM_DB.db;
@@ -71,7 +72,7 @@ describe("recordScheduledJobRun", () => {
     for (let i = 0; i < SCHEDULED_JOB_RUN_HISTORY_LIMIT + 5; i++) {
       await recordScheduledJobRun(env, ROW, { ok: true, firedAt: i });
     }
-    await recordScheduledJobRun(env, { id: "job-2", space_id: "space-1", tenant_id: "tenant-1" }, { ok: true, firedAt: 999 });
+    await recordScheduledJobRun(env, { id: "job-2", space_id: "space-1", tenant_id: "tenant-1", project_id: "project-1" }, { ok: true, firedAt: 999 });
 
     const job2Rows = rawDb(env).prepare(`SELECT id FROM scheduled_job_runs WHERE job_id = 'job-2'`).all();
     expect(job2Rows).toHaveLength(1);

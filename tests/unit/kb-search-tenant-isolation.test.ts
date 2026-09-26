@@ -54,7 +54,7 @@ describe("knowledge worker — GET /spaces/:spaceId/kb/search tenant isolation",
     const token = await mintInternalToken(SECRET, "attacker-tenant");
     const res = await knowledgeWorker.fetch(
       new Request("https://knowledge.naelao.com/spaces/victim-space/kb/search?q=secret", {
-        headers: { "x-naelao-tenant-id": "attacker-tenant", "x-naelao-internal-token": token },
+        headers: { "x-naelao-tenant-id": "attacker-tenant", "x-naelao-internal-token": token, "x-naelao-role": "builder", "x-naelao-user-id": "builder" },
       }),
       makeEnv({ ownerTenantId: "victim-tenant", vectorizeQuery }) as never,
       execCtx
@@ -68,7 +68,7 @@ describe("knowledge worker — GET /spaces/:spaceId/kb/search tenant isolation",
     const token = await mintInternalToken(SECRET, "owner-tenant");
     const res = await knowledgeWorker.fetch(
       new Request("https://knowledge.naelao.com/spaces/my-space/kb/search?q=hello", {
-        headers: { "x-naelao-tenant-id": "owner-tenant", "x-naelao-internal-token": token },
+        headers: { "x-naelao-tenant-id": "owner-tenant", "x-naelao-internal-token": token, "x-naelao-role": "builder", "x-naelao-user-id": "builder" },
       }),
       makeEnv({ ownerTenantId: "owner-tenant", vectorizeQuery }) as never,
       execCtx

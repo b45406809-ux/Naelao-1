@@ -22,7 +22,13 @@ function makeHarness(handler: (req: Request) => Promise<Response>) {
 }
 
 function makeDO(container: ReturnType<typeof makeHarness> | undefined) {
-  const ctx = { container };
+  const ctx = {
+    container,
+    storage: {
+      put: async () => undefined,
+      setAlarm: async () => undefined,
+    },
+  };
   return new ToolSandboxDO(ctx as never, {} as never);
 }
 

@@ -36,9 +36,11 @@ async function call(doInstance: SpaceDO, path: string, method: string, body?: un
 describe("POST /internal/events/fire", () => {
   it("fires a matching event_trigger for the given event type", async () => {
     const { doInstance, calls } = makeSpaceDO();
+    const project = await call(doInstance, "/projects", "POST", { space_id: "space-1", name: "Automation" });
 
     await call(doInstance, "/event-triggers", "POST", {
       space_id: "space-1",
+      project_id: project.json.id,
       event_type: "scheduled_job.disabled",
       script_name: "notifications.notify_builder",
     });
@@ -47,7 +49,7 @@ describe("POST /internal/events/fire", () => {
       doInstance,
       "/internal/events/fire",
       "POST",
-      { type: "scheduled_job.disabled", space_id: "space-1", payload: { scheduled_job_id: "job-1" } },
+      { type: "scheduled_job.disabled", space_id: "space-1", project_id: project.json.id, payload: { scheduled_job_id: "job-1" } },
       { "x-naelao-tenant-id": "tenant-1" }
     );
     expect(res.status).toBe(200);
@@ -91,14 +93,15 @@ describe("POST /internal/events/fire", () => {
   // full-HTTP-round-trip coverage (see scheduled-jobs-business-membership.test.ts for that).
   it("also accepts tenant_id via the query string (what the real forwarding route actually sends)", async () => {
     const { doInstance, calls } = makeSpaceDO();
+    const project = await call(doInstance, "/projects", "POST", { space_id: "space-1", name: "Automation" });
     await call(doInstance, "/event-triggers", "POST", {
-      space_id: "space-1", event_type: "scheduled_job.disabled", script_name: "s",
+      space_id: "space-1", project_id: project.json.id, event_type: "scheduled_job.disabled", script_name: "s",
     });
     const res = await doInstance.fetch(
       new Request("http://space-do/internal/events/fire?tenant_id=tenant-1", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ type: "scheduled_job.disabled", space_id: "space-1", payload: { scheduled_job_id: "job-1" } }),
+        body: JSON.stringify({ type: "scheduled_job.disabled", space_id: "space-1", project_id: project.json.id, payload: { scheduled_job_id: "job-1" } }),
       })
     );
     expect(res.status).toBe(200);

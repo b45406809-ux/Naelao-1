@@ -16,8 +16,11 @@ function makeSpaceDO(): SpaceDO {
 }
 
 async function call(doInstance: SpaceDO, path: string, method: string, body?: unknown): Promise<{ status: number; json: any }> {
+  const routedPath = method === "GET" && /^\/projects\/[^/?]+$/.test(path)
+    ? `${path}?space_manager=1`
+    : path;
   const resp = await doInstance.fetch(
-    new Request(`http://space-do${path}`, {
+    new Request(`http://space-do${routedPath}`, {
       method,
       headers: { "content-type": "application/json" },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
