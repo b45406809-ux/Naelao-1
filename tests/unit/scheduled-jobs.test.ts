@@ -40,7 +40,10 @@ const SPACES_TABLE_SQL = `
 function makeSpacesEnv(spaceId: string, tenantId: string): Record<string, unknown> {
   const fakeDb = createFakeD1([SPACES_TABLE_SQL, SCHEDULED_JOBS_MIGRATION, SCHEDULED_JOBS_FAILURES_MIGRATION, SCHEDULED_JOBS_AGENT_GOAL_MIGRATION, SCHEDULED_JOB_RUNS_MIGRATION]);
   fakeDb.db.exec(`INSERT INTO spaces (id, tenant_id, status, name) VALUES ('${spaceId}', '${tenantId}', 'active', 'Test Space')`);
-  return { PLATFORM_SECRET: "s", ENVIRONMENT: "test", PLATFORM_DB: fakeDb };
+  return { PLATFORM_SECRET: "s", ENVIRONMENT: "test", PLATFORM_DB: fakeDb, SPACE_DO: {
+    idFromName: (name: string) => name,
+    get: () => ({ fetch: async () => Response.json({ project_id: "proj-1", can_manage: true }) }),
+  } };
 }
 
 function req(path: string, opts: { method?: string; body?: unknown; tenant?: string } = {}): Request {
@@ -60,7 +63,7 @@ describe("scheduled-jobs CRUD (spaces worker)", () => {
     const res = await spacesWorker.fetch(
       req("/spaces/space-1/scheduled-jobs", {
         method: "POST",
-        body: { name: "Daily standup", cron_expression: "0 9 * * *", script_name: "notifications.daily_standup" },
+        body: { name: "Daily standup", cron_expression: "0 9 * * *", script_name: "notifications.daily_standup", project_id: "proj-1" },
       }),
       env as never, execCtx
     );
@@ -75,7 +78,7 @@ describe("scheduled-jobs CRUD (spaces worker)", () => {
     const res = await spacesWorker.fetch(
       req("/spaces/space-1/scheduled-jobs", {
         method: "POST",
-        body: { name: "Bad", cron_expression: "not a cron", script_name: "x" },
+        body: { name: "Bad", cron_expression: "not a cron", script_name: "x", project_id: "proj-1" },
       }),
       env as never, execCtx
     );
@@ -95,11 +98,11 @@ describe("scheduled-jobs CRUD (spaces worker)", () => {
   it("reports a real next_run_at for an enabled job, and null for a disabled one", async () => {
     const env = makeSpacesEnv("space-1", "tenant-1");
     await spacesWorker.fetch(
-      req("/spaces/space-1/scheduled-jobs", { method: "POST", body: { name: "Enabled job", cron_expression: "0 9 * * *", script_name: "s1" } }),
+      req("/spaces/space-1/scheduled-jobs", { method: "POST", body: { name: "Enabled job", cron_expression: "0 9 * * *", script_name: "s1", project_id: "proj-1" } }),
       env as never, execCtx
     );
     const created = await (await spacesWorker.fetch(
-      req("/spaces/space-1/scheduled-jobs", { method: "POST", body: { name: "Disabled job", cron_expression: "0 9 * * *", script_name: "s2" } }),
+      req("/spaces/space-1/scheduled-jobs", { method: "POST", body: { name: "Disabled job", cron_expression: "0 9 * * *", script_name: "s2", project_id: "proj-1" } }),
       env as never, execCtx
     )).json() as { id: string };
     await spacesWorker.fetch(
@@ -119,7 +122,7 @@ describe("scheduled-jobs CRUD (spaces worker)", () => {
   it("lists jobs for a space, including the new failure-tracking fields", async () => {
     const env = makeSpacesEnv("space-1", "tenant-1");
     await spacesWorker.fetch(
-      req("/spaces/space-1/scheduled-jobs", { method: "POST", body: { name: "Job A", cron_expression: "0 8 * * *", script_name: "s1" } }),
+      req("/spaces/space-1/scheduled-jobs", { method: "POST", body: { name: "Job A", cron_expression: "0 8 * * *", script_name: "s1", project_id: "proj-1" } }),
       env as never, execCtx
     );
     const res = await spacesWorker.fetch(req("/spaces/space-1/scheduled-jobs"), env as never, execCtx);
@@ -132,10 +135,10 @@ describe("scheduled-jobs CRUD (spaces worker)", () => {
   // Crons side-panel scoping: the assistant/Home view wants ITS OWN (space-wide) jobs, a project
   // thread wants only that project's own — see workers/spaces/src/index.ts's own header comment
   // on this route for why neither param given stays unfiltered (Dashboard overview compat).
-  it("?scope=assistant returns only space-wide (project_id IS NULL) jobs", async () => {
+  it("?scope=assistant is empty because automations are project anchored", async () => {
     const env = makeSpacesEnv("space-1", "tenant-1");
     await spacesWorker.fetch(
-      req("/spaces/space-1/scheduled-jobs", { method: "POST", body: { name: "Assistant job", cron_expression: "0 8 * * *", script_name: "s1" } }),
+      req("/spaces/space-1/scheduled-jobs", { method: "POST", body: { name: "Assistant job", cron_expression: "0 8 * * *", script_name: "s1", project_id: "proj-1" } }),
       env as never, execCtx
     );
     await spacesWorker.fetch(
@@ -144,15 +147,13 @@ describe("scheduled-jobs CRUD (spaces worker)", () => {
     );
     const res = await spacesWorker.fetch(req("/spaces/space-1/scheduled-jobs?scope=assistant"), env as never, execCtx);
     const json = await res.json() as { data: Array<{ name: string; project_id: string | null }> };
-    expect(json.data).toHaveLength(1);
-    expect(json.data[0]!.name).toBe("Assistant job");
-    expect(json.data[0]!.project_id).toBeNull();
+    expect(json.data).toHaveLength(0);
   });
 
   it("?project_id=X returns only that project's own jobs", async () => {
     const env = makeSpacesEnv("space-1", "tenant-1");
     await spacesWorker.fetch(
-      req("/spaces/space-1/scheduled-jobs", { method: "POST", body: { name: "Assistant job", cron_expression: "0 8 * * *", script_name: "s1" } }),
+      req("/spaces/space-1/scheduled-jobs", { method: "POST", body: { name: "Other project job", cron_expression: "0 8 * * *", script_name: "s1", project_id: "proj-0" } }),
       env as never, execCtx
     );
     await spacesWorker.fetch(
@@ -173,7 +174,7 @@ describe("scheduled-jobs CRUD (spaces worker)", () => {
   it("no scope/project_id param stays unfiltered (Dashboard overview / Assistant page compat)", async () => {
     const env = makeSpacesEnv("space-1", "tenant-1");
     await spacesWorker.fetch(
-      req("/spaces/space-1/scheduled-jobs", { method: "POST", body: { name: "Assistant job", cron_expression: "0 8 * * *", script_name: "s1" } }),
+      req("/spaces/space-1/scheduled-jobs", { method: "POST", body: { name: "Assistant job", cron_expression: "0 8 * * *", script_name: "s1", project_id: "proj-1" } }),
       env as never, execCtx
     );
     await spacesWorker.fetch(
@@ -188,7 +189,7 @@ describe("scheduled-jobs CRUD (spaces worker)", () => {
   it("PATCH can disable a job and rejects an invalid new cron", async () => {
     const env = makeSpacesEnv("space-1", "tenant-1");
     const created = await (await spacesWorker.fetch(
-      req("/spaces/space-1/scheduled-jobs", { method: "POST", body: { name: "Job A", cron_expression: "0 8 * * *", script_name: "s1" } }),
+      req("/spaces/space-1/scheduled-jobs", { method: "POST", body: { name: "Job A", cron_expression: "0 8 * * *", script_name: "s1", project_id: "proj-1" } }),
       env as never, execCtx
     )).json() as { id: string };
 
@@ -217,7 +218,7 @@ describe("scheduled-jobs CRUD (spaces worker)", () => {
   it("DELETE removes a job, scoped to the owning tenant", async () => {
     const env = makeSpacesEnv("space-1", "tenant-1");
     const created = await (await spacesWorker.fetch(
-      req("/spaces/space-1/scheduled-jobs", { method: "POST", body: { name: "Job A", cron_expression: "0 8 * * *", script_name: "s1" } }),
+      req("/spaces/space-1/scheduled-jobs", { method: "POST", body: { name: "Job A", cron_expression: "0 8 * * *", script_name: "s1", project_id: "proj-1" } }),
       env as never, execCtx
     )).json() as { id: string };
 

@@ -34,7 +34,7 @@ describe("LocalTunnelDO correlation and multiplexing", () => {
       })
     );
 
-    expect(outbox.length).toBe(2);
+    await vi.waitFor(() => expect(outbox.length).toBe(2));
     const msg1 = JSON.parse(outbox[0]);
     const msg2 = JSON.parse(outbox[1]);
 

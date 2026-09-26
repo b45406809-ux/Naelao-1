@@ -487,15 +487,14 @@ async function runBrowser(
 
   const dispatch = async (eng: "kitesurf" | "chromium") => {
     const resp = await browserWorker.fetch(
-      "http://browser/v1/browser/navigate",
-      {
+      new Request("http://browser/v1/browser/navigate", {
         method: "POST",
         headers: {
           "content-type": "application/json",
           "x-naelao-internal-token": token,
         },
         body: JSON.stringify({ ...params.args, engine: eng }),
-      }
+      })
     );
     const body: {
       ok?: boolean;
