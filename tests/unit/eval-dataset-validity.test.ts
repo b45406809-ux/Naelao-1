@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { gradeTrace, type TraceCheck } from "../../workers/eval/src/trace-checks.js";
 
 // A golden dataset is only useful if it is well-formed. A malformed case is not caught by any
@@ -8,7 +9,7 @@ import { gradeTrace, type TraceCheck } from "../../workers/eval/src/trace-checks
 // that is spending real, rate-limited inference — the most expensive possible place to find a
 // typo. This validates the datasets statically, for free.
 
-const DATASET_DIR = join(process.cwd(), "tests", "eval-datasets");
+const DATASET_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "eval-datasets");
 
 interface EvalCase {
   input: string;

@@ -5,6 +5,7 @@ import { createFakeD1 } from "../stubs/d1-sqlite.js";
 import { createDOStorage } from "./helpers/sqlite-do-shim.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { mintInternalToken } from "@naelao/http";
 
 // Phase 3 item 29 — a cron's own CONFIG change (created/updated/enabled/paused/deleted) fires an
 // event through the same event_triggers path every other structural mutation already uses.
@@ -49,23 +50,33 @@ function makeStatefulSpaceDoNamespaceWithEnv(env: Record<string, unknown>): { na
       return new Response(JSON.stringify({ result: "ok" }), { status: 200 });
     },
   };
-  const instances = new Map<string, SpaceDO>();
-  function getOrCreate(name: string): SpaceDO {
-    let inst = instances.get(name);
-    if (!inst) {
+  const instances = new Map<string, { instance: SpaceDO; storage: ReturnType<typeof createDOStorage>; seeded: boolean }>();
+  function getOrCreate(name: string) {
+    let entry = instances.get(name);
+    if (!entry) {
       const ctx = { storage: createDOStorage() };
-      inst = new SpaceDO(ctx as never, { ...env, AGENTS_WORKER } as never);
-      instances.set(name, inst);
+      entry = { instance: new SpaceDO(ctx as never, { ...env, AGENTS_WORKER } as never), storage: ctx.storage, seeded: false };
+      instances.set(name, entry);
     }
-    return inst;
+    return entry;
   }
   const namespace = {
     idFromName(name: string) {
       return { toString: () => name } as unknown as DurableObjectId;
     },
     get(id: DurableObjectId) {
-      const inst = getOrCreate(id.toString());
-      return { fetch: (req: Request) => inst.fetch(req) } as unknown as DurableObjectStub;
+      const entry = getOrCreate(id.toString());
+      return { fetch: async (req: Request) => {
+        if (!entry.seeded) {
+          await entry.instance.fetch(new Request("http://space-do/__initialize"));
+          entry.storage.sql.exec(
+            "INSERT OR IGNORE INTO projects (id, space_id, name, description, status, created_at) VALUES (?, ?, ?, '', 'active', ?)",
+            "project-1", "space-1", "Automation", new Date().toISOString(),
+          );
+          entry.seeded = true;
+        }
+        return entry.instance.fetch(req);
+      } } as unknown as DurableObjectStub;
     },
   } as unknown as DurableObjectNamespace;
   return { namespace, calls };
@@ -84,18 +95,19 @@ function makeEnv() {
   return { env: { PLATFORM_SECRET, ENVIRONMENT: "test", PLATFORM_DB: fakeDb, SPACE_DO: namespace }, calls };
 }
 
-function builderReq(path: string, init?: RequestInit): Request {
+async function builderReq(path: string, init?: RequestInit): Promise<Request> {
+  const token = await mintInternalToken(PLATFORM_SECRET, "tenant-1");
   return new Request(`https://spaces.naelao.com${path}`, {
     ...init,
-    headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1", ...(init?.headers as Record<string, string> | undefined) },
+    headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token, ...(init?.headers as Record<string, string> | undefined) },
   });
 }
 
 async function registerTrigger(env: ReturnType<typeof makeEnv>["env"], eventType: string, scriptName: string): Promise<void> {
   const res = await spacesWorker.fetch(
-    builderReq("/spaces/space-1/event-triggers", {
+    await builderReq("/spaces/space-1/event-triggers", {
       method: "POST",
-      body: JSON.stringify({ event_type: eventType, script_name: scriptName, condition: { type: "always" } }),
+      body: JSON.stringify({ project_id: "project-1", event_type: eventType, script_name: scriptName, condition: { type: "always" } }),
     }),
     env as never, execCtx
   );
@@ -111,9 +123,9 @@ describe("scheduled-jobs CRUD fires scheduled_job.* events end to end (through t
     const { env, calls } = makeEnv();
     await registerTrigger(env, "scheduled_job.created", "on-cron-created");
     const res = await spacesWorker.fetch(
-      builderReq("/spaces/space-1/scheduled-jobs", {
+      await builderReq("/spaces/space-1/scheduled-jobs", {
         method: "POST",
-        body: JSON.stringify({ name: "Weekly review", cron_expression: "0 9 * * 1", goal: "Review" }),
+        body: JSON.stringify({ name: "Weekly review", cron_expression: "0 9 * * 1", goal: "Review", project_id: "project-1" }),
       }),
       env as never, execCtx
     );
@@ -126,16 +138,16 @@ describe("scheduled-jobs CRUD fires scheduled_job.* events end to end (through t
     await registerTrigger(env, "scheduled_job.paused", "on-cron-paused");
     await registerTrigger(env, "scheduled_job.updated", "on-cron-updated");
     const created = await spacesWorker.fetch(
-      builderReq("/spaces/space-1/scheduled-jobs", {
+      await builderReq("/spaces/space-1/scheduled-jobs", {
         method: "POST",
-        body: JSON.stringify({ name: "Job", cron_expression: "0 9 * * *", goal: "x" }),
+        body: JSON.stringify({ name: "Job", cron_expression: "0 9 * * *", goal: "x", project_id: "project-1" }),
       }),
       env as never, execCtx
     ).then((r) => r.json<{ id: string }>());
     calls.length = 0; // ignore the .created firing from the setup POST above
 
     const res = await spacesWorker.fetch(
-      builderReq(`/spaces/space-1/scheduled-jobs/${created.id}`, { method: "PATCH", body: JSON.stringify({ enabled: false }) }),
+      await builderReq(`/spaces/space-1/scheduled-jobs/${created.id}`, { method: "PATCH", body: JSON.stringify({ enabled: false }) }),
       env as never, execCtx
     );
     expect(res.status).toBe(200);
@@ -146,16 +158,16 @@ describe("scheduled-jobs CRUD fires scheduled_job.* events end to end (through t
     const { env, calls } = makeEnv();
     await registerTrigger(env, "scheduled_job.enabled", "on-cron-enabled");
     const created = await spacesWorker.fetch(
-      builderReq("/spaces/space-1/scheduled-jobs", {
+      await builderReq("/spaces/space-1/scheduled-jobs", {
         method: "POST",
-        body: JSON.stringify({ name: "Job", cron_expression: "0 9 * * *", goal: "x" }),
+        body: JSON.stringify({ name: "Job", cron_expression: "0 9 * * *", goal: "x", project_id: "project-1" }),
       }),
       env as never, execCtx
     ).then((r) => r.json<{ id: string }>());
     calls.length = 0;
 
     await spacesWorker.fetch(
-      builderReq(`/spaces/space-1/scheduled-jobs/${created.id}`, { method: "PATCH", body: JSON.stringify({ enabled: true }) }),
+      await builderReq(`/spaces/space-1/scheduled-jobs/${created.id}`, { method: "PATCH", body: JSON.stringify({ enabled: true }) }),
       env as never, execCtx
     );
     expect(await scriptNamesFired(calls)).toEqual(["on-cron-enabled"]);
@@ -165,16 +177,16 @@ describe("scheduled-jobs CRUD fires scheduled_job.* events end to end (through t
     const { env, calls } = makeEnv();
     await registerTrigger(env, "scheduled_job.updated", "on-cron-updated");
     const created = await spacesWorker.fetch(
-      builderReq("/spaces/space-1/scheduled-jobs", {
+      await builderReq("/spaces/space-1/scheduled-jobs", {
         method: "POST",
-        body: JSON.stringify({ name: "Job", cron_expression: "0 9 * * *", goal: "x" }),
+        body: JSON.stringify({ name: "Job", cron_expression: "0 9 * * *", goal: "x", project_id: "project-1" }),
       }),
       env as never, execCtx
     ).then((r) => r.json<{ id: string }>());
     calls.length = 0;
 
     await spacesWorker.fetch(
-      builderReq(`/spaces/space-1/scheduled-jobs/${created.id}`, { method: "PATCH", body: JSON.stringify({ name: "Renamed" }) }),
+      await builderReq(`/spaces/space-1/scheduled-jobs/${created.id}`, { method: "PATCH", body: JSON.stringify({ name: "Renamed" }) }),
       env as never, execCtx
     );
     expect(await scriptNamesFired(calls)).toEqual(["on-cron-updated"]);
@@ -184,16 +196,16 @@ describe("scheduled-jobs CRUD fires scheduled_job.* events end to end (through t
     const { env, calls } = makeEnv();
     await registerTrigger(env, "scheduled_job.deleted", "on-cron-deleted");
     const created = await spacesWorker.fetch(
-      builderReq("/spaces/space-1/scheduled-jobs", {
+      await builderReq("/spaces/space-1/scheduled-jobs", {
         method: "POST",
-        body: JSON.stringify({ name: "Job", cron_expression: "0 9 * * *", goal: "x" }),
+        body: JSON.stringify({ name: "Job", cron_expression: "0 9 * * *", goal: "x", project_id: "project-1" }),
       }),
       env as never, execCtx
     ).then((r) => r.json<{ id: string }>());
     calls.length = 0;
 
     const res = await spacesWorker.fetch(
-      builderReq(`/spaces/space-1/scheduled-jobs/${created.id}`, { method: "DELETE" }),
+      await builderReq(`/spaces/space-1/scheduled-jobs/${created.id}`, { method: "DELETE" }),
       env as never, execCtx
     );
     expect(res.status).toBe(200);
@@ -203,9 +215,9 @@ describe("scheduled-jobs CRUD fires scheduled_job.* events end to end (through t
   it("firing is best-effort — the CRUD response still succeeds even if event_triggers has nothing configured", async () => {
     const { env, calls } = makeEnv();
     const res = await spacesWorker.fetch(
-      builderReq("/spaces/space-1/scheduled-jobs", {
+      await builderReq("/spaces/space-1/scheduled-jobs", {
         method: "POST",
-        body: JSON.stringify({ name: "Job", cron_expression: "0 9 * * *", goal: "x" }),
+        body: JSON.stringify({ name: "Job", cron_expression: "0 9 * * *", goal: "x", project_id: "project-1" }),
       }),
       env as never, execCtx
     );

@@ -23,6 +23,7 @@ const MIGRATIONS = [
   readFileSync(join(__dirname, "../../infra/migrations/0037_mcp_servers_auth.sql"), "utf8"),
   readFileSync(join(__dirname, "../../infra/migrations/0060_mcp_server_connector_provider.sql"), "utf8"),
   readFileSync(join(__dirname, "../../infra/migrations/0075_phase1_runtime_security.sql"), "utf8"),
+  readFileSync(join(__dirname, "../../infra/migrations/0076_connector_alias_hardening.sql"), "utf8"),
 ];
 
 function makeEnv(overrides: Record<string, unknown> = {}) {

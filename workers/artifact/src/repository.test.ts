@@ -62,27 +62,29 @@ describe("Git object and metadata encoding", () => {
   });
 
   it("supports turn-by-turn commits, zero-copy micro-forking, and reasoning blame", async () => {
-    const storage = new Map();
-    const objects = new Map();
+    const storage = new Map<string, unknown>();
+    const objects = new Map<string, Uint8Array>();
     const mockCtx = {
       storage: {
-        get: async (k) => storage.get(k),
-        put: async (k, v) => {
+        get: async (k: string) => storage.get(k),
+        put: async (k: string, v: unknown) => {
           storage.set(k, v);
         },
       },
     };
     const mockEnv = {
       REPOSITORY_OBJECTS: {
-        head: async (k) => objects.has(k),
-        put: async (k, v) => {
+        head: async (k: string) => objects.has(k),
+        put: async (k: string, v: Uint8Array) => {
           objects.set(k, v);
         },
-        get: async (k) => ({ arrayBuffer: async () => objects.get(k).buffer }),
+        get: async (k: string) => ({
+          arrayBuffer: async () => objects.get(k)!.buffer,
+        }),
       },
     };
 
-    const repo = new RepositoryDO(mockCtx, mockEnv);
+    const repo = new RepositoryDO(mockCtx as never, mockEnv as never);
     const scopeHeaders = {
       "x-repository-scope": JSON.stringify({
         tenantId: "t1",
@@ -111,7 +113,7 @@ describe("Git object and metadata encoding", () => {
         body: JSON.stringify({ metadata }),
       })
     );
-    const c1 = await c1Res.json();
+    const c1 = (await c1Res.json()) as { commit_id: string };
 
     // Zero-copy fork
     const forkRes = await repo.fetch(
@@ -130,7 +132,9 @@ describe("Git object and metadata encoding", () => {
         headers: scopeHeaders,
       })
     );
-    const blame = await blameRes.json();
+    const blame = (await blameRes.json()) as {
+      latest: { metadata: typeof metadata };
+    };
     expect(blame.latest.metadata.rationale).toBe("implemented feature");
 
     // Rollback
@@ -151,6 +155,9 @@ describe("Git object and metadata encoding", () => {
     const treeRes = await repo.fetch(
       new Request("https://repo/tree", { method: "GET", headers: scopeHeaders })
     );
-    expect((await treeRes.json()).data[0]?.path).toBe("README.md");
+    expect(
+      ((await treeRes.json()) as { data: Array<{ path: string }> }).data[0]
+        ?.path
+    ).toBe("README.md");
   });
 });

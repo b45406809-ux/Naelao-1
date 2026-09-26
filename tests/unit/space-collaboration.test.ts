@@ -129,28 +129,25 @@ describe("SpaceDO — project deduplication", () => {
     expect(res.json.possible_duplicates).toEqual([]);
   });
 
-  it("fires a project.possible_duplicate trigger (bounded fan-out, no LLM cost) when a duplicate is found", async () => {
+  it("does not cross-fire a project-scoped trigger for a different duplicate project", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response("{}"));
     const doWithTriggers = makeSpaceDO({ AGENTS_WORKER: { fetch: fetchMock } });
 
+    const support = await call(doWithTriggers, "/projects", "POST", { space_id: "space1", name: "Support" });
     await call(doWithTriggers, "/event-triggers", "POST", {
       space_id: "space1",
+      project_id: support.json.id,
       event_type: "project.possible_duplicate",
       condition: { type: "always" },
       script_name: "notifications.notify_admin",
     });
 
-    await call(doWithTriggers, "/projects", "POST", { space_id: "space1", name: "Support" });
     fetchMock.mockClear();
     await call(doWithTriggers, "/projects", "POST", {
       space_id: "space1", name: "Support Desk", tenant_id: "tenant-1",
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    // fireMatchingTriggers calls fetch(request) with a single Request object (not (url, init)).
-    const [firedRequest] = fetchMock.mock.calls[0] as [Request];
-    const firedBody = await firedRequest.json() as { scriptName: string };
-    expect(firedBody.scriptName).toBe("notifications.notify_admin");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

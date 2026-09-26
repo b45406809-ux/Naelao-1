@@ -40,7 +40,16 @@ function makeEnv(opts: {
           }
           return null;
         },
-        async all() { return { results: [] }; },
+        async all() {
+          if (/FROM kb_chunks k/.test(sql)) {
+            return { results: [{
+              id: "doc-1_chunk_0", document_id: "doc-1", content: "hello there",
+              r2_key: "kb/chunk.txt", byte_start: 0, byte_end: 11,
+              line_start: 1, line_end: 1, title: "Hello",
+            }] };
+          }
+          return { results: [] };
+        },
         async run() {
           if (/^DELETE FROM kb_documents/.test(sql) && opts.deleteRan) opts.deleteRan.called = true;
           if (/^INSERT INTO kb_documents/.test(sql) && opts.insertRan) opts.insertRan.called = true;
@@ -95,7 +104,7 @@ describe("knowledge worker — kb/* ownership gate covers every verb", () => {
     const token = await mintInternalToken(SECRET, "attacker-tenant");
     const res = await knowledgeWorker.fetch(
       new Request("https://knowledge.naelao.com/spaces/victim-space/kb/documents", {
-        headers: { "x-naelao-tenant-id": "attacker-tenant", "x-naelao-internal-token": token },
+        headers: { "x-naelao-tenant-id": "attacker-tenant", "x-naelao-internal-token": token, "x-naelao-role": "builder", "x-naelao-user-id": "builder" },
       }),
       makeEnv({ ownerTenantId: "victim-tenant" }) as never,
       execCtx
@@ -112,6 +121,8 @@ describe("knowledge worker — kb/* ownership gate covers every verb", () => {
         headers: {
           "x-naelao-tenant-id": "attacker-tenant",
           "x-naelao-internal-token": token,
+          "x-naelao-role": "builder",
+          "x-naelao-user-id": "builder",
           "content-type": "application/json",
         },
         body: JSON.stringify({ title: "poisoned doc", content: "malicious content" }),
@@ -129,7 +140,7 @@ describe("knowledge worker — kb/* ownership gate covers every verb", () => {
     const res = await knowledgeWorker.fetch(
       new Request("https://knowledge.naelao.com/spaces/victim-space/kb/documents/doc-1", {
         method: "DELETE",
-        headers: { "x-naelao-tenant-id": "attacker-tenant", "x-naelao-internal-token": token },
+        headers: { "x-naelao-tenant-id": "attacker-tenant", "x-naelao-internal-token": token, "x-naelao-role": "builder", "x-naelao-user-id": "builder" },
       }),
       makeEnv({ ownerTenantId: "victim-tenant", deleteRan }) as never,
       execCtx
@@ -146,7 +157,7 @@ describe("knowledge worker — kb/* ownership gate covers every verb", () => {
     // Tenant A searches its own space — cache miss, populates the cache.
     const resA = await knowledgeWorker.fetch(
       new Request("https://knowledge.naelao.com/spaces/shared-space-id/kb/search?q=hello", {
-        headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": tokenA },
+        headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": tokenA, "x-naelao-role": "builder", "x-naelao-user-id": "builder" },
       }),
       envA as never,
       execCtx
@@ -160,7 +171,7 @@ describe("knowledge worker — kb/* ownership gate covers every verb", () => {
     const tokenB = await mintInternalToken(SECRET, "tenant-b");
     const resB = await knowledgeWorker.fetch(
       new Request("https://knowledge.naelao.com/spaces/shared-space-id/kb/search?q=hello", {
-        headers: { "x-naelao-tenant-id": "tenant-b", "x-naelao-internal-token": tokenB },
+        headers: { "x-naelao-tenant-id": "tenant-b", "x-naelao-internal-token": tokenB, "x-naelao-role": "builder", "x-naelao-user-id": "builder" },
       }),
       makeEnv({ ownerTenantId: "tenant-a", cacheStore }) as never,
       execCtx
@@ -173,7 +184,7 @@ describe("knowledge worker — kb/* ownership gate covers every verb", () => {
     const tokenBOwn = await mintInternalToken(SECRET, "tenant-b");
     const resBOwn = await knowledgeWorker.fetch(
       new Request("https://knowledge.naelao.com/spaces/tenant-b-space/kb/search?q=hello", {
-        headers: { "x-naelao-tenant-id": "tenant-b", "x-naelao-internal-token": tokenBOwn },
+        headers: { "x-naelao-tenant-id": "tenant-b", "x-naelao-internal-token": tokenBOwn, "x-naelao-role": "builder", "x-naelao-user-id": "builder" },
       }),
       makeEnv({ ownerTenantId: "tenant-b", cacheStore }) as never,
       execCtx

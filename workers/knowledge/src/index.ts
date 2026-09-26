@@ -72,10 +72,11 @@ interface ChunkRecord {
   lineEnd: number;
 }
 
-// WS-4: Vectorize metadata can't filter on a genuinely absent field the same way SQL's
-// `IS NULL` works — an empty string is used as the "space-wide" sentinel so a project-scoped
-// query and a space-wide query never accidentally match each other.
-const SPACE_WIDE_PROJECT_SENTINEL = "";
+// WS-4: Vectorize metadata cannot filter on an absent field like SQL's `IS NULL`. Use a stable,
+// non-empty sentinel so the shared retrieval contract accepts the scope while project-scoped and
+// space-wide queries remain disjoint. `_space` is explicit in telemetry/cache keys and cannot
+// collide with generated project IDs.
+const SPACE_WIDE_PROJECT_SENTINEL = "_space";
 
 // ── Hono app ──────────────────────────────────────────────────────────────────
 
@@ -832,8 +833,7 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
     throw notFound("Project not found");
   }
   const policyVersion = c.env.RETRIEVAL_POLICY_VERSION ?? "1";
-  const mode = useAutoRag ? "autorag" : "hybrid";
-  const namespace = `${tenantId}:${spaceId}:${scope.projectId}:${roleRank}:${mode}:${policyVersion}`;
+  let mode: "autorag" | "hybrid" = useAutoRag ? "autorag" : "hybrid";
   const telemetry: Record<string, number> = {};
   const timed = async <T>(name: string, operation: () => Promise<T>): Promise<T> => {
     const started = performance.now();
@@ -845,6 +845,53 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
     byteStart: Number(row.byte_start), byteEnd: Number(row.byte_end),
     lineStart: Number(row.line_start), lineEnd: Number(row.line_end), title: String(row.title ?? ""),
   });
+  if (useAutoRag) {
+    try {
+      const autoRagInstance = c.env.AUTORAG_KB_INSTANCE;
+      if (!autoRagInstance) throw new Error("AutoRAG instance is not configured");
+      const response = await timed("autorag_search_ms", () =>
+        c.env.AI.autorag(autoRagInstance).search({
+          query: query.trim(),
+          max_num_results: topK,
+          rewrite_query: true,
+        })
+      ) as { data?: Array<{ filename?: string; score?: number; content?: Array<{ text?: string }> }> };
+      const data = (response.data ?? [])
+        .filter((item) => {
+          const prefix = `autorag/${spaceId}/${projectId ?? "_space"}/`;
+          return typeof item.filename === "string" && item.filename.startsWith(prefix);
+        })
+        .flatMap((item, index) => {
+          const filename = item.filename;
+          if (!filename) return [];
+          const leaf = filename.split("/").pop();
+          if (!leaf) return [];
+          const docId = leaf.replace(/\.md$/, "");
+          return {
+            chunk_id: `autorag:${docId}:${index}`,
+            doc_id: docId,
+            content: contextEnvelope({
+              id: `autorag:${docId}:${index}`,
+              score: item.score ?? 0,
+              content: (item.content ?? []).map((part) => part.text ?? "").join("\n"),
+              r2Key: filename,
+              byteStart: 0,
+              byteEnd: 0,
+              title: docId,
+            }),
+            score: item.score ?? 0,
+            citation: { document_id: docId, chunk_id: `autorag:${docId}:${index}`, byte_start: 0, byte_end: 0 },
+          };
+        });
+      return c.json({ data, cached: false, retrieval_mode: "autorag", confidence: data[0]?.score ?? 0,
+        live_grounding: false, latency_ms: telemetry["autorag_search_ms"] ?? 0 });
+    } catch {
+      // AutoRAG is optional. Preserve availability by falling back to the fully scoped hybrid
+      // pipeline rather than exposing provider/configuration failures to callers.
+      mode = "hybrid";
+    }
+  }
+  const namespace = `${tenantId}:${spaceId}:${scope.projectId}:${roleRank}:${mode}:${policyVersion}`;
   const result = await googleModeSearch(query.trim(), scope, {
     now: Date.now,
     cache: {
@@ -913,7 +960,7 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
   }, { confidenceThreshold: Number(c.env.RETRIEVAL_CONFIDENCE_THRESHOLD ?? "0.8"), limit: topK });
 
   const data = result.hits.map((hit) => ({
-    chunk_id: hit.id, content: contextEnvelope(hit), score: hit.score,
+    chunk_id: hit.id, doc_id: hit.id.split("_chunk_")[0], content: contextEnvelope(hit), score: hit.score,
     citation: hit.r2Key ? { document_id: hit.id.split("_chunk_")[0], chunk_id: hit.id,
       content_hash: undefined, byte_start: hit.byteStart, byte_end: hit.byteEnd,
       line_start: hit.lineStart, line_end: hit.lineEnd } : null,

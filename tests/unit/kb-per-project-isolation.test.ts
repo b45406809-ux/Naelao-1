@@ -20,10 +20,14 @@ const SPACES_TABLE_SQL = `
 `;
 const KB_DOCUMENTS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0006_kb_documents.sql"), "utf8");
 const KB_PROJECT_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0051_kb_documents_project.sql"), "utf8");
+const KB_SECURITY_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0074_items_45_87_security_models.sql"), "utf8");
 
 function makeEnv() {
-  const fakeDb = createFakeD1([SPACES_TABLE_SQL, KB_DOCUMENTS_MIGRATION, KB_PROJECT_MIGRATION]);
+  const fakeDb = createFakeD1([SPACES_TABLE_SQL, KB_DOCUMENTS_MIGRATION, KB_PROJECT_MIGRATION, KB_SECURITY_MIGRATION]);
   fakeDb.db.exec(`INSERT INTO spaces (id, tenant_id, status) VALUES ('space-1', 'tenant-1', 'active')`);
+  for (const projectId of ["proj-1", "proj-a", "proj-b"]) {
+    fakeDb.db.exec(`INSERT INTO project_access (tenant_id, space_id, project_id, user_id, role_rank, visibility) VALUES ('tenant-1', 'space-1', '${projectId}', 'builder', 50, 'private')`);
+  }
 
   // In-memory fake Vectorize: query() filters by the SAME flat-metadata semantics the real
   // Vectorize index uses (all filter fields ANDed, top-level $eq only).
@@ -80,7 +84,7 @@ function makeEnv() {
 
 async function req(path: string, opts: { method?: string; body?: unknown } = {}): Promise<Request> {
   const token = await mintInternalToken(SECRET, "tenant-1");
-  const headers: Record<string, string> = { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token };
+  const headers: Record<string, string> = { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token, "x-naelao-role": "builder", "x-naelao-user-id": "builder" };
   if (opts.body !== undefined) headers["content-type"] = "application/json";
   return new Request(`https://knowledge.naelao.com${path}`, {
     method: opts.method ?? "GET",

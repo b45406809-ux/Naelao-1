@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import analyticsWorker from "../../workers/analytics/src/index.js";
 import { mintInternalToken } from "@naelao/http";
 import { createFakeD1 } from "../stubs/d1-sqlite.js";
@@ -70,7 +70,9 @@ describe("analytics worker — /metrics/space/:spaceId isolation (WS-7)", () => 
     kvStore.set("metrics:space:space-1:30", JSON.stringify({ leaked: true }));
     // tenant-1 legitimately owns space-1 — its own (correctly tenant-scoped) cache key must be
     // a cache MISS here since nothing populated it yet, proving the old shared key is dead.
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("unavailable", { status: 503 }));
     const res = await analyticsWorker.fetch(await req("/metrics/space/space-1", "tenant-1"), env as never, execCtx);
+    fetchSpy.mockRestore();
     // 503 expected (no real CF_ANALYTICS creds in the test env) — the assertion that matters is
     // that this did NOT come back as the poisoned "leaked" cache entry.
     const body = await res.json() as Record<string, unknown>;

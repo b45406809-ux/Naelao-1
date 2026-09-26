@@ -255,7 +255,7 @@ export class RepositoryDO extends DurableObject<Env> {
           url.searchParams.get("at") ?? state.refs[branch] ?? undefined;
         const commits = [];
         while (currentOid && state.commits[currentOid]) {
-          const rec = state.commits[currentOid];
+          const rec = state.commits[currentOid]!;
           commits.push(rec);
           currentOid = rec.parent;
         }
@@ -267,7 +267,7 @@ export class RepositoryDO extends DurableObject<Env> {
           url.searchParams.get("at") ?? state.refs[branch] ?? undefined;
         const history = [];
         while (currentOid && state.commits[currentOid]) {
-          const rec = state.commits[currentOid];
+          const rec = state.commits[currentOid]!;
           const parentOid = rec.parent
             ? state.commits[rec.parent]?.entries[path]?.oid
             : undefined;
