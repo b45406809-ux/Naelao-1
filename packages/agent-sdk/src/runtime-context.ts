@@ -102,8 +102,10 @@ export function workspacePath(path: string): string {
 function scopedFs(fs: RuntimeFileSystem): RuntimeFileSystem {
   return Object.freeze({
     read: async (path: string) => fs.read(workspacePath(path)),
-    write: async (path: string, contents: string) => fs.write(workspacePath(path), contents),
-    edit: async (path: string, oldText: string, newText: string) => fs.edit(workspacePath(path), oldText, newText),
+    write: async (path: string, contents: string, options?: { expectedHash?: string }) => options
+      ? fs.write(workspacePath(path), contents, options) : fs.write(workspacePath(path), contents),
+    edit: async (path: string, oldText: string, newText: string, options?: { expectedHash?: string }) => options
+      ? fs.edit(workspacePath(path), oldText, newText, options) : fs.edit(workspacePath(path), oldText, newText),
     diff: async (path: string, contents: string) => fs.diff(workspacePath(path), contents),
     grep: async (pattern: string, options: { path?: string; glob?: string } = {}) =>
       fs.grep(pattern, { ...options, path: workspacePath(options.path ?? WORKSPACE_ROOT) }),

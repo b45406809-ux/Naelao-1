@@ -5,6 +5,8 @@ import { parseCliWords, VirtualCliDispatcher } from "./virtual-cli.js";
 export interface VirtualFileSystem {
   read(path: string): Promise<string | undefined>;
   list(): Promise<string[]>;
+  write?(path: string, contents: string, options?: { expectedHash?: string }): Promise<void>;
+  edit?(path: string, oldText: string, newText: string, options?: { expectedHash?: string }): Promise<void>;
 }
 
 export interface VirtualShellResult {

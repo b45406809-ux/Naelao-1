@@ -8,6 +8,7 @@ import {
   encodeTreeHierarchy,
   normalizePath,
   objectKey,
+  sha256,
   validateMetadata,
 } from "./repository.js";
 
@@ -177,6 +178,15 @@ export class RepositoryDO extends DurableObject<Env> {
   }
 
   async fetch(request: Request): Promise<Response> {
+    if (request.method === "GET") return this.handle(request);
+    // Keep the state read, expected-hash comparison, immutable object write and ref/state update
+    // inside one Durable Object input gate. This is the SQLite equivalent of an atomic CAS.
+    return typeof this.ctx.blockConcurrencyWhile === "function"
+      ? this.ctx.blockConcurrencyWhile(() => this.handle(request))
+      : this.handle(request);
+  }
+
+  private async handle(request: Request): Promise<Response> {
     try {
       const scope = this.scope(request);
       const url = new URL(request.url);
@@ -195,6 +205,11 @@ export class RepositoryDO extends DurableObject<Env> {
             "git.reset_hard": "rollback",
             rollbackToTurn: "rollback",
             getBlame: "blame",
+            generatePullRequestDiff: "pull-request-diff",
+            submitPullRequest: "submit-pull-request",
+            mergePullRequest: "merge-pull-request",
+            getDivergenceStatus: "divergence",
+            reconcileUpstream: "reconcile-upstream",
           } as Record<string, string>
         )[op] ?? op;
       const state = await this.state();
@@ -292,15 +307,21 @@ export class RepositoryDO extends DurableObject<Env> {
                 char.charCodeAt(0)
               )
             : new TextEncoder().encode(String(body.content ?? ""));
+        const current = state.worktrees[branch]![path];
+        if (body.expected_hash !== undefined && current?.hash !== body.expected_hash) {
+          return jsonError(`✖ Conflict Error: '${path}' was modified concurrently. Re-read before applying patch.`, 409);
+        }
         const blob = await encodeGitObject("blob", bytes);
+        const hash = await sha256(bytes);
         await this.putObject(scope, blob.oid, blob.bytes);
         state.worktrees[branch]![path] = {
           path,
           oid: blob.oid,
           size: bytes.byteLength,
+          hash,
         };
         await this.save(state);
-        return Response.json({ path, oid: blob.oid, size: bytes.byteLength });
+        return Response.json({ path, oid: blob.oid, hash, size: bytes.byteLength });
       }
       if (op === "file" && request.method === "DELETE") {
         const path = normalizePath(String(body.path ?? ""));
@@ -343,6 +364,9 @@ export class RepositoryDO extends DurableObject<Env> {
           ]
             .map((byte) => byte.toString(16).padStart(2, "0"))
             .join("");
+          const current = state.worktrees[branch]![path];
+          if (change.expected_hash !== undefined && current?.hash !== change.expected_hash)
+            return jsonError(`✖ Conflict Error: '${path}' was modified concurrently. Re-read before applying patch.`, 409);
           if (change.oid !== undefined && change.oid !== contentSha256)
             return jsonError(`Content SHA-256 mismatch for ${path}`, 409);
           const blob = await encodeGitObject("blob", bytes);
@@ -351,6 +375,7 @@ export class RepositoryDO extends DurableObject<Env> {
             path,
             oid: blob.oid,
             size: bytes.byteLength,
+            hash: contentSha256,
           };
         }
         // Defense in depth for worktrees created before namespace validation was introduced.
@@ -452,6 +477,87 @@ export class RepositoryDO extends DurableObject<Env> {
           { status: 201 }
         );
       }
+      if (op === "pull-request-diff" && request.method === "GET") {
+        const baseName = (url.searchParams.get("baseBranch") ?? "main").replace(/^refs\/heads\//, "");
+        const forkName = (url.searchParams.get("forkBranch") ?? "").replace(/^refs\/heads\//, "");
+        const base = state.refs[baseName];
+        const head = state.refs[forkName];
+        if (!base || !head) return jsonError("Reference not found", 404);
+        const files = await this.changedFiles(scope, state.commits[base]!.entries, state.commits[head]!.entries);
+        return Response.json({
+          baseBranch: baseName, forkBranch: forkName, baseCommit: base, headCommit: head,
+          additions: files.reduce((sum, file) => sum + file.additions, 0),
+          deletions: files.reduce((sum, file) => sum + file.deletions, 0), files,
+        });
+      }
+      if (op === "submit-pull-request" && request.method === "POST") {
+        const baseName = String(body.baseBranch ?? "main").replace(/^refs\/heads\//, "");
+        const forkName = String(body.forkBranch ?? branch).replace(/^refs\/heads\//, "");
+        const base = state.refs[baseName], head = state.refs[forkName];
+        if (!base || !head) return jsonError("Reference not found", 404);
+        const files = await this.changedFiles(scope, state.commits[base]!.entries, state.commits[head]!.entries);
+        const card = {
+          type: "inline_pull_request", id: crypto.randomUUID(), title: String(body.title ?? `Merge ${forkName} into ${baseName}`),
+          author: String(body.author ?? "agent"), reasoning: String(body.reasoning ?? ""), baseBranch: baseName,
+          forkBranch: forkName, baseCommit: base, headCommit: head, files,
+          additions: files.reduce((sum, file) => sum + file.additions, 0),
+          deletions: files.reduce((sum, file) => sum + file.deletions, 0),
+          actions: ["accept_and_merge", "request_revisions", "reject"], createdAt: new Date().toISOString(),
+        };
+        return Response.json({ card, event: { type: "workspace.pull_request", tier: "tier_1_team", payload: card } }, { status: 201 });
+      }
+      if (op === "divergence" && request.method === "GET") {
+        const baseName = url.searchParams.get("baseRef") ?? "main";
+        const currentName = url.searchParams.get("currentRef") ?? branch;
+        const upstreamHead = this.resolve(state, baseName), current = this.resolve(state, currentName);
+        if (!upstreamHead || !current) return jsonError("Reference not found", 404);
+        const currentAncestors = this.ancestors(state, current);
+        const commitsBehind = [...this.ancestors(state, upstreamHead).keys()].filter((oid) => !currentAncestors.has(oid)).length;
+        const common = [...this.ancestors(state, upstreamHead).keys()].find((oid) => currentAncestors.has(oid)) ?? current;
+        return Response.json({ commitsBehind, baseCommit: common, upstreamHead });
+      }
+      if (op === "reconcile-upstream" && request.method === "POST") {
+        const targetName = String(body.targetBranch ?? branch).replace(/^refs\/heads\//, "");
+        const upstreamName = String(body.upstreamBranch ?? "main").replace(/^refs\/heads\//, "");
+        const target = state.refs[targetName], upstream = state.refs[upstreamName];
+        if (!target || !upstream) return jsonError("Reference not found", 404);
+        const targetAncestors = this.ancestors(state, target);
+        const commitsBehind = [...this.ancestors(state, upstream).keys()].filter((oid) => !targetAncestors.has(oid)).length;
+        if (!commitsBehind) return Response.json({ status: "UP_TO_DATE", commitsBehind: 0, baseCommit: upstream, upstreamHead: upstream, overlappingFiles: [] });
+        const common = [...this.ancestors(state, upstream).keys()].find((oid) => targetAncestors.has(oid));
+        if (!common) return jsonError("No merge base", 409);
+        const baseEntries = state.commits[common]!.entries;
+        const upstreamEntries = state.commits[upstream]!.entries;
+        const targetEntries = state.commits[target]!.entries;
+        const upstreamFiles = (await this.changedFiles(scope, baseEntries, upstreamEntries)).map((f) => f.path);
+        const localFiles = (await this.changedFiles(scope, baseEntries, targetEntries)).map((f) => f.path);
+        const overlappingFiles = localFiles.filter((path) => upstreamFiles.includes(path));
+        if (overlappingFiles.length) {
+          const threeWayDiff = await this.changedFiles(scope, upstreamEntries, targetEntries);
+          return Response.json({ status: "REVIEW_REQUIRED", commitsBehind, baseCommit: common, upstreamHead: upstream, overlappingFiles, upstreamFiles, threeWayDiff });
+        }
+        const rebased: Entries = structuredClone(upstreamEntries);
+        for (const path of localFiles) targetEntries[path] ? rebased[path] = targetEntries[path]! : delete rebased[path];
+        const hierarchy = await encodeTreeHierarchy(rebased);
+        await Promise.all(hierarchy.objects.map((object) => this.putObject(scope, object.oid, object.bytes)));
+        const createdAt = new Date().toISOString();
+        const metadata = validateMetadata(body.metadata ?? {
+          agent_role: "system", user_goal: "Reconcile upstream", task_id: "auto-rebase",
+          rationale: `Rebase ${targetName} onto ${upstreamName}`, thread_id: "system", tool_turn_id: crypto.randomUUID(),
+        });
+        const encoded = await encodeGitObject("commit", commitBody(hierarchy.root.oid, upstream, `Rebase ${targetName} onto ${upstreamName}`, metadata, createdAt));
+        await this.putObject(scope, encoded.oid, encoded.bytes);
+        state.commits[encoded.oid] = { oid: encoded.oid, tree: hierarchy.root.oid, parent: upstream, parents: [upstream], message: `Rebase ${targetName} onto ${upstreamName}`, metadata, createdAt, entries: structuredClone(rebased) };
+        state.refs[targetName] = encoded.oid; state.worktrees[targetName] = rebased; await this.save(state);
+        return Response.json({ status: "AUTO_REBASED", commitsBehind, baseCommit: common, upstreamHead: upstream, commit_id: encoded.oid, overlappingFiles: [] });
+      }
+      if (op === "merge-pull-request" && request.method === "POST") {
+        const rank = String(body.reviewerRank ?? body.reviewer_rank ?? "");
+        if (rank !== "admin" && rank !== "owner") return jsonError("Only an admin or owner may merge a pull request", 403);
+        op = "merge";
+        body.target = body.baseBranch ?? "main";
+        body.source = body.forkBranch ?? branch;
+      }
       if (op === "compare" && request.method === "GET") {
         const base = this.resolve(
           state,
@@ -532,6 +638,7 @@ export class RepositoryDO extends DurableObject<Env> {
             commit_id: source,
             fast_forward: true,
             branch: targetName,
+            event: { type: "workspace.merged", branch: targetName, source: sourceName, reviewerId: body.reviewerId ?? null },
           });
         }
         const common = [...this.ancestors(state, target).keys()].find((oid) =>
@@ -563,7 +670,11 @@ export class RepositoryDO extends DurableObject<Env> {
             { status: 409 }
           );
         state.worktrees[targetName] = merged;
-        const metadata = validateMetadata(body.metadata);
+        const metadata = validateMetadata(body.metadata ?? {
+          agent_role: "reviewer", user_goal: `Merge ${sourceName} into ${targetName}`,
+          task_id: "pull-request-merge", rationale: `Approved by ${String(body.reviewerId ?? "reviewer")}`,
+          thread_id: "team-room", tool_turn_id: crypto.randomUUID(),
+        });
         const hierarchy = await encodeTreeHierarchy(merged);
         await Promise.all(
           hierarchy.objects.map((object) =>
@@ -604,6 +715,7 @@ export class RepositoryDO extends DurableObject<Env> {
             merged: true,
             branch: targetName,
             parents: [target, source],
+            event: { type: "workspace.merged", branch: targetName, source: sourceName, reviewerId: body.reviewerId ?? null },
           },
           { status: 201 }
         );

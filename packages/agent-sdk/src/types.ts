@@ -64,8 +64,8 @@ export interface UniversalAgentManifest {
 
 export interface RuntimeFileSystem {
   read(path: string): Promise<string>;
-  write(path: string, contents: string): Promise<void>;
-  edit(path: string, oldText: string, newText: string): Promise<void>;
+  write(path: string, contents: string, options?: { expectedHash?: string }): Promise<void>;
+  edit(path: string, oldText: string, newText: string, options?: { expectedHash?: string }): Promise<void>;
   diff(path: string, contents: string): Promise<string>;
   grep(pattern: string, options?: { path?: string; glob?: string }): Promise<unknown>;
   glob(pattern: string): Promise<string[]>;
