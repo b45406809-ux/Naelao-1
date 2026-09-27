@@ -152,7 +152,7 @@ function projectBusinessForModel(business: BusinessContext): Omit<BusinessContex
  * it is the part that must be obeyed structurally, and recency helps format compliance on the
  * small open-weight models this platform runs on.
  */
-export function composeSystemPrompt(agentPrompt: string | undefined, business?: BusinessContext, founderDirectives?: string): string {
+export function composeSystemPrompt(agentPrompt: string | undefined, business?: BusinessContext, founderDirectives?: string, activeCatalog?: string): string {
   const own = (agentPrompt ?? "").trim();
   // The business belongs in the system message, not only in the payload.
   //
@@ -163,7 +163,8 @@ export function composeSystemPrompt(agentPrompt: string | undefined, business?: 
   // schemas, is not somewhere a 70B model reliably looks. It is carried in BOTH places for the
   // same reason the profile is: payload for completeness, system prompt for attention.
   const brief = business ? renderBusinessBrief(business) : "";
-  if (!own && !founderDirectives) return brief ? `${DECISION_INSTRUCTIONS}\n\n---\n\n${brief}` : DECISION_INSTRUCTIONS;
+  const catalog = activeCatalog?.trim() ? `# AVAILABLE COMMANDS & SKILLS\n${activeCatalog.trim()}\n\nSignatures and descriptions only. Load implementation source only when executing a command.` : "";
+  if (!own && !founderDirectives) return [DECISION_INSTRUCTIONS, brief, catalog].filter(Boolean).join("\n\n---\n\n");
   const bounded = own.length > MAX_AGENT_PROMPT_CHARS ? `${own.slice(0, MAX_AGENT_PROMPT_CHARS)}…` : own;
   // Identity, protocol, then identity again in one line.
   //
@@ -182,6 +183,7 @@ export function composeSystemPrompt(agentPrompt: string | undefined, business?: 
     `<business_context>${escapeLayer(brief)}</business_context>`,
     `<soul>${escapeLayer(bounded)}</soul>`,
     `<founder_directives>${escapeLayer((founderDirectives ?? "").trim())}</founder_directives>`,
+    catalog,
     // The closing anchor now carries the business too, for exactly the reason it carries the
     // identity: it is the last thing read, and "which business" was being lost in the same place
     // "who am I" was.
@@ -863,7 +865,7 @@ export class GatewayReasoner implements Reasoner {
     const query = {
       model: this.deps.model ?? this.deps.ctx.model ?? "claude-haiku-4-5-20251001",
       max_tokens: 1500,
-      system: composeSystemPrompt(this.deps.agentPrompt, this.deps.businessContext, this.deps.founderDirectives),
+      system: composeSystemPrompt(this.deps.agentPrompt, this.deps.businessContext, this.deps.founderDirectives, input.activeCatalog),
       messages: [{ role: "user", content: userContent }],
     };
 

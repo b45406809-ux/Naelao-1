@@ -33,6 +33,9 @@ import { assessSkillHealth } from "../skill-health.js";
 import { isPromotable } from "../federation.js";
 import { removeScriptEmbedding } from "../script-find.js";
 import { mintInternalToken } from "@naelao/http";
+import { distillSkillFromTrace } from "../distill.js";
+import { distillSkillFromVideo } from "../video-distill.js";
+import { workspacePrefix } from "../types.js";
 
 function library(ctx: PrebuiltOpContext): SkillLibrary {
   return new SkillLibrary(ctx.env.scriptsBucket, ctx.env.spaceId);
@@ -219,6 +222,20 @@ async function promote(a: Record<string, unknown>, ctx: PrebuiltOpContext): Prom
   };
 }
 
+async function distillTrace(a: Record<string, unknown>, ctx: PrebuiltOpContext): Promise<unknown> {
+  if (!Array.isArray(a["trace"])) throw new Error("skill.distill_from_trace requires trace[]");
+  const result = await distillSkillFromTrace(a["trace"] as never[], String(a["skillName"] ?? ""), {
+    library: library(ctx),
+    ...(typeof a["description"] === "string" ? { description: a["description"] } : {}),
+    workspace: { bucket: ctx.env.workspaceBucket ?? ctx.env.scriptsBucket, prefix: workspacePrefix(ctx.env) },
+  });
+  return { ok: true, name: result.metadata.name, parameters: result.metadata.parameters, verified: true };
+}
+
+async function distillVideo(a: Record<string, unknown>, ctx: PrebuiltOpContext): Promise<unknown> {
+  return distillSkillFromVideo(ctx.env, { videoPath: String(a["videoPath"] ?? ""), skillName: String(a["skillName"] ?? ""), ...(typeof a["description"] === "string" ? { description: a["description"] } : {}) });
+}
+
 export const skillManager: PrebuiltScript = {
   name: "skill-manager",
   description:
@@ -231,5 +248,11 @@ export const skillManager: PrebuiltScript = {
     "skill.rollback": rollback,
     "skill.retire": retire,
     "skill.promote": promote,
+    "skill.distill_from_trace": distillTrace,
+    "skill.distill_from_video": distillVideo,
+  },
+  paramHints: {
+    "skill.distill_from_trace": "trace and skillName are required; description is optional.",
+    "skill.distill_from_video": "videoPath and skillName are required; description is optional.",
   },
 };
