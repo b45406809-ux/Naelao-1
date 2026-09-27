@@ -21,6 +21,8 @@ async function internalHeaders(ctx: PrebuiltOpContext, extra?: Record<string, st
   return {
     "x-naelao-tenant-id": ctx.env.tenantId,
     "x-naelao-internal-token": await mintInternalToken(ctx.env.platformSecret ?? "", ctx.env.tenantId),
+    "x-naelao-user-id": ctx.env.userId ?? ctx.env.humanInvokerId ?? "system",
+    "x-naelao-role": ctx.env.effectiveRole ?? "owner",
     ...extra,
   };
 }
@@ -45,7 +47,7 @@ export const knowledgeBase: PrebuiltScript = {
       const topK = typeof args["top_k"] === "number" ? (args["top_k"] as number) : 5;
       const resp = await reqWorker(ctx).fetch(
         new Request(
-          `http://knowledge-worker/spaces/${ctx.env.spaceId}/kb/search?q=${encodeURIComponent(query)}&top_k=${topK}`,
+          `http://knowledge-worker/spaces/${ctx.env.spaceId}/kb/search?q=${encodeURIComponent(query)}&top_k=${topK}${ctx.env.projectId ? `&project_id=${encodeURIComponent(ctx.env.projectId)}` : ""}`,
           { headers: await internalHeaders(ctx) }
         )
       );

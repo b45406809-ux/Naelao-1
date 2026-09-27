@@ -1,6 +1,25 @@
 /** Public contracts for code authored against the universal AVOS runtime. */
 export type RuntimeScope = "SPACE_WIDE" | "PROJECT_BOUND";
 
+/** Public sovereign-permission contract shared by agent integrations. */
+export type KnowledgeRole = "owner" | "admin" | "editor" | "member" | "viewer";
+export type KnowledgeScope = "USER_PRIVATE" | "PROJECT_BOUND" | "SPACE_WIDE";
+export interface KnowledgeCallerClaims {
+  userId: string;
+  role: KnowledgeRole;
+  spaceIds: readonly string[];
+  projectIds?: readonly string[];
+}
+export interface KnowledgeClearance {
+  userId: string;
+  role: KnowledgeRole;
+  roleMask: number;
+  spaceId: string;
+  projectId?: string;
+  scope: KnowledgeScope;
+  allowedUserIds: readonly string[];
+}
+
 /** Declarative identity for every Naelao runtime. The kernel is shared; only this data varies. */
 export type UniversalAgentRole =
   | "DEV_OPERATOR"

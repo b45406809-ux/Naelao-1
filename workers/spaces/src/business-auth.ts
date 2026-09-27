@@ -21,10 +21,16 @@
 // product root. No applicable row means no access, regardless of product session validity.
 
 import { createMiddleware } from "hono/factory";
+import { KNOWLEDGE_ROLE_MASK, type KnowledgeRole } from "@naelao/security";
 
 export type BusinessRole = "viewer" | "member" | "admin" | "owner";
 
 const ROLE_RANK: Record<BusinessRole, number> = { viewer: 0, member: 1, admin: 2, owner: 3 };
+
+/** Canonical bit carried into knowledge indexing/query claims for business members. */
+export function businessRoleKnowledgeMask(role: BusinessRole): number {
+  return KNOWLEDGE_ROLE_MASK[role as KnowledgeRole];
+}
 
 interface BusinessAuthEnv {
   PLATFORM_DB: D1Database;
