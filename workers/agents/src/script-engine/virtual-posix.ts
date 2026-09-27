@@ -1,5 +1,6 @@
 import { normalizeWorkspacePath } from "./workspace-paths.js";
-import { parseCliWords } from "./virtual-cli.js";
+import { inspectMutation, type WriteGuardOptions } from "@naelao/security";
+import { parseCliWords, VirtualCliDispatcher } from "./virtual-cli.js";
 
 export interface VirtualFileSystem {
   read(path: string): Promise<string | undefined>;
@@ -11,7 +12,11 @@ export interface VirtualShellResult {
   stdout: string;
   stderr?: string;
 }
-const BUILTINS = new Set(["cat", "grep", "sed", "awk", "find", "jq", "diff"]);
+export interface VirtualPosixOptions {
+  writeGuard?: WriteGuardOptions;
+  cli?: VirtualCliDispatcher;
+}
+const BUILTINS = new Set(["cat", "grep", "sed", "awk", "find", "jq", "diff", "stripe", "gh", "r2", "resend"]);
 
 function pipelines(command: string): string[] {
   const result: string[] = [];
@@ -183,12 +188,18 @@ export function canRunVirtually(command: string): boolean {
 /** Runs a bounded POSIX subset entirely in the Worker isolate; no container is started. */
 export async function executeVirtualPosix(
   command: string,
-  fs: VirtualFileSystem
+  fs: VirtualFileSystem,
+  options: VirtualPosixOptions = {}
 ): Promise<VirtualShellResult> {
   let stdout = "";
   try {
-    for (const part of pipelines(command))
-      stdout = await stage(fs, parseCliWords(part), stdout);
+    // This is intentionally the first awaited operation: no filesystem/API handler can run first.
+    if (options.writeGuard) await inspectMutation(command, { ...options.writeGuard, kind: "shell" });
+    for (const part of pipelines(command)) {
+      const words = parseCliWords(part);
+      const intercepted = await options.cli?.execute(words, stdout);
+      stdout = intercepted ? intercepted.stdout : await stage(fs, words, stdout);
+    }
     return { exit_code: 0, stdout };
   } catch (error) {
     return {

@@ -31,13 +31,13 @@ export function workspacePath(path: string): string {
 
 function scopedFs(fs: RuntimeFileSystem): RuntimeFileSystem {
   return Object.freeze({
-    read: (path: string) => fs.read(workspacePath(path)),
-    write: (path: string, contents: string) => fs.write(workspacePath(path), contents),
-    edit: (path: string, oldText: string, newText: string) => fs.edit(workspacePath(path), oldText, newText),
-    diff: (path: string, contents: string) => fs.diff(workspacePath(path), contents),
-    grep: (pattern: string, options: { path?: string; glob?: string } = {}) =>
+    read: async (path: string) => fs.read(workspacePath(path)),
+    write: async (path: string, contents: string) => fs.write(workspacePath(path), contents),
+    edit: async (path: string, oldText: string, newText: string) => fs.edit(workspacePath(path), oldText, newText),
+    diff: async (path: string, contents: string) => fs.diff(workspacePath(path), contents),
+    grep: async (pattern: string, options: { path?: string; glob?: string } = {}) =>
       fs.grep(pattern, { ...options, path: workspacePath(options.path ?? WORKSPACE_ROOT) }),
-    glob: (pattern: string) => {
+    glob: async (pattern: string) => {
       if (pattern.startsWith("/") || pattern.split("/").includes("..")) workspacePath(pattern);
       return fs.glob(pattern.startsWith("/") ? pattern : `${WORKSPACE_ROOT}/${pattern}`);
     },
@@ -63,6 +63,10 @@ export function createRuntimeContext(options: CreateRuntimeContextOptions | Laun
     browser: services.browser,
     mcp: services.mcp,
     run: services.run,
+    cli: services.cli ?? Object.freeze({
+      run: async () => { throw new Error("virtual_cli_unavailable"); },
+      register: async () => { throw new Error("virtual_cli_synthesis_unavailable"); },
+    }),
   };
   if (options.scope === "SPACE_WIDE") {
     if (!services.space) throw new Error("SPACE_WIDE runtime requires space services");
