@@ -6,6 +6,47 @@ export interface CitationCoordinate {
   lineEnd?: number;
 }
 
+export interface CitationCandidate extends CitationCoordinate {
+  docId: string;
+  title: string;
+  snippet: string;
+  url?: string;
+}
+
+export interface NumberedCitation {
+  index: number;
+  title: string;
+  docId: string;
+  snippet: string;
+  url: string;
+  r2Key: string;
+  charOffset: number;
+}
+
+/** Attach stable numeric badges to cited chunk tokens (e.g. [[doc:abc]]), and return the
+ * independently renderable footnote metadata. Unreferenced candidates are not exposed. */
+export function formatNumberedCitations(chunks: CitationCandidate[], responseText: string): {
+  text: string;
+  citations: NumberedCitation[];
+} {
+  const citations: NumberedCitation[] = [];
+  const byDoc = new Map<string, NumberedCitation>();
+  const text = responseText.replace(/\[\[doc:([^\]]+)\]\]/g, (token, docId: string) => {
+    const chunk = chunks.find((item) => item.docId === docId);
+    if (!chunk) return "";
+    let citation = byDoc.get(docId);
+    if (!citation) {
+      citation = { index: citations.length + 1, title: chunk.title, docId, snippet: chunk.snippet,
+        url: chunk.url ?? `/citations/${encodeURIComponent(docId)}`, r2Key: chunk.r2Key,
+        charOffset: chunk.byteStart };
+      citations.push(citation);
+      byDoc.set(docId, citation);
+    }
+    return `[${citation.index}]`;
+  });
+  return { text, citations };
+}
+
 /** Rejects forged keys/ranges before an R2 read. The expected key is derived from authoritative
  * document state rather than accepted from the model or browser. */
 export function verifyCitationCoordinate(

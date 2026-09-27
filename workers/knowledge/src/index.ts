@@ -7,10 +7,12 @@
 
 import { Hono } from "hono";
 import { requestId, errorResponse, notFound, badRequest, unauthorized, internalError, safeKvPut, requireInternalHmac } from "@naelao/http";
-import { chunkText, embedText, embedBatch, googleModeSearch, searchPermissionedKnowledge, wrapContextChunk, UNTRUSTED_CONTEXT_INSTRUCTION, verifyCitationCoordinate, type GroundedSearchHit, type RetrievalScope } from "@naelao/rag";
+import { chunkText, chunkStructuredMarkdown, embedText, embedBatch, googleModeSearch, lookupSemanticCache, searchPermissionedKnowledge, wrapContextChunk, UNTRUSTED_CONTEXT_INSTRUCTION, verifyCitationCoordinate, type GroundedSearchHit, type RetrievalScope } from "@naelao/rag";
 import { checkSsrf, KNOWLEDGE_ROLE_MASK, type KnowledgeRole } from "@naelao/security";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { moderateInput } from "@naelao/llm-gateway";
+import { createParseV5Request } from "./parse-v5.js";
+import { sparseRank } from "./search.js";
 
 // ── Environment ───────────────────────────────────────────────────────────────
 
@@ -195,20 +197,6 @@ function docR2Prefix(spaceId: string, projectId: string | null | undefined, docI
   return `kb/${spaceId}/${projectId ?? "_space"}/${docId}/`;
 }
 
-async function parseWithCohere(env: KnowledgeEnv, content: string, contentType: string): Promise<string> {
-  if (!env.COHERE_API_KEY) throw Object.assign(new Error("Cohere Parse is not configured"), { status: 503 });
-  const response = await fetch("https://api.cohere.com/v2/parse", {
-    method: "POST",
-    headers: { authorization: `Bearer ${env.COHERE_API_KEY}`, "content-type": "application/json" },
-    body: JSON.stringify({ model: "parse-v5.0", document: { content, content_type: contentType }, output_format: "markdown" }),
-  });
-  if (!response.ok) throw Object.assign(new Error(`Cohere Parse failed (${response.status})`), { status: 502 });
-  const parsed = await response.json<{ text?: string; markdown?: string; document?: { text?: string } }>();
-  const text = parsed.markdown ?? parsed.text ?? parsed.document?.text;
-  if (!text) throw Object.assign(new Error("Cohere Parse returned no document text"), { status: 502 });
-  return text;
-}
-
 function chunkCoordinates(document: string, chunks: string[]): Array<{ byteStart: number; byteEnd: number; lineStart: number; lineEnd: number }> {
   const encoder = new TextEncoder();
   let cursor = 0;
@@ -377,7 +365,12 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
 
   try {
     // ── G-BD01: Sanitize content — strip HTML, detect injection patterns ────
-    const parsedContent = contentType === "pdf" ? await parseWithCohere(c.env, body.content, contentType) : body.content;
+    const originalBytes = contentType === "pdf"
+      ? Uint8Array.from(atob(body.content.replace(/^data:[^,]+,/, "")), (value) => value.charCodeAt(0))
+      : new TextEncoder().encode(body.content);
+    const originalKey = `kb/${spaceId}/${projectId ?? "_space"}/${docId}/original`;
+    await c.env.KB_BUCKET.put(originalKey, originalBytes, { httpMetadata: { contentType: contentType === "pdf" ? "application/pdf" : "text/plain; charset=utf-8" } });
+    const parsedContent = contentType === "pdf" ? await createParseV5Request(originalBytes, "application/pdf", c.env) : body.content;
     const { sanitized: sanitizedContent, injectionDetected } = sanitizeKbContent(parsedContent);
     if (injectionDetected) {
       // Flag in DB but do NOT reject — builders may legitimately document attacks
@@ -388,7 +381,8 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     }
 
     // ── Chunking ────────────────────────────────────────────────────────────
-    const chunks = chunkText(sanitizedContent);
+    const structuralChunks = contentType === "pdf" ? chunkStructuredMarkdown(sanitizedContent) : [];
+    const chunks = structuralChunks.length ? structuralChunks.map((chunk) => chunk.content) : chunkText(sanitizedContent);
 
     if (chunks.length === 0) {
       // Content too short to chunk — treat as one chunk
@@ -430,7 +424,7 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
         chunkId,
         contentHash,
         sourceFreshness: now,
-        headingPath: [],
+        headingPath: structuralChunks[i]?.headingPath ?? [],
         ...coordinate,
       };
       await c.env.KB_BUCKET.put(
@@ -455,6 +449,7 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
           allowed_roles: allowedRoles,
           allowed_user_ids: allowedUserIds,
           access_mask: accessMasks.reduce((mask, roleMask) => mask | roleMask, 0),
+          allowedRolesMask: accessMasks.reduce((mask, roleMask) => mask | roleMask, 0),
           required_role_rank: requiredRoleRank,
           doc_id: docId,
           chunk_id: chunkId,
@@ -898,6 +893,20 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
     }
   }
   const namespace = `${tenantId}:${spaceId}:${scope.projectId}:${roleRank}:${userId}:${mode}:${policyVersion}`;
+  // Semantic answer cache is checked before any document or web retrieval. Its Vectorize filter
+  // enforces space isolation in hardware and the helper applies the strict >.96 threshold.
+  const queryEmbedding = await embedText(c.env.AI, query.trim());
+  const semanticHit = await lookupSemanticCache(
+    { vectors: c.env.SEMANTIC_CACHE_VECTORS, kv: c.env.SEMANTIC_CACHE_KV },
+    queryEmbedding.embedding,
+    spaceId,
+  ).catch(() => null);
+  if (semanticHit) {
+    return c.json({ answer: semanticHit.text, data: [], citations: [], cached: true,
+      cache_id: semanticHit.id, similarity: semanticHit.score, retrieval_mode: "semantic-cache",
+      confidence: semanticHit.score, live_grounding: false });
+  }
+  let denseCandidates: Promise<GroundedSearchHit[]>;
   const result = await googleModeSearch(query.trim(), scope, {
     now: Date.now,
     cache: {
@@ -914,11 +923,11 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
         await safeKvPut(c.env.KB_CACHE, key, JSON.stringify({ createdAt: Date.now(), expiresAt, hits }), { expirationTtl: 3600 });
       },
     },
-    dense: async (q, scoped) => timed("dense_search_ms", async () => {
-      const embedded = await timed("embedding_ms", () => embedText(c.env.AI, q));
+    dense: async (_q, scoped) => {
+      denseCandidates = timed("dense_search_ms", async () => {
       const callerRole = (c.req.header("x-naelao-role") ?? "viewer") as KnowledgeRole;
       if (!(callerRole in KNOWLEDGE_ROLE_MASK)) throw unauthorized("Invalid knowledge role");
-      const found = await searchPermissionedKnowledge(c.env.KB_VECTORS, embedded.embedding, {
+      const found = await searchPermissionedKnowledge(c.env.KB_VECTORS, queryEmbedding.embedding, {
         tenantId: scoped.tenantId, spaceId: scoped.spaceId,
         ...(projectId ? { projectId } : {}), userId, role: callerRole,
         roleMask: KNOWLEDGE_ROLE_MASK[callerRole], topK: topK * 2,
@@ -935,10 +944,11 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
       return (found.matches ?? []).flatMap((match) => {
         const row = byId.get(match.id); return row ? [rowToHit(row, match.score ?? 0)] : [];
       });
-    }),
-    // FTS cannot apply Vectorize's array membership ACL before BM25 ranking. Returning no sparse
-    // candidates is intentionally fail-closed; never replace this with post-retrieval filtering.
-    sparse: async () => [],
+      });
+      return denseCandidates;
+    },
+    // BM25 operates only on the ACL-prefiltered candidate population, never a broad FTS result.
+    sparse: async (q) => timed("sparse_search_ms", async () => sparseRank(q, await denseCandidates)),
     web: async (q, scoped) => timed("web_grounding_ms", async () => {
       if (!c.env.TAVILY_API_KEY) return [];
       const response = await fetch(TAVILY_SEARCH_URL, { method: "POST", headers: { "content-type": "application/json" },
@@ -948,22 +958,29 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
       // no fake internal R2 coordinates or citation identity.
       const data = await response.json<{ results?: TavilyResult[] }>();
       return (data.results ?? []).map((item, index) => ({ id: `web:${index}`, score: item.score ?? 0,
-        content: item.content ?? "", r2Key: "", byteStart: 0, byteEnd: 0, title: item.title ?? "" }));
+        content: item.content ?? "", r2Key: "", byteStart: 0, byteEnd: 0, title: item.title ?? "", url: item.url ?? "" }));
     }),
     emitTelemetry: (event) => {
       const payload = { ...event, ...telemetry, retrieval_mode: mode, result_count: 0 };
       c.env.KNOWLEDGE_ANALYTICS?.writeDataPoint({ blobs: [tenantId, spaceId, scope.projectId, JSON.stringify(payload)], doubles: [event.latencyMs, event.confidence] });
       console.log(JSON.stringify({ event: "knowledge.retrieval", ...payload }));
     },
-  }, { confidenceThreshold: Number(c.env.RETRIEVAL_CONFIDENCE_THRESHOLD ?? "0.8"), limit: topK });
+  }, { confidenceThreshold: Number(c.env.RETRIEVAL_CONFIDENCE_THRESHOLD ?? "0.85"), limit: topK });
 
+  const citationHits = result.hits.filter((hit) => hit.r2Key);
+  const citationIndex = new Map(citationHits.map((hit, index) => [hit.id, index + 1]));
+  const citations = citationHits.map((hit, index) => ({ index: index + 1, title: hit.title ?? "Untitled",
+    docId: hit.id.split("_chunk_")[0], snippet: hit.content.slice(0, 280), r2Key: hit.r2Key,
+    charOffset: hit.byteStart,
+    url: `/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId ?? SPACE_WIDE_PROJECT_SENTINEL)}/citations/${encodeURIComponent(hit.id.split("_chunk_")[0] ?? "")}/${encodeURIComponent(hit.id)}` }));
   const data = await Promise.all(result.hits.map(async (hit) => ({
     chunk_id: hit.id, doc_id: hit.id.split("_chunk_")[0], content: await wrapContextChunk(hit), score: hit.score,
     citation: hit.r2Key ? { document_id: hit.id.split("_chunk_")[0], chunk_id: hit.id,
+      index: citationIndex.get(hit.id), title: hit.title, snippet: hit.content.slice(0, 280),
       content_hash: undefined, byte_start: hit.byteStart, byte_end: hit.byteEnd,
       line_start: hit.lineStart, line_end: hit.lineEnd } : null,
   })));
-  return c.json({ data, context_instruction: UNTRUSTED_CONTEXT_INSTRUCTION, cached: result.cacheHit, retrieval_mode: mode, confidence: result.confidence,
+  return c.json({ data, citations, context_instruction: UNTRUSTED_CONTEXT_INSTRUCTION, cached: result.cacheHit, retrieval_mode: mode, confidence: result.confidence,
     live_grounding: result.liveGrounding, latency_ms: result.latencyMs });
 });
 
@@ -980,7 +997,7 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
 //   Query: ?spaceId=xxx
 //   Returns: { invalidated: true }
 
-const SEMANTIC_CACHE_SIMILARITY_THRESHOLD = 0.97;
+const SEMANTIC_CACHE_SIMILARITY_THRESHOLD = 0.96;
 const SEMANTIC_CACHE_TTL_SECS = 24 * 60 * 60;
 
 // A1.16.9 (layer-3 backstop): these routes had NO auth check at all — not even a truthy
@@ -1009,7 +1026,7 @@ app.post("/internal/semantic-cache/lookup", async (c) => {
     });
 
     const top = results.matches?.[0];
-    if (!top || (top.score ?? 0) < SEMANTIC_CACHE_SIMILARITY_THRESHOLD) {
+    if (!top || (top.score ?? 0) <= SEMANTIC_CACHE_SIMILARITY_THRESHOLD) {
       return c.json({ hit: false });
     }
 
