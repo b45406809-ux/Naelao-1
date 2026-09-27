@@ -1301,6 +1301,21 @@ const MIGRATIONS: Migration[] = [
         THEN 'multiplayer_office' ELSE 'solo_cockpit' END;
     `,
   },
+  {
+    version: 47,
+    description: "inline pull request cards in team-room streams",
+    up: `
+      CREATE TABLE IF NOT EXISTS pull_request_cards (
+        id TEXT PRIMARY KEY, space_id TEXT NOT NULL, project_id TEXT NOT NULL,
+        thread_id TEXT, base_branch TEXT NOT NULL, fork_branch TEXT NOT NULL,
+        title TEXT NOT NULL, author TEXT NOT NULL, reasoning TEXT NOT NULL,
+        payload TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open'
+          CHECK (status IN ('open','merged','revisions_requested','rejected')),
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_pr_cards_room ON pull_request_cards(space_id, project_id, created_at DESC);
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -1993,6 +2008,19 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // optionally scoped to one project.
       if (method === "GET" && url.pathname === "/presence") {
         return this.listPresence(url.searchParams);
+      }
+      if (method === "POST" && url.pathname === "/pull-request-cards") {
+        return this.createPullRequestCard(request);
+      }
+      if (method === "GET" && url.pathname === "/pull-request-cards") {
+        return this.listPullRequestCards(url.searchParams);
+      }
+      if (method === "POST" && url.pathname === "/workspace-events") {
+        const body = await request.json<{ space_id?: string; project_id?: string; event?: { type?: string } }>().catch(() => ({}));
+        if (!body.space_id || !body.project_id || body.event?.type !== "workspace.merged")
+          return Response.json({ error_code: "bad_request", message: "A workspace.merged event is required" }, { status: 400 });
+        await broadcastSpaceEvent(this.env, request.headers.get("x-naelao-tenant-id") ?? "", body.space_id, "workspace.merged", { project_id: body.project_id, ...body.event });
+        return Response.json({ emitted: true });
       }
 
       // ── Event triggers (@naelao/events) ────────────────────────────────────────
@@ -7420,6 +7448,34 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       taskId
     );
     return Response.json({ ok: true, deleted: taskId });
+  }
+
+  private async createPullRequestCard(request: Request): Promise<Response> {
+    const body = await request.json<Record<string, unknown>>().catch(() => ({}));
+    const spaceId = String(body["space_id"] ?? ""), projectId = String(body["project_id"] ?? "");
+    const card = body["card"] as Record<string, unknown> | undefined;
+    if (!spaceId || !projectId || !card || card["type"] !== "inline_pull_request")
+      return Response.json({ error_code: "bad_request", message: "space_id, project_id and inline PR card are required" }, { status: 400 });
+    const project = queryOne<{ id: string }>(this.ctx.storage.sql as never, "SELECT id FROM projects WHERE id = ? AND space_id = ? AND status != 'archived'", projectId, spaceId);
+    if (!project) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+    const room = queryOne<{ id: string }>(this.ctx.storage.sql as never,
+      "SELECT id FROM threads WHERE space_id = ? AND project_id = ? AND thread_tier = 'tier_1_team' AND status = 'active' ORDER BY created_at LIMIT 1", spaceId, projectId);
+    const id = String(card["id"] ?? crypto.randomUUID()), now = new Date().toISOString();
+    execute(this.ctx.storage.sql as never,
+      `INSERT INTO pull_request_cards (id, space_id, project_id, thread_id, base_branch, fork_branch, title, author, reasoning, payload, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id, spaceId, projectId, room?.id ?? null, String(card["baseBranch"] ?? "main"), String(card["forkBranch"] ?? ""),
+      String(card["title"] ?? "Pull request"), String(card["author"] ?? "agent"), String(card["reasoning"] ?? ""), JSON.stringify(card), now, now);
+    const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+    await broadcastSpaceEvent(this.env, tenantId, spaceId, "workspace.pull_request", { project_id: projectId, thread_id: room?.id ?? null, card: { ...card, id } });
+    return Response.json({ id, thread_id: room?.id ?? null, tier: "tier_1_team", card: { ...card, id } }, { status: 201 });
+  }
+
+  private listPullRequestCards(params: URLSearchParams): Response {
+    const spaceId = params.get("space_id") ?? "", projectId = params.get("project_id") ?? "";
+    const rows = queryAll<{ payload: string; status: string; thread_id: string | null }>(this.ctx.storage.sql as never,
+      "SELECT payload, status, thread_id FROM pull_request_cards WHERE space_id = ? AND project_id = ? ORDER BY created_at DESC LIMIT 100", spaceId, projectId);
+    return Response.json({ data: rows.map((row) => ({ ...JSON.parse(row.payload) as object, status: row.status, thread_id: row.thread_id })) });
   }
 
   // ── Event triggers (@naelao/events) — no-code "after X happens, run script Y" ─────────────

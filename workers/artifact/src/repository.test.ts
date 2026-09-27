@@ -229,7 +229,7 @@ describe("Git object and metadata encoding", () => {
       )
     ).json()) as { data: Array<Record<string, unknown>> };
     expect(treePayload.data[0]).toEqual(
-      expect.objectContaining({ path: "README.md", size: 2 })
+      expect.objectContaining({ path: "README.md", size: 2, hash: expect.stringMatching(/^[a-f0-9]{64}$/) })
     );
     expect(treePayload.data[0]).not.toHaveProperty("content");
     const oid = String(treePayload.data[0]?.oid);
@@ -296,5 +296,44 @@ describe("Git object and metadata encoding", () => {
       })
     );
     expect(stale.status).toBe(409);
+
+    const staleWrite = await repo.fetch(new Request("https://repo/write", {
+      method: "PUT", headers: scopeHeaders,
+      body: JSON.stringify({ path: "README.md", content: "clobber", expected_hash: "0".repeat(64) }),
+    }));
+    expect(staleWrite.status).toBe(409);
+    expect(await staleWrite.text()).toContain("Re-read before applying patch");
+
+    const prDiff = await repo.fetch(new Request(
+      "https://repo/generatePullRequestDiff?baseBranch=main&forkBranch=scratchpad-1",
+      { headers: scopeHeaders },
+    ));
+    const pr = await prDiff.json() as { additions: number; deletions: number; files: Array<{ patch: string }> };
+    expect(pr.additions).toBeGreaterThan(0);
+    expect(pr.deletions).toBeGreaterThan(0);
+    expect(pr.files[0]?.patch).toContain("+++ b/");
+
+    const divergence = await repo.fetch(new Request(
+      "https://repo/getDivergenceStatus?baseRef=main&currentRef=scratchpad-1",
+      { headers: scopeHeaders },
+    ));
+    expect((await divergence.json() as { commitsBehind: number }).commitsBehind).toBeGreaterThan(0);
+
+    const rebase = await repo.fetch(new Request("https://repo/reconcileUpstream", {
+      method: "POST", headers: scopeHeaders,
+      body: JSON.stringify({ targetBranch: "scratchpad-1" }),
+    }));
+    expect(await rebase.json()).toEqual(expect.objectContaining({ status: "AUTO_REBASED", overlappingFiles: [] }));
+
+    const forbiddenMerge = await repo.fetch(new Request("https://repo/mergePullRequest", {
+      method: "POST", headers: scopeHeaders,
+      body: JSON.stringify({ baseBranch: "main", forkBranch: "scratchpad-1", reviewerId: "viewer", reviewerRank: "member" }),
+    }));
+    expect(forbiddenMerge.status).toBe(403);
+    const merged = await repo.fetch(new Request("https://repo/mergePullRequest", {
+      method: "POST", headers: scopeHeaders,
+      body: JSON.stringify({ baseBranch: "main", forkBranch: "scratchpad-1", reviewerId: "owner", reviewerRank: "owner" }),
+    }));
+    expect(await merged.json()).toEqual(expect.objectContaining({ fast_forward: true, event: expect.objectContaining({ type: "workspace.merged" }) }));
   });
 });

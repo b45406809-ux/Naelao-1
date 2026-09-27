@@ -16,6 +16,18 @@ export interface RepositoryComparison {
   files: Array<{ path: string; status: "added" | "modified" | "deleted"; additions: number; deletions: number; patch: string }>;
 }
 
+export interface PullRequestDiff {
+  baseBranch: string; forkBranch: string; baseCommit: string; headCommit: string;
+  additions: number; deletions: number; files: RepositoryComparison["files"];
+}
+
+export interface DivergenceStatus { commitsBehind: number; baseCommit: string; upstreamHead: string }
+export type ReconcileResult = DivergenceStatus & {
+  status: "UP_TO_DATE" | "AUTO_REBASED" | "REVIEW_REQUIRED";
+  overlappingFiles: string[]; upstreamFiles?: string[]; threeWayDiff?: RepositoryComparison["files"];
+  commit_id?: string;
+};
+
 export interface ArtifactFetcher {
   fetch(input: Request): Promise<Response>;
 }
@@ -51,4 +63,19 @@ export class ArtifactRepositoryClient {
   forkForPrivateScratchpad(name: string, from?: string) { return this.request<{ branch: string; commit_id: string | null }>("forkForPrivateScratchpad", { method: "POST", body: JSON.stringify({ name, from, temporary: true }) }); }
   rollbackToTurn(commitOid: string, branch = "main") { return this.request<{ commit_id: string }>("rollbackToTurn", { method: "POST", body: JSON.stringify({ commit_id: commitOid, branch }) }); }
   getBlame(path: string, at?: string) { return this.request<Record<string, unknown>>("getBlame", {}, new URLSearchParams({ path, ...(at ? { at } : {}) })); }
+  generatePullRequestDiff(baseBranch: string, forkBranch: string) {
+    return this.request<PullRequestDiff>("generatePullRequestDiff", {}, new URLSearchParams({ baseBranch, forkBranch }));
+  }
+  submitPullRequest(details: { baseBranch?: string; forkBranch: string; title: string; author: string; reasoning: string }) {
+    return this.request<{ card: Record<string, unknown>; event: Record<string, unknown> }>("submitPullRequest", { method: "POST", body: JSON.stringify(details) });
+  }
+  mergePullRequest(baseBranch: string, forkBranch: string, reviewerId: string, reviewerRank: "admin" | "owner", metadata?: RepositoryCommitMetadata) {
+    return this.request<{ commit_id: string; fast_forward: boolean; event: Record<string, unknown> }>("mergePullRequest", { method: "POST", body: JSON.stringify({ baseBranch, forkBranch, reviewerId, reviewerRank, metadata }) });
+  }
+  getDivergenceStatus(baseRef: string, currentRef: string) {
+    return this.request<DivergenceStatus>("getDivergenceStatus", {}, new URLSearchParams({ baseRef, currentRef }));
+  }
+  reconcileUpstream(targetBranch: string, options: { upstreamBranch?: string; metadata?: RepositoryCommitMetadata } = {}) {
+    return this.request<ReconcileResult>("reconcileUpstream", { method: "POST", body: JSON.stringify({ targetBranch, ...options }) });
+  }
 }

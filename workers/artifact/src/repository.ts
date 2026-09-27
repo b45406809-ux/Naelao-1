@@ -25,6 +25,8 @@ export interface TreeEntry {
   path: string;
   oid: string;
   size: number;
+  /** SHA-256 of the raw file bytes. Unlike the Git object id, this is a CAS checkpoint. */
+  hash: string;
 }
 
 export interface CommitRecord {
@@ -75,6 +77,10 @@ function hex(bytes: ArrayBuffer): string {
   return [...new Uint8Array(bytes)]
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
+}
+
+export async function sha256(bytes: Uint8Array): Promise<string> {
+  return hex(await crypto.subtle.digest("SHA-256", bytes));
 }
 
 export async function encodeGitObject(

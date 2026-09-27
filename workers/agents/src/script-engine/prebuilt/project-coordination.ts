@@ -157,6 +157,18 @@ async function spacesCall(ctx: PrebuiltOpContext, method: string, path: string, 
   return resp.json();
 }
 
+async function repositoryCall(ctx: PrebuiltOpContext, operation: string, method: "GET" | "POST", payload: Record<string, unknown>): Promise<unknown> {
+  if (!ctx.env.artifactWorker || !ctx.env.projectId) throw new Error("project repository unavailable");
+  const token = await mintInternalToken(ctx.env.platformSecret ?? "", ctx.env.tenantId);
+  const query = method === "GET" ? `?${new URLSearchParams(Object.entries(payload).map(([key, value]): [string, string] => [key, String(value)]))}` : "";
+  const response = await ctx.env.artifactWorker.fetch(new Request(
+    `http://artifact-worker/spaces/${encodeURIComponent(ctx.env.spaceId)}/projects/${encodeURIComponent(ctx.env.projectId)}/repository/${operation}${query}`,
+    { method, headers: { "content-type": "application/json", "x-naelao-tenant-id": ctx.env.tenantId, "x-naelao-internal-token": token }, ...(method === "POST" ? { body: JSON.stringify(payload) } : {}) },
+  ));
+  if (!response.ok) throw new Error(`repository ${operation} failed: ${response.status} ${await response.text()}`);
+  return response.json();
+}
+
 export const projectCoordination: PrebuiltScript = {
   name: "project-coordination",
   description:
@@ -172,6 +184,35 @@ export const projectCoordination: PrebuiltScript = {
   domain: "orchestration",
   requires_tier: 1,
   operations: {
+    "project.pull_request.diff": (a, c) => repositoryCall(c, "generatePullRequestDiff", "GET", {
+      baseBranch: String(a["base_branch"] ?? "main"), forkBranch: String(a["fork_branch"] ?? ""),
+    }),
+    "project.pull_request.submit": async (a, c) => {
+      const result = await repositoryCall(c, "submitPullRequest", "POST", {
+        baseBranch: String(a["base_branch"] ?? "main"), forkBranch: String(a["fork_branch"] ?? ""),
+        title: String(a["title"] ?? "Pull request"), author: String(a["author"] ?? c.env.userId ?? "agent"), reasoning: String(a["reasoning"] ?? ""),
+      }) as { card: Record<string, unknown> };
+      return spacesCall(c, "POST", "/pull-request-cards", { space_id: c.env.spaceId, project_id: c.env.projectId, card: result.card });
+    },
+    "project.pull_request.merge": async (a, c) => {
+      if (!c.env.userId) throw new Error("A human reviewer is required to merge a pull request");
+      const authorization = await spacesCall(c, "GET",
+        `/hierarchy-authorize?target_space_id=${encodeURIComponent(c.env.spaceId)}&user_id=${encodeURIComponent(c.env.userId)}&action=admin`) as { permitted?: boolean; role?: string };
+      if (!authorization.permitted || (authorization.role !== "admin" && authorization.role !== "owner"))
+        throw new Error("Only an admin or owner may merge a pull request");
+      const merged = await repositoryCall(c, "mergePullRequest", "POST", {
+        baseBranch: String(a["base_branch"] ?? "main"), forkBranch: String(a["fork_branch"] ?? ""),
+        reviewerId: c.env.userId, reviewerRank: authorization.role,
+      }) as { event?: Record<string, unknown> };
+      await spacesCall(c, "POST", "/workspace-events", { space_id: c.env.spaceId, project_id: c.env.projectId, event: merged.event });
+      return merged;
+    },
+    "project.upstream.status": (a, c) => repositoryCall(c, "getDivergenceStatus", "GET", {
+      baseRef: String(a["base_ref"] ?? "main"), currentRef: String(a["current_ref"] ?? ""),
+    }),
+    "project.upstream.reconcile": (a, c) => repositoryCall(c, "reconcileUpstream", "POST", {
+      targetBranch: String(a["target_branch"] ?? ""), upstreamBranch: String(a["upstream_branch"] ?? "main"),
+    }),
     "project.mcp_call": async (a, c) => {
       const projectId = String(a["project_id"] ?? "");
       const tool = String(a["tool"] ?? "");
