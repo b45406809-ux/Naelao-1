@@ -15,6 +15,7 @@ import { createBusinessForEndUser } from "./business-create.js";
 import { loadTemplateCatalog, loadShellCatalog } from "./template-catalog.js";
 import { registerBusinessRoutes } from "./business-routes.js";
 import { ALLOWED_MODELS, isAllowedModel, isValidEffortLevel, isPersonalPlanTier, PERSONAL_PLAN_LIMITS, type PersonalPlanTier } from "@naelao/billing-core";
+import { registerProjectMcpRoutes } from "./routes/mcp.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { LockDO } from "./do/LockDO.js";
@@ -756,6 +757,7 @@ app.use("/spaces/:spaceId/projects", requireInternalHmac((c) => (c as unknown as
 app.use("/spaces/:spaceId/projects", requireBusinessMembership({ GET: "member", POST: "member" }));
 app.use("/spaces/:spaceId/projects/:projectId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/projects/:projectId", requireBusinessMembership({ GET: "member" }));
+registerProjectMcpRoutes(app, requireManageableAutomationProject);
 // Step 21: a customer-bot's no-code automation rules ("after the customer says X, this happens")
 // are now editable from the business's own Automation dashboard — opened to a business ADMIN (the
 // person who owns the business), same admin-floor precedent as model-config/assistant-policy/

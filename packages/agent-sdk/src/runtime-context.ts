@@ -5,12 +5,45 @@ import type {
   RuntimeConnector,
   RuntimeConnectors,
   RuntimeFileSystem,
+  RuntimeMcp,
+  ProjectMcpClientOptions,
   SpaceRuntimeContext,
 } from "./types.js";
 import { createLaunchpadRuntimeContext } from "./launchpad-runtime.js";
 import type { LaunchpadSpace, RuntimeContextAdapters, LaunchpadRuntimeContext } from "./launchpad-runtime.js";
 
 const CONNECTOR_ALIAS_RE = /^[a-z][a-z0-9_]{1,63}$/;
+
+/** Stateless Streamable HTTP connector for the inter-project MCP mesh. It deliberately creates
+ * a fresh JSON-RPC request per operation and keeps no session/socket state. */
+export function createProjectMcpClient(options: ProjectMcpClientOptions): RuntimeMcp {
+  let nextId = 0;
+  const request = async (projectId: string, method: string, params?: Record<string, unknown>) => {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(projectId)) throw new Error("Invalid project id");
+    const response = await options.spacesWorker.fetch(new Request(
+      `http://spaces-worker/spaces/${encodeURIComponent(options.spaceId)}/projects/${encodeURIComponent(projectId)}/mcp`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          "x-naelao-tenant-id": options.tenantId,
+          "x-naelao-internal-token": options.internalToken,
+          ...(options.userId ? { "x-naelao-user-id": options.userId } : {}),
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: ++nextId, method, ...(params ? { params } : {}) }),
+      },
+    ));
+    if (!response.ok) throw new Error(`Project MCP request failed: ${response.status}`);
+    const envelope = await response.json() as { result?: unknown; error?: { message?: string } };
+    if (envelope.error) throw new Error(envelope.error.message ?? "Project MCP error");
+    return envelope.result;
+  };
+  return Object.freeze({
+    call: (projectId: string, tool: string, params: Record<string, unknown> = {}) => request(projectId, "tools/call", { name: tool, arguments: params }),
+    listTools: (projectId: string) => request(projectId, "tools/list"),
+  });
+}
 
 export class MaxDelegationDepthExceededError extends Error {
   constructor() {
