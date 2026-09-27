@@ -7,6 +7,7 @@ import {
   normalizePath,
   repositoryName,
   validateMetadata,
+  parseCommitMetadata,
 } from "./repository.js";
 
 const metadata = {
@@ -56,9 +57,8 @@ describe("Git object and metadata encoding", () => {
         "2026-01-01T00:00:00.000Z"
       )
     );
-    expect(JSON.parse(text.split("naelao-metadata ")[1]!.trim())).toEqual(
-      metadata
-    );
+    expect(text).toContain("--AVOS-METADATA--\nauthor: \"builder\"");
+    expect(parseCommitMetadata(text)).toEqual(metadata);
   });
 
   it("requires every rollback audit field", () => {
@@ -130,6 +130,24 @@ describe("Git object and metadata encoding", () => {
       })
     );
     expect(forkRes.status).toBe(201);
+
+    await repo.fetch(new Request("https://repo/write", { method: "PUT", headers: scopeHeaders,
+      body: JSON.stringify({ branch: "scratchpad-1", path: "README.md", content: "v2\nnew line" }) }));
+    const forkCommitRes = await repo.fetch(new Request("https://repo/commit", { method: "POST", headers: scopeHeaders,
+      body: JSON.stringify({ branch: "scratchpad-1", message: "experiment", metadata: { ...metadata, tool_turn_id: "turn-2" } }) }));
+    const forkCommit = await forkCommitRes.json() as { commit_id: string };
+    const headRes = await repo.fetch(new Request("https://repo/head", { headers: scopeHeaders }));
+    expect((await headRes.json() as { commit_id: string }).commit_id).toBe(c1.commit_id);
+    const compareRes = await repo.fetch(new Request("https://repo/compare?baseRef=main&headRef=scratchpad-1", { headers: scopeHeaders }));
+    const comparison = await compareRes.json() as { ahead: number; behind: number; files: Array<{ additions: number; patch: string }> };
+    expect(comparison.ahead).toBe(1);
+    expect(comparison.behind).toBe(0);
+    expect(comparison.files[0]?.patch).toContain("+new line");
+
+    // A fresh instance (as after DO eviction) reads refs/commits from durable storage.
+    const restarted = new RepositoryDO(mockCtx as never, mockEnv as never);
+    const persisted = await restarted.fetch(new Request(`https://repo/getCommit?oid=${forkCommit.commit_id}`, { headers: scopeHeaders }));
+    expect(persisted.status).toBe(200);
 
     // Blame
     const blameRes = await repo.fetch(

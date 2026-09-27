@@ -187,6 +187,8 @@ export interface ScriptRunResult {
   duration_ms: number;
   /** Reasoning-model tokens consumed by this run (0 for pure script execution). */
   tokens_used: number;
+  /** Artifact Git snapshot created by this tool invocation, when it mutated the workspace. */
+  commit_oid?: string;
   /** Directional breakdown of tokens_used, when the reasoner reported it — lets the host
    *  compute a real per-model USD/credit cost (input and output are priced differently).
    *  Absent for pure script execution, where tokens_used is already 0. */
@@ -286,6 +288,8 @@ export interface TraceStep {
    *  return value (see loop.ts's `formatToolOutput`). A failed call's outcome lives in `detail`/
    *  `error` instead — this is only ever set on success. */
   output?: string | undefined;
+  /** Immutable Artifact Git snapshot produced by this mutating tool turn. */
+  commit_oid?: string | undefined;
   /** Date.now() at the moment the step was recorded. */
   ts: number;
 }
@@ -881,7 +885,9 @@ export interface ScriptEngineEnv {
   onWorkspaceChange?: (change: {
     path: string;
     operation: "write" | "delete";
-  }) => void;
+  }) => Promise<{ commit_oid?: string } | void>;
+  /** Set by the host callback and consumed by the loop immediately after the tool completes. */
+  lastWorkspaceCommitOid?: string;
   /** Runs the SAME Memory OS maintenance pass (decay/promote/prune) the client-driven
    *  POST .../sessions/:id/compact HTTP route triggers — as a tool the model itself can call mid-
    *  run (see the `memory` prebuilt's `memory.compact` op), not only from the shell UI. Present

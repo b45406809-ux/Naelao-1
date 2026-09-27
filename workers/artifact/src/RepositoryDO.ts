@@ -5,7 +5,7 @@ import {
   type TreeEntry,
   commitBody,
   encodeGitObject,
-  encodeTree,
+  encodeTreeHierarchy,
   normalizePath,
   objectKey,
   validateMetadata,
@@ -17,8 +17,11 @@ interface RepoState {
   refs: Record<string, string | null>;
   worktrees: Record<string, Record<string, TreeEntry>>;
   commits: Record<string, CommitRecord>;
+  tags?: Record<string, { oid: string; target: string }>;
   temporary: string[];
 }
+
+type Entries = Record<string, TreeEntry>;
 
 interface Env {
   REPOSITORY_OBJECTS: R2Bucket;
@@ -29,6 +32,7 @@ const EMPTY: RepoState = {
   refs: {},
   worktrees: {},
   commits: {},
+  tags: {},
   temporary: [],
 };
 
@@ -42,12 +46,23 @@ export class RepositoryDO extends DurableObject<Env> {
   }
 
   private async state(): Promise<RepoState> {
+    const sql = (this.ctx.storage as DurableObjectStorage & { sql?: SqlStorage }).sql;
+    if (sql) {
+      sql.exec("CREATE TABLE IF NOT EXISTS repository_state (id INTEGER PRIMARY KEY CHECK (id = 1), json TEXT NOT NULL)");
+      const row = sql.exec("SELECT json FROM repository_state WHERE id = 1").one() as { json?: SqlStorageValue } | null;
+      return typeof row?.json === "string" ? JSON.parse(row.json) as RepoState : structuredClone(EMPTY);
+    }
     return (
       (await this.ctx.storage.get<RepoState>("repository")) ??
       structuredClone(EMPTY)
     );
   }
   private async save(state: RepoState): Promise<void> {
+    const sql = (this.ctx.storage as DurableObjectStorage & { sql?: SqlStorage }).sql;
+    if (sql) {
+      sql.exec("INSERT INTO repository_state (id, json) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET json = excluded.json", JSON.stringify(state));
+      return;
+    }
     await this.ctx.storage.put("repository", state);
   }
   private scope(request: Request): RepositoryScope {
@@ -67,11 +82,56 @@ export class RepositoryDO extends DurableObject<Env> {
       });
   }
 
+  private resolve(state: RepoState, value: string | null | undefined): string | null {
+    if (!value) return null;
+    const ref = value.replace(/^refs\/heads\//, "");
+    return state.refs[ref] !== undefined ? state.refs[ref]! : (state.commits[value] ? value : null);
+  }
+
+  private ancestors(state: RepoState, start: string | null): Map<string, number> {
+    const out = new Map<string, number>();
+    const queue: Array<[string, number]> = start ? [[start, 0]] : [];
+    while (queue.length) {
+      const [oid, distance] = queue.shift()!;
+      if (out.has(oid)) continue;
+      out.set(oid, distance);
+      const commit = state.commits[oid];
+      for (const parent of commit?.parents ?? (commit?.parent ? [commit.parent] : [])) queue.push([parent, distance + 1]);
+    }
+    return out;
+  }
+
+  private async blobText(scope: RepositoryScope, entry: TreeEntry | undefined): Promise<string> {
+    if (!entry) return "";
+    const object = await this.env.REPOSITORY_OBJECTS.get(objectKey(scope, entry.oid));
+    if (!object) throw new Error(`Object missing: ${entry.oid}`);
+    const envelope = new Uint8Array(await object.arrayBuffer());
+    const separator = envelope.indexOf(0);
+    return new TextDecoder().decode(envelope.slice(separator + 1));
+  }
+
+  private async changedFiles(scope: RepositoryScope, a: Entries, b: Entries) {
+    const paths = [...new Set([...Object.keys(a), ...Object.keys(b)])].sort();
+    return Promise.all(paths.filter((path) => a[path]?.oid !== b[path]?.oid).map(async (path) => {
+      const before = await this.blobText(scope, a[path]);
+      const after = await this.blobText(scope, b[path]);
+      const beforeLines = before ? before.split("\n") : [];
+      const afterLines = after ? after.split("\n") : [];
+      const additions = afterLines.filter((line) => !beforeLines.includes(line)).length;
+      const deletions = beforeLines.filter((line) => !afterLines.includes(line)).length;
+      const patch = [`--- a/${path}`, `+++ b/${path}`, `@@ -1,${beforeLines.length} +1,${afterLines.length} @@`,
+        ...beforeLines.map((line) => `-${line}`), ...afterLines.map((line) => `+${line}`)].join("\n");
+      return { path, status: !a[path] ? "added" : !b[path] ? "deleted" : "modified", additions, deletions, patch, before: a[path]?.oid, after: b[path]?.oid };
+    }));
+  }
+
   async fetch(request: Request): Promise<Response> {
     try {
       const scope = this.scope(request);
       const url = new URL(request.url);
-      const op = url.pathname.replace(/^\/+/, "");
+      let op = url.pathname.replace(/^\/+/, "");
+      // Stable binding names used by SDK callers; the compact HTTP names remain backwards compatible.
+      op = ({ createRepo: "init", getRepo: "head", getCommit: "commit-object", getTree: "tree", compare: "compare", forkForPrivateScratchpad: "branch", createTaskBranch: "branch", "git.reset_hard": "rollback", rollbackToTurn: "rollback", getBlame: "blame" } as Record<string, string>)[op] ?? op;
       const state = await this.state();
       const body =
         request.method === "GET"
@@ -162,6 +222,10 @@ export class RepositoryDO extends DurableObject<Env> {
         return Response.json({ deleted: true, path });
       }
       if (op === "commit" && request.method === "POST") {
+        if (body.oid !== undefined) {
+          const record = state.commits[String(body.oid)];
+          return record ? Response.json(record) : jsonError("Commit not found", 404);
+        }
         const expected = body.expected_head;
         if (expected !== undefined && expected !== state.refs[branch])
           return jsonError("Head changed", 409);
@@ -171,8 +235,9 @@ export class RepositoryDO extends DurableObject<Env> {
         for (const path of Object.keys(state.worktrees[branch]!)) {
           if (path === ".avos" || path.startsWith(".avos/")) delete state.worktrees[branch]![path];
         }
-        const tree = await encodeTree(state.worktrees[branch]!);
-        await this.putObject(scope, tree.oid, tree.bytes);
+        const hierarchy = await encodeTreeHierarchy(state.worktrees[branch]!);
+        const tree = hierarchy.root;
+        await Promise.all(hierarchy.objects.map((object) => this.putObject(scope, object.oid, object.bytes)));
         const timestamp = new Date().toISOString();
         const message = String(body.message ?? metadata.rationale).slice(
           0,
@@ -188,6 +253,7 @@ export class RepositoryDO extends DurableObject<Env> {
           oid: encoded.oid,
           tree: tree.oid,
           ...(parent ? { parent } : {}),
+          ...(parent ? { parents: [parent] } : {}),
           message,
           metadata,
           createdAt: timestamp,
@@ -200,6 +266,25 @@ export class RepositoryDO extends DurableObject<Env> {
           { status: 201 }
         );
       }
+      if (op === "commit-object" && request.method === "GET") {
+        const oid = this.resolve(state, url.searchParams.get("oid") ?? url.searchParams.get("at"));
+        return oid && state.commits[oid] ? Response.json(state.commits[oid]) : jsonError("Commit not found", 404);
+      }
+      if (op === "tag" && request.method === "POST") {
+        const name = String(body.name ?? "");
+        if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(name)) return jsonError("Invalid tag name");
+        const target = this.resolve(state, String(body.target ?? state.refs[branch] ?? ""));
+        if (!target) return jsonError("Commit not found", 404);
+        state.tags ??= {};
+        if (state.tags[name]) return jsonError("Tag exists", 409);
+        const tag = await encodeGitObject("tag", new TextEncoder().encode(
+          `object ${target}\ntype commit\ntag ${name}\ntagger Naelao Agent <agent@naelao.ai> ${Math.floor(Date.now() / 1000)} +0000\n\n${String(body.message ?? name)}\n`,
+        ));
+        await this.putObject(scope, tag.oid, tag.bytes);
+        state.tags[name] = { oid: tag.oid, target };
+        await this.save(state);
+        return Response.json({ ref: `refs/tags/${name}`, oid: tag.oid, target }, { status: 201 });
+      }
       if (op === "branch" && request.method === "POST") {
         const name = String(body.name ?? "");
         if (
@@ -208,7 +293,7 @@ export class RepositoryDO extends DurableObject<Env> {
         )
           return jsonError("Invalid branch name");
         if (name in state.refs) return jsonError("Branch exists", 409);
-        const from = String(body.from ?? state.refs[branch] ?? "");
+        const from = this.resolve(state, String(body.from ?? state.refs[branch] ?? "")) ?? "";
         if (from && !state.commits[from])
           return jsonError("Commit not found", 404);
         state.refs[name] = from || null;
@@ -221,6 +306,16 @@ export class RepositoryDO extends DurableObject<Env> {
           { branch: name, commit_id: state.refs[name], copy_on_write: true },
           { status: 201 }
         );
+      }
+      if (op === "compare" && request.method === "GET") {
+        const base = this.resolve(state, url.searchParams.get("base") ?? url.searchParams.get("baseRef"));
+        const head = this.resolve(state, url.searchParams.get("head") ?? url.searchParams.get("headRef"));
+        if (!base || !head) return jsonError("Reference not found", 404);
+        const baseAncestors = this.ancestors(state, base);
+        const headAncestors = this.ancestors(state, head);
+        const ahead = [...headAncestors.keys()].filter((oid) => !baseAncestors.has(oid)).length;
+        const behind = [...baseAncestors.keys()].filter((oid) => !headAncestors.has(oid)).length;
+        return Response.json({ base, head, ahead, behind, files: await this.changedFiles(scope, state.commits[base]!.entries, state.commits[head]!.entries) });
       }
       if (op === "checkout" && request.method === "POST") {
         state.head = branch;
@@ -246,6 +341,46 @@ export class RepositoryDO extends DurableObject<Env> {
               after: b[path]?.oid,
             })),
         });
+      }
+      if (op === "merge" && request.method === "POST") {
+        const targetName = String(body.target ?? "main").replace(/^refs\/heads\//, "");
+        const sourceName = String(body.source ?? branch).replace(/^refs\/heads\//, "");
+        const target = state.refs[targetName];
+        const source = state.refs[sourceName];
+        if (!source || target === undefined) return jsonError("Reference not found", 404);
+        if (!target || this.ancestors(state, source).has(target)) {
+          if (body.expected_head !== undefined && body.expected_head !== target) return jsonError("Head changed", 409);
+          state.refs[targetName] = source;
+          state.worktrees[targetName] = structuredClone(state.commits[source]!.entries);
+          await this.save(state);
+          return Response.json({ commit_id: source, fast_forward: true, branch: targetName });
+        }
+        const common = [...this.ancestors(state, target).keys()].find((oid) => this.ancestors(state, source).has(oid));
+        if (!common) return jsonError("No merge base", 409);
+        const baseEntries = state.commits[common]!.entries;
+        const ours = state.commits[target]!.entries;
+        const theirs = state.commits[source]!.entries;
+        const merged: Entries = structuredClone(ours);
+        const conflicts: string[] = [];
+        for (const path of new Set([...Object.keys(baseEntries), ...Object.keys(ours), ...Object.keys(theirs)])) {
+          const baseOid = baseEntries[path]?.oid, ourOid = ours[path]?.oid, theirOid = theirs[path]?.oid;
+          if (ourOid === theirOid) continue;
+          if (ourOid === baseOid) { if (theirs[path]) merged[path] = theirs[path]!; else delete merged[path]; }
+          else if (theirOid !== baseOid) conflicts.push(path);
+        }
+        if (conflicts.length) return Response.json({ error: "Merge conflict", conflicts }, { status: 409 });
+        state.worktrees[targetName] = merged;
+        const metadata = validateMetadata(body.metadata);
+        const hierarchy = await encodeTreeHierarchy(merged);
+        await Promise.all(hierarchy.objects.map((object) => this.putObject(scope, object.oid, object.bytes)));
+        const createdAt = new Date().toISOString();
+        const message = String(body.message ?? `Merge ${sourceName} into ${targetName}`).slice(0, 10_000);
+        const encoded = await encodeGitObject("commit", commitBody(hierarchy.root.oid, [target, source], message, metadata, createdAt));
+        await this.putObject(scope, encoded.oid, encoded.bytes);
+        state.commits[encoded.oid] = { oid: encoded.oid, tree: hierarchy.root.oid, parent: target, parents: [target, source], message, metadata, createdAt, entries: structuredClone(merged) };
+        state.refs[targetName] = encoded.oid;
+        await this.save(state);
+        return Response.json({ commit_id: encoded.oid, fast_forward: false, merged: true, branch: targetName, parents: [target, source] }, { status: 201 });
       }
       if (op === "rollback" && request.method === "POST") {
         const commit = state.commits[String(body.commit_id ?? "")];
@@ -289,7 +424,24 @@ export class RepositoryDO extends DurableObject<Env> {
         }
         if (history.length === 0)
           return jsonError("File not found in history", 404);
-        return Response.json({ path, latest: history[0], history });
+        const tip = this.resolve(state, url.searchParams.get("at") ?? branch);
+        const tipEntry = tip ? state.commits[tip]?.entries[path] : undefined;
+        const lines = (await this.blobText(scope, tipEntry)).split("\n");
+        const blame = [];
+        for (let index = 0; index < lines.length; index++) {
+          let oid = tip!;
+          let owner = state.commits[oid]!;
+          while (owner.parent) {
+            const parent = state.commits[owner.parent]!;
+            const currentLines = (await this.blobText(scope, owner.entries[path])).split("\n");
+            const parentLines = (await this.blobText(scope, parent.entries[path])).split("\n");
+            if (currentLines[index] !== parentLines[index]) break;
+            owner = parent;
+            oid = parent.oid;
+          }
+          blame.push({ line: index + 1, content: lines[index], commit_oid: oid, author: owner.metadata.agent_role, metadata: owner.metadata, createdAt: owner.createdAt });
+        }
+        return Response.json({ path, latest: history[0], history, lines: blame });
       }
       if (op === "head" && request.method === "GET") {
         return Response.json({

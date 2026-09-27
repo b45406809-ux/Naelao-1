@@ -160,3 +160,4 @@ export * from "./canvas-runtime.js";
 export * from "./workflow-taxonomy.js";
 export * from "./extensions.js";
 export * from "./avos-features.js";
+export * from "./artifact-client.js";

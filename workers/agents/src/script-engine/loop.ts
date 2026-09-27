@@ -547,7 +547,11 @@ export async function runScriptLoop(
    */
   const runOnce = async (name: string, params: Record<string, unknown>): Promise<ScriptRunResult> => {
     const ledger = env.actionLedger;
-    if (!ledger) return tools.run(name, params);
+    delete env.lastWorkspaceCommitOid;
+    if (!ledger) {
+      const result = await tools.run(name, params);
+      return env.lastWorkspaceCommitOid ? { ...result, commit_oid: env.lastWorkspaceCommitOid } : result;
+    }
     const paramsHash = stableStringify(params);
     try {
       const recorded = await ledger.lookup(ledgerKey, name, paramsHash);
@@ -560,7 +564,8 @@ export async function runScriptLoop(
       // A ledger that can't be read must not block real work. The exposure is a possible repeat
       // on replay — the same risk as having no ledger at all, which is where this started.
     }
-    const result = await tools.run(name, params);
+    let result = await tools.run(name, params);
+    if (env.lastWorkspaceCommitOid) result = { ...result, commit_oid: env.lastWorkspaceCommitOid };
     if (result.ok) {
       try {
         await ledger.record(ledgerKey, name, paramsHash, result);
@@ -707,7 +712,7 @@ export async function runScriptLoop(
       notes.push(`L1 run ${top!.name}: ${result.ok ? "ok" : "fail"}`);
       pushTrace({
         phase: "run", name: top!.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used,
-        ok: result.ok, detail: result.error, params, ...(result.ok ? { output: formatToolOutput(result.output) } : {}),
+        ok: result.ok, detail: result.error, params, ...(result.commit_oid ? { commit_oid: result.commit_oid } : {}), ...(result.ok ? { output: formatToolOutput(result.output) } : {}),
       });
       return finish({ level, script_name: top!.name, result, notes });
     }
@@ -749,7 +754,7 @@ export async function runScriptLoop(
         await reportProgress(opts, { phase: "run", name: decision.name, detail: `Running ${decision.name}` });
         const result = await runOnce(decision.name, params);
         notes.push(`L2 patched ${decision.name}: ${result.ok ? "ok" : "fail"}`);
-        pushTrace({ phase: "run", name: decision.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used, ok: result.ok, detail: result.error });
+        pushTrace({ phase: "run", name: decision.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used, ok: result.ok, detail: result.error, ...(result.commit_oid ? { commit_oid: result.commit_oid } : {}) });
         // Automatic rollback on immediate failure (spec §10.3).
         if (!result.ok) {
           const meta = await tools.skillLibrary.readMetadata(decision.name);
@@ -1095,6 +1100,7 @@ export async function runScriptLoop(
           pushTrace({
             phase: "run", name: decision.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used,
             ok: result.ok, detail: result.error, params: decision.params,
+            ...(result.commit_oid ? { commit_oid: result.commit_oid } : {}),
             ...(result.ok ? { output: formatToolOutput(result.output) } : {}),
           });
           // The real outcome, recorded for the repeat guard above — see its own comment for why
@@ -1350,7 +1356,7 @@ async function applyTerminalDecision(
     }
     const result = await runAction(decision.name, decision.params);
     notes.push(`${level} distilled ${decision.name}: ${result.ok ? "ok" : "fail"}`);
-    pushTrace({ phase: "run", name: decision.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used, ok: result.ok, detail: `distilled: ${result.error ?? "ok"}` });
+    pushTrace({ phase: "run", name: decision.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used, ok: result.ok, detail: `distilled: ${result.error ?? "ok"}`, ...(result.commit_oid ? { commit_oid: result.commit_oid } : {}) });
     return { level, script_name: decision.name, result, distilled_script: decision.name, notes };
   }
 
@@ -1358,7 +1364,7 @@ async function applyTerminalDecision(
     await tools.update(decision.name, { code: decision.code }, decision.reason);
     const result = await runAction(decision.name, {});
     notes.push(`${level} patched ${decision.name}`);
-    pushTrace({ phase: "run", name: decision.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used, ok: result.ok, detail: `patched: ${result.error ?? "ok"}` });
+    pushTrace({ phase: "run", name: decision.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used, ok: result.ok, detail: `patched: ${result.error ?? "ok"}`, ...(result.commit_oid ? { commit_oid: result.commit_oid } : {}) });
     return { level, script_name: decision.name, result, distilled_script: decision.name, notes };
   }
 
