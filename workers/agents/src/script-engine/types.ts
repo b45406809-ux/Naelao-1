@@ -451,7 +451,7 @@ export interface OrchestrationHooks {
   receiveFromSubAgent?(id: string): Promise<unknown>;
   terminateSubAgent?(id: string): Promise<void>;
   workflowCreate?(name: string, code: string): Promise<{ id: string }>;
-  workflowRun?(name: string, params: Record<string, unknown>): Promise<unknown>;
+  workflowRun?(name: string, params: Record<string, unknown>, options?: { detach?: boolean; cleanContext?: boolean; maxContextTokens?: number }): Promise<unknown>;
   workflowSchedule?(name: string, cron: string): Promise<{ id: string }>;
   workflowStatus?(id: string): Promise<unknown>;
   /**

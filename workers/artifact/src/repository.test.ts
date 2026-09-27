@@ -4,6 +4,7 @@ import {
   commitBody,
   encodeGitObject,
   objectKey,
+  normalizePath,
   repositoryName,
   validateMetadata,
 } from "./repository.js";
@@ -29,6 +30,11 @@ describe("repository scoping", () => {
     expect(() =>
       repositoryName({ tenantId: "../other", spaceId: "s", projectId: "p" })
     ).toThrow();
+  });
+
+  it("rejects agent machinery and traversal as deliverables", () => {
+    expect(() => normalizePath(".avos/bin/private.ts")).toThrow("Invalid repository path");
+    expect(() => normalizePath("workspace/../../.avos/key")).toThrow("Invalid repository path");
   });
 });
 
