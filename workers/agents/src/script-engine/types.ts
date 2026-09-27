@@ -844,6 +844,8 @@ export interface PlanState {
 
 /** Everything the engine needs from the host (NaelaoAgentDO) to operate. */
 export interface ScriptEngineEnv {
+  /** Host adapters for declarative, validated per-step context and verification hooks. */
+  pipelineRuntime?: import("./step-pipeline.js").PipelineRuntime;
   /** R2 bucket holding the skill library (spaces/{spaceId}/scripts/...). */
   scriptsBucket: R2Bucket;
   /** R2 bucket for the agent's persistent workspace (spaces/{spaceId}/workspace/...).

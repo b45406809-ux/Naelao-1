@@ -9,3 +9,5 @@ export { isPrivateNetworkAddress } from "./ssrf.js";
 
 export * from "./write-guard.js";
 export * from "./delegation.js";
+export * from "./dlp.js";
+export * from "./ephemeral-grant.js";

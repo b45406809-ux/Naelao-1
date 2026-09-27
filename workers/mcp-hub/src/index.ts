@@ -1,8 +1,7 @@
 // G-I17: MCP Tool Server Registry — registers MCP servers per Space and proxies tool calls
 import { Hono } from "hono";
 import { errorResponse, requestId, requireInternalHmac, mintInternalToken } from "@naelao/http";
-import { checkSsrf } from "@naelao/security";
-import { scrubEgressPayload } from "@naelao/agent-sdk";
+import { checkSsrf, scanAndScrubEgress } from "@naelao/security";
 import { missingToolScopes } from "./connector-policy";
 import type { ConnectorScope } from "./connector-policy";
 
@@ -864,10 +863,10 @@ app.post("/v1/spaces/:spaceId/mcp-servers/:serverId/tools/call", async (c) => {
 
   // Scan the serialized structure at the final outbound boundary. Fail closed and never log
   // payload contents; aliases and custom MCP URLs cannot bypass this centralized gate.
-  const dlp = scrubEgressPayload(body.input);
+  const dlp = scanAndScrubEgress(body.input);
   if (dlp.findings.length > 0) {
-    const findings = [...new Set(dlp.findings)];
-    console.warn("[mcp-hub] outbound DLP blocked", { tenantId, spaceId, serverId, toolName: body.tool_name, findings });
+    const findings = dlp.findings.map(({ rule }) => rule);
+    console.warn("[mcp-hub] outbound DLP blocked", { tenantId, spaceId, serverId, toolName: body.tool_name, findings, timestamp: new Date().toISOString() });
     return c.json({ error_code: "egress_dlp_blocked", message: "Connector payload contains protected data and was not sent", findings }, 422);
   }
 

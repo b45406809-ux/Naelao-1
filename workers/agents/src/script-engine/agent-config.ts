@@ -9,6 +9,9 @@
  *     skills.json         ← which SKILL.md knowledge docs are in context
  */
 
+import type { StepPipeline } from "./step-pipeline.js";
+import { validateStepPipeline } from "./step-pipeline.js";
+
 /** scripts.json (spec §11.2). */
 export interface ScriptsConfig {
   /** Prebuilt platform scripts to enable (names from the catalogue). */
@@ -48,12 +51,13 @@ export interface AgentConfig {
    * MUST fall back to `parseRequiresApprovalFor(agentsMd)` in that case (see loop.ts).
    */
   requiresApprovalFor?: string[];
+  pipelines?: StepPipeline;
 }
 
 /** On-disk shape of scripts.json: ScriptsConfig plus the structural approval-gate list. Kept
  *  inside this existing JSON file rather than a fifth R2 file — an agent is still defined by
  *  exactly the four files (agents.md, system-prompt.md, scripts.json, skills.json). */
-type PersistedScriptsConfig = ScriptsConfig & { requires_approval_for?: string[] };
+type PersistedScriptsConfig = ScriptsConfig & { requires_approval_for?: string[]; pipelines?: StepPipeline };
 
 function agentDir(spaceId: string, agentId: string): string {
   return `spaces/${spaceId}/agents/${agentId}`;
@@ -74,7 +78,8 @@ export async function loadAgentConfig(
   ]);
   if (!scriptsJson || !systemPrompt) return null;
 
-  const { requires_approval_for, ...scripts } = JSON.parse(await scriptsJson.text()) as PersistedScriptsConfig;
+  const { requires_approval_for, pipelines, ...scripts } = JSON.parse(await scriptsJson.text()) as PersistedScriptsConfig;
+  if (pipelines) validateStepPipeline(pipelines);
 
   return {
     agentsMd: agentsMd ? await agentsMd.text() : "",
@@ -82,6 +87,7 @@ export async function loadAgentConfig(
     scripts,
     skills: skillsJson ? (JSON.parse(await skillsJson.text()) as SkillsConfig) : { skills: [] },
     ...(requires_approval_for ? { requiresApprovalFor: requires_approval_for } : {}),
+    ...(pipelines ? { pipelines } : {}),
   };
 }
 
@@ -93,9 +99,12 @@ export async function writeAgentConfig(
   config: AgentConfig
 ): Promise<void> {
   const dir = agentDir(spaceId, agentId);
-  const persistedScripts: PersistedScriptsConfig = config.requiresApprovalFor
-    ? { ...config.scripts, requires_approval_for: config.requiresApprovalFor }
-    : config.scripts;
+  if (config.pipelines) validateStepPipeline(config.pipelines);
+  const persistedScripts: PersistedScriptsConfig = {
+    ...config.scripts,
+    ...(config.requiresApprovalFor ? { requires_approval_for: config.requiresApprovalFor } : {}),
+  };
+  if (config.pipelines) persistedScripts.pipelines = config.pipelines;
   await Promise.all([
     bucket.put(`${dir}/agents.md`, config.agentsMd),
     bucket.put(`${dir}/system-prompt.md`, config.systemPrompt),
