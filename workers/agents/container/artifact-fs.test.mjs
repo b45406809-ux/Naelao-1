@@ -14,14 +14,15 @@ describe("ArtifactFS", () => {
   it("hydrates bodies only when opened and flushes before commit", async () => {
     root = await mkdtemp(join(tmpdir(), "artifactfs-"));
     const calls = [];
+    const oid = createHash("sha1").update("blob 5\0hello").digest("hex");
     const fetchImpl = vi.fn(async (url, init = {}) => {
       calls.push([url, init.method ?? "GET", init.body]);
       if (url.endsWith("/tree?branch=main"))
         return Response.json({
-          data: [{ path: "src/a.txt", oid: createHash("sha256").update("hello").digest("hex"), size: 5 }],
+          data: [{ path: "src/a.txt", oid, size: 5 }],
           commit_id: "old",
         });
-      if (url.includes("/file?")) return new Response("hello");
+      if (url.includes(`/objects/${oid}?`)) return new Response("hello");
       return Response.json({ commit_id: "new" });
     });
     const fs = new ArtifactFS({
@@ -47,22 +48,71 @@ describe("ArtifactFS", () => {
     expect(calls.at(-1)[0]).toBe("https://repo/commit");
     const commit = JSON.parse(calls.at(-1)[2]);
     expect(commit.changes).toMatchObject([{ path: "src/a.txt" }]);
+    expect(
+      (await fs.flushAndCommit({ message: "again", metadata: {} })).unchanged
+    ).toBe(true);
   });
 
   it("coalesces hydration and excludes node_modules from hash-diff capture", async () => {
     root = await mkdtemp(join(tmpdir(), "artifactfs-"));
     let bodyFetches = 0;
-    const digest = createHash("sha256").update("body").digest("hex");
-    const fs = new ArtifactFS({ root, cacheRoot: `${root}-cache`, repositoryUrl: "https://repo", fetchImpl: async (url) => {
-      if (url.includes("/tree?")) return Response.json({ data: [{ path: "a", oid: digest, size: 4 }], commit_id: "h" });
-      bodyFetches++; return new Response("body");
-    }});
+    const digest = createHash("sha1").update("blob 4\0body").digest("hex");
+    const fs = new ArtifactFS({
+      root,
+      cacheRoot: `${root}-cache`,
+      repositoryUrl: "https://repo",
+      fetchImpl: async (url) => {
+        if (url.includes("/tree?"))
+          return Response.json({
+            data: [{ path: "a", oid: digest, size: 4 }],
+            commit_id: "h",
+          });
+        bodyFetches++;
+        return new Response("body");
+      },
+    });
     await fs.mount();
     await Promise.all([fs.open("a"), fs.open("a")]);
     await fs.write("package-lock.json", "{}");
-    await import("node:fs/promises").then(({ mkdir, writeFile }) => mkdir(join(root, "node_modules/x"), { recursive: true }).then(() => writeFile(join(root, "node_modules/x/a"), "ignored")));
+    await import("node:fs/promises").then(({ mkdir, writeFile }) =>
+      mkdir(join(root, "node_modules/x"), { recursive: true }).then(() =>
+        writeFile(join(root, "node_modules/x/a"), "ignored")
+      )
+    );
     expect((await fs.captureChanges()).modified).toEqual(["package-lock.json"]);
     expect(bodyFetches).toBe(1);
+  });
+
+  it("hydrates dependency manifests before ordinary blobs", async () => {
+    root = await mkdtemp(join(tmpdir(), "artifactfs-priority-"));
+    const packageOid = createHash("sha1").update("blob 2\0{}").digest("hex");
+    const sourceOid = createHash("sha1").update("blob 6\0source").digest("hex");
+    const calls = [];
+    const fs = new ArtifactFS({
+      root,
+      cacheRoot: `${root}-cache`,
+      repositoryUrl: "https://repo/repos/p1",
+      fetchImpl: async (url) => {
+        calls.push(url);
+        if (url.includes("/tree?"))
+          return Response.json({
+            data: [
+              { path: "src/index.js", oid: sourceOid, size: 6 },
+              { path: "package.json", oid: packageOid, size: 2 },
+            ],
+            commit_id: "head",
+          });
+        if (url.includes(packageOid)) return new Response("{}");
+        if (url.includes(sourceOid)) return new Response("source");
+        return new Response("missing", { status: 404 });
+      },
+    });
+    await fs.mount();
+    expect(fs.stat("package.json").hydrated).toBe(true);
+    expect(fs.stat("src/index.js").hydrated).toBe(false);
+    expect(calls).toHaveLength(2);
+    await fs.open("src/index.js");
+    expect(calls.at(-1)).toContain(`/objects/${sourceOid}`);
   });
 
   it("rejects path traversal attempting to escape root", async () => {
