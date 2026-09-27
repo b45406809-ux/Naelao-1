@@ -37,6 +37,8 @@ import {
 } from "../script-engine/index.js";
 import { createTracer } from "@naelao/tracing";
 import { verifyCapabilityGrant } from "@naelao/agent-sdk";
+import { issueDelegationClaim, verifyDelegationClaim } from "@naelao/security";
+import { routeMentions } from "../script-engine/mention-router.js";
 import { GatewayReasoner, WorkersAIEmbedder } from "../script-engine/reasoner.js";
 import { resolveAssistantApprovalPlan, type AssistantEffectiveRole } from "../script-engine/assistant-access.js";
 import { buildCodeRunner, type WorkerLoaderBinding } from "../script-engine/code-runner.js";
@@ -1310,6 +1312,22 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     `);
     this.ctx.storage.sql.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_msg_dedupe ON channel_messages(session_id, direction, external_id)`);
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_channel_msg_unanswered ON channel_messages(direction, answered, created_at)`);
+    try { this.ctx.storage.sql.exec(`ALTER TABLE channel_messages ADD COLUMN turn_holder TEXT`); } catch { /* exists */ }
+    try { this.ctx.storage.sql.exec(`ALTER TABLE channel_messages ADD COLUMN referents TEXT NOT NULL DEFAULT '[]'`); } catch { /* exists */ }
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS turn_locks (
+        turn_id TEXT PRIMARY KEY, holder_agent_id TEXT NOT NULL, depth INTEGER NOT NULL,
+        initiator_user_id TEXT NOT NULL, originating_role_rank INTEGER NOT NULL,
+        delegation_token TEXT, updated_at INTEGER NOT NULL
+      )
+    `);
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS turn_delegations (
+        id TEXT PRIMARY KEY, turn_id TEXT NOT NULL, from_agent_id TEXT NOT NULL,
+        to_agent_id TEXT NOT NULL, task TEXT NOT NULL, handover_context TEXT NOT NULL,
+        delegation_token TEXT NOT NULL, created_at INTEGER NOT NULL
+      )
+    `);
 
     // Per-project daily spend tracking (customer-bot spend caps — G-3664680-style plan
     // gating, applied here at the project level). "Credits" is a coarse tokens_used proxy,
@@ -1496,6 +1514,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
       if (method === "POST" && url.pathname === "/channels/heartbeat") {
         return this.handleChannelHeartbeat(request);
+      }
+
+      if (method === "POST" && url.pathname === "/turn/delegate") {
+        return this.handleTurnDelegation(request);
       }
 
       // POST /channels/sessions/:sessionId/resume — admin hands a human-takeover thread
@@ -3840,10 +3862,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // replayed event (freshness window bypassed, or delivered twice within it) that hits the
     // unique index is IGNORED, so rowsWritten is 0 — that's the "already handled" signal used
     // below to skip kicking a second drain for a message already in the queue/answered.
+    const mentionRoute = routeMentions(norm.text);
     const insertResult = this.ctx.storage.sql.exec(
-      `INSERT OR IGNORE INTO channel_messages (id, session_id, direction, text, external_id, answered, created_at)
-       VALUES (?, ?, 'inbound', ?, ?, 0, ?)`,
-      crypto.randomUUID(), sessionId, norm.text, norm.external_id, norm.timestamp
+      `INSERT OR IGNORE INTO channel_messages (id, session_id, direction, text, external_id, answered, created_at, turn_holder, referents)
+       VALUES (?, ?, 'inbound', ?, ?, 0, ?, ?, ?)`,
+      crypto.randomUUID(), sessionId, norm.text, norm.external_id, norm.timestamp,
+      mentionRoute.turnHolder, JSON.stringify(mentionRoute.referents)
     );
     const isNewMessage = insertResult.rowsWritten > 0;
 
@@ -3861,7 +3885,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         this.handleChannelHeartbeat(new Request("http://agent-do/channels/heartbeat", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ spaceId, agentId: "naelao-agent", tenantId, apiKey }),
+          // Only the first mention receives execution dispatch. Referents remain persisted
+          // metadata and are never iterated/woken here.
+          body: JSON.stringify({ spaceId, agentId: mentionRoute.turnHolder ?? "naelao-agent", tenantId, apiKey }),
         })).catch((err) => {
           console.error(`[channels] immediate drain failed space=${spaceId}:`, (err as Error).message);
         })
@@ -3869,6 +3895,61 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
 
     return Response.json({ session_id: sessionId, queued: true, duplicate: !isNewMessage });
+  }
+
+  /** Compare-and-swap ownership before recording a handoff. The signed claim is minted first,
+   * then both SQL writes happen without an await, so no other DO event can interleave them. */
+  private async handleTurnDelegation(request: Request): Promise<Response> {
+    type Body = { turnId?: string; currentAgentId?: string; targetAgentId?: string; task?: string;
+      handoverContext?: Record<string, unknown>; depth?: number; initiatorUserId?: string;
+      originatingRoleRank?: number; delegationToken?: string };
+    const body: Body = await request.json<Body>().catch(() => ({}));
+    if (!body.turnId || !body.currentAgentId || !body.targetAgentId || !body.task) {
+      return Response.json({ error: "turnId, currentAgentId, targetAgentId and task are required" }, { status: 400 });
+    }
+    const existing = this.ctx.storage.sql.exec(
+      `SELECT holder_agent_id, depth, initiator_user_id, originating_role_rank FROM turn_locks WHERE turn_id = ?`, body.turnId
+    ).toArray()[0] as { holder_agent_id: string; depth: number; initiator_user_id: string; originating_role_rank: number } | undefined;
+    const depth = existing?.depth ?? body.depth ?? 1;
+    if (depth >= 3) return Response.json({ error: "MaxDelegationDepthExceededError", message: "Delegation depth is capped at 3" }, { status: 409 });
+    if (existing && existing.holder_agent_id !== body.currentAgentId) {
+      return Response.json({ error: "turn_lock_not_held" }, { status: 409 });
+    }
+    let initiatorUserId = existing?.initiator_user_id ?? body.initiatorUserId ?? "system";
+    let originatingRoleRank = existing?.originating_role_rank ?? body.originatingRoleRank ?? 0;
+    if (body.delegationToken) {
+      const parent = await verifyDelegationClaim(body.delegationToken, this.env.PLATFORM_SECRET);
+      if (!parent || parent.depth !== depth) return Response.json({ error: "invalid_delegation_chain" }, { status: 403 });
+      initiatorUserId = parent.initiatorUserId;
+      // The original human's rank is immutable; caller-supplied elevation is discarded.
+      originatingRoleRank = parent.originatingRoleRank;
+    }
+    const nextDepth = (depth + 1) as 2 | 3;
+    const delegationToken = await issueDelegationClaim({ initiatorUserId, originatingRoleRank,
+      targetResourceId: body.targetAgentId, depth: nextDepth, exp: Date.now() + 15 * 60_000 }, this.env.PLATFORM_SECRET);
+    const now = Date.now();
+    this.ctx.storage.sql.exec("BEGIN IMMEDIATE");
+    try {
+      if (existing) {
+        const updated = this.ctx.storage.sql.exec(
+          `UPDATE turn_locks SET holder_agent_id = ?, depth = ?, delegation_token = ?, updated_at = ?
+           WHERE turn_id = ? AND holder_agent_id = ?`,
+          body.targetAgentId, nextDepth, delegationToken, now, body.turnId, body.currentAgentId
+        );
+        if (updated.rowsWritten !== 1) throw new Error("turn_lock_not_held");
+      } else {
+        this.ctx.storage.sql.exec(`INSERT INTO turn_locks VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          body.turnId, body.targetAgentId, nextDepth, initiatorUserId, originatingRoleRank, delegationToken, now);
+      }
+      this.ctx.storage.sql.exec(`INSERT INTO turn_delegations VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        crypto.randomUUID(), body.turnId, body.currentAgentId, body.targetAgentId, body.task,
+        JSON.stringify(body.handoverContext ?? {}), delegationToken, now);
+      this.ctx.storage.sql.exec("COMMIT");
+    } catch (error) {
+      this.ctx.storage.sql.exec("ROLLBACK");
+      return Response.json({ error: (error as Error).message }, { status: 409 });
+    }
+    return Response.json({ targetAgentId: body.targetAgentId, depth: nextDepth, delegationToken });
   }
 
   // Observability surface for customer-bot projects ("all you do is see what the customers

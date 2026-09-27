@@ -21,6 +21,7 @@ import type {
 } from "@naelao/events";
 import { broadcastSpaceEvent, mintInternalToken } from "@naelao/http";
 import type { MessageRole } from "@naelao/types";
+import { verifyCapabilityToken } from "@naelao/security";
 
 function todaySpendKey(): string {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
@@ -8042,11 +8043,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // GET /cross-space-check — THE CRITICAL PATH (§49). Default DENIED on any error.
   // A user gets access if they are a direct member of the target space, OR a valid
   // (unexpired, unrevoked) grant exists from the requesting space to the target.
-  private checkCrossSpace(params: URLSearchParams): Response {
+  private async checkCrossSpace(params: URLSearchParams): Promise<Response> {
     const userId = params.get("user_id") ?? "";
     const requestingSpaceId = params.get("requesting_space_id") ?? "";
     const targetSpaceId = params.get("target_space_id") ?? "";
     const resourceId = params.get("resource_id") ?? params.get("grant_type") ?? "*";
+    const capabilityToken = params.get("capability_token") ?? "";
+    const permission = params.get("permission") ?? "read";
 
     try {
       if (!userId || !targetSpaceId) {
@@ -8058,6 +8061,21 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           },
           { status: 400 }
         );
+      }
+
+      // A bearer capability is the only grant accepted across departments. Its signed scope is
+      // checked against every requested coordinate; a database grant alone is not transferable.
+      if (requestingSpaceId && requestingSpaceId !== targetSpaceId && capabilityToken) {
+        const capability = await verifyCapabilityToken(capabilityToken, this.env.PLATFORM_SECRET, {
+          granteeSpaceId: requestingSpaceId,
+          targetSpaceId,
+          resourceId,
+          permission,
+        });
+        if (capability) {
+          return Response.json({ permitted: true, reason: "Valid scoped capability token.", resource_id: resourceId });
+        }
+        return Response.json({ permitted: false, reason: "Invalid, expired, or mismatched capability token.", resource_id: null });
       }
 
       // Direct membership of the target space → permitted.
@@ -8079,6 +8097,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const now = new Date().toISOString();
       if (!requestingSpaceId) {
         return Response.json({ permitted: false, reason: "requesting_space_id is required", resource_id: null }, { status: 400 });
+      }
+      if (!capabilityToken) {
+        return Response.json({ permitted: false, reason: "A scoped capability token is required for cross-space access.", resource_id: null });
       }
       const grant = queryOne<{ id: string; resource_id: string }>(
         this.ctx.storage.sql as never,

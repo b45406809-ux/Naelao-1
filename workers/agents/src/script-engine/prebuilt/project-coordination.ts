@@ -172,6 +172,23 @@ export const projectCoordination: PrebuiltScript = {
   domain: "orchestration",
   requires_tier: 1,
   operations: {
+    "thread.delegate": async (a, c) => {
+      if (!c.env.orchestration?.delegateTurn) {
+        return { ok: false, error: "sequential delegation not available in this environment" };
+      }
+      const targetAgentId = String(a["agent_id"] ?? "");
+      const task = String(a["task"] ?? "");
+      if (!targetAgentId || !task) throw new Error("thread.delegate requires agent_id and task");
+      const agentCheck = await validateAgentId(c, targetAgentId);
+      if (agentCheck) return agentCheck;
+      return c.env.orchestration.delegateTurn({
+        targetAgentId,
+        task,
+        ...(a["handover_context"] && typeof a["handover_context"] === "object"
+          ? { handoverContext: a["handover_context"] as Record<string, unknown> }
+          : {}),
+      });
+    },
     "thread.consult": async (a, c) => {
       if (!c.env.orchestration?.consultAgent) {
         return { ok: false, error: "thread.consult not available in this environment" };

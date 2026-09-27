@@ -454,6 +454,13 @@ export interface TieredCodeRunner {
  * when absent the corresponding prebuilt operations report themselves unavailable.
  */
 export interface OrchestrationHooks {
+  /** Sequential handoff. A successful call transfers the durable turn lock and never returns
+   * control to the caller's tool loop. */
+  delegateTurn?(params: {
+    targetAgentId: string;
+    task: string;
+    handoverContext?: Record<string, unknown>;
+  }): Promise<never>;
   spawnSubAgent?(config: Record<string, unknown>): Promise<{ id: string }>;
   sendToSubAgent?(id: string, task: unknown): Promise<unknown>;
   receiveFromSubAgent?(id: string): Promise<unknown>;

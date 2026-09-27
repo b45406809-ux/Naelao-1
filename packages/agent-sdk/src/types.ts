@@ -79,6 +79,30 @@ export interface RuntimeContextBase {
   cli: RuntimeCli;
 }
 
+export interface DelegateRequest {
+  targetAgentId: string;
+  task: string;
+  handoverContext?: Record<string, unknown>;
+}
+
+export interface DelegationResult {
+  targetAgentId: string;
+  depth: 2 | 3;
+  delegationToken: string;
+}
+
+export interface RuntimeDelegationAdapter {
+  transfer(request: DelegateRequest & {
+    currentDepth: 1 | 2;
+    initiatorUserId: string;
+    originatingRoleRank: number;
+  }): Promise<DelegationResult>;
+}
+
+export interface RuntimeDelegateCapability {
+  delegate(request: DelegateRequest): Promise<never>;
+}
+
 export type SpaceRuntimeContext = RuntimeContextBase & { space: RuntimeSpace; project?: never };
 export type ProjectRuntimeContext = RuntimeContextBase & { project: RuntimeProject; space?: never };
 export type RuntimeContext = SpaceRuntimeContext | ProjectRuntimeContext;
@@ -94,8 +118,9 @@ export interface RuntimeContextServices {
   cli?: RuntimeCli;
   project?: Omit<RuntimeProject, "id">;
   space?: Omit<RuntimeSpace, "id">;
+  delegation?: RuntimeDelegationAdapter;
 }
 
 export type CreateRuntimeContextOptions =
-  | { scope: "SPACE_WIDE"; spaceId: string; services: RuntimeContextServices }
-  | { scope: "PROJECT_BOUND"; projectId: string; services: RuntimeContextServices };
+  | { scope: "SPACE_WIDE"; spaceId: string; services: RuntimeContextServices; delegationDepth?: 1 | 2 | 3; initiatorUserId?: string; originatingRoleRank?: number }
+  | { scope: "PROJECT_BOUND"; projectId: string; services: RuntimeContextServices; delegationDepth?: 1 | 2 | 3; initiatorUserId?: string; originatingRoleRank?: number };
