@@ -29,10 +29,26 @@ describe("Space Hierarchy & Isolation Policies", () => {
                   const [target, req] = params;
                   return (rows.get("cross_space_grants") ?? []).filter(
                     (r) =>
-                      r.granting_space_id === target &&
-                      r.receiving_space_id === req
+                      r.target_space_id === target &&
+                      r.grantee_space_id === req &&
+                      !r.revoked_at && r.expires_at > new Date().toISOString()
                   );
                 }
+                if (query.includes("FROM projects WHERE id = ?")) {
+                  const id = params[0];
+                  return (rows.get("projects") ?? []).filter((r) => r.id === id);
+                }
+                if (query.includes("FROM projects WHERE space_id = ?")) {
+                  const id = params[0];
+                  return (rows.get("projects") ?? []).filter((r) => r.space_id === id);
+                }
+                if (query.includes("FROM project_members")) {
+                  const [projectId, userId] = params;
+                  return (rows.get("project_members") ?? []).filter(
+                    (r) => r.project_id === projectId && r.user_id === userId
+                  );
+                }
+                if (query.includes("FROM threads WHERE")) return rows.get("threads") ?? [];
                 return [];
               },
             };
@@ -150,11 +166,11 @@ describe("Space Hierarchy & Isolation Policies", () => {
 
     rows.set("cross_space_grants", [
       {
-        granting_space_id: "dept-legal",
-        receiving_space_id: "dept-dev",
-        grant_type: "read-knowledge",
+        target_space_id: "dept-legal",
+        grantee_space_id: "dept-dev",
+        resource_id: "*",
         revoked_at: null,
-        expires_at: null,
+        expires_at: "2999-01-01T00:00:00.000Z",
       },
     ]);
     const withGrant = await spaceDO.fetch(
@@ -164,7 +180,30 @@ describe("Space Hierarchy & Isolation Policies", () => {
     );
     expect(await withGrant.json()).toMatchObject({
       permitted: true,
-      grant_type: "read-knowledge",
+      resource_id: "*",
     });
+  });
+
+  it("rejects creation beneath a depth-one department", async () => {
+    const { spaceDO, rows } = createTestDO();
+    rows.set("spaces", [{ id: "dept", depth: 1, parent_id: "root", space_type: "launchpad", status: "active" }]);
+    const res = await spaceDO.fetch(new Request("https://space-do/sub-spaces", {
+      method: "POST",
+      body: JSON.stringify({ parent_id: "dept", name: "Nested" }),
+    }));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error_code: "max_depth_exceeded" });
+  });
+
+  it("conceals private projects from non-members on direct reads and thread lists", async () => {
+    const { spaceDO, rows } = createTestDO();
+    rows.set("projects", [{ id: "secret", space_id: "dept", visibility: "private", status: "active", allowed_agent_ids: null, channel_config: "{}" }]);
+    rows.set("project_members", []);
+    const direct = await spaceDO.fetch(new Request("https://space-do/projects/secret?viewer_id=outsider"));
+    expect(direct.status).toBe(404);
+    expect(await direct.json()).toMatchObject({ message: "Project not found" });
+    const threads = await spaceDO.fetch(new Request("https://space-do/threads?space_id=dept&project_id=secret&viewer_id=outsider"));
+    expect(threads.status).toBe(404);
+    expect(await threads.json()).toMatchObject({ message: "Project not found" });
   });
 });

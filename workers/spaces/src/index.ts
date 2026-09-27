@@ -906,6 +906,12 @@ app.use("/spaces/:spaceId/projects/:projectId/workspace/files", requireInternalH
 app.use("/spaces/:spaceId/projects/:projectId/workspace/files", requireBusinessMembership({ GET: "member" }));
 app.get("/spaces/:spaceId/projects/:projectId/workspace/files", async (c) => {
   const { spaceId, projectId } = c.req.param();
+  const identity = getCallerIdentity(c);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const access = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}?viewer_id=${encodeURIComponent(identity.userId)}`, "GET");
+  if (!access.ok) return new Response(access.body, { status: access.status, headers: { "content-type": "application/json" } });
   if (!c.env.SCRIPTS_R2) return c.json({ data: [], count: 0, unavailable: true });
   const prefix = workspaceKeyPrefix(spaceId, projectId);
   const files: Array<{ path: string; size: number; uploaded: string }> = [];
@@ -927,6 +933,12 @@ app.use("/spaces/:spaceId/projects/:projectId/workspace/files/*", requireInterna
 app.use("/spaces/:spaceId/projects/:projectId/workspace/files/*", requireBusinessMembership({ GET: "member" }));
 app.get("/spaces/:spaceId/projects/:projectId/workspace/files/*", async (c) => {
   const { spaceId, projectId } = c.req.param();
+  const identity = getCallerIdentity(c);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const access = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}?viewer_id=${encodeURIComponent(identity.userId)}`, "GET");
+  if (!access.ok) return new Response(access.body, { status: access.status, headers: { "content-type": "application/json" } });
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Workspace storage not configured" }, 503);
   const prefix = workspaceKeyPrefix(spaceId, projectId);
   const rest = c.req.path.split("/workspace/files/")[1] ?? "";
@@ -2577,11 +2589,14 @@ app.use("/spaces/:spaceId/threads/:threadId", requireInternalHmac((c) => (c as u
 app.use("/spaces/:spaceId/threads/:threadId", requireBusinessMembership({ GET: "member" }));
 app.get("/spaces/:spaceId/threads", async (c) => {
   const spaceId = c.req.param("spaceId");
-  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  const identity = getCallerIdentity(c);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const qs = new URLSearchParams({ space_id: spaceId });
   const projectId = c.req.query("project_id");
   if (projectId) qs.set("project_id", projectId);
+  if (identity.userId) qs.set("viewer_id", identity.userId);
+  else qs.set("space_manager", "1");
   const includeSubThreads = c.req.query("include_sub_threads");
   if (includeSubThreads) qs.set("include_sub_threads", includeSubThreads);
   const parentThreadId = c.req.query("parent_thread_id");
@@ -2705,7 +2720,10 @@ app.post("/spaces/:spaceId/sub-spaces", async (c) => {
     "SELECT spacetype_id, config_json, tenancy_mode, depth, parent_space_id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'"
   ).bind(spaceId, tenantId).first<{ spacetype_id: string; config_json: string | null; tenancy_mode: string; depth: number; parent_space_id: string | null }>();
   if (!product) throw notFound("Space");
-  if (product.spacetype_id !== "launchpad" || product.depth !== 0 || product.parent_space_id) {
+  if (product.depth >= 1 || product.parent_space_id) {
+    return c.json({ error_code: "max_depth_exceeded", message: "A department cannot have child spaces" }, 400);
+  }
+  if (product.spacetype_id !== "launchpad") {
     return c.json({ error_code: "invalid_hierarchy", message: "Departments require a Launchpad root" }, 400);
   }
 
