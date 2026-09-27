@@ -227,6 +227,8 @@ export interface Reasoner {
        *  script-level description was not enough for a model to know what fields a call needs). */
       paramHints?: Record<string, string>;
     }>;
+    /** Signature-only catalog assembled at turn start; never contains implementation source. */
+    activeCatalog?: string;
     /** Set on L2/L3 — the script being repaired and why it drifted. */
     repairTarget?: { name: string; failureReason: string };
     /**
@@ -728,6 +730,7 @@ export async function runScriptLoop(
         candidates,
         availableOperations: tools.availableOperations(),
           operationGroups: tools.disclosureGroups(),
+        activeCatalog: await tools.activeCatalog(),
         ...(opts.conversation ? { conversation: opts.conversation } : {}),
         repairTarget: { name: top!.name, failureReason: repairReason ?? "fingerprint drift (partial match)" },
         ...(deltaReporter(opts) ? { onDelta: deltaReporter(opts)! } : {}),
@@ -899,6 +902,7 @@ export async function runScriptLoop(
           candidates,
           availableOperations: tools.availableOperations(),
           operationGroups: tools.disclosureGroups(),
+        activeCatalog: await tools.activeCatalog(),
           ...(opts.conversation ? { conversation: opts.conversation } : {}),
           ...(level === "L3" && top
             ? { repairTarget: { name: top.name, failureReason: repairReason ?? "stale / re-derive" } }
@@ -1213,6 +1217,7 @@ export async function runScriptLoop(
             candidates,
             availableOperations: tools.availableOperations(),
           operationGroups: tools.disclosureGroups(),
+        activeCatalog: await tools.activeCatalog(),
             ...(opts.conversation ? { conversation: opts.conversation } : {}),
             priorSteps: closing.recent,
             ...(closing.digest.length > 0 ? { earlierSteps: closing.digest } : {}),

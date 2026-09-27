@@ -32,6 +32,7 @@ import { assertNoReservedViolation } from "./reserved-capabilities.js";
 import { isReadSafeOperation } from "./assistant-access.js";
 import { enforceWriteGuard, requiresMutationGrant } from "@naelao/agent-sdk";
 import { interceptPlatformCli } from "./virtual-cli.js";
+import { workspacePrefix } from "./types.js";
 
 /** Plain edit distance — used only to rank "did you mean" suggestions by how close a guess
  *  actually is, never for anything security-relevant. Op names are short (well under 40 chars),
@@ -331,6 +332,40 @@ export class ScriptToolSurface {
   /** Names of all available prebuilt operations (for prompt construction / discovery). */
   availableOperations(): string[] {
     return [...this.ops.keys()];
+  }
+
+  /** Compact zero-turn index. Fetches metadata and object names only, never code.ts bodies. */
+  async activeCatalog(): Promise<string> {
+    const rows: string[] = [];
+    let heading = "";
+    const groups = this.availableOperationsGrouped().sort((a, b) => {
+      const ad = this.ops.get(a.operations[0]!)?.prebuilt.domain ?? "other";
+      const bd = this.ops.get(b.operations[0]!)?.prebuilt.domain ?? "other";
+      return ad.localeCompare(bd);
+    });
+    for (const group of groups) for (const operation of group.operations) {
+      const domain = this.ops.get(operation)?.prebuilt.domain ?? "other";
+      if (domain !== heading) { rows.push(`## ${domain}`); heading = domain; }
+      rows.push(`- \`${operation}\` - ${group.description.replace(/\s+/g, " ").trim()} - ${group.paramHints?.[operation] ?? "{}"}`);
+    }
+    rows.push("## distilled skills");
+    for (const name of await this.library.list()) {
+      const metadata = await this.library.readMetadata(name);
+      if (metadata) rows.push(`- \`${name}\` - ${metadata.description.replace(/\s+/g, " ").trim()} - ${JSON.stringify(metadata.parameters)}`);
+    }
+    const bucket = this.env.workspaceBucket ?? this.env.scriptsBucket;
+    const prefix = `${workspacePrefix(this.env)}.avos/bin/`;
+    rows.push("## virtual CLI namespaces (avos chore / ext: / auto:)");
+    let cursor: string | undefined;
+    do {
+      const page = await bucket.list(cursor ? { prefix, cursor } : { prefix });
+      for (const object of page.objects) {
+        const command = object.key.slice(prefix.length).replace(/\.ts$/, "");
+        if (command) rows.push(`- \`${command}\` - Project virtual CLI - {"args":{"type":"array","items":{"type":"string"}}}`);
+      }
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor);
+    return rows.join("\n");
   }
 
   /**

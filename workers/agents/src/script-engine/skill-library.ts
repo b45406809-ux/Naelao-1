@@ -98,8 +98,9 @@ export class SkillLibrary {
   }
 
   async readMetadata(name: string): Promise<ScriptMetadata | null> {
-    const s = await this.read(name);
-    return s?.metadata ?? null;
+    if (!this.isUsableName(name)) return null;
+    const object = await this.bucket.get(`${this.dir(name)}/SCRIPT.md`);
+    return object ? JSON.parse(await object.text()) as ScriptMetadata : null;
   }
 
   /**

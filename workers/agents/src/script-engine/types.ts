@@ -47,6 +47,22 @@ export interface SkillOutcome {
   error?: string;
 }
 
+/** A successful demonstration captured from the reasoning loop and suitable for compilation. */
+export interface DemonstrationStep {
+  name: string;
+  params: Record<string, unknown>;
+  output?: unknown;
+  ok?: boolean;
+}
+
+export type VideoSkillAction =
+  | { type: "NAVIGATE"; url: string }
+  | { type: "CLICK"; selector: string }
+  | { type: "TYPE"; selector: string; value: string; parameter?: string }
+  | { type: "EXTRACT"; selector: string; as: string }
+  | { type: "BASH"; command: string }
+  | { type: "ASSERT"; selector: string; text?: string };
+
 /** Recency verdict for a stored skill. Derived in skill-health.ts (all the logic lives there;
  *  the shape lives here so `FindCandidate` can carry it without a circular import). */
 export type SkillHealthState = "unproven" | "proven" | "degrading" | "broken";
@@ -833,6 +849,10 @@ export interface ScriptEngineEnv {
   /** R2 bucket for the agent's persistent workspace (spaces/{spaceId}/workspace/...).
    *  Defaults to scriptsBucket when not separately provisioned. */
   workspaceBucket?: R2Bucket;
+  /** Host-provided multimodal analyzer. Media bytes never leave through the text reasoner. */
+  videoSkillAnalyzer?: {
+    analyze(input: { data: ArrayBuffer; contentType: string; description?: string }): Promise<VideoSkillAction[]>;
+  };
   /** Vectorize index for script.find (optional — engine degrades to tag/text search). */
   vectorIndex?: VectorIndex;
   embedder?: Embedder;
