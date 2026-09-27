@@ -34,8 +34,12 @@ describe("repository scoping", () => {
   });
 
   it("rejects agent machinery and traversal as deliverables", () => {
-    expect(() => normalizePath(".avos/bin/private.ts")).toThrow("Invalid repository path");
-    expect(() => normalizePath("workspace/../../.avos/key")).toThrow("Invalid repository path");
+    expect(() => normalizePath(".avos/bin/private.ts")).toThrow(
+      "Invalid repository path"
+    );
+    expect(() => normalizePath("workspace/../../.avos/key")).toThrow(
+      "Invalid repository path"
+    );
   });
 });
 
@@ -57,7 +61,7 @@ describe("Git object and metadata encoding", () => {
         "2026-01-01T00:00:00.000Z"
       )
     );
-    expect(text).toContain("--AVOS-METADATA--\nauthor: \"builder\"");
+    expect(text).toContain('--AVOS-METADATA--\nauthor: "builder"');
     expect(parseCommitMetadata(text)).toEqual(metadata);
   });
 
@@ -131,22 +135,56 @@ describe("Git object and metadata encoding", () => {
     );
     expect(forkRes.status).toBe(201);
 
-    await repo.fetch(new Request("https://repo/write", { method: "PUT", headers: scopeHeaders,
-      body: JSON.stringify({ branch: "scratchpad-1", path: "README.md", content: "v2\nnew line" }) }));
-    const forkCommitRes = await repo.fetch(new Request("https://repo/commit", { method: "POST", headers: scopeHeaders,
-      body: JSON.stringify({ branch: "scratchpad-1", message: "experiment", metadata: { ...metadata, tool_turn_id: "turn-2" } }) }));
-    const forkCommit = await forkCommitRes.json() as { commit_id: string };
-    const headRes = await repo.fetch(new Request("https://repo/head", { headers: scopeHeaders }));
-    expect((await headRes.json() as { commit_id: string }).commit_id).toBe(c1.commit_id);
-    const compareRes = await repo.fetch(new Request("https://repo/compare?baseRef=main&headRef=scratchpad-1", { headers: scopeHeaders }));
-    const comparison = await compareRes.json() as { ahead: number; behind: number; files: Array<{ additions: number; patch: string }> };
+    await repo.fetch(
+      new Request("https://repo/write", {
+        method: "PUT",
+        headers: scopeHeaders,
+        body: JSON.stringify({
+          branch: "scratchpad-1",
+          path: "README.md",
+          content: "v2\nnew line",
+        }),
+      })
+    );
+    const forkCommitRes = await repo.fetch(
+      new Request("https://repo/commit", {
+        method: "POST",
+        headers: scopeHeaders,
+        body: JSON.stringify({
+          branch: "scratchpad-1",
+          message: "experiment",
+          metadata: { ...metadata, tool_turn_id: "turn-2" },
+        }),
+      })
+    );
+    const forkCommit = (await forkCommitRes.json()) as { commit_id: string };
+    const headRes = await repo.fetch(
+      new Request("https://repo/head", { headers: scopeHeaders })
+    );
+    expect(((await headRes.json()) as { commit_id: string }).commit_id).toBe(
+      c1.commit_id
+    );
+    const compareRes = await repo.fetch(
+      new Request("https://repo/compare?baseRef=main&headRef=scratchpad-1", {
+        headers: scopeHeaders,
+      })
+    );
+    const comparison = (await compareRes.json()) as {
+      ahead: number;
+      behind: number;
+      files: Array<{ additions: number; patch: string }>;
+    };
     expect(comparison.ahead).toBe(1);
     expect(comparison.behind).toBe(0);
     expect(comparison.files[0]?.patch).toContain("+new line");
 
     // A fresh instance (as after DO eviction) reads refs/commits from durable storage.
     const restarted = new RepositoryDO(mockCtx as never, mockEnv as never);
-    const persisted = await restarted.fetch(new Request(`https://repo/getCommit?oid=${forkCommit.commit_id}`, { headers: scopeHeaders }));
+    const persisted = await restarted.fetch(
+      new Request(`https://repo/getCommit?oid=${forkCommit.commit_id}`, {
+        headers: scopeHeaders,
+      })
+    );
     expect(persisted.status).toBe(200);
 
     // Blame
@@ -183,5 +221,80 @@ describe("Git object and metadata encoding", () => {
       ((await treeRes.json()) as { data: Array<{ path: string }> }).data[0]
         ?.path
     ).toBe("README.md");
+    const treePayload = (await (
+      await repo.fetch(
+        new Request(`https://repo/tree?at=${c1.commit_id}`, {
+          headers: scopeHeaders,
+        })
+      )
+    ).json()) as { data: Array<Record<string, unknown>> };
+    expect(treePayload.data[0]).toEqual(
+      expect.objectContaining({ path: "README.md", size: 2 })
+    );
+    expect(treePayload.data[0]).not.toHaveProperty("content");
+    const oid = String(treePayload.data[0]?.oid);
+    const objectRes = await repo.fetch(
+      new Request(`https://repo/object/${oid}?at=${c1.commit_id}`, {
+        headers: scopeHeaders,
+      })
+    );
+    expect(objectRes.headers.get("x-git-oid")).toBe(oid);
+    expect(await objectRes.text()).toBe("v1");
+    expect(
+      (
+        await repo.fetch(
+          new Request(
+            `https://repo/object/${"a".repeat(40)}?at=${c1.commit_id}`,
+            { headers: scopeHeaders }
+          )
+        )
+      ).status
+    ).toBe(404);
+
+    const changed = new TextEncoder().encode("from-container");
+    const sha256 = [
+      ...new Uint8Array(await crypto.subtle.digest("SHA-256", changed)),
+    ]
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+    const writeback = await repo.fetch(
+      new Request("https://repo/commit", {
+        method: "POST",
+        headers: scopeHeaders,
+        body: JSON.stringify({
+          expected_head: c1.commit_id,
+          message: "container writeback",
+          metadata: { ...metadata, tool_turn_id: "turn-writeback" },
+          changes: [
+            {
+              path: "result.txt",
+              oid: sha256,
+              content_base64: btoa("from-container"),
+            },
+          ],
+        }),
+      })
+    );
+    expect(writeback.status).toBe(201);
+    const writebackTree = await repo.fetch(
+      new Request("https://repo/tree", { headers: scopeHeaders })
+    );
+    expect(
+      (
+        (await writebackTree.json()) as { data: Array<{ path: string }> }
+      ).data.map((entry) => entry.path)
+    ).toContain("result.txt");
+    const stale = await repo.fetch(
+      new Request("https://repo/commit", {
+        method: "POST",
+        headers: scopeHeaders,
+        body: JSON.stringify({
+          expected_head: c1.commit_id,
+          metadata,
+          changes: [],
+        }),
+      })
+    );
+    expect(stale.status).toBe(409);
   });
 });

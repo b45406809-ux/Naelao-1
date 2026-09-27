@@ -10,10 +10,20 @@
 // worker's /spaces/:spaceId/... routes), requireInternalHmac gating every route (this worker is
 // workers_dev=false and reached only via a direct service binding or the router's proxyTo, never
 // directly), and a real LIST route (there wasn't one — a per-space artifact browser needs it).
-import { badRequest, errorResponse, notFound, requestId, requireInternalHmac } from "@naelao/http";
-import { Hono } from "hono";
+import {
+  badRequest,
+  errorResponse,
+  notFound,
+  requestId,
+  requireInternalHmac,
+} from "@naelao/http";
+import { Hono, type Context } from "hono";
 export { RepositoryDO } from "./RepositoryDO.js";
 import { repositoryName, assertSegment } from "./repository.js";
+import {
+  createRepositoryToken,
+  verifyRepositoryToken,
+} from "./repository-token.js";
 
 // ── Env ───────────────────────────────────────────────────────────────────────
 
@@ -26,7 +36,8 @@ export interface ArtifactEnv {
 }
 
 function validateEnv(env: ArtifactEnv): void {
-  if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
+  if (!env.PLATFORM_SECRET)
+    throw new Error("Missing required secret: PLATFORM_SECRET");
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -34,16 +45,29 @@ function validateEnv(env: ArtifactEnv): void {
 // Keyed {tenantId}/{spaceId}/{artifactId}/{filename} — one artifact is exactly one R2 object (no
 // chunking, unlike KB documents), so a list-by-prefix at the artifact-id level always returns
 // either zero or one real object.
-function buildR2Key(tenantId: string, spaceId: string, artifactId: string, filename: string): string {
+function buildR2Key(
+  tenantId: string,
+  spaceId: string,
+  artifactId: string,
+  filename: string
+): string {
   return `${tenantId}/${spaceId}/${artifactId}/${filename}`;
 }
-function buildR2Prefix(tenantId: string, spaceId: string, artifactId?: string): string {
-  return artifactId ? `${tenantId}/${spaceId}/${artifactId}/` : `${tenantId}/${spaceId}/`;
+function buildR2Prefix(
+  tenantId: string,
+  spaceId: string,
+  artifactId?: string
+): string {
+  return artifactId
+    ? `${tenantId}/${spaceId}/${artifactId}/`
+    : `${tenantId}/${spaceId}/`;
 }
 
 const MAX_ARTIFACT_BYTES = 5 * 1024 * 1024;
 
-function requireTenant(c: { req: { header: (h: string) => string | undefined } }): string {
+function requireTenant(c: {
+  req: { header: (h: string) => string | undefined };
+}): string {
   const tenantId = c.req.header("x-naelao-tenant-id");
   if (!tenantId) throw badRequest("x-naelao-tenant-id header is required");
   return tenantId;
@@ -59,25 +83,117 @@ app.use("*", async (c, next) => {
   await next();
 });
 
-app.use("/spaces/:spaceId/artifacts", requireInternalHmac((c) => (c as unknown as { env: ArtifactEnv }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/artifacts/*", requireInternalHmac((c) => (c as unknown as { env: ArtifactEnv }).env.PLATFORM_SECRET));
+app.use(
+  "/spaces/:spaceId/artifacts",
+  requireInternalHmac(
+    (c) => (c as unknown as { env: ArtifactEnv }).env.PLATFORM_SECRET
+  )
+);
+app.use(
+  "/spaces/:spaceId/artifacts/*",
+  requireInternalHmac(
+    (c) => (c as unknown as { env: ArtifactEnv }).env.PLATFORM_SECRET
+  )
+);
 
 // Repository operations are routed to exactly one Durable Object per tenant/space/project. The
 // caller cannot select a DO id or R2 prefix directly; both are derived from authenticated scope.
-app.use("/spaces/:spaceId/projects/:projectId/repository/*", requireInternalHmac((c) => (c as unknown as { env: ArtifactEnv }).env.PLATFORM_SECRET));
-app.all("/spaces/:spaceId/projects/:projectId/repository/:operation", async (c) => {
-  const scope = {
-    tenantId: assertSegment(requireTenant(c), "tenant"),
-    spaceId: assertSegment(c.req.param("spaceId"), "space"),
-    projectId: assertSegment(c.req.param("projectId"), "project"),
-  };
-  const stub = c.env.REPOSITORY_DO.get(c.env.REPOSITORY_DO.idFromName(repositoryName(scope)));
+app.use(
+  "/spaces/:spaceId/projects/:projectId/repository/*",
+  requireInternalHmac(
+    (c) => (c as unknown as { env: ArtifactEnv }).env.PLATFORM_SECRET
+  )
+);
+app.post(
+  "/spaces/:spaceId/projects/:projectId/repository/mount-token",
+  async (c) => {
+    const scope = {
+      tenantId: assertSegment(requireTenant(c), "tenant"),
+      spaceId: assertSegment(c.req.param("spaceId"), "space"),
+      projectId: assertSegment(c.req.param("projectId"), "project"),
+    };
+    const expiresAt = Date.now() + 5 * 60_000;
+    const token = await createRepositoryToken(c.env.PLATFORM_SECRET, {
+      ...scope,
+      repoId: scope.projectId,
+      exp: expiresAt,
+    });
+    const origin = new URL(c.req.url).origin;
+    return c.json({
+      token,
+      expires_at: new Date(expiresAt).toISOString(),
+      repository_url: `${origin}/repos/${scope.projectId}`,
+    });
+  }
+);
+app.all(
+  "/spaces/:spaceId/projects/:projectId/repository/:operation",
+  async (c) => {
+    const scope = {
+      tenantId: assertSegment(requireTenant(c), "tenant"),
+      spaceId: assertSegment(c.req.param("spaceId"), "space"),
+      projectId: assertSegment(c.req.param("projectId"), "project"),
+    };
+    const stub = c.env.REPOSITORY_DO.get(
+      c.env.REPOSITORY_DO.idFromName(repositoryName(scope))
+    );
+    const source = new URL(c.req.url);
+    const target = new URL(
+      `https://repository.internal/${c.req.param("operation")}`
+    );
+    target.search = source.search;
+    const headers = new Headers(c.req.raw.headers);
+    headers.set("x-repository-scope", JSON.stringify(scope));
+    return stub.fetch(
+      new Request(target, {
+        method: c.req.method,
+        headers,
+        body: c.req.raw.body,
+      })
+    );
+  }
+);
+
+async function mountedRepository(c: Context<{ Bindings: ArtifactEnv }>) {
+  const repoId = assertSegment(c.req.param("id"), "repository");
+  const authorization = c.req.header("authorization") ?? "";
+  const token = authorization.match(/^Bearer\s+(.+)$/i)?.[1];
+  const claims = token
+    ? await verifyRepositoryToken(c.env.PLATFORM_SECRET, token, repoId)
+    : null;
+  if (!claims) return null;
+  const stub = c.env.REPOSITORY_DO.get(
+    c.env.REPOSITORY_DO.idFromName(repositoryName(claims))
+  );
+  return { stub, claims };
+}
+
+// Narrow capability routes consumed by container mounts. Tree responses contain metadata only;
+// blobs are fetched separately by immutable object id on the first filesystem read.
+app.get("/repos/:id/tree", async (c) => {
+  const mounted = await mountedRepository(c);
+  if (!mounted) return c.json({ error: "invalid_repository_token" }, 401);
   const source = new URL(c.req.url);
-  const target = new URL(`https://repository.internal/${c.req.param("operation")}`);
+  const target = new URL("https://repository.internal/tree");
   target.search = source.search;
-  const headers = new Headers(c.req.raw.headers);
-  headers.set("x-repository-scope", JSON.stringify(scope));
-  return stub.fetch(new Request(target, { method: c.req.method, headers, body: c.req.raw.body }));
+  const headers = new Headers({
+    "x-repository-scope": JSON.stringify(mounted.claims),
+  });
+  return mounted.stub.fetch(new Request(target, { headers }));
+});
+
+app.get("/repos/:id/objects/:oid", async (c) => {
+  const mounted = await mountedRepository(c);
+  if (!mounted) return c.json({ error: "invalid_repository_token" }, 401);
+  const source = new URL(c.req.url);
+  const target = new URL(
+    `https://repository.internal/object/${c.req.param("oid")}`
+  );
+  target.search = source.search;
+  const headers = new Headers({
+    "x-repository-scope": JSON.stringify(mounted.claims),
+  });
+  return mounted.stub.fetch(new Request(target, { headers }));
 });
 
 // POST /spaces/:spaceId/artifacts — create an artifact. Accepts multipart/form-data (a 'file'
@@ -99,12 +215,20 @@ app.post("/spaces/:spaceId/artifacts", async (c) => {
     if (!fileField || typeof fileField === "string") {
       throw badRequest("multipart body must contain a 'file' field");
     }
-    const fileBlob = fileField as unknown as Blob & { name: string; type: string };
+    const fileBlob = fileField as unknown as Blob & {
+      name: string;
+      type: string;
+    };
     filename = fileBlob.name || `artifact-${artifactId}`;
     mimeType = fileBlob.type || "application/octet-stream";
     fileBytes = new Uint8Array(await fileBlob.arrayBuffer());
   } else {
-    let body: { content_type?: string; content?: string; data_base64?: string; filename?: string };
+    let body: {
+      content_type?: string;
+      content?: string;
+      data_base64?: string;
+      filename?: string;
+    };
     try {
       body = await c.req.json();
     } catch {
@@ -137,7 +261,12 @@ app.post("/spaces/:spaceId/artifacts", async (c) => {
   });
 
   return c.json(
-    { artifact_id: artifactId, filename, content_type: mimeType, size: fileBytes.byteLength },
+    {
+      artifact_id: artifactId,
+      filename,
+      content_type: mimeType,
+      size: fileBytes.byteLength,
+    },
     201
   );
 });
@@ -147,10 +276,20 @@ app.get("/spaces/:spaceId/artifacts", async (c) => {
   const tenantId = requireTenant(c);
   const spaceId = c.req.param("spaceId");
   const prefix = buildR2Prefix(tenantId, spaceId);
-  const items: Array<{ artifact_id: string; filename: string; content_type: string; size: number; uploaded: string }> = [];
+  const items: Array<{
+    artifact_id: string;
+    filename: string;
+    content_type: string;
+    size: number;
+    uploaded: string;
+  }> = [];
   let cursor: string | undefined;
   do {
-    const listed = await c.env.ARTIFACT_BUCKET.list({ prefix, ...(cursor ? { cursor } : {}), limit: 200 });
+    const listed = await c.env.ARTIFACT_BUCKET.list({
+      prefix,
+      ...(cursor ? { cursor } : {}),
+      limit: 200,
+    });
     for (const o of listed.objects) {
       const rest = o.key.slice(prefix.length); // {artifactId}/{filename}
       const slash = rest.indexOf("/");
@@ -159,7 +298,10 @@ app.get("/spaces/:spaceId/artifacts", async (c) => {
       items.push({
         artifact_id: artifactId,
         filename,
-        content_type: o.customMetadata?.["content_type"] ?? o.httpMetadata?.contentType ?? "application/octet-stream",
+        content_type:
+          o.customMetadata?.["content_type"] ??
+          o.httpMetadata?.contentType ??
+          "application/octet-stream",
         size: o.size,
         uploaded: o.uploaded.toISOString(),
       });
@@ -184,7 +326,9 @@ app.get("/spaces/:spaceId/artifacts/:artifactId", async (c) => {
   if (!object) throw notFound("Artifact");
 
   const mimeType =
-    object.customMetadata?.["content_type"] ?? object.httpMetadata?.contentType ?? "application/octet-stream";
+    object.customMetadata?.["content_type"] ??
+    object.httpMetadata?.contentType ??
+    "application/octet-stream";
 
   return new Response(object.body, {
     headers: {
