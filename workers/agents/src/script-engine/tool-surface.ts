@@ -26,7 +26,7 @@ import type {
 } from "./types.js";
 import { SkillLibrary } from "./skill-library.js";
 import { scriptFind, indexScriptEmbedding, removeScriptEmbedding } from "./script-find.js";
-import { runStoredScript } from "./execution-ladder.js";
+import { classifyExecutionRoute, EXECUTION_ENGINES, runStoredScript } from "./execution-ladder.js";
 import { buildOperationMap, type PrebuiltOp, type PrebuiltScript } from "./prebuilt/index.js";
 import { assertNoReservedViolation } from "./reserved-capabilities.js";
 import { isReadSafeOperation } from "./assistant-access.js";
@@ -703,12 +703,15 @@ export class ScriptToolSurface {
       this.missStreak = 0;
       // Bash first attempts the in-isolate virtual POSIX/$PATH runtime (Tier 2); only an
       // unsupported command promotes itself to the container from inside the operation.
-      const effectiveTier = name === "Bash" ? 2 : prebuilt.prebuilt.requires_tier;
+      const route = name === "Bash" ? classifyExecutionRoute(mutationIntent) : undefined;
+      const effectiveTier = route?.tier ?? prebuilt.prebuilt.requires_tier;
       if (this.env.maxTier !== undefined && effectiveTier > this.env.maxTier) {
         return {
           ok: false,
           error: `Tier ${prebuilt.prebuilt.requires_tier} exceeds this project's execution ceiling (${this.env.maxTier}) for script.run('${name}').`,
           tier: effectiveTier,
+          actual_tier: effectiveTier,
+          engine: route?.engine ?? EXECUTION_ENGINES[effectiveTier],
           duration_ms: Date.now() - started,
           tokens_used: 0,
         };

@@ -47,6 +47,7 @@ interface ContainerRuntime {
   readonly running: boolean;
   start(opts?: { enableInternet?: boolean }): void;
   getTcpPort(port: number): ContainerPort;
+  stop?(signal?: string): Promise<void> | void;
 }
 
 const HARNESS_PORT = 8080;
@@ -75,7 +76,15 @@ export class ToolSandboxDO extends DurableObject {
     const lastUsed =
       (await this.ctx.storage.get<number>("last_used_at")) ?? this.lastUsedAt;
     if (Date.now() - lastUsed >= 60_000) {
-      await this.ctx.storage.put("container_status", "stopped");
+      const container = this.container;
+      if (container?.running) {
+        const port = container.getTcpPort(HARNESS_PORT);
+        const snapshot: { files?: Record<string, string> } = await port.fetch(new Request("http://sandbox/workspace/read", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).then((r) => r.json<{ files?: Record<string, string> }>()).catch(() => ({}));
+        if (snapshot.files) await this.ctx.storage.put("workspace_snapshot", snapshot.files);
+        await port.fetch(new Request("http://sandbox/shutdown", { method: "POST" })).catch(() => undefined);
+        await container.stop?.("SIGTERM");
+      }
+      await this.ctx.storage.put("container_status", "hibernated");
     }
   }
 
@@ -144,6 +153,10 @@ export class ToolSandboxDO extends DurableObject {
     if (!container.running) {
       container.start({ enableInternet: false });
       await this.ctx.storage.put("container_status", "running");
+      const snapshot = await this.ctx.storage.get<Record<string, string>>("workspace_snapshot");
+      if (snapshot && Object.keys(snapshot).length) {
+        await container.getTcpPort(HARNESS_PORT).fetch(new Request("http://sandbox/workspace/write", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ files: snapshot }) }));
+      }
     }
 
     // /build, /exec, and every /workspace/* route all forward to the harness as-is now — this

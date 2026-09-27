@@ -32,8 +32,13 @@ export function interceptPlatformCli(command: string): CliDispatch | null {
   if (words[0] === "schedule" && words[1] === "--cron" && words[2] && words[3]) {
     return { operation: "workflow.schedule", params: { cron: words[2], name: words[3] } };
   }
-  if (words[0] === "see" && words[1]) {
-    return { operation: "browser.screenshot", params: { url: words[1], ...(words[2] === "--crop" && words[3] ? { crop: words[3] } : {}) } };
+  if (words[0] === "browse" && words[1]) {
+    return { operation: "browser.navigate", params: { url: words[1], save_screenshot: true, accessibility_text: true } };
+  }
+  if (words[0] === "see") {
+    const cropAt = words.indexOf("--crop");
+    const path = words[1] && words[1] !== "--crop" ? words[1] : "latest";
+    return { operation: "browser.see", params: { path, ...(cropAt >= 0 && words[cropAt + 1] ? { crop: words[cropAt + 1] } : {}) } };
   }
   const scoped = words[0]?.match(/^(?:ext|auto):([a-z][a-z0-9_-]*)$/i);
   if (scoped) return { operation: scoped[1]!, params: { argv: words.slice(1) } };

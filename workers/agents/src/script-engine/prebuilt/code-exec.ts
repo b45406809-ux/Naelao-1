@@ -30,6 +30,7 @@ import { workspacePrefix, type ExecutionTier } from "../types.js";
 import { assertNoReservedViolation } from "../reserved-capabilities.js";
 import { canRunVirtually, executeVirtualPosix } from "../virtual-posix.js";
 import { parseCliWords } from "../virtual-cli.js";
+import { requiresNativeCompilation } from "../execution-ladder.js";
 
 const PYTHON_HARNESS = `
 import { execFileSync } from "node:child_process";
@@ -168,12 +169,12 @@ async function runBash(
       });
     }
   }
-  if (ctx.env.maxTier !== undefined && ctx.env.maxTier < 5) {
+  if (ctx.env.maxTier !== undefined && ctx.env.maxTier < 6) {
     throw new Error(
-      `command requires the Tier 5 container, above this project's execution ceiling (${ctx.env.maxTier})`
+      `command requires the Tier 6 container, above this project's execution ceiling (${ctx.env.maxTier})`
     );
   }
-  return runTier(ctx, "code-exec.execute_bash", BASH_HARNESS, 5, args);
+  return runTier(ctx, "code-exec.execute_bash", BASH_HARNESS, 6, args);
 }
 
 export const codeExec: PrebuiltScript = {
@@ -199,10 +200,14 @@ export const codeExec: PrebuiltScript = {
       "(object, optional — passed through to the module's own args param).",
   },
   operations: {
-    "code.execute_python": (a, c) =>
-      runTier(c, "code-exec.execute_python", PYTHON_HARNESS, 5, a),
+    "code.execute_python": (a, c) => {
+      const code = String(a["code"] ?? "");
+      const installDeps = Array.isArray(a["install_deps"]) ? a["install_deps"].join(" ") : "";
+      const native = installDeps.length > 0 || requiresNativeCompilation(code);
+      return runTier(c, "code-exec.execute_python", PYTHON_HARNESS, native ? 6 : 2, a);
+    },
     "code.execute_bash": (a, c) =>
-      runTier(c, "code-exec.execute_bash", BASH_HARNESS, 5, a),
+      runTier(c, "code-exec.execute_bash", BASH_HARNESS, 6, a),
     // Same op as code.execute_bash — see RENAMED_OPERATIONS in tool-surface.ts ("bash"/
     // "execute_bash" -> "Bash") and this file's own header.
     Bash: runBash,

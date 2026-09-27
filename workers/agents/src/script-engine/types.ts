@@ -179,6 +179,10 @@ export interface ScriptRunResult {
   output?: unknown;
   error?: string;
   tier: ExecutionTier;
+  /** Runtime receipt. `tier` remains for backwards compatibility; these fields describe what
+   * actually ran after invisible pre-flight promotion/fallback. */
+  actual_tier?: ExecutionTier;
+  engine?: "sqlite_fs" | "isolate" | "workflow" | "kitesurf" | "chromium" | "container";
   /** Milliseconds of wall-clock execution. */
   duration_ms: number;
   /** Reasoning-model tokens consumed by this run (0 for pure script execution). */
