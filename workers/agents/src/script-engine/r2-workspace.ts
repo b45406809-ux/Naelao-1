@@ -23,7 +23,7 @@ export async function virtualFsWrite(
   const bucket = env.workspaceBucket ?? env.scriptsBucket;
   const key = `${workspacePrefix(env)}${path.replace(/^\/+/, "")}`;
   await bucket.put(key, textEncoder.encode(content));
-  env.onWorkspaceChange?.({ path, operation: "write" });
+  await env.onWorkspaceChange?.({ path, operation: "write" });
 }
 
 export async function virtualFsDelete(
@@ -33,7 +33,7 @@ export async function virtualFsDelete(
   const bucket = env.workspaceBucket ?? env.scriptsBucket;
   const key = `${workspacePrefix(env)}${path.replace(/^\/+/, "")}`;
   await bucket.delete(key);
-  env.onWorkspaceChange?.({ path, operation: "delete" });
+  await env.onWorkspaceChange?.({ path, operation: "delete" });
 }
 
 export async function virtualFsList(

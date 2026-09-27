@@ -31,6 +31,8 @@ export interface CommitRecord {
   oid: string;
   tree: string;
   parent?: string;
+  /** First parent is `parent`; additional parents are present for merge commits. */
+  parents?: string[];
   message: string;
   metadata: CommitMetadata;
   createdAt: string;
@@ -76,7 +78,7 @@ function hex(bytes: ArrayBuffer): string {
 }
 
 export async function encodeGitObject(
-  type: "blob" | "tree" | "commit",
+  type: "blob" | "tree" | "commit" | "tag",
   body: Uint8Array
 ): Promise<{ oid: string; bytes: Uint8Array }> {
   const header = encoder.encode(`${type} ${body.byteLength}\0`);
@@ -98,6 +100,90 @@ export async function encodeTree(
       .join("")
   );
   return encodeGitObject("tree", body);
+}
+
+/** Encode a real hierarchy of canonical Git tree objects (raw 20-byte child OIDs). */
+export async function encodeTreeHierarchy(entries: Record<string, TreeEntry>): Promise<{
+  root: { oid: string; bytes: Uint8Array };
+  objects: Array<{ oid: string; bytes: Uint8Array }>;
+}> {
+  type Node = { files: Map<string, TreeEntry>; dirs: Map<string, Node> };
+  const root: Node = { files: new Map(), dirs: new Map() };
+  for (const entry of Object.values(entries)) {
+    const parts = entry.path.split("/");
+    const name = parts.pop()!;
+    let node = root;
+    for (const part of parts) {
+      let child = node.dirs.get(part);
+      if (!child) { child = { files: new Map(), dirs: new Map() }; node.dirs.set(part, child); }
+      node = child;
+    }
+    node.files.set(name, entry);
+  }
+  const objects: Array<{ oid: string; bytes: Uint8Array }> = [];
+  const rawOid = (oid: string) => Uint8Array.from(oid.match(/../g)!, (byte) => Number.parseInt(byte, 16));
+  const encodeNode = async (node: Node): Promise<{ oid: string; bytes: Uint8Array }> => {
+    const records: Array<{ name: string; bytes: Uint8Array }> = [];
+    for (const [name, child] of node.dirs) {
+      const tree = await encodeNode(child);
+      const prefix = encoder.encode(`40000 ${name}\0`);
+      const bytes = new Uint8Array(prefix.length + 20); bytes.set(prefix); bytes.set(rawOid(tree.oid), prefix.length);
+      records.push({ name: `${name}/`, bytes });
+    }
+    for (const [name, file] of node.files) {
+      const prefix = encoder.encode(`100644 ${name}\0`);
+      const bytes = new Uint8Array(prefix.length + 20); bytes.set(prefix); bytes.set(rawOid(file.oid), prefix.length);
+      records.push({ name, bytes });
+    }
+    records.sort((a, b) => a.name.localeCompare(b.name));
+    const length = records.reduce((sum, item) => sum + item.bytes.length, 0);
+    const body = new Uint8Array(length); let offset = 0;
+    for (const record of records) { body.set(record.bytes, offset); offset += record.bytes.length; }
+    const encoded = await encodeGitObject("tree", body); objects.push(encoded); return encoded;
+  };
+  const encodedRoot = await encodeNode(root);
+  return { root: encodedRoot, objects };
+}
+
+/** Parse the canonical metadata trailer emitted by {@link commitBody}. */
+export function parseCommitMetadata(message: string): CommitMetadata | null {
+  const marker = "--AVOS-METADATA--";
+  const start = message.lastIndexOf(marker);
+  if (start < 0) return null;
+  const values: Record<string, string> = {};
+  for (const line of message.slice(start + marker.length).trim().split("\n")) {
+    const match = line.match(/^([a-z_]+):\s*(.*)$/);
+    if (!match) continue;
+    let value = match[2]!.trim();
+    if (value.startsWith('"') && value.endsWith('"')) {
+      try { value = JSON.parse(value) as string; } catch { return null; }
+    }
+    values[match[1]!] = value;
+  }
+  try {
+    return validateMetadata({
+      agent_role: values["author"], user_goal: values["goal"],
+      rationale: values["rationale"], task_id: values["task_id"],
+      thread_id: values["thread_id"], tool_turn_id: values["tool_turn_id"],
+    });
+  } catch { return null; }
+}
+
+function yamlString(value: string): string {
+  // JSON strings are valid YAML scalars and avoid newline/colon injection into the trailer.
+  return JSON.stringify(value);
+}
+
+export function metadataTrailer(metadata: CommitMetadata): string {
+  return [
+    "--AVOS-METADATA--",
+    `author: ${yamlString(metadata.agent_role)}`,
+    `goal: ${yamlString(metadata.user_goal)}`,
+    `rationale: ${yamlString(metadata.rationale)}`,
+    `task_id: ${yamlString(metadata.task_id)}`,
+    `thread_id: ${yamlString(metadata.thread_id)}`,
+    `tool_turn_id: ${yamlString(metadata.tool_turn_id)}`,
+  ].join("\n");
 }
 
 export function validateMetadata(value: unknown): CommitMetadata {
@@ -126,19 +212,19 @@ export function validateMetadata(value: unknown): CommitMetadata {
 
 export function commitBody(
   tree: string,
-  parent: string | undefined,
+  parent: string | string[] | undefined,
   message: string,
   metadata: CommitMetadata,
   timestamp: string
 ): Uint8Array {
   const lines = [`tree ${tree}`];
-  if (parent) lines.push(`parent ${parent}`);
+  for (const oid of Array.isArray(parent) ? parent : parent ? [parent] : []) lines.push(`parent ${oid}`);
   lines.push(
     `author Naelao Agent <agent@naelao.ai> ${Math.floor(new Date(timestamp).getTime() / 1000)} +0000`
   );
   lines.push(
     `committer Naelao Agent <agent@naelao.ai> ${Math.floor(new Date(timestamp).getTime() / 1000)} +0000`
   );
-  lines.push("", message, "", `naelao-metadata ${JSON.stringify(metadata)}`);
+  lines.push("", message, "", metadataTrailer(metadata));
   return encoder.encode(`${lines.join("\n")}\n`);
 }

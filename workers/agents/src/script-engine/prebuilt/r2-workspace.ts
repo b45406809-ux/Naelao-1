@@ -85,7 +85,7 @@ async function writeFileImpl(
   // write actually succeeded, and never awaited — a listener failing must not turn a successful
   // write into a failed one.
   if (!path.replaceAll("\\", "/").startsWith("/.avos/")) {
-    ctx.env.onWorkspaceChange?.({ path, operation: "write" });
+    await ctx.env.onWorkspaceChange?.({ path, operation: "write" });
   }
   return { ok: true, path, size: content.length };
 }
@@ -478,7 +478,7 @@ export const r2Workspace: PrebuiltScript = {
       // that write fires an event, and a no-code rule wakes whoever owns the next stage. Fired
       // after the write actually succeeded, and never awaited — a listener failing must not turn
       // a successful write into a failed one.
-      ctx.env.onWorkspaceChange?.({ path, operation: "write" });
+      await ctx.env.onWorkspaceChange?.({ path, operation: "write" });
       return { ok: true, path };
     },
 
@@ -499,7 +499,7 @@ export const r2Workspace: PrebuiltScript = {
     async delete_file(args, ctx) {
       const path = reqStr(args, "path");
       await bucket(ctx).delete(key(ctx, path));
-      ctx.env.onWorkspaceChange?.({ path, operation: "delete" });
+      await ctx.env.onWorkspaceChange?.({ path, operation: "delete" });
       return { ok: true };
     },
 

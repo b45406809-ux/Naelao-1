@@ -149,7 +149,7 @@ export const webSearch: PrebuiltScript = {
         ...(result.content_type ? { httpMetadata: { contentType: result.content_type } } : {}),
         customMetadata: { updatedAt: Date.now().toString(), sourceUrl: url },
       });
-      ctx.env.onWorkspaceChange?.({ path, operation: "write" });
+      await ctx.env.onWorkspaceChange?.({ path, operation: "write" });
       return {
         ok: true, path,
         size: result.size ?? (payload instanceof Uint8Array ? payload.byteLength : payload.length),

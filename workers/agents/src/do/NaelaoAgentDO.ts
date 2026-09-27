@@ -1067,6 +1067,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // — the per-action status that the next action replaces. Kept separately because they render
     // in different places and have different lifetimes; see TraceStep's own doc.
     try { this.ctx.storage.sql.exec(`ALTER TABLE run_traces ADD COLUMN message TEXT`); } catch { /* exists */ }
+    try { this.ctx.storage.sql.exec(`ALTER TABLE run_traces ADD COLUMN commit_oid TEXT`); } catch { /* exists */ }
 
     // The durable stream: a run's live progress and its answer AS IT IS BEING WRITTEN.
     //
@@ -1415,6 +1416,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // POST /cancel — cancel all active runs for this DO
       if (method === "POST" && url.pathname === "/cancel") {
         return this.handleCancelAll();
+      }
+      if (method === "POST" && (url.pathname === "/git/reset-hard" || url.pathname === "/rollback-to-turn")) {
+        if (!this.env.ARTIFACT_WORKER) return Response.json({ error: "artifact repository unavailable" }, { status: 503 });
+        const body = await request.json<{ tenant_id: string; space_id: string; project_id: string; commit_oid: string; branch?: string }>();
+        if (!body.tenant_id || !body.space_id || !body.project_id || !/^[a-f0-9]{40}$/.test(body.commit_oid)) {
+          return Response.json({ error: "tenant_id, space_id, project_id and a valid commit_oid are required" }, { status: 400 });
+        }
+        const headers = await this.internalHeaders(body.tenant_id, { "content-type": "application/json" });
+        return this.env.ARTIFACT_WORKER.fetch(new Request(
+          `http://artifact-worker/spaces/${encodeURIComponent(body.space_id)}/projects/${encodeURIComponent(body.project_id)}/repository/git.reset_hard`,
+          { method: "POST", headers, body: JSON.stringify({ commit_id: body.commit_oid, branch: body.branch ?? "main" }) },
+        ));
       }
 
       // GET /status
@@ -1970,10 +1983,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // scratch space, not a pipeline, and firing on every note it writes would be noise.
     if (this.env.SPACES_WORKER && projectId) {
       const spacesWorker = this.env.SPACES_WORKER;
-      env.onWorkspaceChange = (change) => {
-        // Fire-and-forget in both directions: the write already succeeded, so a failure to
-        // announce it must not surface as a failed write.
-        void (async () => {
+      env.onWorkspaceChange = async (change) => {
+        // Repository commits are awaited so the tool's completed TraceStep can carry the exact
+        // snapshot it produced. Failures remain best-effort: the workspace mutation is already real.
+        let commitOid: string | undefined;
           try {
             // Mirror the changed file into the repository and create an auditable commit for
             // this successful mutating tool turn. R2 workspace reads remain lazy; only the one
@@ -1996,6 +2009,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               }) }));
               if (commitResponse.ok) {
                 const committed = await commitResponse.json<{ commit_id: string }>();
+                commitOid = committed.commit_id;
+                env.lastWorkspaceCommitOid = committed.commit_id;
                 await broadcastSpaceEvent(this.env, tenantId, spaceId, "repository.committed", { project_id: projectId, thread_id: commitContext.threadId, commit_id: committed.commit_id, rollback_commit_id: committed.commit_id });
               }
             }
@@ -2015,7 +2030,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           } catch {
             /* best-effort */
           }
-        })();
+        return commitOid ? { commit_oid: commitOid } : undefined;
       };
     }
 
@@ -4194,8 +4209,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     try {
       for (const step of trace) {
         this.ctx.storage.sql.exec(
-          `INSERT OR REPLACE INTO run_traces (run_id, seq, phase, name, tier, duration_ms, tokens, ok, detail, ts, narration, thinking, params, output, message)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT OR REPLACE INTO run_traces (run_id, seq, phase, name, tier, duration_ms, tokens, ok, detail, ts, narration, thinking, params, output, message, commit_oid)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           runId,
           step.seq,
           step.phase,
@@ -4210,7 +4225,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           step.thinking ?? null,
           step.params === undefined ? null : (() => { try { return JSON.stringify(step.params); } catch { return null; } })(),
           step.output ?? null,
-          step.message ?? null
+          step.message ?? null,
+          step.commit_oid ?? null
         );
       }
     } catch {
@@ -4244,7 +4260,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   private readRunTrace(runId: string): TraceStep[] {
     const rows = this.ctx.storage.sql
       .exec(
-        `SELECT seq, phase, name, tier, duration_ms, tokens, ok, detail, ts, narration, thinking, params, output, message FROM run_traces WHERE run_id = ? ORDER BY seq ASC`,
+        `SELECT seq, phase, name, tier, duration_ms, tokens, ok, detail, ts, narration, thinking, params, output, message, commit_oid FROM run_traces WHERE run_id = ? ORDER BY seq ASC`,
         runId
       )
       .toArray() as Array<{
@@ -4262,6 +4278,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       params: string | null;
       output: string | null;
       message: string | null;
+      commit_oid: string | null;
     }>;
     return rows.map((r) => ({
       seq: r.seq,
@@ -4278,6 +4295,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       params: r.params === null ? undefined : (() => { try { return JSON.parse(r.params!); } catch { return r.params; } })(),
       output: r.output ?? undefined,
       message: r.message ?? undefined,
+      commit_oid: r.commit_oid ?? undefined,
     }));
   }
 
