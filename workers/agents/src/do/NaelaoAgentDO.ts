@@ -1854,6 +1854,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ...(this.env.LOADER ? { loader: this.env.LOADER } : {}),
       ...(this.env.BROWSER_WORKER ? { browserWorker: this.env.BROWSER_WORKER } : {}),
       ...(this.env.MCP_HUB ? { mcpHubWorker: this.env.MCP_HUB } : {}),
+      ...(this.env.CREDENTIALS_WORKER ? { credentialsWorker: this.env.CREDENTIALS_WORKER } : {}),
       ...(this.env.PLATFORM_SECRET ? { platformSecret: this.env.PLATFORM_SECRET } : {}),
       ...(this.env.TOOL_SANDBOX ? { toolSandbox: this.env.TOOL_SANDBOX } : {}),
     });

@@ -5,3 +5,4 @@ export { generateApiKey, hashApiKey, verifyApiKey, validatePasswordStrength, gen
 export { securityHeaders } from "./headers.js";
 export { checkSsrf, resolveHostnameIps } from "./ssrf-guard.js";
 export type { SsrfCheckResult } from "./ssrf-guard.js";
+export { isPrivateNetworkAddress } from "./ssrf.js";

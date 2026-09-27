@@ -39,6 +39,7 @@ import type {
   TieredCodeRunner,
 } from "./types.js";
 import { requiresNativeCompilation } from "./execution-ladder.js";
+import { createVaultProxy } from "./vault-proxy.js";
 
 // ── CF Worker Loader binding (beta) — minimal local typing ─────────────────────────────
 
@@ -76,6 +77,8 @@ export interface CodeRunnerOptions {
   browserWorker?: Fetcher;
   /** naelao-mcp-hub service binding — powers Tiers 2-4's ctx.mcp (§A1.17 Phase I). */
   mcpHubWorker?: Fetcher;
+  /** Zero-leak credential egress worker. Only this binding receives logical credential names. */
+  credentialsWorker?: Fetcher;
   /** Used to mint short-lived internal tokens for the browser/mcp-hub loopbacks — never handed
    *  to the isolate directly. */
   platformSecret?: string;
@@ -244,6 +247,17 @@ export default {
         },
       };
     }
+    if (env.__VAULT__) {
+      ctx.vault = {
+        fetchWithAuth: async (url, init) => {
+          if (!init || !init.credentialName) throw new Error("ctx.vault.fetchWithAuth requires credentialName");
+          return env.__VAULT__.fetchWithAuth(url, init);
+        },
+      };
+    }
+    // Deterministic authority fence: project isolates cannot even observe a space property.
+    if (env.__PROJECT_ID__) ctx.project = { id: env.__PROJECT_ID__ };
+    else ctx.space = { id: env.__SPACE_ID__ };
     if (typeof run !== "function") {
       return Response.json({ ok: false, error: "script must export an async function named 'run'" }, { status: 500 });
     }
@@ -381,6 +395,19 @@ async function runIsolate(
     env.__MCP_PROJECT__ = params.projectId ?? "";
   }
 
+  if (opts.credentialsWorker && opts.platformSecret) {
+    env.__VAULT__ = createVaultProxy({
+      credentialsWorker: opts.credentialsWorker,
+      platformSecret: opts.platformSecret,
+      tenantId: params.tenantId,
+      spaceId: params.spaceId,
+      agentId: params.agentId,
+      ...(params.userId ? { userId: params.userId } : {}),
+    });
+  }
+  env.__SPACE_ID__ = params.spaceId;
+  if (params.projectId) env.__PROJECT_ID__ = params.projectId;
+
   // One isolate per (space, script, code revision) — never share isolates across spaces.
   // `loader.get(id, factory)` caches by id and does NOT re-invoke `factory` (so does not
   // refresh `env`) while a warm isolate for that id exists. That's fine for env values with no
@@ -389,7 +416,7 @@ async function runIsolate(
   // wired, fold a coarse time bucket into the id — well inside the token's freshness window —
   // forcing a fresh isolate (and a fresh token) periodically. Scripts that never touch ctx.mcp
   // keep the original stable id, so their isolate-reuse cache hit rate is unaffected.
-  const mcpTimeBucket = opts.mcpHubWorker
+  const mcpTimeBucket = opts.mcpHubWorker || opts.credentialsWorker
     ? `:mcp${Math.floor(Date.now() / 45_000)}`
     : "";
   const lockId = `${params.spaceId}:${params.name}:${hashCode(params.code)}${mcpTimeBucket}`;

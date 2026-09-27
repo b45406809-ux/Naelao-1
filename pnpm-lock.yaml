@@ -618,6 +618,9 @@ importers:
       '@naelao/moderation':
         specifier: workspace:*
         version: link:../../packages/moderation
+      '@naelao/security':
+        specifier: workspace:*
+        version: link:../../packages/security
       '@naelao/tracing':
         specifier: workspace:*
         version: link:../../packages/tracing
@@ -841,6 +844,9 @@ importers:
       '@naelao/http':
         specifier: workspace:*
         version: link:../../packages/http
+      '@naelao/security':
+        specifier: workspace:*
+        version: link:../../packages/security
       '@naelao/types':
         specifier: workspace:*
         version: link:../../packages/types
