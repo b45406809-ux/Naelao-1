@@ -701,11 +701,14 @@ export class ScriptToolSurface {
       // A resolved name — whatever happens next, this was not a "guessed the wrong name" miss.
       // See the miss-streak comment at the "Unknown script or operation" branch below.
       this.missStreak = 0;
-      if (this.env.maxTier !== undefined && prebuilt.prebuilt.requires_tier > this.env.maxTier) {
+      // Bash first attempts the in-isolate virtual POSIX/$PATH runtime (Tier 2); only an
+      // unsupported command promotes itself to the container from inside the operation.
+      const effectiveTier = name === "Bash" ? 2 : prebuilt.prebuilt.requires_tier;
+      if (this.env.maxTier !== undefined && effectiveTier > this.env.maxTier) {
         return {
           ok: false,
           error: `Tier ${prebuilt.prebuilt.requires_tier} exceeds this project's execution ceiling (${this.env.maxTier}) for script.run('${name}').`,
-          tier: prebuilt.prebuilt.requires_tier,
+          tier: effectiveTier,
           duration_ms: Date.now() - started,
           tokens_used: 0,
         };
@@ -733,7 +736,7 @@ export class ScriptToolSurface {
         return {
           ok: true,
           output: limited,
-          tier: prebuilt.prebuilt.requires_tier,
+          tier: effectiveTier,
           duration_ms: Date.now() - started,
           tokens_used: usage?.tokens_used ?? 0,
           ...(usage?.input_tokens !== undefined ? { input_tokens: usage.input_tokens } : {}),

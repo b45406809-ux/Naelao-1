@@ -26,6 +26,7 @@
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 import { workspacePrefix } from "../types.js";
+import { normalizeAvosPath, normalizeWorkspacePath } from "../workspace-paths.js";
 
 /** Above this, read_file refuses rather than returning a payload that can blow the context of a
  *  turn all by itself. ~50k tokens at a rough 4-chars/token estimate — generous for real text/
@@ -39,8 +40,11 @@ function bucket(ctx: PrebuiltOpContext): R2Bucket {
 
 /** All workspace keys are scoped under the run's workspace prefix (space- or project-scoped). */
 function key(ctx: PrebuiltOpContext, path: string): string {
-  const clean = String(path).replace(/^\/+/, "");
-  if (clean.includes("..")) throw new Error(`Path traversal rejected: ${path}`);
+  if (String(path).replaceAll("\\", "/").startsWith("/.avos/")) {
+    const machinePath = normalizeAvosPath(String(path)).slice("/.avos/".length);
+    return `${workspacePrefix(ctx.env).replace(/workspace\/$/, "avos/")}${machinePath}`;
+  }
+  const clean = normalizeWorkspacePath(String(path));
   return `${workspacePrefix(ctx.env)}${clean}`;
 }
 
@@ -80,7 +84,9 @@ async function writeFileImpl(
   // write fires an event, and a no-code rule wakes whoever owns the next stage. Fired after the
   // write actually succeeded, and never awaited — a listener failing must not turn a successful
   // write into a failed one.
-  ctx.env.onWorkspaceChange?.({ path, operation: "write" });
+  if (!path.replaceAll("\\", "/").startsWith("/.avos/")) {
+    ctx.env.onWorkspaceChange?.({ path, operation: "write" });
+  }
   return { ok: true, path, size: content.length };
 }
 

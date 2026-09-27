@@ -20,28 +20,67 @@ function hooks(ctx: PrebuiltOpContext): OrchestrationHooks {
 
 export const dynamicWorkflow: PrebuiltScript = {
   name: "dynamic-workflow",
-  description: "Create, run, schedule (cron), and check status of durable CF Workflows.",
+  description:
+    "Create, run, schedule (cron), and check status of durable CF Workflows.",
   domain: "orchestration",
   requires_tier: 2,
   operations: {
     async "workflow.create"(args, ctx) {
       const h = hooks(ctx);
-      if (!h.workflowCreate) return { ok: false, reason: "workflow registry not available in this environment" };
-      return await h.workflowCreate(String(args["name"] ?? ""), String(args["code"] ?? ""));
+      if (!h.workflowCreate)
+        return {
+          ok: false,
+          reason: "workflow registry not available in this environment",
+        };
+      return await h.workflowCreate(
+        String(args["name"] ?? ""),
+        String(args["code"] ?? "")
+      );
     },
     async "workflow.run"(args, ctx) {
+      if (!ctx.env.projectId)
+        throw new Error("workflow.run requires a project-scoped run");
       const h = hooks(ctx);
-      if (!h.workflowRun) return { ok: false, reason: "workflow run not available" };
-      return await h.workflowRun(String(args["name"] ?? ""), (args["params"] as Record<string, unknown>) ?? {});
+      if (!h.workflowRun)
+        return { ok: false, reason: "workflow run not available" };
+      const name = String(args["name"] ?? "");
+      const result = await h.workflowRun(
+        name,
+        (args["params"] as Record<string, unknown>) ?? {},
+        {
+          detach: args["detach"] === true,
+          cleanContext: true,
+          maxContextTokens: 2_000,
+        }
+      );
+      return {
+        queued: true,
+        result,
+        receipt_card: {
+          kind: "workflow_receipt",
+          collapsed: true,
+          lines: [
+            `Workflow ${name} queued`,
+            `Project ${ctx.env.projectId} · clean context (≤2,000 tokens)`,
+          ],
+        },
+      };
     },
     async "workflow.schedule"(args, ctx) {
+      if (!ctx.env.projectId)
+        throw new Error("workflow.schedule requires a project-scoped run");
       const h = hooks(ctx);
-      if (!h.workflowSchedule) return { ok: false, reason: "workflow schedule not available" };
-      return await h.workflowSchedule(String(args["name"] ?? ""), String(args["cron"] ?? ""));
+      if (!h.workflowSchedule)
+        return { ok: false, reason: "workflow schedule not available" };
+      return await h.workflowSchedule(
+        String(args["name"] ?? ""),
+        String(args["cron"] ?? "")
+      );
     },
     async "workflow.status"(args, ctx) {
       const h = hooks(ctx);
-      if (!h.workflowStatus) return { ok: false, reason: "workflow status not available" };
+      if (!h.workflowStatus)
+        return { ok: false, reason: "workflow status not available" };
       return await h.workflowStatus(String(args["id"] ?? ""));
     },
   },

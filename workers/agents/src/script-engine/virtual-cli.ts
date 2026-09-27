@@ -37,6 +37,9 @@ export function interceptPlatformCli(command: string): CliDispatch | null {
   }
   const scoped = words[0]?.match(/^(?:ext|auto):([a-z][a-z0-9_-]*)$/i);
   if (scoped) return { operation: scoped[1]!, params: { argv: words.slice(1) } };
-  if (words[0] === "avos" && words[1]) return { operation: `avos-${words[1]}`, params: { argv: words.slice(2) } };
+  if (words[0] === "avos" && words[1] === "chore" && words[2]) {
+    return { operation: "avos.chore", params: { name: words[2], argv: words.slice(3) } };
+  }
+  if (words[0] === "avos") throw new Error("usage: avos chore <name> [args]");
   return null;
 }

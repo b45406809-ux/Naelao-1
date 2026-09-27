@@ -79,6 +79,7 @@ export const schedule: PrebuiltScript = {
   },
   operations: {
     "schedule.wake_me": async (a, c) => {
+      if (!c.env.projectId) throw new Error("schedule.wake_me requires a project-scoped run");
       const goal = String(a["goal"] ?? "").trim();
       if (!goal) throw new Error("schedule.wake_me requires a goal (what to do when you wake)");
       const explicitCron = typeof a["cron"] === "string" ? (a["cron"] as string).trim() : "";
@@ -102,7 +103,7 @@ export const schedule: PrebuiltScript = {
         cron_expression: cron,
         goal,
         agent_id: c.env.agentId,
-        ...(c.env.projectId ? { project_id: c.env.projectId } : {}),
+        project_id: c.env.projectId,
         ...(oneShot ? { params: { _one_shot: true } } : {}),
       });
       if (!res.ok) return { ok: false, error: `failed to schedule wake: HTTP ${res.status}` };
@@ -118,12 +119,14 @@ export const schedule: PrebuiltScript = {
       };
     },
     "schedule.list": async (_a, c) => {
-      const qs = c.env.projectId ? `?project_id=${encodeURIComponent(c.env.projectId)}` : "";
+      if (!c.env.projectId) throw new Error("schedule.list requires a project-scoped run");
+      const qs = `?project_id=${encodeURIComponent(c.env.projectId)}`;
       const res = await spacesCall(c, "GET", `/spaces/${c.env.spaceId}/scheduled-jobs${qs}`);
       if (!res.ok) return { ok: false, error: `failed to list wakes: HTTP ${res.status}` };
       return res.json;
     },
     "schedule.cancel": async (a, c) => {
+      if (!c.env.projectId) throw new Error("schedule.cancel requires a project-scoped run");
       const id = String(a["id"] ?? "").trim();
       if (!id) throw new Error("schedule.cancel requires an id");
       const res = await spacesCall(c, "DELETE", `/spaces/${c.env.spaceId}/scheduled-jobs/${encodeURIComponent(id)}`);

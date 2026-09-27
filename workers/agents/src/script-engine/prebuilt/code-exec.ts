@@ -26,8 +26,10 @@
  */
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
-import type { ExecutionTier } from "../types.js";
+import { workspacePrefix, type ExecutionTier } from "../types.js";
 import { assertNoReservedViolation } from "../reserved-capabilities.js";
+import { canRunVirtually, executeVirtualPosix } from "../virtual-posix.js";
+import { parseCliWords } from "../virtual-cli.js";
 
 const PYTHON_HARNESS = `
 import { execFileSync } from "node:child_process";
@@ -100,7 +102,10 @@ async function runTier(
   args: Record<string, unknown>
 ): Promise<unknown> {
   if (!ctx.env.codeRunner) {
-    return { ok: false, reason: `Tier ${tier} unavailable: no code runner configured in this environment` };
+    return {
+      ok: false,
+      reason: `Tier ${tier} unavailable: no code runner configured in this environment`,
+    };
   }
   const result = await ctx.env.codeRunner.run({
     name,
@@ -116,29 +121,91 @@ async function runTier(
   return result.output;
 }
 
+async function runBash(
+  args: Record<string, unknown>,
+  ctx: PrebuiltOpContext
+): Promise<unknown> {
+  const command = String(
+    args["commands"] ?? args["command"] ?? args["cmd"] ?? ""
+  ).trim();
+  if (!command) throw new Error("commands is required");
+  const bucket = ctx.env.workspaceBucket ?? ctx.env.scriptsBucket;
+  const prefix = workspacePrefix(ctx.env);
+  if (canRunVirtually(command)) {
+    const result = await executeVirtualPosix(command, {
+      read: async (path) => (await bucket.get(`${prefix}${path}`))?.text(),
+      list: async () => {
+        const found: string[] = [];
+        let cursor: string | undefined;
+        do {
+          const page = await bucket.list({
+            prefix,
+            ...(cursor ? { cursor } : {}),
+          });
+          found.push(...page.objects.map((o) => o.key.slice(prefix.length)));
+          cursor = page.truncated ? page.cursor : undefined;
+        } while (cursor && found.length < 1_000);
+        return found;
+      },
+    });
+    if (result.exit_code !== 0)
+      throw new Error(result.stderr ?? "virtual command failed");
+    return { ...result, virtual: true };
+  }
+
+  // /.avos is deliberately a sibling namespace in R2, never under the deliverable prefix.
+  const first = parseCliWords(command)[0];
+  if (first && /^[a-zA-Z][\w-]*$/.test(first)) {
+    const avosPrefix = prefix.replace(/workspace\/$/, "avos/");
+    const module = await bucket.get(`${avosPrefix}bin/${first}.ts`);
+    if (module) {
+      if (!ctx.env.codeRunner)
+        throw new Error("Tier 2 unavailable: no code runner configured");
+      const source = await module.text();
+      assertNoReservedViolation({ name: `avos-bin.${first}`, code: source });
+      return runTier(ctx, `avos-bin.${first}`, source, 2, {
+        argv: parseCliWords(command).slice(1),
+      });
+    }
+  }
+  if (ctx.env.maxTier !== undefined && ctx.env.maxTier < 5) {
+    throw new Error(
+      `command requires the Tier 5 container, above this project's execution ceiling (${ctx.env.maxTier})`
+    );
+  }
+  return runTier(ctx, "code-exec.execute_bash", BASH_HARNESS, 5, args);
+}
+
 export const codeExec: PrebuiltScript = {
   name: "code-exec",
-  description: "Execute Python or Bash in a real sandbox container, or fast JS in a V8 isolate.",
+  description:
+    "Execute Python or Bash in a real sandbox container, or fast JS in a V8 isolate.",
   domain: "container",
   requires_tier: 5,
   paramHints: {
-    "code.execute_bash": "commands (string, REQUIRED — a bash command line). timeout (number, " +
+    "code.execute_bash":
+      "commands (string, REQUIRED — a bash command line). timeout (number, " +
       "optional seconds, default 30). working_dir (string, optional, default the synced project " +
       "workspace).",
-    "Bash": "Same as code.execute_bash — commands (string, REQUIRED). timeout (number, optional " +
+    Bash:
+      "Same as code.execute_bash — commands (string, REQUIRED). timeout (number, optional " +
       "seconds). working_dir (string, optional).",
-    "code.execute_python": "code (string, REQUIRED — a Python script body). timeout (number, " +
+    "code.execute_python":
+      "code (string, REQUIRED — a Python script body). timeout (number, " +
       "optional seconds, default 30). install_deps (string[], optional — pip packages to install " +
       "first).",
-    "code.run_js": "code (string, REQUIRED — a `run(args, ctx)` module body, no file I/O). args " +
+    "code.run_js":
+      "code (string, REQUIRED — a `run(args, ctx)` module body, no file I/O). args " +
       "(object, optional — passed through to the module's own args param).",
   },
   operations: {
-    "code.execute_python": (a, c) => runTier(c, "code-exec.execute_python", PYTHON_HARNESS, 5, a),
-    "code.execute_bash": (a, c) => runTier(c, "code-exec.execute_bash", BASH_HARNESS, 5, a),
+    "code.execute_python": (a, c) =>
+      runTier(c, "code-exec.execute_python", PYTHON_HARNESS, 5, a),
+    "code.execute_bash": (a, c) =>
+      runTier(c, "code-exec.execute_bash", BASH_HARNESS, 5, a),
     // Same op as code.execute_bash — see RENAMED_OPERATIONS in tool-surface.ts ("bash"/
     // "execute_bash" -> "Bash") and this file's own header.
-    "Bash": (a, c) => runTier(c, "code-exec.execute_bash", BASH_HARNESS, 5, a),
+    Bash: runBash,
     // codemode (spec): JS/TS with no file I/O runs at Tier 2 — the agent supplies its own
     // `run(args, ctx)` module body directly (no fixed harness; this *is* the Tier-2 contract).
     // Same reserved-capability gate as script.create/update applies here too — ad hoc code
@@ -146,7 +213,13 @@ export const codeExec: PrebuiltScript = {
     async "code.run_js"(a, c) {
       const adHocCode = String(a["code"] ?? "");
       assertNoReservedViolation({ name: "code-exec.run_js", code: adHocCode });
-      return runTier(c, "code-exec.run_js", adHocCode, 2, (a["args"] as Record<string, unknown>) ?? {});
+      return runTier(
+        c,
+        "code-exec.run_js",
+        adHocCode,
+        2,
+        (a["args"] as Record<string, unknown>) ?? {}
+      );
     },
   },
 };

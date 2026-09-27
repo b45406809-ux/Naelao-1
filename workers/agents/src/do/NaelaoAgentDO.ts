@@ -2206,7 +2206,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         });
         return { id: name };
       };
-      hooks.workflowRun = async (name, params) => tools.run(name, params);
+      hooks.workflowRun = async (name, params) => {
+        // Workflows never inherit or hold open the caller's conversational request. Dispatch
+        // into a fresh Workflow execution and immediately return a receipt to the UI stream.
+        this.ctx.waitUntil(tools.run(name, params));
+        return { queued: true, workflow: name, context: "clean", max_context_tokens: 2_000 };
+      };
       hooks.workflowSchedule = async (name, cron) => {
         // Reuses the existing scheduled_jobs cron dispatcher (runScheduledJobs /
         // fireScriptDirectly) rather than a second scheduler — a due fire calls

@@ -166,6 +166,11 @@ export class RepositoryDO extends DurableObject<Env> {
         if (expected !== undefined && expected !== state.refs[branch])
           return jsonError("Head changed", 409);
         const metadata = validateMetadata(body.metadata);
+        // Defense in depth for worktrees created before namespace validation was introduced.
+        // Agent machinery can never be serialized into a user-visible Git tree.
+        for (const path of Object.keys(state.worktrees[branch]!)) {
+          if (path === ".avos" || path.startsWith(".avos/")) delete state.worktrees[branch]![path];
+        }
         const tree = await encodeTree(state.worktrees[branch]!);
         await this.putObject(scope, tree.oid, tree.bytes);
         const timestamp = new Date().toISOString();

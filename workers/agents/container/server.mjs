@@ -50,10 +50,19 @@ const WORKSPACE_DIR = "/workspace";
 const MAX_WORKSPACE_FILES = 300;
 const MAX_WORKSPACE_FILE_BYTES = 2 * 1024 * 1024;
 
+function safeWorkspacePath(path) {
+  const value = String(path).replaceAll("\\", "/");
+  if (value.startsWith("/.avos") || value === ".avos" || value.startsWith(".avos/")) throw new Error("agent state is not a deliverable");
+  const relativePath = value.startsWith("/workspace/") ? value.slice(11) : value.replace(/^\/+/, "");
+  const parts = relativePath.split("/");
+  if (!relativePath || parts.some((part) => !part || part === "." || part === "..")) throw new Error("workspace path traversal rejected");
+  return parts.join("/");
+}
+
 async function materializeWorkspace(files) {
   await mkdir(WORKSPACE_DIR, { recursive: true });
   for (const [relPath, content] of Object.entries(files ?? {})) {
-    const dest = join(WORKSPACE_DIR, relPath);
+    const dest = join(WORKSPACE_DIR, safeWorkspacePath(relPath));
     await mkdir(dirname(dest), { recursive: true });
     await writeFile(dest, content, "utf8");
   }
@@ -101,10 +110,11 @@ async function readWorkspacePaths(paths) {
   const out = {};
   for (const relPath of paths.slice(0, MAX_WORKSPACE_FILES)) {
     try {
-      const full = join(WORKSPACE_DIR, relPath);
+      const safePath = safeWorkspacePath(relPath);
+      const full = join(WORKSPACE_DIR, safePath);
       const info = await stat(full);
       if (info.size > MAX_WORKSPACE_FILE_BYTES) continue;
-      out[relPath] = await readFile(full, "utf8");
+      out[safePath] = await readFile(full, "utf8");
     } catch {
       // missing/unreadable — simply absent from the result, not an error for the whole batch
     }
