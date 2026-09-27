@@ -16,10 +16,9 @@
 // not per-business), so a session verified for the product root would, without this lookup, also
 // satisfy the identity check for ANY business under that product — a caller could simply change
 // the :spaceId in the URL to reach a different end user's business. `resolveEndUserBusinessRole`
-// closes this: the product ROOT space (no parent_space_id) keeps Phase B's behavior (a verified
-// session for that exact space implies "member" — safe, since the session literally IS scoped to
-// it), but a BUSINESS space (parent_space_id set) requires an ACTIVE row in `business_memberships`
-// — no row, no access, regardless of whether the caller is a valid end user of the product.
+// closes this: every space first requires its own explicit `space_members` row. A child-business
+// `business_memberships` row is accepted only for that child; it never grants upward access to the
+// product root. No applicable row means no access, regardless of product session validity.
 
 import { createMiddleware } from "hono/factory";
 
@@ -44,11 +43,19 @@ export async function resolveEndUserBusinessRole(
     const space = await db.prepare("SELECT parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'")
       .bind(spaceId).first<{ parent_space_id: string | null }>();
     if (!space) return null;
-    if (!space.parent_space_id) {
-      // The product root — resolveProductEndUserClaims already proved a valid session scoped to
-      // exactly this space, so "member" is safe here (this is the Phase B behavior, unchanged).
-      return "member";
+    const direct = await db.prepare(
+      "SELECT role FROM space_members WHERE space_id = ? AND end_user_id = ? AND suspended_at IS NULL"
+    ).bind(spaceId, endUserId).first<{ role: string }>();
+    if (direct) {
+      const role = direct.role === "moderator" ? "admin" : direct.role;
+      return (["viewer", "member", "admin", "owner"] as string[]).includes(role)
+        ? role as BusinessRole
+        : "member";
     }
+    // A department membership never implies access to its parent. Root access requires the
+    // independent space_members row checked above; absence is denial rather than a session-based
+    // fallback that would turn child membership into upward visibility.
+    if (!space.parent_space_id) return null;
     const membership = await db.prepare(
       "SELECT role FROM business_memberships WHERE business_space_id = ? AND end_user_id = ? AND status = 'active'"
     ).bind(spaceId, endUserId).first<{ role: string }>();

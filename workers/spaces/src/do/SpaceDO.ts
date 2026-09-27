@@ -296,7 +296,7 @@ const MIGRATIONS: Migration[] = [
     // Space hierarchy registry (spec §10 SpaceDO schema + §49 Sub-Space Architecture,
     // G-Y15/G-Y16). This DO is one product's complete database; the `spaces` table is
     // the product's space registry: the root space (depth 0) plus its in-DO sub-spaces
-    // (departments, depth 1-2) for tenancy_mode='team'. Sub-spaces share this SQLite and
+    // (departments, depth 1) for tenancy_mode='team'. Sub-spaces share this SQLite and
     // are isolated by the space_id column already carried on threads/messages — no RLS,
     // because the DO instance boundary is the product boundary.
     //
@@ -315,7 +315,7 @@ const MIGRATIONS: Migration[] = [
         tenancy_mode  TEXT NOT NULL DEFAULT 'team'
                         CHECK (tenancy_mode IN ('single','team','saas')),
         agency_shell  INTEGER NOT NULL DEFAULT 0,
-        depth         INTEGER NOT NULL DEFAULT 0 CHECK (depth <= 2),
+        depth         INTEGER NOT NULL DEFAULT 0 CHECK (depth IN (0, 1)),
         scenario_type TEXT,
         status        TEXT NOT NULL DEFAULT 'active'
                         CHECK (status IN ('active','suspended','deleted')),
@@ -652,7 +652,7 @@ const MIGRATIONS: Migration[] = [
     description:
       "project visibility + project_members ACL + exclusive-mode thread locking",
     up: `
-      ALTER TABLE projects ADD COLUMN visibility TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('public','private'));
+      ALTER TABLE projects ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public' CHECK (visibility IN ('public','private'));
       ALTER TABLE projects ADD COLUMN created_by TEXT;
       ALTER TABLE projects ADD COLUMN exclusive_mode INTEGER NOT NULL DEFAULT 0;
       ALTER TABLE projects ADD COLUMN active_thread_id TEXT;
@@ -663,6 +663,7 @@ const MIGRATIONS: Migration[] = [
         user_id    TEXT NOT NULL,
         role       TEXT NOT NULL DEFAULT 'viewer' CHECK (role IN ('owner','editor','viewer')),
         added_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
         PRIMARY KEY (project_id, user_id)
       );
       CREATE INDEX IF NOT EXISTS idx_project_members_user ON project_members(user_id);
@@ -753,7 +754,7 @@ const MIGRATIONS: Migration[] = [
         default_agent_id        TEXT,
         max_threads             INTEGER NOT NULL DEFAULT 0,
         allowed_agent_ids       TEXT,
-        visibility              TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('public','private')),
+        visibility              TEXT NOT NULL DEFAULT 'public' CHECK (visibility IN ('public','private')),
         created_by              TEXT,
         exclusive_mode          INTEGER NOT NULL DEFAULT 0,
         active_thread_id        TEXT,
@@ -865,7 +866,7 @@ const MIGRATIONS: Migration[] = [
         default_agent_id        TEXT,
         max_threads             INTEGER NOT NULL DEFAULT 0,
         allowed_agent_ids       TEXT,
-        visibility              TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('public','private')),
+        visibility              TEXT NOT NULL DEFAULT 'public' CHECK (visibility IN ('public','private')),
         created_by              TEXT,
         exclusive_mode          INTEGER NOT NULL DEFAULT 0,
         active_thread_id        TEXT,
@@ -1150,7 +1151,7 @@ const MIGRATIONS: Migration[] = [
         default_agent_id        TEXT,
         max_threads             INTEGER NOT NULL DEFAULT 0,
         allowed_agent_ids       TEXT,
-        visibility              TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('public','private')),
+        visibility              TEXT NOT NULL DEFAULT 'public' CHECK (visibility IN ('public','private')),
         created_by              TEXT,
         exclusive_mode          INTEGER NOT NULL DEFAULT 0,
         active_thread_id        TEXT,
@@ -1166,6 +1167,72 @@ const MIGRATIONS: Migration[] = [
       FROM projects;
       DROP TABLE projects;
       ALTER TABLE projects_v41 RENAME TO projects;
+      CREATE INDEX idx_projects_space ON projects(space_id, created_at DESC);
+      CREATE UNIQUE INDEX idx_projects_space_name ON projects(space_id, name);
+      CREATE UNIQUE INDEX idx_projects_singleton_kind
+        ON projects(space_id, kind) WHERE is_singleton_kind = 1 AND status = 'active';
+    `,
+  },
+  {
+    version: 42,
+    description: "strict two-tier hierarchy, canonical cross-space tickets, public project default",
+    up: `
+      CREATE TRIGGER IF NOT EXISTS spaces_two_tier_insert
+      BEFORE INSERT ON spaces WHEN NEW.depth NOT IN (0, 1)
+      BEGIN SELECT RAISE(ABORT, 'space hierarchy depth must be 0 or 1'); END;
+
+      CREATE TABLE cross_space_grants_v42 (
+        id TEXT PRIMARY KEY,
+        grantee_space_id TEXT NOT NULL,
+        target_space_id TEXT NOT NULL,
+        resource_id TEXT NOT NULL,
+        granted_by TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        expires_at TEXT NOT NULL,
+        revoked_at TEXT,
+        CHECK (grantee_space_id <> target_space_id)
+      );
+      INSERT INTO cross_space_grants_v42
+        (id, grantee_space_id, target_space_id, resource_id, granted_by, created_at, expires_at, revoked_at)
+      SELECT id, receiving_space_id, granting_space_id,
+        CASE WHEN grant_type = 'full-access' THEN '*' ELSE grant_type END,
+        granted_by, granted_at, COALESCE(expires_at, granted_at), revoked_at
+      FROM cross_space_grants;
+      DROP TABLE cross_space_grants;
+      ALTER TABLE cross_space_grants_v42 RENAME TO cross_space_grants;
+      CREATE INDEX idx_csg_grantee ON cross_space_grants(grantee_space_id);
+      CREATE INDEX idx_csg_target ON cross_space_grants(target_space_id);
+
+      CREATE TABLE project_members_v42 (
+        project_id TEXT NOT NULL, user_id TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'viewer' CHECK (role IN ('owner','editor','viewer')),
+        added_at TEXT NOT NULL DEFAULT (datetime('now')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        assistant_mode TEXT NOT NULL DEFAULT 'inherit' CHECK (assistant_mode IN ('inherit','read_only','none')),
+        PRIMARY KEY (project_id, user_id)
+      );
+      INSERT INTO project_members_v42
+        (project_id, user_id, role, added_at, created_at, assistant_mode)
+      SELECT project_id, user_id, role, added_at, added_at, assistant_mode FROM project_members;
+      DROP TABLE project_members;
+      ALTER TABLE project_members_v42 RENAME TO project_members;
+      CREATE INDEX idx_project_members_user ON project_members(user_id);
+
+      CREATE TABLE projects_v42 (
+        id TEXT PRIMARY KEY, space_id TEXT NOT NULL, name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')), kind TEXT NOT NULL DEFAULT 'workspace',
+        execution_ceiling INTEGER NOT NULL DEFAULT 5 CHECK (execution_ceiling BETWEEN 1 AND 6),
+        daily_spend_cap_credits INTEGER NOT NULL DEFAULT 0, channel_config TEXT NOT NULL DEFAULT '{}',
+        show_sub_threads INTEGER NOT NULL DEFAULT 0, default_agent_id TEXT, max_threads INTEGER NOT NULL DEFAULT 0,
+        allowed_agent_ids TEXT, visibility TEXT NOT NULL DEFAULT 'public' CHECK (visibility IN ('public','private')),
+        created_by TEXT, exclusive_mode INTEGER NOT NULL DEFAULT 0, active_thread_id TEXT,
+        active_thread_since TEXT, is_singleton_kind INTEGER NOT NULL DEFAULT 0, last_activity_at TEXT
+      );
+      INSERT INTO projects_v42 SELECT * FROM projects;
+      DROP TABLE projects;
+      ALTER TABLE projects_v42 RENAME TO projects;
       CREATE INDEX idx_projects_space ON projects(space_id, created_at DESC);
       CREATE UNIQUE INDEX idx_projects_space_name ON projects(space_id, name);
       CREATE UNIQUE INDEX idx_projects_singleton_kind
@@ -1239,12 +1306,12 @@ interface SpaceRow {
 
 interface CrossSpaceGrantRow {
   id: string;
-  granting_space_id: string;
-  receiving_space_id: string;
-  grant_type: string;
+  grantee_space_id: string;
+  target_space_id: string;
+  resource_id: string;
   granted_by: string;
-  granted_at: string;
-  expires_at: string | null;
+  created_at: string;
+  expires_at: string;
   revoked_at: string | null;
 }
 
@@ -3076,14 +3143,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       "SELECT id, space_id, name, description, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at, last_activity_at, kind, is_singleton_kind FROM projects WHERE space_id = ? AND status != 'archived' ORDER BY COALESCE(last_activity_at, created_at) DESC",
       spaceId
     );
-    const visible = viewerId
-      ? rows.filter(
-          (r) =>
-            r.visibility !== "private" ||
-            this.getProjectMemberRole(r.id, viewerId) !== null ||
-            this.isSpaceOwnerOrAdmin(viewerId)
-        )
-      : rows;
+    const manager = params.get("space_manager") === "1";
+    const visible = rows.filter(
+      (r) =>
+        r.visibility === "public" ||
+        manager ||
+        (viewerId !== "" &&
+          (this.getProjectMemberRole(r.id, viewerId) !== null ||
+            this.isSpaceOwnerOrAdmin(viewerId, r.space_id)))
+    );
     return Response.json({
       data: visible.map((r) => ({
         ...r,
@@ -3277,7 +3345,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         body.default_agent_id ?? null,
         body.max_threads ?? 0,
         allowedAgentIdsJson,
-        body.visibility ?? "private",
+        body.visibility ?? "public",
         body.created_by ?? null,
         now
       );
@@ -3544,7 +3612,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       !isSpaceManager &&
       (!viewerId ||
         (this.getProjectMemberRole(projectId, viewerId) === null &&
-          !this.isSpaceOwnerOrAdmin(viewerId)))
+          !this.isSpaceOwnerOrAdmin(viewerId, row.space_id)))
     ) {
       // Deliberately identical to a missing id: callers cannot use status, body, or wording as
       // an existence oracle for confidential workstations.
@@ -3584,7 +3652,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const role = this.getProjectMemberRole(projectId, userId);
     const allowed =
       params.get("space_manager") === "1" ||
-      this.isSpaceOwnerOrAdmin(userId) ||
+      this.isSpaceOwnerOrAdmin(userId, project.space_id) ||
       role === "owner" ||
       role === "editor";
     if (!allowed)
@@ -3893,14 +3961,30 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return this.getProject(projectId);
   }
 
-  private isSpaceOwnerOrAdmin(userId: string): boolean {
+  private isSpaceOwnerOrAdmin(userId: string, spaceId?: string): boolean {
     if (!userId) return false;
     const row = queryOne<{ role: string }>(
       this.ctx.storage.sql as never,
-      "SELECT role FROM space_members WHERE user_id = ?",
+      spaceId
+        ? "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?"
+        : "SELECT role FROM space_members WHERE user_id = ?",
+      ...(spaceId ? [spaceId, userId] : [userId])
+    );
+    if (row?.role === "owner" || row?.role === "admin") return true;
+    if (!spaceId) return false;
+    const child = queryOne<{ parent_id: string | null; depth: number }>(
+      this.ctx.storage.sql as never,
+      "SELECT parent_id, depth FROM spaces WHERE id = ? AND status = 'active'",
+      spaceId
+    );
+    if (child?.depth !== 1 || !child.parent_id) return false;
+    const inherited = queryOne<{ role: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?",
+      child.parent_id,
       userId
     );
-    return row?.role === "owner" || row?.role === "admin";
+    return inherited?.role === "owner" || inherited?.role === "admin";
   }
 
   // §A1.17 Phase T1: real per-project membership ACL — a routing/authorization table, not just a
@@ -6580,6 +6664,29 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private listThreads(params: URLSearchParams): Response {
     const spaceId = params.get("space_id") ?? "";
     const projectId = params.get("project_id");
+    const viewerId = params.get("viewer_id") ?? "";
+    const isSpaceManager = params.get("space_manager") === "1";
+    if (projectId) {
+      const project = queryOne<{ id: string; space_id: string; visibility: string }>(
+        this.ctx.storage.sql as never,
+        "SELECT id, space_id, visibility FROM projects WHERE id = ? AND space_id = ? AND status != 'archived'",
+        projectId,
+        spaceId
+      );
+      if (
+        !project ||
+        (project.visibility === "private" &&
+          !isSpaceManager &&
+          (!viewerId ||
+            (this.getProjectMemberRole(projectId, viewerId) === null &&
+              !this.isSpaceOwnerOrAdmin(viewerId, project.space_id))))
+      ) {
+        return Response.json(
+          { error_code: "not_found", message: "Project not found" },
+          { status: 404 }
+        );
+      }
+    }
     const parentThreadId = params.get("parent_thread_id");
     let showSubThreads = params.get("include_sub_threads") === "true";
     if (!showSubThreads && projectId) {
@@ -7753,24 +7860,25 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         userId
       );
       if (requesterRole) {
-        const grant = queryOne<{ id: string; grant_type: string }>(
+        const resourceId = params.get("resource_id") ?? "*";
+        const grant = queryOne<{ id: string; resource_id: string }>(
           this.ctx.storage.sql as never,
-          `SELECT id, grant_type FROM cross_space_grants
-           WHERE granting_space_id = ? AND receiving_space_id = ?
-             AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)
+          `SELECT id, resource_id FROM cross_space_grants
+           WHERE target_space_id = ? AND grantee_space_id = ?
+             AND (resource_id = ? OR resource_id = '*')
+             AND revoked_at IS NULL AND expires_at > ?
            LIMIT 1`,
           target.id,
           requestingSpaceId,
+          resourceId,
           new Date().toISOString()
         );
         if (grant) {
-          const actionAllowed =
-            action === "read" || grant.grant_type === "full-access";
-          if (actionAllowed) {
+          if (action === "read") {
             return Response.json({
               permitted: true,
               source_space_id: requestingSpaceId,
-              grant_type: grant.grant_type,
+              resource_id: grant.resource_id,
             });
           }
         }
@@ -7790,28 +7898,26 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
   private async grantCrossSpace(request: Request): Promise<Response> {
     const body = await request.json<{
-      granting_space_id: string;
-      receiving_space_id: string;
-      grant_type: "read-knowledge" | "read-threads" | "full-access";
+      grantee_space_id: string;
+      target_space_id: string;
+      resource_id: string;
       granted_by: string;
-      expires_at?: string;
+      expires_at: string;
     }>();
     if (
-      !body.granting_space_id ||
-      !body.receiving_space_id ||
-      !body.grant_type ||
-      !body.granted_by
+      !body.grantee_space_id || !body.target_space_id || !body.resource_id ||
+      !body.granted_by || !body.expires_at
     ) {
       return Response.json(
         {
           error_code: "bad_request",
           message:
-            "granting_space_id, receiving_space_id, grant_type, granted_by are required",
+            "grantee_space_id, target_space_id, resource_id, granted_by, expires_at are required",
         },
         { status: 400 }
       );
     }
-    if (body.granting_space_id === body.receiving_space_id) {
+    if (body.grantee_space_id === body.target_space_id) {
       return Response.json(
         {
           error_code: "bad_request",
@@ -7820,20 +7926,26 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         { status: 400 }
       );
     }
+    if (Number.isNaN(Date.parse(body.expires_at)) || body.expires_at <= new Date().toISOString()) {
+      return Response.json(
+        { error_code: "bad_request", message: "expires_at must be a future ISO timestamp" },
+        { status: 400 }
+      );
+    }
     const id = crypto.randomUUID();
     execute(
       this.ctx.storage.sql as never,
-      `INSERT INTO cross_space_grants (id, granting_space_id, receiving_space_id, grant_type, granted_by, granted_at, expires_at)
+      `INSERT INTO cross_space_grants (id, grantee_space_id, target_space_id, resource_id, granted_by, created_at, expires_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       id,
-      body.granting_space_id,
-      body.receiving_space_id,
-      body.grant_type,
+      body.grantee_space_id,
+      body.target_space_id,
+      body.resource_id,
       body.granted_by,
       new Date().toISOString(),
-      body.expires_at ?? null
+      body.expires_at
     );
-    return Response.json({ id, grant_type: body.grant_type }, { status: 201 });
+    return Response.json({ id, resource_id: body.resource_id }, { status: 201 });
   }
 
   private listCrossSpaceGrants(params: URLSearchParams): Response {
@@ -7842,14 +7954,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       ? queryAll<CrossSpaceGrantRow>(
           this.ctx.storage.sql as never,
           `SELECT * FROM cross_space_grants
-           WHERE (granting_space_id = ? OR receiving_space_id = ?) AND revoked_at IS NULL
-           ORDER BY granted_at DESC`,
+           WHERE (target_space_id = ? OR grantee_space_id = ?) AND revoked_at IS NULL
+           ORDER BY created_at DESC`,
           spaceId,
           spaceId
         )
       : queryAll<CrossSpaceGrantRow>(
           this.ctx.storage.sql as never,
-          "SELECT * FROM cross_space_grants WHERE revoked_at IS NULL ORDER BY granted_at DESC"
+          "SELECT * FROM cross_space_grants WHERE revoked_at IS NULL ORDER BY created_at DESC"
         );
     return Response.json({ data: rows });
   }
@@ -7871,7 +7983,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const userId = params.get("user_id") ?? "";
     const requestingSpaceId = params.get("requesting_space_id") ?? "";
     const targetSpaceId = params.get("target_space_id") ?? "";
-    const grantType = params.get("grant_type") ?? "read-knowledge";
+    const resourceId = params.get("resource_id") ?? params.get("grant_type") ?? "*";
 
     try {
       if (!userId || !targetSpaceId) {
@@ -7902,29 +8014,32 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
       // Valid cross-space grant from requesting → target.
       const now = new Date().toISOString();
-      const grant = queryOne<{ id: string; grant_type: string }>(
+      if (!requestingSpaceId) {
+        return Response.json({ permitted: false, reason: "requesting_space_id is required", resource_id: null }, { status: 400 });
+      }
+      const grant = queryOne<{ id: string; resource_id: string }>(
         this.ctx.storage.sql as never,
-        `SELECT id, grant_type FROM cross_space_grants
-         WHERE granting_space_id = ? AND receiving_space_id = ?
-           AND (grant_type = ? OR grant_type = 'full-access')
-           AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)
+        `SELECT id, resource_id FROM cross_space_grants
+         WHERE target_space_id = ? AND grantee_space_id = ?
+           AND (resource_id = ? OR resource_id = '*')
+           AND revoked_at IS NULL AND expires_at > ?
          LIMIT 1`,
         targetSpaceId,
         requestingSpaceId,
-        grantType,
+        resourceId,
         now
       );
       if (!grant) {
         return Response.json({
           permitted: false,
-          reason: `User ${userId} is not a member of ${targetSpaceId} and no '${grantType}' grant exists from ${requestingSpaceId}.`,
-          grant_type: null,
+          reason: `User ${userId} is not a member of ${targetSpaceId} and no active grant exists from ${requestingSpaceId}.`,
+          resource_id: null,
         });
       }
       return Response.json({
         permitted: true,
-        reason: `Cross-space grant '${grant.grant_type}' applies.`,
-        grant_type: grant.grant_type,
+        reason: `Cross-space grant for '${grant.resource_id}' applies.`,
+        resource_id: grant.resource_id,
       });
     } catch (err) {
       // ANY unexpected error → DENIED. Never permit on error.
