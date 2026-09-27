@@ -12,6 +12,21 @@ import type { LaunchpadSpace, RuntimeContextAdapters, LaunchpadRuntimeContext } 
 
 const CONNECTOR_ALIAS_RE = /^[a-z][a-z0-9_]{1,63}$/;
 
+export class MaxDelegationDepthExceededError extends Error {
+  constructor() {
+    super("Delegation depth is capped at 3");
+    this.name = "MaxDelegationDepthExceededError";
+  }
+}
+
+/** A successful transfer is control flow, not a return: the former holder must stop. */
+export class TurnDelegatedError extends Error {
+  constructor(readonly result: unknown) {
+    super("Turn delegated; caller must yield immediately");
+    this.name = "TurnDelegatedError";
+  }
+}
+
 function connectorSurface(adapter: CreateRuntimeContextOptions["services"]["connectors"]): RuntimeConnectors {
   return Object.freeze({
     use(aliasName: string): RuntimeConnector {
@@ -91,10 +106,28 @@ export function createRuntimeContext(options: CreateRuntimeContextOptions | Laun
       register: async () => { throw new Error("virtual_cli_synthesis_unavailable"); },
     }),
   };
+  const depth = options.delegationDepth ?? 1;
+  if (depth < 1 || depth > 3) throw new MaxDelegationDepthExceededError();
+  let delegation: Record<string, unknown> = {};
+  if (depth < 3 && services.delegation) {
+    const delegationAdapter = services.delegation;
+    const delegate = async (request: { targetAgentId: string; task: string; handoverContext?: Record<string, unknown> }): Promise<never> => {
+      const result = await delegationAdapter.transfer({
+        targetAgentId: request.targetAgentId,
+        task: request.task,
+        ...(request.handoverContext ? { handoverContext: request.handoverContext } : {}),
+        currentDepth: depth as 1 | 2,
+        initiatorUserId: options.initiatorUserId ?? "system",
+        originatingRoleRank: options.originatingRoleRank ?? 0,
+      });
+      throw new TurnDelegatedError(result);
+    };
+    delegation = { delegate, agent: Object.freeze({ delegate }) };
+  }
   if (options.scope === "SPACE_WIDE") {
     if (!services.space) throw new Error("SPACE_WIDE runtime requires space services");
-    return Object.freeze({ ...base, space: Object.freeze({ id: options.spaceId, ...services.space }) }) as SpaceRuntimeContext;
+    return Object.freeze({ ...base, ...delegation, space: Object.freeze({ id: options.spaceId, ...services.space }) }) as SpaceRuntimeContext;
   }
   if (!services.project) throw new Error("PROJECT_BOUND runtime requires project services");
-  return Object.freeze({ ...base, project: Object.freeze({ id: options.projectId, ...services.project }) }) as ProjectRuntimeContext;
+  return Object.freeze({ ...base, ...delegation, project: Object.freeze({ id: options.projectId, ...services.project }) }) as ProjectRuntimeContext;
 }

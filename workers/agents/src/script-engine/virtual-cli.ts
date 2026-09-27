@@ -122,7 +122,10 @@ export class VirtualCliDispatcher {
   }
   static validateSynthesized(name: string, source: string): void {
     if (!/^[a-z][a-z0-9_-]{0,63}$/i.test(name)) throw new Error("invalid_command_name");
-    if (source.length > 16_384 || !/export\s+async\s+function\s+run\s*\(\s*args\s*:\s*string\[\]\s*,\s*ctx\s*:\s*RuntimeContext\s*\)/.test(source)) throw new Error("invalid_synthesized_command_schema");
+    // Persisted commands created before the TypeScript annotation requirement used the same
+    // two-argument ABI as plain JavaScript. Accept both spellings while still rejecting any
+    // different export/signature.
+    if (source.length > 16_384 || !/export\s+async\s+function\s+run\s*\(\s*args(?:\s*:\s*string\[\])?\s*,\s*ctx(?:\s*:\s*RuntimeContext)?\s*\)/.test(source)) throw new Error("invalid_synthesized_command_schema");
     if (/\b(?:eval|Function)\s*\(|\bimport\s*\(|\b(?:WebSocket|connect|createConnection|Deno)\b|\b(?:process\.env|ctx\.vault\.(?:get|read)|STRIPE_KEY|GITHUB_TOKEN|RESEND_API_KEY)\b/.test(source)) throw new Error("unsafe_synthesized_command");
     if (/\$\{[^}]+\}/.test(source)) throw new Error("unsafe_string_interpolation");
   }
