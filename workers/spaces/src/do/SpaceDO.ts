@@ -1239,6 +1239,30 @@ const MIGRATIONS: Migration[] = [
         ON projects(space_id, kind) WHERE is_singleton_kind = 1 AND status = 'active';
     `,
   },
+  {
+    version: 43,
+    description: "logical connector aliases with three-tier execution scope",
+    up: `
+      CREATE TABLE IF NOT EXISTS connector_aliases (
+        space_id TEXT NOT NULL,
+        alias_name TEXT NOT NULL,
+        connector_id TEXT NOT NULL,
+        scope TEXT NOT NULL DEFAULT 'space_shared'
+          CHECK (scope IN ('space_shared','project_bound','user_personal')),
+        project_id TEXT,
+        user_id TEXT,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (space_id, alias_name, scope, project_id, user_id),
+        CHECK ((scope='space_shared' AND project_id IS NULL AND user_id IS NULL)
+          OR (scope='project_bound' AND project_id IS NOT NULL AND user_id IS NULL)
+          OR (scope='user_personal' AND project_id IS NULL AND user_id IS NOT NULL))
+      );
+      CREATE INDEX IF NOT EXISTS idx_connector_alias_resolution
+        ON connector_aliases(space_id, alias_name, user_id, project_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_connector_alias_binding
+        ON connector_aliases(space_id, alias_name, scope, ifnull(project_id,''), ifnull(user_id,''));
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -1361,6 +1385,32 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     this.initialized = true;
   }
 
+  /** Resolve on every invocation. A cron has no userId, so user_personal rows are not even
+   * eligible for the query and their connector ids cannot leak into autonomous execution. */
+  resolveConnectorAlias(
+    spaceId: string,
+    aliasName: string,
+    projectId?: string,
+    userId?: string
+  ): { connector_id: string; scope: "space_shared" | "project_bound" | "user_personal" } | null {
+    if (!spaceId || !/^[a-z][a-z0-9_]{1,63}$/.test(aliasName)) return null;
+    return queryOne(
+      this.ctx.storage.sql as never,
+      `SELECT connector_id, scope FROM connector_aliases
+       WHERE space_id = ? AND alias_name = ?
+         AND ((scope = 'user_personal' AND user_id = ?)
+           OR (scope = 'project_bound' AND project_id = ?)
+           OR scope = 'space_shared')
+       ORDER BY CASE scope
+         WHEN 'user_personal' THEN 3 WHEN 'project_bound' THEN 2 ELSE 1 END DESC
+       LIMIT 1`,
+      spaceId,
+      aliasName,
+      userId ?? null,
+      projectId ?? null
+    ) as { connector_id: string; scope: "space_shared" | "project_bound" | "user_personal" } | null;
+  }
+
   override async fetch(request: Request): Promise<Response> {
     this.ensureInit();
     const url = new URL(request.url);
@@ -1426,6 +1476,19 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // POST /invalidate-user — G-F03: clear deny-cache entries for a user+space pair
       if (method === "POST" && url.pathname === "/invalidate-user") {
         return this.handleInvalidateUser(request);
+      }
+
+      const aliasMatch = url.pathname.match(/^\/internal\/connector-aliases\/([^/]+)$/);
+      if (method === "GET" && aliasMatch?.[1]) {
+        const resolved = this.resolveConnectorAlias(
+          url.searchParams.get("space_id") ?? "",
+          decodeURIComponent(aliasMatch[1]),
+          url.searchParams.get("project_id") ?? undefined,
+          url.searchParams.get("user_id") ?? undefined
+        );
+        return resolved
+          ? Response.json(resolved)
+          : Response.json({ error_code: "connector_alias_not_found" }, { status: 404 });
       }
 
       // GET /me/messages?user_id=xxx — G-AO30: fetch all messages for GDPR export
