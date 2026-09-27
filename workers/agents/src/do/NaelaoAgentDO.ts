@@ -2128,8 +2128,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         // S0.4: failClosed=true — a lock must DENY when ConcurrencyDO is unreachable, never
         // grant every acquirer (that would silently defeat the whole point of taking a lock).
         acquire: (params) =>
-          this.acquireConcurrencySlot(lockNamespace + params.key, params.holderId, params.limit ?? 1, params.ttlMs, true),
-        release: (params) => this.releaseConcurrencySlot(lockNamespace + params.key, params.holderId),
+          this.acquireFileLock(lockNamespace + params.key, params.holderId, params.ttlMs),
+        release: (params) => this.releaseFileLock(lockNamespace + params.key, params.holderId),
         status: (key) => this.concurrencyStatus(lockNamespace + key),
       };
     }
@@ -2372,6 +2372,31 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     } catch {
       /* best-effort — the slot's own TTL reclaims it if release never lands */
     }
+  }
+
+  private async acquireFileLock(key: string, holderId: string, ttlMs?: number): Promise<{ granted: boolean; acquired: boolean; active: number; heldBy?: string; remainingMs?: number; degraded?: boolean }> {
+    if (!this.env.CONCURRENCY_DO) return { granted: false, acquired: false, active: 0, degraded: true };
+    try {
+      const stub = this.env.CONCURRENCY_DO.get(this.env.CONCURRENCY_DO.idFromName(key));
+      const resp = await stub.fetch(new Request("http://concurrency-do/locks/acquire", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ key, holderId, ...(typeof ttlMs === "number" ? { ttlMs } : {}) }),
+      }));
+      const result = await resp.json<{ acquired: boolean; heldBy?: string; remainingMs?: number }>();
+      return { ...result, granted: result.acquired, active: result.acquired ? 1 : 0 };
+    } catch {
+      return { granted: false, acquired: false, active: 0, degraded: true };
+    }
+  }
+
+  private async releaseFileLock(key: string, holderId: string): Promise<void> {
+    if (!this.env.CONCURRENCY_DO) return;
+    try {
+      const stub = this.env.CONCURRENCY_DO.get(this.env.CONCURRENCY_DO.idFromName(key));
+      await stub.fetch(new Request("http://concurrency-do/locks/release", {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key, holderId }),
+      }));
+    } catch { /* expiry is the fail-safe */ }
   }
 
   private async concurrencyStatus(key: string): Promise<{ active: number }> {

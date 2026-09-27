@@ -1282,6 +1282,25 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE tasks ADD COLUMN budget_tokens INTEGER NOT NULL DEFAULT 1800;
     `,
   },
+  {
+    version: 46,
+    description: "four-tier threads and dynamic project collaboration mode",
+    up: `
+      ALTER TABLE threads ADD COLUMN thread_tier TEXT NOT NULL DEFAULT 'tier_2_task'
+        CHECK (thread_tier IN ('tier_1_team','tier_2_task','tier_3_consult','tier_4_scratchpad'));
+      ALTER TABLE threads ADD COLUMN created_by TEXT;
+      ALTER TABLE threads ADD COLUMN system_internal INTEGER NOT NULL DEFAULT 0;
+      UPDATE threads SET created_by = user_id WHERE created_by IS NULL;
+      UPDATE threads SET thread_tier = 'tier_3_consult', system_internal = 1
+        WHERE thread_kind = 'sub_agent';
+      CREATE INDEX IF NOT EXISTS idx_threads_tier ON threads(space_id, thread_tier, created_at DESC);
+      ALTER TABLE projects ADD COLUMN mode TEXT NOT NULL DEFAULT 'solo_cockpit'
+        CHECK (mode IN ('solo_cockpit','multiplayer_office'));
+      UPDATE projects SET mode = CASE
+        WHEN (SELECT COUNT(*) FROM project_members pm WHERE pm.project_id = projects.id) > 1
+        THEN 'multiplayer_office' ELSE 'solo_cockpit' END;
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -1629,6 +1648,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const projectIdMatch = url.pathname.match(/^\/projects\/([^/]+)$/);
       if (method === "GET" && projectIdMatch?.[1]) {
         return this.getProject(projectIdMatch[1], url.searchParams);
+      }
+      const projectModeMatch = url.pathname.match(/^\/projects\/([^/]+)\/mode$/);
+      if (method === "GET" && projectModeMatch?.[1]) {
+        return Response.json({ project_id: projectModeMatch[1], mode: this.getProjectMode(projectModeMatch[1]) });
       }
       const automationAccessMatch = url.pathname.match(
         /^\/projects\/([^/]+)\/automation-access$/
@@ -2057,7 +2080,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // GET /threads/:id
       const threadIdMatch = url.pathname.match(/^\/threads\/([^/]+)$/);
       if (method === "GET" && threadIdMatch?.[1]) {
-        return this.getThread(threadIdMatch[1]);
+        return this.getThread(threadIdMatch[1], url.searchParams.get("viewer_id") ?? "");
       }
       // PATCH /threads/:id — rename and/or archive (there is no hard delete — see updateThread).
       if (method === "PATCH" && threadIdMatch?.[1]) {
@@ -4136,7 +4159,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     request: Request
   ): Promise<Response> {
     const body = await request
-      .json<{ user_id?: string; role?: string; assistant_mode?: string }>()
+      .json<{ user_id?: string; role?: string; assistant_mode?: string; tenant_id?: string }>()
       .catch(() => ({}) as Record<string, never>);
     if (!body.user_id)
       return Response.json(
@@ -4174,6 +4197,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         { error_code: "not_found", message: "Project not found" },
         { status: 404 }
       );
+    const beforeMode = this.getProjectMode(projectId);
     execute(
       this.ctx.storage.sql as never,
       `INSERT INTO project_members (project_id, user_id, role, assistant_mode, added_at) VALUES (?, ?, ?, ?, ?)
@@ -4184,15 +4208,50 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       assistantMode,
       new Date().toISOString()
     );
+    const mode = this.getProjectMode(projectId);
+    if (mode !== beforeMode) {
+      execute(
+        this.ctx.storage.sql as never,
+        "UPDATE projects SET mode = ? WHERE id = ?",
+        mode,
+        projectId
+      );
+      if (mode === "multiplayer_office") {
+        const projectRow = queryOne<{ space_id: string }>(
+          this.ctx.storage.sql as never,
+          "SELECT space_id FROM projects WHERE id = ?",
+          projectId
+        );
+        const tenantId = body.tenant_id ?? request.headers.get("x-naelao-tenant-id") ?? "";
+        if (projectRow) {
+          await broadcastSpaceEvent(this.env, tenantId, projectRow.space_id, "project.promoted_to_multiplayer", {
+            project_id: projectId,
+            mode,
+            member_count: 2,
+          });
+        }
+      }
+    }
     return Response.json(
       {
         project_id: projectId,
         user_id: body.user_id,
         role,
         assistant_mode: assistantMode,
+        mode,
       },
       { status: 201 }
     );
+  }
+
+  /** Resolve from live membership so promotion is correct even for legacy/imported rows. */
+  private getProjectMode(projectId: string): "solo_cockpit" | "multiplayer_office" {
+    const row = queryOne<{ count: number }>(
+      this.ctx.storage.sql as never,
+      "SELECT COUNT(*) AS count FROM project_members WHERE project_id = ?",
+      projectId
+    );
+    return (row?.count ?? 0) <= 1 ? "solo_cockpit" : "multiplayer_office";
   }
 
   /**
@@ -6777,6 +6836,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const projectId = params.get("project_id");
     const viewerId = params.get("viewer_id") ?? "";
     const isSpaceManager = params.get("space_manager") === "1";
+    const includeSystem = params.get("include_system") === "true";
     if (projectId) {
       const project = queryOne<{ id: string; space_id: string; visibility: string }>(
         this.ctx.storage.sql as never,
@@ -6824,6 +6884,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       args.push(parentThreadId);
     } else if (!showSubThreads) {
       clauses.push("thread_kind = 'primary'");
+    }
+    if (!includeSystem) clauses.push("system_internal = 0");
+    // Scratchpads never become visible through manager flags or broad project listings.
+    if (viewerId) {
+      clauses.push("(thread_tier != 'tier_4_scratchpad' OR created_by = ?)");
+      args.push(viewerId);
+    } else {
+      clauses.push("thread_tier != 'tier_4_scratchpad'");
     }
 
     const rows = queryAll(
@@ -6874,6 +6942,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         channel_session_id?: string;
         tenant_id?: string;
         session_id?: string;
+        thread_tier?: "tier_1_team" | "tier_2_task" | "tier_3_consult" | "tier_4_scratchpad";
+        created_by?: string;
+        system_internal?: boolean;
       }>()
       .catch(() => ({}) as Record<string, never>);
     if (!body.space_id) {
@@ -6892,6 +6963,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         { status: 400 }
       );
     }
+    const tier = body.thread_tier ?? (kind === "sub_agent" ? "tier_3_consult" : "tier_2_task");
+    const validTiers = ["tier_1_team", "tier_2_task", "tier_3_consult", "tier_4_scratchpad"];
+    if (!validTiers.includes(tier)) {
+      return Response.json({ error_code: "bad_request", message: "invalid thread_tier" }, { status: 400 });
+    }
+    const createdBy = body.created_by ?? body.user_id ?? null;
+    if (tier === "tier_4_scratchpad" && !createdBy) {
+      return Response.json({ error_code: "bad_request", message: "Scratchpads require a creating user" }, { status: 400 });
+    }
+    const systemInternal = tier === "tier_3_consult" ? 1 : body.system_internal ? 1 : 0;
     const id = body.id ?? crypto.randomUUID();
     const now = new Date().toISOString();
     const tenantId =
@@ -6947,8 +7028,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       execute(
         this.ctx.storage.sql as never,
-        `INSERT INTO threads (id, space_id, user_id, project_id, title, status, parent_thread_id, thread_kind, channel, channel_session_id, session_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO threads (id, space_id, user_id, project_id, title, status, parent_thread_id, thread_kind, channel, channel_session_id, session_id, created_at, updated_at, thread_tier, created_by, system_internal)
+         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         id,
         body.space_id,
         body.user_id ?? null,
@@ -6960,7 +7041,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         body.channel_session_id,
         body.session_id ?? null,
         now,
-        now
+        now,
+        tier,
+        createdBy,
+        systemInternal
       );
       await fireCreated(id, body.project_id ?? null);
       const row = queryOne(
@@ -6995,8 +7079,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       execute(
         this.ctx.storage.sql as never,
-        `INSERT INTO threads (id, space_id, user_id, project_id, title, status, parent_thread_id, thread_kind, channel, channel_session_id, session_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO threads (id, space_id, user_id, project_id, title, status, parent_thread_id, thread_kind, channel, channel_session_id, session_id, created_at, updated_at, thread_tier, created_by, system_internal)
+         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         id,
         body.space_id,
         body.user_id ?? null,
@@ -7008,7 +7092,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         body.channel_session_id ?? null,
         body.session_id ?? null,
         now,
-        now
+        now,
+        tier,
+        createdBy,
+        systemInternal
       );
       await fireCreated(id, body.project_id ?? null);
     }
@@ -7020,13 +7107,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json(row, { status: 201 });
   }
 
-  private getThread(threadId: string): Response {
-    const row = queryOne(
+  private getThread(threadId: string, viewerId = ""): Response {
+    const row = queryOne<{ thread_tier: string; created_by: string | null } & Record<string, unknown>>(
       this.ctx.storage.sql as never,
       "SELECT * FROM threads WHERE id = ?",
       threadId
     );
-    if (!row)
+    if (!row || (row.thread_tier === "tier_4_scratchpad" && row.created_by !== viewerId))
       return Response.json(
         { error_code: "not_found", message: "Thread not found" },
         { status: 404 }
