@@ -62,9 +62,13 @@ export interface ProjectJournal {
   goal: string;
   /** Standing, project-specific instructions every agent in the project should honour. */
   instructions: string;
+  /** Architectural and operating rules. Kept separate from transient status. */
+  rules: string[];
   /** Current state in a sentence or two. Rewritten as work progresses, not appended to. */
   status: string;
   todos: JournalTodo[];
+  /** Decisions still governing current work; completed decisions move into activity/archive. */
+  activeDecisions: string[];
   /** Newest LAST, matching how a human reads a log top-to-bottom. */
   activity: JournalActivity[];
   /** Dense summary of activity already compacted out of `activity`. */
@@ -89,10 +93,10 @@ export const DEFAULT_JOURNAL_LIMITS: JournalLimits = {
 };
 
 export function emptyJournal(name = ""): ProjectJournal {
-  return { name, goal: "", instructions: "", status: "", todos: [], activity: [], archive: "" };
+  return { name, goal: "", instructions: "", rules: [], status: "", todos: [], activeDecisions: [], activity: [], archive: "" };
 }
 
-const SECTIONS = ["Goal", "Instructions", "Status", "Todos", "Activity", "Archive"] as const;
+const SECTIONS = ["Goal", "Instructions", "Rules", "Status", "Todos", "Active Decisions", "Activity", "Archive"] as const;
 type SectionName = (typeof SECTIONS)[number];
 
 /** Split the file into its `## <Name>` sections. Unknown sections are ignored rather than
@@ -169,14 +173,20 @@ export function parseJournal(md: string): ProjectJournal {
     const sec = splitSections(md);
     j.goal = (sec["Goal"] ?? "").trim();
     j.instructions = (sec["Instructions"] ?? "").trim();
+    j.rules = parseBullets(sec["Rules"] ?? "");
     j.status = (sec["Status"] ?? "").trim();
     j.archive = (sec["Archive"] ?? "").trim();
     j.todos = parseTodos(sec["Todos"] ?? "");
+    j.activeDecisions = parseBullets(sec["Active Decisions"] ?? "");
     j.activity = parseActivity(sec["Activity"] ?? "");
   } catch {
     return emptyJournal();
   }
   return j;
+}
+
+function parseBullets(block: string): string[] {
+  return block.split(/\r?\n/).map((line) => /^\s*[-*]\s+(.+?)\s*$/.exec(line)?.[1]?.trim() ?? "").filter(Boolean);
 }
 
 function renderTodo(t: JournalTodo): string {
@@ -202,11 +212,17 @@ export function renderJournal(j: ProjectJournal): string {
     "## Instructions",
     placeholder(j.instructions, "_None._"),
     "",
+    "## Rules",
+    j.rules.length ? j.rules.map((rule) => `- ${rule}`).join("\n") : "_None._",
+    "",
     "## Status",
     placeholder(j.status, "_Not started._"),
     "",
     "## Todos",
     j.todos.length ? j.todos.map(renderTodo).join("\n") : "_None._",
+    "",
+    "## Active Decisions",
+    j.activeDecisions.length ? j.activeDecisions.map((decision) => `- ${decision}`).join("\n") : "_None._",
     "",
     "## Activity",
     j.activity.length ? j.activity.map(renderActivity).join("\n") : "_Nothing recorded yet._",
