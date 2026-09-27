@@ -9,7 +9,7 @@
  * (https://docs.agentmail.to/openapi.json — base https://api.agentmail.to, Bearer auth, paths
  * under /v0). Every function degrades HONESTLY when `AGENTMAIL_API_KEY` is unset
  * (`{configured:false}`) rather than throwing or pretending — the same "confirm once real access
- * exists" precedent as this repo's Whop/Composio/Pipedream integrations. The exact wire shapes
+ * exists" precedent as this repo's Whop/Composio integrations. The exact wire shapes
  * below are the real ones from the OpenAPI, not guessed; the one thing genuinely unverified until
  * a live key exists is the Svix header/secret format (documented on the verify function).
  */

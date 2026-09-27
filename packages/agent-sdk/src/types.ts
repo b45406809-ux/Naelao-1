@@ -89,8 +89,17 @@ export interface RuntimeBrowser {
 }
 
 export interface RuntimeMcp {
+  /** Call a registered external MCP server or a sibling project id in the current space. */
   call(server: string, tool: string, params?: Record<string, unknown>): Promise<unknown>;
   listTools(server: string): Promise<unknown>;
+}
+
+export interface ProjectMcpClientOptions {
+  spacesWorker: { fetch(input: Request): Promise<Response> };
+  spaceId: string;
+  tenantId: string;
+  internalToken: string;
+  userId?: string;
 }
 
 /** A connector selected by a stable semantic name, never by a physical account handle. */

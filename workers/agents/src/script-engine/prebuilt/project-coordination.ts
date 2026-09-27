@@ -172,6 +172,25 @@ export const projectCoordination: PrebuiltScript = {
   domain: "orchestration",
   requires_tier: 1,
   operations: {
+    "project.mcp_call": async (a, c) => {
+      const projectId = String(a["project_id"] ?? "");
+      const tool = String(a["tool"] ?? "");
+      if (!projectId || !tool) throw new Error("project.mcp_call requires project_id and tool");
+      const body = {
+        jsonrpc: "2.0",
+        id: crypto.randomUUID(),
+        method: "tools/call",
+        params: { name: tool, arguments: (a["params"] as Record<string, unknown> | undefined) ?? {} },
+      };
+      return spacesCall(c, "POST", `/spaces/${c.env.spaceId}/projects/${encodeURIComponent(projectId)}/mcp`, body);
+    },
+    "project.mcp_list_tools": async (a, c) => {
+      const projectId = String(a["project_id"] ?? "");
+      if (!projectId) throw new Error("project.mcp_list_tools requires project_id");
+      return spacesCall(c, "POST", `/spaces/${c.env.spaceId}/projects/${encodeURIComponent(projectId)}/mcp`, {
+        jsonrpc: "2.0", id: crypto.randomUUID(), method: "tools/list",
+      });
+    },
     "thread.delegate": async (a, c) => {
       if (!c.env.orchestration?.delegateTurn) {
         return { ok: false, error: "sequential delegation not available in this environment" };
