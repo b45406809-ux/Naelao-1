@@ -1271,6 +1271,17 @@ const MIGRATIONS: Migration[] = [
       nonce TEXT PRIMARY KEY, tool_name TEXT NOT NULL, consumed_at TEXT NOT NULL
     );`,
   },
+  {
+    version: 45,
+    description: "goal planner task specifications and isolated worker budgets",
+    up: `
+      ALTER TABLE tasks ADD COLUMN subtask_spec TEXT;
+      ALTER TABLE tasks ADD COLUMN assigned_role TEXT;
+      ALTER TABLE tasks ADD COLUMN model TEXT;
+      ALTER TABLE tasks ADD COLUMN file_paths TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE tasks ADD COLUMN budget_tokens INTEGER NOT NULL DEFAULT 1800;
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -7113,7 +7124,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       clauses.push("status = ?");
       args.push(status);
     }
-    const rows = queryAll<{ dependencies: string }>(
+    const rows = queryAll<{ dependencies: string; file_paths?: string }>(
       this.ctx.storage.sql as never,
       `SELECT * FROM tasks WHERE ${clauses.join(" AND ")} ORDER BY created_at ASC LIMIT 200`,
       ...args
@@ -7122,6 +7133,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       data: rows.map((r) => ({
         ...r,
         dependencies: safeJsonParseArr(r.dependencies) as string[],
+        file_paths: safeJsonParseArr(r.file_paths ?? "[]") as string[],
       })),
       count: rows.length,
     });
@@ -7138,6 +7150,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         status?: string;
         dependencies?: string[];
         assigned_agent?: string;
+        subtask_spec?: string;
+        assigned_role?: string;
+        model?: string;
+        file_paths?: string[];
+        budget_tokens?: number;
       }>()
       .catch(() => ({}) as Record<string, never>);
     if (!body.space_id)
@@ -7168,8 +7185,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const now = new Date().toISOString();
     execute(
       this.ctx.storage.sql as never,
-      `INSERT INTO tasks (id, space_id, project_id, thread_id, title, status, dependencies, assigned_agent, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (id, space_id, project_id, thread_id, title, status, dependencies, assigned_agent, subtask_spec, assigned_role, model, file_paths, budget_tokens, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       body.space_id,
       body.project_id ?? null,
@@ -7180,16 +7197,21 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         Array.isArray(body.dependencies) ? body.dependencies.map(String) : []
       ),
       body.assigned_agent ?? null,
+      body.subtask_spec ?? null,
+      body.assigned_role ?? null,
+      body.model ?? null,
+      JSON.stringify(Array.isArray(body.file_paths) ? body.file_paths.map(String) : []),
+      Math.max(1, Math.min(2000, Number(body.budget_tokens ?? 1800))),
       now,
       now
     );
-    const row = queryOne<{ dependencies: string }>(
+    const row = queryOne<{ dependencies: string; file_paths?: string }>(
       this.ctx.storage.sql as never,
       "SELECT * FROM tasks WHERE id = ?",
       id
     );
     return Response.json(
-      { ...row, dependencies: safeJsonParseArr(row!.dependencies) as string[] },
+      { ...row, dependencies: safeJsonParseArr(row!.dependencies) as string[], file_paths: safeJsonParseArr(row!.file_paths ?? "[]") as string[] },
       { status: 201 }
     );
   }

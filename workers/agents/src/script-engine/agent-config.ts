@@ -11,6 +11,9 @@
 
 import type { StepPipeline } from "./step-pipeline.js";
 import { validateStepPipeline } from "./step-pipeline.js";
+import type { UniversalAgentManifest } from "@naelao/agent-sdk";
+
+export type { UniversalAgentManifest } from "@naelao/agent-sdk";
 
 /** scripts.json (spec §11.2). */
 export interface ScriptsConfig {
@@ -52,6 +55,8 @@ export interface AgentConfig {
    */
   requiresApprovalFor?: string[];
   pipelines?: StepPipeline;
+  /** Runtime-only normalized manifest. Legacy four-file agents are upgraded by the DO. */
+  manifest?: UniversalAgentManifest;
 }
 
 /** On-disk shape of scripts.json: ScriptsConfig plus the structural approval-gate list. Kept

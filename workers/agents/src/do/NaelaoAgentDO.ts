@@ -56,6 +56,8 @@ import {
 } from "../script-engine/conversation-context.js";
 import { isChannelType, getAdapter, type NormalizedInbound } from "../launchpad/channels.js";
 import type { BusinessContext } from "../launchpad/business-context.js";
+import type { UniversalAgentManifest, UniversalAgentRole } from "@naelao/agent-sdk";
+import { composeUniversalPrompt, ROLE_MAX_TIER } from "../script-engine/index.js";
 import {
   sanitizeSubAgentOutput,
   safeJsonParse,
@@ -994,6 +996,17 @@ export interface AgentDOEnv {
 }
 
 export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
+  /** Normalize every assistant/operator into the one kernel configuration used by this DO. */
+  assembleUniversalAgent(manifest: UniversalAgentManifest, businessContext?: BusinessContext) {
+    const maxTier = Math.max(1, Math.min(ROLE_MAX_TIER[manifest.role] ?? 1, Number(manifest.capabilities.maxTier ?? 1))) as ExecutionTier;
+    const normalized: UniversalAgentManifest = {
+      ...manifest,
+      capabilities: { ...manifest.capabilities, maxTier },
+      prompts: { ...manifest.prompts },
+      autonomy: { ...manifest.autonomy, autoApprovedActions: [...manifest.autonomy.autoApprovedActions], requiresApprovalFor: [...manifest.autonomy.requiresApprovalFor] },
+    };
+    return { manifest: normalized, systemPrompt: composeUniversalPrompt({ manifest: normalized, ...(businessContext ? { businessContext } : {}) }), maxTier };
+  }
   private initialized = false;
 
   private ensureInit(): void {
@@ -2177,6 +2190,19 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   ): import("../script-engine/types.js").OrchestrationHooks {
     const hooks: import("../script-engine/types.js").OrchestrationHooks = {};
 
+    if (this.env.SPACES_WORKER) {
+      hooks.persistGoalTasks = async (tasks) => {
+        await Promise.all(tasks.map(async (task) => {
+          const response = await this.env.SPACES_WORKER!.fetch(new Request("http://spaces-worker/tasks", {
+            method: "POST",
+            headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
+            body: JSON.stringify({ ...task, space_id: spaceId, ...(projectId ? { project_id: projectId } : {}), ...(parentThreadId ? { thread_id: parentThreadId } : {}) }),
+          }));
+          if (!response.ok) throw new Error(`failed to persist goal task '${task.id}' (HTTP ${response.status})`);
+        }));
+      };
+    }
+
     if (this.env.NAELAO_AGENT_DO) {
       const agentDO = this.env.NAELAO_AGENT_DO;
       hooks.spawnSubAgent = async (config) => {
@@ -2423,6 +2449,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               // launder a mutation through a spawn.
               ...(userId ? { userId } : {}),
               model: modelResolution.model,
+              ...(typeof t["role"] === "string" ? { functionalRole: t["role"] } : {}),
               context: {
                 parent_run_id: parentRunId,
                 sub_agent_id: subId,
@@ -3240,6 +3267,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
        *  binding, so it cannot look the space up itself. Absent for a direct/internal caller that
        *  never resolved one, in which case the reasoner simply omits the field. */
       businessContext?: BusinessContext;
+      manifest?: UniversalAgentManifest;
+      functionalRole?: UniversalAgentRole;
       /** The id the caller already handed to its client, so the persisted trace is reachable
        *  through GET .../runs/:runId/trace. Optional — direct callers omit it. */
       runId?: string;
@@ -3285,6 +3314,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     if (!body.goal || !spaceId) {
       return Response.json({ error: "goal and spaceId are required" }, { status: 400 });
+    }
+    // Slash-command entry points all converge on the same tool; no parallel goal runner exists.
+    if (/^\/goal(?:\s|$)/.test(body.goal)) {
+      const objective = body.goal.replace(/^\/goal\s*/, "").trim();
+      if (!objective) return Response.json({ error: "/goal requires an objective" }, { status: 400 });
+      body.goal = `Plan and execute this objective with engine.plan_and_delegate_goal. Create a dependency DAG, give every worker only its subtask and file paths, and cap every budget_tokens at 2000. Objective: ${objective}`;
     }
 
     // Go-live monetization pass: a business that opted into revenue-cut billing (productConfig.
@@ -3363,6 +3398,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!config) {
       return Response.json({ error: `agent '${agentId}' is not provisioned in space '${spaceId}'` }, { status: 404 });
     }
+    const fallbackRole: UniversalAgentRole = body.functionalRole ?? (/support|customer/i.test(agentId) ? "CUSTOMER_SUPPORT" : "DEV_OPERATOR");
+    const assembled = this.assembleUniversalAgent(body.manifest ?? {
+      scope: projectId ? "PROJECT_BOUND" : "SPACE_WIDE",
+      role: fallbackRole,
+      prompts: { systemPrompt: config.systemPrompt, instructions: "Follow the configured agent rules.", ...(config.agentsMd ? { userCustomInstructions: config.agentsMd } : {}) },
+      capabilities: { enabledPrebuilts: config.scripts.prebuilt, maxTier: engineEnv.maxTier ?? 6 },
+      autonomy: { approvalMode: projectId ? "gate_listed" : "gate_unless_listed", autoApprovedActions: [], requiresApprovalFor: config.requiresApprovalFor ?? [] },
+    }, body.businessContext);
+    engineEnv.maxTier = Math.min(engineEnv.maxTier ?? 6, assembled.maxTier) as ExecutionTier;
 
     // Approval policy. A project-bound Naelao Agent keeps the ordinary allowlist-of-gated
     // actions (spec §11, appendix A1.16.1). The Space Assistant (no projectId) is different:
@@ -3405,7 +3449,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         alternative: { type: "mcp_v2_elicitation_card", action: "request_ephemeral_action_grant", expires_in_ms: 15_000 },
       });
     }
-    const tools = new ScriptToolSurface(engineEnv, config.scripts.prebuilt, body.roomType ? { roomType: body.roomType } : {});
+    const tools = new ScriptToolSurface(engineEnv, assembled.manifest.capabilities.enabledPrebuilts, { ...(body.roomType ? { roomType: body.roomType } : {}), role: assembled.manifest.role });
     // A sub-agent spawned mid-task inherits the SAME project scoping as its parent — it's
     // conceptually a subthread of the same project, not a different workspace. Built after
     // `tools` (§A1.17 Phase J's workflow.create/run ops need it to author/re-run stored
@@ -3438,6 +3482,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // WHICH business this run is for. Resolved by index.ts from the space row it already
       // fetches; omitted entirely when the caller never resolved one.
       ...(body.businessContext ? { businessContext: body.businessContext } : {}),
+      manifest: assembled.manifest,
     });
 
     try {

@@ -49,7 +49,11 @@ async function verify<T extends object>(token: string, kind: string, secret: str
     const key = await crypto.subtle.importKey(
       "raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]
     );
-    if (!(await crypto.subtle.verify("HMAC", key, decode(signature), encoder.encode(body)))) return null;
+    const signatureBytes = decode(signature);
+    // Reject non-canonical base64url. Otherwise changing unused trailing bits can produce a
+    // different token string that decodes to the same MAC and incorrectly passes as untampered.
+    if (encode(signatureBytes) !== signature) return null;
+    if (!(await crypto.subtle.verify("HMAC", key, signatureBytes, encoder.encode(body)))) return null;
     const parsed = JSON.parse(new TextDecoder().decode(decode(body))) as T & { v?: number; kind?: string };
     if (parsed.v !== 1 || parsed.kind !== kind) return null;
     return parsed;

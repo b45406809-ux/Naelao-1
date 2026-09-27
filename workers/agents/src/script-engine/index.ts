@@ -21,6 +21,8 @@ export { scriptFind, indexScriptEmbedding, removeScriptEmbedding, FIND_CONFIDENC
 export { classifyExecutionRoute, EXECUTION_ENGINES, requiresNativeCompilation, runStoredScript, tierLabel } from "./execution-ladder.js";
 export { ScriptToolSurface, privacyBridgeCard, isPublicRoom, type RoomType } from "./tool-surface.js";
 export * from "./step-pipeline.js";
+export * from "./agent-firewall.js";
+export * from "./prompt-assembly.js";
 export { interceptPlatformCli, parseCliWords } from "./virtual-cli.js";
 export { runObserve, observeFilesystem, observeApi } from "./observe.js";
 export {
