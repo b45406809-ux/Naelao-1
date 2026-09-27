@@ -19,6 +19,33 @@ export interface RuntimeThread {
 
 export type ProjectMode = "solo_cockpit" | "multiplayer_office";
 
+export interface TaskLeaseResult {
+  success: boolean;
+  claimedBy: string | null;
+  leaseExpiresAt: string | null;
+  status?: "CLAIMED" | "SPECTATING";
+  activeLead?: string | null;
+}
+
+export interface IntentDeduplicationResult {
+  duplicate: boolean;
+  existingTaskId?: string;
+  threadId?: string | null;
+  similarity?: number;
+}
+
+export interface SponsorDirective {
+  sponsorId: string;
+  directive: string;
+}
+
+export interface SponsorRfcResult {
+  id: string;
+  projectId: string;
+  status: "OPEN";
+  executionStatus: "FROZEN_FOR_RFC";
+}
+
 /** Public sovereign-permission contract shared by agent integrations. */
 export type KnowledgeRole = "owner" | "admin" | "editor" | "member" | "viewer";
 export type KnowledgeScope = "USER_PRIVATE" | "PROJECT_BOUND" | "SPACE_WIDE";

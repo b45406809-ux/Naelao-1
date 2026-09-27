@@ -832,6 +832,9 @@ export async function runScriptLoop(
        *  below. Only ever set once the outcome is actually known (never for a merely "pending"
        *  gate, which never reaches here). */
       const attemptedCalls = new Map<string, { ok: boolean; output?: unknown; error?: string }>();
+      // A consult result followed by another consult is one deliberation round. Two rounds is a
+      // hard protocol horizon: a third would spend tokens without human authority to break the tie.
+      let deliberationRound = 0;
       for (let step = 0; ; step++) {
         // Stopped by a person. Not an error and not a failure: the steps already taken are real
         // and are reported, which is the difference between "I stopped, here is what I did" and a
@@ -962,6 +965,21 @@ export async function runScriptLoop(
         // resolved any later would be a different action to every one of them. See
         // ScriptToolSurface.resolveOperationAlias for what it will and will not resolve.
         if (decision.action === "run") {
+          if (decision.name === "thread.consult" || decision.name.endsWith(".consult")) {
+            deliberationRound++;
+            if (deliberationRound > 2) {
+              const message = "Two consultation rounds did not reach consensus; human direction is required.";
+              notes.push(`${level} ${message}`);
+              pushTrace({ phase: "gate", name: decision.name, detail: "BLOCKED_AWAITING_HUMAN", ok: false });
+              return finish(withTokenUsage({
+                level,
+                status: "BLOCKED_AWAITING_HUMAN",
+                deliberation_round: 2,
+                result: { ok: false, output: message, error: "BLOCKED_AWAITING_HUMAN", tier: 1, duration_ms: 0, tokens_used: 0 },
+                notes,
+              }, usageAcc));
+            }
+          }
           const resolved = tools.resolveOperationAlias(decision.name, decision.params);
           decision.name = resolved.name;
           decision.params = resolved.params;

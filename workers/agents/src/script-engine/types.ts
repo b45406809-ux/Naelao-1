@@ -336,6 +336,9 @@ export type LiveCheckpoint = Omit<TraceStep, "seq" | "ts"> & {
 };
 
 export interface LoopResult {
+  /** Terminal orchestration state when safety policy, rather than execution, stops the run. */
+  status?: "BLOCKED_AWAITING_HUMAN";
+  deliberation_round?: number;
   level: EscalationLevel;
   script_name?: string;
   result?: ScriptRunResult;
