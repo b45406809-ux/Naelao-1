@@ -2,11 +2,33 @@ import type {
   CreateRuntimeContextOptions,
   ProjectRuntimeContext,
   RuntimeContext,
+  RuntimeConnector,
+  RuntimeConnectors,
   RuntimeFileSystem,
   SpaceRuntimeContext,
 } from "./types.js";
 import { createLaunchpadRuntimeContext } from "./launchpad-runtime.js";
 import type { LaunchpadSpace, RuntimeContextAdapters, LaunchpadRuntimeContext } from "./launchpad-runtime.js";
+
+const CONNECTOR_ALIAS_RE = /^[a-z][a-z0-9_]{1,63}$/;
+
+function connectorSurface(adapter: CreateRuntimeContextOptions["services"]["connectors"]): RuntimeConnectors {
+  return Object.freeze({
+    use(aliasName: string): RuntimeConnector {
+      if (!CONNECTOR_ALIAS_RE.test(aliasName)) throw new Error("Invalid connector alias");
+      const call = (tool: string, params: Record<string, unknown> = {}, scopes: readonly string[] = []) =>
+        adapter.call(aliasName, tool, params, scopes);
+      return new Proxy(Object.freeze({ call }) as RuntimeConnector, {
+        get(target, property, receiver) {
+          if (property === "then") return undefined;
+          if (Reflect.has(target, property)) return Reflect.get(target, property, receiver);
+          if (typeof property !== "string") return undefined;
+          return (params: Record<string, unknown> = {}) => call(property, params);
+        },
+      });
+    },
+  });
+}
 
 const WORKSPACE_ROOT = "/workspace";
 
@@ -62,6 +84,7 @@ export function createRuntimeContext(options: CreateRuntimeContextOptions | Laun
     vault: services.vault,
     browser: services.browser,
     mcp: services.mcp,
+    connectors: connectorSurface(services.connectors),
     run: services.run,
     cli: services.cli ?? Object.freeze({
       run: async () => { throw new Error("virtual_cli_unavailable"); },

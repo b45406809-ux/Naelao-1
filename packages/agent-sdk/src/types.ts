@@ -50,6 +50,16 @@ export interface RuntimeMcp {
   listTools(server: string): Promise<unknown>;
 }
 
+/** A connector selected by a stable semantic name, never by a physical account handle. */
+export interface RuntimeConnector {
+  call(tool: string, params?: Record<string, unknown>, requiredScopes?: readonly string[]): Promise<unknown>;
+  readonly [tool: string]: unknown;
+}
+export interface RuntimeConnectors { use(aliasName: string): RuntimeConnector; }
+export interface RuntimeConnectorAdapter {
+  call(aliasName: string, tool: string, params: Record<string, unknown>, requiredScopes: readonly string[]): Promise<unknown>;
+}
+
 export interface RuntimeRun {
   runSkill(name: string, args?: Record<string, unknown>): Promise<unknown>;
 }
@@ -64,6 +74,7 @@ export interface RuntimeContextBase {
   vault: RuntimeVault;
   browser: RuntimeBrowser;
   mcp: RuntimeMcp;
+  connectors: RuntimeConnectors;
   run: RuntimeRun;
   cli: RuntimeCli;
 }
@@ -78,6 +89,7 @@ export interface RuntimeContextServices {
   vault: RuntimeVault;
   browser: RuntimeBrowser;
   mcp: RuntimeMcp;
+  connectors: RuntimeConnectorAdapter;
   run: RuntimeRun;
   cli?: RuntimeCli;
   project?: Omit<RuntimeProject, "id">;

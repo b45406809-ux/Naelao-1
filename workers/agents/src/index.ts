@@ -2565,7 +2565,7 @@ app.get("/spaces/:spaceId/connector-aliases", async (c) => {
 app.post("/spaces/:spaceId/connector-aliases", async (c) => {
   const spaceId = c.req.param("spaceId");
   if (!(await requireEndUserBusinessMembership(c, spaceId, "admin"))) throw forbidden("Business admin access required");
-  const body = await c.req.json<{ alias?: string; scope?: "space" | "project" | "user"; project_id?: string; connector_name?: string; granted_scopes?: string[] }>();
+  const body = await c.req.json<{ alias?: string; scope?: "space_shared" | "project_bound" | "user_personal"; project_id?: string; connector_name?: string; granted_scopes?: string[] }>();
   if (!body.connector_name) throw badRequest("connector_name is required");
   const listed = await connectorAliasHubRequest(c, `/v1/spaces/${encodeURIComponent(spaceId)}/mcp-servers`);
   if (!listed.ok) return listed;
