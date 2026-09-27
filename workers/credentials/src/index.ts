@@ -16,6 +16,7 @@
 // infra/migrations/0069_credential_sharing_and_product_tier.sql.
 import { badRequest, errorResponse, forbidden, mintInternalToken, notFound, requestId, requireInternalHmac } from "@naelao/http";
 import { Hono } from "hono";
+import { checkSsrf } from "@naelao/security";
 
 // ── Env ───────────────────────────────────────────────────────────────────────
 
@@ -711,6 +712,64 @@ app.post("/v1/internal/spaces/:spaceId/credentials/:name/plaintext", async (c) =
   }
 
   return c.json({ name: row.name, value, scope: row.scope, is_override: Boolean(row.is_override), resolved_tier: tier });
+});
+
+// POST /v1/internal/spaces/:spaceId/outbound
+// The sole network egress that can see credential plaintext. The caller supplies only a logical
+// name; decryption and Authorization injection occur in this worker and are never serialized
+// back across the service binding. Redirects are followed manually and re-validated to prevent
+// a public endpoint redirecting into metadata/private networks.
+app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const credentialToken = c.req.header("x-naelao-credential-token") ?? "";
+  const spaceId = c.req.param("spaceId");
+  if (!tenantId || !credentialToken) throw forbidden("Authenticated outbound request required");
+  const tokenCheck = await verifyCredentialToken(credentialToken, c.env.PLATFORM_SECRET, spaceId);
+  if (!tokenCheck.ok) throw forbidden(tokenCheck.reason ?? "Invalid credential token");
+
+  const body = await c.req.json<{
+    url: string; credentialName: string; method?: string; body?: unknown;
+    headers?: Record<string, string>; onBehalfOfUserId?: string;
+  }>();
+  validateCredentialName(body.credentialName);
+  const resolved = await resolveCredential(c.env.PLATFORM_DB, spaceId, tenantId, body.credentialName, body.onBehalfOfUserId ?? null);
+  if (!resolved || "notFoundReason" in resolved) throw notFound("Credential");
+  const secret = await decrypt(resolved.row.encrypted_value, resolved.row.iv, resolveRootKeyHex(c.env, resolved.row.key_version), resolved.row.space_id);
+
+  const supplied = new Headers(body.headers);
+  supplied.delete("authorization");
+  supplied.delete("proxy-authorization");
+  supplied.set("authorization", `Bearer ${secret}`);
+  let destination = body.url;
+  let response: Response | undefined;
+  for (let redirects = 0; redirects <= 5; redirects++) {
+    const policy = await checkSsrf(destination);
+    if (policy.blocked) throw forbidden(`Outbound destination denied: ${policy.reason}`);
+    response = await fetch(destination, {
+      method: body.method ?? (body.body === undefined ? "GET" : "POST"),
+      headers: supplied,
+      ...(body.body === undefined ? {} : { body: typeof body.body === "string" ? body.body : JSON.stringify(body.body) }),
+      redirect: "manual",
+    });
+    if (![301, 302, 303, 307, 308].includes(response.status)) break;
+    const location = response.headers.get("location");
+    if (!location) break;
+    destination = new URL(location, destination).toString();
+    response = undefined;
+  }
+  if (!response) throw forbidden("Outbound redirect limit exceeded");
+
+  const safeHeaders = new Headers();
+  for (const [name, value] of response.headers) {
+    if (!/^(set-cookie|authorization|proxy-authenticate|www-authenticate)$/i.test(name) && !value.includes(secret)) safeHeaders.append(name, value);
+  }
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  // Defend against an origin reflecting the bearer value into textual output.
+  const contentType = safeHeaders.get("content-type") ?? "";
+  const safeBody = /^(text\/|application\/(json|xml|javascript))/.test(contentType)
+    ? new TextEncoder().encode(new TextDecoder().decode(bytes).split(secret).join("[REDACTED]"))
+    : bytes;
+  return new Response(safeBody, { status: response.status, statusText: response.statusText, headers: safeHeaders });
 });
 
 // ── Error handler ─────────────────────────────────────────────────────────────

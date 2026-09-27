@@ -21,6 +21,7 @@
     "@naelao/moderation": "workspace:*",
     "@naelao/events": "workspace:*",
     "@naelao/tracing": "workspace:*",
+    "@naelao/security": "workspace:*",
     "hono": "^4.6.0"
   },
   "devDependencies": {

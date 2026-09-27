@@ -158,6 +158,8 @@ export function createSpaceSDK(
 export * from "./launchpad-runtime.js";
 export * from "./canvas-runtime.js";
 export * from "./workflow-taxonomy.js";
+export * from "./types.js";
+export * from "./runtime-context.js";
 export * from "./extensions.js";
 export * from "./avos-features.js";
 export * from "./artifact-client.js";

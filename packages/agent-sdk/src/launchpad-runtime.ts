@@ -547,7 +547,7 @@ export class ContainerVirtualDisplay implements VirtualDisplay {
 
 // ── Universal script context ─────────────────────────────────────────────────
 
-export interface RuntimeContext {
+export interface LaunchpadRuntimeContext {
   fs: ArtifactFS;
   project: {
     id: string;
@@ -568,17 +568,18 @@ export interface RuntimeContext {
 export interface RuntimeContextAdapters {
   fs: ArtifactFS;
   repo: ArtifactRepository;
-  vault: RuntimeContext["vault"];
-  cli: RuntimeContext["cli"];
-  browser: RuntimeContext["browser"];
-  connectors: RuntimeContext["connectors"];
+  vault: LaunchpadRuntimeContext["vault"];
+  cli: LaunchpadRuntimeContext["cli"];
+  browser: LaunchpadRuntimeContext["browser"];
+  connectors: LaunchpadRuntimeContext["connectors"];
 }
 
-export function createRuntimeContext(
+/** @deprecated Use the scoped universal createRuntimeContext export for new scripts. */
+export function createLaunchpadRuntimeContext(
   space: LaunchpadSpace,
   projectId: string,
   adapters: RuntimeContextAdapters
-): RuntimeContext {
+): LaunchpadRuntimeContext {
   if (!projectId.trim()) throw new Error("Runtime context requires a project");
   return Object.freeze({
     fs: adapters.fs,
