@@ -7,8 +7,8 @@
 
 import { Hono } from "hono";
 import { requestId, errorResponse, notFound, badRequest, unauthorized, internalError, safeKvPut, requireInternalHmac } from "@naelao/http";
-import { chunkText, embedText, embedBatch, googleModeSearch, verifyCitationCoordinate, type GroundedSearchHit, type RetrievalScope } from "@naelao/rag";
-import { checkSsrf } from "@naelao/security";
+import { chunkText, embedText, embedBatch, googleModeSearch, searchPermissionedKnowledge, wrapContextChunk, UNTRUSTED_CONTEXT_INSTRUCTION, verifyCitationCoordinate, type GroundedSearchHit, type RetrievalScope } from "@naelao/rag";
+import { checkSsrf, KNOWLEDGE_ROLE_MASK, type KnowledgeRole } from "@naelao/security";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { moderateInput } from "@naelao/llm-gateway";
 
@@ -135,11 +135,6 @@ async function authorizeProject(db: D1Database, scope: RetrievalScope, userId: s
     // Schema/service-policy failures must never widen access.
     return false;
   }
-}
-
-function contextEnvelope(hit: GroundedSearchHit): string {
-  const content = hit.content.replace(/<\/context_chunk>/gi, "&lt;/context_chunk&gt;");
-  return `<context_chunk id="${hit.id.replace(/[^a-zA-Z0-9_-]/g, "")}" trust="untrusted">${content}</context_chunk>`;
 }
 
 // ── G-BD01: KB content sanitization — strip HTML/XML and scan for injection ───
@@ -299,9 +294,19 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
      *  space-wide default (omitted/null). */
     project_id?: string;
     required_role_rank?: number;
+    /** Explicit sovereign-user allowlist. IDs are indexed, never evaluated after ranking. */
+    allowed_user_ids?: string[];
   }>();
   const projectId = body.project_id ?? null;
   const requiredRoleRank = Math.max(0, Math.min(body.required_role_rank ?? 0, 50));
+  const allowedUserIds = [...new Set((body.allowed_user_ids ?? []).filter((id) => typeof id === "string" && id.length > 0))].slice(0, 100);
+  // An explicit user allowlist is USER_PRIVATE and therefore outranks role/project visibility.
+  const allowedRoles = allowedUserIds.length > 0
+    ? []
+    : Object.entries(ROLE_RANK)
+      .filter(([role, rank]) => role in KNOWLEDGE_ROLE_MASK && rank >= requiredRoleRank)
+      .map(([role]) => role);
+  const accessMasks = allowedRoles.map((role) => KNOWLEDGE_ROLE_MASK[role as KnowledgeRole]);
   if (projectId) {
     const scope = { tenantId, spaceId, projectId, roleRank: effectiveRoleRank(c) };
     const userId = c.req.header("x-naelao-user-id") ?? "";
@@ -446,7 +451,10 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
           space_id: spaceId,
           tenant_id: tenantId,
           project_id: projectId ?? SPACE_WIDE_PROJECT_SENTINEL,
-          visibility: projectId ? "project" : "space",
+          visibility: requiredRoleRank === 0 && allowedUserIds.length === 0 ? "public" : "restricted",
+          allowed_roles: allowedRoles,
+          allowed_user_ids: allowedUserIds,
+          access_mask: accessMasks.reduce((mask, roleMask) => mask | roleMask, 0),
           required_role_rank: requiredRoleRank,
           doc_id: docId,
           chunk_id: chunkId,
@@ -656,6 +664,10 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
           space_id: spaceId,
           tenant_id: tenantId,
           project_id: projectId ?? SPACE_WIDE_PROJECT_SENTINEL,
+          visibility: "public",
+          allowed_roles: ["owner", "admin", "editor", "member", "viewer"],
+          allowed_user_ids: [],
+          access_mask: 31,
           required_role_rank: 0,
           content_hash: contentHash,
           doc_id: docId,
@@ -814,7 +826,9 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
   // decides), not a stored per-space policy. Falls back to the legacy hybrid pipeline whenever
   // AutoRAG isn't configured on this worker, even if the caller asked for it — never a hard
   // error for an unconfigured optional integration.
-  const useAutoRag = url.searchParams.get("retrieval_mode") === "autorag" && Boolean(c.env.AUTORAG_KB_INSTANCE);
+  // AutoRAG currently exposes no metadata-filter parameter. It must remain disabled here rather
+  // than retrieve broadly and filter afterward (which would leak ranking density).
+  const useAutoRag: boolean = false;
 
   if (!query || query.trim().length === 0) {
     throw badRequest("q parameter is required");
@@ -856,34 +870,26 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
           rewrite_query: true,
         })
       ) as { data?: Array<{ filename?: string; score?: number; content?: Array<{ text?: string }> }> };
-      const data = (response.data ?? [])
+      const data = (await Promise.all((response.data ?? [])
         .filter((item) => {
           const prefix = `autorag/${spaceId}/${projectId ?? "_space"}/`;
           return typeof item.filename === "string" && item.filename.startsWith(prefix);
         })
-        .flatMap((item, index) => {
+        .map(async (item, index) => {
           const filename = item.filename;
-          if (!filename) return [];
+          if (!filename) return null;
           const leaf = filename.split("/").pop();
-          if (!leaf) return [];
+          if (!leaf) return null;
           const docId = leaf.replace(/\.md$/, "");
           return {
             chunk_id: `autorag:${docId}:${index}`,
             doc_id: docId,
-            content: contextEnvelope({
-              id: `autorag:${docId}:${index}`,
-              score: item.score ?? 0,
-              content: (item.content ?? []).map((part) => part.text ?? "").join("\n"),
-              r2Key: filename,
-              byteStart: 0,
-              byteEnd: 0,
-              title: docId,
-            }),
+            content: await wrapContextChunk({ content: (item.content ?? []).map((part) => part.text ?? "").join("\n") }),
             score: item.score ?? 0,
             citation: { document_id: docId, chunk_id: `autorag:${docId}:${index}`, byte_start: 0, byte_end: 0 },
           };
-        });
-      return c.json({ data, cached: false, retrieval_mode: "autorag", confidence: data[0]?.score ?? 0,
+        }))).filter((item) => item !== null);
+      return c.json({ data, context_instruction: UNTRUSTED_CONTEXT_INSTRUCTION, cached: false, retrieval_mode: "autorag", confidence: data[0]?.score ?? 0,
         live_grounding: false, latency_ms: telemetry["autorag_search_ms"] ?? 0 });
     } catch {
       // AutoRAG is optional. Preserve availability by falling back to the fully scoped hybrid
@@ -891,7 +897,7 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
       mode = "hybrid";
     }
   }
-  const namespace = `${tenantId}:${spaceId}:${scope.projectId}:${roleRank}:${mode}:${policyVersion}`;
+  const namespace = `${tenantId}:${spaceId}:${scope.projectId}:${roleRank}:${userId}:${mode}:${policyVersion}`;
   const result = await googleModeSearch(query.trim(), scope, {
     now: Date.now,
     cache: {
@@ -910,13 +916,12 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
     },
     dense: async (q, scoped) => timed("dense_search_ms", async () => {
       const embedded = await timed("embedding_ms", () => embedText(c.env.AI, q));
-      const found = await c.env.KB_VECTORS.query(embedded.embedding, {
-        topK: topK * 2,
-        filter: {
-          tenant_id: { $eq: scoped.tenantId }, space_id: { $eq: scoped.spaceId },
-          project_id: { $eq: scoped.projectId }, required_role_rank: { $lte: scoped.roleRank },
-        },
-        returnMetadata: "indexed",
+      const callerRole = (c.req.header("x-naelao-role") ?? "viewer") as KnowledgeRole;
+      if (!(callerRole in KNOWLEDGE_ROLE_MASK)) throw unauthorized("Invalid knowledge role");
+      const found = await searchPermissionedKnowledge(c.env.KB_VECTORS, embedded.embedding, {
+        tenantId: scoped.tenantId, spaceId: scoped.spaceId,
+        ...(projectId ? { projectId } : {}), userId, role: callerRole,
+        roleMask: KNOWLEDGE_ROLE_MASK[callerRole], topK: topK * 2,
       });
       const ids = (found.matches ?? []).map((m) => m.id);
       if (!ids.length) return [];
@@ -931,16 +936,9 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
         const row = byId.get(match.id); return row ? [rowToHit(row, match.score ?? 0)] : [];
       });
     }),
-    // Sparse retrieval searches the entire authorized FTS corpus, never only dense candidates.
-    sparse: async (q, scoped) => timed("sparse_search_ms", async () => {
-      const rows = await c.env.PLATFORM_DB.prepare(
-        `SELECT k.*, d.title, bm25(kb_chunks_fts) AS rank FROM kb_chunks_fts f
-         JOIN kb_chunks k ON k.rowid=f.rowid JOIN kb_documents d ON d.id=k.document_id
-         WHERE kb_chunks_fts MATCH ? AND k.tenant_id=? AND k.space_id=? AND k.project_id=?
-           AND k.required_role_rank<=? AND k.deleted_at IS NULL ORDER BY rank LIMIT ?`
-      ).bind(q, scoped.tenantId, scoped.spaceId, scoped.projectId, scoped.roleRank, topK * 2).all<Record<string, unknown>>();
-      return rows.results.map((row, index) => rowToHit(row, 1 / (index + 1)));
-    }),
+    // FTS cannot apply Vectorize's array membership ACL before BM25 ranking. Returning no sparse
+    // candidates is intentionally fail-closed; never replace this with post-retrieval filtering.
+    sparse: async () => [],
     web: async (q, scoped) => timed("web_grounding_ms", async () => {
       if (!c.env.TAVILY_API_KEY) return [];
       const response = await fetch(TAVILY_SEARCH_URL, { method: "POST", headers: { "content-type": "application/json" },
@@ -959,13 +957,13 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
     },
   }, { confidenceThreshold: Number(c.env.RETRIEVAL_CONFIDENCE_THRESHOLD ?? "0.8"), limit: topK });
 
-  const data = result.hits.map((hit) => ({
-    chunk_id: hit.id, doc_id: hit.id.split("_chunk_")[0], content: contextEnvelope(hit), score: hit.score,
+  const data = await Promise.all(result.hits.map(async (hit) => ({
+    chunk_id: hit.id, doc_id: hit.id.split("_chunk_")[0], content: await wrapContextChunk(hit), score: hit.score,
     citation: hit.r2Key ? { document_id: hit.id.split("_chunk_")[0], chunk_id: hit.id,
       content_hash: undefined, byte_start: hit.byteStart, byte_end: hit.byteEnd,
       line_start: hit.lineStart, line_end: hit.lineEnd } : null,
-  }));
-  return c.json({ data, cached: result.cacheHit, retrieval_mode: mode, confidence: result.confidence,
+  })));
+  return c.json({ data, context_instruction: UNTRUSTED_CONTEXT_INSTRUCTION, cached: result.cacheHit, retrieval_mode: mode, confidence: result.confidence,
     live_grounding: result.liveGrounding, latency_ms: result.latencyMs });
 });
 

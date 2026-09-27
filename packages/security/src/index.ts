@@ -11,3 +11,4 @@ export * from "./write-guard.js";
 export * from "./delegation.js";
 export * from "./dlp.js";
 export * from "./ephemeral-grant.js";
+export * from "./knowledge-permissions.js";
