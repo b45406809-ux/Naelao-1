@@ -14,6 +14,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       start: vi.fn(() => {
         containerRunning = true;
       }),
+      stop: vi.fn(() => { containerRunning = false; }),
       getTcpPort: () => ({
         fetch: async (req) => {
           const url = new URL(req.url);
@@ -111,5 +112,20 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       new Request("https://sandbox/workspace/list", { method: "POST" })
     );
     expect(getAlarmTime()).toBeGreaterThanOrEqual(start + 59_000);
+  });
+
+  it("stays warm before 60s and snapshots then hibernates at 60s", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    const { sandbox, storage, mockContainer } = createTestSandbox();
+    await sandbox.fetch(new Request("https://sandbox/workspace/list", { method: "POST" }));
+    vi.setSystemTime(1_059_999);
+    await sandbox.alarm();
+    expect(mockContainer.stop).not.toHaveBeenCalled();
+    vi.setSystemTime(1_060_000);
+    await sandbox.alarm();
+    expect(mockContainer.stop).toHaveBeenCalledWith("SIGTERM");
+    expect(storage.get("container_status")).toBe("hibernated");
+    vi.useRealTimers();
   });
 });

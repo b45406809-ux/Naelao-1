@@ -1,9 +1,29 @@
 import { describe, expect, it, vi } from "vitest";
 import { buildCodeRunner } from "./code-runner.js";
-import { runStoredScript, tierLabel } from "./execution-ladder.js";
+import { classifyExecutionRoute, requiresNativeCompilation, runStoredScript, tierLabel } from "./execution-ladder.js";
+import { interceptPlatformCli } from "./virtual-cli.js";
 import type { ScriptEngineEnv, StoredScript } from "./types.js";
 
 describe("Execution Ladder & Code Runner", () => {
+  it("classifies all six engines and sends native work straight to Tier 6", () => {
+    expect(classifyExecutionRoute("cat package.json")).toMatchObject({ tier: 1, engine: "sqlite_fs" });
+    expect(classifyExecutionRoute("node script.ts")).toMatchObject({ tier: 2, engine: "isolate" });
+    expect(classifyExecutionRoute("workflow run nightly")).toMatchObject({ tier: 3, engine: "workflow" });
+    expect(classifyExecutionRoute("browse https://example.com")).toMatchObject({ tier: 4, engine: "kitesurf" });
+    expect(classifyExecutionRoute("browse https://example.com --screenshot")).toMatchObject({ tier: 5, engine: "chromium" });
+    expect(classifyExecutionRoute("cargo build --release")).toMatchObject({ tier: 6, engine: "container" });
+    expect(requiresNativeCompilation("npm install @tensorflow/tfjs-node")).toBe(true);
+  });
+
+  it("routes pure Python to Pyodide and native imports to the container", () => {
+    expect(classifyExecutionRoute('python3 -c "import math; print(math.pi)"')).toMatchObject({ tier: 2 });
+    expect(classifyExecutionRoute('python3 -c "import torch"')).toMatchObject({ tier: 6 });
+  });
+
+  it("keeps browse screenshots out of context until see is requested", () => {
+    expect(interceptPlatformCli("browse https://example.com")).toEqual({ operation: "browser.navigate", params: { url: "https://example.com", save_screenshot: true, accessibility_text: true } });
+    expect(interceptPlatformCli('see --crop "10,20,30,40"')).toEqual({ operation: "browser.see", params: { path: "latest", crop: "10,20,30,40" } });
+  });
   it("maps tier labels accurately across all 6 tiers", () => {
     expect(tierLabel(1)).toBe("T1 direct-vfs");
     expect(tierLabel(2)).toBe("T2 v8-isolate");

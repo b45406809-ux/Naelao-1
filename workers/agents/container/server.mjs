@@ -254,9 +254,19 @@ const DISPLAY_ROUTES = new Set([
   "/display/mouse",
   "/display/type",
 ]);
+let shuttingDown = false;
 
 createServer((req, res) => {
   const path = req.url ?? "";
+  if (req.method === "POST" && path.endsWith("/shutdown")) {
+    shuttingDown = true;
+    res.writeHead(200, { "content-type": "application/json", connection: "close" }).end(JSON.stringify({ ok: true, flushed: true }));
+    return;
+  }
+  if (shuttingDown) {
+    res.writeHead(503, { "content-type": "application/json" }).end(JSON.stringify({ error: "container_shutting_down" }));
+    return;
+  }
   const isWorkspaceRoute = [...WORKSPACE_ROUTES].some((r) => path.endsWith(r));
   const isDisplayRoute = [...DISPLAY_ROUTES].some((r) => path.endsWith(r));
   if (

@@ -38,6 +38,7 @@ import type {
   ScriptRunResult,
   TieredCodeRunner,
 } from "./types.js";
+import { requiresNativeCompilation } from "./execution-ladder.js";
 
 // ── CF Worker Loader binding (beta) — minimal local typing ─────────────────────────────
 
@@ -257,6 +258,32 @@ export default {
 `;
 }
 
+/** Pyodide is loaded inside the dynamic Worker, never in the orchestration worker. Stdout is
+ * captured explicitly so Python has the same result contract as the Linux harness. */
+function buildPythonIsolateModule(): string {
+  return `${SSRF_GUARD_PRELUDE}
+import { loadPyodide } from "pyodide";
+let __runtime;
+export default {
+  async fetch(request) {
+    const { args } = await request.json();
+    const lines = [];
+    __runtime ||= loadPyodide({
+      indexURL: "https://cdn.jsdelivr.net/pyodide/v0.27.7/full/",
+      stdout: (line) => lines.push(line),
+      stderr: (line) => lines.push(line),
+    });
+    try {
+      const pyodide = await __runtime;
+      const result = await pyodide.runPythonAsync(String(args.code || ""));
+      return Response.json({ ok: true, result: { stdout: lines.join("\\n"), result: result == null ? null : String(result) } });
+    } catch (err) {
+      return Response.json({ ok: false, error: String((err && err.message) || err) }, { status: 500 });
+    }
+  },
+};`;
+}
+
 /** Fetch a package's ESM bundle from esm.sh for Tier-3 best-effort npm resolution. */
 async function fetchEsmModule(pkg: string): Promise<string | null> {
   try {
@@ -297,9 +324,18 @@ async function runIsolate(
     };
   }
 
+  const python = params.name === "code-exec.execute_python";
   const modules: Record<string, string> = {
-    "main.js": buildIsolateModule(params.code),
+    "main.js": python ? buildPythonIsolateModule() : buildIsolateModule(params.code),
   };
+
+  if (python) {
+    const pyodideModule = await fetchEsmModule("pyodide@0.27.7");
+    if (!pyodideModule) {
+      return { ok: false, error: "Pyodide module could not be loaded", tier: 2, actual_tier: 2, engine: "isolate", duration_ms: Date.now() - started, tokens_used: 0 };
+    }
+    modules.pyodide = pyodideModule;
+  }
 
   // Tier 3: best-effort resolve bare-specifier imports from a CDN as extra virtual modules.
   if (params.tier === 3) {
@@ -317,6 +353,8 @@ async function runIsolate(
         ok: false,
         error: `Tier ${params.tier} is unavailable: no naelao-browser service binding configured`,
         tier: params.tier,
+        actual_tier: params.tier,
+        engine: "isolate",
         duration_ms: Date.now() - started,
         tokens_used: 0,
       };
@@ -388,6 +426,8 @@ async function runIsolate(
           ? { output: body.result }
           : { error: body.error ?? `isolate returned ${resp.status}` }),
         tier: params.tier,
+        actual_tier: params.tier,
+        engine: "isolate",
         duration_ms: Date.now() - started,
         tokens_used: 0,
       };
@@ -437,6 +477,8 @@ async function runIsolate(
       ok: false,
       error: errMsg,
       tier: params.tier,
+      actual_tier: params.tier,
+      engine: "isolate",
       duration_ms: Date.now() - started,
       tokens_used: 0,
     };
@@ -463,6 +505,8 @@ async function runBrowser(
       ok: false,
       error: `Browser engine '${engine}' is unavailable: no naelao-browser service binding configured`,
       tier: engine === "kitesurf" ? 4 : 5,
+      actual_tier: engine === "kitesurf" ? 4 : 5,
+      engine,
       duration_ms: Date.now() - started,
       tokens_used: 0,
     };
@@ -474,7 +518,7 @@ async function runBrowser(
 
   if (
     engine === "kitesurf" &&
-    Boolean(params.args["needsScreenshot"] || params.args["needsWebGL"])
+    Boolean(params.args["needsScreenshot"] || params.args["take_screenshot"] || params.args["pdf"] || params.args["needsWebGL"] || params.args["needsCanvas"])
   ) {
     selectedEngine = "chromium";
     fallbackReason = "visual QA / WebGL requested";
@@ -486,8 +530,9 @@ async function runBrowser(
   );
 
   const dispatch = async (eng: "kitesurf" | "chromium") => {
+    const endpoint = params.name === "browser-use.see" ? "/v1/browser/see" : "/v1/browser/navigate";
     const resp = await browserWorker.fetch(
-      new Request("http://browser/v1/browser/navigate", {
+      new Request(`http://browser${endpoint}`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -533,6 +578,8 @@ async function runBrowser(
         ...(fallbackReason ? { fallback_reason: fallbackReason } : {}),
       },
       tier: selectedEngine === "kitesurf" ? 4 : 5,
+      actual_tier: selectedEngine === "kitesurf" ? 4 : 5,
+      engine: selectedEngine,
       duration_ms: Date.now() - started,
       tokens_used: 0,
     };
@@ -541,6 +588,8 @@ async function runBrowser(
       ok: false,
       error: String(err),
       tier: selectedEngine === "kitesurf" ? 4 : 5,
+      actual_tier: selectedEngine === "kitesurf" ? 4 : 5,
+      engine: selectedEngine,
       duration_ms: Date.now() - started,
       tokens_used: 0,
     };
@@ -572,6 +621,8 @@ async function runContainer(
         ok: false,
         error: `Container image '${params.containerImage}' is not available in this environment yet`,
         tier: 6,
+        actual_tier: 6,
+        engine: "container",
         duration_ms: Date.now() - started,
         tokens_used: 0,
       };
@@ -592,6 +643,8 @@ async function runContainer(
       error:
         "Tier 6 is unavailable: no ToolSandboxDO (TOOL_SANDBOX) binding configured",
       tier: 6,
+      actual_tier: 6,
+      engine: "container",
       duration_ms: Date.now() - started,
       tokens_used: 0,
     };
@@ -651,6 +704,8 @@ async function runContainerRequest(
         ? { output: body.result }
         : { error: body.error ?? `container returned ${resp.status}` }),
       tier: 6,
+      actual_tier: 6,
+      engine: "container",
       duration_ms: Date.now() - started,
       tokens_used: 0,
     };
@@ -662,6 +717,8 @@ async function runContainerRequest(
         ? "Tier 6 execution timed out"
         : String(err instanceof Error ? err.message : err),
       tier: 6,
+      actual_tier: 6,
+      engine: "container",
       duration_ms: Date.now() - started,
       tokens_used: 0,
     };
@@ -684,8 +741,15 @@ function hashCode(s: string): string {
 export function buildCodeRunner(opts: CodeRunnerOptions): TieredCodeRunner {
   return {
     async run(params) {
+      const commandIntent = String(params.args["commands"] ?? params.args["command"] ?? params.args["code"] ?? params.code);
+      if (params.tier !== 6 && requiresNativeCompilation(commandIntent)) {
+        return runContainer(opts, { ...params, tier: 6 });
+      }
       if (params.tier === 6) return runContainer(opts, params);
       if (params.tier === 4 || params.tier === 5) {
+        if (params.name.startsWith("browser-use.")) {
+          return runBrowser(opts, params, params.tier === 4 ? "kitesurf" : "chromium");
+        }
         if (params.code && params.code.includes("export async function run")) {
           return runIsolate(opts, params);
         }

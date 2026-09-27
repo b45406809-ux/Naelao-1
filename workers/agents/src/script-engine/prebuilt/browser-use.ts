@@ -45,7 +45,7 @@ export async function run(args, ctx) {
 
 async function navigate(
   ctx: PrebuiltOpContext,
-  body: { url: string; actions?: BrowserAction[]; take_screenshot?: boolean; extract_links?: boolean; engine?: BrowserEngine }
+  body: { url: string; actions?: BrowserAction[]; take_screenshot?: boolean; save_screenshot?: boolean; accessibility_text?: boolean; extract_links?: boolean; engine?: BrowserEngine }
 ): Promise<unknown> {
   if (!ctx.env.codeRunner) {
     return { ok: false, reason: "Tier 4 (browser) unavailable: no code runner configured in this environment" };
@@ -63,13 +63,29 @@ async function navigate(
   return result.output;
 }
 
+async function see(ctx: PrebuiltOpContext, args: Record<string, unknown>): Promise<unknown> {
+  if (!ctx.env.codeRunner) throw new Error("Tier 5 (Chromium vision) unavailable");
+  const result = await ctx.env.codeRunner.run({
+    name: "browser-use.see", code: "", tier: 5,
+    args: { path: String(args["path"] ?? "latest"), ...(args["crop"] ? { crop: String(args["crop"]) } : {}) },
+    spaceId: ctx.env.spaceId, agentId: ctx.env.agentId, tenantId: ctx.env.tenantId,
+  });
+  if (!result.ok) throw new Error(result.error ?? "screenshot loading failed");
+  return result.output;
+}
+
 export const browserUse: PrebuiltScript = {
   name: "browser-use",
   description: "Navigate, click, type, extract text/links, and screenshot real web pages.",
   domain: "browser",
   requires_tier: 4,
   operations: {
-    "browser.navigate": (a, c) => navigate(c, { url: String(a["url"] ?? ""), ...engineArg(a) }),
+    "browser.navigate": (a, c) => navigate(c, {
+      url: String(a["url"] ?? ""),
+      save_screenshot: a["save_screenshot"] !== false,
+      accessibility_text: true,
+      ...engineArg(a),
+    }),
     "browser.click": (a, c) =>
       navigate(c, {
         url: String(a["url"] ?? ""),
@@ -85,5 +101,6 @@ export const browserUse: PrebuiltScript = {
     "browser.extract": (a, c) =>
       navigate(c, { url: String(a["url"] ?? ""), extract_links: a["extract_links"] !== false, ...engineArg(a) }),
     "browser.screenshot": (a, c) => navigate(c, { url: String(a["url"] ?? ""), take_screenshot: true, ...engineArg(a) }),
+    "browser.see": (a, c) => see(c, a),
   },
 };
