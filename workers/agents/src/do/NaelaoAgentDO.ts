@@ -20,6 +20,9 @@ import type { ReasoningRequest, GatewayOpts } from "../shared/ai-client.js";
 import { byokProviderForModel, BYOK_PROVIDER_KEY_FIELD } from "../shared/ai-client.js";
 import {
   ScriptToolSurface,
+  privacyBridgeCard,
+  isPublicRoom,
+  type RoomType,
   runScriptLoop,
   parseRequiresApprovalFor,
   loadAgentConfig,
@@ -3252,6 +3255,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
        *  disclosure when neither is set, so every existing run is unaffected. */
       progressiveToolDisclosure?: boolean;
       mutationGrant?: string;
+      roomType?: RoomType;
     }>();
 
     // Also accept spaceId / agentId / tenantId from internal request headers (set by billing/triggers)
@@ -3394,7 +3398,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       approvalMode = plan.approvalMode;
     }
 
-    const tools = new ScriptToolSurface(engineEnv, config.scripts.prebuilt);
+    const personalIntent = /\b(my|personal|private)\s+(?:inbox|email|calendar|files?|account)\b|\b(?:run|execute)\s+(?:a\s+)?(?:shell|bash)\b/i.test(body.goal);
+    if (isPublicRoom(body.roomType) && personalIntent) {
+      return Response.json({
+        card: privacyBridgeCard(sessionId, "This request requires a personal or high-privilege tool that is unavailable in a public room."),
+        alternative: { type: "mcp_v2_elicitation_card", action: "request_ephemeral_action_grant", expires_in_ms: 15_000 },
+      });
+    }
+    const tools = new ScriptToolSurface(engineEnv, config.scripts.prebuilt, body.roomType ? { roomType: body.roomType } : {});
     // A sub-agent spawned mid-task inherits the SAME project scoping as its parent — it's
     // conceptually a subthread of the same project, not a different workspace. Built after
     // `tools` (§A1.17 Phase J's workflow.create/run ops need it to author/re-run stored
@@ -3449,6 +3460,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         approvalMode,
         runId,
         sessionId,
+        ...(config.pipelines ? { pipeline: config.pipelines } : {}),
         // Checked once per step, so a Stop button actually stops something. Only wired here —
         // the interactive path — since a cron wake or channel drain has nobody watching it.
         shouldCancel: () => this.isCancelRequested(runId),

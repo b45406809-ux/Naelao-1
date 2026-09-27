@@ -21,7 +21,7 @@ import type {
 } from "@naelao/events";
 import { broadcastSpaceEvent, mintInternalToken } from "@naelao/http";
 import type { MessageRole } from "@naelao/types";
-import { verifyCapabilityToken } from "@naelao/security";
+import { consumeEphemeralActionGrant, mintEphemeralActionGrant, type EphemeralActionGrant, verifyCapabilityToken } from "@naelao/security";
 
 function todaySpendKey(): string {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
@@ -1264,6 +1264,13 @@ const MIGRATIONS: Migration[] = [
         ON connector_aliases(space_id, alias_name, scope, ifnull(project_id,''), ifnull(user_id,''));
     `,
   },
+  {
+    version: 44,
+    description: "single-use ephemeral action grant consumption ledger",
+    up: `CREATE TABLE IF NOT EXISTS ephemeral_grants_consumed (
+      nonce TEXT PRIMARY KEY, tool_name TEXT NOT NULL, consumed_at TEXT NOT NULL
+    );`,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -1418,6 +1425,18 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const method = request.method;
 
     try {
+      if (method === "POST" && url.pathname === "/ephemeral-grants/mint") {
+        const body = await request.json<{ tool_name?: string; params?: Record<string, unknown> }>().catch(() => ({} as { tool_name?: string; params?: Record<string, unknown> }));
+        if (!body.tool_name) return Response.json({ error: "tool_name is required" }, { status: 400 });
+        const grant = await mintEphemeralActionGrant(body.tool_name, body.params ?? {}, this.env.PLATFORM_SECRET);
+        return Response.json({ type: "mcp_v2_elicitation_card", action: body.tool_name, grant, expires_in_ms: 15_000 }, { status: 201 });
+      }
+      if (method === "POST" && url.pathname === "/ephemeral-grants/consume") {
+        const body = await request.json<{ grant?: EphemeralActionGrant; tool_name?: string; params?: Record<string, unknown> }>().catch(() => ({} as { grant?: EphemeralActionGrant; tool_name?: string; params?: Record<string, unknown> }));
+        if (!body.grant || !body.tool_name) return Response.json({ error: "grant and tool_name are required" }, { status: 400 });
+        const consumed = await consumeEphemeralActionGrant(this.ctx.storage.sql, body.grant, body.tool_name, body.params ?? {}, this.env.PLATFORM_SECRET);
+        return consumed ? Response.json({ consumed: true }) : Response.json({ error: "invalid_expired_or_replayed_grant" }, { status: 403 });
+      }
       // POST /sessions
       if (method === "POST" && url.pathname === "/sessions") {
         return this.createSession(request);

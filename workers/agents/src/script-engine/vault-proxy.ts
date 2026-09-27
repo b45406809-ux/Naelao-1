@@ -1,4 +1,5 @@
 import type { VaultFetchOptions } from "@naelao/agent-sdk";
+import { scanAndScrubEgress } from "@naelao/security";
 
 export interface VaultProxyOptions {
   credentialsWorker: Fetcher;
@@ -22,6 +23,8 @@ export function createVaultProxy(options: VaultProxyOptions) {
   return Object.freeze({
     async fetchWithAuth(url: string, init: VaultFetchOptions): Promise<Response> {
       if (!init || typeof init.credentialName !== "string" || !init.credentialName) throw new Error("credentialName is required");
+      const dlp = scanAndScrubEgress(init, "redact");
+      if (dlp.findings.length) console.warn("[vault-proxy] outbound DLP redaction", dlp.audit);
       const response = await options.credentialsWorker.fetch(new Request(
         `http://credentials/v1/internal/spaces/${encodeURIComponent(options.spaceId)}/outbound`,
         {
@@ -31,7 +34,7 @@ export function createVaultProxy(options: VaultProxyOptions) {
             "x-naelao-tenant-id": options.tenantId,
             "x-naelao-credential-token": await credentialToken(options.platformSecret, options.spaceId, options.agentId),
           },
-          body: JSON.stringify({ url, ...init, ...(options.userId ? { onBehalfOfUserId: options.userId } : {}) }),
+          body: JSON.stringify({ url, ...dlp.payload, ...(options.userId ? { onBehalfOfUserId: options.userId } : {}) }),
         }
       ));
       if (!response.ok) {

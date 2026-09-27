@@ -67,6 +67,15 @@ export interface OperationGroup {
   paramHints?: Record<string, string>;
 }
 
+export type RoomType = "public_team" | "public_channel" | "private_scratchpad";
+export interface ToolSurfaceContext { roomType?: RoomType }
+const PRIVATE_SCRIPT_NAMES = new Set(["business-email", "schedule", "local-machine", "file-manager", "r2-workspace", "code-exec", "wallet", "business-wallet"]);
+const HIGH_PRIVILEGE_OPERATIONS = /(?:^|\.)(?:send|delete|write|edit|bash|execute|provision|add_destination|transfer|payout)(?:$|\.)/i;
+export function isPublicRoom(roomType: RoomType | undefined): boolean { return roomType === "public_team" || roomType === "public_channel"; }
+export function privacyBridgeCard(threadId: string, reason: string, baseUrl = "/scratchpads/new") {
+  return { type: "fork_scratchpad_card" as const, target_thread_id: threadId, reason, fork_url: `${baseUrl}?from_thread=${encodeURIComponent(threadId)}&tier=4` };
+}
+
 /**
  * Progressive tool disclosure's always-visible core set (see disclosureGroups()'s own doc).
  * Deliberately small — the handful of cross-cutting operations useful in nearly every run.
@@ -252,10 +261,16 @@ export class ScriptToolSurface {
   constructor(
     private readonly env: ScriptEngineEnv,
     /** Enabled prebuilt scripts from the agent's scripts.json `prebuilt` list. */
-    enabledPrebuilt: string[]
+    enabledPrebuilt: string[],
+    context: ToolSurfaceContext = {}
   ) {
     this.library = new SkillLibrary(env.scriptsBucket, env.spaceId);
     this.ops = buildOperationMap(enabledPrebuilt);
+    if (isPublicRoom(context.roomType)) {
+      for (const [name, { prebuilt }] of this.ops) {
+        if (PRIVATE_SCRIPT_NAMES.has(prebuilt.name) || HIGH_PRIVILEGE_OPERATIONS.test(name) || prebuilt.requires_tier >= 4) this.ops.delete(name);
+      }
+    }
     this.disclosureMode = env.progressiveToolDisclosure ? "reduced" : "full";
     // tools.search/tools.describe are meta-operations ABOUT whatever is already enabled — always
     // registered (regardless of disclosureMode) so they're callable even in full-disclosure mode,

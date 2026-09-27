@@ -39,6 +39,7 @@ import { FIND_CONFIDENCE_FLOOR } from "./script-find.js";
 import { assessSkillHealth, isSafeToAutoRun } from "./skill-health.js";
 import { applyPlanOp } from "./prebuilt/plan.js";
 import type { PlanState } from "./types.js";
+import { runAfterStep, runBeforeStep, type StepPipeline } from "./step-pipeline.js";
 
 /**
  * Rebuild the run's plan from its recorded history — used at the start of a RESUMED run, where the
@@ -375,6 +376,7 @@ const DEFAULT_ASSUMED_CONTEXT_WINDOW = 24_000;
 const MAX_OVERFLOW_RETRIES = 2;
 
 export interface RunLoopOptions {
+  pipeline?: StepPipeline;
   goal: string;
   startupObserve: string;
   observeArgs?: Record<string, unknown>;
@@ -548,11 +550,15 @@ export async function runScriptLoop(
    * be safe: on a resume the model is shown its completed steps, but showing is not preventing.
    */
   const runOnce = async (name: string, params: Record<string, unknown>): Promise<ScriptRunResult> => {
+    const injected = await runBeforeStep(opts.pipeline, env.pipelineRuntime);
+    if (injected.length) notes.push(`pipeline context: ${JSON.stringify(injected).slice(0, 2000)}`);
     const ledger = env.actionLedger;
     delete env.lastWorkspaceCommitOid;
     if (!ledger) {
       const result = await tools.run(name, params);
-      return env.lastWorkspaceCommitOid ? { ...result, commit_oid: env.lastWorkspaceCommitOid } : result;
+      const verification = result.ok ? await runAfterStep(opts.pipeline, env.pipelineRuntime) : { ok: true, failures: [] };
+      const verified = verification.ok ? result : { ...result, ok: false, error: `post-step verification failed: ${JSON.stringify(verification.failures)}` };
+      return env.lastWorkspaceCommitOid ? { ...verified, commit_oid: env.lastWorkspaceCommitOid } : verified;
     }
     const paramsHash = stableStringify(params);
     try {
@@ -567,6 +573,7 @@ export async function runScriptLoop(
       // on replay — the same risk as having no ledger at all, which is where this started.
     }
     let result = await tools.run(name, params);
+    if (result.ok) { const verification = await runAfterStep(opts.pipeline, env.pipelineRuntime); if (!verification.ok) result = { ...result, ok: false, error: `post-step verification failed: ${JSON.stringify(verification.failures)}` }; }
     if (env.lastWorkspaceCommitOid) result = { ...result, commit_oid: env.lastWorkspaceCommitOid };
     if (result.ok) {
       try {
