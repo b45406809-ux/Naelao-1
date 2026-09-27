@@ -33,6 +33,7 @@ export interface GroundedSearchHit {
   lineStart?: number;
   lineEnd?: number;
   title?: string;
+  url?: string;
 }
 
 export interface GoogleModeSearchAdapters {
@@ -132,7 +133,7 @@ export async function googleModeSearch(
     }
   );
   const confidence = Math.max(dense[0]?.score ?? 0, sparse[0]?.score ?? 0);
-  const threshold = options.confidenceThreshold ?? 0.8;
+  const threshold = options.confidenceThreshold ?? 0.85;
   const liveGrounding = confidence < threshold;
   const web = liveGrounding ? await adapters.web(query, scope) : [];
   const hits = [...fused, ...web].slice(0, options.limit ?? 10);
