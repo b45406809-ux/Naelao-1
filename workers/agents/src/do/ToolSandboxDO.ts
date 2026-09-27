@@ -56,13 +56,23 @@ const WORKSPACE_ROUTES = [
   "/workspace/write",
   "/workspace/list",
   "/workspace/delete",
+  "/workspace/rehydrate",
 ];
+
+interface WorkspaceRecord { content: string; hash: string }
 
 interface StoredShellState {
   cwd: string;
   env: Record<string, string>;
   gitHead: string;
   revision: number;
+  stateHash: string;
+}
+
+async function hashState(state: Omit<StoredShellState, "stateHash">): Promise<string> {
+  const canonical = JSON.stringify({ cwd: state.cwd, env: Object.fromEntries(Object.entries(state.env).sort()), gitHead: state.gitHead, revision: state.revision });
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
+  return [...new Uint8Array(digest)].map((v) => v.toString(16).padStart(2, "0")).join("");
 }
 
 export class ToolSandboxDO extends DurableObject {
@@ -95,35 +105,71 @@ export class ToolSandboxDO extends DurableObject {
     await this.ctx.storage.setAlarm(Date.now() + 60_000);
 
     if (url.pathname === "/session/state" && request.method === "POST") {
-      const current = (await this.ctx.storage.get<StoredShellState>(
+      const stored = await this.ctx.storage.get<StoredShellState>(
         "shell_state"
-      )) ?? { cwd: "/workspace", env: {}, gitHead: "main", revision: 1 };
+      );
+      const base = stored ?? { cwd: "/workspace", env: {}, gitHead: "main", revision: 1 };
+      const current: StoredShellState = { ...base, stateHash: stored?.stateHash ?? await hashState(base) };
       const body: {
         expected_revision?: number;
+        expected_hash?: string;
         patch?: Partial<StoredShellState>;
       } = await request
         .json<{
           expected_revision?: number;
+          expected_hash?: string;
           patch?: Partial<StoredShellState>;
         }>()
         .catch(() => ({}));
-      if (
+      if ((
         body.expected_revision !== undefined &&
         body.expected_revision !== current.revision
-      ) {
+      ) || (
+        body.expected_hash !== undefined && body.expected_hash !== current.stateHash
+      )) {
         return Response.json(
-          { error: "workspace_state_conflict", revision: current.revision },
+          { error: "workspace_state_conflict", revision: current.revision, state_hash: current.stateHash },
           { status: 409 }
         );
       }
-      const next: StoredShellState = {
+      if (!body.patch) return Response.json(current);
+      const withoutHash = {
         ...current,
+        stateHash: undefined,
         ...(body.patch ?? {}),
         env: { ...current.env, ...(body.patch?.env ?? {}) },
         revision: current.revision + 1,
       };
+      delete (withoutHash as { stateHash?: string }).stateHash;
+      const next: StoredShellState = { ...withoutHash, stateHash: await hashState(withoutHash) };
       await this.ctx.storage.put("shell_state", next);
       return Response.json(next);
+    }
+
+    if (url.pathname === "/workspace/state-sync" && request.method === "POST") {
+      type SyncBody = { files?: Record<string, { content: string; expected_hash?: string | null }>; deleted?: Record<string, string> };
+      const body: SyncBody = await request.json<SyncBody>().catch(() => ({}));
+      const records = (await this.ctx.storage.get<Record<string, WorkspaceRecord>>("workspace_files")) ?? {};
+      const conflicts: string[] = [];
+      for (const [path, change] of Object.entries(body.files ?? {})) {
+        if (path.split("/").includes("node_modules")) continue;
+        const actual = records[path]?.hash ?? null;
+        if (change.expected_hash !== undefined && change.expected_hash !== actual) conflicts.push(path);
+      }
+      for (const [path, expected] of Object.entries(body.deleted ?? {}))
+        if (records[path]?.hash !== expected) conflicts.push(path);
+      if (conflicts.length) return Response.json({ error: "workspace_state_conflict", conflicts }, { status: 409 });
+      let lockfilesChanged = false;
+      for (const [path, change] of Object.entries(body.files ?? {})) {
+        if (path.split("/").includes("node_modules")) continue;
+        const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(change.content));
+        const hash = [...new Uint8Array(digest)].map((v) => v.toString(16).padStart(2, "0")).join("");
+        if (records[path]?.hash !== hash && (path === "package.json" || path === "package-lock.json")) lockfilesChanged = true;
+        records[path] = { content: change.content, hash };
+      }
+      for (const path of Object.keys(body.deleted ?? {})) delete records[path];
+      await this.ctx.storage.put("workspace_files", records);
+      return Response.json({ ok: true, hashes: Object.fromEntries(Object.entries(records).map(([path, value]) => [path, value.hash])), rehydrate: lockfilesChanged });
     }
 
     const container = this.container;
@@ -157,6 +203,24 @@ export class ToolSandboxDO extends DurableObject {
       if (snapshot && Object.keys(snapshot).length) {
         await container.getTcpPort(HARNESS_PORT).fetch(new Request("http://sandbox/workspace/write", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ files: snapshot }) }));
       }
+    }
+
+    if (url.pathname === "/shell" && request.method === "POST") {
+      const body: { command?: string; expected_state_hash?: string } = await request.json<{ command?: string; expected_state_hash?: string }>().catch(() => ({}));
+      const stored = await this.ctx.storage.get<StoredShellState>("shell_state");
+      const base = stored ?? { cwd: "/workspace", env: {}, gitHead: "main", revision: 1 };
+      const state: StoredShellState = { ...base, stateHash: stored?.stateHash ?? await hashState(base) };
+      if (body.expected_state_hash && body.expected_state_hash !== state.stateHash)
+        return Response.json({ error: "workspace_state_conflict", state_hash: state.stateHash }, { status: 409 });
+      const response = await container.getTcpPort(HARNESS_PORT).fetch(new Request("http://sandbox/shell", {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ command: body.command, session: state }),
+      }));
+      const result = await response.json<{ session?: { cwd: string; env: Record<string, string> } }>();
+      if (response.ok && result.session) {
+        const nextBase = { cwd: result.session.cwd, env: result.session.env, gitHead: state.gitHead, revision: state.revision + 1 };
+        await this.ctx.storage.put("shell_state", { ...nextBase, stateHash: await hashState(nextBase) });
+      }
+      return Response.json(result, { status: response.status });
     }
 
     // /build, /exec, and every /workspace/* route all forward to the harness as-is now — this
