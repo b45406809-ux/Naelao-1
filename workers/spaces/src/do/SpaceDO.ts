@@ -2596,6 +2596,23 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   private getMessages(sessionId: string, params: URLSearchParams): Response {
+    // Agent context reads must identify the complete structural scope. This prevents a valid
+    // session id from being used as a global transcript fallback for a sibling project/thread.
+    const scopeSpace = params.get("scope_space_id");
+    const scopeProject = params.get("scope_project_id");
+    const scopeThread = params.get("scope_thread_id");
+    if (scopeSpace || scopeProject || scopeThread) {
+      const scoped = queryOne<{ space_id: string; project_id: string | null; thread_id: string | null }>(
+        this.ctx.storage.sql as never,
+        `SELECT s.space_id, t.project_id, COALESCE(t.session_id, s.id) AS thread_id
+         FROM sessions s LEFT JOIN threads t ON t.session_id = s.id
+         WHERE s.id = ?`,
+        sessionId
+      );
+      if (!scoped || scoped.space_id !== scopeSpace || (scoped.project_id ?? "") !== (scopeProject ?? "") || (scoped.thread_id ?? sessionId) !== scopeThread) {
+        return Response.json({ error_code: "not_found", message: "Thread transcript not found" }, { status: 404 });
+      }
+    }
     // Cap raised from 200 to 500 so the context-usage endpoint's own `?limit=500` is honoured
     // instead of being silently clamped: that caller sums every message's length to report "% of
     // context used", and clamping made it UNDER-report on exactly the long conversations where the

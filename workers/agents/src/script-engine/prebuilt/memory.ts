@@ -14,6 +14,7 @@
  */
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
+import { renderRecalledMemory } from "../memory/gate-memory.js";
 
 function userIdFor(args: Record<string, unknown>, ctx: PrebuiltOpContext): string | undefined {
   const explicit = args["user_id"];
@@ -47,11 +48,18 @@ export const memory: PrebuiltScript = {
       const text = String(args["query"] ?? args["text"] ?? "");
       if (!text) throw new Error("memory.recall requires 'query'");
       const userId = userIdFor(args, ctx);
-      return ctx.env.memoryStore.recall({
+      const results = await ctx.env.memoryStore.recall({
         ...(userId ? { userId } : {}),
         text,
         limit: typeof args["limit"] === "number" ? (args["limit"] as number) : 5,
       });
+      const semantic = results.filter((result) => result.layer === "semantic");
+      return {
+        results,
+        // Only gated semantic hindsight enters the model-visible tagged context. Structured
+        // project truth remains plainly typed data and never masquerades as semantic recall.
+        ...(semantic.length ? { recalled_memory: renderRecalledMemory(semantic) } : {}),
+      };
     },
     async "memory.forget"(args, ctx) {
       if (!ctx.env.memoryStore) return { ok: false, reason: "memory store not available in this environment" };

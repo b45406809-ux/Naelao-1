@@ -108,8 +108,10 @@ export const projectJournal: PrebuiltScript = {
         const map: Record<string, unknown> = {
           goal: j.goal,
           instructions: j.instructions,
+          rules: j.rules,
           status: j.status,
           todos: j.todos,
+          active_decisions: j.activeDecisions,
           activity: j.activity,
           archive: j.archive,
         };
@@ -123,13 +125,36 @@ export const projectJournal: PrebuiltScript = {
         name: j.name,
         goal: j.goal,
         instructions: j.instructions,
+        rules: j.rules,
         status: j.status,
         todos: j.todos,
+        active_decisions: j.activeDecisions,
         // Newest last; a reader wanting "what just happened" reads the tail.
         activity: j.activity,
         archive: j.archive,
         markdown: renderJournal(j),
       };
+    },
+
+    /** Atomically update deterministic project truth without accepting arbitrary markdown. */
+    async "project_journal.update"(args, ctx) {
+      const scope = requireProject(ctx);
+      if ("error" in scope) return { ok: false, reason: scope.error };
+      const j = await loadJournal(ctx, scope.spaceId, scope.projectId);
+      if (typeof args["goal"] === "string") j.goal = String(args["goal"]).trim();
+      if (Array.isArray(args["rules"])) j.rules = args["rules"].map(String).map((v) => v.trim()).filter(Boolean);
+      if (Array.isArray(args["active_decisions"])) {
+        j.activeDecisions = args["active_decisions"].map(String).map((v) => v.trim()).filter(Boolean);
+      }
+      if (Array.isArray(args["todos"])) {
+        j.todos = args["todos"].map((todo) =>
+          typeof todo === "string"
+            ? { text: todo.trim(), done: false, at: nowIso() }
+            : { text: String((todo as Record<string, unknown>)["text"] ?? "").trim(), done: Boolean((todo as Record<string, unknown>)["done"]), at: nowIso() }
+        ).filter((todo) => todo.text);
+      }
+      await saveJournal(ctx, scope.spaceId, scope.projectId, j);
+      return { ok: true, goal: j.goal, rules: j.rules, todos: j.todos, active_decisions: j.activeDecisions };
     },
 
     /** Record something that was done. The op every agent calls after a real action. */
@@ -229,6 +254,7 @@ export const projectJournal: PrebuiltScript = {
   },
   paramHints: {
     "project_journal.read": "no required fields — the project comes from the run itself, never an argument.",
+    "project_journal.update": "any of goal (string), rules (string[]), todos (string[] or {text,done}[]), active_decisions (string[]).",
     "project_journal.log": "summary (string, REQUIRED — ONE factual line about what you actually DID and what resulted, e.g. \"created the Lead Tracking project and briefed the dev agent\"; the field is `summary`, not `content`/`text`).",
     "project_journal.set": "at least one of goal / instructions / status / name (all strings).",
     "project_journal.add_todo": "text (string, REQUIRED).",

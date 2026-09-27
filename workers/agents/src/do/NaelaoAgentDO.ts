@@ -47,10 +47,13 @@ import { resolveAssistantApprovalPlan, type AssistantEffectiveRole } from "../sc
 import { buildCodeRunner, type WorkerLoaderBinding } from "../script-engine/code-runner.js";
 import { initMemorySchema, buildMemoryStore, runMemoryMaintenance } from "../script-engine/memory-os.js";
 import { buildProjectMemoryStore, buildHybridMemoryStore } from "../script-engine/project-memory-client.js";
+import { parseJournal, renderJournal, emptyJournal, journalKey, appendActivity } from "../script-engine/project-journal.js";
 import {
   buildConversationContext,
   messagesToSummarize,
   buildSummaryPrompt,
+  shouldCompactContext,
+  splitForCompaction,
   type ConversationContext,
   type ConversationMessage,
 } from "../script-engine/conversation-context.js";
@@ -996,6 +999,8 @@ export interface AgentDOEnv {
 }
 
 export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
+  /** Layer 1: wake-local working context. Never shared across structural thread keys. */
+  private readonly workingContexts = new Map<string, ConversationContext>();
   /** Normalize every assistant/operator into the one kernel configuration used by this DO. */
   assembleUniversalAgent(manifest: UniversalAgentManifest, businessContext?: BusinessContext) {
     const maxTier = Math.max(1, Math.min(ROLE_MAX_TIER[manifest.role] ?? 1, Number(manifest.capabilities.maxTier ?? 1))) as ExecutionTier;
@@ -1252,6 +1257,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       )
     `);
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at)`);
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS archived_messages (
+        id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL,
+        created_at TEXT, archived_at TEXT NOT NULL
+      )
+    `);
+    this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_archived_messages_session ON archived_messages(session_id, archived_at)`);
     try {
       this.ctx.storage.sql.exec(`
         CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
@@ -1753,7 +1765,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const autoRagInstance = this.env.AUTORAG_WIKI_INSTANCE;
       const localMemoryStore = buildMemoryStore({
         sql: this.ctx.storage.sql,
+        tenantId,
         spaceId,
+        projectId: projectId ?? ASSISTANT_MEMORY_SCOPE,
         ...(this.env.MEMORY_VECTORIZE
           ? { vectorIndex: this.env.MEMORY_VECTORIZE as unknown as NonNullable<ScriptEngineEnv["vectorIndex"]> }
           : {}),
@@ -1811,7 +1825,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // notices its own conversation growing shouldn't need the shell UI to trigger this on its
       // behalf. Bound to this specific spaceId/DO instance, matching runMemoryMaintenanceForSpace's
       // own scoping (memory maintenance is per-space, not per-session).
-      env.compactMemory = () => this.runMemoryMaintenanceForSpace(spaceId);
+      env.compactMemory = () => this.runMemoryMaintenanceForSpace(spaceId, tenantId, memoryScope);
     }
     // §A1.25: lets web-search's grounded_answer op make its own direct LLM call (native
     // web-search tool) — degrades to unavailable (never a silent no-op) when neither credential
@@ -3496,7 +3510,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ]);
       // The thread's own history — without it the agent has no memory of the conversation it is
       // replying in. Best-effort: undefined simply means "no history", the prior behaviour.
-      const conversation = await this.loadConversationContext(spaceId, sessionId, tenantId);
+      const conversation = await this.loadConversationContext(spaceId, projectId ?? "", sessionId, tenantId);
       const result = await runScriptLoop(engineEnv, tools, reasoner, config.scripts.prebuilt, {
         goal: body.goal,
         startupObserve: config.scripts.startup_observe,
@@ -3777,19 +3791,19 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
   private async handleMemoryMaintenance(request: Request): Promise<Response> {
     this.ensureInit();
-    const body = await request.json<{ spaceId?: string; sessionId?: string; tenantId?: string }>()
-      .catch(() => ({}) as { spaceId?: string; sessionId?: string; tenantId?: string });
+    const body = await request.json<{ spaceId?: string; projectId?: string; sessionId?: string; tenantId?: string }>()
+      .catch(() => ({}) as { spaceId?: string; projectId?: string; sessionId?: string; tenantId?: string });
     const spaceId = body.spaceId ?? request.headers.get("x-naelao-space-id") ?? "";
     if (!spaceId) return Response.json({ error: "spaceId is required" }, { status: 400 });
     const tenantId = body.tenantId ?? request.headers.get("x-naelao-tenant-id") ?? "";
-    const result = await this.runMemoryMaintenanceForSpace(spaceId);
+    const result = await this.runMemoryMaintenanceForSpace(spaceId, tenantId);
     // Memory OS maintenance (fact decay/prune/promote) does not shrink the CONTEXT WINDOW, which
     // is what someone pressing "Compact" at 85% full is actually asking for. When a session is
     // named, also fold its older messages into a stored summary — that summary is what
     // loadConversationContext serves on the next turn IN PLACE of those messages, so the window
     // genuinely gets smaller. Without this, Compact ran and visibly did nothing.
     const conversation = body.sessionId && tenantId
-      ? await this.compactConversationForSession(spaceId, body.sessionId, tenantId)
+      ? await this.compactConversationForSession(spaceId, body.projectId ?? "", body.sessionId, tenantId)
       : undefined;
     return Response.json({ ...result, ...(conversation ? { conversation } : {}) });
   }
@@ -3801,11 +3815,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    */
   private async compactConversationForSession(
     spaceId: string,
+    projectId: string,
     sessionId: string,
     tenantId: string
   ): Promise<{ summarized_messages: number; summary_chars: number; already_current: boolean } | undefined> {
     try {
-      const messages = await this.fetchSessionMessages(spaceId, sessionId, tenantId);
+      const messages = await this.fetchSessionMessages(spaceId, projectId, sessionId, tenantId);
       if (!messages || messages.length === 0) return undefined;
 
       const toSummarize = messagesToSummarize(messages);
@@ -3843,6 +3858,32 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       } catch {
         return undefined;
       }
+      const { archive } = splitForCompaction(messages);
+      const archivedAt = new Date().toISOString();
+      for (let i = 0; i < archive.length; i++) {
+        const message = archive[i]!;
+        this.ctx.storage.sql.exec(
+          `INSERT OR IGNORE INTO archived_messages (id, session_id, role, content, created_at, archived_at) VALUES (?, ?, ?, ?, ?, ?)`,
+          `${sessionId}:${i}`, sessionId, message.role, message.content, message.created_at ?? null, archivedAt
+        );
+      }
+      if (projectId && this.env.SCRIPTS_R2) {
+        try {
+          const key = journalKey(spaceId, projectId);
+          const prior = await this.env.SCRIPTS_R2.get(key);
+          const journal = prior ? parseJournal(await prior.text()) : emptyJournal();
+          const milestone = regenerated.replace(/\s+/g, " ").slice(0, 1000);
+          const updated = await appendActivity(journal, {
+            at: archivedAt,
+            actor: "context-compactor",
+            summary: `Compacted ${archive.length} earlier messages into project truth: ${milestone}`,
+            threadId: sessionId,
+          });
+          await this.env.SCRIPTS_R2.put(key, renderJournal(updated.journal));
+        } catch {
+          // Transcript compaction remains valid if the optional R2 mirror is temporarily down.
+        }
+      }
       return { summarized_messages: toSummarize.length, summary_chars: regenerated.length, already_current: false };
     } catch {
       return undefined;
@@ -3852,11 +3893,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   /** Shared by the client-driven HTTP route above and env.compactMemory (script-engine/types.ts)
    *  — the SAME maintenance pass, whether triggered by the shell UI crossing a context-usage
    *  threshold or by the model itself calling memory.compact mid-run. */
-  private async runMemoryMaintenanceForSpace(spaceId: string): Promise<Awaited<ReturnType<typeof runMemoryMaintenance>>> {
+  private async runMemoryMaintenanceForSpace(
+    spaceId: string,
+    tenantId = "",
+    projectId = ASSISTANT_MEMORY_SCOPE
+  ): Promise<Awaited<ReturnType<typeof runMemoryMaintenance>>> {
     this.ensureInit();
     return runMemoryMaintenance({
       sql: this.ctx.storage.sql,
+      tenantId,
       spaceId,
+      projectId,
       ...(this.env.MEMORY_VECTORIZE
         ? { vectorIndex: this.env.MEMORY_VECTORIZE as unknown as NonNullable<ScriptEngineEnv["vectorIndex"]> }
         : {}),
@@ -6368,6 +6415,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    *  compaction pass so both read the conversation the same way. */
   private async fetchSessionMessages(
     spaceId: string,
+    projectId: string,
     sessionId: string,
     tenantId: string
   ): Promise<ConversationMessage[] | undefined> {
@@ -6376,7 +6424,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const headers = await this.internalHeaders(tenantId);
       const resp = await this.env.SPACES_WORKER.fetch(
         new Request(
-          `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/sessions/${encodeURIComponent(sessionId)}/messages`,
+          `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/sessions/${encodeURIComponent(sessionId)}/messages?limit=500&scope_space_id=${encodeURIComponent(spaceId)}&scope_project_id=${encodeURIComponent(projectId)}&scope_thread_id=${encodeURIComponent(sessionId)}`,
           { headers }
         )
       );
@@ -6390,13 +6438,24 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
   private async loadConversationContext(
     spaceId: string,
+    projectId: string,
     sessionId: string,
     tenantId: string
   ): Promise<ConversationContext | undefined> {
     if (!sessionId || !this.env.SPACES_WORKER) return undefined;
+    const workingKey = `${spaceId}\0${projectId}\0${sessionId}`;
     try {
-      const messages = await this.fetchSessionMessages(spaceId, sessionId, tenantId);
-      if (!messages || messages.length === 0) return undefined;
+      const messages = await this.fetchSessionMessages(spaceId, projectId, sessionId, tenantId);
+      if (!messages || messages.length === 0) {
+        this.workingContexts.delete(workingKey);
+        return undefined;
+      }
+
+      const threadTurns = messages.filter((message) => message.role === "user").length;
+      const tokenUsageRatio = messages.reduce((sum, message) => sum + estimateTokens(message.content), 0) / MODEL_CONTEXT_LIMIT_TOKENS;
+      if (shouldCompactContext(threadTurns, tokenUsageRatio)) {
+        await this.compactConversationForSession(spaceId, projectId, sessionId, tenantId);
+      }
 
       // The stored summary covers the oldest `covered_messages`; reuse it unless the conversation
       // has grown enough that more messages now fall outside the recent window.
@@ -6434,7 +6493,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         }
       }
 
-      return buildConversationContext(messages, summary);
+      const context = buildConversationContext(messages, summary);
+      this.workingContexts.set(workingKey, context);
+      return context;
     } catch {
       return undefined;
     }

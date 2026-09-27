@@ -20,6 +20,7 @@
  */
 
 import type { Embedder, VectorIndex, MemoryStore, MemoryRecallResult, FabricEntry, WikiArticle } from "./types.js";
+import { gateMemory } from "./memory/gate-memory.js";
 
 /** The minimal DO SQLite surface this module needs (matches `this.ctx.storage.sql`). */
 export interface SqlStorageLike {
@@ -46,7 +47,9 @@ export interface AutoRagGateway {
 
 export interface MemoryOSOptions {
   sql: SqlStorageLike;
+  tenantId?: string;
   spaceId: string;
+  projectId?: string;
   vectorIndex?: VectorIndex;
   embedder?: Embedder;
   /** R2 bucket to mirror Wiki concepts into for AutoRAG indexing. Optional — Wiki CRUD works
@@ -82,7 +85,6 @@ const EPISODIC_RETENTION_CAP = 500; // unpromoted, sub-threshold rows kept per (
 const DECAY_TICK_MS = 24 * 60 * 60 * 1000; // a fact decays at most once per day of inactivity
 // Hindsight memories cross a thread boundary only when similarity strictly exceeds 0.80.
 // Keep the comparison below as `<=` so the boundary itself is denied rather than rounded up.
-const SEMANTIC_SCORE_FLOOR = 0.8;
 const FABRIC_SCORE_FLOOR = 0.7; // spec's surgicalRecall threshold for Fabric specifically
 
 export function initMemorySchema(sql: SqlStorageLike): void {
@@ -382,7 +384,12 @@ export function buildMemoryStore(opts: MemoryOSOptions): MemoryStore {
             scopes.map((s) =>
               opts.vectorIndex!.query(vec, {
                 topK: limit,
-                filter: { spaceId: { $eq: opts.spaceId }, userId: { $eq: s } },
+                filter: {
+                  tenantId: { $eq: opts.tenantId ?? "" },
+                  spaceId: { $eq: opts.spaceId },
+                  projectId: { $eq: opts.projectId ?? "" },
+                  userId: { $eq: s },
+                },
                 returnMetadata: true,
               })
             )
@@ -390,7 +397,7 @@ export function buildMemoryStore(opts: MemoryOSOptions): MemoryStore {
           const seenIds = new Set<string>();
           for (const res of matches) {
             for (const m of res.matches) {
-              if (m.score <= SEMANTIC_SCORE_FLOOR || seenIds.has(m.id)) continue;
+              if (seenIds.has(m.id)) continue;
               seenIds.add(m.id);
               semanticResults.push({
                 id: m.id,
@@ -401,6 +408,7 @@ export function buildMemoryStore(opts: MemoryOSOptions): MemoryStore {
               });
             }
           }
+          semanticResults = await gateMemory(vec, semanticResults);
         } catch {
           /* semantic recall is best-effort */
         }
@@ -589,7 +597,17 @@ export async function runMemoryMaintenance(opts: MemoryOSOptions): Promise<Memor
       try {
         const vec = await opts.embedder.embed(e.text);
         await opts.vectorIndex.upsert([
-          { id: e.id, values: vec, metadata: { spaceId: opts.spaceId, userId: e.user_id, text: e.text } },
+          {
+            id: e.id,
+            values: vec,
+            metadata: {
+              tenantId: opts.tenantId ?? "",
+              spaceId: opts.spaceId,
+              projectId: opts.projectId ?? "",
+              userId: e.user_id,
+              text: e.text,
+            },
+          },
         ]);
         opts.sql.exec(`UPDATE episodic_log SET promoted = 1 WHERE id = ?`, e.id);
         result.promoted++;

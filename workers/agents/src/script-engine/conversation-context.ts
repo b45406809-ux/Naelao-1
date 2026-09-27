@@ -70,6 +70,43 @@ export const DEFAULT_CONVERSATION_LIMITS: ConversationLimits = {
   maxMessageChars: 2000,
 };
 
+export const COMPACTION_TURN_THRESHOLD = 25;
+export const COMPACTION_TOKEN_RATIO_THRESHOLD = 0.8;
+export const COMPACTION_RECENT_TURNS = 6;
+export const COMPACTION_NOTICE =
+  "Earlier conversation history was compacted into PROJECT.md. Use `conversation.search` to inspect archived messages.";
+
+export interface ConversationScope {
+  spaceId: string;
+  projectId: string;
+  threadId: string;
+}
+
+/** Fail closed unless every transcript row belongs to the active structural thread scope. */
+export function isolateThreadMessages<T extends ConversationMessage & Partial<ConversationScope>>(
+  messages: T[],
+  scope: ConversationScope
+): ConversationMessage[] {
+  return messages.filter((message) =>
+    message.spaceId === scope.spaceId &&
+    message.projectId === scope.projectId &&
+    message.threadId === scope.threadId
+  );
+}
+
+export function shouldCompactContext(threadTurns: number, tokenUsageRatio: number): boolean {
+  return threadTurns >= COMPACTION_TURN_THRESHOLD || tokenUsageRatio >= COMPACTION_TOKEN_RATIO_THRESHOLD;
+}
+
+export function splitForCompaction(messages: ConversationMessage[], recentTurns = COMPACTION_RECENT_TURNS): {
+  archive: ConversationMessage[];
+  recent: ConversationMessage[];
+} {
+  const keep = Math.max(0, recentTurns * 2);
+  const split = Math.max(0, messages.length - keep);
+  return { archive: messages.slice(0, split), recent: messages.slice(split) };
+}
+
 /** Rough token estimate. chars/4 is the convention already used elsewhere in this codebase for
  *  budgeting; it is an estimate for sizing, never for billing. */
 export function estimateTokens(text: string): number {
@@ -177,11 +214,7 @@ export function renderConversationForReasoner(ctx: ConversationContext): Record<
       ? {
           // Stated in the payload itself, not only in the system prompt: the model reads this
           // block right next to the history it is about to reason over.
-          notice:
-            `This conversation is COMPACTED — ${ctx.omittedMessages} earlier message(s) are not shown. ` +
-            "If the user refers to something that is not in the summary or recent messages above, " +
-            "do NOT guess and do NOT assume it never happened: run conversation.search to look it " +
-            "up in the full transcript first.",
+          notice: COMPACTION_NOTICE,
         }
       : {}),
   };
