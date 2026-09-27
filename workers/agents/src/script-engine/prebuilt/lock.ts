@@ -13,7 +13,7 @@
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 
-const DEFAULT_LOCK_TTL_MS = 60_000; // a lock nobody releases within 60s is assumed abandoned
+const DEFAULT_LOCK_TTL_MS = 30_000;
 
 function reqStr(args: Record<string, unknown>, name: string): string {
   const v = args[name];

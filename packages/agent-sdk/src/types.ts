@@ -1,6 +1,24 @@
 /** Public contracts for code authored against the universal AVOS runtime. */
 export type RuntimeScope = "SPACE_WIDE" | "PROJECT_BOUND";
 
+/** Conversation visibility is structural, rather than a UI-only convention. */
+export type ThreadTier =
+  | "tier_1_team"
+  | "tier_2_task"
+  | "tier_3_consult"
+  | "tier_4_scratchpad";
+
+export interface RuntimeThread {
+  id: string;
+  space_id: string;
+  project_id: string | null;
+  created_by: string | null;
+  thread_tier: ThreadTier;
+  system_internal: boolean;
+}
+
+export type ProjectMode = "solo_cockpit" | "multiplayer_office";
+
 /** Public sovereign-permission contract shared by agent integrations. */
 export type KnowledgeRole = "owner" | "admin" | "editor" | "member" | "viewer";
 export type KnowledgeScope = "USER_PRIVATE" | "PROJECT_BOUND" | "SPACE_WIDE";

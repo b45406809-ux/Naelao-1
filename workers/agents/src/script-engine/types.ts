@@ -671,7 +671,10 @@ export interface LockGateway {
     ttlMs?: number;
   }): Promise<{
     granted: boolean;
+    acquired?: boolean;
     active: number;
+    heldBy?: string;
+    remainingMs?: number;
     limit?: number;
     degraded?: boolean;
   }>;
