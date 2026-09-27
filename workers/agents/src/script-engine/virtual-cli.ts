@@ -38,6 +38,7 @@ export function interceptPlatformCli(command: string): CliDispatch | null {
   if (words[0] === "see") {
     const cropAt = words.indexOf("--crop");
     const path = words[1] && words[1] !== "--crop" ? words[1] : "latest";
+    if (path === "display" || path === "computer") return { operation: "computer.see", params: {} };
     return { operation: "browser.see", params: { path, ...(cropAt >= 0 && words[cropAt + 1] ? { crop: words[cropAt + 1] } : {}) } };
   }
   const scoped = words[0]?.match(/^(?:ext|auto):([a-z][a-z0-9_-]*)$/i);

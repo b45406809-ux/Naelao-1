@@ -678,8 +678,11 @@ async function runContainerRequest(
   const timeoutMs = opts.containerTimeoutMs ?? DEFAULT_CONTAINER_TIMEOUT_MS;
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
+    const computerEndpoint = params.name === "computer-use.screenshot"
+      ? "/computer/screenshot"
+      : params.name === "computer-use.action" ? "/computer/action" : "/exec";
     const resp = await stub.fetch(
-      new Request("http://sandbox/exec", {
+      new Request(`http://sandbox${computerEndpoint}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -692,6 +695,14 @@ async function runContainerRequest(
         signal: controller.signal,
       })
     );
+    if (computerEndpoint === "/computer/screenshot") {
+      if (!resp.ok) return { ok: false, error: `display capture failed (${resp.status})`, tier: 6, actual_tier: 6, engine: "container", duration_ms: Date.now() - started, tokens_used: 0 };
+      const bytes = new Uint8Array(await resp.arrayBuffer());
+      let binary = "";
+      for (let offset = 0; offset < bytes.length; offset += 0x8000)
+        binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+      return { ok: true, output: { media_type: "image/png", data_base64: btoa(binary), explicit_vision_request: true }, tier: 6, actual_tier: 6, engine: "container", duration_ms: Date.now() - started, tokens_used: 0 };
+    }
     const body = await resp.json<{
       ok: boolean;
       result?: unknown;

@@ -86,6 +86,22 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     });
   });
 
+  it("CAS-syncs workspace hashes, tracks lockfiles, and excludes node_modules", async () => {
+    const { sandbox, storage } = createTestSandbox();
+    const first = await sandbox.fetch(new Request("https://sandbox/workspace/state-sync", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ files: { "package.json": { content: "{}", expected_hash: null }, "node_modules/x/a.js": { content: "ignored" } } }),
+    }));
+    const result = await first.json();
+    expect(result).toMatchObject({ ok: true, rehydrate: true });
+    expect(Object.keys(storage.get("workspace_files"))).toEqual(["package.json"]);
+    const stale = await sandbox.fetch(new Request("https://sandbox/workspace/state-sync", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ files: { "package.json": { content: "new", expected_hash: "stale" } } }),
+    }));
+    expect(stale.status).toBe(409);
+  });
+
   it("implements virtual display automation endpoints", async () => {
     const { sandbox } = createTestSandbox();
     const captureRes = await sandbox.fetch(

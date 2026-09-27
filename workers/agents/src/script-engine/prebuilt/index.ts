@@ -28,6 +28,7 @@ import { storefront } from "./storefront.js";
 import { businessEmail } from "./business-email.js";
 import { mcpConnector } from "./mcp-connector.js";
 import { browserUse } from "./browser-use.js";
+import { computerUse } from "./computer-use.js";
 import { codeExec } from "./code-exec.js";
 import { memory } from "./memory.js";
 import { fabric } from "./fabric.js";
@@ -103,6 +104,7 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   [mcpConnector.name]: mcpConnector,
   // Execution ladder Tiers 2/4/5: real browser + sandboxed code execution.
   [browserUse.name]: browserUse,
+  [computerUse.name]: computerUse,
   [codeExec.name]: codeExec,
   // Memory OS: episodic log + semantic recall + user model (Hermes-pattern self-managed memory).
   [memory.name]: memory,

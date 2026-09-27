@@ -41,6 +41,12 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { build } from "esbuild";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { startBinaryBridge } from "./binary-bridge.mjs";
+import { ArtifactFS } from "./artifact-fs.mjs";
+
+const execFileAsync = promisify(execFile);
 
 const PORT = 8080;
 const EXEC_TIMEOUT_MS = 55_000;
@@ -81,7 +87,7 @@ async function collectWorkspace() {
     for (const entry of entries) {
       if (count >= MAX_WORKSPACE_FILES) return;
       const full = join(dir, entry.name);
-      if (entry.name === ".avos") continue;
+      if (entry.name === ".avos" || entry.name === "node_modules") continue;
       if (entry.isDirectory()) {
         await walk(full);
       } else if (entry.isFile()) {
@@ -134,7 +140,7 @@ async function listWorkspacePaths() {
     for (const entry of entries) {
       if (names.length >= MAX_WORKSPACE_FILES) return;
       const full = join(dir, entry.name);
-      if (entry.name === ".avos") continue;
+      if (entry.name === ".avos" || entry.name === "node_modules") continue;
       if (entry.isDirectory()) await walk(full);
       else if (entry.isFile()) names.push(relative(WORKSPACE_DIR, full));
     }
@@ -248,12 +254,18 @@ const WORKSPACE_ROUTES = new Set([
   "/workspace/write",
   "/workspace/list",
   "/workspace/delete",
+  "/workspace/rehydrate",
 ]);
 const DISPLAY_ROUTES = new Set([
+  "/computer/action",
+  "/computer/screenshot",
   "/display/capture",
   "/display/mouse",
   "/display/type",
 ]);
+const SESSION_ROUTES = new Set(["/shell"]);
+const ARTIFACT_ROUTES = new Set(["/artifact/mount", "/artifact/read", "/artifact/write", "/artifact/flush"]);
+let artifactFs;
 let shuttingDown = false;
 
 createServer((req, res) => {
@@ -269,12 +281,16 @@ createServer((req, res) => {
   }
   const isWorkspaceRoute = [...WORKSPACE_ROUTES].some((r) => path.endsWith(r));
   const isDisplayRoute = [...DISPLAY_ROUTES].some((r) => path.endsWith(r));
+  const isSessionRoute = [...SESSION_ROUTES].some((r) => path.endsWith(r));
+  const isArtifactRoute = [...ARTIFACT_ROUTES].some((r) => path.endsWith(r));
   if (
     req.method !== "POST" ||
     (!path.endsWith("/build") &&
       !path.endsWith("/exec") &&
       !isWorkspaceRoute &&
-      !isDisplayRoute)
+      !isDisplayRoute &&
+      !isSessionRoute &&
+      !isArtifactRoute)
   ) {
     res.writeHead(404).end(JSON.stringify({ error: "not_found" }));
     return;
@@ -289,11 +305,54 @@ createServer((req, res) => {
   req.on("end", async () => {
     try {
       const parsed = JSON.parse(body || "{}");
+      if (isArtifactRoute) {
+        if (path.endsWith("/artifact/mount")) {
+          if (!parsed.repository_url) throw new Error("repository_url required");
+          artifactFs = new ArtifactFS({ root: WORKSPACE_DIR, repositoryUrl: parsed.repository_url, headers: parsed.headers ?? {} });
+          const mounted = await artifactFs.mount(parsed.branch ?? "main");
+          res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, ...mounted })); return;
+        }
+        if (!artifactFs) throw new Error("ArtifactFS is not mounted");
+        if (path.endsWith("/artifact/read")) {
+          const bytes = await artifactFs.open(parsed.path);
+          res.writeHead(200, { "content-type": "application/octet-stream" }).end(bytes); return;
+        }
+        if (path.endsWith("/artifact/write")) await artifactFs.write(parsed.path, Buffer.from(parsed.content_base64, "base64"));
+        const result = path.endsWith("/artifact/flush")
+          ? await artifactFs.flushAndCommit({ message: parsed.message ?? "container changes", metadata: parsed.metadata, expected_head: parsed.expected_head })
+          : { ok: true };
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(result)); return;
+      }
+      if (isSessionRoute) {
+        const cwd = String(parsed.session?.cwd || WORKSPACE_DIR);
+        if (cwd !== WORKSPACE_DIR && !cwd.startsWith(`${WORKSPACE_DIR}/`)) throw new Error("shell cwd escapes workspace");
+        const marker = `__NAELAO_STATE_${crypto.randomUUID()}__`;
+        const script = `${String(parsed.command ?? "")}\n__status=$?\nprintf '\\n${marker}%s\\n' "$__status"\npwd -P\nprintf '${marker}ENV\\n'\nenv -0`;
+        const { stdout, stderr } = await execFileAsync("bash", ["-lc", script], {
+          cwd, env: { PATH: process.env.PATH, HOME: process.env.HOME, ...(parsed.session?.env ?? {}) }, maxBuffer: 16 * 1024 * 1024,
+        }).catch((error) => ({ stdout: error.stdout ?? "", stderr: error.stderr ?? String(error) }));
+        const text = String(stdout);
+        const stateAt = text.lastIndexOf(`\n${marker}`);
+        const visible = stateAt >= 0 ? text.slice(0, stateAt) : text;
+        const state = stateAt >= 0 ? text.slice(stateAt + marker.length + 1) : "1\n" + cwd;
+        const [statusLine, cwdLine, envBlock = ""] = state.split(`${marker}ENV\n`)[0].split("\n").length >= 2
+          ? [state.split("\n")[0], state.split("\n")[1], state.split(`${marker}ENV\n`)[1] ?? ""] : ["1", cwd, ""];
+        const env = Object.fromEntries(envBlock.split("\0").filter(Boolean).map((line) => { const at = line.indexOf("="); return [line.slice(0, at), line.slice(at + 1)]; }));
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: Number(statusLine) === 0, status: Number(statusLine), stdout: visible, stderr: String(stderr), session: { cwd: cwdLine || cwd, env } }));
+        return;
+      }
       if (isWorkspaceRoute) {
         let result;
         if (path.endsWith("/workspace/write")) {
           await materializeWorkspace(parsed.files);
           result = { ok: true };
+        } else if (path.endsWith("/workspace/rehydrate")) {
+          const started = Date.now();
+          await execFileAsync("npm", ["ci", "--prefer-offline", "--no-audit", "--no-fund"], {
+            cwd: WORKSPACE_DIR, timeout: 120_000,
+            env: { ...process.env, npm_config_registry: process.env.EDGE_NPM_REGISTRY ?? "https://registry.npmjs.org" },
+          });
+          result = { ok: true, duration_ms: Date.now() - started };
         } else if (path.endsWith("/workspace/read"))
           result = { files: await readWorkspacePaths(parsed.paths) };
         else if (path.endsWith("/workspace/list"))
@@ -308,39 +367,39 @@ createServer((req, res) => {
         return;
       }
       if (isDisplayRoute) {
-        if (path.endsWith("/display/capture")) {
+        if (path.endsWith("/display/capture") || path.endsWith("/computer/screenshot")) {
           try {
-            const { execFileSync } = await import("node:child_process");
-            const frame = execFileSync("scrot", ["-z", "-o", "-"], {
-              env: { ...process.env, DISPLAY: ":99" },
-              maxBuffer: 10 * 1024 * 1024,
+            const { stdout: frame } = await execFileAsync("import", ["-window", "root", "png:-"], {
+              encoding: "buffer", env: { ...process.env, DISPLAY: process.env.DISPLAY || ":99" }, maxBuffer: 16 * 1024 * 1024,
             });
             res.writeHead(200, { "content-type": "image/png" }).end(frame);
-          } catch {
-            const fallbackPng = Buffer.from(
-              "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-              "base64"
-            );
-            res
-              .writeHead(200, { "content-type": "image/png" })
-              .end(fallbackPng);
+          } catch (error) {
+            res.writeHead(503, { "content-type": "application/json" }).end(JSON.stringify({ error: "display_capture_unavailable", detail: String(error) }));
           }
           return;
         }
+        if (path.endsWith("/computer/action")) {
+          const action = parsed.action;
+          const args = [];
+          if (action === "move") args.push("mousemove", "--sync", String(parsed.x), String(parsed.y));
+          else if (action === "click") args.push("click", String({ left: 1, middle: 2, right: 3 }[parsed.button ?? "left"] ?? parsed.button ?? 1));
+          else if (action === "double_click") args.push("click", "--repeat", "2", "--delay", String(parsed.delay_ms ?? 100), "1");
+          else if (action === "drag") args.push("mousemove", "--sync", String(parsed.from_x), String(parsed.from_y), "mousedown", "1", "mousemove", "--sync", String(parsed.to_x), String(parsed.to_y), "mouseup", "1");
+          else if (action === "key") args.push("key", "--clearmodifiers", String(parsed.key));
+          else if (action === "type") args.push("type", "--clearmodifiers", "--delay", String(parsed.delay_ms ?? 12), String(parsed.text ?? ""));
+          else { res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: "unsupported_computer_action" })); return; }
+          await execFileAsync("xdotool", args, { env: { ...process.env, DISPLAY: process.env.DISPLAY || ":99" }, timeout: 10_000 });
+          res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, action }));
+          return;
+        }
         if (path.endsWith("/display/mouse")) {
-          res
-            .writeHead(200, { "content-type": "application/json" })
-            .end(
-              JSON.stringify({
-                ok: true,
-                x: parsed.x ?? 0,
-                y: parsed.y ?? 0,
-                button: parsed.button ?? "left",
-              })
-            );
+          const button = { left: 1, middle: 2, right: 3 }[parsed.button ?? "left"] ?? 1;
+          await execFileAsync("xdotool", ["mousemove", "--sync", String(parsed.x ?? 0), String(parsed.y ?? 0), "click", String(button)], { env: { ...process.env, DISPLAY: process.env.DISPLAY || ":99" } });
+          res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, x: parsed.x ?? 0, y: parsed.y ?? 0, button: parsed.button ?? "left" }));
           return;
         }
         if (path.endsWith("/display/type")) {
+          await execFileAsync("xdotool", ["type", "--clearmodifiers", String(parsed.text ?? "")], { env: { ...process.env, DISPLAY: process.env.DISPLAY || ":99" } });
           res
             .writeHead(200, { "content-type": "application/json" })
             .end(JSON.stringify({ ok: true, text: parsed.text ?? "" }));
@@ -354,6 +413,12 @@ createServer((req, res) => {
       const result = isExec
         ? await execScript(parsed.name ?? "script", parsed.code, parsed.args)
         : await buildAndTest(parsed.code);
+      if (isExec && artifactFs) {
+        result.workspace_sync = await artifactFs.flushAndCommit({
+          message: `container: ${parsed.name ?? "script"}`,
+          metadata: { source: "tool-sandbox" }, expected_head: parsed.expected_head,
+        });
+      }
       res
         .writeHead(200, { "content-type": "application/json" })
         .end(JSON.stringify(result));
@@ -372,3 +437,5 @@ createServer((req, res) => {
 }).listen(PORT, () =>
   console.log(`tool-sandbox harness listening on :${PORT}`)
 );
+
+startBinaryBridge();
