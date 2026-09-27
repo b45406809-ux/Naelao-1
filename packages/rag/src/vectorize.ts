@@ -14,6 +14,23 @@ export interface PermissionedVectorFilter {
 
 type QueryableVectorIndex = Pick<VectorizeIndex, "query">;
 
+/** Numerically safe cosine similarity used by intent de-duplication callers. */
+export function cosineSimilarity(left: readonly number[], right: readonly number[]): number {
+  if (left.length === 0 || left.length !== right.length) return 0;
+  let dot = 0;
+  let leftMagnitude = 0;
+  let rightMagnitude = 0;
+  for (let index = 0; index < left.length; index++) {
+    const a = left[index] ?? 0;
+    const b = right[index] ?? 0;
+    dot += a * b;
+    leftMagnitude += a * a;
+    rightMagnitude += b * b;
+  }
+  const denominator = Math.sqrt(leftMagnitude) * Math.sqrt(rightMagnitude);
+  return denominator === 0 ? 0 : Math.max(-1, Math.min(1, dot / denominator));
+}
+
 /**
  * Query Vectorize with the complete ACL in its metadata filter. No result is ever ranked before
  * tenant, space, project and sovereign-user permission checks have been applied by the index.

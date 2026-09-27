@@ -1316,6 +1316,28 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_pr_cards_room ON pull_request_cards(space_id, project_id, created_at DESC);
     `,
   },
+  {
+    version: 48,
+    description: "atomic task leases, semantic intents, and sponsor-alignment RFCs",
+    up: `
+      ALTER TABLE tasks ADD COLUMN claimed_by TEXT;
+      ALTER TABLE tasks ADD COLUMN lease_expires_at TEXT;
+      ALTER TABLE tasks ADD COLUMN spectator_assistant_ids TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE tasks ADD COLUMN intent_embedding TEXT;
+      ALTER TABLE tasks ADD COLUMN prompt_text TEXT;
+      ALTER TABLE projects ADD COLUMN execution_status TEXT NOT NULL DEFAULT 'ACTIVE';
+      ALTER TABLE projects ADD COLUMN lead_user_id TEXT;
+      ALTER TABLE notifications ADD COLUMN recipient_user_id TEXT;
+      CREATE INDEX IF NOT EXISTS idx_tasks_active_intent ON tasks(project_id, status);
+      CREATE TABLE IF NOT EXISTS rfcs (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL,
+        conflicting_directives_json TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN','RESOLVED','CANCELLED')),
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_rfcs_project_status ON rfcs(project_id, status, created_at DESC);
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -2126,6 +2148,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // needless extra layer for its only real caller).
       if (method === "POST" && url.pathname === "/tasks") {
         return this.createTask(request);
+      }
+      const taskLeaseMatch = url.pathname.match(/^\/tasks\/([^/]+)\/lease$/);
+      if (method === "POST" && taskLeaseMatch?.[1]) {
+        return this.claimTaskLease(taskLeaseMatch[1], request);
+      }
+      if (method === "POST" && url.pathname === "/intent-deduplicate") {
+        return this.checkActiveIntentDeduplication(request);
+      }
+      if (method === "POST" && url.pathname === "/rfcs") {
+        return this.triggerSponsorRfc(request);
       }
       const taskIdMatch = url.pathname.match(/^\/tasks\/([^/]+)$/);
       // PATCH /tasks/:id — status/title/dependencies/assigned_agent, any subset.
@@ -3862,6 +3894,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         visibility?: "public" | "private";
         /** §A1.17 Phase T3: opts a project into the hard single-active-thread lock. */
         exclusive_mode?: boolean;
+        /** Sole human on-call recipient for project failures. null falls back to lead assistant. */
+        lead_user_id?: string | null;
       }>()
       .catch(() => ({}) as Record<string, never>);
 
@@ -3932,6 +3966,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         body.status,
         projectId
       );
+    }
+    if (body.lead_user_id !== undefined) {
+      execute(this.ctx.storage.sql as never, "UPDATE projects SET lead_user_id = ? WHERE id = ?", body.lead_user_id?.trim() || null, projectId);
     }
     if (body.kind !== undefined) {
       // F-33: validate against the registry (not a hardcoded set) and stamp is_singleton_kind so
@@ -4896,6 +4933,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         severity?: "info" | "warning" | "critical";
         source_agent_id?: string | null;
         related_id?: string | null;
+        recipient_user_id?: string | null;
       }>()
       .catch(() => null);
     if (!body)
@@ -4950,8 +4988,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const id = crypto.randomUUID();
     execute(
       this.ctx.storage.sql as never,
-      `INSERT INTO notifications (id, space_id, project_id, kind, title, body, severity, source_agent_id, related_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO notifications (id, space_id, project_id, kind, title, body, severity, source_agent_id, related_id, recipient_user_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       body.space_id,
       body.project_id ?? null,
@@ -4960,7 +4998,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       (body.body ?? "").slice(0, 2000),
       body.severity ?? "info",
       body.source_agent_id ?? null,
-      body.related_id ?? null
+      body.related_id ?? null,
+      body.recipient_user_id ?? null
     );
     return Response.json({ ok: true, id }, { status: 201 });
   }
@@ -7287,6 +7326,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         model?: string;
         file_paths?: string[];
         budget_tokens?: number;
+        prompt_text?: string;
+        intent_embedding?: number[];
       }>()
       .catch(() => ({}) as Record<string, never>);
     if (!body.space_id)
@@ -7313,12 +7354,24 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         { status: 400 }
       );
     }
+    // The creation boundary owns de-duplication: callers cannot accidentally bypass it by
+    // forgetting to invoke the advisory endpoint first. Explicit embeddings come from the
+    // reasoner's provider; the deterministic lexical vector is the offline-safe fallback.
+    if (body.project_id && (body.prompt_text || body.title)) {
+      const dedupResponse = await this.checkActiveIntentDeduplication(new Request("http://space/intent-deduplicate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ promptText: body.prompt_text ?? body.title, projectId: body.project_id, embedding: body.intent_embedding }),
+      }));
+      const dedup = await dedupResponse.json<{ duplicate?: boolean; existingTaskId?: string; threadId?: string | null; similarity?: number; notice?: string }>();
+      if (dedup.duplicate) return Response.json({ ...dedup, status: "DEDUPLICATED" }, { status: 200 });
+    }
     const id = body.id ?? crypto.randomUUID();
     const now = new Date().toISOString();
     execute(
       this.ctx.storage.sql as never,
-      `INSERT INTO tasks (id, space_id, project_id, thread_id, title, status, dependencies, assigned_agent, subtask_spec, assigned_role, model, file_paths, budget_tokens, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (id, space_id, project_id, thread_id, title, status, dependencies, assigned_agent, subtask_spec, assigned_role, model, file_paths, budget_tokens, prompt_text, intent_embedding, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       body.space_id,
       body.project_id ?? null,
@@ -7334,6 +7387,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       body.model ?? null,
       JSON.stringify(Array.isArray(body.file_paths) ? body.file_paths.map(String) : []),
       Math.max(1, Math.min(2000, Number(body.budget_tokens ?? 1800))),
+      body.prompt_text ?? body.title,
+      Array.isArray(body.intent_embedding) ? JSON.stringify(body.intent_embedding) : null,
       now,
       now
     );
@@ -7346,6 +7401,86 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       { ...row, dependencies: safeJsonParseArr(row!.dependencies) as string[], file_paths: safeJsonParseArr(row!.file_paths ?? "[]") as string[] },
       { status: 201 }
     );
+  }
+
+  private async claimTaskLease(taskId: string, request: Request): Promise<Response> {
+    const body = await request.json<{ assistantId?: string; assistant_id?: string; ttlMinutes?: number }>().catch(() => ({} as { assistantId?: string; assistant_id?: string; ttlMinutes?: number }));
+    const assistantId = body.assistantId ?? body.assistant_id ?? "";
+    if (!assistantId) return Response.json({ error_code: "bad_request", message: "assistantId is required" }, { status: 400 });
+    const ttl = Math.max(1, Math.min(15, Number(body.ttlMinutes ?? 15)));
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + ttl * 60_000).toISOString();
+    const claimed = queryOne<{ claimed_by: string; lease_expires_at: string }>(this.ctx.storage.sql as never,
+      `UPDATE tasks SET claimed_by = ?, lease_expires_at = ?, status = 'in_progress', updated_at = ?
+       WHERE id = ? AND (claimed_by IS NULL OR lease_expires_at IS NULL OR lease_expires_at < ?)
+       RETURNING claimed_by, lease_expires_at`,
+      assistantId, expiresAt, now.toISOString(), taskId, now.toISOString());
+    const row = queryOne<{ claimed_by: string | null; lease_expires_at: string | null; spectator_assistant_ids: string }>(
+      this.ctx.storage.sql as never, "SELECT claimed_by, lease_expires_at, spectator_assistant_ids FROM tasks WHERE id = ?", taskId);
+    if (!row) return Response.json({ error_code: "not_found", message: "Task not found" }, { status: 404 });
+    if (!claimed) {
+      const spectators = safeJsonParseArr(row.spectator_assistant_ids).map(String);
+      if (!spectators.includes(assistantId)) spectators.push(assistantId);
+      execute(this.ctx.storage.sql as never,
+        "UPDATE tasks SET spectator_assistant_ids = ?, updated_at = ? WHERE id = ?",
+        JSON.stringify(spectators), now.toISOString(), taskId);
+      console.info(`[TaskLease] ${assistantId} is spectating task ${taskId}; active lead is ${row.claimed_by ?? "unknown"}`);
+      return Response.json({ success: false, claimedBy: row.claimed_by, leaseExpiresAt: row.lease_expires_at, status: "SPECTATING", activeLead: row.claimed_by });
+    }
+    return Response.json({ success: true, claimedBy: assistantId, leaseExpiresAt: expiresAt, status: "CLAIMED" });
+  }
+
+  private async checkActiveIntentDeduplication(request: Request): Promise<Response> {
+    const body = await request.json<{ promptText?: string; projectId?: string; embedding?: number[] }>().catch(() => ({} as { promptText?: string; projectId?: string; embedding?: number[] }));
+    if (!body.promptText || !body.projectId) return Response.json({ error_code: "bad_request", message: "promptText and projectId are required" }, { status: 400 });
+    const embedding = Array.isArray(body.embedding) ? body.embedding : SpaceDO.lexicalIntentEmbedding(body.promptText);
+    const rows = queryAll<{ id: string; thread_id: string | null; intent_embedding: string | null; prompt_text: string | null }>(this.ctx.storage.sql as never,
+      "SELECT id, thread_id, intent_embedding, prompt_text FROM tasks WHERE project_id = ? AND status IN ('pending','in_progress','blocked')", body.projectId);
+    let best: { id: string; thread: string | null; similarity: number } | undefined;
+    for (const row of rows) {
+      const candidate = row.intent_embedding ? safeJsonParseArr(row.intent_embedding).map(Number) : SpaceDO.lexicalIntentEmbedding(row.prompt_text ?? "");
+      const similarity = SpaceDO.cosine(embedding, candidate);
+      if (!best || similarity > best.similarity) best = { id: row.id, thread: row.thread_id, similarity };
+    }
+    if (best && best.similarity > 0.85) return Response.json({ duplicate: true, existingTaskId: best.id, threadId: best.thread, similarity: best.similarity, notice: `Work is already active in task ${best.id}${best.thread ? ` (thread ${best.thread})` : ""}.` });
+    return Response.json({ duplicate: false, similarity: best?.similarity ?? 0 });
+  }
+
+  private static lexicalIntentEmbedding(text: string): number[] {
+    const vector = new Array<number>(256).fill(0);
+    for (const token of text.toLowerCase().match(/[a-z0-9]+/g) ?? []) {
+      let hash = 2166136261;
+      for (const char of token) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
+      vector[(hash >>> 0) % vector.length]! += 1;
+    }
+    return vector;
+  }
+
+  private static cosine(a: number[], b: number[]): number {
+    if (!a.length || a.length !== b.length) return 0;
+    let dot = 0, aa = 0, bb = 0;
+    for (let i = 0; i < a.length; i++) { const x = a[i] ?? 0, y = b[i] ?? 0; dot += x * y; aa += x * x; bb += y * y; }
+    return aa && bb ? dot / Math.sqrt(aa * bb) : 0;
+  }
+
+  private async triggerSponsorRfc(request: Request): Promise<Response> {
+    const body = await request.json<{ projectId?: string; conflictingDirectives?: Array<{ sponsorId: string; directive: string }>; title?: string }>().catch(() => ({} as { projectId?: string; conflictingDirectives?: Array<{ sponsorId: string; directive: string }>; title?: string }));
+    const directives = body.conflictingDirectives ?? [];
+    if (!body.projectId || directives.length < 2 || new Set(directives.map(d => d.sponsorId)).size < 2) {
+      return Response.json({ error_code: "bad_request", message: "conflicting directives from at least two sponsors are required" }, { status: 400 });
+    }
+    const project = queryOne<{ id: string; space_id: string }>(this.ctx.storage.sql as never, "SELECT id, space_id FROM projects WHERE id = ?", body.projectId);
+    if (!project) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+    const id = crypto.randomUUID();
+    const title = body.title?.trim() || "Sponsor alignment required";
+    const now = new Date().toISOString();
+    execute(this.ctx.storage.sql as never, "UPDATE projects SET execution_status = 'FROZEN_FOR_RFC' WHERE id = ?", body.projectId);
+    execute(this.ctx.storage.sql as never, "UPDATE tasks SET status = 'blocked', updated_at = ? WHERE project_id = ? AND status IN ('pending','in_progress')", now, body.projectId);
+    execute(this.ctx.storage.sql as never, "INSERT INTO rfcs (id, project_id, title, conflicting_directives_json, status, created_at) VALUES (?, ?, ?, ?, 'OPEN', ?)", id, body.projectId, title, JSON.stringify(directives), now);
+    execute(this.ctx.storage.sql as never,
+      "INSERT INTO notifications (id, space_id, project_id, kind, title, body, severity, related_id) VALUES (?, ?, ?, 'rfc_discussion_card', ?, ?, 'warning', ?)",
+      crypto.randomUUID(), project.space_id, body.projectId, title, JSON.stringify({ type: "RFC_DISCUSSION_CARD", rfc_id: id, directives }), id);
+    return Response.json({ id, projectId: body.projectId, status: "OPEN", executionStatus: "FROZEN_FOR_RFC" }, { status: 201 });
   }
 
   private async updateTask(

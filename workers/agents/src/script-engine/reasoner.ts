@@ -17,6 +17,13 @@ import type { UniversalAgentManifest } from "@naelao/agent-sdk";
 import { composeUniversalPrompt } from "./prompt-assembly.js";
 import type { Reasoner, ReasonDecision, ReasonerUsage } from "./loop.js";
 import type { Embedder } from "./types.js";
+
+/** Embed an incoming task intent through the same provider used by semantic script retrieval. */
+export async function embedTaskIntent(embedder: Embedder, promptText: string): Promise<number[]> {
+  const normalized = promptText.trim().replace(/\s+/g, " ");
+  if (!normalized) throw new Error("promptText is required");
+  return embedder.embed(normalized);
+}
 import {
   buildUniversalBody,
   normalizeUniversalResponse,

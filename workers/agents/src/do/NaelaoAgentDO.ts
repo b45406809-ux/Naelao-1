@@ -3354,6 +3354,23 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!body.goal || !spaceId) {
       return Response.json({ error: "goal and spaceId are required" }, { status: 400 });
     }
+    // A task id identifies shared work (unlike runId, which identifies one attempt). Claim it
+    // before any model/tool spend. A losing sibling becomes a spectator and exits cleanly.
+    const sharedTaskId = typeof body.context?.["task_id"] === "string" ? String(body.context["task_id"]) : undefined;
+    if (sharedTaskId && this.env.SPACES_WORKER) {
+      const token = await mintInternalToken(this.env.PLATFORM_SECRET ?? "", tenantId);
+      const leaseResponse = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/tasks/${encodeURIComponent(sharedTaskId)}/lease`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": token },
+        body: JSON.stringify({ assistantId: agentId, ttlMinutes: 15 }),
+      }));
+      if (!leaseResponse.ok) return new Response(await leaseResponse.text(), { status: leaseResponse.status, headers: { "content-type": "application/json" } });
+      const lease = await leaseResponse.json<{ success: boolean; activeLead?: string; leaseExpiresAt?: string }>();
+      if (!lease.success) {
+        void this.logAgentActivity(spaceId, tenantId, agentId, "run_completed", { projectId: projectId ?? null, threadId: sessionId, summary: `Spectating ${sharedTaskId}; ${lease.activeLead ?? "another assistant"} holds the active lease.` });
+        return Response.json({ status: "SPECTATING", activeLead: lease.activeLead ?? null, taskId: sharedTaskId, leaseExpiresAt: lease.leaseExpiresAt ?? null });
+      }
+    }
     // Slash-command entry points all converge on the same tool; no parallel goal runner exists.
     if (/^\/goal(?:\s|$)/.test(body.goal)) {
       const objective = body.goal.replace(/^\/goal\s*/, "").trim();
@@ -3770,13 +3787,19 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         // push-style notification, which would otherwise read as "your agent couldn't finish" for
         // something entirely under the person's own control.
         if (classification.kind !== "user_cancelled") {
-          void this.createSpaceNotification(spaceId, tenantId, {
+          const leadUserId = projectId ? await this.resolveProjectLead(projectId, tenantId) : null;
+          // Never fall back to a member-wide project broadcast. If no lead has been designated,
+          // the durable activity log remains the honest record until one is configured.
+          if (!projectId || leadUserId) void this.createSpaceNotification(spaceId, tenantId, {
             kind: "run_failed",
             title: `'${agentId}' couldn't finish: ${body.goal.slice(0, 80)}`,
             body: `${failureText ? failureText.slice(0, 400) : "Run did not complete successfully"}\n\n${classification.summary}`,
             severity: classification.clears_on_its_own ? "info" : "warning",
             projectId: projectId ?? null,
             sourceAgentId: agentId,
+            // Project failures are page-worthy only for the designated on-call. A null lead
+            // deliberately remains an inbox record rather than broadcasting to every member.
+            recipientUserId: leadUserId,
           });
         }
       }
@@ -4689,6 +4712,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       projectId?: string | null;
       sourceAgentId?: string | null;
       relatedId?: string | null;
+      recipientUserId?: string | null;
     }
   ): Promise<void> {
     if (!this.env.SPACES_WORKER || !tenantId) return;
@@ -4707,11 +4731,26 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             severity: opts.severity ?? "info",
             source_agent_id: opts.sourceAgentId ?? null,
             related_id: opts.relatedId ?? null,
+            recipient_user_id: opts.recipientUserId ?? null,
           }),
         }
       ));
     } catch {
       /* best-effort — never fails the caller's own run/approval flow */
+    }
+  }
+
+  private async resolveProjectLead(projectId: string, tenantId: string): Promise<string | null> {
+    if (!this.env.SPACES_WORKER) return null;
+    try {
+      const response = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/projects/${encodeURIComponent(projectId)}`, {
+        headers: await this.internalHeaders(tenantId),
+      }));
+      if (!response.ok) return null;
+      const project = await response.json<{ lead_user_id?: string | null; default_agent_id?: string | null }>();
+      return project.lead_user_id ?? project.default_agent_id ?? null;
+    } catch {
+      return null;
     }
   }
 
