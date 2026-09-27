@@ -13,6 +13,8 @@
 import { renderConversationForReasoner } from "./conversation-context.js";
 import { renderStepsForReasoner } from "./step-context.js";
 import type { BusinessContext } from "../launchpad/business-context.js";
+import type { UniversalAgentManifest } from "@naelao/agent-sdk";
+import { composeUniversalPrompt } from "./prompt-assembly.js";
 import type { Reasoner, ReasonDecision, ReasonerUsage } from "./loop.js";
 import type { Embedder } from "./types.js";
 import {
@@ -76,6 +78,7 @@ export interface ReasonerDeps {
    * case nothing is sent rather than a hollow placeholder. See launchpad/business-context.ts.
    */
   businessContext?: BusinessContext;
+  manifest?: UniversalAgentManifest;
 }
 
 /**
@@ -865,7 +868,9 @@ export class GatewayReasoner implements Reasoner {
     const query = {
       model: this.deps.model ?? this.deps.ctx.model ?? "claude-haiku-4-5-20251001",
       max_tokens: 1500,
-      system: composeSystemPrompt(this.deps.agentPrompt, this.deps.businessContext, this.deps.founderDirectives, input.activeCatalog),
+      system: this.deps.manifest
+        ? composeUniversalPrompt({ manifest: this.deps.manifest, ...(this.deps.businessContext ? { businessContext: this.deps.businessContext } : {}), protocol: DECISION_INSTRUCTIONS, ...(input.activeCatalog ? { activeCatalog: input.activeCatalog } : {}) })
+        : composeSystemPrompt(this.deps.agentPrompt, this.deps.businessContext, this.deps.founderDirectives, input.activeCatalog),
       messages: [{ role: "user", content: userContent }],
     };
 

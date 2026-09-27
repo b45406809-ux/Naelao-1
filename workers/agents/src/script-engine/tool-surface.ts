@@ -33,6 +33,8 @@ import { isReadSafeOperation } from "./assistant-access.js";
 import { enforceWriteGuard, requiresMutationGrant } from "@naelao/agent-sdk";
 import { interceptPlatformCli } from "./virtual-cli.js";
 import { workspacePrefix } from "./types.js";
+import type { UniversalAgentRole } from "@naelao/agent-sdk";
+import { isToolAllowedForRole } from "./agent-firewall.js";
 
 /** Plain edit distance — used only to rank "did you mean" suggestions by how close a guess
  *  actually is, never for anything security-relevant. Op names are short (well under 40 chars),
@@ -68,7 +70,7 @@ export interface OperationGroup {
 }
 
 export type RoomType = "public_team" | "public_channel" | "private_scratchpad";
-export interface ToolSurfaceContext { roomType?: RoomType }
+export interface ToolSurfaceContext { roomType?: RoomType; role?: UniversalAgentRole }
 const PRIVATE_SCRIPT_NAMES = new Set(["business-email", "schedule", "local-machine", "file-manager", "r2-workspace", "code-exec", "wallet", "business-wallet"]);
 const HIGH_PRIVILEGE_OPERATIONS = /(?:^|\.)(?:send|delete|write|edit|bash|execute|provision|add_destination|transfer|payout)(?:$|\.)/i;
 export function isPublicRoom(roomType: RoomType | undefined): boolean { return roomType === "public_team" || roomType === "public_channel"; }
@@ -257,6 +259,7 @@ export class ScriptToolSurface {
   /** Consecutive "unknown operation" errors since the last successfully-resolved call, tracked
    *  only while disclosureMode is "reduced" — see the miss-streak comment in run(). */
   private missStreak = 0;
+  private readonly role: UniversalAgentRole;
 
   constructor(
     private readonly env: ScriptEngineEnv,
@@ -264,8 +267,12 @@ export class ScriptToolSurface {
     enabledPrebuilt: string[],
     context: ToolSurfaceContext = {}
   ) {
+    this.role = context.role ?? "DEV_OPERATOR";
     this.library = new SkillLibrary(env.scriptsBucket, env.spaceId);
     this.ops = buildOperationMap(enabledPrebuilt);
+    for (const [name, { prebuilt }] of this.ops) {
+      if (!isToolAllowedForRole(this.role, name, prebuilt.requires_tier)) this.ops.delete(name);
+    }
     if (isPublicRoom(context.roomType)) {
       for (const [name, { prebuilt }] of this.ops) {
         if (PRIVATE_SCRIPT_NAMES.has(prebuilt.name) || HIGH_PRIVILEGE_OPERATIONS.test(name) || prebuilt.requires_tier >= 4) this.ops.delete(name);
@@ -704,6 +711,9 @@ export class ScriptToolSurface {
 
   async run(name: string, params: Record<string, unknown> = {}): Promise<ScriptRunResult> {
     const started = Date.now();
+    if (!isToolAllowedForRole(this.role, name)) {
+      return { ok: false, error: `role_firewall_denied: ${this.role} cannot execute '${name}'`, tier: 1, duration_ms: Date.now() - started, tokens_used: 0 };
+    }
     const mutationIntent = name === "Bash"
       ? String(params["commands"] ?? params["command"] ?? params["cmd"] ?? "")
       : `${name} ${JSON.stringify(params)}`;

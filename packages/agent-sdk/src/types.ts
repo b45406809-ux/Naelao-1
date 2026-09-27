@@ -1,6 +1,30 @@
 /** Public contracts for code authored against the universal AVOS runtime. */
 export type RuntimeScope = "SPACE_WIDE" | "PROJECT_BOUND";
 
+/** Declarative identity for every Naelao runtime. The kernel is shared; only this data varies. */
+export type UniversalAgentRole =
+  | "DEV_OPERATOR"
+  | "GROWTH_OPERATOR"
+  | "CUSTOMER_SUPPORT"
+  | "ARCHITECT_DELEGATE"
+  | "CUSTOM";
+
+export interface UniversalAgentManifest {
+  scope: RuntimeScope;
+  role: UniversalAgentRole;
+  prompts: {
+    systemPrompt: string;
+    instructions: string;
+    userCustomInstructions?: string;
+  };
+  capabilities: { enabledPrebuilts: string[]; maxTier: number };
+  autonomy: {
+    approvalMode: "gate_listed" | "gate_unless_listed";
+    autoApprovedActions: string[];
+    requiresApprovalFor: string[];
+  };
+}
+
 export interface RuntimeFileSystem {
   read(path: string): Promise<string>;
   write(path: string, contents: string): Promise<void>;

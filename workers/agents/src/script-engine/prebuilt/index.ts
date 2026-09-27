@@ -48,6 +48,7 @@ import { revenueTracker } from "./revenue-tracker.js";
 import { schedule } from "./schedule.js";
 import { tasks } from "./tasks.js";
 import { plan } from "./plan.js";
+import { goalPlanner } from "./goal-planner.js";
 
 /** Context handed to every prebuilt operation. */
 export interface PrebuiltOpContext {
@@ -157,6 +158,7 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   // The run-scoped plan/checklist (Claude Code TodoWrite). Enforced by loop.ts: once set, a run
   // can't stop with open steps. Distinct from `tasks` (durable, cross-agent) — see plan.ts.
   [plan.name]: plan,
+  [goalPlanner.name]: goalPlanner,
 };
 
 /**

@@ -470,6 +470,7 @@ export interface TieredCodeRunner {
  * when absent the corresponding prebuilt operations report themselves unavailable.
  */
 export interface OrchestrationHooks {
+  persistGoalTasks?(tasks: Array<{ id: string; title: string; subtask_spec: string; assigned_role: string; model?: string; file_paths: string[]; dependencies?: string[]; budget_tokens: number }>): Promise<void>;
   /** Sequential handoff. A successful call transfers the durable turn lock and never returns
    * control to the caller's tool loop. */
   delegateTurn?(params: {
