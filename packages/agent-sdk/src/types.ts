@@ -53,6 +53,11 @@ export interface RuntimeMcp {
 export interface RuntimeRun {
   runSkill(name: string, args?: Record<string, unknown>): Promise<unknown>;
 }
+export interface RuntimeCli {
+  run(command: string, args?: string[]): Promise<unknown>;
+  /** Persist a deterministic parser in /.avos/bin and hot-mount it for this project. */
+  register(name: string, source: string): Promise<string>;
+}
 
 export interface RuntimeContextBase {
   fs: RuntimeFileSystem;
@@ -60,6 +65,7 @@ export interface RuntimeContextBase {
   browser: RuntimeBrowser;
   mcp: RuntimeMcp;
   run: RuntimeRun;
+  cli: RuntimeCli;
 }
 
 export type SpaceRuntimeContext = RuntimeContextBase & { space: RuntimeSpace; project?: never };
@@ -73,6 +79,7 @@ export interface RuntimeContextServices {
   browser: RuntimeBrowser;
   mcp: RuntimeMcp;
   run: RuntimeRun;
+  cli?: RuntimeCli;
   project?: Omit<RuntimeProject, "id">;
   space?: Omit<RuntimeSpace, "id">;
 }

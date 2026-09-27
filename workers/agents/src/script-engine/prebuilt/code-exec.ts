@@ -30,6 +30,9 @@ import { workspacePrefix, type ExecutionTier } from "../types.js";
 import { assertNoReservedViolation } from "../reserved-capabilities.js";
 import { canRunVirtually, executeVirtualPosix } from "../virtual-posix.js";
 import { parseCliWords } from "../virtual-cli.js";
+import { VirtualCliDispatcher } from "../virtual-cli.js";
+import { createVaultProxy } from "../vault-proxy.js";
+import { inspectMutation } from "@naelao/security";
 import { requiresNativeCompilation } from "../execution-ladder.js";
 
 const PYTHON_HARNESS = `
@@ -130,9 +133,23 @@ async function runBash(
     args["commands"] ?? args["command"] ?? args["cmd"] ?? ""
   ).trim();
   if (!command) throw new Error("commands is required");
+  await inspectMutation(command, {
+    kind: "shell",
+    ...(ctx.env.mutationGrant ? { token: ctx.env.mutationGrant } : {}),
+    secret: ctx.env.platformSecret ?? "",
+    resourceId: ctx.env.projectId ?? ctx.env.spaceId,
+  });
   const bucket = ctx.env.workspaceBucket ?? ctx.env.scriptsBucket;
   const prefix = workspacePrefix(ctx.env);
   if (canRunVirtually(command)) {
+    const cli = ctx.env.credentialsWorker && ctx.env.platformSecret
+      ? new VirtualCliDispatcher({
+          vault: createVaultProxy({ credentialsWorker: ctx.env.credentialsWorker, platformSecret: ctx.env.platformSecret, tenantId: ctx.env.tenantId, spaceId: ctx.env.spaceId, agentId: ctx.env.agentId }),
+          tenantId: ctx.env.tenantId,
+          spaceId: ctx.env.spaceId,
+          ...(ctx.env.projectId ? { projectId: ctx.env.projectId } : {}),
+        })
+      : undefined;
     const result = await executeVirtualPosix(command, {
       read: async (path) => (await bucket.get(`${prefix}${path}`))?.text(),
       list: async () => {
@@ -148,7 +165,7 @@ async function runBash(
         } while (cursor && found.length < 1_000);
         return found;
       },
-    });
+    }, cli ? { cli } : {});
     if (result.exit_code !== 0)
       throw new Error(result.stderr ?? "virtual command failed");
     return { ...result, virtual: true };
@@ -163,6 +180,9 @@ async function runBash(
       if (!ctx.env.codeRunner)
         throw new Error("Tier 2 unavailable: no code runner configured");
       const source = await module.text();
+      // Revalidate durable source on every load so restarts and out-of-band writes cannot bypass
+      // the JIT compiler's safety contract.
+      VirtualCliDispatcher.validateSynthesized(first, source);
       assertNoReservedViolation({ name: `avos-bin.${first}`, code: source });
       return runTier(ctx, `avos-bin.${first}`, source, 2, {
         argv: parseCliWords(command).slice(1),
@@ -206,8 +226,7 @@ export const codeExec: PrebuiltScript = {
       const native = installDeps.length > 0 || requiresNativeCompilation(code);
       return runTier(c, "code-exec.execute_python", PYTHON_HARNESS, native ? 6 : 2, a);
     },
-    "code.execute_bash": (a, c) =>
-      runTier(c, "code-exec.execute_bash", BASH_HARNESS, 6, a),
+    "code.execute_bash": runBash,
     // Same op as code.execute_bash — see RENAMED_OPERATIONS in tool-surface.ts ("bash"/
     // "execute_bash" -> "Bash") and this file's own header.
     Bash: runBash,
@@ -217,6 +236,11 @@ export const codeExec: PrebuiltScript = {
     // bypasses the library, so it must not bypass the money-in guard as well.
     async "code.run_js"(a, c) {
       const adHocCode = String(a["code"] ?? "");
+      await inspectMutation(adHocCode, {
+        ...(c.env.mutationGrant ? { token: c.env.mutationGrant } : {}),
+        secret: c.env.platformSecret ?? "",
+        resourceId: c.env.projectId ?? c.env.spaceId,
+      });
       assertNoReservedViolation({ name: "code-exec.run_js", code: adHocCode });
       return runTier(
         c,

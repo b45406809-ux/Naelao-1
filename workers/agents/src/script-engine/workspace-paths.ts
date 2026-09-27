@@ -1,5 +1,11 @@
 export const WORKSPACE_ROOT = "/workspace";
 export const AVOS_ROOT = "/.avos";
+export const AVOS_BIN = `${AVOS_ROOT}/bin`;
+
+export function synthesizedCommandPath(command: string): string {
+  if (!/^[a-z][a-z0-9_-]{0,63}$/i.test(command)) throw new Error("invalid_command_name");
+  return `${AVOS_BIN}/${command}.ts`;
+}
 
 /** Normalize an agent-supplied deliverable path. Machine paths are never valid deliverables. */
 export function normalizeWorkspacePath(input: string): string {
