@@ -508,6 +508,9 @@ importers:
       '@naelao/types':
         specifier: workspace:*
         version: link:../types
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
     devDependencies:
       '@cloudflare/workers-types':
         specifier: '*'
@@ -515,6 +518,9 @@ importers:
       typescript:
         specifier: '*'
         version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@26.0.0)
 
   tests:
     devDependencies:
