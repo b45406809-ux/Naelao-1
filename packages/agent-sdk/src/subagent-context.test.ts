@@ -32,6 +32,8 @@ describe("ephemeral subagent runtime", () => {
       return ctx.ai.complete({ prompt: "done", maxTokens: 9_000 });
     } }, context);
     expect(result).toMatchObject({ ok: true, output: 1_999, modifiedFiles: ["/workspace/a.ts", "/workspace/new.ts"] });
+    expect(result.receipt).toEqual(["Subagent completed", "2 files changed"]);
+    expect(Object.keys(result)).not.toContain("thread");
   });
 
   it("offloads logs before emitting a compact two-line receipt", async () => {

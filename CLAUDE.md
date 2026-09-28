@@ -8854,6 +8854,9 @@ every commit. (Older branches `...-eu1uic`, `...-8vkakf`, `...-713ruz`, `...-6kb
 superseded.)
 
 ## Build Progress
+- [x] Reconciliation Pass A1: capability-isolated Executive Cabinet delegation, ephemeral
+  two-line subagent receipts, SR-EEO abort/escrow enforcement, depth-tiered models, and regression
+  coverage for the five credit-defense envelopes.
 - [x] Phase 0: Scaffold (root workspace, packages, workers structure)
 - [x] Phase 1: Foundation (router worker, auth, SpaceDO, D1 migrations)
 - [x] Phase 2: KB System (knowledge worker, Vectorize ingestion, hybrid retrieval)

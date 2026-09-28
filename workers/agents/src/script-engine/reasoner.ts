@@ -18,6 +18,17 @@ import { composeUniversalPrompt } from "./prompt-assembly.js";
 import type { Reasoner, ReasonDecision, ReasonerUsage } from "./loop.js";
 import type { Embedder } from "./types.js";
 
+export const DEPTH_MODELS = Object.freeze({
+  1: "anthropic/claude-3-7-sonnet",
+  2: "groq/llama-3.3-70b-versatile",
+  3: "@cf/meta/llama-3.2-3b-instruct",
+} as const);
+
+/** Model selection is structural: leaf callers cannot accidentally inherit a frontier model. */
+export function modelForDelegationDepth(depth: 1 | 2 | 3, requested?: string): string {
+  return depth === 3 ? DEPTH_MODELS[3] : requested ?? DEPTH_MODELS[depth];
+}
+
 /** Embed an incoming task intent through the same provider used by semantic script retrieval. */
 export async function embedTaskIntent(embedder: Embedder, promptText: string): Promise<number[]> {
   const normalized = promptText.trim().replace(/\s+/g, " ");

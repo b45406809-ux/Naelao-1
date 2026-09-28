@@ -1,4 +1,4 @@
-import { clampPlanParallelism } from "@naelao/billing-core";
+import { clampPlanParallelism, DEFAULT_TASK_ESCROW_CREDITS } from "@naelao/billing-core";
 
 export type RacePlan = "free" | "starter" | "pro" | "enterprise";
 export interface ModelRaceWorkerResult { exitCode: number; commitOid?: string }
@@ -9,14 +9,19 @@ export interface ModelRaceDependencies {
   runOracle(input: { command: string; branch: string; signal: AbortSignal }): Promise<ModelRaceWorkerResult>;
   fastForwardMain(branch: string): Promise<void>;
   cleanupBranch?(branch: string): Promise<void>;
+  /** Atomically reserves credits before any branch or model work starts. */
+  reserveCreditHold(credits: number): Promise<{ release(): Promise<void> }>;
 }
 export interface ModelRaceResult { model: string; branch: string; commitOid?: string; attempted: number; aborted: number }
 const segment = (value: string) => encodeURIComponent(value.replaceAll("/", "-")).slice(0, 96);
 
 /** Race isolated branches and promote only the first deterministic, passing result. */
 export async function runSpeculativeModelRace(taskId: string, models: readonly string[], prompt: string,
-  testCommand: string, dependencies: ModelRaceDependencies): Promise<ModelRaceResult> {
+  testCommand: string, dependencies: ModelRaceDependencies, escrowCredits = DEFAULT_TASK_ESCROW_CREDITS): Promise<ModelRaceResult> {
   if (!taskId || !prompt || !testCommand || models.length === 0) throw new Error("taskId, models, prompt and testCommand are required");
+  if (!Number.isFinite(escrowCredits) || escrowCredits <= 0) throw new Error("Task escrow must be positive");
+  const hold = await dependencies.reserveCreditHold(Math.ceil(escrowCredits));
+  try {
   const branches = models.map((model) => `race/${segment(taskId)}/${segment(model)}`);
   await Promise.all(branches.map(dependencies.createBranch));
   let attempted = 0, aborted = 0;
@@ -55,4 +60,7 @@ export async function runSpeculativeModelRace(taskId: string, models: readonly s
   await dependencies.fastForwardMain(winner.branch);
   if (dependencies.cleanupBranch) await Promise.all(branches.filter((branch) => branch !== winner!.branch).map(dependencies.cleanupBranch));
   return { ...winner, attempted, aborted };
+  } finally {
+    await hold.release();
+  }
 }
