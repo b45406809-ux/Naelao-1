@@ -8,6 +8,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@naelao/agent-sdk": "workspace:*",
     "@naelao/billing-core": "workspace:*",
     "@naelao/crypto": "workspace:*",
     "@naelao/db": "workspace:*",
