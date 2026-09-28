@@ -12,6 +12,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -19,6 +20,7 @@
   },
   "devDependencies": {
     "typescript": "*",
+    "vitest": "*",
     "@cloudflare/workers-types": "*"
   }
 }
