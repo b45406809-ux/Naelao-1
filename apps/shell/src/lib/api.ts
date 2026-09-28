@@ -2470,3 +2470,34 @@ export async function resolveInterruptedRun(
     { method: "POST", body: JSON.stringify({ run_id: runId, action }), session }
   );
 }
+
+export interface MarketRadarOpportunity {
+  id: string;
+  name: string;
+  search_surge_pct: number;
+  saturation_index: number;
+  saturation_label: string;
+  arr_low_cents: number;
+  arr_high_cents: number;
+  source_url: string;
+  observed_at: string;
+  score: number;
+  preconfigured_stack: string[];
+  blueprint: { id: string };
+}
+
+export async function getMarketRadar(productSpaceId: string, session: SessionCredentials): Promise<MarketRadarOpportunity[]> {
+  const result = await apiFetch<{ data: MarketRadarOpportunity[] }>(`/v1/spaces/${encodeURIComponent(productSpaceId)}/market-radar/top-trends`, { session });
+  return result.data;
+}
+
+export async function launchMarketRadarOpportunity(
+  opportunityId: string,
+  productSpaceId: string,
+  input: { name?: string; spacetype_id: string },
+  session: SessionCredentials
+): Promise<{ space_id: string; opportunity_id: string; blueprint_id: string }> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(productSpaceId)}/market-radar/${encodeURIComponent(opportunityId)}/launch`, {
+    method: "POST", body: JSON.stringify(input), session,
+  });
+}

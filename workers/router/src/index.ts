@@ -586,6 +586,10 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // productSpaceId in the path only identifies which product's session to verify, the query
   // itself carries no tenant filter to authorize against.
   /^\/spaces\/([^/]+)\/template-activity$/,
+  // Live Market Radar is product-scoped for session verification; the spaces worker creates the
+  // launched venture as a child of this product and applies the same authenticated identity.
+  /^\/spaces\/([^/]+)\/market-radar\/top-trends$/,
+  /^\/spaces\/([^/]+)\/market-radar\/[^/]+\/launch$/,
   /^\/spaces\/([^/]+)\/invites(\/|$)/,
   /^\/spaces\/([^/]+)\/business-members(\/|$)/,
   // Phase E (§A1.17): pricing display + checkout initiation. All three are additionally gated by
