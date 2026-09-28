@@ -262,6 +262,9 @@ importers:
       typescript:
         specifier: '*'
         version: 5.9.3
+      vitest:
+        specifier: '*'
+        version: 2.1.9(@types/node@26.0.0)
 
   packages/client-sdk:
     dependencies:
@@ -765,6 +768,9 @@ importers:
       typescript:
         specifier: ^5.6.3
         version: 5.9.3
+      vitest:
+        specifier: '*'
+        version: 2.1.9(@types/node@26.0.0)
       wrangler:
         specifier: ^3.91.0
         version: 3.114.17(@cloudflare/workers-types@4.20260623.1)

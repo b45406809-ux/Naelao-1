@@ -17,6 +17,8 @@ import { registerBusinessRoutes } from "./business-routes.js";
 import { ALLOWED_MODELS, isAllowedModel, isValidEffortLevel, isPersonalPlanTier, PERSONAL_PLAN_LIMITS, type PersonalPlanTier } from "@naelao/billing-core";
 import { registerProjectMcpRoutes } from "./routes/mcp.js";
 import { registerGadgetMcpRoutes } from "./routes/gadget-mcp.js";
+import { registerRecipeRoutes } from "./routes/recipes.js";
+import { registerMarketplaceRoutes } from "./routes/marketplace.js";
 import { evaluateBlueprintSecurity, sanitizeAndScrubBlueprint } from "@naelao/security";
 import type { SpaceBlueprint } from "@naelao/agent-sdk";
 
@@ -69,6 +71,8 @@ const app = new Hono<{ Bindings: Env }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
 registerGadgetMcpRoutes(app);
+registerRecipeRoutes(app);
+registerMarketplaceRoutes(app);
 
 // Extract caller identity from headers (set by router worker after JWT validation)
 function getCallerIdentity(c: { req: { header: (h: string) => string | undefined } }) {
