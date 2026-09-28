@@ -19,6 +19,7 @@ import { registerWhopWalletRoutes, handleWhopWebhook, renderPayoutApprovalPage, 
 import { createBusinessWhopOAuthCheckout } from "./whop-oauth-billing.js";
 import { reserveOwnerPayout, settleSpaceWallet } from "./wallet-checkout.js";
 import { normalizePlanTier, PLANS } from "@naelao/billing-core";
+import { registerPartnerPortalRoutes } from "./partner-portal.js";
 export { settleTemplateSubscriptionPayment } from "./settlement.js";
 
 export interface BillingEnv {
@@ -125,6 +126,7 @@ function validateEnv(env: BillingEnv): void {
 const app = new Hono<{ Bindings: BillingEnv }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
+registerPartnerPortalRoutes(app);
 
 app.post("/billing/business-wallet/settle", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";

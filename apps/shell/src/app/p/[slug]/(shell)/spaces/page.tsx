@@ -31,6 +31,7 @@ import {
 } from "@/lib/api";
 import { listModelBenchmarks, DEFAULT_WORKING_MODEL, type CostTier } from "@naelao/billing-core";
 import { modelLabel } from "@/components/ModelSelector";
+import { DiscoverMarketRadar } from "@/components/DiscoverMarketRadar";
 
 const COST_TIER_LABEL: Record<CostTier, string> = { economy: "Economy", standard: "Standard", premium: "Premium" };
 const COST_TIER_BADGE: Record<CostTier, "green" | "blue" | "amber"> = { economy: "green", standard: "blue", premium: "amber" };
@@ -322,6 +323,8 @@ export default function DiscoverPage() {
         </div>
         {canCreate && <Button onClick={() => openCreate()}>New business</Button>}
       </div>
+
+      {creds && canCreate && <DiscoverMarketRadar session={creds} productSpaceId={product.space_id} spacetypeId={manifest?.allowed_child_space_types[0] ?? "launchpad"} onLaunched={(spaceId) => router.push(`/p/${product.slug}/spaces/${spaceId}/onboarding`)} />}
 
       {/* Portfolio at a glance — real numbers whenever the leaderboard fetch reached at least one
           business, never fabricated for one that failed or hasn't loaded yet. */}
