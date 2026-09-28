@@ -116,7 +116,9 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
     let domain: string;
     try { domain = new URL(input.domain.includes("://") ? input.domain : `https://${input.domain}`).hostname.toLowerCase(); }
     catch { throw new Error("invalid_domain"); }
-    const rate = Math.max(1, Math.min(1_000, Math.floor(input.maxPerSecond ?? 5)));
+    // Five requests/second is a platform safety ceiling, not merely the default.  In
+    // particular, do not let an untrusted connector raise the ceiling by passing 1000 here.
+    const rate = Math.max(1, Math.min(5, Math.floor(input.maxPerSecond ?? 5)));
     const interval = Math.ceil(1_000 / rate);
     const now = Date.now();
     const rows = this.ctx.storage.sql.exec(`SELECT next_release_at FROM outbound_pacers WHERE domain = ?`, domain).toArray() as Array<{ next_release_at: number }>;
@@ -176,11 +178,17 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
 
   private async scheduleNextAlarm(): Promise<void> {
     const rows = this.ctx.storage.sql.exec(`SELECT MIN(expires_at) AS expires_at FROM (
+      SELECT expires_at FROM slots UNION ALL
       SELECT expires_at FROM locks UNION ALL
       SELECT expires_at FROM appointment_slot_holds WHERE confirmed=0
     )`).toArray() as Array<{ expires_at: number | null }>;
     const next = rows[0]?.expires_at;
-    await this.ctx.storage.setAlarm(next ?? Date.now() + SWEEP_INTERVAL_MS);
+    // Cancellation is important for ephemeral slot-hold DOs: keeping a five-minute alarm
+    // alive after an explicit release needlessly bills an otherwise idle object.  Durable
+    // Object alarms are authoritative, so remove the alarm rather than replacing it with a
+    // polling alarm when there is nothing left to expire.
+    if (next == null) await this.ctx.storage.deleteAlarm();
+    else await this.ctx.storage.setAlarm(next);
   }
 
   async acquireSlotHold(input: unknown): Promise<Response> {
@@ -204,6 +212,13 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
       remainingSeconds: held.confirmed ? null : Math.max(1, Math.ceil((held.expires_at - now) / 1000)),
     });
     if (held?.confirmed) return Response.json({ success: true, confirmed: true, slotKey });
+    // An idempotent retry by the same caller observes the original lease. It must not slide
+    // the expiry forward: the mutex is a strict 15-second edge hold, not a renewable lock.
+    if (held) return Response.json({
+      success: true, slotKey, holderId, ttlMs: SLOT_HOLD_TTL_MS,
+      expiresAt: held.expires_at,
+      remainingSeconds: Math.max(1, Math.ceil((held.expires_at - now) / 1000)),
+    });
     const expiresAt = now + SLOT_HOLD_TTL_MS;
     this.ctx.storage.sql.exec(
       `INSERT INTO appointment_slot_holds(slot_key,holder_id,acquired_at,expires_at,confirmed) VALUES(?,?,?,?,0)
