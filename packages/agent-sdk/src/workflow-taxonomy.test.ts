@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { WORKFLOW_CLASS_POLICIES } from "./workflow-taxonomy.js";
+import { WORKFLOW_CLASS_POLICIES, routeWorkflow } from "./workflow-taxonomy.js";
 
 describe("Workflow Taxonomy Policies (Item 4)", () => {
   it("defines durable policies for company automations", () => {
@@ -21,5 +21,13 @@ describe("Workflow Taxonomy Policies (Item 4)", () => {
     const policy = WORKFLOW_CLASS_POLICIES.ephemeral_task;
     expect(policy.persistence).toBe("until_terminal");
     expect(policy.maxAttempts).toBe(2);
+  });
+});
+
+describe("workflow routing", () => {
+  it("isolates class budgets and targets reports", () => {
+    expect(routeWorkflow({ workflowClass: "company_automation", spaceId: "s", budgetCredits: 10 })).toMatchObject({ budgetKey: "workflow:company_automation:s", reportTarget: "executive_channel_and_founder_telegram", escalationTarget: "space_owner" });
+    expect(routeWorkflow({ workflowClass: "vertical_extension", spaceId: "s", projectId: "p", extensionId: "ci", budgetCredits: 2 })).toMatchObject({ budgetKey: "workflow:vertical_extension:ci:p", reportTarget: "project_team_room" });
+    expect(routeWorkflow({ workflowClass: "ephemeral_task", spaceId: "s", invokerId: "u", budgetCredits: 1 })).toMatchObject({ budgetKey: "workflow:ephemeral_task:u", reportTarget: "receipt_card" });
   });
 });

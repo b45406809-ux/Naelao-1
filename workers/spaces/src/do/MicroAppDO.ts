@@ -47,10 +47,61 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       if (request.method === "GET" && url.pathname === "/api/data") return this.readData(url);
       if (request.method === "POST" && url.pathname === "/api/data") return await this.writeData(request);
       if (request.method === "DELETE" && url.pathname === "/api/data") return this.deleteData(url);
+      if (request.method === "POST" && url.pathname === "/mcp") return await this.handleMcp(request);
       return Response.json({ error: "not_found" }, { status: 404 });
     } catch (error) {
       return Response.json({ error: error instanceof Error ? error.message : "micro_app_error" }, { status: 400 });
     }
+  }
+
+  private appId(): string {
+    return [...this.ctx.storage.sql.exec<{ value: string }>("SELECT value FROM gadget_metadata WHERE key = 'app_id'")][0]?.value ?? "app";
+  }
+
+  private userTables(): string[] {
+    return [...this.ctx.storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('gadget_metadata') ORDER BY name")].map(row => row.name);
+  }
+
+  private columns(table: string): Array<{ name: string; type: string; pk: number; notnull: number }> {
+    if (!this.userTables().includes(table)) throw new Error("unknown_table");
+    return [...this.ctx.storage.sql.exec<{ name: string; type: string; pk: number; notnull: number }>(`PRAGMA table_info("${table.replaceAll('"', '""')}")`)];
+  }
+
+  /** Stateless MCP 2025 Streamable HTTP transport. Each request is a complete JSON-RPC turn. */
+  private async handleMcp(request: Request): Promise<Response> {
+    const rpc = await request.json<{ jsonrpc?: string; id?: string | number | null; method?: string; params?: Record<string, unknown> }>();
+    const id = rpc.id ?? null, appId = this.appId().replace(/[^a-zA-Z0-9_]/g, "_");
+    const result = (value: unknown) => Response.json({ jsonrpc: "2.0", id, result: value }, { headers: { "mcp-session-id": crypto.randomUUID() } });
+    if (rpc.jsonrpc !== "2.0") return Response.json({ jsonrpc: "2.0", id, error: { code: -32600, message: "Invalid Request" } }, { status: 400 });
+    if (rpc.method === "initialize") return result({ protocolVersion: "2025-03-26", serverInfo: { name: `naelao-app-${appId}`, version: "2.0" }, capabilities: { tools: { listChanged: false } } });
+    const tables = this.userTables();
+    const schemas = tables.map(table => ({ table, columns: this.columns(table) }));
+    const tools = [
+      { name: `app_${appId}_list`, description: "List gadget records", inputSchema: { type: "object", properties: { table: { type: "string", enum: tables }, filter: { type: "object" }, limit: { type: "integer", minimum: 1, maximum: 500 } }, required: ["table"] } },
+      { name: `app_${appId}_insert`, description: "Insert a schema-validated gadget record", inputSchema: { type: "object", properties: { table: { type: "string", enum: tables }, record: { type: "object" } }, required: ["table", "record"] } },
+      { name: `app_${appId}_get`, description: "Get one gadget record by primary key", inputSchema: { type: "object", properties: { table: { type: "string", enum: tables }, id: {} }, required: ["table", "id"] } },
+    ];
+    if (rpc.method === "tools/list") return result({ tools, schema: schemas });
+    if (rpc.method !== "tools/call") return Response.json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } }, { status: 404 });
+    const name = String(rpc.params?.name ?? ""), args = (rpc.params?.arguments ?? {}) as Record<string, unknown>, table = String(args.table ?? "");
+    const columns = this.columns(table), quoted = `"${table.replaceAll('"', '""')}"`;
+    let data: unknown;
+    if (name === `app_${appId}_list`) {
+      const filter = args.filter && typeof args.filter === "object" && !Array.isArray(args.filter) ? args.filter as Record<string, unknown> : {};
+      const allowed = new Set(columns.map(c => c.name)); const pairs = Object.entries(filter).filter(([key]) => allowed.has(key));
+      const where = pairs.length ? ` WHERE ${pairs.map(([key]) => `"${key.replaceAll('"','""')}" = ?`).join(" AND ")}` : "";
+      data = [...this.ctx.storage.sql.exec(`SELECT * FROM ${quoted}${where} LIMIT ?`, ...pairs.map(([,v]) => v as SqlStorageValue), Math.min(Math.max(Number(args.limit ?? 100), 1), 500))];
+    } else if (name === `app_${appId}_insert`) {
+      if (!args.record || typeof args.record !== "object" || Array.isArray(args.record)) throw new Error("record_required");
+      const record = args.record as Record<string, unknown>, allowed = new Set(columns.map(c => c.name)); const entries = Object.entries(record).filter(([key]) => allowed.has(key));
+      if (!entries.length || entries.length !== Object.keys(record).length) throw new Error("record_does_not_match_schema");
+      this.ctx.storage.sql.exec(`INSERT INTO ${quoted} (${entries.map(([key]) => `"${key.replaceAll('"','""')}"`).join(",")}) VALUES (${entries.map(() => "?").join(",")})`, ...entries.map(([,v]) => v as SqlStorageValue));
+      data = { inserted: true };
+    } else if (name === `app_${appId}_get`) {
+      const pk = columns.find(c => c.pk)?.name ?? columns[0]?.name; if (!pk) throw new Error("table_has_no_columns");
+      data = [...this.ctx.storage.sql.exec(`SELECT * FROM ${quoted} WHERE "${pk.replaceAll('"','""')}" = ? LIMIT 1`, args.id as SqlStorageValue)][0] ?? null;
+    } else throw new Error("unknown_tool");
+    return result({ content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: data });
   }
 
   private async initialize(request: Request): Promise<Response> {

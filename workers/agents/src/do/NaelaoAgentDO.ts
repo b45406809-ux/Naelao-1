@@ -3375,7 +3375,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // back to a fresh id keeps direct callers (channel heartbeats, triggers) working unchanged.
     const runId = body.runId ?? crypto.randomUUID();
 
-    if (body.templateMode !== undefined && body.templateMode !== "autonomous_operator" && body.templateMode !== "cowork_studio") {
+    if (body.templateMode !== undefined && body.templateMode !== "autonomous_operator" && body.templateMode !== "autonomous_venture_os" && body.templateMode !== "cowork_studio") {
       return Response.json({ error: "invalid templateMode", error_code: "bad_request" }, { status: 400 });
     }
     const templateMode: TemplateMode = body.templateMode ?? "cowork_studio";
@@ -3402,9 +3402,6 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
     // Slash-command entry points all converge on the same tool; no parallel goal runner exists.
     if (/^\/goal(?:\s|$)/.test(body.goal)) {
-      if (templateMode === "cowork_studio") {
-        return Response.json({ error: "Task DAG execution is unavailable in cowork studio mode; run an interactive canvas turn instead", error_code: "interactive_mode_required" }, { status: 409 });
-      }
       const objective = body.goal.replace(/^\/goal\s*/, "").trim();
       if (!objective) return Response.json({ error: "/goal requires an objective" }, { status: 400 });
       body.goal = `Plan and execute this objective with engine.plan_and_delegate_goal. Create a dependency DAG, give every worker only its subtask and file paths, and cap every budget_tokens at 2000. Objective: ${objective}`;
@@ -3529,13 +3526,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       requiresApprovalFor = plan.requiresApprovalFor;
       approvalMode = plan.approvalMode;
     }
-    // Cowork Studio is structurally human-led: every external/tool action is approval-gated,
-    // and no delegation hooks are installed below. Autonomous Operator retains the project's
-    // configured gates and full DAG/sub-agent surface.
-    if (templateMode === "cowork_studio") {
-      requiresApprovalFor = [];
-      approvalMode = "gate_unless_listed";
-    }
+    // Template mode controls presentation and seeded work only. Approval policy and autonomous
+    // kernel capabilities are identical for Cowork and Venture OS projects.
 
     const personalIntent = /\b(my|personal|private)\s+(?:inbox|email|calendar|files?|account)\b|\b(?:run|execute)\s+(?:a\s+)?(?:shell|bash)\b/i.test(body.goal);
     if (isPublicRoom(body.roomType) && personalIntent) {
@@ -3550,12 +3542,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // `tools` (§A1.17 Phase J's workflow.create/run ops need it to author/re-run stored
     // scripts) — read lazily at call time, so ordering relative to runScriptLoop is safe.
     const consultLog: Array<{ thread_id: string; agent_id: string; title: string }> = [];
-    if (templateMode === "autonomous_operator") {
-      engineEnv.orchestration = this.buildOrchestrationHooks(spaceId, agentId, tenantId, body.apiKey ?? "", runId, sessionId, projectId, tools, userId, consultLog, body.model, body.effort);
-      // Keep the DO warm for its watchdog/proactive scheduler; autonomous runs may continue
-      // from scheduled events without a human chat turn. Cowork mode never creates this wake.
-      await this.ctx.storage.setAlarm(Date.now() + 60_000);
-    }
+    engineEnv.orchestration = this.buildOrchestrationHooks(spaceId, agentId, tenantId, body.apiKey ?? "", runId, sessionId, projectId, tools, userId, consultLog, body.model, body.effort);
+    // Every template has a proactive assistant/REPL; product taxonomy never clamps the engine.
+    await this.ctx.storage.setAlarm(Date.now() + 60_000);
     const reasoningRequest = NaelaoAgentDO.resolveReasoningRequest(body.model, body.reasoningEffort);
     // Step 28: a business's OWN Gemini/Groq key wins over the platform key for its own runs. Spread
     // AFTER the env keys so it overrides; a business with none (or a default @cf/ model) gets the

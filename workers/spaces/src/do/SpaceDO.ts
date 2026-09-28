@@ -1402,7 +1402,7 @@ const MIGRATIONS: Migration[] = [
     description: "display preferences, operating mode, and canvas viewport configuration",
     up: `
       ALTER TABLE projects ADD COLUMN template_mode TEXT NOT NULL DEFAULT 'cowork_studio'
-        CHECK (template_mode IN ('autonomous_operator','cowork_studio'));
+        CHECK (template_mode IN ('autonomous_operator','autonomous_venture_os','cowork_studio'));
       ALTER TABLE projects ADD COLUMN viewport_config TEXT NOT NULL DEFAULT '{}';
       CREATE TABLE user_settings (
         user_id TEXT NOT NULL, space_id TEXT NOT NULL,
@@ -3525,8 +3525,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (body.lifecycle !== undefined && body.lifecycle !== "finite" && body.lifecycle !== "continuous") {
       return Response.json({ error_code: "bad_request", message: "lifecycle must be 'finite' or 'continuous'" }, { status: 400 });
     }
-    if (body.template_mode !== undefined && body.template_mode !== "autonomous_operator" && body.template_mode !== "cowork_studio") {
-      return Response.json({ error_code: "bad_request", message: "template_mode must be 'autonomous_operator' or 'cowork_studio'" }, { status: 400 });
+    if (body.template_mode !== undefined && body.template_mode !== "autonomous_operator" && body.template_mode !== "autonomous_venture_os" && body.template_mode !== "cowork_studio") {
+      return Response.json({ error_code: "bad_request", message: "template_mode must be 'autonomous_venture_os' or 'cowork_studio'" }, { status: 400 });
     }
     if (
       body.max_threads !== undefined &&
