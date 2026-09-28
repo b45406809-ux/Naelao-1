@@ -19,6 +19,7 @@ import { registerWhopWalletRoutes, handleWhopWebhook, renderPayoutApprovalPage, 
 import { createBusinessWhopOAuthCheckout } from "./whop-oauth-billing.js";
 import { reserveOwnerPayout, settleSpaceWallet } from "./wallet-checkout.js";
 import { normalizePlanTier, PLANS } from "@naelao/billing-core";
+export { settleTemplateSubscriptionPayment } from "./settlement.js";
 
 export interface BillingEnv {
   ENVIRONMENT: string;
