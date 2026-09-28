@@ -1442,7 +1442,6 @@ async function wakeAgentGoal(
     // into dispatching normally, same posture as every other best-effort read in this file.
   }
 
-  const brief = await buildWakeUpBrief(env, params.spaceId, params.tenantId);
   const heartbeatSessionId = await createHeartbeatSession(
     env, params.spaceId, params.tenantId,
     `Heartbeat — ${new Date().toISOString().slice(0, 16).replace("T", " ")}`
@@ -1461,13 +1460,15 @@ async function wakeAgentGoal(
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        goal: brief ? `${brief}${params.goal}` : params.goal,
+        // Scheduled work is intentionally pristine: no wake-up brief and no prior transcript.
+        // The AgentDO also enforces the 2k context window from this attested trigger marker.
+        goal: params.goal,
         spaceId: params.spaceId,
         agentId,
         tenantId: params.tenantId,
         sessionId: heartbeatSessionId,
         ...(params.projectId ? { projectId: params.projectId } : {}),
-        context: { trigger: "scheduled_job" },
+        context: { trigger: "scheduled_job", decoupled_context: true, max_context_tokens: 2_000 },
         apiKey: env.ANTHROPIC_API_KEY ?? "",
         model: wake.model,
         ...(wake.businessContext ? { businessContext: wake.businessContext } : {}),

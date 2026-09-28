@@ -32,6 +32,7 @@ import { DurableObject } from "cloudflare:workers";
 const SWEEP_INTERVAL_MS = 5 * 60 * 1000; // spec: "auto-release abandoned slots" via DO Alarms
 const DEFAULT_TTL_MS = 30 * 60 * 1000; // a slot no one explicitly releases within 30m is stale
 const FILE_LOCK_TTL_MS = 30_000;
+export const SLOT_HOLD_TTL_MS = 15_000;
 
 export interface ConcurrencyDOEnv {
   PLATFORM_SECRET?: string;
@@ -60,6 +61,11 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
     this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS outbound_pacers (
       domain TEXT PRIMARY KEY, next_release_at INTEGER NOT NULL
     )`);
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS appointment_slot_holds (
+      slot_key TEXT PRIMARY KEY, holder_id TEXT NOT NULL, acquired_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL, confirmed INTEGER NOT NULL DEFAULT 0
+    )`);
+    this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_appointment_holds_expiry ON appointment_slot_holds(expires_at)`);
     this.initialized = true;
   }
 
@@ -95,6 +101,9 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
         if (!body.domain) return Response.json({ error_code: "bad_request", message: "domain is required" }, { status: 400 });
         return Response.json(await this.paceOutboundRequest({ domain: body.domain, ...(body.maxPerSecond === undefined ? {} : { maxPerSecond: body.maxPerSecond }) }));
       }
+      if (request.method === "POST" && url.pathname === "/slot-holds/acquire") return this.acquireSlotHold(await request.json());
+      if (request.method === "POST" && url.pathname === "/slot-holds/confirm") return this.confirmSlotBooking(await request.json());
+      if (request.method === "POST" && url.pathname === "/slot-holds/release") return this.releaseSlotHold(await request.json());
       return Response.json({ error_code: "not_found" }, { status: 404 });
     } catch (err) {
       return Response.json({ error_code: "internal_error", message: String(err) }, { status: 500 });
@@ -166,9 +175,65 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
   }
 
   private async scheduleNextAlarm(): Promise<void> {
-    const rows = this.ctx.storage.sql.exec(`SELECT MIN(expires_at) AS expires_at FROM locks`).toArray() as Array<{ expires_at: number | null }>;
+    const rows = this.ctx.storage.sql.exec(`SELECT MIN(expires_at) AS expires_at FROM (
+      SELECT expires_at FROM locks UNION ALL
+      SELECT expires_at FROM appointment_slot_holds WHERE confirmed=0
+    )`).toArray() as Array<{ expires_at: number | null }>;
     const next = rows[0]?.expires_at;
     await this.ctx.storage.setAlarm(next ?? Date.now() + SWEEP_INTERVAL_MS);
+  }
+
+  async acquireSlotHold(input: unknown): Promise<Response> {
+    this.ensureInit();
+    const body = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+    const holderId = String(body["holderId"] ?? body["holder_id"] ?? "");
+    const suppliedKey = String(body["slotKey"] ?? body["slot_key"] ?? "");
+    const calendarId = String(body["calendarId"] ?? body["calendar_id"] ?? "");
+    const slotIsoTime = String(body["slotIsoTime"] ?? body["slot_iso_time"] ?? "");
+    const slotKey = suppliedKey || (calendarId && slotIsoTime ? `${calendarId}:${slotIsoTime}` : "");
+    if (!slotKey || !holderId) return Response.json({ success: false, reason: "INVALID_SLOT_HOLD" }, { status: 400 });
+    const now = Date.now();
+    this.ctx.storage.sql.exec("DELETE FROM appointment_slot_holds WHERE confirmed=0 AND expires_at <= ?", now);
+    const current = this.ctx.storage.sql.exec(
+      "SELECT holder_id,expires_at,confirmed FROM appointment_slot_holds WHERE slot_key=?", slotKey
+    ).toArray() as Array<{ holder_id: string; expires_at: number; confirmed: number }>;
+    const held = current[0];
+    if (held && held.holder_id !== holderId) return Response.json({
+      success: false,
+      reason: held.confirmed ? "SLOT_ALREADY_BOOKED" : "SLOT_TENTATIVELY_HELD",
+      remainingSeconds: held.confirmed ? null : Math.max(1, Math.ceil((held.expires_at - now) / 1000)),
+    });
+    if (held?.confirmed) return Response.json({ success: true, confirmed: true, slotKey });
+    const expiresAt = now + SLOT_HOLD_TTL_MS;
+    this.ctx.storage.sql.exec(
+      `INSERT INTO appointment_slot_holds(slot_key,holder_id,acquired_at,expires_at,confirmed) VALUES(?,?,?,?,0)
+       ON CONFLICT(slot_key) DO UPDATE SET holder_id=excluded.holder_id,acquired_at=excluded.acquired_at,expires_at=excluded.expires_at,confirmed=0`,
+      slotKey, holderId, now, expiresAt);
+    await this.scheduleNextAlarm();
+    return Response.json({ success: true, slotKey, holderId, ttlMs: SLOT_HOLD_TTL_MS, expiresAt });
+  }
+
+  async confirmSlotBooking(input: unknown): Promise<Response> {
+    this.ensureInit();
+    const body = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+    const slotKey = String(body["slotKey"] ?? body["slot_key"] ?? "");
+    const holderId = String(body["holderId"] ?? body["holder_id"] ?? "");
+    const now = Date.now();
+    const result = this.ctx.storage.sql.exec(
+      "UPDATE appointment_slot_holds SET confirmed=1 WHERE slot_key=? AND holder_id=? AND confirmed=0 AND expires_at>?", slotKey, holderId, now);
+    await this.scheduleNextAlarm();
+    return Response.json(result.rowsWritten ? { success: true, confirmed: true, slotKey } : { success: false, reason: "SLOT_HOLD_NOT_OWNED" }, { status: result.rowsWritten ? 200 : 409 });
+  }
+
+  async releaseSlotHold(input: unknown): Promise<Response> {
+    this.ensureInit();
+    const body = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+    const slotKey = String(body["slotKey"] ?? body["slot_key"] ?? "");
+    const holderId = String(body["holderId"] ?? body["holder_id"] ?? "");
+    const result = this.ctx.storage.sql.exec(
+      "DELETE FROM appointment_slot_holds WHERE slot_key=? AND holder_id=? AND confirmed=0", slotKey, holderId);
+    await this.scheduleNextAlarm();
+    return Response.json({ success: true, released: result.rowsWritten > 0 });
   }
 
   private async handleAcquire(request: Request): Promise<Response> {
@@ -235,6 +300,7 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
     this.ensureInit();
     this.ctx.storage.sql.exec(`DELETE FROM slots WHERE expires_at < ?`, Date.now());
     this.ctx.storage.sql.exec(`DELETE FROM locks WHERE expires_at <= ?`, Date.now());
+    this.ctx.storage.sql.exec(`DELETE FROM appointment_slot_holds WHERE confirmed=0 AND expires_at <= ?`, Date.now());
     await this.scheduleNextAlarm();
   }
 }

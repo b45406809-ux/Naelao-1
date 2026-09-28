@@ -3619,7 +3619,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ]);
       // The thread's own history — without it the agent has no memory of the conversation it is
       // replying in. Best-effort: undefined simply means "no history", the prior behaviour.
-      const conversation = await this.loadConversationContext(spaceId, projectId ?? "", sessionId, tenantId);
+      const isDecoupledScheduledRun = body.context?.["trigger"] === "scheduled_job"
+        && body.context?.["decoupled_context"] === true;
+      // A cron receives only its payload plus the workspace/SOUL material already loaded by the
+      // engine. Never query a thread transcript for an autonomous scheduled run.
+      const conversation = isDecoupledScheduledRun
+        ? { recent: [], summary: "", compacted: false, totalMessages: 0, omittedMessages: 0 }
+        : await this.loadConversationContext(spaceId, projectId ?? "", sessionId, tenantId);
       const result = await runScriptLoop(engineEnv, tools, reasoner, config.scripts.prebuilt, {
         goal: body.goal,
         startupObserve: config.scripts.startup_observe,
@@ -3640,7 +3646,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         // How much of its own history the run may carry each turn. Resolved from the model
         // ACTUALLY running, because the platform's default is served with a 24k window against a
         // nominal 128k — sizing against the wrong figure overflows it (see step-context.ts).
-        contextWindowTokens: contextWindowForModel(body.model ?? DEFAULT_WORKING_MODEL),
+        contextWindowTokens: isDecoupledScheduledRun
+          ? 2_000
+          : contextWindowForModel(body.model ?? DEFAULT_WORKING_MODEL),
         // A person is waiting on the other end of this request, so the loop gets a wall clock. One
         // turn before it expires the model is told to wrap up, which turns "ran out of time" into a
         // real answer about what was done rather than a stalled request.

@@ -98,6 +98,18 @@ export const schedule: PrebuiltScript = {
         throw new Error("schedule.wake_me requires either delay_minutes/delay_hours or a cron expression");
       }
       const name = typeof a["name"] === "string" && a["name"] ? (a["name"] as string) : `wake: ${goal.slice(0, 40)}`;
+      // SpaceDO is the canonical project-universal registry. Keep the platform dispatcher row
+      // below as the durable Workflows/Queue harness, but never enqueue it unless attribution and
+      // project ownership have first been accepted by the shared state plane.
+      const canonical = await spacesCall(c, "POST", `/spaces/${c.env.spaceId}/project-crons`, {
+        space_id: c.env.spaceId,
+        project_id: c.env.projectId,
+        bot_id: c.env.agentId,
+        cron_expression: cron,
+        script_path: "schedule:wake_agent_goal",
+        state: { goal, name, ...(oneShot ? { one_shot: true } : {}) },
+      });
+      if (!canonical.ok) return { ok: false, error: `failed to register project cron: HTTP ${canonical.status}` };
       const res = await spacesCall(c, "POST", `/spaces/${c.env.spaceId}/scheduled-jobs`, {
         name,
         cron_expression: cron,
@@ -108,9 +120,11 @@ export const schedule: PrebuiltScript = {
       });
       if (!res.ok) return { ok: false, error: `failed to schedule wake: HTTP ${res.status}` };
       const created = res.json as { id?: string };
+      const registered = canonical.json as { id?: string };
       return {
         ok: true,
         id: created.id ?? null,
+        project_cron_id: registered.id ?? null,
         cron_expression: cron,
         one_shot: oneShot,
         note: oneShot
