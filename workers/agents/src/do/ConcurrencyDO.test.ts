@@ -4,6 +4,7 @@ import { ConcurrencyDO } from "./ConcurrencyDO.js";
 function harness() {
   const locks = new Map<string, { holder_id: string; acquired_at: number; expires_at: number }>();
   const pacers = new Map<string, number>();
+  const holds = new Map<string, { holder_id: string; acquired_at: number; expires_at: number; confirmed: number }>();
   let alarm: number | null = null;
   const sql = {
     exec(query: string, ...args: unknown[]) {
@@ -20,6 +21,17 @@ function harness() {
         locks.set(String(args[0]), { holder_id: String(args[1]), acquired_at: Number(args[2]), expires_at: Number(args[3]) });
       } else if (query.includes("INSERT INTO outbound_pacers")) {
         pacers.set(String(args[0]), Number(args[1]));
+      } else if (query.includes("DELETE FROM appointment_slot_holds WHERE confirmed=0 AND expires_at")) {
+        for (const [key, row] of holds) if (!row.confirmed && row.expires_at <= Number(args[0])) holds.delete(key);
+      } else if (query.includes("INSERT INTO appointment_slot_holds")) {
+        holds.set(String(args[0]), { holder_id: String(args[1]), acquired_at: Number(args[2]), expires_at: Number(args[3]), confirmed: 0 });
+      } else if (query.includes("UPDATE appointment_slot_holds SET confirmed=1")) {
+        const row = holds.get(String(args[0]));
+        if (row?.holder_id === args[1] && !row.confirmed && row.expires_at > Number(args[2])) row.confirmed = 1;
+        return { rowsWritten: row?.confirmed ? 1 : 0, toArray: () => [] };
+      } else if (query.includes("DELETE FROM appointment_slot_holds WHERE slot_key")) {
+        const row = holds.get(String(args[0]));
+        if (row?.holder_id === args[1] && !row.confirmed) holds.delete(String(args[0]));
       }
       const toArray = () => {
         if (query.includes("SELECT holder_id, expires_at FROM locks")) {
@@ -33,13 +45,16 @@ function harness() {
           const next_release_at = pacers.get(String(args[0]));
           return next_release_at === undefined ? [] : [{ next_release_at }];
         }
+        if (query.includes("SELECT holder_id,expires_at,confirmed FROM appointment_slot_holds")) {
+          const row = holds.get(String(args[0])); return row ? [row] : [];
+        }
         return [];
       };
       return { toArray };
     },
   };
   const ctx = { storage: { sql, getAlarm: async () => alarm, setAlarm: async (value: number) => { alarm = value; } } };
-  return { instance: new ConcurrencyDO(ctx as never, {}), locks, getAlarm: () => alarm };
+  return { instance: new ConcurrencyDO(ctx as never, {}), locks, holds, getAlarm: () => alarm };
 }
 
 describe("ConcurrencyDO file mutexes", () => {
@@ -58,6 +73,22 @@ describe("ConcurrencyDO file mutexes", () => {
     await h.instance.alarm();
     expect(h.locks.size).toBe(0);
     expect(await acquire("agent-b")).toMatchObject({ acquired: true, holderId: "agent-b" });
+    vi.useRealTimers();
+  });
+});
+
+describe("ConcurrencyDO appointment slot holds", () => {
+  it("exclusively holds a slot for exactly 15 seconds and then auto-expires", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const h = harness();
+    const acquire = (holderId: string) => h.instance.acquireSlotHold({ slotKey: "cal:2026-01-02T10:00:00Z", holderId }).then((r) => r.json<Record<string, unknown>>());
+    expect(await acquire("caller-a")).toMatchObject({ success: true, ttlMs: 15_000 });
+    expect(await acquire("caller-b")).toMatchObject({ success: false, reason: "SLOT_TENTATIVELY_HELD", remainingSeconds: 15 });
+    vi.advanceTimersByTime(15_000);
+    await h.instance.alarm();
+    expect(h.holds.size).toBe(0);
+    expect(await acquire("caller-b")).toMatchObject({ success: true, holderId: "caller-b" });
     vi.useRealTimers();
   });
 });

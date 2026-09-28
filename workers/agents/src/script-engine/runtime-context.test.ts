@@ -35,4 +35,11 @@ describe("createRuntimeContext", () => {
     await send({ to: "person@example.test" });
     expect(backing.connectors.call).toHaveBeenCalledWith("primary_inbox", "send_email", { to: "person@example.test" }, []);
   });
+
+  it("maps the primary calendar surface to standardized namespaced tools", async () => {
+    const backing = services();
+    const context = createRuntimeContext({ scope: "PROJECT_BOUND", projectId: "p", services: backing });
+    await context.connectors.use("primary_calendar").get_availability({ startDate: "2026-01-01", endDate: "2026-01-02" });
+    expect(backing.connectors.call).toHaveBeenCalledWith("primary_calendar", "calendar.get_availability", { startDate: "2026-01-01", endDate: "2026-01-02" }, []);
+  });
 });

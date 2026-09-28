@@ -634,6 +634,16 @@ async function spaceDoStub(env: Env, spaceId: string, tenantId: string) {
   return env.SPACE_DO.get(doId);
 }
 
+// Canonical project-universal cron registration. The SpaceDO performs the authoritative
+// project/space ownership check atomically with persistence.
+app.post("/spaces/:spaceId/project-crons", async (c) => {
+  const { tenantId } = getCallerIdentity(c);
+  const spaceId = c.req.param("spaceId");
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const body = await c.req.json<Record<string, unknown>>();
+  return forwardToSpaceDO(stub, "/internal/project-crons", "POST", JSON.stringify({ ...body, space_id: spaceId }));
+});
+
 // Space-owned private LoRA manifests. The adapter identifier never leaves the trusted workers;
 // the agents worker resolves it immediately before Workers AI inference.
 app.get("/custom-models/:modelId", async (c) => {

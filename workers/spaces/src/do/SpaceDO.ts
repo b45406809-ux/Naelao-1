@@ -10,6 +10,8 @@ import {
   isKnownProjectKind,
   roleMeetsMinimum,
   selectMatchingRules,
+  computeNextRun,
+  validateCronExpression,
 } from "@naelao/events";
 import type {
   ConditionContext,
@@ -1452,6 +1454,28 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_processed_webhook_events_at ON processed_webhook_events(processed_at);
     `,
   },
+  {
+    version: 54,
+    description: "project-universal crons and space-shared calendar state",
+    up: `
+      CREATE TABLE project_scheduled_jobs (
+        id TEXT PRIMARY KEY, space_id TEXT NOT NULL, project_id TEXT NOT NULL,
+        bot_id TEXT NOT NULL, cron_expression TEXT NOT NULL, script_path TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT '{}', last_run_at TEXT, next_run_at TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX idx_project_scheduled_jobs_due
+        ON project_scheduled_jobs(space_id, next_run_at);
+      CREATE TABLE space_calendar_events (
+        id TEXT PRIMARY KEY, space_id TEXT NOT NULL, calendar_id TEXT NOT NULL,
+        start_at TEXT NOT NULL, end_at TEXT NOT NULL, client_details TEXT NOT NULL DEFAULT '{}',
+        provider_booking_id TEXT, status TEXT NOT NULL DEFAULT 'confirmed',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX idx_space_calendar_availability
+        ON space_calendar_events(space_id, calendar_id, start_at, end_at);
+    `,
+  },
 ];
 
 export const PROVENANCE_GENESIS_HASH = "0".repeat(64);
@@ -1702,6 +1726,20 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return resolved
           ? Response.json(resolved)
           : Response.json({ error_code: "connector_alias_not_found" }, { status: 404 });
+      }
+
+      if (method === "POST" && url.pathname === "/internal/project-crons") {
+        return this.registerProjectCron(await request.json());
+      }
+      if (url.pathname === "/internal/primary-calendar/availability" && method === "GET") {
+        return this.getCalendarAvailability(url.searchParams);
+      }
+      if (url.pathname === "/internal/primary-calendar/bookings" && method === "POST") {
+        return this.createCalendarBooking(await request.json());
+      }
+      const calendarBookingMatch = url.pathname.match(/^\/internal\/primary-calendar\/bookings\/([^/]+)$/);
+      if (calendarBookingMatch?.[1] && method === "DELETE") {
+        return this.cancelCalendarBooking(decodeURIComponent(calendarBookingMatch[1]), url.searchParams);
       }
 
       // GET /me/messages?user_id=xxx — G-AO30: fetch all messages for GDPR export
@@ -8797,6 +8835,81 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         grant_type: null,
       });
     }
+  }
+
+  /** Register a cron in the owning SpaceDO so every project (and bot identity) uses one
+   * authoritative schedule. The project ownership check is in the same serialized state plane
+   * as the insert, preventing a cross-space project id from being smuggled into a job. */
+  registerProjectCron(input: unknown): Response {
+    const body = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+    const spaceId = String(body["space_id"] ?? "");
+    const projectId = String(body["project_id"] ?? "");
+    const botId = String(body["bot_id"] ?? "");
+    const cronExpression = String(body["cron_expression"] ?? "");
+    const scriptPath = String(body["script_path"] ?? "");
+    if (!spaceId || !projectId || !botId || !scriptPath) {
+      return Response.json({ error_code: "invalid_project_cron", message: "space_id, project_id, bot_id, and script_path are required" }, { status: 400 });
+    }
+    const cronError = validateCronExpression(cronExpression);
+    if (cronError) return Response.json({ error_code: "invalid_cron", message: cronError }, { status: 400 });
+    const project = queryOne<{ id: string }>(this.ctx.storage.sql as never,
+      "SELECT id FROM projects WHERE id = ? AND space_id = ?", projectId, spaceId);
+    if (!project) return Response.json({ error_code: "project_not_in_space" }, { status: 404 });
+    const now = Date.now();
+    const id = typeof body["id"] === "string" && body["id"] ? body["id"] : crypto.randomUUID();
+    const nextRun = computeNextRun(cronExpression, now);
+    if (nextRun === null) return Response.json({ error_code: "cron_has_no_next_run" }, { status: 400 });
+    const nextRunAt = new Date(nextRun).toISOString();
+    execute(this.ctx.storage.sql as never,
+      `INSERT INTO project_scheduled_jobs
+       (id,space_id,project_id,bot_id,cron_expression,script_path,state,next_run_at,created_at)
+       VALUES (?,?,?,?,?,?,?,?,?)`, id, spaceId, projectId, botId, cronExpression, scriptPath,
+      JSON.stringify(body["state"] ?? {}), nextRunAt, new Date(now).toISOString());
+    return Response.json({ id, space_id: spaceId, project_id: projectId, bot_id: botId, cron_expression: cronExpression, script_path: scriptPath, next_run_at: nextRunAt }, { status: 201 });
+  }
+
+  private getCalendarAvailability(params: URLSearchParams): Response {
+    const spaceId = params.get("space_id") ?? "";
+    const calendarId = params.get("calendar_id") ?? "primary";
+    const start = params.get("start_date") ?? "";
+    const end = params.get("end_date") ?? "";
+    if (!spaceId || !start || !end || !Number.isFinite(Date.parse(start)) || !Number.isFinite(Date.parse(end)) || Date.parse(start) >= Date.parse(end)) {
+      return Response.json({ error_code: "invalid_date_range" }, { status: 400 });
+    }
+    const events = queryAll(this.ctx.storage.sql as never,
+      `SELECT id,start_at,end_at,client_details,status FROM space_calendar_events
+       WHERE space_id=? AND calendar_id=? AND status='confirmed' AND start_at < ? AND end_at > ? ORDER BY start_at`,
+      spaceId, calendarId, end, start);
+    return Response.json({ calendar_id: calendarId, start_date: start, end_date: end, busy: events });
+  }
+
+  private createCalendarBooking(input: unknown): Response {
+    const body = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+    const spaceId = String(body["space_id"] ?? "");
+    const calendarId = String(body["calendar_id"] ?? "primary");
+    const slot = body["slot"] as { start?: unknown; end?: unknown } | undefined;
+    const start = String(slot?.start ?? "");
+    const end = String(slot?.end ?? "");
+    if (!spaceId || !Number.isFinite(Date.parse(start)) || !Number.isFinite(Date.parse(end)) || Date.parse(start) >= Date.parse(end)) {
+      return Response.json({ error_code: "invalid_booking_slot" }, { status: 400 });
+    }
+    const conflict = queryOne<{ id: string }>(this.ctx.storage.sql as never,
+      `SELECT id FROM space_calendar_events WHERE space_id=? AND calendar_id=? AND status='confirmed'
+       AND start_at < ? AND end_at > ? LIMIT 1`, spaceId, calendarId, end, start);
+    if (conflict) return Response.json({ error_code: "SLOT_ALREADY_BOOKED", booking_id: conflict.id }, { status: 409 });
+    const id = crypto.randomUUID();
+    execute(this.ctx.storage.sql as never,
+      `INSERT INTO space_calendar_events(id,space_id,calendar_id,start_at,end_at,client_details,provider_booking_id,status)
+       VALUES(?,?,?,?,?,?,?,'confirmed')`, id, spaceId, calendarId, start, end,
+      JSON.stringify(body["client_details"] ?? {}), body["provider_booking_id"] ?? null);
+    return Response.json({ id, calendar_id: calendarId, slot: { start, end }, status: "confirmed" }, { status: 201 });
+  }
+
+  private cancelCalendarBooking(bookingId: string, params: URLSearchParams): Response {
+    const spaceId = params.get("space_id") ?? "";
+    const result = this.ctx.storage.sql.exec(
+      "UPDATE space_calendar_events SET status='cancelled',updated_at=datetime('now') WHERE id=? AND space_id=? AND status='confirmed'", bookingId, spaceId);
+    return Response.json({ cancelled: result.rowsWritten > 0, booking_id: bookingId }, { status: result.rowsWritten > 0 ? 200 : 404 });
   }
 
   private listExtensions(): Response {

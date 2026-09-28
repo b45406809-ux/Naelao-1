@@ -87,7 +87,11 @@ function connectorSurface(adapter: CreateRuntimeContextOptions["services"]["conn
           if (property === "then") return undefined;
           if (Reflect.has(target, property)) return Reflect.get(target, property, receiver);
           if (typeof property !== "string") return undefined;
-          return (params: Record<string, unknown> = {}) => call(property, params);
+          // Calendar providers expose a standardized MCP namespace while retaining the same
+          // ergonomic connector surface as other aliases.
+          const tool = aliasName === "primary_calendar" && !property.includes(".")
+            ? `calendar.${property}` : property;
+          return (params: Record<string, unknown> = {}) => call(tool, params);
         },
       });
     },
