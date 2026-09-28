@@ -69,6 +69,8 @@ import {
   DEFAULT_SUB_AGENT_BUDGET_TOKENS,
   MAX_CONCURRENT_SUB_AGENT_TREES,
 } from "../script-engine/sub-agent-output.js";
+import { handleExecutiveInbound } from "../channels/executive-channel.js";
+import { persistCustomerConversation } from "../telemetry/customer-telemetry.js";
 
 // ── G-AZ01: Agent FSM states and valid transitions ───────────────────────────
 
@@ -4091,6 +4093,43 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const norm: NormalizedInbound | null = adapter.normalizeInbound(body.raw ?? {});
     if (!norm) return Response.json({ ignored: true }); // bot echo / not actionable
 
+    // WhatsApp/Telegram owner contacts form a private control plane. Verification is performed
+    // against SpaceDO's live owner/admin membership on every message, so removing an admin takes
+    // effect immediately. Unknown senders fall through to the quarantined customer plane.
+    if ((norm.channel === "whatsapp" || norm.channel === "telegram") && body.spaceId && body.tenantId) {
+      const headers = await this.internalHeaders(body.tenantId, { "content-type": "application/json" });
+      const executive = await handleExecutiveInbound({
+        spaceId: body.spaceId, tenantId: body.tenantId, channel: norm.channel,
+        senderId: norm.channel_user_id, text: norm.text,
+      }, {
+        verify: async (input) => {
+          const response = await this.env.SPACES_WORKER.fetch(new Request(
+            `http://spaces-worker/internal/spaces/${encodeURIComponent(input.spaceId)}/executive/verify`,
+            { method: "POST", headers, body: JSON.stringify({ space_id: input.spaceId, channel: input.channel, contact_id: input.senderId }) },
+          ));
+          return response.ok;
+        },
+        freeze: async (input) => {
+          const response = await this.env.SPACES_WORKER.fetch(new Request(
+            `http://spaces-worker/internal/spaces/${encodeURIComponent(input.spaceId)}/executive/emergency-stop`,
+            { method: "POST", headers, body: JSON.stringify({ space_id: input.spaceId, contact_id: norm.channel_user_id }) },
+          ));
+          if (!response.ok) throw new Error(`emergency_stop_failed:${response.status}`);
+          await this.handleCancelAll();
+        },
+        routeToRootAssistant: async () => { /* fall through to the root agent inbox below */ },
+        send: async ({ channel, senderId, text }) => {
+          if (!this.env.NOTIFICATIONS_WORKER) throw new Error("executive_confirmation_channel_unavailable");
+          const response = await this.env.NOTIFICATIONS_WORKER.fetch(new Request("http://notifications-worker/internal/notify", {
+            method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": body.tenantId! },
+            body: JSON.stringify({ channel, space_id: body.spaceId, to: senderId, body: text }),
+          }));
+          if (!response.ok) throw new Error(`executive_confirmation_failed:${response.status}`);
+        },
+      });
+      if (executive.emergencyStopped) return Response.json({ handled: true, emergency_stopped: true });
+    }
+
     const rows = this.ctx.storage.sql
       .exec(`SELECT id FROM channel_sessions WHERE channel = ? AND channel_user_id = ?`, norm.channel, norm.channel_user_id)
       .toArray() as Array<{ id: string }>;
@@ -5815,7 +5854,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!config) return Response.json({ error: `agent '${agentId}' is not provisioned in space '${spaceId}'` }, { status: 404 });
     // Same structural-config-first, agents.md-parse-fallback precedence as handleScriptRun above.
     const requiresApprovalFor = config.requiresApprovalFor ?? [...parseRequiresApprovalFor(config.agentsMd)];
-    const tools = new ScriptToolSurface(engineEnv, config.scripts.prebuilt);
+    // This queue is exclusively external-channel traffic. Construct a separate allow-listed
+    // surface rather than redacting the internal agent's tools: filesystem, git, vault,
+    // browser and container handlers do not exist in this object at all.
+    const tools = new ScriptToolSurface(engineEnv, ["customer-bot"]);
+    // Kept out of the model-facing surface; only platform code below can dispatch the resulting
+    // reply to the same conversation address.
+    const deliveryTools = new ScriptToolSurface(engineEnv, ["notifications"]);
     const model = body.model ?? DEFAULT_WORKING_MODEL;
     // Step 28: same BYOK override as the interactive path — a customer messaging a business on a
     // channel is answered on the business's own Gemini/Groq key when it has one.
@@ -5927,7 +5972,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           ? (matchedRule.reply_text ?? "")
           : null;
         if (replyText) {
-          const deliver = await tools.run(`notify.${msg.channel}`, this.notifyParamsFor(msg.channel, msg.channel_user_id, replyText));
+          const deliver = await deliveryTools.run(`notify.${msg.channel}`, this.notifyParamsFor(msg.channel, msg.channel_user_id, replyText));
           if (deliver.ok) {
             this.markOutbound(msg.session_id, msg.id, replyText);
             ruleHandled++;
@@ -5985,7 +6030,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
       // 3. Full reasoning loop, under the project's execution ceiling if it has one.
       if (projectCfg) {
-        engineEnv.maxTier = projectCfg.execution_ceiling as ExecutionTier;
+        engineEnv.maxTier = Math.min(2, projectCfg.execution_ceiling) as ExecutionTier;
       } else if (projectCfgResult?.status === "error") {
         // F17 / A1.13: SpaceDO fetch failed — fail CLOSED (most restrictive tier, treated as a
         // spend-cap hit) rather than running the full reasoning loop unrestricted.
@@ -5993,16 +6038,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         spendCapped++;
         continue;
       } else {
-        delete engineEnv.maxTier;
+        engineEnv.maxTier = 2 as ExecutionTier;
       }
 
       let result: Awaited<ReturnType<typeof runScriptLoop>>;
       try {
-        result = await runScriptLoop(engineEnv, tools, reasoner, config.scripts.prebuilt, {
+        result = await runScriptLoop(engineEnv, tools, reasoner, ["customer-bot"], {
           goal:
             `A message arrived on ${msg.channel} from user ${msg.channel_user_id}: "${msg.text.slice(0, 2000)}". ` +
-            `Draft a helpful, grounded reply and send it via notify.${msg.channel} to "${msg.channel_user_id}". ` +
-            `If you cannot answer confidently, reply with exactly "ESCALATE" instead of guessing — do not send anything.`,
+            "Draft a helpful, grounded reply using only the quarantined customer tools. " +
+            "If you cannot answer confidently, reply with exactly \"ESCALATE\" instead of guessing; the platform, not you, dispatches the reply.",
           startupObserve: config.scripts.startup_observe,
           requiresApprovalFor,
           sessionId: msg.session_id,
@@ -6046,13 +6091,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
       const text = typeof result.result?.output === "string" ? result.result.output.trim() : "";
       if (!result.result?.ok || !text || text === "ESCALATE" || !moderateText(text).allowed) {
+        await this.persistTerminatedCustomerSession(spaceId, tenantId, msg.session_id, msg.channel, msg.channel_user_id, true, true);
         escalated++;
         continue;
       }
       // The reasoner answered in text rather than calling notify.* itself — deliver it now.
-      const deliver = await tools.run(`notify.${msg.channel}`, this.notifyParamsFor(msg.channel, msg.channel_user_id, text));
+      const deliver = await deliveryTools.run(`notify.${msg.channel}`, this.notifyParamsFor(msg.channel, msg.channel_user_id, text));
       if (!deliver.ok) { escalated++; continue; }
       this.markOutbound(msg.session_id, msg.id, text);
+      await this.persistTerminatedCustomerSession(spaceId, tenantId, msg.session_id, msg.channel, msg.channel_user_id, false, false);
       answered++;
       } finally {
         // Release the claim for any message that didn't reach a real terminal state this
@@ -6062,6 +6109,20 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
     }
     return Response.json({ drained: pending.length, answered, escalated, rule_handled: ruleHandled, spend_capped: spendCapped });
+  }
+
+  private async persistTerminatedCustomerSession(spaceId: string, tenantId: string, sessionId: string, channel: string, customerId: string, unresolved: boolean, escalated: boolean): Promise<void> {
+    const transcript = this.ctx.storage.sql.exec(
+      "SELECT direction,text,created_at FROM channel_messages WHERE session_id=? ORDER BY created_at,id", sessionId,
+    ).toArray() as Array<{ direction: string; text: string; created_at: number }>;
+    const negative = /\b(angry|awful|hate|terrible|useless|refund|scam|frustrat(?:ed|ing))\b/i;
+    const positive = /\b(thanks|thank you|great|helpful|perfect|love)\b/i;
+    const customerText = transcript.filter((m) => m.direction === "inbound").map((m) => m.text).join(" ");
+    const sentiment = negative.test(customerText) ? -0.8 : positive.test(customerText) ? 0.5 : 0;
+    await persistCustomerConversation(this.env.SPACES_WORKER, tenantId, {
+      id: sessionId, spaceId, channel, customerId, transcript,
+      sentimentScore: sentiment, unresolved, escalated,
+    }, await this.internalHeaders(tenantId));
   }
 
   // ── POST /run ─────────────────────────────────────────────────────────────

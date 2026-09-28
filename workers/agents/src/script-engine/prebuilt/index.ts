@@ -49,6 +49,7 @@ import { schedule } from "./schedule.js";
 import { tasks } from "./tasks.js";
 import { plan } from "./plan.js";
 import { goalPlanner } from "./goal-planner.js";
+import { customerBot } from "./customer-bot.js";
 
 /** Context handed to every prebuilt operation. */
 export interface PrebuiltOpContext {
@@ -159,6 +160,7 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   // can't stop with open steps. Distinct from `tasks` (durable, cross-agent) — see plan.ts.
   [plan.name]: plan,
   [goalPlanner.name]: goalPlanner,
+  [customerBot.name]: customerBot,
 };
 
 /**
@@ -207,4 +209,5 @@ export {
   schedule,
   tasks,
   plan,
+  customerBot,
 };

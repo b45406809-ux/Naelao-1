@@ -1490,6 +1490,34 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_calendar_reminders ON space_calendar_events(space_id, status, start_at);
     `,
   },
+  {
+    version: 56,
+    description: "executive contacts, atomic emergency freeze, and customer conversation analytics",
+    up: `
+      CREATE TABLE executive_contacts (
+        space_id TEXT NOT NULL, user_id TEXT NOT NULL, channel TEXT NOT NULL,
+        contact_id TEXT NOT NULL, verified_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (space_id, channel, contact_id)
+      );
+      CREATE TABLE space_runtime_state (
+        space_id TEXT PRIMARY KEY, space_status TEXT NOT NULL DEFAULT 'ACTIVE',
+        frozen_at TEXT, frozen_by_contact TEXT
+      );
+      CREATE TABLE emergency_stopped_tasks (
+        task_id TEXT PRIMARY KEY, previous_status TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'EMERGENCY_STOPPED', stopped_at TEXT NOT NULL
+      );
+      CREATE TABLE customer_conversations (
+        id TEXT PRIMARY KEY, space_id TEXT NOT NULL, channel TEXT NOT NULL,
+        customer_id TEXT NOT NULL, transcript_json TEXT NOT NULL,
+        sentiment_score REAL DEFAULT 0.0, unresolved INTEGER DEFAULT 0,
+        escalated INTEGER DEFAULT 0, analytics_alerted INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX idx_customer_conversations_scan
+        ON customer_conversations(space_id, analytics_alerted, created_at);
+    `,
+  },
 ];
 
 export const PROVENANCE_GENESIS_HASH = "0".repeat(64);
@@ -1668,6 +1696,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const consumed = await consumeEphemeralActionGrant(this.ctx.storage.sql, body.grant, body.tool_name, body.params ?? {}, this.env.PLATFORM_SECRET);
         return consumed ? Response.json({ consumed: true }) : Response.json({ error: "invalid_expired_or_replayed_grant" }, { status: 403 });
       }
+      if (method === "PUT" && url.pathname === "/internal/executive-contacts") return this.putExecutiveContact(request);
+      if (method === "POST" && url.pathname === "/internal/executive/verify") return this.verifyExecutiveContact(request);
+      if (method === "POST" && url.pathname === "/internal/emergency-stop") return this.handleEmergencyStop(request);
+      if (method === "POST" && url.pathname === "/internal/customer-conversations") return this.recordCustomerConversation(request);
+      if (method === "GET" && url.pathname === "/internal/customer-conversations/urgent") return this.listUrgentCustomerConversations(url.searchParams);
+      if (method === "POST" && url.pathname === "/internal/customer-conversations/mark-alerted") return this.markCustomerConversationsAlerted(request);
       // POST /sessions
       if (method === "POST" && url.pathname === "/sessions") {
         return this.createSession(request);
@@ -2425,6 +2459,82 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         { status: 500 }
       );
     }
+  }
+
+  private async putExecutiveContact(request: Request): Promise<Response> {
+    const body = await request.json<{ space_id?: string; user_id?: string; channel?: string; contact_id?: string }>();
+    if (!body.space_id || !body.user_id || !["whatsapp", "telegram"].includes(body.channel ?? "") || !body.contact_id) {
+      return Response.json({ error: "space_id, user_id, channel and contact_id are required" }, { status: 400 });
+    }
+    const member = queryOne(this.ctx.storage.sql as never,
+      "SELECT role FROM space_members WHERE space_id = ? AND user_id = ? AND role IN ('owner','admin')",
+      body.space_id, body.user_id) as { role: string } | null;
+    if (!member) return Response.json({ error: "owner_or_admin_membership_required" }, { status: 403 });
+    const contact = body.channel === "whatsapp" ? body.contact_id.replace(/[^+\d]/g, "") : body.contact_id.trim();
+    execute(this.ctx.storage.sql as never,
+      `INSERT INTO executive_contacts (space_id,user_id,channel,contact_id) VALUES (?,?,?,?)
+       ON CONFLICT(space_id,channel,contact_id) DO UPDATE SET user_id=excluded.user_id, verified_at=datetime('now')`,
+      body.space_id, body.user_id, body.channel, contact);
+    return Response.json({ verified: true }, { status: 201 });
+  }
+
+  private async verifyExecutiveContact(request: Request): Promise<Response> {
+    const body = await request.json<{ space_id?: string; channel?: string; contact_id?: string }>();
+    const contact = body.channel === "whatsapp" ? (body.contact_id ?? "").replace(/[^+\d]/g, "") : (body.contact_id ?? "").trim();
+    const row = queryOne(this.ctx.storage.sql as never,
+      `SELECT ec.user_id, sm.role FROM executive_contacts ec
+       JOIN space_members sm ON sm.space_id=ec.space_id AND sm.user_id=ec.user_id
+       WHERE ec.space_id=? AND ec.channel=? AND ec.contact_id=? AND sm.role IN ('owner','admin')`,
+      body.space_id ?? "", body.channel ?? "", contact);
+    return Response.json({ verified: Boolean(row), ...(row ? { member: row } : {}) }, { status: row ? 200 : 403 });
+  }
+
+  /** All mutations occur in one SQLite transaction before this method yields. */
+  private async handleEmergencyStop(request: Request): Promise<Response> {
+    const body = await request.json<{ space_id?: string; contact_id?: string }>();
+    if (!body.space_id) return Response.json({ error: "space_id is required" }, { status: 400 });
+    const now = new Date().toISOString();
+    this.ctx.storage.transactionSync(() => {
+      execute(this.ctx.storage.sql as never,
+        `INSERT INTO space_runtime_state(space_id,space_status,frozen_at,frozen_by_contact) VALUES (?, 'FROZEN_BY_OWNER', ?, ?)
+         ON CONFLICT(space_id) DO UPDATE SET space_status='FROZEN_BY_OWNER',frozen_at=excluded.frozen_at,frozen_by_contact=excluded.frozen_by_contact`,
+        body.space_id!, now, body.contact_id ?? null);
+      execute(this.ctx.storage.sql as never,
+        `INSERT OR REPLACE INTO emergency_stopped_tasks(task_id,previous_status,status,stopped_at)
+         SELECT id,status,'EMERGENCY_STOPPED',? FROM tasks WHERE space_id=? AND status IN ('pending','in_progress','blocked')`, now, body.space_id!);
+      execute(this.ctx.storage.sql as never,
+        "UPDATE tasks SET status='cancelled', claimed_by=NULL, lease_expires_at=NULL, updated_at=? WHERE space_id=? AND status IN ('pending','in_progress','blocked')",
+        now, body.space_id!);
+      execute(this.ctx.storage.sql as never,
+        "UPDATE projects SET execution_status='FROZEN_FOR_RFC' WHERE space_id=? AND execution_status='ACTIVE'", body.space_id!);
+    });
+    return Response.json({ space_status: "FROZEN_BY_OWNER", task_status: "EMERGENCY_STOPPED", frozen_at: now });
+  }
+
+  private async recordCustomerConversation(request: Request): Promise<Response> {
+    const b = await request.json<{ id?: string; space_id?: string; channel?: string; customer_id?: string; transcript_json?: unknown; sentiment_score?: number; unresolved?: boolean; escalated?: boolean }>();
+    if (!b.id || !b.space_id || !b.channel || !b.customer_id || !Array.isArray(b.transcript_json)) return Response.json({ error: "invalid conversation" }, { status: 400 });
+    execute(this.ctx.storage.sql as never,
+      `INSERT OR REPLACE INTO customer_conversations(id,space_id,channel,customer_id,transcript_json,sentiment_score,unresolved,escalated)
+       VALUES (?,?,?,?,?,?,?,?)`, b.id, b.space_id, b.channel, b.customer_id, JSON.stringify(b.transcript_json), Math.max(-1, Math.min(1, b.sentiment_score ?? 0)), b.unresolved ? 1 : 0, b.escalated ? 1 : 0);
+    return Response.json({ recorded: true }, { status: 201 });
+  }
+
+  private listUrgentCustomerConversations(params: URLSearchParams): Response {
+    const rows = queryAll(this.ctx.storage.sql as never,
+      `SELECT id AS conversationId,channel,customer_id AS customerId,sentiment_score AS sentimentScore,unresolved
+       FROM customer_conversations WHERE space_id=? AND analytics_alerted=0 AND (sentiment_score < -0.6 OR unresolved=1)
+       ORDER BY created_at ASC LIMIT 100`, params.get("space_id") ?? "");
+    return Response.json({ conversations: rows });
+  }
+
+  private async markCustomerConversationsAlerted(request: Request): Promise<Response> {
+    const b = await request.json<{ space_id?: string; ids?: string[] }>();
+    const ids = (b.ids ?? []).filter(Boolean).slice(0, 100);
+    if (!b.space_id || !ids.length) return Response.json({ updated: 0 });
+    const result = this.ctx.storage.sql.exec(
+      `UPDATE customer_conversations SET analytics_alerted=1 WHERE space_id=? AND id IN (${ids.map(() => "?").join(",")})`, b.space_id, ...ids);
+    return Response.json({ updated: result.rowsWritten });
   }
 
   private async claimWebhookEvent(request: Request): Promise<Response> {

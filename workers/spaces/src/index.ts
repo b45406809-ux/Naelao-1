@@ -447,6 +447,30 @@ app.get("/internal/spaces/:spaceId/owner-contact", async (c) => {
   return c.json({ found: true, email: user.email });
 });
 
+// Executive-channel and customer-analytics storage. These are service-to-service only; the
+// public router can never use them to probe registered personal contact identifiers.
+app.use("/internal/spaces/:spaceId/executive/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.all("/internal/spaces/:spaceId/executive/*", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const suffix = new URL(c.req.url).pathname.split(`/internal/spaces/${spaceId}/executive/`)[1] ?? "";
+  const target = suffix === "contacts" ? "/internal/executive-contacts"
+    : suffix === "verify" ? "/internal/executive/verify" : "/internal/emergency-stop";
+  return forwardToSpaceDO(stub, target, c.req.method, c.req.raw.body);
+});
+
+app.use("/internal/spaces/:spaceId/customer-conversations*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.all("/internal/spaces/:spaceId/customer-conversations*", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const path = new URL(c.req.url).pathname;
+  const suffix = path.slice(`/internal/spaces/${spaceId}/customer-conversations`.length);
+  const query = c.req.method === "GET" ? `?space_id=${encodeURIComponent(spaceId)}` : "";
+  return forwardToSpaceDO(stub, `/internal/customer-conversations${suffix}${query}`, c.req.method, c.req.raw.body);
+});
+
 // ── /internal/business-role ─────────────────────────────────────────────────
 // Cross-worker authorization check: KV and other workers call this to verify
 // a product_end_user has a real business_memberships row for a target space.
