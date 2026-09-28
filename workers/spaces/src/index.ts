@@ -24,6 +24,8 @@ export { TransactionCoordinatorDO } from "./do/TransactionCoordinatorDO.js";
 export { SpaceTypeRegistryDO } from "./do/SpaceTypeRegistryDO.js";
 export { BuilderAccountDO } from "./do/BuilderAccountDO.js";
 export { ProductUserDO } from "./do/ProductUserDO.js";
+export { MicroAppDO } from "./do/MicroAppDO.js";
+export { gadgetActorId, gadgetStorageKey } from "./do/MicroAppDO.js";
 
 export interface Env {
   ENVIRONMENT: string;
@@ -35,6 +37,7 @@ export interface Env {
   BUILDER_ACCOUNT_DO: DurableObjectNamespace;
   /** Three-Tier Platform Model, Phase 2 — one per (productId, endUserId). */
   PRODUCT_USER_DO: DurableObjectNamespace;
+  MICRO_APP_DO: DurableObjectNamespace;
   NAELAO_CONFIG_KV: KVNamespace;
   EXPORTS_BUCKET: R2Bucket;
   /** F-39: agent workspace bucket (read-only file viewer). Optional so tests/dev without R2 degrade. */

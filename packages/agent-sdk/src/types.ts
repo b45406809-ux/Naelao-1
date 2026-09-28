@@ -1,6 +1,17 @@
 /** Public contracts for code authored against the universal AVOS runtime. */
 export type RuntimeScope = "USER_PRIVATE" | "SPACE_WIDE" | "PROJECT_BOUND";
 
+export type GadgetScope = RuntimeScope;
+export interface GadgetActorScope {
+  scope: GadgetScope;
+  appId: string;
+  spaceId: string;
+  projectId?: string;
+  userId?: string;
+}
+
+export type DurableDaemonState = "STOPPED" | "RUNNING" | "PAUSED" | "ERROR";
+
 export interface ProvenanceEntryInput {
   human_trigger_id: string;
   assistant_actor_id: string;

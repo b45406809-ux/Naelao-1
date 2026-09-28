@@ -16,6 +16,9 @@ export default defineConfig({
       "@naelao/http": fileURLToPath(
         new URL("../../packages/http/src/index.ts", import.meta.url)
       ),
+      "@naelao/events": fileURLToPath(
+        new URL("../../packages/events/src/index.ts", import.meta.url)
+      ),
       "@naelao/agent-sdk": fileURLToPath(
         new URL("../../packages/agent-sdk/src/index.ts", import.meta.url)
       ),

@@ -42,7 +42,7 @@ export function interceptPlatformCli(command: string): CliDispatch | null {
     return { operation: "browser.see", params: { path, ...(cropAt >= 0 && words[cropAt + 1] ? { crop: words[cropAt + 1] } : {}) } };
   }
   const scoped = words[0]?.match(/^(?:ext|auto):([a-z][a-z0-9_-]*)$/i);
-  if (scoped) return { operation: scoped[1]!, params: { argv: words.slice(1) } };
+  if (scoped) return { operation: `ext:${scoped[1]!}`, params: { argv: words.slice(1) } };
   if (words[0] === "avos" && words[1] === "chore" && words[2]) {
     return { operation: "avos.chore", params: { name: words[2], argv: words.slice(3) } };
   }
@@ -54,7 +54,8 @@ export interface VirtualCliVault {
   fetchWithAuth(url: string, options: { credentialName: string; method?: string; body?: unknown; headers?: Record<string, string> }): Promise<Response>;
 }
 export interface SynthesizedCliStore { read(path: string): Promise<string | null>; write(path: string, source: string): Promise<void> }
-export interface VirtualCliContext { vault: VirtualCliVault; tenantId: string; spaceId: string; projectId?: string }
+export interface VirtualCliDaemonRegistry { execute(name: string, argv: string[]): Promise<unknown> }
+export interface VirtualCliContext { vault: VirtualCliVault; tenantId: string; spaceId: string; projectId?: string; daemons?: VirtualCliDaemonRegistry }
 export interface VirtualCliResult { exit_code: number; stdout: string; stderr?: string }
 
 const API_COMMANDS = new Set(["stripe", "gh", "r2", "resend"]);
@@ -94,6 +95,12 @@ export class VirtualCliDispatcher {
   async execute(words: string[], stdin = ""): Promise<VirtualCliResult | null> {
     const [command, ...args] = words;
     if (!command) return null;
+    const daemon = command.match(/^ext:([a-z][a-z0-9_-]*)$/i)?.[1];
+    if (daemon) {
+      if (!this.ctx.daemons) throw new Error("daemon_registry_unavailable");
+      const result = await this.ctx.daemons.execute(daemon, args);
+      return { exit_code: 0, stdout: JSON.stringify(result, null, 2) };
+    }
     if (command === "jq") return { exit_code: 0, stdout: jqValue(args[0] ?? ".", stdin) };
     if (!API_COMMANDS.has(command)) return null;
     const { positional, body } = bodyAndFlags(args);
