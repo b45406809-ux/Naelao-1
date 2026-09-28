@@ -1,6 +1,19 @@
 /** Public contracts for code authored against the universal AVOS runtime. */
 export type RuntimeScope = "USER_PRIVATE" | "SPACE_WIDE" | "PROJECT_BOUND";
 
+/** Space-owned allowance used for a human's personal assistant runs. Cron/system actors omit it. */
+export interface UserDailyBudgetEnvelope {
+  space_id: string;
+  user_id: string;
+  daily_credit_limit: number;
+  credits_spent_today: number;
+  reset_at: string;
+}
+
+export type DailyBudgetDebitResult =
+  | { ok: true; envelope: UserDailyBudgetEnvelope }
+  | { ok: false; error_code: "daily_user_budget_exhausted"; envelope: UserDailyBudgetEnvelope };
+
 export interface AppointmentAvailabilityQuery { startAt: string; endAt: string; timezone?: string; }
 export interface CustomerBotServices {
   searchKnowledge(query: string, limit?: number): Promise<unknown>;

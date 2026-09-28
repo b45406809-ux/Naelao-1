@@ -1,4 +1,6 @@
-export type RacePlan = "starter" | "pro" | "enterprise";
+import { clampPlanParallelism } from "@naelao/billing-core";
+
+export type RacePlan = "free" | "starter" | "pro" | "enterprise";
 export interface ModelRaceWorkerResult { exitCode: number; commitOid?: string }
 export interface ModelRaceDependencies {
   plan: RacePlan;
@@ -27,22 +29,26 @@ export async function runSpeculativeModelRace(taskId: string, models: readonly s
     return { model, branch, ...(oracle.commitOid ? { commitOid: oracle.commitOid } : {}) };
   };
   let winner: Awaited<ReturnType<typeof execute>> | undefined;
-  if (dependencies.plan === "starter") {
+  const parallelism = clampPlanParallelism(dependencies.plan, models.length);
+  if (parallelism === 1) {
     for (let i = 0; i < models.length; i++) {
       try { winner = await execute(models[i]!, branches[i]!, new AbortController().signal); break; } catch { /* sequential clamp */ }
     }
   } else {
-    const controllers = models.map(() => new AbortController());
+    // A plan limit is also respected when an Enterprise caller supplies an unusually large
+    // candidate set. Execute bounded waves; normal Pro races (<=8) remain a single true race.
+    const candidates = models.slice(0, parallelism);
+    const controllers = candidates.map(() => new AbortController());
     winner = await new Promise<Awaited<ReturnType<typeof execute>>>((resolve, reject) => {
       let failures = 0, settled = false;
-      models.forEach((model, index) => void execute(model, branches[index]!, controllers[index]!.signal).then((result) => {
+      candidates.forEach((model, index) => void execute(model, branches[index]!, controllers[index]!.signal).then((result) => {
         if (settled) return;
         settled = true;
         controllers.forEach((controller, other) => {
           if (other !== index && !controller.signal.aborted) { controller.abort(new DOMException("Race lost", "AbortError")); aborted++; }
         });
         resolve(result);
-      }).catch((error) => { if (++failures === models.length && !settled) reject(error); }));
+      }).catch((error) => { if (++failures === candidates.length && !settled) reject(error); }));
     });
   }
   if (!winner) throw new Error("No model satisfied the deterministic oracle");

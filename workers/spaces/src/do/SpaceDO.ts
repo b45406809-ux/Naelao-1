@@ -1518,6 +1518,27 @@ const MIGRATIONS: Migration[] = [
         ON customer_conversations(space_id, analytics_alerted, created_at);
     `,
   },
+  {
+    version: 57,
+    description: "per-user daily credit envelopes and self-funding wallet payouts",
+    up: `
+      CREATE TABLE IF NOT EXISTS space_user_budget_envelopes (
+        space_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        daily_credit_limit INTEGER NOT NULL DEFAULT 500,
+        credits_spent_today INTEGER NOT NULL DEFAULT 0,
+        reset_at TEXT NOT NULL,
+        PRIMARY KEY (space_id, user_id)
+      );
+      CREATE TABLE IF NOT EXISTS wallet_payouts (
+        id TEXT PRIMARY KEY, space_id TEXT NOT NULL, project_id TEXT NOT NULL,
+        amount_cents INTEGER NOT NULL, requested_by TEXT NOT NULL,
+        destination_id TEXT, status TEXT NOT NULL DEFAULT 'requested',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_wallet_payouts_space ON wallet_payouts(space_id, created_at DESC);
+    `,
+  },
 ];
 
 export const PROVENANCE_GENESIS_HASH = "0".repeat(64);
@@ -1680,6 +1701,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const method = request.method;
 
     try {
+      if (method === "POST" && url.pathname === "/internal/user-budget/debit") return this.debitUserDailyBudget(request);
+      if (method === "POST" && url.pathname === "/internal/business-wallet/settle") return this.settleBusinessWallet(request);
+      if (method === "POST" && url.pathname === "/internal/business-wallet/withdraw") return this.withdrawBusinessWallet(request);
       if (url.pathname === "/extensions" && method === "GET") return this.listExtensions();
       if (url.pathname === "/extensions" && method === "POST") return await this.installExtension(request);
       const extensionMatch = url.pathname.match(/^\/extensions\/(ext_[a-z0-9_-]+)$/);
@@ -6131,6 +6155,81 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       sessionId
     );
     return Response.json({ ok: true });
+  }
+
+  /** Atomically resets at UTC midnight and debits a personal user's shared-space allowance. */
+  private async debitUserDailyBudget(request: Request): Promise<Response> {
+    const body = await request.json<{ space_id?: string; user_id?: string; credits?: number; daily_credit_limit?: number }>().catch(() => ({} as any));
+    const spaceId = body.space_id ?? "";
+    const userId = body.user_id ?? "";
+    const credits = Number.isFinite(body.credits) ? Math.ceil(body.credits!) : -1;
+    const limit = Number.isFinite(body.daily_credit_limit) ? Math.max(0, Math.floor(body.daily_credit_limit!)) : 500;
+    if (!spaceId || !userId || credits < 0) return Response.json({ error_code: "bad_request" }, { status: 400 });
+
+    execute(this.ctx.storage.sql as never,
+      `INSERT OR IGNORE INTO space_user_budget_envelopes
+       (space_id, user_id, daily_credit_limit, credits_spent_today, reset_at)
+       VALUES (?, ?, ?, 0, datetime('now', 'start of day', '+1 day'))`, spaceId, userId, limit);
+    execute(this.ctx.storage.sql as never,
+      `UPDATE space_user_budget_envelopes SET credits_spent_today = 0,
+       reset_at = datetime('now', 'start of day', '+1 day')
+       WHERE space_id = ? AND user_id = ? AND datetime('now') >= reset_at`, spaceId, userId);
+    const updated = this.ctx.storage.sql.exec(
+      `UPDATE space_user_budget_envelopes SET credits_spent_today = credits_spent_today + ?
+       WHERE space_id = ? AND user_id = ? AND credits_spent_today + ? <= daily_credit_limit
+         AND (? > 0 OR credits_spent_today < daily_credit_limit)`,
+      credits, spaceId, userId, credits, credits);
+    const envelope = queryOne<{ space_id: string; user_id: string; daily_credit_limit: number; credits_spent_today: number; reset_at: string }>(
+      this.ctx.storage.sql as never, "SELECT * FROM space_user_budget_envelopes WHERE space_id = ? AND user_id = ?", spaceId, userId)!;
+    if (updated.rowsWritten === 0) return Response.json({ ok: false, error_code: "daily_user_budget_exhausted", envelope }, { status: 402 });
+    return Response.json({ ok: true, envelope });
+  }
+
+  /** Revenue and compute settlement share the existing append-only, cent-denominated ledger. */
+  private async settleBusinessWallet(request: Request): Promise<Response> {
+    const body = await request.json<{ space_id?: string; amount_cents?: number; type?: "revenue" | "expense"; source?: string; idempotency_key?: string }>().catch(() => ({} as any));
+    const spaceId = body.space_id ?? "";
+    const amount = Number.isFinite(body.amount_cents) ? Math.ceil(Math.abs(body.amount_cents!)) : 0;
+    if (!spaceId || !amount || (body.type !== "revenue" && body.type !== "expense")) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const wallet = queryOne<{ id: string }>(this.ctx.storage.sql as never,
+      "SELECT id FROM projects WHERE space_id = ? AND kind = 'wallet' AND status != 'archived' LIMIT 1", spaceId);
+    if (!wallet) return Response.json({ error_code: "wallet_not_found" }, { status: 404 });
+    const signed = body.type === "revenue" ? amount : -amount;
+    const balance = this.walletBalance(wallet.id);
+    if (balance + signed < 0) return Response.json({ error_code: "insufficient_balance", balance_cents: balance }, { status: 402 });
+    if (body.idempotency_key) {
+      const prior = queryOne<{ balance_after_cents: number }>(this.ctx.storage.sql as never,
+        "SELECT balance_after_cents FROM wallet_ledger WHERE project_id = ? AND idempotency_key = ?", wallet.id, body.idempotency_key);
+      if (prior) return Response.json({ balance_cents: prior.balance_after_cents, deduplicated: true });
+    }
+    const balanceAfter = balance + signed;
+    execute(this.ctx.storage.sql as never,
+      `INSERT INTO wallet_ledger (id, project_id, space_id, delta_cents, currency, reason, balance_after_cents, idempotency_key)
+       VALUES (?, ?, ?, ?, 'USD', ?, ?, ?)`, crypto.randomUUID(), wallet.id, spaceId, signed,
+      `${body.type}:${body.source ?? "unknown"}`, balanceAfter, body.idempotency_key ?? null);
+    return Response.json({ balance_cents: balanceAfter }, { status: 201 });
+  }
+
+  /** Owner payout keeps the mandatory $10 operating reserve in the wallet. */
+  private async withdrawBusinessWallet(request: Request): Promise<Response> {
+    const body = await request.json<{ space_id?: string; amount_cents?: number; requested_by?: string; destination_id?: string }>().catch(() => ({} as any));
+    const spaceId = body.space_id ?? "";
+    const amount = Number.isFinite(body.amount_cents) ? Math.ceil(body.amount_cents!) : 0;
+    if (!spaceId || amount <= 0 || !body.requested_by) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const wallet = queryOne<{ id: string }>(this.ctx.storage.sql as never,
+      "SELECT id FROM projects WHERE space_id = ? AND kind = 'wallet' AND status != 'archived' LIMIT 1", spaceId);
+    if (!wallet) return Response.json({ error_code: "wallet_not_found" }, { status: 404 });
+    const balance = this.walletBalance(wallet.id);
+    if (balance - amount < 1_000) return Response.json({ error_code: "operational_reserve_required", balance_cents: balance, reserve_cents: 1_000 }, { status: 402 });
+    const payoutId = crypto.randomUUID();
+    const balanceAfter = balance - amount;
+    execute(this.ctx.storage.sql as never,
+      `INSERT INTO wallet_ledger (id, project_id, space_id, delta_cents, currency, reason, balance_after_cents, idempotency_key)
+       VALUES (?, ?, ?, ?, 'USD', 'owner_payout', ?, ?)`, crypto.randomUUID(), wallet.id, spaceId, -amount, balanceAfter, `payout:${payoutId}`);
+    execute(this.ctx.storage.sql as never,
+      `INSERT INTO wallet_payouts (id, space_id, project_id, amount_cents, requested_by, destination_id)
+       VALUES (?, ?, ?, ?, ?, ?)`, payoutId, spaceId, wallet.id, amount, body.requested_by, body.destination_id ?? null);
+    return Response.json({ payout_id: payoutId, balance_cents: balanceAfter, reserve_cents: 1_000 }, { status: 201 });
   }
 
   // ── Launchpad Wallet (user-directed feature) ────────────────────────────────

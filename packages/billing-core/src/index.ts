@@ -200,7 +200,7 @@ export function computeTokenCostMicro(
  * rather than disappearing. Single source of truth — every USD↔credit conversion in the
  * platform must go through this constant, not a locally re-derived rate.
  */
-export const CREDITS_PER_USD = 100;
+export { CREDITS_PER_USD } from "./credits.js";
 
 /**
  * Converts real reasoner token usage into the platform credit unit, using computeTokenCostMicro's
@@ -209,11 +209,8 @@ export const CREDITS_PER_USD = 100;
  * (NaelaoAgentDO's project spend cap, sub-agent budgets). Always rounds UP: a run that cost
  * anything above $0 must never be recorded as free.
  */
-export function tokensToCredits(inputTokens: number, outputTokens: number, model: string): number {
-  if (inputTokens <= 0 && outputTokens <= 0) return 0;
-  const costMicro = computeTokenCostMicro(inputTokens, outputTokens, model);
-  return Math.max(1, Math.ceil((costMicro * CREDITS_PER_USD) / 1_000_000));
-}
+export { tokensToCredits, calculateResourceCredits, ACTIVE_PHONE_LINE_MONTHLY_CREDITS } from "./credits.js";
+export type { ResourceType, ResourceMetadata } from "./credits.js";
 
 /**
  * §A1.26: which Cloudflare compute resource an execution ran on — used to price it, and to
@@ -221,38 +218,11 @@ export function tokensToCredits(inputTokens: number, outputTokens: number, model
  * billed as a flat per-invocation cost rather than per-ms (a durable CF Workflow step's own
  * orchestration overhead isn't meaningfully proportional to wall-clock time at Naelao's scale).
  */
-export type InfraResourceType = "isolate" | "container" | "workflow_step";
-
-/**
- * Approximate default USD rates for each resource type — NOT authoritative Cloudflare pricing.
- * Tune against the platform's real CF invoice before relying on this for margin analysis; the
- * relative ordering (container > isolate, workflow steps a small flat fee) is what actually
- * matters for fair per-tenant metering, not the exact figures.
- */
-const INFRA_PRICING: Record<InfraResourceType, { perMs: number; flatUsd?: number }> = {
-  // Tier 2-4 CF Worker Loader isolates — cheapest, proportional to CF's own CPU-ms billing.
-  isolate: { perMs: 0.00000002 },
-  // Tier 5 CF Containers — full-VM compute, materially costlier per unit time than an isolate.
-  container: { perMs: 0.0000006 },
-  // A durable CF Workflow step's cost is dominated by orchestration overhead, not wall-clock —
-  // a small flat per-step fee rather than a per-ms rate.
-  workflow_step: { perMs: 0, flatUsd: 0.00005 },
-};
-
-/**
- * Converts real Cloudflare infra consumption (isolate/container wall-clock time, or a durable
- * Workflow step) into the platform credit unit — the infra-usage counterpart to tokensToCredits.
- * Same "always round up, minimum 1 credit for any nonzero cost" invariant: an execution that
- * consumed real compute must never be recorded as free.
- */
-export function infraTimeToCredits(resourceType: InfraResourceType, durationMs: number): number {
-  const pricing = INFRA_PRICING[resourceType];
-  const costUsd = pricing.perMs * Math.max(0, durationMs) + (pricing.flatUsd ?? 0);
-  if (costUsd <= 0) return 0;
-  return Math.max(1, Math.ceil(costUsd * CREDITS_PER_USD));
-}
+export { infraTimeToCredits } from "./credits.js";
+export type { InfraResourceType } from "./credits.js";
 
 // See the comment near the top of this file — these must come last.
 export * from "./model-benchmarks.js";
 export * from "./effort.js";
 export * from "./personal-plan.js";
+export * from "./plans.js";

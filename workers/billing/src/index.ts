@@ -17,6 +17,8 @@ import { handleLemonSqueezyWebhook, recordPlatformPlanSubscription, grantPersona
 import { createLsProductVariant, lsProductsConfig } from "./ls-products.js";
 import { registerWhopWalletRoutes, handleWhopWebhook, renderPayoutApprovalPage, confirmPayoutApproval, routeWhopWalletCheckout, getSubMerchant } from "./whop-wallet.js";
 import { createBusinessWhopOAuthCheckout } from "./whop-oauth-billing.js";
+import { reserveOwnerPayout, settleSpaceWallet } from "./wallet-checkout.js";
+import { normalizePlanTier, PLANS } from "@naelao/billing-core";
 
 export interface BillingEnv {
   ENVIRONMENT: string;
@@ -123,6 +125,18 @@ const app = new Hono<{ Bindings: BillingEnv }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
 
+app.post("/billing/business-wallet/settle", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId) return c.json({ error_code: "unauthorized" }, 401);
+  return settleSpaceWallet(c.env, tenantId, await c.req.json());
+});
+
+app.post("/billing/business-wallet/withdraw", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId) return c.json({ error_code: "unauthorized" }, 401);
+  return reserveOwnerPayout(c.env, tenantId, await c.req.json());
+});
+
 // ── GET /billing/subscription ─────────────────────────────────────────────────
 // Authenticated — router sets x-naelao-tenant-id from validated JWT
 app.get("/billing/subscription", async (c) => {
@@ -149,6 +163,7 @@ app.get("/billing/subscription", async (c) => {
     }>();
 
   const planTier = sub?.plan_tier ?? "free";
+  const unifiedPlan = PLANS[normalizePlanTier(planTier)];
 
   // Fetch quota current/limit for all three metrics in parallel
   const [spacesQuota, kbDocsQuota, apiCallsQuota] = await Promise.all([
@@ -171,6 +186,7 @@ app.get("/billing/subscription", async (c) => {
 
   return c.json({
     plan_tier: planTier,
+    plan: unifiedPlan,
     status: sub?.status ?? "active",
     current_period_start: sub?.current_period_start ?? null,
     current_period_end: sub?.current_period_end ?? null,

@@ -92,7 +92,9 @@ export const businessWallet: PrebuiltScript = {
       if (!a["destination_id"] || typeof a["amount_cents"] !== "number" || a["amount_cents"] <= 0) {
         throw new Error("request_payout requires destination_id and a positive amount_cents");
       }
-      return billingCall(c, "/billing/whop-wallet/payouts", "POST", {
+      // Reserve enforcement is performed by the authoritative SpaceDO before any provider-side
+      // payout: the business always retains 1,000 credits ($10) for autonomous operations.
+      return billingCall(c, "/billing/business-wallet/withdraw", "POST", {
         space_id: c.env.spaceId,
         destination_id: a["destination_id"],
         amount_cents: a["amount_cents"],

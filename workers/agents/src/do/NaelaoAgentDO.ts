@@ -5051,6 +5051,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     let effectiveRole: AssistantEffectiveRole | undefined;
     let maxTier: ExecutionTier | undefined;
 
+    // Personal assistants consume a per-human envelope. System/cron invocations have no user id
+    // and deliberately bypass this gate so background operations remain funded by the space.
+    if (userId && BUILDER_CALLER_ROLES.has(callerRole ?? "") && this.env.SPACES_WORKER) {
+      const budget = await this.debitUserDailyBudget(spaceId, tenantId, userId, 0);
+      if (!budget.ok) return { ok: false, response: budget.response };
+    }
+
     // §A1 Harness Excellence Phase HX2: session token-budget guard — checked first, ahead of
     // every payer-specific gate below, since it's a session-scoped ceiling independent of who's
     // paying. Never silent: crossing 100% always surfaces a clear error_code + approval_id
@@ -5436,6 +5443,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ? tokensToCredits(inputTokens, outputTokens, model ?? DEFAULT_WORKING_MODEL)
       : tokensUsed;
 
+    if (userId && BUILDER_CALLER_ROLES.has(callerRole ?? "") && this.env.SPACES_WORKER) {
+      const dailyDebit = await this.debitUserDailyBudget(spaceId, tenantId, userId, credits);
+      if (!dailyDebit.ok) notes.push("Billing: daily_user_budget_exhausted; subsequent personal runs are blocked until UTC reset.");
+    }
+
     // §A1 Harness Excellence Phase HX2: post-run tally increment — only when this space actually
     // opted into the guard (sessionCreditCeiling set), so an unconfigured space pays zero extra
     // cost per run. Best-effort: a missed increment under-counts by one run's worth of credits,
@@ -5512,6 +5524,26 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return data;
     } catch {
       return { capped: true, spent_today: Number.POSITIVE_INFINITY };
+    }
+  }
+
+  private async debitUserDailyBudget(
+    spaceId: string, tenantId: string, userId: string, credits: number
+  ): Promise<{ ok: true } | { ok: false; response: Response }> {
+    try {
+      const response = await this.env.SPACES_WORKER.fetch(new Request("http://spaces-worker/internal/user-budget/debit", {
+        method: "POST",
+        headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
+        body: JSON.stringify({ space_id: spaceId, user_id: userId, credits }),
+      }));
+      if (response.status === 402) return { ok: false, response: Response.json(
+        { error: "daily user budget exhausted", error_code: "daily_user_budget_exhausted" }, { status: 402 }) };
+      if (!response.ok) return { ok: false, response: Response.json(
+        { error: "unable to verify daily user budget", error_code: "daily_user_budget_unavailable" }, { status: 503 }) };
+      return { ok: true };
+    } catch {
+      return { ok: false, response: Response.json(
+        { error: "unable to verify daily user budget", error_code: "daily_user_budget_unavailable" }, { status: 503 }) };
     }
   }
 
