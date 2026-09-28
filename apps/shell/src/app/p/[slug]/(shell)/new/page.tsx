@@ -198,6 +198,7 @@ export default function HomePage() {
                 window.setTimeout(() => setDockNotice((cur) => (cur === msg ? null : cur)), 4000);
               }}
               onUseTip={(text) => insertPrompt(text)}
+              onDictation={(text) => setInput((current) => `${current}${current && !/\s$/.test(current) ? " " : ""}${text}`)}
             >
               <div className="input-container">
                 <div className="input-top">

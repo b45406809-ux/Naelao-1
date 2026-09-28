@@ -48,6 +48,37 @@ export interface RuntimeThread {
   system_internal: boolean;
 }
 
+/** Configuration stored by a voice agent's human-facing management thread. */
+export interface VoiceAgentConfig {
+  greeting: string;
+  businessHours: Record<string, { open: string; close: string } | null>;
+  voiceModel: string;
+  fallbackPhoneNumber?: string;
+  timezone: string;
+}
+
+export type VoiceCallBookingState = "none" | "held" | "confirmed" | "reschedule_requested";
+
+/** Durable audit record produced when an isolated telephone call thread terminates. */
+export interface VoiceCallSummary {
+  callSid: string;
+  callerId: string;
+  durationSeconds: number;
+  sentimentScore: number;
+  transcript: Array<{ role: "caller" | "assistant"; text: string; at: string }>;
+  bookingState: VoiceCallBookingState;
+  actionOutcomes: Array<{ action: string; ok: boolean; detail?: string }>;
+}
+
+/** Public manifest for the deliberately restricted 24/7 telephone receptionist. */
+export interface VoiceAgentManifest {
+  kind: "voice_agent";
+  managementThreadTier: "tier_2_task";
+  callThreadTier: "tier_3_consult";
+  executionCeiling: 2;
+  enabledTools: readonly ["primary_calendar", "faq_search"];
+}
+
 export type ProjectMode = "solo_cockpit" | "multiplayer_office";
 
 /** User-facing complexity level. Business mode deliberately receives a redacted projection. */

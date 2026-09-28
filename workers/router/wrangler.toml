@@ -3,6 +3,9 @@ main = "src/index.ts"
 compatibility_date = "2024-12-01"
 compatibility_flags = ["nodejs_compat"]
 
+[ai]
+binding = "AI"
+
 [vars]
 ENVIRONMENT = "development"
 CORS_ALLOWLIST = "http://localhost:3000,http://localhost:3001,http://localhost:3100,https://naelao-dashboard.pages.dev,https://naelao-portal.pages.dev,https://naelao-shell.pages.dev,https://naelao-marketplace.pages.dev"

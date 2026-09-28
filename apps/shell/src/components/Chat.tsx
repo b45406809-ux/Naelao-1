@@ -1853,6 +1853,7 @@ export function Chat({
               window.setTimeout(() => setUploadNotice((cur) => (cur === msg ? null : cur)), 4000);
             }}
             onUseTip={(text) => setInput(text)}
+            onDictation={(text) => setInput((current) => `${current}${current && !/\s$/.test(current) ? " " : ""}${text}`)}
             ensureSessionId={ensureSessionId}
             pendingUploads={pendingUploads}
             onUploadsChange={setPendingUploads}

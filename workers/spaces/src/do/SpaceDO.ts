@@ -1476,6 +1476,20 @@ const MIGRATIONS: Migration[] = [
         ON space_calendar_events(space_id, calendar_id, start_at, end_at);
     `,
   },
+  {
+    version: 55,
+    description: "isolated voice call threads and reminder outcomes",
+    up: `
+      CREATE TABLE voice_call_sessions (
+        call_sid TEXT PRIMARY KEY, thread_id TEXT NOT NULL UNIQUE, space_id TEXT NOT NULL,
+        caller_id TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT,
+        duration_seconds INTEGER, sentiment_score REAL, transcript_json TEXT NOT NULL DEFAULT '[]',
+        booking_state TEXT NOT NULL DEFAULT 'none', action_outcomes_json TEXT NOT NULL DEFAULT '[]'
+      );
+      CREATE INDEX idx_voice_calls_space ON voice_call_sessions(space_id, started_at DESC);
+      CREATE INDEX idx_calendar_reminders ON space_calendar_events(space_id, status, start_at);
+    `,
+  },
 ];
 
 export const PROVENANCE_GENESIS_HASH = "0".repeat(64);
@@ -1730,6 +1744,18 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
       if (method === "POST" && url.pathname === "/internal/project-crons") {
         return this.registerProjectCron(await request.json());
+      }
+      if (method === "POST" && url.pathname === "/internal/voice/calls/start") {
+        return this.startVoiceCall(await request.json());
+      }
+      if (method === "POST" && url.pathname === "/internal/voice/calls/finish") {
+        return this.finishVoiceCall(await request.json());
+      }
+      if (method === "GET" && url.pathname === "/internal/calendar/reminders") {
+        return this.listCalendarReminders(url.searchParams);
+      }
+      if (method === "POST" && url.pathname === "/internal/calendar/reminders/outcome") {
+        return this.updateReminderOutcome(await request.json());
       }
       if (url.pathname === "/internal/primary-calendar/availability" && method === "GET") {
         return this.getCalendarAvailability(url.searchParams);
@@ -8881,6 +8907,63 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
        WHERE space_id=? AND calendar_id=? AND status='confirmed' AND start_at < ? AND end_at > ? ORDER BY start_at`,
       spaceId, calendarId, end, start);
     return Response.json({ calendar_id: calendarId, start_date: start, end_date: end, busy: events });
+  }
+
+  private startVoiceCall(input: unknown): Response {
+    const body = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+    const spaceId = String(body["space_id"] ?? "");
+    const callSid = String(body["call_sid"] ?? "");
+    const callerId = String(body["caller_id"] ?? "");
+    const projectId = body["project_id"] ? String(body["project_id"]) : null;
+    if (!spaceId || !callSid || !callerId) return Response.json({ error_code: "invalid_voice_call" }, { status: 400 });
+    const existing = queryOne<{ thread_id: string }>(this.ctx.storage.sql as never, "SELECT thread_id FROM voice_call_sessions WHERE call_sid=?", callSid);
+    if (existing) return Response.json({ thread_id: existing.thread_id, call_sid: callSid });
+    const threadId = crypto.randomUUID();
+    const startedAt = new Date().toISOString();
+    execute(this.ctx.storage.sql as never,
+      `INSERT INTO threads(id,space_id,project_id,title,status,thread_kind,channel,channel_session_id,thread_tier,system_internal,created_at,updated_at)
+       VALUES(?,?,?,?,'active','channel','voice',?,'tier_3_consult',1,?,?)`,
+      threadId, spaceId, projectId, `Call from ${callerId}`, callSid, startedAt, startedAt);
+    execute(this.ctx.storage.sql as never,
+      "INSERT INTO voice_call_sessions(call_sid,thread_id,space_id,caller_id,started_at) VALUES(?,?,?,?,?)",
+      callSid, threadId, spaceId, callerId, startedAt);
+    return Response.json({ thread_id: threadId, call_sid: callSid, channel: "voice", caller_id: callerId, thread_tier: "tier_3_consult" }, { status: 201 });
+  }
+
+  private finishVoiceCall(input: unknown): Response {
+    const body = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+    const callSid = String(body["call_sid"] ?? "");
+    const transcript = Array.isArray(body["transcript"]) ? body["transcript"] : [];
+    const outcomes = Array.isArray(body["action_outcomes"]) ? body["action_outcomes"] : [];
+    const endedAt = new Date().toISOString();
+    const result = this.ctx.storage.sql.exec(
+      `UPDATE voice_call_sessions SET ended_at=?,duration_seconds=?,sentiment_score=?,transcript_json=?,booking_state=?,action_outcomes_json=? WHERE call_sid=?`,
+      endedAt, Math.max(0, Number(body["duration_seconds"] ?? 0)), Math.max(-1, Math.min(1, Number(body["sentiment_score"] ?? 0))),
+      JSON.stringify(transcript), String(body["booking_state"] ?? "none"), JSON.stringify(outcomes), callSid);
+    if (!result.rowsWritten) return Response.json({ error_code: "voice_call_not_found" }, { status: 404 });
+    this.ctx.storage.sql.exec("UPDATE threads SET status='archived',updated_at=? WHERE channel_session_id=? AND channel='voice'", endedAt, callSid);
+    return Response.json({ ok: true, call_sid: callSid, ended_at: endedAt });
+  }
+
+  private listCalendarReminders(params: URLSearchParams): Response {
+    const spaceId = params.get("space_id") ?? "";
+    const from = params.get("from") ?? new Date().toISOString();
+    const to = params.get("to") ?? new Date(Date.parse(from) + 24 * 60 * 60 * 1000).toISOString();
+    if (!spaceId || !Number.isFinite(Date.parse(from)) || !Number.isFinite(Date.parse(to))) return Response.json({ error_code: "invalid_reminder_range" }, { status: 400 });
+    const events = queryAll<{ id: string; start_at: string; end_at: string; client_details: string; status: string }>(this.ctx.storage.sql as never,
+      `SELECT id,start_at,end_at,client_details,status FROM space_calendar_events
+       WHERE space_id=? AND lower(status)='confirmed' AND start_at>=? AND start_at<? ORDER BY start_at`, spaceId, from, to)
+      .map((event) => ({ ...event, client_details: JSON.parse(event.client_details || "{}") }));
+    return Response.json({ events, from, to });
+  }
+
+  private updateReminderOutcome(input: unknown): Response {
+    const body = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+    const eventId = String(body["event_id"] ?? "");
+    const status = String(body["status"] ?? "").toUpperCase();
+    if (!eventId || !["CONFIRMED", "RESCHEDULE_REQUESTED"].includes(status)) return Response.json({ error_code: "invalid_reminder_outcome" }, { status: 400 });
+    const result = this.ctx.storage.sql.exec("UPDATE space_calendar_events SET status=?,updated_at=datetime('now') WHERE id=?", status, eventId);
+    return Response.json({ updated: result.rowsWritten > 0, event_id: eventId, status }, { status: result.rowsWritten ? 200 : 404 });
   }
 
   private createCalendarBooking(input: unknown): Response {

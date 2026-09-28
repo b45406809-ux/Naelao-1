@@ -11,6 +11,17 @@ export interface SessionCredentials {
   endUserId: string;
 }
 
+export async function transcribeVoice(audio: Blob): Promise<string> {
+  const response = await fetch(`${API_URL}/api/voice/transcribe`, {
+    method: "POST",
+    headers: { "content-type": audio.type || "audio/webm" },
+    body: audio,
+  });
+  const result = await response.json() as { ok?: boolean; text?: string; error?: string };
+  if (!response.ok || !result.ok) throw new Error(result.error ?? "Voice transcription failed");
+  return result.text ?? "";
+}
+
 // Callers need to distinguish "not found" (self-healable — e.g. Chat.tsx recreating a stale
 // session) from other failures, but the backend's `message` field is human text ("Session not
 // found") with no reliable substring to match on — a prior version of this threw a plain Error

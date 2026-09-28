@@ -24,4 +24,6 @@ export interface Env {
     create(opts: { id?: string; params?: unknown }): Promise<{ id: string; status(): Promise<{ status: string; output?: unknown; error?: unknown }> }>;
     get(id: string): Promise<{ id: string; status(): Promise<{ status: string; output?: unknown; error?: unknown }> }>;
   };
+  SCHEDULED_REMINDER_WORKFLOW?: { create(opts: { id?: string; params: unknown }): Promise<{ id: string }> };
+  VOICE_CALLS?: Fetcher;
 }

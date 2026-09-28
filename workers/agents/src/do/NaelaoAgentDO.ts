@@ -1415,6 +1415,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         return Response.json({ status: "warm", ts: Date.now() });
       }
 
+      // Voice-agent management is deliberately separate from per-call transcripts. The former
+      // is an admin-authored Tier-2 workspace file; call records live in isolated SpaceDO threads.
+      if (method === "PUT" && url.pathname === "/voice/config") return this.putVoiceConfig(request);
+      if (method === "GET" && url.pathname === "/voice/config") return this.getVoiceConfig(url.searchParams);
+      if (method === "POST" && url.pathname === "/voice/calls/start") return this.forwardVoiceCall(request, "start");
+      if (method === "POST" && url.pathname === "/voice/calls/finish") return this.forwardVoiceCall(request, "finish");
+
       // Finite-project terminal transition. Clearing the watchdog/schedule alarm is what lets
       // this Durable Object hibernate at zero compute until a subsequent human /script/run.
       if (method === "POST" && url.pathname === "/project/hibernate") {
@@ -1659,6 +1666,39 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         { status: 500 }
       );
     }
+  }
+
+  private async putVoiceConfig(request: Request): Promise<Response> {
+    if (!this.env.SCRIPTS_R2) return Response.json({ error_code: "workspace_unavailable" }, { status: 503 });
+    const body = await request.json<{ spaceId?: string; projectId?: string; config?: Record<string, unknown> }>()
+      .catch((): { spaceId?: string; projectId?: string; config?: Record<string, unknown> } => ({}));
+    if (!body.spaceId || !body.projectId || !body.config) return Response.json({ error_code: "invalid_voice_config" }, { status: 400 });
+    const greeting = String(body.config.greeting ?? "").trim();
+    const voiceModel = String(body.config.voiceModel ?? "@cf/myshell-ai/melotts");
+    const timezone = String(body.config.timezone ?? "UTC");
+    if (!greeting || greeting.length > 500) return Response.json({ error_code: "invalid_greeting" }, { status: 400 });
+    const config = { ...body.config, greeting, voiceModel, timezone };
+    const key = `spaces/${body.spaceId}/projects/${body.projectId}/workspace/voice_agent_config.json`;
+    await this.env.SCRIPTS_R2.put(key, JSON.stringify(config, null, 2), { httpMetadata: { contentType: "application/json" } });
+    return Response.json({ ok: true, path: "voice_agent_config.json", thread_tier: "tier_2_task", config });
+  }
+
+  private async getVoiceConfig(params: URLSearchParams): Promise<Response> {
+    if (!this.env.SCRIPTS_R2) return Response.json({ error_code: "workspace_unavailable" }, { status: 503 });
+    const spaceId = params.get("space_id") ?? "";
+    const projectId = params.get("project_id") ?? "";
+    if (!spaceId || !projectId) return Response.json({ error_code: "space_id_and_project_id_required" }, { status: 400 });
+    const object = await this.env.SCRIPTS_R2.get(`spaces/${spaceId}/projects/${projectId}/workspace/voice_agent_config.json`);
+    if (!object) return Response.json({ error_code: "voice_config_not_found" }, { status: 404 });
+    return Response.json({ config: JSON.parse(await object.text()), thread_tier: "tier_2_task" });
+  }
+
+  private async forwardVoiceCall(request: Request, action: "start" | "finish"): Promise<Response> {
+    if (!this.env.SPACES_WORKER) return Response.json({ error_code: "spaces_unavailable" }, { status: 503 });
+    const body = await request.text();
+    return this.env.SPACES_WORKER.fetch(new Request(`http://spaces-do/internal/voice/calls/${action}`, {
+      method: "POST", headers: { "content-type": "application/json" }, body,
+    }));
   }
 
   // ── WebSocket ─────────────────────────────────────────────────────────────
