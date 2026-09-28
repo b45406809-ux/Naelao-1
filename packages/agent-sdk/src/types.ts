@@ -1,6 +1,23 @@
 /** Public contracts for code authored against the universal AVOS runtime. */
 export type RuntimeScope = "USER_PRIVATE" | "SPACE_WIDE" | "PROJECT_BOUND";
 
+export interface AppointmentAvailabilityQuery { startAt: string; endAt: string; timezone?: string; }
+export interface CustomerBotServices {
+  searchKnowledge(query: string, limit?: number): Promise<unknown>;
+  getCannedResponse(key: string): Promise<string | null>;
+  getAppointmentAvailability(query: AppointmentAvailabilityQuery): Promise<unknown>;
+  escalateToHuman(reason: string): Promise<void>;
+}
+
+/** The intentionally tiny, physically isolated public-customer runtime surface. */
+export interface CustomerBotContext {
+  readonly executionTier: 2;
+  readonly knowledge: Readonly<{ search(query: string, limit?: number): Promise<unknown> }>;
+  readonly cannedResponses: Readonly<{ get(key: string): Promise<string | null> }>;
+  readonly primaryCalendar: Readonly<{ availability(query: AppointmentAvailabilityQuery): Promise<unknown> }>;
+  readonly escalateToHuman: (reason: string) => Promise<void>;
+}
+
 export type GadgetScope = RuntimeScope;
 export interface GadgetActorScope {
   scope: GadgetScope;
