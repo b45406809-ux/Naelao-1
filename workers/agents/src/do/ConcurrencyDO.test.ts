@@ -40,7 +40,13 @@ function harness() {
         if (query.includes("SELECT holder_id FROM locks")) {
           const row = locks.get(String(args[0])); return row ? [row] : [];
         }
-        if (query.includes("MIN(expires_at)")) return [{ expires_at: locks.size ? Math.min(...[...locks.values()].map((x) => x.expires_at)) : null }];
+        if (query.includes("MIN(expires_at)")) {
+          const expiries = [
+            ...[...locks.values()].map((x) => x.expires_at),
+            ...[...holds.values()].filter((x) => !x.confirmed).map((x) => x.expires_at),
+          ];
+          return [{ expires_at: expiries.length ? Math.min(...expiries) : null }];
+        }
         if (query.includes("SELECT next_release_at")) {
           const next_release_at = pacers.get(String(args[0]));
           return next_release_at === undefined ? [] : [{ next_release_at }];
@@ -53,7 +59,7 @@ function harness() {
       return { toArray };
     },
   };
-  const ctx = { storage: { sql, getAlarm: async () => alarm, setAlarm: async (value: number) => { alarm = value; } } };
+  const ctx = { storage: { sql, getAlarm: async () => alarm, setAlarm: async (value: number) => { alarm = value; }, deleteAlarm: async () => { alarm = null; } } };
   return { instance: new ConcurrencyDO(ctx as never, {}), locks, holds, getAlarm: () => alarm };
 }
 
@@ -84,10 +90,15 @@ describe("ConcurrencyDO appointment slot holds", () => {
     const h = harness();
     const acquire = (holderId: string) => h.instance.acquireSlotHold({ slotKey: "cal:2026-01-02T10:00:00Z", holderId }).then((r) => r.json<Record<string, unknown>>());
     expect(await acquire("caller-a")).toMatchObject({ success: true, ttlMs: 15_000 });
+    expect(h.getAlarm()).toBe(Date.now() + 15_000);
     expect(await acquire("caller-b")).toMatchObject({ success: false, reason: "SLOT_TENTATIVELY_HELD", remainingSeconds: 15 });
-    vi.advanceTimersByTime(15_000);
+    vi.advanceTimersByTime(5_000);
+    expect(await acquire("caller-a")).toMatchObject({ success: true, remainingSeconds: 10 });
+    expect(h.getAlarm()).toBe(Date.now() + 10_000);
+    vi.advanceTimersByTime(10_000);
     await h.instance.alarm();
     expect(h.holds.size).toBe(0);
+    expect(h.getAlarm()).toBeNull();
     expect(await acquire("caller-b")).toMatchObject({ success: true, holderId: "caller-b" });
     vi.useRealTimers();
   });
@@ -102,6 +113,17 @@ describe("ConcurrencyDO outbound pacing", () => {
     await vi.advanceTimersByTimeAsync(1_000);
     const releases = (await Promise.all(pending)).map((result) => result.releasedAt);
     expect(releases).toEqual(releases.map((_, index) => releases[0]! + index * 200));
+    expect(releases[5]! - releases[0]!).toBe(1_000);
+    vi.useRealTimers();
+  });
+
+  it("does not allow callers to override the five requests per second ceiling", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const { instance } = harness();
+    const pending = Array.from({ length: 6 }, () => instance.paceOutboundRequest({ domain: "api.example.com", maxPerSecond: 500 }));
+    await vi.advanceTimersByTimeAsync(1_000);
+    const releases = (await Promise.all(pending)).map((result) => result.releasedAt);
     expect(releases[5]! - releases[0]!).toBe(1_000);
     vi.useRealTimers();
   });

@@ -141,6 +141,48 @@ export class RepositoryDO extends DurableObject<Env> {
     return new TextDecoder().decode(envelope.slice(separator + 1));
   }
 
+  private deliverableKind(path: string): "spreadsheet" | "document" | "code" {
+    const extension = path.slice(path.lastIndexOf(".")).toLowerCase();
+    if (extension === ".csv" || extension === ".xlsx" || extension === ".xls") return "spreadsheet";
+    if (extension === ".docx" || extension === ".doc" || extension === ".md" || extension === ".txt") return "document";
+    return "code";
+  }
+
+  /** RFC-4180-compatible row parser used for human-readable CSV cell deltas. */
+  private csvRows(value: string): string[][] {
+    const rows: string[][] = [];
+    let row: string[] = [], field = "", quoted = false;
+    for (let index = 0; index < value.length; index++) {
+      const character = value[index]!;
+      if (quoted && character === '"' && value[index + 1] === '"') { field += '"'; index++; }
+      else if (character === '"') quoted = !quoted;
+      else if (!quoted && character === ",") { row.push(field); field = ""; }
+      else if (!quoted && (character === "\n" || character === "\r")) {
+        if (character === "\r" && value[index + 1] === "\n") index++;
+        row.push(field); rows.push(row); row = []; field = "";
+      } else field += character;
+    }
+    if (field || row.length) { row.push(field); rows.push(row); }
+    return rows;
+  }
+
+  private spreadsheetCellDeltas(before: string, after: string) {
+    const a = this.csvRows(before), b = this.csvRows(after);
+    const changes: Array<{ cell: string; before: string | null; after: string | null }> = [];
+    const columnName = (column: number) => {
+      let name = "";
+      for (let value = column + 1; value; value = Math.floor((value - 1) / 26)) name = String.fromCharCode(65 + ((value - 1) % 26)) + name;
+      return name;
+    };
+    for (let row = 0; row < Math.max(a.length, b.length); row++) {
+      for (let column = 0; column < Math.max(a[row]?.length ?? 0, b[row]?.length ?? 0); column++) {
+        const oldValue = a[row]?.[column] ?? null, newValue = b[row]?.[column] ?? null;
+        if (oldValue !== newValue) changes.push({ cell: `${columnName(column)}${row + 1}`, before: oldValue, after: newValue });
+      }
+    }
+    return changes;
+  }
+
   private async changedFiles(scope: RepositoryScope, a: Entries, b: Entries) {
     const paths = [...new Set([...Object.keys(a), ...Object.keys(b)])].sort();
     return Promise.all(
@@ -164,12 +206,27 @@ export class RepositoryDO extends DurableObject<Env> {
             ...beforeLines.map((line) => `-${line}`),
             ...afterLines.map((line) => `+${line}`),
           ].join("\n");
+          const kind = this.deliverableKind(path);
+          const extension = path.slice(path.lastIndexOf(".")).toLowerCase();
+          const presentation = kind === "spreadsheet"
+            ? {
+                kind,
+                // CSV is intrinsically cell-addressable. XLS/XLSX remains losslessly
+                // versioned and is deliberately identified as a workbook so the shell can
+                // render its binary workbook delta with its SheetJS viewport.
+                cellDeltas: extension === ".csv" ? this.spreadsheetCellDeltas(before, after) : [],
+                binaryWorkbook: extension !== ".csv",
+              }
+            : kind === "document"
+              ? { kind, redline: patch, binaryDocument: extension === ".doc" || extension === ".docx" }
+              : { kind, patch };
           return {
             path,
             status: !a[path] ? "added" : !b[path] ? "deleted" : "modified",
             additions,
             deletions,
             patch,
+            presentation,
             before: a[path]?.oid,
             after: b[path]?.oid,
           };

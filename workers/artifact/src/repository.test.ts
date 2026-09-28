@@ -116,6 +116,14 @@ describe("Git object and metadata encoding", () => {
         body: JSON.stringify({ path: "README.md", content: "v1" }),
       })
     );
+    await repo.fetch(new Request("https://repo/write", {
+      method: "PUT", headers: scopeHeaders,
+      body: JSON.stringify({ path: "forecast.csv", content: "month,revenue\nJan,100" }),
+    }));
+    await repo.fetch(new Request("https://repo/write", {
+      method: "PUT", headers: scopeHeaders,
+      body: JSON.stringify({ path: "contract.docx", content_base64: btoa("docx-v1") }),
+    }));
     const c1Res = await repo.fetch(
       new Request("https://repo/commit", {
         method: "POST",
@@ -146,6 +154,14 @@ describe("Git object and metadata encoding", () => {
         }),
       })
     );
+    await repo.fetch(new Request("https://repo/write", {
+      method: "PUT", headers: scopeHeaders,
+      body: JSON.stringify({ branch: "scratchpad-1", path: "forecast.csv", content: "month,revenue\nJan,125" }),
+    }));
+    await repo.fetch(new Request("https://repo/write", {
+      method: "PUT", headers: scopeHeaders,
+      body: JSON.stringify({ branch: "scratchpad-1", path: "contract.docx", content_base64: btoa("docx-v2") }),
+    }));
     const forkCommitRes = await repo.fetch(
       new Request("https://repo/commit", {
         method: "POST",
@@ -172,11 +188,18 @@ describe("Git object and metadata encoding", () => {
     const comparison = (await compareRes.json()) as {
       ahead: number;
       behind: number;
-      files: Array<{ additions: number; patch: string }>;
+      files: Array<{ path: string; additions: number; patch: string; presentation: Record<string, unknown> }>;
     };
     expect(comparison.ahead).toBe(1);
     expect(comparison.behind).toBe(0);
-    expect(comparison.files[0]?.patch).toContain("+new line");
+    expect(comparison.files.find((file) => file.path === "README.md")?.patch).toContain("+new line");
+    expect(comparison.files.find((file) => file.path === "forecast.csv")?.presentation).toMatchObject({
+      kind: "spreadsheet", binaryWorkbook: false,
+      cellDeltas: [{ cell: "B2", before: "100", after: "125" }],
+    });
+    expect(comparison.files.find((file) => file.path === "contract.docx")?.presentation).toMatchObject({
+      kind: "document", binaryDocument: true,
+    });
 
     // A fresh instance (as after DO eviction) reads refs/commits from durable storage.
     const restarted = new RepositoryDO(mockCtx as never, mockEnv as never);
