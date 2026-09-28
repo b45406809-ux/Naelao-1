@@ -127,6 +127,25 @@ export interface RuntimeProject {
   postMessage(threadId: string, message: string): Promise<unknown>;
 }
 
+/** Server-enforced model controls attached to a vertical template or an individual space. */
+export interface SpaceModelPolicy {
+  mode: "open" | "whitelist_only";
+  allowedModelIds: string[];
+}
+
+export interface SpaceCompliancePolicy {
+  /** When enabled, inference may only use a local/* model through the on-premise tunnel. */
+  airGappedOnly?: boolean;
+}
+
+export type ProjectLifecycle = "finite" | "continuous";
+
+export interface CustomModelManifest {
+  modelId: `custom/${string}`;
+  baseModel: string;
+  loraAdapterId: string;
+}
+
 export interface RuntimeSpace {
   readonly id: string;
   createProject(project: Record<string, unknown>): Promise<unknown>;

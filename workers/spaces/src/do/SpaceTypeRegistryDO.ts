@@ -126,6 +126,9 @@ export interface NaelaoSpaceTypeManifestV2 {
  *     (spec §05 default "one per user per Space") or a single shared one.
  */
 export interface SpaceTypeProductConfig {
+  /** Vertical certification policy, enforced again by the agents router at dispatch time. */
+  modelPolicy?: { mode: "open" | "whitelist_only"; allowedModelIds: string[] };
+  compliance?: { airGappedOnly?: boolean };
   /**
    * Tenancy — the data-topology contract (spec G-Y15 CRITICAL, G-Y16). This is the
    * authoritative dimension that maps to a DO topology + isolation strategy:

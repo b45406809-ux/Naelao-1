@@ -37,6 +37,9 @@ import {
   fetchOAuthIdentity,
   linkOAuthAccountAndCheckDuplicate,
 } from "./connectors/oauth.js";
+import type { SpaceModelPolicy } from "@naelao/agent-sdk";
+import { validateModelForSpacePolicy } from "./model-policy.js";
+export { validateModelForSpacePolicy } from "./model-policy.js";
 import {
   startComposioLink,
   getComposioConnectionStatus,
@@ -532,6 +535,28 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
     throw badRequest(`Space is ${spaceRow.status}, cannot run agent`);
   }
 
+  let spacePolicy: SpaceModelPolicy | undefined;
+  let airGappedOnly = false;
+  try {
+    const cfg = JSON.parse(spaceRow.config_json || "{}") as {
+      model_policy?: SpaceModelPolicy;
+      productConfig?: { modelPolicy?: SpaceModelPolicy; compliance?: { airGappedOnly?: boolean } };
+      compliance?: { airGappedOnly?: boolean };
+    };
+    spacePolicy = cfg.model_policy ?? cfg.productConfig?.modelPolicy;
+    airGappedOnly = cfg.compliance?.airGappedOnly === true || cfg.productConfig?.compliance?.airGappedOnly === true;
+  } catch { /* malformed configuration is handled conservatively by the ordinary allowlist */ }
+
+  const policyModel = rawBody.model ?? (() => {
+    try { return (JSON.parse(spaceRow.config_json || "{}") as { productConfig?: { modelConfig?: { model?: string } } }).productConfig?.modelConfig?.model; }
+    catch { return undefined; }
+  })() ?? DEFAULT_WORKING_MODEL;
+  const policyResult = validateModelForSpacePolicy(policyModel, spacePolicy);
+  if (!policyResult.ok) return c.json({ error_code: policyResult.error_code, message: policyResult.message }, 400);
+  if (airGappedOnly && !policyModel.startsWith("local/")) {
+    return c.json({ error_code: "compliance_violation", message: "Air-gapped spaces only permit local/* models" }, 400);
+  }
+
   // NO SpaceType lookup here. There used to be a `SELECT * FROM spacetypes WHERE id = ?` whose
   // result was fetched and then ONLY null-checked — its ReAct-era columns
   // (system_prompt_template/tools_config) went dead in the A-2 cutover, since the script-native
@@ -557,7 +582,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   // space's stored configuration between runs — which would be both racy and a real change to a
   // live product. Rejected rather than ignored on an unknown string: silently running a different
   // model than the caller named would make every number the eval produces a lie.
-  if (rawBody.model && !isAllowedModel(rawBody.model)) {
+  if (rawBody.model && !rawBody.model.startsWith("custom/") && !rawBody.model.startsWith("local/") && !isAllowedModel(rawBody.model)) {
     throw badRequest(`model must be one of ${ALLOWED_MODELS.join(", ")}`);
   }
 
@@ -768,6 +793,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         // WHICH business this is — resolved above from the space row. Sent on BOTH dispatch paths
         // so a durable/async run knows exactly as much about the business as a sync one.
         businessContext,
+        airGappedOnly,
         // Model switcher capability config — already validated above against whichever model
         // actually runs, so this is passed through as-is rather than re-checked at the DO.
         reasoningEffort: rawBody.reasoning_effort,
@@ -832,6 +858,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         // WHICH business this is — resolved above from the space row. Sent on BOTH dispatch paths
         // so a durable/async run knows exactly as much about the business as a sync one.
         businessContext,
+        airGappedOnly,
         // Model switcher capability config — already validated above against whichever model
         // actually runs.
         reasoningEffort: rawBody.reasoning_effort,

@@ -40,6 +40,10 @@ interface PendingRequest {
   timer: ReturnType<typeof setTimeout>;
 }
 
+export class LocalTunnelError extends Error {
+  readonly code = "air_gapped_runner_offline";
+}
+
 const EXEC_TIMEOUT_MS = 30_000;
 
 export class LocalTunnelDO extends DurableObject<LocalTunnelEnv> {
@@ -108,12 +112,46 @@ export class LocalTunnelDO extends DurableObject<LocalTunnelEnv> {
       return Response.json(result);
     }
 
+    if (url.pathname === "/chat/completions" && request.method === "POST") {
+      const payload = await request.json<Record<string, unknown>>().catch(() => null);
+      if (!payload || !Array.isArray(payload.messages)) {
+        return Response.json({ error_code: "bad_request", message: "OpenAI-compatible messages are required" }, { status: 400 });
+      }
+      const result = await this.dispatchChatCompletion(payload);
+      return result.ok
+        ? Response.json(result.result)
+        : Response.json({ error_code: "air_gapped_runner_offline", message: result.error }, { status: 503 });
+    }
+
     if (url.pathname === "/status" && request.method === "GET") {
       const sockets = this.ctx.getWebSockets();
       return Response.json({ connected: sockets.length > 0 });
     }
 
     return Response.json({ error_code: "not_found", message: "Not found" }, { status: 404 });
+  }
+
+  /** Correlated OpenAI-compatible inference; never contacts a cloud provider. */
+  async dispatchChatCompletion(payload: Record<string, unknown>): Promise<{ ok: boolean; result?: unknown; error?: string }> {
+    const sockets = this.ctx.getWebSockets();
+    if (sockets.length === 0) return { ok: false, error: "air_gapped_runner_offline: local runner is disconnected" };
+    const requestId = crypto.randomUUID();
+    const result = new Promise<{ ok: boolean; result?: unknown; error?: string }>((resolve) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(requestId);
+        resolve({ ok: false, error: "air_gapped_runner_offline: local runner timed out" });
+      }, EXEC_TIMEOUT_MS);
+      this.pending.set(requestId, { resolve, timer });
+    });
+    try {
+      sockets[sockets.length - 1]!.send(JSON.stringify({ type: "chat.completion", request_id: requestId, payload }));
+    } catch {
+      const pending = this.pending.get(requestId);
+      if (pending) clearTimeout(pending.timer);
+      this.pending.delete(requestId);
+      return { ok: false, error: "air_gapped_runner_offline: failed to send to local runner" };
+    }
+    return result;
   }
 
   override webSocketMessage(_ws: WebSocket, message: string | ArrayBuffer): void {
