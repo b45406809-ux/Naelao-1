@@ -60,6 +60,7 @@ import { PREBUILT_SCRIPTS } from "./script-engine/prebuilt/index.js";
 import { findAgentTemplate, agentTemplateSummaries, agentTemplateToConfig, customAgentToConfig } from "./agent-templates.js";
 import { ARCHETYPE_PRESETS, isKnownArchetype, clampScriptsToArchetype } from "./script-engine/agent-archetypes.js";
 import { writeAgentConfig } from "./script-engine/agent-config.js";
+import { actorAddress, type ThreadTier } from "@naelao/agent-sdk";
 
 function safeParse(s: string): unknown {
   try { return JSON.parse(s); } catch { return {}; }
@@ -384,6 +385,21 @@ async function getAgentDOForSpace(
   const doName = await getDOName("agent", `${spaceId}:${agentId}`, tenantId, env.PLATFORM_SECRET);
   const doId = env.NAELAO_AGENT_DO.idFromName(doName);
   return env.NAELAO_AGENT_DO.get(doId);
+}
+
+export function resolveActorAddress(input: {
+  spaceId: string; projectId?: string; userId?: string; threadTier?: ThreadTier;
+}): string {
+  if (input.threadTier === "tier_4_scratchpad") {
+    if (!input.userId) throw new Error("An attested user is required for a private scratchpad");
+    return actorAddress({ scope: "USER_PRIVATE", spaceId: input.spaceId, userId: input.userId });
+  }
+  if (input.projectId) return actorAddress({ scope: "PROJECT_BOUND", spaceId: input.spaceId, projectId: input.projectId });
+  return actorAddress({ scope: "SPACE_WIDE", spaceId: input.spaceId });
+}
+
+function getScopedActorDO(env: AgentsEnv, input: Parameters<typeof resolveActorAddress>[0]): DurableObjectStub<NaelaoAgentDO> {
+  return env.NAELAO_AGENT_DO.get(env.NAELAO_AGENT_DO.idFromName(resolveActorAddress(input)));
 }
 
 // §A1.17 Phase Q: apps/shell AND apps/portal's sendMessage() both POST here with only
@@ -1001,6 +1017,7 @@ app.post("/agents/:agentId/script/run", async (c) => {
     tenantId?: string;
     sessionId?: string;
     projectId?: string;
+    threadTier?: ThreadTier;
     context?: Record<string, unknown>;
     model?: string;
   }
@@ -1019,7 +1036,11 @@ app.post("/agents/:agentId/script/run", async (c) => {
     return c.json({ error_code: "forbidden", message: "tenantId does not match the verified internal token" }, 403);
   }
 
-  const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, agentId, c.get("requestId"));
+  const actingUserId = c.req.header("x-naelao-user-id") ?? "";
+  const stub = body.threadTier || body.projectId
+    ? getScopedActorDO(c.env, { spaceId, ...(body.projectId ? { projectId: body.projectId } : {}),
+        ...(actingUserId ? { userId: actingUserId } : {}), ...(body.threadTier ? { threadTier: body.threadTier } : {}) })
+    : await getAgentDOForSpace(c.env, tenantId, spaceId, agentId, c.get("requestId"));
   // F-36: forward the VERIFIED acting-user identity to the DO. For a router-proxied owner/
   // member call these headers were set by proxyTo from verified claims (and this route already
   // required the matching internal token above, so a direct caller can't spoof them past that
@@ -1028,7 +1049,6 @@ app.post("/agents/:agentId/script/run", async (c) => {
   // clamp documents. Previously this route silently DROPPED both headers, so the per-user
   // clamp (and handleScriptRun's per-caller billing branches) could never apply to runs
   // entering here.
-  const actingUserId = c.req.header("x-naelao-user-id") ?? "";
   const actingRole = c.req.header("x-naelao-role") ?? "";
   const doResp = await stub.fetch(
     new Request("http://agent-do/script/run", {

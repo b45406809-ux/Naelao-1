@@ -42,7 +42,10 @@ function isAllowedOrigin(origin: string | null, env: Env): boolean {
 interface WsSessionMeta {
   tenantId: string;
   spaceId?: string;
+  userId?: string;
 }
+
+interface PresenceState extends Record<string, SqlStorageValue> { user_id: string; file_path: string | null; cursor_line: number | null; cursor_col: number | null; last_seen: number }
 
 interface BroadcastBody {
   spaceId?: string;
@@ -58,6 +61,33 @@ export class WsHubDO extends DurableObject<Env> {
   // DO hibernation kills in-memory state; however WebSocket connections themselves
   // survive hibernation via the Hibernation API (acceptWebSocket).
   private sessions = new Map<WebSocket, WsSessionMeta>();
+  private presence = new Map<string, PresenceState>();
+  private persistTimer: ReturnType<typeof setTimeout> | undefined;
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS presence (
+      user_id TEXT PRIMARY KEY, file_path TEXT, cursor_line INTEGER, cursor_col INTEGER, last_seen INTEGER NOT NULL)`);
+    for (const row of ctx.storage.sql.exec<PresenceState>("SELECT user_id, file_path, cursor_line, cursor_col, last_seen FROM presence")) {
+      if (row.last_seen >= Date.now() - 60_000) this.presence.set(row.user_id, row);
+    }
+  }
+
+  private schedulePresencePersistence(): void {
+    if (this.persistTimer) clearTimeout(this.persistTimer);
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = undefined;
+      const cutoff = Date.now() - 60_000;
+      this.ctx.storage.sql.exec("DELETE FROM presence WHERE last_seen < ?", cutoff);
+      for (const value of this.presence.values()) {
+        if (value.last_seen < cutoff) { this.presence.delete(value.user_id); continue; }
+        this.ctx.storage.sql.exec(`INSERT INTO presence VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(user_id) DO UPDATE SET file_path=excluded.file_path, cursor_line=excluded.cursor_line,
+          cursor_col=excluded.cursor_col, last_seen=excluded.last_seen`, value.user_id, value.file_path,
+          value.cursor_line, value.cursor_col, value.last_seen);
+      }
+    }, 500);
+  }
 
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -85,8 +115,10 @@ export class WsHubDO extends DurableObject<Env> {
       this.ctx.acceptWebSocket(server);
 
       const spaceId = url.searchParams.get("spaceId") ?? undefined;
-      const meta: WsSessionMeta = { tenantId, ...(spaceId !== undefined ? { spaceId } : {}) };
+      const userId = url.searchParams.get("userId") ?? undefined;
+      const meta: WsSessionMeta = { tenantId, ...(spaceId !== undefined ? { spaceId } : {}), ...(userId ? { userId } : {}) };
       this.sessions.set(server, meta);
+      server.serializeAttachment(meta);
 
       server.addEventListener("close", () => {
         this.sessions.delete(server);
@@ -119,11 +151,12 @@ export class WsHubDO extends DurableObject<Env> {
       for (const ws of activeSockets) {
         // When woken via hibernation, re-populate in-memory map from websocket attachment
         if (!this.sessions.has(ws)) {
+          const attachment = ws.deserializeAttachment() as WsSessionMeta | null;
           const attached = this.ctx.getTags(ws);
           // Tags format: ["tenantId:<tid>", "spaceId:<sid>"]
           const tenantTag = attached.find((t) => t.startsWith("tenantId:")) ?? "";
           const spaceTag = attached.find((t) => t.startsWith("spaceId:")) ?? undefined;
-          const restoredMeta: WsSessionMeta = {
+          const restoredMeta: WsSessionMeta = attachment ?? {
             tenantId: tenantTag.replace("tenantId:", ""),
             ...(spaceTag !== undefined
               ? { spaceId: spaceTag.replace("spaceId:", "") }
@@ -171,6 +204,23 @@ export class WsHubDO extends DurableObject<Env> {
         (parsed as { type: unknown }).type === "ping"
       ) {
         ws.send(JSON.stringify({ type: "pong" }));
+        return;
+      }
+      if (parsed !== null && typeof parsed === "object" && (parsed as { type?: unknown }).type === "presence.update") {
+        const meta = this.sessions.get(ws) ?? ws.deserializeAttachment() as WsSessionMeta | null;
+        const body = parsed as { file_path?: unknown; cursor_line?: unknown; cursor_col?: unknown };
+        if (!meta?.userId) { ws.send(JSON.stringify({ error: "user_identity_required" })); return; }
+        const value: PresenceState = {
+          user_id: meta.userId,
+          file_path: typeof body.file_path === "string" ? body.file_path : null,
+          cursor_line: Number.isInteger(body.cursor_line) ? body.cursor_line as number : null,
+          cursor_col: Number.isInteger(body.cursor_col) ? body.cursor_col as number : null,
+          last_seen: Date.now(),
+        };
+        this.presence.set(meta.userId, value);
+        this.schedulePresencePersistence();
+        const payload = JSON.stringify({ event: "presence.update", data: value });
+        for (const [socket, socketMeta] of this.sessions) if (socketMeta.spaceId === meta.spaceId) socket.send(payload);
       }
     }
   }

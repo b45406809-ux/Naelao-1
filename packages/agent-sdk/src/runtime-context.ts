@@ -1,4 +1,5 @@
 import type {
+  ActorAddressInput,
   CreateRuntimeContextOptions,
   ProjectRuntimeContext,
   RuntimeContext,
@@ -9,6 +10,21 @@ import type {
   ProjectMcpClientOptions,
   SpaceRuntimeContext,
 } from "./types.js";
+
+/** Canonical, invoker-attested Durable Object address. Scope is part of the identity, so a
+ * scratchpad can never share a storage instance with a project or space actor. */
+export function actorAddress(input: ActorAddressInput): string {
+  if (!input.spaceId) throw new Error("spaceId is required");
+  if (input.scope === "USER_PRIVATE") {
+    if (!input.userId) throw new Error("userId is required for USER_PRIVATE actors");
+    return `actor:personal:${input.spaceId}:${input.userId}`;
+  }
+  if (input.scope === "PROJECT_BOUND") {
+    if (!input.projectId) throw new Error("projectId is required for PROJECT_BOUND actors");
+    return `actor:project:${input.spaceId}:${input.projectId}`;
+  }
+  return `actor:space:${input.spaceId}`;
+}
 import { createLaunchpadRuntimeContext } from "./launchpad-runtime.js";
 import type { LaunchpadSpace, RuntimeContextAdapters, LaunchpadRuntimeContext } from "./launchpad-runtime.js";
 

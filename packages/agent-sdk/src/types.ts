@@ -1,5 +1,25 @@
 /** Public contracts for code authored against the universal AVOS runtime. */
-export type RuntimeScope = "SPACE_WIDE" | "PROJECT_BOUND";
+export type RuntimeScope = "USER_PRIVATE" | "SPACE_WIDE" | "PROJECT_BOUND";
+
+export interface ProvenanceEntryInput {
+  human_trigger_id: string;
+  assistant_actor_id: string;
+  project_executor_id: string;
+  git_commit_oid: string;
+  task_id?: string;
+  created_at?: string;
+}
+
+export interface ProvenanceEntry extends Required<Omit<ProvenanceEntryInput, "task_id">> {
+  task_id: string | null;
+  prev_hash: string;
+  entry_hash: string;
+}
+
+export type ActorAddressInput =
+  | { scope: "USER_PRIVATE"; spaceId: string; userId: string }
+  | { scope: "PROJECT_BOUND"; spaceId: string; projectId: string }
+  | { scope: "SPACE_WIDE"; spaceId: string };
 
 /** Conversation visibility is structural, rather than a UI-only convention. */
 export type ThreadTier =
