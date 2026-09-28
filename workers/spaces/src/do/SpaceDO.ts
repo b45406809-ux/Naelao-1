@@ -8071,17 +8071,20 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   private async claimTaskLease(taskId: string, request: Request): Promise<Response> {
-    const body = await request.json<{ assistantId?: string; assistant_id?: string; ttlMinutes?: number }>().catch(() => ({} as { assistantId?: string; assistant_id?: string; ttlMinutes?: number }));
+    const body = await request.json<{ assistantId?: string; assistant_id?: string }>().catch(() => ({} as { assistantId?: string; assistant_id?: string }));
     const assistantId = body.assistantId ?? body.assistant_id ?? "";
     if (!assistantId) return Response.json({ error_code: "bad_request", message: "assistantId is required" }, { status: 400 });
-    const ttl = Math.max(1, Math.min(15, Number(body.ttlMinutes ?? 15)));
     const now = new Date();
-    const expiresAt = new Date(now.getTime() + ttl * 60_000).toISOString();
+    const expiresAt = new Date(now.getTime() + 15 * 60_000).toISOString();
+    const taskState = queryOne<{ execution_status: string | null }>(this.ctx.storage.sql as never,
+      "SELECT p.execution_status FROM tasks t LEFT JOIN projects p ON p.id=t.project_id WHERE t.id=?", taskId);
+    if (!taskState) return Response.json({ error_code: "not_found", message: "Task not found" }, { status: 404 });
+    if (taskState.execution_status === "FROZEN_FOR_RFC") return Response.json({ error_code: "frozen_for_rfc", status: "FROZEN_FOR_RFC" }, { status: 409 });
     const claimed = queryOne<{ claimed_by: string; lease_expires_at: string }>(this.ctx.storage.sql as never,
       `UPDATE tasks SET claimed_by = ?, lease_expires_at = ?, status = 'in_progress', updated_at = ?
-       WHERE id = ? AND (claimed_by IS NULL OR lease_expires_at IS NULL OR lease_expires_at < ?)
+       WHERE id = ? AND (claimed_by = ? OR claimed_by IS NULL OR lease_expires_at IS NULL OR lease_expires_at < ?)
        RETURNING claimed_by, lease_expires_at`,
-      assistantId, expiresAt, now.toISOString(), taskId, now.toISOString());
+      assistantId, expiresAt, now.toISOString(), taskId, assistantId, now.toISOString());
     const row = queryOne<{ claimed_by: string | null; lease_expires_at: string | null; spectator_assistant_ids: string }>(
       this.ctx.storage.sql as never, "SELECT claimed_by, lease_expires_at, spectator_assistant_ids FROM tasks WHERE id = ?", taskId);
     if (!row) return Response.json({ error_code: "not_found", message: "Task not found" }, { status: 404 });
@@ -8092,7 +8095,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         "UPDATE tasks SET spectator_assistant_ids = ?, updated_at = ? WHERE id = ?",
         JSON.stringify(spectators), now.toISOString(), taskId);
       console.info(`[TaskLease] ${assistantId} is spectating task ${taskId}; active lead is ${row.claimed_by ?? "unknown"}`);
-      return Response.json({ success: false, claimedBy: row.claimed_by, leaseExpiresAt: row.lease_expires_at, status: "SPECTATING", activeLead: row.claimed_by });
+      return Response.json({ success: false, claimedBy: row.claimed_by, leaseExpiresAt: row.lease_expires_at, status: "SPECTATING", activeLead: row.claimed_by, tokensConsumed: 0, suggestedAction: "AUDIT_ACTIVE_PULL_REQUEST" });
     }
     return Response.json({ success: true, claimedBy: assistantId, leaseExpiresAt: expiresAt, status: "CLAIMED" });
   }
@@ -8109,7 +8112,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const similarity = SpaceDO.cosine(embedding, candidate);
       if (!best || similarity > best.similarity) best = { id: row.id, thread: row.thread_id, similarity };
     }
-    if (best && best.similarity > 0.85) return Response.json({ duplicate: true, existingTaskId: best.id, threadId: best.thread, similarity: best.similarity, notice: `Work is already active in task ${best.id}${best.thread ? ` (thread ${best.thread})` : ""}.` });
+    if (best && best.similarity > 0.85) return Response.json({ duplicate: true, existingTaskId: best.id, existingBranch: `task/${best.id}`, threadId: best.thread, similarity: best.similarity, notice: `Work is already active on branch task/${best.id}${best.thread ? ` (thread ${best.thread})` : ""}.` });
     return Response.json({ duplicate: false, similarity: best?.similarity ?? 0 });
   }
 
@@ -9311,10 +9314,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   private async installExtension(request: Request): Promise<Response> {
-    const body = await request.json<{ manifest?: unknown; installedBy?: string }>();
+    const body = await request.json<{ manifest?: unknown; installedBy?: string; gatekeeperCapabilities?: string[] }>();
     if (!body.installedBy) return Response.json({ error: "installedBy is required" }, { status: 400 });
     let manifest: ExtensionManifest;
-    try { manifest = validateExtensionManifest(body.manifest); }
+    try { manifest = validateExtensionManifest(body.manifest, { gatekeeperCapabilities: body.gatekeeperCapabilities ?? [] }); }
     catch (error) { return Response.json({ error: error instanceof Error ? error.message : "invalid_extension_manifest" }, { status: 400 }); }
     const now = new Date().toISOString();
     execute(this.ctx.storage.sql as never,

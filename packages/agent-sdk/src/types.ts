@@ -201,6 +201,7 @@ export interface TaskLeaseResult {
 export interface IntentDeduplicationResult {
   duplicate: boolean;
   existingTaskId?: string;
+  existingBranch?: string;
   threadId?: string | null;
   similarity?: number;
 }

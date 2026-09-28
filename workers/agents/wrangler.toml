@@ -122,6 +122,16 @@ name = "AgentTaskWorkflow"
 class_name = "AgentTaskWorkflow"
 binding = "AGENT_TASK_WORKFLOW"
 
+[[workflows]]
+name = "GenericSubagentWorkflow"
+class_name = "GenericSubagentWorkflow"
+binding = "GENERIC_SUBAGENT_WORKFLOW"
+
+[[workflows]]
+name = "CompanyAutomationWorkflow"
+class_name = "CompanyAutomationWorkflow"
+binding = "COMPANY_AUTOMATION_WORKFLOW"
+
 # §A1.17 Phase J — durable execution for scripts tagged runtime:"workflow" (long-running/cron
 # automations). Separate from AgentTaskWorkflow (which runs one full agent reasoning turn);
 # this runs one named script directly, no reasoner, with step retries.

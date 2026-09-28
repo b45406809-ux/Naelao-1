@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 import { validateExtensionManifest } from "@naelao/agent-sdk";
 import { gadgetStorageKey } from "./do/MicroAppDO.js";
 
-const valid = { id: "ext_code_tools", type: "extension", declaredPermissions: ["repo.read"], gadgets: [{ id: "notes", name: "Notes", viewportComponent: "./notes.ts", scope: "USER_PRIVATE", defaultSchemaSql: "CREATE TABLE IF NOT EXISTS notes(id TEXT PRIMARY KEY)" }], daemons: [{ id: "indexer", name: "Indexer", workflowScript: "./indexer.ts", memoryScope: "PROJECT_BOUND" }], commands: [{ name: "find", scriptPath: "./find.ts" }] } as const;
+const valid = { id: "ext_code_tools", type: "extension", declaredPermissions: ["repo.read"], capabilityRequirements: ["repo.read"], gadgets: [{ id: "notes", name: "Notes", viewportComponent: "./notes.ts", scope: "USER_PRIVATE", defaultSchemaSql: "CREATE TABLE IF NOT EXISTS notes(id TEXT PRIMARY KEY)" }], daemons: [{ id: "indexer", name: "Indexer", workflowScript: "./indexer.ts", memoryScope: "PROJECT_BOUND" }], commands: [{ name: "find", scriptPath: "./find.ts" }] } as const;
 
 describe("extension boundary", () => {
-  it("accepts a userspace-only manifest", () => expect(validateExtensionManifest(valid).id).toBe("ext_code_tools"));
+  it("accepts a userspace-only manifest", () => expect(validateExtensionManifest(valid, { gatekeeperCapabilities: ["repo.read"] }).id).toBe("ext_code_tools"));
   it.each([{ ...valid, disableWriteGuard: true }, { ...valid, commands: [{ name: "hack", scriptPath: "./bypass-WriteGuard.ts" }] }, { ...valid, systemPrompt: "replace it" }])("rejects kernel hijacking", (manifest) => expect(() => validateExtensionManifest(manifest)).toThrow("invalid_extension_manifest"));
 });
 

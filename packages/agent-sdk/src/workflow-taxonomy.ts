@@ -3,6 +3,8 @@ export type WorkflowClass =
   | "vertical_extension"
   | "ephemeral_task";
 export interface WorkflowClassPolicy {
+  executionClass: 1 | 2 | 3;
+  minimumDeterministicStepRatio: number;
   owner: "space" | "extension" | "invoker";
   persistence: "durable" | "extension_state" | "until_terminal";
   maxAttempts: number;
@@ -16,6 +18,7 @@ export const WORKFLOW_CLASS_POLICIES: Readonly<
   Record<WorkflowClass, WorkflowClassPolicy>
 > = Object.freeze({
   company_automation: {
+    executionClass: 1, minimumDeterministicStepRatio: 0.9,
     owner: "space",
     persistence: "durable",
     maxAttempts: 5,
@@ -24,6 +27,7 @@ export const WORKFLOW_CLASS_POLICIES: Readonly<
     reportsTo: "executive_channel_and_founder_telegram", escalationTarget: "space_owner", receiptLines: null,
   },
   vertical_extension: {
+    executionClass: 2, minimumDeterministicStepRatio: 0,
     owner: "extension",
     persistence: "extension_state",
     maxAttempts: 3,
@@ -32,6 +36,7 @@ export const WORKFLOW_CLASS_POLICIES: Readonly<
     reportsTo: "project_team_room", escalationTarget: "project_lead", receiptLines: null,
   },
   ephemeral_task: {
+    executionClass: 3, minimumDeterministicStepRatio: 0,
     owner: "invoker",
     persistence: "until_terminal",
     maxAttempts: 2,

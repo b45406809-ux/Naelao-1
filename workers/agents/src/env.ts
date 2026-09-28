@@ -19,6 +19,7 @@ export interface Env {
   BILLING_WORKER?: Fetcher;
   AGENT_CACHE: KVNamespace;
   AGENT_TASK_WORKFLOW: { create(opts: { id?: string; params?: unknown }): Promise<void> };
+  GENERIC_SUBAGENT_WORKFLOW?: { create(opts: { id?: string; params: unknown }): Promise<{ id: string }> };
   /** §A1.17 Phase J — durable dispatch for runtime:"workflow" scripts (ScriptRunWorkflow). */
   AGENT_SCRIPT_WORKFLOW?: {
     create(opts: { id?: string; params?: unknown }): Promise<{ id: string; status(): Promise<{ status: string; output?: unknown; error?: unknown }> }>;

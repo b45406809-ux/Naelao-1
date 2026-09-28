@@ -60,14 +60,14 @@ export const dynamicWorkflow: PrebuiltScript = {
       return {
         queued: true,
         result,
-        receipt_card: {
+        ...(workflowClass === "ephemeral_task" ? { receipt_card: {
           kind: "workflow_receipt",
           collapsed: true,
           lines: [
             `Workflow ${name} queued`,
             `${route.reportTarget} · isolated budget ${route.budgetKey}`,
           ],
-        },
+        } } : { alert_route: route.reportTarget }),
       };
     },
     async "workflow.schedule"(args, ctx) {
