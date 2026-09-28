@@ -12,6 +12,8 @@ export interface SubagentVerbResult<T = unknown> {
   output?: T;
   error?: string;
   modifiedFiles: string[];
+  /** Exactly two UI-safe lines rendered by the persistent parent; never a child thread. */
+  receipt: readonly [string, string];
 }
 
 const FORBIDDEN = ["threads", "sessions", "presence", "channels", "delegate"] as const;
@@ -35,7 +37,7 @@ export function createSubagentContext(input: SubagentContext): SubagentContext {
 
 /** Execute an ephemeral subagent to completion and report its workspace delta to its parent. */
 export async function spawnSubagentVerb<T>(taskSpec: SubagentTaskSpec<T>, input: SubagentContext): Promise<SubagentVerbResult<T>> {
-  if (!taskSpec.task.trim()) return { ok: false, error: "Subagent task is required", modifiedFiles: [] };
+  if (!taskSpec.task.trim()) return { ok: false, error: "Subagent task is required", modifiedFiles: [], receipt: ["Subagent failed", "Subagent task is required"] };
   const maxTokens = Math.min(1_999, Math.max(1, taskSpec.maxTokens ?? 1_999));
   const base = createSubagentContext(input);
   const context = createSubagentContext({
@@ -48,11 +50,12 @@ export async function spawnSubagentVerb<T>(taskSpec: SubagentTaskSpec<T>, input:
     const after = await snapshot(context.fs);
     const modifiedFiles = [...new Set([...before.keys(), ...after.keys()])]
       .filter((path) => before.get(path) !== after.get(path)).sort();
-    return { ok: true, output, modifiedFiles };
+    return { ok: true, output, modifiedFiles, receipt: ["Subagent completed", `${modifiedFiles.length} file${modifiedFiles.length === 1 ? "" : "s"} changed`] };
   } catch (error) {
     const after = await snapshot(context.fs);
     const modifiedFiles = [...new Set([...before.keys(), ...after.keys()])]
       .filter((path) => before.get(path) !== after.get(path)).sort();
-    return { ok: false, error: error instanceof Error ? error.message : String(error), modifiedFiles };
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, error: message, modifiedFiles, receipt: ["Subagent failed", message] };
   }
 }

@@ -1,6 +1,10 @@
 /** Public contracts for code authored against the universal AVOS runtime. */
 export type RuntimeScope = "USER_PRIVATE" | "SPACE_WIDE" | "PROJECT_BOUND";
 
+export type SpaceCabinetWorkerId = "project_manager_worker" | "treasury_worker" | "identity_worker" | "comms_worker";
+export interface SpaceCabinetTask { operation: string; params?: Record<string, unknown> }
+export interface DelegateToSpaceWorkerInput { worker_id: SpaceCabinetWorkerId; task: SpaceCabinetTask }
+
 /** Space-owned allowance used for a human's personal assistant runs. Cron/system actors omit it. */
 export interface UserDailyBudgetEnvelope {
   space_id: string;

@@ -50,6 +50,7 @@ import { tasks } from "./tasks.js";
 import { plan } from "./plan.js";
 import { goalPlanner } from "./goal-planner.js";
 import { customerBot } from "./customer-bot.js";
+import { executiveCabinet } from "./executive-cabinet.js";
 
 /** Context handed to every prebuilt operation. */
 export interface PrebuiltOpContext {
@@ -161,6 +162,7 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   [plan.name]: plan,
   [goalPlanner.name]: goalPlanner,
   [customerBot.name]: customerBot,
+  [executiveCabinet.name]: executiveCabinet,
 };
 
 /**
