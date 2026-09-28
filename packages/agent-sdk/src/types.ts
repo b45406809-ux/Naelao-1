@@ -131,6 +131,52 @@ export interface ViewportConfiguration {
   canvasPrimary: true;
 }
 
+/** Portable, secret-free representation of a Space. Version 2 is deliberately data-only. */
+export interface BlueprintCredential {
+  name: string;
+  description: string;
+  required: boolean;
+}
+
+export interface BlueprintTask {
+  id?: string;
+  title: string;
+  status?: "pending" | "in_progress" | "completed" | "blocked" | "cancelled";
+  dependencies?: string[];
+  assignedAgent?: string;
+}
+
+export interface BlueprintStarterFile {
+  path: string;
+  content: string;
+}
+
+export interface BlueprintProject {
+  id?: string;
+  name: string;
+  kind: string;
+  templateMode: TemplateMode;
+  viewports: Record<string, unknown>;
+  systemPrompt: string;
+  initialTasks: BlueprintTask[];
+  starterFiles: BlueprintStarterFile[];
+  configuration?: Record<string, unknown>;
+  /** Optional declarations inspected by the marketplace capability firewall. */
+  roles?: string[];
+  capabilities?: string[];
+  executionTier?: number;
+}
+
+export interface SpaceBlueprint {
+  id: string;
+  schemaVersion: "2.0";
+  metadata: Record<string, unknown> & { name?: string; exportedAt?: string };
+  templateCategory: string;
+  projects: BlueprintProject[];
+  requiredExtensions: string[];
+  requiredCredentials: BlueprintCredential[];
+}
+
 export interface ExecutionTelemetry {
   commit_oid?: string;
   git_oid?: string;

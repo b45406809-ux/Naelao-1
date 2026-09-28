@@ -13,3 +13,5 @@ export * from "./dlp.js";
 export * from "./ephemeral-grant.js";
 export * from "./knowledge-permissions.js";
 export * from "./circuit-breaker.js";
+export * from "./blueprint-scrubber.js";
+export * from "./blueprint-validator.js";

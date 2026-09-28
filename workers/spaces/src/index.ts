@@ -17,6 +17,8 @@ import { registerBusinessRoutes } from "./business-routes.js";
 import { ALLOWED_MODELS, isAllowedModel, isValidEffortLevel, isPersonalPlanTier, PERSONAL_PLAN_LIMITS, type PersonalPlanTier } from "@naelao/billing-core";
 import { registerProjectMcpRoutes } from "./routes/mcp.js";
 import { registerGadgetMcpRoutes } from "./routes/gadget-mcp.js";
+import { evaluateBlueprintSecurity, sanitizeAndScrubBlueprint } from "@naelao/security";
+import type { SpaceBlueprint } from "@naelao/agent-sdk";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { LockDO } from "./do/LockDO.js";
@@ -153,6 +155,54 @@ app.get("/spaces/:id", async (c) => {
 
   if (!space) throw notFound("Space");
   return c.json(space);
+});
+
+// ── Blueprint export and activation ─────────────────────────────────────────
+app.post("/spaces/:spaceId/export-template", async (c) => {
+  const { tenantId } = getCallerIdentity(c);
+  const spaceId = c.req.param("spaceId");
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'").bind(spaceId, tenantId).first();
+  if (!owned) throw notFound("Space");
+  if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Blueprint storage not configured" }, 503);
+  const sourceId = c.env.SPACE_DO.idFromName(await getDOName("space", spaceId, tenantId, c.env.PLATFORM_SECRET));
+  const rawResponse = await c.env.SPACE_DO.get(sourceId).fetch(new Request("http://space-do/blueprints/export", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ space_id: spaceId }),
+  }));
+  if (!rawResponse.ok) return new Response(rawResponse.body, { status: rawResponse.status });
+  const blueprint = sanitizeAndScrubBlueprint(await rawResponse.json()) as unknown as SpaceBlueprint;
+  const security = evaluateBlueprintSecurity(blueprint);
+  if (!security.publishable) return c.json({ error_code: "blueprint_rejected", security }, 422);
+
+  // A separate DO proves schema, project, task and filesystem installation before publication.
+  const testSpaceId = `blueprint-test-${blueprint.id}`;
+  const testId = c.env.SPACE_DO.idFromName(await getDOName("space", testSpaceId, tenantId, c.env.PLATFORM_SECRET));
+  const dryRun = await c.env.SPACE_DO.get(testId).fetch(new Request("http://space-do/blueprints/instantiate", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ blueprint, target_space_id: testSpaceId }),
+  }));
+  if (!dryRun.ok) return c.json({ error_code: "sandbox_dry_run_failed", details: await dryRun.text() }, 422);
+  await c.env.SCRIPTS_R2.put(`blueprints/${blueprint.id}.json`, JSON.stringify({ ...blueprint, securityRating: security.rating }, null, 2), {
+    httpMetadata: { contentType: "application/json" }, customMetadata: { safetyRating: security.rating, schemaVersion: "2.0" },
+  });
+  return c.json({ blueprintId: blueprint.id, key: `blueprints/${blueprint.id}.json`, security, dryRun: await dryRun.json() }, 201);
+});
+
+app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
+  const { tenantId } = getCallerIdentity(c);
+  const spaceId = c.req.param("spaceId");
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'").bind(spaceId, tenantId).first();
+  if (!owned) throw notFound("Space");
+  const stored = await c.env.SCRIPTS_R2?.get(`blueprints/${c.req.param("blueprintId")}.json`);
+  if (!stored) throw notFound("Blueprint");
+  const blueprint = await stored.json<SpaceBlueprint>();
+  const security = evaluateBlueprintSecurity(blueprint);
+  if (!security.publishable) return c.json({ error_code: "blueprint_rejected", security }, 422);
+  const targetId = c.env.SPACE_DO.idFromName(await getDOName("space", spaceId, tenantId, c.env.PLATFORM_SECRET));
+  const response = await c.env.SPACE_DO.get(targetId).fetch(new Request("http://space-do/blueprints/instantiate", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ blueprint, target_space_id: spaceId }),
+  }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json" } });
 });
 
 // ── PATCH /spaces/:id ───────────────────────────────────────────────────────

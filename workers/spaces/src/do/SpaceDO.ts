@@ -22,7 +22,8 @@ import type {
 import { broadcastSpaceEvent, mintInternalToken } from "@naelao/http";
 import type { MessageRole } from "@naelao/types";
 import { defaultViewportFor, getProjectKindManifest, validateExtensionManifest } from "@naelao/agent-sdk";
-import type { DisplayMode, ExtensionManifest, TemplateMode } from "@naelao/agent-sdk";
+import { instantiateBlueprint as compileBlueprint } from "@naelao/agent-sdk";
+import type { DisplayMode, ExtensionManifest, SpaceBlueprint, TemplateMode } from "@naelao/agent-sdk";
 import { consumeEphemeralActionGrant, mintEphemeralActionGrant, type EphemeralActionGrant, verifyCapabilityToken } from "@naelao/security";
 
 function todaySpendKey(): string {
@@ -1539,6 +1540,22 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_wallet_payouts_space ON wallet_payouts(space_id, created_at DESC);
     `,
   },
+  {
+    version: 58,
+    description: "portable blueprint starter files in the authoritative Space filesystem",
+    up: `
+      CREATE TABLE IF NOT EXISTS workspace_files (
+        project_id TEXT NOT NULL,
+        path TEXT NOT NULL,
+        content TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, path)
+      );
+      CREATE INDEX IF NOT EXISTS idx_workspace_files_project ON workspace_files(project_id, path);
+    `,
+  },
 ];
 
 export const PROVENANCE_GENESIS_HASH = "0".repeat(64);
@@ -1726,6 +1743,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && url.pathname === "/internal/customer-conversations") return this.recordCustomerConversation(request);
       if (method === "GET" && url.pathname === "/internal/customer-conversations/urgent") return this.listUrgentCustomerConversations(url.searchParams);
       if (method === "POST" && url.pathname === "/internal/customer-conversations/mark-alerted") return this.markCustomerConversationsAlerted(request);
+      if (method === "POST" && url.pathname === "/blueprints/export") {
+        const body = await request.json<{ space_id?: string }>();
+        if (!body.space_id) return Response.json({ error: "space_id is required" }, { status: 400 });
+        return Response.json(await this.exportBlueprint(body.space_id));
+      }
+      if (method === "POST" && url.pathname === "/blueprints/instantiate") {
+        const body = await request.json<{ blueprint?: SpaceBlueprint; target_space_id?: string }>();
+        if (!body.blueprint || !body.target_space_id) return Response.json({ error: "blueprint and target_space_id are required" }, { status: 400 });
+        return Response.json(await this.instantiateBlueprint(body.blueprint, body.target_space_id), { status: 201 });
+      }
       // POST /sessions
       if (method === "POST" && url.pathname === "/sessions") {
         return this.createSession(request);
@@ -2483,6 +2510,77 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         { status: 500 }
       );
     }
+  }
+
+  /** Produce the raw portable representation. The public worker always scrubs it before R2. */
+  async exportBlueprint(spaceId: string): Promise<SpaceBlueprint> {
+    this.ensureInit();
+    const projects = queryAll<{
+      id: string; name: string; kind: string; template_mode: TemplateMode; viewport_config: string; default_agent_id: string | null; execution_ceiling: number; channel_config: string;
+    }>(this.ctx.storage.sql as never,
+      "SELECT id, name, kind, template_mode, viewport_config, default_agent_id, execution_ceiling, channel_config FROM projects WHERE space_id = ? AND status != 'archived' ORDER BY created_at, id", spaceId);
+    const exportedProjects = projects.map((project) => {
+      const agent = project.default_agent_id ? queryOne<{ config_json: string }>(this.ctx.storage.sql as never,
+        "SELECT config_json FROM agent_definitions WHERE id = ? AND space_id = ?", project.default_agent_id, spaceId) : null;
+      const config = safeJsonParseObj(agent?.config_json ?? "{}");
+      const tasks = queryAll<{ id: string; title: string; status: "pending" | "in_progress" | "completed" | "blocked" | "cancelled"; dependencies: string; assigned_agent: string | null }>(this.ctx.storage.sql as never,
+        "SELECT id, title, status, dependencies, assigned_agent FROM tasks WHERE space_id = ? AND project_id = ? ORDER BY created_at, id", spaceId, project.id);
+      const files = queryAll<{ path: string; content: string }>(this.ctx.storage.sql as never,
+        "SELECT path, content FROM workspace_files WHERE project_id = ? ORDER BY path", project.id);
+      return {
+        id: project.id, name: project.name, kind: project.kind, templateMode: project.template_mode,
+        viewports: safeJsonParseObj(project.viewport_config),
+        configuration: { executionCeiling: project.execution_ceiling, channel: safeJsonParseObj(project.channel_config) },
+        systemPrompt: typeof config.system_prompt === "string" ? config.system_prompt : "",
+        initialTasks: tasks.map((task) => ({ id: task.id, title: task.title, status: task.status, dependencies: safeJsonParseArr(task.dependencies).filter((id): id is string => typeof id === "string"), ...(task.assigned_agent ? { assignedAgent: task.assigned_agent } : {}) })),
+        starterFiles: files.map((file) => ({ path: file.path, content: file.content })),
+      };
+    });
+    const extensions = queryAll<{ extension_id: string }>(this.ctx.storage.sql as never, "SELECT extension_id FROM installed_extensions ORDER BY extension_id");
+    return {
+      id: crypto.randomUUID(), schemaVersion: "2.0", metadata: { exportedAt: new Date().toISOString(), sourceSpaceId: spaceId },
+      templateCategory: "venture", projects: exportedProjects, requiredExtensions: extensions.map((item) => item.extension_id), requiredCredentials: [],
+    };
+  }
+
+  /** Install a validated blueprint locally; hashing and writes complete before returning. */
+  async instantiateBlueprint(blueprint: SpaceBlueprint, targetSpaceId: string): Promise<{ projectIds: string[]; taskCount: number; fileCount: number }> {
+    this.ensureInit();
+    const compiled = compileBlueprint(blueprint, targetSpaceId);
+    const ids = new Map<string, string>();
+    for (const project of compiled.projects) ids.set(project.id ?? project.name, crypto.randomUUID());
+    let taskCount = 0;
+    let fileCount = 0;
+    for (const project of compiled.projects) {
+      const projectId = ids.get(project.id ?? project.name)!;
+      execute(this.ctx.storage.sql as never,
+        `INSERT INTO projects (id, space_id, name, description, status, kind, created_at, template_mode, viewport_config)
+         VALUES (?, ?, ?, '', 'active', ?, ?, ?, ?)`,
+        projectId, targetSpaceId, project.name, project.kind, new Date().toISOString(), project.templateMode, JSON.stringify(project.viewports));
+      const ceiling = project.configuration?.executionCeiling;
+      if (typeof ceiling === "number" && ceiling >= 1 && ceiling <= 6) execute(this.ctx.storage.sql as never, "UPDATE projects SET execution_ceiling = ? WHERE id = ?", ceiling, projectId);
+      if (project.systemPrompt) {
+        const agentId = crypto.randomUUID();
+        execute(this.ctx.storage.sql as never, "INSERT INTO agent_definitions (id, space_id, name, config_json) VALUES (?, ?, ?, ?)", agentId, targetSpaceId, `${project.name} Agent`, JSON.stringify({ system_prompt: project.systemPrompt }));
+        execute(this.ctx.storage.sql as never, "UPDATE projects SET default_agent_id = ? WHERE id = ?", agentId, projectId);
+      }
+      const taskIds = new Map(project.initialTasks.map((task) => [task.id ?? task.title, crypto.randomUUID()]));
+      for (const task of project.initialTasks) {
+        execute(this.ctx.storage.sql as never,
+          "INSERT INTO tasks (id, space_id, project_id, title, status, dependencies, assigned_agent, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          taskIds.get(task.id ?? task.title)!, targetSpaceId, projectId, task.title, task.status ?? "pending",
+          JSON.stringify((task.dependencies ?? []).map((dependency) => taskIds.get(dependency) ?? dependency)), task.assignedAgent ?? null, new Date().toISOString(), new Date().toISOString());
+        taskCount++;
+      }
+      for (const file of project.starterFiles) {
+        const hash = await sha256Hex(file.content);
+        execute(this.ctx.storage.sql as never,
+          "INSERT INTO workspace_files (project_id, path, content, content_hash, size_bytes, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+          projectId, file.path, file.content, hash, new TextEncoder().encode(file.content).byteLength, new Date().toISOString());
+        fileCount++;
+      }
+    }
+    return { projectIds: [...ids.values()], taskCount, fileCount };
   }
 
   private async putExecutiveContact(request: Request): Promise<Response> {

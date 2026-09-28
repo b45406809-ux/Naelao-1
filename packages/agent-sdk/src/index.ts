@@ -169,3 +169,4 @@ export * from "./widgets.js";
 export * from "./subagent-context.js";
 export * from "./receipt-card.js";
 export * from "./customer-bot-context.js";
+export * from "./blueprint.js";
