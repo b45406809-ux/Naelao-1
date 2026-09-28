@@ -39,7 +39,7 @@ import {
   type AgentConfig,
 } from "../script-engine/index.js";
 import { createTracer } from "@naelao/tracing";
-import { verifyCapabilityGrant } from "@naelao/agent-sdk";
+import { emitWorkflowReceiptCard, verifyCapabilityGrant } from "@naelao/agent-sdk";
 import { issueDelegationClaim, verifyDelegationClaim } from "@naelao/security";
 import { routeMentions } from "../script-engine/mention-router.js";
 import { GatewayReasoner, WorkersAIEmbedder } from "../script-engine/reasoner.js";
@@ -2311,8 +2311,26 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       hooks.workflowRun = async (name, params) => {
         // Workflows never inherit or hold open the caller's conversational request. Dispatch
         // into a fresh Workflow execution and immediately return a receipt to the UI stream.
-        this.ctx.waitUntil(tools.run(name, params));
-        return { queued: true, workflow: name, context: "clean", max_context_tokens: 2_000 };
+        const runId = crypto.randomUUID();
+        const started = Date.now();
+        this.ctx.waitUntil((async () => {
+          let result: unknown;
+          let failure: unknown;
+          try { result = await tools.run(name, params); } catch (error) { failure = error; }
+          if (this.env.SCRIPTS_R2) {
+            await emitWorkflowReceiptCard({
+              runId, workflowName: name, status: failure ? "failed" : "succeeded",
+              durationMs: Date.now() - started, summary: failure ? "Workflow failed. Inspect logs for details." : "Workflow completed successfully.",
+              stdout: result === undefined ? "" : JSON.stringify(result, null, 2),
+              stderr: failure instanceof Error ? failure.stack ?? failure.message : failure ? String(failure) : "",
+            }, {
+              logs: this.env.SCRIPTS_R2,
+              logUrl: (key) => `/api/workflow-logs/${encodeURIComponent(key)}`,
+              emit: async (card) => { await broadcastSpaceEvent(this.env, tenantId, spaceId, "timeline.receipt", card as unknown as Record<string, unknown>); },
+            });
+          }
+        })());
+        return { queued: true, runId, workflow: name, context: "clean", max_context_tokens: 2_000 };
       };
       hooks.workflowSchedule = async (name, cron) => {
         // Reuses the existing scheduled_jobs cron dispatcher (runScheduledJobs /
@@ -2458,24 +2476,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       tasks.map(async (t) => {
         const subId = crypto.randomUUID();
         const goal = String(t["goal"] ?? "");
-        const budgetTokens = typeof t["budget_tokens"] === "number" ? (t["budget_tokens"] as number) : DEFAULT_SUB_AGENT_BUDGET_TOKENS;
+        const budgetTokens = Math.max(1, Math.min(1_999, typeof t["budget_tokens"] === "number" ? (t["budget_tokens"] as number) : 1_999));
         const maxSteps = budgetToMaxSteps(budgetTokens);
         const now = Date.now();
         this.ctx.storage.sql.exec(
           `INSERT INTO sub_agents (id, parent_run_id, goal, status, budget_tokens, tokens_used, created_at, updated_at) VALUES (?, ?, ?, 'running', ?, 0, ?, ?)`,
           subId, parentRunId, goal, budgetTokens, now, now
         );
-        // Best-effort subthread mirror (spec: a sub-agent run is just a thread, linked to
-        // its parent — hidden from the default list unless the project opts in). Awaited
-        // (not fire-and-forget) so it can't be abandoned mid-flight once this task's own
-        // promise resolves and the DO's request context is free to tear down.
-        await this.mirrorThread(spaceId, tenantId, {
-          id: subId,
-          thread_kind: "sub_agent",
-          ...(parentThreadId ? { parent_thread_id: parentThreadId } : {}),
-          ...(projectId ? { project_id: projectId } : {}),
-          title: goal.slice(0, 120),
-        });
+        // A subagent is an ephemeral verb. It is never mirrored into the user-facing thread
+        // store; only its structured result is handed back to the persistent parent agent.
         if (!goal) {
           this.ctx.storage.sql.exec(`UPDATE sub_agents SET status='failed', error=?, updated_at=? WHERE id=?`, "missing goal", Date.now(), subId);
           return { id: subId, ok: false, error: "missing goal" };
@@ -2525,6 +2534,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           const tokensUsed = body.result?.tokens_used ?? 0;
           const ok = resp.ok && !!body.result?.ok;
           const output = ok ? sanitizeSubAgentOutput(body.result?.output) : undefined;
+          const modifiedFiles = output && typeof output === "object" && Array.isArray((output as Record<string, unknown>)["modifiedFiles"])
+            ? ((output as Record<string, unknown>)["modifiedFiles"] as unknown[]).filter((path): path is string => typeof path === "string")
+            : [];
           this.ctx.storage.sql.exec(
             `UPDATE sub_agents SET status = ?, tokens_used = ?, result = ?, error = ?, updated_at = ? WHERE id = ?`,
             ok ? "done" : "failed", tokensUsed, ok ? JSON.stringify(output) : null, ok ? null : (body.result?.error ?? `HTTP ${resp.status}`), Date.now(), subId
@@ -2534,6 +2546,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             ok,
             model_used: modelResolution.model,
             ...(modelResolution.downgraded ? { effort_downgraded: true, effort_downgrade_reason: modelResolution.reason } : {}),
+            modifiedFiles,
             ...(ok ? { output } : { error: body.result?.error ?? `HTTP ${resp.status}` }),
           };
         } catch (err) {

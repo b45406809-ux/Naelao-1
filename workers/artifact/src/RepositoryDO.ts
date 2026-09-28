@@ -215,7 +215,7 @@ export class RepositoryDO extends DurableObject<Env> {
           } as Record<string, string>
         )[op] ?? op;
       const state = await this.state();
-      const body =
+      let body =
         request.method === "GET"
           ? {}
           : await request.json<Record<string, unknown>>().catch(() => ({}));
@@ -234,6 +234,17 @@ export class RepositoryDO extends DurableObject<Env> {
       }
       if (!state.initialized)
         return jsonError("Repository not initialized", 409);
+      if (op === "accumulate-workspace" && request.method === "POST") {
+        const name = String(body.branch ?? "").replace(/^refs\/heads\//, "");
+        if (!/^task\/[A-Za-z0-9._-]+\/accumulator$/.test(name)) return jsonError("Invalid accumulator branch");
+        if (!(name in state.refs)) {
+          const from = this.resolve(state, String(body.from ?? state.head));
+          state.refs[name] = from;
+          state.worktrees[name] = from ? structuredClone(state.commits[from]!.entries) : {};
+        }
+        body = { ...body, branch: name, changes: Array.isArray(body.files) ? body.files : [], message: String(body.message ?? `Accumulate ${body.chunk_id ?? "workspace changes"}`) };
+        op = "commit";
+      }
       const branch = String(
         body.branch ?? url.searchParams.get("branch") ?? state.head
       );

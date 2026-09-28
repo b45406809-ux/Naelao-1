@@ -14,6 +14,7 @@
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 import type { OrchestrationHooks } from "../types.js";
 import { routeWorkflow, type WorkflowClass } from "@naelao/agent-sdk";
+import { compileWorkflowEntrypoint } from "../../workflows/workflow-harness.js";
 
 function hooks(ctx: PrebuiltOpContext): OrchestrationHooks {
   return ctx.env.orchestration ?? {};
@@ -33,10 +34,8 @@ export const dynamicWorkflow: PrebuiltScript = {
           ok: false,
           reason: "workflow registry not available in this environment",
         };
-      return await h.workflowCreate(
-        String(args["name"] ?? ""),
-        String(args["code"] ?? "")
-      );
+      const compiled = compileWorkflowEntrypoint(String(args["code"] ?? ""));
+      return await h.workflowCreate(String(args["name"] ?? ""), compiled.source);
     },
     async "workflow.run"(args, ctx) {
       const workflowClass = String(args["workflow_class"] ?? "ephemeral_task") as WorkflowClass;
