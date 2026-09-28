@@ -19,8 +19,8 @@ import type {
 } from "@naelao/events";
 import { broadcastSpaceEvent, mintInternalToken } from "@naelao/http";
 import type { MessageRole } from "@naelao/types";
-import { defaultViewportFor, getProjectKindManifest } from "@naelao/agent-sdk";
-import type { DisplayMode, TemplateMode } from "@naelao/agent-sdk";
+import { defaultViewportFor, getProjectKindManifest, validateExtensionManifest } from "@naelao/agent-sdk";
+import type { DisplayMode, ExtensionManifest, TemplateMode } from "@naelao/agent-sdk";
 import { consumeEphemeralActionGrant, mintEphemeralActionGrant, type EphemeralActionGrant, verifyCapabilityToken } from "@naelao/security";
 
 function todaySpendKey(): string {
@@ -47,6 +47,7 @@ function safeJsonParseObj(text: string): Record<string, unknown> {
   } catch {
     return {};
   }
+
 }
 
 /** projects.allowed_agent_ids is stored as a JSON string[] or NULL (unrestricted). */
@@ -1411,6 +1412,19 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 52,
+    description: "validated userspace extension installations",
+    up: `
+      CREATE TABLE installed_extensions (
+        extension_id TEXT PRIMARY KEY,
+        manifest_json TEXT NOT NULL,
+        installed_by TEXT NOT NULL,
+        installed_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `,
+  },
 ];
 
 export const PROVENANCE_GENESIS_HASH = "0".repeat(64);
@@ -1573,6 +1587,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const method = request.method;
 
     try {
+      if (url.pathname === "/extensions" && method === "GET") return this.listExtensions();
+      if (url.pathname === "/extensions" && method === "POST") return await this.installExtension(request);
+      const extensionMatch = url.pathname.match(/^\/extensions\/(ext_[a-z0-9_-]+)$/);
+      if (extensionMatch?.[1] && method === "DELETE") return this.uninstallExtension(extensionMatch[1]);
       if (method === "POST" && url.pathname === "/ephemeral-grants/mint") {
         const body = await request.json<{ tool_name?: string; params?: Record<string, unknown> }>().catch(() => ({} as { tool_name?: string; params?: Record<string, unknown> }));
         if (!body.tool_name) return Response.json({ error: "tool_name is required" }, { status: 400 });
@@ -8741,4 +8759,32 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       });
     }
   }
+
+  private listExtensions(): Response {
+    const rows = queryAll<{ manifest_json: string; installed_by: string; installed_at: string; updated_at: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT manifest_json,installed_by,installed_at,updated_at FROM installed_extensions ORDER BY extension_id"
+    );
+    return Response.json({ extensions: rows.map((row) => ({ manifest: JSON.parse(row.manifest_json) as ExtensionManifest, installedBy: row.installed_by, installedAt: row.installed_at, updatedAt: row.updated_at })) });
+  }
+
+  private async installExtension(request: Request): Promise<Response> {
+    const body = await request.json<{ manifest?: unknown; installedBy?: string }>();
+    if (!body.installedBy) return Response.json({ error: "installedBy is required" }, { status: 400 });
+    let manifest: ExtensionManifest;
+    try { manifest = validateExtensionManifest(body.manifest); }
+    catch (error) { return Response.json({ error: error instanceof Error ? error.message : "invalid_extension_manifest" }, { status: 400 }); }
+    const now = new Date().toISOString();
+    execute(this.ctx.storage.sql as never,
+      `INSERT INTO installed_extensions(extension_id,manifest_json,installed_by,installed_at,updated_at)
+       VALUES (?,?,?,?,?) ON CONFLICT(extension_id) DO UPDATE SET manifest_json=excluded.manifest_json,installed_by=excluded.installed_by,updated_at=excluded.updated_at`,
+      manifest.id, JSON.stringify(manifest), body.installedBy, now, now);
+    return Response.json({ installed: true, manifest, installedAt: now }, { status: 201 });
+  }
+
+  private uninstallExtension(extensionId: string): Response {
+    execute(this.ctx.storage.sql as never, "DELETE FROM installed_extensions WHERE extension_id = ?", extensionId);
+    return Response.json({ uninstalled: true, extensionId });
+  }
+
 }

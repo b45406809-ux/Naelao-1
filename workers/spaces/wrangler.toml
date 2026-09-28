@@ -62,6 +62,10 @@ class_name = "BuilderAccountDO"
 name = "PRODUCT_USER_DO"
 class_name = "ProductUserDO"
 
+[[durable_objects.bindings]]
+name = "MICRO_APP_DO"
+class_name = "MicroAppDO"
+
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["LockDO"]
@@ -85,6 +89,10 @@ new_sqlite_classes = ["BuilderAccountDO"]
 [[migrations]]
 tag = "v7"
 new_sqlite_classes = ["ProductUserDO"]
+
+[[migrations]]
+tag = "v8"
+new_sqlite_classes = ["MicroAppDO"]
 
 [[d1_databases]]
 binding = "PLATFORM_DB"
