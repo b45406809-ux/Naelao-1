@@ -57,6 +57,9 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
       key TEXT PRIMARY KEY, holder_id TEXT NOT NULL, acquired_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
     )`);
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_locks_expires ON locks(expires_at)`);
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS outbound_pacers (
+      domain TEXT PRIMARY KEY, next_release_at INTEGER NOT NULL
+    )`);
     this.initialized = true;
   }
 
@@ -87,10 +90,35 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
       if (request.method === "POST" && url.pathname === "/locks/force-release") {
         return this.forceReleaseLock(request);
       }
+      if (request.method === "POST" && url.pathname === "/outbound/pace") {
+        const body = await request.json<{ domain?: string; maxPerSecond?: number }>().catch(() => ({} as { domain?: string; maxPerSecond?: number }));
+        if (!body.domain) return Response.json({ error_code: "bad_request", message: "domain is required" }, { status: 400 });
+        return Response.json(await this.paceOutboundRequest({ domain: body.domain, ...(body.maxPerSecond === undefined ? {} : { maxPerSecond: body.maxPerSecond }) }));
+      }
       return Response.json({ error_code: "not_found" }, { status: 404 });
     } catch (err) {
       return Response.json({ error_code: "internal_error", message: String(err) }, { status: 500 });
     }
+  }
+
+  /** A persisted leaky bucket: reservations survive DO eviction and are serialized by the DO. */
+  async paceOutboundRequest(input: { domain: string; maxPerSecond?: number }): Promise<{ releasedAt: number; delayedMs: number }> {
+    this.ensureInit();
+    let domain: string;
+    try { domain = new URL(input.domain.includes("://") ? input.domain : `https://${input.domain}`).hostname.toLowerCase(); }
+    catch { throw new Error("invalid_domain"); }
+    const rate = Math.max(1, Math.min(1_000, Math.floor(input.maxPerSecond ?? 5)));
+    const interval = Math.ceil(1_000 / rate);
+    const now = Date.now();
+    const rows = this.ctx.storage.sql.exec(`SELECT next_release_at FROM outbound_pacers WHERE domain = ?`, domain).toArray() as Array<{ next_release_at: number }>;
+    const releasedAt = Math.max(now, rows[0]?.next_release_at ?? now);
+    this.ctx.storage.sql.exec(
+      `INSERT INTO outbound_pacers (domain, next_release_at) VALUES (?, ?)
+       ON CONFLICT(domain) DO UPDATE SET next_release_at=excluded.next_release_at`, domain, releasedAt + interval
+    );
+    const delayedMs = releasedAt - now;
+    if (delayedMs > 0) await new Promise<void>((resolve) => setTimeout(resolve, delayedMs));
+    return { releasedAt, delayedMs };
   }
 
   private async acquireLock(request: Request): Promise<Response> {

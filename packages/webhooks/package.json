@@ -4,8 +4,24 @@
   "private": true,
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": { ".": { "import": "./dist/index.js", "types": "./dist/index.d.ts" } },
-  "scripts": { "build": "tsc", "typecheck": "tsc --noEmit" },
-  "dependencies": { "@naelao/types": "workspace:*" },
-  "devDependencies": { "typescript": "*", "@cloudflare/workers-types": "*" }
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@naelao/types": "workspace:*",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "*",
+    "typescript": "*",
+    "vitest": "^2.1.8"
+  }
 }

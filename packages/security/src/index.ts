@@ -12,3 +12,4 @@ export * from "./delegation.js";
 export * from "./dlp.js";
 export * from "./ephemeral-grant.js";
 export * from "./knowledge-permissions.js";
+export * from "./circuit-breaker.js";

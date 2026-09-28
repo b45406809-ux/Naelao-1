@@ -40,6 +40,20 @@ async function sha256Hex(input: string): Promise<string> {
     .join("");
 }
 
+export interface WebhookEventIdentity { spaceId: string; provider: string; eventType: string; eventId: string; }
+export async function claimProcessedWebhookEvent(
+  sql: { exec(query: string, ...bindings: unknown[]): { rowsWritten: number } },
+  event: WebhookEventIdentity
+): Promise<{ claimed: boolean; eventHash: string }> {
+  const eventHash = await sha256Hex(JSON.stringify([event.spaceId, event.provider, event.eventType, event.eventId]));
+  sql.exec(`DELETE FROM processed_webhook_events WHERE processed_at < datetime('now', '-24 hours')`);
+  const result = sql.exec(
+    `INSERT OR IGNORE INTO processed_webhook_events (event_hash, provider, event_id, processed_at)
+     VALUES (?, ?, ?, datetime('now'))`, eventHash, event.provider, event.eventId
+  );
+  return { claimed: result.rowsWritten > 0, eventHash };
+}
+
 function safeJsonParseObj(text: string): Record<string, unknown> {
   try {
     const v = JSON.parse(text) as unknown;
@@ -1425,6 +1439,19 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 53,
+    description: "24-hour webhook event idempotency registry",
+    up: `
+      CREATE TABLE processed_webhook_events (
+        event_hash TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        processed_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX idx_processed_webhook_events_at ON processed_webhook_events(processed_at);
+    `,
+  },
 ];
 
 export const PROVENANCE_GENESIS_HASH = "0".repeat(64);
@@ -2156,6 +2183,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         await broadcastSpaceEvent(this.env, request.headers.get("x-naelao-tenant-id") ?? "", body.space_id, "workspace.merged", { project_id: body.project_id, ...body.event });
         return Response.json({ emitted: true });
       }
+      if (method === "POST" && url.pathname === "/processed-webhook-events") {
+        return this.claimWebhookEvent(request);
+      }
 
       // ── Event triggers (@naelao/events) ────────────────────────────────────────
       // GET /event-triggers?space_id=&project_id=
@@ -2331,6 +2361,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         { status: 500 }
       );
     }
+  }
+
+  private async claimWebhookEvent(request: Request): Promise<Response> {
+    const body = await request.json<{ spaceId?: string; provider?: string; eventType?: string; eventId?: string }>().catch(() => ({} as { spaceId?: string; provider?: string; eventType?: string; eventId?: string }));
+    if (!body.spaceId || !body.provider || !body.eventType || !body.eventId) {
+      return Response.json({ error_code: "bad_request", message: "spaceId, provider, eventType, and eventId are required" }, { status: 400 });
+    }
+    const result = await claimProcessedWebhookEvent(this.ctx.storage.sql, body as WebhookEventIdentity);
+    return Response.json({ ...result, duplicate: !result.claimed });
   }
 
   private async createSession(request: Request): Promise<Response> {
