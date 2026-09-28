@@ -184,6 +184,17 @@ export const projectCoordination: PrebuiltScript = {
   domain: "orchestration",
   requires_tier: 1,
   operations: {
+    "project.accumulator.commit": (a, c) => repositoryCall(c, "accumulate-workspace", "POST", {
+      branch: String(a["branch"] ?? `task/${String(a["task_id"] ?? "")}/accumulator`),
+      task_id: String(a["task_id"] ?? ""), chunk_id: String(a["chunk_id"] ?? "chunk"),
+      files: Array.isArray(a["files"]) ? a["files"] : [],
+      message: String(a["message"] ?? `Accumulate ${String(a["chunk_id"] ?? "workspace changes")}`),
+      metadata: (a["metadata"] as Record<string, unknown> | undefined) ?? {
+        agent_role: "subagent", user_goal: String(a["goal"] ?? "chunked repository task"),
+        task_id: String(a["task_id"] ?? "unknown"), rationale: String(a["message"] ?? "Accumulate subagent deliverables"),
+        thread_id: String(a["thread_id"] ?? "workflow"), tool_turn_id: String(a["chunk_id"] ?? crypto.randomUUID()),
+      },
+    }),
     "project.pull_request.diff": (a, c) => repositoryCall(c, "generatePullRequestDiff", "GET", {
       baseBranch: String(a["base_branch"] ?? "main"), forkBranch: String(a["fork_branch"] ?? ""),
     }),

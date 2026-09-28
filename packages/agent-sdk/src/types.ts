@@ -245,6 +245,28 @@ export interface RuntimeCli {
   register(name: string, source: string): Promise<string>;
 }
 
+/** The deliberately small capability surface given to an ephemeral subagent. */
+export interface RuntimeAi {
+  complete(request: { prompt: string; maxTokens: number; system?: string }): Promise<unknown>;
+}
+
+export interface RuntimeWorkflowStep {
+  do<T>(name: string, callback: () => Promise<T>): Promise<T>;
+  sleep(name: string, duration: string | number): Promise<void>;
+}
+
+/**
+ * Subagents are execution functions, not actors.  In particular this type must never grow
+ * thread, session, channel, presence, websocket, or delegation handles.
+ */
+export interface SubagentContext {
+  readonly ai: RuntimeAi;
+  readonly fs: RuntimeFileSystem;
+  readonly cli: RuntimeCli;
+  readonly vault: RuntimeVault;
+  readonly step: RuntimeWorkflowStep;
+}
+
 export interface RuntimeContextBase {
   fs: RuntimeFileSystem;
   vault: RuntimeVault;

@@ -4,6 +4,23 @@ import * as React from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { GeneratedWidget } from "@/components/widgets/GeneratedWidget";
+import type { WorkflowReceiptCard as WorkflowReceipt } from "@naelao/agent-sdk";
+
+function WorkflowReceiptCard({ card }: { card: WorkflowReceipt }): React.ReactElement {
+  const status = card.status === "succeeded" ? "🟢 Succeeded" : card.status === "failed" ? "🔴 Failed" : "🟡 Cancelled";
+  return <details className="workflow-receipt-card">
+    <summary>⏰ Workflow Completed: {card.workflowName} | Status: {status} | Duration: {card.durationMs}ms | <span>Inspect Full Logs</span></summary>
+    <div><p>{card.summary}</p><a href={card.logUrl} target="_blank" rel="noopener noreferrer">Open full logs</a><code>{card.runId}</code></div>
+  </details>;
+}
+
+function parseReceipt(text: string): WorkflowReceipt | null {
+  if (!text.startsWith("{\"kind\":\"workflow_receipt\"")) return null;
+  try {
+    const value = JSON.parse(text) as WorkflowReceipt;
+    return value.kind === "workflow_receipt" && Array.isArray(value.lines) ? value : null;
+  } catch { return null; }
+}
 
 /**
  * Chat text rendered as markdown.
@@ -42,6 +59,8 @@ const COMPONENTS = {
 } as const;
 
 function MarkdownImpl({ text }: { text: string }): React.ReactElement {
+  const receipt = parseReceipt(text);
+  if (receipt) return <WorkflowReceiptCard card={receipt} />;
   const parts = text.split(/(<ui_widget\s+type="[^"]+">[\s\S]*?<\/ui_widget>)/g);
   return (
     <>{parts.map((part, index) => { const match = part.match(/^<ui_widget\s+type="([^"]+)">([\s\S]*)<\/ui_widget>$/); if (!match) return <ReactMarkdown key={index} remarkPlugins={[remarkGfm]} components={COMPONENTS as never}>{part}</ReactMarkdown>; try { const json = JSON.parse(match[2]!); return <GeneratedWidget key={index} value={{ ...json, type: match[1] }}/>; } catch { return <span key={index}>Invalid widget</span>; } })}</>
