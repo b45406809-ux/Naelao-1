@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { requestId, jwtAuth, errorResponse, unauthorized, mintInternalToken } from "@naelao/http";
 import { signHmac } from "@naelao/crypto";
 import type { NaelaoJwtClaims } from "@naelao/types";
+import { transcribeAudio } from "./routes/transcribe";
 export { RateLimitDO } from "./RateLimitDO";
 
 export interface Env {
@@ -26,6 +27,7 @@ export interface Env {
   CREDENTIALS_WORKER: Fetcher;
   /** F-2: billing worker — the public Lemon Squeezy webhook ingress proxies here. */
   BILLING_WORKER?: Fetcher;
+  AI: Ai;
 }
 
 // G-AX27: Replay attack prevention — max clock skew in seconds
@@ -228,6 +230,14 @@ app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
 app.get("/health", (c) =>
   c.json({ status: "ok", env: c.env.ENVIRONMENT, ts: Date.now() })
 );
+
+// Browser dictation intentionally has its own small, rate-limited media endpoint. It accepts no
+// caller-selected model or prompt, so user audio can only reach the fixed Whisper binding.
+app.post("/api/voice/transcribe", async (c) => {
+  const limited = await checkPreAuthRateLimit(c, "voice-transcribe", 30);
+  if (!limited.allowed) return c.json({ ok: false, error: "Too many transcription requests", retry_after_ms: limited.retryAfterMs }, 429);
+  return transcribeAudio(c.req.raw, c.env);
+});
 
 // Launch-readiness audit follow-up: /v1/auth/* had ZERO pre-auth rate limiting at all — login
 // (brute-force) and register (account-farming) were both completely unthrottled, and the new

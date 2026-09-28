@@ -159,6 +159,7 @@ export { LocalTunnelDO } from "./do/LocalTunnelDO.js";
 export { ConcurrencyDO } from "./do/ConcurrencyDO.js";
 export { AgentTaskWorkflow } from "./workflows/AgentTaskWorkflow.js";
 export { ScriptRunWorkflow } from "./workflows/ScriptRunWorkflow.js";
+export { ScheduledReminderWorkflow } from "./workflows/outbound-reminder-workflow.js";
 
 // ── Env interface ─────────────────────────────────────────────────────────────
 

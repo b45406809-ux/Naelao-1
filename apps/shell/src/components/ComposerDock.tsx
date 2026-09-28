@@ -31,6 +31,7 @@ import {
   type BusinessMember,
   type SessionCredentials,
   type AgentTemplateSummary,
+  transcribeVoice,
 } from "@/lib/api";
 import { startConnectorConnect, startDirectoryConnect, submitManualConnectorKey } from "@/lib/connectorActions";
 import { modelLabel } from "./ModelSelector";
@@ -104,6 +105,7 @@ export function ComposerDock({
   isBusinessSpace,
   onNotice,
   onUseTip,
+  onDictation,
   ensureSessionId,
   pendingUploads,
   onUploadsChange,
@@ -135,6 +137,7 @@ export function ComposerDock({
   onNotice?: (message: string) => void;
   /** A tip card is clickable: it drops its example straight into the composer. */
   onUseTip?: (text: string) => void;
+  onDictation?: (text: string) => void;
   /** Mints (or reuses) the real session id an upload needs to know where in the workspace it
    *  landed — a fresh thread/Home has no session yet (lazy creation), so attaching a file before
    *  the first message still needs somewhere real to put it. */
@@ -184,8 +187,50 @@ export function ComposerDock({
   const [directorySearching, setDirectorySearching] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const rootRef = React.useRef<HTMLDivElement>(null);
+  const recorderRef = React.useRef<MediaRecorder | null>(null);
+  const streamRef = React.useRef<MediaStream | null>(null);
+  const chunksRef = React.useRef<Blob[]>([]);
+  const [recording, setRecording] = React.useState(false);
+  const [transcribing, setTranscribing] = React.useState(false);
 
   const toggle = (next: DockPanel) => setPanel((cur) => (cur === next ? "compose" : next));
+
+  React.useEffect(() => () => {
+    if (recorderRef.current?.state === "recording") recorderRef.current.stop();
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+  }, []);
+
+  async function toggleDictation() {
+    if (recording) { recorderRef.current?.stop(); return; }
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      onNotice?.("Voice dictation is not supported by this browser."); return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+      streamRef.current = stream;
+      chunksRef.current = [];
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "audio/webm";
+      const recorder = new MediaRecorder(stream, { mimeType });
+      recorderRef.current = recorder;
+      recorder.ondataavailable = (event) => { if (event.data.size) chunksRef.current.push(event.data); };
+      recorder.onerror = () => onNotice?.("Microphone recording failed.");
+      recorder.onstop = async () => {
+        setRecording(false);
+        stream.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+        const blob = new Blob(chunksRef.current, { type: recorder.mimeType });
+        if (!blob.size) return;
+        setTranscribing(true);
+        try {
+          const text = await transcribeVoice(blob);
+          if (text) { onDictation?.(text); setPanel("compose"); }
+        } catch (error) { onNotice?.(error instanceof Error ? error.message : "Voice transcription failed"); }
+        finally { setTranscribing(false); }
+      };
+      recorder.start(250);
+      setRecording(true);
+    } catch (error) { onNotice?.(error instanceof Error ? error.message : "Microphone access was denied."); }
+  }
 
   // Connectors and members feed the bar itself (the connected dot, the avatar stack), so they load
   // once on mount rather than only when their panel opens.
@@ -859,6 +904,9 @@ export function ComposerDock({
 
         <button type="button" className={`dock-btn${panel === "uploads" ? " open" : ""}`} onClick={() => toggle("uploads")} title="Uploads">
           <Icon path={ICONS.upload} />
+        </button>
+        <button type="button" className={`dock-btn${recording ? " open" : ""}`} onClick={toggleDictation} disabled={transcribing} aria-pressed={recording} title={recording ? "Stop dictation" : transcribing ? "Transcribing…" : "Dictate message"}>
+          <span aria-hidden="true">{recording ? "■" : transcribing ? "…" : "🎙"}</span>
         </button>
         <button type="button" className={`dock-btn${panel === "tips" ? " open" : ""}`} onClick={() => toggle("tips")} title="Tips for a better answer">
           <Icon path={ICONS.bulb} />

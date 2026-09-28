@@ -130,6 +130,15 @@ name = "ScriptRunWorkflow"
 class_name = "ScriptRunWorkflow"
 binding = "AGENT_SCRIPT_WORKFLOW"
 
+[[workflows]]
+name = "ScheduledReminderWorkflow"
+class_name = "ScheduledReminderWorkflow"
+binding = "SCHEDULED_REMINDER_WORKFLOW"
+
+[[services]]
+binding = "VOICE_CALLS"
+service = "naelao-calls"
+
 [[kv_namespaces]]
 binding = "AGENT_CACHE"
 id = "8564eeacd7b44efb88f71f39366ec4be"
