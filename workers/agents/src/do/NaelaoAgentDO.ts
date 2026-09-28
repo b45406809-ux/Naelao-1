@@ -2064,6 +2064,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                 const committed = await commitResponse.json<{ commit_id: string }>();
                 commitOid = committed.commit_id;
                 env.lastWorkspaceCommitOid = committed.commit_id;
+                // The Space DO is the ledger's single writer. Attest the immutable human
+                // invoker separately from the assistant actor and project executor.
+                await spacesWorker.fetch(new Request("http://spaces-worker/provenance", {
+                  method: "POST", headers,
+                  body: JSON.stringify({
+                    human_trigger_id: env.humanInvokerId ?? env.userId ?? "system",
+                    assistant_actor_id: agentId,
+                    project_executor_id: projectId,
+                    git_commit_oid: committed.commit_id,
+                    task_id: commitContext.taskId,
+                  }),
+                }));
                 await broadcastSpaceEvent(this.env, tenantId, spaceId, "repository.committed", { project_id: projectId, thread_id: commitContext.threadId, commit_id: committed.commit_id, rollback_commit_id: committed.commit_id });
               }
             }

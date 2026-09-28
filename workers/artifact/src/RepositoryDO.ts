@@ -202,6 +202,8 @@ export class RepositoryDO extends DurableObject<Env> {
             compare: "compare",
             forkForPrivateScratchpad: "branch",
             createTaskBranch: "branch",
+            createRaceBranch: "branch",
+            fastForwardRace: "merge",
             "git.reset_hard": "rollback",
             rollbackToTurn: "rollback",
             getBlame: "blame",

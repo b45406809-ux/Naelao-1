@@ -2,14 +2,12 @@ import { DurableObject } from "cloudflare:workers";
 import { applyMigrations, execute, queryAll, queryOne } from "@naelao/db";
 import type { Migration } from "@naelao/db";
 import {
-  PRESENCE_FRESHNESS_WINDOW_MS,
   buildFireParams,
   evaluateCondition,
   findPossibleDuplicateProjects,
   getBusinessFeatureKind,
   isFailureKind,
   isKnownProjectKind,
-  isPresenceFresh,
   roleMeetsMinimum,
   selectMatchingRules,
 } from "@naelao/events";
@@ -1338,7 +1336,35 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_rfcs_project_status ON rfcs(project_id, status, created_at DESC);
     `,
   },
+  {
+    version: 49,
+    description: "tamper-evident provenance ledger and editor cursor presence",
+    up: `
+      CREATE TABLE IF NOT EXISTS provenance_ledger (
+        entry_hash TEXT PRIMARY KEY,
+        prev_hash TEXT NOT NULL,
+        human_trigger_id TEXT NOT NULL,
+        assistant_actor_id TEXT NOT NULL,
+        project_executor_id TEXT NOT NULL,
+        git_commit_oid TEXT NOT NULL,
+        task_id TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_provenance_created ON provenance_ledger(created_at, entry_hash);
+      ALTER TABLE presence ADD COLUMN file_path TEXT;
+      ALTER TABLE presence ADD COLUMN cursor_line INTEGER;
+      ALTER TABLE presence ADD COLUMN cursor_col INTEGER;
+    `,
+  },
 ];
+
+export const PROVENANCE_GENESIS_HASH = "0".repeat(64);
+
+export async function provenanceHmac(secret: string, fields: readonly string[]): Promise<string> {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(fields.join("")));
+  return [...new Uint8Array(signature)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
 export interface SpaceDOEnv {
   PLATFORM_SECRET: string;
@@ -2031,6 +2057,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "GET" && url.pathname === "/presence") {
         return this.listPresence(url.searchParams);
       }
+      if (method === "POST" && url.pathname === "/provenance") {
+        return this.appendProvenanceEntry(request);
+      }
+      if (method === "GET" && url.pathname === "/provenance/verify") {
+        return Response.json(await this.verifyProvenanceLedger());
+      }
       if (method === "POST" && url.pathname === "/pull-request-cards") {
         return this.createPullRequestCard(request);
       }
@@ -2038,7 +2070,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return this.listPullRequestCards(url.searchParams);
       }
       if (method === "POST" && url.pathname === "/workspace-events") {
-        const body = await request.json<{ space_id?: string; project_id?: string; event?: { type?: string } }>().catch(() => ({}));
+        const body = await request.json<{ space_id?: string; project_id?: string; event?: { type?: string } }>().catch(() => ({} as { space_id?: string; project_id?: string; event?: { type?: string } }));
         if (!body.space_id || !body.project_id || body.event?.type !== "workspace.merged")
           return Response.json({ error_code: "bad_request", message: "A workspace.merged event is required" }, { status: 400 });
         await broadcastSpaceEvent(this.env, request.headers.get("x-naelao-tenant-id") ?? "", body.space_id, "workspace.merged", { project_id: body.project_id, ...body.event });
@@ -3683,6 +3715,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       user_id: string;
       project_id?: string;
       thread_id?: string;
+      file_path?: string;
+      cursor_line?: number;
+      cursor_col?: number;
       tenant_id?: string;
     }>();
     if (!body.space_id || !body.user_id) {
@@ -3697,13 +3732,18 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const now = Date.now();
     execute(
       this.ctx.storage.sql as never,
-      `INSERT INTO presence (space_id, user_id, project_id, thread_id, last_seen_at) VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(space_id, user_id) DO UPDATE SET project_id = excluded.project_id, thread_id = excluded.thread_id, last_seen_at = excluded.last_seen_at`,
+      `INSERT INTO presence (space_id, user_id, project_id, thread_id, last_seen_at, file_path, cursor_line, cursor_col) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(space_id, user_id) DO UPDATE SET project_id = excluded.project_id, thread_id = excluded.thread_id,
+       last_seen_at = excluded.last_seen_at, file_path = excluded.file_path,
+       cursor_line = excluded.cursor_line, cursor_col = excluded.cursor_col`,
       body.space_id,
       body.user_id,
       body.project_id ?? null,
       body.thread_id ?? null,
-      now
+      now,
+      body.file_path ?? null,
+      Number.isInteger(body.cursor_line) ? body.cursor_line! : null,
+      Number.isInteger(body.cursor_col) ? body.cursor_col! : null
     );
     // §A1.17 Phase V: live-sync presence too — online/offline transitions appear live instead of
     // only on the next GET /presence poll. Best-effort, never blocks the heartbeat response.
@@ -3711,11 +3751,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       this.env,
       body.tenant_id ?? "",
       body.space_id,
-      "presence.heartbeat",
+      "presence.update",
       {
         user_id: body.user_id,
         project_id: body.project_id ?? null,
         thread_id: body.thread_id ?? null,
+        file_path: body.file_path ?? null,
+        cursor_line: body.cursor_line ?? null,
+        cursor_col: body.cursor_col ?? null,
       }
     );
     // Opportunistic prune: presence's PK is (space_id, user_id), so a row only ever grows the
@@ -3729,7 +3772,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       this.ctx.storage.sql as never,
       "DELETE FROM presence WHERE space_id = ? AND last_seen_at < ?",
       body.space_id,
-      now - PRESENCE_PRUNE_CUTOFF_MS
+      now - 60_000
     );
     return Response.json({ ok: true, last_seen_at: now });
   }
@@ -3742,10 +3785,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           user_id: string;
           project_id: string | null;
           thread_id: string | null;
-          last_seen_at: number;
+          last_seen_at: number; file_path: string | null; cursor_line: number | null; cursor_col: number | null;
         }>(
           this.ctx.storage.sql as never,
-          "SELECT user_id, project_id, thread_id, last_seen_at FROM presence WHERE space_id = ? AND project_id = ?",
+          "SELECT user_id, project_id, thread_id, last_seen_at, file_path, cursor_line, cursor_col FROM presence WHERE space_id = ? AND project_id = ?",
           spaceId,
           projectId
         )
@@ -3753,19 +3796,62 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           user_id: string;
           project_id: string | null;
           thread_id: string | null;
-          last_seen_at: number;
+          last_seen_at: number; file_path: string | null; cursor_line: number | null; cursor_col: number | null;
         }>(
           this.ctx.storage.sql as never,
-          "SELECT user_id, project_id, thread_id, last_seen_at FROM presence WHERE space_id = ?",
+          "SELECT user_id, project_id, thread_id, last_seen_at, file_path, cursor_line, cursor_col FROM presence WHERE space_id = ?",
           spaceId
         );
     const now = Date.now();
-    const active = rows.filter((r) => isPresenceFresh(r.last_seen_at, now));
+    const active = rows.filter((r) => r.last_seen_at >= now - 60_000);
     return Response.json({
       data: active,
       count: active.length,
-      freshness_window_ms: PRESENCE_FRESHNESS_WINDOW_MS,
+      freshness_window_ms: 60_000,
     });
+  }
+
+  /** Append under the DO's single-writer input gate. The timestamp is stored verbatim and is part
+   * of the authenticated message, making alteration, deletion, or reordering detectable. */
+  async appendProvenanceEntry(request: Request): Promise<Response> {
+    const entry = await request.json<{
+      human_trigger_id?: string; assistant_actor_id?: string; project_executor_id?: string;
+      git_commit_oid?: string; task_id?: string; created_at?: string;
+    }>();
+    if (!entry.human_trigger_id || !entry.assistant_actor_id || !entry.project_executor_id ||
+        !entry.git_commit_oid || !/^[a-f0-9]{40,64}$/i.test(entry.git_commit_oid)) {
+      return Response.json({ error: "valid actor ids and git_commit_oid are required" }, { status: 400 });
+    }
+    const createdAt = entry.created_at ?? new Date().toISOString();
+    if (!Number.isFinite(Date.parse(createdAt))) return Response.json({ error: "invalid created_at" }, { status: 400 });
+    const latest = queryOne<{ entry_hash: string }>(this.ctx.storage.sql as never,
+      "SELECT entry_hash FROM provenance_ledger ORDER BY rowid DESC LIMIT 1");
+    const prevHash = latest?.entry_hash ?? PROVENANCE_GENESIS_HASH;
+    const entryHash = await provenanceHmac(this.env.PLATFORM_SECRET, [prevHash, entry.human_trigger_id,
+      entry.assistant_actor_id, entry.project_executor_id, entry.git_commit_oid, createdAt]);
+    execute(this.ctx.storage.sql as never,
+      `INSERT INTO provenance_ledger (entry_hash, prev_hash, human_trigger_id, assistant_actor_id,
+       project_executor_id, git_commit_oid, task_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      entryHash, prevHash, entry.human_trigger_id, entry.assistant_actor_id, entry.project_executor_id,
+      entry.git_commit_oid, entry.task_id ?? null, createdAt);
+    return Response.json({ ...entry, task_id: entry.task_id ?? null, created_at: createdAt,
+      prev_hash: prevHash, entry_hash: entryHash }, { status: 201 });
+  }
+
+  async verifyProvenanceLedger(): Promise<{ valid: boolean; entries: number; invalid_entry_hash?: string }> {
+    const rows = queryAll<{ entry_hash: string; prev_hash: string; human_trigger_id: string;
+      assistant_actor_id: string; project_executor_id: string; git_commit_oid: string; created_at: string }>(
+      this.ctx.storage.sql as never, "SELECT * FROM provenance_ledger ORDER BY rowid ASC");
+    let previous = PROVENANCE_GENESIS_HASH;
+    for (const row of rows) {
+      const expected = await provenanceHmac(this.env.PLATFORM_SECRET, [previous, row.human_trigger_id,
+        row.assistant_actor_id, row.project_executor_id, row.git_commit_oid, row.created_at]);
+      if (row.prev_hash !== previous || row.entry_hash !== expected) {
+        return { valid: false, entries: rows.length, invalid_entry_hash: row.entry_hash };
+      }
+      previous = row.entry_hash;
+    }
+    return { valid: true, entries: rows.length };
   }
 
   // ── Customer-bot project config (no-code, admin-configured) ─────────────────
@@ -7586,7 +7672,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   private async createPullRequestCard(request: Request): Promise<Response> {
-    const body = await request.json<Record<string, unknown>>().catch(() => ({}));
+    const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
     const spaceId = String(body["space_id"] ?? ""), projectId = String(body["project_id"] ?? "");
     const card = body["card"] as Record<string, unknown> | undefined;
     if (!spaceId || !projectId || !card || card["type"] !== "inline_pull_request")
