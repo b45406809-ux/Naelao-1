@@ -19,6 +19,8 @@ import type {
 } from "@naelao/events";
 import { broadcastSpaceEvent, mintInternalToken } from "@naelao/http";
 import type { MessageRole } from "@naelao/types";
+import { defaultViewportFor, getProjectKindManifest } from "@naelao/agent-sdk";
+import type { DisplayMode, TemplateMode } from "@naelao/agent-sdk";
 import { consumeEphemeralActionGrant, mintEphemeralActionGrant, type EphemeralActionGrant, verifyCapabilityToken } from "@naelao/security";
 
 function todaySpendKey(): string {
@@ -1394,6 +1396,21 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 51,
+    description: "display preferences, operating mode, and canvas viewport configuration",
+    up: `
+      ALTER TABLE projects ADD COLUMN template_mode TEXT NOT NULL DEFAULT 'cowork_studio'
+        CHECK (template_mode IN ('autonomous_operator','cowork_studio'));
+      ALTER TABLE projects ADD COLUMN viewport_config TEXT NOT NULL DEFAULT '{}';
+      CREATE TABLE user_settings (
+        user_id TEXT NOT NULL, space_id TEXT NOT NULL,
+        display_mode TEXT NOT NULL DEFAULT 'business' CHECK (display_mode IN ('business','developer')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (user_id, space_id)
+      );
+    `,
+  },
 ];
 
 export const PROVENANCE_GENESIS_HASH = "0".repeat(64);
@@ -1734,6 +1751,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // PATCH /spaces/:id — update status / settings (suspend a department, etc.)
       if (method === "PATCH" && spaceRowMatch?.[1]) {
         return this.updateSpaceRow(spaceRowMatch[1], request);
+      }
+      const preferenceMatch = url.pathname.match(/^\/spaces\/([^/]+)\/users\/([^/]+)\/preferences$/);
+      if (method === "GET" && preferenceMatch?.[1] && preferenceMatch[2]) {
+        return this.getUserPreferences(preferenceMatch[1], preferenceMatch[2]);
+      }
+      if (method === "PUT" && preferenceMatch?.[1] && preferenceMatch[2]) {
+        return this.putUserPreferences(preferenceMatch[1], preferenceMatch[2], request);
       }
 
       // ── projects (thread grouping) ────────────────────────────────────────────
@@ -3409,6 +3433,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       last_activity_at: string | null;
       kind: string;
       is_singleton_kind: number;
+      template_mode: TemplateMode;
+      viewport_config: string;
     }>(
       this.ctx.storage.sql as never,
       // F-40: `kind` is surfaced so the frontend project-page shell can mount the natively-built
@@ -3425,7 +3451,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // appendMessage on every thread-linked message write — ordinary project chat AND consult
       // subthreads alike) now takes precedence over created_at, so a project an assistant just
       // consulted an agent about really does come back to the top, not just one a human typed in.
-      "SELECT id, space_id, name, description, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at, last_activity_at, kind, is_singleton_kind FROM projects WHERE space_id = ? AND status != 'archived' ORDER BY COALESCE(last_activity_at, created_at) DESC",
+      "SELECT id, space_id, name, description, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at, last_activity_at, kind, is_singleton_kind, template_mode, viewport_config FROM projects WHERE space_id = ? AND status != 'archived' ORDER BY COALESCE(last_activity_at, created_at) DESC",
       spaceId
     );
     const manager = params.get("space_manager") === "1";
@@ -3441,6 +3467,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       data: visible.map((r) => ({
         ...r,
         allowed_agent_ids: safeJsonParseAgentIds(r.allowed_agent_ids),
+        viewport_config: safeJsonParseObj(r.viewport_config),
       })),
       count: visible.length,
     });
@@ -3465,6 +3492,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
        *  created_by must never itself imply privilege. */
       system_caller?: boolean;
       lifecycle?: "finite" | "continuous";
+      template_mode?: TemplateMode;
+      execution_ceiling?: number;
     }>();
     if (!body.space_id || !body.name) {
       return Response.json(
@@ -3477,6 +3506,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
     if (body.lifecycle !== undefined && body.lifecycle !== "finite" && body.lifecycle !== "continuous") {
       return Response.json({ error_code: "bad_request", message: "lifecycle must be 'finite' or 'continuous'" }, { status: 400 });
+    }
+    if (body.template_mode !== undefined && body.template_mode !== "autonomous_operator" && body.template_mode !== "cowork_studio") {
+      return Response.json({ error_code: "bad_request", message: "template_mode must be 'autonomous_operator' or 'cowork_studio'" }, { status: 400 });
     }
     if (
       body.max_threads !== undefined &&
@@ -3517,7 +3549,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     // against the Business Feature Projects registry; role-gate feature kinds; stamp
     // is_singleton_kind so the DB partial unique index (F-32) is the real singleton guarantee.
     const kind = body.kind ?? "workspace";
-    if (!isKnownProjectKind(kind)) {
+    const projectKindManifest = getProjectKindManifest(kind);
+    if (!isKnownProjectKind(kind) && !projectKindManifest) {
       return Response.json(
         {
           error_code: "bad_request",
@@ -3526,6 +3559,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         { status: 400 }
       );
     }
+    const requestedTier = body.execution_ceiling ?? projectKindManifest?.allowedLadderTiers.at(-1) ?? 5;
+    if (!Number.isInteger(requestedTier) || requestedTier < 1 || requestedTier > 6 || (projectKindManifest && !projectKindManifest.allowedLadderTiers.includes(requestedTier))) {
+      return Response.json({ error_code: "invalid_ladder_tier", message: `Tier ${requestedTier} is not allowed for '${kind}'` }, { status: 400 });
+    }
+    const templateMode = body.template_mode ?? projectKindManifest?.defaultAutonomy ?? "cowork_studio";
+    const viewportConfig = projectKindManifest ? defaultViewportFor(projectKindManifest.kind) : { component: "WorkspaceViewport", copilotPlacement: "side_panel", canvasPrimary: true };
     const featureKind = getBusinessFeatureKind(kind);
     let isSingletonKind = 0;
     if (featureKind) {
@@ -3622,8 +3661,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     try {
       execute(
         this.ctx.storage.sql as never,
-        `INSERT INTO projects (id, space_id, name, description, status, kind, is_singleton_kind, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at, lifecycle)
-         VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO projects (id, space_id, name, description, status, kind, is_singleton_kind, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at, lifecycle, execution_ceiling, template_mode, viewport_config)
+         VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(space_id, name) DO NOTHING`,
         id,
         body.space_id,
@@ -3637,7 +3676,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         body.visibility ?? "public",
         body.created_by ?? null,
         now,
-        body.lifecycle ?? "finite"
+        body.lifecycle ?? "finite",
+        requestedTier,
+        templateMode,
+        JSON.stringify(viewportConfig)
       );
     } catch (err) {
       // F-32: the partial unique index (space_id, kind) WHERE is_singleton_kind=1 fired — a
@@ -3674,9 +3716,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       visibility: string;
       created_by: string | null;
       created_at: string;
+      kind: string;
+      execution_ceiling: number;
+      template_mode: TemplateMode;
+      viewport_config: string;
     }>(
       this.ctx.storage.sql as never,
-      "SELECT id, name, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at FROM projects WHERE space_id = ? AND name = ?",
+      "SELECT id, name, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at, kind, execution_ceiling, template_mode, viewport_config FROM projects WHERE space_id = ? AND name = ?",
       body.space_id,
       body.name
     );
@@ -3741,6 +3787,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       ? {
           ...row,
           allowed_agent_ids: safeJsonParseAgentIds(row.allowed_agent_ids),
+          viewport_config: safeJsonParseObj(row.viewport_config),
         }
       : {
           id,
@@ -3750,6 +3797,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           max_threads: body.max_threads ?? 0,
           allowed_agent_ids: body.allowed_agent_ids ?? null,
           created_at: now,
+          kind,
+          execution_ceiling: requestedTier,
+          template_mode: templateMode,
+          viewport_config: viewportConfig,
         };
     return Response.json(
       // `created` distinguishes a genuine insert from the `ON CONFLICT(space_id, name) DO NOTHING`
@@ -8354,6 +8405,33 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         }
       })(),
     };
+  }
+
+  private getUserPreferences(spaceId: string, userId: string): Response {
+    const row = queryOne<{ display_mode: DisplayMode }>(
+      this.ctx.storage.sql as never,
+      "SELECT display_mode FROM user_settings WHERE space_id = ? AND user_id = ?",
+      spaceId,
+      userId
+    );
+    return Response.json({ space_id: spaceId, user_id: userId, display_mode: row?.display_mode ?? "business" });
+  }
+
+  private async putUserPreferences(spaceId: string, userId: string, request: Request): Promise<Response> {
+    const body = await request.json<{ display_mode?: DisplayMode }>().catch((): { display_mode?: DisplayMode } => ({}));
+    if (body.display_mode !== "business" && body.display_mode !== "developer") {
+      return Response.json({ error_code: "bad_request", message: "display_mode must be 'business' or 'developer'" }, { status: 400 });
+    }
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO user_settings (user_id, space_id, display_mode, updated_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(user_id, space_id) DO UPDATE SET display_mode = excluded.display_mode, updated_at = excluded.updated_at`,
+      userId,
+      spaceId,
+      body.display_mode,
+      new Date().toISOString()
+    );
+    return Response.json({ space_id: spaceId, user_id: userId, display_mode: body.display_mode });
   }
 
   /** Authoritative hierarchy RBAC. Membership is intentionally read only from the requested

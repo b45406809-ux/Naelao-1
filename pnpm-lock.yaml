@@ -1178,6 +1178,9 @@ importers:
 
   workers/spaces:
     dependencies:
+      '@naelao/agent-sdk':
+        specifier: workspace:*
+        version: link:../../packages/agent-sdk
       '@naelao/billing-core':
         specifier: workspace:*
         version: link:../../packages/billing-core

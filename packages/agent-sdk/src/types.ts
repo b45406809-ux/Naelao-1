@@ -39,6 +39,31 @@ export interface RuntimeThread {
 
 export type ProjectMode = "solo_cockpit" | "multiplayer_office";
 
+/** User-facing complexity level. Business mode deliberately receives a redacted projection. */
+export type DisplayMode = "business" | "developer";
+
+/** Whether a project runs proactively or pairs with a human in the canvas. */
+export type TemplateMode = "autonomous_operator" | "cowork_studio";
+
+export interface UserInterfacePreferences {
+  display_mode: DisplayMode;
+}
+
+export interface ViewportConfiguration {
+  component: string;
+  copilotPlacement: "docked" | "side_panel";
+  canvasPrimary: true;
+}
+
+export interface ExecutionTelemetry {
+  commit_oid?: string;
+  git_oid?: string;
+  raw_tier_id?: string;
+  v8_cold_start_log?: string;
+  token_breakdown?: Record<string, number>;
+  [key: string]: unknown;
+}
+
 export interface TaskLeaseResult {
   success: boolean;
   claimedBy: string | null;
