@@ -629,6 +629,30 @@ async function spaceDoStub(env: Env, spaceId: string, tenantId: string) {
   return env.SPACE_DO.get(doId);
 }
 
+// Space-owned private LoRA manifests. The adapter identifier never leaves the trusted workers;
+// the agents worker resolves it immediately before Workers AI inference.
+app.get("/custom-models/:modelId", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const spaceId = c.req.query("space_id") ?? "";
+  if (!tenantId || !spaceId) return c.json({ error_code: "bad_request", message: "tenant and space_id are required" }, 400);
+  const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ?").bind(spaceId, tenantId).first();
+  if (!owned) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  return stub.fetch(new Request(`http://space/custom-models/${encodeURIComponent(c.req.param("modelId"))}?space_id=${encodeURIComponent(spaceId)}`));
+});
+app.put("/custom-models/:modelId", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const spaceId = c.req.query("space_id") ?? "";
+  const role = c.req.header("x-naelao-role") ?? "";
+  if (role !== "owner" && role !== "admin") return c.json({ error_code: "forbidden", message: "Owner or admin role required" }, 403);
+  const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ?").bind(spaceId, tenantId).first();
+  if (!owned) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  return stub.fetch(new Request(`http://space/custom-models/${encodeURIComponent(c.req.param("modelId"))}?space_id=${encodeURIComponent(spaceId)}`, {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(await c.req.json()),
+  }));
+});
+
 /** Get the BuilderAccountDO stub for a builder (== tenant), HMAC-named like every other DO. */
 async function builderAccountDoStub(env: Env, tenantId: string) {
   const doId = env.BUILDER_ACCOUNT_DO.idFromName(

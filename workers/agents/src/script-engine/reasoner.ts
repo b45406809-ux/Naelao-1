@@ -86,6 +86,14 @@ export interface ReasonerDeps {
    */
   businessContext?: BusinessContext;
   manifest?: UniversalAgentManifest;
+  /** A strict egress policy resolved by the central router, never from request input. */
+  airGappedOnly?: boolean;
+  /** Dispatch an OpenAI-compatible request over LocalTunnelDO. */
+  localCompletion?: (payload: Record<string, unknown>) => Promise<unknown>;
+  /** Resolve a space-owned LoRA manifest from SpaceDO/R2. */
+  resolveCustomModel?: (modelId: string) => Promise<{ baseModel: string; loraAdapterId: string } | null>;
+  /** Workers AI binding used for private LoRA inference. */
+  workersAI?: Ai;
 }
 
 /**
@@ -711,6 +719,16 @@ const MAX_RETRY_WAIT_MS = 35_000;
 /** Two retries: enough to cross one rolling-window boundary, not enough to stall a run. */
 const MAX_TRANSIENT_RETRIES = 2;
 
+/** Build the Workers AI input without ever replacing the private adapter with a cloud model ID. */
+export function privateLoraInferenceInput(
+  messages: Array<{ role: string; content: string }>,
+  tools: ToolSpec[],
+  loraAdapterId: string,
+  maxTokens: number
+): Record<string, unknown> {
+  return { messages, tools, max_tokens: maxTokens, lora: loraAdapterId };
+}
+
 /** A Reasoner backed by CF AI Gateway's Universal Endpoint. Provider is inferred from the
  *  model name — no hardcoded provider preference. */
 export class GatewayReasoner implements Reasoner {
@@ -881,12 +899,18 @@ export class GatewayReasoner implements Reasoner {
       messages: [{ role: "user", content: userContent }],
     };
 
+    const isLocalModel = query.model.startsWith("local/");
+    const isCustomModel = query.model.startsWith("custom/");
+    if (this.deps.airGappedOnly && !isLocalModel) {
+      return { action: "give_up", reason: "compliance_violation: air-gapped spaces only permit local/* models" };
+    }
+
     // No provider key AND no gateway-stored-key auth → the call can't authenticate. Fail honestly
     // here rather than firing a doomed request (whose 401 would just surface as a vague give_up).
     // A BYOK provider (Gemini, Groq) routes through the gateway's compat endpoint with its OWN
     // key; everything else goes to the AI REST API on a Cloudflare token.
     const isByok = isCompatProviderModel(query.model);
-    if (!canAuthenticateLlm(this.deps.gateway, this.deps.apiKey, query.model)) {
+    if (!isLocalModel && !isCustomModel && !canAuthenticateLlm(this.deps.gateway, this.deps.apiKey, query.model)) {
       const secret = isGoogleAiStudioModel(query.model) ? "GOOGLE_AI_STUDIO_API_KEY" : "GROQ_API_KEY";
       return {
         action: "give_up",
@@ -909,7 +933,27 @@ export class GatewayReasoner implements Reasoner {
     let transientRetries = 0;
     for (;;) {
     try {
-      resp = await fetch(url, {
+      if (isLocalModel) {
+        if (!this.deps.localCompletion) {
+          return { action: "give_up", reason: "air_gapped_runner_offline: no local runner tunnel is configured" };
+        }
+        const localResult = await this.deps.localCompletion({
+          model: query.model.slice("local/".length), messages: [{ role: "system", content: query.system }, ...query.messages],
+          tools: decisionTools(query.model), tool_choice: "required", max_tokens: query.max_tokens, stream: false,
+        });
+        resp = Response.json(localResult);
+      } else if (isCustomModel) {
+        const manifest = await this.deps.resolveCustomModel?.(query.model);
+        if (!manifest || !this.deps.workersAI) {
+          return { action: "give_up", reason: `custom_model_unavailable: no certified manifest found for '${query.model}'` };
+        }
+        const result = await this.deps.workersAI.run(manifest.baseModel as Parameters<Ai["run"]>[0],
+          privateLoraInferenceInput(
+            [{ role: "system", content: query.system }, ...query.messages],
+            decisionTools(query.model), manifest.loraAdapterId, query.max_tokens
+          ) as Parameters<Ai["run"]>[1]);
+        resp = Response.json(result);
+      } else resp = await fetch(url, {
         method: "POST",
         headers,
         body: buildUniversalBody({
@@ -925,7 +969,9 @@ export class GatewayReasoner implements Reasoner {
         }),
       });
     } catch (err) {
-      return { action: "give_up", reason: `reasoner gateway network error: ${err instanceof Error ? err.message : String(err)}` };
+      const message = err instanceof Error ? err.message : String(err);
+      if (isLocalModel) return { action: "give_up", reason: message.includes("air_gapped_runner_offline") ? message : `air_gapped_runner_offline: ${message}` };
+      return { action: "give_up", reason: `reasoner gateway network error: ${message}` };
     }
     if (!resp.ok) {
       // Include the gateway's own explanation. A bare status code is close to undebuggable in

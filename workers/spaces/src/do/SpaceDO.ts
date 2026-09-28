@@ -1356,6 +1356,44 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE presence ADD COLUMN cursor_col INTEGER;
     `,
   },
+  {
+    version: 50,
+    description: "finite project lifecycle and completed-project hibernation",
+    up: `
+      CREATE TABLE projects_v50 (
+        id TEXT PRIMARY KEY, space_id TEXT NOT NULL, name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived','HIBERNATED_COMPLETED')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')), kind TEXT NOT NULL DEFAULT 'workspace',
+        execution_ceiling INTEGER NOT NULL DEFAULT 5 CHECK (execution_ceiling BETWEEN 1 AND 6),
+        daily_spend_cap_credits INTEGER NOT NULL DEFAULT 0, channel_config TEXT NOT NULL DEFAULT '{}',
+        show_sub_threads INTEGER NOT NULL DEFAULT 0, default_agent_id TEXT, max_threads INTEGER NOT NULL DEFAULT 0,
+        allowed_agent_ids TEXT, visibility TEXT NOT NULL DEFAULT 'public' CHECK (visibility IN ('public','private')),
+        created_by TEXT, exclusive_mode INTEGER NOT NULL DEFAULT 0, active_thread_id TEXT,
+        active_thread_since TEXT, is_singleton_kind INTEGER NOT NULL DEFAULT 0, last_activity_at TEXT,
+        execution_status TEXT NOT NULL DEFAULT 'ACTIVE', lead_user_id TEXT,
+        lifecycle TEXT NOT NULL DEFAULT 'finite' CHECK (lifecycle IN ('finite','continuous'))
+      );
+      INSERT INTO projects_v50
+        (id,space_id,name,description,status,created_at,kind,execution_ceiling,daily_spend_cap_credits,
+         channel_config,show_sub_threads,default_agent_id,max_threads,allowed_agent_ids,visibility,created_by,
+         exclusive_mode,active_thread_id,active_thread_since,is_singleton_kind,last_activity_at,execution_status,lead_user_id)
+      SELECT id,space_id,name,description,status,created_at,kind,execution_ceiling,daily_spend_cap_credits,
+         channel_config,show_sub_threads,default_agent_id,max_threads,allowed_agent_ids,visibility,created_by,
+         exclusive_mode,active_thread_id,active_thread_since,is_singleton_kind,last_activity_at,execution_status,lead_user_id FROM projects;
+      DROP TABLE projects;
+      ALTER TABLE projects_v50 RENAME TO projects;
+      CREATE INDEX idx_projects_space ON projects(space_id, created_at DESC);
+      CREATE UNIQUE INDEX idx_projects_space_name ON projects(space_id, name);
+      CREATE UNIQUE INDEX idx_projects_singleton_kind ON projects(space_id, kind)
+        WHERE is_singleton_kind = 1 AND status = 'active';
+      CREATE TABLE custom_model_manifests (
+        model_id TEXT NOT NULL, space_id TEXT NOT NULL, base_model TEXT NOT NULL,
+        lora_adapter_id TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (space_id, model_id)
+      );
+    `,
+  },
 ];
 
 export const PROVENANCE_GENESIS_HASH = "0".repeat(64);
@@ -2187,6 +2225,27 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       if (method === "POST" && url.pathname === "/intent-deduplicate") {
         return this.checkActiveIntentDeduplication(request);
+      }
+      const customModelMatch = url.pathname.match(/^\/custom-models\/(custom%2F|custom\/)([^/]+)$/i);
+      if (customModelMatch) {
+        const modelId = `custom/${decodeURIComponent(customModelMatch[2] ?? "")}`;
+        const spaceId = url.searchParams.get("space_id") ?? "";
+        if (method === "GET") {
+          const manifest = queryOne<{ base_model: string; lora_adapter_id: string }>(this.ctx.storage.sql as never,
+            "SELECT base_model, lora_adapter_id FROM custom_model_manifests WHERE space_id = ? AND model_id = ?", spaceId, modelId);
+          return manifest
+            ? Response.json({ modelId, baseModel: manifest.base_model, loraAdapterId: manifest.lora_adapter_id })
+            : Response.json({ error_code: "not_found", message: "Custom model manifest not found" }, { status: 404 });
+        }
+        if (method === "PUT") {
+          const body = await request.json<{ baseModel?: string; loraAdapterId?: string }>().catch((): { baseModel?: string; loraAdapterId?: string } => ({}));
+          if (!spaceId || !body.baseModel || !body.loraAdapterId) return Response.json({ error_code: "bad_request", message: "space_id, baseModel and loraAdapterId are required" }, { status: 400 });
+          execute(this.ctx.storage.sql as never,
+            `INSERT INTO custom_model_manifests (model_id, space_id, base_model, lora_adapter_id) VALUES (?, ?, ?, ?)
+             ON CONFLICT(space_id, model_id) DO UPDATE SET base_model=excluded.base_model, lora_adapter_id=excluded.lora_adapter_id`,
+            modelId, spaceId, body.baseModel, body.loraAdapterId);
+          return Response.json({ modelId, baseModel: body.baseModel, loraAdapterId: body.loraAdapterId });
+        }
       }
       if (method === "POST" && url.pathname === "/rfcs") {
         return this.triggerSponsorRfc(request);
@@ -3405,6 +3464,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
        *  system-initiated creates. See the role check below: defense in depth means a MISSING
        *  created_by must never itself imply privilege. */
       system_caller?: boolean;
+      lifecycle?: "finite" | "continuous";
     }>();
     if (!body.space_id || !body.name) {
       return Response.json(
@@ -3414,6 +3474,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         },
         { status: 400 }
       );
+    }
+    if (body.lifecycle !== undefined && body.lifecycle !== "finite" && body.lifecycle !== "continuous") {
+      return Response.json({ error_code: "bad_request", message: "lifecycle must be 'finite' or 'continuous'" }, { status: 400 });
     }
     if (
       body.max_threads !== undefined &&
@@ -3559,8 +3622,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     try {
       execute(
         this.ctx.storage.sql as never,
-        `INSERT INTO projects (id, space_id, name, description, status, kind, is_singleton_kind, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at)
-         VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO projects (id, space_id, name, description, status, kind, is_singleton_kind, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at, lifecycle)
+         VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(space_id, name) DO NOTHING`,
         id,
         body.space_id,
@@ -3573,7 +3636,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         allowedAgentIdsJson,
         body.visibility ?? "public",
         body.created_by ?? null,
-        now
+        now,
+        body.lifecycle ?? "finite"
       );
     } catch (err) {
       // F-32: the partial unique index (space_id, kind) WHERE is_singleton_kind=1 fired — a
@@ -3982,6 +4046,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         exclusive_mode?: boolean;
         /** Sole human on-call recipient for project failures. null falls back to lead assistant. */
         lead_user_id?: string | null;
+        lifecycle?: "finite" | "continuous";
       }>()
       .catch(() => ({}) as Record<string, never>);
 
@@ -4055,6 +4120,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
     if (body.lead_user_id !== undefined) {
       execute(this.ctx.storage.sql as never, "UPDATE projects SET lead_user_id = ? WHERE id = ?", body.lead_user_id?.trim() || null, projectId);
+    }
+    if (body.lifecycle !== undefined) {
+      if (body.lifecycle !== "finite" && body.lifecycle !== "continuous") {
+        return Response.json({ error_code: "bad_request", message: "lifecycle must be 'finite' or 'continuous'" }, { status: 400 });
+      }
+      execute(this.ctx.storage.sql as never, "UPDATE projects SET lifecycle = ? WHERE id = ?", body.lifecycle, projectId);
     }
     if (body.kind !== undefined) {
       // F-33: validate against the registry (not a hardcoded set) and stamp is_singleton_kind so
@@ -7396,6 +7467,37 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     });
   }
 
+  private async hibernateFiniteProjectIfComplete(taskId: string): Promise<void> {
+    const task = queryOne<{ project_id: string | null; space_id: string }>(this.ctx.storage.sql as never,
+      "SELECT project_id, space_id FROM tasks WHERE id = ?", taskId);
+    if (!task?.project_id) return;
+    const project = queryOne<{ lifecycle: string; status: string; name: string }>(this.ctx.storage.sql as never,
+      "SELECT lifecycle, status, name FROM projects WHERE id = ?", task.project_id);
+    if (!project || project.lifecycle !== "finite" || project.status === "HIBERNATED_COMPLETED") return;
+    const remaining = queryOne<{ count: number }>(this.ctx.storage.sql as never,
+      "SELECT COUNT(*) AS count FROM tasks WHERE project_id = ? AND status != 'completed' AND status != 'cancelled'", task.project_id)?.count ?? 0;
+    if (remaining !== 0) return;
+    const now = new Date().toISOString();
+    execute(this.ctx.storage.sql as never,
+      "UPDATE projects SET status = 'HIBERNATED_COMPLETED', execution_status = 'HIBERNATED_COMPLETED', last_activity_at = ? WHERE id = ?",
+      now, task.project_id);
+    execute(this.ctx.storage.sql as never,
+      `INSERT INTO notifications (id, space_id, project_id, kind, title, body, severity, related_id)
+       VALUES (?, ?, ?, 'project.hibernated', ?, ?, 'info', ?)`,
+      crypto.randomUUID(), task.space_id, task.project_id, `${project.name} completed`,
+      JSON.stringify({ event: "project.hibernated", milestone: "All project DAG tasks completed", completed_at: now }), task.project_id);
+    await this.ctx.storage.deleteAlarm();
+    await broadcastSpaceEvent(this.env, "", task.space_id, "project.hibernated", {
+      project_id: task.project_id, status: "HIBERNATED_COMPLETED", completed_at: now,
+    });
+    if (this.env.AGENTS_WORKER) {
+      await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/projects/hibernate", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ spaceId: task.space_id, projectId: task.project_id }),
+      })).catch(() => undefined);
+    }
+  }
+
   private async createTask(request: Request): Promise<Response> {
     const body = await request
       .json<{
@@ -7641,6 +7743,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       `UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`,
       ...args
     );
+    if (body.status === "completed") await this.hibernateFiniteProjectIfComplete(taskId);
     const row = queryOne<{ dependencies: string }>(
       this.ctx.storage.sql as never,
       "SELECT * FROM tasks WHERE id = ?",

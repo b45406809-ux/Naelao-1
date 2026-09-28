@@ -1415,6 +1415,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         return Response.json({ status: "warm", ts: Date.now() });
       }
 
+      // Finite-project terminal transition. Clearing the watchdog/schedule alarm is what lets
+      // this Durable Object hibernate at zero compute until a subsequent human /script/run.
+      if (method === "POST" && url.pathname === "/project/hibernate") {
+        const body = await request.json<{ projectId?: string }>().catch((): { projectId?: string } => ({}));
+        if (!body.projectId) return Response.json({ error_code: "bad_request", message: "projectId is required" }, { status: 400 });
+        await this.ctx.storage.deleteAlarm();
+        return Response.json({ ok: true, projectId: body.projectId, hibernated: true });
+      }
+
       // POST /run
       if (method === "POST" && url.pathname === "/run") {
         return this.handleRun(request);
@@ -3318,6 +3327,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
        *  binding, so it cannot look the space up itself. Absent for a direct/internal caller that
        *  never resolved one, in which case the reasoner simply omits the field. */
       businessContext?: BusinessContext;
+      airGappedOnly?: boolean;
       manifest?: UniversalAgentManifest;
       functionalRole?: UniversalAgentRole;
       /** The id the caller already handed to its client, so the persisted trace is reachable
@@ -3551,6 +3561,27 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // fetches; omitted entirely when the caller never resolved one.
       ...(body.businessContext ? { businessContext: body.businessContext } : {}),
       manifest: assembled.manifest,
+      airGappedOnly: body.airGappedOnly === true,
+      ...(this.env.AI ? { workersAI: this.env.AI } : {}),
+      ...(this.env.LOCAL_TUNNEL && userId ? {
+        localCompletion: async (payload: Record<string, unknown>) => {
+          const ns = this.env.LOCAL_TUNNEL!;
+          const stub = ns.get(ns.idFromName(`local-tunnel:${spaceId}:${userId}`));
+          const response = await stub.fetch(new Request("http://local/chat/completions", {
+            method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+          }));
+          const value = await response.json<unknown>();
+          if (!response.ok) throw new Error((value as { error_code?: string }).error_code ?? "air_gapped_runner_offline");
+          return value;
+        },
+      } : {}),
+      resolveCustomModel: async (modelId: string) => {
+        const response = await this.env.SPACES_WORKER.fetch(new Request(
+          `http://spaces-worker/custom-models/${encodeURIComponent(modelId)}?space_id=${encodeURIComponent(spaceId)}`,
+          { headers: { "x-naelao-tenant-id": tenantId } }
+        ));
+        return response.ok ? response.json<{ baseModel: string; loraAdapterId: string }>() : null;
+      },
     });
 
     try {

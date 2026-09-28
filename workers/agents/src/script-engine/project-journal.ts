@@ -75,6 +75,19 @@ export interface ProjectJournal {
   archive: string;
 }
 
+/** Deterministic final milestone used when a finite DAG reaches its terminal state. */
+export function finalizeCompletedJournal(journal: ProjectJournal, at: string): ProjectJournal {
+  const open = journal.todos.filter((todo) => !todo.done);
+  if (open.length > 0) return journal;
+  const milestone = "Final milestone: every task in the project DAG is completed; project hibernated.";
+  if (journal.activity.some((entry) => entry.summary === milestone)) return journal;
+  return {
+    ...journal,
+    status: "HIBERNATED_COMPLETED",
+    activity: [...journal.activity, { at, actor: "system", summary: milestone }],
+  };
+}
+
 export interface JournalLimits {
   /** Activity entries retained verbatim before the oldest are folded into the archive. */
   maxActivityEntries: number;

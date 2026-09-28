@@ -293,8 +293,21 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     // actually know how to price. The list itself now lives in packages/billing-core alongside
     // those tables, so this and the agents worker's own run-time model override can never drift.
     const model = body.product_config?.modelConfig?.model;
-    if (model && !isAllowedModel(model)) {
+    const policy = body.product_config?.modelPolicy;
+    if (policy && (policy.mode !== "open" && policy.mode !== "whitelist_only")) {
+      return c.json({ error_code: "bad_request", message: "modelPolicy.mode must be open or whitelist_only" }, 400);
+    }
+    if (policy && (!Array.isArray(policy.allowedModelIds) || policy.allowedModelIds.some((id: string) => typeof id !== "string" || !id.trim()))) {
+      return c.json({ error_code: "bad_request", message: "modelPolicy.allowedModelIds must contain non-empty model IDs" }, 400);
+    }
+    if (model && !model.startsWith("custom/") && !model.startsWith("local/") && !isAllowedModel(model)) {
       return c.json({ error_code: "bad_request", message: `modelConfig.model must be one of ${ALLOWED_MODELS.join(", ")}` }, 400);
+    }
+    if (model && policy?.mode === "whitelist_only" && !policy.allowedModelIds.includes(model)) {
+      return c.json({ error_code: "compliance_violation", message: `Model '${model}' is not certified by this product policy` }, 400);
+    }
+    if (body.product_config?.compliance?.airGappedOnly === true && model && !model.startsWith("local/")) {
+      return c.json({ error_code: "compliance_violation", message: "Air-gapped products require a local/* model" }, 400);
     }
     const effort = body.product_config?.modelConfig?.effort;
     if (effort && !isValidEffortLevel(model ?? DEFAULT_WORKING_MODEL, effort)) {

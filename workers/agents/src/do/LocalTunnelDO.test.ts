@@ -2,6 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 import { LocalTunnelDO } from "./LocalTunnelDO.js";
 
 describe("LocalTunnelDO correlation and multiplexing", () => {
+  it("fails closed when an air-gapped completion has no local runner", async () => {
+    const tunnel = new LocalTunnelDO({ getWebSockets: () => [], acceptWebSocket: vi.fn() } as never, { PLATFORM_SECRET: "test-secret" });
+    const response = await tunnel.fetch(new Request("https://tunnel/chat/completions", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "llama3", messages: [{ role: "user", content: "hi" }] }),
+    }));
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({ error_code: "air_gapped_runner_offline" });
+  });
   it("prevents concurrent correlation IDs from crossing", async () => {
     const outbox = [];
     const mockWs = {
