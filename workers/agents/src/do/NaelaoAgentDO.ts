@@ -3452,7 +3452,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const lease = await leaseResponse.json<{ success: boolean; activeLead?: string; leaseExpiresAt?: string }>();
       if (!lease.success) {
         void this.logAgentActivity(spaceId, tenantId, agentId, "run_completed", { projectId: projectId ?? null, threadId: sessionId, summary: `Spectating ${sharedTaskId}; ${lease.activeLead ?? "another assistant"} holds the active lease.` });
-        return Response.json({ status: "SPECTATING", activeLead: lease.activeLead ?? null, taskId: sharedTaskId, leaseExpiresAt: lease.leaseExpiresAt ?? null });
+        return Response.json({ status: "SPECTATING", activeLead: lease.activeLead ?? null, taskId: sharedTaskId, leaseExpiresAt: lease.leaseExpiresAt ?? null, tokensConsumed: 0, suggestedAction: "AUDIT_ACTIVE_PULL_REQUEST" });
       }
     }
     // Slash-command entry points all converge on the same tool; no parallel goal runner exists.

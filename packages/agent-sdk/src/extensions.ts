@@ -30,6 +30,8 @@ export interface ExtensionManifest {
   id: `ext_${string}`;
   type: "extension";
   declaredPermissions: string[];
+  /** Gatekeeper capabilities that must be present when this package is installed. */
+  capabilityRequirements: string[];
   gadgets: ExtensionGadgetManifest[];
   daemons: ExtensionDaemonManifest[];
   commands: ExtensionCommandManifest[];
@@ -39,7 +41,7 @@ const ID = /^[a-z][a-z0-9_-]{1,63}$/;
 const EXTENSION_ID = /^ext_[a-z][a-z0-9_-]{1,59}$/;
 const PERMISSION = /^[a-z][a-z0-9_.:-]{1,127}$/;
 const SAFE_PATH = /^(?:\.\/)?[a-zA-Z0-9_./-]+\.(?:ts|js)$/;
-const FORBIDDEN_KEY = /(?:kernel|systemprompt|coreprompt|promptlayers?|writeguard|gatekeepers?|replloop|reasoningloop|bypass|disableguard)/i;
+const FORBIDDEN_KEY = /(?:kernel|systemprompt|coreprompt|promptlayers?|writeguard|gatekeepers?|replloop|reasoningloop|bypass|disableguard|unsandboxed|sandboxdisabled)/i;
 const FORBIDDEN_SCRIPT = /(?:NaelaoAgentDO|WriteGuard|Gatekeeper|system\s*prompt|core\s*prompt|reasoning\s*loop|\bmain\b.*(?:push|commit|write)|bypass\s+(?:guard|approval))/i;
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -55,19 +57,25 @@ function rejectKernelOverrides(value: unknown): void {
   }
 }
 
+export interface ExtensionValidationContext { gatekeeperCapabilities: readonly string[] }
 /** Strict parser used at the trust boundary before an extension is persisted. */
 export function validateExtensionManifest(value: LegacyExtensionManifest): LegacyExtensionManifest;
-export function validateExtensionManifest(value: unknown): ExtensionManifest;
-export function validateExtensionManifest(value: unknown): ExtensionManifest | LegacyExtensionManifest {
+export function validateExtensionManifest(value: unknown, context?: ExtensionValidationContext): ExtensionManifest;
+export function validateExtensionManifest(value: unknown, context?: ExtensionValidationContext): ExtensionManifest | LegacyExtensionManifest {
   assert(value !== null && typeof value === "object" && !Array.isArray(value), "object_required");
   const raw = value as Record<string, unknown>;
   if ("version" in raw) return validateLegacyManifest(raw);
   rejectKernelOverrides(raw);
-  const allowed = new Set(["id", "type", "declaredPermissions", "gadgets", "daemons", "commands"]);
+  const allowed = new Set(["id", "type", "declaredPermissions", "capabilityRequirements", "gadgets", "daemons", "commands"]);
   for (const key of Object.keys(raw)) assert(allowed.has(key), `unknown_field:${key}`);
   assert(typeof raw.id === "string" && EXTENSION_ID.test(raw.id), "invalid_id");
   assert(raw.type === "extension", "invalid_type");
   assert(Array.isArray(raw.declaredPermissions) && raw.declaredPermissions.every((p) => typeof p === "string" && PERMISSION.test(p)), "invalid_permissions");
+  assert(Array.isArray(raw.capabilityRequirements) && raw.capabilityRequirements.length > 0 && raw.capabilityRequirements.every((p) => typeof p === "string" && PERMISSION.test(p)), "capability_requirements_required");
+  if (context) {
+    const granted = new Set(context.gatekeeperCapabilities);
+    for (const capability of raw.capabilityRequirements as string[]) assert(granted.has(capability), `gatekeeper_capability_denied:${capability}`);
+  }
   assert(Array.isArray(raw.gadgets) && Array.isArray(raw.daemons) && Array.isArray(raw.commands), "arrays_required");
   const scopes = new Set<RuntimeScope>(["SPACE_WIDE", "PROJECT_BOUND", "USER_PRIVATE"]);
   const ids = new Set<string>();

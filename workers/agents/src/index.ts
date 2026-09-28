@@ -160,6 +160,8 @@ export { ConcurrencyDO } from "./do/ConcurrencyDO.js";
 export { AgentTaskWorkflow } from "./workflows/AgentTaskWorkflow.js";
 export { ScriptRunWorkflow } from "./workflows/ScriptRunWorkflow.js";
 export { ScheduledReminderWorkflow } from "./workflows/outbound-reminder-workflow.js";
+export { GenericSubagentWorkflow } from "./workflows/generic-subagent-workflow.js";
+export { CompanyAutomationWorkflow } from "./workflows/company-automation-workflow.js";
 
 // ── Env interface ─────────────────────────────────────────────────────────────
 
