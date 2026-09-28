@@ -53,8 +53,12 @@ export type ProjectMode = "solo_cockpit" | "multiplayer_office";
 /** User-facing complexity level. Business mode deliberately receives a redacted projection. */
 export type DisplayMode = "business" | "developer";
 
-/** Whether a project runs proactively or pairs with a human in the canvas. */
-export type TemplateMode = "autonomous_operator" | "cowork_studio";
+/**
+ * Product taxonomy only. Both modes run the same autonomous kernel (including
+ * planning, delegation and proactive REPL wakes); the mode selects seeded
+ * projects, channels and viewports, never permissions.
+ */
+export type TemplateMode = "autonomous_venture_os" | "cowork_studio" | "autonomous_operator";
 
 export interface UserInterfacePreferences {
   display_mode: DisplayMode;

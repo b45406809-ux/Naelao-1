@@ -7,6 +7,7 @@ import {
   type Project, type BusinessWallet, type WorkspaceFile, type WorkspaceFileContent,
 } from "@/lib/api";
 import { FileViewer } from "@/components/FileViewer";
+import { CanvasContainer } from "@/components/CanvasContainer";
 
 type Creds = { sessionToken: string; endUserId: string };
 
@@ -118,8 +119,10 @@ function WorkspaceFilesPanel({ spaceId, projectId, creds }: { spaceId: string; p
  * (F-39) is shown for every kind since every project has a workspace.
  */
 export function ProjectKindPanel({ project, spaceId, creds }: { project: Project; spaceId: string; creds: Creds }) {
+  const canvasKind = ["product_dev", "doc_studio", "voice_agent", "customer_bot", "model_studio", "growth_engine", "app_studio"].includes(project.kind ?? "");
   return (
     <>
+      {canvasKind && <CanvasContainer project={project} spaceId={spaceId} creds={creds} />}
       {project.kind === "wallet" && (
         <>
           <div className="section-label">Wallet</div>
@@ -128,8 +131,7 @@ export function ProjectKindPanel({ project, spaceId, creds }: { project: Project
       )}
       {/* Additional kind panels (storefront, crm, ...) mount here one at a time — see F-40. */}
 
-      <div className="section-label" style={{ marginTop: 24 }}>Files</div>
-      <WorkspaceFilesPanel spaceId={spaceId} projectId={project.id} creds={creds} />
+      {!canvasKind && <><div className="section-label" style={{ marginTop: 24 }}>Files</div><WorkspaceFilesPanel spaceId={spaceId} projectId={project.id} creds={creds} /></>}
     </>
   );
 }

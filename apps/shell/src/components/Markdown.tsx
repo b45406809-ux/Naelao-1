@@ -3,6 +3,7 @@
 import * as React from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { GeneratedWidget } from "@/components/widgets/GeneratedWidget";
 
 /**
  * Chat text rendered as markdown.
@@ -41,10 +42,9 @@ const COMPONENTS = {
 } as const;
 
 function MarkdownImpl({ text }: { text: string }): React.ReactElement {
+  const parts = text.split(/(<ui_widget\s+type="[^"]+">[\s\S]*?<\/ui_widget>)/g);
   return (
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={COMPONENTS as never}>
-      {text}
-    </ReactMarkdown>
+    <>{parts.map((part, index) => { const match = part.match(/^<ui_widget\s+type="([^"]+)">([\s\S]*)<\/ui_widget>$/); if (!match) return <ReactMarkdown key={index} remarkPlugins={[remarkGfm]} components={COMPONENTS as never}>{part}</ReactMarkdown>; try { const json = JSON.parse(match[2]!); return <GeneratedWidget key={index} value={{ ...json, type: match[1] }}/>; } catch { return <span key={index}>Invalid widget</span>; } })}</>
   );
 }
 

@@ -7,6 +7,7 @@ interface Env {
   PLATFORM_SECRET: string;
   WS_HUB: DurableObjectNamespace<WsHubDO>;
   ALLOWED_ORIGINS?: string; // comma-separated list, e.g. "https://app.naelao.com,https://dashboard.naelao.com"
+  AGENTS_WORKER?: Fetcher;
 }
 
 // G-AL03: Strict origin validation to prevent subdomain spoofing.
@@ -43,6 +44,8 @@ interface WsSessionMeta {
   tenantId: string;
   spaceId?: string;
   userId?: string;
+  agentId?: string;
+  sessionId?: string;
 }
 
 interface PresenceState extends Record<string, SqlStorageValue> { user_id: string; file_path: string | null; cursor_line: number | null; cursor_col: number | null; last_seen: number }
@@ -116,7 +119,9 @@ export class WsHubDO extends DurableObject<Env> {
 
       const spaceId = url.searchParams.get("spaceId") ?? undefined;
       const userId = url.searchParams.get("userId") ?? undefined;
-      const meta: WsSessionMeta = { tenantId, ...(spaceId !== undefined ? { spaceId } : {}), ...(userId ? { userId } : {}) };
+      const agentId = url.searchParams.get("agentId") ?? undefined;
+      const sessionId = url.searchParams.get("sessionId") ?? undefined;
+      const meta: WsSessionMeta = { tenantId, ...(spaceId !== undefined ? { spaceId } : {}), ...(userId ? { userId } : {}), ...(agentId ? { agentId } : {}), ...(sessionId ? { sessionId } : {}) };
       this.sessions.set(server, meta);
       server.serializeAttachment(meta);
 
@@ -221,6 +226,16 @@ export class WsHubDO extends DurableObject<Env> {
         this.schedulePresencePersistence();
         const payload = JSON.stringify({ event: "presence.update", data: value });
         for (const [socket, socketMeta] of this.sessions) if (socketMeta.spaceId === meta.spaceId) socket.send(payload);
+      }
+      if (parsed !== null && typeof parsed === "object" && (parsed as { type?: unknown }).type === "mcp.ui_action") {
+        const meta = this.sessions.get(ws) ?? ws.deserializeAttachment() as WsSessionMeta | null;
+        const event = parsed as { action?: unknown; payload?: unknown; projectId?: unknown };
+        if (!meta?.spaceId || !meta.userId || !meta.agentId || !meta.sessionId || typeof event.action !== "string" || !event.action) { ws.send(JSON.stringify({ error: "ui_action_context_required" })); return; }
+        const payload = event.payload && typeof event.payload === "object" && !Array.isArray(event.payload) ? event.payload : {};
+        const escapedPayload = JSON.stringify(payload).replace(/[<&]/g, c => c === "<" ? "\\u003c" : "\\u0026");
+        const goal = `<ui_action_event user="${meta.userId.replace(/[\"&<>]/g, "_")}" action="${event.action.replace(/[\"&<>]/g, "_")}" payload="${escapedPayload.replace(/"/g, "&quot;")}" />`;
+        if (this.env.AGENTS_WORKER) void this.env.AGENTS_WORKER.fetch(new Request(`http://agents/agents/${encodeURIComponent(meta.agentId)}/script/run`, { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": meta.tenantId, "x-naelao-space-id": meta.spaceId, "x-naelao-user-id": meta.userId, "x-naelao-platform-secret": this.env.PLATFORM_SECRET }, body: JSON.stringify({ goal, spaceId: meta.spaceId, projectId: event.projectId, sessionId: meta.sessionId, context: { immediate: true, source: "mcp_ui" } }) }));
+        ws.send(JSON.stringify({ type: "mcp.ui_action.accepted", action: event.action }));
       }
     }
   }

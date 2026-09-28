@@ -13,6 +13,7 @@
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 import type { OrchestrationHooks } from "../types.js";
+import { routeWorkflow, type WorkflowClass } from "@naelao/agent-sdk";
 
 function hooks(ctx: PrebuiltOpContext): OrchestrationHooks {
   return ctx.env.orchestration ?? {};
@@ -38,8 +39,8 @@ export const dynamicWorkflow: PrebuiltScript = {
       );
     },
     async "workflow.run"(args, ctx) {
-      if (!ctx.env.projectId)
-        throw new Error("workflow.run requires a project-scoped run");
+      const workflowClass = String(args["workflow_class"] ?? "ephemeral_task") as WorkflowClass;
+      const route = routeWorkflow({ workflowClass, spaceId: ctx.env.spaceId, ...(ctx.env.projectId ? { projectId: ctx.env.projectId } : {}), ...(args["extension_id"] ? { extensionId: String(args["extension_id"]) } : {}), invokerId: ctx.env.humanInvokerId ?? "system", budgetCredits: Number(args["budget_credits"] ?? 1) });
       const h = hooks(ctx);
       if (!h.workflowRun)
         return { ok: false, reason: "workflow run not available" };
@@ -51,6 +52,10 @@ export const dynamicWorkflow: PrebuiltScript = {
           detach: args["detach"] === true,
           cleanContext: true,
           maxContextTokens: 2_000,
+          workflowClass: route.workflowClass,
+          budgetKey: route.budgetKey,
+          reportTarget: route.reportTarget,
+          escalationTarget: route.escalationTarget,
         }
       );
       return {
@@ -61,7 +66,7 @@ export const dynamicWorkflow: PrebuiltScript = {
           collapsed: true,
           lines: [
             `Workflow ${name} queued`,
-            `Project ${ctx.env.projectId} · clean context (≤2,000 tokens)`,
+            `${route.reportTarget} · isolated budget ${route.budgetKey}`,
           ],
         },
       };

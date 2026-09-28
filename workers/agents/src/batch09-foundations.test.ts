@@ -26,7 +26,7 @@ describe("Batch 09 foundations", () => {
   });
 
   it("assigns explicit autonomous and cowork defaults", () => {
-    expect(PROJECT_KIND_MANIFESTS.customer_bot.defaultAutonomy).toBe("autonomous_operator");
+    expect(PROJECT_KIND_MANIFESTS.customer_bot.defaultAutonomy).toBe("autonomous_venture_os");
     expect(PROJECT_KIND_MANIFESTS.doc_studio.defaultAutonomy).toBe("cowork_studio");
   });
 });
