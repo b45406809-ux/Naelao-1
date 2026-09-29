@@ -11,13 +11,26 @@
  * trigger table.
  */
 
-import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
-import type { OrchestrationHooks } from "../types.js";
-import { routeWorkflow, type WorkflowClass } from "@naelao/agent-sdk";
+import {
+  type ExtensionId,
+  type WorkflowClass,
+  assertExtensionId,
+  routeWorkflow,
+} from "@naelao/agent-sdk";
 import { compileWorkflowEntrypoint } from "../../workflows/workflow-harness.js";
+import type { OrchestrationHooks } from "../types.js";
+import type { PrebuiltOpContext, PrebuiltScript } from "./index.js";
 
 function hooks(ctx: PrebuiltOpContext): OrchestrationHooks {
   return ctx.env.orchestration ?? {};
+}
+
+/** Validate an untrusted CLI argument before crossing the branded SDK boundary. */
+function extensionIdFromArgs(value: unknown): ExtensionId | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const extensionId = String(value);
+  assertExtensionId(extensionId);
+  return extensionId;
 }
 
 export const dynamicWorkflow: PrebuiltScript = {
@@ -34,21 +47,31 @@ export const dynamicWorkflow: PrebuiltScript = {
           ok: false,
           reason: "workflow registry not available in this environment",
         };
-      const compiled = compileWorkflowEntrypoint(String(args["code"] ?? ""));
-      return await h.workflowCreate(String(args["name"] ?? ""), compiled.source);
+      const compiled = compileWorkflowEntrypoint(String(args.code ?? ""));
+      return await h.workflowCreate(String(args.name ?? ""), compiled.source);
     },
     async "workflow.run"(args, ctx) {
-      const workflowClass = String(args["workflow_class"] ?? "ephemeral_task") as WorkflowClass;
-      const route = routeWorkflow({ workflowClass, spaceId: ctx.env.spaceId, ...(ctx.env.projectId ? { projectId: ctx.env.projectId } : {}), ...(args["extension_id"] ? { extensionId: String(args["extension_id"]) } : {}), invokerId: ctx.env.humanInvokerId ?? "system", budgetCredits: Number(args["budget_credits"] ?? 1) });
+      const workflowClass = String(
+        args.workflow_class ?? "ephemeral_task"
+      ) as WorkflowClass;
+      const extensionId = extensionIdFromArgs(args.extension_id);
+      const route = routeWorkflow({
+        workflowClass,
+        spaceId: ctx.env.spaceId,
+        ...(ctx.env.projectId ? { projectId: ctx.env.projectId } : {}),
+        ...(extensionId ? { extensionId } : {}),
+        invokerId: ctx.env.humanInvokerId ?? "system",
+        budgetCredits: Number(args.budget_credits ?? 1),
+      });
       const h = hooks(ctx);
       if (!h.workflowRun)
         return { ok: false, reason: "workflow run not available" };
-      const name = String(args["name"] ?? "");
+      const name = String(args.name ?? "");
       const result = await h.workflowRun(
         name,
-        (args["params"] as Record<string, unknown>) ?? {},
+        (args.params as Record<string, unknown>) ?? {},
         {
-          detach: args["detach"] === true,
+          detach: args.detach === true,
           cleanContext: true,
           maxContextTokens: 2_000,
           contextSources: ["task_payload", "target_files", "SOUL.md"],
@@ -62,14 +85,18 @@ export const dynamicWorkflow: PrebuiltScript = {
       return {
         queued: true,
         result,
-        ...(workflowClass === "ephemeral_task" ? { receipt_card: {
-          kind: "workflow_receipt",
-          collapsed: true,
-          lines: [
-            `[ ⏰ Background Job: ${name} | Status: 🟡 Queued ]`,
-            `[View Full R2 Logs] [Inspect Diff]`,
-          ],
-        } } : { alert_route: route.reportTarget }),
+        ...(workflowClass === "ephemeral_task"
+          ? {
+              receipt_card: {
+                kind: "workflow_receipt",
+                collapsed: true,
+                lines: [
+                  `[ ⏰ Background Job: ${name} | Status: 🟡 Queued ]`,
+                  "[View Full R2 Logs] [Inspect Diff]",
+                ],
+              },
+            }
+          : { alert_route: route.reportTarget }),
       };
     },
     async "workflow.schedule"(args, ctx) {
@@ -79,19 +106,26 @@ export const dynamicWorkflow: PrebuiltScript = {
       if (!h.workflowSchedule)
         return { ok: false, reason: "workflow schedule not available" };
       const result = await h.workflowSchedule(
-        String(args["name"] ?? ""),
-        String(args["cron"] ?? "")
+        String(args.name ?? ""),
+        String(args.cron ?? "")
       );
-      return { result, receipt_card: { kind: "workflow_receipt", collapsed: true, lines: [
-        `[ ⏰ Background Cron: ${String(args["name"] ?? "")} | Status: 🟡 Scheduled ]`,
-        `[View Full R2 Logs] [Inspect Diff]`,
-      ] } };
+      return {
+        result,
+        receipt_card: {
+          kind: "workflow_receipt",
+          collapsed: true,
+          lines: [
+            `[ ⏰ Background Cron: ${String(args.name ?? "")} | Status: 🟡 Scheduled ]`,
+            "[View Full R2 Logs] [Inspect Diff]",
+          ],
+        },
+      };
     },
     async "workflow.status"(args, ctx) {
       const h = hooks(ctx);
       if (!h.workflowStatus)
         return { ok: false, reason: "workflow status not available" };
-      return await h.workflowStatus(String(args["id"] ?? ""));
+      return await h.workflowStatus(String(args.id ?? ""));
     },
   },
 };
