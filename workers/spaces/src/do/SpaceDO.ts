@@ -21,9 +21,9 @@ import type {
 } from "@naelao/events";
 import { broadcastSpaceEvent, mintInternalToken } from "@naelao/http";
 import type { MessageRole } from "@naelao/types";
-import { defaultViewportFor, DOGFOOD_EXTENSIONS, getProjectKindManifest, validateExtensionManifest } from "@naelao/agent-sdk";
+import { defaultViewportFor, DOGFOOD_EXTENSIONS, getProjectKindManifest, getProjectTemplate, validateExtensionManifest } from "@naelao/agent-sdk";
 import { instantiateBlueprint as compileBlueprint } from "@naelao/agent-sdk";
-import type { DisplayMode, ExtensionManifest, SpaceBlueprint, TemplateMode } from "@naelao/agent-sdk";
+import type { DisplayMode, ExtensionManifest, ProjectTemplateId, SpaceBlueprint, TemplateMode } from "@naelao/agent-sdk";
 import { consumeEphemeralActionGrant, mintEphemeralActionGrant, type EphemeralActionGrant, verifyCapabilityToken } from "@naelao/security";
 
 function todaySpendKey(): string {
@@ -41,6 +41,24 @@ async function sha256Hex(input: string): Promise<string> {
   return [...new Uint8Array(buf)]
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
+}
+
+export interface ProjectTemplateOverrides {
+  name?: string;
+  description?: string;
+  agentName?: string;
+  systemPrompt?: string;
+  viewport?: Partial<{ component: string; copilotPlacement: "docked" | "side_panel" }>;
+}
+
+export interface ProjectTemplateStampResult {
+  projectId: string;
+  templateId: ProjectTemplateId;
+  kind: string;
+  viewport: Record<string, unknown>;
+  agentId: string;
+  taskCount: number;
+  fileCount: number;
 }
 
 export interface WebhookEventIdentity { spaceId: string; provider: string; eventType: string; eventId: string; }
@@ -1786,6 +1804,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         if (!body.blueprint || !body.target_space_id) return Response.json({ error: "blueprint and target_space_id are required" }, { status: 400 });
         return Response.json(await this.instantiateBlueprint(body.blueprint, body.target_space_id), { status: 201 });
       }
+      if (method === "POST" && url.pathname === "/project-templates/stamp") {
+        const body = await request.json<{ space_id?: string; template_id?: string; overrides?: ProjectTemplateOverrides }>();
+        if (!body.space_id || !body.template_id) return Response.json({ error: "space_id and template_id are required" }, { status: 400 });
+        return Response.json(await this.stampProjectTemplate(body.space_id, body.template_id, body.overrides), { status: 201 });
+      }
       // POST /sessions
       if (method === "POST" && url.pathname === "/sessions") {
         return this.createSession(request);
@@ -2617,6 +2640,39 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
     }
     return { projectIds: [...ids.values()], taskCount, fileCount };
+  }
+
+  /** Stamp one canonical room into an existing space in a single local SQLite transaction. */
+  async stampProjectTemplate(spaceId: string, templateId: string, overrides: ProjectTemplateOverrides = {}): Promise<ProjectTemplateStampResult> {
+    this.ensureInit();
+    const template = getProjectTemplate(templateId);
+    if (!template) throw new Error(`unknown_project_template:${templateId}`);
+    const projectId = crypto.randomUUID();
+    const agentId = crypto.randomUUID();
+    const taskIds = new Map(template.tasks.map((task) => [task.id ?? task.title, crypto.randomUUID()]));
+    const files = await Promise.all(template.starterFiles.map(async (file) => ({ ...file, hash: await sha256Hex(file.content) })));
+    const now = new Date().toISOString();
+    const viewport = { ...template.viewport, ...(overrides.viewport ?? {}), canvasPrimary: true, tab: "canvases" };
+    const name = overrides.name?.trim() || template.name;
+    const systemPrompt = overrides.systemPrompt?.trim() || template.agent.systemPrompt;
+    this.ctx.storage.transactionSync(() => {
+      execute(this.ctx.storage.sql as never,
+        `INSERT INTO projects (id, space_id, name, description, status, kind, created_at, default_agent_id, template_mode, viewport_config)
+         VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`,
+        projectId, spaceId, name, overrides.description ?? "", template.kind, now, agentId, template.templateMode, JSON.stringify(viewport));
+      execute(this.ctx.storage.sql as never,
+        "INSERT INTO agent_definitions (id, space_id, name, description, config_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        agentId, spaceId, overrides.agentName?.trim() || template.agent.name, `Functional agent for ${name}`,
+        JSON.stringify({ system_prompt: systemPrompt, soul_md: template.agent.soul, project_template_id: template.id }), now, now);
+      for (const task of template.tasks) execute(this.ctx.storage.sql as never,
+        "INSERT INTO tasks (id, space_id, project_id, title, status, dependencies, assigned_agent, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        taskIds.get(task.id ?? task.title)!, spaceId, projectId, task.title, task.status ?? "pending",
+        JSON.stringify((task.dependencies ?? []).map((dependency) => taskIds.get(dependency) ?? dependency)), agentId, now, now);
+      for (const file of files) execute(this.ctx.storage.sql as never,
+        "INSERT INTO workspace_files (project_id, path, content, content_hash, size_bytes, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        projectId, file.path, file.content, file.hash, new TextEncoder().encode(file.content).byteLength, now);
+    });
+    return { projectId, templateId: template.id, kind: template.kind, viewport, agentId, taskCount: template.tasks.length, fileCount: files.length };
   }
 
   private async putExecutiveContact(request: Request): Promise<Response> {

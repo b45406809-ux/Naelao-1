@@ -66,6 +66,12 @@ export interface CustomerBotContext {
 }
 
 export type GadgetScope = RuntimeScope;
+export type GadgetTier = 1 | 2 | 3;
+/** Lifecycle tier is explicit and must agree with scope (validated at installation). */
+export interface GadgetManifestLifecycle {
+  gadgetTier: GadgetTier;
+  scope: GadgetScope;
+}
 export interface GadgetActorScope {
   scope: GadgetScope;
   appId: string;

@@ -1,7 +1,9 @@
 import { DurableObject } from "cloudflare:workers";
-import type { GadgetActorScope, GadgetScope } from "@naelao/agent-sdk";
+import type { GadgetActorScope, GadgetScope, GadgetTier } from "@naelao/agent-sdk";
 
 export interface MicroAppDOEnv { PLATFORM_SECRET: string }
+export const TIER_1_STORAGE_LIMIT_BYTES = 25 * 1024 * 1024;
+export const TIER_1_IDLE_TTL_MS = 14 * 86_400 * 1000;
 
 /** The exact stable name passed to DurableObjectNamespace.idFromName. */
 export function gadgetStorageKey(input: GadgetActorScope): string {
@@ -39,9 +41,10 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
   }
 
   override async fetch(request: Request): Promise<Response> {
-    this.ensureBaseSchema();
     const url = new URL(request.url);
     try {
+      if (await this.ctx.storage.get<boolean>("deleted")) return Response.json({ error: "gadget_deleted" }, { status: 410 });
+      this.ensureBaseSchema();
       if (request.method === "POST" && url.pathname === "/initialize") return await this.initialize(request);
       if (request.method === "GET" && url.pathname === "/app") return this.renderApp();
       if (request.method === "GET" && url.pathname === "/api/data") return this.readData(url);
@@ -50,8 +53,34 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       if (request.method === "POST" && url.pathname === "/mcp") return await this.handleMcp(request);
       return Response.json({ error: "not_found" }, { status: 404 });
     } catch (error) {
-      return Response.json({ error: error instanceof Error ? error.message : "micro_app_error" }, { status: 400 });
+      const message = error instanceof Error ? error.message : "micro_app_error";
+      return Response.json({ error: message }, { status: message === "storage_limit_exceeded" ? 413 : 400 });
+    } finally {
+      if (this.initialized && this.gadgetTier() === 1) await this.ctx.storage.setAlarm(Date.now() + TIER_1_IDLE_TTL_MS);
     }
+  }
+
+  private metadata(key: string): string | undefined {
+    return [...this.ctx.storage.sql.exec<{ value: string }>("SELECT value FROM gadget_metadata WHERE key = ?", key)][0]?.value;
+  }
+
+  private gadgetTier(): GadgetTier | undefined {
+    const tier = Number(this.metadata("gadget_tier"));
+    return tier === 1 || tier === 2 || tier === 3 ? tier : undefined;
+  }
+
+  private databaseSizeBytes(): number {
+    const pageCount = [...this.ctx.storage.sql.exec<{ page_count: number }>("PRAGMA page_count")][0]?.page_count ?? 0;
+    const pageSize = [...this.ctx.storage.sql.exec<{ page_size: number }>("PRAGMA page_size")][0]?.page_size ?? 0;
+    return pageCount * pageSize;
+  }
+
+  override async alarm(): Promise<void> {
+    this.ensureBaseSchema();
+    if (this.gadgetTier() !== 1) return;
+    await this.ctx.storage.deleteAll();
+    await this.ctx.storage.put("deleted", true);
+    this.initialized = false;
   }
 
   private appId(): string {
@@ -95,7 +124,10 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       if (!args.record || typeof args.record !== "object" || Array.isArray(args.record)) throw new Error("record_required");
       const record = args.record as Record<string, unknown>, allowed = new Set(columns.map(c => c.name)); const entries = Object.entries(record).filter(([key]) => allowed.has(key));
       if (!entries.length || entries.length !== Object.keys(record).length) throw new Error("record_does_not_match_schema");
-      this.ctx.storage.sql.exec(`INSERT INTO ${quoted} (${entries.map(([key]) => `"${key.replaceAll('"','""')}"`).join(",")}) VALUES (${entries.map(() => "?").join(",")})`, ...entries.map(([,v]) => v as SqlStorageValue));
+      this.ctx.storage.transactionSync(() => {
+        this.ctx.storage.sql.exec(`INSERT INTO ${quoted} (${entries.map(([key]) => `"${key.replaceAll('"','""')}"`).join(",")}) VALUES (${entries.map(() => "?").join(",")})`, ...entries.map(([,v]) => v as SqlStorageValue));
+        if (this.gadgetTier() === 1 && this.databaseSizeBytes() > TIER_1_STORAGE_LIMIT_BYTES) throw new Error("storage_limit_exceeded");
+      });
       data = { inserted: true };
     } else if (name === `app_${appId}_get`) {
       const pk = columns.find(c => c.pk)?.name ?? columns[0]?.name; if (!pk) throw new Error("table_has_no_columns");
@@ -105,15 +137,24 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
   }
 
   private async initialize(request: Request): Promise<Response> {
-    const body = await request.json<{ appId?: string; scope?: GadgetScope; defaultSchemaSql?: string; html?: string }>();
-    if (!body.appId || !body.scope) return Response.json({ error: "appId and scope are required" }, { status: 400 });
+    const body = await request.json<{ appId?: string; scope?: GadgetScope; gadgetTier?: GadgetTier; defaultSchemaSql?: string; html?: string }>();
+    if (!body.appId || !body.scope || !body.gadgetTier) return Response.json({ error: "appId, scope and gadgetTier are required" }, { status: 400 });
+    if ((body.gadgetTier === 1 && body.scope !== "USER_PRIVATE") || (body.gadgetTier === 2 && body.scope !== "PROJECT_BOUND") || (body.gadgetTier === 3 && body.scope === "USER_PRIVATE")) {
+      return Response.json({ error: "gadget_tier_scope_mismatch" }, { status: 400 });
+    }
     const existing = [...this.ctx.storage.sql.exec<{ value: string }>("SELECT value FROM gadget_metadata WHERE key = 'app_id'")][0];
     if (existing && existing.value !== body.appId) return Response.json({ error: "actor_already_owned" }, { status: 409 });
+    const existingScope = this.metadata("scope");
+    const existingTier = this.gadgetTier();
+    if ((existingScope && existingScope !== body.scope) || (existingTier && existingTier !== body.gadgetTier)) {
+      return Response.json({ error: "actor_lifecycle_immutable" }, { status: 409 });
+    }
     for (const statement of validDdl(body.defaultSchemaSql ?? "")) this.ctx.storage.sql.exec(statement);
     const html = body.html ?? `<main id="app"></main><script type="module">window.__NAELAO_GADGET__=${JSON.stringify(body.appId)}</script>`;
     if (html.length > 512_000) throw new Error("gadget_bundle_too_large");
-    this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES ('app_id',?),('scope',?),('html',?)", body.appId, body.scope, html);
-    return Response.json({ initialized: true, appId: body.appId, scope: body.scope }, { status: 201 });
+    this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES ('app_id',?),('scope',?),('gadget_tier',?),('html',?)", body.appId, body.scope, String(body.gadgetTier), html);
+    if (body.gadgetTier !== 1) await this.ctx.storage.deleteAlarm();
+    return Response.json({ initialized: true, appId: body.appId, scope: body.scope, gadgetTier: body.gadgetTier }, { status: 201 });
   }
 
   private renderApp(): Response {
@@ -139,7 +180,10 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     const encoded = JSON.stringify(body.value);
     if (encoded === undefined || encoded.length > 1_000_000) return Response.json({ error: "invalid_or_oversized_value" }, { status: 413 });
     const now = new Date().toISOString();
-    this.ctx.storage.sql.exec("INSERT INTO gadget_data(key,value_json,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at", body.key, encoded, now);
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec("INSERT INTO gadget_data(key,value_json,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at", body.key!, encoded, now);
+      if (this.gadgetTier() === 1 && this.databaseSizeBytes() > TIER_1_STORAGE_LIMIT_BYTES) throw new Error("storage_limit_exceeded");
+    });
     return Response.json({ key: body.key, value: body.value, updatedAt: now }, { status: 201 });
   }
 
