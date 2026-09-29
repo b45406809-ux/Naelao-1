@@ -20,13 +20,12 @@ export const runtime = "edge";
 // layout. Chat is mounted as a direct flex sibling instead so its own flex:1 sizing still works.
 
 import * as React from "react";
-import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useProduct } from "@/lib/product-context";
-import { Chat } from "@/components/Chat";
+import { ProjectCanvas } from "@/components/ProjectCanvas";
 import { useProductAuth } from "@/lib/auth-provider";
 import { useActiveSpace } from "@/lib/active-space-context";
-import { getThread, listThreads, type ThreadSummary } from "@/lib/api";
+import { getProject, getThread, listThreads, type Project, type ThreadSummary } from "@/lib/api";
 
 export default function ProjectThreadPage() {
   const params = useParams<{ projectId: string; threadId: string }>();
@@ -34,23 +33,10 @@ export default function ProjectThreadPage() {
   const { activeSpaceId, supportContact } = useActiveSpace();
   const { session } = useProductAuth();
   const [thread, setThread] = React.useState<ThreadSummary | null>(null);
+  const [project, setProject] = React.useState<Project | null>(null);
   const [loadFailed, setLoadFailed] = React.useState(false);
   const [siblingThreads, setSiblingThreads] = React.useState<ThreadSummary[]>([]);
-  const [railOpen, setRailOpen] = React.useState(true);
 
-  // Closed by default on a phone. Below 900px `.spaces-sidebar` becomes a full-width horizontal
-  // strip above the content — fine on Discover, wrong here: it steals vertical space from a chat
-  // surface that needs the full height for its message area and sticky composer, which is what
-  // made this page unusable on mobile once the rail was added. Reopening it is one tap.
-  //
-  // Done in an effect rather than a lazy useState initialiser on purpose: reading `window` during
-  // the first render would mismatch the server-rendered markup. Same pattern as the right-hand
-  // thread panel's own mobile default.
-  React.useEffect(() => {
-    if (typeof window !== "undefined" && window.matchMedia("(max-width: 900px)").matches) {
-      setRailOpen(false);
-    }
-  }, []);
 
   const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
 
@@ -59,9 +45,9 @@ export default function ProjectThreadPage() {
     let cancelled = false;
     setThread(null);
     setLoadFailed(false);
-    void getThread(activeSpaceId, params.threadId, creds)
-      .then((t) => {
-        if (!cancelled) setThread(t);
+    void Promise.all([getThread(activeSpaceId, params.threadId, creds), getProject(activeSpaceId, params.projectId, creds)])
+      .then(([t, p]) => {
+        if (!cancelled) { setThread(t); setProject(p); }
       })
       .catch(() => {
         if (!cancelled) setLoadFailed(true);
@@ -105,70 +91,7 @@ export default function ProjectThreadPage() {
   // the thread loads would always take the fallback path — for a thread that already HAS a
   // session (opened again, or from a different browser/tab), that meant minting a brand new,
   // unlinked session every time instead of reusing the real one.
-  if (!thread) return <div className="page-view">Loading…</div>;
+  if (!thread || !project) return <div className="page-view">Loading…</div>;
 
-  return (
-    <div className="spaces-layout">
-      {railOpen && (
-        <div className="spaces-sidebar">
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "2px 4px 6px" }}>
-            <span style={{ fontSize: 10.5, fontWeight: 500, color: "var(--text3)", letterSpacing: "0.07em", textTransform: "uppercase" }}>
-              Threads in this project
-            </span>
-            <button
-              type="button"
-              onClick={() => setRailOpen(false)}
-              title="Hide thread list"
-              style={{ background: "transparent", border: "none", color: "var(--text3)", cursor: "pointer", fontSize: 14, lineHeight: 1, padding: 2 }}
-            >
-              ‹
-            </button>
-          </div>
-          <Link
-            href={`/p/${product.slug}/projects/${params.projectId}`}
-            className="space-tree-item"
-            style={{ textDecoration: "none" }}
-          >
-            <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="currentColor"><path d="M2 4H6L7 5H14V13H2V4Z" /></svg>
-            Back to project
-          </Link>
-          <div style={{ padding: "4px 10px", margin: "4px 0" }}>
-            <div style={{ height: 1, background: "var(--border)" }} />
-          </div>
-          {siblingThreads.length === 0 ? (
-            <p style={{ fontSize: 11.5, color: "var(--text3)", padding: "4px 10px" }}>No other threads yet.</p>
-          ) : (
-            siblingThreads.map((t) => (
-              <Link
-                key={t.id}
-                href={`/p/${product.slug}/projects/${params.projectId}/threads/${t.id}`}
-                className={`space-tree-item${t.id === params.threadId ? " active" : ""}`}
-                style={{ textDecoration: "none" }}
-              >
-                <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="currentColor"><path d="M4 2H10L13 5V14H4V2Z" /></svg>
-                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.title ?? "Untitled thread"}</span>
-              </Link>
-            ))
-          )}
-        </div>
-      )}
-      {!railOpen && (
-        <button type="button" className="rail-expander" onClick={() => setRailOpen(true)} title="Show thread list">
-          ›<span className="rail-expander-label">Threads in this project</span>
-        </button>
-      )}
-      <div style={{ flex: 1, minWidth: 0, display: "flex" }}>
-        <Chat
-          spaceId={activeSpaceId}
-          session={creds}
-          sessionKey={params.threadId}
-          title={thread.title ?? "Thread"}
-          supportContact={supportContact}
-          threadId={params.threadId}
-          projectId={params.projectId}
-          {...(thread.session_id ? { sessionId: thread.session_id } : {})}
-        />
-      </div>
-    </div>
-  );
+  return <ProjectCanvas project={project} threads={siblingThreads} thread={thread} spaceId={activeSpaceId} slug={product.slug} session={creds} supportContact={supportContact} />;
 }

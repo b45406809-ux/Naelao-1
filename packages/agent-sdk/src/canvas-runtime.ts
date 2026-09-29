@@ -6,6 +6,7 @@ export const PROJECT_KINDS = [
   "model_studio",
   "growth_engine",
   "app_studio",
+  "finance_grid",
   "quant_desk",
 ] as const;
 export type ProjectKind = (typeof PROJECT_KINDS)[number];
@@ -40,13 +41,13 @@ export const PROJECT_KIND_MANIFESTS: Readonly<
     kind: "product_dev",
     canvas: "code",
     capabilities: ["files", "git", "preview"],
-    label: "Product Development", viewportComponent: "CodeCanvas", allowedLadderTiers: [1,2,3,4,5,6], defaultAutonomy: "cowork_studio", domainSystemPrompt: "Build production software with AST-aware edits and atomic Git history.", linterRules: ["typecheck", "tests", "no-secrets"],
+    label: "Product Development", viewportComponent: "CodeWorkspaceCanvas", allowedLadderTiers: [1,2,3,4,5,6], defaultAutonomy: "cowork_studio", domainSystemPrompt: "Build production software with AST-aware edits and atomic Git history.", linterRules: ["typecheck", "tests", "no-secrets"],
   },
   doc_studio: {
     kind: "doc_studio",
     canvas: "document",
     capabilities: ["files", "redline", "citations"],
-    label: "Document Studio", viewportComponent: "DocStudioCanvas", allowedLadderTiers: [1,2], defaultAutonomy: "cowork_studio", domainSystemPrompt: "Draft and redline documents while preserving citations and defined terms.", linterRules: ["defined-terms", "delaware-contract", "citation-integrity"],
+    label: "Document Studio", viewportComponent: "DocumentRedlineCanvas", allowedLadderTiers: [1,2], defaultAutonomy: "cowork_studio", domainSystemPrompt: "Draft and redline documents while preserving citations and defined terms.", linterRules: ["defined-terms", "delaware-contract", "citation-integrity"],
   },
   voice_agent: {
     kind: "voice_agent",
@@ -78,6 +79,12 @@ export const PROJECT_KIND_MANIFESTS: Readonly<
     capabilities: ["schema", "preview", "publish"],
     label: "App Studio", viewportComponent: "AppStudioCanvas", allowedLadderTiers: [1,2], defaultAutonomy: "cowork_studio", domainSystemPrompt: "Build and preview focused micro-apps against isolated Facet SQLite data.", linterRules: ["schema-safety", "accessibility", "input-validation"],
   },
+  finance_grid: {
+    kind: "finance_grid", canvas: "trading", capabilities: ["files", "formulas", "python"],
+    label: "Finance Grid", viewportComponent: "SpreadsheetFormulaGrid", allowedLadderTiers: [1,2,5,6],
+    defaultAutonomy: "cowork_studio", domainSystemPrompt: "Build auditable financial models with live formula and Python-backed calculation updates.",
+    linterRules: ["formula-integrity", "source-provenance", "model-audit"],
+  },
   quant_desk: {
     kind: "quant_desk", canvas: "trading", capabilities: ["r2_ticks", "backtest", "risk_guard"],
     label: "Quant Desk", viewportComponent: "QuantDeskCanvas", allowedLadderTiers: [1,2,6],
@@ -102,6 +109,30 @@ export type CanvasMessage =
       action: string;
       payload: Record<string, string | number | boolean | null>;
     };
+
+/** Stable viewport identifiers shared by agents and the shell's polymorphic canvas host. */
+export const CANVAS_VIEWPORTS = [
+  "document_redline", "spreadsheet_formula_grid", "code_workspace", "micro_app",
+  "container_terminal", "virtual_desktop", "voice_agent", "customer_bot",
+  "model_studio", "growth_engine",
+] as const;
+export type CanvasViewport = (typeof CANVAS_VIEWPORTS)[number];
+
+export interface CanvasMountDescriptor {
+  viewport: CanvasViewport;
+  resourceId?: string;
+  title?: string;
+  live?: boolean;
+}
+
+export function isCanvasMountDescriptor(value: unknown): value is CanvasMountDescriptor {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const item = value as Record<string, unknown>;
+  return typeof item.viewport === "string" && (CANVAS_VIEWPORTS as readonly string[]).includes(item.viewport)
+    && (item.resourceId === undefined || typeof item.resourceId === "string")
+    && (item.title === undefined || typeof item.title === "string")
+    && (item.live === undefined || typeof item.live === "boolean");
+}
 
 export function parseCanvasMessage(
   value: unknown,
