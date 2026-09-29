@@ -51,6 +51,8 @@ export const dynamicWorkflow: PrebuiltScript = {
           detach: args["detach"] === true,
           cleanContext: true,
           maxContextTokens: 2_000,
+          contextSources: ["task_payload", "target_files", "SOUL.md"],
+          inheritChatHistory: false,
           workflowClass: route.workflowClass,
           budgetKey: route.budgetKey,
           reportTarget: route.reportTarget,
@@ -64,8 +66,8 @@ export const dynamicWorkflow: PrebuiltScript = {
           kind: "workflow_receipt",
           collapsed: true,
           lines: [
-            `Workflow ${name} queued`,
-            `${route.reportTarget} · isolated budget ${route.budgetKey}`,
+            `[ ⏰ Background Job: ${name} | Status: 🟡 Queued ]`,
+            `[View Full R2 Logs] [Inspect Diff]`,
           ],
         } } : { alert_route: route.reportTarget }),
       };
@@ -76,10 +78,14 @@ export const dynamicWorkflow: PrebuiltScript = {
       const h = hooks(ctx);
       if (!h.workflowSchedule)
         return { ok: false, reason: "workflow schedule not available" };
-      return await h.workflowSchedule(
+      const result = await h.workflowSchedule(
         String(args["name"] ?? ""),
         String(args["cron"] ?? "")
       );
+      return { result, receipt_card: { kind: "workflow_receipt", collapsed: true, lines: [
+        `[ ⏰ Background Cron: ${String(args["name"] ?? "")} | Status: 🟡 Scheduled ]`,
+        `[View Full R2 Logs] [Inspect Diff]`,
+      ] } };
     },
     async "workflow.status"(args, ctx) {
       const h = hooks(ctx);

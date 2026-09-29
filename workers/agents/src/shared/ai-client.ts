@@ -276,6 +276,8 @@ export function buildUniversalBody(opts: {
   /** Declared action space, sent as real tools so the model returns a schema-constrained call
    *  instead of prose we have to regex. */
   tools?: ToolSpec[];
+  /** `auto` lets the model answer normally when no terminal action is required. */
+  toolChoice?: "required" | "auto";
   /** Set only for a model whose MODEL_CAPABILITIES entry supports it; absent means "send nothing
    *  reasoning-related" (the model either doesn't support it or the caller didn't choose a level). */
   reasoning?: ReasoningRequest;
@@ -295,7 +297,7 @@ export function buildUniversalBody(opts: {
     model: query.model,
     max_tokens: query.max_tokens,
     messages: [{ role: "system", content: query.system }, ...query.messages],
-    ...(tools && tools.length > 0 ? { tools: toolsWire(tools), tool_choice: "required" } : {}),
+    ...(tools && tools.length > 0 ? { tools: toolsWire(tools), tool_choice: opts.toolChoice ?? "required" } : {}),
     ...(reasoning?.param === "reasoning_effort" ? { reasoning_effort: reasoning.level } : {}),
     ...(reasoning?.param === "kimi_thinking" ? { chat_template_kwargs: { thinking: reasoning.level === "on" } } : {}),
     ...(opts.stream ? { stream: true, stream_options: { include_usage: true } } : {}),

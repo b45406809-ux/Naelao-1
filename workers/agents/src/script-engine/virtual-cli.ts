@@ -41,8 +41,8 @@ export function interceptPlatformCli(command: string): CliDispatch | null {
     if (path === "display" || path === "computer") return { operation: "computer.see", params: {} };
     return { operation: "browser.see", params: { path, ...(cropAt >= 0 && words[cropAt + 1] ? { crop: words[cropAt + 1] } : {}) } };
   }
-  const scoped = words[0]?.match(/^(?:ext|auto):([a-z][a-z0-9_-]*)$/i);
-  if (scoped) return { operation: `ext:${scoped[1]!}`, params: { argv: words.slice(1) } };
+  const scoped = words[0]?.match(/^(ext|auto):([a-z][a-z0-9_-]*)$/i);
+  if (scoped) return { operation: `${scoped[1]!.toLowerCase()}:${scoped[2]!}`, params: { argv: words.slice(1) } };
   if (words[0] === "avos" && words[1] === "chore" && words[2]) {
     return { operation: "avos.chore", params: { name: words[2], argv: words.slice(3) } };
   }
@@ -55,10 +55,11 @@ export interface VirtualCliVault {
 }
 export interface SynthesizedCliStore { read(path: string): Promise<string | null>; write(path: string, source: string): Promise<void> }
 export interface VirtualCliDaemonRegistry { execute(name: string, argv: string[]): Promise<unknown> }
-export interface VirtualCliContext { vault: VirtualCliVault; tenantId: string; spaceId: string; projectId?: string; daemons?: VirtualCliDaemonRegistry }
+export interface VirtualCliNamespaceRegistry { execute(name: string, argv: string[]): Promise<unknown> }
+export interface VirtualCliContext { vault: VirtualCliVault; tenantId: string; spaceId: string; projectId?: string; daemons?: VirtualCliDaemonRegistry; automations?: VirtualCliNamespaceRegistry; chores?: VirtualCliNamespaceRegistry }
 export interface VirtualCliResult { exit_code: number; stdout: string; stderr?: string }
 
-const API_COMMANDS = new Set(["stripe", "gh", "r2", "resend"]);
+const API_COMMANDS = new Set(["stripe", "gh", "r2", "resend", "twilio"]);
 export function isRegisteredVirtualCli(name: string): boolean { return API_COMMANDS.has(name) || name === "jq"; }
 
 function bodyAndFlags(args: string[]): { positional: string[]; body: Record<string, unknown> } {
@@ -101,6 +102,17 @@ export class VirtualCliDispatcher {
       const result = await this.ctx.daemons.execute(daemon, args);
       return { exit_code: 0, stdout: JSON.stringify(result, null, 2) };
     }
+    const automation = command.match(/^auto:([a-z][a-z0-9_-]*)$/i)?.[1];
+    if (automation) {
+      if (!this.ctx.automations) throw new Error("automation_registry_unavailable");
+      if (!/^(?:trigger|status|pause)$/.test(args[0] ?? "")) throw new Error("usage: auto:<automation> [trigger|status|pause]");
+      return { exit_code: 0, stdout: JSON.stringify(await this.ctx.automations.execute(automation, args), null, 2) };
+    }
+    if (command === "avos") {
+      if (args[0] !== "chore" || !args[1]) throw new Error("usage: avos chore <name> [args]");
+      if (!this.ctx.chores) throw new Error("chore_registry_unavailable");
+      return { exit_code: 0, stdout: JSON.stringify(await this.ctx.chores.execute(args[1], args.slice(2)), null, 2) };
+    }
     if (command === "jq") return { exit_code: 0, stdout: jqValue(args[0] ?? ".", stdin) };
     if (!API_COMMANDS.has(command)) return null;
     const { positional, body } = bodyAndFlags(args);
@@ -118,11 +130,16 @@ export class VirtualCliDispatcher {
     } else if (command === "resend") {
       if (positional[0] !== "emails" || positional[1] !== "send") throw new Error("usage: resend emails send [--field value]");
       url = "https://api.resend.com/emails"; credentialName = "RESEND_API_KEY"; method = "POST";
-    } else {
+    } else if (command === "r2") {
       const [bucket, action = "list"] = positional;
       if (!bucket) throw new Error("usage: r2 <bucket> <action>");
       url = `https://api.cloudflare.com/client/v4/r2/buckets/${encodeURIComponent(bucket)}/${encodeURIComponent(action!)}`;
       credentialName = "CLOUDFLARE_API_TOKEN"; method = action === "list" || action === "get" ? "GET" : "POST";
+    } else {
+      const [resource, action] = positional;
+      if (!resource || !action) throw new Error("usage: twilio <resource> <action> [--field value]");
+      url = `https://api.twilio.com/2010-04-01/${encodeURIComponent(resource)}/${encodeURIComponent(action)}.json`;
+      credentialName = "TWILIO_AUTH_TOKEN"; method = action === "list" || action === "get" ? "GET" : "POST";
     }
     const response = await this.ctx.vault.fetchWithAuth(url, { credentialName, method, ...(method !== "GET" ? { body } : {}), headers: { "content-type": "application/json" } });
     return { exit_code: 0, stdout: await responseText(response) };

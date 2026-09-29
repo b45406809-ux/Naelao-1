@@ -2,9 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 import { buildCodeRunner } from "./code-runner.js";
 import { classifyExecutionRoute, requiresNativeCompilation, runStoredScript, tierLabel } from "./execution-ladder.js";
 import { interceptPlatformCli } from "./virtual-cli.js";
+import { decisionTools } from "./reasoner.js";
+import { browserTextReceipt } from "./prebuilt/browser-use.js";
+import { dynamicWorkflow } from "./prebuilt/dynamic-workflow.js";
 import type { ScriptEngineEnv, StoredScript } from "./types.js";
 
 describe("Execution Ladder & Code Runner", () => {
+  it("exposes only the all-CLI model action surface", () => {
+    expect(decisionTools(undefined).map((tool) => tool.name)).toEqual(["Bash", "Read", "Edit"]);
+  });
   it("classifies all six engines and sends native work straight to Tier 6", () => {
     expect(classifyExecutionRoute("cat package.json")).toMatchObject({ tier: 1, engine: "sqlite_fs" });
     expect(classifyExecutionRoute("node script.ts")).toMatchObject({ tier: 2, engine: "isolate" });
@@ -23,6 +29,29 @@ describe("Execution Ladder & Code Runner", () => {
   it("keeps browse screenshots out of context until see is requested", () => {
     expect(interceptPlatformCli("browse https://example.com")).toEqual({ operation: "browser.navigate", params: { url: "https://example.com", save_screenshot: true, accessibility_text: true } });
     expect(interceptPlatformCli('see --crop "10,20,30,40"')).toEqual({ operation: "browser.see", params: { path: "latest", crop: "10,20,30,40" } });
+    expect(browserTextReceipt({ accessibility_text: "Page", screenshot: "base64-secret", screenshot_path: "/tmp/latest.png" })).toEqual({ accessibility_text: "Page", screenshot_path: "/tmp/latest.png", screenshot_saved: true });
+  });
+
+  it("preserves scoped command namespaces", () => {
+    expect(interceptPlatformCli("avos chore repomix-pack")?.operation).toBe("avos.chore");
+    expect(interceptPlatformCli("ext:tree-sitter query User")?.operation).toBe("ext:tree-sitter");
+    expect(interceptPlatformCli("auto:stripe-sync trigger")?.operation).toBe("auto:stripe-sync");
+  });
+
+  it("detaches workflows with pristine context and a two-line receipt", async () => {
+    const workflowRun = vi.fn(async () => ({ id: "run-123" }));
+    const result = await dynamicWorkflow.operations["workflow.run"]!(
+      { name: "nightly.ts", detach: true },
+      { env: { scriptsBucket: {} as R2Bucket, spaceId: "s", projectId: "p", tenantId: "t", agentId: "a", orchestration: { workflowRun } }, run: async () => undefined }
+    ) as { result: { id: string }; receipt_card: { lines: string[] } };
+    expect(result.result.id).toBe("run-123");
+    expect(result.receipt_card.lines).toHaveLength(2);
+    expect(workflowRun).toHaveBeenCalledWith("nightly.ts", {}, expect.objectContaining({
+      detach: true,
+      maxContextTokens: 2_000,
+      contextSources: ["task_payload", "target_files", "SOUL.md"],
+      inheritChatHistory: false,
+    }));
   });
   it("maps tier labels accurately across all 6 tiers", () => {
     expect(tierLabel(1)).toBe("T1 direct-vfs");

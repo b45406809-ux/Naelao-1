@@ -60,7 +60,23 @@ async function navigate(
     tenantId: ctx.env.tenantId,
   });
   if (!result.ok) throw new Error(result.error ?? "browser navigation failed");
-  return result.output;
+  return browserTextReceipt(result.output);
+}
+
+/** Strip image bytes/URLs from a browse response. Vision enters context only through `see`. */
+export function browserTextReceipt(output: unknown): unknown {
+  if (!output || typeof output !== "object") return output;
+  const source = output as Record<string, unknown>;
+  const nested = source["result"] && typeof source["result"] === "object"
+    ? source["result"] as Record<string, unknown>
+    : source;
+  const text = String(nested["accessibility_text"] ?? nested["text"] ?? nested["content"] ?? "");
+  const screenshotPath = nested["screenshot_path"] ?? nested["path"];
+  return {
+    accessibility_text: text.slice(0, 1_200),
+    ...(typeof screenshotPath === "string" ? { screenshot_path: screenshotPath } : {}),
+    screenshot_saved: true,
+  };
 }
 
 async function see(ctx: PrebuiltOpContext, args: Record<string, unknown>): Promise<unknown> {
