@@ -348,7 +348,7 @@ export interface ContainerLease {
   lastUsedAt: number;
 }
 
-export type ContainerBackend = "webcontainer" | "cloudflare" | "local";
+import type { ContainerBackend } from "./types.js";
 export interface ContainerRequirements {
   native?: boolean;
   gpu?: boolean;
@@ -364,11 +364,11 @@ export function selectContainerBackend(
   if (input.gpu) {
     if (!input.localTunnelAuthorized)
       throw new Error("local_tunnel_not_authorized");
-    return "local";
+    return "local_workstation";
   }
   if (!input.native && !input.confidential && input.browserAvailable)
     return "webcontainer";
-  return "cloudflare";
+  return "cloudflare_container";
 }
 
 export interface EnvironmentHandoff {

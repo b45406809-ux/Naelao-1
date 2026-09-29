@@ -26,6 +26,10 @@ class_name = "ToolSandboxDO"
 name = "LOCAL_TUNNEL"
 class_name = "LocalTunnelDO"
 
+[[durable_objects.bindings]]
+name = "RISK_GUARD"
+class_name = "RiskGuardDO"
+
 # Account-level concurrency ceiling (spec §28 "ConcurrencyDO") — gates simultaneous sub-agent
 # spawn trees per (spaceId, holder). See buildOrchestrationHooks' spawnSubAgent in NaelaoAgentDO.
 [[durable_objects.bindings]]
@@ -67,6 +71,10 @@ new_sqlite_classes = ["LocalTunnelDO"]
 [[migrations]]
 tag = "v8"
 deleted_classes = ["ProductDO", "BusinessDO"]
+
+[[migrations]]
+tag = "v9"
+new_sqlite_classes = ["RiskGuardDO"]
 
 # Tier-5 micro-tool build/test compute (WG-01). A Cloudflare Container attached to
 # ToolSandboxDO — the agent spins it up on demand to build + test the micro-tool's

@@ -41,6 +41,7 @@ const ID = /^[a-z][a-z0-9_-]{1,63}$/;
 const EXTENSION_ID = /^ext_[a-z][a-z0-9_-]{1,59}$/;
 const PERMISSION = /^[a-z][a-z0-9_.:-]{1,127}$/;
 const SAFE_PATH = /^(?:\.\/)?[a-zA-Z0-9_./-]+\.(?:ts|js)$/;
+const COMMAND = /^(?:ext:[a-z][a-z0-9_-]{1,59}|[a-z][a-z0-9_-]{1,63})$/;
 const FORBIDDEN_KEY = /(?:kernel|systemprompt|coreprompt|promptlayers?|writeguard|gatekeepers?|replloop|reasoningloop|bypass|disableguard|unsandboxed|sandboxdisabled)/i;
 const FORBIDDEN_SCRIPT = /(?:NaelaoAgentDO|WriteGuard|Gatekeeper|system\s*prompt|core\s*prompt|reasoning\s*loop|\bmain\b.*(?:push|commit|write)|bypass\s+(?:guard|approval))/i;
 
@@ -97,7 +98,7 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
     assert(item.schedule === undefined || (typeof item.schedule === "string" && item.schedule.length <= 128), "invalid_schedule");
   }
   for (const item of raw.commands as Record<string, unknown>[]) {
-    assert(item && typeof item.name === "string" && ID.test(item.name), "invalid_command_name");
+    assert(item && typeof item.name === "string" && COMMAND.test(item.name), "invalid_command_name");
     assert(typeof item.scriptPath === "string" && SAFE_PATH.test(item.scriptPath) && !FORBIDDEN_SCRIPT.test(item.scriptPath), "invalid_command_path");
   }
   return raw as unknown as ExtensionManifest;

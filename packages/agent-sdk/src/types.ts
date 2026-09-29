@@ -1,6 +1,21 @@
 /** Public contracts for code authored against the universal AVOS runtime. */
 export type RuntimeScope = "USER_PRIVATE" | "SPACE_WIDE" | "PROJECT_BOUND";
 
+/** Stable Tier-6 ABI. Backend names are never inferred from a URL or provider response. */
+export type ContainerBackend =
+  | "webcontainer"
+  | "cloudflare_container"
+  | "local_workstation";
+
+export interface Tier6ContainerOptions {
+  backend: ContainerBackend;
+  /** Owner/user identity required when routing through LocalTunnelDO. */
+  localUserId?: string;
+  /** Lockfiles are portable state; dependency trees are explicitly non-portable. */
+  lockfiles?: Readonly<Partial<Record<"package.json" | "package-lock.json", string>>>;
+  migration?: Readonly<{ from: "webcontainer"; previewId: string }>;
+}
+
 export type SpaceCabinetWorkerId = "project_manager_worker" | "treasury_worker" | "identity_worker" | "comms_worker";
 export interface SpaceCabinetTask { operation: string; params?: Record<string, unknown> }
 export interface DelegateToSpaceWorkerInput { worker_id: SpaceCabinetWorkerId; task: SpaceCabinetTask }

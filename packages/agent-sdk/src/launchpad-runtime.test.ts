@@ -164,21 +164,21 @@ describe("Namespace Boundaries & Execution Routing", () => {
   it("selects container backend and validates handoffs", () => {
     expect(
       selectContainerBackend({ gpu: true, localTunnelAuthorized: true })
-    ).toBe("local");
+    ).toBe("local_workstation");
     expect(() =>
       selectContainerBackend({ gpu: true, localTunnelAuthorized: false })
     ).toThrow();
     expect(
       selectContainerBackend({ native: false, browserAvailable: true })
     ).toBe("webcontainer");
-    expect(selectContainerBackend({ native: true })).toBe("cloudflare");
+    expect(selectContainerBackend({ native: true })).toBe("cloudflare_container");
     expect(() =>
       planEnvironmentHandoff("webcontainer", "webcontainer", [
         "/workspace/package.json",
       ])
     ).toThrow();
     expect(() =>
-      planEnvironmentHandoff("webcontainer", "cloudflare", [
+      planEnvironmentHandoff("webcontainer", "cloudflare_container", [
         "/workspace/node_modules/pkg",
       ])
     ).toThrow();

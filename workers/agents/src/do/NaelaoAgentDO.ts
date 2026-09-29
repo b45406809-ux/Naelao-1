@@ -976,6 +976,8 @@ export interface AgentDOEnv {
   /** §A1.17 Phase M — local-machine-as-container. One DO per (spaceId, userId); the
    *  `local-machine` prebuilt reports itself unavailable when absent. */
   LOCAL_TUNNEL?: DurableObjectNamespace;
+  /** Per-space mathematical trading boundary and emergency liquidation coordinator. */
+  RISK_GUARD?: DurableObjectNamespace;
   /** Vectorize index for the Memory OS semantic layer (episodic→semantic promotion). */
   MEMORY_VECTORIZE?: VectorizeIndex;
   /** §A1.19 (AutoRAG/AI Search): the Cloudflare AutoRAG instance name backing Memory OS Layer 6
@@ -1960,6 +1962,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ...(this.env.CREDENTIALS_WORKER ? { credentialsWorker: this.env.CREDENTIALS_WORKER } : {}),
       ...(this.env.PLATFORM_SECRET ? { platformSecret: this.env.PLATFORM_SECRET } : {}),
       ...(this.env.TOOL_SANDBOX ? { toolSandbox: this.env.TOOL_SANDBOX } : {}),
+      ...(this.env.LOCAL_TUNNEL ? { localTunnel: this.env.LOCAL_TUNNEL } : {}),
     });
 
     // §A1.17 Phase R: the container half of the explicit multi-workspace model — same
@@ -4116,6 +4119,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           ));
           if (!response.ok) throw new Error(`emergency_stop_failed:${response.status}`);
           await this.handleCancelAll();
+        },
+        abortPendingOrders: async (input) => {
+          if (!this.env.RISK_GUARD) return;
+          const guard = this.env.RISK_GUARD.get(this.env.RISK_GUARD.idFromName(`risk:${input.spaceId}`));
+          const response = await guard.fetch(new Request("http://risk-guard/emergency-freeze", { method: "POST" }));
+          if (!response.ok) throw new Error(`risk_guard_freeze_failed:${response.status}`);
         },
         routeToRootAssistant: async () => { /* fall through to the root agent inbox below */ },
         send: async ({ channel, senderId, text }) => {

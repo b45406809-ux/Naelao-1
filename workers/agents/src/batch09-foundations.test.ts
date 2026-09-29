@@ -9,10 +9,10 @@ describe("Batch 09 foundations", () => {
     expect(projectExecutionTelemetry(telemetry, "developer")).toEqual(telemetry);
   });
 
-  it("declares seven distinct canvas-first foundational project kinds", () => {
+  it("declares eight distinct canvas-first foundational project kinds", () => {
     const manifests = Object.values(PROJECT_KIND_MANIFESTS);
-    expect(manifests).toHaveLength(7);
-    expect(new Set(manifests.map((item) => item.viewportComponent)).size).toBe(7);
+    expect(manifests).toHaveLength(8);
+    expect(new Set(manifests.map((item) => item.viewportComponent)).size).toBe(8);
     for (const manifest of manifests) {
       expect(defaultViewportFor(manifest.kind)).toMatchObject({ component: manifest.viewportComponent, canvasPrimary: true });
       expect(manifest.allowedLadderTiers.length).toBeGreaterThan(0);

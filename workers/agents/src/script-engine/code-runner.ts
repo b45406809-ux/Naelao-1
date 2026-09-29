@@ -40,6 +40,7 @@ import type {
 } from "./types.js";
 import { requiresNativeCompilation } from "./execution-ladder.js";
 import { createVaultProxy } from "./vault-proxy.js";
+import type { ContainerBackend, Tier6ContainerOptions } from "@naelao/agent-sdk";
 
 // ── CF Worker Loader binding (beta) — minimal local typing ─────────────────────────────
 
@@ -84,6 +85,10 @@ export interface CodeRunnerOptions {
   platformSecret?: string;
   /** ToolSandboxDO namespace (Tier 5, the Phase K base per-project sandbox). */
   toolSandbox?: DurableObjectNamespace;
+  /** Browser-owned WebContainer bridge, when a live tab advertises one. */
+  webContainer?: Fetcher;
+  /** LocalTunnelDO namespace for explicitly selected workstation execution. */
+  localTunnel?: DurableObjectNamespace;
   /** §A1.17 Phase L: Container Marketplace image id -> its own DO namespace binding. Empty/absent
    *  today — every catalogue image ships `available:false` (see container-catalogue.ts) until a
    *  real Dockerfile + persistence strategy + wrangler binding lands for it. */
@@ -634,9 +639,21 @@ async function runContainer(
     projectId?: string;
     containerImage?: string;
     tier?: ExecutionTier;
+    containerOptions?: Tier6ContainerOptions;
   }
 ): Promise<ScriptRunResult> {
   const started = Date.now();
+  const backend: ContainerBackend = params.containerOptions?.backend ?? "cloudflare_container";
+  if (backend === "webcontainer") {
+    if (!opts.webContainer) return unavailableBackend(backend, started);
+    return runContainerRequest(opts.webContainer, opts, params, started);
+  }
+  if (backend === "local_workstation") {
+    const userId = params.containerOptions?.localUserId;
+    if (!opts.localTunnel || !userId) return unavailableBackend(backend, started);
+    const tunnel = opts.localTunnel.get(opts.localTunnel.idFromName(`${params.spaceId}:${userId}`));
+    return runContainerRequest(tunnel, opts, params, started, true);
+  }
 
   // §A1.17 Phase L: a script tagged with a Container Marketplace image routes to THAT image's
   // own binding, never the base sandbox — fails closed with a clear message when the image
@@ -685,11 +702,38 @@ async function runContainer(
     `sandbox:${params.spaceId}:${params.projectId ?? "_assistant"}`
   );
   const stub = opts.toolSandbox.get(doId);
-  return runContainerRequest(stub, opts, params, started);
+  if (params.containerOptions?.migration) {
+    if (!opts.webContainer) return unavailableBackend("webcontainer", started);
+    const terminated = await opts.webContainer.fetch(new Request("http://webcontainer/process/signal", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ signal: "SIGTERM" }),
+    }));
+    if (!terminated.ok) return { ok: false, error: `WebContainer SIGTERM failed (${terminated.status})`, tier: 6, actual_tier: 6, engine: "container", duration_ms: Date.now() - started, tokens_used: 0 };
+  }
+  if (params.containerOptions?.lockfiles) {
+    let response: Response;
+    try {
+      response = await stub.fetch(new Request("http://sandbox/workspace/rehydrate", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ lockfiles: params.containerOptions.lockfiles }), signal: AbortSignal.timeout(2_500),
+      }));
+    } catch (error) {
+      return { ok: false, error: `Lockfile rehydration exceeded 2500ms: ${String(error)}`, tier: 6, actual_tier: 6, engine: "container", duration_ms: Date.now() - started, tokens_used: 0 };
+    }
+    if (!response.ok) return { ok: false, error: `Lockfile rehydration failed (${response.status})`, tier: 6, actual_tier: 6, engine: "container", duration_ms: Date.now() - started, tokens_used: 0 };
+  }
+  const result = await runContainerRequest(stub, opts, params, started);
+  if (result.ok && params.containerOptions?.migration) {
+    result.output = { result: result.output, previewTarget: `https://preview.avos.dev/${encodeURIComponent(params.containerOptions.migration.previewId)}` };
+  }
+  return result;
+}
+
+function unavailableBackend(backend: ContainerBackend, started: number): ScriptRunResult {
+  return { ok: false, error: `Tier 6 backend '${backend}' is unavailable`, tier: 6, actual_tier: 6, engine: "container", duration_ms: Date.now() - started, tokens_used: 0 };
 }
 
 async function runContainerRequest(
-  stub: DurableObjectStub,
+  stub: Pick<DurableObjectStub, "fetch"> | Fetcher,
   opts: CodeRunnerOptions,
   params: {
     name: string;
@@ -699,20 +743,21 @@ async function runContainerRequest(
     agentId: string;
     projectId?: string;
   },
-  started: number
+  started: number,
+  localTunnel = false
 ): Promise<ScriptRunResult> {
   const controller = new AbortController();
   const timeoutMs = opts.containerTimeoutMs ?? DEFAULT_CONTAINER_TIMEOUT_MS;
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const computerEndpoint = params.name === "computer-use.screenshot"
+    const computerEndpoint = localTunnel ? "/exec" : params.name === "computer-use.screenshot"
       ? "/computer/screenshot"
       : params.name === "computer-use.action" ? "/computer/action" : "/exec";
     const resp = await stub.fetch(
       new Request(`http://sandbox${computerEndpoint}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
+        body: JSON.stringify(localTunnel ? { op: "exec", params: { command: params.code, args: params.args } } : {
           name: params.name,
           code: params.code,
           args: params.args,
