@@ -5,7 +5,7 @@ const facet = (id: string, name: string, schema: string, permissions: string[], 
   type: "extension",
   declaredPermissions: permissions,
   capabilityRequirements: permissions,
-  gadgets: [{ id: `${id.slice(4)}_facet`, name, viewportComponent: `./${id}/viewport.ts`, scope: "PROJECT_BOUND", defaultSchemaSql: schema }],
+  gadgets: [{ id: `${id.slice(4)}_facet`, name, viewportComponent: `./${id}/viewport.ts`, scope: "PROJECT_BOUND", gadgetTier: 2, defaultSchemaSql: schema }],
   daemons: daemon ? [{ id: `${id.slice(4)}_daemon`, name: `${name} automation`, workflowScript: `./${id}/${daemon.script}.ts`, ...(daemon.schedule ? { schedule: daemon.schedule } : {}), memoryScope: "PROJECT_BOUND" }] : [],
   commands: [{ name: `ext:${id.slice(4)}`, scriptPath: `./${id}/command.ts` }],
 });

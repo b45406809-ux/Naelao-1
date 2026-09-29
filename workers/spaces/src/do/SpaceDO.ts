@@ -21,7 +21,7 @@ import type {
 } from "@naelao/events";
 import { broadcastSpaceEvent, mintInternalToken } from "@naelao/http";
 import type { MessageRole } from "@naelao/types";
-import { defaultViewportFor, DOGFOOD_EXTENSIONS, getProjectKindManifest, validateExtensionManifest } from "@naelao/agent-sdk";
+import { defaultViewportFor, DOGFOOD_EXTENSIONS, getProjectKindManifest, getProjectTemplate, projectTemplateAsBlueprintProject, validateExtensionManifest } from "@naelao/agent-sdk";
 import { instantiateBlueprint as compileBlueprint } from "@naelao/agent-sdk";
 import type { DisplayMode, ExtensionManifest, SpaceBlueprint, TemplateMode } from "@naelao/agent-sdk";
 import { consumeEphemeralActionGrant, mintEphemeralActionGrant, type EphemeralActionGrant, verifyCapabilityToken } from "@naelao/security";
@@ -1786,6 +1786,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         if (!body.blueprint || !body.target_space_id) return Response.json({ error: "blueprint and target_space_id are required" }, { status: 400 });
         return Response.json(await this.instantiateBlueprint(body.blueprint, body.target_space_id), { status: 201 });
       }
+      if (method === "POST" && url.pathname === "/project-templates/stamp") {
+        const body = await request.json<{ space_id?: string; template_id?: string; overrides?: { name?: string } }>();
+        if (!body.space_id || !body.template_id) return Response.json({ error: "space_id and template_id are required" }, { status: 400 });
+        return Response.json(await this.stampProjectTemplate(body.space_id, body.template_id, body.overrides), { status: 201 });
+      }
       // POST /sessions
       if (method === "POST" && url.pathname === "/sessions") {
         return this.createSession(request);
@@ -2617,6 +2622,36 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
     }
     return { projectIds: [...ids.values()], taskCount, fileCount };
+  }
+
+  /** Atomically-shaped, local-only stamping path: no network or queue work is on the hot path. */
+  async stampProjectTemplate(
+    spaceId: string,
+    templateId: string,
+    overrides: { name?: string } = {}
+  ): Promise<{ projectId: string; templateId: string; kind: string; viewport: Record<string, unknown>; taskCount: number; fileCount: number }> {
+    this.ensureInit();
+    const definition = getProjectTemplate(templateId);
+    if (!definition) throw new Error(`unknown_project_template:${templateId}`);
+    const name = overrides.name?.trim() || definition.name;
+    if (name.length > 120) throw new Error("project_template_name_too_long");
+    const blueprint: SpaceBlueprint = {
+      id: definition.id,
+      schemaVersion: "2.0",
+      metadata: { name: definition.name },
+      templateCategory: "project",
+      projects: [projectTemplateAsBlueprintProject(definition, name)],
+      requiredExtensions: [],
+      requiredCredentials: [],
+    };
+    const stamped = await this.instantiateBlueprint(blueprint, spaceId);
+    const projectId = stamped.projectIds[0]!;
+    const agent = queryOne<{ default_agent_id: string | null }>(this.ctx.storage.sql as never,
+      "SELECT default_agent_id FROM projects WHERE id = ? AND space_id = ?", projectId, spaceId);
+    if (agent?.default_agent_id) execute(this.ctx.storage.sql as never,
+      "UPDATE agent_definitions SET name = ? WHERE id = ? AND space_id = ?", definition.agentName, agent.default_agent_id, spaceId);
+    return { projectId, templateId: definition.id, kind: definition.kind, viewport: { ...definition.viewport },
+      taskCount: stamped.taskCount, fileCount: stamped.fileCount };
   }
 
   private async putExecutiveContact(request: Request): Promise<Response> {

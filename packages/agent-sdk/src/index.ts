@@ -173,5 +173,6 @@ export * from "./blueprint.js";
 export * from "./recipes.js";
 export * from "./no-code-subagent.js";
 export * from "./project-kinds.js";
+export * from "./project-templates.js";
 export * from "./dogfood-extensions/index.js";
 export * from "./templates/dev-foundry.js";

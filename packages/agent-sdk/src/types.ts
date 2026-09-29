@@ -66,6 +66,13 @@ export interface CustomerBotContext {
 }
 
 export type GadgetScope = RuntimeScope;
+export type GadgetTier = 1 | 2 | 3;
+
+/** Lifecycle declaration enforced by MicroAppDO, rather than trusted to UI code. */
+export interface GadgetManifestLifecycle {
+  gadgetTier: GadgetTier;
+  scope: GadgetScope;
+}
 export interface GadgetActorScope {
   scope: GadgetScope;
   appId: string;
@@ -163,6 +170,8 @@ export interface ViewportConfiguration {
   component: string;
   copilotPlacement: "docked" | "side_panel";
   canvasPrimary: true;
+  mount?: "right_sidebar";
+  tab?: "Canvases";
 }
 
 /** Portable, secret-free representation of a Space. Version 2 is deliberately data-only. */
