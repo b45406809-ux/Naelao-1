@@ -7,6 +7,7 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
+import { NATIVE_SPACE_TEMPLATES, assertTemplateId } from "@naelao/agent-sdk";
 import { LAUNCHPAD_MANIFEST } from "../launchpad-manifest.js";
 
 // ── SpaceType Manifest v2 (spec §61) ─────────────────────────────────────────
@@ -553,7 +554,25 @@ export class SpaceTypeRegistryDO extends DurableObject {
         installed_at INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000),
         PRIMARY KEY (type_id, space_id)
       );
+
+      CREATE TABLE IF NOT EXISTS native_space_templates (
+        id TEXT PRIMARY KEY CHECK (id GLOB 'tpl_*'),
+        version TEXT NOT NULL,
+        manifest TEXT NOT NULL,
+        shell_route TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
     `);
+    const templateUpdatedAt = Date.now();
+    for (const template of Object.values(NATIVE_SPACE_TEMPLATES)) {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO native_space_templates (id, version, manifest, shell_route, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET version=excluded.version, manifest=excluded.manifest,
+           shell_route=excluded.shell_route, updated_at=excluded.updated_at`,
+        template.id, template.version, JSON.stringify(template), template.shellRoute, templateUpdatedAt
+      );
+    }
     this.initialized = true;
 
     // Self-heal: this registry must always carry at least the built-in Naelao
@@ -591,6 +610,25 @@ export class SpaceTypeRegistryDO extends DurableObject {
     this.ensureInit();
     const url = new URL(request.url);
     const method = request.method;
+
+    // Native templates render inside apps/shell and are distinct from installable ext_* packages.
+    const nativeTemplateMatch = url.pathname.match(/^\/native-template\/([^/]+)$/);
+    if (method === "GET" && nativeTemplateMatch?.[1]) {
+      try { assertTemplateId(nativeTemplateMatch[1]); }
+      catch { return Response.json({ error: "invalid_template_id" }, { status: 400 }); }
+      const row = this.ctx.storage.sql.exec(
+        "SELECT manifest FROM native_space_templates WHERE id = ?", nativeTemplateMatch[1]
+      ).toArray()[0] as { manifest?: string } | undefined;
+      if (!row?.manifest) return Response.json({ error: "not_found" }, { status: 404 });
+      return new Response(row.manifest, { headers: { "content-type": "application/json" } });
+    }
+
+    if (method === "GET" && url.pathname === "/native-templates") {
+      const rows = this.ctx.storage.sql.exec(
+        "SELECT manifest FROM native_space_templates ORDER BY id"
+      ).toArray() as unknown as Array<{ manifest: string }>;
+      return Response.json({ templates: rows.map((row) => JSON.parse(row.manifest)) });
+    }
 
     // GET /type/:id — retrieve an approved manifest
     const typeMatch = url.pathname.match(/^\/type\/([^/]+)$/);

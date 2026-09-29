@@ -141,11 +141,13 @@ export class RepositoryDO extends DurableObject<Env> {
     return new TextDecoder().decode(envelope.slice(separator + 1));
   }
 
-  private deliverableKind(path: string): "spreadsheet" | "document" | "code" {
+  /** Viewport hint only: every kind is persisted as the original raw blob bytes. */
+  private deliverableKind(path: string): "spreadsheet" | "document" | "code" | "generic" {
     const extension = path.slice(path.lastIndexOf(".")).toLowerCase();
     if (extension === ".csv" || extension === ".xlsx" || extension === ".xls") return "spreadsheet";
     if (extension === ".docx" || extension === ".doc" || extension === ".md" || extension === ".txt") return "document";
-    return "code";
+    if (/^(?:src\/|.*\.(?:[cm]?[jt]sx?|py|rs|go|java|css|html|json|ya?ml)$)/i.test(path)) return "code";
+    return "generic";
   }
 
   /** RFC-4180-compatible row parser used for human-readable CSV cell deltas. */

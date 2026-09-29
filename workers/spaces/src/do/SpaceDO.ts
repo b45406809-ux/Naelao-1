@@ -1556,6 +1556,36 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_workspace_files_project ON workspace_files(project_id, path);
     `,
   },
+  {
+    version: 59,
+    description: "exactly one hierarchically assigned assistant per space",
+    up: `
+      CREATE TABLE space_assistants (
+        space_id TEXT PRIMARY KEY,
+        assistant_actor_id TEXT NOT NULL UNIQUE,
+        parent_assistant_actor_id TEXT,
+        hierarchy_role TEXT NOT NULL CHECK (hierarchy_role IN ('DIRECTOR','DEPARTMENT_LEAD')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        CHECK (
+          (hierarchy_role = 'DIRECTOR' AND parent_assistant_actor_id IS NULL) OR
+          (hierarchy_role = 'DEPARTMENT_LEAD' AND parent_assistant_actor_id IS NOT NULL)
+        )
+      );
+      INSERT INTO space_assistants (space_id, assistant_actor_id, parent_assistant_actor_id, hierarchy_role)
+      SELECT id, 'assistant:space:' || id,
+        CASE WHEN parent_id IS NULL THEN NULL ELSE 'assistant:space:' || parent_id END,
+        CASE WHEN parent_id IS NULL THEN 'DIRECTOR' ELSE 'DEPARTMENT_LEAD' END
+      FROM spaces WHERE status != 'deleted';
+      CREATE TRIGGER reject_floating_space_assistant
+      BEFORE INSERT ON space_assistants
+      WHEN NEW.assistant_actor_id != ('assistant:space:' || NEW.space_id)
+      BEGIN SELECT RAISE(ABORT, 'assistant must be assigned to its space'); END;
+      CREATE TRIGGER reject_floating_space_assistant_update
+      BEFORE UPDATE ON space_assistants
+      WHEN NEW.space_id != OLD.space_id OR NEW.assistant_actor_id != ('assistant:space:' || NEW.space_id)
+      BEGIN SELECT RAISE(ABORT, 'assistant assignment is immutable'); END;
+    `,
+  },
 ];
 
 export const PROVENANCE_GENESIS_HASH = "0".repeat(64);
@@ -1932,6 +1962,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // GET /spaces — list all spaces in this product registry (root + sub-spaces)
       if (method === "GET" && url.pathname === "/spaces") {
         return this.listSpaceRows();
+      }
+      if (method === "GET" && url.pathname === "/space-assistants") {
+        return this.listSpaceAssistants();
       }
       // POST /sub-spaces — create an in-DO sub-space (department) under a parent
       if (method === "POST" && url.pathname === "/sub-spaces") {
@@ -8645,8 +8678,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       JSON.stringify(body.settings ?? {}),
       new Date().toISOString()
     );
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO space_assistants (space_id, assistant_actor_id, parent_assistant_actor_id, hierarchy_role)
+       VALUES (?, ?, NULL, 'DIRECTOR')
+       ON CONFLICT(space_id) DO UPDATE SET assistant_actor_id=excluded.assistant_actor_id,
+         parent_assistant_actor_id=NULL, hierarchy_role='DIRECTOR'`,
+      body.id,
+      `assistant:space:${body.id}`
+    );
     return Response.json(
-      { id: body.id, depth: 0, status: "active" },
+      { id: body.id, depth: 0, status: "active", assistant_actor_id: `assistant:space:${body.id}` },
       { status: 201 }
     );
   }
@@ -8765,6 +8807,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       JSON.stringify(body.settings ?? {}),
       now
     );
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO space_assistants (space_id, assistant_actor_id, parent_assistant_actor_id, hierarchy_role)
+       VALUES (?, ?, ?, 'DEPARTMENT_LEAD')`,
+      id,
+      `assistant:space:${id}`,
+      `assistant:space:${parent.id}`
+    );
     return Response.json(
       {
         id,
@@ -8775,9 +8825,24 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         scenario_type: scenario,
         status: "active",
         created_at: now,
+        assistant_actor_id: `assistant:space:${id}`,
+        parent_assistant_actor_id: `assistant:space:${parent.id}`,
       },
       { status: 201 }
     );
+  }
+
+  private listSpaceAssistants(): Response {
+    const rows = queryAll<{
+      space_id: string;
+      assistant_actor_id: string;
+      parent_assistant_actor_id: string | null;
+      hierarchy_role: "DIRECTOR" | "DEPARTMENT_LEAD";
+    }>(this.ctx.storage.sql as never,
+      `SELECT a.space_id, a.assistant_actor_id, a.parent_assistant_actor_id, a.hierarchy_role
+       FROM space_assistants a JOIN spaces s ON s.id=a.space_id
+       WHERE s.status != 'deleted' ORDER BY s.depth, s.created_at`);
+    return Response.json({ data: rows });
   }
 
   private getSpaceRow(id: string): Response {

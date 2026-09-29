@@ -1,3 +1,5 @@
+import { assertExtensionId, type ExtensionId } from "./types.js";
+
 export type WorkflowClass =
   | "company_automation"
   | "vertical_extension"
@@ -46,13 +48,15 @@ export const WORKFLOW_CLASS_POLICIES: Readonly<
   },
 });
 
-export interface WorkflowDeclaration { workflowClass: WorkflowClass; spaceId: string; projectId?: string; extensionId?: string; invokerId?: string; budgetCredits: number }
+export interface WorkflowDeclaration { workflowClass: WorkflowClass; spaceId: string; projectId?: string; extensionId?: ExtensionId; invokerId?: string; budgetCredits: number }
 export interface RoutedWorkflow extends WorkflowDeclaration { budgetKey: string; reportTarget: WorkflowClassPolicy["reportsTo"]; escalationTarget: WorkflowClassPolicy["escalationTarget"] }
 /** Validates scope and returns an isolated accounting/routing envelope. */
 export function routeWorkflow(declaration: WorkflowDeclaration): RoutedWorkflow {
   if (!Number.isFinite(declaration.budgetCredits) || declaration.budgetCredits <= 0) throw new Error("workflow budget must be positive");
   const policy = WORKFLOW_CLASS_POLICIES[declaration.workflowClass];
+  if (declaration.workflowClass === "company_automation" && (declaration.projectId || declaration.extensionId)) throw new Error("company automation must be rooted at the space");
   if (declaration.workflowClass === "vertical_extension" && (!declaration.projectId || !declaration.extensionId)) throw new Error("vertical workflow requires projectId and extensionId");
+  if (declaration.extensionId) assertExtensionId(declaration.extensionId);
   if (declaration.workflowClass === "ephemeral_task" && !declaration.invokerId) throw new Error("ephemeral workflow requires invokerId");
   const owner = declaration.workflowClass === "company_automation" ? declaration.spaceId : declaration.workflowClass === "vertical_extension" ? `${declaration.extensionId}:${declaration.projectId}` : declaration.invokerId!;
   return { ...declaration, budgetKey: `workflow:${declaration.workflowClass}:${owner}`, reportTarget: policy.reportsTo, escalationTarget: policy.escalationTarget };

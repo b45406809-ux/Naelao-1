@@ -26,6 +26,9 @@ describe("virtual POSIX shell", () => {
     expect(() => normalizeWorkspacePath("/.avos/bin/tool.ts")).toThrow(
       "agent_state_is_not_a_deliverable"
     );
+    expect(() => normalizeWorkspacePath("/etc/passwd")).toThrow(
+      "deliverable_must_be_in_workspace"
+    );
   });
 
   it("executes a command installed in /.avos/bin in Tier 2", async () => {

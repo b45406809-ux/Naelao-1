@@ -20,6 +20,9 @@ export function normalizeWorkspacePath(input: string): string {
   ) {
     throw new Error("agent_state_is_not_a_deliverable");
   }
+  if (unix.startsWith("/") && unix !== WORKSPACE_ROOT && !unix.startsWith(`${WORKSPACE_ROOT}/`)) {
+    throw new Error("deliverable_must_be_in_workspace");
+  }
   const relative =
     unix === WORKSPACE_ROOT
       ? ""
