@@ -18,7 +18,7 @@ export interface VirtualPosixOptions {
   writeGuard?: WriteGuardOptions;
   cli?: VirtualCliDispatcher;
 }
-const BUILTINS = new Set(["cat", "grep", "sed", "awk", "find", "jq", "diff", "stripe", "gh", "r2", "resend"]);
+const BUILTINS = new Set(["cat", "grep", "sed", "awk", "find", "jq", "diff", "stripe", "gh", "r2", "resend", "twilio", "avos"]);
 
 function pipelines(command: string): string[] {
   const result: string[] = [];
@@ -180,7 +180,7 @@ async function stage(
 export function canRunVirtually(command: string): boolean {
   try {
     return pipelines(command).every((part) =>
-      BUILTINS.has(parseCliWords(part)[0] ?? "")
+      BUILTINS.has(parseCliWords(part)[0] ?? "") || /^(?:ext|auto):[a-z][a-z0-9_-]*$/i.test(parseCliWords(part)[0] ?? "")
     );
   } catch {
     return false;

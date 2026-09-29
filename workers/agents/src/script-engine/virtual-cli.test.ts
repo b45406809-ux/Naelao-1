@@ -24,4 +24,16 @@ describe("VirtualCliDispatcher", () => {
     expect(files.get("/.avos/bin/hello.ts")).toBe(source);
     expect(() => VirtualCliDispatcher.validateSynthesized("bad", "export async function run(args: string[], ctx: RuntimeContext) { eval(args[0]); }")).toThrow("unsafe_synthesized_command");
   });
+  it("routes extension, automation, and housekeeping namespaces independently", async () => {
+    const daemons = { execute: vi.fn(async () => ({ kind: "extension" })) };
+    const automations = { execute: vi.fn(async () => ({ kind: "automation" })) };
+    const chores = { execute: vi.fn(async () => ({ kind: "chore" })) };
+    const cli = new VirtualCliDispatcher({ vault: { fetchWithAuth: vi.fn() }, tenantId: "t", spaceId: "s", daemons, automations, chores });
+    await cli.execute(["ext:tree-sitter", "query", "User"]);
+    await cli.execute(["auto:stripe-sync", "trigger"]);
+    await cli.execute(["avos", "chore", "repomix-pack"]);
+    expect(daemons.execute).toHaveBeenCalledWith("tree-sitter", ["query", "User"]);
+    expect(automations.execute).toHaveBeenCalledWith("stripe-sync", ["trigger"]);
+    expect(chores.execute).toHaveBeenCalledWith("repomix-pack", []);
+  });
 });
