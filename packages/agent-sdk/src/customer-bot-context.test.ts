@@ -44,5 +44,8 @@ describe("CustomerBotContext quarantine", () => {
     expect(() => assertCustomerBotToolAllowed("knowledge.search", 3)).toThrow(
       "customer_bot_capability_denied"
     );
+    expect(() => assertCustomerBotToolAllowed("knowledge.search", 0)).toThrow(
+      "customer_bot_capability_denied"
+    );
   });
 });

@@ -21,13 +21,20 @@ export function PartnerFoundry({
   platformUrl,
   developerHandle,
   onWithdraw,
+  onCreateExtension,
+  onInspectSchema,
+  onRunConformance,
 }: {
   portfolio: PartnerPortfolio;
   platformUrl: string;
   developerHandle: string;
   onWithdraw: () => Promise<void>;
+  onCreateExtension?: () => void;
+  onInspectSchema?: () => void;
+  onRunConformance?: () => Promise<void>;
 }) {
   const [withdrawing, setWithdrawing] = React.useState(false);
+  const [runningConformance, setRunningConformance] = React.useState(false);
   const currency = (cents: number) =>
     new Intl.NumberFormat("en-US", {
       style: "currency",
@@ -38,6 +45,21 @@ export function PartnerFoundry({
   return (
     <section aria-labelledby="partner-foundry-title">
       <h1 id="partner-foundry-title">Developer Foundry</h1>
+      <p>Build <code>ext_*</code> packages, inspect their private SQLite schemas, and run the repository conformance harness without leaving Naelao.</p>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20 }} aria-label="Foundry tools">
+        <Button disabled={!onCreateExtension} onClick={onCreateExtension}>New extension</Button>
+        <Button disabled={!onInspectSchema} onClick={onInspectSchema}>Inspect SQLite schema</Button>
+        <Button
+          disabled={!onRunConformance || runningConformance}
+          onClick={async () => {
+            if (!onRunConformance) return;
+            setRunningConformance(true);
+            try { await onRunConformance(); } finally { setRunningConformance(false); }
+          }}
+        >
+          {runningConformance ? "Running harness…" : "Run conformance harness"}
+        </Button>
+      </div>
       <div className="grid-3">
         <div className="card">
           <div className="card-label">Pending earnings</div>
@@ -63,6 +85,7 @@ export function PartnerFoundry({
           <div className="card-value">
             {currency(portfolio.earnings.lifetime_cents)}
           </div>
+          <div style={{ fontSize: 12, color: "var(--text3)" }}>40% referral royalty</div>
         </div>
         <div className="card">
           <div className="card-label">Active client spaces</div>

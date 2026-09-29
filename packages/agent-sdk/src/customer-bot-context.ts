@@ -33,7 +33,7 @@ export function assertCustomerBotToolAllowed(
     "primary_calendar.availability",
     "human.escalate",
   ]);
-  if (requestedTier > 2 || !allowed.has(toolName)) {
+  if (!Number.isInteger(requestedTier) || requestedTier < 1 || requestedTier > 2 || !allowed.has(toolName)) {
     throw new Error(`customer_bot_capability_denied:${toolName}`);
   }
 }

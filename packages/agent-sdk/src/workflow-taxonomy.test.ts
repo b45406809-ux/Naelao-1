@@ -27,7 +27,12 @@ describe("Workflow Taxonomy Policies (Item 4)", () => {
 describe("workflow routing", () => {
   it("isolates class budgets and targets reports", () => {
     expect(routeWorkflow({ workflowClass: "company_automation", spaceId: "s", budgetCredits: 10 })).toMatchObject({ budgetKey: "workflow:company_automation:s", reportTarget: "executive_channel_and_founder_telegram", escalationTarget: "space_owner" });
-    expect(routeWorkflow({ workflowClass: "vertical_extension", spaceId: "s", projectId: "p", extensionId: "ci", budgetCredits: 2 })).toMatchObject({ budgetKey: "workflow:vertical_extension:ci:p", reportTarget: "project_team_room" });
+    expect(routeWorkflow({ workflowClass: "vertical_extension", spaceId: "s", projectId: "p", extensionId: "ext_ci", budgetCredits: 2 })).toMatchObject({ budgetKey: "workflow:vertical_extension:ext_ci:p", reportTarget: "project_team_room" });
     expect(routeWorkflow({ workflowClass: "ephemeral_task", spaceId: "s", invokerId: "u", budgetCredits: 1 })).toMatchObject({ budgetKey: "workflow:ephemeral_task:u", reportTarget: "receipt_card" });
+  });
+
+  it("enforces class ownership boundaries", () => {
+    expect(() => routeWorkflow({ workflowClass: "company_automation", spaceId: "s", projectId: "p", budgetCredits: 1 })).toThrow("rooted at the space");
+    expect(() => routeWorkflow({ workflowClass: "vertical_extension", spaceId: "s", projectId: "p", extensionId: "ext_ok", budgetCredits: 1 })).not.toThrow();
   });
 });

@@ -1,4 +1,4 @@
-import type { RuntimeScope } from "./types.js";
+import { assertExtensionId, type ExtensionId, type RuntimeScope } from "./types.js";
 
 export interface ExtensionGadgetManifest {
   id: string;
@@ -27,7 +27,7 @@ export interface LegacyExtensionManifest {
 
 /** A userspace package. It intentionally has no prompt, kernel, or guard configuration. */
 export interface ExtensionManifest {
-  id: `ext_${string}`;
+  id: ExtensionId;
   type: "extension";
   declaredPermissions: string[];
   /** Gatekeeper capabilities that must be present when this package is installed. */
@@ -38,7 +38,6 @@ export interface ExtensionManifest {
 }
 
 const ID = /^[a-z][a-z0-9_-]{1,63}$/;
-const EXTENSION_ID = /^ext_[a-z][a-z0-9_-]{1,59}$/;
 const PERMISSION = /^[a-z][a-z0-9_.:-]{1,127}$/;
 const SAFE_PATH = /^(?:\.\/)?[a-zA-Z0-9_./-]+\.(?:ts|js)$/;
 const COMMAND = /^(?:ext:[a-z][a-z0-9_-]{1,59}|[a-z][a-z0-9_-]{1,63})$/;
@@ -69,7 +68,8 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
   rejectKernelOverrides(raw);
   const allowed = new Set(["id", "type", "declaredPermissions", "capabilityRequirements", "gadgets", "daemons", "commands"]);
   for (const key of Object.keys(raw)) assert(allowed.has(key), `unknown_field:${key}`);
-  assert(typeof raw.id === "string" && EXTENSION_ID.test(raw.id), "invalid_id");
+  assert(typeof raw.id === "string", "invalid_id");
+  try { assertExtensionId(raw.id); } catch { throw new Error("invalid_extension_manifest:invalid_id"); }
   assert(raw.type === "extension", "invalid_type");
   assert(Array.isArray(raw.declaredPermissions) && raw.declaredPermissions.every((p) => typeof p === "string" && PERMISSION.test(p)), "invalid_permissions");
   assert(Array.isArray(raw.capabilityRequirements) && raw.capabilityRequirements.length > 0 && raw.capabilityRequirements.every((p) => typeof p === "string" && PERMISSION.test(p)), "capability_requirements_required");

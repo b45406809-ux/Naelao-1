@@ -1,6 +1,21 @@
 /** Public contracts for code authored against the universal AVOS runtime. */
 export type RuntimeScope = "USER_PRIVATE" | "SPACE_WIDE" | "PROJECT_BOUND";
 
+/** Canonical public identifiers. Component kinds are never inferred from shape. */
+export type TemplateId = `tpl_${string}`;
+export type ExtensionId = `ext_${string}`;
+
+const TEMPLATE_ID_PATTERN = /^tpl_[a-z][a-z0-9_]{0,59}$/;
+const EXTENSION_ID_PATTERN = /^ext_[a-z][a-z0-9_]{0,59}$/;
+
+export function assertTemplateId(value: string): asserts value is TemplateId {
+  if (!TEMPLATE_ID_PATTERN.test(value)) throw new Error(`invalid_template_id:${value}`);
+}
+
+export function assertExtensionId(value: string): asserts value is ExtensionId {
+  if (!EXTENSION_ID_PATTERN.test(value)) throw new Error(`invalid_extension_id:${value}`);
+}
+
 /** Stable Tier-6 ABI. Backend names are never inferred from a URL or provider response. */
 export type ContainerBackend =
   | "webcontainer"
