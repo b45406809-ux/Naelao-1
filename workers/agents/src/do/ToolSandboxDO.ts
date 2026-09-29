@@ -69,6 +69,10 @@ interface StoredShellState {
   stateHash: string;
 }
 
+export function isPortableWorkspacePath(path: string): boolean {
+  return !path.replace(/\\/g, "/").split("/").includes("node_modules");
+}
+
 async function hashState(state: Omit<StoredShellState, "stateHash">): Promise<string> {
   const canonical = JSON.stringify({ cwd: state.cwd, env: Object.fromEntries(Object.entries(state.env).sort()), gitHead: state.gitHead, revision: state.revision });
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
@@ -167,9 +171,25 @@ export class ToolSandboxDO extends DurableObject {
         if (records[path]?.hash !== hash && (path === "package.json" || path === "package-lock.json")) lockfilesChanged = true;
         records[path] = { content: change.content, hash };
       }
-      for (const path of Object.keys(body.deleted ?? {})) delete records[path];
+      for (const path of Object.keys(body.deleted ?? {})) if (isPortableWorkspacePath(path)) delete records[path];
       await this.ctx.storage.put("workspace_files", records);
       return Response.json({ ok: true, hashes: Object.fromEntries(Object.entries(records).map(([path, value]) => [path, value.hash])), rehydrate: lockfilesChanged });
+    }
+
+    if (url.pathname === "/workspace/rehydrate" && request.method === "POST") {
+      const body = await request.json<{ lockfiles?: Record<string, string> }>().catch((): { lockfiles?: Record<string, string> } => ({}));
+      const lockfiles = body.lockfiles ?? {};
+      const names = Object.keys(lockfiles);
+      if (names.some(name => name !== "package.json" && name !== "package-lock.json") || typeof lockfiles["package-lock.json"] !== "string") {
+        return Response.json({ error: "package-lock.json_required" }, { status: 400 });
+      }
+      await this.ctx.storage.put("dependency_lockfiles", lockfiles);
+      const container = this.container;
+      if (!container) return Response.json({ error: "Tier-6 container runtime not available" }, { status: 503 });
+      if (!container.running) container.start({ enableInternet: true });
+      return container.getTcpPort(HARNESS_PORT).fetch(new Request("http://sandbox/workspace/rehydrate", {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ lockfiles, mirror: "cloudflare" }),
+      }));
     }
 
     const container = this.container;

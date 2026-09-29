@@ -464,6 +464,7 @@ export interface TieredCodeRunner {
     /** §A1.17 Phase L: routes a Tier 5 run to this Container Marketplace image's own binding
      *  instead of the base per-project ToolSandboxDO. Absent = the ordinary Phase K sandbox. */
     containerImage?: string;
+    containerOptions?: import("@naelao/agent-sdk").Tier6ContainerOptions;
   }): Promise<ScriptRunResult>;
 }
 

@@ -21,7 +21,7 @@ import type {
 } from "@naelao/events";
 import { broadcastSpaceEvent, mintInternalToken } from "@naelao/http";
 import type { MessageRole } from "@naelao/types";
-import { defaultViewportFor, getProjectKindManifest, validateExtensionManifest } from "@naelao/agent-sdk";
+import { defaultViewportFor, DOGFOOD_EXTENSIONS, getProjectKindManifest, validateExtensionManifest } from "@naelao/agent-sdk";
 import { instantiateBlueprint as compileBlueprint } from "@naelao/agent-sdk";
 import type { DisplayMode, ExtensionManifest, SpaceBlueprint, TemplateMode } from "@naelao/agent-sdk";
 import { consumeEphemeralActionGrant, mintEphemeralActionGrant, type EphemeralActionGrant, verifyCapabilityToken } from "@naelao/security";
@@ -1722,6 +1722,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && url.pathname === "/internal/business-wallet/settle") return this.settleBusinessWallet(request);
       if (method === "POST" && url.pathname === "/internal/business-wallet/withdraw") return this.withdrawBusinessWallet(request);
       if (url.pathname === "/extensions" && method === "GET") return this.listExtensions();
+      if (url.pathname === "/extensions/first-party" && method === "GET") {
+        return Response.json({ extensions: DOGFOOD_EXTENSIONS });
+      }
       if (url.pathname === "/extensions" && method === "POST") return await this.installExtension(request);
       const extensionMatch = url.pathname.match(/^\/extensions\/(ext_[a-z0-9_-]+)$/);
       if (extensionMatch?.[1] && method === "DELETE") return this.uninstallExtension(extensionMatch[1]);

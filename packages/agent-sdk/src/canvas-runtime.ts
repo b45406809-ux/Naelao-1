@@ -6,6 +6,7 @@ export const PROJECT_KINDS = [
   "model_studio",
   "growth_engine",
   "app_studio",
+  "quant_desk",
 ] as const;
 export type ProjectKind = (typeof PROJECT_KINDS)[number];
 
@@ -20,7 +21,8 @@ export interface ProjectKindManifest {
     | "conversation"
     | "model"
     | "campaign"
-    | "application";
+    | "application"
+    | "trading";
   capabilities: readonly string[];
   label: string;
   viewportComponent: string;
@@ -75,6 +77,12 @@ export const PROJECT_KIND_MANIFESTS: Readonly<
     canvas: "application",
     capabilities: ["schema", "preview", "publish"],
     label: "App Studio", viewportComponent: "AppStudioCanvas", allowedLadderTiers: [1,2], defaultAutonomy: "cowork_studio", domainSystemPrompt: "Build and preview focused micro-apps against isolated Facet SQLite data.", linterRules: ["schema-safety", "accessibility", "input-validation"],
+  },
+  quant_desk: {
+    kind: "quant_desk", canvas: "trading", capabilities: ["r2_ticks", "backtest", "risk_guard"],
+    label: "Quant Desk", viewportComponent: "QuantDeskCanvas", allowedLadderTiers: [1,2,6],
+    defaultAutonomy: "cowork_studio", domainSystemPrompt: "Backtest against immutable tick data and submit every live order through RiskGuardDO.",
+    linterRules: ["riskguard-required", "no-model-risk-overrides", "reproducible-backtest"],
   },
 });
 

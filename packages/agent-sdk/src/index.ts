@@ -172,3 +172,5 @@ export * from "./customer-bot-context.js";
 export * from "./blueprint.js";
 export * from "./recipes.js";
 export * from "./no-code-subagent.js";
+export * from "./project-kinds.js";
+export * from "./dogfood-extensions/index.js";

@@ -157,6 +157,7 @@ export { TaskDO } from "./do/TaskDO.js";
 export { ToolSandboxDO } from "./do/ToolSandboxDO.js";
 export { LocalTunnelDO } from "./do/LocalTunnelDO.js";
 export { ConcurrencyDO } from "./do/ConcurrencyDO.js";
+export { RiskGuardDO } from "./do/RiskGuardDO.js";
 export { AgentTaskWorkflow } from "./workflows/AgentTaskWorkflow.js";
 export { ScriptRunWorkflow } from "./workflows/ScriptRunWorkflow.js";
 export { ScheduledReminderWorkflow } from "./workflows/outbound-reminder-workflow.js";
@@ -190,6 +191,7 @@ export interface AgentsEnv {
   /** §A1.17 Phase M — local-machine-as-container. One DO per (spaceId, userId); optional, like
    *  every other execution-ladder binding — the local-machine prebuilt fails closed without it. */
   LOCAL_TUNNEL?: DurableObjectNamespace<LocalTunnelDO>;
+  RISK_GUARD?: DurableObjectNamespace;
   KNOWLEDGE_WORKER: Fetcher;
   SPACES_WORKER: Fetcher;
   AGENTS_WORKER: Fetcher;
