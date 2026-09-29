@@ -944,6 +944,23 @@ app.post("/spaces/:spaceId/projects", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
+/** Stamp a canonical drop-in room into an existing SpaceDO. */
+app.use("/spaces/:spaceId/project-templates/:templateId/stamp", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/project-templates/:templateId/stamp", requireBusinessMembership({ POST: "member" }));
+app.post("/spaces/:spaceId/project-templates/:templateId/stamp", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const templateId = c.req.param("templateId");
+  const identity = getCallerIdentity(c);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const body = await c.req.json<{ overrides?: { name?: string } }>().catch((): { overrides?: { name?: string } } => ({}));
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, "/project-templates/stamp", "POST", JSON.stringify({
+    space_id: spaceId, template_id: templateId, overrides: body.overrides ?? {},
+  }));
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
 // §A1.17 Phase T1: project members (real ACL, not just presence). §A1.17 Phase T3: exclusive-
 // mode thread activation.
 app.use("/spaces/:spaceId/projects/:projectId/members", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));

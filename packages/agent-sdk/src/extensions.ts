@@ -1,10 +1,11 @@
-import { assertExtensionId, type ExtensionId, type RuntimeScope } from "./types.js";
+import { assertExtensionId, type ExtensionId, type GadgetTier, type RuntimeScope } from "./types.js";
 
 export interface ExtensionGadgetManifest {
   id: string;
   name: string;
   viewportComponent: string;
   scope: RuntimeScope;
+  gadgetTier: GadgetTier;
   defaultSchemaSql: string;
 }
 
@@ -86,6 +87,10 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
     assert(typeof item.name === "string" && item.name.trim().length > 0, "invalid_gadget_name");
     assert(typeof item.viewportComponent === "string" && SAFE_PATH.test(item.viewportComponent), "invalid_viewport");
     assert(scopes.has(item.scope as RuntimeScope), "invalid_gadget_scope");
+    assert(item.gadgetTier === 1 || item.gadgetTier === 2 || item.gadgetTier === 3, "invalid_gadget_tier");
+    assert(item.gadgetTier !== 1 || item.scope === "USER_PRIVATE", "tier_1_must_be_user_private");
+    assert(item.gadgetTier !== 2 || item.scope === "PROJECT_BOUND", "tier_2_must_be_project_bound");
+    assert(item.gadgetTier !== 3 || item.scope === "PROJECT_BOUND" || item.scope === "SPACE_WIDE", "tier_3_scope_invalid");
     assert(typeof item.defaultSchemaSql === "string" && item.defaultSchemaSql.length <= 64_000, "invalid_schema");
     assert(!FORBIDDEN_SCRIPT.test(item.defaultSchemaSql), "unsafe_schema");
   }

@@ -1,7 +1,10 @@
 import { DurableObject } from "cloudflare:workers";
-import type { GadgetActorScope, GadgetScope } from "@naelao/agent-sdk";
+import type { GadgetActorScope, GadgetScope, GadgetTier } from "@naelao/agent-sdk";
 
 export interface MicroAppDOEnv { PLATFORM_SECRET: string }
+
+export const TIER_ONE_STORAGE_LIMIT_BYTES = 25 * 1024 * 1024;
+export const TIER_ONE_IDLE_TTL_MS = 14 * 86_400 * 1000;
 
 /** The exact stable name passed to DurableObjectNamespace.idFromName. */
 export function gadgetStorageKey(input: GadgetActorScope): string {
@@ -51,7 +54,32 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       return Response.json({ error: "not_found" }, { status: 404 });
     } catch (error) {
       return Response.json({ error: error instanceof Error ? error.message : "micro_app_error" }, { status: 400 });
+    } finally {
+      await this.refreshLifecycleAlarm();
     }
+  }
+
+  private metadata(key: string): string | undefined {
+    return [...this.ctx.storage.sql.exec<{ value: string }>("SELECT value FROM gadget_metadata WHERE key = ?", key)][0]?.value;
+  }
+
+  private gadgetTier(): GadgetTier | undefined {
+    const value = Number(this.metadata("gadget_tier"));
+    return value === 1 || value === 2 || value === 3 ? value : undefined;
+  }
+
+  private async refreshLifecycleAlarm(): Promise<void> {
+    const tier = this.gadgetTier();
+    if (tier === 1) await this.ctx.storage.setAlarm(Date.now() + TIER_ONE_IDLE_TTL_MS);
+    else if (tier === 2 || tier === 3) await this.ctx.storage.deleteAlarm();
+  }
+
+  override async alarm(): Promise<void> {
+    this.ensureBaseSchema();
+    if (this.gadgetTier() !== 1) return;
+    await this.ctx.storage.deleteAll();
+    await this.ctx.storage.put("deleted", true);
+    this.initialized = false;
   }
 
   private appId(): string {
@@ -105,15 +133,21 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
   }
 
   private async initialize(request: Request): Promise<Response> {
-    const body = await request.json<{ appId?: string; scope?: GadgetScope; defaultSchemaSql?: string; html?: string }>();
-    if (!body.appId || !body.scope) return Response.json({ error: "appId and scope are required" }, { status: 400 });
+    const body = await request.json<{ appId?: string; scope?: GadgetScope; gadgetTier?: GadgetTier; defaultSchemaSql?: string; html?: string }>();
+    if (!body.appId || !body.scope || !body.gadgetTier) return Response.json({ error: "appId, scope and gadgetTier are required" }, { status: 400 });
+    if ((body.gadgetTier === 1 && body.scope !== "USER_PRIVATE") || (body.gadgetTier === 2 && body.scope !== "PROJECT_BOUND") ||
+      (body.gadgetTier === 3 && body.scope !== "PROJECT_BOUND" && body.scope !== "SPACE_WIDE")) {
+      return Response.json({ error: "gadget_tier_scope_mismatch" }, { status: 400 });
+    }
     const existing = [...this.ctx.storage.sql.exec<{ value: string }>("SELECT value FROM gadget_metadata WHERE key = 'app_id'")][0];
     if (existing && existing.value !== body.appId) return Response.json({ error: "actor_already_owned" }, { status: 409 });
     for (const statement of validDdl(body.defaultSchemaSql ?? "")) this.ctx.storage.sql.exec(statement);
     const html = body.html ?? `<main id="app"></main><script type="module">window.__NAELAO_GADGET__=${JSON.stringify(body.appId)}</script>`;
     if (html.length > 512_000) throw new Error("gadget_bundle_too_large");
-    this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES ('app_id',?),('scope',?),('html',?)", body.appId, body.scope, html);
-    return Response.json({ initialized: true, appId: body.appId, scope: body.scope }, { status: 201 });
+    const existingTier = this.gadgetTier();
+    if (existingTier !== undefined && existingTier !== body.gadgetTier) return Response.json({ error: "gadget_tier_immutable" }, { status: 409 });
+    this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES ('app_id',?),('scope',?),('gadget_tier',?),('html',?)", body.appId, body.scope, String(body.gadgetTier), html);
+    return Response.json({ initialized: true, appId: body.appId, scope: body.scope, gadgetTier: body.gadgetTier }, { status: 201 });
   }
 
   private renderApp(): Response {
@@ -138,6 +172,16 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     if (!body.key || body.key.length > 256) return Response.json({ error: "valid key is required" }, { status: 400 });
     const encoded = JSON.stringify(body.value);
     if (encoded === undefined || encoded.length > 1_000_000) return Response.json({ error: "invalid_or_oversized_value" }, { status: 413 });
+    if (this.gadgetTier() === 1) {
+      const pageCount = [...this.ctx.storage.sql.exec<Record<string, number>>("PRAGMA page_count")][0];
+      const pageSize = [...this.ctx.storage.sql.exec<Record<string, number>>("PRAGMA page_size")][0];
+      const count = Number(pageCount?.page_count ?? Object.values(pageCount ?? {})[0] ?? 0);
+      const size = Number(pageSize?.page_size ?? Object.values(pageSize ?? {})[0] ?? 0);
+      const incomingBytes = new TextEncoder().encode(body.key + encoded).byteLength;
+      if ((count * size) + incomingBytes > TIER_ONE_STORAGE_LIMIT_BYTES) {
+        return Response.json({ error: "storage_limit_exceeded", limitBytes: TIER_ONE_STORAGE_LIMIT_BYTES }, { status: 413 });
+      }
+    }
     const now = new Date().toISOString();
     this.ctx.storage.sql.exec("INSERT INTO gadget_data(key,value_json,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at", body.key, encoded, now);
     return Response.json({ key: body.key, value: body.value, updatedAt: now }, { status: 201 });
