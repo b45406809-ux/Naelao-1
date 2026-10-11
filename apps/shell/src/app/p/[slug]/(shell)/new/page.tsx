@@ -1,7 +1,5 @@
 "use client";
 
-export const runtime = "edge";
-
 // Home — a start-here page, not a chat window. Typing a line and pressing Enter mints a session
 // and opens it, exactly like claude.com/new; recent conversations sit underneath so returning
 // lands you back in your work rather than staring at an empty box.
@@ -124,6 +122,7 @@ export default function HomePage() {
       // Title the session from its opening line — SpaceDO has no title column, so this rides in
       // metadata and is what makes the sidebar/recent list readable instead of a wall of ids.
       const created = await startSession(activeSpaceId, creds, trimmed.slice(0, 80));
+      window.dispatchEvent(new CustomEvent("naelao:session-created", { detail: { spaceId: activeSpaceId, sessionId: created.id } }));
       router.push(`/p/${product.slug}/sessions/${created.id}?q=${encodeURIComponent(trimmed)}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't start a conversation");
@@ -144,6 +143,19 @@ export default function HomePage() {
   // mobile padding in the media query.
   return (
     <div className="home-view" style={{ gap: 0 }}>
+      <button
+        type="button"
+        className="home-mobile-menu-btn"
+        aria-label="Open menu"
+        title="Open menu"
+        onClick={() => window.dispatchEvent(new CustomEvent("naelao:toggle-mobile-nav"))}
+      >
+        <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="currentColor">
+          <line x1="2" y1="4" x2="14" y2="4" />
+          <line x1="2" y1="8" x2="14" y2="8" />
+          <line x1="2" y1="12" x2="14" y2="12" />
+        </svg>
+      </button>
       <div style={{ width: "100%", maxWidth: 680 }}>
         <h1 style={{ fontSize: 27, fontWeight: 650, margin: 0, textAlign: "center" }}>{greeting}</h1>
         <p style={{ fontSize: 14, color: "var(--text3)", marginTop: 8, textAlign: "center" }}>

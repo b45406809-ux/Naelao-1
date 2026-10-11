@@ -1,6 +1,5 @@
 "use client";
 
-export const runtime = "edge";
 
 // A thread's own chat surface (the flat /threads/:id route, reached from the Sessions browse
 // list). threads.session_id (added for exactly this) links it to the real chat session — passed
@@ -12,16 +11,21 @@ export const runtime = "edge";
 import * as React from "react";
 import { useParams } from "next/navigation";
 import { Chat } from "@/components/Chat";
+import { ProjectCanvas } from "@/components/ProjectCanvas";
+import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
 import { useActiveSpace } from "@/lib/active-space-context";
-import { getThread, type ThreadSummary } from "@/lib/api";
+import { getProject, getThread, listThreads, type Project, type ThreadSummary } from "@/lib/api";
 
 export default function ThreadChatPage() {
   const params = useParams<{ threadId: string }>();
-  const { activeSpaceId } = useActiveSpace();
+  const product = useProduct();
+  const { activeSpaceId, supportContact } = useActiveSpace();
   const { session } = useProductAuth();
   const [thread, setThread] = React.useState<ThreadSummary | null>(null);
   const [loadFailed, setLoadFailed] = React.useState(false);
+  const [project, setProject] = React.useState<Project | null>(null);
+  const [projectThreads, setProjectThreads] = React.useState<ThreadSummary[]>([]);
 
   const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
 
@@ -31,8 +35,17 @@ export default function ThreadChatPage() {
     setThread(null);
     setLoadFailed(false);
     void getThread(activeSpaceId, params.threadId, creds)
-      .then((t) => {
+      .then(async (t) => {
         if (!cancelled) setThread(t);
+        if (t.project_id) {
+          const [nextProject, siblings] = await Promise.all([
+            getProject(activeSpaceId, t.project_id, creds),
+            listThreads(activeSpaceId, creds, { projectId: t.project_id, includeSubThreads: true }),
+          ]);
+          if (!cancelled) { setProject(nextProject); setProjectThreads(siblings); }
+        } else if (!cancelled) {
+          setProject(null); setProjectThreads([]);
+        }
       })
       .catch(() => {
         if (!cancelled) setLoadFailed(true);
@@ -56,6 +69,8 @@ export default function ThreadChatPage() {
   // session even for a thread that already HAS one.
   if (!thread) return <div className="page-view">Loading…</div>;
 
+  if (thread.project_id && !project) return <div className="page-view">Loading project…</div>;
+  if (project) return <ProjectCanvas project={project} threads={projectThreads} thread={thread} spaceId={activeSpaceId} slug={product.slug} session={creds} supportContact={supportContact} />;
   return (
     <Chat
       spaceId={activeSpaceId}

@@ -6,6 +6,7 @@ import {
 } from "@naelao/billing-core";
 import type { Hono } from "hono";
 import type { BillingEnv } from "./index.js";
+import { developerCommissionBps } from "./settlement.js";
 
 export interface TemplateSubscriptionInput {
   space_id: string;
@@ -117,8 +118,7 @@ export function registerPartnerPortalRoutes(
         attribution_channel: attribution.channel,
         developer_user_id: attribution.developerId,
         wholesale_floor_cents: floor.floorCents,
-        commission_bps:
-          attribution.channel === "DEVELOPER_REFERRAL" ? 4_000 : 2_000,
+        commission_bps: developerCommissionBps(attribution.channel),
       },
       201
     );

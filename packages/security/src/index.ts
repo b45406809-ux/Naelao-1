@@ -15,3 +15,7 @@ export * from "./knowledge-permissions.js";
 export * from "./circuit-breaker.js";
 export * from "./blueprint-scrubber.js";
 export * from "./blueprint-validator.js";
+export * from "./data-residency.js";
+export * from "./air-gap.js";
+export * from "./egress-policy.js";
+export * from "./capability-policy.js";

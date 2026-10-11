@@ -1,6 +1,7 @@
 // G-AGI01..G-AGI08: Mini-AGI — hierarchical agent orchestration (planner + child agents, depth ≤ 3)
 import { Hono } from "hono";
 import { errorResponse, requestId, mintInternalToken } from "@naelao/http";
+import { isSpaceNetworkEgressDenied } from "@naelao/security";
 
 interface Env {
   ENVIRONMENT: string;
@@ -76,6 +77,12 @@ app.post("/v1/agi/runs", async (c) => {
     "SELECT id FROM spaces WHERE id = ? AND tenant_id = ?"
   ).bind(body.space_id, tenantId).first<{ id: string }>();
   if (!space) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, body.space_id)) {
+    return c.json({
+      error_code: "air_gap_egress_denied",
+      message: "This space blocks network and managed-service egress",
+    }, 403);
+  }
 
   const runId = crypto.randomUUID();
   const now = new Date().toISOString();
@@ -147,6 +154,14 @@ async function orchestrate(
 ): Promise<void> {
   const now = () => new Date().toISOString();
   try {
+    // Re-read policy at the durable execution boundary in case the space changed posture after
+    // the run was queued.
+    if (await isSpaceNetworkEgressDenied(env.PLATFORM_DB, spaceId)) {
+      await env.PLATFORM_DB.prepare(
+        "UPDATE agi_runs SET status = 'failed', error = ?, updated_at = ? WHERE id = ?"
+      ).bind("air_gap_egress_denied", now(), runId).run();
+      return;
+    }
     await env.PLATFORM_DB.prepare(
       "UPDATE agi_runs SET status = 'running', updated_at = ? WHERE id = ?"
     ).bind(now(), runId).run();

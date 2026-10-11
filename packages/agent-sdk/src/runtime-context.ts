@@ -25,8 +25,134 @@ export function actorAddress(input: ActorAddressInput): string {
   }
   return `actor:space:${input.spaceId}`;
 }
+
+/** Installation scopes are ownership boundaries, not visual or business categories. */
+export type InstallationScope = "SPACE_SHARED" | "SPACE_USER" | "PROJECT_SHARED" | "PROJECT_USER";
+export type InstallationStatus = "active" | "removed" | "expired";
+export interface ScopedInstallationIdentity {
+  tenantId: string;
+  spaceId: string;
+  extensionId: string;
+  scope: InstallationScope;
+  projectId?: string;
+  userId?: string;
+}
+export interface ScopedInstallationRecord extends ScopedInstallationIdentity {
+  instanceId: string;
+  ownerKey: string;
+  installedBy: string;
+  installedAt: string;
+  status: InstallationStatus;
+  removedAt?: string;
+}
+export interface LinkedSpaceGrant { grantId: string; tenantId: string; fromSpaceId: string; toSpaceId: string; userId: string; actions: readonly ("read" | "write")[]; expiresAt?: string; }
+
+const INSTALL_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+function requireInstallId(label: string, value: string): void {
+  if (!INSTALL_ID.test(value)) throw new Error(`invalid_${label}`);
+}
+function installationOwnerKey(input: ScopedInstallationIdentity): string {
+  requireInstallId("tenant_id", input.tenantId); requireInstallId("space_id", input.spaceId); requireInstallId("extension_id", input.extensionId);
+  if (input.scope === "SPACE_SHARED") return `space:${input.spaceId}`;
+  if (input.scope === "SPACE_USER") { if (!input.userId) throw new Error("user_id_required_for_space_user"); requireInstallId("user_id", input.userId); return `space:${input.spaceId}:user:${input.userId}`; }
+  if (!input.projectId) throw new Error("project_id_required_for_project_scope");
+  requireInstallId("project_id", input.projectId);
+  if (input.scope === "PROJECT_USER") { if (!input.userId) throw new Error("user_id_required_for_project_user"); requireInstallId("user_id", input.userId); return `space:${input.spaceId}:project:${input.projectId}:user:${input.userId}`; }
+  return `space:${input.spaceId}:project:${input.projectId}`;
+}
+export function scopedInstallationId(input: ScopedInstallationIdentity): string {
+  const owner = installationOwnerKey(input);
+  return `installation:${input.tenantId}:${input.extensionId}:${owner}`;
+}
+
+/** A deterministic local double for the SpaceDO installation lifecycle. It models the same
+ * ownership rules used by persistence: shared records outlive projects, user records are
+ * removed with the user, and every cleanup operation is safe to repeat. */
+export class InstallationLedger {
+  private readonly records = new Map<string, ScopedInstallationRecord>();
+  install(input: Omit<ScopedInstallationRecord, "instanceId" | "ownerKey" | "status" | "installedAt"> & { installedAt?: string }): ScopedInstallationRecord {
+    const instanceId = scopedInstallationId(input);
+    const existing = this.records.get(instanceId);
+    if (existing?.status === "active") return existing;
+    const record: ScopedInstallationRecord = Object.freeze({ ...input, instanceId, ownerKey: installationOwnerKey(input), installedAt: input.installedAt ?? new Date().toISOString(), status: "active" });
+    this.records.set(instanceId, record);
+    return record;
+  }
+  uninstall(instanceId: string, now = new Date().toISOString()): ScopedInstallationRecord | undefined {
+    const current = this.records.get(instanceId);
+    if (!current || current.status !== "active") return current;
+    const removed = Object.freeze({ ...current, status: "removed" as const, removedAt: now });
+    this.records.set(instanceId, removed);
+    return removed;
+  }
+  removeProject(spaceId: string, projectId: string, now = new Date().toISOString()): number {
+    let count = 0;
+    for (const record of this.records.values()) if (record.spaceId === spaceId && record.projectId === projectId && record.status === "active") { this.uninstall(record.instanceId, now); count++; }
+    return count;
+  }
+  removeMember(spaceId: string, userId: string, now = new Date().toISOString()): number {
+    let count = 0;
+    for (const record of this.records.values()) if (record.spaceId === spaceId && record.userId === userId && record.status === "active") { this.uninstall(record.instanceId, now); count++; }
+    return count;
+  }
+  expireSpace(spaceId: string, now = new Date().toISOString()): number {
+    let count = 0;
+    for (const record of this.records.values()) if (record.spaceId === spaceId && record.status === "active") { const expired = Object.freeze({ ...record, status: "expired" as const, removedAt: now }); this.records.set(record.instanceId, expired); count++; }
+    return count;
+  }
+  list(spaceId?: string): readonly ScopedInstallationRecord[] { return Object.freeze([...this.records.values()].filter((record) => !spaceId || record.spaceId === spaceId)); }
+}
+
+export function canUseLinkedSpace(grant: LinkedSpaceGrant, input: { tenantId: string; fromSpaceId: string; toSpaceId: string; userId: string; action: "read" | "write" }, now = Date.now()): boolean {
+  return grant.tenantId === input.tenantId && grant.fromSpaceId === input.fromSpaceId && grant.toSpaceId === input.toSpaceId && grant.userId === input.userId && grant.actions.includes(input.action) && (!grant.expiresAt || Date.parse(grant.expiresAt) > now);
+}
 import { createLaunchpadRuntimeContext } from "./launchpad-runtime.js";
 import type { LaunchpadSpace, RuntimeContextAdapters, LaunchpadRuntimeContext } from "./launchpad-runtime.js";
+
+/** Authority stays in the host. Guest code receives only a JSON RPC facade; every call is
+ * reauthorized, including after an await, so an expired/revoked grant cannot remain warm. */
+export interface CodeInvocationScope {
+  tenantId: string; spaceId: string; agentId: string; projectId?: string; userId?: string;
+  runId?: string; taskId?: string; installationId?: string; grantVersion?: string;
+}
+export interface ScopedCodeRpcOptions {
+  scope: Readonly<CodeInvocationScope>;
+  capabilities: readonly string[];
+  signal: AbortSignal;
+  maxCalls?: number; maxPayloadBytes?: number; secrets?: readonly string[];
+  authorize(scope: Readonly<CodeInvocationScope>, capability: string): Promise<boolean>;
+  dispatch(scope: Readonly<CodeInvocationScope>, capability: string, input: unknown, signal: AbortSignal): Promise<unknown>;
+}
+export function redactCodeValue(value: unknown, maxBytes = 65_536, secrets: readonly string[] = []): unknown {
+  const encoded = JSON.stringify(value ?? null, (key, item: unknown) => {
+    if (/(?:secret|password|authorization|api[_-]?key|access[_-]?token|private[_-]?key)/i.test(key)) return "[redacted]";
+    if (typeof item === "string") {
+      let text = item;
+      for (const secret of secrets) if (secret.length >= 8) text = text.split(secret).join("[redacted]");
+      return text;
+    }
+    return item;
+  });
+  if (new TextEncoder().encode(encoded).byteLength > maxBytes) throw new Error("code_output_limit");
+  return JSON.parse(encoded) as unknown;
+}
+export function createScopedCodeRpc(options: ScopedCodeRpcOptions): (capability: string, input: unknown) => Promise<unknown> {
+  if (!options.scope.tenantId || !options.scope.spaceId || !options.scope.agentId) throw new Error("code_scope_required");
+  const scope = Object.freeze({ ...options.scope });
+  const allowed = new Set(options.capabilities);
+  let calls = 0;
+  return async (capability, input) => {
+    if (options.signal.aborted) throw new Error("code_invocation_closed");
+    if (!allowed.has(capability) || !await options.authorize(scope, capability)) throw new Error(`code_capability_denied:${capability}`);
+    if (++calls > (options.maxCalls ?? 64)) throw new Error("code_rpc_quota");
+    // Clone input rather than letting getters, bindings or mutable host objects cross the boundary.
+    const payload = JSON.parse(JSON.stringify(input ?? null)) as unknown;
+    if (new TextEncoder().encode(JSON.stringify(payload)).byteLength > (options.maxPayloadBytes ?? 65_536)) throw new Error("code_rpc_payload_limit");
+    const result = await options.dispatch(scope, capability, payload, options.signal);
+    if (options.signal.aborted || !await options.authorize(scope, capability)) throw new Error("code_invocation_closed");
+    return redactCodeValue(result, options.maxPayloadBytes, options.secrets);
+  };
+}
 
 const CONNECTOR_ALIAS_RE = /^[a-z][a-z0-9_]{1,63}$/;
 

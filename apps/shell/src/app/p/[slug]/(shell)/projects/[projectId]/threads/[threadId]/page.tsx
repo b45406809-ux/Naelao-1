@@ -1,6 +1,5 @@
 "use client";
 
-export const runtime = "edge";
 
 // A project thread's chat surface, addressed under the project it belongs to
 // (/projects/:projectId/threads/:threadId) rather than at the flat /threads/:id — a thread is not

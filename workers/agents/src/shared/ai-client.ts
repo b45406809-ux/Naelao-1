@@ -45,10 +45,15 @@ export interface GatewayOpts {
    *  this is a genuinely separate routing path from every other model on this account. Supplied
    *  via the `GOOGLE_AI_STUDIO_API_KEY` worker secret. */
   googleAiStudioApiKey?: string;
+  /** Additional space-owned keys for the same provider. The first entry is the preferred key;
+   * the reasoner tries later entries only when the provider call fails. */
+  googleAiStudioApiKeys?: string[];
   /** A real Groq API key, BYOK through the same compat route Gemini uses. Supplied via the
    *  `GROQ_API_KEY` worker secret. Groq's free tier is 14,400 requests/day against Gemini's 20,
    *  which is the difference between being able to test this platform properly and not. */
   groqApiKey?: string;
+  /** Additional space-owned keys for the same provider. */
+  groqApiKeys?: string[];
 }
 
 // ── CF AI Gateway Universal Endpoint ─────────────────────────────────────────
@@ -136,6 +141,23 @@ export function byokProviderForModel(model: string): string | null {
 /** Does this model route through the compat endpoint rather than the AI REST API? */
 export function isCompatProviderModel(model: string): boolean {
   return byokKeyFieldForModel(model) !== null;
+}
+
+/**
+ * Translate the UI's friendly Gemini aliases to model ids accepted by Google's OpenAI
+ * compatibility endpoint. The aliases are useful in persisted space configuration, but the
+ * compatibility endpoint expects a concrete model code; forwarding `gemini-flash-latest` can
+ * otherwise return Google's generic 400 INVALID_ARGUMENT response.
+ */
+export function compatProviderModelId(model: string): string {
+  const prefix = model.startsWith("google-ai-studio/") ? "google-ai-studio/" : model.startsWith("groq/") ? "groq/" : "";
+  const bare = prefix ? model.slice(prefix.length) : model;
+  const geminiAliases: Record<string, string> = {
+    "gemini-flash-lite-latest": "gemini-3.1-flash-lite",
+    "gemini-flash-latest": "gemini-3.8-flash",
+    "gemini-pro-latest": "gemini-3.1-pro-preview",
+  };
+  return `${prefix}${geminiAliases[bare] ?? bare}`;
 }
 
 /** The compat-endpoint URL for a BYOK provider call. */
@@ -282,6 +304,12 @@ export function buildUniversalBody(opts: {
    *  reasoning-related" (the model either doesn't support it or the caller didn't choose a level). */
   reasoning?: ReasoningRequest;
   /**
+   * Retry mode for providers whose OpenAI compatibility layer rejects an optional field. The
+   * required chat payload remains intact, while tools/reasoning/stream usage hints are omitted so
+   * a provider can still answer in the JSON protocol carried by the system prompt.
+   */
+  compatibilityMode?: "minimal";
+  /**
    * Ask the provider to stream the reply back as Server-Sent Events instead of returning it whole.
    *
    * This is what makes the agent's own text arrive AS it is generated rather than only once the
@@ -293,14 +321,19 @@ export function buildUniversalBody(opts: {
   stream?: boolean;
 }): string {
   const { query, tools, reasoning } = opts;
+  const minimal = opts.compatibilityMode === "minimal";
   return JSON.stringify({
     model: query.model,
     max_tokens: query.max_tokens,
     messages: [{ role: "system", content: query.system }, ...query.messages],
+    // Keep the declared action tools on compatibility retries. Removing them leaves the model
+    // with prompt prose only, which makes native actions such as AskUser impossible even though
+    // the planner was instructed to use them. The retry drops optional reasoning/stream metadata
+    // below; the action schema is part of the required planner protocol.
     ...(tools && tools.length > 0 ? { tools: toolsWire(tools), tool_choice: opts.toolChoice ?? "required" } : {}),
-    ...(reasoning?.param === "reasoning_effort" ? { reasoning_effort: reasoning.level } : {}),
-    ...(reasoning?.param === "kimi_thinking" ? { chat_template_kwargs: { thinking: reasoning.level === "on" } } : {}),
-    ...(opts.stream ? { stream: true, stream_options: { include_usage: true } } : {}),
+    ...(!minimal && reasoning?.param === "reasoning_effort" ? { reasoning_effort: reasoning.level } : {}),
+    ...(!minimal && reasoning?.param === "kimi_thinking" ? { chat_template_kwargs: { thinking: reasoning.level === "on" } } : {}),
+    ...(opts.stream ? { stream: true, ...(!minimal ? { stream_options: { include_usage: true } } : {}) } : {}),
   });
 }
 

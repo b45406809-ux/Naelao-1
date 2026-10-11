@@ -24,7 +24,7 @@ import { DurableObject } from "cloudflare:workers";
 
 const AUTO_REJECT_MS = 30_000;
 
-type ApprovalStatus = "pending" | "approved" | "rejected" | "timeout";
+type ApprovalStatus = "pending" | "approved" | "answered" | "rejected" | "timeout";
 
 interface ApprovalRow {
   id: string;
@@ -49,6 +49,11 @@ interface ApprovalRow {
   // rederived from the space alone. Null for approvals opened outside a loop (the Phase O
   // HTTP agent-key gate), which have no run to resume.
   resume_do_id: string | null;
+  kind: "approval" | "question";
+  question: string | null;
+  options_json: string | null;
+  questions_json: string | null;
+  answer: string | null;
 }
 
 export class HITLApprovalDO extends DurableObject {
@@ -70,7 +75,12 @@ export class HITLApprovalDO extends DurableObject {
         resolved_at        TEXT,
         expires_at         INTEGER NOT NULL,
         consumed_at        TEXT,
-        resume_do_id       TEXT
+        resume_do_id       TEXT,
+        kind               TEXT NOT NULL DEFAULT 'approval',
+        question           TEXT,
+        options_json       TEXT,
+        questions_json     TEXT,
+        answer             TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_approvals_run ON approvals(run_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, created_at DESC);
@@ -83,6 +93,15 @@ export class HITLApprovalDO extends DurableObject {
       this.ctx.storage.sql.exec(`ALTER TABLE approvals ADD COLUMN resume_do_id TEXT`);
     } catch {
       /* already present — the ordinary case on every wake-up after the first */
+    }
+    for (const migration of [
+      "ALTER TABLE approvals ADD COLUMN kind TEXT NOT NULL DEFAULT 'approval'",
+      "ALTER TABLE approvals ADD COLUMN question TEXT",
+      "ALTER TABLE approvals ADD COLUMN options_json TEXT",
+      "ALTER TABLE approvals ADD COLUMN questions_json TEXT",
+      "ALTER TABLE approvals ADD COLUMN answer TEXT",
+    ]) {
+      try { this.ctx.storage.sql.exec(migration); } catch { /* already present */ }
     }
     this.initialized = true;
   }
@@ -103,6 +122,10 @@ export class HITLApprovalDO extends DurableObject {
         tool_name: string;
         tool_input: Record<string, unknown>;
         action_description: string;
+        kind?: "approval" | "question";
+        question?: string;
+        options?: string[];
+        questions?: Array<{ question: string; options?: string[] }>;
         ttl_ms?: number;
         resume_do_id?: string;
       }>();
@@ -116,11 +139,14 @@ export class HITLApprovalDO extends DurableObject {
       const expiresAt = Date.now() + (body.ttl_ms && body.ttl_ms > 0 ? body.ttl_ms : AUTO_REJECT_MS);
 
       this.ctx.storage.sql.exec(
-        `INSERT INTO approvals (id, run_id, session_id, tool_name, tool_input, action_description, status, created_at, expires_at, resume_do_id)
-         VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+        `INSERT INTO approvals (id, run_id, session_id, tool_name, tool_input, action_description, status, created_at, expires_at, resume_do_id, kind, question, options_json, questions_json)
+         VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`,
         id, body.run_id, body.session_id, body.tool_name,
         JSON.stringify(body.tool_input ?? {}),
-        body.action_description, now, expiresAt, body.resume_do_id ?? null
+        body.action_description, now, expiresAt, body.resume_do_id ?? null,
+        body.kind ?? "approval", body.question ?? null,
+        body.options?.length ? JSON.stringify(body.options.slice(0, 8)) : null,
+        body.questions?.length ? JSON.stringify(body.questions.slice(0, 5)) : null
       );
 
       // Set alarm to auto-reject when TTL expires
@@ -173,6 +199,25 @@ export class HITLApprovalDO extends DurableObject {
     if (method === "PUT" && rejectMatch?.[1]) {
       const body = await request.json<{ reason?: string }>().catch(() => ({ reason: undefined }));
       return this.resolveApproval(rejectMatch[1], "rejected", (body as { reason?: string }).reason ?? "Builder rejected");
+    }
+
+    // PUT /requests/:questionId/answer — resolve a planner questionnaire.
+    const answerMatch = url.pathname.match(/^\/requests\/([^/]+)\/answer$/);
+    if (method === "PUT" && answerMatch?.[1]) {
+      const body = await request.json<{ answer?: string }>().catch(() => ({ answer: undefined }));
+      const answer = typeof body.answer === "string" ? body.answer.trim() : "";
+      if (!answer) return Response.json({ error: "answer is required" }, { status: 400 });
+      const rows = this.ctx.storage.sql
+        .exec(`SELECT id, status, kind FROM approvals WHERE id = ?`, answerMatch[1])
+        .toArray() as unknown as Array<{ id: string; status: string; kind: string }>;
+      if (!rows[0]) return Response.json({ error: "not_found" }, { status: 404 });
+      if (rows[0].kind !== "question") return Response.json({ error: "not_a_question" }, { status: 400 });
+      if (rows[0].status !== "pending") return Response.json({ error: "already_resolved", current_status: rows[0].status }, { status: 409 });
+      this.ctx.storage.sql.exec(
+        `UPDATE approvals SET status = 'answered', answer = ?, resolved_at = ? WHERE id = ?`,
+        answer.slice(0, 4000), new Date().toISOString(), answerMatch[1]
+      );
+      return Response.json({ id: answerMatch[1], status: "answered" });
     }
 
     // POST /requests/:approvalId/consume — §A1.17 Phase O: single-use redemption of an

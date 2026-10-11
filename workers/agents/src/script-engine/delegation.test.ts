@@ -10,7 +10,7 @@ import {
   verifyCapabilityToken,
   verifyDelegationClaim,
 } from "@naelao/security";
-import { routeMentions } from "./mention-router.js";
+import { routeMentions, routeMentionsWithSentry } from "./mention-router.js";
 
 const secret = "unit-test-platform-secret";
 
@@ -45,6 +45,24 @@ describe("turn routing and delegation ceiling", () => {
   it("routes only the first mention as holder", () => {
     expect(routeMentions("@lead ask @legal, then tell @ops")).toEqual({ turnHolder: "lead", referents: ["legal", "ops"], mentions: ["lead", "legal", "ops"] });
     expect(routeMentions("email a@b.test").turnHolder).toBeNull();
+  });
+
+  it("uses high-confidence System One routing only within explicit mentions", async () => {
+    const route = await routeMentionsWithSentry("@lead ask @legal to review", {
+      choice: async () => ({ kind: "choice", value: "legal", provider: "jev", policyCode: "mention_primary_turn_holder", confidence: 0.92 }),
+      score: async () => { throw new Error("unused"); },
+      noul: async () => { throw new Error("unused"); },
+    });
+    expect(route).toEqual({ turnHolder: "legal", referents: ["lead"], mentions: ["lead", "legal"] });
+  });
+
+  it("keeps deterministic routing when System One confidence is low", async () => {
+    const route = await routeMentionsWithSentry("@lead ask @legal", {
+      choice: async () => ({ kind: "choice", value: "legal", provider: "laya", policyCode: "mention_primary_turn_holder", confidence: 0.4 }),
+      score: async () => { throw new Error("unused"); },
+      noul: async () => { throw new Error("unused"); },
+    });
+    expect(route.turnHolder).toBe("lead");
   });
 
   it.each([1, 2] as const)("injects delegation at depth %s and terminates the caller", async (depth) => {

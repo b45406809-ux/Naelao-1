@@ -1,7 +1,5 @@
 "use client";
 
-export const runtime = "edge";
-
 // Step 20: the Plugins directory — a browsable catalogue of the native business-infrastructure
 // "plugins" (Wallet, CRM, Business Email, Storefront, Analytics, …) a business can install, in the
 // spirit of Claude's own plugin marketplace. Distinct from the inline "Plugins" grid in the New
@@ -23,6 +21,7 @@ import {
   listProjects,
   createProject,
   getFeatureKinds,
+  ApiError,
   type Project,
   type FeatureKind,
 } from "@/lib/api";
@@ -70,6 +69,11 @@ export default function PluginsPage() {
     ]);
     if (p.status === "fulfilled") {
       setProjects(p.value);
+      setLoadFailed(false);
+    } else if (p.reason instanceof ApiError && [401, 403].includes(p.reason.status)) {
+      // The product shell is reachable before the user belongs to a business. Show the empty
+      // catalogue state instead of reporting a misleading network/loading failure.
+      setProjects([]);
       setLoadFailed(false);
     } else {
       setLoadFailed(true);

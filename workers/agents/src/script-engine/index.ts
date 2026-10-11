@@ -18,7 +18,10 @@ export * from "./types.js";
 export * from "./fingerprint.js";
 export { SkillLibrary, computeStabilityScore } from "./skill-library.js";
 export { scriptFind, indexScriptEmbedding, removeScriptEmbedding, FIND_CONFIDENCE_FLOOR } from "./script-find.js";
-export { classifyExecutionRoute, EXECUTION_ENGINES, requiresNativeCompilation, runStoredScript, tierLabel } from "./execution-ladder.js";
+export { classifyExecutionRoute, classifyExecutionRouteWithSentry, EXECUTION_ENGINES, requiresNativeCompilation, runStoredScript, tierLabel } from "./execution-ladder.js";
+export { triageCustomerMessage, type CustomerMessageCategory, type CustomerMessageTriage } from "./customer-triage.js";
+export { evaluateLoopAfterTool, type LoopEvaluation } from "./loop-evaluator.js";
+export { beginConsultation, initialDeliberationState, type DeliberationState, type DeliberationStatus } from "./deliberation-state.js";
 export { ScriptToolSurface, privacyBridgeCard, isPublicRoom, type RoomType } from "./tool-surface.js";
 export * from "./step-pipeline.js";
 export * from "./agent-firewall.js";
@@ -39,6 +42,8 @@ export {
 export {
   loadAgentConfig,
   writeAgentConfig,
+  createAgentConfigLockGateway,
+  createRemoteAgentConfigLockGateway,
   listSpaceAgents,
   mergeMissingPrebuilt,
   type AgentConfig,

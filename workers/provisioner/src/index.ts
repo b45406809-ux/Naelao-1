@@ -30,6 +30,7 @@ import {
   businessServicePrebuilts,
   LAUNCHPAD_ASSISTANT_PROFILE,
   LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED,
+  createRemoteAgentConfigLockGateway,
 } from "../../agents/src/script-engine/index.js";
 import { SkillLibrary } from "../../agents/src/script-engine/skill-library.js";
 import { seedScalingSkills } from "../../agents/src/launchpad/scaling-skills.js";
@@ -132,13 +133,34 @@ export async function installLaunchpadAgents(
   // Space Assistant — every space gets this (spec §15). Launchpad gets the business-builder
   // profile (§A1.17 Phase G) instead of the generic one — same agentId ("naelao-agent"), same
   // dispatch, richer prompt.
-  await writeAgentConfig(env.SCRIPTS_R2, spaceId, LAUNCHPAD_ASSISTANT_PROFILE.agentId, withServices(LAUNCHPAD_ASSISTANT_PROFILE.config));
+  const lockHeaders = {
+    "x-naelao-tenant-id": spaceId,
+    "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, spaceId),
+  };
+  // Provisioning is a multi-file write and must fail closed if the shared lock service binding
+  // is absent. The optional binding remains useful for unrelated best-effort AgentMail paths,
+  // but it is never acceptable to install an agent bundle without its mutex.
+  if (!env.AGENTS_WORKER) throw new Error("agent_config_lock_unavailable");
+  const lockGateway = createRemoteAgentConfigLockGateway(env.AGENTS_WORKER, lockHeaders, spaceId);
+  await writeAgentConfig(
+    env.SCRIPTS_R2,
+    spaceId,
+    LAUNCHPAD_ASSISTANT_PROFILE.agentId,
+    withServices(LAUNCHPAD_ASSISTANT_PROFILE.config),
+    { lockGateway, holderId: crypto.randomUUID() },
+  );
   await registerAgentIndex(spaceId, tenantId, LAUNCHPAD_ASSISTANT_PROFILE.agentId, "Naelao Agent", "Business-builder Space Assistant", null, manifest.id, env);
   await seedLaunchpadAssistantPolicy(spaceId, tenantId, env);
 
   for (const agentDef of agentsToInstall) {
     const profile = launchpadAgentToProfile(agentDef);
-    await writeAgentConfig(env.SCRIPTS_R2, spaceId, profile.agentId, withServices(profile.config));
+    await writeAgentConfig(
+      env.SCRIPTS_R2,
+      spaceId,
+      profile.agentId,
+      withServices(profile.config),
+      { lockGateway, holderId: crypto.randomUUID() },
+    );
     await registerAgentIndex(
       spaceId, tenantId, profile.agentId, agentDef.name, agentDef.description,
       primaryTemplateId, manifest.id, env
@@ -862,6 +884,28 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
         );
       const generalId = await seedGeneralProject({ postToSpaces, getFromSpaces }, spaceId);
       if (generalId) provisioned.push("general-project");
+
+      // Install the standard local-access worker for every new script-enabled space. This uses
+      // the agents worker's ordinary idempotent template path so config, policy and the worker
+      // definition stay identical to a directory install.
+      if (env.AGENTS_WORKER) {
+        try {
+          const localWorkerResp = await env.AGENTS_WORKER.fetch(new Request("http://agents-worker/agent-templates/instantiate", {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-naelao-tenant-id": tenantId,
+              ...(userId ? { "x-naelao-user-id": userId } : {}),
+              "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+            },
+            body: JSON.stringify({ space_id: spaceId, template_id: "local-access" }),
+          }));
+          if (localWorkerResp.ok) provisioned.push("local-access-worker");
+          else console.warn(`[provisioner] local-access worker seed failed for ${spaceId}: ${await localWorkerResp.text()}`);
+        } catch (err) {
+          console.warn(`[provisioner] local-access worker seed failed for ${spaceId}:`, (err as Error).message);
+        }
+      }
     }
 
     // Step 9b: Template bootstrap — inherit the shared template skill library (federated

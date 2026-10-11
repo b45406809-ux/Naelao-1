@@ -15,6 +15,7 @@
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 import { renderRecalledMemory } from "../memory/gate-memory.js";
+import { gateStructuredFacts } from "../project-memory-client.js";
 
 function userIdFor(args: Record<string, unknown>, ctx: PrebuiltOpContext): string | undefined {
   const explicit = args["user_id"];
@@ -53,9 +54,16 @@ export const memory: PrebuiltScript = {
         text,
         limit: typeof args["limit"] === "number" ? (args["limit"] as number) : 5,
       });
-      const semantic = results.filter((result) => result.layer === "semantic");
+      const gatedFacts = await gateStructuredFacts(
+        text,
+        results.filter((result) => result.layer === "structured_fact"),
+        ctx.env.fastDecision,
+      );
+      const gatedFactIds = new Set(gatedFacts.map((result) => result.id));
+      const visibleResults = results.filter((result) => result.layer !== "structured_fact" || gatedFactIds.has(result.id));
+      const semantic = visibleResults.filter((result) => result.layer === "semantic");
       return {
-        results,
+        results: visibleResults,
         // Only gated semantic hindsight enters the model-visible tagged context. Structured
         // project truth remains plainly typed data and never masquerades as semantic recall.
         ...(semantic.length ? { recalled_memory: renderRecalledMemory(semantic) } : {}),

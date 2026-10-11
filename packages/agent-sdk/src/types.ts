@@ -26,6 +26,8 @@ export interface Tier6ContainerOptions {
   backend: ContainerBackend;
   /** Owner/user identity required when routing through LocalTunnelDO. */
   localUserId?: string;
+  /** Explicit named machine; legacy user-only targeting is rejected. */
+  localMachineId?: string;
   /** Lockfiles are portable state; dependency trees are explicitly non-portable. */
   lockfiles?: Readonly<Partial<Record<"package.json" | "package-lock.json", string>>>;
   migration?: Readonly<{ from: "webcontainer"; previewId: string }>;
@@ -348,6 +350,8 @@ export interface RuntimeSpace {
 export interface VaultFetchOptions {
   credentialName: string;
   method?: string;
+  /** Required for non-read methods so replay never repeats an external mutation. */
+  idempotencyKey?: string;
   body?: unknown;
   headers?: Record<string, string>;
 }
@@ -473,3 +477,28 @@ export interface RuntimeContextServices {
 export type CreateRuntimeContextOptions =
   | { scope: "SPACE_WIDE"; spaceId: string; services: RuntimeContextServices; delegationDepth?: 1 | 2 | 3; initiatorUserId?: string; originatingRoleRank?: number }
   | { scope: "PROJECT_BOUND"; projectId: string; services: RuntimeContextServices; delegationDepth?: 1 | 2 | 3; initiatorUserId?: string; originatingRoleRank?: number };
+
+// Step 02 kernel contracts. These are deliberately domain-neutral; business roles and
+// project templates belong to extensions, while the kernel only validates identifiers.
+export type WorkerRole = string & { readonly __workerRoleBrand?: never };
+export const WORKER_ROLE_PATTERN = /^[a-z][a-z0-9._-]{1,63}$/;
+export function assertWorkerRole(value: string): asserts value is WorkerRole {
+  if (!WORKER_ROLE_PATTERN.test(value)) throw new Error("invalid_worker_role: use 2-64 lowercase letters, digits, '.', '_' or '-'");
+}
+
+export type KernelLayout = "DualPane" | "CanvasFirst";
+export type ExecutionMode = "interactive" | "headless";
+export type PermissionAction = "read" | "write" | "execute" | "network" | "admin";
+
+export interface RelationalStateSubstrate { readonly name: "relational_state_git_mesh"; readonly version: string; }
+export interface ComputeHypervisorSubstrate { readonly name: "compute_hypervisor"; readonly version: string; }
+export interface UniversalToolSurface { readonly name: "universal_tool_surface"; readonly version: string; readonly tools: readonly string[]; }
+export interface ZeroLeakVaultSubstrate { readonly name: "zero_leak_vault"; readonly version: string; }
+export interface TunnelMeshSubstrate { readonly name: "tunnel_mesh"; readonly version: string; }
+export interface KernelSubstrates {
+  readonly state: RelationalStateSubstrate;
+  readonly compute: ComputeHypervisorSubstrate;
+  readonly tools: UniversalToolSurface;
+  readonly vault: ZeroLeakVaultSubstrate;
+  readonly tunnels: TunnelMeshSubstrate;
+}

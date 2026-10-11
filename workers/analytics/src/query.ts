@@ -190,3 +190,68 @@ WHERE toDateTime(double1 / 1000) >= now() - INTERVAL ${periodDays} DAY
     p95LatencyMs: toNum(row["p95_latency_ms"]),
   };
 }
+
+// ── Runtime economics evidence ───────────────────────────────────────────────
+
+export interface RuntimeEconomicsMetrics {
+  periodDays: number;
+  sampleCount: number;
+  tierCounts: Record<string, number>;
+  tierOneTwoShare: number;
+  tierSixShare: number;
+  successRate: number;
+  averageDurationMs: number;
+  p50DurationMs: number;
+  p95DurationMs: number;
+  tierOneTwoP95DurationMs: number;
+  totalTokens: number;
+}
+
+/** Query action-level execution evidence emitted by the agents worker.
+ * This deliberately reports distribution and latency only. Infrastructure cost and gross margin
+ * require Cloudflare billing exports and must not be inferred from action counts. */
+export async function getRuntimeEconomicsMetrics(
+  accountId: string,
+  apiToken: string,
+  periodDays = 30
+): Promise<RuntimeEconomicsMetrics> {
+  const sql = `
+SELECT
+  count() AS sample_count,
+  countIf(double3 = 1) AS tier_1,
+  countIf(double3 = 2) AS tier_2,
+  countIf(double3 = 3) AS tier_3,
+  countIf(double3 = 4) AS tier_4,
+  countIf(double3 = 5) AS tier_5,
+  countIf(double3 = 6) AS tier_6,
+  if(count() = 0, 0, countIf(double3 IN (1, 2)) / count()) AS tier_1_2_share,
+  if(count() = 0, 0, countIf(double3 = 6) / count()) AS tier_6_share,
+  if(count() = 0, 0, sum(double4) / count()) AS success_rate,
+  avg(double2) AS average_duration_ms,
+  quantile(0.50)(double2) AS p50_duration_ms,
+  quantile(0.95)(double2) AS p95_duration_ms,
+  quantileIf(0.95)(double2, double3 IN (1, 2)) AS tier_1_2_p95_duration_ms,
+  sum(double5) AS total_tokens
+FROM naelao_agent_events
+WHERE blob1 = 'tool.execution'
+  AND toDateTime(double1 / 1000) >= now() - INTERVAL ${periodDays} DAY
+`.trim();
+
+  const { data } = await queryAnalytics(accountId, apiToken, sql);
+  const row = data[0] ?? {};
+  const tierCounts: Record<string, number> = {};
+  for (let tier = 1; tier <= 6; tier++) tierCounts[String(tier)] = toNum(row[`tier_${tier}`]);
+  return {
+    periodDays,
+    sampleCount: toNum(row["sample_count"]),
+    tierCounts,
+    tierOneTwoShare: toNum(row["tier_1_2_share"]),
+    tierSixShare: toNum(row["tier_6_share"]),
+    successRate: toNum(row["success_rate"]),
+    averageDurationMs: toNum(row["average_duration_ms"]),
+    p50DurationMs: toNum(row["p50_duration_ms"]),
+    p95DurationMs: toNum(row["p95_duration_ms"]),
+    tierOneTwoP95DurationMs: toNum(row["tier_1_2_p95_duration_ms"]),
+    totalTokens: toNum(row["total_tokens"]),
+  };
+}

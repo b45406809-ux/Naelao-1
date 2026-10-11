@@ -1,7 +1,5 @@
 "use client";
 
-export const runtime = "edge";
-
 // Knowledge Base — the curated, searchable document store for the active business or product.
 //
 // Deliberately a DIFFERENT mechanism from the input bar's chat uploads (ComposerDock's Uploads

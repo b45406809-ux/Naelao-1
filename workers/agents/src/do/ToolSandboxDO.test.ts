@@ -39,6 +39,9 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
         put: async (k, v) => {
           storage.set(k, v);
         },
+        delete: async (k) => {
+          storage.delete(k);
+        },
         setAlarm: async (time) => {
           alarmTime = time;
         },
@@ -102,6 +105,32 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     expect(stale.status).toBe(409);
   });
 
+  it("requires hashes on normal container workspace writes", async () => {
+    const { sandbox, storage } = createTestSandbox();
+    const missing = await sandbox.fetch(new Request("https://sandbox/workspace/write", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ files: { "src/main.ts": "one" } }),
+    }));
+    expect(missing.status).toBe(400);
+
+    const created = await sandbox.fetch(new Request("https://sandbox/workspace/write", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ files: { "src/main.ts": "one" }, expected_hashes: { "src/main.ts": null } }),
+    }));
+    expect(created.status).toBe(200);
+    const hash = storage.get("workspace_files")["src/main.ts"].hash;
+    const stale = await sandbox.fetch(new Request("https://sandbox/workspace/write", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ files: { "src/main.ts": "two" }, expected_hashes: { "src/main.ts": null } }),
+    }));
+    expect(stale.status).toBe(409);
+    const updated = await sandbox.fetch(new Request("https://sandbox/workspace/write", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ files: { "src/main.ts": "two" }, expected_hashes: { "src/main.ts": hash } }),
+    }));
+    expect(updated.status).toBe(200);
+  });
+
   it("implements virtual display automation endpoints", async () => {
     const { sandbox } = createTestSandbox();
     const captureRes = await sandbox.fetch(
@@ -128,6 +157,45 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       new Request("https://sandbox/workspace/list", { method: "POST" })
     );
     expect(getAlarmTime()).toBeGreaterThanOrEqual(start + 59_000);
+  });
+
+  it("keeps an active Task DAG container warm for 300s", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    const { sandbox, getAlarmTime, mockContainer } = createTestSandbox();
+    await sandbox.fetch(new Request("https://sandbox/exec", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-avos-task-active": "1" },
+      body: "{}",
+    }));
+    expect(getAlarmTime()).toBe(1_300_000);
+    vi.setSystemTime(1_060_000);
+    await sandbox.alarm();
+    expect(mockContainer.stop).not.toHaveBeenCalled();
+    expect(getAlarmTime()).toBe(1_300_000);
+    vi.useRealTimers();
+  });
+
+  it("returns to the 60s window when a task completes", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    const { sandbox, storage, getAlarmTime } = createTestSandbox();
+    await sandbox.fetch(new Request("https://sandbox/exec", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-avos-task-active": "1" },
+      body: "{}",
+    }));
+    expect(storage.get("task_active")).toBe(true);
+    vi.setSystemTime(1_010_000);
+    const response = await sandbox.fetch(new Request("https://sandbox/lifecycle", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status: "completed" }),
+    }));
+    expect(await response.json()).toMatchObject({ idle_window_ms: 60_000 });
+    expect(storage.has("task_active")).toBe(false);
+    expect(getAlarmTime()).toBe(1_070_000);
+    vi.useRealTimers();
   });
 
   it("stays warm before 60s and snapshots then hibernates at 60s", async () => {

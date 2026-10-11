@@ -7,16 +7,26 @@ import {
   virtualFsRead,
   virtualFsWrite,
 } from "./r2-workspace.js";
+import { workspacePrefix } from "./types.js";
 
 function createMockEnv() {
   const store = new Map();
+  const metadata = new Map();
+  const etags = new Map();
   const mockBucket = {
     get: async (key) => {
       const data = store.get(key);
       return data ? { arrayBuffer: async () => data.buffer } : null;
     },
-    put: async (key, value) => {
+    head: async (key) => store.has(key) ? { customMetadata: { sha256: metadata.get(key) }, etag: etags.get(key) } : null,
+    put: async (key, value, options) => {
+      if (options?.onlyIf?.etagMatches && etags.get(key) !== options.onlyIf.etagMatches) return undefined;
+      if (options?.onlyIf?.etagDoesNotMatch === "*" && store.has(key)) return undefined;
       store.set(key, value);
+      metadata.set(key, options?.customMetadata?.sha256 ?? null);
+      const etag = `etag-${store.size}-${Date.now()}`;
+      etags.set(key, etag);
+      return { etag };
     },
     delete: async (key) => {
       store.delete(key);
@@ -40,15 +50,28 @@ function createMockEnv() {
 }
 
 describe("R2 Virtual POSIX Workspace", () => {
+  it("isolates a race branch below the project workspace prefix", () => {
+    expect(workspacePrefix({ spaceId: "space-1", projectId: "proj-1", workspaceBranch: "race/task/model" }))
+      .toBe("spaces/space-1/projects/proj-1/workspace/branches/race/task/model/");
+    expect(workspacePrefix({ spaceId: "space-1", projectId: "proj-1" }))
+      .toBe("spaces/space-1/projects/proj-1/workspace/");
+    expect(() => workspacePrefix({ spaceId: "space-1", projectId: "proj-1", workspaceBranch: "../escape" })).toThrow("invalid path");
+  });
+  async function hash(content: string): Promise<string> {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(content));
+    return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+
   it("performs file read, write, delete, and list operations in V8", async () => {
     const env = createMockEnv();
-    await virtualFsWrite(env, "docs/readme.md", "hello world");
+    await virtualFsWrite(env, "docs/readme.md", "hello world", null);
     expect(await virtualFsRead(env, "docs/readme.md")).toBe("hello world");
 
     const list = await virtualFsList(env, "docs");
     expect(list).toEqual([{ path: "docs/readme.md", size: 11 }]);
 
-    await virtualFsDelete(env, "docs/readme.md");
+    await expect(virtualFsWrite(env, "docs/readme.md", "clobber", null)).rejects.toThrow("Conflict Error");
+    await virtualFsDelete(env, "docs/readme.md", await hash("hello world"));
     expect(await virtualFsRead(env, "docs/readme.md")).toBeNull();
   });
 
@@ -57,9 +80,10 @@ describe("R2 Virtual POSIX Workspace", () => {
     await virtualFsWrite(
       env,
       "src/api.ts",
-      "const x = 1;\nexport function findMe() {}\nconst y = 2;"
+      "const x = 1;\nexport function findMe() {}\nconst y = 2;",
+      null
     );
-    await virtualFsWrite(env, "src/util.ts", "export const version = '1.0';");
+    await virtualFsWrite(env, "src/util.ts", "export const version = '1.0';", null);
 
     const matches = await virtualFsGrep(env, "findMe", "src");
     expect(matches).toEqual([
@@ -72,6 +96,7 @@ describe("R2 Virtual POSIX Workspace", () => {
     const writeRes = await executeVirtualShell(env, "write", {
       path: "notes.txt",
       content: "POSIX in V8",
+      expectedHash: null,
     });
     expect(writeRes.ok).toBe(true);
     expect(writeRes.tier).toBe(1);

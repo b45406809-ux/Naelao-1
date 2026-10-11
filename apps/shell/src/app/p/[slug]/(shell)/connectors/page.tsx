@@ -1,6 +1,5 @@
 "use client";
 
-export const runtime = "edge";
 
 // Sidebar → More → Connectors: the app store for the active business.
 //

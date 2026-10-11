@@ -1,7 +1,5 @@
 "use client";
 
-export const runtime = "edge";
-
 // The shell root is not a page of its own — starting a conversation lives at /new (the same
 // split claude.com uses). Landing here redirects there so an existing bookmark, the post-login
 // landing, and the sidebar's "new session" button all end up in one place instead of two

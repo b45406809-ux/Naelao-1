@@ -10,11 +10,47 @@ workers_dev = false
 
 browser = { binding = "BROWSER" }
 
+[[durable_objects.bindings]]
+name = "BROWSER_SESSION_DO"
+class_name = "BrowserSessionDO"
+
+[[migrations]]
+tag = "v1-browser-sessions"
+new_sqlite_classes = ["BrowserSessionDO"]
+
+[[r2_buckets]]
+binding = "BROWSER_ARTIFACTS"
+bucket_name = "naelao-browser-artifacts"
+
+[[services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"
+
 [vars]
 ENVIRONMENT = "development"
 
 [env.staging]
 vars = { ENVIRONMENT = "staging" }
 
+[[env.staging.durable_objects.bindings]]
+name = "BROWSER_SESSION_DO"
+class_name = "BrowserSessionDO"
+[[env.staging.r2_buckets]]
+binding = "BROWSER_ARTIFACTS"
+bucket_name = "naelao-browser-artifacts-staging"
+[[env.staging.services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces-staging"
+
 [env.production]
 vars = { ENVIRONMENT = "production" }
+
+[[env.production.durable_objects.bindings]]
+name = "BROWSER_SESSION_DO"
+class_name = "BrowserSessionDO"
+[[env.production.r2_buckets]]
+binding = "BROWSER_ARTIFACTS"
+bucket_name = "naelao-browser-artifacts"
+[[env.production.services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces-production"

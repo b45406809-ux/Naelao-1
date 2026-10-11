@@ -51,10 +51,13 @@ import { plan } from "./plan.js";
 import { goalPlanner } from "./goal-planner.js";
 import { customerBot } from "./customer-bot.js";
 import { executiveCabinet } from "./executive-cabinet.js";
+import { modelRaceScript } from "./model-race-script.js";
 
 /** Context handed to every prebuilt operation. */
 export interface PrebuiltOpContext {
   env: ScriptEngineEnv;
+  commands?: ReadonlyMap<string, { operation: string; requiresTier: ExecutionTier; usage: string }>;
+  authorizeShell?: (resource: { kind: "command" | "file"; name: string; access?: "read" | "write" }) => Promise<boolean>;
   /** Call another script (prebuilt op or stored) — enables skills calling skills (§7). */
   run: (name: string, params: Record<string, unknown>) => Promise<unknown>;
 }
@@ -163,6 +166,7 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   [goalPlanner.name]: goalPlanner,
   [customerBot.name]: customerBot,
   [executiveCabinet.name]: executiveCabinet,
+  [modelRaceScript.name]: modelRaceScript,
 };
 
 /**
@@ -206,6 +210,7 @@ export {
   lock,
   workspaceAdmin,
   projectCoordination,
+  modelRaceScript,
   businessDiagnostics,
   localMachine,
   schedule,

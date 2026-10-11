@@ -1,7 +1,5 @@
 "use client";
 
-export const runtime = "edge";
-
 // Notifications — what your assistant/its agents want you to know about: an approval that opened,
 // a run that couldn't finish, a connector that needs setup. Distinct from Approvals: a
 // notification doesn't necessarily need a decision, it just needs to be seen — reading this page

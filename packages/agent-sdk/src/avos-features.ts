@@ -1,5 +1,7 @@
 /** Security and cognition primitives for AVOS plan features 21-50. */
 
+import type { FastDecisionGateway } from "./fast-decision.js";
+
 const encoder = new TextEncoder();
 
 function bytesToBase64Url(value: Uint8Array): string {
@@ -287,6 +289,41 @@ export async function enforceWriteGuard(
   ) {
     throw new Error("destructive_mutation_denied");
   }
+}
+
+/**
+ * Deterministic signatures remain authoritative. System One may only tighten the gate by asking
+ * for a grant on an ambiguous mutation; it can never waive a deterministic requirement.
+ */
+export async function enforceWriteGuardWithSentry(
+  command: string,
+  grantToken: string | undefined,
+  secret: string,
+  requirement: { subject: string; resource: string },
+  gateway?: FastDecisionGateway,
+  now = Date.now(),
+): Promise<boolean> {
+  let required = requiresMutationGrant(command);
+  if (!required && gateway) {
+    try {
+      const decision = await gateway.noul({
+        state: { command },
+        instructions: "Does this command perform a destructive, irreversible, broad, or privilege-changing mutation that requires explicit human authorization?",
+        criteria: { true: "A mutation grant is required before execution.", false: "The command is read-only or narrowly reversible." },
+        policyCode: "write_guard_ambiguous_mutation",
+        threshold: 0.9,
+      });
+      required = decision.value && (decision.confidence ?? 0) >= 0.9;
+    } catch {
+      // Provider failure cannot weaken deterministic policy; ambiguous commands keep the
+      // deterministic result and proceed to the ordinary sandbox/role gates.
+    }
+  }
+  if (!required) return false;
+  if (!grantToken || !(await verifyCapabilityGrant(grantToken, secret, { ...requirement, action: "destructive_write" }, now))) {
+    throw new Error("destructive_mutation_denied");
+  }
+  return true;
 }
 
 // Features 23-24: virtual commands and durable synthesized parsers.

@@ -1,6 +1,6 @@
 name = "naelao-agents"
 main = "src/index.ts"
-compatibility_date = "2024-12-01"
+compatibility_date = "2026-09-10"
 compatibility_flags = ["nodejs_compat"]
 
 [[durable_objects.bindings]]
@@ -18,6 +18,14 @@ class_name = "TaskDO"
 [[durable_objects.bindings]]
 name = "TOOL_SANDBOX"
 class_name = "ToolSandboxDO"
+
+[[durable_objects.bindings]]
+name = "DOCUMENT_SANDBOX"
+class_name = "DocumentSandboxDO"
+
+[[durable_objects.bindings]]
+name = "MEDIA_SANDBOX"
+class_name = "MediaSandboxDO"
 
 # §A1.17 Phase M — local-machine-as-container (spec gap G-3). One instance per (spaceId, userId);
 # holds the WebSocket to a builder's own Naelao Local Agent client. No [[containers]] binding —
@@ -76,14 +84,41 @@ deleted_classes = ["ProductDO", "BusinessDO"]
 tag = "v9"
 new_sqlite_classes = ["RiskGuardDO"]
 
+[[durable_objects.bindings]]
+name = "WORKFLOW_RUN_DO"
+class_name = "WorkflowRunDO"
+
+[[migrations]]
+tag = "v10"
+new_sqlite_classes = ["WorkflowRunDO"]
+
+[[migrations]]
+tag = "v11-containers"
+new_sqlite_classes = ["DocumentSandboxDO", "MediaSandboxDO"]
+
 # Tier-5 micro-tool build/test compute (WG-01). A Cloudflare Container attached to
 # ToolSandboxDO — the agent spins it up on demand to build + test the micro-tool's
 # code (Node, and Python for scripts that need it), and it sleeps when idle.
-[containers]
+[[containers]]
 class_name = "ToolSandboxDO"
 image = "./Dockerfile.toolsandbox"
 max_instances = 5
-# instance_type = "basic"   # bump for heavier build/test workloads
+instance_type = "basic"
+
+# Default scheduling is deliberate: dynamic durable_object image mode retains root caps.
+# After building/publishing, configure CONTAINER_IMAGE_REGISTRY with real deployed digests.
+# An empty registry disables sidecar execution. Never put guessed hashes in that variable.
+[[containers]]
+class_name = "DocumentSandboxDO"
+image = "./Dockerfile.documents"
+max_instances = 3
+instance_type = "standard-1"
+
+[[containers]]
+class_name = "MediaSandboxDO"
+image = "./Dockerfile.media"
+max_instances = 3
+instance_type = "standard-1"
 
 # Script-first engine (authoritative agent model; spec appendix ~6672k):
 # skill library + agent 4-file config + agent workspace, all keyed by space.
@@ -115,8 +150,8 @@ index_name = "naelao-agent-memory"
 # moment the account upgrades to the $5/mo plan; the code already degrades to "unavailable"
 # identically whether the binding is absent or present-but-unusable, so this is a zero-behavior-
 # change toggle, not a functionality cut.
-# [[worker_loaders]]
-# binding = "LOADER"
+[[worker_loaders]]
+binding = "LOADER"
 #
 # VERIFIED 2026-08-08, and the result is a trap worth writing down: uncommenting this and running
 # `wrangler deploy` SUCCEEDS — it prints a normal deployment and a new Version ID — but Cloudflare
@@ -250,8 +285,10 @@ service = "naelao-ws-gateway"
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"
 database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+migrations_dir = "../../infra/migrations"
 
 [vars]
+DYNAMIC_PYTHON_ENABLED = "true"
 ENVIRONMENT = "development"
 # CF AI Gateway — every LLM call routes through this (spec §15).
 # The real account id + gateway name (dash.cloudflare.com → account id in the URL/sidebar;
@@ -269,6 +306,13 @@ NAELAO_GATEWAY_ID = "naelao-gateway"
 # in the CF dashboard, enable Authentication, and set the gateway token:
 #   wrangler secret put NAELAO_AIG_TOKEN
 # When NAELAO_AIG_TOKEN is unset AND no ANTHROPIC_API_KEY is provided, LLM calls fail honestly.
+#
+# System One decision sentry. Hosted Jev uses the official endpoint and secret:
+#   wrangler secret put TYPESAFE_API_KEY
+# To self-host the open-source Laya model, run `pip install "laya[serve]"`, publish its
+# Jev-compatible /v1/systemone route, and set SYSTEM_ONE_ENDPOINT plus
+# SYSTEM_ONE_PROVIDER="laya". SYSTEM_ONE_MODEL is optional (defaults to jev-latest, an alias
+# accepted by Laya). A missing sentry never weakens deterministic routing.
 #
 # Google AI Studio (Gemini) — a genuinely separate provider relationship, BYOK to a real Google
 # key (not held by the CF Gateway itself). Lets the model switcher offer Gemini models

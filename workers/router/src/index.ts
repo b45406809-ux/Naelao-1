@@ -25,6 +25,7 @@ export interface Env {
   AGENTS_WORKER: Fetcher;
   AUTH_WORKER: Fetcher;
   CREDENTIALS_WORKER: Fetcher;
+  ANALYTICS_WORKER?: Fetcher;
   /** F-2: billing worker — the public Lemon Squeezy webhook ingress proxies here. */
   BILLING_WORKER?: Fetcher;
   AI: Ai;
@@ -436,6 +437,8 @@ const END_USER_ROUTE_LIMITS: Record<string, [routeKey: string, limit: number]> =
   "end-users/reset-password": ["end-user-reset-confirm", 10],
   "end-users/verify-email": ["end-user-verify-email", 10],
   "end-users/resend-verification": ["end-user-resend-verification", 5],
+  "end-users/request-whatsapp-login": ["end-user-whatsapp-request", 3],
+  "end-users/verify-whatsapp-login": ["end-user-whatsapp-verify", 10],
 };
 
 app.all("/v1/spaces/:spaceId/end-users/*", async (c) => {
@@ -474,7 +477,14 @@ app.get("/v1/products/by-slug/:slug", async (c) => {
   headers.delete("x-naelao-role");
   headers.delete("x-naelao-scopes");
   headers.delete("x-naelao-internal-token");
-  return c.env.SPACES_WORKER.fetch(new Request(u.toString(), { method: c.req.method, headers, body: c.req.raw.body }));
+  return c.env.SPACES_WORKER.fetch(
+    new Request(u.toString(), {
+      method: c.req.method,
+      headers,
+      body: c.req.raw.body,
+      duplex: "half",
+    } as RequestInit)
+  );
 });
 
 // Three-Tier Platform Model, Phase 6: the shell's login page needs branding (logo/color/name)
@@ -498,7 +508,14 @@ app.get("/v1/spaces/:spaceId/shell/manifest", async (c) => {
   headers.delete("x-naelao-role");
   headers.delete("x-naelao-scopes");
   headers.delete("x-naelao-internal-token");
-  return c.env.SPACES_WORKER.fetch(new Request(u.toString(), { method: c.req.method, headers, body: c.req.raw.body }));
+  return c.env.SPACES_WORKER.fetch(
+    new Request(u.toString(), {
+      method: c.req.method,
+      headers,
+      body: c.req.raw.body,
+      duplex: "half",
+    } as RequestInit)
+  );
 });
 
 // Three-Tier Platform Model, Phase 6: routes a product end user (authenticated against
@@ -886,6 +903,18 @@ api.use("*", async (c, next) => {
 // `X-Naelao-Approval-Id` header — checked and single-use-consumed by the second branch below.
 api.use("*", async (c, next) => {
   const claims = c.get("claims");
+  const pathSpaceId = matchAgentSpacePath(c.req.path);
+  const claimedSpaceId = c.req.header("x-naelao-space-id");
+  // The route and authenticated claims are authoritative. A caller cannot substitute a
+  // different space through a header while the request is being proxied downstream.
+  if (claims && pathSpaceId && claimedSpaceId && claimedSpaceId !== pathSpaceId) {
+    return c.json({ error_code: "capability_scope_mismatch", message: "The requested space does not match the authenticated scope" }, 403);
+  }
+  return next();
+});
+
+api.use("*", async (c, next) => {
+  const claims = c.get("claims");
   const approval = c.get("agentApproval");
   const isMutating = ["POST", "PUT", "PATCH", "DELETE"].includes(c.req.method);
   if (claims?.role !== "agent" || !approval || !isMutating) return next();
@@ -1247,6 +1276,22 @@ api.all("/billing/whop-wallet/balance", proxyBilling);
 api.all("/billing/whop-wallet/transactions", proxyBilling);
 api.all("/billing/whop-wallet/destinations", proxyBilling);
 api.all("/billing/whop-wallet/payouts", proxyBilling);
+
+// Owner-only runtime distribution evidence. The analytics worker performs a second role and
+// platform-secret check before querying the private agent-event dataset.
+api.get("/analytics/runtime-economics", async (c) => {
+  if (!c.env.ANALYTICS_WORKER) {
+    return c.json({ error_code: "analytics_unavailable", message: "Analytics worker not configured" }, 503);
+  }
+  const url = new URL(c.req.url);
+  url.pathname = "/metrics/runtime-economics";
+  return proxyTo(
+    c.env.ANALYTICS_WORKER,
+    c.get("claims"),
+    new Request(url, c.req.raw),
+    c.env.PLATFORM_SECRET,
+  );
+});
 
 // Founder roadmap catalog (space types + templates, dev-only) → agents worker.
 // (/product/* and /business/* used to proxy here too, for the retired BusinessDO/ProductDO

@@ -19,6 +19,17 @@ describe("virtual POSIX shell", () => {
     ).resolves.toMatchObject({ exit_code: 0, stdout: "1\n3" });
   });
 
+  it("keeps simple shell status commands in the virtual runtime", async () => {
+    await expect(executeVirtualPosix("echo \"Project created successfully\"", fs)).resolves.toEqual({
+      exit_code: 0,
+      stdout: "Project created successfully",
+    });
+    await expect(executeVirtualPosix("pwd", fs)).resolves.toEqual({
+      exit_code: 0,
+      stdout: "/workspace",
+    });
+  });
+
   it("rejects traversal and the machine namespace", () => {
     expect(() => normalizeWorkspacePath("/workspace/../.avos/key")).toThrow(
       "workspace_path_traversal"

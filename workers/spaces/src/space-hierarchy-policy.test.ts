@@ -206,4 +206,28 @@ describe("Space Hierarchy & Isolation Policies", () => {
     expect(threads.status).toBe(404);
     expect(await threads.json()).toMatchObject({ message: "Project not found" });
   });
+
+  it("does not let a sibling department list, fetch, or infer a confidential project", async () => {
+    const { spaceDO, rows } = createTestDO();
+    rows.set("spaces", [
+      { id: "root", depth: 0, parent_id: null, space_type: "launchpad", status: "active" },
+      { id: "dev", depth: 1, parent_id: "root", space_type: "launchpad", status: "active" },
+      { id: "legal", depth: 1, parent_id: "root", space_type: "launchpad", status: "active" },
+    ]);
+    rows.set("space_members", [{ space_id: "dev", user_id: "engineer", role: "member" }]);
+    rows.set("projects", [{ id: "merger", space_id: "legal", visibility: "private", status: "active", allowed_agent_ids: null, channel_config: "{}" }]);
+    rows.set("project_members", []);
+
+    const authorization = await spaceDO.fetch(new Request(
+      "https://space-do/hierarchy-authorize?user_id=engineer&target_space_id=legal&requesting_space_id=dev&resource_id=merger",
+    ));
+    expect(await authorization.json()).toMatchObject({ permitted: false });
+
+    const direct = await spaceDO.fetch(new Request("https://space-do/projects/merger?viewer_id=engineer"));
+    const threads = await spaceDO.fetch(new Request("https://space-do/threads?space_id=legal&project_id=merger&viewer_id=engineer"));
+    for (const response of [direct, threads]) {
+      expect(response.status).toBe(404);
+      expect(await response.json()).toMatchObject({ message: "Project not found" });
+    }
+  });
 });

@@ -8,7 +8,7 @@
 import { Hono } from "hono";
 import { requestId, errorResponse, notFound, badRequest, unauthorized, internalError, safeKvPut, requireInternalHmac } from "@naelao/http";
 import { chunkText, chunkStructuredMarkdown, embedText, embedBatch, googleModeSearch, lookupSemanticCache, searchPermissionedKnowledge, wrapContextChunk, UNTRUSTED_CONTEXT_INSTRUCTION, verifyCitationCoordinate, type GroundedSearchHit, type RetrievalScope } from "@naelao/rag";
-import { checkSsrf, KNOWLEDGE_ROLE_MASK, type KnowledgeRole } from "@naelao/security";
+import { buildRetrievalPredicate, checkSsrf, isRetrievalRecordAllowed, isSpaceNetworkEgressDenied, KNOWLEDGE_ROLE_MASK, type KnowledgeRole } from "@naelao/security";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { moderateInput } from "@naelao/llm-gateway";
 import { createParseV5Request } from "./parse-v5.js";
@@ -97,6 +97,17 @@ function requireTenant(c: { req: { header: (h: string) => string | undefined } }
   const tenantId = c.req.header("x-naelao-tenant-id");
   if (!tenantId) throw unauthorized("Missing x-naelao-tenant-id header");
   return tenantId;
+}
+
+async function knowledgeEgressDenied(env: KnowledgeEnv, spaceId: string): Promise<boolean> {
+  return isSpaceNetworkEgressDenied(env.PLATFORM_DB, spaceId);
+}
+
+function airGapResponse(c: { json: (body: unknown, status: 403) => Response }): Response {
+  return c.json({
+    error_code: "air_gap_egress_denied",
+    message: "This operation is unavailable because the space blocks network and managed-service egress",
+  }, 403);
 }
 
 // F8: every kb/documents/* route already scopes its SQL by `WHERE space_id = ? AND tenant_id
@@ -272,6 +283,7 @@ app.get("/spaces/:spaceId/kb/documents", async (c) => {
 app.post("/spaces/:spaceId/kb/documents", async (c) => {
   const tenantId = requireTenant(c);
   const spaceId = c.req.param("spaceId");
+  if (await knowledgeEgressDenied(c.env, spaceId)) return airGapResponse(c);
 
   const body = await c.req.json<{
     title?: string;
@@ -540,6 +552,10 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
   if (!body.title && !body.content) {
     throw badRequest("At least one of title or content is required");
   }
+
+  // A title-only edit stays in D1. Content changes invoke Workers AI and Vectorize and therefore
+  // must be rejected before document state or existing vectors are mutated.
+  if (body.content && await knowledgeEgressDenied(c.env, spaceId)) return airGapResponse(c);
 
   // Verify ownership and get current state
   const existing = await c.env.PLATFORM_DB.prepare(
@@ -811,6 +827,7 @@ app.get("/spaces/:spaceId/projects/:projectId/citations/:documentId/:chunkId", a
 app.get("/spaces/:spaceId/kb/search", async (c) => {
   const tenantId = requireTenant(c);
   const spaceId = c.req.param("spaceId");
+  if (await knowledgeEgressDenied(c.env, spaceId)) return airGapResponse(c);
   const url = new URL(c.req.url);
   const query = url.searchParams.get("q");
   const topK = Math.min(parseInt(url.searchParams.get("top_k") ?? "10", 10), 50);
@@ -841,6 +858,7 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
     // Conceal absent and inaccessible private projects identically.
     throw notFound("Project not found");
   }
+  const retrievalPredicate = buildRetrievalPredicate("k", { tenantId, spaceId, projectId: scope.projectId, userId, roleRank });
   const policyVersion = c.env.RETRIEVAL_POLICY_VERSION ?? "1";
   let mode: "autorag" | "hybrid" = useAutoRag ? "autorag" : "hybrid";
   const telemetry: Record<string, number> = {};
@@ -937,12 +955,17 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
       const placeholders = ids.map(() => "?").join(",");
       const rows = await c.env.PLATFORM_DB.prepare(
         `SELECT k.*, d.title FROM kb_chunks k JOIN kb_documents d ON d.id=k.document_id
-         WHERE k.id IN (${placeholders}) AND k.tenant_id=? AND k.space_id=? AND k.project_id=?
-           AND k.required_role_rank<=? AND k.deleted_at IS NULL`
-      ).bind(...ids, scoped.tenantId, scoped.spaceId, scoped.projectId, scoped.roleRank).all<Record<string, unknown>>();
+         WHERE k.id IN (${placeholders}) AND ${retrievalPredicate.sql} AND k.deleted_at IS NULL`
+      ).bind(...ids, ...retrievalPredicate.binds).all<Record<string, unknown>>();
       const byId = new Map(rows.results.map((row) => [String(row.id), row]));
       return (found.matches ?? []).flatMap((match) => {
-        const row = byId.get(match.id); return row ? [rowToHit(row, match.score ?? 0)] : [];
+        const row = byId.get(match.id);
+        if (!row) return [];
+        const allowed = isRetrievalRecordAllowed({
+          tenantId: String(row.tenant_id), spaceId: String(row.space_id), projectId: String(row.project_id),
+          requiredRoleRank: Number(row.required_role_rank), content: String(row.content),
+        }, { tenantId, spaceId, projectId: scope.projectId, userId, roleRank });
+        return allowed ? [rowToHit(row, match.score ?? 0)] : [];
       });
       });
       return denseCandidates;
@@ -1010,6 +1033,7 @@ app.post("/internal/semantic-cache/lookup", async (c) => {
   if (!body.query || !body.spaceId) {
     return c.json({ error: "query and spaceId required" }, 400);
   }
+  if (await knowledgeEgressDenied(c.env, body.spaceId)) return airGapResponse(c);
 
   // Fail open if Vectorize binding not available (optional binding)
   if (!c.env.SEMANTIC_CACHE_VECTORS || !c.env.SEMANTIC_CACHE_KV) {
@@ -1060,6 +1084,7 @@ app.post("/internal/semantic-cache/store", async (c) => {
   if (!body.query || !body.spaceId || !body.response) {
     return c.json({ error: "query, spaceId, and response required" }, 400);
   }
+  if (await knowledgeEgressDenied(c.env, body.spaceId)) return airGapResponse(c);
 
   if (!c.env.SEMANTIC_CACHE_VECTORS || !c.env.SEMANTIC_CACHE_KV) {
     return c.json({ stored: false, reason: "semantic cache not configured" });
@@ -1095,6 +1120,7 @@ app.post("/internal/semantic-cache/store", async (c) => {
 app.delete("/internal/semantic-cache", async (c) => {
   const spaceId = c.req.query("spaceId");
   if (!spaceId) return c.json({ error: "spaceId required" }, 400);
+  if (await knowledgeEgressDenied(c.env, spaceId)) return airGapResponse(c);
 
   if (!c.env.SEMANTIC_CACHE_VECTORS || !c.env.SEMANTIC_CACHE_KV) {
     return c.json({ invalidated: true, count: 0 });
@@ -1156,7 +1182,20 @@ interface TavilyResult {
   score?: number;
 }
 
+async function requireWebToolEgress(c: Parameters<typeof airGapResponse>[0] & {
+  req: { header: (name: string) => string | undefined };
+  env: KnowledgeEnv;
+}): Promise<Response | null> {
+  const spaceId = c.req.header("x-naelao-space-id")?.trim();
+  // Internal callers must identify the policy owner. Missing identity fails closed instead of
+  // silently turning this platform endpoint into an ungoverned egress path.
+  if (!spaceId || await knowledgeEgressDenied(c.env, spaceId)) return airGapResponse(c);
+  return null;
+}
+
 app.post("/internal/web-search/search", async (c) => {
+  const denied = await requireWebToolEgress(c);
+  if (denied) return denied;
   const body = await c.req.json<{ query?: string; max_results?: number }>().catch(() => ({} as { query?: string; max_results?: number }));
   const query = (body.query ?? "").trim();
   if (!query) return c.json({ error_code: "bad_request", message: "query required" }, 400);
@@ -1196,6 +1235,8 @@ app.post("/internal/web-search/search", async (c) => {
 });
 
 app.post("/internal/web-search/fetch", async (c) => {
+  const denied = await requireWebToolEgress(c);
+  if (denied) return denied;
   const body = await c.req.json<{ url?: string }>().catch(() => ({} as { url?: string }));
   const rawUrl = (body.url ?? "").trim();
   if (!rawUrl) return c.json({ error_code: "bad_request", message: "url required" }, 400);
@@ -1215,6 +1256,8 @@ app.post("/internal/web-search/fetch", async (c) => {
 });
 
 app.post("/internal/web-search/extract", async (c) => {
+  const denied = await requireWebToolEgress(c);
+  if (denied) return denied;
   const body = await c.req.json<{ url?: string; schema?: unknown }>().catch(() => ({} as { url?: string }));
   const rawUrl = (body.url ?? "").trim();
   if (!rawUrl) return c.json({ error_code: "bad_request", message: "url required" }, 400);
@@ -1293,6 +1336,8 @@ function isTextualContentType(contentType: string): boolean {
 }
 
 app.post("/internal/web-search/download", async (c) => {
+  const denied = await requireWebToolEgress(c);
+  if (denied) return denied;
   const body = await c.req.json<{ url?: string }>().catch(() => ({} as { url?: string }));
   const rawUrl = (body.url ?? "").trim();
   if (!rawUrl) return c.json({ error_code: "bad_request", message: "url required" }, 400);

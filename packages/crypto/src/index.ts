@@ -98,6 +98,36 @@ export async function decrypt(envelope: EncryptedEnvelope, dek: CryptoKey): Prom
   return new TextDecoder().decode(plaintext);
 }
 
+/** AES-GCM envelope encryption with canonical caller-supplied authenticated metadata.
+ * The additional data is authenticated but never encrypted or stored in the envelope. */
+export async function encryptAuthenticated(
+  plaintext: string,
+  dek: CryptoKey,
+  authenticatedData: string,
+): Promise<EncryptedEnvelope> {
+  const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv, additionalData: new TextEncoder().encode(authenticatedData) },
+    dek,
+    new TextEncoder().encode(plaintext),
+  );
+  return { ciphertext: bufToBase64(new Uint8Array(ciphertext)), iv: bufToBase64(iv), algorithm: "aes-256-gcm" };
+}
+
+/** Decrypt an authenticated envelope. Metadata mismatch and tampering fail closed. */
+export async function decryptAuthenticated(
+  envelope: EncryptedEnvelope,
+  dek: CryptoKey,
+  authenticatedData: string,
+): Promise<string> {
+  const plaintext = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: base64ToBuf(envelope.iv), additionalData: new TextEncoder().encode(authenticatedData) },
+    dek,
+    base64ToBuf(envelope.ciphertext),
+  );
+  return new TextDecoder().decode(plaintext);
+}
+
 // Wrap (encrypt) a DEK with a Key Encryption Key — returns compact base64(iv||ciphertext)
 export async function wrapDek(dek: CryptoKey, kek: CryptoKey): Promise<string> {
   const rawDek = await (crypto.subtle.exportKey("raw", dek) as Promise<ArrayBuffer>);

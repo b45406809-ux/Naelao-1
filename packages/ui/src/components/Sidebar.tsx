@@ -16,6 +16,7 @@ export interface SidebarListEntry {
   label: string;
   meta?: React.ReactNode;
   icon?: IconName;
+  projectId?: string;
 }
 
 export interface SidebarProps {
@@ -42,6 +43,10 @@ export interface SidebarProps {
    *  it is a claim about the data, not a navigation affordance. Defaults to true so existing
    *  callers keep their current behaviour. */
   hasMoreThreads?: boolean;
+  projectThreads?: SidebarListEntry[];
+  onOpenProjectThread?: (threadId: string, projectId: string) => void;
+  onMoreProjectThreads?: () => void;
+  hasMoreProjectThreads?: boolean;
   spaceSwitcher?: {
     current: SpaceSwitcherEntry;
     entries: SpaceSwitcherEntry[];
@@ -85,6 +90,10 @@ export function Sidebar({
   onOpenThread,
   onMoreThreads,
   hasMoreThreads = true,
+  projectThreads,
+  onOpenProjectThread,
+  onMoreProjectThreads,
+  hasMoreProjectThreads = false,
   spaceSwitcher,
   iconOnly,
   onToggleCollapse,
@@ -95,6 +104,7 @@ export function Sidebar({
   // row (the ask was "list x projects with —more projects—"), while the chevron still collapses.
   const [projectsOpen, setProjectsOpen] = React.useState(true);
   const [threadsOpen, setThreadsOpen] = React.useState(true);
+  const [projectThreadsOpen, setProjectThreadsOpen] = React.useState(true);
 
   return (
     <nav id="sidebar" className={[iconOnly ? "icon-only" : "", mobileOpen ? "mobile-open" : ""].filter(Boolean).join(" ") || undefined}>
@@ -110,16 +120,19 @@ export function Sidebar({
         >
           {brandName}
         </span>
-        {onToggleCollapse && (
-          <button className="sidebar-collapse" onClick={onToggleCollapse} title="Toggle sidebar" type="button">
-            <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="currentColor">
-              <line x1="5" y1="4" x2="5" y2="12" />
-              <line x1="9" y1="6" x2="11" y2="8" />
-              <line x1="9" y1="10" x2="11" y2="8" />
-            </svg>
-          </button>
-        )}
       </div>
+
+      {onToggleCollapse && (
+        <button
+          className="sidebar-edge-toggle"
+          onClick={onToggleCollapse}
+          title={iconOnly ? "Open sidebar" : "Collapse sidebar"}
+          aria-label={iconOnly ? "Open sidebar" : "Collapse sidebar"}
+          type="button"
+        >
+          {iconOnly ? "›" : "‹"}
+        </button>
+      )}
 
       {onNewThread && (
         <button className="new-chat-btn" onClick={onNewThread} type="button">
@@ -129,35 +142,55 @@ export function Sidebar({
       )}
 
       <div className="sidebar-nav">
-        {primaryNav.map((item) => (
-          <NavItem
-            key={item.key}
-            icon={item.icon}
-            label={item.label}
-            active={activeKey === item.key}
-            badge={item.badge}
-            onClick={() => onNavigate(item.key)}
-          />
-        ))}
+        {primaryNav.map((item) => {
+          if (item.key !== "projects" || !projects) {
+            return <NavItem key={item.key} icon={item.icon} label={item.label} active={activeKey === item.key} badge={item.badge} onClick={() => onNavigate(item.key)} />;
+          }
+          return (
+            <React.Fragment key={item.key}>
+              <NavItem
+                icon={item.icon}
+                label={item.label}
+                active={activeKey === item.key}
+                badge={item.badge}
+                onClick={() => {
+                  if (iconOnly && onToggleCollapse) onToggleCollapse();
+                  setProjectsOpen((v) => iconOnly ? true : !v);
+                }}
+                trailing={<ChevronRightIcon className="sidebar-project-chevron" style={{ width: 10, height: 10, marginLeft: "auto", transition: "transform .2s", transform: projectsOpen ? "rotate(90deg)" : "none" }} />}
+              />
+              {projectsOpen && (
+                <div className="sidebar-project-list">
+                  {projects.slice(0, PROJECTS_SHOWN).map((p) => (
+                    <HistoryItem key={p.id} icon="projects" label={p.label} meta={p.meta} onClick={() => onOpenProject?.(p.id)} />
+                  ))}
+                  {projects.length > PROJECTS_SHOWN && onMoreProjects && (
+                    <HistoryItem icon="projects" label="… more projects" muted onClick={onMoreProjects} />
+                  )}
+                </div>
+              )}
+            </React.Fragment>
+          );
+        })}
         {moreNav && moreNav.length > 0 && (
           <>
             <div
               className={["nav-item", moreOpen ? "" : ""].filter(Boolean).join(" ")}
-              onClick={() => setMoreOpen((v) => !v)}
+              onClick={() => {
+                if (iconOnly && onToggleCollapse) onToggleCollapse();
+                setMoreOpen((v) => iconOnly ? true : !v);
+              }}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter" && event.key !== " ") return;
+                event.preventDefault();
+                if (iconOnly && onToggleCollapse) onToggleCollapse();
+                setMoreOpen((v) => iconOnly ? true : !v);
+              }}
               role="button"
               tabIndex={0}
             >
               <MoreIcon />
               <span className="sidebar-text">More</span>
-              <ChevronRightIcon
-                style={{
-                  width: 10,
-                  height: 10,
-                  marginLeft: "auto",
-                  transition: "transform 0.2s",
-                  transform: moreOpen ? "rotate(90deg)" : "none",
-                }}
-              />
             </div>
             {moreOpen && (
               <div>
@@ -177,48 +210,6 @@ export function Sidebar({
           </>
         )}
       </div>
-
-      {projects && (
-        <>
-          <div
-            className="sidebar-section sidebar-text"
-            style={{ cursor: "pointer" }}
-            onClick={() => setProjectsOpen((v) => !v)}
-          >
-            <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
-              <ChevronRightIcon
-                width={10}
-                height={10}
-                style={{ transition: "transform 0.2s", transform: projectsOpen ? "rotate(90deg)" : "none" }}
-              />
-              Projects
-            </span>
-            {onNewProject && (
-              <button
-                className="section-add"
-                title="New project"
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onNewProject();
-                }}
-              >
-                <PlusIcon />
-              </button>
-            )}
-          </div>
-          {projectsOpen && (
-            <div>
-              {projects.slice(0, PROJECTS_SHOWN).map((p) => (
-                <HistoryItem key={p.id} icon="projects" label={p.label} meta={p.meta} onClick={() => onOpenProject?.(p.id)} />
-              ))}
-              {projects.length > PROJECTS_SHOWN && onMoreProjects && (
-                <HistoryItem icon="projects" label="… more projects" muted onClick={onMoreProjects} />
-              )}
-            </div>
-          )}
-        </>
-      )}
 
       {threads && (
         <>
@@ -250,12 +241,47 @@ export function Sidebar({
             )}
           </div>
           {threadsOpen && (
-            <div>
+            <div className="sidebar-history-list">
               {threads.map((t) => (
                 <HistoryItem key={t.id} icon="threads" label={t.label} onClick={() => onOpenThread?.(t.id)} />
               ))}
               {onMoreThreads && hasMoreThreads && (
                 <HistoryItem icon="threads" label="… more sessions" muted onClick={onMoreThreads} />
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      {projectThreads && (
+        <>
+          <div
+            className="sidebar-section sidebar-text"
+            style={{ cursor: "pointer" }}
+            onClick={() => setProjectThreadsOpen((v) => !v)}
+          >
+            <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+              <ChevronRightIcon
+                width={10}
+                height={10}
+                style={{ transition: "transform 0.2s", transform: projectThreadsOpen ? "rotate(90deg)" : "none" }}
+              />
+              Project threads
+            </span>
+          </div>
+          {projectThreadsOpen && (
+            <div className="sidebar-history-list">
+              {projectThreads.map((thread) => (
+                <HistoryItem
+                  key={thread.id}
+                  icon="threads"
+                  label={thread.label}
+                  meta={thread.meta}
+                  onClick={() => thread.projectId && onOpenProjectThread?.(thread.id, thread.projectId)}
+                />
+              ))}
+              {onMoreProjectThreads && hasMoreProjectThreads && (
+                <HistoryItem icon="threads" label="… more project threads" muted onClick={onMoreProjectThreads} />
               )}
             </div>
           )}

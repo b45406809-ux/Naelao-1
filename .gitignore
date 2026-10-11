@@ -23,3 +23,9 @@ repomix-*.txt
 .repomix-cache/
 repomix/outputs/
 .phase-runs/
+
+# Local development server logs
+.dev/
+workers/*/wrangler.dev.generated.toml
+test-results/
+tests/.plan-state/

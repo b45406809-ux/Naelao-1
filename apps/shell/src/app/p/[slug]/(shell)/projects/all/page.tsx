@@ -1,7 +1,5 @@
 "use client";
 
-export const runtime = "edge";
-
 // The full project list (moved off /projects, which now redirects straight into the business's
 // default General project — see /projects/page.tsx). "New Project" opens a template grid first,
 // matching how creating a business already works: pick a real preset (kind, execution ceiling,
@@ -19,6 +17,7 @@ import {
   createProjectFromTemplate,
   getShellManifest,
   getFeatureKinds,
+  ApiError,
   type Project,
   type FeatureKind,
 } from "@/lib/api";
@@ -43,6 +42,7 @@ export default function ProjectsAllPage() {
   // (not just left to the server's own 409) so the grid never offers a doomed create attempt.
   const [featureKinds, setFeatureKinds] = React.useState<FeatureKind[]>([]);
   const [loading, setLoading] = React.useState(true);
+  const [loadError, setLoadError] = React.useState<string | null>(null);
 
   // Two-step dialog: pick a template/plugin (or "Blank") first, then — only for Blank — name it.
   const [modalOpen, setModalOpen] = React.useState(false);
@@ -57,18 +57,31 @@ export default function ProjectsAllPage() {
   const refresh = React.useCallback(async () => {
     if (!creds) return;
     setLoading(true);
+    setLoadError(null);
     try {
-      const [projectList, manifest, kinds] = await Promise.all([
+      const [projectResult, manifestResult, kindsResult] = await Promise.allSettled([
         listProjects(activeSpaceId, creds),
-        getShellManifest(activeSpaceId, creds).catch(() => null),
-        getFeatureKinds(activeSpaceId, creds).catch(() => []),
+        getShellManifest(activeSpaceId, creds),
+        getFeatureKinds(activeSpaceId, creds),
       ]);
-      setProjects(projectList);
-      setTemplates(manifest?.project_template_catalog ?? []);
-      const activeSingletonKinds = new Set(projectList.filter((p) => p.status !== "archived").map((p) => p.kind));
+
+      // A product end-user can open the shell before joining a business. The catalog is still
+      // useful in that state, while the business-scoped project list correctly returns 403.
+      if (projectResult.status === "fulfilled") {
+        setProjects(projectResult.value);
+      } else {
+        throw projectResult.reason;
+      }
+
+      const manifest = manifestResult.status === "fulfilled" ? manifestResult.value : null;
+      const catalog = manifest?.project_template_catalog ?? [];
+      setTemplates(catalog);
+      const kinds = kindsResult.status === "fulfilled" ? kindsResult.value : [];
+      const currentProjects = projectResult.status === "fulfilled" ? projectResult.value : [];
+      const activeSingletonKinds = new Set(currentProjects.filter((p) => p.status !== "archived").map((p) => p.kind));
       setFeatureKinds(kinds.filter((k) => !k.singleton || !activeSingletonKinds.has(k.kind)));
-    } catch {
-      show("Couldn't load projects");
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "Couldn't load projects");
     } finally {
       setLoading(false);
     }
@@ -134,11 +147,13 @@ export default function ProjectsAllPage() {
           <div className="page-title">All Projects</div>
           <div className="page-subtitle">Workspaces your agents access through threads.</div>
         </div>
-        <Button onClick={openModal}>New Project</Button>
+        <Button onClick={openModal} disabled={loading || !!loadError}>New Project</Button>
       </div>
 
       {loading ? (
         <p style={{ color: "var(--text3)", fontSize: 13 }}>Loading…</p>
+      ) : loadError ? (
+        <div role="alert"><p>{loadError}</p><Button variant="secondary" onClick={() => void refresh()}>Retry</Button></div>
       ) : projects.length === 0 ? (
         <p style={{ color: "var(--text3)", fontSize: 13 }}>No projects yet.</p>
       ) : (
@@ -158,6 +173,7 @@ export default function ProjectsAllPage() {
       <Modal
         open={modalOpen}
         onClose={() => setModalOpen(false)}
+        width={760}
         title={pickedTemplate === "blank" ? "Blank project" : pickedKind ? pickedKind.label : "New Project"}
         footer={
           pickedTemplate === "blank" || pickedKind ? (
@@ -178,7 +194,7 @@ export default function ProjectsAllPage() {
       >
         {pickedTemplate === "blank" || pickedKind ? (
           <form onSubmit={handleCreateNamed} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <FormInput placeholder="Project name" value={name} onChange={(e) => setName(e.target.value)} required autoFocus />
+            <FormInput aria-label="Project name" placeholder="Project name" value={name} onChange={(e) => setName(e.target.value)} required autoFocus />
             <FormTextarea placeholder="Description (optional)" value={description} onChange={(e) => setDescription(e.target.value)} rows={3} />
           </form>
         ) : (
@@ -186,7 +202,7 @@ export default function ProjectsAllPage() {
             <p style={{ fontSize: 12.5, color: "var(--text3)", margin: "0 0 12px" }}>
               A template sets up the project's kind, spend limits and agent in one step. Or start blank.
             </p>
-            <div className="app-grid">
+            <div className="app-grid project-template-grid">
               {templates.map((t) => (
                 <button
                   key={t.id}
@@ -225,7 +241,7 @@ export default function ProjectsAllPage() {
                   Plugins — native business infrastructure (a wallet, a CRM, a shared inbox…) as its
                   own project, with its own thread and access control.
                 </p>
-                <div className="app-grid">
+                <div className="app-grid project-template-grid">
                   {featureKinds.map((k) => (
                     <button
                       key={k.kind}

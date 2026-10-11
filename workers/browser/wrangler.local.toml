@@ -1,0 +1,26 @@
+# Cloudflare Browser Rendering is unavailable in the local emulator. The service
+# still runs and reports its real unavailable-provider error when called.
+name = "naelao-browser"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = false
+
+[[durable_objects.bindings]]
+name = "BROWSER_SESSION_DO"
+class_name = "BrowserSessionDO"
+
+[[migrations]]
+tag = "v1-browser-sessions"
+new_sqlite_classes = ["BrowserSessionDO"]
+
+[[r2_buckets]]
+binding = "BROWSER_ARTIFACTS"
+bucket_name = "naelao-browser-artifacts"
+
+[[services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"
+
+[vars]
+ENVIRONMENT = "development"

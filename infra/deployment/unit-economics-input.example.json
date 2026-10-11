@@ -1,0 +1,17 @@
+{
+  "periodDays": 30,
+  "activePaidUsers": 0,
+  "netRevenueUsd": 0,
+  "costsUsd": {
+    "workers": null,
+    "durableObjects": null,
+    "r2Operations": null,
+    "egress": null,
+    "model": null,
+    "browser": null,
+    "containers": null,
+    "paymentProcessing": null,
+    "customerSupport": null,
+    "otherCostOfRevenue": null
+  }
+}

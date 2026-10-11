@@ -29,11 +29,14 @@ import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 import { workspacePrefix, type ExecutionTier } from "../types.js";
 import { assertNoReservedViolation } from "../reserved-capabilities.js";
 import { canRunVirtually, executeVirtualPosix } from "../virtual-posix.js";
-import { parseCliWords } from "../virtual-cli.js";
+import { parseCliWords, interceptPlatformWords } from "../virtual-cli.js";
+import { parseShell } from "../shell-parser.js";
+import { virtualFsList, virtualFsWrite, virtualFsDelete } from "../r2-workspace.js";
+import { readBytesWithHash, sha256Text } from "../r2-cas.js";
 import { VirtualCliDispatcher } from "../virtual-cli.js";
 import { createVaultProxy } from "../vault-proxy.js";
 import { inspectMutation } from "@naelao/security";
-import { requiresNativeCompilation } from "../execution-ladder.js";
+import { isDeclaredNativeCommand } from "../execution-ladder.js";
 
 const PYTHON_HARNESS = `
 import { execFileSync } from "node:child_process";
@@ -103,7 +106,8 @@ async function runTier(
   name: string,
   harness: string,
   tier: ExecutionTier,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  sidecar?: import("../container-policy.js").InstalledContainer
 ): Promise<unknown> {
   if (!ctx.env.codeRunner) {
     return {
@@ -119,10 +123,20 @@ async function runTier(
     spaceId: ctx.env.spaceId,
     agentId: ctx.env.agentId,
     tenantId: ctx.env.tenantId,
+    ...(ctx.env.maxTier !== undefined ? { maxTier: ctx.env.maxTier } : {}),
+    ...(ctx.env.workspaceBranch ? { workspaceBranch: ctx.env.workspaceBranch } : {}),
+    ...(ctx.env.humanInvokerId ? { userId: ctx.env.humanInvokerId } : {}),
+    ...(Array.isArray(args["capabilities"]) ? { capabilities: args["capabilities"].filter((value): value is string => typeof value === "string") } : {}),
+    ...(ctx.env.runId ? { runId: ctx.env.runId } : {}),
+    ...(ctx.env.taskId ? { taskId: ctx.env.taskId } : {}),
     ...(ctx.env.projectId ? { projectId: ctx.env.projectId } : {}),
+    ...(ctx.env.executionSignal ? { signal: ctx.env.executionSignal } : {}),
+    ...(sidecar ? { containerImage: sidecar.contract.image, installationId: sidecar.installationId } : {}),
   });
-  if (!result.ok) throw new Error(result.error ?? `${name} failed`);
-  return result.output;
+  if (!result.ok) throw Object.assign(new Error(result.error ?? `${name} failed`), { capability_error: result.capability_error, runtime_receipt: result.runtime_receipt });
+  return result.output && typeof result.output === "object" && !Array.isArray(result.output)
+    ? { ...(result.output as Record<string, unknown>), actual_tier: result.actual_tier, engine: result.engine, runtime_receipt: result.runtime_receipt }
+    : { result: result.output, actual_tier: result.actual_tier, engine: result.engine, runtime_receipt: result.runtime_receipt };
 }
 
 async function runBash(
@@ -141,39 +155,72 @@ async function runBash(
   });
   const bucket = ctx.env.workspaceBucket ?? ctx.env.scriptsBucket;
   const prefix = workspacePrefix(ctx.env);
-  if (canRunVirtually(command)) {
+  const observed = new Map<string, string | null>();
+  let actualTier: ExecutionTier = 1;
+  if (canRunVirtually(command, (name) => ctx.commands?.has(name) ?? false)) {
     const cli = ctx.env.credentialsWorker && ctx.env.platformSecret
       ? new VirtualCliDispatcher({
-          vault: createVaultProxy({ credentialsWorker: ctx.env.credentialsWorker, platformSecret: ctx.env.platformSecret, tenantId: ctx.env.tenantId, spaceId: ctx.env.spaceId, agentId: ctx.env.agentId }),
+          vault: createVaultProxy({ credentialsWorker: ctx.env.credentialsWorker, platformSecret: ctx.env.platformSecret, tenantId: ctx.env.tenantId, spaceId: ctx.env.spaceId, agentId: ctx.env.agentId, ...(ctx.env.projectId ? { projectId: ctx.env.projectId } : {}), ...(ctx.env.userId ? { userId: ctx.env.userId } : {}), ...(ctx.env.runId ? { runId: ctx.env.runId } : {}), ...(ctx.env.taskId ? { taskId: ctx.env.taskId } : {}) }),
           tenantId: ctx.env.tenantId,
           spaceId: ctx.env.spaceId,
           ...(ctx.env.projectId ? { projectId: ctx.env.projectId } : {}),
         })
       : undefined;
     const result = await executeVirtualPosix(command, {
-      read: async (path) => (await bucket.get(`${prefix}${path}`))?.text(),
-      list: async () => {
-        const found: string[] = [];
-        let cursor: string | undefined;
-        do {
-          const page = await bucket.list({
-            prefix,
-            ...(cursor ? { cursor } : {}),
-          });
-          found.push(...page.objects.map((o) => o.key.slice(prefix.length)));
-          cursor = page.truncated ? page.cursor : undefined;
-        } while (cursor && found.length < 1_000);
-        return found;
+      read: async (path) => {
+        const value = await readBytesWithHash(bucket, `${prefix}${path}`);
+        observed.set(path, value?.hash ?? null);
+        return value ? new TextDecoder().decode(value.bytes) : undefined;
       },
-    }, cli ? { cli } : {});
+      list: async () => (await virtualFsList(ctx.env)).map((entry) => entry.path),
+      write: async (path, contents) => {
+        if (!observed.has(path)) observed.set(path, (await readBytesWithHash(bucket, `${prefix}${path}`))?.hash ?? null);
+        await virtualFsWrite(ctx.env, path, contents, observed.get(path)!);
+        observed.set(path, await sha256Text(contents));
+      },
+      remove: async (path) => {
+        if (!observed.has(path)) observed.set(path, (await readBytesWithHash(bucket, `${prefix}${path}`))?.hash ?? null);
+        await virtualFsDelete(ctx.env, path, observed.get(path)!);
+        observed.set(path, null);
+      },
+    }, {
+      ...(cli ? { cli } : {}),
+      authorize: ctx.authorizeShell,
+      deadline: Date.now() + Math.max(1, Math.min(120, Number(args["timeout"]) || 30)) * 1000,
+      maxOutputBytes: 65_536,
+      resolve: async (words, stdin, execution) => {
+        if (execution.signal.aborted) throw new Error("shell_cancelled");
+        const dispatch = interceptPlatformWords(words);
+        const registered = ctx.commands?.get(words[0] ?? "");
+        if (!dispatch && !registered) return null;
+        if (registered && words.includes("--help")) return { exit_code: 0, stdout: registered.usage };
+        const operation = dispatch?.operation ?? registered!.operation;
+        const declaredTier = ctx.commands?.get(operation)?.requiresTier ?? registered?.requiresTier ?? 1;
+        actualTier = Math.max(actualTier, declaredTier) as ExecutionTier;
+        if (operation === "Bash" || operation === "code.execute_bash") throw new Error("recursive_shell_command");
+        let parameters: Record<string, unknown> = { argv: words.slice(1), stdin };
+        const paramsAt = words.indexOf("--params");
+        if (paramsAt >= 0) {
+          const parsed = JSON.parse(words[paramsAt + 1] ?? "null") as unknown;
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("--params requires a JSON object");
+          parameters = parsed as Record<string, unknown>;
+        }
+        const value = await ctx.run(operation, dispatch?.params ?? parameters);
+        return { exit_code: 0, stdout: typeof value === "string" ? value : JSON.stringify(value),
+          ...(operation === "delegate_to_space_worker" || operation === "thread.delegate" ? { events: [{ type: "worker" as const, name: operation, data: value }] } : {}),
+        };
+      },
+    });
     if (result.exit_code !== 0)
       throw new Error(result.stderr ?? "virtual command failed");
-    return { ...result, virtual: true };
+    return { ...result, virtual: true, actual_tier: actualTier, engine: actualTier === 1 ? "sqlite_fs" : undefined };
   }
 
   // /.avos is deliberately a sibling namespace in R2, never under the deliverable prefix.
-  const first = parseCliWords(command)[0];
-  if (first && /^[a-zA-Z][\w-]*$/.test(first)) {
+  const parsedShell = parseShell(command);
+  const first = parsedShell[0]?.commands[0]?.argv[0];
+  if (parsedShell.length === 1 && parsedShell[0]!.commands.length === 1 && !parsedShell[0]!.commands[0]!.redirects.length && first && /^[a-zA-Z][\w-]*$/.test(first)) {
+    if (ctx.authorizeShell && !await ctx.authorizeShell({ kind: "command", name: first })) throw new Error(`shell_permission_denied:${first}`);
     const avosPrefix = prefix.replace(/workspace\/$/, "avos/");
     const module = await bucket.get(`${avosPrefix}bin/${first}.ts`);
     if (module) {
@@ -189,6 +236,21 @@ async function runBash(
       });
     }
   }
+  const stages = parseShell(command).flatMap((pipeline) => pipeline.commands);
+  if (stages.length === 1 && first && !stages[0]!.redirects.length && ctx.env.resolveContainerCommand) {
+    const sidecar = await ctx.env.resolveContainerCommand(first);
+    if (sidecar) {
+      if (ctx.env.maxTier !== undefined && ctx.env.maxTier < 6) throw new Error("container_execution_ceiling_exceeded");
+      if (ctx.authorizeShell && !await ctx.authorizeShell({ kind: "command", name: first })) throw new Error("shell_permission_denied:" + first);
+      const binary = first.includes("/") ? first.split("/").at(-1)! : first;
+      const words = [binary, ...stages[0]!.argv.slice(1)];
+      const resolvedCommand = words.map(word => "'" + word.replaceAll("'", "'\\''") + "'").join(" ");
+      return runTier(ctx, "container.extension_binary", BASH_HARNESS, 6, { ...args, commands: resolvedCommand }, sidecar);
+    }
+  }
+  if (!stages.length || stages.some(({ argv }) => !isDeclaredNativeCommand(argv[0] ?? "")))
+    throw new Error(`command_not_found: ${first ?? "unknown"}. Use tools.search or install a worker/command that provides this capability.`);
+  for (const stage of stages) if (ctx.authorizeShell && !await ctx.authorizeShell({ kind: "command", name: stage.argv[0]! })) throw new Error(`shell_permission_denied:${stage.argv[0]}`);
   if (ctx.env.maxTier !== undefined && ctx.env.maxTier < 6) {
     throw new Error(
       `command requires the Tier 6 container, above this project's execution ceiling (${ctx.env.maxTier})`
@@ -202,7 +264,7 @@ export const codeExec: PrebuiltScript = {
   description:
     "Execute Python or Bash in a real sandbox container, or fast JS in a V8 isolate.",
   domain: "container",
-  requires_tier: 5,
+  requires_tier: 1,
   paramHints: {
     "code.execute_bash":
       "commands (string, REQUIRED — a bash command line). timeout (number, " +
@@ -221,10 +283,7 @@ export const codeExec: PrebuiltScript = {
   },
   operations: {
     "code.execute_python": (a, c) => {
-      const code = String(a["code"] ?? "");
-      const installDeps = Array.isArray(a["install_deps"]) ? a["install_deps"].join(" ") : "";
-      const native = installDeps.length > 0 || requiresNativeCompilation(code);
-      return runTier(c, "code-exec.execute_python", PYTHON_HARNESS, native ? 6 : 2, a);
+      return runTier(c, "code-exec.execute_python", PYTHON_HARNESS, 2, a);
     },
     "code.execute_bash": runBash,
     // Same op as code.execute_bash — see RENAMED_OPERATIONS in tool-surface.ts ("bash"/

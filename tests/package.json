@@ -7,6 +7,7 @@
     "test:watch": "vitest"
   },
   "devDependencies": {
+    "@playwright/test": "^1.55.0",
     "vitest": "^2.1.8",
     "@naelao/types": "workspace:*",
     "@naelao/auth": "workspace:*",
@@ -23,6 +24,8 @@
     "@naelao/events": "workspace:*",
     "@naelao/http": "workspace:*",
     "@naelao/agent-sdk": "workspace:*",
+    "@naelao/db": "workspace:*",
+    "@naelao/sdk": "workspace:*",
     "hono": "^4.6.14",
     "typescript": "^5.6.3"
   }

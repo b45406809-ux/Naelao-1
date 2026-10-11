@@ -6,14 +6,14 @@
 
 #bg-canvas { position: fixed; inset: 0; pointer-events: none; z-index: 0; transition: opacity 0.6s; opacity: 0; }
 #bg-canvas.visible { opacity: 1; }
-#app { display: flex; width: 100%; height: 100vh; position: relative; z-index: 1; overflow: hidden; }
+#app { display: flex; width: 100%; height: 100vh; position: relative; z-index: 1; overflow: visible; }
 
 /* ── SIDEBAR ── */
 #sidebar{
-  width:216px;flex-shrink:0;background:var(--sidebar-bg);border-right:1px solid var(--border);
+  width:216px;flex-shrink:0;background:rgba(var(--surface-rgb),0.82);border-right:1px solid var(--border);
   display:flex;flex-direction:column;height:100%;overflow:hidden;
   transition:width 0.22s cubic-bezier(.4,0,.2,1),background 0.3s,border-color 0.3s;
-  position:relative;z-index:2;
+  position:relative;z-index:2;overflow:visible;backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
 }
 #sidebar.icon-only{width:52px}
 #sidebar.icon-only .sidebar-text{display:none!important}
@@ -33,6 +33,12 @@
 .logo-mark svg{fill:var(--bg);width:14px;height:14px}
 .sidebar-collapse{margin-left:auto;background:none;border:none;color:var(--text3);cursor:pointer;padding:4px;border-radius:6px;display:flex;align-items:center;transition:color var(--transition),background var(--transition)}
 .sidebar-collapse:hover{color:var(--text);background:var(--surface2)}
+.sidebar-edge-toggle{position:absolute;right:-12px;top:50%;transform:translateY(-50%);width:24px;height:24px;border-radius:50%;border:1px solid var(--border2);background:var(--surface);color:var(--text2);display:flex;align-items:center;justify-content:center;font-size:17px;line-height:1;cursor:pointer;z-index:50;opacity:0;pointer-events:auto;transition:opacity var(--transition),background var(--transition),color var(--transition)}
+#sidebar:hover .sidebar-edge-toggle,#sidebar:focus-within .sidebar-edge-toggle{opacity:1}
+#sidebar.icon-only .sidebar-edge-toggle{opacity:0;right:-12px}
+#sidebar.icon-only:hover .sidebar-edge-toggle{opacity:1}
+.sidebar-edge-toggle:hover{background:var(--surface2);color:var(--text)}
+.sidebar-nav{overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--border2) transparent}
 
 .new-chat-btn{margin:0 10px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--text);font-size:13px;font-weight:400;font-family:'DM Sans',sans-serif;transition:all var(--transition);text-align:left;width:calc(100% - 20px);white-space:nowrap}
 .new-chat-btn:hover{background:var(--border);border-color:var(--border2)}
@@ -50,6 +56,14 @@
 .nav-group-toggle:hover{color:var(--text2)}
 .nav-group-toggle svg{width:10px;height:10px;stroke:currentColor;transition:transform 0.2s;flex-shrink:0}
 .nav-group.open .nav-group-toggle svg{transform:rotate(90deg)}
+#sidebar.icon-only .nav-group-toggle{justify-content:center;padding-left:7px;padding-right:7px}
+#sidebar.icon-only .nav-group-toggle svg:last-child{display:none}
+#sidebar.icon-only .sidebar-more-chevron{display:none}
+#sidebar.icon-only .sidebar-project-chevron{display:none}
+#sidebar.icon-only .sidebar-project-list{display:none}
+#sidebar.icon-only .sidebar-history-list{padding-left:0}
+.sidebar-project-list{padding-left:15px}
+.sidebar-history-list{padding-left:15px}
 .nav-group-items{display:none}
 .nav-group.open .nav-group-items{display:block}
 
@@ -64,7 +78,7 @@
 .folder-item:hover,.history-item:hover{background:var(--surface2);color:var(--text)}
 .folder-item svg,.history-item svg{width:13px;height:13px;stroke:currentColor;flex-shrink:0;opacity:0.7}
 
-.sidebar-footer{margin-top:auto;border-top:1px solid var(--border);padding:10px}
+.sidebar-footer{margin-top:auto;border-top:0;padding:10px}
 .upgrade-banner{background:linear-gradient(135deg,var(--accent-dim),transparent);border:1px solid rgba(91,82,240,0.2);border-radius:var(--radius-sm);padding:11px 12px;margin-bottom:10px;position:relative}
 [data-theme="dark"] .upgrade-banner{border-color:rgba(123,115,245,0.2)}
 .upgrade-banner .close-x{position:absolute;top:8px;right:8px;background:none;border:none;cursor:pointer;color:var(--text3);padding:2px;display:flex}
@@ -74,7 +88,7 @@
 .upgrade-btn:hover{opacity:0.88;transform:scale(0.98)}
 
 /* ── SPACE ROW (bottom of sidebar, replaces user-row) ── */
-.space-row{display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:var(--radius-sm);cursor:pointer;transition:background var(--transition);position:relative}
+.space-row{display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:var(--radius-sm);cursor:pointer;transition:background var(--transition);position:relative;background:rgba(255,255,255,0.01)}
 .space-row:hover{background:var(--surface2)}
 .space-avatar{width:29px;height:29px;border-radius:7px;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:#fff;flex-shrink:0;box-shadow:0 2px 8px var(--accent-glow)}
 .space-info{flex:1;min-width:0}
@@ -93,8 +107,12 @@
 }
 .space-switcher-dropdown.open{opacity:1;pointer-events:all;transform:translateY(0)}
 .switcher-header{padding:10px 12px 6px;font-size:10.5px;font-weight:500;color:var(--text3);letter-spacing:0.06em;text-transform:uppercase;display:flex;align-items:center;justify-content:space-between}
+.switcher-header-actions{display:flex;align-items:center;gap:4px;margin-left:auto}
 .switcher-header button{background:none;border:none;cursor:pointer;color:var(--accent);font-size:11px;font-family:'DM Sans',sans-serif;padding:2px 6px;border-radius:4px;transition:background var(--transition)}
 .switcher-header button:hover{background:var(--accent-dim)}
+.switcher-header .theme-switcher-button{display:grid;place-items:center;width:22px;height:22px;padding:3px;color:var(--text2);border:1px solid transparent;border-radius:6px}
+.switcher-header .theme-switcher-button:hover{color:var(--text);border-color:var(--border);background:var(--surface2)}
+.theme-switcher-button svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round}
 .space-item{display:flex;align-items:center;gap:9px;padding:8px 12px;cursor:pointer;transition:background var(--transition)}
 .space-item:hover{background:var(--surface2)}
 .space-item.active-space{background:var(--accent-dim)}
@@ -151,6 +169,27 @@
 .privacy-badge{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text3);background:var(--surface2);border:1px solid var(--border);border-radius:20px;padding:2px 8px}
 .privacy-badge svg{width:10px;height:10px;stroke:currentColor}
 .topbar-actions{margin-left:auto;display:flex;align-items:center;gap:6px;flex-shrink:0}
+.thread-topbar{position:relative;justify-content:center;background:rgba(var(--surface-rgb),0.05);border-bottom:0}
+.thread-title{max-width:min(72vw,680px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:500;color:var(--text)}
+.thread-topbar .topbar-actions{position:absolute;right:12px}
+.thread-title-wrap{display:flex;flex-direction:column;align-items:center;gap:2px;width:100%;max-width:calc(100% - 24px);min-width:0;margin-top:15px}
+.thread-mobile-control{display:none;position:absolute;top:7px;width:34px;height:34px;align-items:center;justify-content:center;border:1px solid var(--border);border-radius:var(--radius-sm);background:transparent;color:var(--text2);font:inherit;font-size:16px;line-height:1;cursor:pointer;z-index:2}
+.thread-mobile-control:hover{background:var(--surface2);color:var(--text)}
+.thread-mobile-control svg{width:17px;height:17px;stroke:currentColor}
+.thread-mobile-menu{left:12px}
+.thread-workspace-control{right:12px}
+.thread-model-summary{max-width:100%;min-width:0}
+.thread-model-button{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border:0;background:transparent;color:var(--text3);font:inherit;font-size:10.5px;cursor:pointer;padding:1px 6px;border-radius:5px}
+.thread-model-button:hover{background:var(--surface2);color:var(--text)}
+.thread-model-menu{position:absolute;top:40px;left:50%;transform:translateX(-50%);z-index:20;min-width:190px;padding:6px;background:var(--surface);border:1px solid var(--border);border-radius:9px;box-shadow:var(--shadow-lg);text-align:left}
+.thread-model-menu-label{padding:5px 8px 3px;color:var(--text3);font-size:10px;text-transform:uppercase;letter-spacing:.06em}
+.thread-model-option{display:flex;width:100%;justify-content:space-between;gap:12px;padding:7px 8px;border:0;border-radius:6px;background:transparent;color:var(--text2);font:inherit;font-size:12px;cursor:pointer;text-align:left}
+.thread-model-option:hover,.thread-model-option.active{background:var(--accent-dim);color:var(--text)}
+.workspace-active-model{margin:0 9px 12px;padding:10px;border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px}
+.workspace-active-model span{color:var(--text3)}
+.composer-ideas{display:flex;justify-content:center;gap:6px;flex-wrap:wrap;margin:0 auto 8px;max-width:760px}
+.composer-ideas button{border:1px solid var(--border);background:rgba(var(--surface-rgb),.55);color:var(--text2);border-radius:999px;padding:6px 10px;font:inherit;font-size:11px;cursor:pointer}
+.composer-ideas button:hover{background:var(--surface2);color:var(--text);border-color:var(--border2)}
 .icon-btn{width:32px;height:32px;background:none;border:1px solid var(--border);border-radius:var(--radius-sm);display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text2);transition:all var(--transition)}
 .icon-btn:hover{background:var(--surface2);color:var(--text);border-color:var(--border2)}
 .icon-btn svg{width:15px;height:15px;stroke:currentColor}
@@ -184,7 +223,7 @@
    (#f5f4f0) are four hex points apart, so an unbordered bubble in that colour would read as
    plain text on the page rather than as a message. pre-wrap because the user's own text is
    rendered literally (never markdown — they typed it), so their line breaks have to survive. */
-.bubble.user{padding:10px 14px;border-radius:14px 14px 4px 14px;background:var(--surface2);color:var(--text);border:1px solid var(--border);white-space:pre-wrap}
+.bubble.user{padding:10px 14px;color:var(--text);background:var(--surface2);border:1px solid var(--border);border-radius:14px 14px 4px 14px;white-space:pre-wrap}
 .bubble p{margin-bottom:8px}.bubble p:last-child{margin-bottom:0}
 .bubble ul,.bubble ol{padding-left:18px;margin-bottom:8px}
 .bubble ul li,.bubble ol li{margin-bottom:3px}
@@ -239,20 +278,52 @@
 
 /* ── THREAD RIGHT PANEL ── */
 .chat-layout{display:flex;flex:1;overflow:hidden;position:relative}
-.thread-panel{width:260px;flex-shrink:0;border-left:1px solid var(--border);background:var(--sidebar-bg);display:flex;flex-direction:column;overflow:hidden;transition:width 0.22s cubic-bezier(.4,0,.2,1)}
+.workspace-panel-shell{position:relative;display:flex;flex:0 0 auto;min-width:0;align-self:stretch;transition:width .24s cubic-bezier(.4,0,.2,1)}
+.workspace-panel-shell.collapsed{height:max-content;align-self:flex-start}
+.thread-panel{position:relative;width:min(250px,32vw);min-width:220px;max-width:min(720px,60vw);flex-shrink:0;margin:12px 12px 12px 0;border:1px solid var(--border);border-radius:16px;background:rgba(var(--surface-rgb),0.82);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);display:flex;flex-direction:column;overflow:hidden;transition:width 0.22s cubic-bezier(.4,0,.2,1)}
 .thread-panel.hidden{width:0;border-left:none}
+.thread-panel-resizer{position:absolute;left:0;top:0;bottom:0;width:7px;cursor:ew-resize;z-index:10}
+.thread-panel-resizer:hover{background:var(--accent-dim)}
+.workspace-tab-rail{width:44px;min-height:52px;height:max-content;max-height:calc(100% - 24px);flex-shrink:0;align-self:flex-start;margin:12px 12px 12px 0;border:1px solid var(--border);border-radius:16px;background:rgba(var(--surface-rgb),0.82);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);display:flex;flex-direction:column;align-items:center;padding:8px 5px;gap:10px;transition:height 0.22s cubic-bezier(.4,0,.2,1)}
+.workspace-rail-toggle,.workspace-rail-tab{width:32px;height:32px;border:0;border-radius:9px;background:transparent;color:var(--text3);font:inherit;font-size:16px;line-height:1;cursor:pointer;display:grid;place-items:center;transition:background var(--transition),color var(--transition)}
+.workspace-rail-toggle{font-size:22px;color:var(--text2)}
+.workspace-rail-toggle:hover,.workspace-rail-tab:hover{background:var(--surface2);color:var(--text)}
+.workspace-rail-tabs{display:flex;flex-direction:column;align-items:center;gap:4px;overflow-y:auto;scrollbar-width:none}
+.workspace-rail-tabs::-webkit-scrollbar{display:none}
+.workspace-rail-tab.active{background:var(--accent-dim);color:var(--accent)}
 .tp-header{padding:12px 14px 8px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
 .tp-header-title{font-size:12px;font-weight:500;color:var(--text);letter-spacing:0.01em}
+.tp-header-actions{display:flex;align-items:center;gap:2px}
+.tp-header-btn{width:24px;height:24px;border:0;border-radius:6px;background:transparent;color:var(--text3);font:inherit;font-size:15px;line-height:1;cursor:pointer}
+.tp-header-btn:hover{background:var(--surface2);color:var(--text)}
 /* One scrollable row, not a wrapping block. There are a dozen tabs and the panel is 260px wide
    (min(86vw,340px) as a mobile drawer), so flex-wrap turned the header into a four-row wall that
    ate the panel it was supposed to be labelling. Same treatment .spaces-sidebar/.settings-nav
    already get on mobile: horizontal scroll with the scrollbar itself hidden. */
-.tp-tabs{display:flex;gap:1px;padding:8px 10px 4px;flex-shrink:0;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}
+.tp-tabs{position:relative;display:block;padding:0;flex-shrink:0;overflow:hidden}
 .tp-tabs::-webkit-scrollbar{display:none}
-.tp-tab{flex-shrink:0;background:none;border:none;font-family:'DM Sans',sans-serif;font-size:11.5px;color:var(--text3);cursor:pointer;padding:4px 8px;border-radius:6px;transition:all var(--transition);white-space:nowrap}
+.tp-tab-scroll{display:flex;gap:1px;min-width:0;overflow-x:auto;padding:8px 104px 4px 10px;scrollbar-width:none}
+.tp-tab-scroll::-webkit-scrollbar{display:none}
+.tp-tab-actions{position:absolute;right:0;top:0;height:100%;display:flex;align-items:center;gap:1px;padding:6px 8px 4px 4px;border-left:1px solid var(--border);border-radius:0 15px 0 8px;background:rgba(var(--surface-rgb),.96);z-index:2}
+.tp-tab{flex-shrink:0;background:none;border:none;font-family:'DM Sans',sans-serif;font-size:11.5px;color:var(--text3);cursor:pointer;padding:0;border-radius:6px;transition:all var(--transition);white-space:nowrap;display:flex;align-items:center}
 .tp-tab.active{background:var(--accent-dim);color:var(--accent)}
 .tp-tab:hover:not(.active){background:var(--surface2);color:var(--text)}
+.tp-tab-label,.tp-tab-close{border:0;background:transparent;color:inherit;font:inherit;cursor:pointer}.tp-tab-label{padding:4px 8px}.tp-tab-close{width:0;opacity:0;overflow:hidden;padding:4px 0;transition:width .15s ease,opacity .15s ease,padding .15s ease}.tp-tab:hover .tp-tab-close,.tp-tab:focus-within .tp-tab-close{width:20px;opacity:1;padding:4px 6px 4px 0}.tp-tab-close:hover{color:var(--text)}
+.workspace-tab-menu{position:absolute;top:50px;right:12px;z-index:5;display:flex;flex-direction:column;gap:2px;min-width:168px;max-height:320px;overflow:auto;padding:6px;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow-lg)}
+.workspace-tab-menu button{border:0;border-radius:7px;background:transparent;color:var(--text2);font:inherit;font-size:12px;text-align:left;padding:7px 9px;cursor:pointer;white-space:nowrap}
+.workspace-tab-menu button:hover{background:var(--surface2);color:var(--text)}
+.workspace-tab-empty{padding:8px 9px;color:var(--text3);font-size:12px}
+.workspace-messages-panel{padding-bottom:12px}.workspace-message-link{width:100%;display:grid;grid-template-columns:10px 1fr;gap:8px;align-items:start;border:0;border-bottom:1px solid var(--border);background:transparent;color:var(--text2);padding:9px 12px;text-align:left;cursor:pointer}.workspace-message-link:hover{background:var(--surface2)}.workspace-message-link>span:last-child{min-width:0;display:grid;grid-template-columns:1fr auto;gap:2px 8px}.workspace-message-link strong{font-size:11.5px}.workspace-message-link small{font-size:10px;color:var(--text3)}.workspace-message-link>span:last-child>span{grid-column:1/-1;font-size:11px;color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.workspace-message-dot{width:7px;height:7px;margin-top:4px;border-radius:50%;border:1px solid var(--text3)}.workspace-message-dot.user{background:var(--accent);border-color:var(--accent)}
+.workspace-model-filters{display:grid;grid-template-columns:minmax(0,1fr) 122px;gap:6px;padding:8px 10px}.workspace-model-filters input,.workspace-model-filters select{min-width:0;width:100%;border:1px solid var(--border);border-radius:8px;background:var(--surface2);color:var(--text);padding:7px 8px;font:inherit;font-size:11px}.workspace-model-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;padding:0 10px 10px}.workspace-model-card{position:relative;display:flex;min-width:0;min-height:78px;flex-direction:column;align-items:flex-start;gap:4px;border:1px solid var(--border);border-radius:10px;background:var(--surface2);color:var(--text);padding:10px;text-align:left;cursor:pointer}.workspace-model-card:hover{border-color:var(--border2);background:var(--surface3)}.workspace-model-card.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent-dim)}.workspace-model-card span{font-size:11.5px;font-weight:600;line-height:1.3;overflow-wrap:anywhere}.workspace-model-card small{font-size:10px;color:var(--text3)}.workspace-model-card b{margin-top:auto;color:var(--accent);font-size:9.5px;text-transform:uppercase;letter-spacing:.05em}.workspace-directory-row{display:grid;grid-template-columns:30px minmax(0,1fr) auto;gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--border)}.workspace-directory-row>span{width:28px;height:28px;display:grid;place-items:center;border-radius:8px;background:var(--surface2);font-size:11px}.workspace-directory-row>span.connected{box-shadow:inset 0 0 0 1px #22c55e}.workspace-directory-row img{max-width:18px;max-height:18px}.workspace-directory-row div{min-width:0;display:flex;flex-direction:column}.workspace-directory-row strong{font-size:11.5px;overflow:hidden;text-overflow:ellipsis}.workspace-directory-row small{font-size:10px;color:var(--text3)}.workspace-directory-row>b{font-size:10px;color:var(--text3);text-transform:capitalize}
+.workspace-directory-overlay{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;padding:16px;background:#0009}.workspace-directory-dialog{width:min(920px,calc(100vw - 32px));max-height:min(780px,calc(100vh - 32px));overflow:auto;border:1px solid var(--border);border-radius:16px;background:var(--surface);padding:clamp(16px,3vw,28px);box-shadow:0 24px 80px #0009}.workspace-directory-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:14px}.workspace-directory-heading strong{font-size:16px;color:var(--text)}.workspace-directory-heading p{margin:4px 0 0;color:var(--text3);font-size:12px}.workspace-directory-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px}.workspace-directory-card{display:flex;flex-direction:column;justify-content:space-between;gap:14px;min-height:135px;border:1px solid var(--border);border-radius:12px;background:var(--surface2);padding:14px}.workspace-directory-card strong{font-size:13px;color:var(--text)}.workspace-directory-card p{margin:5px 0 0;color:var(--text3);font-size:11.5px;line-height:1.45}.workspace-directory-card .btn{align-self:flex-start}
+.workspace-threads{padding-bottom:12px}
+.tp-thread-link{display:block;margin:0 10px 2px;padding:7px 9px;border-radius:7px;color:var(--text2);font-size:12px;text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tp-thread-link:hover,.tp-thread-link.active{background:var(--surface2);color:var(--text)}
+.workspace-canvas-tab{height:100%;min-height:0}
+.workspace-canvas-tab .canvas-container{height:100%;border:0;border-radius:0;background:transparent;box-shadow:none}
+.canvas-standalone .canvas-viewport{height:100%;min-height:0}
 .tp-body{flex:1;overflow-y:auto;padding:4px 0;scrollbar-width:thin;scrollbar-color:var(--border2) transparent}
+.tp-body-stats{padding:12px}
 .tp-section{padding:8px 14px 4px;font-size:10px;font-weight:500;color:var(--text3);letter-spacing:0.07em;text-transform:uppercase}
 .tp-container-item{margin:0 10px 6px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;overflow:hidden}
 .tp-container-header{display:flex;align-items:center;gap:8px;padding:9px 12px;cursor:pointer}
@@ -468,6 +539,8 @@
 /* Directory of connectable apps. Responsive rather than the fixed grid-3/grid-4 above, because
    this list is thousands long and is browsed at every width. */
 .app-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}
+.project-template-grid{grid-template-columns:repeat(2,minmax(0,1fr));}
+.project-template-grid>.app-card:first-child{grid-column:span 2;}
 .app-card{display:flex;flex-direction:column}
 .app-card.connected{border-color:rgba(22,163,74,0.35)}
 .app-card-desc{flex:1;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
@@ -476,6 +549,7 @@
 /* Fallback when a provider sends no logo, or the URL fails to load: the app's own initial. */
 .app-card-initial{width:36px;height:36px;border-radius:9px;background:var(--accent-dim);color:var(--accent);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:15px;font-weight:600;text-transform:uppercase}
 .app-card-tag{font-size:10px;letter-spacing:0.05em;text-transform:uppercase;color:var(--text3)}
+@media (max-width:600px){.project-template-grid{grid-template-columns:1fr}.project-template-grid>.app-card:first-child{grid-column:auto}}
 
 /* analytics */
 .chart-bar-wrap{display:flex;align-items:flex-end;gap:6px;height:80px}
@@ -529,9 +603,10 @@
 .cron-expr{font-family:'Courier New',monospace;font-size:11px;color:var(--accent);margin-top:2px}
 .sub-agent-item{display:flex;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 10px;margin-bottom:6px}
 .proactive-badge{font-size:10px;color:var(--text3);background:var(--surface2);border:1px solid var(--border);padding:1px 5px;border-radius:3px}
-.chat-input-area{padding:12px 16px 14px;flex-shrink:0;border-top:1px solid var(--border);display:flex;flex-direction:column;align-items:center}
-.chat-input-area .input-container{max-width:680px;width:100%}
-.chat-input-area .disclaimer{max-width:680px;width:100%;text-align:center}
+.chat-input-area{padding:12px 16px 14px;flex-shrink:0;border-top:0;display:flex;flex-direction:column;align-items:center}
+.project-workspace-flat .chat-input-area{padding-bottom:3px;border-top:0}
+.chat-input-area .input-container{max-width:520px;width:100%}
+.chat-input-area .disclaimer{max-width:520px;width:100%;text-align:center}
 
 /* explore page */
 .explore-features{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:24px}
@@ -575,6 +650,9 @@
 .mobile-menu-btn{width:34px;height:34px;flex-shrink:0;background:none;border:1px solid var(--border);border-radius:var(--radius-sm);display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text2);transition:all var(--transition)}
 .mobile-menu-btn:hover{background:var(--surface2);color:var(--text)}
 .mobile-menu-btn svg{width:17px;height:17px;stroke:currentColor}
+.home-mobile-menu-btn{display:none;position:absolute;top:12px;left:12px;width:34px;height:34px;align-items:center;justify-content:center;background:none;border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;color:var(--text2);z-index:2;transition:all var(--transition)}
+.home-mobile-menu-btn:hover{background:var(--surface2);color:var(--text)}
+.home-mobile-menu-btn svg{width:17px;height:17px;stroke:currentColor}
 .mobile-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);backdrop-filter:blur(2px);z-index:99;opacity:0;transition:opacity 0.22s}
 .mobile-backdrop.show{display:block;opacity:1}
 
@@ -589,7 +667,7 @@
    over the page, so opening one pushes the input down as a single object and the whole thing reads
    as one surface. The toolbar is a labelled primary pill on the left, a row of icon buttons, then
    the member stack on the right. Same tokens as everything else, so it themes with the app. */
-.composer-dock{position:relative;width:100%;max-width:680px;display:flex;flex-direction:column;background:var(--input-bg);border:1px solid var(--border2);border-radius:22px;box-shadow:var(--shadow-md);overflow:hidden;transition:border-color var(--transition),box-shadow var(--transition),background 0.3s}
+.composer-dock{position:relative;width:100%;max-width:520px;display:flex;flex-direction:column;background:var(--input-bg);border:1px solid var(--border2);border-radius:22px;box-shadow:var(--shadow-md);overflow:hidden;transition:border-color var(--transition),box-shadow var(--transition),background 0.3s}
 .composer-dock:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-dim),var(--shadow-md)}
 /* the input keeps its own padding but loses the standalone card chrome once docked */
 .composer-dock .input-container{max-width:none;background:none;border:none;border-radius:0;box-shadow:none}
@@ -633,7 +711,9 @@
 
 /* the toolbar row — inside the same card as the input, separated by a hairline */
 .dock-bar{display:flex;align-items:center;gap:2px;padding:8px 10px;border-top:1px solid var(--border)}
+.dock-bar.compact{gap:0}
 .dock-primary{display:flex;align-items:center;gap:9px;flex-shrink:0;background:var(--surface2);border:none;border-radius:999px;padding:9px 17px 9px 13px;font-family:'DM Sans',sans-serif;font-size:13.5px;color:var(--text2);cursor:pointer;transition:all var(--transition);max-width:220px}
+.dock-bar.compact .dock-primary{flex:1;min-width:0;max-width:none;justify-content:flex-start}
 .dock-primary:hover,.dock-primary.open{background:var(--surface3);color:var(--text)}
 .dock-primary svg{width:17px;height:17px;stroke:currentColor;flex-shrink:0}
 .dock-primary span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -659,7 +739,7 @@
 @media (max-width:640px){
   .dock-tips{grid-template-columns:1fr;gap:6px}
   .dock-tip,.dock-tip:first-child,.dock-tip:last-child{border-radius:14px}
-  .dock-primary{max-width:140px;padding-left:10px;padding-right:12px}
+  .dock-primary{max-width:none;padding-left:10px;padding-right:12px}
   .dock-sep{margin:0 3px}
 }
 
@@ -678,7 +758,7 @@
   #app{flex-direction:column}
   #sidebar{position:fixed;top:0;left:0;height:100%;width:264px!important;max-width:86vw;z-index:200;
            padding-top:env(safe-area-inset-top);
-           transform:translateX(-100%);transition:transform 0.24s cubic-bezier(.4,0,.2,1);box-shadow:var(--shadow-lg)}
+           transform:translateX(-100%);transition:transform 0.24s cubic-bezier(.4,0,.2,1)}
   #sidebar.mobile-open{transform:translateX(0)}
   #sidebar.icon-only{width:264px!important}
   #sidebar.icon-only .sidebar-text,#sidebar.icon-only .sidebar-logo span,#sidebar.icon-only .new-chat-btn span,
@@ -686,8 +766,11 @@
   #sidebar.icon-only .new-chat-btn,#sidebar.icon-only .nav-item,#sidebar.icon-only .space-row{justify-content:flex-start;padding:8px 12px}
   .sidebar-collapse{display:none}
 
-  .mobile-topbar{display:flex}
   #main{width:100%}
+
+  .thread-mobile-control{display:flex}
+  .home-mobile-menu-btn{display:flex}
+  .thread-title-wrap{max-width:calc(100% - 96px)}
 
   /* Live-reported bug: this used to unconditionally collapse .thread-panel to zero width on
      mobile REGARDLESS of whether it was open — the existing desktop "toggle panel" button already
@@ -695,8 +778,13 @@
      visible. Turned into the same off-canvas-drawer pattern #sidebar already uses (mirrored to
      the right edge) instead of hiding it outright — it only exists in the DOM while open, so no
      transform/transition is needed to slide it in from off-screen. */
-  .thread-panel{position:fixed;top:0;right:0;height:100%;width:min(86vw,340px);z-index:200;
-           padding-top:env(safe-area-inset-top);box-shadow:var(--shadow-lg)}
+  .thread-panel{position:fixed;top:0;right:0;height:100%;width:min(86vw,340px)!important;min-width:0;z-index:200;
+           margin:0;border-radius:16px 0 0 16px;padding-top:env(safe-area-inset-top)}
+  /* On a phone the rail's vertical strip consumes useful chat width and duplicates the control
+     in the thread header. Keep the active tab in state, but expose it through that header icon. */
+  .workspace-tab-rail{display:none}
+  .workspace-panel-shell{width:0!important;min-width:0}
+  .thread-panel-resizer{display:none}
   .thread-panel-backdrop{display:none}
   .thread-panel-backdrop.show{display:block;position:fixed;inset:0;background:rgba(0,0,0,0.45);
            backdrop-filter:blur(2px);z-index:199}

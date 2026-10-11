@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { applyMigrations, execute, queryAll, queryOne } from "@naelao/db";
+import { applyMigrations, execute, queryAll, queryOne, validateMigrationSequence } from "@naelao/db";
 import type { Migration } from "@naelao/db";
 import {
   buildFireParams,
@@ -21,10 +21,14 @@ import type {
 } from "@naelao/events";
 import { broadcastSpaceEvent, mintInternalToken } from "@naelao/http";
 import type { MessageRole } from "@naelao/types";
-import { defaultViewportFor, DOGFOOD_EXTENSIONS, getProjectKindManifest, getProjectTemplate, projectTemplateAsBlueprintProject, validateExtensionManifest } from "@naelao/agent-sdk";
+import { defaultViewportFor, DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, getProjectKindManifest, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateExtensionManifest, scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
 import { instantiateBlueprint as compileBlueprint } from "@naelao/agent-sdk";
 import type { DisplayMode, ExtensionManifest, SpaceBlueprint, TemplateMode } from "@naelao/agent-sdk";
+import { promoteCockpit } from "@naelao/agent-sdk";
+import { projectFactRelevance } from "@naelao/agent-sdk";
 import { consumeEphemeralActionGrant, mintEphemeralActionGrant, type EphemeralActionGrant, verifyCapabilityToken } from "@naelao/security";
+import { signActionReceipt, verifyActionReceiptChain, type ActionReceipt, type ActionReceiptDraft } from "@naelao/tracing";
+import { MACHINE_NAME, assertMachineIdentity, validateMachinePublicKey, validateMachineHardware, validateMachineGrants, verifyMachineProof, tunnelHash, type NamedMachine, type MachineHardware, type MachineGrant, type MachineProof } from "@naelao/agent-sdk";
 
 function todaySpendKey(): string {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
@@ -1392,15 +1396,16 @@ const MIGRATIONS: Migration[] = [
         created_by TEXT, exclusive_mode INTEGER NOT NULL DEFAULT 0, active_thread_id TEXT,
         active_thread_since TEXT, is_singleton_kind INTEGER NOT NULL DEFAULT 0, last_activity_at TEXT,
         execution_status TEXT NOT NULL DEFAULT 'ACTIVE', lead_user_id TEXT,
+        mode TEXT NOT NULL DEFAULT 'solo_cockpit' CHECK (mode IN ('solo_cockpit','multiplayer_office')),
         lifecycle TEXT NOT NULL DEFAULT 'finite' CHECK (lifecycle IN ('finite','continuous'))
       );
       INSERT INTO projects_v50
         (id,space_id,name,description,status,created_at,kind,execution_ceiling,daily_spend_cap_credits,
          channel_config,show_sub_threads,default_agent_id,max_threads,allowed_agent_ids,visibility,created_by,
-         exclusive_mode,active_thread_id,active_thread_since,is_singleton_kind,last_activity_at,execution_status,lead_user_id)
+         exclusive_mode,active_thread_id,active_thread_since,is_singleton_kind,last_activity_at,execution_status,lead_user_id,mode)
       SELECT id,space_id,name,description,status,created_at,kind,execution_ceiling,daily_spend_cap_credits,
          channel_config,show_sub_threads,default_agent_id,max_threads,allowed_agent_ids,visibility,created_by,
-         exclusive_mode,active_thread_id,active_thread_since,is_singleton_kind,last_activity_at,execution_status,lead_user_id FROM projects;
+         exclusive_mode,active_thread_id,active_thread_since,is_singleton_kind,last_activity_at,execution_status,lead_user_id,mode FROM projects;
       DROP TABLE projects;
       ALTER TABLE projects_v50 RENAME TO projects;
       CREATE INDEX idx_projects_space ON projects(space_id, created_at DESC);
@@ -1586,6 +1591,107 @@ const MIGRATIONS: Migration[] = [
       BEGIN SELECT RAISE(ABORT, 'assistant assignment is immutable'); END;
     `,
   },
+  {
+    version: 60,
+    description: "durable lossless solo cockpit promotion state",
+    up: `
+      ALTER TABLE projects ADD COLUMN cockpit_promotion_version INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE projects ADD COLUMN cockpit_promoted_at TEXT;
+      ALTER TABLE projects ADD COLUMN cockpit_promoted_by TEXT;
+      UPDATE projects SET
+        cockpit_promotion_version = CASE WHEN mode = 'multiplayer_office' THEN 1 ELSE 0 END,
+        cockpit_promoted_at = CASE WHEN mode = 'multiplayer_office' THEN created_at ELSE NULL END,
+        cockpit_promoted_by = CASE WHEN mode = 'multiplayer_office' THEN created_by ELSE NULL END
+        WHERE mode = 'multiplayer_office';
+    `,
+  },
+  {
+    version: 61,
+    description: "role-ranked shared project facts",
+    up: `
+      ALTER TABLE project_facts ADD COLUMN required_role_rank INTEGER NOT NULL DEFAULT 0;
+      CREATE INDEX IF NOT EXISTS idx_project_facts_role ON project_facts(project_id, required_role_rank);
+      ALTER TABLE project_fabric ADD COLUMN required_role_rank INTEGER NOT NULL DEFAULT 0;
+      CREATE INDEX IF NOT EXISTS idx_project_fabric_role ON project_fabric(project_id, required_role_rank);
+      ALTER TABLE project_wiki ADD COLUMN required_role_rank INTEGER NOT NULL DEFAULT 0;
+      CREATE INDEX IF NOT EXISTS idx_project_wiki_role ON project_wiki(project_id, required_role_rank);
+    `,
+  },
+  {
+    version: 62,
+    description: "owned extension installation instances with explicit lifecycle scope",
+    up: `
+      CREATE TABLE IF NOT EXISTS extension_instances (
+        instance_id TEXT PRIMARY KEY,
+        extension_id TEXT NOT NULL,
+        tenant_id TEXT NOT NULL,
+        space_id TEXT NOT NULL,
+        project_id TEXT,
+        user_id TEXT,
+        scope TEXT NOT NULL CHECK (scope IN ('SPACE_SHARED','SPACE_USER','PROJECT_SHARED','PROJECT_USER')),
+        owner_key TEXT NOT NULL,
+        installed_by TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','removed','expired')),
+        installed_at TEXT NOT NULL,
+        removed_at TEXT,
+        UNIQUE(extension_id, tenant_id, space_id, project_id, user_id, scope)
+      );
+      CREATE INDEX IF NOT EXISTS idx_extension_instances_owner
+        ON extension_instances(tenant_id, space_id, status, scope);
+      CREATE INDEX IF NOT EXISTS idx_extension_instances_project
+        ON extension_instances(space_id, project_id, status);
+    `,
+  },
+  {
+    version: 63,
+    description: "idempotent hash-chained causal action receipts",
+    up: `
+      CREATE TABLE IF NOT EXISTS action_receipts (
+        action_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        tenant_id TEXT NOT NULL,
+        space_id TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        task_id TEXT,
+        worker_id TEXT NOT NULL,
+        trace_id TEXT NOT NULL,
+        span_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        input_hash TEXT NOT NULL,
+        output_hash TEXT NOT NULL,
+        grant_id TEXT,
+        cost_micros INTEGER NOT NULL DEFAULT 0 CHECK(cost_micros >= 0),
+        outcome TEXT NOT NULL CHECK(outcome IN ('pending','succeeded','failed','unknown')),
+        decision_summary TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        prev_hash TEXT NOT NULL UNIQUE,
+        key_version TEXT NOT NULL,
+        receipt_hash TEXT NOT NULL UNIQUE
+      );
+      CREATE INDEX IF NOT EXISTS idx_action_receipts_space ON action_receipts(tenant_id, space_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_action_receipts_run ON action_receipts(run_id, created_at);
+    `,
+  },
+  {
+    version: 64,
+    description: "named machine identities and one-time expiring enrollment",
+    up: `
+      CREATE TABLE IF NOT EXISTS named_machines (
+        machine_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, space_id TEXT NOT NULL,
+        name TEXT NOT NULL, owner_id TEXT NOT NULL, status TEXT NOT NULL,
+        sequence INTEGER NOT NULL DEFAULT 0, key_version INTEGER NOT NULL DEFAULT 1,
+        record_json TEXT NOT NULL, updated_at INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS named_machines_active_name ON named_machines(tenant_id,space_id,name) WHERE status='active';
+      CREATE TABLE IF NOT EXISTS machine_enrollments (
+        token_hash TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, space_id TEXT NOT NULL,
+        name TEXT NOT NULL, owner_id TEXT NOT NULL, expires_at INTEGER NOT NULL,
+        grants_json TEXT NOT NULL, consumed_at INTEGER, machine_id TEXT
+      );
+      CREATE INDEX IF NOT EXISTS machine_enrollments_expiry ON machine_enrollments(expires_at);
+    `,
+  },
 ];
 
 export const PROVENANCE_GENESIS_HASH = "0".repeat(64);
@@ -1598,6 +1704,10 @@ export async function provenanceHmac(secret: string, fields: readonly string[]):
 
 export interface SpaceDOEnv {
   PLATFORM_SECRET: string;
+  ACTION_RECEIPT_HMAC_KEY?: string;
+  ACTION_RECEIPT_HMAC_KEY_PREV?: string;
+  ACTION_RECEIPT_KEY_VERSION?: string;
+  ACTION_RECEIPT_KEY_VERSION_PREV?: string;
   /** Agents worker — used to fire event_triggers (script.run) on a structural lifecycle
    *  event (thread.created, project.created, ...). Optional: firing is best-effort, never
    *  blocks the state change that triggered it. */
@@ -1712,6 +1822,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
   private ensureInit(): void {
     if (this.initialized) return;
+    validateMigrationSequence(MIGRATIONS);
     applyMigrations(this.ctx.storage as never, MIGRATIONS);
     this.initialized = true;
   }
@@ -1752,8 +1863,33 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && url.pathname === "/internal/business-wallet/settle") return this.settleBusinessWallet(request);
       if (method === "POST" && url.pathname === "/internal/business-wallet/withdraw") return this.withdrawBusinessWallet(request);
       if (url.pathname === "/extensions" && method === "GET") return this.listExtensions();
+      if (url.pathname === "/machine-authority" && method === "POST") return this.machineAuthority(request);
+      if (url.pathname === "/container-installations" && method === "GET") {
+        const rows = queryAll<{ manifest_json: string }>(this.ctx.storage.sql as never,
+          "SELECT i.*, e.manifest_json FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.tenant_id=? AND i.space_id=? AND i.status='active' AND (i.scope='SPACE_SHARED' OR (i.scope='SPACE_USER' AND i.user_id=?) OR (i.scope='PROJECT_SHARED' AND i.project_id=?) OR (i.scope='PROJECT_USER' AND i.project_id=? AND i.user_id=?))",
+          url.searchParams.get("tenant_id"), url.searchParams.get("space_id"), url.searchParams.get("user_id"), url.searchParams.get("project_id"), url.searchParams.get("project_id"), url.searchParams.get("user_id"));
+        return Response.json({ installations: rows.map(row => { const { manifest_json, ...instance } = row; return { instance, manifest: JSON.parse(manifest_json) }; }) });
+      }
+      if (url.pathname === "/workflow-installation" && method === "GET") {
+        const rows = queryAll<{ instance_id: string; manifest_json: string }>(this.ctx.storage.sql as never,
+          "SELECT i.*, e.manifest_json, e.updated_at AS manifest_updated_at FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.instance_id=? AND i.tenant_id=? AND i.space_id=? AND i.status='active'",
+          url.searchParams.get("instance_id"), url.searchParams.get("tenant_id"), url.searchParams.get("space_id"));
+        const row = rows[0];
+        if (!row) return Response.json({ error: "installation_not_found" }, { status: 404 });
+        const { manifest_json, ...instance } = row;
+        return Response.json({ instance, manifest: JSON.parse(manifest_json) });
+      }
       if (url.pathname === "/extensions/first-party" && method === "GET") {
-        return Response.json({ extensions: DOGFOOD_EXTENSIONS });
+        return Response.json({
+          extensions: DOGFOOD_EXTENSIONS,
+          catalog: DOGFOOD_EXTENSION_CATALOG.map((entry) => ({
+            extensionId: entry.manifest.id,
+            maturity: entry.maturity,
+            productClaim: entry.productClaim,
+            saasReplacementEligible: isSaasReplacementEligible(entry),
+            graduation: entry.graduation ?? null,
+          })),
+        });
       }
       if (url.pathname === "/extensions" && method === "POST") return await this.installExtension(request);
       const extensionMatch = url.pathname.match(/^\/extensions\/(ext_[a-z0-9_-]+)$/);
@@ -2011,7 +2147,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       const projectModeMatch = url.pathname.match(/^\/projects\/([^/]+)\/mode$/);
       if (method === "GET" && projectModeMatch?.[1]) {
-        return Response.json({ project_id: projectModeMatch[1], mode: this.getProjectMode(projectModeMatch[1]) });
+        return this.getProjectModeState(projectModeMatch[1]);
+      }
+      const projectPromotionMatch = url.pathname.match(/^\/projects\/([^/]+)\/promote$/);
+      if (method === "POST" && projectPromotionMatch?.[1]) {
+        return this.promoteProject(projectPromotionMatch[1], request);
       }
       const automationAccessMatch = url.pathname.match(
         /^\/projects\/([^/]+)\/automation-access$/
@@ -2173,7 +2313,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       ) {
         return this.lookupProjectWikiConcept(
           projWikiConceptMatch[1],
-          decodeURIComponent(projWikiConceptMatch[2])
+          decodeURIComponent(projWikiConceptMatch[2]),
+          url.searchParams
         );
       }
       const projWikiMatch = url.pathname.match(
@@ -2360,6 +2501,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "GET" && url.pathname === "/provenance/verify") {
         return Response.json(await this.verifyProvenanceLedger());
       }
+      if (method === "POST" && url.pathname === "/internal/action-receipts") return this.appendActionReceipt(request);
+      if (method === "GET" && url.pathname === "/internal/action-receipts/verify") return Response.json(await this.verifyActionReceipts());
       if (method === "POST" && url.pathname === "/pull-request-cards") {
         return this.createPullRequestCard(request);
       }
@@ -2462,7 +2605,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // GET /threads/:id
       const threadIdMatch = url.pathname.match(/^\/threads\/([^/]+)$/);
       if (method === "GET" && threadIdMatch?.[1]) {
-        return this.getThread(threadIdMatch[1], url.searchParams.get("viewer_id") ?? "");
+        return this.getThread(
+          threadIdMatch[1],
+          url.searchParams.get("viewer_id") ?? "",
+          url.searchParams.get("space_manager") === "1",
+        );
       }
       // PATCH /threads/:id — rename and/or archive (there is no hard delete — see updateThread).
       if (method === "PATCH" && threadIdMatch?.[1]) {
@@ -4393,6 +4540,107 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return { valid: true, entries: rows.length };
   }
 
+  private async appendActionReceipt(request: Request): Promise<Response> {
+    const body = await request.json<Partial<ActionReceiptDraft>>().catch(() => null);
+    const requestUrl = new URL(request.url);
+    if (body?.space_id !== requestUrl.searchParams.get("space_id") || body?.tenant_id !== requestUrl.searchParams.get("tenant_id")) {
+      return Response.json({ error_code: "action_receipt_scope_mismatch" }, { status: 403 });
+    }
+    const isHash = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{64}$/i.test(value);
+    if (!body || !body.tenant_id || !body.space_id || !body.action_id || !body.idempotency_key || !body.actor_id ||
+        !body.run_id || !body.worker_id || !body.trace_id || !body.span_id || !body.action ||
+        !isHash(body.input_hash) || !isHash(body.output_hash) ||
+        !["pending", "succeeded", "failed", "unknown"].includes(body.outcome ?? "") ||
+        !Number.isSafeInteger(body.cost_micros) || (body.cost_micros ?? -1) < 0 ||
+        typeof body.decision_summary !== "string" || body.decision_summary.length > 512) {
+      return Response.json({ error_code: "invalid_action_receipt" }, { status: 400 });
+    }
+    const idPattern = /^[A-Za-z0-9._:-]{1,160}$/;
+    if (![body.tenant_id, body.space_id, body.action_id, body.idempotency_key, body.actor_id, body.run_id, body.worker_id, body.action].every((id) => idPattern.test(id)) ||
+        (body.task_id !== null && body.task_id !== undefined && !idPattern.test(body.task_id)) ||
+        (body.grant_id !== null && body.grant_id !== undefined && !idPattern.test(body.grant_id)) ||
+        !/^[a-f0-9]{32}$/i.test(body.trace_id) || !/^[a-f0-9]{16}$/i.test(body.span_id)) {
+      return Response.json({ error_code: "invalid_action_receipt_scope" }, { status: 400 });
+    }
+    const activeSecret = this.env.ACTION_RECEIPT_HMAC_KEY ?? this.env.PLATFORM_SECRET;
+    const keyVersion = this.env.ACTION_RECEIPT_KEY_VERSION ?? "platform-secret-v1";
+    const createdAt = body.created_at ?? new Date().toISOString();
+    if (!Number.isFinite(Date.parse(createdAt))) return Response.json({ error_code: "invalid_action_receipt_time" }, { status: 400 });
+    const draft: ActionReceiptDraft = {
+      tenant_id: body.tenant_id,
+      space_id: body.space_id,
+      action_id: body.action_id,
+      idempotency_key: body.idempotency_key,
+      actor_id: body.actor_id,
+      run_id: body.run_id,
+      task_id: body.task_id ?? null,
+      worker_id: body.worker_id,
+      trace_id: body.trace_id.toLowerCase(),
+      span_id: body.span_id.toLowerCase(),
+      action: body.action,
+      input_hash: body.input_hash.toLowerCase(),
+      output_hash: body.output_hash.toLowerCase(),
+      grant_id: body.grant_id ?? null,
+      cost_micros: body.cost_micros!,
+      outcome: body.outcome as ActionReceiptDraft["outcome"],
+      decision_summary: body.decision_summary,
+      created_at: createdAt,
+      key_version: keyVersion,
+    };
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const existing = queryOne<ActionReceipt>(this.ctx.storage.sql as never,
+        "SELECT * FROM action_receipts WHERE idempotency_key = ?", draft.idempotency_key);
+      if (existing) {
+        const sameRequest = existing.action_id === draft.action_id && existing.tenant_id === draft.tenant_id &&
+          existing.space_id === draft.space_id && existing.input_hash === draft.input_hash && existing.action === draft.action;
+        const final = sameRequest && existing.outcome === "pending"
+          ? queryOne<ActionReceipt>(this.ctx.storage.sql as never,
+            "SELECT * FROM action_receipts WHERE action_id = ? AND outcome != 'pending' ORDER BY rowid DESC LIMIT 1", existing.action_id)
+          : null;
+        return sameRequest
+          ? Response.json({ receipt: final ?? existing, replayed: true })
+          : Response.json({ error_code: "idempotency_key_conflict" }, { status: 409 });
+      }
+      const latest = queryOne<{ receipt_hash: string }>(this.ctx.storage.sql as never,
+        "SELECT receipt_hash FROM action_receipts ORDER BY rowid DESC LIMIT 1");
+      const previousHash = latest?.receipt_hash ?? "0".repeat(64);
+      const receiptHash = await signActionReceipt(draft, previousHash, activeSecret);
+      let raced = false;
+      try {
+        this.ctx.storage.transactionSync(() => {
+          const anchor = queryOne<{ receipt_hash: string }>(this.ctx.storage.sql as never,
+            "SELECT receipt_hash FROM action_receipts ORDER BY rowid DESC LIMIT 1");
+          if ((anchor?.receipt_hash ?? "0".repeat(64)) !== previousHash) { raced = true; return; }
+          execute(this.ctx.storage.sql as never,
+            `INSERT INTO action_receipts (action_id,idempotency_key,tenant_id,space_id,actor_id,run_id,task_id,worker_id,
+              trace_id,span_id,action,input_hash,output_hash,grant_id,cost_micros,outcome,decision_summary,created_at,
+              prev_hash,key_version,receipt_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            draft.action_id,draft.idempotency_key,draft.tenant_id,draft.space_id,draft.actor_id,draft.run_id,draft.task_id,
+            draft.worker_id,draft.trace_id,draft.span_id,draft.action,draft.input_hash,draft.output_hash,draft.grant_id,
+            draft.cost_micros,draft.outcome,draft.decision_summary,draft.created_at,previousHash,draft.key_version,receiptHash);
+        });
+      } catch {
+        raced = true;
+      }
+      if (raced) continue;
+      const receipt = queryOne<ActionReceipt>(this.ctx.storage.sql as never,
+        "SELECT * FROM action_receipts WHERE idempotency_key = ?", draft.idempotency_key);
+      return Response.json({ receipt, replayed: false }, { status: 201 });
+    }
+    return Response.json({ error_code: "action_receipt_contention" }, { status: 503 });
+  }
+
+  async verifyActionReceipts(): Promise<{ valid: boolean; entries: number; invalid_action_id?: string }> {
+    const rows = queryAll<ActionReceipt>(this.ctx.storage.sql as never, "SELECT * FROM action_receipts ORDER BY rowid ASC");
+    const secrets: Record<string, string> = {
+      [this.env.ACTION_RECEIPT_KEY_VERSION ?? "platform-secret-v1"]: this.env.ACTION_RECEIPT_HMAC_KEY ?? this.env.PLATFORM_SECRET,
+    };
+    if (this.env.ACTION_RECEIPT_HMAC_KEY_PREV && this.env.ACTION_RECEIPT_KEY_VERSION_PREV) {
+      secrets[this.env.ACTION_RECEIPT_KEY_VERSION_PREV] = this.env.ACTION_RECEIPT_HMAC_KEY_PREV;
+    }
+    return verifyActionReceiptChain(rows, secrets);
+  }
+
   // ── Customer-bot project config (no-code, admin-configured) ─────────────────
   private getProject(projectId: string, params?: URLSearchParams): Response {
     const row = queryOne<{
@@ -4495,7 +4743,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   ): Promise<Response> {
     const body = await request
       .json<{
-        kind?: "workspace" | "customer_bot" | "wallet";
+        kind?: string;
         execution_ceiling?: number;
         daily_spend_cap_credits?: number;
         channel_config?: Record<string, unknown>;
@@ -4605,7 +4853,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (body.kind !== undefined) {
       // F-33: validate against the registry (not a hardcoded set) and stamp is_singleton_kind so
       // the singleton index applies even when kind is set via PATCH (the legacy seedWallet path).
-      if (!isKnownProjectKind(body.kind)) {
+      const requestedKindManifest = getProjectKindManifest(body.kind);
+      if (!isKnownProjectKind(body.kind) && !requestedKindManifest) {
         return Response.json(
           {
             error_code: "bad_request",
@@ -4636,13 +4885,25 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         }
       }
       try {
-        execute(
-          this.ctx.storage.sql as never,
-          "UPDATE projects SET kind = ?, is_singleton_kind = ? WHERE id = ?",
-          body.kind,
-          singleton,
-          projectId
-        );
+        if (requestedKindManifest) {
+          execute(
+            this.ctx.storage.sql as never,
+            "UPDATE projects SET kind = ?, is_singleton_kind = ?, template_mode = ?, viewport_config = ? WHERE id = ?",
+            body.kind,
+            singleton,
+            requestedKindManifest.defaultAutonomy,
+            JSON.stringify(defaultViewportFor(requestedKindManifest.kind)),
+            projectId
+          );
+        } else {
+          execute(
+            this.ctx.storage.sql as never,
+            "UPDATE projects SET kind = ?, is_singleton_kind = ? WHERE id = ?",
+            body.kind,
+            singleton,
+            projectId
+          );
+        }
       } catch (err) {
         if (singleton && /UNIQUE|constraint/i.test((err as Error).message)) {
           const dup = queryOne<{ id: string }>(
@@ -4907,26 +5168,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     );
     const mode = this.getProjectMode(projectId);
     if (mode !== beforeMode) {
-      execute(
-        this.ctx.storage.sql as never,
-        "UPDATE projects SET mode = ? WHERE id = ?",
-        mode,
-        projectId
-      );
       if (mode === "multiplayer_office") {
-        const projectRow = queryOne<{ space_id: string }>(
-          this.ctx.storage.sql as never,
-          "SELECT space_id FROM projects WHERE id = ?",
-          projectId
-        );
         const tenantId = body.tenant_id ?? request.headers.get("x-naelao-tenant-id") ?? "";
-        if (projectRow) {
-          await broadcastSpaceEvent(this.env, tenantId, projectRow.space_id, "project.promoted_to_multiplayer", {
-            project_id: projectId,
-            mode,
-            member_count: 2,
-          });
-        }
+        await this.promoteProject(projectId, new Request("http://space/projects/" + encodeURIComponent(projectId) + "/promote", {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
+          body: JSON.stringify({ promoted_by: body.user_id, tenant_id: tenantId }),
+        }));
+      } else {
+        execute(this.ctx.storage.sql as never, "UPDATE projects SET mode = ? WHERE id = ?", mode, projectId);
       }
     }
     return Response.json(
@@ -4949,6 +5199,67 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       projectId
     );
     return (row?.count ?? 0) <= 1 ? "solo_cockpit" : "multiplayer_office";
+  }
+
+  private getProjectModeState(projectId: string): Response {
+    const row = queryOne<{
+      id: string;
+      mode: "solo_cockpit" | "multiplayer_office";
+      cockpit_promotion_version: number;
+      cockpit_promoted_at: string | null;
+      cockpit_promoted_by: string | null;
+    }>(this.ctx.storage.sql as never,
+      "SELECT id, mode, cockpit_promotion_version, cockpit_promoted_at, cockpit_promoted_by FROM projects WHERE id = ? AND status != 'archived'",
+      projectId);
+    if (!row) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+    return Response.json({
+      project_id: projectId,
+      mode: row.mode,
+      promotion_version: row.cockpit_promotion_version,
+      promoted_at: row.cockpit_promoted_at,
+      promoted_by: row.cockpit_promoted_by,
+    });
+  }
+
+  /** Promote once, preserve all existing thread/artifact identities, and ensure the team room. */
+  private async promoteProject(projectId: string, request: Request): Promise<Response> {
+    const body = await request.json<{ promoted_by?: string; tenant_id?: string }>().catch(
+      () => ({}) as { promoted_by?: string; tenant_id?: string }
+    );
+    const project = queryOne<{
+      id: string; space_id: string; mode: "solo_cockpit" | "multiplayer_office";
+      cockpit_promotion_version: number; cockpit_promoted_at: string | null; cockpit_promoted_by: string | null;
+    }>(this.ctx.storage.sql as never,
+      "SELECT id, space_id, mode, cockpit_promotion_version, cockpit_promoted_at, cockpit_promoted_by FROM projects WHERE id = ? AND status != 'archived'",
+      projectId);
+    if (!project) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+    const now = new Date().toISOString();
+    const next = promoteCockpit({
+      mode: project.mode,
+      promotionVersion: project.cockpit_promotion_version,
+      promotedAt: project.cockpit_promoted_at,
+      promotedBy: project.cockpit_promoted_by,
+    }, body.promoted_by ?? null, now);
+    this.ctx.storage.transactionSync(() => {
+      if (next.mode !== project.mode) {
+        execute(this.ctx.storage.sql as never,
+          "UPDATE projects SET mode = ?, cockpit_promotion_version = ?, cockpit_promoted_at = ?, cockpit_promoted_by = ? WHERE id = ?",
+          next.mode, next.promotionVersion, next.promotedAt, next.promotedBy, projectId);
+      }
+      const room = queryOne<{ id: string }>(this.ctx.storage.sql as never,
+        "SELECT id FROM threads WHERE project_id = ? AND thread_tier = 'tier_1_team' AND status = 'active' LIMIT 1", projectId);
+      if (!room) {
+        execute(this.ctx.storage.sql as never,
+          `INSERT INTO threads (id, space_id, project_id, title, status, thread_kind, thread_tier, system_internal, created_at, updated_at)
+           VALUES (?, ?, ?, 'Team room', 'active', 'primary', 'tier_1_team', 0, ?, ?)`,
+          crypto.randomUUID(), project.space_id, projectId, now, now);
+      }
+    });
+    if (next.mode !== project.mode) {
+      await broadcastSpaceEvent(this.env, body.tenant_id ?? request.headers.get("x-naelao-tenant-id") ?? "", project.space_id,
+        "project.promoted_to_multiplayer", { project_id: projectId, mode: next.mode, promotion_version: next.promotionVersion });
+    }
+    return this.getProjectModeState(projectId);
   }
 
   /**
@@ -5108,6 +5419,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         { status: 400 }
       );
     }
+    const requiredRoleRank = Math.max(0, Math.min(3, Number.parseInt(new URL(request.url).searchParams.get("role_rank") ?? "0", 10) || 0));
     const now = new Date().toISOString();
     const existing = queryOne<{ id: string }>(
       this.ctx.storage.sql as never,
@@ -5119,8 +5431,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (existing) {
       execute(
         this.ctx.storage.sql as never,
-        "UPDATE project_facts SET attribute = ?, trust_score = 1.0, updated_at = ? WHERE id = ?",
+        "UPDATE project_facts SET attribute = ?, trust_score = 1.0, required_role_rank = MAX(required_role_rank, ?), updated_at = ? WHERE id = ?",
         body.attribute,
+        requiredRoleRank,
         now,
         existing.id
       );
@@ -5129,12 +5442,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const id = crypto.randomUUID();
     execute(
       this.ctx.storage.sql as never,
-      "INSERT INTO project_facts (id, project_id, entity, relation, attribute, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO project_facts (id, project_id, entity, relation, attribute, required_role_rank, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       id,
       projectId,
       body.entity,
       body.relation,
       body.attribute,
+      requiredRoleRank,
       now,
       now
     );
@@ -5150,25 +5464,49 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       Number.parseInt(params.get("limit") ?? "5", 10) || 5,
       50
     );
-    const like = `%${q.replace(/[%_]/g, (c) => `\\${c}`)}%`;
+    const roleRank = Math.max(0, Math.min(3, Number.parseInt(params.get("role_rank") ?? "0", 10) || 0));
+    const tokens = q
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((token) => token.length > 2);
+    if (tokens.length === 0) return Response.json({ data: [] });
+    const tokenClauses = tokens
+      .map(() => `(entity LIKE ? ESCAPE '\\' OR relation LIKE ? ESCAPE '\\' OR attribute LIKE ? ESCAPE '\\')`)
+      .join(" OR ");
+    const tokenParams = tokens.flatMap((token) => {
+      const like = `%${token.replace(/[%_]/g, (c) => `\\${c}`)}%`;
+      return [like, like, like];
+    });
     const rows = queryAll<{
       id: string;
       entity: string;
       relation: string;
       attribute: string;
       trust_score: number;
+      required_role_rank: number;
     }>(
       this.ctx.storage.sql as never,
-      `SELECT id, entity, relation, attribute, trust_score FROM project_facts
-       WHERE project_id = ? AND (entity LIKE ? ESCAPE '\\' OR relation LIKE ? ESCAPE '\\' OR attribute LIKE ? ESCAPE '\\')
+      `SELECT id, entity, relation, attribute, trust_score, required_role_rank FROM project_facts
+       WHERE project_id = ? AND required_role_rank <= ? AND (${tokenClauses})
        ORDER BY trust_score DESC LIMIT ?`,
       projectId,
-      like,
-      like,
-      like,
-      limit
+      roleRank,
+      ...tokenParams,
+      Math.min(limit * 4, 50)
     );
-    return Response.json({ data: rows });
+    const data = rows
+      .map((row) => ({
+        ...row,
+        relevance_score: projectFactRelevance(q, `${row.entity} ${row.relation} ${row.attribute}`),
+      }))
+      // Trust establishes that a fact is durable; it does not establish that it
+      // belongs in this query. Keep the shared route fail-closed as well as the
+      // agent-side Jev gate, so direct project-memory consumers cannot receive an
+      // unrelated fact merely because it has a high trust score.
+      .filter((row) => row.trust_score >= 0.8 && row.relevance_score >= 0.8)
+      .sort((a, b) => b.relevance_score - a.relevance_score || b.trust_score - a.trust_score)
+      .slice(0, limit);
+    return Response.json({ data });
   }
 
   private deleteProjectFact(projectId: string, factId: string): Response {
@@ -5201,15 +5539,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         { status: 400 }
       );
     }
+    const requiredRoleRank = Math.max(0, Math.min(3, Number.parseInt(new URL(request.url).searchParams.get("role_rank") ?? "0", 10) || 0));
     const id = crypto.randomUUID();
     execute(
       this.ctx.storage.sql as never,
-      "INSERT INTO project_fabric (id, project_id, session_id, summary, key_insights, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      "INSERT INTO project_fabric (id, project_id, session_id, summary, key_insights, required_role_rank, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
       id,
       projectId,
       body.session_id,
       body.summary,
       JSON.stringify(body.key_insights ?? []),
+      requiredRoleRank,
       new Date().toISOString()
     );
     return Response.json({ id }, { status: 201 });
@@ -5224,6 +5564,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       Number.parseInt(params.get("limit") ?? "5", 10) || 5,
       50
     );
+    const roleRank = Math.max(0, Math.min(3, Number.parseInt(params.get("role_rank") ?? "0", 10) || 0));
     const rows = queryAll<{
       id: string;
       session_id: string;
@@ -5232,8 +5573,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       created_at: string;
     }>(
       this.ctx.storage.sql as never,
-      "SELECT * FROM project_fabric WHERE project_id = ? ORDER BY created_at DESC LIMIT 100",
-      projectId
+      "SELECT * FROM project_fabric WHERE project_id = ? AND required_role_rank <= ? ORDER BY created_at DESC LIMIT 100",
+      projectId,
+      roleRank
     );
     const scored = rows.map((r) => {
       const haystack = `${r.summary} ${r.key_insights}`.toLowerCase();
@@ -5265,6 +5607,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       Number.parseInt(params.get("limit") ?? "5", 10) || 5,
       50
     );
+    const roleRank = Math.max(0, Math.min(3, Number.parseInt(params.get("role_rank") ?? "0", 10) || 0));
     const rows = queryAll<{
       id: string;
       session_id: string;
@@ -5273,8 +5616,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       created_at: string;
     }>(
       this.ctx.storage.sql as never,
-      "SELECT * FROM project_fabric WHERE project_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
+      "SELECT * FROM project_fabric WHERE project_id = ? AND required_role_rank <= ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
       projectId,
+      roleRank,
       limit
     );
     return Response.json({ data: rows });
@@ -5300,14 +5644,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         { status: 400 }
       );
     }
+    const requiredRoleRank = Math.max(0, Math.min(3, Number.parseInt(new URL(request.url).searchParams.get("role_rank") ?? "0", 10) || 0));
     execute(
       this.ctx.storage.sql as never,
-      `INSERT INTO project_wiki (project_id, concept, definition, relationships, updated_at) VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(project_id, concept) DO UPDATE SET definition = excluded.definition, relationships = excluded.relationships, updated_at = excluded.updated_at`,
+      `INSERT INTO project_wiki (project_id, concept, definition, relationships, required_role_rank, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(project_id, concept) DO UPDATE SET definition = excluded.definition, relationships = excluded.relationships, required_role_rank = MAX(project_wiki.required_role_rank, excluded.required_role_rank), updated_at = excluded.updated_at`,
       projectId,
       body.concept,
       body.definition,
       JSON.stringify(body.relationships ?? []),
+      requiredRoleRank,
       new Date().toISOString()
     );
     return Response.json({ concept: body.concept });
@@ -5315,8 +5661,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
   private lookupProjectWikiConcept(
     projectId: string,
-    concept: string
+    concept: string,
+    params: URLSearchParams
   ): Response {
+    const roleRank = Math.max(0, Math.min(3, Number.parseInt(params.get("role_rank") ?? "0", 10) || 0));
     const row = queryOne<{
       concept: string;
       definition: string;
@@ -5324,9 +5672,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       updated_at: string;
     }>(
       this.ctx.storage.sql as never,
-      "SELECT * FROM project_wiki WHERE project_id = ? AND concept = ?",
+      "SELECT * FROM project_wiki WHERE project_id = ? AND concept = ? AND required_role_rank <= ?",
       projectId,
-      concept
+      concept,
+      roleRank
     );
     return Response.json({ data: row ?? null });
   }
@@ -5340,6 +5689,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       Number.parseInt(params.get("limit") ?? "5", 10) || 5,
       50
     );
+    const roleRank = Math.max(0, Math.min(3, Number.parseInt(params.get("role_rank") ?? "0", 10) || 0));
     const like = `%${q.replace(/[%_]/g, (c) => `\\${c}`)}%`;
     const rows = queryAll<{
       concept: string;
@@ -5348,8 +5698,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       updated_at: string;
     }>(
       this.ctx.storage.sql as never,
-      `SELECT * FROM project_wiki WHERE project_id = ? AND (concept LIKE ? ESCAPE '\\' OR definition LIKE ? ESCAPE '\\') ORDER BY updated_at DESC LIMIT ?`,
+      `SELECT * FROM project_wiki WHERE project_id = ? AND required_role_rank <= ? AND (concept LIKE ? ESCAPE '\\' OR definition LIKE ? ESCAPE '\\') ORDER BY updated_at DESC LIMIT ?`,
       projectId,
+      roleRank,
       like,
       like,
       limit
@@ -7631,6 +7982,22 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           { status: 404 }
         );
       }
+      // Every project has one durable Tier 1 team room. This also backfills projects created
+      // before team rooms shipped; the tier check makes repeated list calls idempotent.
+      const teamRoom = queryOne<{ id: string }>(
+        this.ctx.storage.sql as never,
+        "SELECT id FROM threads WHERE project_id = ? AND thread_tier = 'tier_1_team' AND status = 'active' LIMIT 1",
+        projectId
+      );
+      if (!teamRoom) {
+        const now = new Date().toISOString();
+        execute(
+          this.ctx.storage.sql as never,
+          `INSERT INTO threads (id, space_id, project_id, title, status, thread_kind, thread_tier, system_internal, created_at, updated_at)
+           VALUES (?, ?, ?, 'Team room', 'active', 'primary', 'tier_1_team', 0, ?, ?)`,
+          crypto.randomUUID(), spaceId, projectId, now, now
+        );
+      }
     }
     const parentThreadId = params.get("parent_thread_id");
     let showSubThreads = params.get("include_sub_threads") === "true";
@@ -7745,6 +8112,41 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const createdBy = body.created_by ?? body.user_id ?? null;
     if (tier === "tier_4_scratchpad" && !createdBy) {
       return Response.json({ error_code: "bad_request", message: "Scratchpads require a creating user" }, { status: 400 });
+    }
+    if (body.project_id) {
+      const project = queryOne<{ id: string; space_id: string; status: string; visibility: string }>(
+        this.ctx.storage.sql as never,
+        "SELECT id, space_id, status, visibility FROM projects WHERE id = ?",
+        body.project_id,
+      );
+      if (!project || project.space_id !== body.space_id || project.status === "archived") {
+        return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+      }
+      // User-created threads must already be allowed into a private project. Mirrored
+      // service threads have no creator and are authorized by their authenticated worker route.
+      if (
+        createdBy &&
+        project.visibility === "private" &&
+        this.getProjectMemberRole(body.project_id, createdBy) === null &&
+        !this.isSpaceOwnerOrAdmin(createdBy, body.space_id)
+      ) {
+        return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+      }
+    }
+    if (body.parent_thread_id) {
+      const parent = queryOne<{ space_id: string; project_id: string | null; status: string }>(
+        this.ctx.storage.sql as never,
+        "SELECT space_id, project_id, status FROM threads WHERE id = ?",
+        body.parent_thread_id,
+      );
+      if (
+        !parent ||
+        parent.space_id !== body.space_id ||
+        parent.project_id !== (body.project_id ?? null) ||
+        parent.status === "archived"
+      ) {
+        return Response.json({ error_code: "bad_request", message: "parent_thread_id must belong to the same active project" }, { status: 400 });
+      }
     }
     const systemInternal = tier === "tier_3_consult" ? 1 : body.system_internal ? 1 : 0;
     const id = body.id ?? crypto.randomUUID();
@@ -7881,17 +8283,44 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json(row, { status: 201 });
   }
 
-  private getThread(threadId: string, viewerId = ""): Response {
-    const row = queryOne<{ thread_tier: string; created_by: string | null } & Record<string, unknown>>(
+  private getThread(threadId: string, viewerId = "", spaceManager = false): Response {
+    const row = queryOne<{
+      thread_tier: string;
+      created_by: string | null;
+      project_id: string | null;
+      space_id: string;
+    } & Record<string, unknown>>(
       this.ctx.storage.sql as never,
       "SELECT * FROM threads WHERE id = ?",
       threadId
     );
-    if (!row || (row.thread_tier === "tier_4_scratchpad" && row.created_by !== viewerId))
+    if (!row) {
       return Response.json(
         { error_code: "not_found", message: "Thread not found" },
         { status: 404 }
       );
+    }
+    // Scratchpads remain private even to space managers; they are personal simulation lanes.
+    if (row.thread_tier === "tier_4_scratchpad" && row.created_by !== viewerId) {
+      return Response.json({ error_code: "not_found", message: "Thread not found" }, { status: 404 });
+    }
+    if (row.project_id && !spaceManager) {
+      const project = queryOne<{ visibility: string; space_id: string }>(
+        this.ctx.storage.sql as never,
+        "SELECT visibility, space_id FROM projects WHERE id = ?",
+        row.project_id,
+      );
+      if (
+        !project ||
+        project.space_id !== row.space_id ||
+        (project.visibility === "private" &&
+          (!viewerId ||
+            (this.getProjectMemberRole(row.project_id, viewerId) === null &&
+              !this.isSpaceOwnerOrAdmin(viewerId, row.space_id))))
+      ) {
+        return Response.json({ error_code: "not_found", message: "Thread not found" }, { status: 404 });
+      }
+    }
     return Response.json(row);
   }
 
@@ -8017,12 +8446,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     });
   }
 
-  private async hibernateFiniteProjectIfComplete(taskId: string): Promise<void> {
+  private async hibernateFiniteProjectIfComplete(taskId: string, tenantId = ""): Promise<void> {
     const task = queryOne<{ project_id: string | null; space_id: string }>(this.ctx.storage.sql as never,
       "SELECT project_id, space_id FROM tasks WHERE id = ?", taskId);
     if (!task?.project_id) return;
-    const project = queryOne<{ lifecycle: string; status: string; name: string }>(this.ctx.storage.sql as never,
-      "SELECT lifecycle, status, name FROM projects WHERE id = ?", task.project_id);
+    const project = queryOne<{ lifecycle: string; status: string; name: string; default_agent_id: string | null; allowed_agent_ids: string | null }>(this.ctx.storage.sql as never,
+      "SELECT lifecycle, status, name, default_agent_id, allowed_agent_ids FROM projects WHERE id = ?", task.project_id);
     if (!project || project.lifecycle !== "finite" || project.status === "HIBERNATED_COMPLETED") return;
     const remaining = queryOne<{ count: number }>(this.ctx.storage.sql as never,
       "SELECT COUNT(*) AS count FROM tasks WHERE project_id = ? AND status != 'completed' AND status != 'cancelled'", task.project_id)?.count ?? 0;
@@ -8041,9 +8470,19 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       project_id: task.project_id, status: "HIBERNATED_COMPLETED", completed_at: now,
     });
     if (this.env.AGENTS_WORKER) {
+      const allowed = safeJsonParseArr(project.allowed_agent_ids ?? "[]") as string[];
+      const agentIds = [...new Set([
+        ...(project.default_agent_id ? [project.default_agent_id] : []),
+        ...allowed,
+      ])];
+      const headers: Record<string, string> = { "content-type": "application/json" };
+      if (tenantId) {
+        headers["x-naelao-tenant-id"] = tenantId;
+        headers["x-naelao-internal-token"] = await mintInternalToken(this.env.PLATFORM_SECRET, tenantId);
+      }
       await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/projects/hibernate", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ spaceId: task.space_id, projectId: task.project_id }),
+        method: "POST", headers,
+        body: JSON.stringify({ spaceId: task.space_id, projectId: task.project_id, agentIds }),
       })).catch(() => undefined);
     }
   }
@@ -8296,7 +8735,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       `UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`,
       ...args
     );
-    if (body.status === "completed") await this.hibernateFiniteProjectIfComplete(taskId);
+    if (body.status === "completed") {
+      await this.hibernateFiniteProjectIfComplete(taskId, request.headers.get("x-naelao-tenant-id") ?? "");
+    }
     const row = queryOne<{ dependencies: string }>(
       this.ctx.storage.sql as never,
       "SELECT * FROM tasks WHERE id = ?",
@@ -9417,8 +9858,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   private async installExtension(request: Request): Promise<Response> {
-    const body = await request.json<{ manifest?: unknown; installedBy?: string; gatekeeperCapabilities?: string[] }>();
+    const body = await request.json<{ manifest?: unknown; installedBy?: string; gatekeeperCapabilities?: string[]; tenantId?: string; spaceId?: string; scope?: InstallationScope; projectId?: string; userId?: string }>();
     if (!body.installedBy) return Response.json({ error: "installedBy is required" }, { status: 400 });
+    if (body.scope && (!body.tenantId || !body.spaceId)) return Response.json({ error: "tenantId and spaceId are required for scoped installations" }, { status: 400 });
     let manifest: ExtensionManifest;
     try { manifest = validateExtensionManifest(body.manifest, { gatekeeperCapabilities: body.gatekeeperCapabilities ?? [] }); }
     catch (error) { return Response.json({ error: error instanceof Error ? error.message : "invalid_extension_manifest" }, { status: 400 }); }
@@ -9427,11 +9869,126 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       `INSERT INTO installed_extensions(extension_id,manifest_json,installed_by,installed_at,updated_at)
        VALUES (?,?,?,?,?) ON CONFLICT(extension_id) DO UPDATE SET manifest_json=excluded.manifest_json,installed_by=excluded.installed_by,updated_at=excluded.updated_at`,
       manifest.id, JSON.stringify(manifest), body.installedBy, now, now);
+    if (body.scope && body.tenantId && body.spaceId) {
+      let ownerKey: string;
+      if (body.scope === "SPACE_SHARED") ownerKey = `space:${body.spaceId}`;
+      else if (body.scope === "SPACE_USER") ownerKey = body.userId ? `space:${body.spaceId}:user:${body.userId}` : "";
+      else if (body.scope === "PROJECT_SHARED") ownerKey = body.projectId ? `space:${body.spaceId}:project:${body.projectId}` : "";
+      else ownerKey = body.projectId && body.userId ? `space:${body.spaceId}:project:${body.projectId}:user:${body.userId}` : "";
+      if (!ownerKey) return Response.json({ error: "projectId or userId is required for the selected installation scope" }, { status: 400 });
+      const instanceId = scopedInstallationId({ tenantId: body.tenantId, spaceId: body.spaceId, extensionId: manifest.id, scope: body.scope, ...(body.projectId ? { projectId: body.projectId } : {}), ...(body.userId ? { userId: body.userId } : {}) });
+      execute(this.ctx.storage.sql as never,
+        `INSERT INTO extension_instances(instance_id,extension_id,tenant_id,space_id,project_id,user_id,scope,owner_key,installed_by,status,installed_at,removed_at)
+         VALUES(?,?,?,?,?,?,?,?,?,'active',?,NULL)
+         ON CONFLICT(instance_id) DO UPDATE SET installed_by=excluded.installed_by,status='active',removed_at=NULL`,
+        instanceId, manifest.id, body.tenantId, body.spaceId, body.projectId ?? null, body.userId ?? null, body.scope, ownerKey, body.installedBy, now);
+    }
     return Response.json({ installed: true, manifest, installedAt: now }, { status: 201 });
+  }
+
+  private async machineAuthority(request: Request): Promise<Response> {
+    const body = await request.json<{ action: string; tenantId: string; spaceId: string; actorId?: string; machineId?: string; name?: string;
+      token?: string; publicKey?: JsonWebKey; hardware?: MachineHardware; grants?: MachineGrant[]; proof?: MachineProof; signature?: string }>();
+    const db = this.ctx.storage.sql as never;
+    const now = Date.now();
+    const read = (id: string): NamedMachine | undefined => {
+      const row = queryOne<{ record_json: string }>(db, "SELECT record_json FROM named_machines WHERE machine_id=? AND tenant_id=? AND space_id=?", id, body.tenantId, body.spaceId);
+      return row ? JSON.parse(row.record_json) as NamedMachine : undefined;
+    };
+    const save = (machine: NamedMachine) => execute(db,
+      "INSERT INTO named_machines(machine_id,tenant_id,space_id,name,owner_id,status,sequence,key_version,record_json,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(machine_id) DO UPDATE SET name=excluded.name,status=excluded.status,sequence=excluded.sequence,key_version=excluded.key_version,record_json=excluded.record_json,updated_at=excluded.updated_at",
+      machine.machineId, machine.tenantId, machine.spaceId, machine.name, machine.ownerId, machine.status, machine.sequence, machine.keyVersion, JSON.stringify(machine), machine.updatedAt);
+    const requireAdmin = () => {
+      const member = queryOne<{ role: string }>(db, "SELECT role FROM space_members WHERE space_id=? AND user_id=?", body.spaceId, body.actorId);
+      if (!member || !["owner", "admin"].includes(member.role)) throw new Error("tunnel_space_admin_required");
+    };
+    try {
+      if (!body.tenantId || !body.spaceId) throw new Error("tunnel_identity_invalid");
+      if (body.action === "enrollment") {
+        requireAdmin();
+        if (!body.name || !MACHINE_NAME.test(body.name)) throw new Error("tunnel_name_invalid");
+        validateMachineGrants(body.grants ?? []);
+        const token = Array.from(crypto.getRandomValues(new Uint8Array(32)), n => n.toString(16).padStart(2, "0")).join("");
+        execute(db, "INSERT INTO machine_enrollments(token_hash,tenant_id,space_id,name,owner_id,expires_at,grants_json) VALUES(?,?,?,?,?,?,?)",
+          await tunnelHash(token), body.tenantId, body.spaceId, body.name, body.actorId, now + 300000, JSON.stringify(body.grants ?? []));
+        return Response.json({ enrollmentToken: token, expiresAt: now + 300000, tenantId: body.tenantId, spaceId: body.spaceId, name: body.name }, { status: 201 });
+      }
+      if (body.action === "enroll") {
+        if (!body.token || !/^[a-f0-9]{64}$/.test(body.token)) throw new Error("tunnel_enrollment_invalid");
+        validateMachinePublicKey(body.publicKey!); validateMachineHardware(body.hardware!);
+        const hash = await tunnelHash(body.token);
+        const ticket = queryOne<{ name: string; owner_id: string; grants_json: string; expires_at: number; consumed_at: number | null }>(db,
+          "SELECT * FROM machine_enrollments WHERE token_hash=? AND tenant_id=? AND space_id=?", hash, body.tenantId, body.spaceId);
+        if (!ticket || ticket.consumed_at !== null || ticket.expires_at <= now || ticket.name !== body.name) throw new Error("tunnel_enrollment_expired_or_used");
+        // The ticket's original owner must STILL be an administrator at consumption time.
+        body.actorId = ticket.owner_id; requireAdmin();
+        const machine: NamedMachine = { schema: 1, tenantId: body.tenantId, spaceId: body.spaceId, machineId: crypto.randomUUID(), name: ticket.name,
+          ownerId: ticket.owner_id, publicKey: body.publicKey!, hardware: body.hardware!, grants: JSON.parse(ticket.grants_json), keyVersion: 1, sequence: 0, status: "active", createdAt: now, updatedAt: now };
+        this.ctx.storage.transactionSync(() => {
+          const current = queryOne<{ consumed_at: number | null }>(db, "SELECT consumed_at FROM machine_enrollments WHERE token_hash=?", hash);
+          if (!current || current.consumed_at !== null) throw new Error("tunnel_enrollment_already_used");
+          if (queryOne(db, "SELECT machine_id FROM named_machines WHERE tenant_id=? AND space_id=? AND name=? AND status!='removed'", body.tenantId, body.spaceId, ticket.name)) throw new Error("tunnel_name_collision_rename_or_remove");
+          save(machine);
+          execute(db, "UPDATE machine_enrollments SET consumed_at=?,machine_id=? WHERE token_hash=?", now, machine.machineId, hash);
+        });
+        return Response.json({ machine }, { status: 201 });
+      }
+      if (body.action === "list") {
+        const member = queryOne<{ role: string }>(db, "SELECT role FROM space_members WHERE space_id=? AND user_id=?", body.spaceId, body.actorId);
+        if (!member) throw new Error("tunnel_member_required");
+        const machines = queryAll<{ record_json: string }>(db, "SELECT record_json FROM named_machines WHERE tenant_id=? AND space_id=? AND status!='removed' ORDER BY name", body.tenantId, body.spaceId)
+          .map(row => JSON.parse(row.record_json) as NamedMachine)
+          .filter(machine => ["owner", "admin"].includes(member.role) || machine.ownerId === body.actorId || machine.grants.some(grant => grant.actorId === body.actorId && grant.expiresAt > now))
+          .map(machine => ({ ...machine, grants: machine.grants.filter(grant => ["owner", "admin"].includes(member.role) || grant.actorId === body.actorId) }));
+        return Response.json({ machines });
+      }
+      const machine = body.machineId ? read(body.machineId) : undefined;
+      if (body.action === "lookup" && body.actorId && !queryOne(db, "SELECT user_id FROM space_members WHERE space_id=? AND user_id=?", body.spaceId, body.actorId)) throw new Error("tunnel_actor_membership_revoked");
+      if (!machine) throw new Error("tunnel_machine_not_found");
+      assertMachineIdentity(machine);
+      if (body.action === "lookup") return Response.json({ machine });
+      if (["rename", "revoke", "remove", "grants"].includes(body.action)) {
+        requireAdmin();
+        if (body.action === "rename") {
+          if (!body.name || !MACHINE_NAME.test(body.name) || queryOne(db, "SELECT machine_id FROM named_machines WHERE tenant_id=? AND space_id=? AND name=? AND machine_id!=? AND status!='removed'", body.tenantId, body.spaceId, body.name, machine.machineId)) throw new Error("tunnel_name_collision_or_invalid");
+          machine.name = body.name;
+        } else if (body.action === "grants") { validateMachineGrants(body.grants ?? []); machine.grants = body.grants ?? []; }
+        else { machine.status = body.action === "remove" ? "removed" : "revoked"; machine.keyVersion++; machine.grants = []; }
+        machine.updatedAt = now; save(machine); return Response.json({ machine });
+      }
+      if (body.action === "heartbeat") {
+        if (!body.proof || machine.status !== "active" || body.proof.sequence !== machine.sequence || body.proof.keyVersion !== machine.keyVersion) throw new Error("tunnel_stale_connection");
+        // Only the already authenticated DO submits this internal heartbeat; no public route
+        // accepts an unsigned hardware update or chooses a socket generation.
+        machine.heartbeatAt = now; machine.updatedAt = now; save(machine); return Response.json({ machine });
+      }
+      if (body.action === "authenticate") {
+        const proof = body.proof!;
+        if (!proof || !body.signature || !await verifyMachineProof(machine, proof, body.signature, now)) throw new Error("tunnel_machine_authentication_failed");
+        const data = proof.operation === "connect" ? body.hardware : proof.operation === "rotate" ? body.publicKey : {};
+        if (proof.dataHash !== await tunnelHash(JSON.stringify(data))) throw new Error("tunnel_signed_payload_mismatch");
+        if (proof.operation === "connect") validateMachineHardware(body.hardware!);
+        if (proof.operation === "rotate") validateMachinePublicKey(body.publicKey!);
+        const updated = this.ctx.storage.transactionSync(() => {
+          const current = read(machine.machineId)!;
+          if (current.status !== "active" || current.sequence >= proof.sequence || current.keyVersion !== proof.keyVersion) throw new Error("tunnel_proof_replayed_or_revoked");
+          current.sequence = proof.sequence; current.updatedAt = now;
+          if (proof.operation === "rotate") { current.publicKey = body.publicKey!; current.keyVersion++; }
+          else if (proof.operation === "remove") { current.status = "removed"; current.keyVersion++; current.grants = []; }
+          else current.hardware = body.hardware!;
+          save(current); return current;
+        });
+        return Response.json({ machine: updated });
+      }
+      throw new Error("tunnel_authority_operation_unknown");
+    } catch (error) {
+      return Response.json({ error_code: error instanceof Error ? error.message : "tunnel_authority_failed" }, { status: 403 });
+    }
   }
 
   private uninstallExtension(extensionId: string): Response {
     execute(this.ctx.storage.sql as never, "DELETE FROM installed_extensions WHERE extension_id = ?", extensionId);
+    execute(this.ctx.storage.sql as never, "UPDATE extension_instances SET status='removed', removed_at=datetime('now') WHERE extension_id = ? AND status='active'", extensionId);
     return Response.json({ uninstalled: true, extensionId });
   }
 

@@ -1,5 +1,12 @@
 # Naelao Local Agent (reference client)
 
+The executable entry point now forwards to the named-machine bridge in
+[`@naelao/bridge`](../../../packages/bridge/README.md). Follow that guide for
+enrollment, explicit machine selection, encrypted identity, reconnects and shutdown.
+The user-only token instructions below describe the retired protocol and must not
+be used for new connections. Exported legacy helpers remain for compatibility tests.
+Native execution requires an OS isolation adapter; no whole-host fallback is enabled.
+
 Opt your own machine in as a grant-checked execution target for your space's agent
 (spec gap G-3, "Local PC as a Container Target" — §A1.17 Phase M). This is the ONLY way
 an agent can read/write files or run a command on hardware Naelao doesn't own; there is no
@@ -46,9 +53,15 @@ The token expires in 5 minutes — run the client promptly after minting one.
 node naelao-local-agent.mjs \
   --url wss://<your-agents-worker-hostname> \
   --space <spaceId> --user <userId> --token <token> \
+  --inference-url http://127.0.0.1:11434/v1/chat/completions \
   --allow-dir /home/alice/my-project \
   --allow-command "npm test"
 ```
+
+The optional inference URL is loopback-only and defaults to Ollama's OpenAI-compatible endpoint.
+It can point at a local Ollama, vLLM, or Laya adapter; remote URLs are rejected by the client.
+The agent forwards `local/*` model requests from the tunnel as `chat.completion` messages and
+returns the provider's OpenAI-compatible JSON response.
 
 `--url` is your deployment's agents-worker public hostname — this is an operator/deployment
 detail, not something the platform hardcodes for you.
@@ -69,6 +82,7 @@ re-run to reconnect.
 ## Protocol (for anyone porting this to another runtime)
 
 The server sends: `{"type":"request","request_id":"...","op":"read_file"|"write_file"|"exec","params":{...}}`
+or `{"type":"chat.completion","request_id":"...","payload":{...}}` for local inference.
 
 The client replies: `{"type":"response","request_id":"...","ok":true,"result":...}` or
 `{"type":"response","request_id":"...","ok":false,"error":"..."}`

@@ -30,6 +30,7 @@ import {
   type JournalSummarizer,
 } from "../project-journal.js";
 import { UTILITY_MODEL } from "@naelao/billing-core";
+import { putTextCas, readTextWithHash } from "../r2-cas.js";
 
 function bucket(ctx: PrebuiltOpContext): R2Bucket {
   return ctx.env.workspaceBucket ?? ctx.env.scriptsBucket;
@@ -47,14 +48,14 @@ function requireProject(ctx: PrebuiltOpContext): { spaceId: string; projectId: s
   return { spaceId: ctx.env.spaceId, projectId };
 }
 
-async function loadJournal(ctx: PrebuiltOpContext, spaceId: string, projectId: string): Promise<ProjectJournal> {
-  const obj = await bucket(ctx).get(journalKey(spaceId, projectId));
-  if (!obj) return emptyJournal();
-  return parseJournal(await obj.text());
+async function loadJournal(ctx: PrebuiltOpContext, spaceId: string, projectId: string): Promise<{ journal: ProjectJournal; expectedHash: string | null }> {
+  const observed = await readTextWithHash(bucket(ctx), journalKey(spaceId, projectId));
+  if (!observed) return { journal: emptyJournal(), expectedHash: null };
+  return { journal: parseJournal(observed.text), expectedHash: observed.hash };
 }
 
-async function saveJournal(ctx: PrebuiltOpContext, spaceId: string, projectId: string, j: ProjectJournal): Promise<void> {
-  await bucket(ctx).put(journalKey(spaceId, projectId), renderJournal(j));
+async function saveJournal(ctx: PrebuiltOpContext, spaceId: string, projectId: string, j: ProjectJournal, expectedHash: string | null): Promise<void> {
+  await putTextCas(bucket(ctx), journalKey(spaceId, projectId), renderJournal(j), expectedHash);
 }
 
 /** An LLM-backed summariser when one is wired, else undefined so compaction uses its
@@ -102,7 +103,7 @@ export const projectJournal: PrebuiltScript = {
     async "project_journal.read"(args, ctx) {
       const scope = requireProject(ctx);
       if ("error" in scope) return { ok: false, reason: scope.error };
-      const j = await loadJournal(ctx, scope.spaceId, scope.projectId);
+      const { journal: j } = await loadJournal(ctx, scope.spaceId, scope.projectId);
       const section = typeof args["section"] === "string" ? (args["section"] as string).toLowerCase() : null;
       if (section) {
         const map: Record<string, unknown> = {
@@ -140,7 +141,8 @@ export const projectJournal: PrebuiltScript = {
     async "project_journal.update"(args, ctx) {
       const scope = requireProject(ctx);
       if ("error" in scope) return { ok: false, reason: scope.error };
-      const j = await loadJournal(ctx, scope.spaceId, scope.projectId);
+      const loaded = await loadJournal(ctx, scope.spaceId, scope.projectId);
+      const j = loaded.journal;
       if (typeof args["goal"] === "string") j.goal = String(args["goal"]).trim();
       if (Array.isArray(args["rules"])) j.rules = args["rules"].map(String).map((v) => v.trim()).filter(Boolean);
       if (Array.isArray(args["active_decisions"])) {
@@ -153,7 +155,7 @@ export const projectJournal: PrebuiltScript = {
             : { text: String((todo as Record<string, unknown>)["text"] ?? "").trim(), done: Boolean((todo as Record<string, unknown>)["done"]), at: nowIso() }
         ).filter((todo) => todo.text);
       }
-      await saveJournal(ctx, scope.spaceId, scope.projectId, j);
+      await saveJournal(ctx, scope.spaceId, scope.projectId, j, loaded.expectedHash);
       return { ok: true, goal: j.goal, rules: j.rules, todos: j.todos, active_decisions: j.activeDecisions };
     },
 
@@ -168,14 +170,15 @@ export const projectJournal: PrebuiltScript = {
       // its own, and inventing one would put a wrong "jump to this conversation" link in the log.
       const threadId = typeof args["thread_id"] === "string" ? (args["thread_id"] as string) : undefined;
 
-      const j = await loadJournal(ctx, scope.spaceId, scope.projectId);
+      const loaded = await loadJournal(ctx, scope.spaceId, scope.projectId);
+      const j = loaded.journal;
       const result = await appendActivity(
         j,
         { at: nowIso(), actor, summary, ...(threadId ? { threadId } : {}) },
         summarizerFor(ctx),
         DEFAULT_JOURNAL_LIMITS
       );
-      await saveJournal(ctx, scope.spaceId, scope.projectId, result.journal);
+      await saveJournal(ctx, scope.spaceId, scope.projectId, result.journal, loaded.expectedHash);
       return {
         ok: true,
         logged: summary,
@@ -190,7 +193,8 @@ export const projectJournal: PrebuiltScript = {
     async "project_journal.set"(args, ctx) {
       const scope = requireProject(ctx);
       if ("error" in scope) return { ok: false, reason: scope.error };
-      const j = await loadJournal(ctx, scope.spaceId, scope.projectId);
+      const loaded = await loadJournal(ctx, scope.spaceId, scope.projectId);
+      const j = loaded.journal;
       let changed = false;
       for (const field of ["goal", "instructions", "status", "name"] as const) {
         const v = args[field];
@@ -200,7 +204,7 @@ export const projectJournal: PrebuiltScript = {
         }
       }
       if (!changed) throw new Error("project_journal.set requires at least one of: goal, instructions, status, name");
-      await saveJournal(ctx, scope.spaceId, scope.projectId, j);
+      await saveJournal(ctx, scope.spaceId, scope.projectId, j, loaded.expectedHash);
       return { ok: true, goal: j.goal, instructions: j.instructions, status: j.status, name: j.name };
     },
 
@@ -210,13 +214,14 @@ export const projectJournal: PrebuiltScript = {
       if ("error" in scope) return { ok: false, reason: scope.error };
       const text = String(args["text"] ?? "").trim();
       if (!text) throw new Error("project_journal.add_todo requires 'text'");
-      const j = await loadJournal(ctx, scope.spaceId, scope.projectId);
+      const loaded = await loadJournal(ctx, scope.spaceId, scope.projectId);
+      const j = loaded.journal;
       // Adding the same todo twice is a normal consequence of two threads working in parallel —
       // dedupe rather than letting the list rot into duplicates.
       const existing = j.todos.find((t) => t.text.toLowerCase() === text.toLowerCase());
       if (existing) return { ok: true, todo: existing, already_present: true, todos: j.todos };
       j.todos.push({ text, done: false, at: nowIso() });
-      await saveJournal(ctx, scope.spaceId, scope.projectId, j);
+      await saveJournal(ctx, scope.spaceId, scope.projectId, j, loaded.expectedHash);
       return { ok: true, todos: j.todos };
     },
 
@@ -227,12 +232,13 @@ export const projectJournal: PrebuiltScript = {
       const text = String(args["text"] ?? "").trim();
       if (!text) throw new Error("project_journal.complete_todo requires 'text'");
       const done = args["done"] === undefined ? true : Boolean(args["done"]);
-      const j = await loadJournal(ctx, scope.spaceId, scope.projectId);
+      const loaded = await loadJournal(ctx, scope.spaceId, scope.projectId);
+      const j = loaded.journal;
       const todo = j.todos.find((t) => t.text.toLowerCase() === text.toLowerCase());
       if (!todo) return { ok: false, reason: `no todo matching '${text}'`, todos: j.todos };
       todo.done = done;
       todo.at = nowIso();
-      await saveJournal(ctx, scope.spaceId, scope.projectId, j);
+      await saveJournal(ctx, scope.spaceId, scope.projectId, j, loaded.expectedHash);
       return { ok: true, todos: j.todos };
     },
 
@@ -241,9 +247,10 @@ export const projectJournal: PrebuiltScript = {
     async "project_journal.compact"(_args, ctx) {
       const scope = requireProject(ctx);
       if ("error" in scope) return { ok: false, reason: scope.error };
-      const j = await loadJournal(ctx, scope.spaceId, scope.projectId);
+      const loaded = await loadJournal(ctx, scope.spaceId, scope.projectId);
+      const j = loaded.journal;
       const result = await compactJournal(j, summarizerFor(ctx), DEFAULT_JOURNAL_LIMITS);
-      if (result.compacted > 0) await saveJournal(ctx, scope.spaceId, scope.projectId, result.journal);
+      if (result.compacted > 0) await saveJournal(ctx, scope.spaceId, scope.projectId, result.journal, loaded.expectedHash);
       return {
         ok: true,
         compacted: result.compacted,

@@ -34,9 +34,10 @@ import { promisify } from "node:util";
 
 const exec = promisify(execCallback);
 const EXEC_TIMEOUT_MS = 25_000; // stays under LocalTunnelDO's 30s /exec timeout
+const DEFAULT_INFERENCE_URL = "http://127.0.0.1:11434/v1/chat/completions";
 
 function parseArgs(argv) {
-  const args = { allowDirs: [], allowCommands: [] };
+  const args = { allowDirs: [], allowCommands: [], inferenceUrl: DEFAULT_INFERENCE_URL };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--url") args.url = argv[++i];
@@ -45,20 +46,48 @@ function parseArgs(argv) {
     else if (a === "--token") args.token = argv[++i];
     else if (a === "--allow-dir") args.allowDirs.push(argv[++i]);
     else if (a === "--allow-command") args.allowCommands.push(argv[++i]);
+    else if (a === "--inference-url") args.inferenceUrl = argv[++i];
   }
   return args;
 }
 
+export function isLoopbackInferenceUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+export function isSecureTunnelUrl(value) {
+  try {
+    const url = new URL(value);
+    if (url.protocol === "wss:") return true;
+    return (url.protocol === "ws:" || url.protocol === "http:" || url.protocol === "https:")
+      && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 export function normalizePath(p) {
-  const isAbsolute = p.startsWith("/");
-  const parts = p.split("/").filter(Boolean);
+  const canonical = String(p).replace(/\\/gu, "/");
+  const drive = canonical.match(/^[A-Za-z]:/u)?.[0] ?? "";
+  const isAbsolute = canonical.startsWith("/") || drive.length > 0;
+  const parts = canonical.slice(drive.length).split("/").filter(Boolean);
   const out = [];
   for (const part of parts) {
     if (part === ".") continue;
-    if (part === "..") { out.pop(); continue; }
+    if (part === "..") {
+      if (out.length > 0 && out[out.length - 1] !== "..") out.pop();
+      else if (!isAbsolute) out.push(part);
+      continue;
+    }
     out.push(part);
   }
-  return (isAbsolute ? "/" : "") + out.join("/");
+  const prefix = drive || (isAbsolute ? "/" : "");
+  return prefix + out.join("/");
 }
 
 export function isWithinAny(path, dirs) {
@@ -73,6 +102,23 @@ export function isWithinAny(path, dirs) {
 export function isAllowedCommand(command, commands) {
   if (commands.length === 0) return true; // same as above — server already checked this
   return commands.includes(command);
+}
+
+/** Forward only to a local OpenAI-compatible server (Ollama, vLLM, or Laya's local adapter).
+ * The URL is deliberately restricted to loopback so a compromised server request cannot turn
+ * this opt-in workstation client into an arbitrary outbound proxy. */
+export async function handleChatCompletion(args, payload, fetchImpl = fetch) {
+  if (!isLoopbackInferenceUrl(args.inferenceUrl)) {
+    throw new Error("local policy: --inference-url must target localhost or loopback");
+  }
+  const response = await fetchImpl(args.inferenceUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(`local inference ${response.status}: ${body?.error?.message ?? body?.message ?? "request failed"}`);
+  return body;
 }
 
 export async function handleRequest(args, op, params) {
@@ -95,8 +141,8 @@ export async function handleRequest(args, op, params) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  if (!args.url || !args.space || !args.user || !args.token) {
-    console.error("Usage: naelao-local-agent.mjs --url <wss://...> --space <id> --user <id> --token <token> [--allow-dir <path> ...] [--allow-command <cmd> ...]");
+  if (!args.url || !isSecureTunnelUrl(args.url) || !args.space || !args.user || !args.token || !isLoopbackInferenceUrl(args.inferenceUrl)) {
+    console.error("Usage: naelao-local-agent.mjs --url <wss://...> --space <id> --user <id> --token <token> [--inference-url http://127.0.0.1:11434/v1/chat/completions] [--allow-dir <path> ...] [--allow-command <cmd> ...]");
     process.exit(1);
   }
 
@@ -119,10 +165,15 @@ async function main() {
     } catch {
       return;
     }
-    if (msg.type !== "request" || !msg.request_id) return;
+    if (!msg.request_id) return;
 
     try {
-      const result = await handleRequest(args, msg.op, msg.params || {});
+      const result = msg.type === "chat.completion"
+        ? await handleChatCompletion(args, msg.payload || {})
+        : msg.type === "request"
+          ? await handleRequest(args, msg.op, msg.params || {})
+          : undefined;
+      if (result === undefined) return;
       ws.send(JSON.stringify({ type: "response", request_id: msg.request_id, ok: true, result }));
     } catch (err) {
       ws.send(JSON.stringify({ type: "response", request_id: msg.request_id, ok: false, error: String(err?.message || err) }));
@@ -141,6 +192,9 @@ async function main() {
 
 // Only run when invoked directly (`node naelao-local-agent.mjs ...`) — importing this module
 // (e.g. from a test exercising the pure helpers above) must not open a real connection.
-if (import.meta.url === `file://${process.argv[1]}`) {
-  main();
+if (process.argv[1] && import.meta.url === (await import("node:url")).pathToFileURL(process.argv[1]).href) {
+  const { runBridge } = await import("../../../packages/bridge/src/runtime.mjs");
+  runBridge(process.argv.slice(2)).then(result => {
+    if (result !== undefined) process.stdout.write(JSON.stringify(result) + "\n");
+  }).catch(error => { process.stderr.write(String(error.message ?? error) + "\n"); process.exitCode = 1; });
 }

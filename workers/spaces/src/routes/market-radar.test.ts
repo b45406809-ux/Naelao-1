@@ -1,7 +1,7 @@
 import { evaluateBlueprintSecurity } from "@naelao/security";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { GRADUATION_STAGES } from "./graduation.js";
-import { blueprintForOpportunity, scoreMarketSignal } from "./market-radar.js";
+import { blueprintForOpportunity, scoreMarketSignal, scoreMarketSignalWithSentry } from "./market-radar.js";
 
 describe("market radar and graduation", () => {
   it("tracks the complete graduation lifecycle in order", () => {
@@ -29,5 +29,19 @@ describe("market radar and graduation", () => {
     ).toBeGreaterThan(
       scoreMarketSignal({ search_surge_pct: 30, saturation_index: 80 })
     );
+  });
+
+  it("uses a confident typed Jev/Laya score and falls back deterministically", async () => {
+    const signal = { search_surge_pct: 118, saturation_index: 14 };
+    const score = vi.fn(async () => ({
+      kind: "score" as const, value: 8.1, provider: "laya" as const,
+      policyCode: "market_radar_opportunity_v1", confidence: 0.91,
+    }));
+    await expect(scoreMarketSignalWithSentry(signal, { score } as never)).resolves.toEqual({ score: 90, provider: "laya" });
+
+    score.mockRejectedValueOnce(new Error("offline"));
+    await expect(scoreMarketSignalWithSentry(signal, { score } as never)).resolves.toEqual({
+      score: scoreMarketSignal(signal), provider: "deterministic",
+    });
   });
 });

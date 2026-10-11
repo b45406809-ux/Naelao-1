@@ -1,6 +1,5 @@
 "use client";
 
-export const runtime = "edge";
 
 // The Dashboard — a merged BUSINESS dashboard + ASSISTANT dashboard for whichever space is
 // currently active (formerly two separate surfaces: this page used to be assistant-only, and a

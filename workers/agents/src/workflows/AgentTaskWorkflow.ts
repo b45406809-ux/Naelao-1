@@ -15,6 +15,8 @@ import { mintInternalToken } from "@naelao/http";
 import type { Env } from "../env.js";
 import { reportWorkflowStepInfraUsage } from "./report-infra-usage.js";
 import type { BusinessContext } from "../launchpad/business-context.js";
+import { checkpointAgentTask } from "./agent-task-checkpoints.js";
+import { workflowRunStub } from "./workflow-host.js";
 
 export interface AgentTaskParams {
   taskId: string;
@@ -79,7 +81,12 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
     // a last-resort, non-step (plain fetch, no Serializable<T> constraint, no retry policy of its
     // own) direct write, so it can still run even when the step machinery itself is what failed.
     try {
-      await this.runSteps(event, step);
+      const checked = await checkpointAgentTask(this.env, event.instanceId, event.payload, step);
+      const outcome = await this.runSteps(event, checked.step);
+      const stub = workflowRunStub(this.env, checked.identity);
+      if (outcome === "waiting") { await stub.state(event.instanceId, "waiting"); return; }
+      const taskResult = await stub.putArtifact(event.instanceId, { taskId: event.payload.taskId, state: "turn_finished" });
+      await step.do("workflow-terminal", async () => { await stub.finish(event.instanceId, outcome, outcome === "succeeded" ? taskResult : "agent_task_failed"); return { ok: true }; });
     } catch (err) {
       try {
         const stub = this.env.TASK_DO.get(this.env.TASK_DO.idFromName(event.payload.taskDoName));
@@ -96,13 +103,17 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
         // Genuinely nothing more can be done — TaskDO itself is unreachable. The task stays
         // "processing"; this is the one failure mode this file cannot self-heal.
       }
+      try {
+        const stub = workflowRunStub(this.env, { tenantId: event.payload.tenantId, spaceId: event.payload.spaceId, runId: event.instanceId });
+        if (await stub.existing()) await stub.finish(event.instanceId, "failed", "agent_task_workflow_failed");
+      } catch { /* The persisted expiry alarm retries cleanup if services are unavailable. */ }
     }
   }
 
   private async runSteps(
     event: WorkflowEvent<AgentTaskParams>,
     step: WorkflowStep,
-  ): Promise<void> {
+  ): Promise<"succeeded" | "failed" | "waiting"> {
     const p = event.payload;
 
     const retry = {
@@ -150,7 +161,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
     // whatever the failure, it becomes a normal `runResult.error` value and step 3 always runs.
     let runResult: {
       final_answer: string | undefined; error: string | undefined; error_code: string | undefined; status: string | undefined;
-      pending_approval_json: string | undefined; deferred_approvals_json: string | undefined;
+      pending_approval_json: string | undefined; pending_question_json: string | undefined; deferred_approvals_json: string | undefined;
     };
     try {
       runResult = await step.do("run-agent", { retries: { limit: 0, delay: 0 } }, async () => {
@@ -161,6 +172,11 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
         // state, the run happened; return what was recorded instead of doing it again.
         const already = await this.recordedResult(p);
         if (already) return already;
+        // A process interruption before a completed TaskDO receipt is indeterminate, not a
+        // reason to execute all the agent's external effects again.
+        const runJournal = workflowRunStub(this.env, { tenantId: p.tenantId, spaceId: p.spaceId, runId: event.instanceId });
+        const claim = await runJournal.claimAgentRun(event.instanceId, p.taskId);
+        if (!claim) throw new Error("workflow_agent_run_reconciliation_required");
         // Go-live audit F1: /internal/tasks/:taskId/run is HMAC-gated (verified tenant must match
         // the body's tenantId) — mint the same signed internal token naelao-router's proxyTo and
         // every other internal caller uses. Without this the workflow's own run would now 403.
@@ -212,6 +228,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
           let parsedError: string | undefined;
           let errorCode: string | undefined;
           let pendingApprovalJson: string | undefined;
+          let pendingQuestionJson: string | undefined;
           let deferredApprovalsJson: string | undefined;
           try {
             const errBody = JSON.parse(text) as {
@@ -224,11 +241,13 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
               // any other failure and render an upgrade path instead of a bare error banner.
               error_code?: string;
               pending_approval?: { approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number };
+              pending_question?: { question_id: string; question: string; options?: string[]; expires_at?: number };
               deferred_approvals?: Array<{ approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number }>;
             };
             parsedError = errBody.error ?? errBody.message;
             errorCode = errBody.error_code;
             pendingApprovalJson = errBody.pending_approval ? JSON.stringify(errBody.pending_approval) : undefined;
+            pendingQuestionJson = errBody.pending_question ? JSON.stringify(errBody.pending_question) : undefined;
             deferredApprovalsJson = errBody.deferred_approvals?.length ? JSON.stringify(errBody.deferred_approvals) : undefined;
           } catch {
             // Not JSON, or not the shape above — the raw text below is still a real error message.
@@ -239,6 +258,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
             error_code: errorCode,
             status: undefined,
             pending_approval_json: pendingApprovalJson,
+            pending_question_json: pendingQuestionJson,
             deferred_approvals_json: deferredApprovalsJson,
           };
         }
@@ -255,6 +275,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
           error?: string;
           status?: string;
           pending_approval?: { approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number };
+          pending_question?: { question_id: string; question: string; options?: string[]; expires_at?: number };
           // Live-reported bug (2026-07-29): a run that parked a real approval and continued (rather
           // than fully suspending) carried this array in the direct-DO response, but this step never
           // read it at all — every async-dispatched (the DEFAULT) run silently dropped it, so the
@@ -274,6 +295,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
           // inside the plain (non-step) "update-result" callback below where that constraint
           // doesn't apply.
           pending_approval_json: body.pending_approval ? JSON.stringify(body.pending_approval) : undefined,
+          pending_question_json: body.pending_question ? JSON.stringify(body.pending_question) : undefined,
           deferred_approvals_json: body.deferred_approvals?.length ? JSON.stringify(body.deferred_approvals) : undefined,
         };
       });
@@ -284,10 +306,12 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
         error_code: undefined,
         status: undefined,
         pending_approval_json: undefined,
+        pending_question_json: undefined,
         deferred_approvals_json: undefined,
       };
     }
 
+    const outcome = runResult.status === "awaiting_approval" ? "waiting" : runResult.error ? "failed" : "succeeded";
     // ── Step 3: Update task with result ───────────────────────────────────────
     await step.do("update-result", retry, async () => {
       const doId = this.env.TASK_DO.idFromName(p.taskDoName);
@@ -320,12 +344,13 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
           // subscription_inactive/quota_exceeded) got only the raw error TEXT, with no reliable
           // way to render an "upgrade" path instead of a bare error banner — error_code carries
           // through even on a hard error now, for exactly the same reason deferred_approvals does.
-          result: (hasError && !runResult.deferred_approvals_json && !runResult.error_code) ? null : JSON.stringify({
+      result: (hasError && !runResult.deferred_approvals_json && !runResult.pending_question_json && !runResult.error_code) ? null : JSON.stringify({
             ...(hasError ? {} : { final_answer: runResult.final_answer }),
             // Re-parsed here (a plain step-3 callback, not the run-agent step itself, so the
             // Serializable<T> constraint that made the pre-stringify necessary doesn't apply).
             ...(runResult.error_code ? { error_code: runResult.error_code } : {}),
             ...(runResult.pending_approval_json ? { pending_approval: JSON.parse(runResult.pending_approval_json) } : {}),
+            ...(runResult.pending_question_json ? { pending_question: JSON.parse(runResult.pending_question_json) } : {}),
             ...(runResult.deferred_approvals_json ? { deferred_approvals: JSON.parse(runResult.deferred_approvals_json) } : {}),
           }),
           error: runResult.error ?? null,
@@ -334,6 +359,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
       if (!resp.ok) throw new Error(`Failed to update task result: ${resp.status}`);
       return { ok: true };
     });
+    return outcome;
   }
 
   /**
@@ -348,12 +374,12 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
     p: AgentTaskParams
   ): Promise<{
     final_answer: string | undefined; error: string | undefined; error_code: string | undefined; status: string | undefined;
-    pending_approval_json: string | undefined; deferred_approvals_json: string | undefined;
+    pending_approval_json: string | undefined; pending_question_json: string | undefined; deferred_approvals_json: string | undefined;
   } | null> {
     try {
       const stub = this.env.TASK_DO.get(this.env.TASK_DO.idFromName(p.taskDoName));
       const resp = await stub.fetch(`http://task-do/tasks/${p.taskId}`);
-      if (!resp.ok) return null;
+      if (!resp.ok) throw new Error("workflow_task_ledger_unavailable");
       const task = await resp.json<{ status?: string; result?: string | null; error?: string | null }>();
       // "awaiting_approval" is deliberately NOT recorded-and-short-circuited here — unlike
       // complete/failed, it isn't a terminal outcome the ledger should ever treat as "the run
@@ -370,9 +396,9 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
           errorCode = parsed.error_code;
         } catch { /* a result we can't parse is still proof the run happened */ }
       }
-      return { final_answer: answer, error: task.error ?? undefined, error_code: errorCode, status: task.status, pending_approval_json: undefined, deferred_approvals_json: undefined };
-    } catch {
-      return null;
+      return { final_answer: answer, error: task.error ?? undefined, error_code: errorCode, status: task.status, pending_approval_json: undefined, pending_question_json: undefined, deferred_approvals_json: undefined };
+    } catch (error) {
+      throw new Error("workflow_task_ledger_unavailable", { cause: error });
     }
   }
 }

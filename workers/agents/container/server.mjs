@@ -30,20 +30,22 @@
 
 import {
   mkdir,
+  chmod,
+  chown,
   mkdtemp,
   readFile,
   readdir,
+  lstat,
   rm,
   stat,
   writeFile,
 } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
-import { build } from "esbuild";
+import { dirname, join, relative, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { startBinaryBridge } from "./binary-bridge.mjs";
+import { runGuest, cancelExecution, cancelAllExecutions } from "./process-supervisor.mjs";
 import { ArtifactFS } from "./artifact-fs.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -56,25 +58,43 @@ const WORKSPACE_DIR = "/workspace";
 const MAX_WORKSPACE_FILES = 300;
 const MAX_WORKSPACE_FILE_BYTES = 2 * 1024 * 1024;
 
+async function assertWorkspaceAncestors(path) {
+  let current = WORKSPACE_DIR;
+  for (const part of safeWorkspacePath(path).split("/")) {
+    current = join(current, part);
+    try {
+      if ((await lstat(current)).isSymbolicLink()) throw new Error("workspace symlink rejected");
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+}
+
 function safeWorkspacePath(path) {
   const value = String(path).replaceAll("\\", "/");
   if (value.startsWith("/.avos") || value === ".avos" || value.startsWith(".avos/")) throw new Error("agent state is not a deliverable");
   const relativePath = value.startsWith("/workspace/") ? value.slice(11) : value.replace(/^\/+/, "");
   const parts = relativePath.split("/");
   if (!relativePath || parts.some((part) => !part || part === "." || part === "..")) throw new Error("workspace path traversal rejected");
+  if (parts.some((part) => [".avos", ".naelao", ".git", "node_modules", ".cache", ".turbo", ".next", ".vite", "coverage", "tmp", ".tmp"].includes(part) || part === ".env" || part.startsWith(".env.") && part !== ".env.example")) throw new Error("workspace control/cache/secret path rejected");
   return parts.join("/");
 }
 
-async function materializeWorkspace(files) {
+async function materializeWorkspace(files, binary = false) {
   await mkdir(WORKSPACE_DIR, { recursive: true });
   for (const [relPath, content] of Object.entries(files ?? {})) {
+    await assertWorkspaceAncestors(relPath);
     const dest = join(WORKSPACE_DIR, safeWorkspacePath(relPath));
     await mkdir(dirname(dest), { recursive: true });
-    await writeFile(dest, content, "utf8");
+    await writeFile(dest, binary ? Buffer.from(content, "base64") : content, binary ? undefined : "utf8");
   }
 }
 
-async function collectWorkspace() {
+function encodedFile(bytes, encoding) {
+  return encoding === "base64" ? bytes.toString("base64") : bytes.toString("utf8");
+}
+
+async function collectWorkspace(encoding = "text") {
   const out = {};
   let count = 0;
   async function walk(dir) {
@@ -85,16 +105,16 @@ async function collectWorkspace() {
       return;
     }
     for (const entry of entries) {
-      if (count >= MAX_WORKSPACE_FILES) return;
+      if (count >= MAX_WORKSPACE_FILES) throw new Error("workspace snapshot file limit exceeded");
       const full = join(dir, entry.name);
-      if (entry.name === ".avos" || entry.name === "node_modules") continue;
+      if ([".avos", ".naelao", ".git", "node_modules", ".cache", ".turbo", ".next", ".vite", "coverage", "tmp", ".tmp"].includes(entry.name) || entry.name === ".env" || entry.name.startsWith(".env.") && entry.name !== ".env.example") continue;
       if (entry.isDirectory()) {
         await walk(full);
       } else if (entry.isFile()) {
         const info = await stat(full).catch(() => null);
-        if (!info || info.size > MAX_WORKSPACE_FILE_BYTES) continue;
+        if (!info || info.size > MAX_WORKSPACE_FILE_BYTES) throw new Error("workspace snapshot file size limit exceeded");
         try {
-          out[relative(WORKSPACE_DIR, full)] = await readFile(full, "utf8");
+          out[relative(WORKSPACE_DIR, full)] = encodedFile(await readFile(full), encoding);
           count++;
         } catch {
           // Binary/unreadable-as-utf8 file — skip rather than corrupt it (matches the
@@ -111,17 +131,20 @@ async function collectWorkspace() {
 // §A1.17 Phase R: explicit read of specific paths (workspace.copy('container','r2', path)) —
 // falls back to collectWorkspace()'s full walk when no paths are given (workspace.list-adjacent
 // callers that want everything).
-async function readWorkspacePaths(paths) {
-  if (!paths || paths.length === 0) return collectWorkspace();
+async function readWorkspacePaths(paths, encoding = "text") {
+  if (!paths || paths.length === 0) return collectWorkspace(encoding);
   const out = {};
-  for (const relPath of paths.slice(0, MAX_WORKSPACE_FILES)) {
+  if (paths.length > MAX_WORKSPACE_FILES) throw new Error("workspace read file limit exceeded");
+  for (const relPath of paths) {
     try {
       const safePath = safeWorkspacePath(relPath);
+      await assertWorkspaceAncestors(safePath);
       const full = join(WORKSPACE_DIR, safePath);
       const info = await stat(full);
-      if (info.size > MAX_WORKSPACE_FILE_BYTES) continue;
-      out[safePath] = await readFile(full, "utf8");
-    } catch {
+      if (info.size > MAX_WORKSPACE_FILE_BYTES) throw new Error("workspace read file size limit exceeded");
+       out[safePath] = encodedFile(await readFile(full), encoding);
+    } catch (error) {
+      if (encoding === "base64") throw error;
       // missing/unreadable — simply absent from the result, not an error for the whole batch
     }
   }
@@ -138,9 +161,9 @@ async function listWorkspacePaths() {
       return;
     }
     for (const entry of entries) {
-      if (names.length >= MAX_WORKSPACE_FILES) return;
+      if (names.length >= MAX_WORKSPACE_FILES) throw new Error("workspace listing file limit exceeded");
       const full = join(dir, entry.name);
-      if (entry.name === ".avos" || entry.name === "node_modules") continue;
+      if ([".avos", ".naelao", ".git", "node_modules", ".cache", ".turbo", ".next", ".vite", "coverage", "tmp", ".tmp"].includes(entry.name) || entry.name === ".env" || entry.name.startsWith(".env.") && entry.name !== ".env.example") continue;
       if (entry.isDirectory()) await walk(full);
       else if (entry.isFile()) names.push(relative(WORKSPACE_DIR, full));
     }
@@ -152,11 +175,13 @@ async function listWorkspacePaths() {
 
 async function deleteWorkspacePaths(paths) {
   for (const relPath of paths ?? []) {
-    await rm(join(WORKSPACE_DIR, relPath), { force: true }).catch(() => {});
+    const safe = safeWorkspacePath(relPath);
+    await assertWorkspaceAncestors(safe);
+    await rm(join(WORKSPACE_DIR, safe), { force: true });
   }
 }
 
-async function buildAndTest(code) {
+async function buildAndTest(code, execution) {
   const logs = [];
   const dir = await mkdtemp(join(tmpdir(), "tool-"));
   const src = join(dir, "tool.ts");
@@ -166,14 +191,9 @@ async function buildAndTest(code) {
 
     // 1+2. Build (this is also the type/transpile gate).
     try {
-      await build({
-        entryPoints: [src],
-        outfile: out,
-        bundle: true,
-        format: "esm",
-        platform: "node",
-        logLevel: "silent",
-      });
+      await chown(dir, 10001, 10001); await chmod(dir, 0o700);
+      const compiled = await runGuest(process.execPath, ["/app/compile-runner.mjs"], { ...execution, message: { src, out } });
+      if (!compiled.result.ok) throw new Error(compiled.result.error);
       logs.push("build: ok");
     } catch (err) {
       logs.push(`build: failed — ${String(err).slice(0, 1000)}`);
@@ -181,12 +201,12 @@ async function buildAndTest(code) {
     }
 
     // 3. Run the tool's own tests.
-    const mod = await import(`file://${out}`);
-    if (typeof mod.runTests !== "function") {
-      logs.push("tests: tool exports no runTests() — cannot verify it works");
-      return { built: true, tests_passed: false, logs: logs.join("\n") };
-    }
-    const result = await mod.runTests();
+    await chmod(dir, 0o755);
+    const child = await runGuest(process.execPath, ["/app/child-runner.mjs"], {
+      ...execution, message: { modulePath: out, mode: "tests" },
+    });
+    if (!child.result.ok) throw new Error(child.result.error);
+    const result = child.result.result;
     const passed = !!(result && result.passed);
     logs.push(`tests: ${passed ? "passed" : "failed"}`);
     if (Array.isArray(result?.results))
@@ -200,7 +220,7 @@ async function buildAndTest(code) {
   }
 }
 
-async function execScript(name, code, args) {
+async function execScript(name, code, args, execution) {
   const dir = await mkdtemp(join(tmpdir(), "exec-"));
   const src = join(dir, "script.ts");
   const out = join(dir, "script.mjs");
@@ -210,38 +230,20 @@ async function execScript(name, code, args) {
   try {
     await writeFile(src, code, "utf8");
     try {
-      await build({
-        entryPoints: [src],
-        outfile: out,
-        bundle: true,
-        format: "esm",
-        platform: "node",
-        logLevel: "silent",
-      });
+      await chown(dir, 10001, 10001); await chmod(dir, 0o700);
+      const compiled = await runGuest(process.execPath, ["/app/compile-runner.mjs"], { ...execution, message: { src, out } });
+      if (!compiled.result.ok) throw new Error(compiled.result.error);
     } catch (err) {
       return {
         ok: false,
         error: `build failed: ${String(err).slice(0, 1000)}`,
       };
     }
-    const mod = await import(`file://${out}`);
-    if (typeof mod.run !== "function") {
-      return {
-        ok: false,
-        error: `script '${name}' does not export an async function named 'run'`,
-      };
-    }
-    const timeout = new Promise((_, reject) =>
-      setTimeout(
-        () => reject(new Error("execution timed out")),
-        EXEC_TIMEOUT_MS
-      )
-    );
-    const result = await Promise.race([
-      mod.run(args ?? {}, { workspaceDir: WORKSPACE_DIR }),
-      timeout,
-    ]);
-    return { ok: true, result };
+    await chmod(dir, 0o755);
+    const child = await runGuest(process.execPath, ["/app/child-runner.mjs"], {
+      ...execution, message: { modulePath: out, mode: "run", args: args ?? {} },
+    });
+    return { ...child.result, logs: (child.stdout + child.stderr).slice(0, 16000) };
   } catch (err) {
     return { ok: false, error: String(err).slice(0, 2000) };
   } finally {
@@ -267,11 +269,29 @@ const SESSION_ROUTES = new Set(["/shell"]);
 const ARTIFACT_ROUTES = new Set(["/artifact/mount", "/artifact/read", "/artifact/write", "/artifact/flush"]);
 let artifactFs;
 let shuttingDown = false;
+let controlToken;
 
 createServer((req, res) => {
   const path = req.url ?? "";
+  // Initialization precedes any guest. Container ports must only be reachable through the
+  // owning DO; a guest cannot read the root supervisor's token or authorize its own RPC.
+  if (req.method === "POST" && path === "/control/init" && (!controlToken || req.headers["x-naelao-container-control"] === controlToken)) {
+    const token = req.headers["x-naelao-container-control"];
+    if (typeof token !== "string" || !/^[a-f0-9]{64}$/.test(token)) { res.writeHead(403).end(); return; }
+    controlToken = token;
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true })); return;
+  }
+  if (!controlToken || req.headers["x-naelao-container-control"] !== controlToken) { res.writeHead(403).end(); return; }
+  if (req.method === "GET" && path === "/health") {
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, guest_uid: 10001, guest_capabilities: "none", no_new_privileges: true })); return;
+  }
+  if (req.method === "POST" && path === "/cancel") {
+    cancelExecution(req.headers["x-naelao-execution-id"]);
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true })); return;
+  }
   if (req.method === "POST" && path.endsWith("/shutdown")) {
     shuttingDown = true;
+    cancelAllExecutions();
     res.writeHead(200, { "content-type": "application/json", connection: "close" }).end(JSON.stringify({ ok: true, flushed: true }));
     return;
   }
@@ -296,6 +316,9 @@ createServer((req, res) => {
     return;
   }
   const isExec = path.endsWith("/exec");
+  const controller = new AbortController();
+  req.once("aborted", () => controller.abort());
+  res.once("close", () => { if (!res.writableEnded) controller.abort(); });
   const MAX_BODY_BYTES = 10_000_000; // §A1.17 Phase R: no more bundled workspace_files, back to a script-code-sized budget
   let body = "";
   req.on("data", (c) => {
@@ -305,6 +328,8 @@ createServer((req, res) => {
   req.on("end", async () => {
     try {
       const parsed = JSON.parse(body || "{}");
+      const timeoutMs = Math.min(EXEC_TIMEOUT_MS, Number(req.headers["x-naelao-timeout-ms"] ?? EXEC_TIMEOUT_MS));
+      const execution = { id: String(req.headers["x-naelao-execution-id"] ?? crypto.randomUUID()), signal: controller.signal, timeoutMs };
       if (isArtifactRoute) {
         if (path.endsWith("/artifact/mount")) {
           if (!parsed.repository_url) throw new Error("repository_url required");
@@ -324,13 +349,13 @@ createServer((req, res) => {
         res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(result)); return;
       }
       if (isSessionRoute) {
-        const cwd = String(parsed.session?.cwd || WORKSPACE_DIR);
+        const cwd = resolve(String(parsed.session?.cwd || WORKSPACE_DIR));
         if (cwd !== WORKSPACE_DIR && !cwd.startsWith(`${WORKSPACE_DIR}/`)) throw new Error("shell cwd escapes workspace");
         const marker = `__NAELAO_STATE_${crypto.randomUUID()}__`;
         const script = `${String(parsed.command ?? "")}\n__status=$?\nprintf '\\n${marker}%s\\n' "$__status"\npwd -P\nprintf '${marker}ENV\\n'\nenv -0`;
-        const { stdout, stderr } = await execFileAsync("bash", ["-lc", script], {
-          cwd, env: { PATH: process.env.PATH, HOME: process.env.HOME, ...(parsed.session?.env ?? {}) }, maxBuffer: 16 * 1024 * 1024,
-        }).catch((error) => ({ stdout: error.stdout ?? "", stderr: error.stderr ?? String(error) }));
+        const { stdout, stderr } = await runGuest("/bin/bash", ["-lc", script], {
+          ...execution, cwd, env: parsed.session?.env ?? {},
+        });
         const text = String(stdout);
         const stateAt = text.lastIndexOf(`\n${marker}`);
         const visible = stateAt >= 0 ? text.slice(0, stateAt) : text;
@@ -344,17 +369,16 @@ createServer((req, res) => {
       if (isWorkspaceRoute) {
         let result;
         if (path.endsWith("/workspace/write")) {
-          await materializeWorkspace(parsed.files);
+          await materializeWorkspace(parsed.files_base64 ?? parsed.files, Boolean(parsed.files_base64));
           result = { ok: true };
         } else if (path.endsWith("/workspace/rehydrate")) {
           const started = Date.now();
-          await execFileAsync("npm", ["ci", "--prefer-offline", "--no-audit", "--no-fund"], {
-            cwd: WORKSPACE_DIR, timeout: 120_000,
-            env: { ...process.env, npm_config_registry: process.env.EDGE_NPM_REGISTRY ?? "https://registry.npmjs.org" },
-          });
+          await runGuest("/usr/local/bin/npm", ["ci", "--offline", "--ignore-scripts", "--no-audit", "--no-fund"], { ...execution, cwd: WORKSPACE_DIR });
           result = { ok: true, duration_ms: Date.now() - started };
         } else if (path.endsWith("/workspace/read"))
-          result = { files: await readWorkspacePaths(parsed.paths) };
+          result = parsed.encoding === "base64"
+            ? { files_base64: await readWorkspacePaths(parsed.paths, "base64") }
+            : { files: await readWorkspacePaths(parsed.paths) };
         else if (path.endsWith("/workspace/list"))
           result = { files: await listWorkspacePaths() };
         else {
@@ -411,8 +435,8 @@ createServer((req, res) => {
         return;
       }
       const result = isExec
-        ? await execScript(parsed.name ?? "script", parsed.code, parsed.args)
-        : await buildAndTest(parsed.code);
+        ? await execScript(parsed.name ?? "script", parsed.code, parsed.args, execution)
+        : await buildAndTest(parsed.code, execution);
       if (isExec && artifactFs) {
         result.workspace_sync = await artifactFs.flushAndCommit({
           message: `container: ${parsed.name ?? "script"}`,
@@ -438,4 +462,5 @@ createServer((req, res) => {
   console.log(`tool-sandbox harness listening on :${PORT}`)
 );
 
-startBinaryBridge();
+// The former unauthenticated TCP bridge could bypass the control-token boundary. A future
+// binary transport must authenticate each scoped request before enabling this listener.

@@ -27,6 +27,7 @@
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 import { workspacePrefix } from "../types.js";
 import { normalizeAvosPath, normalizeWorkspacePath } from "../workspace-paths.js";
+import { deleteWorkspaceBytesCas, publishWorkspaceBytesCas, readBytesWithHash } from "../r2-cas.js";
 
 /** Above this, read_file refuses rather than returning a payload that can blow the context of a
  *  turn all by itself. ~50k tokens at a rough 4-chars/token estimate — generous for real text/
@@ -52,6 +53,17 @@ function reqStr(args: Record<string, unknown>, name: string): string {
   const v = args[name];
   if (typeof v !== "string" || v.length === 0) throw new Error(`'${name}' (string) is required`);
   return v;
+}
+
+function requiredExpectedHash(args: Record<string, unknown>): string | null {
+  if (!Object.prototype.hasOwnProperty.call(args, "expectedHash")) {
+    throw new Error("'expectedHash' (SHA-256 string or null) is required for every workspace mutation");
+  }
+  const value = args["expectedHash"];
+  if (value !== null && typeof value !== "string") {
+    throw new Error("'expectedHash' must be a SHA-256 string or null for a new file");
+  }
+  return value;
 }
 
 function numArg(args: Record<string, unknown>, name: string): number | undefined {
@@ -84,21 +96,21 @@ async function contentHash(content: string): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+async function bytesHash(bytes: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 async function writeFileImpl(
   ctx: PrebuiltOpContext,
   path: string,
   content: string,
-  expectedHash?: string
+  expectedHash: string | null
 ): Promise<{ ok: true; path: string; size: number; hash: string }> {
   const storageKey = key(ctx, path);
-  const current = await bucket(ctx).head(storageKey);
-  if (expectedHash !== undefined && current?.customMetadata?.["sha256"] !== expectedHash) throw new ConflictError(path);
-  const hash = await contentHash(content);
-  const written = await bucket(ctx).put(storageKey, content, {
-    customMetadata: { updatedAt: Date.now().toString(), sha256: hash },
-    ...(current ? { onlyIf: { etagMatches: current.etag } } : expectedHash === undefined ? {} : { onlyIf: { etagDoesNotMatch: "*" } }),
-  });
-  if (!written) throw new ConflictError(path);
+  let hash: string;
+  try { ({ hash } = await publishWorkspaceBytesCas(ctx.env, bucket(ctx), storageKey, new TextEncoder().encode(content), expectedHash)); }
+  catch { throw new ConflictError(path); }
   // The file IS the handoff between projects: one project's agent records what it found, that
   // write fires an event, and a no-code rule wakes whoever owns the next stage. Fired after the
   // write actually succeeded, and never awaited — a listener failing must not turn a successful
@@ -107,6 +119,20 @@ async function writeFileImpl(
     await ctx.env.onWorkspaceChange?.({ path, operation: "write" });
   }
   return { ok: true, path, size: new TextEncoder().encode(content).byteLength, hash };
+}
+
+async function copyBinaryImpl(
+  ctx: PrebuiltOpContext,
+  path: string,
+  bytes: ArrayBuffer,
+  expectedHash: string | null,
+): Promise<{ ok: true; path: string; size: number; hash: string }> {
+  const storageKey = key(ctx, path);
+  let hash: string;
+  try { ({ hash } = await publishWorkspaceBytesCas(ctx.env, bucket(ctx), storageKey, new Uint8Array(bytes), expectedHash)); }
+  catch { throw new ConflictError(path); }
+  await ctx.env.onWorkspaceChange?.({ path, operation: "write" });
+  return { ok: true, path, size: bytes.byteLength, hash };
 }
 
 /** Claude-Code-shaped windowed reader: 1-indexed LINE offset/limit, returned as
@@ -130,7 +156,7 @@ async function readWindowed(
   message?: string;
 }> {
   const head = await bucket(ctx).head(key(ctx, path));
-  if (!head) return { exists: false };
+  if (!head || head.customMetadata?.["deleted"] === "true") return { exists: false };
   if (head.size > MAX_SEARCHABLE_FILE_BYTES) {
     return {
       exists: true,
@@ -139,9 +165,9 @@ async function readWindowed(
       message: `This file is ${head.size} bytes, over the ${MAX_SEARCHABLE_FILE_BYTES}-byte limit for a windowed read. Use search_file/Grep to jump to the part you need, or read_file(path, offset, length) for a true byte-chunked read.`,
     };
   }
-  const obj = await bucket(ctx).get(key(ctx, path));
-  if (!obj) return { exists: false };
-  const allLines = (await obj.text()).split(/\r?\n/);
+  const current = await readBytesWithHash(bucket(ctx), key(ctx, path));
+  if (!current) return { exists: false };
+  const allLines = new TextDecoder().decode(current.bytes).split(/\r?\n/);
   const total = allLines.length;
   const start = Math.max(1, offsetLines ?? 1);
   const count = Math.max(1, Math.min(limitLines ?? 2000, 2000));
@@ -168,11 +194,11 @@ async function editFile(
   path: string,
   oldString: string,
   newString: string,
-  expectedHash?: string
+  expectedHash: string | null
 ): Promise<{ ok: boolean; path: string; replacements?: number; error?: string; hint?: string }> {
   if (!oldString) throw new Error("'oldString' (string) is required");
   const head = await bucket(ctx).head(key(ctx, path));
-  if (!head) return { ok: false, path, error: `File not found: ${path}` };
+  if (!head || head.customMetadata?.["deleted"] === "true") return { ok: false, path, error: `File not found: ${path}` };
   if (head.size > MAX_READABLE_FILE_BYTES) {
     return {
       ok: false,
@@ -180,9 +206,9 @@ async function editFile(
       error: `This file is ${head.size} bytes, over the ${MAX_READABLE_FILE_BYTES}-byte limit for Edit. Use read_file(path, offset, length) to inspect it in chunks instead.`,
     };
   }
-  const obj = await bucket(ctx).get(key(ctx, path));
-  if (!obj) return { ok: false, path, error: `File not found: ${path}` };
-  const content = await obj.text();
+  const current = await readBytesWithHash(bucket(ctx), key(ctx, path));
+  if (!current) return { ok: false, path, error: `File not found: ${path}` };
+  const content = new TextDecoder().decode(current.bytes);
 
   if (!content.includes(oldString)) {
     const searchLines = oldString.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 3);
@@ -213,7 +239,7 @@ async function editFile(
   }
 
   const patched = content.replace(oldString, newString);
-  await writeFileImpl(ctx, path, patched, expectedHash ?? head.customMetadata?.["sha256"]);
+  await writeFileImpl(ctx, path, patched, expectedHash);
   return { ok: true, path, replacements: 1 };
 }
 
@@ -246,12 +272,12 @@ async function grepWorkspace(
   do {
     const listing = await bucket(ctx).list(cursor ? { prefix, cursor } : { prefix });
     for (const objMeta of listing.objects) {
-      if (objMeta.key.endsWith("/.keep") || objMeta.size > MAX_SEARCHABLE_FILE_BYTES) continue;
+      if (objMeta.key.endsWith("/.keep") || objMeta.customMetadata?.["deleted"] === "true" || objMeta.size > MAX_SEARCHABLE_FILE_BYTES) continue;
       if (filesScanned >= MAX_GREP_FILES_SCANNED) { truncated = true; break; }
       filesScanned++;
-      const fileObj = await bucket(ctx).get(objMeta.key);
+      const fileObj = await readBytesWithHash(bucket(ctx), objMeta.key);
       if (!fileObj) continue;
-      const lines = (await fileObj.text()).split(/\r?\n/);
+      const lines = new TextDecoder().decode(fileObj.bytes).split(/\r?\n/);
       const relativePath = objMeta.key.slice(wsPrefix.length);
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i] ?? "";
@@ -325,7 +351,7 @@ async function globWorkspace(
   do {
     const listing = await bucket(ctx).list(cursor ? { prefix, cursor } : { prefix });
     for (const obj of listing.objects) {
-      if (obj.key.endsWith("/.keep")) continue;
+      if (obj.key.endsWith("/.keep") || obj.customMetadata?.["deleted"] === "true") continue;
       allFiles.push(obj.key.slice(wsPrefix.length));
       if (allFiles.length >= CAP) { truncated = true; break; }
     }
@@ -363,7 +389,7 @@ export const r2Workspace: PrebuiltScript = {
       "path (string, REQUIRED). query (string, REQUIRED — a substring, matched case-insensitively). " +
       "context (number, optional, 0-10) — lines of surrounding context per match. Returns matching " +
       "lines with line numbers; many matches are paged automatically.",
-    write_file: "path (string, REQUIRED). content (string, REQUIRED). expectedHash (SHA-256, optional CAS checkpoint).",
+    write_file: "path (string, REQUIRED). content (string, REQUIRED). expectedHash (SHA-256, REQUIRED; use null only when creating a new file).",
     list_directory: "path (string, optional — a prefix; omit for the whole workspace).",
     delete_file: "path (string, REQUIRED).",
     copy_file: "from (string, REQUIRED). to (string, REQUIRED).",
@@ -397,6 +423,8 @@ export const r2Workspace: PrebuiltScript = {
       if (offset !== undefined || length !== undefined) {
         const off = Math.max(0, offset ?? 0);
         const len = Math.min(length ?? MAX_READABLE_FILE_BYTES, MAX_READABLE_FILE_BYTES);
+        const head = await bucket(ctx).head(k);
+        if (!head || head.customMetadata?.["deleted"] === "true") return { exists: false, content: null };
         const obj = await bucket(ctx).get(k, { range: { offset: off, length: len } });
         if (!obj) return { exists: false, content: null };
         const total = obj.size;
@@ -421,6 +449,8 @@ export const r2Workspace: PrebuiltScript = {
 
       // Full read. get() returns the object with its real `.size` metadata, so the oversize check
       // still happens before the body is materialized into a payload that could blow the turn.
+      const head = await bucket(ctx).head(k);
+      if (!head || head.customMetadata?.["deleted"] === "true") return { exists: false, content: null };
       const obj = await bucket(ctx).get(k);
       if (!obj) return { exists: false, content: null };
       if (obj.size > MAX_READABLE_FILE_BYTES) {
@@ -443,7 +473,7 @@ export const r2Workspace: PrebuiltScript = {
       const query = reqStr(args, "query");
       const k = key(ctx, path);
       const head = await bucket(ctx).head(k);
-      if (!head) return { exists: false };
+      if (!head || head.customMetadata?.["deleted"] === "true") return { exists: false };
       if (head.size > MAX_SEARCHABLE_FILE_BYTES) {
         return {
           exists: true,
@@ -478,7 +508,7 @@ export const r2Workspace: PrebuiltScript = {
     // the hard way.
     async stat_file(args, ctx) {
       const head = await bucket(ctx).head(key(ctx, reqStr(args, "path")));
-      if (!head) return { exists: false };
+      if (!head || head.customMetadata?.["deleted"] === "true") return { exists: false };
       return {
         exists: true,
         size: head.size,
@@ -492,7 +522,7 @@ export const r2Workspace: PrebuiltScript = {
       const path = reqStr(args, "path");
       const content = args["content"];
       if (typeof content !== "string") throw new Error("'content' (string) is required");
-      return writeFileImpl(ctx, path, content, typeof args["expectedHash"] === "string" ? args["expectedHash"] : undefined);
+      return writeFileImpl(ctx, path, content, requiredExpectedHash(args));
     },
 
     async list_directory(args, ctx) {
@@ -502,6 +532,7 @@ export const r2Workspace: PrebuiltScript = {
       do {
         const listing = await bucket(ctx).list(cursor ? { prefix, cursor } : { prefix });
         for (const o of listing.objects) {
+          if (o.customMetadata?.["deleted"] === "true") continue;
           out.push({ key: o.key, size: o.size, uploaded: o.uploaded.toISOString() });
         }
         cursor = listing.truncated ? listing.cursor : undefined;
@@ -511,25 +542,29 @@ export const r2Workspace: PrebuiltScript = {
 
     async delete_file(args, ctx) {
       const path = reqStr(args, "path");
-      await bucket(ctx).delete(key(ctx, path));
-      await ctx.env.onWorkspaceChange?.({ path, operation: "delete" });
+      const storageKey = key(ctx, path);
+      const expectedHash = requiredExpectedHash(args);
+      try {
+        const result = await deleteWorkspaceBytesCas(ctx.env, bucket(ctx), storageKey, expectedHash);
+        if (result.deleted) await ctx.env.onWorkspaceChange?.({ path, operation: "delete" });
+      } catch { throw new ConflictError(path); }
       return { ok: true };
     },
 
     async copy_file(args, ctx) {
-      const from = await bucket(ctx).get(key(ctx, reqStr(args, "from")));
+      const from = await readBytesWithHash(bucket(ctx), key(ctx, reqStr(args, "from")));
       if (!from) throw new Error("source file not found");
-      await bucket(ctx).put(key(ctx, reqStr(args, "to")), from.body);
-      return { ok: true };
+      return copyBinaryImpl(ctx, reqStr(args, "to"), from.bytes.slice().buffer as ArrayBuffer, requiredExpectedHash(args));
     },
 
     async move_file(args, ctx) {
       const fromKey = key(ctx, reqStr(args, "from"));
-      const from = await bucket(ctx).get(fromKey);
+      const from = await readBytesWithHash(bucket(ctx), fromKey);
       if (!from) throw new Error("source file not found");
-      await bucket(ctx).put(key(ctx, reqStr(args, "to")), from.body);
-      await bucket(ctx).delete(fromKey);
-      return { ok: true };
+      const result = await copyBinaryImpl(ctx, reqStr(args, "to"), from.bytes.slice().buffer as ArrayBuffer, requiredExpectedHash(args));
+      try { await deleteWorkspaceBytesCas(ctx.env, bucket(ctx), fromKey, from.hash); }
+      catch { throw new ConflictError(reqStr(args, "from")); }
+      return result;
     },
 
     // ── Claude-Code-shaped REPL primitives — same workspace, different lens (see file header) ──
@@ -543,11 +578,11 @@ export const r2Workspace: PrebuiltScript = {
         reqStr(args, "path"),
         reqStr(args, "oldString"),
         typeof newString === "string" ? newString : "",
-        typeof args["expectedHash"] === "string" ? args["expectedHash"] : undefined
+        requiredExpectedHash(args)
       );
     },
     async Write(args, ctx) {
-      return writeFileImpl(ctx, reqStr(args, "path"), reqStr(args, "content"), typeof args["expectedHash"] === "string" ? args["expectedHash"] : undefined);
+      return writeFileImpl(ctx, reqStr(args, "path"), reqStr(args, "content"), requiredExpectedHash(args));
     },
     async Grep(args, ctx) {
       const p = args["path"];

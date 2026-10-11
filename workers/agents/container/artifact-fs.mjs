@@ -1,15 +1,25 @@
 import { createHash } from "node:crypto";
 import {
   mkdir,
+  lstat,
   readFile,
   readdir,
+  rename,
   rm,
   stat,
   writeFile,
 } from "node:fs/promises";
 import { dirname, join, normalize, relative, sep } from "node:path";
 
-const EXCLUDED_SEGMENTS = new Set(["node_modules", ".avos"]);
+const EXCLUDED_SEGMENTS = new Set([
+  "node_modules", ".avos", ".naelao", ".git", ".cache", ".turbo",
+  ".next", ".vite", "coverage", "tmp", ".tmp", ".artifactfs-staging",
+]);
+const isSecretPath = (path) => path.split("/").some((part) =>
+  part === ".env" || /^\.env\..+/.test(part) && part !== ".env.example"
+);
+const isExcludedPath = (path) =>
+  path.split("/").some((part) => EXCLUDED_SEGMENTS.has(part)) || isSecretPath(path);
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const gitBlobOid = (bytes) =>
   createHash("sha1")
@@ -18,8 +28,8 @@ const gitBlobOid = (bytes) =>
     .digest("hex");
 
 /**
- * Lazy repository mount used by the container-side FUSE process. The kernel adapter calls
- * list/stat/open/write/unlink; importantly only open/read hydrate bytes. A per-path promise
+ * Lazy repository adapter for container staging. A future kernel adapter can call
+ * list/stat/open/write/unlink; only open/read hydrate bytes. A per-path promise
  * coalesces concurrent page faults and the content-addressed local cache survives remounts.
  */
 export class ArtifactFS {
@@ -48,9 +58,37 @@ export class ArtifactFS {
       value.split("/").some((part) => !part || part === "." || part === "..")
     )
       throw new Error("Invalid ArtifactFS path");
-    if (value.split("/").some((part) => EXCLUDED_SEGMENTS.has(part)))
+    if (value.split("/").some((part) => EXCLUDED_SEGMENTS.has(part)) || isSecretPath(value))
       throw new Error("Excluded ArtifactFS path");
     return value;
+  }
+
+  async assertNoSymlinkAncestors(path) {
+    let current = this.root;
+    for (const segment of this.normalizePath(path).split("/")) {
+      current = join(current, segment);
+      try {
+        if ((await lstat(current)).isSymbolicLink())
+          throw new Error("Symlinks are not supported in ArtifactFS");
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+    }
+  }
+
+  async atomicWrite(path, bytes) {
+    const full = this.safePath(path);
+    await this.assertNoSymlinkAncestors(path);
+    await mkdir(dirname(full), { recursive: true });
+    const staging = join(this.root, ".artifactfs-staging");
+    await mkdir(staging, { recursive: true });
+    const temporary = join(staging, `${crypto.randomUUID()}.tmp`);
+    try {
+      await writeFile(temporary, bytes, { flag: "wx" });
+      await rename(temporary, full);
+    } finally {
+      await rm(temporary, { force: true }).catch(() => undefined);
+    }
   }
 
   safePath(path) {
@@ -95,6 +133,7 @@ export class ArtifactFS {
     await mkdir(this.root, { recursive: true });
     await mkdir(this.cacheRoot, { recursive: true });
     for (const raw of result.data ?? []) {
+      if (isExcludedPath(String(raw.path).replaceAll("\\", "/"))) continue;
       const path = this.normalizePath(raw.path);
       this.entries.set(path, { ...raw, path, hydrated: false });
       // Populate dentries/directories only. Creating an empty regular file would make an
@@ -152,6 +191,7 @@ export class ArtifactFS {
           } catch {
             bytes = undefined;
           }
+          if (bytes && entry.oid && gitBlobOid(bytes) !== entry.oid) bytes = undefined;
           if (!bytes) {
             const response = entry.oid
               ? await this.request(`objects/${encodeURIComponent(entry.oid)}`, {
@@ -170,8 +210,7 @@ export class ArtifactFS {
                 () => undefined
               );
           }
-          await mkdir(dirname(full), { recursive: true });
-          await writeFile(full, bytes);
+          await this.atomicWrite(normalized, bytes);
           entry.hydrated = true;
         })().finally(() => this.hydrating.delete(normalized));
         this.hydrating.set(normalized, pending);
@@ -184,14 +223,14 @@ export class ArtifactFS {
   async write(path, content) {
     const normalized = this.normalizePath(path);
     const full = this.safePath(normalized);
-    await mkdir(dirname(full), { recursive: true });
-    await writeFile(full, content);
+    await this.atomicWrite(normalized, content);
     this.dirty.add(normalized);
     this.deleted.delete(normalized);
   }
 
   async unlink(path) {
     const normalized = this.normalizePath(path);
+    await this.assertNoSymlinkAncestors(normalized);
     await rm(this.safePath(normalized), { force: true });
     this.dirty.delete(normalized);
     this.deleted.add(normalized);
@@ -209,6 +248,7 @@ export class ArtifactFS {
         if (item.isDirectory()) await walk(full);
         else if (item.isFile()) {
           const path = relative(this.root, full).replaceAll(sep, "/");
+          if (isExcludedPath(path)) continue;
           found.add(path);
           const digest = gitBlobOid(await readFile(full));
           if (this.entries.get(path)?.oid !== digest) this.dirty.add(path);
@@ -229,11 +269,19 @@ export class ArtifactFS {
     const changes = [];
     for (const path of this.dirty) {
       const content = await readFile(this.safePath(path));
-      const oid = sha256(content);
-      if (this.entries.get(path)?.oid === gitBlobOid(content)) continue;
-      changes.push({ path, oid, content_base64: content.toString("base64") });
+      const prior = this.entries.get(path);
+      if (prior?.oid === gitBlobOid(content)) continue;
+      changes.push({
+        path,
+        expected_hash: prior?.hash ?? null,
+        content_base64: content.toString("base64"),
+      });
     }
-    for (const path of this.deleted) changes.push({ path, deleted: true });
+    for (const path of this.deleted) changes.push({
+      path,
+      deleted: true,
+      expected_hash: this.entries.get(path)?.hash ?? null,
+    });
     if (!changes.length)
       return { commit_id: this.head, unchanged: true, rehydrate: false };
     const response = await this.request("commit", {
@@ -258,6 +306,7 @@ export class ArtifactFS {
         path: change.path,
         oid: gitBlobOid(content),
         size: content.byteLength,
+        hash: sha256(content),
         hydrated: true,
       });
     }

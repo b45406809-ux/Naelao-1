@@ -115,6 +115,8 @@ export function ComposerDock({
   availableTemplates,
   addingTemplateId,
   onAddTemplate,
+  threadMode = false,
+  ideas,
   children,
 }: {
   spaceId: string;
@@ -160,14 +162,17 @@ export function ComposerDock({
    *  "Adding…" rather than letting a slow request look like a dead click. */
   addingTemplateId?: string | null;
   onAddTemplate?: (templateId: string) => void;
+  /** Compact conversation mode moves model, agent, connector, ideas, and member controls into the workspace panel. */
+  threadMode?: boolean;
+  /** Optional empty-thread idea chips shown only while the message composer is open. */
+  ideas?: React.ReactNode;
   /** The message input itself. The dock owns the whole stack — panel above, input in the middle,
    *  toolbar below — so an open panel pushes the input down as one unit instead of overlaying it. */
   children?: React.ReactNode;
 }) {
-  // "compose" (the plain text input) is the resting state, never a fully-closed one — a dock with
-  // every panel toggled off used to render nothing but the icon row, with no visible way to type
-  // at all. Toggling a panel off now always lands back on "compose" instead of null.
-  const [panel, setPanel] = React.useState<DockPanel>("compose");
+  // The composer is a toolbar until the user explicitly opens a panel. This keeps the thread
+  // canvas clear while preserving one-click access to the message input.
+  const [panel, setPanel] = React.useState<DockPanel | null>(null);
   const [connectors, setConnectors] = React.useState<ConnectorInfo[]>([]);
   const [modes, setModes] = React.useState<Record<string, "business" | "personal">>({});
   const [busyId, setBusyId] = React.useState<string | null>(null);
@@ -193,7 +198,7 @@ export function ComposerDock({
   const [recording, setRecording] = React.useState(false);
   const [transcribing, setTranscribing] = React.useState(false);
 
-  const toggle = (next: DockPanel) => setPanel((cur) => (cur === next ? "compose" : next));
+  const toggle = (next: DockPanel) => setPanel((cur) => (cur === next ? null : next));
 
   React.useEffect(() => () => {
     if (recorderRef.current?.state === "recording") recorderRef.current.stop();
@@ -289,9 +294,9 @@ export function ComposerDock({
   // the dock with nothing open — see the `panel` state's own comment.
   React.useEffect(() => {
     if (panel === "compose") return;
-    function onKey(e: KeyboardEvent) { if (e.key === "Escape") setPanel("compose"); }
+    function onKey(e: KeyboardEvent) { if (e.key === "Escape") setPanel(null); }
     function onDocClick(e: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setPanel("compose");
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setPanel(null);
     }
     document.addEventListener("keydown", onKey);
     document.addEventListener("mousedown", onDocClick);
@@ -848,9 +853,12 @@ export function ComposerDock({
 
       {/* The message input is a panel like any other — the dock is only a toolbar until you
           open it. It grows with what you type, up to the dock's own ceiling, then scrolls. */}
-      {panel === "compose" && <div className="dock-compose">{children}</div>}
+      {panel === "compose" && <>
+        {ideas}
+        <div className="dock-compose">{children}</div>
+      </>}
 
-      <div className="dock-bar">
+      <div className={`dock-bar${threadMode ? " compact" : ""}`}>
         {/* Item 107 removed this as "redundant" (every other panel's own button already returns
            to compose on a second click, plus Escape/outside-click) — reinstated on request: on a
            phone there's no Escape key, and a tap outside the dock is an easy miss on a small
@@ -859,24 +867,24 @@ export function ComposerDock({
         <button
           type="button"
           className={`dock-primary${panel === "compose" ? " open" : ""}`}
-          onClick={() => setPanel("compose")}
+          onClick={() => setPanel((current) => current === "compose" ? null : "compose")}
           title="Write a message"
         >
           <Icon path={ICONS.compose} />
           <span>Message</span>
         </button>
 
-        <div className="dock-sep" />
+        {!threadMode && <div className="dock-sep" />}
 
-        <button type="button" className={`dock-btn${panel === "model" ? " open" : ""}`} onClick={() => toggle("model")} title={`Model: ${modelLabel(model)}`}>
+        {!threadMode && <button type="button" className={`dock-btn${panel === "model" ? " open" : ""}`} onClick={() => toggle("model")} title={`Model: ${modelLabel(model)}`}>
           <Icon path={ICONS.cube} />
           {capability.reasoningLevels.length > 0 && reasoningLevel && <span className="dock-btn-dot" />}
-        </button>
+        </button>}
         {/* Effort — shown as its OWN visible text ("Low" by default), not the word "Effort" —
             it's the control's live value, the same way the Model button shows the model's own
             name rather than the word "Model." Always present: even a model with no native
             reasoning mode still has a real low/medium escalation-budget distinction. */}
-        <button
+        {!threadMode && <button
           type="button"
           className={`dock-btn dock-btn-labeled${panel === "effort" ? " open" : ""}`}
           onClick={() => toggle("effort")}
@@ -884,8 +892,8 @@ export function ComposerDock({
         >
           <Icon path={ICONS.gauge} size={14} />
           <span>{EFFORT_LABELS[effort] ?? effort}</span>
-        </button>
-        {projectId && (
+        </button>}
+        {!threadMode && projectId && (
           <button
             type="button"
             className={`dock-btn${panel === "agent" ? " open" : ""}`}
@@ -895,12 +903,12 @@ export function ComposerDock({
             <Icon path={ICONS.agent} />
           </button>
         )}
-        <button type="button" className={`dock-btn${panel === "apps" ? " open" : ""}`} onClick={() => toggle("apps")} title="Connected apps">
+        {!threadMode && <button type="button" className={`dock-btn${panel === "apps" ? " open" : ""}`} onClick={() => toggle("apps")} title="Connected apps">
           <Icon path={ICONS.plug} />
           {connectedCount > 0 && <span className="dock-btn-dot" />}
-        </button>
+        </button>}
 
-        <div className="dock-sep" />
+        {!threadMode && <div className="dock-sep" />}
 
         <button type="button" className={`dock-btn${panel === "uploads" ? " open" : ""}`} onClick={() => toggle("uploads")} title="Uploads">
           <Icon path={ICONS.upload} />
@@ -908,13 +916,10 @@ export function ComposerDock({
         <button type="button" className={`dock-btn${recording ? " open" : ""}`} onClick={toggleDictation} disabled={transcribing} aria-pressed={recording} title={recording ? "Stop dictation" : transcribing ? "Transcribing…" : "Dictate message"}>
           <span aria-hidden="true">{recording ? "■" : transcribing ? "…" : "🎙"}</span>
         </button>
-        <button type="button" className={`dock-btn${panel === "tips" ? " open" : ""}`} onClick={() => toggle("tips")} title="Tips for a better answer">
-          <Icon path={ICONS.bulb} />
-        </button>
 
-        <div className="dock-spacer" />
+        {!threadMode && <div className="dock-spacer" />}
 
-        {isBusinessSpace && members.length > 0 && (
+        {!threadMode && isBusinessSpace && members.length > 0 && (
           <>
             <div className="dock-sep" />
             <button

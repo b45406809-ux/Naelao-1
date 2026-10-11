@@ -24,3 +24,9 @@ export class WorkflowEntrypoint {
 // Types are erased at runtime; runtime placeholders keep named imports resolvable.
 export const WorkflowStep = {} as unknown;
 export const WorkflowEvent = {} as unknown;
+
+export class WorkerEntrypoint {
+  protected ctx: unknown;
+  protected env: unknown;
+  constructor(ctx?: unknown, env?: unknown) { this.ctx = ctx; this.env = env; }
+}

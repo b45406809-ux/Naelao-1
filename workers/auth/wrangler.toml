@@ -21,6 +21,7 @@ BUILDER_DASHBOARD_URL = ""
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"
 database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+migrations_dir = "../../infra/migrations"
 
 # Launch-readiness audit follow-up — password-reset emails.
 [[services]]

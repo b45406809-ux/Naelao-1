@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { buildCodeRunner } from "./code-runner.js";
 import {
   classifyExecutionRoute,
+  classifyExecutionRouteWithSentry,
   requiresNativeCompilation,
   runStoredScript,
   tierLabel,
@@ -9,6 +10,7 @@ import {
 import { browserTextReceipt } from "./prebuilt/browser-use.js";
 import { dynamicWorkflow } from "./prebuilt/dynamic-workflow.js";
 import { decisionTools } from "./reasoner.js";
+import { buildUniversalBody } from "../shared/ai-client.js";
 import type { ScriptEngineEnv, StoredScript } from "./types.js";
 import { interceptPlatformCli } from "./virtual-cli.js";
 
@@ -16,6 +18,7 @@ describe("Execution Ladder & Code Runner", () => {
   it("exposes only the all-CLI model action surface", () => {
     expect(decisionTools(undefined).map((tool) => tool.name)).toEqual([
       "Bash",
+      "AskUser",
       "Read",
       "Edit",
     ]);
@@ -94,6 +97,55 @@ describe("Execution Ladder & Code Runner", () => {
     expect(interceptPlatformCli("auto:stripe-sync trigger")?.operation).toBe(
       "auto:stripe-sync"
     );
+  });
+
+  it("lets System One elevate an ambiguous command but never lower deterministic native work", async () => {
+    const noul = vi.fn(async () => ({ kind: "noul" as const, value: true, probability: 0.91, confidence: 0.91, provider: "jev" as const, model: "jev-1.13.0", policyCode: "execution_native_preflight_v1" }));
+    await expect(classifyExecutionRouteWithSentry("node opaque-addon.js", { noul })).resolves.toMatchObject({ tier: 6, engine: "container", reason: "jev_native_preflight", sentry: { provider: "jev" } });
+    await expect(classifyExecutionRouteWithSentry("cargo build", { noul })).resolves.toMatchObject({ tier: 6, reason: "deterministic_native_preflight" });
+    expect(noul).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to the deterministic route when System One is unavailable", async () => {
+    const noul = vi.fn(async () => { throw new Error("offline"); });
+    await expect(classifyExecutionRouteWithSentry("node app.js", { noul })).resolves.toMatchObject({ tier: 2, engine: "isolate", reason: "isolate_runtime" });
+  });
+  it("keeps native planner actions on compatibility retries", () => {
+    const body = JSON.parse(buildUniversalBody({
+      apiKey: "",
+      gatewayOpts: { accountId: "account", gatewayId: "gateway" },
+      ctx: { spaceId: "space" },
+      query: { model: "model", max_tokens: 100, system: "", messages: [] },
+      tools: decisionTools(undefined),
+      toolChoice: "auto",
+      compatibilityMode: "minimal",
+    })) as { tools?: Array<{ function?: { name?: string } }>; tool_choice?: string };
+    expect(body.tools?.map((tool) => tool.function?.name)).toContain("AskUser");
+    expect(body.tool_choice).toBe("auto");
+  });
+
+  it("keeps planner coordination behind explicit Bash commands", () => {
+    expect(interceptPlatformCli("naelao project agents list")).toEqual({
+      operation: "thread.list_project_agents", params: {},
+    });
+    expect(interceptPlatformCli('naelao project agents consult --agent-id worker-1 --message "Check the build"')).toEqual({
+      operation: "thread.consult", params: { agent_id: "worker-1", message: "Check the build" },
+    });
+    expect(interceptPlatformCli('naelao project agents delegate --agent-id worker-1 --task "Fix the test"')).toEqual({
+      operation: "thread.delegate", params: { agent_id: "worker-1", task: "Fix the test" },
+    });
+    expect(interceptPlatformCli("naelao worker project_manager_worker project.create --params '{\"name\":\"Demo\"}'")).toEqual({
+      operation: "delegate_to_space_worker",
+      params: { worker_id: "project_manager_worker", task: { operation: "project.create", params: { name: "Demo" } } },
+    });
+    expect(interceptPlatformCli('naelao worker project_manager_worker project.create --params {"name":"Demo"}')).toEqual({
+      operation: "delegate_to_space_worker",
+      params: { worker_id: "project_manager_worker", task: { operation: "project.create", params: { name: "Demo" } } },
+    });
+    expect(interceptPlatformCli('naelao worker project_manager_worker project.create --params "{\"name\":\"Demo\"}"')).toEqual({
+      operation: "delegate_to_space_worker",
+      params: { worker_id: "project_manager_worker", task: { operation: "project.create", params: { name: "Demo" } } },
+    });
   });
 
   it("detaches workflows with pristine context and a two-line receipt", async () => {
@@ -224,6 +276,50 @@ describe("Execution Ladder & Code Runner", () => {
 
     expect(calls).toEqual(["chromium"]);
     expect(res.ok).toBe(true);
+  });
+
+  it("blocks browser and cloud container egress for air-gapped spaces", async () => {
+    const browserWorker = { fetch: vi.fn(async () => Response.json({ ok: true })) };
+    const toolSandbox = {
+      idFromName: vi.fn(() => ({ toString: () => "sandbox" })),
+      get: vi.fn(() => ({ fetch: vi.fn(async () => Response.json({ ok: true })) })),
+    };
+    const runner = buildCodeRunner({ airGappedOnly: true, browserWorker, toolSandbox: toolSandbox as never });
+
+    const browser = await runner.run({ name: "scrape", code: "", tier: 4, args: { url: "https://example.com" }, spaceId: "s1", agentId: "a1", tenantId: "t1" });
+    const container = await runner.run({ name: "Bash", code: "curl https://example.com", tier: 6, args: {}, spaceId: "s1", agentId: "a1", tenantId: "t1" });
+
+    expect(browser).toMatchObject({ ok: false, error: expect.stringContaining("compliance_violation") });
+    expect(container).toMatchObject({ ok: false, error: expect.stringContaining("local workstation") });
+    expect(browserWorker.fetch).not.toHaveBeenCalled();
+    expect(toolSandbox.get).not.toHaveBeenCalled();
+  });
+
+  it("addresses speculative Tier 6 runs by branch-isolated sandbox", async () => {
+    const ids: string[] = [];
+    const toolSandbox = {
+      idFromName: vi.fn((name: string) => {
+        ids.push(name);
+        return { toString: () => name };
+      }),
+      get: vi.fn(() => ({ fetch: vi.fn(async () => Response.json({ ok: true, result: "done" })) })),
+    };
+    const runner = buildCodeRunner({ toolSandbox: toolSandbox as never });
+
+    const result = await runner.run({
+      name: "Bash",
+      code: "echo candidate",
+      tier: 6,
+      args: { commands: "echo candidate" },
+      spaceId: "s1",
+      agentId: "a1",
+      tenantId: "t1",
+      projectId: "p1",
+      workspaceBranch: "race/task/model-a",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(ids).toEqual(["sandbox:s1:p1:branch:race/task/model-a"]);
   });
 
   it("dispatches durable workflow scripts via workflowRunner", async () => {

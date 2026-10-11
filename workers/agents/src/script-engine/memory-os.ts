@@ -21,6 +21,7 @@
 
 import type { Embedder, VectorIndex, MemoryStore, MemoryRecallResult, FabricEntry, WikiArticle } from "./types.js";
 import { gateMemory } from "./memory/gate-memory.js";
+import { projectFactRelevance } from "@naelao/agent-sdk";
 
 /** The minimal DO SQLite surface this module needs (matches `this.ctx.storage.sql`). */
 export interface SqlStorageLike {
@@ -59,6 +60,9 @@ export interface MemoryOSOptions {
   /** AutoRAG/AI Search gateway for semantic Wiki search. Optional — searchWiki degrades to its
    *  existing SQLite LIKE-match when absent, unchanged from before this feature existed. */
   autoRag?: AutoRagGateway;
+  /** Read dynamically so an assistant-access clamp resolved after environment construction
+   * can still govern every memory result produced by this store. */
+  roleRank?: () => number;
 }
 
 /** Turns a concept name into a safe R2 key segment — mirrors are one file per (user scope,
@@ -289,6 +293,7 @@ export function buildMemoryStore(opts: MemoryOSOptions): MemoryStore {
     async recall(query) {
       const userId = scope(query.userId);
       const limit = query.limit ?? 5;
+      const roleRank = Math.max(0, Math.min(3, Math.trunc(opts.roleRank?.() ?? 0)));
       const like = `%${query.text.replace(/[%_]/g, (c) => `\\${c}`)}%`;
       const now = Date.now();
 
@@ -344,6 +349,8 @@ export function buildMemoryStore(opts: MemoryOSOptions): MemoryStore {
         relation: r.relation,
         attribute: r.attribute,
         score: r.trust_score,
+        role_rank: roleRank,
+        relevance_score: projectFactRelevance(query.text, `${r.entity} ${r.relation} ${r.attribute}`),
         ...userIdField(r.user_id),
       }));
 
@@ -365,6 +372,7 @@ export function buildMemoryStore(opts: MemoryOSOptions): MemoryStore {
         layer: "episodic",
         text: r.text,
         score: r.importance,
+        role_rank: roleRank,
         ...userIdField(r.user_id),
       }));
 
@@ -404,6 +412,7 @@ export function buildMemoryStore(opts: MemoryOSOptions): MemoryStore {
                 layer: "semantic" as const,
                 text: String(m.metadata?.["text"] ?? ""),
                 score: m.score,
+                role_rank: roleRank,
                 ...userIdField((m.metadata?.["userId"] as string | undefined) ?? ""),
               });
             }

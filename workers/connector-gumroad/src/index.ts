@@ -16,9 +16,11 @@
 
 import { Hono } from "hono";
 import type { Context } from "hono";
+import { requireInternalHmac } from "@naelao/http";
 
 interface Env {
   ENVIRONMENT: string;
+  PLATFORM_SECRET: string;
 }
 
 const GUMROAD_API = "https://api.gumroad.com/v2";
@@ -89,6 +91,16 @@ async function callTool(name: string, args: Record<string, unknown>, token: stri
 }
 
 const app = new Hono<{ Bindings: Env }>();
+
+const requireManagedConnectorContext = async (c: Context<{ Bindings: Env }>, next: () => Promise<void>) => {
+  if (!c.req.header("x-naelao-space-id")) {
+    return c.json({ error_code: "forbidden", message: "Connector calls must originate from MCP Hub" }, 403);
+  }
+  return next();
+};
+
+app.use("/mcp", requireManagedConnectorContext, requireInternalHmac((c) => c.env.PLATFORM_SECRET ?? ""));
+app.use("/connectors/gumroad/mcp", requireManagedConnectorContext, requireInternalHmac((c) => c.env.PLATFORM_SECRET ?? ""));
 
 interface JsonRpcReq {
   jsonrpc?: string;

@@ -1,31 +1,118 @@
+import { parseShell, shellWords } from "./shell-parser.js";
+
 export interface CliDispatch {
   operation: string;
   params: Record<string, unknown>;
 }
 
+/**
+ * Planner coordination commands. These are deliberately parsed here, at the Bash boundary,
+ * rather than exposed as native model tools. The planner gets one stable shell-shaped interface;
+ * the operation names and structured payloads stay internal to the worker runtime.
+ */
+function plannerCoordinationCli(words: string[], rawCommand?: string): CliDispatch | null {
+  if (words[0] !== "naelao") return null;
+  if (words[1] === "tunnel") {
+    const action = words[2] ?? "list";
+    const { positional, body } = bodyAndFlags(words.slice(3));
+    if (!["list", "inspect", "exec", "status", "cancel"].includes(action)) throw new Error("usage: naelao tunnel list|inspect|exec|status|cancel");
+    if (action !== "list" && !positional[0]) throw new Error("tunnel requires an explicit machine name");
+    if (action === "exec" && typeof body.command !== "string") throw new Error("usage: naelao tunnel exec <machine> --command <command> [--request-id <id>]");
+    if (action === "cancel" && !body.request_id) throw new Error("cancel requires --request-id");
+    return { operation: "tunnel." + action, params: { ...body, machine: positional[0] } };
+  }
+
+  if (words[1] === "project" && words[2] === "agents") {
+    const action = words[3] ?? "list";
+    if (action === "list") return { operation: "thread.list_project_agents", params: {} };
+    const { body } = bodyAndFlags(words.slice(4));
+    if (action === "consult") {
+      if (typeof body.agent_id !== "string" || typeof body.message !== "string") {
+        throw new Error("usage: naelao project agents consult --agent-id <id> --message <text>");
+      }
+      return { operation: "thread.consult", params: body };
+    }
+    if (action === "delegate") {
+      if (typeof body.agent_id !== "string" || typeof body.task !== "string") {
+        throw new Error("usage: naelao project agents delegate --agent-id <id> --task <text>");
+      }
+      return { operation: "thread.delegate", params: body };
+    }
+    throw new Error("usage: naelao project agents [list|consult|delegate] ...");
+  }
+
+  if (words[1] === "worker" && words[2]) {
+    if (words[2] === "run" || words.includes("--task")) {
+      const workerId = words[2] === "run" ? words[3] : words[2];
+      const { body } = bodyAndFlags(words.slice(words[2] === "run" ? 4 : 3));
+      if (!workerId || typeof body.task !== "string" || !body.task.trim()) throw new Error("usage: naelao worker run <worker_id> --task <objective>");
+      return { operation: "delegate_to_space_worker", params: { worker_id: workerId, task: body.task } };
+    }
+    const workerId = words[2];
+    const { positional, body } = bodyAndFlags(words.slice(3));
+    const operation = typeof body.operation === "string" ? body.operation : positional[0];
+    if (!operation) throw new Error("usage: naelao worker <worker_id> <operation> [--params <json>]");
+    let params: Record<string, unknown> = {};
+    if (body.params !== undefined) {
+      try {
+        const parsed = rawJsonFlag(rawCommand, "--params") ?? (typeof body.params === "string" ? JSON.parse(body.params) : body.params);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("object required");
+        params = parsed as Record<string, unknown>;
+      } catch {
+        throw new Error("naelao worker --params must be a JSON object");
+      }
+    }
+    return {
+      operation: "delegate_to_space_worker",
+      params: { worker_id: workerId, task: { operation, params } },
+    };
+  }
+
+  throw new Error("usage: naelao project agents list|consult|delegate or naelao worker <worker_id> <operation>");
+}
+
+/** Recover JSON flags before shell tokenization removes JSON's inner quotes. */
+function rawJsonFlag(command: string | undefined, flag: string): unknown {
+  if (!command) return undefined;
+  const marker = command.indexOf(flag);
+  if (marker < 0) return undefined;
+  let raw = command.slice(marker + flag.length).trim();
+  if (!raw) return undefined;
+  if (raw.startsWith("'") && raw.endsWith("'")) raw = raw.slice(1, -1);
+  const candidates = [raw, raw.replace(/\\\\"/g, '"')];
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    const objectText = raw.slice(start, end + 1);
+    candidates.push(objectText, objectText.replace(/\\\\"/g, '"'));
+  }
+  for (const candidate of candidates) {
+    try {
+      const first = JSON.parse(candidate);
+      return typeof first === "string" ? JSON.parse(first) : first;
+    } catch {
+      // Try the next shell-quoting representation.
+    }
+  }
+  return undefined;
+}
+
 /** Shell-word parser without eval, substitution, redirection, or expansion. */
 export function parseCliWords(command: string): string[] {
-  if (/[`;]|\$\(|\n|\r/.test(command)) throw new Error("unsafe_cli_syntax");
-  const words: string[] = [];
-  let current = "";
-  let quote: "'" | '"' | null = null;
-  let escaped = false;
-  for (const char of command.trim()) {
-    if (escaped) { current += char; escaped = false; continue; }
-    if (char === "\\" && quote !== "'") { escaped = true; continue; }
-    if (quote) { if (char === quote) quote = null; else current += char; continue; }
-    if (char === "'" || char === '"') { quote = char; continue; }
-    if (/\s/.test(char)) { if (current) { words.push(current); current = ""; } continue; }
-    current += char;
-  }
-  if (escaped || quote) throw new Error("unterminated_cli_token");
-  if (current) words.push(current);
-  return words;
+  return shellWords(command);
 }
 
 /** Maps terminal-native platform commands to existing authorized production operations. */
 export function interceptPlatformCli(command: string): CliDispatch | null {
-  const words = parseCliWords(command);
+  const tree = parseShell(command);
+  if (tree.length !== 1 || tree[0]!.commands.length !== 1 || tree[0]!.commands[0]!.redirects.length) return null;
+  const words = tree[0]!.commands[0]!.argv;
+  return interceptPlatformWords(words, command);
+}
+
+export function interceptPlatformWords(words: string[], command?: string): CliDispatch | null {
+  const plannerCommand = plannerCoordinationCli(words, command);
+  if (plannerCommand) return plannerCommand;
   if (words[0] === "workflow" && words[1] === "run" && words[2]) {
     return { operation: "workflow.run", params: { name: words[2], params: {}, detach: words.includes("--detach") } };
   }

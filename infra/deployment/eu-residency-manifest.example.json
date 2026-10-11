@@ -1,0 +1,21 @@
+{
+  "environment": "production-eu",
+  "resources": [
+    {
+      "kind": "d1",
+      "resource": "replace-with-eu-created-database-id",
+      "jurisdiction": "eu",
+      "createdInJurisdiction": true,
+      "evidence": "Cloudflare creation command or audit record"
+    },
+    {
+      "kind": "r2",
+      "resource": "replace-with-eu-created-bucket-name",
+      "jurisdiction": "eu",
+      "createdInJurisdiction": true,
+      "evidence": "Cloudflare creation command or audit record"
+    }
+  ],
+  "regionalServices": { "enabled": false, "evidence": "" },
+  "customerMetadataBoundary": { "enabled": false, "evidence": "" }
+}

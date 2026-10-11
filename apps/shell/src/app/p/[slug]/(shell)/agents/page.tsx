@@ -1,7 +1,5 @@
 "use client";
 
-export const runtime = "edge";
-
 // The agent library for whichever space is currently active.
 //
 // Two things were wrong here before: it listed `product.space_id` — the product ROOT — so someone
@@ -30,11 +28,15 @@ import {
   getAssistantCapabilities,
   listProjects,
   listArchetypes,
+  getSkillsDirectory,
+  getConnectorStatus,
   type Project,
   type AgentDefinitionSummary,
   type AgentTemplateSummary,
   type AssistantCapabilities,
   type ArchetypePreset,
+  type DirectorySkill,
+  type ConnectorInfo,
 } from "@/lib/api";
 
 export default function AgentsPage() {
@@ -61,6 +63,10 @@ export default function AgentsPage() {
   const [cDesc, setCDesc] = React.useState("");
   const [cInstr, setCInstr] = React.useState("");
   const [cTools, setCTools] = React.useState<Set<string>>(new Set(["web-search", "knowledge-base", "code-exec", "project-journal"]));
+  const [skillDirectory, setSkillDirectory] = React.useState<DirectorySkill[]>([]);
+  const [connectorDirectory, setConnectorDirectory] = React.useState<ConnectorInfo[]>([]);
+  const [cSkills, setCSkills] = React.useState<Set<string>>(new Set());
+  const [cConnectors, setCConnectors] = React.useState<Set<string>>(new Set());
   const [cMode, setCMode] = React.useState<"always_ask" | "gate_unless_listed" | "yolo">("gate_unless_listed");
   const [cProject, setCProject] = React.useState<string>("");
   const [creating, setCreating] = React.useState(false);
@@ -123,6 +129,8 @@ export default function AgentsPage() {
     // AVOS plan step 5 — best-effort; an empty list just means the archetype picker offers only
     // "No restriction", which is the same behavior this had before archetypes existed.
     if (archetypes.length === 0) listArchetypes(activeSpaceId, creds).then(setArchetypes).catch(() => setArchetypes([]));
+    if (skillDirectory.length === 0) getSkillsDirectory(activeSpaceId, creds).then((directory) => setSkillDirectory(directory?.skills ?? [])).catch(() => setSkillDirectory([]));
+    if (connectorDirectory.length === 0) getConnectorStatus(activeSpaceId, creds).then(setConnectorDirectory).catch(() => setConnectorDirectory([]));
   }
 
   async function submitCustomAgent() {
@@ -135,6 +143,8 @@ export default function AgentsPage() {
         ...(cDesc.trim() ? { description: cDesc.trim() } : {}),
         instructions: cInstr.trim(),
         prebuilt_scripts: [...cTools],
+        skills: [...cSkills],
+        connectors: [...cConnectors],
         approval_mode: cMode,
         ...(cProject ? { project_id: cProject } : {}),
         // AVOS plan step 5 — the archetype, when one is chosen, clamps the tool list above to what
@@ -144,6 +154,7 @@ export default function AgentsPage() {
       });
       setCustomOpen(false);
       setCName(""); setCDesc(""); setCInstr(""); setCProject(""); setCArchetype("");
+      setCTools(new Set()); setCSkills(new Set()); setCConnectors(new Set());
       // The archetype may have silently dropped some of the tools that were checked — say so,
       // rather than letting the agent later look like it "can't do what it was configured to do"
       // with no explanation anywhere.
@@ -183,15 +194,15 @@ export default function AgentsPage() {
     <div className="page-view">
       <div className="page-header" style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
         <div>
-          <div className="page-title">Agents</div>
+          <div className="page-title">Workers</div>
           <div className="page-subtitle">
-            The specialists working in {isBusinessSpace && activeSpaceName ? activeSpaceName : product.product_name},
+            The specialist workers in {isBusinessSpace && activeSpaceName ? activeSpaceName : product.product_name},
             alongside your assistant. Open one to set what it may do on its own.
           </div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          <Button variant="secondary" onClick={() => void openCustomBuilder()}>+ Create custom</Button>
-          <Button onClick={() => void openTemplatePicker()}>+ Add from template</Button>
+          <Button variant="secondary" onClick={() => void openCustomBuilder()}>+ Create custom worker</Button>
+          <Button onClick={() => void openTemplatePicker()}>+ Add worker</Button>
         </div>
       </div>
 
@@ -206,7 +217,7 @@ export default function AgentsPage() {
         </p>
       ) : agents.length === 0 ? (
         <p style={{ color: "var(--text3)", fontSize: 13 }}>
-          No specialist agents here yet. Add one from a Naelao Agent Template above, or they arrive
+          No specialist workers here yet. Add one from the worker directory above, or they arrive
           with the templates you add to a business — your assistant works on its own until then.
         </p>
       ) : (
@@ -223,7 +234,7 @@ export default function AgentsPage() {
         </div>
       )}
 
-      <Modal open={templatePickerOpen} onClose={() => setTemplatePickerOpen(false)} title="Naelao Agent Templates">
+      <Modal open={templatePickerOpen} onClose={() => setTemplatePickerOpen(false)} title="Worker directory">
         <p style={{ fontSize: 12.5, color: "var(--text3)", margin: "0 0 12px" }}>
           Each template is a real, distinct configuration — its own tool list, autonomy default,
           and vertical instructions — not a label on the same generic agent.
@@ -283,7 +294,7 @@ export default function AgentsPage() {
         )}
       </Modal>
       {/* Step 17: custom agent builder — instructions, tool list, autonomy, project. */}
-      <Modal open={customOpen} onClose={() => setCustomOpen(false)} title="Create a custom agent">
+      <Modal open={customOpen} onClose={() => setCustomOpen(false)} title="Create a custom worker">
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <label style={{ fontSize: 12.5 }}>
             <div style={{ color: "var(--text3)", marginBottom: 4 }}>Name</div>
@@ -317,6 +328,18 @@ export default function AgentsPage() {
             )}
             <div style={{ color: "var(--text3)", fontSize: 10.5, marginTop: 4 }}>r2-workspace, memory and notifications are always included.</div>
           </div>
+          <div style={{ fontSize: 12.5 }}>
+            <div style={{ color: "var(--text3)", marginBottom: 6 }}>Skills directory</div>
+            <div className="workspace-directory-grid" style={{ maxHeight: 210, overflowY: "auto" }}>
+              {skillDirectory.length === 0 ? <span style={{ color: "var(--text3)", fontSize: 12 }}>No installable skills are available yet.</span> : skillDirectory.map((skill) => <label key={skill.name} className="workspace-directory-card" style={{ minHeight: 0, cursor: "pointer" }}><span><input type="checkbox" checked={cSkills.has(skill.name)} onChange={(event) => setCSkills((current) => { const next = new Set(current); event.target.checked ? next.add(skill.name) : next.delete(skill.name); return next; })} /> <strong>{skill.name}</strong></span><p>{skill.description}</p></label>)}
+            </div>
+          </div>
+          <div style={{ fontSize: 12.5 }}>
+            <div style={{ color: "var(--text3)", marginBottom: 6 }}>Connected apps</div>
+            <div className="workspace-directory-grid" style={{ maxHeight: 210, overflowY: "auto" }}>
+              {connectorDirectory.length === 0 ? <span style={{ color: "var(--text3)", fontSize: 12 }}>No connected apps are available yet.</span> : connectorDirectory.map((connector) => <label key={connector.id} className="workspace-directory-card" style={{ minHeight: 0, cursor: "pointer", opacity: connector.connected ? 1 : .6 }}><span><input type="checkbox" disabled={!connector.connected} checked={cConnectors.has(connector.id)} onChange={(event) => setCConnectors((current) => { const next = new Set(current); event.target.checked ? next.add(connector.id) : next.delete(connector.id); return next; })} /> <strong>{connector.name}</strong></span><p>{connector.connected ? connector.category : "Connect this app first"}</p></label>)}
+            </div>
+          </div>
           <label style={{ fontSize: 12.5 }}>
             <div style={{ color: "var(--text3)", marginBottom: 4 }}>Archetype (optional)</div>
             <select value={cArchetype} onChange={(e) => setCArchetype(e.target.value)} style={inputStyle}>
@@ -348,7 +371,7 @@ export default function AgentsPage() {
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
             <Button variant="secondary" onClick={() => setCustomOpen(false)}>Cancel</Button>
             <Button disabled={creating || !cName.trim() || !cInstr.trim()} onClick={() => void submitCustomAgent()}>
-              {creating ? "Creating…" : "Create agent"}
+              {creating ? "Creating…" : "Create worker"}
             </Button>
           </div>
         </div>

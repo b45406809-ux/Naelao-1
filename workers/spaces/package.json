@@ -15,6 +15,7 @@
     "@naelao/events": "workspace:*",
     "@naelao/http": "workspace:*",
     "@naelao/security": "workspace:*",
+    "@naelao/tracing": "workspace:*",
     "@naelao/types": "workspace:*",
     "hono": "^4.6.14"
   },

@@ -26,17 +26,17 @@ export class CabinetCapabilityViolationError extends Error {
 
 function workerId(value: unknown): CabinetWorkerId {
   if (typeof value === "string" && (CABINET_WORKERS as readonly string[]).includes(value)) return value as CabinetWorkerId;
-  throw new Error("Unknown executive cabinet worker");
+  throw new Error("Unknown executive cabinet worker; use Bash `naelao worker <worker_id> <operation> --params <json>` with one of project_manager_worker, treasury_worker, identity_worker, or comms_worker");
 }
 
 function task(value: unknown): { operation: string; params: Record<string, unknown> } {
   let parsed = value;
   if (typeof value === "string") {
-    try { parsed = JSON.parse(value); } catch { throw new Error("Cabinet task must be structured JSON"); }
+    try { parsed = JSON.parse(value); } catch { throw new Error("Cabinet task must be structured JSON; use Bash `naelao worker <worker_id> <operation> --params <json>`"); }
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Cabinet task must be an object");
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Cabinet task must be an object with operation and params");
   const input = parsed as Record<string, unknown>;
-  if (typeof input["operation"] !== "string" || !input["operation"].trim()) throw new Error("Cabinet task.operation is required");
+  if (typeof input["operation"] !== "string" || !input["operation"].trim()) throw new Error("Cabinet task.operation is required; use Bash `naelao worker <worker_id> <operation> --params <json>`");
   const params = input["params"];
   if (params !== undefined && (!params || typeof params !== "object" || Array.isArray(params))) throw new Error("Cabinet task.params must be an object");
   return { operation: input["operation"], params: (params ?? {}) as Record<string, unknown> };

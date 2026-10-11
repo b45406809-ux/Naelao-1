@@ -1,6 +1,7 @@
 // G-N01: Notifications worker — email + in-app notification consumer
 import { badRequest, errorResponse, notFound, requestId, mintInternalToken } from "@naelao/http";
 import { Hono } from "hono";
+import { isSpaceNetworkEgressDenied } from "@naelao/security";
 
 // ── Env ───────────────────────────────────────────────────────────────────────
 
@@ -99,6 +100,9 @@ async function sendChatMessage(
   const credName = CHANNEL_SEND_CREDENTIAL[channel];
   if (!credName) return { delivered: false, reason: `no send path for channel '${channel}'` };
   if (!to) return { delivered: false, reason: "missing recipient" };
+  if (await isSpaceNetworkEgressDenied(env.PLATFORM_DB, opts.spaceId)) {
+    return { delivered: false, reason: "air_gapped_space_blocks_network_egress" };
+  }
 
   // A business that PAIRED a channel (scanned a code against Naelao's own app) has no per-space
   // token of its own — the platform app owns the connection. Falling back to the platform token
@@ -460,6 +464,16 @@ export async function queue(
   for (const message of batch.messages) {
     const msg = message.body;
     try {
+      if (msg.type !== "in_app" && msg.spaceId && await isSpaceNetworkEgressDenied(env.PLATFORM_DB, msg.spaceId)) {
+        console.warn(`[notifications/queue] blocked ${msg.type} egress for air-gapped space ${msg.spaceId}`);
+        message.ack();
+        continue;
+      }
+      if (msg.type === "webhook" && !msg.spaceId) {
+        console.warn("[notifications/queue] scoped webhook missing spaceId; denying egress");
+        message.ack();
+        continue;
+      }
       switch (msg.type) {
         case "email": {
           if (!msg.email) {
@@ -622,6 +636,9 @@ app.post("/internal/notify", async (c) => {
 
   if (body.channel === "email") {
     if (!body.to) throw badRequest("email notification requires 'to'");
+    if (body.space_id && await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, body.space_id)) {
+      return c.json({ delivered: false, channel: "email", reason: "air_gapped_space_blocks_network_egress" }, 403);
+    }
     const result = await sendEmailNow(c.env, {
       tenantId,
       email: body.to,

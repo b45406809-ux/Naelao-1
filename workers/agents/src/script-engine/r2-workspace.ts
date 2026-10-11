@@ -1,5 +1,6 @@
 import type { ScriptEngineEnv, ScriptRunResult } from "./types.js";
 import { workspacePrefix } from "./types.js";
+import { deleteWorkspaceBytesCas, publishWorkspaceBytesCas, readBytesWithHash } from "./r2-cas.js";
 
 const textDecoder = new TextDecoder();
 const textEncoder = new TextEncoder();
@@ -10,30 +11,32 @@ export async function virtualFsRead(
 ): Promise<string | null> {
   const bucket = env.workspaceBucket ?? env.scriptsBucket;
   const key = `${workspacePrefix(env)}${path.replace(/^\/+/, "")}`;
-  const object = await bucket.get(key);
+  const object = await readBytesWithHash(bucket, key);
   if (!object) return null;
-  return textDecoder.decode(await object.arrayBuffer());
+  return textDecoder.decode(object.bytes);
 }
 
 export async function virtualFsWrite(
   env: ScriptEngineEnv,
   path: string,
-  content: string
+  content: string,
+  expectedHash: string | null
 ): Promise<void> {
   const bucket = env.workspaceBucket ?? env.scriptsBucket;
   const key = `${workspacePrefix(env)}${path.replace(/^\/+/, "")}`;
-  await bucket.put(key, textEncoder.encode(content));
+  const { hash } = await publishWorkspaceBytesCas(env, bucket, key, textEncoder.encode(content), expectedHash);
   await env.onWorkspaceChange?.({ path, operation: "write" });
 }
 
 export async function virtualFsDelete(
   env: ScriptEngineEnv,
-  path: string
+  path: string,
+  expectedHash: string | null
 ): Promise<void> {
   const bucket = env.workspaceBucket ?? env.scriptsBucket;
   const key = `${workspacePrefix(env)}${path.replace(/^\/+/, "")}`;
-  await bucket.delete(key);
-  await env.onWorkspaceChange?.({ path, operation: "delete" });
+  const result = await deleteWorkspaceBytesCas(env, bucket, key, expectedHash);
+  if (result.deleted) await env.onWorkspaceChange?.({ path, operation: "delete" });
 }
 
 export async function virtualFsList(
@@ -46,9 +49,11 @@ export async function virtualFsList(
   let cursor: string | undefined;
   do {
     const listing = await bucket.list(
-      cursor ? { prefix: base, cursor } : { prefix: base }
+      { prefix: base, ...(cursor ? { cursor } : {}), include: ["customMetadata"] }
     );
     for (const item of listing.objects) {
+      if (item.customMetadata?.["deleted"] === "true") continue;
+      if (!env.workspaceBranch && item.key.slice(workspacePrefix(env).length).startsWith("branches/")) continue;
       objects.push({
         path: item.key.slice(workspacePrefix(env).length),
         size: item.size,
@@ -106,7 +111,8 @@ export async function executeVirtualShell(
     if (op === "write") {
       const path = String(params.path ?? "");
       const content = String(params.content ?? "");
-      await virtualFsWrite(env, path, content);
+      if (!Object.prototype.hasOwnProperty.call(params, "expectedHash")) throw new Error("expectedHash is required for virtual filesystem writes");
+      await virtualFsWrite(env, path, content, params.expectedHash === null ? null : String(params.expectedHash));
       return {
         ok: true,
         output: { path, written: true },
@@ -117,7 +123,8 @@ export async function executeVirtualShell(
     }
     if (op === "delete") {
       const path = String(params.path ?? "");
-      await virtualFsDelete(env, path);
+      if (!Object.prototype.hasOwnProperty.call(params, "expectedHash")) throw new Error("expectedHash is required for virtual filesystem deletes");
+      await virtualFsDelete(env, path, params.expectedHash === null ? null : String(params.expectedHash));
       return {
         ok: true,
         output: { path, deleted: true },

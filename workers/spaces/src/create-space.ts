@@ -7,6 +7,20 @@
 
 import { mintInternalToken } from "@naelao/http";
 import { checkFreeTierTemplateEligibility } from "./template-catalog.js";
+import { scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
+
+/** Stable identity used by SpaceDO-owned extension records. A project is included only for
+ * project scopes; no project can become the parent of a space-owned installation. */
+export function deriveSpaceInstallationId(input: {
+  tenantId: string;
+  spaceId: string;
+  extensionId: string;
+  scope: InstallationScope;
+  projectId?: string;
+  userId?: string;
+}): string {
+  return scopedInstallationId(input);
+}
 
 export interface ProvisionMessage {
   type: "space_provision" | "space_deprovision";
@@ -21,6 +35,7 @@ export interface ProvisionMessage {
 
 export interface CreateSpaceEnv {
   PLATFORM_DB: D1Database;
+  ENVIRONMENT?: string;
   PROVISION_QUEUE?: Queue<ProvisionMessage>;
   /** G-BF08: the free-tier template gate resolves the real catalogue (free_tier_eligible) from
    *  the agents worker, KV-cached. Both optional — absent (dev/test), the gate degrades open;
@@ -345,7 +360,12 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
     ...mergedConfigOverrides,
     ...(params.templateId ? { template_id: params.templateId } : {}),
   });
-  const initialStatus = env.PROVISION_QUEUE ? "provisioning" : "active";
+  // Independent Wrangler dev processes do not share the local queue persistence directory,
+  // so a local producer would leave products permanently stuck in `provisioning`. The local
+  // shell can use the persisted product config immediately; deployed environments retain the
+  // asynchronous provisioning workflow.
+  const useProvisioningQueue = Boolean(env.PROVISION_QUEUE) && env.ENVIRONMENT !== "development";
+  const initialStatus = useProvisioningQueue ? "provisioning" : "active";
 
   try {
     await env.PLATFORM_DB.prepare(
@@ -360,7 +380,7 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
     throw err;
   }
 
-  if (env.PROVISION_QUEUE) {
+  if (useProvisioningQueue && env.PROVISION_QUEUE) {
     await env.PROVISION_QUEUE.send({
       type: "space_provision",
       spaceId: id,

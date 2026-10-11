@@ -1,6 +1,7 @@
 // G-T01..G-T08: Threads — multi-session conversation threading with LLM-generated summaries
 import { Hono } from "hono";
 import { errorResponse, requestId } from "@naelao/http";
+import { isSpaceNetworkEgressDenied } from "@naelao/security";
 
 interface Env {
   ENVIRONMENT: string;
@@ -162,9 +163,12 @@ app.post("/v1/threads/:id/summarize", async (c) => {
   const { tenantId } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const thread = await c.env.PLATFORM_DB.prepare(
-    "SELECT id FROM threads WHERE id = ? AND tenant_id = ?"
-  ).bind(c.req.param("id"), tenantId).first<{ id: string }>();
+    "SELECT id, space_id FROM threads WHERE id = ? AND tenant_id = ?"
+  ).bind(c.req.param("id"), tenantId).first<{ id: string; space_id: string }>();
   if (!thread) return c.json({ error_code: "not_found", message: "Thread not found" }, 404);
+  if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, thread.space_id)) {
+    return c.json({ summary: null, unavailable: "This space blocks model egress" }, 403);
+  }
 
   // Retrieve per-session summaries from the D1 shadow table (ordered by session start time)
   const { results: sessionRows } = await c.env.PLATFORM_DB.prepare(

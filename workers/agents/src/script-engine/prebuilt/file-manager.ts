@@ -8,6 +8,7 @@
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 import { workspacePrefix } from "../types.js";
+import { publishWorkspaceBytesCas } from "../r2-cas.js";
 
 function bucket(ctx: PrebuiltOpContext): R2Bucket {
   return ctx.env.workspaceBucket ?? ctx.env.scriptsBucket;
@@ -21,6 +22,24 @@ function reqStr(args: Record<string, unknown>, name: string): string {
   const v = args[name];
   if (typeof v !== "string") throw new Error(`'${name}' (string) is required`);
   return v;
+}
+
+function requiredExpectedHash(args: Record<string, unknown>): string | null {
+  if (!Object.prototype.hasOwnProperty.call(args, "expectedHash")) {
+    throw new Error("'expectedHash' (SHA-256 string or null) is required for every workspace mutation");
+  }
+  const value = args["expectedHash"];
+  if (value !== null && typeof value !== "string") throw new Error("'expectedHash' must be a SHA-256 string or null");
+  return value;
+}
+
+async function contentHash(content: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(content));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function casWrite(ctx: PrebuiltOpContext, storageKey: string, content: string, expectedHash: string | null): Promise<string> {
+  return (await publishWorkspaceBytesCas(ctx.env, bucket(ctx), storageKey, new TextEncoder().encode(content), expectedHash)).hash;
 }
 
 /** Naive line-level diff (added/removed line sets) — adequate for change tracking. */
@@ -40,12 +59,14 @@ export const fileManager: PrebuiltScript = {
   requires_tier: 1,
   operations: {
     async "file.append"(args, ctx) {
-      const k = key(ctx, reqStr(args, "path"));
+      const path = reqStr(args, "path");
+      const k = key(ctx, path);
       const existing = await bucket(ctx).get(k);
       const prior = existing ? await existing.text() : "";
       const content = prior + reqStr(args, "content");
-      await bucket(ctx).put(k, content, { customMetadata: { updatedAt: Date.now().toString() } });
-      return { ok: true, size: content.length };
+      const hash = await casWrite(ctx, k, content, requiredExpectedHash(args));
+      await ctx.env.onWorkspaceChange?.({ path, operation: "write" });
+      return { ok: true, size: content.length, hash };
     },
 
     async "file.diff"(args, ctx) {
@@ -67,8 +88,9 @@ export const fileManager: PrebuiltScript = {
       const find = reqStr(args, "find");
       const replace = reqStr(args, "replace");
       const after = before.split(find).join(replace);
-      await bucket(ctx).put(k, after, { customMetadata: { updatedAt: Date.now().toString() } });
-      return { ok: true, changed: before !== after };
+      const hash = await casWrite(ctx, k, after, requiredExpectedHash(args));
+      await ctx.env.onWorkspaceChange?.({ path: reqStr(args, "path"), operation: "write" });
+      return { ok: true, changed: before !== after, hash };
     },
 
     async "file.history"(_args, _ctx) {

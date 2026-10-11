@@ -91,6 +91,19 @@ export async function logIn(spaceId: string, email: string, password: string): P
   return session;
 }
 
+export async function requestWhatsAppLogin(spaceId: string, phone: string): Promise<{ ok: boolean; message: string }> {
+  return call(`/v1/spaces/${spaceId}/end-users/request-whatsapp-login`, { phone });
+}
+
+export async function verifyWhatsAppLogin(
+  spaceId: string,
+  input: { phone?: string; code?: string; token?: string }
+): Promise<ProductEndUser> {
+  const session = await call<ProductEndUser>(`/v1/spaces/${spaceId}/end-users/verify-whatsapp-login`, input);
+  storeProductSession(spaceId, session);
+  return session;
+}
+
 export function logOut(spaceId: string): void {
   clearProductSession(spaceId);
 }

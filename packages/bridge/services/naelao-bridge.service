@@ -1,0 +1,19 @@
+[Unit]
+Description=Naelao named-machine outbound bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=REPLACE_WITH_CONSENTING_USER
+ExecStart=/usr/bin/node /REPLACE_WITH_BRIDGE_DIST/cli.js connect --identity /REPLACE_WITH_PRIVATE_IDENTITY.json --passphrase-file /REPLACE_WITH_PRIVATE_PASSPHRASE
+Restart=on-failure
+RestartSec=10
+KillMode=control-group
+TimeoutStopSec=70
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

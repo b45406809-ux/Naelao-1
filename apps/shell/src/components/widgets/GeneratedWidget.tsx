@@ -2,10 +2,13 @@
 import * as React from "react";
 import { validateGeneratedWidget, type GeneratedWidget as Widget } from "@naelao/agent-sdk";
 
-export function GeneratedWidget({ value }: { value: unknown }) {
+export function GeneratedWidget({ value, onAction }: { value: unknown; onAction?: (widgetId: string, value: unknown) => void }) {
   let widget: Widget;
   try { widget = validateGeneratedWidget(value); } catch { return <div role="alert" className="bubble">Unsafe or invalid widget was blocked.</div>; }
-  const emit = (value: unknown) => window.dispatchEvent(new CustomEvent("naelao:widget-action", { detail: { widgetId: widget.id, value } }));
+  const emit = (value: unknown) => {
+    onAction?.(widget.id, value);
+    window.dispatchEvent(new CustomEvent("naelao:widget-action", { detail: { widgetId: widget.id, value } }));
+  };
   if (widget.type === "datetime") return <label>{widget.label}<input type="datetime-local" defaultValue={widget.value} min={widget.min} max={widget.max} onChange={e => emit(e.currentTarget.value)}/></label>;
   if (widget.type === "range") return <label>{widget.label}<input type="range" min={widget.min} max={widget.max} step={widget.step} defaultValue={widget.value} onChange={e => emit(Number(e.currentTarget.value))}/></label>;
   if (widget.type === "multi_select") return <fieldset><legend>{widget.label}</legend>{widget.options.map(option => <label key={option} style={{ display: "inline-flex", margin: 4 }}><input type="checkbox" defaultChecked={widget.selected?.includes(option)} onChange={e => emit({ option, selected: e.currentTarget.checked })}/>{option}</label>)}</fieldset>;

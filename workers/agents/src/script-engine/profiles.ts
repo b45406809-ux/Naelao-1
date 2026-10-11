@@ -11,6 +11,7 @@
 
 import type { AgentConfig } from "./agent-config.js";
 import { LAUNCHPAD_CORE_AGENTS, type LaunchpadAgentDefinition } from "../launchpad/spacetype.js";
+import { UNIVERSAL_AGENT_BASELINE_PREBUILTS } from "./agent-topology.js";
 
 /** Shared behavioral + escalation rules (spec §11.1) every Naelao agent inherits. */
 const BASE_AGENTS_MD = `# Behavioral Rules
@@ -967,7 +968,7 @@ outreach-draft skill". If a sentence would only make sense to someone who has re
 configuration, rewrite it before saying it.`;
 
 export function launchpadAgentToProfile(def: LaunchpadAgentDefinition): { agentId: string; config: AgentConfig } {
-  const prebuilt = new Set<string>(["r2-workspace"]); // every agent gets the workspace
+  const prebuilt = new Set<string>(["r2-workspace", ...UNIVERSAL_AGENT_BASELINE_PREBUILTS]);
   for (const skill of def.allowed_skills) {
     for (const p of skillToPrebuilt(skill)) prebuilt.add(p);
   }

@@ -588,6 +588,11 @@ export class SpaceTypeRegistryDO extends DurableObject {
         this.registerManifest(manifest, "naelao");
       }
     }
+    // Built-in manifests are source-controlled. Refresh the persisted registry so a local dev
+    // session does not keep serving an old onboarding policy after a manifest update.
+    for (const manifest of [LAUNCHPAD_MANIFEST]) {
+      this.registerManifest(manifest, "naelao");
+    }
   }
 
   private registerManifest(manifest: NaelaoSpaceTypeManifestV2, authorId: string): void {

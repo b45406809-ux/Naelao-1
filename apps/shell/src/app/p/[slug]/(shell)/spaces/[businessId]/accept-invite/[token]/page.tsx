@@ -1,6 +1,5 @@
 "use client";
 
-export const runtime = "edge";
 
 // Redeeming a business invite requires the visitor to already be signed in as a product end user
 // (the (shell) layout above this route enforces that, redirecting to login otherwise) — a

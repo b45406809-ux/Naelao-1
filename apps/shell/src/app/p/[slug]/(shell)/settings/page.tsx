@@ -1,6 +1,5 @@
 "use client";
 
-export const runtime = "edge";
 
 // Settings — reorganized around the mockup's `.settings-nav` sidebar (apps/launchpad/src/index.html
 // #settings-view): General / Members / Billing / Connected Apps / AI & Models, plus a Personal tab
@@ -43,6 +42,10 @@ import {
   getAssistantPolicy,
   updateAssistantPolicy,
   updateModelConfig,
+  getByokStatus,
+  setByokKey,
+  selectByokKey,
+  deleteByokKey,
   getConnectorStatus,
   type ProductUserMe,
   type Business,
@@ -53,6 +56,7 @@ import {
   type CreditPack,
   type AssistantPolicy,
   type ConnectorInfo,
+  type ByokProviderStatus,
 } from "@/lib/api";
 
 const MODEL_LABELS: Record<string, string> = {
@@ -66,6 +70,8 @@ const MODEL_LABELS: Record<string, string> = {
   "google-ai-studio/gemini-flash-lite-latest": "Gemini Flash-Lite — needs a Google AI Studio key",
   "google-ai-studio/gemini-flash-latest": "Gemini Flash — needs a Google AI Studio key",
   "google-ai-studio/gemini-pro-latest": "Gemini Pro — needs a Google AI Studio key",
+  "groq/llama-3.3-70b-versatile": "Groq Llama 3.3 70B — needs a Groq key",
+  "groq/llama-3.1-8b-instant": "Groq Llama 3.1 8B — needs a Groq key",
 };
 
 type TabId = "general" | "members" | "billing" | "apps" | "ai" | "personal";
@@ -606,6 +612,76 @@ function AiTab({
   const [savingModel, setSavingModel] = React.useState(false);
   const [savingEffort, setSavingEffort] = React.useState(false);
   const [savingPolicy, setSavingPolicy] = React.useState(false);
+  const [byok, setByok] = React.useState<ByokProviderStatus[]>([]);
+  const [byokProvider, setByokProvider] = React.useState("google-ai-studio");
+  const [byokLabel, setByokLabel] = React.useState("");
+  const [byokKey, setByokKeyInput] = React.useState("");
+  const [byokBusy, setByokBusy] = React.useState(false);
+  const [byokError, setByokError] = React.useState<string | null>(null);
+  const [byokNotice, setByokNotice] = React.useState<string | null>(null);
+
+  const refreshByok = React.useCallback(async () => {
+    if (!creds) return;
+    try {
+      setByok(await getByokStatus(spaceId, creds));
+    } catch (err) {
+      setByokError(err instanceof Error ? err.message : "Unable to load provider keys");
+    }
+  }, [creds, spaceId]);
+
+  React.useEffect(() => { void refreshByok(); }, [refreshByok]);
+
+  const providerLabel = (provider: string) => provider === "google-ai-studio" ? "Google AI Studio / Gemini" : "Groq";
+
+  async function addByokKey() {
+    if (!creds || !byokKey.trim()) return;
+    setByokBusy(true);
+    setByokError(null);
+    setByokNotice(null);
+    try {
+      await setByokKey(spaceId, creds, byokProvider, byokKey, byokLabel);
+      setByokKeyInput("");
+      setByokLabel("");
+      await refreshByok();
+      setByokNotice(`${providerLabel(byokProvider)} key added and selected for new runs.`);
+    } catch (err) {
+      setByokError(err instanceof Error ? err.message : "Unable to save provider key");
+    } finally {
+      setByokBusy(false);
+    }
+  }
+
+  async function chooseByokKey(provider: string, keyId: string) {
+    if (!creds) return;
+    setByokBusy(true);
+    setByokError(null);
+    setByokNotice(null);
+    try {
+      await selectByokKey(spaceId, creds, provider, keyId);
+      await refreshByok();
+      setByokNotice(`${providerLabel(provider)} key selected.`);
+    } catch (err) {
+      setByokError(err instanceof Error ? err.message : "Unable to select provider key");
+    } finally {
+      setByokBusy(false);
+    }
+  }
+
+  async function removeByokKey(provider: string, keyId: string) {
+    if (!creds) return;
+    setByokBusy(true);
+    setByokError(null);
+    setByokNotice(null);
+    try {
+      await deleteByokKey(spaceId, creds, provider, keyId);
+      await refreshByok();
+      setByokNotice("Provider key removed.");
+    } catch (err) {
+      setByokError(err instanceof Error ? err.message : "Unable to remove provider key");
+    } finally {
+      setByokBusy(false);
+    }
+  }
 
   async function toggleAutonomy(autonomous: boolean) {
     if (!creds) return;
@@ -691,8 +767,62 @@ function AiTab({
           )}
         </div>
       </div>
+
+      <div className="settings-section-title" style={{ marginTop: 28 }}>Space-wide provider keys</div>
+      <div className="settings-section-sub">
+        Add multiple keys for Gemini or Groq. The selected key is tried first; an authentication, rate-limit, or provider outage automatically tries the next key for that run. Keys are encrypted in the vault and never shown again.
+      </div>
+
+      <div className="settings-block">
+        {canManage && (
+          <div className="settings-row" style={{ alignItems: "flex-end", flexWrap: "wrap", gap: 10 }}>
+            <div style={{ minWidth: 190 }}>
+              <label className="settings-row-sub" htmlFor="byok-provider">Provider</label>
+              <FormSelect id="byok-provider" value={byokProvider} onChange={(e) => setByokProvider(e.target.value)}>
+                <option value="google-ai-studio">Google AI Studio / Gemini</option>
+                <option value="groq">Groq</option>
+              </FormSelect>
+            </div>
+            <div style={{ minWidth: 150, flex: "1 1 150px" }}>
+              <label className="settings-row-sub" htmlFor="byok-label">Label (optional)</label>
+              <FormInput id="byok-label" value={byokLabel} onChange={(e) => setByokLabel(e.target.value)} placeholder="e.g. Production" autoComplete="off" />
+            </div>
+            <div style={{ minWidth: 220, flex: "2 1 220px" }}>
+              <label className="settings-row-sub" htmlFor="byok-key">Provider API key</label>
+              <FormInput id="byok-key" type="password" value={byokKey} onChange={(e) => setByokKeyInput(e.target.value)} placeholder="Paste a new key" autoComplete="off" />
+            </div>
+            <Button onClick={() => void addByokKey()} disabled={byokBusy || !byokKey.trim()}>{byokBusy ? "Saving…" : "Add key"}</Button>
+          </div>
+        )}
+
+        {byok.map((entry) => (
+          <div key={entry.provider} className="settings-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+              <div>
+                <div className="settings-row-label">{providerLabel(entry.provider)}</div>
+                <div className="settings-row-sub">
+                  {entry.keys.length === 0 ? "No key configured" : `${entry.keys.length} key${entry.keys.length === 1 ? "" : "s"} configured · automatic failover enabled`}
+                </div>
+              </div>
+              {entry.active_key_id && <Badge color="green">Active key selected</Badge>}
+            </div>
+            {entry.keys.map((key) => (
+              <div key={key.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 6, background: "var(--surface2, rgba(127,127,127,.08))" }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12.5, color: "var(--text1)" }}>{key.label || "Unnamed key"}</div>
+                  <div style={{ fontSize: 11, color: "var(--text3)" }}>Secret stored in vault{key.created_at ? ` · added ${new Date(key.created_at).toLocaleDateString()}` : ""}</div>
+                </div>
+                {key.active ? <Badge color="green">Using</Badge> : canManage ? <Button onClick={() => void chooseByokKey(entry.provider, key.id)} disabled={byokBusy}>Use</Button> : null}
+                {canManage && <Button onClick={() => void removeByokKey(entry.provider, key.id)} disabled={byokBusy}>Remove</Button>}
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+      {byokError && <div style={{ color: "#dc2626", fontSize: 12.5, marginTop: 8 }}>{byokError}</div>}
+      {byokNotice && <div style={{ color: "var(--text2)", fontSize: 12.5, marginTop: 8 }}>{byokNotice}</div>}
       {!canManage && (
-        <div style={{ fontSize: 12, color: "var(--text3)" }}>Only business admins and owners can change these.</div>
+        <div style={{ fontSize: 12, color: "var(--text3)", marginTop: 12 }}>Only business admins and owners can change these.</div>
       )}
     </div>
   );

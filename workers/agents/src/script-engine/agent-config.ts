@@ -12,8 +12,82 @@
 import type { StepPipeline } from "./step-pipeline.js";
 import { validateStepPipeline } from "./step-pipeline.js";
 import type { UniversalAgentManifest } from "@naelao/agent-sdk";
+import { putTextCas, readTextWithHash } from "./r2-cas.js";
+import type { LockGateway } from "./types.js";
 
 export type { UniversalAgentManifest } from "@naelao/agent-sdk";
+
+/**
+ * Build the lock adapter used by every agent-config writer. The namespace is keyed by space,
+ * while the lock key remains agent-specific, so independent agents in one space do not block
+ * each other and writes from different workers still serialize through the same DO.
+ */
+export function createAgentConfigLockGateway(
+  namespace: DurableObjectNamespace,
+  spaceId: string,
+): LockGateway {
+  const stub = namespace.get(namespace.idFromName(`agent-config-lock:${spaceId}`));
+  const call = async <T>(path: string, body?: unknown): Promise<T> => {
+    const response = await stub.fetch(new Request(`http://agent-config-lock${path}`, {
+      method: body === undefined ? "GET" : "POST",
+      ...(body === undefined ? {} : {
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    }));
+    if (!response.ok) throw new Error(`agent_config_lock_${response.status}`);
+    return response.json<T>();
+  };
+  return {
+    acquire: async (params) => {
+      const result = await call<{ acquired?: boolean; granted?: boolean; active?: number; limit?: number; heldBy?: string; remainingMs?: number }>(
+        "/lock/acquire", { key: params.key, holderId: params.holderId, ttlMs: params.ttlMs });
+      return {
+        granted: result.granted ?? result.acquired ?? false,
+        active: result.active ?? (result.granted || result.acquired ? 1 : 0),
+        ...(result.limit === undefined ? {} : { limit: result.limit }),
+        ...(result.heldBy === undefined ? {} : { heldBy: result.heldBy }),
+        ...(result.remainingMs === undefined ? {} : { remainingMs: result.remainingMs }),
+      };
+    },
+    release: async (params) => { await call("/lock/release", { key: params.key, holderId: params.holderId }); },
+    status: (key) => call<{ active: number }>(`/status?key=${encodeURIComponent(key)}`),
+  };
+}
+
+/** Adapter for a provisioner or another worker that reaches the agents worker by service binding. */
+export function createRemoteAgentConfigLockGateway(
+  fetcher: Fetcher,
+  headers: HeadersInit,
+  spaceId: string,
+): LockGateway {
+  const call = async <T>(path: string, body?: unknown): Promise<T> => {
+    const target = new URL(`http://agents-worker/internal/agent-config-lock${path}`);
+    if (body === undefined) target.searchParams.set("space_id", spaceId);
+    const response = await fetcher.fetch(new Request(target, {
+      method: body === undefined ? "GET" : "POST",
+      headers: { ...Object.fromEntries(new Headers(headers).entries()), ...(body === undefined ? {} : { "content-type": "application/json" }) },
+      ...(body === undefined ? {} : { body: JSON.stringify({ space_id: spaceId, ...body as Record<string, unknown> }) }),
+    }));
+    if (!response.ok) throw new Error(`agent_config_lock_${response.status}`);
+    return response.json<T>();
+  };
+  return {
+    acquire: async (params) => {
+      const result = await call<{ acquired?: boolean; granted?: boolean; active?: number; limit?: number; heldBy?: string; remainingMs?: number }>(
+        "/acquire", { key: params.key, holderId: params.holderId, ttlMs: params.ttlMs });
+      return {
+        granted: result.granted ?? result.acquired ?? false,
+        active: result.active ?? (result.granted || result.acquired ? 1 : 0),
+        ...(result.limit === undefined ? {} : { limit: result.limit }),
+        ...(result.heldBy === undefined ? {} : { heldBy: result.heldBy }),
+        ...(result.remainingMs === undefined ? {} : { remainingMs: result.remainingMs }),
+      };
+    },
+    release: async (params) => { await call("/release", { key: params.key, holderId: params.holderId }); },
+    status: (key) => call<{ active: number }>(`/status?key=${encodeURIComponent(key)}`),
+  };
+}
 
 /** scripts.json (spec §11.2). */
 export interface ScriptsConfig {
@@ -101,7 +175,8 @@ export async function writeAgentConfig(
   bucket: R2Bucket,
   spaceId: string,
   agentId: string,
-  config: AgentConfig
+  config: AgentConfig,
+  options: { lockGateway?: LockGateway; holderId?: string } = {},
 ): Promise<void> {
   const dir = agentDir(spaceId, agentId);
   if (config.pipelines) validateStepPipeline(config.pipelines);
@@ -110,12 +185,30 @@ export async function writeAgentConfig(
     ...(config.requiresApprovalFor ? { requires_approval_for: config.requiresApprovalFor } : {}),
   };
   if (config.pipelines) persistedScripts.pipelines = config.pipelines;
-  await Promise.all([
-    bucket.put(`${dir}/agents.md`, config.agentsMd),
-    bucket.put(`${dir}/system-prompt.md`, config.systemPrompt),
-    bucket.put(`${dir}/scripts.json`, JSON.stringify(persistedScripts, null, 2)),
-    bucket.put(`${dir}/skills.json`, JSON.stringify(config.skills, null, 2)),
-  ]);
+  const files: Array<[string, string]> = [
+    [`${dir}/agents.md`, config.agentsMd],
+    [`${dir}/system-prompt.md`, config.systemPrompt],
+    [`${dir}/scripts.json`, JSON.stringify(persistedScripts, null, 2)],
+    [`${dir}/skills.json`, JSON.stringify(config.skills, null, 2)],
+  ];
+  let locked = false;
+  const lockKey = `agent-config:${spaceId}:${agentId}`;
+  if (options.lockGateway) {
+    if (!options.holderId) throw new Error("agent_config_lock_holder_required");
+    const result = await options.lockGateway.acquire({ key: lockKey, holderId: options.holderId, limit: 1, ttlMs: 30_000 });
+    if (!result.granted) throw new Error("agent_config_lock_unavailable");
+    locked = true;
+  }
+  try {
+    // Capture every base before writing any file. Each individual object is then protected by
+    // SHA-256 plus its R2 ETag, so a concurrent editor cannot silently lose a prompt/skills change.
+    const observed = await Promise.all(files.map(([key]) => readTextWithHash(bucket, key)));
+    await Promise.all(files.map(([key, text], index) => putTextCas(bucket, key, text, observed[index]?.hash ?? null)));
+  } finally {
+    if (locked && options.lockGateway && options.holderId) {
+      await options.lockGateway.release({ key: lockKey, holderId: options.holderId });
+    }
+  }
 }
 
 /**

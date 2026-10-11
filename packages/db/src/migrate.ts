@@ -7,6 +7,27 @@ export interface Migration {
   up: string; // SQL to apply
 }
 
+export interface MigrationRestoreFixture {
+  name: string;
+  fromVersion: number;
+  toVersion: number;
+  exportMarker: string;
+  importMarker: string;
+}
+
+/** Guard additive migration plans before they reach a live DO. Historical versions are
+ * immutable: a duplicate or renumbered entry must fail loudly instead of silently changing
+ * what an existing reader means. */
+export function validateMigrationSequence(migrations: readonly Migration[]): void {
+  const versions = new Set<number>();
+  for (const migration of migrations) {
+    if (!Number.isInteger(migration.version) || migration.version < 1) throw new Error("migration_version_must_be_positive_integer");
+    if (versions.has(migration.version)) throw new Error(`duplicate_migration_version:${migration.version}`);
+    if (!migration.description.trim() || !migration.up.trim()) throw new Error(`migration_${migration.version}_is_incomplete`);
+    versions.add(migration.version);
+  }
+}
+
 /** The subset of DurableObjectStorage this needs: the raw .sql handle plus the
  *  JS transaction API. Cloudflare's real SQLite-backed DO storage REJECTS raw SQL
  *  BEGIN/SAVEPOINT/COMMIT statements outright ("please use state.storage.transaction()
@@ -39,6 +60,17 @@ function splitStatements(sqlText: string): string[] {
   let inString = false;
   let inLineComment = false;
   let inBlockComment = false;
+  let triggerBlockDepth = 0;
+  let word = "";
+
+  // Trigger bodies contain semicolons before their final END. Keep those
+  // semicolons inside the same statement or SQLite reports "incomplete input".
+  const flushWord = () => {
+    const normalized = word.toUpperCase();
+    if (normalized === "BEGIN") triggerBlockDepth++;
+    if (normalized === "END" && triggerBlockDepth > 0) triggerBlockDepth--;
+    word = "";
+  };
   for (let i = 0; i < sqlText.length; i++) {
     const ch = sqlText[i];
     const next = sqlText[i + 1];
@@ -67,8 +99,12 @@ function splitStatements(sqlText: string): string[] {
       current += ch;
       continue;
     }
+    if (!inString) {
+      if (ch && /[A-Za-z_]/.test(ch)) word += ch;
+      else flushWord();
+    }
     if (ch === "'") inString = !inString;
-    if (ch === ";" && !inString) {
+    if (ch === ";" && !inString && triggerBlockDepth === 0) {
       // A chunk that's comment-only (e.g. a trailing "-- note" after the last real
       // statement's semicolon) has no SQL content — pushing it would hand sql.exec() a
       // string containing nothing but a comment, which throws "SQL code did not contain
@@ -120,7 +156,13 @@ export function applyMigrations(
       if (existing) continue;
 
       for (const statement of splitStatements(m.up)) {
-        sql.exec(statement);
+        try {
+          sql.exec(statement);
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          const preview = statement.replace(/\s+/g, " ").trim().slice(0, 240);
+          throw new Error(`Migration ${m.version} (${m.description}) failed: ${detail}; SQL: ${preview}`, { cause: error });
+        }
       }
       execute(
         sql,

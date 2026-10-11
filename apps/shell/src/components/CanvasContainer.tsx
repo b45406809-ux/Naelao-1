@@ -11,14 +11,14 @@ import { VirtualDesktopGuiCanvas } from "./viewports/VirtualDesktopGuiCanvas";
 
 type Creds = { sessionToken: string; endUserId: string };
 type HeaderTab = "canvases" | "files" | "details";
-type CanvasView = "deliverable" | "micro-app" | "terminal" | "gui";
+export type CanvasView = "deliverable" | "code" | "micro-app" | "terminal" | "gui";
 const DOMAIN_VIEWPORTS: Record<string, React.ComponentType<ViewportProps>> = { product_dev: CodeCanvas, voice_agent: VoiceAgentCanvas, customer_bot: CustomerBotCanvas, model_studio: ModelStudioCanvas, growth_engine: GrowthEngineCanvas };
 
-export function CanvasContainer({ project, spaceId, creds, maximized = false, onMaximize = () => {} }: { project: Project; spaceId: string; creds: Creds; maximized?: boolean; onMaximize?(): void }) {
+export function CanvasContainer({ project, spaceId, creds, maximized = false, onMaximize = () => {}, standalone = false, canvasView }: { project: Project; spaceId: string; creds: Creds; maximized?: boolean; onMaximize?(): void; standalone?: boolean; canvasView?: CanvasView }) {
   const [files, setFiles] = React.useState<WorkspaceFile[]>([]);
   const [selected, setSelected] = React.useState<WorkspaceFileContent | null>(null);
   const [tab, setTab] = React.useState<HeaderTab>("canvases");
-  const [view, setView] = React.useState<CanvasView>(project.kind === "app_studio" ? "micro-app" : "deliverable");
+  const [view, setView] = React.useState<CanvasView>(canvasView ?? (project.kind === "app_studio" ? "micro-app" : "deliverable"));
   const [terminalLines, setTerminalLines] = React.useState<string[]>([]);
   const [connected, setConnected] = React.useState(false);
   const socket = React.useRef<WebSocket | null>(null);
@@ -47,18 +47,21 @@ export function CanvasContainer({ project, spaceId, creds, maximized = false, on
   const onAction = React.useCallback((action: string, payload: Record<string, unknown> = {}) => { const event = { type: "mcp.ui_action", projectId: project.id, user: creds.endUserId, action, payload }; window.dispatchEvent(new CustomEvent("naelao:mcp-ui-action", { detail: event })); if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify(event)); }, [project.id, creds.endUserId]);
 
   const hasContainer = Boolean(project.channel_config?.container_enabled);
-  const views: { id: CanvasView; label: string }[] = [{ id: "deliverable", label: "📄 Deliverable" }];
+  const views: { id: CanvasView; label: string }[] = [{ id: "deliverable", label: "📄 Deliverable" }, { id: "code", label: "⌘ Code Canvas" }];
   if (project.kind === "app_studio" || project.channel_config?.app_id) views.push({ id: "micro-app", label: "📱 Micro-App" });
   if (hasContainer) views.push({ id: "terminal", label: "💻 Terminal" }, { id: "gui", label: "🖥️ GUI Display" });
-  const props = { files, selected, onSelect, onAction };
+  const props = { files, selected, onSelect, onAction, bare: standalone };
   const DomainViewport = DOMAIN_VIEWPORTS[project.kind ?? ""];
   const deliverable = project.kind === "doc_studio" ? <DocumentRedlineCanvas {...props} /> : project.kind === "finance_grid" || project.kind === "quant_desk" ? <SpreadsheetFormulaGrid {...props} /> : DomainViewport ? <DomainViewport {...props} /> : <CodeCanvas {...props} />;
+  const activeView = canvasView ?? view;
   const appId = String(project.channel_config?.app_id ?? project.id);
   const desktopUrl = typeof project.channel_config?.desktop_stream_url === "string" ? project.channel_config.desktop_stream_url : null;
 
+  const canvas = <div className="canvas-viewport">{activeView === "deliverable" && deliverable}{activeView === "code" && <CodeCanvas {...props} />}{activeView === "micro-app" && <MicroAppCanvas spaceId={spaceId} appId={appId} onAction={onAction} />}{activeView === "terminal" && <ContainerTerminalCanvas lines={terminalLines} connected={connected} />}{activeView === "gui" && <VirtualDesktopGuiCanvas {...(desktopUrl ? { streamUrl: desktopUrl } : {})} />}</div>;
+  if (standalone) return <section className={`canvas-container canvas-standalone${maximized ? " maximized" : ""}`} aria-label={canvasView === "code" ? "Code canvas" : "Canvas"} data-testid="canvas-container">{canvas}</section>;
   return <section className={`canvas-container${maximized ? " maximized" : ""}`} aria-label="Canvas container" data-testid="canvas-container">
     <header className="canvas-header"><nav aria-label="Canvas sections">{(["canvases", "files", "details"] as HeaderTab[]).map(id => <button key={id} type="button" aria-selected={tab === id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>{id === "canvases" ? "📄 Canvases" : id === "files" ? "📁 Files" : "ℹ️ Details"}</button>)}</nav><button type="button" className="canvas-maximize" onClick={onMaximize} aria-label={maximized ? "Restore canvas" : "Maximize canvas"}>{maximized ? "⤡ Restore" : "⤢ Maximize"}</button></header>
-    {tab === "canvases" && <><nav className="canvas-switcher" aria-label="Available canvas views">{views.map(item => <button key={item.id} type="button" className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}>{item.label}</button>)}</nav><div className="canvas-viewport">{view === "deliverable" && deliverable}{view === "micro-app" && <MicroAppCanvas spaceId={spaceId} appId={appId} onAction={onAction} />}{view === "terminal" && <ContainerTerminalCanvas lines={terminalLines} connected={connected} />}{view === "gui" && <VirtualDesktopGuiCanvas {...(desktopUrl ? { streamUrl: desktopUrl } : {})} />}</div></>}
+    {tab === "canvases" && <><nav className="canvas-switcher" aria-label="Available canvas views">{views.map(item => <button key={item.id} type="button" className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}>{item.label}</button>)}</nav>{canvas}</>}
     {tab === "files" && <div className="canvas-panel"><h3>Workspace files</h3>{files.map(file => <button key={file.path} type="button" className={selected?.path === file.path ? "active" : ""} onClick={() => { onSelect(file.path); setTab("canvases"); }}>{file.path}<small>{Math.ceil(file.size / 1024)} KB</small></button>)}</div>}
     {tab === "details" && <div className="canvas-details"><span className="canvas-eyebrow">Active project</span><h3>{project.name}</h3><p>{project.description || "No project description."}</p><dl><dt>Canvas</dt><dd>{project.kind ?? "workspace"}</dd><dt>Live sync</dt><dd>{connected ? "Connected" : "Polling fallback"}</dd><dt>File</dt><dd>{selected?.path ?? "None selected"}</dd></dl></div>}
   </section>;

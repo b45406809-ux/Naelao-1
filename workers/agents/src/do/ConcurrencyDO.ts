@@ -28,6 +28,7 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
+import { deleteBytesCas, putBytesCas } from "../script-engine/r2-cas.js";
 
 const SWEEP_INTERVAL_MS = 5 * 60 * 1000; // spec: "auto-release abandoned slots" via DO Alarms
 const DEFAULT_TTL_MS = 30 * 60 * 1000; // a slot no one explicitly releases within 30m is stale
@@ -36,6 +37,7 @@ export const SLOT_HOLD_TTL_MS = 15_000;
 
 export interface ConcurrencyDOEnv {
   PLATFORM_SECRET?: string;
+  SCRIPTS_R2?: R2Bucket;
 }
 
 export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
@@ -57,6 +59,8 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
     this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS locks (
       key TEXT PRIMARY KEY, holder_id TEXT NOT NULL, acquired_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
     )`);
+    try { this.ctx.storage.sql.exec("ALTER TABLE locks ADD COLUMN fencing_token INTEGER NOT NULL DEFAULT 0"); } catch { /* already migrated */ }
+    this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS lock_fences (key TEXT PRIMARY KEY, fencing_token INTEGER NOT NULL)");
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_locks_expires ON locks(expires_at)`);
     this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS outbound_pacers (
       domain TEXT PRIMARY KEY, next_release_at INTEGER NOT NULL
@@ -92,6 +96,13 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
       }
       if (request.method === "POST" && (url.pathname === "/lock/release" || url.pathname === "/locks/release")) {
         return this.releaseLock(request);
+      }
+      if (request.method === "POST" && url.pathname === "/locks/renew") return this.renewLock(request);
+      if (request.method === "POST" && url.pathname === "/workspace/publish") {
+        const publish = () => this.publishWorkspaceMutation(request);
+        return typeof this.ctx.blockConcurrencyWhile === "function"
+          ? this.ctx.blockConcurrencyWhile(publish)
+          : publish();
       }
       if (request.method === "POST" && url.pathname === "/locks/force-release") {
         return this.forceReleaseLock(request);
@@ -141,30 +152,81 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
     const requestedTtl = body.ttlMs ?? body.ttl_ms ?? FILE_LOCK_TTL_MS;
     const ttlMs = Math.max(1, Math.min(FILE_LOCK_TTL_MS, requestedTtl));
     const now = Date.now();
-    this.ctx.storage.sql.exec(`DELETE FROM locks WHERE key = ? AND expires_at <= ?`, key, now);
-    const rows = this.ctx.storage.sql.exec(`SELECT holder_id, expires_at FROM locks WHERE key = ?`, key).toArray() as Array<{ holder_id: string; expires_at: number }>;
+    const rows = this.ctx.storage.sql.exec(`SELECT holder_id, expires_at, fencing_token FROM locks WHERE key = ?`, key).toArray() as Array<{ holder_id: string; expires_at: number; fencing_token?: number }>;
     const held = rows[0];
-    if (held && held.holder_id !== holderId) {
+    if (held && held.expires_at > now && held.holder_id !== holderId) {
       return Response.json({ acquired: false, heldBy: held.holder_id, remainingMs: Math.max(0, held.expires_at - now) });
+    }
+    let fencingToken = held?.fencing_token ?? 0;
+    if (!held || held.expires_at <= now || fencingToken < 1) {
+      const next = this.ctx.storage.sql.exec("SELECT fencing_token FROM lock_fences WHERE key = ?", key).toArray() as Array<{ fencing_token: number }>;
+      fencingToken = Math.max(next[0]?.fencing_token ?? 0, fencingToken) + 1;
+      this.ctx.storage.sql.exec(`INSERT INTO lock_fences(key,fencing_token) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET fencing_token=excluded.fencing_token`, key, fencingToken);
     }
     const expiresAt = now + ttlMs;
     this.ctx.storage.sql.exec(
-      `INSERT INTO locks (key, holder_id, acquired_at, expires_at) VALUES (?, ?, ?, ?)
-       ON CONFLICT(key) DO UPDATE SET holder_id=excluded.holder_id, acquired_at=excluded.acquired_at, expires_at=excluded.expires_at`,
-      key, holderId, now, expiresAt
+      `INSERT INTO locks (key, holder_id, acquired_at, expires_at, fencing_token) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET holder_id=excluded.holder_id, acquired_at=excluded.acquired_at, expires_at=excluded.expires_at, fencing_token=excluded.fencing_token`,
+      key, holderId, now, expiresAt, fencingToken
     );
     await this.scheduleNextAlarm();
-    return Response.json({ acquired: true, holderId, expiresAt, ttlMs });
+    return Response.json({ acquired: true, holderId, expiresAt, ttlMs, fencingToken });
+  }
+
+  private async renewLock(request: Request): Promise<Response> {
+    const body = await request.json<{ key?: string; holderId?: string; fencingToken?: number; ttlMs?: number }>().catch(() => ({} as { key?: string; holderId?: string; fencingToken?: number; ttlMs?: number }));
+    const key = String(body.key ?? ""); const holderId = String(body.holderId ?? "");
+    const token = Number(body.fencingToken); const now = Date.now();
+    if (!key || !holderId || !Number.isSafeInteger(token) || token < 1) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const ttlMs = Math.max(1, Math.min(FILE_LOCK_TTL_MS, Number(body.ttlMs ?? FILE_LOCK_TTL_MS)));
+    const expiresAt = now + ttlMs;
+    const result = this.ctx.storage.sql.exec("UPDATE locks SET expires_at=? WHERE key=? AND holder_id=? AND fencing_token=? AND expires_at>?", expiresAt, key, holderId, token, now);
+    await this.scheduleNextAlarm();
+    return result.rowsWritten ? Response.json({ renewed: true, expiresAt, ttlMs, fencingToken: token }) : Response.json({ renewed: false, error_code: "lease_lost" }, { status: 409 });
+  }
+
+  private async publishWorkspaceMutation(request: Request): Promise<Response> {
+    const body = await request.json<{ key?: string; holderId?: string; fencingToken?: number; path?: string; operation?: "write" | "delete"; expectedHash?: string | null; contentBase64?: string; metadata?: Record<string, string>; contentType?: string }>().catch(() => ({} as { key?: string; holderId?: string; fencingToken?: number; path?: string; operation?: "write" | "delete"; expectedHash?: string | null; contentBase64?: string; metadata?: Record<string, string>; contentType?: string }));
+    const lockKey = String(body.key ?? ""); const holderId = String(body.holderId ?? "");
+    const path = String(body.path ?? ""); const token = Number(body.fencingToken);
+    if (!lockKey || !holderId || !path.startsWith("spaces/") || path.includes("\\") || path.split("/").includes("..") ||
+        !Number.isSafeInteger(token) || token < 1 || !["write", "delete"].includes(String(body.operation)) ||
+        !Object.prototype.hasOwnProperty.call(body, "expectedHash") || (body.expectedHash !== null && typeof body.expectedHash !== "string"))
+      return Response.json({ error_code: "bad_request", message: "invalid workspace CAS request" }, { status: 400 });
+    if (!this.env.SCRIPTS_R2) return Response.json({ error_code: "workspace_storage_unavailable" }, { status: 503 });
+    const now = Date.now();
+    const lease = this.ctx.storage.sql.exec("SELECT holder_id,expires_at,fencing_token FROM locks WHERE key=?", lockKey).toArray() as Array<{ holder_id: string; expires_at: number; fencing_token: number }>;
+    if (lease[0]?.holder_id !== holderId || lease[0]?.fencing_token !== token || lease[0].expires_at <= now)
+      return Response.json({ error_code: "lease_lost" }, { status: 409 });
+    const current = await this.env.SCRIPTS_R2.head(path);
+    const storedFence = Number(current?.customMetadata?.["fencingToken"] ?? 0);
+    if (storedFence > token) return Response.json({ error_code: "stale_fencing_token" }, { status: 409 });
+    try {
+      if (body.operation === "delete") {
+        const result = await deleteBytesCas(this.env.SCRIPTS_R2, path, body.expectedHash, { ...(body.metadata ?? {}), fencingToken: String(token) });
+        return Response.json({ ...result, fencingToken: token });
+      }
+      if (typeof body.contentBase64 !== "string") return Response.json({ error_code: "bad_request", message: "contentBase64 is required" }, { status: 400 });
+      const bytes = Uint8Array.from(atob(body.contentBase64), (character) => character.charCodeAt(0));
+      const result = await putBytesCas(this.env.SCRIPTS_R2, path, bytes, body.expectedHash, { ...(body.metadata ?? {}), fencingToken: String(token) }, body.contentType ? { contentType: body.contentType } : undefined);
+      return Response.json({ ...result, fencingToken: token });
+    } catch {
+      return Response.json({ error_code: "revision_conflict" }, { status: 409 });
+    }
   }
 
   private async releaseLock(request: Request): Promise<Response> {
-    const body = await request.json<{ key?: string; holderId?: string; holder_id?: string }>().catch(() => ({} as { key?: string; holderId?: string; holder_id?: string }));
+    const body = await request.json<{ key?: string; holderId?: string; holder_id?: string; fencingToken?: number }>().catch(() => ({} as { key?: string; holderId?: string; holder_id?: string; fencingToken?: number }));
     const key = String(body.key ?? "");
     const holderId = String(body.holderId ?? body.holder_id ?? "");
-    const before = this.ctx.storage.sql.exec(`SELECT holder_id FROM locks WHERE key = ?`, key).toArray() as Array<{ holder_id: string }>;
-    if (key && holderId) this.ctx.storage.sql.exec(`DELETE FROM locks WHERE key = ? AND holder_id = ?`, key, holderId);
+    const token = Number(body.fencingToken);
+    const before = this.ctx.storage.sql.exec(`SELECT holder_id,fencing_token FROM locks WHERE key = ?`, key).toArray() as Array<{ holder_id: string; fencing_token: number }>;
+    if (key && holderId) {
+      if (Number.isSafeInteger(token) && token > 0) this.ctx.storage.sql.exec(`DELETE FROM locks WHERE key = ? AND holder_id = ? AND fencing_token = ?`, key, holderId, token);
+      else this.ctx.storage.sql.exec(`DELETE FROM locks WHERE key = ? AND holder_id = ?`, key, holderId);
+    }
     await this.scheduleNextAlarm();
-    return Response.json({ released: before[0]?.holder_id === holderId });
+    return Response.json({ released: before[0]?.holder_id === holderId && (!Number.isSafeInteger(token) || token <= 0 || before[0]?.fencing_token === token) });
   }
 
   private async forceReleaseLock(request: Request): Promise<Response> {

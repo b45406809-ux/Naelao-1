@@ -1,6 +1,5 @@
 "use client";
 
-export const runtime = "edge";
 
 // Ported from apps/launchpad/src/index.html's Projects page (#projects-view): breadcrumb, a
 // header with icon action buttons, a stats row, a searchable thread list with status-colored
@@ -42,11 +41,19 @@ import {
 import { ProjectKindPanel } from "@/components/ProjectKindPanel";
 import { CustomerBotAutomation } from "@/components/CustomerBotAutomation";
 import { AgentPolicyPanel } from "@/components/AgentPolicyPanel";
+import { PROJECT_KINDS, getProjectKindManifest } from "@naelao/agent-sdk";
 
 const STATUS_BADGE: Record<string, "green" | "amber" | "blue" | undefined> = {
   active: "green",
   archived: undefined,
 };
+
+const CONFIGURED_PROJECT_KINDS = ["workspace", "customer_bot", ...PROJECT_KINDS] as const;
+function projectKindLabel(kind: string): string {
+  if (kind === "workspace") return "Workspace";
+  if (kind === "customer_bot") return "Customer bot";
+  return getProjectKindManifest(kind)?.label ?? kind.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
 
 export default function ProjectDetailPage() {
   const params = useParams<{ projectId: string }>();
@@ -81,7 +88,7 @@ export default function ProjectDetailPage() {
   // business; the settings section is still shown to a plain member (read-only save attempt
   // will surface the 403 via toast rather than pre-computing role client-side).
   const [savingSettings, setSavingSettings] = React.useState(false);
-  const [draftKind, setDraftKind] = React.useState<"workspace" | "customer_bot">("workspace");
+  const [draftKind, setDraftKind] = React.useState<string>("workspace");
   const [draftMaxThreads, setDraftMaxThreads] = React.useState("0");
   const [draftExecutionCeiling, setDraftExecutionCeiling] = React.useState("5");
   const [draftSpendCap, setDraftSpendCap] = React.useState("0");
@@ -95,7 +102,7 @@ export default function ProjectDetailPage() {
     try {
       const [p, t, a, allP] = await Promise.all([
         getProject(activeSpaceId, params.projectId, creds),
-        listThreads(activeSpaceId, creds, { projectId: params.projectId }),
+        listThreads(activeSpaceId, creds, { projectId: params.projectId, includeSubThreads: true }),
         listAgentDefinitions(activeSpaceId, creds).catch(() => []),
         listProjects(activeSpaceId, creds).catch(() => []),
       ]);
@@ -103,7 +110,7 @@ export default function ProjectDetailPage() {
       setThreads(t);
       setAgents(a);
       setAllProjects(allP);
-      setDraftKind(p.kind === "customer_bot" ? "customer_bot" : "workspace");
+      setDraftKind(p.kind ?? "workspace");
       setDraftMaxThreads(String(p.max_threads ?? 0));
       setDraftExecutionCeiling(String(p.execution_ceiling ?? 5));
       setDraftSpendCap(String(p.daily_spend_cap_credits ?? 0));
@@ -180,7 +187,7 @@ export default function ProjectDetailPage() {
       const created = await createThread(activeSpaceId, creds, { project_id: params.projectId, title: "New thread" });
       // Open it. Creating a thread and being left staring at the same list is a dead end — the
       // point of making one is to start working in it.
-      router.push(`/p/${product.slug}/projects/${params.projectId}/threads/${created.id}`);
+      router.push(`/p/${product.slug}/threads/${created.id}`);
     } catch (err) {
       show(err instanceof Error ? err.message : "Failed to create thread");
     } finally {
@@ -273,12 +280,18 @@ export default function ProjectDetailPage() {
   const visibleThreads = threadQuery.trim()
     ? threads.filter((t) => (t.title ?? "Untitled thread").toLowerCase().includes(threadQuery.trim().toLowerCase()))
     : threads;
+  const threadTiers = [
+    { id: "tier_1_team", label: "Team room", description: project?.visibility === "public" ? "Public to every project member" : "Available to project members" },
+    { id: "tier_2_task", label: "Task threads", description: "Shared work and deliverables" },
+    { id: "tier_3_consult", label: "Worker consultations", description: "Worker and specialist collaboration" },
+    { id: "tier_4_scratchpad", label: "Private scratchpads", description: "Visible only to their creator" },
+  ] as const;
 
   return (
     <div className="spaces-layout">
       {/* Left: project tree nav — the mockup's #projects-view left rail (quick-switch between
           this space's projects without leaving the detail view), plus space-wide shortcuts to
-          Agent Library / Knowledge Base. Thread counts are shown ONLY for the currently open
+          Worker Library / Knowledge Base. Thread counts are shown ONLY for the currently open
           project (the one count already fetched here) — fetching every OTHER project's thread
           count just to populate this rail would be an N+1 for a cosmetic number, so those are
           left off rather than fabricated or paid for. */}
@@ -304,11 +317,11 @@ export default function ProjectDetailPage() {
           <div style={{ height: 1, background: "var(--border)" }} />
         </div>
         <div style={{ padding: "10px 14px 4px", fontSize: 10.5, fontWeight: 500, color: "var(--text3)", letterSpacing: "0.07em", textTransform: "uppercase" }}>
-          Agents in Space
+          Workers in Space
         </div>
         <Link href={`/p/${product.slug}/agents`} className="space-tree-item" style={{ textDecoration: "none" }}>
           <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="currentColor"><rect x="3" y="3" width="10" height="10" rx="2" /><circle cx="6" cy="7" r="1" /><circle cx="10" cy="7" r="1" /><path d="M6 10C6 10 7 11 10 10" /></svg>
-          Agent Library
+          Worker Library
         </Link>
         <Link href={`/p/${product.slug}/knowledge`} className="space-tree-item" style={{ textDecoration: "none" }}>
           <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="currentColor"><path d="M3 3H9L13 7V13H3V3Z" /><polyline points="9,3 9,7 13,7" /></svg>
@@ -402,9 +415,11 @@ export default function ProjectDetailPage() {
       ) : visibleThreads.length === 0 ? (
         <p style={{ color: "var(--text3)", fontSize: 13, marginBottom: 24 }}>No threads match &ldquo;{threadQuery}&rdquo;.</p>
       ) : (
-        <div style={{ marginBottom: 24 }}>
-          {visibleThreads.map((t) => (
-            <Link key={t.id} href={`/p/${product.slug}/projects/${params.projectId}/threads/${t.id}`} style={{ textDecoration: "none" }}>
+        <div style={{ marginBottom: 24, display: "grid", gap: 16 }}>
+          {threadTiers.map((tier) => {
+            const rows = visibleThreads.filter((thread) => (thread.thread_tier ?? "tier_2_task") === tier.id);
+            return <section key={tier.id} className="settings-block" style={{ padding: 12 }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}><strong style={{ fontSize: 13 }}>{tier.label}</strong><span style={{ fontSize: 10.5, color: "var(--text3)" }}>{tier.description}</span></div>{rows.length === 0 ? <p style={{ color: "var(--text3)", fontSize: 12, margin: 0 }}>No {tier.label.toLowerCase()}.</p> : rows.map((t) => (
+            <Link key={t.id} href={`/p/${product.slug}/threads/${t.id}`} style={{ textDecoration: "none" }}>
               <div className="workflow-item">
                 <div className="workflow-icon">
                   <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="var(--accent)" width={14} height={14}>
@@ -423,14 +438,15 @@ export default function ProjectDetailPage() {
                 </span>
               </div>
             </Link>
-          ))}
+          ))}</section>;
+          })}
         </div>
       )}
 
-      <div className="section-label">Agents in this project</div>
+      <div className="section-label">Workers in this project</div>
       {agents.length === 0 ? (
         <p style={{ color: "var(--text3)", fontSize: 13, marginBottom: 24 }}>
-          No agents installed in this space yet — your assistant can set one up when you ask.
+          No workers installed in this space yet — your assistant can set one up when you ask.
         </p>
       ) : (
         <div className="grid-3">
@@ -466,16 +482,16 @@ export default function ProjectDetailPage() {
             style={{ borderStyle: "dashed", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 6, minHeight: 90, cursor: "pointer", font: "inherit" }}
           >
             <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="var(--accent)" width={16} height={16}><path d="M8 3.5v9M3.5 8h9" /></svg>
-            <div style={{ fontSize: 12, color: "var(--accent)" }}>Add agent from template</div>
+            <div style={{ fontSize: 12, color: "var(--accent)" }}>Add worker from template</div>
           </button>
           <Link href={`/p/${product.slug}/agents`} className="card" style={{ borderStyle: "dashed", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 6, minHeight: 90, textDecoration: "none" }}>
             <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="var(--text3)" width={16} height={16}><circle cx="8" cy="8" r="6" /></svg>
-            <div style={{ fontSize: 12, color: "var(--text3)" }}>View all agents</div>
+            <div style={{ fontSize: 12, color: "var(--text3)" }}>View all workers</div>
           </Link>
         </div>
       )}
 
-      <Modal open={templatePickerOpen} onClose={() => setTemplatePickerOpen(false)} title="Add an agent from a template">
+      <Modal open={templatePickerOpen} onClose={() => setTemplatePickerOpen(false)} title="Add a worker from a template">
         <p style={{ fontSize: 12.5, color: "var(--text3)", margin: "0 0 12px" }}>
           Each template is a real, distinct configuration — tool list, autonomy, and vertical
           instructions — not a label on the same generic agent. It joins this project's agent
@@ -513,9 +529,10 @@ export default function ProjectDetailPage() {
             <div className="settings-row-label">Kind</div>
             <div className="settings-row-sub">Customer-bot projects get a capped execution ceiling, a daily spend cap, and no-code rules</div>
           </div>
-          <FormSelect value={draftKind} onChange={(e) => setDraftKind(e.target.value as "workspace" | "customer_bot")} style={{ maxWidth: 180 }}>
-            <option value="workspace">Workspace</option>
-            <option value="customer_bot">Customer bot</option>
+          <FormSelect value={draftKind} onChange={(e) => setDraftKind(e.target.value)} style={{ maxWidth: 220 }}>
+            {CONFIGURED_PROJECT_KINDS.map((kind) => (
+              <option key={kind} value={kind}>{projectKindLabel(kind)}</option>
+            ))}
           </FormSelect>
         </div>
         <div className="settings-row">
@@ -548,12 +565,12 @@ export default function ProjectDetailPage() {
         <div className="settings-row">
           <div>
             <div className="settings-row-label">Execution ceiling</div>
-            <div className="settings-row-sub">Tier 1-5 script execution ladder cap for this project</div>
+            <div className="settings-row-sub">Tier 1-6 script execution ladder cap for this project</div>
           </div>
           <FormInput
             type="number"
             min={1}
-            max={5}
+              max={6}
             value={draftExecutionCeiling}
             onChange={(e) => setDraftExecutionCeiling(e.target.value)}
             style={{ maxWidth: 100, textAlign: "right" }}

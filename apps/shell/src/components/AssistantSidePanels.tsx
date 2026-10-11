@@ -18,6 +18,7 @@
 // whole-space view.
 
 import * as React from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import { detectRuntimeAnomaly, isJobOverdue } from "@naelao/events";
 import { ChannelConnect, CHANNELS } from "./ChannelConnect";
@@ -35,6 +36,9 @@ import {
   listScheduledJobRuns,
   listAssistantChannels,
   listSubAgents,
+  listAgentDefinitions,
+  listAgentTemplates,
+  instantiateAgentTemplate,
   listAssistantFiles,
   listWorkspaceFiles,
   readAssistantFile,
@@ -61,6 +65,8 @@ import {
   type ScheduledJobRun,
   type ChannelLink,
   type SubAgentSummary,
+  type AgentDefinitionSummary,
+  type AgentTemplateSummary,
   type WorkspaceFile,
   type ArtifactSummary,
   type ArtifactContent,
@@ -100,7 +106,7 @@ const ALL_SIDE_PANEL_TABS: { key: SidePanelTab; label: string; assistantOnly?: b
   // whole-business-oversight concept — meaningless scoped to a single project's own agent, which
   // doesn't run on its own heartbeat cycle the way the Space Assistant does. Assistant-view only.
   { key: "heartbeats", label: "Heartbeats", assistantOnly: true },
-  { key: "sub-agents", label: "Sub-agents" },
+  { key: "sub-agents", label: "Workers" },
   { key: "files", label: "Files" },
   // Phase 5: agent-authored deliverables, distinct from Files (the agent's own scratch
   // workspace) — replaces Chat.tsx's old hardcoded "Coming soon." placeholder tab. Space-wide
@@ -114,7 +120,7 @@ const ALL_SIDE_PANEL_TABS: { key: SidePanelTab; label: string; assistantOnly?: b
   // exists ONLY inside a project thread, showing the grants that would actually apply to a run in
   // THAT project (its own scoped grants plus every space-wide one, mirroring local-machine.ts's
   // own resolution rule) with the ability to add a grant scoped to just this project.
-  { key: "local-machine", label: "Local Machine", projectOnly: true },
+  { key: "local-machine", label: "Local Access" },
 ];
 
 /** isProjectContext = true (a project thread) hides tabs that only make sense for the
@@ -464,6 +470,7 @@ function CronsPanel({
 }) {
   const product = useProduct();
   const [crons, setCrons] = React.useState<ScheduledJob[] | null>(null);
+  const [cronError, setCronError] = React.useState<string | null>(null);
   const [canEdit, setCanEdit] = React.useState(false);
   const [creating, setCreating] = React.useState(false);
   const [editingId, setEditingId] = React.useState<string | null>(null);
@@ -472,9 +479,10 @@ function CronsPanel({
   const [busyId, setBusyId] = React.useState<string | null>(null);
 
   const load = React.useCallback(() => {
+    setCronError(null);
     listScheduledJobs(spaceId, session, { projectId: projectId ?? null })
       .then(setCrons)
-      .catch(() => setCrons([]));
+      .catch(error => { setCrons([]); setCronError(error instanceof Error ? error.message : "Couldn't load scheduled jobs."); });
   }, [spaceId, session, projectId]);
   React.useEffect(() => {
     setCrons(null);
@@ -499,8 +507,8 @@ function CronsPanel({
     try {
       await toggleScheduledJob(spaceId, job.id, session, !job.enabled);
       load();
-    } catch {
-      // Best-effort — the list reload below will show the real (unchanged) state either way.
+    } catch (error) {
+      setCronError(error instanceof Error ? error.message : "Couldn't change this schedule.");
     } finally {
       setBusyId(null);
     }
@@ -517,8 +525,8 @@ function CronsPanel({
     try {
       await deleteScheduledJob(spaceId, job.id, session);
       load();
-    } catch {
-      // Best-effort — a failed delete just leaves the row in place.
+    } catch (error) {
+      setCronError(error instanceof Error ? error.message : "Couldn't remove this schedule.");
     } finally {
       setBusyId(null);
     }
@@ -544,12 +552,12 @@ function CronsPanel({
           <CronForm
             spaceId={spaceId}
             session={session}
-            projectId={projectId}
+            projectId={projectId ?? null}
             onCancel={() => setCreating(false)}
             onSaved={() => { setCreating(false); load(); }}
           />
         )}
-        {crons === null ? (
+        {cronError ? <div role="alert"><p>{cronError}</p><button className="btn btn-ghost btn-sm" onClick={load}>Retry</button></div> : crons === null ? (
           <div style={{ fontSize: 12, color: "var(--text3)", padding: "4px 4px" }}>Loading…</div>
         ) : crons.length === 0 && !creating ? (
           <div style={{ fontSize: 12, color: "var(--text3)", padding: "4px 4px" }}>No scheduled jobs.</div>
@@ -752,7 +760,7 @@ function LocalMachinePanel({
 }: {
   spaceId: string;
   session: SessionCredentials;
-  projectId: string;
+  projectId?: string | null;
   isBusinessSpace: boolean;
 }) {
   const product = useProduct();
@@ -768,7 +776,7 @@ function LocalMachinePanel({
   const [busyId, setBusyId] = React.useState<string | null>(null);
 
   const load = React.useCallback(() => {
-    listLocalGrants(spaceId, session, { projectId }).then(setGrants).catch(() => setGrants([]));
+    listLocalGrants(spaceId, session, projectId ? { projectId } : {}).then(setGrants).catch(() => setGrants([]));
   }, [spaceId, session, projectId]);
   React.useEffect(() => { setGrants(null); load(); }, [load]);
 
@@ -789,11 +797,11 @@ function LocalMachinePanel({
         const list = commandsText.split(",").map((s) => s.trim()).filter(Boolean);
         if (list.length === 0) throw new Error("List at least one command");
         setSaving(true);
-        await createLocalGrant(spaceId, session, { grant_type: "exec", commands: list, project_id: projectId });
+        await createLocalGrant(spaceId, session, { grant_type: "exec", commands: list, ...(projectId ? { project_id: projectId } : {}) });
       } else {
         if (!directory.trim()) throw new Error("Enter a directory");
         setSaving(true);
-        await createLocalGrant(spaceId, session, { grant_type: grantType, directory: directory.trim(), project_id: projectId });
+        await createLocalGrant(spaceId, session, { grant_type: grantType, directory: directory.trim(), ...(projectId ? { project_id: projectId } : {}) });
       }
       setCreating(false);
       setDirectory("");
@@ -828,7 +836,7 @@ function LocalMachinePanel({
   return (
     <>
       <div className="tp-section" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <span>Local Machine — This Project</span>
+        <span>{projectId ? "Local Access — This Project" : "Local Access — This Space"}</span>
         {canEdit && !creating && (
           <button type="button" className="btn btn-ghost btn-sm" style={{ fontSize: 10.5, padding: "2px 7px" }} onClick={() => setCreating(true)}>
             + New
@@ -837,8 +845,8 @@ function LocalMachinePanel({
       </div>
       <div style={{ padding: "0 10px 8px" }}>
         <div style={{ fontSize: 11, color: "var(--text3)", padding: "2px 4px 8px", lineHeight: 1.5 }}>
-          What an agent in THIS project may read, write, or run on a connected local machine —
-          this project&apos;s own grants plus any space-wide ones. Nothing is granted by default.
+          What workers may read, write, or run on your connected local machine.
+          {projectId ? " This project also inherits space-wide grants." : " These grants apply across the space."} Nothing is granted until you add it.
         </div>
         {creating && (
           <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 8, marginBottom: 8 }}>
@@ -882,7 +890,7 @@ function LocalMachinePanel({
         {grants === null ? (
           <div style={{ fontSize: 12, color: "var(--text3)", padding: "4px 4px" }}>Loading…</div>
         ) : grants.length === 0 && !creating ? (
-          <div style={{ fontSize: 12, color: "var(--text3)", padding: "4px 4px" }}>No grants apply to this project yet.</div>
+          <div style={{ fontSize: 12, color: "var(--text3)", padding: "4px 4px" }}>No local access grants yet.</div>
         ) : (
           grants.map((g) => (
             <div className="cron-item" key={g.id}>
@@ -916,14 +924,26 @@ function LocalMachinePanel({
   );
 }
 
-function SubAgentsPanel({
-  spaceId, session, lastRunId, sessionId, agentId,
+function WorkersPanel({
+  spaceId, session, lastRunId, sessionId, agentId, projectId, projectAgentIds,
 }: {
   spaceId: string; session: SessionCredentials; lastRunId: string;
   sessionId?: string | null | undefined; agentId?: string | null | undefined;
+  projectId?: string | null | undefined;
+  projectAgentIds?: string[] | null | undefined;
 }) {
   const [subAgents, setSubAgents] = React.useState<SubAgentSummary[] | null>(null);
   const [failed, setFailed] = React.useState(false);
+  const [definitions, setDefinitions] = React.useState<AgentDefinitionSummary[] | null>(null);
+  const [templates, setTemplates] = React.useState<AgentTemplateSummary[] | null>(null);
+  const [directoryOpen, setDirectoryOpen] = React.useState(false);
+  const [portalRoot, setPortalRoot] = React.useState<HTMLElement | null>(null);
+  const [addingTemplateId, setAddingTemplateId] = React.useState<string | null>(null);
+  const [directoryNotice, setDirectoryNotice] = React.useState<string | null>(null);
+  const [recentlyAddedAgentIds, setRecentlyAddedAgentIds] = React.useState<string[]>([]);
+  React.useEffect(() => {
+    setPortalRoot(document.body);
+  }, []);
   React.useEffect(() => {
     let cancelled = false;
     setFailed(false);
@@ -934,12 +954,61 @@ function SubAgentsPanel({
     // turn's, so a reload (which loses lastRunId) still shows everything.
     listSubAgents(spaceId, session, lastRunId, { sessionId, agentId })
       .then((s) => { if (!cancelled) setSubAgents(s); })
-      .catch(() => { if (!cancelled) { setSubAgents([]); setFailed(true); } });
+      .catch((error) => {
+        console.error("Failed to load worker activity", error);
+        if (!cancelled) { setSubAgents([]); setFailed(true); }
+      });
     return () => { cancelled = true; };
   }, [spaceId, session, lastRunId, sessionId, agentId]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    Promise.allSettled([listAgentDefinitions(spaceId, session), listAgentTemplates(spaceId, session)]).then(([defs, catalog]) => {
+      if (cancelled) return;
+      if (defs.status === "fulfilled") setDefinitions(defs.value);
+      if (catalog.status === "fulfilled") setTemplates(catalog.value);
+    });
+    return () => { cancelled = true; };
+  }, [spaceId, session]);
+
+  const projectIds = React.useMemo(() => new Set([...(projectAgentIds ?? []), ...recentlyAddedAgentIds]), [projectAgentIds, recentlyAddedAgentIds]);
+  const configuredWorkers = (definitions ?? []).filter((definition) => {
+    if (!projectId || projectIds.size === 0) return true;
+    const shortId = definition.id.includes(":") ? definition.id.slice(definition.id.indexOf(":") + 1) : definition.id;
+    return projectIds.has(definition.id) || projectIds.has(shortId);
+  });
+  const installed = React.useMemo(() => {
+    const rows = configuredWorkers.map((definition) => ({ id: definition.id, name: definition.name ?? definition.id }));
+    // The projects worker is a capability-isolated platform worker rather than a user-created
+    // AgentDefinition, so it never appears in listAgentDefinitions. It is still installed on the
+    // Space Assistant and must be visible alongside directory-installed specialists.
+    if (!projectId && !rows.some((worker) => worker.id === "project_manager_worker")) {
+      rows.unshift({ id: "project_manager_worker", name: "Projects worker" });
+    }
+    return rows;
+  }, [configuredWorkers, projectId]);
+  const addTemplate = async (template: AgentTemplateSummary) => {
+    if (addingTemplateId) return;
+    setAddingTemplateId(template.id);
+    setDirectoryNotice(null);
+    try {
+      const created = await instantiateAgentTemplate(spaceId, session, { template_id: template.id, ...(projectId ? { project_id: projectId } : {}) });
+      setRecentlyAddedAgentIds((current) => Array.from(new Set([...current, created.agent_id, created.agent_definition_id])));
+      const refreshed = await listAgentDefinitions(spaceId, session);
+      setDefinitions(refreshed);
+      setDirectoryNotice(`${template.name} added to ${projectId ? "this project" : "the assistant"}.`);
+    } catch (err) {
+      setDirectoryNotice(err instanceof Error ? err.message : `Couldn't add ${template.name}.`);
+    } finally {
+      setAddingTemplateId(null);
+    }
+  };
   return (
     <>
-      <div className="tp-section">Sub-agents</div>
+      <div className="tp-section" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span>Workers</span>
+        <button type="button" className="tp-header-btn" aria-label="Add worker" title="Add worker" onClick={() => setDirectoryOpen(true)}>+</button>
+      </div>
       {subAgents === null ? (
         <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>Loading…</div>
       ) : failed ? (
@@ -950,20 +1019,62 @@ function SubAgentsPanel({
         </div>
       ) : subAgents.length === 0 ? (
         <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>
-          No sub-agents have run in this conversation.
+          No workers have run in this conversation.
         </div>
       ) : (
         <div style={{ padding: "0 10px 8px" }}>
           {subAgents.map((sa) => (
-            <div className="sub-agent-item" key={sa.id}>
+            <details className="sub-agent-item" key={sa.id}>
+              <summary style={{ cursor: "pointer", listStyle: "none", display: "flex", alignItems: "center", gap: 8 }}>
               <div className="ws-dot" style={sa.status === "completed" ? { background: "#22c55e", animation: "none" } : undefined} />
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text)" }}>{sa.goal}</div>
                 <div style={{ fontSize: 11, color: "var(--text3)" }}>{sa.status}{sa.progress_note ? ` · ${sa.progress_note}` : ""}</div>
               </div>
-            </div>
+              </summary>
+              <div style={{ margin: "7px 0 0 26px", fontSize: 11, color: "var(--text3)", lineHeight: 1.5 }}>
+                <div>Worker run {sa.status === "running" ? "is active" : "has finished"}.</div>
+                {sa.progress_note && <div style={{ marginTop: 3 }}>{sa.progress_note}</div>}
+                {sa.error && <div style={{ marginTop: 5, color: "#dc2626" }}>Error: {sa.error}</div>}
+                {sa.result && <pre style={{ margin: "6px 0 0", padding: 7, maxHeight: 150, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", borderRadius: 7, background: "var(--surface2)", color: "var(--text2)", font: "10.5px/1.45 var(--font-mono, monospace)" }}>{sa.result}</pre>}
+                {sa.tokens_used !== undefined && <div style={{ marginTop: 3 }}>{sa.tokens_used.toLocaleString()} tokens</div>}
+                <div style={{ marginTop: 3, fontFamily: "var(--font-mono, monospace)", fontSize: 10 }}>Run {sa.id.slice(0, 8)}</div>
+              </div>
+            </details>
           ))}
         </div>
+      )}
+      <div className="tp-section" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 4 }}>
+        <span>{projectId ? "Project workers" : "Installed workers"}</span>
+        <span style={{ fontSize: 10, color: "var(--text3)" }}>{installed.length}</span>
+      </div>
+      <div style={{ padding: "0 14px 10px", display: "grid", gap: 6 }}>
+        {installed.length === 0 ? <div style={{ fontSize: 11, color: "var(--text3)" }}>No workers installed yet.</div> : installed.map((definition) => (
+          <div key={definition.id} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 11.5 }}>
+            <span className="ws-dot" style={{ background: "#22c55e", animation: "none" }} />
+            <span style={{ color: "var(--text2)", flex: 1 }}>{definition.name}</span>
+          </div>
+        ))}
+      </div>
+      {directoryNotice && <div style={{ padding: "0 14px 8px", fontSize: 11, color: "var(--text3)" }}>{directoryNotice}</div>}
+      {directoryOpen && portalRoot && createPortal(
+        <div role="dialog" aria-label="Worker directory" style={{ position: "fixed", inset: 0, zIndex: 1000, display: "grid", placeItems: "center", background: "#0008", padding: 16 }} onClick={() => setDirectoryOpen(false)}>
+          <div style={{ width: "min(860px, calc(100vw - 32px))", maxHeight: "min(760px, calc(100vh - 32px))", overflow: "auto", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 14, padding: "clamp(16px, 3vw, 28px)", boxShadow: "0 24px 80px #0008" }} onClick={(event) => event.stopPropagation()}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 5 }}>
+              <strong style={{ color: "var(--text)" }}>Worker directory</strong>
+              <button type="button" className="tp-header-btn" aria-label="Close worker directory" onClick={() => setDirectoryOpen(false)}>×</button>
+            </div>
+            <p style={{ margin: "0 0 12px", fontSize: 11.5, color: "var(--text3)" }}>Add a specialist worker {projectId ? "to this project" : "to the assistant"}.</p>
+            {templates === null ? <div style={{ fontSize: 12, color: "var(--text3)" }}>Loading worker directory…</div> : templates.length === 0 ? <div style={{ fontSize: 12, color: "var(--text3)" }}>No installable workers are available.</div> : templates.map((template) => (
+              <div key={template.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderTop: "1px solid var(--border)" }}>
+                <span style={{ fontSize: 20 }}>{template.icon || "◇"}</span>
+                <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 12, fontWeight: 600, color: "var(--text)" }}>{template.name}</div><div style={{ fontSize: 11, color: "var(--text3)" }}>{template.description}</div></div>
+                <button type="button" className="btn btn-primary btn-sm" disabled={addingTemplateId === template.id} onClick={() => void addTemplate(template)}>{addingTemplateId === template.id ? "Adding…" : "Add"}</button>
+              </div>
+            ))}
+          </div>
+        </div>,
+        portalRoot
       )}
     </>
   );
@@ -1275,8 +1386,10 @@ function SkillsPanel({ spaceId, session, projectId }: { spaceId: string; session
   // dirFailed distinguishes those two so a load failure never silently reads as "nothing here").
   const [dir, setDir] = React.useState<{ template_id: string; skills: DirectorySkill[] } | null | undefined>(undefined);
   const [dirFailed, setDirFailed] = React.useState(false);
-  const [showAllDirectory, setShowAllDirectory] = React.useState(false);
   const [addingName, setAddingName] = React.useState<string | null>(null);
+  const [directoryOpen, setDirectoryOpen] = React.useState(false);
+  const [portalRoot, setPortalRoot] = React.useState<HTMLElement | null>(null);
+  React.useEffect(() => { setPortalRoot(document.body); }, []);
 
   const loadDirectory = React.useCallback(() => {
     getSkillsDirectory(spaceId, session)
@@ -1308,7 +1421,6 @@ function SkillsPanel({ spaceId, session, projectId }: { spaceId: string; session
   if (!caps) return <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>Loading…</div>;
   const prebuilts = showAllPrebuilts ? caps.prebuilts : caps.prebuilts.slice(0, 6);
   const notInstalled = dir?.skills.filter((s) => !s.installed) ?? [];
-  const directoryShown = showAllDirectory ? notInstalled : notInstalled.slice(0, 6);
 
   return (
     <>
@@ -1324,53 +1436,15 @@ function SkillsPanel({ spaceId, session, projectId }: { spaceId: string; session
           </div>
         ))
       )}
-      <div className="tp-section">Skill Directory</div>
-      <div style={{ fontSize: 11, color: "var(--text3)", padding: "2px 14px 6px", lineHeight: 1.5 }}>
-        Proven skills other businesses on the same template have already learned — add one instead
-        of waiting for this business to rediscover it.
-      </div>
-      {dir === undefined ? (
-        <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>Loading…</div>
-      ) : dirFailed ? (
-        <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>Couldn&apos;t load the directory.</div>
-      ) : dir === null ? (
-        <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>
-          No shared directory for this business&apos;s template yet.
-        </div>
-      ) : notInstalled.length === 0 ? (
-        <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>
-          Already has everything the directory offers.
-        </div>
-      ) : (
-        <>
-          {directoryShown.map((s) => (
-            <div className="tp-tool-row" key={s.name} style={{ alignItems: "flex-start" }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div className="tp-tool-name" style={{ fontFamily: "monospace", fontSize: 11.5 }}>{s.name}</div>
-                <div style={{ fontSize: 11, color: "var(--text3)", lineHeight: 1.5 }}>{s.description}</div>
-              </div>
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                style={{ fontSize: 10.5, padding: "2px 7px", flexShrink: 0 }}
-                disabled={addingName === s.name}
-                onClick={() => void addSkill(s.name)}
-              >
-                {addingName === s.name ? "Adding…" : "Add"}
-              </button>
-            </div>
-          ))}
-          {!showAllDirectory && notInstalled.length > 6 && (
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              style={{ margin: "4px 14px", fontSize: 11 }}
-              onClick={() => setShowAllDirectory(true)}
-            >
-              Show all {notInstalled.length}
-            </button>
-          )}
-        </>
+      <div className="tp-section" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><span>Skill Directory</span><button type="button" className="btn btn-primary btn-sm" onClick={() => setDirectoryOpen(true)}>+ Add skill</button></div>
+      <div style={{ fontSize: 11, color: "var(--text3)", padding: "2px 14px 8px", lineHeight: 1.5 }}>{notInstalled.length} skill{notInstalled.length === 1 ? "" : "s"} available to add.</div>
+      {directoryOpen && portalRoot && createPortal(
+        <div role="dialog" aria-label="Skill directory" className="workspace-directory-overlay" onClick={() => setDirectoryOpen(false)}>
+          <div className="workspace-directory-dialog" onClick={(event) => event.stopPropagation()}>
+            <div className="workspace-directory-heading"><div><strong>Skill directory</strong><p>Add proven skills to this space.</p></div><button type="button" className="tp-header-btn" aria-label="Close skill directory" onClick={() => setDirectoryOpen(false)}>×</button></div>
+            {dir === undefined ? <p className="workspace-tab-empty">Loading directory…</p> : dirFailed ? <p className="workspace-tab-empty">Couldn&apos;t load the directory.</p> : dir === null ? <p className="workspace-tab-empty">No shared skill directory is available yet.</p> : notInstalled.length === 0 ? <p className="workspace-tab-empty">All available skills are installed.</p> : <div className="workspace-directory-grid">{notInstalled.map((skill) => <article key={skill.name} className="workspace-directory-card"><div><strong>{skill.name}</strong><p>{skill.description}</p></div><button type="button" className="btn btn-primary btn-sm" disabled={addingName === skill.name} onClick={() => void addSkill(skill.name)}>{addingName === skill.name ? "Adding…" : "Add"}</button></article>)}</div>}
+          </div>
+        </div>, portalRoot
       )}
       <div className="tp-section">Built-in Scripts ({caps.prebuilt_count})</div>
       {prebuilts.map((p) => (
@@ -1548,6 +1622,7 @@ export function AssistantSidePanelBody({
   tab,
   agentId,
   projectId,
+  projectAgentIds,
   lastRunId,
   sessionId,
   isBusinessSpace,
@@ -1559,6 +1634,7 @@ export function AssistantSidePanelBody({
    *  Config tab to that agent's own policy instead of the space-wide one. */
   agentId?: string | null | undefined;
   projectId?: string | null | undefined;
+  projectAgentIds?: string[] | null | undefined;
   /** Scopes the Sub-agents tab to the run that actually produced any — empty until a first send. */
   lastRunId?: string | null | undefined;
   /** This conversation's own chat session. Required for Sub-agents to read the right DO — see
@@ -1578,7 +1654,7 @@ export function AssistantSidePanelBody({
     case "heartbeats":
       return <HeartbeatsPanel spaceId={spaceId} session={session} />;
     case "sub-agents":
-      return <SubAgentsPanel spaceId={spaceId} session={session} lastRunId={lastRunId ?? ""} sessionId={sessionId} agentId={agentId} />;
+      return <WorkersPanel spaceId={spaceId} session={session} lastRunId={lastRunId ?? ""} sessionId={sessionId} agentId={agentId} projectId={projectId} projectAgentIds={projectAgentIds} />;
     case "files":
       return <FilesPanel spaceId={spaceId} projectId={projectId} session={session} />;
     case "artifacts":
@@ -1588,8 +1664,6 @@ export function AssistantSidePanelBody({
     case "notifications":
       return <NotificationsPanel spaceId={spaceId} session={session} projectId={projectId} />;
     case "local-machine":
-      // projectOnly in ALL_SIDE_PANEL_TABS guarantees this tab is only ever selectable when
-      // projectId is set — the fallback empty string is just to satisfy the required prop type.
-      return <LocalMachinePanel spaceId={spaceId} session={session} projectId={projectId ?? ""} isBusinessSpace={isBusinessSpace} />;
+      return <LocalMachinePanel spaceId={spaceId} session={session} projectId={projectId ?? null} isBusinessSpace={isBusinessSpace} />;
   }
 }

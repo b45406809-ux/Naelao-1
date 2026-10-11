@@ -23,6 +23,7 @@ import { errorResponse, requestId, requireInternalHmac } from "@naelao/http";
 import { type AnalyticsEvent, writeEvent } from "./events.js";
 import {
   getPlatformMetrics,
+  getRuntimeEconomicsMetrics,
   getSpaceMetrics,
   getTenantMetrics,
 } from "./query.js";
@@ -257,29 +258,12 @@ app.get("/metrics/tenant", async (c) => {
 // Admin-only: requires both x-naelao-role: owner header AND a shared
 // internal secret (x-naelao-platform-secret) to prevent external callers.
 // No KV cache — admins always get fresh data.
-app.get("/metrics/platform", async (c) => {
+app.get("/metrics/platform", requireInternalHmac((c) => (c.env as unknown as AnalyticsEnv).PLATFORM_SECRET), async (c) => {
   // Role check: must be platform owner
   const role = c.req.header("x-naelao-role") ?? "";
   if (role !== "owner") {
     return c.json(
       { error_code: "forbidden", message: "Platform metrics require owner role" },
-      403
-    );
-  }
-
-  // Internal secret check: prevents external access even if someone sends the
-  // owner role header through a misconfigured proxy.
-  // The router must set x-naelao-platform-secret from CF Workers Secrets before
-  // forwarding to this worker via service binding.
-  const platformSecret = c.req.header("x-naelao-platform-secret") ?? "";
-  // If no secret is configured in the environment (e.g. dev), skip the check.
-  // In production, PLATFORM_ANALYTICS_SECRET must be set.
-  const envSecret =
-    (c.env as unknown as Record<string, string>)["PLATFORM_ANALYTICS_SECRET"] ??
-    "";
-  if (envSecret && platformSecret !== envSecret) {
-    return c.json(
-      { error_code: "forbidden", message: "Invalid internal secret" },
       403
     );
   }
@@ -302,6 +286,24 @@ app.get("/metrics/platform", async (c) => {
   const metrics = await getPlatformMetrics(accountId, apiToken, period);
 
   return c.json(metrics);
+});
+
+app.get("/metrics/runtime-economics", requireInternalHmac((c) => (c.env as unknown as AnalyticsEnv).PLATFORM_SECRET), async (c) => {
+  if ((c.req.header("x-naelao-role") ?? "") !== "owner") {
+    return c.json({ error_code: "forbidden", message: "Runtime economics metrics require owner role" }, 403);
+  }
+  if (!c.env.CF_ACCOUNT_ID || !c.env.CF_ANALYTICS_API_TOKEN) {
+    return c.json({
+      error_code: "configuration_error",
+      message: "CF_ACCOUNT_ID and CF_ANALYTICS_API_TOKEN must be configured",
+    }, 503);
+  }
+  const period = parsePeriod(new URL(c.req.url).searchParams.get("period"));
+  return c.json(await getRuntimeEconomicsMetrics(
+    c.env.CF_ACCOUNT_ID,
+    c.env.CF_ANALYTICS_API_TOKEN,
+    period,
+  ));
 });
 
 // ── Error handler ─────────────────────────────────────────────────────────────

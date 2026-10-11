@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.naelao.bridge</string>
+<key>ProgramArguments</key><array>
+<string>/REPLACE_WITH_NODE</string><string>/REPLACE_WITH_BRIDGE_DIST/cli.js</string>
+<string>connect</string><string>--identity</string><string>/REPLACE_WITH_PRIVATE_IDENTITY.json</string>
+<string>--passphrase-file</string><string>/REPLACE_WITH_PRIVATE_PASSPHRASE</string>
+</array>
+<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+<key>ThrottleInterval</key><integer>10</integer>
+<key>ExitTimeOut</key><integer>70</integer>
+</dict></plist>

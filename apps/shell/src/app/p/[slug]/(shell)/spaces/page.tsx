@@ -1,6 +1,5 @@
 "use client";
 
-export const runtime = "edge";
 
 // Discover — the hub for everything that isn't a conversation: the businesses you run, the
 // business templates you could start next, and what those templates actually give you (the
@@ -267,6 +266,8 @@ export default function DiscoverPage() {
   // already intersected server-side with the builder's business_templates narrowing) instead of a
   // hardcoded duplicate of LAUNCHPAD_TEMPLATES.
   const availableTemplates = manifest?.template_catalog ?? [];
+  const aveTemplates = availableTemplates.filter((t) => (t.template_mode ?? "ave") === "ave");
+  const coworkTemplates = availableTemplates.filter((t) => t.template_mode === "cowork");
   const projectTemplates = manifest?.project_template_catalog ?? [];
   const agentCatalog = manifest?.agent_catalog ?? [];
   // Set by the shell layout's business-first redirect (layout.tsx) when a hybrid/tenant user has
@@ -298,6 +299,59 @@ export default function DiscoverPage() {
   const portfolioCurrency = leaderboard?.find((r) => r.revenueNetCents > 0)?.currency ?? "USD";
   const portfolioRuns30d = leaderboard?.reduce((sum, r) => sum + r.runs30d, 0) ?? 0;
 
+  function templateCard(t: (typeof availableTemplates)[number]) {
+    const activity = t.coming_soon ? null : templateActivityBadge(activityByTemplate.get(t.id));
+    const mode = t.template_mode === "cowork" ? "cowork" : "ave";
+    return (
+      <Card
+        key={t.id}
+        interactive={!t.coming_soon}
+        onClick={t.coming_soon ? undefined : () => openCreate(t.id)}
+        style={t.coming_soon ? { opacity: 0.55, cursor: "default" } : { cursor: "pointer" }}
+      >
+        <div className="app-card-header">
+          <div className="app-card-initial">{t.name.slice(0, 1)}</div>
+          <CardTitle>{t.name}</CardTitle>
+        </div>
+        <CardDesc>{t.description ?? "Preconfigured workspace, agents and setup — ready to run."}</CardDesc>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          <Badge color={mode === "cowork" ? "blue" : "green"}>{mode === "cowork" ? "Cowork" : "AVE"}</Badge>
+          {t.vertical && <Badge color="blue">{t.vertical}</Badge>}
+          {t.wallet_mode && <Badge color="amber">{t.wallet_mode === "business_wallet" ? "Business wallet" : "Company budget"}</Badge>}
+          {t.coming_soon && <Badge color="amber">Coming soon</Badge>}
+          {!t.coming_soon && !t.free_tier_eligible && <Badge color="amber">Requires plan upgrade</Badge>}
+          {activity && <Badge color={activity.color}>{activity.label}</Badge>}
+        </div>
+      </Card>
+    );
+  }
+
+  function templateChoice(t: (typeof availableTemplates)[number]) {
+    return (
+      <button
+        key={t.id}
+        type="button"
+        className={`card app-card${selectedTemplates.has(t.id) ? " connected" : ""}`}
+        disabled={t.coming_soon}
+        onClick={() => toggleTemplate(t.id)}
+        style={{ textAlign: "left", cursor: t.coming_soon ? "default" : "pointer", font: "inherit", opacity: t.coming_soon ? 0.55 : 1 }}
+      >
+        <div className="app-card-header">
+          <div className="app-card-initial">{t.name.slice(0, 1)}</div>
+          <CardTitle>{t.name}</CardTitle>
+        </div>
+        <div className="app-card-desc card-desc">{t.description ?? "Preconfigured workspace, agents and setup — ready to run."}</div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          <Badge color={t.template_mode === "cowork" ? "blue" : "green"}>{t.template_mode === "cowork" ? "Cowork" : "AVE"}</Badge>
+          {t.vertical && <Badge color="blue">{t.vertical}</Badge>}
+          {t.wallet_mode && <Badge color="amber">{t.wallet_mode === "business_wallet" ? "Business wallet" : "Company budget"}</Badge>}
+          {t.coming_soon && <Badge color="amber">Coming soon</Badge>}
+          {!t.coming_soon && !t.free_tier_eligible && <Badge color="amber">Requires plan upgrade</Badge>}
+        </div>
+      </button>
+    );
+  }
+
   return (
     <div className="page-view">
       {firstRun && (
@@ -323,8 +377,6 @@ export default function DiscoverPage() {
         </div>
         {canCreate && <Button onClick={() => openCreate()}>New business</Button>}
       </div>
-
-      {creds && canCreate && <DiscoverMarketRadar session={creds} productSpaceId={product.space_id} spacetypeId={manifest?.allowed_child_space_types[0] ?? "launchpad"} onLaunched={(spaceId) => router.push(`/p/${product.slug}/spaces/${spaceId}/onboarding`)} />}
 
       {/* Portfolio at a glance — real numbers whenever the leaderboard fetch reached at least one
           business, never fabricated for one that failed or hasn't loaded yet. */}
@@ -540,48 +592,36 @@ export default function DiscoverPage() {
 
       {canCreate && availableTemplates.length > 0 && (
         <>
-          <div className="section-label" style={{ marginTop: 26 }}>
-            Start a business
-          </div>
-          <div className="grid-3">
-            {availableTemplates.map((t) => {
-              const activity = t.coming_soon ? null : templateActivityBadge(activityByTemplate.get(t.id));
-              return (
-                <Card
-                  key={t.id}
-                  interactive={!t.coming_soon}
-                  onClick={t.coming_soon ? undefined : () => openCreate(t.id)}
-                  style={t.coming_soon ? { opacity: 0.55, cursor: "default" } : { cursor: "pointer" }}
-                >
+          {aveTemplates.length > 0 && (
+            <>
+              <div className="section-label" style={{ marginTop: 26 }}>Autonomous ventures</div>
+              <p style={{ fontSize: 12, color: "var(--text3)", margin: "-6px 0 12px" }}>
+                AVE spaces are vertical ventures your operator runs continuously: revenue, growth,
+                delivery, customer service and an isolated business wallet.
+              </p>
+              {creds && <DiscoverMarketRadar session={creds} productSpaceId={product.space_id} spacetypeId={manifest?.allowed_child_space_types[0] ?? "launchpad"} onLaunched={(spaceId) => router.push(`/p/${product.slug}/spaces/${spaceId}/onboarding`)} />}
+              <div className="grid-3">
+                {aveTemplates.map(templateCard)}
+                <Card interactive onClick={() => openCreate(CUSTOM_BUSINESS)} style={{ cursor: "pointer", borderStyle: "dashed" }}>
                   <div className="app-card-header">
-                    <div className="app-card-initial">{t.name.slice(0, 1)}</div>
-                    <CardTitle>{t.name}</CardTitle>
+                    <div className="app-card-initial" style={{ background: "var(--surface2)", color: "var(--text3)" }}>+</div>
+                    <CardTitle>Custom venture</CardTitle>
                   </div>
-                  <CardDesc>
-                    {t.coming_soon
-                      ? "Not available yet."
-                      : "Preconfigured workspaces, agents and setup — ready to run."}
-                  </CardDesc>
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    {t.coming_soon && <Badge color="amber">Coming soon</Badge>}
-                    {/* The backend rejects a non-free_tier_eligible template on the free plan, so
-                        say it here rather than after a failed click. */}
-                    {!t.coming_soon && !t.free_tier_eligible && <Badge color="amber">Requires plan upgrade</Badge>}
-                    {/* AVOS plan step 7 — real, cross-tenant activity on THIS product only (never
-                        fabricated market-research jargon; see templateActivityBadge's own header). */}
-                    {activity && <Badge color={activity.color}>{activity.label}</Badge>}
-                  </div>
+                  <CardDesc>Start from scratch and let the assistant shape a venture around your idea.</CardDesc>
                 </Card>
-              );
-            })}
-            <Card interactive onClick={() => openCreate(CUSTOM_BUSINESS)} style={{ cursor: "pointer", borderStyle: "dashed" }}>
-              <div className="app-card-header">
-                <div className="app-card-initial" style={{ background: "var(--surface2)", color: "var(--text3)" }}>+</div>
-                <CardTitle>Custom</CardTitle>
               </div>
-              <CardDesc>Start from scratch — your assistant helps you design and set it up.</CardDesc>
-            </Card>
-          </div>
+            </>
+          )}
+          {coworkTemplates.length > 0 && (
+            <>
+              <div className="section-label" style={{ marginTop: 30 }}>Vertical Cowork studios</div>
+              <p style={{ fontSize: 12, color: "var(--text3)", margin: "-6px 0 12px" }}>
+                Cowork spaces are tailored company and enterprise workspaces: your team directs a
+                private copilot through approved knowledge, connected tools and clear review gates.
+              </p>
+              <div className="grid-3">{coworkTemplates.map(templateCard)}</div>
+            </>
+          )}
         </>
       )}
 
@@ -715,7 +755,7 @@ export default function DiscoverPage() {
       <Modal
         open={modalOpen}
         onClose={closeModal}
-        title="Start a business"
+        title="Start a venture or cowork space"
         footer={
           <>
             <Button variant="secondary" type="button" onClick={closeModal}>
@@ -732,41 +772,30 @@ export default function DiscoverPage() {
           <div className="section-label" style={{ marginTop: 8 }}>
             Template — tap to select, tap again to deselect
           </div>
-          <div className="app-grid">
-            <button
-              type="button"
-              className={`card app-card${selectedTemplates.has(CUSTOM_BUSINESS) ? " connected" : ""}`}
-              onClick={() => toggleTemplate(CUSTOM_BUSINESS)}
-              style={{ textAlign: "left", cursor: "pointer", font: "inherit", borderStyle: "dashed" }}
-            >
-              <div className="app-card-header">
-                <div className="app-card-initial" style={{ background: "var(--surface2)", color: "var(--text3)" }}>+</div>
-                <CardTitle>Custom</CardTitle>
-              </div>
-              <div className="app-card-desc card-desc">Build from scratch with the assistant.</div>
-            </button>
-            {availableTemplates.map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                className={`card app-card${selectedTemplates.has(t.id) ? " connected" : ""}`}
-                disabled={t.coming_soon}
-                onClick={() => toggleTemplate(t.id)}
-                style={{ textAlign: "left", cursor: t.coming_soon ? "default" : "pointer", font: "inherit", opacity: t.coming_soon ? 0.55 : 1 }}
-              >
-                <div className="app-card-header">
-                  <div className="app-card-initial">{t.name.slice(0, 1)}</div>
-                  <CardTitle>{t.name}</CardTitle>
-                </div>
-                <div className="app-card-desc card-desc">Preconfigured workspaces, agents and setup — ready to run.</div>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {t.coming_soon && <Badge color="amber">Coming soon</Badge>}
-                  {!t.coming_soon && !t.free_tier_eligible && <Badge color="amber">Requires plan upgrade</Badge>}
-                  {!t.coming_soon && (() => { const a = templateActivityBadge(activityByTemplate.get(t.id)); return a && <Badge color={a.color}>{a.label}</Badge>; })()}
-                </div>
-              </button>
-            ))}
-          </div>
+          <button
+            type="button"
+            className={`card app-card${selectedTemplates.has(CUSTOM_BUSINESS) ? " connected" : ""}`}
+            onClick={() => toggleTemplate(CUSTOM_BUSINESS)}
+            style={{ textAlign: "left", cursor: "pointer", font: "inherit", borderStyle: "dashed", marginBottom: 12 }}
+          >
+            <div className="app-card-header">
+              <div className="app-card-initial" style={{ background: "var(--surface2)", color: "var(--text3)" }}>+</div>
+              <CardTitle>Custom</CardTitle>
+            </div>
+            <div className="app-card-desc card-desc">Build from scratch with the assistant.</div>
+          </button>
+          {aveTemplates.length > 0 && (
+            <>
+              <div className="section-label">Autonomous venture templates</div>
+              <div className="app-grid">{aveTemplates.map(templateChoice)}</div>
+            </>
+          )}
+          {coworkTemplates.length > 0 && (
+            <>
+              <div className="section-label" style={{ marginTop: 14 }}>Vertical Cowork templates</div>
+              <div className="app-grid">{coworkTemplates.map(templateChoice)}</div>
+            </>
+          )}
           {selectedTemplates.has(CUSTOM_BUSINESS) && (
             <p style={{ fontSize: 12, color: "var(--text3)" }}>The assistant will help you design and set up this business.</p>
           )}

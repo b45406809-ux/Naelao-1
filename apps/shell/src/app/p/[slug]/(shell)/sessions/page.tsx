@@ -1,7 +1,5 @@
 "use client";
 
-export const runtime = "edge";
-
 // Every conversation with the assistant, newest first. The sidebar shows the most recent few and
 // links here for the rest.
 

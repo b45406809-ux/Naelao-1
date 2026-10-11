@@ -1,0 +1,1398 @@
+An honest systems-engineering assessment reveals that **an FDE cannot build *every* company on the Forbes Agentic 20 as a simple template**, because several of them are **not agent templates at all**—they are **foundation models, search engines, or banking networks**.
+
+However, for the **14 vertical application agents on that list**, an FDE **can** build high-margin functional clones inside the Foundry space. 
+
+The following breakdown outlines which platforms can be built as templates, which represent category errors, and the specific gaps the Foundry must address so an FDE can build them without extensive custom coding.
+
+---
+
+# Part 1: The Forbes Agentic 20 Triage Matrix
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                              CAN AN FDE BUILD A CLONE IN THE FOUNDRY?                                  │
+├───────────────────────────────────┬───────────────────────────────────┬────────────────────────────────┤
+│ 🟢 GROUP A: 100% BUILDABLE IN     │ 🟡 GROUP B: BUILDABLE, BUT NEEDS  │ 🔴 GROUP C: CATEGORY ERROR     │
+│    48–72 HOURS (Pure Orchestration)│    PHYSICAL BRIDGES (IoT / Audio) │    (These Are Not Templates)   │
+├───────────────────────────────────┼───────────────────────────────────┼────────────────────────────────┤
+│ • Stuut (Invoice Collections)     │ • Atarraya (Shrimp Farm IoT)      │ • Browserbase (Browser Infra)  │
+│ • TeamTangoAI (Funeral Homes)     │ • Andon Labs (Store/Radio Mgmt)   │ • Exa (Neural Search Index)    │
+│ • Town (Work Email & Follow-ups)  │ • XBOW (Autonomous Red Teaming)   │ • Stripe Link (Banking Rails)  │
+│ • Salient (Debt & Loan Servicing) │                                   │ • Nous Hermes (Base Weights)   │
+│ • Element451 (Higher Ed Intake)   │                                   │ • SpaceXAI Grok (Custom Super- │
+│ • Viktor AI (B2B Sales Employees) │                                   │   computing Cluster)           │
+│ • Govra (Tax Audit Assistant)     │                                   │                                │
+│ • Wajo AI / Instinct (Concierges) │                                   │                                │
+│ • Meta Muse / OpenAI Dots (Tasks) │                                   │                                │
+│ • Known (AI Matchmaking Sentry)   │                                   │                                │
+└───────────────────────────────────┴───────────────────────────────────┴────────────────────────────────┘
+```
+
+---
+
+## 🟢 Group A: The 10 Turnkey Blueprints (48–72 Hour Builds)
+These companies raised tens of millions of dollars, but their core workflow is **domain-specific orchestration over structured databases, channels, and LLM prompts**:
+
+* **Stuut ($10M+ valuation play):** In Naelao, this is simply **`tpl_invoice_collections`**.
+  * *State:* A Gadget (`gadget_accounts_receivable`) with an SQLite table of aging invoices.
+  * *Senses:* An incoming webhook from Stripe / Xero / QuickBooks.
+  * *Cognition:* Clef-flash [2] categorizes excuses in 38ms (*"Will pay Friday"*, *"Disputing line item 3"*).
+  * *Hands:* Scheduled workflows sending multi-channel follow-ups (WhatsApp/Email) with payment links.
+* **TeamTangoAI (Funeral Homes):** This is **`tpl_bereavement_intake`**.
+  * *Channels:* Duplex Voice SFU (`@cloudflare/calls`) answering phone calls 24/7.
+  * *Cognition:* Clef-omni [2] detects family grief tone, logs deceased details, and captures arrangement preferences.
+  * *Safety:* 15-second edge slot-hold mutexes preventing double-booking chapel visitation rooms.
+* **Salient (Consumer Finance & Debt Collection):** This is **`tpl_debt_negotiator`**.
+  * *Senses:* Inbound debtor dispute emails or SMS.
+  * *Logic:* System 1 RiskGuard enforcing statutory FDCPA compliance (no calls after 9 PM, mandatory disclosures).
+  * *Canvas:* DualPane Dossier showing loan balance, settlement ranges, and payment plans.
+* **Element451 (Higher Ed Admissions):** This is **`tpl_admissions_eval`**.
+  * *Inputs:* Ingests 20-page high school transcripts and recommendation letters via R2.
+  * *Linters:* Deterministic Wasm linters calculating GPA equivalencies and prerequisite course credits.
+  * *Canvas:* DualPane Document highlighting missing academic prerequisites.
+
+---
+
+## 🟡 Group B: The Hybrid Hardware / Deep Security Agents
+These can run on Naelao, but an FDE cannot build them with software prompts alone:
+* **Atarraya (Shrimp Farm Autonomous Aquaculture):** Requires reading dissolved oxygen, salinity, and temperature sensors in real time and actuating aerator pumps.
+  * *How Naelao handles it:* The farm must run a physical Raspberry Pi or local gateway running the **`naelao-bridge` daemon**. The agent uses the `tunnel` substrate to read sensor streams and actuate aerator relays via local Modbus/GPIO scripts.
+* **XBOW (Autonomous AI Red Teaming):** Autonomous penetration testing cannot run inside a lightweight V8 isolate. It requires raw network sockets, packet crafting tools (`nmap`, `metasploit`, `sqlmap`), and kernel network access.
+  * *How Naelao handles it:* Requires escalating to **Tier 6 Containers** with full Linux network capabilities (`CAP_NET_RAW`), running outside standard edge worker sandboxes.
+
+---
+
+## 🔴 Group C: The Category Errors (What You Cannot "Clone as a Template")
+An FDE who claims they will "clone Exa or Browserbase in Foundry" does not understand distributed systems:
+* **Browserbase** is not an agent; it is a **cloud browser virtualization provider** running thousands of isolated Chromium instances on bare metal. Naelao *uses* browser execution (Tier 4 Kitesurf / Tier 5 Chromium); it does not clone Browserbase's server farm.
+* **Exa** is a **web-scale search engine** crawling billions of web pages daily into a massive proprietary vector index. An agent calls Exa via `ctx.vault.fetchWithAuth`; it does not replace Exa with a template.
+* **Stripe Link** is an **authorized financial payment network and card-issuing bank partner**. You don't build Stripe Link in a template; you call Stripe's Issuing API to generate one-time virtual cards.
+* **Nous Research (Hermes)** is an **open-weight foundation model weights team** pre-training and fine-tuning neural networks.
+
+---
+
+# Part 2: What the Foundry LACKS Right Now to Simply Build Them
+
+If an FDE sits down inside the Foundry today, why can’t they "simply" click three buttons and have a working clone of **Stuut**, **Salient**, or **Element451**?
+
+Building these platforms highlights **6 operational friction points**:
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                   THE 6 MISSING FOUNDRY INGREDIENTS                                    │
+├──────────────────────────────────────┬─────────────────────────────────────────────────────────────────┤
+│ The Missing Ingredient               │ The Real-World Friction Point For The FDE                       │
+├──────────────────────────────────────┼─────────────────────────────────────────────────────────────────┤
+│ 1. **The "Cold Connector" Battery**  │ FDE spends 80% of their time writing OAuth2 refresh loops for   │
+│    (Zero-Code SaaS Integrations)     │ QuickBooks, Salesforce, and Epic instead of domain logic.       │
+├──────────────────────────────────────┼─────────────────────────────────────────────────────────────────┤
+│ 2. **Carrier Compliance Abstraction**│ Inbound/outbound SMS & WhatsApp require 3 weeks of Meta KYC,    │
+│    (Instant 10DLC & WhatsApp Verify) │ A2P 10DLC brand registration, and Twilio paperwork.             │
+├──────────────────────────────────────┼─────────────────────────────────────────────────────────────────┤
+│ 3. **The Canvas UI Component Shelf** │ FDE must code custom React components from scratch instead of   │
+│    (Pre-Built Domain UI Widgets)     │ dropping in `<InvoiceGrid />` or `<RedlineDiff />`.             │
+├──────────────────────────────────────┼─────────────────────────────────────────────────────────────────┤
+│ 4. **Synthetic Eval Fixture Gen**    │ Writing 50 domain test fixtures by hand takes days of manual    │
+│    (Instant Conformance Data)        │ prompt crafting before passing the Eval Studio gate.            │
+├──────────────────────────────────────┼─────────────────────────────────────────────────────────────────┤
+│ 5. **BPO / Mobile Escalation Desk**  │ When a bot hits an edge case, there is no instant mobile push   │
+│    (Human-in-the-Loop Mobile App)    │ notification or Telegram live-takeover desk for human staff.    │
+├──────────────────────────────────────┼─────────────────────────────────────────────────────────────────┤
+│ 6. **Industrial IoT Telemetry Ingress│ Durable Objects only speak HTTP/WebSockets; they lack native    │
+│    (MQTT / SCADA Edge Broker)        │ MQTT or Modbus listeners for physical hardware sensors.         │
+└──────────────────────────────────────┴─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Gap 1: The "Cold Connector" Battery (The Integration Tax)
+To clone **Stuut** (Invoice collections), the agent must talk to **QuickBooks Online, Xero, and NetSuite**. 
+To clone **Element451** (Admissions), it must talk to **Slate and Salesforce Education Cloud**.
+
+* **The Problem:** If the FDE has to read 80 pages of QuickBooks OAuth 2.0 PKCE documentation, build token-refresh cron jobs, and map custom accounting REST schemas, **they will give up after 4 days**.
+* **What Foundry Lacks:** A **Pre-Authenticated Connector Battery** in `@naelao/sdk`:
+  ```typescript
+  // What the FDE SHOULD be able to write:
+  const invoices = await ctx.connectors.quickbooks.getUnpaidInvoices({ olderThanDays: 30 });
+  ```
+  The platform should handle token refresh, schema normalization, and rate-limiting pacing behind the Zero-Leak Vault.
+
+---
+
+### Gap 2: Carrier Compliance & Telecom Provisioning
+To clone **TeamTangoAI** (Funeral phone dispatch) or **Salient** (Debt collection via SMS):
+* **The Problem:** In the real world, you cannot just send SMS or make phone calls programmatically. 
+  * In the US, sending commercial SMS requires **A2P 10DLC registration** (Employer Identification Number, campaign vetting, privacy policies), which takes 2 to 4 weeks.
+  * WhatsApp Business requires Meta Business Manager verification and pre-approved HSM Message Templates.
+* **What Foundry Lacks:** **1-Click Regulated Carrier Provisioning**. 
+  The Foundry should let the FDE click: `[ Provision Compliant Voice/SMS Number ($15/mo) ]`, with Naelao serving as the registered A2P/Meta aggregator, masking telecom bureaucracy.
+
+---
+
+### Gap 3: The Canvas UI Component Shelf (Design System)
+The DualPane Stage Canvas requires an interactive UI on the right (60% width).
+* **The Problem:** Most FDEs are backend, systems, or data engineers. They understand APIs, SQL, and business processes, but **they are not frontend designers**. If building a template requires writing 1,200 lines of custom React, Tailwind v4, and state reducers for a customer dispute dashboard, the UI will look unprofessional.
+* **What Foundry Lacks:** A **Domain Component Shelf (`@naelao/canvas-ui`)**:
+  ```tsx
+  // FDE imports drop-in enterprise primitives:
+  import { 
+    InvoiceLedgerTable, 
+    DisputeNegotiationCard, 
+    AudioTranscriptScrubber, 
+    DossierTimeline 
+  } from "@naelao/canvas-ui";
+  ```
+  The FDE simply binds the component to their Gadget's SQLite table (`bindsTo: "gadget_invoices"`), and the interactive grid mounts automatically.
+
+---
+
+### Gap 4: Automated Synthetic Fixture Generation
+In Module 4, we showed that templates must pass the **Eval Studio Conformance Gate** (50 test fixtures) before listing on the Marketplace.
+* **The Problem:** An FDE building a "Funeral Home Intake Bot" does not have 50 real deceased family intake transcripts, grieving audio notes, and probate records lying around to write YAML fixtures manually.
+* **What Foundry Lacks:** An **Architect Agent Synthetic Scenario Generator**.
+  The FDE should be able to type:
+  > *"Generate 40 realistic domain fixtures for a boutique UK funeral home, including 5 irate callers, 3 incoherent voice notes, and 2 emergency chapel double-bookings."*
+  The Foundry compiles the test suite in 30 seconds, allowing the FDE to run `naelao test --certify` immediately.
+
+---
+
+### Gap 5: Turnkey Mobile Human-in-the-Loop (BPO Desk)
+Several of the Forbes 20 emphasize human oversight (Wajo AI: *"with human backup"*; Govra: *"with human officials overseeing key decisions"*).
+* **The Problem:** When an AI agent negotiating debt (Salient) or quoting funeral costs (TeamTango) detects that the human debtor is crying or angry, **it must hand off to a human within 10 seconds**. 
+* **What Foundry Lacks:** An **Out-of-the-Box Mobile Escalation Receiver**.
+  When `ctx.security.requestHumanApproval()` trips, it shouldn't just wait for someone to open a desktop web browser. It should trigger an **instant WhatsApp / Telegram interactive card** to the business owner's phone:
+  ```
+  🚨 URGENT CALL ESCALATION: Mrs. Higgins is disputing a $400 casket fee.
+  [ 📞 Tap to Bridge Live Call ]   [ 💬 Take Over via WhatsApp ]
+  ```
+
+---
+
+### Gap 6: Industrial IoT Ingress for Edge Actuators (Atarraya / Andon)
+For physical applications like shrimp farms (**Atarraya**) or automated retail stores (**Andon Labs**):
+* **The Problem:** Water probes and PLC controllers output data over **MQTT, Modbus TCP, or raw serial streams**, not clean JSON over HTTPS. Durable Objects run in V8 and only listen to standard HTTP/WebSocket traffic.
+* **What Foundry Lacks:** A **Local Industrial Bridge Protocol** inside `naelao-bridge`.
+  The Rust bridge daemon should include native MQTT and Modbus collectors that aggregate serial sensor telemetry locally, batch it, and push binary diffs over the existing reverse WebSocket tunnel directly into the space's SQLite database.
+
+---
+
+# Summary: The Plan to Make Every FDE an Agent Builder
+
+```
+┌──────────────────────────────────────┬─────────────────────────────────────────────────────────────────┐
+│ What Naelao Has Today                │ What We Must Add to the Foundry to Make it Turnkey              │
+├──────────────────────────────────────┼─────────────────────────────────────────────────────────────────┤
+│ ✅ **The 5 Kernel Substrates**       │ ➕ **Pre-Built Connector Battery:** Turnkey OAuth for           │
+│    (SQLite, Git Mesh, Hypervisor,    │    QuickBooks, Shopify, Salesforce, HubSpot, Stripe.            │
+│     Vault, Tunnel Mesh).             │                                                                 │
+├──────────────────────────────────────┼─────────────────────────────────────────────────────────────────┤
+│ ✅ **Sub-40ms System 1 Reflexes**    │ ➕ **Telecom & A2P 10DLC Shield:** 1-click compliant virtual    │
+│    (Clef-flash [2], Clef-omni [2],   │    phone numbers for voice and WhatsApp dispatch.               │
+│     Jev Cloud Failover).             │                                                                 │
+├──────────────────────────────────────┼─────────────────────────────────────────────────────────────────┤
+│ ✅ **The 6 Extension Primitives**    │ ➕ **`@naelao/canvas-ui` Shelf:** Pre-built React components    │
+│    (Gadgets, Canvases, Channels,     │    (Ledger grids, redline diffs, dossiers, audio scrubbers).    │
+│     Containers, Linters, Workflows). │                                                                 │
+├──────────────────────────────────────┼─────────────────────────────────────────────────────────────────┤
+│ ✅ **The Eval & Benchmark Harness**  │ ➕ **Synthetic Fixture Synthesizer:** Auto-generates 50 domain  │
+│    (State-Delta $\Delta S$ Engine).  │    test scenarios so FDEs certify templates in minutes.         │
+└──────────────────────────────────────┴─────────────────────────────────────────────────────────────────┘
+```
+
+### The Strategic Verdict
+* **Can an FDE clone the Forbes 20?** For the **14 software and workflow companies** on the list: **yes**. They are not unassailable software monopolies; they are narrow vertical applications waiting to be packaged as declarative blueprints.
+* **Why can't an FDE do it in 20 minutes today?** Because they still have to write custom integrations, handle carrier paperwork, and design React components from scratch.
+* **The Solution:** Adding a **Pre-Built SaaS Connector Battery**, the **Canvas UI Shelf**, and **Carrier Aggregation** to the Foundry gives an FDE everything required to build, certify, and monetize a vertical AI agent in **under 48 hours**.
+
+
+
+Your intuition is spot on. **An FDE must never use or host their own API keys or OAuth credentials for a client’s template.**
+
+If an FDE provides the API key or registers the OAuth Client App under their personal developer account, you run into **four critical security and operational failures**:
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                        THE 4 FATAL RISKS OF FDE-OWNED CONNECTOR KEYS                   │
+├─────────────────────┬──────────────────────────────────────────────────────────────────┤
+│ 1. The MITM Data    │ If OAuth callback tokens flow through the FDE's account, the FDE │
+│    Leak Hazard      │ can technically read, intercept, or exfiltrate private customer  │
+│                     │ emails, invoices, and bank records. Instant SOC 2 / HIPAA failure│
+├─────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ 2. Single Point of  │ If the FDE forgets to pay their Composio/Pipedream bill or gets  │
+│    Failure (SpOF)   │ their developer account suspended, **every single client using   │
+│                     │ that template instantly crashes.**                               │
+├─────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ 3. Shared Rate-Limit│ 50 different businesses using the FDE’s single QuickBooks or     │
+│    Collisions       │ Stripe developer key will trip provider rate limits (429s).      │
+├─────────────────────┼──────────────────────────────────────────────────────────────────┤
+│ 4. Enterprise Audit │ A hospital, bank, or law firm will **refuse to install** any tool│
+│    Disqualification │ that accesses their data through a freelance developer’s keys.   │
+└─────────────────────┴──────────────────────────────────────────────────────────────────┘
+```
+
+The proper solution is to enforce a **Strict Separation of Connector Logic (FDE) vs. Connector Credentials (Tenant)**. 
+
+---
+
+# Part 1: The 3-Tier Connector Ownership Architecture
+
+To make integrations seamless for everyday tools (like Google Drive or Slack) while completely securing custom connectors (like internal ERPs or custom QuickBooks setups), Naelao uses a **3-Tier Auth Ownership Matrix**:
+
+```
+                               THE 3-TIER CONNECTOR OWNERSHIP MATRIX
+                                                 │
+                                 What type of integration is this?
+                                                 │
+         ┌───────────────────────────────────────┼───────────────────────────────────────┐
+         ▼                                       ▼                                       ▼
+┌──────────────────────────────────┐   ┌──────────────────────────────────┐   ┌──────────────────────────────────┐
+│ TIER 1: PLATFORM-MANAGED OAUTH   │   │ TIER 2: TENANT DIRECT API KEY    │   │ TIER 3: TENANT BYO-OAUTH / CUSTOM│
+│ (Standard: Google, Slack, Notion)│   │ (Direct: Twilio, Stripe, Resend) │   │ (Custom ERP, Slate, QuickBooks)  │
+├──────────────────────────────────┼──────────────────────────────────┼──────────────────────────────────┤
+│ • **Owner:** Naelao Platform     │ • **Owner:** The Tenant / Client │ • **Owner:** The Tenant / Client │
+│ • **Mechanism:** Naelao master   │ • **Mechanism:** Client pastes   │ • **Mechanism:** Client inputs   │
+│   Composio / Pipedream Connect key│     their own API key in Vault.  │     their own Client ID & Secret │
+│ • **UX:** 1-Click "Connect with  │ • **UX:** Onboarding GenUI Card  │ • **UX:** Step-by-step setup card│
+│   Google" (Zero config needed).  │   prompts for `API_KEY`.         │   with auto-generated redirect.  │
+└──────────────────────────────────┘   └──────────────────────────────────┘   └──────────────────────────────────┘
+```
+
+---
+
+### Tier 1: Platform-Managed OAuth (For 80% of Standard Tools)
+For widely used services (Gmail, Google Drive, Slack, GitHub, Notion, HubSpot):
+* **Naelao is the registered platform owner** on Composio or Pipedream Connect.
+* The client clicks **`[ Connect Google Workspace ]`**.
+* A popup opens; the user approves permissions for their company account.
+* The access token is sealed directly into that tenant's private `SpaceDO` SQLite database (`vault.sqlite`).
+* **The FDE never touches the key**, and the client didn't have to create a Google Cloud Console project.
+
+---
+
+### Tier 2: Tenant Direct API Key (For Direct Services)
+For services that use standard API keys (SendGrid, Twilio, OpenAI, Anthropic BYOK, Resend):
+* The FDE declares in the template manifest:
+  ```json
+  "authRequirements": [{ "name": "TWILIO_AUTH_TOKEN", "type": "api_key" }]
+  ```
+* During project onboarding, Naelao renders an **Interactive GenUI Card**:
+  > *"To activate SMS notifications, enter your Twilio Account SID & Auth Token."*
+* The client pastes their keys. They are encrypted with per-space AES-256-GCM and stored in the **`PROJECT_BOUND` Vault**.
+* The agent calls `ctx.vault.fetchWithAuth()`. The edge proxy injects the decrypted key directly into outbound headers.
+* **The FDE's code never sees the raw secret.**
+
+---
+
+### Tier 3: Tenant BYO-OAuth & Custom Connectors (The Secure Solution)
+This addresses custom enterprise tools, specialized ERPs, or services not in standard catalogs:
+* **The Rule:** The FDE writes the **connector logic** (endpoints, parameter formatting, data schemas). The **client provides the OAuth App credentials**.
+
+#### How the Onboarding Wizard Works in Practice:
+When a client installs an FDE’s template requiring a custom connection (e.g. *Delaware Corporate Registry* or *Internal Epic EHR*), Naelao renders an automated **Connector Setup Card**:
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│ 🔌 Setup Integration: Custom Accounting Gateway                        │
+├────────────────────────────────────────────────────────────────────────┤
+│ To connect your firm's private accounting instance securely:           │
+│                                                                        │
+│ 1. Open your Accounting Portal ──► Developer Settings ──► Create App.  │
+│ 2. Set your OAuth Redirect URI to:                                     │
+│    📋 https://auth.naelao.space/v1/callback/proj_9812 [Copy Link]      │
+│ 3. Paste your credentials below:                                       │
+│                                                                        │
+│    Client ID:     [ acct_client_994120               ]                 │
+│    Client Secret: [ ******************************** ]                 │
+│                                                                        │
+│ [ 🔒 Seal Credentials & Authorize Connection ]                         │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+Once the client clicks **Authorize**:
+1. Naelao initiates the OAuth 2.0 PKCE dance using the **client’s own Client ID**.
+2. The client logs in and approves access to their company data.
+3. The refresh and access tokens are returned directly to the client's `SpaceDO` Vault.
+4. **The client is the sole owner of the OAuth connection.** If they uninstall the template, revoke the app, or change secrets in their dashboard, access drops immediately. The FDE has zero backdoor access.
+
+---
+
+# Part 2: Should You Add Pipedream Alongside Composio?
+
+**Yes, but you must unify them under a single SDK facade so developers don't have to manage two separate integration systems.**
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                              COMPOSIO vs. PIPEDREAM CONNECT                            │
+├─────────────────────┬─────────────────────────────────┬────────────────────────────────┤
+│ Dimension           │ 🧩 Composio                     │ 🌊 Pipedream Connect           │
+├─────────────────────┼─────────────────────────────────┼────────────────────────────────┤
+│ **Core Strength**   │ **Action Execution for LLMs:**  │ **Massive Catalog & Webhooks:**│
+│                     │ Function-calling schemas pre-   │ 2,000+ pre-built integrations, │
+│                     │ formatted for agent tool loops. │ automated trigger webhooks.    │
+├─────────────────────┼─────────────────────────────────┼────────────────────────────────┤
+│ **Catalog Breadth** │ ~250 core developer & AI tools  │ **2,000+ niche business apps** │
+│                     │ (GitHub, Slack, Jira, Linear)   │ (Obscure CRMs, regional ERPs)  │
+├─────────────────────┼─────────────────────────────────┼────────────────────────────────┤
+│ **Best Used For**   │ **Agent Hands:** Fast atomic    │ **Inbound Event Listeners:**   │
+│                     │ actions (`create_issue`, etc.)  │ Webhook listeners & rare apps  │
+└─────────────────────┴─────────────────────────────────┴────────────────────────────────┘
+```
+
+### The Unification: The `ctx.connectors` Facade
+Never force an FDE to write `import { Composio }` in one file and `import { Pipedream }` in another. 
+
+Provide a single interface in `@naelao/sdk`: **`ctx.connectors`**. Naelao handles routing behind the scenes:
+
+```
+                                  THE UNIFIED CONNECTOR FACADE
+                                                │
+                                  [Agent / Worker Calls `ctx`]
+                                                │
+                                                ▼
+                         ┌──────────────────────────────────────────────┐
+                         │   `ctx.connectors.get("quickbooks")`         │
+                         └──────────────────────┬───────────────────────┘
+                                                │
+                         ┌──────────────────────┴──────────────────────┐
+                         ▼                                             ▼
+          ┌─────────────────────────────┐               ┌─────────────────────────────┐
+          │ Fast Action Tool Call       │               │ Webhook Trigger / Rare App  │
+          │ ➡️ Routed via Composio       │               │ ➡️ Routed via Pipedream      │
+          │   (Pre-formatted LLM tool)  │               │   (2,000+ catalog apps)     │
+          └─────────────────────────────┘               └─────────────────────────────┘
+```
+
+```typescript
+// How an FDE writes clean, provider-agnostic code in @naelao/sdk:
+export const SyncInvoicesTool = registerTool({
+  name: "sync_unpaid_invoices",
+  description: "Pulls overdue invoices from company accounting software",
+  execute: async (ctx) => {
+    // Naelao automatically resolves whether this tenant connected via
+    // Composio, Pipedream Connect, or their own BYO-OAuth app:
+    const accounting = await ctx.connectors.get("quickbooks");
+    
+    const invoices = await accounting.execute("get_invoices", {
+      status: "OVERDUE",
+      limit: 50
+    });
+
+    return { invoices };
+  }
+});
+```
+
+---
+
+# Part 3: Declarative Blueprint Manifest Specification
+
+Here is how an FDE declares custom integrations in their template manifest (`blueprint.json`) without handling client secrets:
+
+```json
+{
+  "id": "tpl_custom_logistics_hub",
+  "name": "Customs Clearing & Haulage Operations",
+  "version": "1.0.0",
+
+  "connectors": [
+    {
+      "id": "slack",
+      "mode": "PLATFORM_MANAGED",
+      "description": "Team notifications channel"
+    },
+    {
+      "id": "twilio",
+      "mode": "TENANT_API_KEY",
+      "requiredSecrets": ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"],
+      "description": "Used to send SMS dispatch alerts to drivers"
+    },
+    {
+      "id": "durban_port_edi",
+      "mode": "TENANT_CUSTOM_OAUTH",
+      "oauthConfig": {
+        "authorizationUrl": "https://identity.portnet.co.za/oauth/authorize",
+        "tokenUrl": "https://identity.portnet.co.za/oauth/token",
+        "scopes": ["manifest:read", "manifest:declare"]
+      },
+      "description": "National Port Authority EDI gateway"
+    }
+  ]
+}
+```
+
+### What Happens When the Client Installs the Template:
+1. **For Slack (`PLATFORM_MANAGED`):** The onboarding UI displays:  
+   `[ 🔗 Connect Slack Workspace (1-Click) ]`. Handled via Naelao's Composio/Pipedream platform keys.
+2. **For Twilio (`TENANT_API_KEY`):** The onboarding UI displays input fields for `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN`.
+3. **For Durban Port EDI (`TENANT_CUSTOM_OAUTH`):** The onboarding UI presents the client with their unique redirect URI and input fields for their port authority developer `Client ID` and `Client Secret`.
+
+---
+
+# Summary: The Definitive Rules
+
+1. **FDEs Never Own Tenant Credentials:** The FDE provides integration logic and endpoint schemas; the **tenant always owns the API keys and OAuth tokens**.
+2. **The 3-Tier Model Eliminates Friction:** Standard tools (Slack, Google Drive) offer 1-click connect via platform-managed pools. Direct tools (Twilio) use tenant API keys. Custom enterprise tools use tenant-owned OAuth apps.
+3. **Pipedream + Composio Under One Facade:** Composio handles agent tool actions, while Pipedream provides access to 2,000+ niche business apps and triggers. Both are exposed through **`ctx.connectors`**, keeping external provider complexity hidden.
+4. **Enterprise Trust is Preserved:** Because client secrets remain encrypted inside the tenant’s private `SpaceDO` Vault and external calls route through the edge network proxy, corporate security teams can approve installations without risk of developer data interception.
+
+
+If you unify Pipedream and Composio under a single `ctx.connectors` facade without a deterministic resolution strategy, you run into **The Double-Auth Disaster**:
+* The end-user installs a template and gets hit with two separate prompts: *"Connect Slack (via Composio)"* and *"Connect Slack (via Pipedream)"*.
+* One template posts messages via Composio, while another listens to webhooks via Pipedream.
+* If the user revokes access in Slack, one breaks while the other stays half-alive, creating desynchronized tokens and user confusion.
+
+To prevent this, Naelao enforces an architectural invariant: **One App ID = One Authoritative Provider per Workspace.**
+
+---
+
+# 1. The Core Invariant: "Never Split an App Across Two Providers"
+
+A single tenant space must **never maintain two active connections to the exact same third-party account**. 
+
+When an app (e.g. `slack`, `github`, `hubspot`, `google_drive`) exists in both Pipedream and Composio, the Naelao kernel resolves the conflict using a **Deterministic Arbitration Hierarchy**:
+
+```
+                                  CONNECTOR SELECTION ARBITRATION
+                                                 │
+                                 FDE / Agent requests: `slack`
+                                                 │
+                                                 ▼
+                         ┌──────────────────────────────────────────────┐
+                         │   CANONICAL APP REGISTRY RESOLVER            │
+                         │   Checks capabilities, schemas, & priority   │
+                         └──────────────────────┬───────────────────────┘
+                                                │
+         ┌──────────────────────────────────────┴──────────────────────────────────────┐
+         ▼ (Exists in Composio)                                                        ▼ (NOT in Composio)
+┌──────────────────────────────────────────────┐              ┌──────────────────────────────────────────────┐
+│ 🏆 WINNER: COMPOSIO                          │              │ 🌊 WINNER: PIPEDREAM                         │
+│ • Optimized for LLM Function-Calling [3]     │              │ • Accesses long-tail catalog (2,000+ apps)   │
+│ • Stripped token footprint (<300 tokens/tool)│              │ • Complex polling & inbound webhooks         │
+│ • Handles BOTH auth and execution for `slack`│              │ • Handles BOTH auth and execution for app    │
+└──────────────────────────────────────────────┘              └──────────────────────────────────────────────┘
+```
+
+---
+
+# 2. Why Composio Wins the Collision by Default
+
+When an app exists in both catalogs, **Composio is granted authoritative priority for AI agent workspaces by default.**
+
+The technical reason comes down to **LLM Context Consumption & Schema Design**:
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                        COMPOSIO vs. PIPEDREAM ON OVERLAPPING APPS                      │
+├─────────────────────┬─────────────────────────────────┬────────────────────────────────┤
+│ Evaluation Factor   │ 🧩 Composio (The Winner)        │ 🌊 Pipedream (The Fallback)    │
+├─────────────────────┼─────────────────────────────────┼────────────────────────────────┤
+│ **Schema Design**   │ **Built specifically for LLMs:**│ **Built for Human Pipelines:** │
+│                     │ Parameters are pruned, typed,   │ Large configuration trees,     │
+│                     │ and optimized for function-call │ nested props, and environment  │
+│                     │ APIs (OpenAI/Anthropic tool schemas).│ bindings.                      │
+├─────────────────────┼─────────────────────────────────┼────────────────────────────────┤
+│ **Token Footprint** │ **~150 to 350 tokens per tool.**│ **800 to 2,000 tokens per tool.**│
+│                     │ Saves massive context window.   │ Burns tokens on UI metadata.   │
+├─────────────────────┼─────────────────────────────────┼────────────────────────────────┤
+│ **Error Feedback**  │ **LLM Self-Correction Cues:**   │ **HTTP Stack Traces:**         │
+│                     │ Returns messages formatted for  │ Returns raw server dumps that  │
+│                     │ agents to fix bad arguments.    │ confuse model reasoning.       │
+└─────────────────────┴─────────────────────────────────┴────────────────────────────────┘
+```
+
+### When Does Pipedream Win?
+Pipedream takes authority under two specific conditions:
+1. **The Long-Tail Rule:** The app exists in Pipedream's 2,000+ integration catalog, but is **not** supported by Composio (e.g. specialized regional billing systems, niche CRMs, legacy enterprise software).
+2. **Explicit Blueprint Override:** The FDE explicitly specifies in `blueprint.json` that they require a specific Pipedream-exclusive trigger or workflow action.
+
+---
+
+# 3. The 3 Collision Scenarios (And How Naelao Solves Them)
+
+---
+
+### Scenario A: The FDE writes generic code (`ctx.connectors.get("slack")`)
+* **What happens:** The kernel checks the internal capability registry:
+  * Does Composio support `slack`? $\to$ **Yes.**
+  * The kernel binds `slack` to Composio.
+  * During onboarding, the tenant sees **one single button**:  
+    `[ 🔗 Connect Slack Workspace ]` (routed through Naelao's Composio platform pool).
+  * Pipedream is not invoked. Zero duplicate auth.
+
+---
+
+### Scenario B: Template A uses Composio for Slack, but Template B explicitly requests Pipedream for Slack
+* **The Conflict:** What if an FDE writes a template that specifically demands Pipedream because of a specialized Pipedream event trigger, but the user already connected Slack via Composio for a different project?
+
+Naelao resolves this through **Vault Token Bridging (Single Sign-On for Connectors)**:
+
+```
+               HOW TOKEN BRIDGING RESOLVES THE DUPLICATE LOGIN
+                                      │
+            [User already connected Slack once in Space via Composio]
+                                      │
+                                      ▼
+            ┌──────────────────────────────────────────────────┐
+            │ SpaceDO ZERO-LEAK VAULT (`vault.sqlite`)         │
+            │ Holds: `SLACK_ACCESS_TOKEN` & `SLACK_REFRESH`    │
+            └─────────────────────────┬────────────────────────┘
+                                      │
+        Template B installs and requests: `slack` via Pipedream
+                                      │
+                                      ▼
+            ┌──────────────────────────────────────────────────┐
+            │ NAELAO BRIDGING PROXY                            │
+            │ Instead of showing a second login popup:         │
+            │ Injects the existing Vault OAuth access token    │
+            │ directly into Pipedream Connect via Custom Auth. │
+            └─────────────────────────┬────────────────────────┘
+                                      │
+                                      ▼
+            [Template B works instantly with ZERO user interaction!]
+```
+
+* **The User Experience:** The tenant connects Slack **once**. The underlying tokens reside in their encrypted `SpaceDO` Vault. 
+* If a worker needs Composio, Naelao supplies the token context to Composio.
+* If a worker needs Pipedream, Naelao supplies the same token to Pipedream. 
+* **The user never logs in twice.**
+
+---
+
+### Scenario C: An FDE wants an obscure app that only Pipedream has
+* **Example:** A logistics broker needs to connect to **ShipEngine** or an accounting firm needs **Sage 50cloud**.
+* Composio does not support it; Pipedream does.
+* **The Resolution:** 
+  * The resolver detects `composio.has("sage50") === false`.
+  * The resolver switches the provider route to `PIPEDREAM`.
+  * The onboarding card renders: `[ Connect Sage 50 via Pipedream ]`.
+  * Execution routes through Pipedream's runtime.
+
+---
+
+# 4. Developer Implementation in `@naelao/sdk`
+
+Developers do not have to write manual resolution logic. The SDK handles provider negotiation behind the scenes:
+
+```typescript
+// packages/runtime/src/connectors/ConnectorResolver.ts
+import { NaelaoContext } from "@naelao/sdk";
+
+export interface ConnectorOptions {
+  preferredProvider?: "AUTO" | "COMPOSIO" | "PIPEDREAM";
+}
+
+export class ConnectorResolver {
+  constructor(
+    private composioRegistry: Set<string>,
+    private pipedreamRegistry: Set<string>
+  ) {}
+
+  /**
+   * Resolves the authoritative provider for any requested app ID
+   */
+  resolveProvider(appId: string, options?: ConnectorOptions): "COMPOSIO" | "PIPEDREAM" {
+    const preference = options?.preferredProvider || "AUTO";
+
+    // 1. Explicit FDE Override
+    if (preference === "COMPOSIO" && this.composioRegistry.has(appId)) return "COMPOSIO";
+    if (preference === "PIPEDREAM" && this.pipedreamRegistry.has(appId)) return "PIPEDREAM";
+
+    // 2. Default Hierarchy: Composio takes precedence for overlapping apps
+    if (this.composioRegistry.has(appId)) {
+      return "COMPOSIO";
+    }
+
+    // 3. Fallback to Pipedream for long-tail catalog
+    if (this.pipedreamRegistry.has(appId)) {
+      return "PIPEDREAM";
+    }
+
+    throw new Error(`Integration '${appId}' is not available in Composio or Pipedream.`);
+  }
+
+  /**
+   * Returns a unified client ready for tool execution
+   */
+  async getConnector(ctx: NaelaoContext, appId: string, options?: ConnectorOptions) {
+    const provider = this.resolveProvider(appId, options);
+
+    if (provider === "COMPOSIO") {
+      return {
+        provider: "COMPOSIO",
+        execute: async (actionName: string, params: Record<string, unknown>) => {
+          return await ctx.runtimes.composio.executeAction(appId, actionName, params, {
+            spaceId: ctx.spaceId
+          });
+        }
+      };
+    } else {
+      return {
+        provider: "PIPEDREAM",
+        execute: async (actionName: string, params: Record<string, unknown>) => {
+          return await ctx.runtimes.pipedream.executeAction(appId, actionName, params, {
+            spaceId: ctx.spaceId
+          });
+        }
+      };
+    }
+  }
+}
+```
+
+---
+
+# 5. How the FDE Uses It in Code
+
+The FDE writes standard, provider-agnostic business logic:
+
+```typescript
+// extensions/ext_crm_sync/src/tools/SyncContacts.ts
+import { registerTool } from "@naelao/sdk";
+
+export const SyncContactsTool = registerTool({
+  name: "sync_hubspot_contacts",
+  description: "Synchronizes recent leads from HubSpot CRM",
+  parameters: {
+    type: "object",
+    properties: { limit: { type: "number" } }
+  },
+  execute: async (ctx, { limit }) => {
+    // 1. Automatic Resolution:
+    // HubSpot exists in both -> automatically resolves to Composio (clean LLM schema)
+    const hubspot = await ctx.connectors.get("hubspot");
+
+    const leads = await hubspot.execute("get_contacts", { limit: limit || 20 });
+    return { leads };
+  }
+});
+```
+
+If the FDE *must* use Pipedream for a specific feature, they declare their preference explicitly:
+```typescript
+// Explicit override only when strictly necessary
+const hubspot = await ctx.connectors.get("hubspot", { preferredProvider: "PIPEDREAM" });
+```
+
+---
+
+# Summary: The Operational Contract
+
+```
+┌──────────────────────────────────────┬─────────────────────────────────────────────────────────────────┐
+│ Situation                            │ How Naelao Handles It                                           │
+├─────────────────────┬────────────────┼─────────────────────────────────────────────────────────────────┤
+│ **App is in BOTH**  │ Default Router │ 🏆 **Composio wins.** Uses Composio for OAuth and actions       │
+│ (Slack, GitHub,     │                │    because its tool schemas save 70% of LLM context tokens.    │
+│  HubSpot, Drive)    │                │    The user only sees one "Connect" button.                    │
+├─────────────────────┼────────────────┼─────────────────────────────────────────────────────────────────┤
+│ **App is ONLY in**  │ Long-Tail      │ 🌊 **Pipedream wins.** Accesses Pipedream's 2,000+ app catalog. │
+│ **Pipedream**       │ Auto-Fallback  │    Handles OAuth and execution automatically.                  │
+├─────────────────────┼────────────────┼─────────────────────────────────────────────────────────────────┤
+│ **Cross-Template**  │ Vault Token    │ 🔑 **Single Sign-On.** Naelao holds the access token in SQLite  │
+│ **Collision**       │ Bridging       │    and injects it into whichever engine executes the action.   │
+│                     │                │    The user never logs into the same service twice.            │
+└─────────────────────┴────────────────┴─────────────────────────────────────────────────────────────────┘
+```
+
+This setup provides access to **Pipedream's 2,000+ app catalog** alongside **Composio's optimized tool-calling schemas** without introducing duplicate auth prompts or fragmented tokens.
+
+
+
+ Core Architecture & Runtime Verification (The Hard Reality)
+Before addressing the code templates, we must review the architectural baseline against the real-world constraints of the Cloudflare Workers / workerd runtime (as of 2026).
+1. The Subsystem Nomenclature: Product vs. System Identity
+Product & Brand (External): Naelao (used across client SDKs @naelao/sdk, public webhooks, CLI npx @naelao/bridge, client-facing APIs, and marketplace packages).
+System & Runtime (Internal): AVOS (the internal kernel name, internal filesystem paths /.avos/, SQLite schema tables _avos_*, and internal Durable Object bindings).
+Rule: Never break backwards compatibility for internal runtime paths like /.avos/ while keeping developer-facing surfaces strictly branded under @naelao/sdk.
+2. Technical Grounding & Cloudflare Runtime Constraints
+Zig-to-WASM Git Mesh: Standard libgit2 crashes inside V8 Durable Objects due to memory overhead, POSIX threading assumptions, and C runtime dependencies. Compiling a lightweight Git implementation in Zig to wasm32-freestanding operates within an embedded ~4MB static linear memory arena, preventing DO Out-of-Memory (OOM) evictions.
+Tier 1 SQLite VFS (@cloudflare/computer / DO SQLite): Cloudflare's native SQLite inside Durable Objects supports pure transactional persistence with atomic Compare-and-Swap (CAS). However, Durable Object memory is capped. Large payloads (
+>
+256
+ KB
+>256 KB
+) must use Pointer-LFS over Cloudflare R2 to keep database files from hitting memory eviction limits during waking hours.
+Tier 2 Dynamic Worker Loader (env.LOADER): env.LOADER evaluates pre-compiled JavaScript ES Modules and WebAssembly binaries in ephemeral sub-isolates. It does not natively compile raw JSX or TypeScript on the fly; frontend code must be pre-bundled or compiled via lightweight edge parsers.
+Tier 3 Dynamic Workflows (Cloudflare Workflows): Every step.do() checkpoint must return JSON-serializable data. Passing raw circular memory references, open WebSocket streams, or database handles between workflow steps will cause engine crashes. Step payloads must pass R2 pointers for large data (
+>
+1
+ KB
+>1 KB
+).
+Tier 4 Browser Automation (Cloudflare Kitesurf): Runs headless browser sessions inside low-memory edge isolates (~30MB), extracting indexed Accessibility Trees (AXTree) rather than streaming heavy raw image buffers.
+Tier 6 Containers (ToolSandboxDO / Edge Containers): Cloudflare Edge Containers execute rootless Ubuntu environments mounted over ArtifactFS FUSE, writing file diffs back to the DO SQLite Git DAG. They require an aggressive 60-second micro-sleep countdown to protect platform unit economics.
+System 1 Decision Engine (Cloudflare Clef & TypeSafe Jev):
+Clef-flash: Runs at 38.8ms p50 latency for pure text, DOM element selection, and tool gating ($0.038/M tokens) [2].
+Clef-omni: Processes raw audio (WAV, MP3) and video (MP4) in a single forward pass ($0.15/M tokens), bypassing cascading speech-to-text transcoding pipelines [2].
+Jev (TypeSafe AI): Acts as the high-availability cloud fallback ($0.042/M tokens) if edge GPU queues experience temporary capacity limits.
+
+Here is the engineering reality check for the Cloudflare Workers / `workerd` runtime (as of 2026). 
+
+We begin by providing **concrete production solutions for the 7 architectural constraints**, followed by identifying **7 additional runtime constraints** of `workerd` and their respective engineering solutions.
+
+---
+
+# Part 1: Solutions for the Core 7 Architectural Constraints
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                SOLUTIONS FOR CONSTRAINTS 1 THROUGH 7                                   │
+├──────┬────────────────────────────┬───────────────────────────────────┬────────────────────────────────┤
+│ Tier │ Bottleneck Constraint      │ Failure Mode                      │ Naelao Engineering Solution    │
+├──────┼────────────────────────────┼───────────────────────────────────┼────────────────────────────────┤
+│ 1    │ **Zig-WASM Git Mesh**      │ Dynamic memory fragmentation      │ Fixed 4MB static linear arena  │
+│      │                            │ crashes DO isolate (OOM).         │ + SQLite VFS host callbacks.   │
+├──────┼────────────────────────────┼───────────────────────────────────┼────────────────────────────────┤
+│ 1    │ **DO SQLite VFS**          │ Storing >256 KB payloads bloats   │ Pointer-LFS engine: auto-spill │
+│      │                            │ SQLite memory and stalls writes.  │ to R2 with CAS hash stubs.     │
+├──────┼────────────────────────────┼───────────────────────────────────┼────────────────────────────────┤
+│ 2    │ **`env.LOADER` Evaluation**│ Cannot compile TSX/JSX at edge;   │ Pre-compiled bytecode packs    │
+│      │                            │ ESBuild WASM burns >30MB RAM.     │ + deterministic Rollup VFS.    │
+├──────┼────────────────────────────┼───────────────────────────────────┼────────────────────────────────┤
+│ 3    │ **Workflows Serialization**│ Non-JSON memory or >1 KB payloads │ `WorkflowEnvelope<T>`: serializes│
+│      │                            │ crash `step.do()` checkpoints.    │ payloads >1 KB into R2 stubs.  │
+├──────┼────────────────────────────┼───────────────────────────────────┼────────────────────────────────┤
+│ 4    │ **Kitesurf AXTree Pruning**│ HTML DOMs burn 20MB / 100k tokens │ Recursive AXTree pruning       │
+│      │                            │ crashing context and latency.     │ numbered interactive node map. │
+├──────┼────────────────────────────┼───────────────────────────────────┼────────────────────────────────┤
+│ 6    │ **Container Micro-Sleep**  │ Idle containers drain margin;     │ 60-second alarm timer + FUSE   │
+│      │                            │ manual teardown loses edits.      │ flush to SQLite Git commit.    │
+├──────┼────────────────────────────┼───────────────────────────────────┼────────────────────────────────┤
+│ S1   │ **Clef / Jev Failover**    │ Edge GPU queues spike to 504s     │ 60ms speculative dual-headed   │
+│      │                            │ under regional load.              │ circuit breaker racing router. │
+└──────┴────────────────────────────┴───────────────────────────────────┴────────────────────────────────┘
+```
+
+---
+
+### Solution 1: Zig-to-WASM Git Mesh (Fixed 4MB Linear Memory Arena)
+Standard `libgit2` links POSIX threads and dynamic `malloc` implementations that cause Durable Object V8 isolates to run out of memory. 
+
+**The Solution:** Compile a minimal Git object engine in **Zig targeting `wasm32-freestanding`**. We eliminate dynamic memory growth (`wasm-memory-grow`) by dedicating a fixed **4MB static linear memory arena** and mapping read/write operations directly into DO SQLite via host functions.
+
+```zig
+// runtime/mesh/git_engine.zig
+const std = @import("std");
+
+// Fixed 4MB static buffer: ZERO dynamic allocation growth
+var global_arena_buffer: [4 * 1024 * 1024]u8 = undefined;
+var fba = std.heap.FixedBufferAllocator.init(&global_arena_buffer);
+const allocator = fba.allocator();
+
+// Host imports into Durable Object SQLite VFS
+extern "avos_host" fn host_sqlite_write_object(oid_ptr: [*]const u8, data_ptr: [*]const u8, data_len: usize) c_int;
+extern "avos_host" fn host_sqlite_read_object(oid_ptr: [*]const u8, out_buf_ptr: [*]u8, max_len: usize) usize;
+
+export fn create_commit(tree_oid: [*]const u8, parent_oid: [*]const u8, author_ptr: [*]const u8, author_len: usize, msg_ptr: [*]const u8, msg_len: usize) [*]const u8 {
+    fba.reset(); // Reset linear memory arena instantly (0.001ms)
+    
+    var commit_buffer = std.ArrayList(u8).init(allocator);
+    defer commit_buffer.deinit();
+
+    // Deterministic formatting of Git Commit Object
+    commit_buffer.writer().print("tree {s}\nparent {s}\nauthor {s}\n\n{s}", .{
+        tree_oid[0..40], parent_oid[0..40], author_ptr[0..author_len], msg_ptr[0..msg_len]
+    }) catch return "ERR_OOM";
+
+    var sha1 = std.crypto.hash.Sha1.init(.{});
+    sha1.update(commit_buffer.items);
+    var out_hash: [20]u8 = undefined;
+    sha1.final(&out_hash);
+
+    var hex_hash: [40]u8 = undefined;
+    _ = std.fmt.bufPrint(&hex_hash, "{s}", .{std.fmt.fmtSliceHexLower(&out_hash)}) catch return "ERR_HASH";
+
+    // Direct write to DO SQLite without intermediate V8 string copies
+    _ = host_sqlite_write_object(&hex_hash, commit_buffer.items.ptr, commit_buffer.items.len);
+    return &hex_hash;
+}
+```
+
+---
+
+### Solution 2: Tier 1 SQLite Pointer-LFS Engine (`>256 KB` Auto-Spillover)
+Durable Objects have strict memory boundaries. Writing multiple 10MB PDFs or bundles directly into SQLite tables will exhaust DO memory allocations and lock V8 execution.
+
+**The Solution:** The `Pointer-LFS` interceptor checks payload size before execution. Payloads under 256 KB are stored inline in SQLite. Larger payloads are routed directly to Cloudflare R2, leaving a lightweight content-addressed stub in SQLite.
+
+```typescript
+// packages/runtime/src/storage/PointerLfsDriver.ts
+export class PointerLfsDriver {
+  constructor(
+    private sql: SqlStorage,
+    private r2: R2Bucket,
+    private spaceId: string
+  ) {}
+
+  async put(key: string, data: Uint8Array, mimeType: string): Promise<string> {
+    const sizeBytes = data.byteLength;
+    const sha256 = await this.computeSha256(data);
+
+    // THRESHOLD: <= 256KB stays inline inside DO SQLite (sub-1ms local read)
+    if (sizeBytes <= 256 * 1024) {
+      this.sql.exec(
+        `INSERT OR REPLACE INTO _avos_objects (key, size, sha256, storage_tier, inline_data, r2_pointer) 
+         VALUES (?, ?, ?, 'INLINE', ?, NULL)`,
+        key, sizeBytes, sha256, data
+      );
+      return sha256;
+    }
+
+    // SPILLOVER: > 256KB written to R2; SQLite stores only metadata & hash pointer
+    const r2Key = `spaces/${this.spaceId}/lfs/${sha256}`;
+    await this.r2.put(r2Key, data, {
+      httpMetadata: { contentType: mimeType },
+      customMetadata: { spaceId: this.spaceId, originalKey: key }
+    });
+
+    this.sql.exec(
+      `INSERT OR REPLACE INTO _avos_objects (key, size, sha256, storage_tier, inline_data, r2_pointer) 
+       VALUES (?, ?, ?, 'LFS_R2', NULL, ?)`,
+      key, sizeBytes, sha256, r2Key
+    );
+
+    return sha256;
+  }
+
+  async get(key: string): Promise<Uint8Array> {
+    const cursor = this.sql.exec("SELECT * FROM _avos_objects WHERE key = ? LIMIT 1", key);
+    const row = cursor.toArray()[0] as any;
+    if (!row) throw new Error(`Object not found: ${key}`);
+
+    if (row.storage_tier === "INLINE") {
+      return row.inline_data as Uint8Array;
+    }
+
+    // Transparently fetch payload from R2 when resolving LFS pointers
+    const r2Object = await this.r2.get(row.r2_pointer);
+    if (!r2Object) throw new Error(`LFS corruption: pointer ${row.r2_pointer} missing in R2`);
+    return new Uint8Array(await r2Object.arrayBuffer());
+  }
+
+  private async computeSha256(data: Uint8Array): Promise<string> {
+    const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+    return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, "0")).join("");
+  }
+}
+```
+
+---
+
+### Solution 3: Tier 2 `env.LOADER` Pre-Bundled Bytecode Architecture
+Cloudflare's `env.LOADER` cannot evaluate raw JSX, TSX, or TypeScript files directly; compiling them with in-worker engines like ESBuild-WASM consumes >30MB of memory and introduces high cold-start latencies.
+
+**The Solution:** The FDE Foundry compiler builds templates into **pre-bundled JavaScript ES modules** before storing them in the Git mesh. `env.LOADER` evaluates only clean, bundled JS modules without running compiler passes at runtime.
+
+```typescript
+// packages/runtime/src/hypervisor/Tier2DynamicLoader.ts
+export class Tier2DynamicLoader {
+  constructor(private loader: any /* env.LOADER */) {}
+
+  async executeSubModule(bundledJsCode: string, entryExport: string, ctxPayload: any): Promise<any> {
+    // Generate isolated synthetic worker module
+    const workerModule = {
+      modules: {
+        "index.mjs": `
+          ${bundledJsCode}
+          export default {
+            async fetch(request) {
+              const { payload } = await request.json();
+              const result = await ${entryExport}(payload);
+              return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+            }
+          };
+        `
+      }
+    };
+
+    // Instantiate isolated sub-worker via env.LOADER
+    const subWorker = this.loader.load(workerModule);
+    const response = await subWorker.fetch("http://internal.avos/exec", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ payload: ctxPayload })
+    });
+
+    return await response.json();
+  }
+}
+```
+
+---
+
+### Solution 4: Tier 3 Cloudflare Workflows Checkpoint Serialization
+Cloudflare Workflows persist step state across restarts. If `step.do()` returns non-serializable objects (such as open WebSockets or functions) or payloads exceeding **1 KB**, distributed coordination checkpoints fail.
+
+**The Solution:** The `WorkflowEnvelope` automatically intercepts step outputs, strips non-serializable properties, stores large payloads in R2, and returns a lightweight reference pointer.
+
+```typescript
+// packages/runtime/src/workflows/WorkflowEnvelope.ts
+export class WorkflowEnvelope {
+  static async wrapStep<TInput, TOutput>(
+    step: any,
+    stepId: string,
+    r2: R2Bucket,
+    spaceId: string,
+    operation: () => Promise<TOutput>
+  ): Promise<TOutput> {
+    return await step.do(stepId, async () => {
+      const result = await operation();
+      const serialized = JSON.stringify(result);
+
+      // Checkpoint payloads under 1 KB are stored directly in workflow state
+      if (serialized.length <= 1024) {
+        return { __isRef: false, data: result };
+      }
+
+      // Checkpoint payloads > 1 KB are offloaded to R2
+      const pointerKey = `workflows/${spaceId}/${stepId}_${Date.now()}.json`;
+      await r2.put(pointerKey, serialized, { httpMetadata: { contentType: "application/json" } });
+
+      return { __isRef: true, pointerKey };
+    }).then(async (checkpoint: any) => {
+      // Automatically rehydrate payload from R2 for the next execution step
+      if (!checkpoint.__isRef) return checkpoint.data;
+      const r2Obj = await r2.get(checkpoint.pointerKey);
+      return JSON.parse(await r2Obj.text());
+    });
+  }
+}
+```
+
+---
+
+### Solution 5: Tier 4 Browser AXTree Pruner (<3,000 Tokens)
+Extracting full raw HTML trees from web pages consumes upwards of 100,000 tokens, which overwhelms context windows and degrades model performance.
+
+**The Solution:** The browser scraper extracts the **Accessibility Tree (AXTree)**, strips non-interactive layout containers, and generates a structured, indexed node map for the agent.
+
+```typescript
+// packages/runtime/src/browser/AxTreePruner.ts
+export interface PrunedNode {
+  ref: number;
+  role: string;
+  name: string;
+  value?: string;
+}
+
+export class AxTreePruner {
+  static pruneAccessibilitySnapshot(rawAxNodes: any[]): { promptContext: string; indexMap: Map<number, any> } {
+    const prunedList: PrunedNode[] = [];
+    const indexMap = new Map<number, any>();
+    let counter = 1;
+
+    for (const node of rawAxNodes) {
+      // Filter strictly for interactive or semantic elements
+      if (["button", "link", "input", "combobox", "checkbox", "heading"].includes(node.role)) {
+        if (node.name && node.name.trim().length > 0) {
+          prunedList.push({
+            ref: counter,
+            role: node.role,
+            name: node.name.slice(0, 80),
+            value: node.value ? String(node.value).slice(0, 50) : undefined
+          });
+          indexMap.set(counter, node);
+          counter++;
+        }
+      }
+    }
+
+    // Format output as a compact representation: [Index] Role "Name"
+    const promptLines = prunedList.map(n => 
+      `[${n.ref}] ${n.role.toUpperCase()}: "${n.name}"${n.value ? ` (value: "${n.value}")` : ""}`
+    );
+
+    return {
+      promptContext: promptLines.join("\n"),
+      indexMap
+    };
+  }
+}
+```
+
+---
+
+### Solution 6: Tier 6 Container 60-Second Micro-Sleep Manager
+Running persistent Linux containers continuously erodes platform margins. 
+
+**The Solution:** An alarm-based shutdown manager initiates a **60-second micro-sleep countdown** on idle containers. Before termination, active workspace file diffs are flushed to SQLite via the FUSE driver.
+
+```typescript
+// packages/runtime/src/containers/ContainerMicroSleepManager.ts
+export class ContainerMicroSleepManager {
+  private idleTimeoutMs = 60_000; // 60-second micro-sleep policy
+
+  constructor(
+    private state: DurableObjectState,
+    private containerId: string
+  ) {}
+
+  async touchActivity(): Promise<void> {
+    // Postpone container sleep on detected user or agent activity
+    const wakeUntil = Date.now() + this.idleTimeoutMs;
+    await this.state.storage.put("_container_wake_until", wakeUntil);
+    await this.state.storage.setAlarm(wakeUntil);
+  }
+
+  async handleAlarm(): Promise<void> {
+    const wakeUntil = (await this.state.storage.get<number>("_container_wake_until")) || 0;
+    
+    if (Date.now() >= wakeUntil) {
+      console.log(`[MICRO-SLEEP] Container ${this.containerId} idle for 60s. Flushing FUSE diffs...`);
+      
+      // 1. Commit pending file diffs to SQLite Git DAG
+      await this.flushFuseDiffsToGitMesh();
+
+      // 2. Shut down container instance to protect platform unit margins
+      await this.terminateContainerInstance();
+    }
+  }
+
+  private async flushFuseDiffsToGitMesh() {
+    // Calls internal bridge daemon to commit uncommitted modifications
+  }
+
+  private async terminateContainerInstance() {
+    // Issues shutdown command to container lifecycle manager
+  }
+}
+```
+
+---
+
+### Solution 7: System 1 Dual-Brain Circuit Breaker Router
+Regional load spikes on edge GPUs can occasionally lead to request timeouts on Workers AI.
+
+**The Solution:** The router executes a speculative racing loop. If **Clef-flash** does not return a time-to-first-byte (TTFB) within 60ms, the router falls back to **Jev Cloud** and cancels the trailing connection.
+
+```typescript
+// packages/runtime/src/sentry/SystemOneCircuitBreaker.ts
+export class SystemOneCircuitBreaker {
+  constructor(private ai: any, private jevApiKey: string) {}
+
+  async decideWithFallback(payload: { state: string; questions: Record<string, any> }) {
+    const abortController = new AbortController();
+
+    // Primary Execution: Cloudflare Clef-flash (Target: 38ms p50)
+    const clefPromise = this.ai.run("@cf/cloudflare/clef-flash", payload, {
+      signal: abortController.signal
+    });
+
+    // Timeout Trigger: Initiate fallback if Clef does not return within 60ms
+    const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve("TIMEOUT"), 60));
+
+    const raceResult = await Promise.race([clefPromise, timeoutPromise]);
+
+    if (raceResult !== "TIMEOUT") {
+      return { result: raceResult, engine: "clef-flash" };
+    }
+
+    console.warn("[CIRCUIT-BREAKER] Clef-flash exceeded 60ms; initiating Jev Cloud fallback.");
+
+    // Secondary Execution: High-availability Jev Cloud API
+    const jevPromise = fetch("https://api.typesafe.ai/v1/predict", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${this.jevApiKey}`
+      },
+      body: JSON.stringify(payload)
+    }).then(r => r.json());
+
+    const fallbackResult = await Promise.race([clefPromise, jevPromise]);
+    abortController.abort(); // Cancel the slower upstream request
+
+    return { result: fallbackResult, engine: "jev-fallback" };
+  }
+}
+```
+
+---
+
+# Part 2: 7 Additional Runtime Constraints & Solutions
+
+Beyond the baseline specifications, operating an agent platform inside `workerd` encounters **7 additional structural constraints**:
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                              7 ADDITIONAL RUNTIME CONSTRAINTS & SOLUTIONS                              │
+├──────┬────────────────────────────┬───────────────────────────────────┬────────────────────────────────┤
+│ #    │ Runtime Constraint         │ Architectural Failure Mode        │ Naelao Engineering Solution    │
+├──────┼────────────────────────────┼───────────────────────────────────┼────────────────────────────────┤
+│ 8    │ **WebSocket Hibernation**  │ Memory state is cleared during    │ Hibernation-safe state store   │
+│      │                            │ DO sleep cycles.                  │ backed by SQLite hydration.    │
+├──────┼────────────────────────────┼───────────────────────────────────┼────────────────────────────────┤
+│ 9    │ **Subrequest Quotas**      │ Agent loops hit Cloudflare's      │ Subrequest virtualization via  │
+│      │                            │ 50-subrequest ceiling per tick.   │ alarm ticks & queue steps.     │
+├──────┼────────────────────────────┼───────────────────────────────────┼────────────────────────────────┤
+│ 10   │ **SQLite Writer Locks**    │ Heavy analytic queries block      │ Split-handle read snapshots    │
+│      │                            │ incoming chat messages & WS pings.│ with 50ms statement deadlines. │
+├──────┼────────────────────────────┼───────────────────────────────────┼────────────────────────────────┤
+│ 11   │ **Vectorize Payload Caps** │ Storing full text in vector       │ Store IDs only in Vectorize;   │
+│      │                            │ metadata exceeds size limits.     │ resolve text via SQLite joins. │
+├──────┼────────────────────────────┼───────────────────────────────────┼────────────────────────────────┤
+│ 12   │ **CPU Time Deadlines**     │ Heavy AST parsers exceed 50ms     │ Offload compilation passes to  │
+│      │                            │ worker CPU execution limits.      │ background Workflow steps.     │
+├──────┼────────────────────────────┼───────────────────────────────────┼────────────────────────────────┤
+│ 13   │ **Data Sovereignty Leak**  │ EU DO calling US R2/AI endpoints  │ Boundary validation gateway    │
+│      │                            │ violates GDPR Chapter V.          │ enforcing regional routing.    │
+├──────┼────────────────────────────┼───────────────────────────────────┼────────────────────────────────┤
+│ 14   │ **Async Microtask Loss**   │ Unawaited promises are terminated │ Register background tasks with │
+│      │                            │ when response handlers return.    │ `ctx.waitUntil()` wrappers.    │
+└──────┴────────────────────────────┴───────────────────────────────────┴────────────────────────────────┘
+```
+
+---
+
+### Constraint 8: WebSocket Hibernation & In-Memory State Loss
+To minimize idle costs, Durable Objects use WebSocket hibernation (`state.acceptWebSocket()`). While hibernating, **all in-memory JavaScript variables are cleared**. When a message wakes the DO, in-memory state is empty.
+
+**The Solution:** Treat in-memory variables purely as an ephemeral cache. Session tokens, active task IDs, and user roles are persisted to SQLite or restored via the WebSocket attachment buffer (`ws.serializeAttachment()`).
+
+```typescript
+// packages/runtime/src/realtime/HibernationSafeDO.ts
+export class HibernationSafeDO implements DurableObject {
+  constructor(private state: DurableObjectState, private env: any) {}
+
+  async fetch(request: Request): Promise<Response> {
+    const webSocketPair = new WebSocketPair();
+    const [client, server] = Object.values(webSocketPair);
+
+    // Hibernate connection and persist user session to attachment memory
+    this.state.acceptWebSocket(server);
+    server.serializeAttachment({
+      userId: request.headers.get("x-user-id"),
+      role: request.headers.get("x-user-role"),
+      joinedAt: Date.now()
+    });
+
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    // Rehydrate session state directly from attachment buffer
+    const session = ws.deserializeAttachment() as { userId: string; role: string };
+
+    // Query SQLite rather than relying on in-memory variables
+    const lastActiveTaskId = this.state.storage.sql.exec(
+      "SELECT task_id FROM _avos_user_sessions WHERE user_id = ? LIMIT 1",
+      session.userId
+    ).toArray()[0]?.task_id;
+
+    // Process message with verified session and task state
+    this.processCommand(session, lastActiveTaskId, message);
+  }
+}
+```
+
+---
+
+### Constraint 9: The 50-Subrequest Execution Wall
+On standard Workers plans, a single fetch invocation can make a maximum of **50 subrequests** (e.g. `fetch()`, `AI.run()`, `Vectorize.query()`). Multi-step agent loops (retrieval $\to$ reasoning $\to$ tool calls $\to$ callbacks) quickly exceed this threshold.
+
+**The Solution:** Subrequest Virtualization. When the agent's subrequest counter reaches **35**, it checkpoints its state to SQLite and schedules an immediate alarm (`state.storage.setAlarm(Date.now())`). The alarm triggers a fresh subrequest budget, continuing the loop seamlessly.
+
+```typescript
+// packages/runtime/src/hypervisor/SubrequestVirtualizer.ts
+export class SubrequestVirtualizer {
+  private subrequestCount = 0;
+  private readonly MAX_PER_CYCLE = 35; // Reserve margin below the 50 limit
+
+  constructor(private state: DurableObjectState) {}
+
+  async trackSubrequest(): Promise<void> {
+    this.subrequestCount++;
+    if (this.subrequestCount >= this.MAX_PER_CYCLE) {
+      console.warn("[SUBREQUEST-CEILING] Budget approaching limit; scheduling alarm tick.");
+      
+      // Save current execution state to SQLite
+      this.state.storage.sql.exec(
+        "UPDATE _avos_agent_cycle SET execution_status = 'SUSPENDED_YIELD' WHERE id = 1"
+      );
+      
+      // Schedule an immediate alarm to continue with a fresh subrequest budget
+      await this.state.storage.setAlarm(Date.now() + 10);
+      throw new Error("AVOS_YIELD_BUDGET_RESET");
+    }
+  }
+}
+```
+
+---
+
+### Constraint 10: SQLite Single-Writer Transaction Contention
+Cloudflare DO SQLite enforces a single-writer locking model. Running complex analytics or full-table scans can block incoming chat messages and WebSocket pings, triggering client connection drops.
+
+**The Solution:** Dual-Connection Architecture. Read-only queries use detached read snapshot handles with strict **50ms statement deadlines**, ensuring write locks are released quickly for interactive traffic.
+
+```typescript
+// packages/runtime/src/storage/SafeSqlExecutor.ts
+export class SafeSqlExecutor {
+  constructor(private sql: SqlStorage) {}
+
+  async executeInteractiveWrite(query: string, ...params: any[]): Promise<void> {
+    // Quick write transaction
+    this.sql.exec(query, ...params);
+  }
+
+  async executeAnalyticalRead(query: string, ...params: any[]): Promise<any[]> {
+    // Set a strict 50ms statement deadline to prevent thread starvation
+    const timeoutTimer = setTimeout(() => {
+      throw new Error("SQLITE_QUERY_DEADLINE_EXCEEDED: Analytical query exceeded 50ms.");
+    }, 50);
+
+    try {
+      const cursor = this.sql.exec(query, ...params);
+      return cursor.toArray();
+    } finally {
+      clearTimeout(timeoutTimer);
+    }
+  }
+}
+```
+
+---
+
+### Constraint 11: Vectorize Metadata Caps & Cross-Regional Latency
+Cloudflare Vectorize limits metadata size per vector, making it unsuitable for storing full text chunks. Querying a US-hosted index from an EU Durable Object also introduces high cross-region latency.
+
+**The Solution:** The Two-Tier Split. Vectorize stores only the vector embedding, node ID, and department security bitmask. Full document chunks reside in the local DO SQLite database (`_avos_rag_chunks`). Vector queries resolve IDs, followed by zero-latency joins against local SQLite tables.
+
+```typescript
+// packages/runtime/src/rag/TwoTierVectorIndex.ts
+export class TwoTierVectorIndex {
+  constructor(
+    private vectorize: VectorizeIndex,
+    private sql: SqlStorage
+  ) {}
+
+  async search(queryVector: number[], roleClearanceRank: number): Promise<Array<{ text: string; score: number }>> {
+    // 1. Vector index handles top-K vector similarity and security bitmask filtering
+    const matches = await this.vectorize.query(queryVector, {
+      topK: 5,
+      filter: { clearance_rank: { $lte: roleClearanceRank } },
+      returnMetadata: false // Omit metadata payloads to minimize network transfer
+    });
+
+    if (matches.matches.length === 0) return [];
+
+    // 2. Fetch matched text chunks directly from the local DO SQLite store
+    const ids = matches.matches.map(m => `'${m.id}'`).join(",");
+    const rows = this.sql.exec(
+      `SELECT id, chunk_text FROM _avos_rag_chunks WHERE id IN (${ids})`
+    ).toArray() as Array<{ id: string; chunk_text: string }>;
+
+    const rowMap = new Map(rows.map(r => [r.id, r.chunk_text]));
+
+    return matches.matches.map(m => ({
+      text: rowMap.get(m.id) || "",
+      score: m.score
+    }));
+  }
+}
+```
+
+---
+
+### Constraint 12: CPU Time Limits vs. Heavy WASM Execution
+Standard Cloudflare Workers enforce a **50ms CPU time limit** per request. Running complex AST transformations or large regex parsing pipelines inside main request handlers can trigger execution timeouts (`Error: CPU time limit exceeded`).
+
+**The Solution:** Offload CPU-heavy operations to background **Cloudflare Workflows** or **Tier 6 Containers**, keeping the primary edge request thread focused on lightweight routing.
+
+```typescript
+// packages/runtime/src/hypervisor/CpuOffloader.ts
+export class CpuOffloader {
+  constructor(private workflows: any, private spaceId: string) {}
+
+  async runHeavyTask(taskType: "AST_LINT" | "PDF_EXTRACT", rawData: string): Promise<any> {
+    // Dispatch CPU-intensive operations to Cloudflare Workflows
+    const instance = await this.workflows.create({
+      params: {
+        taskType,
+        spaceId: this.spaceId,
+        payloadRef: rawData
+      }
+    });
+
+    return { status: "QUEUED_TO_WORKFLOW", instanceId: instance.id };
+  }
+}
+```
+
+---
+
+### Constraint 13: Data Sovereignty & Regional Cross-Border Leaks
+If a Durable Object is pinned to `jurisdiction: "eu"`, calling an AI model or R2 bucket outside that jurisdiction can result in regulatory non-compliance under GDPR Chapter V.
+
+**The Solution:** The **Jurisdictional Boundary Validator** validates outbound data paths, confirming that R2 storage buckets and AI inference endpoints match the tenant's geographic policy.
+
+```typescript
+// packages/runtime/src/compliance/JurisdictionalValidator.ts
+export class JurisdictionalValidator {
+  constructor(private tenantJurisdiction: "eu" | "us" | "global") {}
+
+  assertR2BindingCompatible(bucketLocation: string) {
+    if (this.tenantJurisdiction === "eu" && !bucketLocation.startsWith("eu-")) {
+      throw new Error(`COMPLIANCE_ERROR: EU-pinned tenant attempted write to non-EU R2 bucket: ${bucketLocation}`);
+    }
+  }
+
+  getAiModelEndpoint(modelName: string): string {
+    // Direct requests to regionally pinned inference endpoints
+    if (this.tenantJurisdiction === "eu") {
+      return `@cf/eu-jurisdiction/${modelName}`;
+    }
+    return `@cf/${modelName}`;
+  }
+}
+```
+
+---
+
+### Constraint 14: Unhandled Async Microtask Loss
+In `workerd`, when a `fetch()` response is returned to the client, any remaining unawaited asynchronous promises in the microtask queue are terminated, which can lead to dropped telemetry and failed write operations.
+
+**The Solution:** Track background promises via **`ctx.waitUntil()`** wrappers to ensure async tasks complete cleanly after responses are sent.
+
+```typescript
+// packages/runtime/src/utils/SafeLifecycle.ts
+export class SafeLifecycle {
+  constructor(private ctx: ExecutionContext) {}
+
+  deferTask(task: () => Promise<void>) {
+    // Register background tasks to prevent premature worker termination
+    this.ctx.waitUntil(
+      task().catch((err) => {
+        console.error("[BACKGROUND-TASK-FAILED]", err);
+      })
+    );
+  }
+}
+```
+
+---
+
+# Part 3: Architecture Summary
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                 THE COMPLETE 14-POINT HARDENED STACK                                   │
+├────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│  1. Zig-WASM Engine:       4MB static linear arena; zero dynamic reallocation OOMs.                    │
+│  2. Pointer-LFS:           Auto-spill at 256 KB to R2; SQLite handles remain fast.                     │
+│  3. Loader Strategy:       Pre-bundled JS/WASM modules via Foundry pipeline; no edge TSX compiles.     │
+│  4. Workflows:             Envelopes offload step payloads >1 KB to R2 checkpoints.                    │
+│  5. Browser Kitesurf:      Prunes DOM trees into indexed AXTree lists (<3,000 tokens).                 │
+│  6. Tier 6 Containers:     60s micro-sleep idle timers with automatic FUSE commit flushes.             │
+│  7. System 1 Reflex:       Dual-brain racing router (Clef-flash 38ms vs Jev Cloud failover).           │
+│  8. Hibernation Engine:    Stateless memory model; state rehydrates from SQLite & attachments.         │
+│  9. Subrequest Manager:    Monitors subrequest counts and yields execution via DO alarm ticks.         │
+│ 10. SQLite Locking:        Enforces 50ms analytical statement timeouts to prevent write starvation.    │
+│ 11. Vector Search:         Vectorize stores IDs only; text retrieved via local SQLite joins.           │
+│ 12. CPU Execution:         Offloads tasks exceeding 50ms CPU time to Cloudflare Workflows.             │
+│ 13. Data Sovereignty:      Validates regional boundaries across R2 buckets and inference routes.       │
+│ 14. Async Lifecycle:       Wraps background tasks in `ctx.waitUntil()` to ensure reliable completion.  │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+By addressing these runtime realities directly, **Naelao / AVOS** delivers the operational reliability, memory safety, and performance required for autonomous edge workloads.

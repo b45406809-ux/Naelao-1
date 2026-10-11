@@ -1,7 +1,7 @@
 /**
  * dynamic-workflow (spec §12.1) — author and deploy CF Workflows for recurring tasks that
  * should run without AgentDO being awake. Operations: workflow.create, workflow.run,
- * workflow.schedule, workflow.status.
+ * workflow.schedule, workflow.status, and workflow.cancel.
  *
  * Workflow registration needs the platform workflow registry, which the engine does not
  * own; these delegate to host orchestration hooks and degrade honestly when unwired.
@@ -38,7 +38,15 @@ export const dynamicWorkflow: PrebuiltScript = {
   description:
     "Create, run, schedule (cron), and check status of durable CF Workflows.",
   domain: "orchestration",
-  requires_tier: 2,
+  requires_tier: 3,
+  paramHints: {
+    "workflow.create": "name, code: export async function execute(step, ctx); capabilities: installed operation names; use ctx.params and ctx.tools.call(stableStepKey, operation, params)",
+    "workflow.run": "name, params, start_key (reuse for retries), workflow_class, budget_credits, optional installation_id",
+    "workflow.status": "id: workflow run ID",
+    "workflow.signal": "id, type, payload: JSON event",
+    "workflow.cancel": "id: cancel durably and release its reservation",
+    "workflow.retry": "id: explicitly restart a failed workflow; committed effects are reused, uncertain effects require reconciliation",
+  },
   operations: {
     async "workflow.create"(args, ctx) {
       const h = hooks(ctx);
@@ -48,7 +56,9 @@ export const dynamicWorkflow: PrebuiltScript = {
           reason: "workflow registry not available in this environment",
         };
       const compiled = compileWorkflowEntrypoint(String(args.code ?? ""));
-      return await h.workflowCreate(String(args.name ?? ""), compiled.source);
+      const capabilities = args.capabilities === undefined ? [] : args.capabilities;
+      if (!Array.isArray(capabilities) || capabilities.some((op) => typeof op !== "string")) throw new Error("workflow_capabilities_invalid");
+      return await h.workflowCreate(String(args.name ?? ""), compiled.source, { capabilities });
     },
     async "workflow.run"(args, ctx) {
       const workflowClass = String(
@@ -78,12 +88,15 @@ export const dynamicWorkflow: PrebuiltScript = {
           inheritChatHistory: false,
           workflowClass: route.workflowClass,
           budgetKey: route.budgetKey,
+          budgetCredits: route.budgetCredits,
           reportTarget: route.reportTarget,
           escalationTarget: route.escalationTarget,
+          ...(typeof args.start_key === "string" ? { startKey: args.start_key } : {}),
+          ...(typeof args.installation_id === "string" ? { installationId: args.installation_id } : {}),
         }
       );
       return {
-        queued: true,
+        queued: !!(result as { queued?: boolean } | null)?.queued,
         result,
         ...(workflowClass === "ephemeral_task"
           ? {
@@ -126,6 +139,23 @@ export const dynamicWorkflow: PrebuiltScript = {
       if (!h.workflowStatus)
         return { ok: false, reason: "workflow status not available" };
       return await h.workflowStatus(String(args.id ?? ""));
+    },
+    async "workflow.cancel"(args, ctx) {
+      const h = hooks(ctx);
+      if (!h.workflowCancel) return { ok: false, reason: "workflow cancellation not available" };
+      const id = String(args.id ?? "");
+      if (!id) throw new Error("workflow.cancel requires an id");
+      return await h.workflowCancel(id);
+    },
+    async "workflow.signal"(args, ctx) {
+      const h = hooks(ctx);
+      if (!h.workflowSignal) throw new Error("workflow_signal_unavailable");
+      return h.workflowSignal(String(args.id ?? ""), String(args.type ?? ""), args.payload ?? null);
+    },
+    async "workflow.retry"(args, ctx) {
+      const h = hooks(ctx);
+      if (!h.workflowRetry) throw new Error("workflow_retry_unavailable");
+      return h.workflowRetry(String(args.id ?? ""));
     },
   },
 };

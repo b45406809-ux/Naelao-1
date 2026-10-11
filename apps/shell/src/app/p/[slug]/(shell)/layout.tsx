@@ -20,12 +20,14 @@ import {
   getMe,
   listProjects,
   listSessions,
+  listThreads,
   listMyBusinesses,
   listAllApprovals,
   type ShellManifest,
   type ProductUserMe,
   type Project,
   type SessionSummary,
+  type ThreadSummary,
   type Business,
 } from "@/lib/api";
 
@@ -39,6 +41,7 @@ import {
  *  "show more" threshold anyway, so this is the pool that list draws from — five was small enough
  *  that a couple of days' work pushed a conversation out of reach without ever going to /sessions. */
 const SIDEBAR_RECENT_SESSIONS = 15;
+const SIDEBAR_RECENT_PROJECT_THREADS = 15;
 
 const DEFAULT_PRIMARY_NAV: SidebarNavEntry[] = [
   { key: "dashboard", icon: "assistant", label: "Dashboard" },
@@ -50,7 +53,7 @@ const DEFAULT_MORE_NAV: SidebarNavEntry[] = [
   // Approvals sits in the primary nav below, not here, and only once something is actually
   // waiting: a permanently-visible empty inbox trains people to ignore it, which defeats the one
   // job it has.
-  { key: "agents", icon: "agents", label: "Agents" },
+  { key: "agents", icon: "agents", label: "Workers" },
   { key: "analytics", icon: "analytics", label: "Analytics" },
   { key: "knowledge", icon: "knowledge", label: "Knowledge" },
   // Step 20: the Plugins directory — native business-feature "plugins" (Wallet, CRM, Business
@@ -90,6 +93,7 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
   const [me, setMe] = React.useState<ProductUserMe | null>(null);
   const [projects, setProjects] = React.useState<Project[]>([]);
   const [sessions, setSessions] = React.useState<SessionSummary[]>([]);
+  const [projectThreads, setProjectThreads] = React.useState<ThreadSummary[]>([]);
   const [businesses, setBusinesses] = React.useState<Business[]>([]);
   // Distinct from businesses.length === 0 (the empty initial state before the list has even been
   // fetched) — the business-first gate and default-business auto-select below both need to know
@@ -100,15 +104,31 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
   // makes it easy to miss that something needs a decision.
   const [pendingApprovals, setPendingApprovals] = React.useState(0);
   const [switcherOpen, setSwitcherOpen] = React.useState(false);
-  // Live-reported bug: below the mockup's 900px breakpoint, #sidebar has always been rendered
-  // permanently off-canvas (packages/ui's own ported CSS transforms it out of view unless it
-  // carries a `mobile-open` class) — but nothing here ever added that class or gave a person any
-  // way to bring it back. There was no hamburger button, no drawer state, nothing: the sidebar
-  // was simply unreachable on a phone. Fixed by wiring the mobile top bar's hamburger to a real
-  // toggle, and closing the drawer automatically on every navigation (matching the mockup's own
-  // closeMobileSidebar()-on-every-nav behaviour).
+  // Below the mockup's 900px breakpoint the left sidebar is an off-canvas drawer. The thread
+  // header owns its hamburger on small screens; keeping the control beside the conversation title
+  // avoids spending a second full-width row on a mobile-only shell header.
   const [mobileNavOpen, setMobileNavOpen] = React.useState(false);
   React.useEffect(() => { setMobileNavOpen(false); }, [pathname]);
+  React.useEffect(() => {
+    const toggle = () => setMobileNavOpen((current) => !current);
+    window.addEventListener("naelao:toggle-mobile-nav", toggle);
+    return () => window.removeEventListener("naelao:toggle-mobile-nav", toggle);
+  }, []);
+  // The workspace opens with the global navigation collapsed so the active canvas gets the
+  // attention. Keep the choice per product, while preserving the compact default for new users.
+  const sidebarKey = `naelao-sidebar-collapsed:${product.slug}`;
+  const [sidebarCollapsed, setSidebarCollapsed] = React.useState(true);
+  React.useEffect(() => {
+    const stored = window.localStorage.getItem(sidebarKey);
+    if (stored !== null) setSidebarCollapsed(stored !== "0");
+  }, [sidebarKey]);
+  const toggleSidebar = React.useCallback(() => {
+    setSidebarCollapsed((current) => {
+      const next = !current;
+      window.localStorage.setItem(sidebarKey, next ? "1" : "0");
+      return next;
+    });
+  }, [sidebarKey]);
   // hybrid/tenant products (Launchpad) are business-first: nothing chattable exists at the
   // product root, every thread/project/session belongs to a business. "team" mode is the
   // universal Journey-1B shell for a non-Launchpad SpaceType, where the product root IS the one
@@ -152,9 +172,6 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
     // balance renders as 0 forever. Always the product root.
     getMe(product.space_id, creds).then(setMe).catch(() => {});
     listProjects(activeSpaceId, creds).then(setProjects).catch(() => {});
-    // The sidebar's recent list is assistant SESSIONS (what Home starts), not structural project
-    // threads — those belong to a project and are reached through /projects/:id.
-    listSessions(activeSpaceId, creds, SIDEBAR_RECENT_SESSIONS).then(setSessions).catch(() => {});
     // The switcher's own entry list is always the product-root's businesses, regardless of which
     // one is currently active — deliberately NOT activeSpaceId.
     listMyBusinesses(product.space_id, creds)
@@ -164,6 +181,29 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, activeSpaceId, product.space_id, product.slug]);
+
+  // Keep both recent conversation groups live while the shell stays mounted. Chat dispatches this
+  // event immediately after lazy session creation, so the new session appears without a reload;
+  // the project-thread list is refreshed at the same time because a newly opened project thread
+  // should be available in the adjacent group immediately as well.
+  const refreshSidebarConversations = React.useCallback(() => {
+    if (!session) return;
+    const sidebarCreds = { sessionToken: session.session_token, endUserId: session.end_user_id };
+    listSessions(activeSpaceId, sidebarCreds, SIDEBAR_RECENT_SESSIONS).then(setSessions).catch(() => {});
+    listThreads(activeSpaceId, sidebarCreds)
+      .then(setProjectThreads)
+      .catch(() => {});
+  }, [activeSpaceId, session?.session_token, session?.end_user_id]);
+
+  React.useEffect(() => {
+    refreshSidebarConversations();
+    const onSessionCreated = (event: Event) => {
+      const detail = (event as CustomEvent<{ spaceId?: string }>).detail;
+      if (!detail?.spaceId || detail.spaceId === activeSpaceId) refreshSidebarConversations();
+    };
+    window.addEventListener("naelao:session-created", onSessionCreated);
+    return () => window.removeEventListener("naelao:session-created", onSessionCreated);
+  }, [activeSpaceId, refreshSidebarConversations]);
 
   // Live-reported bug: a pending approval is per-BUSINESS (HITLApprovalDO is addressed
   // `hitl:{spaceId}`), but this used to only ever check `activeSpaceId` — whichever business the
@@ -209,15 +249,16 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
     router.replace(`/p/${product.slug}/spaces?onboarding=1`);
   }, [isHydrated, isAuthenticated, activeSpaceHydrated, manifest, businessesLoaded, requiresBusiness, businesses.length, pathname, product.slug, router]);
 
-  // Once a business-first user actually has a business, default them straight into it rather than
-  // leaving them parked on the (now unreachable-by-gate, but still the default) product root.
-  // Never overrides an explicit switch — only fires while activeSpaceId is still the untouched
-  // default.
+  // Once a business-first user actually has a business, default them straight into the last valid
+  // business (or the first one). A stale sessionStorage id must never strand the shell on the
+  // product root or on a deleted business.
   React.useEffect(() => {
     if (!activeSpaceHydrated || !businessesLoaded || !requiresBusiness) return;
     if (businesses.length === 0) return;
-    if (activeSpaceId !== product.space_id) return;
-    setActiveSpace(businesses[0]!.id, businesses[0]!.name);
+    const activeBusiness = businesses.find((b) => b.id === activeSpaceId);
+    if (activeBusiness) return;
+    const next = businesses[0]!;
+    setActiveSpace(next.id, next.name);
   }, [activeSpaceHydrated, businessesLoaded, requiresBusiness, businesses, activeSpaceId, product.space_id, setActiveSpace]);
 
   // "New session" doesn't create anything — /new IS the new-session surface, and a session is
@@ -252,6 +293,9 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
   // "new thread"/"new project" buttons must not offer to create either against the product root
   // while they're standing right there looking at "create your first business."
   const canUseWorkspace = !requiresBusiness || businesses.length > 0;
+  const recentProjectThreads = projectThreads
+    .filter((thread) => Boolean(thread.project_id) && !thread.parent_thread_id && thread.thread_kind !== "private")
+    .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
 
   const currentEntry = activeSpaceId === product.space_id
     ? {
@@ -272,38 +316,14 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
 
   return (
     <div id="app">
-      {/* Only visible below the 900px breakpoint (packages/ui/src/styles.css's own media query) —
-          a persistent bar carrying the one control a phone otherwise has no way to reach: opening
-          the off-canvas sidebar. */}
-      <div className="mobile-topbar">
-        <button
-          type="button"
-          className="mobile-menu-btn"
-          aria-label="Open menu"
-          onClick={() => setMobileNavOpen((v) => !v)}
-        >
-          <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="currentColor">
-            <line x1="2" y1="4" x2="14" y2="4" />
-            <line x1="2" y1="8" x2="14" y2="8" />
-            <line x1="2" y1="12" x2="14" y2="12" />
-          </svg>
-        </button>
-        <div className="mt-logo">
-          <div className="logo-mark">
-            <svg viewBox="0 0 14 14">
-              <path d="M7 1L12.5 4.25V10.75L7 14L1.5 10.75V4.25L7 1Z" />
-            </svg>
-          </div>
-          <span>{manifest?.space_name ?? product.product_name}</span>
-        </div>
-        <div className="mt-spacer" />
-      </div>
       <div
         className={["mobile-backdrop", mobileNavOpen ? "show" : ""].filter(Boolean).join(" ")}
         onClick={() => setMobileNavOpen(false)}
       />
       <Sidebar
         brandName={manifest?.space_name ?? product.product_name}
+        iconOnly={sidebarCollapsed}
+        onToggleCollapse={toggleSidebar}
         mobileOpen={mobileNavOpen}
         activeKey={activeKey}
         onNavigate={(key) => router.push(`/p/${product.slug}/${key}`)}
@@ -321,6 +341,14 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
         // Only claim there are more when the fetch actually came back full — otherwise an account
         // with three sessions is told some are hidden.
         hasMoreThreads={sessions.length >= SIDEBAR_RECENT_SESSIONS}
+        projectThreads={recentProjectThreads.slice(0, SIDEBAR_RECENT_PROJECT_THREADS).map((thread) => ({
+          id: thread.id,
+          label: thread.title ?? "Untitled thread",
+          ...(thread.project_id ? { projectId: thread.project_id } : {}),
+        }))}
+        onOpenProjectThread={(threadId) => router.push(`/p/${product.slug}/threads/${threadId}`)}
+        onMoreProjectThreads={() => router.push(`/p/${product.slug}/threads`)}
+        hasMoreProjectThreads={recentProjectThreads.length > SIDEBAR_RECENT_PROJECT_THREADS}
         spaceSwitcher={{
           current: currentEntry,
           entries: [
@@ -335,7 +363,14 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
             ...businesses.map((b) => ({ id: b.id, name: b.name, meta: `${b.role} · ${b.space_status}` })),
           ],
           open: switcherOpen,
-          onToggle: () => setSwitcherOpen((v) => !v),
+          onToggle: () => {
+            if (sidebarCollapsed) {
+              toggleSidebar();
+              setSwitcherOpen(false);
+            } else {
+              setSwitcherOpen((v) => !v);
+            }
+          },
           onSwitch: (id) => {
             setSwitcherOpen(false);
             if (id === product.space_id) {

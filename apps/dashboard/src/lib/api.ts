@@ -41,6 +41,20 @@ export interface Space {
   created_at: string;
 }
 
+export interface ByokKeyMetadata {
+  id: string;
+  label: string;
+  created_at?: string;
+  active: boolean;
+}
+
+export interface ByokProviderStatus {
+  provider: string;
+  configured: boolean;
+  active_key_id?: string | null;
+  keys: ByokKeyMetadata[];
+}
+
 export interface CreateSpaceInput {
   name: string;
   spacetype_id: string;
@@ -237,6 +251,34 @@ export async function createSpace(data: CreateSpaceInput): Promise<Space> {
 
 export async function getSpace(id: string): Promise<Space> {
   return apiFetch<Space>(`/spaces/${id}`);
+}
+
+// ── Space model provider keys ───────────────────────────────────────────────
+
+export async function getByokStatus(spaceId: string): Promise<ByokProviderStatus[]> {
+  const res = await apiFetch<{ providers: ByokProviderStatus[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/llm-byok`);
+  return res.providers;
+}
+
+export async function addByokKey(spaceId: string, provider: string, key: string, label?: string): Promise<ByokKeyMetadata> {
+  return apiFetch<ByokKeyMetadata>(`/v1/spaces/${encodeURIComponent(spaceId)}/llm-byok`, {
+    method: "PUT",
+    body: JSON.stringify({ provider, key, ...(label?.trim() ? { label: label.trim() } : {}) }),
+  });
+}
+
+export async function selectByokKey(spaceId: string, provider: string, keyId: string): Promise<void> {
+  await apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/llm-byok/select`, {
+    method: "POST",
+    body: JSON.stringify({ provider, key_id: keyId }),
+  });
+}
+
+export async function removeByokKey(spaceId: string, provider: string, keyId: string): Promise<void> {
+  await apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/llm-byok/remove`, {
+    method: "POST",
+    body: JSON.stringify({ provider, key_id: keyId }),
+  });
 }
 
 export async function updateSpace(

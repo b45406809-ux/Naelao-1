@@ -10,7 +10,7 @@ export const LAUNCHPAD_MANIFEST: NaelaoSpaceTypeManifestV2 = {
   id: "launchpad",
   name: "Launchpad",
   description: "Creator economy platform — sell products, subscriptions, and memberships with AI-powered operations.",
-  version: "2.0.0",
+  version: "2.1.0",
   author: "naelao",
   icon: "https://assets.naelao.com/spacetypes/launchpad/icon-128.png",
   tags: ["creator", "e-commerce", "subscription", "community", "payments"],
@@ -79,19 +79,18 @@ export const LAUNCHPAD_MANIFEST: NaelaoSpaceTypeManifestV2 = {
     },
   },
 
-  // Default: a single business operated by an invited team, one assistant per member.
-  // Builders flip membershipModel→"tenant"/"hybrid" to resell (let customers create
-  // their own businesses, Polsia-style), and assistantMode→"shared" for one CEO chat.
+  // Launchpad products begin with a business onboarding flow. The product root is the
+  // catalogue/onboarding hub; the user's first real workspace is a child business.
   productConfig: {
-    tenancy: "team",
-    membershipModel: "team",
+    tenancy: "saas",
+    membershipModel: "hybrid",
     agencyShell: false,
     assistantMode: "per-user",
-    allowPublicSignup: false,
+    allowPublicSignup: true,
     allowedChildSpaceTypes: ["launchpad"],
     billingRelationship: "platform",
     userPermissions: {
-      canCreateSpace: false,
+      canCreateSpace: true,
       canCreateSubSpaces: true,
       canCreateProjects: true,
       maxThreadsPerUser: null,

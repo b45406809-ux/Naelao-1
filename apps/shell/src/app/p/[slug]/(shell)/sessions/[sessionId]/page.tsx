@@ -1,7 +1,5 @@
 "use client";
 
-export const runtime = "edge";
-
 // One assistant conversation, opened by id. Distinct from /threads/:id, which is a STRUCTURAL
 // thread inside a project — a different table with a different lifecycle. Sessions are what the
 // sidebar lists and what Home starts; project work lives under /projects/:id.

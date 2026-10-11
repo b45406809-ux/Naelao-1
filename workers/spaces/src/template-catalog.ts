@@ -10,6 +10,10 @@
 export interface TemplateCatalogEntry {
   id: string;
   name: string;
+  description: string;
+  template_mode: "ave" | "cowork";
+  vertical: string;
+  wallet_mode: "business_wallet" | "company_budget";
   coming_soon: boolean;
   free_tier_eligible: boolean;
   /** Connector catalogue ids (catalogue.ts) this template's onboarding recommends connecting —
@@ -24,10 +28,11 @@ export interface TemplateCatalogEnv {
   AGENTS_WORKER?: Fetcher;
 }
 
-// v3: entry shape gained connectors (v2 gained free_tier_eligible) — a stale cache entry from an
+// v5: the catalogue's new verticals are free-tier eligible in local/initial rollout (v4 gained
+// operating-model metadata, v3 gained connectors, v2 gained free_tier_eligible) — a stale cache entry from an
 // older shape would make the onboarding "Recommended apps" panel silently show nothing for up to
 // an hour after deploy, so the key is bumped again rather than reusing v2.
-const CATALOG_CACHE_KEY = "launchpad-template-catalog:v3";
+const CATALOG_CACHE_KEY = "launchpad-template-catalog:v5";
 
 /**
  * Load the catalogue, or null when it is genuinely UNAVAILABLE (no AGENTS_WORKER binding, or
@@ -48,11 +53,25 @@ export async function loadTemplateCatalogOrNull(env: TemplateCatalogEnv): Promis
   }
   if (!resp.ok) return null;
   const body = await resp.json<{
-    templates: Array<{ id: string; name: string; coming_soon?: boolean; free_tier_eligible?: boolean; connectors?: string[] }>;
+    templates: Array<{
+      id: string;
+      name: string;
+      description?: string;
+      template_mode?: "ave" | "cowork";
+      vertical?: string;
+      wallet_mode?: "business_wallet" | "company_budget";
+      coming_soon?: boolean;
+      free_tier_eligible?: boolean;
+      connectors?: string[];
+    }>;
   }>();
   const catalog: TemplateCatalogEntry[] = body.templates.map((t) => ({
     id: t.id,
     name: t.name,
+    description: t.description ?? "Preconfigured workspace, agents and setup.",
+    template_mode: t.template_mode ?? "ave",
+    vertical: t.vertical ?? "Digital business",
+    wallet_mode: t.wallet_mode ?? "business_wallet",
     coming_soon: t.coming_soon ?? false,
     free_tier_eligible: t.free_tier_eligible ?? false,
     connectors: t.connectors ?? [],

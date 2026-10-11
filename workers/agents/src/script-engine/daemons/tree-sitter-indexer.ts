@@ -15,7 +15,12 @@ function blockEnd(lines: string[], start: number, python: boolean): number {
   return start + 1;
 }
 
-/** Lightweight isolate-safe AST symbol parser; its ABI permits replacement by web-tree-sitter WASM. */
+/**
+ * Lightweight isolate-safe lexical symbol heuristic. Despite the legacy TreeSitterIndexer /
+ * ast_symbols names, this is not a syntax parser: it does not validate grammar or support safe
+ * semantic merges. Its index is advisory only; merge acceptance remains deterministic tests,
+ * repository CAS, or human review.
+ */
 export function extractSymbols(file: SourceFile): AstSymbol[] {
   if (!/\.(?:[cm]?[jt]sx?|py)$/.test(file.path)) return [];
   const lines = file.content.split(/\r?\n/); const python = file.path.endsWith(".py"); const out: AstSymbol[] = [];
@@ -44,6 +49,6 @@ export class TreeSitterIndexer {
     for (const file of files) { this.sql.exec("DELETE FROM ast_symbols WHERE file_path = ?", file.path); for (const symbol of extractSymbols(file)) { this.sql.exec("INSERT INTO ast_symbols(name,kind,file_path,start_line,end_line,signature,docstring) VALUES (?,?,?,?,?,?,?)", symbol.name,symbol.kind,symbol.filePath,symbol.startLine,symbol.endLine,symbol.signature,symbol.docstring); count++; } }
     return { files: files.length, symbols: count };
   }
-  async query(term: string): Promise<AstSymbol[]> { return [...this.sql.exec<Record<string, unknown>>("SELECT name,kind,file_path AS filePath,start_line AS startLine,end_line AS endLine,signature,docstring FROM ast_symbols WHERE name = ? ORDER BY file_path,start_line LIMIT 100", term)] as unknown as AstSymbol[]; }
-  async symbols(path: string): Promise<AstSymbol[]> { return [...this.sql.exec<Record<string, unknown>>("SELECT name,kind,file_path AS filePath,start_line AS startLine,end_line AS endLine,signature,docstring FROM ast_symbols WHERE file_path = ? ORDER BY start_line LIMIT 1000", path)] as unknown as AstSymbol[]; }
+  async query(term: string): Promise<AstSymbol[]> { return [...this.sql.exec("SELECT name,kind,file_path AS filePath,start_line AS startLine,end_line AS endLine,signature,docstring FROM ast_symbols WHERE name = ? ORDER BY file_path,start_line LIMIT 100", term)] as unknown as AstSymbol[]; }
+  async symbols(path: string): Promise<AstSymbol[]> { return [...this.sql.exec("SELECT name,kind,file_path AS filePath,start_line AS startLine,end_line AS endLine,signature,docstring FROM ast_symbols WHERE file_path = ? ORDER BY start_line LIMIT 1000", path)] as unknown as AstSymbol[]; }
 }

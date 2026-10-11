@@ -58,12 +58,12 @@ const COMPONENTS = {
   },
 } as const;
 
-function MarkdownImpl({ text }: { text: string }): React.ReactElement {
+function MarkdownImpl({ text, onAction }: { text: string; onAction?: (widgetId: string, value: unknown) => void }): React.ReactElement {
   const receipt = parseReceipt(text);
   if (receipt) return <WorkflowReceiptCard card={receipt} />;
   const parts = text.split(/(<ui_widget\s+type="[^"]+">[\s\S]*?<\/ui_widget>)/g);
   return (
-    <>{parts.map((part, index) => { const match = part.match(/^<ui_widget\s+type="([^"]+)">([\s\S]*)<\/ui_widget>$/); if (!match) return <ReactMarkdown key={index} remarkPlugins={[remarkGfm]} components={COMPONENTS as never}>{part}</ReactMarkdown>; try { const json = JSON.parse(match[2]!); return <GeneratedWidget key={index} value={{ ...json, type: match[1] }}/>; } catch { return <span key={index}>Invalid widget</span>; } })}</>
+    <>{parts.map((part, index) => { const match = part.match(/^<ui_widget\s+type="([^"]+)">([\s\S]*)<\/ui_widget>$/); if (!match) return <ReactMarkdown key={index} remarkPlugins={[remarkGfm]} components={COMPONENTS as never}>{part}</ReactMarkdown>; try { const json = JSON.parse(match[2]!); return <GeneratedWidget key={index} value={{ ...json, type: match[1] }} {...(onAction ? { onAction } : {})}/>; } catch { return <span key={index}>Invalid widget</span>; } })}</>
   );
 }
 
@@ -71,4 +71,4 @@ function MarkdownImpl({ text }: { text: string }): React.ReactElement {
  * Memoised on the exact text. This renders on every tick of a reveal animation and on every poll
  * of a growing answer, and re-parsing an unchanged string each time is pure waste.
  */
-export const Markdown = React.memo(MarkdownImpl, (a, b) => a.text === b.text);
+export const Markdown = React.memo(MarkdownImpl, (a, b) => a.text === b.text && a.onAction === b.onAction);

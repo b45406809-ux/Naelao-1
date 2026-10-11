@@ -83,6 +83,16 @@ export async function sha256(bytes: Uint8Array): Promise<string> {
   return hex(await crypto.subtle.digest("SHA-256", bytes));
 }
 
+/** Git compares tree names as unsigned UTF-8 bytes; directory entries sort with a trailing slash. */
+function compareGitTreeNames(left: string, right: string): number {
+  const a = encoder.encode(left), b = encoder.encode(right);
+  const length = Math.min(a.length, b.length);
+  for (let index = 0; index < length; index++) {
+    if (a[index] !== b[index]) return a[index]! - b[index]!;
+  }
+  return a.length - b.length;
+}
+
 export async function encodeGitObject(
   type: "blob" | "tree" | "commit" | "tag",
   body: Uint8Array
@@ -141,7 +151,7 @@ export async function encodeTreeHierarchy(entries: Record<string, TreeEntry>): P
       const bytes = new Uint8Array(prefix.length + 20); bytes.set(prefix); bytes.set(rawOid(file.oid), prefix.length);
       records.push({ name, bytes });
     }
-    records.sort((a, b) => a.name.localeCompare(b.name));
+    records.sort((a, b) => compareGitTreeNames(a.name, b.name));
     const length = records.reduce((sum, item) => sum + item.bytes.length, 0);
     const body = new Uint8Array(length); let offset = 0;
     for (const record of records) { body.set(record.bytes, offset); offset += record.bytes.length; }

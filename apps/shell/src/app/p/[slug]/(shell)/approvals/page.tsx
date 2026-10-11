@@ -1,6 +1,5 @@
 "use client";
 
-export const runtime = "edge";
 
 // Approvals — the things your agents are waiting on you for.
 //

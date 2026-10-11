@@ -1,12 +1,13 @@
 // G-C01: Credentials worker — encrypted per-Space credential storage.
 //
-// Credential hierarchy (CLAUDE.md open follow-up, closed here): a credential is resolved for an
-// ACTING USER in four tiers, most-specific-wins EXCEPT a privileged override always wins:
+// Credential hierarchy: a credential is resolved for an acting user and signed project context;
+// the privileged override remains the highest-precedence space credential.
 //   1. space-scope row with is_override=1  — privileged (owner/admin) override, always wins
 //   2. user-scope row for the acting user  — personal credential (the per-user default)
-//   3. space-scope row with is_override=0  — shared business-wide fallback (optionally narrowed
+//   3. project-bound row                    — available only with a signed project credential token
+//   4. space-scope row with is_override=0  — shared business-wide fallback (optionally narrowed
 //      to specific members via shared_with_user_ids — NULL means everyone, unchanged default)
-//   4. the PRODUCT ROOT's own space-scope row — a builder-set product-wide default, checked only
+//   5. the PRODUCT ROOT's own space-scope row — a builder-set product-wide default, checked only
 //      when this space is a business (has parent_space_id) and nothing matched above
 // A caller above this worker (mcp-hub, a prebuilt op) applies its own final fallback — a
 // Naelao-held platform Workers Secret (Tavily, etc, item 42's universal-tools doctrine) — when
@@ -15,8 +16,9 @@
 // See resolveCredential() below and infra/migrations/0040_space_credentials.sql +
 // infra/migrations/0069_credential_sharing_and_product_tier.sql.
 import { badRequest, errorResponse, forbidden, mintInternalToken, notFound, requestId, requireInternalHmac } from "@naelao/http";
+import { decryptAuthenticated, encryptAuthenticated, generateDek, unwrapDek, wrapDek, type EncryptedEnvelope } from "@naelao/crypto";
 import { Hono } from "hono";
-import { checkSsrf } from "@naelao/security";
+import { authorizeEgressRedirect, authorizeEgressUrl, isSpaceNetworkEgressDenied, readSpaceEgressPolicy, scanAndScrubEgress } from "@naelao/security";
 
 // ── Env ───────────────────────────────────────────────────────────────────────
 
@@ -63,10 +65,112 @@ async function fireCredentialFallbackEvent(
   }
 }
 
+interface OutboundReceiptContext {
+  tenantId: string; spaceId: string; actorId: string; runId: string; taskId?: string;
+  agentId: string; traceId: string; spanId: string; actionId: string; idempotencyKey: string;
+}
+
+async function sha256Hex(value: string | Uint8Array): Promise<string> {
+  const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function recordOutboundReceipt(
+  env: CredentialsEnv,
+  context: OutboundReceiptContext,
+  phase: "pending" | "succeeded" | "failed" | "unknown",
+  inputHash: string,
+  outputHash: string,
+  summary: string,
+): Promise<{ replayed: boolean; outcome: string }> {
+  if (!env.SPACES_WORKER) throw new Error("action_receipt_store_unavailable");
+  const phaseKey = `${context.idempotencyKey}:${phase === "pending" ? "pending" : "final"}`;
+  const response = await env.SPACES_WORKER.fetch(new Request(
+    `http://spaces-worker/internal/spaces/${encodeURIComponent(context.spaceId)}/action-receipts`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": context.tenantId,
+        "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, context.tenantId),
+      },
+      body: JSON.stringify({
+        tenant_id: context.tenantId,
+        space_id: context.spaceId,
+        action_id: context.actionId,
+        idempotency_key: phaseKey,
+        actor_id: context.actorId,
+        run_id: context.runId,
+        task_id: context.taskId ?? null,
+        worker_id: context.agentId,
+        trace_id: context.traceId,
+        span_id: context.spanId,
+        action: "outbound.fetch",
+        input_hash: inputHash,
+        output_hash: outputHash,
+        grant_id: null,
+        cost_micros: 0,
+        outcome: phase,
+        decision_summary: summary.slice(0, 512),
+      }),
+    },
+  ));
+  if (!response.ok) throw new Error("action_receipt_persistence_failed");
+  const result = await response.json<{ receipt?: { outcome?: string }; replayed?: boolean }>()
+    .catch((): { receipt?: { outcome?: string }; replayed?: boolean } => ({}));
+  return { replayed: result.replayed === true, outcome: result.receipt?.outcome ?? phase };
+}
+
+async function readBoundedResponse(response: Response, limit = 8 * 1024 * 1024): Promise<Uint8Array> {
+  const reader = response.body?.getReader();
+  if (!reader) return new Uint8Array();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel().catch(() => {});
+      throw new Error("egress_response_too_large");
+    }
+    chunks.push(value);
+  }
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.byteLength; }
+  return result;
+}
+
+function redactBytes(input: Uint8Array, secret: string): Uint8Array {
+  const needle = new TextEncoder().encode(secret);
+  if (!needle.length || needle.length > input.length) return input;
+  const replacement = new TextEncoder().encode("[REDACTED]");
+  const output: number[] = [];
+  for (let i = 0; i < input.length;) {
+    let match = true;
+    for (let j = 0; j < needle.length; j++) if (input[i + j] !== needle[j]) { match = false; break; }
+    if (match) { output.push(...replacement); i += needle.length; }
+    else output.push(input[i++]!);
+  }
+  return Uint8Array.from(output);
+}
+
 function validateEnv(env: CredentialsEnv): void {
   if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
   if (!env.CREDENTIAL_ENCRYPTION_KEY) {
     throw new Error("Missing required secret: CREDENTIAL_ENCRYPTION_KEY");
+  }
+  validateEncryptionKeyEnv(env.CREDENTIAL_ENCRYPTION_KEY);
+  const previousKey = (env as CredentialsEnv & { CREDENTIAL_ENCRYPTION_KEY_PREV?: string }).CREDENTIAL_ENCRYPTION_KEY_PREV;
+  if (previousKey) validateEncryptionKeyEnv(previousKey);
+}
+
+function validateEncryptionKeyEnv(value: string): void {
+  const parsed = parseKeyEnv(value);
+  if (!/^v[1-9][0-9]*$/.test(parsed.version) || !/^[0-9a-fA-F]{64}$/.test(parsed.hex)) {
+    throw new Error("Invalid credential encryption key configuration; expected v<N>:<64 hex characters>");
   }
 }
 
@@ -104,8 +208,23 @@ function parseKeyEnv(keyEnv: string): { version: string; hex: string } {
   if (colonIdx > 0 && keyEnv[0] === "v") {
     return { version: keyEnv.slice(0, colonIdx), hex: keyEnv.slice(colonIdx + 1) };
   }
-  // Legacy: no version prefix — treat as v1
+  // Legacy: no version prefix — treat as v1. Validation still enforces a 256-bit key.
   return { version: "v1", hex: keyEnv };
+}
+
+type CredentialAad = Pick<CredentialRow, "space_id" | "tenant_id" | "name" | "scope" | "user_id" | "project_id">;
+
+export type CredentialScope = "SPACE_SHARED" | "PROJECT_BOUND" | "USER_PERSONAL";
+
+function credentialScopeForRow(row: Pick<CredentialRow, "scope" | "project_id">): CredentialScope {
+  if (row.project_id) return "PROJECT_BOUND";
+  return row.scope === "user" ? "USER_PERSONAL" : "SPACE_SHARED";
+}
+
+function credentialAad(row: CredentialAad): string {
+  // A fixed-position tuple is stable across runtimes and prevents ciphertext from being
+  // transplanted to another tenant, credential, owner, or scope.
+  return JSON.stringify(["naelao-credential-v1", row.tenant_id, row.space_id, row.name, row.scope, row.user_id, row.project_id]);
 }
 
 // G-AH07: Derive a per-space AES-256-GCM key from the root key using HKDF-SHA256.
@@ -124,29 +243,92 @@ async function deriveSpaceKey(rootKeyHex: string, spaceId: string): Promise<Cryp
   return crypto.subtle.importKey("raw", bits, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
 }
 
-async function encrypt(
-  plaintext: string,
-  rootKeyEnv: string,
-  spaceId: string
-): Promise<{ ciphertext: string; iv: string; key_version: string }> {
-  const { version, hex } = parseKeyEnv(rootKeyEnv);
-  // G-AH07: Use space-specific derived key, not the root key directly
-  const spaceKey = await deriveSpaceKey(hex, spaceId);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const encoded = new TextEncoder().encode(plaintext);
-  const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, spaceKey, encoded);
-  return { ciphertext: bytesToHex(new Uint8Array(encrypted)), iv: bytesToHex(iv), key_version: version };
+async function deriveSpaceKek(rootKeyHex: string, tenantId: string, spaceId: string): Promise<CryptoKey> {
+  const rootBytes = hexToBytes(rootKeyHex);
+  const rootKey = await crypto.subtle.importKey("raw", rootBytes, { name: "HKDF" }, false, ["deriveBits"]);
+  const info = new TextEncoder().encode(`naelao-vault-kek-v1:${tenantId}:${spaceId}`);
+  const bits = await crypto.subtle.deriveBits(
+    { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(32), info },
+    rootKey,
+    256,
+  );
+  return crypto.subtle.importKey("raw", bits, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
 }
 
-async function decrypt(ciphertext: string, iv: string, rootKeyHex: string, spaceId: string): Promise<string> {
+async function encrypt(
+  plaintext: string,
+  db: D1Database,
+  env: CredentialsEnv,
+  tenantId: string,
+  spaceId: string,
+  aadRow: CredentialAad,
+): Promise<{ ciphertext: string; iv: string; key_version: string }> {
+  const { version } = parseKeyEnv(env.CREDENTIAL_ENCRYPTION_KEY);
+  const dek = await getSpaceDek(db, env, tenantId, spaceId, true);
+  const envelope = await encryptAuthenticated(plaintext, dek, credentialAad(aadRow));
+  return { ciphertext: `a2:${envelope.ciphertext}`, iv: envelope.iv, key_version: version };
+}
+
+async function decrypt(ciphertext: string, iv: string, env: CredentialsEnv, db: D1Database, tenantId: string, spaceId: string, aadRow: CredentialRow): Promise<string> {
+  if (ciphertext.startsWith("a2:")) {
+    const dek = await getSpaceDek(db, env, tenantId, spaceId, false);
+    const envelope: EncryptedEnvelope = { ciphertext: ciphertext.slice(3), iv, algorithm: "aes-256-gcm" };
+    return decryptAuthenticated(envelope, dek, credentialAad(aadRow));
+  }
+  const rootHex = resolveRootKeyHex(env, aadRow.key_version);
   // G-AH07: Derive the same per-space key for decryption
-  const spaceKey = await deriveSpaceKey(rootKeyHex, spaceId);
-  const decrypted = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: hexToBytes(iv) },
-    spaceKey,
-    hexToBytes(ciphertext)
-  );
+  const spaceKey = await deriveSpaceKey(rootHex, spaceId);
+  if (ciphertext.startsWith("a1:")) {
+    const envelope: EncryptedEnvelope = { ciphertext: ciphertext.slice(3), iv, algorithm: "aes-256-gcm" };
+    return decryptAuthenticated(envelope, spaceKey, credentialAad(aadRow));
+  }
+  // Legacy rows predate authenticated metadata. They remain readable during migration; all
+  // new and updated rows use the authenticated `a1:` envelope above.
+  const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv: hexToBytes(iv) }, spaceKey, hexToBytes(ciphertext));
   return new TextDecoder().decode(decrypted);
+}
+
+/**
+ * A per-space data-encryption key is wrapped by a per-space KEK derived from the versioned
+ * platform root secret. Existing DEKs are transparently rewrapped when the active root version
+ * changes; ciphertext rows do not need to be rewritten during root-key rotation.
+ */
+async function getSpaceDek(
+  db: D1Database,
+  env: CredentialsEnv,
+  tenantId: string,
+  spaceId: string,
+  create: boolean,
+): Promise<CryptoKey> {
+  const active = parseKeyEnv(env.CREDENTIAL_ENCRYPTION_KEY);
+  const lookup = async () => db.prepare(
+    "SELECT wrapped_dek, key_version FROM space_credential_keys WHERE tenant_id = ? AND space_id = ? LIMIT 1",
+  ).bind(tenantId, spaceId).first<{ wrapped_dek: string; key_version: string }>();
+  let row = await lookup();
+  if (row) {
+    const wrappingRoot = resolveRootKeyHex(env, row.key_version);
+    const dek = await unwrapDek(row.wrapped_dek, await deriveSpaceKek(wrappingRoot, tenantId, spaceId));
+    if (row.key_version !== active.version) {
+      const newWrapped = await wrapDek(dek, await deriveSpaceKek(active.hex, tenantId, spaceId));
+      await db.prepare(
+        "UPDATE space_credential_keys SET wrapped_dek = ?, key_version = ?, updated_at = ? WHERE tenant_id = ? AND space_id = ?",
+      ).bind(newWrapped, active.version, new Date().toISOString(), tenantId, spaceId).run();
+    }
+    return dek;
+  }
+  if (!create) throw new Error("credential_data_key_unavailable");
+
+  const dek = await generateDek();
+  const wrapped = await wrapDek(dek, await deriveSpaceKek(active.hex, tenantId, spaceId));
+  await db.prepare(
+    `INSERT OR IGNORE INTO space_credential_keys (tenant_id, space_id, wrapped_dek, key_version, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).bind(tenantId, spaceId, wrapped, active.version, new Date().toISOString(), new Date().toISOString()).run();
+  row = await lookup();
+  if (!row) throw new Error("credential_data_key_unavailable");
+  if (row.wrapped_dek === wrapped) return dek;
+  const existingRoot = resolveRootKeyHex(env, row.key_version);
+  return unwrapDek(row.wrapped_dek, await deriveSpaceKek(existingRoot, tenantId, spaceId));
 }
 
 /** Resolve the root key hex matching a stored row's key_version (handles rotation). */
@@ -162,7 +344,7 @@ function resolveRootKeyHex(
     const { version: prevVersion, hex: prevHex } = parseKeyEnv(prevKey);
     if (effectiveRowVersion === prevVersion) return prevHex;
   }
-  return currentHex;
+  throw new Error("credential_encryption_key_version_unavailable");
 }
 
 // ── G-F06: Short-lived per-request HMAC token for internal credential access ──
@@ -173,10 +355,24 @@ function resolveRootKeyHex(
 export async function generateCredentialToken(
   platformSecret: string,
   spaceId: string,
-  agentId: string
+  agentId: string,
+  projectId?: string,
+  tenantId?: string,
+  context?: { actorId?: string; runId?: string; taskId?: string; traceId?: string; spanId?: string },
 ): Promise<string> {
+  const contextValues = context ? Object.values(context).filter((value): value is string => Boolean(value)) : [];
+  if (![spaceId, agentId, ...(projectId ? [projectId] : []), ...(tenantId ? [tenantId] : []), ...contextValues].every((value) => /^[A-Za-z0-9._:-]{1,160}$/.test(value))) {
+    throw new Error("invalid_credential_token_scope");
+  }
+  if (context?.traceId && !/^[a-f0-9]{32}$/i.test(context.traceId)) throw new Error("invalid_credential_trace_context");
+  if (context?.spanId && !/^[a-f0-9]{16}$/i.test(context.spanId)) throw new Error("invalid_credential_trace_context");
   const timestamp = Math.floor(Date.now() / 1000);
-  const signingInput = `${spaceId}:${agentId}:${timestamp}`;
+  const hasRunContext = Boolean(context && Object.values(context).some(Boolean));
+  const signingInput = tenantId && hasRunContext
+    ? `${tenantId}:${spaceId}:${agentId}:${projectId ?? ""}:${context?.actorId ?? ""}:${context?.runId ?? ""}:${context?.taskId ?? ""}:${context?.traceId ?? ""}:${context?.spanId ?? ""}:${timestamp}`
+    : tenantId
+    ? `${tenantId}:${spaceId}:${agentId}:${projectId ?? ""}:${timestamp}`
+    : projectId ? `${spaceId}:${agentId}:${projectId}:${timestamp}` : `${spaceId}:${agentId}:${timestamp}`;
   const key = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(platformSecret),
@@ -188,14 +384,17 @@ export async function generateCredentialToken(
   const hexSig = Array.from(new Uint8Array(sig))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
-  return `t=${timestamp},aid=${agentId},v1=${hexSig}`;
+  if (tenantId && hasRunContext) return `t=${timestamp},aid=${agentId},tid=${tenantId}${projectId ? `,pid=${projectId}` : ""}${context?.actorId ? `,uid=${context.actorId}` : ""}${context?.runId ? `,rid=${context.runId}` : ""}${context?.taskId ? `,task=${context.taskId}` : ""}${context?.traceId ? `,tr=${context.traceId}` : ""}${context?.spanId ? `,sp=${context.spanId}` : ""},v4=${hexSig}`;
+  if (tenantId) return `t=${timestamp},aid=${agentId},tid=${tenantId}${projectId ? `,pid=${projectId}` : ""},v3=${hexSig}`;
+  return projectId ? `t=${timestamp},aid=${agentId},pid=${projectId},v2=${hexSig}` : `t=${timestamp},aid=${agentId},v1=${hexSig}`;
 }
 
 async function verifyCredentialToken(
   token: string,
   platformSecret: string,
-  expectedSpaceId: string
-): Promise<{ ok: boolean; reason?: string }> {
+  expectedSpaceId: string,
+  expectedTenantId: string,
+): Promise<{ ok: boolean; reason?: string; projectId?: string; tenantId?: string; agentId?: string; actorId?: string; runId?: string; taskId?: string; traceId?: string; spanId?: string }> {
   const TOKEN_MAX_AGE_SECONDS = 60;
   const parts: Record<string, string> = {};
   for (const segment of token.split(",")) {
@@ -204,16 +403,32 @@ async function verifyCredentialToken(
   }
   const timestamp = parseInt(parts["t"] ?? "0", 10);
   const agentId = parts["aid"] ?? "";
-  const receivedHex = parts["v1"] ?? "";
+  const projectId = parts["pid"] || undefined;
+  const tenantId = parts["tid"] || undefined;
+  const actorId = parts["uid"] || undefined;
+  const runId = parts["rid"] || undefined;
+  const taskId = parts["task"] || undefined;
+  const traceId = parts["tr"] || undefined;
+  const spanId = parts["sp"] || undefined;
+  const hasRunContext = Boolean(actorId || runId || taskId || traceId || spanId);
+  const receivedHex = hasRunContext ? parts["v4"] ?? "" : tenantId ? parts["v3"] ?? "" : projectId ? parts["v2"] ?? "" : parts["v1"] ?? "";
 
   if (!agentId || !receivedHex) return { ok: false, reason: "Malformed credential token" };
+  if (tenantId && tenantId !== expectedTenantId) return { ok: false, reason: "Credential token tenant scope mismatch" };
 
   const age = Math.floor(Date.now() / 1000) - timestamp;
   if (age < 0 || age > TOKEN_MAX_AGE_SECONDS) {
     return { ok: false, reason: `Credential token expired (age=${age}s)` };
   }
 
-  const signingInput = `${expectedSpaceId}:${agentId}:${timestamp}`;
+  if (hasRunContext && (!tenantId || !actorId || !runId || !traceId || !spanId || !/^[a-f0-9]{32}$/i.test(traceId) || !/^[a-f0-9]{16}$/i.test(spanId))) {
+    return { ok: false, reason: "Malformed credential run context" };
+  }
+  const signingInput = tenantId && hasRunContext
+    ? `${tenantId}:${expectedSpaceId}:${agentId}:${projectId ?? ""}:${actorId ?? ""}:${runId ?? ""}:${taskId ?? ""}:${traceId ?? ""}:${spanId ?? ""}:${timestamp}`
+    : tenantId
+    ? `${tenantId}:${expectedSpaceId}:${agentId}:${projectId ?? ""}:${timestamp}`
+    : projectId ? `${expectedSpaceId}:${agentId}:${projectId}:${timestamp}` : `${expectedSpaceId}:${agentId}:${timestamp}`;
   const key = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(platformSecret),
@@ -231,7 +446,7 @@ async function verifyCredentialToken(
     new TextEncoder().encode(signingInput)
   );
   if (!valid) return { ok: false, reason: "Invalid credential token signature" };
-  return { ok: true };
+  return { ok: true, agentId, ...(projectId ? { projectId } : {}), ...(tenantId ? { tenantId } : {}), ...(actorId ? { actorId } : {}), ...(runId ? { runId } : {}), ...(taskId ? { taskId } : {}), ...(traceId ? { traceId } : {}), ...(spanId ? { spanId } : {}) };
 }
 
 // ── Validation ────────────────────────────────────────────────────────────────
@@ -264,6 +479,7 @@ interface CredentialRow {
   tenant_id: string;
   name: string;
   scope: "user" | "space";
+  project_id: string | null;
   user_id: string | null;
   is_override: number;
   shared_with_user_ids: string | null;
@@ -276,7 +492,7 @@ interface CredentialRow {
   updated_at: string;
 }
 
-export type CredentialResolvedTier = "business_override" | "user" | "business_shared" | "product";
+export type CredentialResolvedTier = "business_override" | "project_bound" | "user" | "business_shared" | "product";
 
 /** Does a business-shared row (is_override=0) apply to this specific acting user? */
 function sharedRowAppliesToUser(row: CredentialRow, actingUserId: string | null): boolean {
@@ -297,7 +513,7 @@ async function fetchSpaceRow(
   name: string
 ): Promise<CredentialRow | null> {
   return db.prepare(
-    `SELECT * FROM space_credentials WHERE space_id = ? AND tenant_id = ? AND name = ? AND scope = 'space' LIMIT 1`
+    `SELECT * FROM space_credentials WHERE space_id = ? AND tenant_id = ? AND name = ? AND scope = 'space' AND project_id IS NULL LIMIT 1`
   ).bind(spaceId, tenantId, name).first<CredentialRow>();
 }
 
@@ -305,9 +521,10 @@ async function fetchSpaceRow(
  * Resolve the effective credential row for (spaceId, name, actingUserId) per the hierarchy:
  *   1. space-scope row with is_override=1        (privileged override — always wins)
  *   2. user-scope row for actingUserId            (personal, default)
- *   3. space-scope row with is_override=0         (business-shared fallback, optionally narrowed
+ *   3. project-bound row for a signed project context
+ *   4. space-scope row with is_override=0         (business-shared fallback, optionally narrowed
  *      to specific members via shared_with_user_ids)
- *   4. the PRODUCT ROOT's own space-scope row     (product-wide default — only when this space
+ *   5. the PRODUCT ROOT's own space-scope row     (product-wide default — only when this space
  *      has a parent, i.e. is a business, and nothing above matched)
  * actingUserId may be omitted (e.g. an agent acting on behalf of the space as a whole, not a
  * specific member) — resolution then skips tier 2 and treats a narrowed tier-3 row as absent.
@@ -320,6 +537,7 @@ async function resolveCredential(
   tenantId: string,
   name: string,
   actingUserId: string | null,
+  projectId: string | null,
   /** §A1 connector default-vs-personal switch: an explicit ask from the caller for WHICH tier to
    *  use, overriding the implicit "personal always wins when connected" default below.
    *  "business": skip tier 2 entirely (a member's own personal credential is ignored even if one
@@ -347,6 +565,15 @@ async function resolveCredential(
     // through to the shared credential silently, that's the exact mismatch the caller needs to
     // know about (see catalogue.ts / the shell's connector-mode UI).
     return { notFoundReason: "personal_required" };
+  }
+
+  // A project row is considered only when its ID arrived inside the signed project-scoped
+  // credential token. A body/header-supplied project ID alone never grants access.
+  if (projectId) {
+    const projectRow = await db.prepare(
+      `SELECT * FROM space_credentials WHERE space_id = ? AND tenant_id = ? AND name = ? AND scope = 'space' AND project_id = ? LIMIT 1`
+    ).bind(spaceId, tenantId, name, projectId).first<CredentialRow>();
+    if (projectRow) return { row: projectRow, tier: "project_bound" };
   }
 
   if (spaceRow && sharedRowAppliesToUser(spaceRow, actingUserId)) {
@@ -391,7 +618,7 @@ app.use("/spaces/:spaceId/credentials", requireInternalHmac((c) => (c as unknown
 app.use("/spaces/:spaceId/credentials/:credId", requireInternalHmac((c) => (c as unknown as { env: CredentialsEnv }).env.PLATFORM_SECRET));
 
 // POST /v1/spaces/:spaceId/credentials — create a credential.
-// Body: { name, value, description?, scope?: 'user'|'space' (default 'user'), is_override?: boolean,
+// Body: { name, value, description?, scope?: 'user'|'space'|'project' (default 'user'), project_id?, is_override?: boolean,
 //         shared_with_user_ids?: string[] | null }
 // - scope='user' (default): a member's own personal credential. Always allowed for the caller,
 //   always owned by the caller (a user can never create another user's credential).
@@ -415,7 +642,8 @@ app.post("/spaces/:spaceId/credentials", async (c) => {
     name: string;
     value: string;
     description?: string;
-    scope?: "user" | "space";
+    scope?: "user" | "space" | "project" | CredentialScope;
+    project_id?: string;
     is_override?: boolean;
     shared_with_user_ids?: string[] | null;
   };
@@ -429,12 +657,18 @@ app.post("/spaces/:spaceId/credentials", async (c) => {
   if (!body.value) throw badRequest("value is required");
   validateCredentialName(body.name);
 
-  const scope = body.scope ?? "user";
-  if (scope !== "user" && scope !== "space") {
-    throw badRequest("scope must be 'user' or 'space'");
+  const inputScope = body.scope ?? "user";
+  const requestedScope = inputScope === "USER_PERSONAL" ? "user" : inputScope === "SPACE_SHARED" ? "space" : inputScope === "PROJECT_BOUND" ? "project" : inputScope;
+  if (requestedScope !== "user" && requestedScope !== "space" && requestedScope !== "project") {
+    throw badRequest("scope must be USER_PERSONAL, SPACE_SHARED, or PROJECT_BOUND");
   }
+  const scope: "user" | "space" = requestedScope === "project" ? "space" : requestedScope;
+  const projectId = requestedScope === "project" ? body.project_id?.trim() ?? null : null;
+  if (requestedScope === "project" && !projectId) throw badRequest("project_id is required for project-bound credentials");
+  if (projectId && !/^[A-Za-z0-9_-]{1,128}$/.test(projectId)) throw badRequest("project_id has an invalid format");
+  if (requestedScope !== "project" && body.project_id !== undefined) throw badRequest("project_id is only valid with scope='project'");
   const isOverride = Boolean(body.is_override);
-  if (isOverride && scope !== "space") {
+  if (isOverride && (scope !== "space" || projectId)) {
     throw badRequest("is_override is only valid with scope='space'");
   }
   if ((scope === "space" || isOverride) && !isPrivileged(role)) {
@@ -442,7 +676,7 @@ app.post("/spaces/:spaceId/credentials", async (c) => {
   }
   const sharedWithUserIds = body.shared_with_user_ids ?? null;
   if (sharedWithUserIds !== null) {
-    if (scope !== "space" || isOverride) {
+    if (scope !== "space" || isOverride || projectId) {
       throw badRequest("shared_with_user_ids is only valid with scope='space' and is_override=false");
     }
     if (!Array.isArray(sharedWithUserIds) || sharedWithUserIds.some((u) => typeof u !== "string" || !u)) {
@@ -450,22 +684,30 @@ app.post("/spaces/:spaceId/credentials", async (c) => {
     }
   }
 
-  // G-AH07: Space-derived key; each space's credentials use a distinct HKDF-derived key
-  const { ciphertext, iv, key_version } = await encrypt(body.value, c.env.CREDENTIAL_ENCRYPTION_KEY, spaceId);
-
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   const ownerUserId = scope === "user" ? userId : null;
   const sharedWithJson = sharedWithUserIds ? JSON.stringify(sharedWithUserIds) : null;
 
+  // G-AH07: Space-derived key; each space's credentials use a distinct HKDF-derived key.
+  // The logical identity is authenticated by AES-GCM so stored ciphertext cannot be moved
+  // between spaces, names, tenants, scopes, or personal owners without detection.
+  const { ciphertext, iv, key_version } = await encrypt(body.value, c.env.PLATFORM_DB, c.env, tenantId, spaceId, {
+    space_id: spaceId, tenant_id: tenantId, name: body.name, scope, user_id: ownerUserId, project_id: projectId,
+  });
+
   // Upsert on the unique (space,name,scope[,user]) index so re-saving the same name/scope
   // rotates the value in place rather than erroring or leaving orphaned rows.
-  const conflictTarget = scope === "user" ? "(space_id, name, user_id)" : "(space_id, name)";
+  const conflictTarget = scope === "user"
+    ? "(space_id, name, user_id) WHERE scope = 'user'"
+    : projectId
+      ? "(space_id, project_id, name) WHERE scope = 'space' AND project_id IS NOT NULL"
+      : "(space_id, name) WHERE scope = 'space' AND project_id IS NULL";
   await c.env.PLATFORM_DB.prepare(
     `INSERT INTO space_credentials
-       (id, space_id, tenant_id, name, scope, user_id, is_override, shared_with_user_ids, encrypted_value, iv, key_version, description, created_by, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT ${conflictTarget} WHERE scope = '${scope}' DO UPDATE SET
+       (id, space_id, tenant_id, name, scope, user_id, project_id, is_override, shared_with_user_ids, encrypted_value, iv, key_version, description, created_by, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT ${conflictTarget} DO UPDATE SET
        is_override = excluded.is_override,
        shared_with_user_ids = excluded.shared_with_user_ids,
        encrypted_value = excluded.encrypted_value,
@@ -481,6 +723,7 @@ app.post("/spaces/:spaceId/credentials", async (c) => {
       body.name,
       scope,
       ownerUserId,
+      projectId ?? null,
       isOverride ? 1 : 0,
       sharedWithJson,
       ciphertext,
@@ -497,7 +740,9 @@ app.post("/spaces/:spaceId/credentials", async (c) => {
     {
       id,
       name: body.name,
-      scope,
+      scope: projectId ? "project" : scope,
+      credential_scope: credentialScopeForRow({ scope, project_id: projectId ?? null }),
+      project_id: projectId ?? null,
       is_override: isOverride,
       shared_with_user_ids: sharedWithUserIds,
       description: body.description ?? null,
@@ -521,15 +766,15 @@ app.get("/spaces/:spaceId/credentials", async (c) => {
 
   const query = isPrivileged(role)
     ? c.env.PLATFORM_DB.prepare(
-        `SELECT id, name, scope, user_id, is_override, shared_with_user_ids, description, created_at
+        `SELECT id, name, scope, project_id, user_id, is_override, shared_with_user_ids, description, created_at
          FROM space_credentials
          WHERE space_id = ? AND tenant_id = ?
          ORDER BY created_at DESC`
       ).bind(spaceId, tenantId)
     : c.env.PLATFORM_DB.prepare(
-        `SELECT id, name, scope, user_id, is_override, shared_with_user_ids, description, created_at
+        `SELECT id, name, scope, project_id, user_id, is_override, shared_with_user_ids, description, created_at
          FROM space_credentials
-         WHERE space_id = ? AND tenant_id = ? AND (scope = 'space' OR user_id = ?)
+         WHERE space_id = ? AND tenant_id = ? AND ((scope = 'space' AND project_id IS NULL) OR user_id = ?)
          ORDER BY created_at DESC`
       ).bind(spaceId, tenantId, userId);
 
@@ -537,6 +782,7 @@ app.get("/spaces/:spaceId/credentials", async (c) => {
     id: string;
     name: string;
     scope: "user" | "space";
+    project_id: string | null;
     user_id: string | null;
     is_override: number;
     shared_with_user_ids: string | null;
@@ -547,6 +793,8 @@ app.get("/spaces/:spaceId/credentials", async (c) => {
   return c.json({
     credentials: results.results.map((r) => ({
       ...r,
+      scope: r.project_id ? "project" : r.scope,
+      credential_scope: credentialScopeForRow(r),
       is_override: Boolean(r.is_override),
       shared_with_user_ids: r.shared_with_user_ids ? (JSON.parse(r.shared_with_user_ids) as string[]) : null,
     })),
@@ -566,8 +814,8 @@ app.delete("/spaces/:spaceId/credentials/:credId", async (c) => {
   if (!tenantId) throw badRequest("x-naelao-tenant-id header is required");
 
   const row = await c.env.PLATFORM_DB.prepare(
-    `SELECT scope, user_id FROM space_credentials WHERE id = ? AND space_id = ? AND tenant_id = ?`
-  ).bind(credId, spaceId, tenantId).first<{ scope: "user" | "space"; user_id: string | null }>();
+    `SELECT scope, project_id, user_id FROM space_credentials WHERE id = ? AND space_id = ? AND tenant_id = ?`
+  ).bind(credId, spaceId, tenantId).first<{ scope: "user" | "space"; project_id: string | null; user_id: string | null }>();
   if (!row) throw notFound("Credential");
 
   const isOwnCredential = row.scope === "user" && row.user_id === userId;
@@ -645,22 +893,25 @@ app.post("/v1/internal/spaces/:spaceId/credentials/:name/plaintext", async (c) =
   if (!credentialToken) throw forbidden("x-naelao-credential-token header is required");
 
   // G-F06: Verify short-lived HMAC token — prevents cross-space exfiltration
-  const tokenCheck = await verifyCredentialToken(credentialToken, c.env.PLATFORM_SECRET, spaceId);
+  const tokenCheck = await verifyCredentialToken(credentialToken, c.env.PLATFORM_SECRET, spaceId, tenantId);
   if (!tokenCheck.ok) {
     throw forbidden(tokenCheck.reason ?? "Invalid credential token");
   }
 
   let onBehalfOfUserId: string | null = null;
+  let requestedProjectId: string | undefined;
   let preferScope: "business" | "personal" | undefined;
   try {
-    const body = await c.req.json<{ on_behalf_of_user_id?: string; prefer_scope?: "business" | "personal" }>();
+    const body = await c.req.json<{ on_behalf_of_user_id?: string; prefer_scope?: "business" | "personal"; project_id?: string }>();
     onBehalfOfUserId = body.on_behalf_of_user_id ?? null;
     preferScope = body.prefer_scope;
+    requestedProjectId = body.project_id;
   } catch {
     // Empty/absent body is fine — resolves at the space level.
   }
 
-  const resolved = await resolveCredential(c.env.PLATFORM_DB, spaceId, tenantId, credName, onBehalfOfUserId, preferScope);
+  if (requestedProjectId && requestedProjectId !== tokenCheck.projectId) throw forbidden("Project scope does not match the signed credential token");
+  const resolved = await resolveCredential(c.env.PLATFORM_DB, spaceId, tenantId, credName, onBehalfOfUserId, tokenCheck.projectId ?? null, preferScope);
   if (!resolved) {
     throw notFound("Credential");
   }
@@ -669,15 +920,9 @@ app.post("/v1/internal/spaces/:spaceId/credentials/:name/plaintext", async (c) =
   }
   const { row, tier } = resolved;
 
-  // G-AH07/G-D05: Resolve the root key matching this credential's key_version for decryption.
-  const rootHex = resolveRootKeyHex(c.env, row.key_version);
-
-  // G-AH07: Re-derive the per-space key using the credential's OWN space (row.space_id) — NOT
-  // the requested spaceId. These differ exactly when tier === "product": the row was created on
-  // (and encrypted for) the product ROOT space, while spaceId in the URL is the business that
-  // fell through to it. Using the wrong space here derives the wrong HKDF key and decryption
-  // fails outright.
-  const value = await decrypt(row.encrypted_value, row.iv, rootHex, row.space_id);
+  // The credential row's tenant and owning space select its wrapped data key. These may differ
+  // from the requested space when a product-root credential is inherited.
+  const value = await decrypt(row.encrypted_value, row.iv, c.env, c.env.PLATFORM_DB, row.tenant_id, row.space_id, row);
 
   // G-D06: Immutable audit entry — credential_access event in Analytics Engine
   try {
@@ -693,7 +938,7 @@ app.post("/v1/internal/spaces/:spaceId/credentials/:name/plaintext", async (c) =
         spaceId,                      // blob3: space_id
         tokenParts["aid"] ?? "",      // blob4: agent_id
         tenantId,                     // blob5: tenant_id
-        tier,                         // blob6: resolved tier (user | business_shared | business_override | product)
+        tier,                         // blob6: resolved tier, including project_bound
       ],
       doubles: [Date.now()],          // double1: access_timestamp_ms
       indexes: [spaceId],
@@ -711,7 +956,7 @@ app.post("/v1/internal/spaces/:spaceId/credentials/:name/plaintext", async (c) =
     );
   }
 
-  return c.json({ name: row.name, value, scope: row.scope, is_override: Boolean(row.is_override), resolved_tier: tier });
+  return c.json({ name: row.name, value, scope: row.project_id ? "project" : row.scope, credential_scope: credentialScopeForRow(row), project_id: row.project_id, is_override: Boolean(row.is_override), resolved_tier: tier });
 });
 
 // POST /v1/internal/spaces/:spaceId/outbound
@@ -724,37 +969,107 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
   const credentialToken = c.req.header("x-naelao-credential-token") ?? "";
   const spaceId = c.req.param("spaceId");
   if (!tenantId || !credentialToken) throw forbidden("Authenticated outbound request required");
-  const tokenCheck = await verifyCredentialToken(credentialToken, c.env.PLATFORM_SECRET, spaceId);
+  const tokenCheck = await verifyCredentialToken(credentialToken, c.env.PLATFORM_SECRET, spaceId, tenantId);
   if (!tokenCheck.ok) throw forbidden(tokenCheck.reason ?? "Invalid credential token");
+  // This is the final bearer-secret egress boundary. Check the immutable space policy before
+  // resolving or decrypting a credential, before SSRF validation, and before the first fetch.
+  if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, spaceId)) {
+    return c.json({
+      error_code: "air_gap_egress_denied",
+      message: "This space blocks network egress",
+    }, 403);
+  }
 
   const body = await c.req.json<{
-    url: string; credentialName: string; method?: string; body?: unknown;
-    headers?: Record<string, string>; onBehalfOfUserId?: string;
+    url: string; credentialName: string; method?: string; idempotencyKey?: string; body?: unknown;
+    headers?: Record<string, string>; onBehalfOfUserId?: string; projectId?: string;
   }>();
+  if (body.projectId && body.projectId !== tokenCheck.projectId) throw forbidden("Project scope does not match the signed credential token");
   validateCredentialName(body.credentialName);
-  const resolved = await resolveCredential(c.env.PLATFORM_DB, spaceId, tenantId, body.credentialName, body.onBehalfOfUserId ?? null);
+  const method = (body.method ?? (body.body === undefined ? "GET" : "POST")).toUpperCase();
+  if (!/^(GET|HEAD|POST|PUT|PATCH|DELETE)$/.test(method)) return c.json({ error_code: "egress_method_denied", message: "This request method is not allowed" }, 403);
+  const isWrite = method !== "GET" && method !== "HEAD";
+  if (isWrite && (!body.idempotencyKey || !/^[A-Za-z0-9._:-]{1,120}$/.test(body.idempotencyKey))) {
+    return c.json({ error_code: "egress_idempotency_required", message: "A valid idempotency key is required for external changes" }, 400);
+  }
+  if (isWrite && (!tokenCheck.actorId || !tokenCheck.runId || !tokenCheck.traceId || !tokenCheck.spanId || !tokenCheck.agentId)) {
+    return c.json({ error_code: "egress_receipt_context_required", message: "This run cannot make external changes because its audit context is unavailable" }, 403);
+  }
+  let approvedUrl: URL;
+  try {
+    approvedUrl = await authorizeEgressUrl(body.url, await readSpaceEgressPolicy(c.env.PLATFORM_DB, spaceId));
+  } catch (error) {
+    const code = error && typeof error === "object" && "code" in error ? String((error as { code: unknown }).code) : "network_denied";
+    return c.json({ error_code: `egress_${code}`, message: error instanceof Error ? error.message : "Destination denied by space policy" }, 403);
+  }
+  if (body.body !== undefined) {
+    try { scanAndScrubEgress(body.body, "block"); }
+    catch { return c.json({ error_code: "egress_sensitive_payload", message: "The request contains data that space policy blocks from leaving" }, 403); }
+  }
+  const resolved = await resolveCredential(c.env.PLATFORM_DB, spaceId, tenantId, body.credentialName, body.onBehalfOfUserId ?? null, tokenCheck.projectId ?? null);
   if (!resolved || "notFoundReason" in resolved) throw notFound("Credential");
-  const secret = await decrypt(resolved.row.encrypted_value, resolved.row.iv, resolveRootKeyHex(c.env, resolved.row.key_version), resolved.row.space_id);
+  const secret = await decrypt(resolved.row.encrypted_value, resolved.row.iv, c.env, c.env.PLATFORM_DB, resolved.row.tenant_id, resolved.row.space_id, resolved.row);
 
   const supplied = new Headers(body.headers);
   supplied.delete("authorization");
   supplied.delete("proxy-authorization");
+  supplied.delete("host");
+  supplied.delete("cookie");
+  supplied.delete("content-length");
   supplied.set("authorization", `Bearer ${secret}`);
-  let destination = body.url;
+  if (isWrite) supplied.set("idempotency-key", body.idempotencyKey!);
+  let destination = approvedUrl;
+  let receiptContext: OutboundReceiptContext | undefined;
+  let inputHash = "";
+  if (isWrite) {
+    const actionId = await sha256Hex(JSON.stringify([tenantId, spaceId, tokenCheck.runId, body.idempotencyKey]));
+    receiptContext = {
+      tenantId, spaceId, actorId: tokenCheck.actorId!, runId: tokenCheck.runId!,
+      ...(tokenCheck.taskId ? { taskId: tokenCheck.taskId } : {}), agentId: tokenCheck.agentId!,
+      traceId: tokenCheck.traceId!, spanId: tokenCheck.spanId!, actionId, idempotencyKey: body.idempotencyKey!,
+    };
+    inputHash = await sha256Hex(JSON.stringify([method, approvedUrl.toString(), body.credentialName, body.body ?? null, [...supplied.entries()].filter(([name]) => !/^(authorization|idempotency-key)$/i.test(name))]));
+    let pending;
+    try {
+      pending = await recordOutboundReceipt(c.env, receiptContext, "pending", inputHash, await sha256Hex("pending"), "Authorized external write; outcome pending");
+    } catch {
+      return c.json({ error_code: "action_receipt_unavailable", message: "The action audit could not be saved, so the external change was not sent" }, 503);
+    }
+    if (pending.replayed) return c.json({
+      error_code: pending.outcome === "pending" ? "action_outcome_unknown" : "action_already_recorded",
+      message: pending.outcome === "pending"
+        ? "This action may already have reached the service. It was not retried; check the action receipt before continuing."
+        : "This action was already recorded and was not sent again.",
+    }, 409);
+  }
   let response: Response | undefined;
   for (let redirects = 0; redirects <= 5; redirects++) {
-    const policy = await checkSsrf(destination);
-    if (policy.blocked) throw forbidden(`Outbound destination denied: ${policy.reason}`);
-    response = await fetch(destination, {
-      method: body.method ?? (body.body === undefined ? "GET" : "POST"),
-      headers: supplied,
-      ...(body.body === undefined ? {} : { body: typeof body.body === "string" ? body.body : JSON.stringify(body.body) }),
-      redirect: "manual",
-    });
+    try {
+      response = await fetch(destination, {
+        method,
+        headers: supplied,
+        ...(body.body === undefined ? {} : { body: typeof body.body === "string" ? body.body : JSON.stringify(body.body) }),
+        redirect: "manual",
+      });
+    } catch {
+      if (receiptContext) {
+        try { await recordOutboundReceipt(c.env, receiptContext, "unknown", inputHash, await sha256Hex("network outcome unknown"), "Network failure after dispatch; replay blocked pending reconciliation"); } catch { /* pending receipt remains fail-closed */ }
+      }
+      return c.json({ error_code: "egress_upstream_unavailable", message: "The external service did not return a confirmed result. This action will not be retried automatically." }, 502);
+    }
     if (![301, 302, 303, 307, 308].includes(response.status)) break;
     const location = response.headers.get("location");
     if (!location) break;
-    destination = new URL(location, destination).toString();
+    if (isWrite) {
+      if (receiptContext) {
+        try { await recordOutboundReceipt(c.env, receiptContext, "unknown", inputHash, await sha256Hex(`redirect:${response.status}`), "Write redirect rejected; upstream outcome requires reconciliation"); } catch { /* pending receipt remains fail-closed */ }
+      }
+      return c.json({ error_code: "egress_write_redirect_denied", message: "Redirects are disabled for requests that may change remote state" }, 502);
+    }
+    let next: URL;
+    try { next = await authorizeEgressRedirect(destination, location, await readSpaceEgressPolicy(c.env.PLATFORM_DB, spaceId)); }
+    catch { return c.json({ error_code: "egress_redirect_denied", message: "The destination redirected outside the approved network policy" }, 502); }
+    destination = next;
     response = undefined;
   }
   if (!response) throw forbidden("Outbound redirect limit exceeded");
@@ -763,13 +1078,26 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
   for (const [name, value] of response.headers) {
     if (!/^(set-cookie|authorization|proxy-authenticate|www-authenticate)$/i.test(name) && !value.includes(secret)) safeHeaders.append(name, value);
   }
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  // Defend against an origin reflecting the bearer value into textual output.
+  let bytes: Uint8Array;
+  try { bytes = redactBytes(await readBoundedResponse(response), secret); }
+  catch {
+    if (receiptContext) {
+      try { await recordOutboundReceipt(c.env, receiptContext, "unknown", inputHash, await sha256Hex("response exceeded safe limit"), "Response was too large to safely record"); } catch { /* pending receipt remains fail-closed */ }
+    }
+    return c.json({ error_code: "egress_response_unavailable", message: "The external response exceeded the safe limit; the action will not be retried automatically." }, 502);
+  }
+  // Defend against an origin reflecting the bearer value into textual output and binary bodies.
   const contentType = safeHeaders.get("content-type") ?? "";
-  const safeBody = /^(text\/|application\/(json|xml|javascript))/.test(contentType)
-    ? new TextEncoder().encode(new TextDecoder().decode(bytes).split(secret).join("[REDACTED]"))
-    : bytes;
-  return new Response(safeBody, { status: response.status, statusText: response.statusText, headers: safeHeaders });
+  if (/^(text\/|application\/(json|xml|javascript))/.test(contentType)) bytes = new TextEncoder().encode(new TextDecoder().decode(bytes).split(secret).join("[REDACTED]"));
+  if (receiptContext) {
+    const outcome = response.ok ? "succeeded" : "failed";
+    try {
+      await recordOutboundReceipt(c.env, receiptContext, outcome, inputHash, await sha256Hex(`${response.status}:${await sha256Hex(bytes)}`), `External service returned HTTP ${response.status}`);
+    } catch {
+      return c.json({ error_code: "action_receipt_finalize_failed", message: "The external service responded, but its audit record could not be finalized. Do not retry this action." }, 503);
+    }
+  }
+  return new Response(bytes, { status: response.status, statusText: response.statusText, headers: safeHeaders });
 });
 
 // ── Error handler ─────────────────────────────────────────────────────────────

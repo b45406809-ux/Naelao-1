@@ -1,6 +1,10 @@
 import type { UniversalAgentRole } from "@naelao/agent-sdk";
 import type { PrebuiltScript } from "./index.js";
 
+const UNIVERSAL_AGENT_ROLES = new Set<UniversalAgentRole>([
+  "DEV_OPERATOR", "GROWTH_OPERATOR", "CUSTOMER_SUPPORT", "ARCHITECT_DELEGATE", "CUSTOM",
+]);
+
 export interface GoalTask {
   id: string;
   title: string;
@@ -18,6 +22,7 @@ export function validateGoalDag(tasks: GoalTask[]): void {
   if (ids.size !== tasks.length) throw new Error("goal task ids must be unique");
   for (const task of tasks) {
     if (!task.id || !task.title || !task.subtask_spec || !Array.isArray(task.file_paths)) throw new Error(`invalid goal task '${task.id}'`);
+    if (!UNIVERSAL_AGENT_ROLES.has(task.assigned_role)) throw new Error(`task '${task.id}' has an invalid assigned_role`);
     if (task.budget_tokens < 1 || task.budget_tokens > 2_000) throw new Error(`task '${task.id}' budget_tokens must be within 1..2000`);
     for (const dependency of task.dependencies ?? []) if (!ids.has(dependency) || dependency === task.id) throw new Error(`task '${task.id}' has invalid dependency '${dependency}'`);
   }

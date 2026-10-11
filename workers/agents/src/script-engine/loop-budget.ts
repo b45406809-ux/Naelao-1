@@ -127,7 +127,8 @@ export function assessBudget(budget: LoopBudget, state: BudgetState): BudgetVerd
   // One step short of the ceiling, or one stall short of the stall limit: this is the last turn.
   if (state.step === budget.maxSteps - 1) return { verdict: "final", reason: "last step available" };
   if (state.stallSteps === budget.maxStallSteps - 1) return { verdict: "final", reason: "no progress for several steps" };
-  return { verdict: "continue" };
+  const decision = deterministicChoice("continue", "loop_budget_within_limits");
+  return { verdict: decision.value };
 }
 
 /**
@@ -166,3 +167,4 @@ export function isContextOverflowError(message: string): boolean {
   if (m.includes("context_length_exceeded")) return true;
   return false;
 }
+import { deterministicChoice } from "@naelao/agent-sdk";

@@ -26,6 +26,8 @@ type Entries = Record<string, TreeEntry>;
 
 interface Env {
   REPOSITORY_OBJECTS: R2Bucket;
+  /** Canonical mutable workspace files; Git refs/objects are a materialized projection. */
+  WORKSPACE_R2?: R2Bucket;
 }
 const EMPTY: RepoState = {
   initialized: false,
@@ -51,30 +53,80 @@ export class RepositoryDO extends DurableObject<Env> {
       this.ctx.storage as DurableObjectStorage & { sql?: SqlStorage }
     ).sql;
     if (sql) {
-      sql.exec(
-        "CREATE TABLE IF NOT EXISTS repository_state (id INTEGER PRIMARY KEY CHECK (id = 1), json TEXT NOT NULL)"
-      );
-      const row = sql
-        .exec("SELECT json FROM repository_state WHERE id = 1")
-        .one() as { json?: SqlStorageValue } | null;
-      return typeof row?.json === "string"
-        ? (JSON.parse(row.json) as RepoState)
-        : structuredClone(EMPTY);
+      this.ensureRepositorySchema(sql);
+      const meta = sql.exec("SELECT initialized, head FROM repository_meta WHERE id = 1").toArray()[0] as { initialized: number; head: string } | undefined;
+      if (!meta) {
+        const legacy = sql.exec("SELECT json FROM repository_state WHERE id = 1").toArray()[0] as { json?: SqlStorageValue } | undefined;
+        if (typeof legacy?.json === "string") {
+          const migrated = JSON.parse(legacy.json) as RepoState;
+          await this.save(migrated);
+          return migrated;
+        }
+        return structuredClone(EMPTY);
+      }
+      const refs: RepoState["refs"] = {};
+      const worktrees: RepoState["worktrees"] = {};
+      const temporary: string[] = [];
+      for (const row of sql.exec("SELECT name, target_oid, temporary FROM repository_refs").toArray() as Array<{ name: string; target_oid: string | null; temporary: number }>) {
+        refs[row.name] = row.target_oid;
+        worktrees[row.name] ??= {};
+        if (row.temporary) temporary.push(row.name);
+      }
+      for (const row of sql.exec("SELECT branch, path, oid, size, hash FROM repository_worktree_entries").toArray() as Array<{ branch: string; path: string; oid: string; size: number; hash: string }>) {
+        (worktrees[row.branch] ??= {})[row.path] = { path: row.path, oid: row.oid, size: row.size, hash: row.hash };
+      }
+      const commits: RepoState["commits"] = {};
+      for (const row of sql.exec("SELECT oid, tree_oid, parent_oids, message, metadata_json, created_at FROM repository_commits").toArray() as Array<{ oid: string; tree_oid: string; parent_oids: string; message: string; metadata_json: string; created_at: string }>) {
+        const parents = JSON.parse(row.parent_oids) as string[];
+        commits[row.oid] = {
+          oid: row.oid, tree: row.tree_oid, ...(parents[0] ? { parent: parents[0] } : {}), ...(parents.length ? { parents } : {}),
+          message: row.message, metadata: JSON.parse(row.metadata_json) as CommitRecord["metadata"], createdAt: row.created_at, entries: {},
+        };
+      }
+      for (const row of sql.exec("SELECT commit_oid, path, oid, size, hash FROM repository_commit_entries").toArray() as Array<{ commit_oid: string; path: string; oid: string; size: number; hash: string }>) {
+        const commit = commits[row.commit_oid];
+        if (commit) commit.entries[row.path] = { path: row.path, oid: row.oid, size: row.size, hash: row.hash };
+      }
+      const tags: NonNullable<RepoState["tags"]> = {};
+      for (const row of sql.exec("SELECT name, oid, target FROM repository_tags").toArray() as Array<{ name: string; oid: string; target: string }>) tags[row.name] = { oid: row.oid, target: row.target };
+      return { initialized: meta.initialized === 1, head: meta.head, refs, worktrees, commits, tags, temporary };
     }
     return (
       (await this.ctx.storage.get<RepoState>("repository")) ??
       structuredClone(EMPTY)
     );
   }
+  private ensureRepositorySchema(sql: SqlStorage): void {
+    sql.exec("CREATE TABLE IF NOT EXISTS repository_state (id INTEGER PRIMARY KEY CHECK (id = 1), json TEXT NOT NULL)");
+    sql.exec("CREATE TABLE IF NOT EXISTS repository_meta (id INTEGER PRIMARY KEY CHECK (id = 1), initialized INTEGER NOT NULL, head TEXT NOT NULL)");
+    sql.exec("CREATE TABLE IF NOT EXISTS repository_refs (name TEXT PRIMARY KEY, target_oid TEXT, temporary INTEGER NOT NULL DEFAULT 0)");
+    sql.exec("CREATE TABLE IF NOT EXISTS repository_worktree_entries (branch TEXT NOT NULL, path TEXT NOT NULL, oid TEXT NOT NULL, size INTEGER NOT NULL, hash TEXT NOT NULL, PRIMARY KEY(branch,path))");
+    sql.exec("CREATE TABLE IF NOT EXISTS repository_commits (oid TEXT PRIMARY KEY, tree_oid TEXT NOT NULL, parent_oids TEXT NOT NULL, message TEXT NOT NULL, metadata_json TEXT NOT NULL, created_at TEXT NOT NULL)");
+    sql.exec("CREATE TABLE IF NOT EXISTS repository_commit_entries (commit_oid TEXT NOT NULL, path TEXT NOT NULL, oid TEXT NOT NULL, size INTEGER NOT NULL, hash TEXT NOT NULL, PRIMARY KEY(commit_oid,path))");
+    sql.exec("CREATE INDEX IF NOT EXISTS idx_repository_commit_entries_blob ON repository_commit_entries(oid)");
+    sql.exec("CREATE TABLE IF NOT EXISTS repository_tags (name TEXT PRIMARY KEY, oid TEXT NOT NULL, target TEXT NOT NULL)");
+  }
   private async save(state: RepoState): Promise<void> {
     const sql = (
       this.ctx.storage as DurableObjectStorage & { sql?: SqlStorage }
     ).sql;
     if (sql) {
-      sql.exec(
-        "INSERT INTO repository_state (id, json) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET json = excluded.json",
-        JSON.stringify(state)
-      );
+      this.ensureRepositorySchema(sql);
+      const storage = this.ctx.storage as DurableObjectStorage & { transactionSync?: (fn: () => void) => void };
+      const persist = () => {
+        for (const table of ["repository_worktree_entries", "repository_commit_entries", "repository_commits", "repository_refs", "repository_tags"]) sql.exec(`DELETE FROM ${table}`);
+        sql.exec("DELETE FROM repository_meta");
+        sql.exec("INSERT INTO repository_meta (id, initialized, head) VALUES (1, ?, ?)", state.initialized ? 1 : 0, state.head);
+        for (const [name, target] of Object.entries(state.refs)) sql.exec("INSERT INTO repository_refs (name,target_oid,temporary) VALUES (?,?,?)", name, target, state.temporary.includes(name) ? 1 : 0);
+        for (const [branch, entries] of Object.entries(state.worktrees)) for (const entry of Object.values(entries)) sql.exec("INSERT INTO repository_worktree_entries (branch,path,oid,size,hash) VALUES (?,?,?,?,?)", branch, entry.path, entry.oid, entry.size, entry.hash);
+        for (const commit of Object.values(state.commits)) {
+          const parents = commit.parents ?? (commit.parent ? [commit.parent] : []);
+          sql.exec("INSERT INTO repository_commits (oid,tree_oid,parent_oids,message,metadata_json,created_at) VALUES (?,?,?,?,?,?)", commit.oid, commit.tree, JSON.stringify(parents), commit.message, JSON.stringify(commit.metadata), commit.createdAt);
+          for (const entry of Object.values(commit.entries)) sql.exec("INSERT INTO repository_commit_entries (commit_oid,path,oid,size,hash) VALUES (?,?,?,?,?)", commit.oid, entry.path, entry.oid, entry.size, entry.hash);
+        }
+        for (const [name, tag] of Object.entries(state.tags ?? {})) sql.exec("INSERT INTO repository_tags (name,oid,target) VALUES (?,?,?)", name, tag.oid, tag.target);
+      };
+      if (storage.transactionSync) storage.transactionSync(persist); else persist();
       return;
     }
     await this.ctx.storage.put("repository", state);
@@ -90,10 +142,81 @@ export class RepositoryDO extends DurableObject<Env> {
     bytes: Uint8Array
   ): Promise<void> {
     const key = objectKey(scope, oid);
-    if (!(await this.env.REPOSITORY_OBJECTS.head(key)))
-      await this.env.REPOSITORY_OBJECTS.put(key, bytes, {
-        customMetadata: { oid },
-      });
+    const parsed = await this.parseVerifiedGitObject(oid, bytes);
+    if (!parsed) throw new Error(`Git object verification failed before write: ${oid}`);
+    if (!(await this.env.REPOSITORY_OBJECTS.head(key))) {
+      await this.env.REPOSITORY_OBJECTS.put(key, bytes, { customMetadata: { oid } });
+    }
+    // R2 is the immutable object source of truth. Validate existing bytes too, including after a
+    // concurrent content-addressed put, so an occupied key can never silently shadow bad data.
+    await this.readVerifiedObject(scope, oid);
+  }
+  private async parseVerifiedGitObject(oid: string, bytes: Uint8Array): Promise<{ type: string; body: Uint8Array } | null> {
+    const separator = bytes.indexOf(0);
+    if (separator < 0) return null;
+    const header = new TextDecoder().decode(bytes.slice(0, separator));
+    const match = /^(blob|tree|commit|tag) (0|[1-9][0-9]*)$/.exec(header);
+    if (!match || Number(match[2]) !== bytes.byteLength - separator - 1) return null;
+    const body = bytes.slice(separator + 1);
+    const encoded = await encodeGitObject(match[1] as "blob" | "tree" | "commit" | "tag", body);
+    return encoded.oid === oid ? { type: match[1]!, body } : null;
+  }
+  private async readVerifiedObject(scope: RepositoryScope, oid: string): Promise<{ type: string; body: Uint8Array }> {
+    const object = await this.env.REPOSITORY_OBJECTS.get(objectKey(scope, oid));
+    if (!object) throw new Error(`Object missing: ${oid}`);
+    const bytes = new Uint8Array(await object.arrayBuffer());
+    const parsed = await this.parseVerifiedGitObject(oid, bytes);
+    if (!parsed) throw new Error(`Git object integrity check failed: ${oid}`);
+    return parsed;
+  }
+  private async collectUnreachableObjects(scope: RepositoryScope, state: RepoState): Promise<{ kept: number; deleted: number }> {
+    const marked = new Set<string>();
+    const visitTree = async (oid: string): Promise<void> => {
+      if (marked.has(oid)) return;
+      marked.add(oid);
+      const object = await this.readVerifiedObject(scope, oid);
+      if (object.type !== "tree") throw new Error(`Expected tree object: ${oid}`);
+      for (let offset = 0; offset < object.body.length;) {
+        const nul = object.body.indexOf(0, offset);
+        if (nul < 0 || nul + 21 > object.body.length) throw new Error(`Malformed tree object: ${oid}`);
+        const mode = new TextDecoder().decode(object.body.slice(offset, object.body.indexOf(32, offset)));
+        const childOid = [...object.body.slice(nul + 1, nul + 21)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+        marked.add(childOid);
+        if (mode === "40000" || mode === "040000") await visitTree(childOid);
+        offset = nul + 21;
+      }
+    };
+    const visitCommit = async (oid: string): Promise<void> => {
+      if (marked.has(oid)) return;
+      const commit = state.commits[oid];
+      if (!commit) throw new Error(`Reachable commit metadata missing: ${oid}`);
+      marked.add(oid);
+      await visitTree(commit.tree);
+      for (const parent of commit.parents ?? (commit.parent ? [commit.parent] : [])) await visitCommit(parent);
+    };
+    for (const oid of Object.values(state.refs)) if (oid) await visitCommit(oid);
+    for (const tag of Object.values(state.tags ?? {})) {
+      marked.add(tag.oid);
+      await visitCommit(tag.target);
+    }
+    // Unsaved worktree edits are reachable state too; retain their blobs until the branch is
+    // deleted, committed, or explicitly cleaned up.
+    for (const entries of Object.values(state.worktrees)) for (const entry of Object.values(entries)) marked.add(entry.oid);
+
+    const prefix = `repositories/${scope.tenantId}/${scope.spaceId}/${scope.projectId}/objects/`;
+    let cursor: string | undefined;
+    let kept = 0, deleted = 0;
+    do {
+      const page = await this.env.REPOSITORY_OBJECTS.list(cursor ? { prefix, cursor } : { prefix });
+      for (const item of page.objects) {
+        const split = item.key.lastIndexOf("/");
+        const oid = `${item.key.slice(split - 2, split)}${item.key.slice(split + 1)}`;
+        if (marked.has(oid)) kept++;
+        else { await this.env.REPOSITORY_OBJECTS.delete(item.key); deleted++; }
+      }
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor);
+    return { kept, deleted };
   }
 
   private resolve(
@@ -132,13 +255,11 @@ export class RepositoryDO extends DurableObject<Env> {
     entry: TreeEntry | undefined
   ): Promise<string> {
     if (!entry) return "";
-    const object = await this.env.REPOSITORY_OBJECTS.get(
-      objectKey(scope, entry.oid)
-    );
-    if (!object) throw new Error(`Object missing: ${entry.oid}`);
-    const envelope = new Uint8Array(await object.arrayBuffer());
-    const separator = envelope.indexOf(0);
-    return new TextDecoder().decode(envelope.slice(separator + 1));
+    const object = await this.readVerifiedObject(scope, entry.oid);
+    if (object.type !== "blob" || object.body.byteLength !== entry.size || await sha256(object.body) !== entry.hash) {
+      throw new Error(`Blob integrity check failed: ${entry.oid}`);
+    }
+    return new TextDecoder().decode(object.body);
   }
 
   /** Viewport hint only: every kind is persisted as the original raw blob bytes. */
@@ -309,6 +430,62 @@ export class RepositoryDO extends DurableObject<Env> {
       );
       if (!(branch in state.refs)) return jsonError("Branch not found", 404);
 
+      if (op === "reconcile" && request.method === "POST") {
+        if (!this.env.WORKSPACE_R2) return jsonError("Workspace reconciliation storage is not bound", 503);
+        const workspaceRoot = `spaces/${scope.spaceId}/projects/${scope.projectId}/workspace/`;
+        const prefix = branch === "main" ? workspaceRoot : `${workspaceRoot}branches/${branch.replaceAll("\\", "/")}/`;
+        const live = new Map<string, { bytes: Uint8Array; hash: string; etag: string }>();
+        let cursor: string | undefined;
+        do {
+          const page = await this.env.WORKSPACE_R2.list(cursor ? { prefix, cursor } : { prefix });
+          for (const item of page.objects) {
+            if (item.customMetadata?.deleted === "true" || item.key.endsWith("/.keep")) continue;
+            const path = normalizePath(item.key.slice(prefix.length));
+            const object = await this.env.WORKSPACE_R2.get(item.key);
+            if (!object) continue;
+            const bytes = new Uint8Array(await object.arrayBuffer());
+            const head = await this.env.WORKSPACE_R2.head(item.key);
+            if (!head) continue;
+            live.set(path, { bytes, hash: await sha256(bytes), etag: head.etag });
+          }
+          cursor = page.truncated ? page.cursor : undefined;
+        } while (cursor);
+        const changes: Array<Record<string, unknown>> = [];
+        for (const [path, prior] of Object.entries(state.worktrees[branch]!)) {
+          if (!live.has(path)) changes.push({ path, deleted: true, expected_hash: prior.hash });
+        }
+        for (const [path, current] of live) {
+          const prior = state.worktrees[branch]![path];
+          if (prior?.hash === current.hash) continue;
+          let binary = "";
+          for (let offset = 0; offset < current.bytes.length; offset += 0x8000)
+            binary += String.fromCharCode(...current.bytes.subarray(offset, Math.min(offset + 0x8000, current.bytes.length)));
+          changes.push({ path, content_base64: btoa(binary), expected_hash: prior?.hash ?? null });
+        }
+        if (!changes.length) return Response.json({ reconciled: true, changed: 0, commit_id: state.refs[branch] ?? null });
+        // Refuse a snapshot that changed while it was being read. The caller can retry and the
+        // next pass will replay the latest canonical R2 state into the Git projection.
+        for (const [path, current] of live) {
+          const head = await this.env.WORKSPACE_R2.head(`${prefix}${path}`);
+          if (head?.etag !== current.etag) return jsonError("Workspace changed during reconciliation; retry", 409);
+        }
+        const commitRequest = new Request("http://repository/commit", {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-repository-scope": JSON.stringify(scope) },
+          body: JSON.stringify({
+            branch,
+            expected_head: state.refs[branch] ?? null,
+            changes,
+            message: "Reconcile workspace projection",
+            metadata: body.metadata,
+          }),
+        });
+        const committed = await this.handle(commitRequest);
+        if (!committed.ok) return committed;
+        const result = await committed.json<{ commit_id: string }>();
+        return Response.json({ reconciled: true, changed: changes.length, commit_id: result.commit_id }, { status: 200 });
+      }
+
       if (op === "tree" && request.method === "GET") {
         const at = url.searchParams.get("at");
         const entries = at
@@ -334,13 +511,9 @@ export class RepositoryDO extends DurableObject<Env> {
           at ? state.commits[at]?.entries : state.worktrees[branch]
         )?.[path];
         if (!entry) return jsonError("File not found", 404);
-        const object = await this.env.REPOSITORY_OBJECTS.get(
-          objectKey(scope, entry.oid)
-        );
-        if (!object) return jsonError("Object missing", 500);
-        const envelope = new Uint8Array(await object.arrayBuffer());
-        const separator = envelope.indexOf(0);
-        return new Response(envelope.slice(separator + 1), {
+        const object = await this.readVerifiedObject(scope, entry.oid);
+        if (object.type !== "blob" || object.body.byteLength !== entry.size || await sha256(object.body) !== entry.hash) return jsonError("Blob integrity check failed", 500);
+        return new Response(object.body, {
           headers: {
             "content-type": "application/octet-stream",
             "x-git-oid": entry.oid,
@@ -357,14 +530,10 @@ export class RepositoryDO extends DurableObject<Env> {
         if (!entries) return jsonError("Commit not found", 404);
         if (!Object.values(entries).some((entry) => entry.oid === oid))
           return jsonError("Object not found", 404);
-        const object = await this.env.REPOSITORY_OBJECTS.get(
-          objectKey(scope, oid)
-        );
-        if (!object) return jsonError("Object missing", 500);
-        const envelope = new Uint8Array(await object.arrayBuffer());
-        const separator = envelope.indexOf(0);
-        if (separator < 0) return jsonError("Invalid object envelope", 500);
-        return new Response(envelope.slice(separator + 1), {
+        const object = await this.readVerifiedObject(scope, oid);
+        const entry = Object.values(entries).find((candidate) => candidate.oid === oid);
+        if (object.type !== "blob" || !entry || object.body.byteLength !== entry.size || await sha256(object.body) !== entry.hash) return jsonError("Blob integrity check failed", 500);
+        return new Response(object.body, {
           headers: {
             "content-type": "application/octet-stream",
             "x-git-oid": oid,
@@ -373,6 +542,8 @@ export class RepositoryDO extends DurableObject<Env> {
       }
       if (op === "write" && request.method === "PUT") {
         const path = normalizePath(String(body.path ?? ""));
+        if (!Object.prototype.hasOwnProperty.call(body, "expected_hash") || (body.expected_hash !== null && typeof body.expected_hash !== "string"))
+          return jsonError("expected_hash is required (string or null for create)");
         const bytes =
           typeof body.content_base64 === "string"
             ? Uint8Array.from(atob(body.content_base64), (char) =>
@@ -380,7 +551,7 @@ export class RepositoryDO extends DurableObject<Env> {
               )
             : new TextEncoder().encode(String(body.content ?? ""));
         const current = state.worktrees[branch]![path];
-        if (body.expected_hash !== undefined && current?.hash !== body.expected_hash) {
+        if ((current?.hash ?? null) !== body.expected_hash) {
           return jsonError(`✖ Conflict Error: '${path}' was modified concurrently. Re-read before applying patch.`, 409);
         }
         const blob = await encodeGitObject("blob", bytes);
@@ -397,8 +568,11 @@ export class RepositoryDO extends DurableObject<Env> {
       }
       if (op === "file" && request.method === "DELETE") {
         const path = normalizePath(String(body.path ?? ""));
-        if (!state.worktrees[branch]![path])
-          return jsonError("File not found", 404);
+        if (!Object.prototype.hasOwnProperty.call(body, "expected_hash") || (body.expected_hash !== null && typeof body.expected_hash !== "string"))
+          return jsonError("expected_hash is required (string or null)");
+        const current = state.worktrees[branch]![path];
+        if ((current?.hash ?? null) !== body.expected_hash) return jsonError(`✖ Conflict Error: '${path}' was modified concurrently. Re-read before deleting.`, 409);
+        if (!current) return jsonError("File not found", 404);
         delete state.worktrees[branch]![path];
         await this.save(state);
         return Response.json({ deleted: true, path });
@@ -410,13 +584,25 @@ export class RepositoryDO extends DurableObject<Env> {
             ? Response.json(record)
             : jsonError("Commit not found", 404);
         }
+        if (!Object.prototype.hasOwnProperty.call(body, "expected_head") || (body.expected_head !== null && typeof body.expected_head !== "string"))
+          return jsonError("expected_head is required (commit ID or null)");
         const expected = body.expected_head;
-        if (expected !== undefined && expected !== state.refs[branch])
+        if (expected !== (state.refs[branch] ?? null))
           return jsonError("Head changed", 409);
         const metadata = validateMetadata(body.metadata);
         const changes = Array.isArray(body.changes)
           ? (body.changes as Array<Record<string, unknown>>)
           : [];
+        // Validate the whole change set before publishing any file mutation. The DO input gate
+        // serializes this head/hash precondition with the eventual ref save.
+        for (const change of changes) {
+          const path = normalizePath(String(change.path ?? ""));
+          if (!Object.prototype.hasOwnProperty.call(change, "expected_hash") || (change.expected_hash !== null && typeof change.expected_hash !== "string"))
+            return jsonError(`expected_hash is required for ${path}`);
+          const current = state.worktrees[branch]![path];
+          if ((current?.hash ?? null) !== change.expected_hash)
+            return jsonError(`✖ Conflict Error: '${path}' was modified concurrently. Re-read before applying patch.`, 409);
+        }
         for (const change of changes) {
           const path = normalizePath(String(change.path ?? ""));
           if (path.split("/").includes("node_modules"))
@@ -437,7 +623,7 @@ export class RepositoryDO extends DurableObject<Env> {
             .map((byte) => byte.toString(16).padStart(2, "0"))
             .join("");
           const current = state.worktrees[branch]![path];
-          if (change.expected_hash !== undefined && current?.hash !== change.expected_hash)
+          if (change.expected_hash !== undefined && (current?.hash ?? null) !== change.expected_hash)
             return jsonError(`✖ Conflict Error: '${path}' was modified concurrently. Re-read before applying patch.`, 409);
           if (change.oid !== undefined && change.oid !== contentSha256)
             return jsonError(`Content SHA-256 mismatch for ${path}`, 409);
@@ -795,10 +981,29 @@ export class RepositoryDO extends DurableObject<Env> {
       if (op === "rollback" && request.method === "POST") {
         const commit = state.commits[String(body.commit_id ?? "")];
         if (!commit) return jsonError("Commit not found", 404);
-        state.worktrees[branch] = structuredClone(commit.entries);
-        state.refs[branch] = commit.oid;
+        const expected = body.expected_head;
+        const currentHead = state.refs[branch];
+        if (expected !== undefined && expected !== currentHead) return jsonError("Head changed", 409);
+        const restored = structuredClone(commit.entries);
+        const metadata = validateMetadata(body.metadata ?? {
+          agent_role: "repository-restore", user_goal: `Restore ${commit.oid}`,
+          task_id: String(body.task_id ?? "restore"), rationale: `Restored repository content from ${commit.oid}`,
+          thread_id: String(body.thread_id ?? "repository"), tool_turn_id: String(body.tool_turn_id ?? crypto.randomUUID()),
+        });
+        const hierarchy = await encodeTreeHierarchy(restored);
+        await Promise.all(hierarchy.objects.map((object) => this.putObject(scope, object.oid, object.bytes)));
+        const createdAt = new Date().toISOString();
+        const message = String(body.message ?? `Restore ${commit.oid}`).slice(0, 10_000);
+        const encoded = await encodeGitObject("commit", commitBody(hierarchy.root.oid, currentHead ?? undefined, message, metadata, createdAt));
+        await this.putObject(scope, encoded.oid, encoded.bytes);
+        state.worktrees[branch] = restored;
+        state.commits[encoded.oid] = {
+          oid: encoded.oid, tree: hierarchy.root.oid, ...(currentHead ? { parent: currentHead, parents: [currentHead] } : {}),
+          message, metadata, createdAt, entries: structuredClone(restored),
+        };
+        state.refs[branch] = encoded.oid;
         await this.save(state);
-        return Response.json({ branch, commit_id: commit.oid });
+        return Response.json({ branch, commit_id: encoded.oid, restored_from: commit.oid, parent: currentHead ?? null }, { status: 201 });
       }
       if (op === "history" && request.method === "GET") {
         let currentOid =
@@ -891,11 +1096,13 @@ export class RepositoryDO extends DurableObject<Env> {
           deleted: names.filter((n) => !(n in state.refs)),
         });
       }
+      if (op === "gc" && request.method === "POST") {
+        return Response.json(await this.collectUnreachableObjects(scope, state));
+      }
       return jsonError("Route not found", 404);
     } catch (error) {
-      return jsonError(
-        error instanceof Error ? error.message : "Invalid request"
-      );
+      const message = error instanceof Error ? error.message : "Invalid request";
+      return jsonError(message, /integrity check failed|object missing|malformed tree|reachable commit metadata missing/i.test(message) ? 500 : 400);
     }
   }
 }

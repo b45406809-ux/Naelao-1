@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { ConcurrencyDO } from "./ConcurrencyDO.js";
 
 function harness() {
-  const locks = new Map<string, { holder_id: string; acquired_at: number; expires_at: number }>();
+  const locks = new Map<string, { holder_id: string; acquired_at: number; expires_at: number; fencing_token: number }>();
+  const fences = new Map<string, number>();
   const pacers = new Map<string, number>();
   const holds = new Map<string, { holder_id: string; acquired_at: number; expires_at: number; confirmed: number }>();
   let alarm: number | null = null;
@@ -17,8 +18,10 @@ function harness() {
       } else if (query.includes("DELETE FROM locks WHERE key = ?")) locks.delete(String(args[0]));
       else if (query.includes("DELETE FROM locks WHERE expires_at")) {
         for (const [key, row] of locks) if (row.expires_at <= Number(args[0])) locks.delete(key);
+      } else if (query.includes("INSERT INTO lock_fences")) {
+        fences.set(String(args[0]), Number(args[1]));
       } else if (query.includes("INSERT INTO locks")) {
-        locks.set(String(args[0]), { holder_id: String(args[1]), acquired_at: Number(args[2]), expires_at: Number(args[3]) });
+        locks.set(String(args[0]), { holder_id: String(args[1]), acquired_at: Number(args[2]), expires_at: Number(args[3]), fencing_token: Number(args[4]) });
       } else if (query.includes("INSERT INTO outbound_pacers")) {
         pacers.set(String(args[0]), Number(args[1]));
       } else if (query.includes("DELETE FROM appointment_slot_holds WHERE confirmed=0 AND expires_at")) {
@@ -34,6 +37,12 @@ function harness() {
         if (row?.holder_id === args[1] && !row.confirmed) holds.delete(String(args[0]));
       }
       const toArray = () => {
+        if (query.includes("SELECT holder_id, expires_at, fencing_token FROM locks")) {
+          const row = locks.get(String(args[0])); return row ? [row] : [];
+        }
+        if (query.includes("SELECT fencing_token FROM lock_fences")) {
+          const fencing_token = fences.get(String(args[0])); return fencing_token === undefined ? [] : [{ fencing_token }];
+        }
         if (query.includes("SELECT holder_id, expires_at FROM locks")) {
           const row = locks.get(String(args[0])); return row ? [row] : [];
         }

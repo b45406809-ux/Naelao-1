@@ -21,7 +21,7 @@ import { registerRecipeRoutes } from "./routes/recipes.js";
 import { registerMarketplaceRoutes } from "./routes/marketplace.js";
 import { registerGraduationRoutes } from "./routes/graduation.js";
 import { registerMarketRadarRoutes } from "./routes/market-radar.js";
-import { evaluateBlueprintSecurity, sanitizeAndScrubBlueprint } from "@naelao/security";
+import { applyDurableObjectJurisdiction, evaluateBlueprintSecurity, sanitizeAndScrubBlueprint } from "@naelao/security";
 import type { SpaceBlueprint } from "@naelao/agent-sdk";
 
 export { SpaceDO } from "./do/SpaceDO.js";
@@ -36,6 +36,7 @@ export { gadgetActorId, gadgetStorageKey } from "./do/MicroAppDO.js";
 
 export interface Env {
   ENVIRONMENT: string;
+  DATA_JURISDICTION?: "eu";
   PLATFORM_SECRET: string;
   PLATFORM_DB: D1Database;
   SPACE_DO: DurableObjectNamespace<SpaceDO>;
@@ -60,6 +61,18 @@ export interface Env {
   AGENTS_WORKER?: Fetcher;
   /** Notifications worker — password-reset emails (product-end-user-routes.ts). */
   NOTIFICATIONS_WORKER?: Fetcher;
+  PRODUCT_SHELL_URL?: string;
+  /** Either Meta Cloud API or Twilio may deliver passwordless WhatsApp challenges. */
+  WHATSAPP_ACCESS_TOKEN?: string;
+  WHATSAPP_PHONE_NUMBER_ID?: string;
+  TWILIO_ACCOUNT_SID?: string;
+  TWILIO_AUTH_TOKEN?: string;
+  TWILIO_WHATSAPP_NUMBER?: string;
+  TYPESAFE_API_KEY?: string;
+  SYSTEM_ONE_ENDPOINT?: string;
+  SYSTEM_ONE_MODEL?: string;
+  SYSTEM_ONE_PROVIDER?: "jev" | "laya";
+  ANALYTICS?: AnalyticsEngineDataset;
 }
 
 /** Message enqueued on space creation; consumed by the provisioner (installs agents etc.). */
@@ -67,6 +80,9 @@ export interface Env {
 // G-A11: Validate required secrets at startup
 function validateEnv(env: Env): void {
   if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
+  applyDurableObjectJurisdiction(env as unknown as Record<string, unknown>, env.DATA_JURISDICTION, [
+    "SPACE_DO", "SPACE_TYPE_REGISTRY_DO", "BUILDER_ACCOUNT_DO", "PRODUCT_USER_DO", "MICRO_APP_DO",
+  ]);
 }
 
 const app = new Hono<{ Bindings: Env }>();
@@ -412,7 +428,10 @@ app.post("/spaces/:spaceId/me/injection", async (c) => {
 // "no token" test started failing OPEN (500 reaching the handler instead of 403) once an
 // unrelated part of the same corruption elsewhere in this file was fixed, proving the risk is
 // real, not theoretical.
-app.all("/spaces/:spaceId/agent-definitions*", async (c) => {
+// Keep the collection route explicit. Hono's mixed `:param*` route form is
+// unreliable in this worker's large route table and was returning 404 for the
+// shell's collection request even though the SpaceDO handler was healthy.
+app.all("/spaces/:spaceId/agent-definitions", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
@@ -566,7 +585,11 @@ app.get("/internal/business-role", async (c) => {
 // see the /internal/space-types-record-install/:id route's comment for the full root-cause
 // writeup (a genuine Hono RegExpRouter limitation at this app's route-table scale, silently
 // corrupting POST matching platform-wide). Gated inline here too, consistent with that fix.
-app.all("/spaces/:spaceId/sessions*", async (c) => {
+// Keep the collection and nested session paths explicit. The mixed `:param*`
+// form can skip the bare collection route in this worker's large Hono table,
+// which made the shell's recent-session request return 404 while nested calls
+// still worked.
+const handleSpaceSessions = async (c: any) => {
   const spaceId = c.req.param("spaceId");
   const { tenantId, role, userId } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
@@ -696,7 +719,10 @@ app.all("/spaces/:spaceId/sessions*", async (c) => {
       ...duplexInit,
     })
   );
-});
+};
+
+app.all("/spaces/:spaceId/sessions", handleSpaceSessions);
+app.all("/spaces/:spaceId/sessions/*", handleSpaceSessions);
 
 // ── Space hierarchy: registry, sub-spaces (departments), cross-space grants ──
 // (spec §10 SpaceDO registry, §49 Sub-Space Architecture, G-Y15/G-Y16).
@@ -715,6 +741,21 @@ async function spaceDoStub(env: Env, spaceId: string, tenantId: string) {
   const doId = env.SPACE_DO.idFromName(await getDOName("space", spaceId, tenantId, env.PLATFORM_SECRET));
   return env.SPACE_DO.get(doId);
 }
+
+app.get("/spaces/:spaceId/workflow-installations/:instanceId", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  const stub = await spaceDoStub(c.env, c.req.param("spaceId"), tenantId);
+  return stub.fetch(new Request("http://space-do/workflow-installation?" + new URLSearchParams({ instance_id: c.req.param("instanceId"), tenant_id: tenantId, space_id: c.req.param("spaceId") })));
+});
+
+app.get("/spaces/:spaceId/container-installations", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const userId = c.req.header("x-naelao-user-id") ?? "";
+  if (!tenantId || !userId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  const stub = await spaceDoStub(c.env, c.req.param("spaceId"), tenantId);
+  return stub.fetch(new Request("http://space-do/container-installations?" + new URLSearchParams({ tenant_id: tenantId, space_id: c.req.param("spaceId"), user_id: userId, project_id: c.req.query("project_id") ?? "" })));
+});
 
 // Canonical project-universal cron registration. The SpaceDO performs the authoritative
 // project/space ownership check atomically with persistence.
@@ -865,6 +906,24 @@ app.post("/internal/spaces/:spaceId/events/fire", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
+// Service-authenticated receipt writes. The SpaceDO is the single writer for a space's
+// tamper-evident action chain; records contain hashes and identifiers, never action payloads.
+app.use("/internal/spaces/:spaceId/action-receipts", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.post("/internal/spaces/:spaceId/action-receipts", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/internal/action-receipts?space_id=${encodeURIComponent(spaceId)}&tenant_id=${encodeURIComponent(tenantId)}`, "POST", c.req.raw.body);
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+app.use("/internal/spaces/:spaceId/action-receipts/verify", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.get("/internal/spaces/:spaceId/action-receipts/verify", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  return stub.fetch(new Request("http://space/internal/action-receipts/verify"));
+});
+
 // Projects (thread grouping) — real traffic always arrives either via the router (proxyTo
 // already mints the token off verified JWT OR product_end_user claims) or a direct internal
 // caller (NaelaoAgentDO, agents worker — both updated to mint it too), so requireInternalHmac
@@ -969,6 +1028,10 @@ app.use("/spaces/:spaceId/projects/:projectId/members/:userId", requireInternalH
 app.use("/spaces/:spaceId/projects/:projectId/members/:userId", requireBusinessMembership({ DELETE: "admin" }));
 app.use("/spaces/:spaceId/projects/:projectId/activate-thread", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/projects/:projectId/activate-thread", requireBusinessMembership({ POST: "member" }));
+app.use("/spaces/:spaceId/projects/:projectId/mode", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/mode", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/projects/:projectId/promote", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/promote", requireBusinessMembership({ POST: "admin" }));
 
 app.get("/spaces/:spaceId/projects/:projectId/members", async (c) => {
   const { spaceId, projectId } = c.req.param();
@@ -1060,7 +1123,7 @@ app.get("/spaces/:spaceId/projects/:projectId/workspace/files", async (c) => {
   do {
     const list = await c.env.SCRIPTS_R2.list({ prefix, ...(cursor ? { cursor } : {}), limit: 1000 });
     for (const obj of list.objects) {
-      if (obj.key.endsWith("/.keep")) continue;
+      if (obj.key.endsWith("/.keep") || obj.customMetadata?.deleted === "true") continue;
       files.push({ path: obj.key.slice(prefix.length), size: obj.size, uploaded: obj.uploaded.toISOString() });
       if (files.length >= WORKSPACE_MAX_FILES) break;
     }
@@ -1087,7 +1150,7 @@ app.get("/spaces/:spaceId/projects/:projectId/workspace/files/*", async (c) => {
   const relative = decodeURIComponent(rest).split("/").filter((seg) => seg && seg !== "." && seg !== "..").join("/");
   if (!relative) return c.json({ error_code: "bad_request", message: "file path required" }, 400);
   const obj = await c.env.SCRIPTS_R2.get(prefix + relative);
-  if (!obj) return c.json({ error_code: "not_found", message: "File not found" }, 404);
+  if (!obj || obj.customMetadata?.deleted === "true") return c.json({ error_code: "not_found", message: "File not found" }, 404);
   return readWorkspaceObject(obj, relative);
 });
 
@@ -1623,6 +1686,42 @@ app.post("/spaces/:spaceId/local-tunnel/connect-token", async (c) => {
   });
 });
 
+// Device enrollment/administration requires both router identity and a live space role.
+app.use("/spaces/:spaceId/tunnels", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/tunnels/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/tunnels", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/tunnels/*", requireBusinessMembership({ GET: "member", POST: "admin", DELETE: "admin" }));
+app.get("/spaces/:spaceId/tunnels", async c => {
+  const identity = getCallerIdentity(c), tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
+  if (!tenantId || !identity.userId) return c.json({ error_code: "unauthorized" }, 401);
+  const stub = await spaceDoStub(c.env, c.req.param("spaceId"), tenantId);
+  return stub.fetch(new Request("http://space-do/machine-authority", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "list", tenantId, spaceId: c.req.param("spaceId"), actorId: identity.userId }) }));
+});
+app.post("/spaces/:spaceId/tunnels/enrollment", async c => {
+  const identity = getCallerIdentity(c), tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
+  if (!tenantId || !identity.userId) return c.json({ error_code: "unauthorized" }, 401);
+  const body = await c.req.json<{ name?: string; grants?: unknown }>();
+  const stub = await spaceDoStub(c.env, c.req.param("spaceId"), tenantId);
+  return stub.fetch(new Request("http://space-do/machine-authority", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "enrollment", tenantId, spaceId: c.req.param("spaceId"), actorId: identity.userId, name: body.name, grants: body.grants ?? [] }) }));
+});
+app.post("/spaces/:spaceId/tunnels/:machineId/:action", async c => {
+  const identity = getCallerIdentity(c), tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
+  const action = c.req.param("action");
+  if (!["rename", "revoke", "remove", "grants"].includes(action)) return c.json({ error_code: "bad_request" }, 400);
+  if (!tenantId || !identity.userId) return c.json({ error_code: "unauthorized" }, 401);
+  const body = await c.req.json<{ name?: string; grants?: unknown }>();
+  const stub = await spaceDoStub(c.env, c.req.param("spaceId"), tenantId);
+  return stub.fetch(new Request("http://space-do/machine-authority", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, tenantId, spaceId: c.req.param("spaceId"), actorId: identity.userId, machineId: c.req.param("machineId"), name: body.name, grants: body.grants }) }));
+});
+app.post("/spaces/:spaceId/tunnel-authority", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  const body = await c.req.json<Record<string, unknown>>();
+  if (!["enroll", "authenticate", "lookup", "heartbeat"].includes(String(body.action))) return c.json({ error_code: "forbidden" }, 403);
+  const stub = await spaceDoStub(c.env, c.req.param("spaceId"), tenantId);
+  return stub.fetch(new Request("http://space-do/machine-authority", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, tenantId, spaceId: c.req.param("spaceId") }) }));
+});
+
 // ── Whop wallet shell wrapper ──────────────────────────────────────────────────────────────────
 // Every business gets an auto-provisioned Whop sub-merchant wallet (no builder action). The
 // balance/transactions read is member-visible (a business's own bank-account balance is
@@ -1813,6 +1912,10 @@ app.get("/spaces/:spaceId/connectors/directory", async (c) => {
 // configured:boolean only.
 app.use("/spaces/:spaceId/llm-byok", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/llm-byok", requireBusinessMembership({ GET: "member", PUT: "admin" }));
+app.use("/spaces/:spaceId/llm-byok/select", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/llm-byok/select", requireBusinessMembership({ POST: "admin" }));
+app.use("/spaces/:spaceId/llm-byok/remove", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/llm-byok/remove", requireBusinessMembership({ POST: "admin" }));
 app.use("/spaces/:spaceId/llm-byok/:provider", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/llm-byok/:provider", requireBusinessMembership({ DELETE: "admin" }));
 
@@ -1822,6 +1925,34 @@ app.get("/spaces/:spaceId/llm-byok", async (c) =>
 app.put("/spaces/:spaceId/llm-byok", async (c) => {
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({}));
   return proxyToAgentsWorker(c, `/spaces/${encodeURIComponent(c.req.param("spaceId"))}/llm-byok`, "PUT", body);
+});
+
+app.get("/spaces/:spaceId/projects/:projectId/mode", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/mode`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.post("/spaces/:spaceId/projects/:projectId/promote", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const identity = getCallerIdentity(c);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/promote`, "POST",
+    JSON.stringify({ promoted_by: identity.userId || null, tenant_id: tenantId }));
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+app.post("/spaces/:spaceId/llm-byok/select", async (c) => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}));
+  return proxyToAgentsWorker(c, `/spaces/${encodeURIComponent(c.req.param("spaceId"))}/llm-byok/select`, "POST", body);
+});
+app.post("/spaces/:spaceId/llm-byok/remove", async (c) => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}));
+  return proxyToAgentsWorker(c, `/spaces/${encodeURIComponent(c.req.param("spaceId"))}/llm-byok/remove`, "POST", body);
 });
 app.delete("/spaces/:spaceId/llm-byok/:provider", async (c) =>
   proxyToAgentsWorker(
@@ -2427,6 +2558,40 @@ app.patch("/spaces/:spaceId/model-config", async (c) => {
   return c.json({ model: body.model, ...(body.effort ? { effort: body.effort } : {}) });
 });
 
+// Internal read used by NaelaoAgentDO's final model gate. Public callers are checked at
+// /agent/run, but scheduled/channel/worker dispatches can enter the DO directly; keeping this
+// lookup behind the platform HMAC makes the DO's policy decision independent of its ingress.
+app.use("/internal/spaces/:spaceId/model-policy", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.get("/internal/spaces/:spaceId/model-policy", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const row = await c.env.PLATFORM_DB.prepare(
+    "SELECT config_json FROM spaces WHERE id = ? AND tenant_id = ?"
+  ).bind(spaceId, tenantId).first<{ config_json: string | null }>();
+  if (!row) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  let policy: { mode: "open" | "whitelist_only"; allowedModelIds: string[] } | null = null;
+  try {
+    const config = JSON.parse(row.config_json || "{}") as {
+      model_policy?: { mode?: string; allowedModelIds?: unknown };
+      productConfig?: { modelPolicy?: { mode?: string; allowedModelIds?: unknown } };
+    };
+    const candidate = config.model_policy ?? config.productConfig?.modelPolicy;
+    if (candidate?.mode === "open" || candidate?.mode === "whitelist_only") {
+      policy = {
+        mode: candidate.mode,
+        allowedModelIds: Array.isArray(candidate.allowedModelIds)
+          ? candidate.allowedModelIds.filter((id): id is string => typeof id === "string" && id.length > 0)
+          : [],
+      };
+    }
+  } catch {
+    // A malformed config has no usable model policy; the agents worker applies its existing
+    // conservative compliance handling for air-gap state separately.
+  }
+  return c.json({ policy });
+});
+
 // ── Builder observability surface (security audit follow-up) ────────────────
 // A builder had no consolidated view of what their agent has actually been doing — run
 // history, cost, why it escalated. NaelaoAgentDO posts one row per run completion/failure and
@@ -2770,6 +2935,7 @@ app.get("/spaces/:spaceId/threads/:threadId", async (c) => {
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const qs = new URLSearchParams();
   if (identity.userId) qs.set("viewer_id", identity.userId);
+  else qs.set("space_manager", "1");
   const res = await forwardToSpaceDO(stub, `/threads/${encodeURIComponent(threadId)}?${qs}`, "GET");
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
@@ -4127,7 +4293,7 @@ app.post("/internal/stream-tickets/consume", async (c) => {
  * below; this is for callers (like the shell manifest projection) that need ui.* too.
  */
 async function loadManifest(env: Env, spaceTypeId: string): Promise<NaelaoSpaceTypeManifestV2 | null> {
-  const cacheKey = `space-type-manifest:${spaceTypeId}`;
+  const cacheKey = `space-type-manifest:v2:${spaceTypeId}`;
   const cached = await env.NAELAO_CONFIG_KV.get(cacheKey, "json") as NaelaoSpaceTypeManifestV2 | null;
   if (cached) return cached;
   const registry = getRegistryDO(env);

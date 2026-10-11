@@ -7,10 +7,9 @@
  * Phase K already gave every project a base Tier-5 sandbox (Python/Bash, ephemeral compute,
  * a `/workspace` an agent explicitly stages via `workspace.copy` — §A1.17 Phase R, see
  * workspace.ts) via `ToolSandboxDO`. The marketplace is for workloads that base sandbox
- * can't serve: a LONG-RUNNING stateful server (a database, a cache) that needs its own container
- * lifecycle, its own persistence strategy, and its own per-minute billing — NOT a one-shot CLI
- * tool. (A one-shot tool like ffmpeg is better served by adding the binary to the base sandbox
- * image and calling it via the existing `code.execute_bash` op — no marketplace slot needed.)
+ * can't serve. Both one-shot extension binaries and stateful services require an approved
+ * immutable image, a scoped lifecycle, durable artifacts and measured usage. Extension tools
+ * use task-isolated sidecars; they are not silently installed in the general project image.
  *
  * Honest scope note (§A1.16.24-style transparency): every entry below is `available: false`
  * this pass. The slot lifecycle (this file + `container_slots` CRUD + the `container_image`
@@ -126,3 +125,5 @@ export const CONTAINER_IMAGE_CATALOGUE: ContainerImageManifest[] = [
 export function findContainerImage(imageId: string): ContainerImageManifest | undefined {
   return CONTAINER_IMAGE_CATALOGUE.find((i) => i.id === imageId);
 }
+
+export { resolveContainerBinary, approvedContainer, parseApprovedContainerImages, sidecarKey } from "./container-policy.js";

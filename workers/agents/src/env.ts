@@ -2,9 +2,17 @@
 import type { NaelaoAgentDO } from "./do/NaelaoAgentDO.js";
 import type { HITLApprovalDO } from "./do/HITLApprovalDO.js";
 import type { TaskDO } from "./do/TaskDO.js";
+import type { DurableWorkflowHostEnv } from "./workflows/workflow-host.js";
 
-export interface Env {
+export interface Env extends DurableWorkflowHostEnv {
   ENVIRONMENT: string;
+  /** Deployment must supply the actual immutable bundle SHA-256, not a mutable version name. */
+  WORKFLOW_BUILD_ID?: string;
+  DATA_JURISDICTION?: "eu";
+  TYPESAFE_API_KEY?: string;
+  SYSTEM_ONE_ENDPOINT?: string;
+  SYSTEM_ONE_MODEL?: string;
+  SYSTEM_ONE_PROVIDER?: "jev" | "laya";
   ANTHROPIC_API_KEY: string;
   PLATFORM_SECRET: string;
   PLATFORM_DB: D1Database;
@@ -21,10 +29,6 @@ export interface Env {
   AGENT_TASK_WORKFLOW: { create(opts: { id?: string; params?: unknown }): Promise<void> };
   GENERIC_SUBAGENT_WORKFLOW?: { create(opts: { id?: string; params: unknown }): Promise<{ id: string }> };
   /** §A1.17 Phase J — durable dispatch for runtime:"workflow" scripts (ScriptRunWorkflow). */
-  AGENT_SCRIPT_WORKFLOW?: {
-    create(opts: { id?: string; params?: unknown }): Promise<{ id: string; status(): Promise<{ status: string; output?: unknown; error?: unknown }> }>;
-    get(id: string): Promise<{ id: string; status(): Promise<{ status: string; output?: unknown; error?: unknown }> }>;
-  };
   SCHEDULED_REMINDER_WORKFLOW?: { create(opts: { id?: string; params: unknown }): Promise<{ id: string }> };
   VOICE_CALLS?: Fetcher;
 }

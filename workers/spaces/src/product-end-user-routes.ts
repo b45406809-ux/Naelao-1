@@ -13,7 +13,8 @@
 import type { Hono } from "hono";
 import { hashPassword, verifyPassword } from "@naelao/crypto";
 import type { HashedPassword } from "@naelao/crypto";
-import { getDOName } from "@naelao/crypto";
+import { getDOName, signHmac, verifyHmac } from "@naelao/crypto";
+import { isSpaceNetworkEgressDenied } from "@naelao/security";
 import type { SpaceTypeProductConfig } from "./do/SpaceTypeRegistryDO.js";
 
 export interface ProductEndUserRoutesEnv {
@@ -29,6 +30,11 @@ export interface ProductEndUserRoutesEnv {
    *  raw token, and the shell's verify-email page accepts a manually pasted token, so signup
    *  verification works either way, not just when this happens to be configured correctly. */
   PRODUCT_SHELL_URL?: string;
+  WHATSAPP_ACCESS_TOKEN?: string;
+  WHATSAPP_PHONE_NUMBER_ID?: string;
+  TWILIO_ACCOUNT_SID?: string;
+  TWILIO_AUTH_TOKEN?: string;
+  TWILIO_WHATSAPP_NUMBER?: string;
 }
 
 async function sha256Hex(input: string): Promise<string> {
@@ -38,6 +44,44 @@ async function sha256Hex(input: string): Promise<string> {
 
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour, same order of magnitude as business_invites' 7-day cap but shorter since this grants a live credential change
 const VERIFY_TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours — long enough that a slow inbox doesn't lock a legitimate signup out of its free credits
+const WHATSAPP_CHALLENGE_TTL_MS = 10 * 60 * 1000;
+const WHATSAPP_MAX_ATTEMPTS = 5;
+
+export function normalizeE164(input: string): string | null {
+  const compact = input.trim().replace(/[\s().-]/g, "");
+  const normalized = compact.startsWith("00") ? `+${compact.slice(2)}` : compact;
+  return /^\+[1-9]\d{7,14}$/.test(normalized) ? normalized : null;
+}
+
+function whatsappChallengeDigest(env: ProductEndUserRoutesEnv, kind: "otp" | "magic", value: string): Promise<string> {
+  return signHmac(`whatsapp-auth:${kind}:${value}`, env.PLATFORM_SECRET);
+}
+
+export async function sendWhatsApp(env: ProductEndUserRoutesEnv, spaceId: string, to: string, text: string): Promise<boolean> {
+  if (await isSpaceNetworkEgressDenied(env.PLATFORM_DB, spaceId)) return false;
+  if (env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.TWILIO_WHATSAPP_NUMBER) {
+    const body = new URLSearchParams({
+      From: `whatsapp:${normalizeE164(env.TWILIO_WHATSAPP_NUMBER) ?? `+${env.TWILIO_WHATSAPP_NUMBER.replace(/^\+/, "")}`}`,
+      To: `whatsapp:${to}`,
+      Body: text,
+    });
+    const response = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Messages.json`, {
+      method: "POST",
+      headers: { authorization: `Basic ${btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`)}`, "content-type": "application/x-www-form-urlencoded" },
+      body,
+    });
+    return response.ok;
+  }
+  if (env.WHATSAPP_ACCESS_TOKEN && env.WHATSAPP_PHONE_NUMBER_ID) {
+    const response = await fetch(`https://graph.facebook.com/v21.0/${env.WHATSAPP_PHONE_NUMBER_ID}/messages`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ messaging_product: "whatsapp", to: to.slice(1), type: "text", text: { body: text } }),
+    });
+    return response.ok;
+  }
+  return false;
+}
 
 async function sendEmail(env: ProductEndUserRoutesEnv, tenantId: string, spaceId: string, to: string, subject: string, body: string): Promise<void> {
   if (!env.NOTIFICATIONS_WORKER) return;
@@ -233,6 +277,128 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
     }));
     const session = await sessionRes.json<{ session_token: string; expires_at: string }>();
 
+    return c.json({ end_user_id: row.end_user_id, session_token: session.session_token, expires_at: session.expires_at });
+  });
+
+  // Passwordless WhatsApp login. The request response is deliberately constant so it cannot be
+  // used to enumerate existing phone numbers. A new phone gets a prospective product-user id and
+  // is only inserted into the roster after possession is proven by the OTP or magic token.
+  app.post("/spaces/:spaceId/end-users/request-whatsapp-login", async (c) => {
+    const env = c.env as ProductEndUserRoutesEnv;
+    const productId = c.req.param("spaceId");
+    const resolved = await loadProductAuthConfig(env, productId);
+    if (!resolved) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+    if (resolved.authConfig?.provider !== "naelao-native") {
+      return c.json({ error_code: "unsupported_provider", message: `This product uses ${resolved.authConfig?.provider ?? "an external"} sign-in` }, 400);
+    }
+    const body = await c.req.json<{ phone?: string }>().catch(() => ({} as { phone?: string }));
+    const phone = normalizeE164(body.phone ?? "");
+    if (!phone) return c.json({ error_code: "bad_request", message: "Enter a valid international phone number, including + and country code" }, 400);
+    const generic = { ok: true, message: "If WhatsApp delivery is available, a sign-in code and link are on the way." };
+
+    const recent = await env.PLATFORM_DB.prepare(
+      `SELECT COUNT(*) AS count FROM whatsapp_auth_challenges
+       WHERE product_space_id = ? AND phone_e164 = ? AND created_at > datetime('now', '-10 minutes')`
+    ).bind(productId, phone).first<{ count: number }>();
+    if ((recent?.count ?? 0) >= 3) return c.json(generic);
+
+    const existing = await env.PLATFORM_DB.prepare(
+      `SELECT end_user_id, suspended_at FROM product_end_users
+       WHERE product_space_id = ? AND phone_e164 = ? AND deleted_at IS NULL`
+    ).bind(productId, phone).first<{ end_user_id: string; suspended_at: string | null }>();
+    if (existing?.suspended_at) return c.json(generic);
+
+    const challengeId = crypto.randomUUID();
+    const endUserId = existing?.end_user_id ?? crypto.randomUUID();
+    const otp = String(crypto.getRandomValues(new Uint32Array(1))[0]! % 1_000_000).padStart(6, "0");
+    const magicToken = `${crypto.randomUUID()}${crypto.randomUUID()}`;
+    const [otpHash, magicHash] = await Promise.all([
+      whatsappChallengeDigest(env, "otp", `${challengeId}:${otp}`),
+      whatsappChallengeDigest(env, "magic", magicToken),
+    ]);
+    const expiresAt = new Date(Date.now() + WHATSAPP_CHALLENGE_TTL_MS).toISOString();
+    const magicUrl = env.PRODUCT_SHELL_URL && resolved.product.product_slug
+      ? `${env.PRODUCT_SHELL_URL}/p/${resolved.product.product_slug}/login?wa_token=${encodeURIComponent(magicToken)}`
+      : null;
+    const text = `Your ${resolved.product.product_slug ?? "Naelao"} sign-in code is ${otp}. It expires in 10 minutes.${magicUrl ? `\n\nSign in: ${magicUrl}` : ""}`;
+
+    await env.PLATFORM_DB.prepare(
+      `INSERT INTO whatsapp_auth_challenges
+       (id, product_space_id, end_user_id, phone_e164, otp_hash, magic_hash, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).bind(challengeId, productId, endUserId, phone, otpHash, magicHash, expiresAt).run();
+    try {
+      if (!(await sendWhatsApp(env, productId, phone, text))) {
+        await env.PLATFORM_DB.prepare("DELETE FROM whatsapp_auth_challenges WHERE id = ?").bind(challengeId).run();
+      }
+    } catch {
+      await env.PLATFORM_DB.prepare("DELETE FROM whatsapp_auth_challenges WHERE id = ?").bind(challengeId).run();
+    }
+    return c.json(generic);
+  });
+
+  app.post("/spaces/:spaceId/end-users/verify-whatsapp-login", async (c) => {
+    const env = c.env as ProductEndUserRoutesEnv;
+    const productId = c.req.param("spaceId");
+    const resolved = await loadProductAuthConfig(env, productId);
+    if (!resolved) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+    const body = await c.req.json<{ phone?: string; code?: string; token?: string }>().catch(() => ({} as { phone?: string; code?: string; token?: string }));
+    const phone = body.phone ? normalizeE164(body.phone) : null;
+    let row: { id: string; end_user_id: string; phone_e164: string; otp_hash: string; attempts: number } | null = null;
+    if (body.token) {
+      row = await env.PLATFORM_DB.prepare(
+        `SELECT id, end_user_id, phone_e164, otp_hash, attempts FROM whatsapp_auth_challenges
+         WHERE product_space_id = ? AND magic_hash = ? AND used_at IS NULL AND expires_at > datetime('now')`
+      ).bind(productId, await whatsappChallengeDigest(env, "magic", body.token)).first<{ id: string; end_user_id: string; phone_e164: string; otp_hash: string; attempts: number }>();
+    } else if (phone && /^\d{6}$/.test(body.code ?? "")) {
+      row = await env.PLATFORM_DB.prepare(
+        `SELECT id, end_user_id, phone_e164, otp_hash, attempts FROM whatsapp_auth_challenges
+         WHERE product_space_id = ? AND phone_e164 = ? AND used_at IS NULL AND expires_at > datetime('now')
+         ORDER BY created_at DESC LIMIT 1`
+      ).bind(productId, phone).first<{ id: string; end_user_id: string; phone_e164: string; otp_hash: string; attempts: number }>();
+      if (row && !(await verifyHmac(`whatsapp-auth:otp:${row.id}:${body.code}`, row.otp_hash, env.PLATFORM_SECRET))) {
+        await env.PLATFORM_DB.prepare(
+          "UPDATE whatsapp_auth_challenges SET attempts = attempts + 1 WHERE id = ? AND attempts < ?"
+        ).bind(row.id, WHATSAPP_MAX_ATTEMPTS).run();
+        row = null;
+      }
+    }
+    if (!row || row.attempts >= WHATSAPP_MAX_ATTEMPTS) {
+      return c.json({ error_code: "invalid_challenge", message: "That code or link is invalid or has expired" }, 400);
+    }
+
+    const consumed = await env.PLATFORM_DB.prepare(
+      "UPDATE whatsapp_auth_challenges SET used_at = datetime('now') WHERE id = ? AND used_at IS NULL AND expires_at > datetime('now')"
+    ).bind(row.id).run();
+    if ((consumed.meta.changes ?? 0) !== 1) {
+      return c.json({ error_code: "invalid_challenge", message: "That code or link is invalid or has expired" }, 400);
+    }
+    await env.PLATFORM_DB.prepare(
+      `INSERT INTO product_end_users
+       (product_space_id, end_user_id, phone_e164, phone_verified_at, first_seen_at, last_seen_at)
+       VALUES (?, ?, ?, datetime('now'), datetime('now'), datetime('now'))
+       ON CONFLICT(product_space_id, end_user_id) DO UPDATE SET
+         phone_e164 = excluded.phone_e164,
+         phone_verified_at = COALESCE(product_end_users.phone_verified_at, datetime('now')),
+         last_seen_at = datetime('now')`
+    ).bind(productId, row.end_user_id, row.phone_e164).run();
+
+    const stub = await productUserDoStub(env, productId, row.end_user_id, resolved.product.tenant_id);
+    // A verified phone proves reachability just like email verification. The deterministic key
+    // means a person who later adds email cannot receive the starting allowance twice.
+    if (resolved.signupCredits > 0) {
+      try {
+        await stub.fetch(new Request("http://do/credits/grant", {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ credits: resolved.signupCredits, reason: "signup_allowance", idempotency_key: `signup:${row.end_user_id}` }),
+        }));
+      } catch { /* session creation remains available; credit grant can be retried safely */ }
+    }
+    const sessionRes = await stub.fetch(new Request("http://do/sessions", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ auth_provider: "whatsapp" }),
+    }));
+    const session = await sessionRes.json<{ session_token: string; expires_at: string }>();
     return c.json({ end_user_id: row.end_user_id, session_token: session.session_token, expires_at: session.expires_at });
   });
 

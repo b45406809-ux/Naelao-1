@@ -1,3 +1,4 @@
+import { ApiError, requestJson } from "./request";
 // Product Shell API client — a signed-in product end user talks to the platform via a
 // product-scoped nps_... session token (ProductUserDO-backed), never the builder's platform JWT.
 // Ported from apps/portal/src/lib/api.ts's proven hybrid-auth pattern (Three-Tier Platform
@@ -22,110 +23,22 @@ export async function transcribeVoice(audio: Blob): Promise<string> {
   return result.text ?? "";
 }
 
-// Callers need to distinguish "not found" (self-healable — e.g. Chat.tsx recreating a stale
-// session) from other failures, but the backend's `message` field is human text ("Session not
-// found") with no reliable substring to match on — a prior version of this threw a plain Error
-// and callers guessed via `message.includes("404")`, which never actually matched and meant a
-// 404 always surfaced as a raw, un-recovered error instead of self-healing. Carrying the real
-// HTTP status lets callers check `err.status === 404` instead of parsing prose.
-export class ApiError extends Error {
-  status: number;
-  errorCode?: string | undefined;
-  constructor(message: string, status: number, errorCode?: string) {
-    super(message);
-    this.name = "ApiError";
-    this.status = status;
-    this.errorCode = errorCode;
-  }
-}
+export { ApiError } from "./request";
 
-// Retry a genuinely transient failure — a dropped connection, or the backend momentarily
-// unavailable — rather than surfacing it as an immediate error. Mirrors Claude Code's own CLI
-// behavior on a flaky API call ("retrying… (attempt x/10)") rather than making the user retype
-// their message over a blip that clears itself a second later.
-//
-// Deliberately NOT applied to a 4xx response: a bad request, an expired session, a missing
-// resource, an insufficient-credit refusal will fail exactly the same way every time, and
-// retrying one ten times just delays a real error the user needs to see now. Only a network-level
-// throw (offline, DNS, connection reset) and 5xx/429 responses are worth retrying.
-const DEFAULT_FETCH_RETRIES = 10;
-
-function isTransientStatus(status: number): boolean {
-  return status >= 500 || status === 429;
-}
-
-function retryDelayMs(attempt: number): number {
-  // 400, 800, 1200, 1600, 2000, 2400, 2800, then capped at 3000 — a real backoff, not a hammer,
-  // without making a full 10-attempt exhaustion take an absurd amount of time either.
-  return Math.min(400 * (attempt + 1), 3000);
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function apiFetch<T>(
-  path: string,
-  options: RequestInit & {
-    session?: SessionCredentials;
-    /** Called once per retry attempt (never on the first try) — the caller's hook for showing
-     *  "Request failed, retrying (x/10)…" or similar, rather than a silent multi-second stall. */
-    onRetry?: (attempt: number, max: number) => void;
-    /** Override the retry ceiling — 0 disables retrying entirely (a caller that already retries
-     *  at its own cadence, e.g. a polling loop, may want this). Defaults to 10. */
-    retries?: number;
-  } = {}
-): Promise<T> {
+async function apiFetch<T>(path: string, options: RequestInit & {
+  session?: SessionCredentials;
+  onRetry?: (attempt: number, max: number) => void;
+  retries?: number;
+} = {}): Promise<T> {
   const { session, onRetry, retries, ...fetchOptions } = options;
-  const maxRetries = retries ?? DEFAULT_FETCH_RETRIES;
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...(fetchOptions.headers as Record<string, string> | undefined),
-  };
+  const headers = new Headers(fetchOptions.headers);
+  headers.set("Content-Type", "application/json");
   if (session) {
-    headers["Authorization"] = `Bearer ${session.sessionToken}`;
-    headers["x-naelao-end-user-id"] = session.endUserId;
+    headers.set("Authorization", `Bearer ${session.sessionToken}`);
+    headers.set("x-naelao-end-user-id", session.endUserId);
   }
-
-  for (let attempt = 0; ; attempt++) {
-    let res: Response;
-    try {
-      res = await fetch(`${API_URL}${path}`, { ...fetchOptions, headers });
-    } catch (err) {
-      if (attempt < maxRetries) {
-        onRetry?.(attempt + 1, maxRetries);
-        await sleep(retryDelayMs(attempt));
-        continue;
-      }
-      throw err instanceof Error ? err : new Error(String(err));
-    }
-
-    if (!res.ok) {
-      if (isTransientStatus(res.status) && attempt < maxRetries) {
-        onRetry?.(attempt + 1, maxRetries);
-        await sleep(retryDelayMs(attempt));
-        continue;
-      }
-      let message = `API error ${res.status}`;
-      let errorCode: string | undefined;
-      try {
-        // Most routes send `{message}`; the billing-gate 402s (insufficient_credits,
-        // subscription_inactive, ...) send `{error}` instead — falling straight through to
-        // error_code as the DISPLAYED text (e.g. the literal string "insufficient_credits")
-        // when `error` carries the real human-readable sentence was a real bug.
-        const body = (await res.json()) as { message?: string; error?: string; error_code?: string };
-        message = body.message ?? body.error ?? body.error_code ?? message;
-        errorCode = body.error_code;
-      } catch {
-        // use default message
-      }
-      throw new ApiError(message, res.status, errorCode);
-    }
-    if (res.status === 204) return undefined as unknown as T;
-    return res.json() as Promise<T>;
-  }
+  return requestJson<T>(`${API_URL}${path}`, { ...fetchOptions, headers }, { onRetry, retries });
 }
-
 // ── Public, pre-login lookups ────────────────────────────────────────────────
 
 export interface ProductBySlug {
@@ -138,7 +51,11 @@ export interface ProductBySlug {
 
 /** GET /v1/products/by-slug/:slug — unauthenticated; resolves the product a visitor landed on. */
 export async function getProductBySlug(slug: string): Promise<ProductBySlug> {
-  return apiFetch<ProductBySlug>(`/v1/products/by-slug/${encodeURIComponent(slug)}`);
+  // Product resolution is the shell's bootstrap request. During local development the router
+  // can come up a moment before its Spaces service binding reconnects; one short retry turned
+  // that transient 503 into a full-page runtime error for every route. Keep this read-only lookup
+  // patient enough for the local worker topology to settle without replaying any mutation.
+  return apiFetch<ProductBySlug>(`/v1/products/by-slug/${encodeURIComponent(slug)}`, { cache: "no-store", retries: 5 });
 }
 
 export interface ShellManifest {
@@ -186,7 +103,16 @@ export interface ShellManifest {
    *  sent by the backend (workers/spaces/src/template-catalog.ts) but missing from this type, so
    *  the dialog had no way to warn a free-plan user before they hit the server-side
    *  plan_upgrade_required rejection — see spaces/page.tsx's "Requires upgrade" badge. */
-  template_catalog: Array<{ id: string; name: string; coming_soon: boolean; free_tier_eligible: boolean }>;
+  template_catalog: Array<{
+    id: string;
+    name: string;
+    description?: string;
+    template_mode?: "ave" | "cowork";
+    vertical?: string;
+    wallet_mode?: "business_wallet" | "company_budget";
+    coming_soon: boolean;
+    free_tier_eligible: boolean;
+  }>;
   /** Browse-only: the project presets a business is configured with, and the core agents that
    *  run it. Static product data — an agent's system_prompt is never included. Absent on an older
    *  backend, so both are optional and default to empty. */
@@ -309,6 +235,8 @@ export interface Message {
    *  loses this (the run is still genuinely pending; the separate /approvals inbox is the
    *  durable, reload-safe way to find and answer it). */
   pendingApproval?: RunPendingApproval;
+  /** CLIENT-ONLY questionnaire card attached to the live turn that is waiting for an answer. */
+  pendingQuestion?: RunPendingApproval;
   /** CLIENT-ONLY, same non-persisted scope as pendingApproval: one or more actions this run
    *  parked and carried on around (as opposed to pendingApproval, where the WHOLE run stopped).
    *  Rendered as the same inline card, one per entry. */
@@ -420,6 +348,11 @@ export interface RunPendingApproval {
   action_name: string;
   params?: Record<string, unknown>;
   expires_at?: number;
+  kind?: "approval" | "question";
+  question_id?: string;
+  question?: string;
+  options?: string[];
+  questions?: Array<{ question: string; options?: string[] }>;
 }
 
 export interface AgentRun {
@@ -443,6 +376,7 @@ export interface AgentRun {
   live_steps?: LiveRunStep[];
   /** Present when status is "awaiting_approval" — which action, with what parameters. */
   pending_approval?: RunPendingApproval;
+  pending_question?: RunPendingApproval;
   /** Actions the run parked and carried on around — distinct from pending_approval (which means
    *  the WHOLE run suspended). A run can finish (or even fail on something unrelated afterward)
    *  while still carrying one or more of these — they must be rendered regardless of `status`. */
@@ -698,7 +632,7 @@ export async function pollRun(
   session: SessionCredentials,
   onRetry?: (attempt: number, max: number) => void
 ): Promise<AgentRun> {
-  const res = await apiFetch<{ id: string; status: string; final_answer?: string; partial_answer?: string; error?: string; error_code?: string; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval; deferred_approvals?: RunPendingApproval[] }>(
+  const res = await apiFetch<{ id: string; status: string; final_answer?: string; partial_answer?: string; error?: string; error_code?: string; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval; pending_question?: RunPendingApproval; deferred_approvals?: RunPendingApproval[] }>(
     `/v1/spaces/${spaceId}/sessions/${sessionId}/agent/runs/${runId}`,
     { session, ...(onRetry ? { onRetry } : {}) }
   );
@@ -711,6 +645,7 @@ export async function pollRun(
     ...(res.error_code !== undefined ? { error_code: res.error_code } : {}),
     ...(res.live_steps ? { live_steps: res.live_steps } : {}),
     ...(res.pending_approval ? { pending_approval: res.pending_approval } : {}),
+    ...(res.pending_question ? { pending_question: res.pending_question } : {}),
     ...(res.deferred_approvals?.length ? { deferred_approvals: res.deferred_approvals } : {}),
   };
 }
@@ -735,6 +670,10 @@ export interface PendingApproval {
   reject_reason: string | null;
   created_at: string;
   expires_at: number;
+  kind?: "approval" | "question";
+  question?: string | null;
+  options_json?: string | null;
+  answer?: string | null;
 }
 
 /** Every open request in this space. The list is space-wide — the session in the path is only
@@ -996,7 +935,7 @@ export async function updateProject(
   patch: Partial<{
     name: string;
     description: string;
-    kind: "workspace" | "customer_bot";
+    kind: string;
     execution_ceiling: number;
     daily_spend_cap_credits: number;
     max_threads: number;
@@ -1017,6 +956,29 @@ export async function updateProject(
 export interface ByokProviderStatus {
   provider: string;
   configured: boolean;
+  active_key_id?: string | null;
+  keys: ByokKeyMetadata[];
+}
+
+/** Submit the answer to a planner questionnaire and resume the suspended run. */
+export async function answerQuestion(
+  spaceId: string,
+  questionId: string,
+  answer: string,
+  session: SessionCredentials
+): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/sessions/inbox/approvals/${questionId}/answer`, {
+    method: "PUT",
+    body: JSON.stringify({ answer }),
+    session,
+  });
+}
+
+export interface ByokKeyMetadata {
+  id: string;
+  label: string;
+  created_at?: string;
+  active: boolean;
 }
 
 /** GET /v1/spaces/:spaceId/llm-byok — which providers are wired (member+). */
@@ -1031,16 +993,45 @@ export async function setByokKey(
   session: SessionCredentials,
   provider: string,
   key: string,
-): Promise<void> {
-  await apiFetch(`/v1/spaces/${spaceId}/llm-byok`, {
+  label?: string,
+): Promise<ByokKeyMetadata> {
+  return apiFetch<ByokKeyMetadata>(`/v1/spaces/${spaceId}/llm-byok`, {
     method: "PUT",
-    body: JSON.stringify({ provider, key }),
+    body: JSON.stringify({ provider, key, ...(label?.trim() ? { label: label.trim() } : {}) }),
     session,
   });
 }
 
-/** DELETE — remove a stored key (admin). */
-export async function deleteByokKey(spaceId: string, session: SessionCredentials, provider: string): Promise<void> {
+/** POST — make one of several stored keys for a provider the active key (admin). */
+export async function selectByokKey(
+  spaceId: string,
+  session: SessionCredentials,
+  provider: string,
+  keyId: string,
+): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/llm-byok/select`, {
+    method: "POST",
+    body: JSON.stringify({ provider, key_id: keyId }),
+    session,
+  });
+}
+
+/** POST — remove one stored key (admin). */
+export async function deleteByokKey(
+  spaceId: string,
+  session: SessionCredentials,
+  provider: string,
+  keyId?: string,
+): Promise<void> {
+  if (keyId) {
+    await apiFetch(`/v1/spaces/${spaceId}/llm-byok/remove`, {
+      method: "POST",
+      body: JSON.stringify({ provider, key_id: keyId }),
+      session,
+    });
+    return;
+  }
+  // Compatibility for callers that still remove the single legacy provider key.
   await apiFetch(`/v1/spaces/${spaceId}/llm-byok/${provider}`, { method: "DELETE", session });
 }
 
@@ -1119,6 +1110,9 @@ export interface ThreadSummary {
   title: string | null;
   status: string;
   thread_kind: string;
+  thread_tier?: "tier_1_team" | "tier_2_task" | "tier_3_consult" | "tier_4_scratchpad";
+  created_by?: string | null;
+  system_internal?: number | boolean;
   parent_thread_id: string | null;
   session_id: string | null;
   created_at: string;
@@ -1128,9 +1122,12 @@ export interface ThreadSummary {
 export async function listThreads(
   spaceId: string,
   session: SessionCredentials,
-  opts: { projectId?: string } = {}
+  opts: { projectId?: string; includeSubThreads?: boolean } = {}
 ): Promise<ThreadSummary[]> {
-  const qs = opts.projectId ? `?project_id=${encodeURIComponent(opts.projectId)}` : "";
+  const params = new URLSearchParams();
+  if (opts.projectId) params.set("project_id", opts.projectId);
+  if (opts.includeSubThreads) params.set("include_sub_threads", "true");
+  const qs = params.size ? `?${params.toString()}` : "";
   const res = await apiFetch<{ data: ThreadSummary[]; count: number }>(`/v1/spaces/${spaceId}/threads${qs}`, { session });
   return res.data;
 }
@@ -1150,7 +1147,7 @@ export async function listSubthreads(spaceId: string, parentThreadId: string, se
 export async function createThread(
   spaceId: string,
   session: SessionCredentials,
-  opts: { title?: string; project_id?: string } = {}
+  opts: { title?: string; project_id?: string; thread_tier?: "tier_1_team" | "tier_2_task" | "tier_3_consult" | "tier_4_scratchpad" } = {}
 ): Promise<ThreadSummary> {
   return apiFetch(`/v1/spaces/${spaceId}/threads`, { method: "POST", body: JSON.stringify(opts), session });
 }
@@ -1214,6 +1211,7 @@ export async function createCustomAgent(
     name: string; description?: string; instructions: string;
     prebuilt_scripts: string[]; approval_mode?: "always_ask" | "gate_unless_listed" | "yolo";
     auto_approved_actions?: string[]; project_id?: string;
+    skills?: string[]; connectors?: string[];
     // AVOS plan step 5 — optional capability-firewall archetype. Omitted = unrestricted (the
     // prebuilt_scripts list above is used verbatim, unchanged legacy behavior).
     archetype?: string;
@@ -1489,6 +1487,9 @@ export interface SubAgentSummary {
   goal: string;
   status: string;
   progress_note: string | null;
+  result?: string | null;
+  error?: string | null;
+  tokens_used?: number;
   created_at: string;
   updated_at: string;
 }

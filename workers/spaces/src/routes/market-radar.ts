@@ -1,4 +1,4 @@
-import type { SpaceBlueprint } from "@naelao/agent-sdk";
+import { deterministicScore, SystemOneDecisionClient, type FastDecisionGateway, type SpaceBlueprint } from "@naelao/agent-sdk";
 import { getDOName } from "@naelao/crypto";
 import type { Context, Hono } from "hono";
 import { createBusinessForEndUser } from "../business-create.js";
@@ -22,7 +22,30 @@ export function scoreMarketSignal(
 ): number {
   const velocity = Math.max(0, Math.min(300, signal.search_surge_pct)) / 3;
   const whitespace = 100 - Math.max(0, Math.min(100, signal.saturation_index));
-  return Math.round((velocity * 0.62 + whitespace * 0.38) * 100) / 100;
+  return deterministicScore(Math.round((velocity * 0.62 + whitespace * 0.38) * 100) / 100, "market_velocity_whitespace_v1").value;
+}
+
+export async function scoreMarketSignalWithSentry(
+  signal: Pick<MarketSignal, "search_surge_pct" | "saturation_index">,
+  gateway?: FastDecisionGateway,
+): Promise<{ score: number; provider: "deterministic" | "jev" | "laya" }> {
+  const fallback = scoreMarketSignal(signal);
+  if (!gateway) return { score: fallback, provider: "deterministic" };
+  try {
+    const decision = await gateway.score({
+      state: {
+        search_surge_pct: signal.search_surge_pct,
+        saturation_index: signal.saturation_index,
+      },
+      instructions: "Score the market opportunity from weak to exceptional using demand velocity and unsaturated whitespace. Return only the typed score.",
+      criteria: ["weak", "very low", "low", "below average", "average", "above average", "good", "strong", "very strong", "exceptional"],
+      policyCode: "market_radar_opportunity_v1",
+    });
+    if ((decision.confidence ?? 0) < 0.75) return { score: fallback, provider: "deterministic" };
+    return { score: Math.round((decision.value * 100 / 9) * 100) / 100, provider: decision.provider };
+  } catch {
+    return { score: fallback, provider: "deterministic" };
+  }
 }
 
 const STACKS: Record<
@@ -145,10 +168,26 @@ export function registerMarketRadarRoutes(app: Hono<{ Bindings: Env }>): void {
       `SELECT id, name, search_surge_pct, saturation_index, arr_low_cents, arr_high_cents, source_url, observed_at
        FROM market_radar_signals WHERE verified = 1 AND observed_at >= datetime('now', '-30 days')`
     ).all<MarketSignal>();
-    const opportunities = results
-      .map((signal) => ({
+    const gateway = c.env.TYPESAFE_API_KEY || c.env.SYSTEM_ONE_ENDPOINT
+      ? new SystemOneDecisionClient({
+          ...(c.env.SYSTEM_ONE_ENDPOINT ? { endpoint: c.env.SYSTEM_ONE_ENDPOINT } : {}),
+          ...(c.env.TYPESAFE_API_KEY ? { apiKey: c.env.TYPESAFE_API_KEY } : {}),
+          ...(c.env.SYSTEM_ONE_MODEL ? { model: c.env.SYSTEM_ONE_MODEL } : {}),
+          provider: c.env.SYSTEM_ONE_PROVIDER ?? (c.env.SYSTEM_ONE_ENDPOINT ? "laya" : "jev"),
+          ...(c.env.ANALYTICS ? { onDecision: (event) => {
+            try {
+              c.env.ANALYTICS!.writeDataPoint({
+                blobs: ["system_one.decision", c.req.header("x-naelao-tenant-id") ?? "", c.req.param("productSpaceId") ?? "", "", "market-radar", event.provider, "spaces", event.policyCode, event.model],
+                doubles: [event.latencyMs, event.usage.inputTokens, event.usage.outputTokens],
+                indexes: [c.req.header("x-naelao-tenant-id") ?? "platform"],
+              });
+            } catch { /* scoring must not depend on telemetry */ }
+          } } : {}),
+        })
+      : undefined;
+    const scored = await Promise.all(results.map(async (signal) => ({
         ...signal,
-        score: scoreMarketSignal(signal),
+        ...await scoreMarketSignalWithSentry(signal, gateway),
         saturation_label:
           signal.saturation_index <= 25
             ? "Blue Ocean"
@@ -157,7 +196,8 @@ export function registerMarketRadarRoutes(app: Hono<{ Bindings: Env }>): void {
               : "Competitive",
         preconfigured_stack: STACKS[signal.id]?.extensions ?? [],
         blueprint: blueprintForOpportunity(signal),
-      }))
+      })));
+    const opportunities = scored
       .filter((item) => item.preconfigured_stack.length > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, 5);
@@ -165,7 +205,9 @@ export function registerMarketRadarRoutes(app: Hono<{ Bindings: Env }>): void {
       data: opportunities,
       count: opportunities.length,
       generated_at: new Date().toISOString(),
-      scoring_engine: "jev-system-1",
+      scoring_engine: opportunities.some((item) => item.provider !== "deterministic")
+        ? "jev-laya-system-1"
+        : "deterministic-system-1",
     });
   };
   app.get("/spaces/market-radar/top-trends", topTrends);

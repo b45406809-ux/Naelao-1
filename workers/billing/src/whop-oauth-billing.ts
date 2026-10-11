@@ -28,14 +28,15 @@ interface OAuthCredentialValue {
   expires_at: number;
 }
 
-async function generateCredentialToken(platformSecret: string, spaceId: string, agentId: string): Promise<string> {
+async function generateCredentialToken(platformSecret: string, tenantId: string, spaceId: string, agentId: string): Promise<string> {
   const timestamp = Math.floor(Date.now() / 1000);
+  if (![tenantId, spaceId, agentId].every((value) => /^[A-Za-z0-9_-]{1,128}$/.test(value))) throw new Error("invalid_credential_token_scope");
   const key = await crypto.subtle.importKey(
     "raw", new TextEncoder().encode(platformSecret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
   );
-  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${spaceId}:${agentId}:${timestamp}`));
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${tenantId}:${spaceId}:${agentId}::${timestamp}`));
   const hex = Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
-  return `t=${timestamp},aid=${agentId},v1=${hex}`;
+  return `t=${timestamp},aid=${agentId},tid=${tenantId},v3=${hex}`;
 }
 
 /** Resolve the plaintext WHOP_OAUTH_TOKENS credential for a business, refreshing it via the
@@ -49,7 +50,7 @@ export async function getBusinessWhopOAuthToken(
 ): Promise<string | null> {
   if (!env.CREDENTIALS_WORKER) return null;
   try {
-    const credToken = await generateCredentialToken(env.PLATFORM_SECRET, spaceId, "billing-worker");
+    const credToken = await generateCredentialToken(env.PLATFORM_SECRET, tenantId, spaceId, "billing-worker");
     const resp = await env.CREDENTIALS_WORKER.fetch(
       new Request(`http://credentials/v1/internal/spaces/${spaceId}/credentials/${encodeURIComponent("WHOP_OAUTH_TOKENS")}/plaintext`, {
         method: "POST",

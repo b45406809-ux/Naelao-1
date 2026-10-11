@@ -130,6 +130,9 @@ export class SkillLibrary {
       parameters: input.metadata.parameters ?? [],
       calls: input.metadata.calls ?? [],
       requires_tier: input.metadata.requires_tier,
+      ...(input.metadata.runtime ? { runtime: input.metadata.runtime } : {}),
+      ...(input.metadata.code_capabilities ? { code_capabilities: input.metadata.code_capabilities } : {}),
+      ...(input.metadata.code_language ? { code_language: input.metadata.code_language } : {}),
       ...(input.metadata.required_credentials !== undefined
         ? { required_credentials: input.metadata.required_credentials }
         : {}),

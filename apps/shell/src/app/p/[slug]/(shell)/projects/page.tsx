@@ -1,6 +1,5 @@
 "use client";
 
-export const runtime = "edge";
 
 // /projects (bare, no id) is no longer a list — it lands you straight in the business's default
 // "General" project, the way opening a folder takes you into it rather than showing you every

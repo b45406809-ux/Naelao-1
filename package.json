@@ -10,9 +10,15 @@
   "scripts": {
     "build": "turbo run build",
     "test": "turbo run test",
+    "test:conformance": "node packages/agent-sdk/node_modules/vitest/vitest.mjs run --config harness/conformance/vitest.config.ts",
     "lint": "biome check .",
     "typecheck": "turbo run typecheck",
-    "dev": "bash infra/scripts/start-dev.sh"
+    "dev": "node infra/scripts/start-dev.mjs",
+    "audit:eu-residency": "node infra/scripts/verify-eu-residency.mjs",
+    "verify:system-one": "node infra/scripts/verify-system-one.mjs",
+    "capture:runtime-economics": "node infra/scripts/capture-runtime-economics.mjs",
+    "evaluate:runtime-economics": "node infra/scripts/evaluate-runtime-economics.mjs",
+    "evaluate:unit-economics": "node infra/scripts/evaluate-unit-economics.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "1.9.4",

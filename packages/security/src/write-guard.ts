@@ -39,21 +39,107 @@ export async function verifyGatekeeperToken(token: string, secret: string, actio
       Array.isArray(claims.resources) && claims.resources.includes(resource);
   } catch { return false; }
 }
-/** Strip comments and literals before structural SQL checks (a small, deterministic AST lexer). */
-function sqlShape(input: string): string {
-  return input.replace(/--[^\n\r]*/g, " ").replace(/\/\*[\s\S]*?\*\//g, " ")
-    .replace(/'(?:''|[^'])*'/g, " ? ").replace(/"(?:""|[^"])*"/g, " identifier ").replace(/\s+/g, " ").trim();
+interface SqlLexed { statements: string[][]; invalid: boolean }
+
+/** Small SQL lexer for deterministic deny rules; it is deliberately not described as an AST. */
+function lexSql(input: string): SqlLexed {
+  const statements: string[][] = [];
+  let tokens: string[] = [];
+  const flush = () => { if (tokens.length) statements.push(tokens); tokens = []; };
+  for (let i = 0; i < input.length;) {
+    const ch = input[i]!;
+    if (/\s/.test(ch)) { i++; continue; }
+    if (ch === "-" && input[i + 1] === "-") {
+      i += 2;
+      while (i < input.length && input[i] !== "\n" && input[i] !== "\r") i++;
+      continue;
+    }
+    if (ch === "/" && input[i + 1] === "*") {
+      const end = input.indexOf("*/", i + 2);
+      if (end < 0) return { statements, invalid: true };
+      i = end + 2;
+      continue;
+    }
+    if (ch === "'") {
+      i++;
+      let closed = false;
+      while (i < input.length) {
+        if (input[i] === "'" && input[i + 1] === "'") { i += 2; continue; }
+        if (input[i] === "'") { i++; closed = true; break; }
+        i++;
+      }
+      if (!closed) return { statements, invalid: true };
+      tokens.push("$LITERAL");
+      continue;
+    }
+    if (ch === '"' || ch === "`" || ch === "[") {
+      const endChar = ch === "[" ? "]" : ch;
+      let value = "";
+      i++;
+      let closed = false;
+      while (i < input.length) {
+        if (input[i] === endChar) {
+          if (input[i + 1] === endChar && endChar !== "]") { value += endChar; i += 2; continue; }
+          i++; closed = true; break;
+        }
+        value += input[i++]!;
+      }
+      if (!closed) return { statements, invalid: true };
+      tokens.push(value.toUpperCase());
+      continue;
+    }
+    if (/[A-Za-z_]/.test(ch)) {
+      let end = i + 1;
+      while (end < input.length && /[A-Za-z0-9_$]/.test(input[end]!)) end++;
+      tokens.push(input.slice(i, end).toUpperCase());
+      i = end;
+      continue;
+    }
+    if (ch === ";") { flush(); i++; continue; }
+    if (/[0-9]/.test(ch)) {
+      let end = i + 1;
+      while (end < input.length && /[0-9.]/.test(input[end]!)) end++;
+      tokens.push(input.slice(i, end)); i = end; continue;
+    }
+    tokens.push(ch);
+    i++;
+  }
+  flush();
+  return { statements, invalid: false };
 }
+
+function tokenSequence(tokens: readonly string[], sequence: readonly string[]): number {
+  for (let i = 0; i <= tokens.length - sequence.length; i++) {
+    if (sequence.every((token, offset) => tokens[i + offset] === token)) return i;
+  }
+  return -1;
+}
+
 export function findDestructiveMutation(input: string, kind: MutationKind | "auto" = "auto", resource = "*"): MutationFinding | null {
-  const sql = sqlShape(input);
   if (kind !== "shell") {
-    const drop = sql.match(/\bDROP\s+(?:TABLE|DATABASE)\s+(?:IF\s+EXISTS\s+)?([\w.`-]+)/i);
-    if (drop) return { kind: "sql", action: "sql.drop", resource, reason: `DROP ${drop[1]}` };
-    const alter = sql.match(/\bALTER\s+TABLE\s+([\w.`-]+)[\s\S]*?\bDROP\b/i);
-    if (alter) return { kind: "sql", action: "sql.alter_drop", resource, reason: `ALTER TABLE DROP ${alter[1]}` };
-    if (/\bTRUNCATE(?:\s+TABLE)?\b/i.test(sql)) return { kind: "sql", action: "sql.truncate", resource, reason: "TRUNCATE" };
-    const write = sql.match(/\b(DELETE\s+FROM|UPDATE)\s+([\w.`-]+)([\s\S]*?)(?:;|$)/i);
-    if (write && !/\bWHERE\b/i.test(write[3]!)) return { kind: "sql", action: "sql.unbounded_write", resource, reason: `${write[1]!.toUpperCase()} without WHERE` };
+    const parsed = lexSql(input);
+    if (parsed.invalid) return { kind: "sql", action: "sql.invalid", resource, reason: "malformed SQL quoting or comment" };
+    if (parsed.statements.length > 1) return { kind: "sql", action: "sql.multiple_statements", resource, reason: "multiple SQL statements are not allowed" };
+    const tokens = parsed.statements[0] ?? [];
+    if (tokenSequence(tokens, ["DROP", "TABLE"]) >= 0 || tokenSequence(tokens, ["DROP", "DATABASE"]) >= 0) {
+      return { kind: "sql", action: "sql.drop", resource, reason: "DROP TABLE or DATABASE" };
+    }
+    const alterAt = tokenSequence(tokens, ["ALTER", "TABLE"]);
+    if (alterAt >= 0 && tokenSequence(tokens.slice(alterAt + 2), ["DROP"]) >= 0) {
+      return { kind: "sql", action: "sql.alter_drop", resource, reason: "ALTER TABLE DROP" };
+    }
+    if (tokenSequence(tokens, ["TRUNCATE"]) >= 0) return { kind: "sql", action: "sql.truncate", resource, reason: "TRUNCATE" };
+    const deleteAt = tokenSequence(tokens, ["DELETE", "FROM"]);
+    const updateAt = tokenSequence(tokens, ["UPDATE"]);
+    const writeAt = deleteAt >= 0 ? deleteAt : updateAt;
+    if (writeAt >= 0) {
+      const whereAt = tokens.indexOf("WHERE", writeAt);
+      const unboundedPredicate = whereAt >= 0 && (tokens.slice(whereAt + 1).join("") === "1=1" || tokens.slice(whereAt + 1).join("") === "TRUE");
+      if (whereAt < 0 || unboundedPredicate) return {
+        kind: "sql", action: "sql.unbounded_write", resource,
+        reason: `${deleteAt >= 0 ? "DELETE" : "UPDATE"} has no restrictive WHERE predicate`,
+      };
+    }
   }
   if (kind !== "sql") {
     const value = input.replace(/\\\s*\n/g, " ").replace(/\s+/g, " ");

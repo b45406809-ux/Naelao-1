@@ -6,21 +6,15 @@
  *   Tier 1 — SQLite virtual FS           just-bash, Read/Edit and AST operations.
  *   Tier 2 — V8 Isolate (Dynamic Worker) TS/JS + HTTP fetch. No fs, no native bins.
  *   Tier 3 — Durable Workflow            multi-hour jobs and cron execution.
- *   Tier 4 — Browser (CF Browser)        DOM/click/fill/screenshot via naelao-browser proxy.
- *                                        naelao-browser itself tries Kitesurf FIRST (a
- *                                        lightweight, agent-first browser Cloudflare announced
- *                                        2026-08-06 — 3-7x less CPU/memory than Chromium, ~1.7x
- *                                        slower wall time, real per @cloudflare/puppeteer 1.3.0's
- *                                        `WorkersLaunchOptions.browser: 'kitesurf'`) and falls
- *                                        back to Chromium on any failure — an internal detail of
- *                                        Tier 4, not a 6th tier, since it changes cost/reliability
- *                                        but not capability. Known Kitesurf gaps (still beta, no
- *                                        GA date): video playback, WebGL, bot-challenge/TLS-
- *                                        fingerprint handshakes, persistent authenticated
- *                                        sessions, pixel-perfect rendering — a caller that knows a
- *                                        target needs one of those can force `engine: "chromium"`.
+ *   Tier 4 — Kitesurf                     lightweight, scoped DOM observations.
+ *   Interactive login/session and visual work explicitly escalate to Tier 5 within
+ *   the run's ceiling. Receipts report the actual engine; failed mutations never retry
+ *   on a second engine. Browser observation and image loading are separate commands.
  *   Tier 5 — Chromium                    visual/full-browser rendering.
  *   Tier 6 — Container (SandboxDO)       Full Linux, Python/bash and native compilers.
+ *   General runtimes are project-scoped; extension binaries run in approved, digest-pinned
+ *   task sidecars. WebContainers require a live consenting browser and declared compatibility.
+ *   Neither a native incompatibility nor a browser disconnect permits a policy bypass.
  *
  * Tiers 2-5 execute arbitrary stored code and so are delegated to an injected
  * TieredCodeRunner (the concrete mechanism — Dynamic Worker Loader, browser proxy,
@@ -35,6 +29,8 @@ import type {
   ScriptRunResult,
   StoredScript,
 } from "./types.js";
+import type { FastDecisionGateway } from "@naelao/agent-sdk";
+import { parseShell } from "./shell-parser.js";
 
 export const EXECUTION_ENGINES = {
   1: "sqlite_fs",
@@ -50,8 +46,10 @@ export type ExecutionEngine = (typeof EXECUTION_ENGINES)[ExecutionTier];
 const NATIVE_COMMANDS = /(?:^|[;&|]\s*|\s)(?:cargo(?:\s+build|\s+test)?|rustc|gcc|g\+\+|clang|clang\+\+|cmake|make|docker|podman|apt(?:-get)?|apk|yum|dnf)(?:\s|$)/i;
 const NATIVE_PACKAGES = /(?:@tensorflow\/tfjs-node|node-gyp|sharp|better-sqlite3|canvas|bcrypt|torch|tensorflow|opencv|cv2|scipy|numpy|pandas)/i;
 const HEAVY_PYTHON_IMPORT = /^\s*(?:from|import)\s+(?:torch|tensorflow|cv2|opencv|scipy|numpy|pandas|sklearn|jax|xgboost)\b/m;
+const NATIVE_BINARIES = new Set(["bash", "sh", "node", "npm", "pnpm", "yarn", "git", "python", "python3", "pip", "pip3", "cargo", "rustc", "gcc", "g++", "clang", "clang++", "cmake", "make", "docker", "podman", "apt", "apt-get", "apk", "yum", "dnf"]);
+export function isDeclaredNativeCommand(name: string): boolean { return NATIVE_BINARIES.has(name); }
 
-/** Jev-style deterministic pre-flight. It runs before any isolate is created. */
+/** Deterministic native pre-flight. It remains the fail-closed authority if System One is absent. */
 export function requiresNativeCompilation(command: string): boolean {
   return NATIVE_COMMANDS.test(command) ||
     (/\b(?:npm|pnpm|yarn|pip3?|python3?\s+-m\s+pip)\s+(?:i|install|add|rebuild)\b/i.test(command) && NATIVE_PACKAGES.test(command)) ||
@@ -61,17 +59,57 @@ export function requiresNativeCompilation(command: string): boolean {
 
 /** Classifies ordinary shell intent without revealing tier mechanics to the model. */
 export function classifyExecutionRoute(command: string): { tier: ExecutionTier; engine: ExecutionEngine; reason: string } {
-  const value = command.trim();
-  let tier: ExecutionTier;
-  let reason: string;
-  if (requiresNativeCompilation(value)) { tier = 6; reason = "jev_native_preflight"; }
-  else if (/^(?:workflow\s+run|schedule\s+--cron)\b/.test(value)) { tier = 3; reason = "durable_workflow"; }
-  else if (/^(?:browse)\b/.test(value)) { tier = /(?:--screenshot|--pdf|--visual|webgl|canvas)/i.test(value) ? 5 : 4; reason = tier === 5 ? "visual_browser" : "dom_browser"; }
-  else if (/^(?:see)\b/.test(value)) { tier = 5; reason = "on_demand_vision"; }
-  else if (/^(?:cat|head|tail|grep|rg|sed|awk|find|jq|diff|sort|uniq|wc|pwd|echo|printf|test|\[|Read|Edit)\b/.test(value)) { tier = 1; reason = "virtual_posix"; }
-  else if (/^(?:node|tsx?|deno|python3?|stripe|gh|r2|resend|twilio|ext:|auto:|avos\s+chore)\b/.test(value)) { tier = 2; reason = "isolate_runtime"; }
-  else { tier = 6; reason = "linux_command"; }
-  return { tier, engine: EXECUTION_ENGINES[tier], reason };
+  const local = new Set(["cat", "head", "tail", "grep", "sed", "awk", "find", "jq", "diff", "sort", "uniq", "wc", "pwd", "echo", "printf", "ls", "true", "false", "touch", "rm", "cp", "mv", "naelao"]);
+  let selected: { tier: ExecutionTier; reason: string } = { tier: 1, reason: "virtual_posix" };
+  for (const { argv } of parseShell(command).flatMap((pipeline) => pipeline.commands)) {
+    const name = argv[0];
+    if (!name) continue;
+    let route: typeof selected;
+    if (local.has(name)) route = { tier: 1, reason: "virtual_posix" };
+    else if (name === "workflow" || name === "schedule") route = { tier: 3, reason: "durable_workflow" };
+    else if (name === "browse") route = argv.some((arg) => ["--screenshot", "--pdf", "--visual"].includes(arg)) ? { tier: 5, reason: "visual_browser" } : { tier: 4, reason: "dom_browser" };
+    else if (name === "see") route = { tier: 5, reason: "on_demand_vision" };
+    else if (isDeclaredNativeCommand(name)) route = { tier: 6, reason: "declared_native_command" };
+    else if (["stripe", "gh", "r2", "resend", "twilio"].includes(name) || /^(ext|auto):/.test(name)) route = { tier: 2, reason: "registered_capability" };
+    else return { tier: 1, engine: EXECUTION_ENGINES[1], reason: "command_not_found" };
+    if (route.tier > selected.tier) selected = route;
+  }
+  return { ...selected, engine: EXECUTION_ENGINES[selected.tier] };
+}
+
+/**
+ * Refine an execution route with Jev or Laya before any isolate is created. The sentry may only
+ * elevate to the Linux container; it can never downgrade a route selected by deterministic policy.
+ */
+export async function classifyExecutionRouteWithSentry(
+  command: string,
+  sentry?: Pick<FastDecisionGateway, "noul">
+): Promise<{ tier: ExecutionTier; engine: ExecutionEngine; reason: string; sentry?: { provider: "jev" | "laya"; confidence?: number; model?: string } }> {
+  const baseline = classifyExecutionRoute(command);
+  if (!sentry || baseline.tier === 6 || baseline.reason === "command_not_found" || baseline.tier === 1) return baseline;
+  try {
+    const decision = await sentry.noul({
+      state: { command },
+      instructions: "Does this shell command require native operating-system packages, compiled binaries, native build tools, or a full Linux environment that cannot run in a V8 isolate or Pyodide?",
+      criteria: {
+        true: "Requires native compilation, native dependencies, system packages, privileged OS behavior, or a full Linux process environment.",
+        false: "Can run with virtual filesystem commands, JavaScript in V8, pure Python in Pyodide, a workflow, or a browser service.",
+      },
+      policyCode: "execution_native_preflight_v1",
+      // Ambiguous predictions must preserve the deterministic route rather than spending a
+      // container allocation. Native commands already caught by regex never depend on this gate.
+      threshold: 0.75,
+    });
+    if (!decision.value || decision.provider === "deterministic") return baseline;
+    return {
+      tier: 6,
+      engine: EXECUTION_ENGINES[6],
+      reason: `${decision.provider}_native_preflight`,
+      sentry: { provider: decision.provider, ...(decision.confidence !== undefined ? { confidence: decision.confidence } : {}), ...(decision.model ? { model: decision.model } : {}) },
+    };
+  } catch {
+    return baseline;
+  }
 }
 
 /** Run a stored script (agent-distilled / authored code) at its declared tier. */
@@ -124,6 +162,7 @@ export async function runStoredScript(
         agentId: env.agentId,
         tenantId: env.tenantId,
         ...(env.projectId ? { projectId: env.projectId } : {}),
+        ...(env.airGappedOnly ? { airGappedOnly: true } : {}),
       });
       return {
         ok: true,
@@ -167,11 +206,19 @@ export async function runStoredScript(
       spaceId: env.spaceId,
       agentId: env.agentId,
       tenantId: env.tenantId,
+      ...(env.maxTier !== undefined ? { maxTier: env.maxTier } : {}),
+      ...(script.metadata.code_capabilities ? { capabilities: script.metadata.code_capabilities } : {}),
+      ...(script.metadata.code_language ? { language: script.metadata.code_language } : {}),
+      ...(env.runId ? { runId: env.runId } : {}),
+      ...(env.taskId ? { taskId: env.taskId } : {}),
       ...(env.humanInvokerId ? { userId: env.humanInvokerId } : {}),
+      ...(env.executionSignal ? { signal: env.executionSignal } : {}),
       ...(env.projectId ? { projectId: env.projectId } : {}),
+      ...(env.workspaceBranch ? { workspaceBranch: env.workspaceBranch } : {}),
       ...(script.metadata.container_image
         ? { containerImage: script.metadata.container_image }
         : {}),
+      ...(script.metadata.container_installation_id ? { installationId: script.metadata.container_installation_id } : {}),
     });
   } catch (err) {
     return {

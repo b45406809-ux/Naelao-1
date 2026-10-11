@@ -16,6 +16,10 @@ bucket_name = "naelao-artifacts"
 binding = "REPOSITORY_OBJECTS"
 bucket_name = "naelao-repository-objects"
 
+[[r2_buckets]]
+binding = "WORKSPACE_R2"
+bucket_name = "naelao-agent-scripts"
+
 [[durable_objects.bindings]]
 name = "REPOSITORY_DO"
 class_name = "RepositoryDO"

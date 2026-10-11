@@ -15,6 +15,7 @@ PRODUCT_SHELL_URL = "http://localhost:3100"
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"
 database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+migrations_dir = "../../infra/migrations"
 
 [[kv_namespaces]]
 binding = "SESSION_REVOCATION"
@@ -67,6 +68,10 @@ service = "naelao-auth"
 [[services]]
 binding = "CREDENTIALS_WORKER"
 service = "naelao-credentials"
+
+[[services]]
+binding = "ANALYTICS_WORKER"
+service = "naelao-analytics"
 
 # F-2: billing worker — the public Lemon Squeezy webhook ingress (/v1/webhooks/lemon-squeezy)
 # proxies here. Inherited by the staging/production named environments (only vars are replaced

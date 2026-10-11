@@ -34,6 +34,15 @@ describe("Project-scoped facts (Layer 3)", () => {
     expect(recalled.json.data[0]).toMatchObject({ entity: "refund_policy", relation: "is", attribute: "30 days" });
   });
 
+  it("does not return a trusted fact that is only partially related to the query", async () => {
+    const doInstance = makeSpaceDO();
+    await call(doInstance, "/projects/proj-1/memory/facts", "POST", { entity: "refund_policy", relation: "is", attribute: "30 days" });
+
+    const unrelated = await call(doInstance, "/projects/proj-1/memory/facts?q=refund+window", "GET");
+
+    expect(unrelated.json.data).toHaveLength(0);
+  });
+
   it("re-remembering the same (entity, relation) updates the attribute in place, not a duplicate", async () => {
     const doInstance = makeSpaceDO();
     await call(doInstance, "/projects/proj-1/memory/facts", "POST", { entity: "refund_policy", relation: "is", attribute: "30 days" });

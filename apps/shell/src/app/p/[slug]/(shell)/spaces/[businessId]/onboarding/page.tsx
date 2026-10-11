@@ -1,6 +1,5 @@
 "use client";
 
-export const runtime = "edge";
 
 // First-run business setup — the end user's own path into the template bootstrap that, until now,
 // only the builder dashboard could reach. Finishing it is what makes a business actually start:

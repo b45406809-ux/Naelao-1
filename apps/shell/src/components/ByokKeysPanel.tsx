@@ -1,27 +1,27 @@
 "use client";
 
-// Step 28: business-wide BYOK LLM keys. An admin enters their business's OWN Gemini/Groq key so
-// the business's runs draw on ITS provider quota instead of the platform's shared allowance. The
-// key is vaulted server-side and never shown again — the UI only ever reports "connected" or not.
+// Space-owner model credentials. Values are posted once to the vault and are never rendered
+// back into the application; metadata supports multiple independently rotatable keys/provider.
 
 import * as React from "react";
 import { Button, Badge, FormInput, useToast, Toast } from "@naelao/ui";
 import {
   getByokStatus,
   setByokKey,
+  selectByokKey,
   deleteByokKey,
   type ByokProviderStatus,
   type SessionCredentials,
 } from "@/lib/api";
 
-const PROVIDER_LABEL: Record<string, string> = {
-  "google-ai-studio": "Google AI Studio (Gemini)",
-  groq: "Groq",
-};
-const PROVIDER_HINT: Record<string, string> = {
-  "google-ai-studio": "Get a free key at aistudio.google.com → API keys.",
-  groq: "Get a free key at console.groq.com → API Keys.",
-};
+const PROVIDERS = [
+  { id: "google-ai-studio", label: "Google AI Studio (Gemini)", hint: "Get a key at aistudio.google.com → API keys." },
+  { id: "groq", label: "Groq", hint: "Get a key at console.groq.com → API Keys." },
+] as const;
+
+function providerLabel(provider: string): string {
+  return PROVIDERS.find((item) => item.id === provider)?.label ?? provider;
+}
 
 export function ByokKeysPanel({
   spaceId,
@@ -34,107 +34,106 @@ export function ByokKeysPanel({
 }) {
   const { toast, show } = useToast();
   const [status, setStatus] = React.useState<ByokProviderStatus[]>([]);
-  const [loading, setLoading] = React.useState(true);
-  const [editing, setEditing] = React.useState<string | null>(null);
+  const [provider, setProvider] = React.useState<string>(PROVIDERS[0].id);
+  const [label, setLabel] = React.useState("");
   const [keyInput, setKeyInput] = React.useState("");
-  const [saving, setSaving] = React.useState(false);
+  const [loading, setLoading] = React.useState(true);
+  const [busy, setBusy] = React.useState(false);
+  const [loadError, setLoadError] = React.useState<string | null>(null);
 
   const refresh = React.useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       setStatus(await getByokStatus(spaceId, creds));
     } catch {
-      // A load failure just hides the state — never an error the user must act on.
-      setStatus([]);
+      setLoadError("Couldn't load the saved provider keys. Try refreshing this section.");
     } finally {
       setLoading(false);
     }
+    // Session credentials are stable for this mounted settings surface.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spaceId]);
 
-  React.useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  React.useEffect(() => { void refresh(); }, [refresh]);
 
-  async function save(provider: string) {
-    if (!keyInput.trim()) return;
-    setSaving(true);
+  async function add() {
+    const value = keyInput.trim();
+    if (!value) return;
+    setBusy(true);
     try {
-      await setByokKey(spaceId, creds, provider, keyInput.trim());
-      setEditing(null);
+      await setByokKey(spaceId, creds, provider, value, label);
       setKeyInput("");
-      show(`${PROVIDER_LABEL[provider] ?? provider} key saved.`);
+      setLabel("");
+      show(`${providerLabel(provider)} key saved and selected as preferred.`);
       await refresh();
     } catch (err) {
-      show(err instanceof Error ? err.message : "Couldn't save the key.");
+      show(err instanceof Error ? err.message : "Couldn't save the provider key.");
     } finally {
-      setSaving(false);
+      setBusy(false);
     }
   }
 
-  async function remove(provider: string) {
+  async function select(providerId: string, keyId: string) {
+    setBusy(true);
     try {
-      await deleteByokKey(spaceId, creds, provider);
-      show(`${PROVIDER_LABEL[provider] ?? provider} key removed.`);
+      await selectByokKey(spaceId, creds, providerId, keyId);
+      show("Preferred key updated.");
       await refresh();
     } catch (err) {
-      show(err instanceof Error ? err.message : "Couldn't remove the key.");
+      show(err instanceof Error ? err.message : "Couldn't select that key.");
+    } finally {
+      setBusy(false);
     }
   }
 
-  if (loading) return <p style={{ color: "var(--text3)", fontSize: 13 }}>Loading…</p>;
+  async function remove(providerId: string, keyId: string) {
+    setBusy(true);
+    try {
+      await deleteByokKey(spaceId, creds, providerId, keyId);
+      show("Provider key removed.");
+      await refresh();
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Couldn't remove the provider key.");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
-    <div style={{ display: "grid", gap: 8 }}>
-      {status.map((p) => (
-        <div key={p.provider} className="settings-block" style={{ padding: 0 }}>
-          <div className="settings-row" style={{ alignItems: "flex-start" }}>
-            <div style={{ minWidth: 0 }}>
-              <div className="settings-row-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                {PROVIDER_LABEL[p.provider] ?? p.provider}
-                {p.configured ? <Badge color="green">Using your key</Badge> : <Badge color="amber">Platform key</Badge>}
-              </div>
-              <div className="settings-row-sub">
-                {p.configured
-                  ? "This business's runs on this provider use your own key and quota."
-                  : PROVIDER_HINT[p.provider] ?? "Not configured — using the shared platform quota."}
-              </div>
-            </div>
-            {canEdit && (
-              <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                <Button size="sm" variant="secondary" onClick={() => { setEditing(editing === p.provider ? null : p.provider); setKeyInput(""); }}>
-                  {p.configured ? "Replace" : "Add key"}
-                </Button>
-                {p.configured && (
-                  <Button size="sm" variant="secondary" onClick={() => void remove(p.provider)}>
-                    Remove
-                  </Button>
-                )}
-              </div>
-            )}
+    <div style={{ display: "grid", gap: 12 }}>
+      <p className="settings-row-sub">Add multiple keys for a provider. The selected key is tried first; eligible provider failures can rotate to another saved key.</p>
+      {canEdit && (
+        <div className="settings-block" style={{ display: "grid", gap: 8 }}>
+          <label className="settings-row-sub" htmlFor="byok-provider">Provider</label>
+          <select id="byok-provider" value={provider} onChange={(event) => setProvider(event.target.value)} style={{ background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 8, padding: "9px 10px" }}>
+            {PROVIDERS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+          </select>
+          <p className="settings-row-sub">{PROVIDERS.find((item) => item.id === provider)?.hint}</p>
+          <FormInput aria-label="Key label" placeholder="Label (optional, e.g. Production)" value={label} onChange={(event) => setLabel(event.target.value)} autoComplete="off" />
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <FormInput aria-label="Provider API key" placeholder={`Paste a ${providerLabel(provider)} API key`} value={keyInput} onChange={(event) => setKeyInput(event.target.value)} type="password" autoComplete="new-password" style={{ flex: 1 }} />
+            <Button size="sm" onClick={() => void add()} disabled={busy || !keyInput.trim()}>{busy ? "Saving…" : "Add key"}</Button>
           </div>
-          {editing === p.provider && canEdit && (
-            <div className="settings-row" style={{ gap: 8, alignItems: "center" }}>
-              <FormInput
-                placeholder={`Paste your ${PROVIDER_LABEL[p.provider] ?? p.provider} API key`}
-                value={keyInput}
-                onChange={(e) => setKeyInput(e.target.value)}
-                type="password"
-                autoFocus
-                style={{ flex: 1 }}
-              />
-              <Button size="sm" onClick={() => void save(p.provider)} disabled={saving || !keyInput.trim()}>
-                {saving ? "Saving…" : "Save"}
-              </Button>
+        </div>
+      )}
+
+      {loading ? <p style={{ color: "var(--text3)", fontSize: 13 }}>Loading provider keys…</p> : null}
+      {loadError ? <p role="alert" style={{ color: "var(--text3)", fontSize: 13 }}>{loadError}</p> : null}
+      {!loading && status.map((item) => (
+        <div key={item.provider} className="settings-block" style={{ display: "grid", gap: 8 }}>
+          <div className="settings-row-label">{providerLabel(item.provider)} <Badge color={item.keys.length ? "green" : "amber"}>{item.keys.length ? `${item.keys.length} key${item.keys.length === 1 ? "" : "s"}` : "Platform key"}</Badge></div>
+          {item.keys.map((entry) => (
+            <div key={entry.id} className="settings-row" style={{ alignItems: "center", gap: 8 }}>
+              <span style={{ minWidth: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>{entry.label || "Unnamed key"}</span>
+              {entry.active ? <Badge color="green">Preferred</Badge> : canEdit ? <Button size="sm" variant="secondary" disabled={busy} onClick={() => void select(item.provider, entry.id)}>Use first</Button> : null}
+              {canEdit ? <Button size="sm" variant="secondary" disabled={busy} onClick={() => void remove(item.provider, entry.id)}>Remove</Button> : null}
             </div>
-          )}
+          ))}
         </div>
       ))}
-      {!canEdit && (
-        <p style={{ fontSize: 11.5, color: "var(--text3)" }}>
-          Only the owner or an admin can change these keys.
-        </p>
-      )}
+      {!canEdit && <p style={{ fontSize: 11.5, color: "var(--text3)" }}>Only the owner or an admin can change these keys.</p>}
+      <p style={{ fontSize: 11.5, color: "var(--text3)" }}>Keys are encrypted in the space vault and never shown again.</p>
       <Toast toast={toast} />
     </div>
   );

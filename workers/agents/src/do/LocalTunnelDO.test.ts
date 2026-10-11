@@ -2,6 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 import { LocalTunnelDO } from "./LocalTunnelDO.js";
 
 describe("LocalTunnelDO correlation and multiplexing", () => {
+  it("rejects non-TLS remote tunnel upgrades", async () => {
+    const tunnel = new LocalTunnelDO({ getWebSockets: () => [], acceptWebSocket: vi.fn() } as never, { PLATFORM_SECRET: "test-secret" });
+    const response = await tunnel.fetch(new Request("http://agents.example.test/connect?space=s&user=u", {
+      headers: { Upgrade: "websocket" },
+    }));
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ message: "Local tunnel connections require TLS" });
+  });
+
   it("fails closed when an air-gapped completion has no local runner", async () => {
     const tunnel = new LocalTunnelDO({ getWebSockets: () => [], acceptWebSocket: vi.fn() } as never, { PLATFORM_SECRET: "test-secret" });
     const response = await tunnel.fetch(new Request("https://tunnel/chat/completions", {

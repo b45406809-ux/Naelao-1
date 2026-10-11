@@ -119,7 +119,7 @@ function WorkspaceFilesPanel({ spaceId, projectId, creds }: { spaceId: string; p
  * (F-39) is shown for every kind since every project has a workspace.
  */
 export function ProjectKindPanel({ project, spaceId, creds }: { project: Project; spaceId: string; creds: Creds }) {
-  const canvasKind = ["product_dev", "doc_studio", "voice_agent", "customer_bot", "model_studio", "growth_engine", "app_studio"].includes(project.kind ?? "");
+  const canvasKind = ["product_dev", "doc_studio", "finance_grid", "quant_desk", "voice_agent", "customer_bot", "model_studio", "growth_engine", "app_studio"].includes(project.kind ?? "");
   return (
     <>
       {canvasKind && <CanvasContainer project={project} spaceId={spaceId} creds={creds} />}

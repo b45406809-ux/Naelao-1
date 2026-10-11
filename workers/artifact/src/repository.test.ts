@@ -18,6 +18,10 @@ const metadata = {
   thread_id: "thread-1",
   tool_turn_id: "turn-1",
 };
+async function sha256Text(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
 describe("repository scoping", () => {
   it("isolates tenant, space and project namespaces", () => {
@@ -113,22 +117,22 @@ describe("Git object and metadata encoding", () => {
       new Request("https://repo/write", {
         method: "PUT",
         headers: scopeHeaders,
-        body: JSON.stringify({ path: "README.md", content: "v1" }),
+        body: JSON.stringify({ path: "README.md", content: "v1", expected_hash: null }),
       })
     );
     await repo.fetch(new Request("https://repo/write", {
       method: "PUT", headers: scopeHeaders,
-      body: JSON.stringify({ path: "forecast.csv", content: "month,revenue\nJan,100" }),
+      body: JSON.stringify({ path: "forecast.csv", content: "month,revenue\nJan,100", expected_hash: null }),
     }));
     await repo.fetch(new Request("https://repo/write", {
       method: "PUT", headers: scopeHeaders,
-      body: JSON.stringify({ path: "contract.docx", content_base64: btoa("docx-v1") }),
+      body: JSON.stringify({ path: "contract.docx", content_base64: btoa("docx-v1"), expected_hash: null }),
     }));
     const c1Res = await repo.fetch(
       new Request("https://repo/commit", {
         method: "POST",
         headers: scopeHeaders,
-        body: JSON.stringify({ metadata }),
+        body: JSON.stringify({ metadata, expected_head: null }),
       })
     );
     const c1 = (await c1Res.json()) as { commit_id: string };
@@ -151,16 +155,17 @@ describe("Git object and metadata encoding", () => {
           branch: "scratchpad-1",
           path: "README.md",
           content: "v2\nnew line",
+          expected_hash: await sha256Text("v1"),
         }),
       })
     );
     await repo.fetch(new Request("https://repo/write", {
       method: "PUT", headers: scopeHeaders,
-      body: JSON.stringify({ branch: "scratchpad-1", path: "forecast.csv", content: "month,revenue\nJan,125" }),
+      body: JSON.stringify({ branch: "scratchpad-1", path: "forecast.csv", content: "month,revenue\nJan,125", expected_hash: await sha256Text("month,revenue\nJan,100") }),
     }));
     await repo.fetch(new Request("https://repo/write", {
       method: "PUT", headers: scopeHeaders,
-      body: JSON.stringify({ branch: "scratchpad-1", path: "contract.docx", content_base64: btoa("docx-v2") }),
+      body: JSON.stringify({ branch: "scratchpad-1", path: "contract.docx", content_base64: btoa("docx-v2"), expected_hash: await sha256Text("docx-v1") }),
     }));
     const forkCommitRes = await repo.fetch(
       new Request("https://repo/commit", {
@@ -168,6 +173,7 @@ describe("Git object and metadata encoding", () => {
         headers: scopeHeaders,
         body: JSON.stringify({
           branch: "scratchpad-1",
+          expected_head: c1.commit_id,
           message: "experiment",
           metadata: { ...metadata, tool_turn_id: "turn-2" },
         }),
@@ -227,16 +233,18 @@ describe("Git object and metadata encoding", () => {
       new Request("https://repo/write", {
         method: "PUT",
         headers: scopeHeaders,
-        body: JSON.stringify({ path: "README.md", content: "v2" }),
+        body: JSON.stringify({ path: "README.md", content: "v2", expected_hash: await sha256Text("v1") }),
       })
     );
-    await repo.fetch(
+    const rollbackResponse = await repo.fetch(
       new Request("https://repo/rollback", {
         method: "POST",
         headers: scopeHeaders,
         body: JSON.stringify({ commit_id: c1.commit_id }),
       })
     );
+    const rollback = await rollbackResponse.json() as { commit_id: string; restored_from: string };
+    expect(rollback).toMatchObject({ restored_from: c1.commit_id });
     const treeRes = await repo.fetch(
       new Request("https://repo/tree", { method: "GET", headers: scopeHeaders })
     );
@@ -285,7 +293,7 @@ describe("Git object and metadata encoding", () => {
         method: "POST",
         headers: scopeHeaders,
         body: JSON.stringify({
-          expected_head: c1.commit_id,
+          expected_head: rollback.commit_id,
           message: "container writeback",
           metadata: { ...metadata, tool_turn_id: "turn-writeback" },
           changes: [
@@ -293,12 +301,13 @@ describe("Git object and metadata encoding", () => {
               path: "result.txt",
               oid: sha256,
               content_base64: btoa("from-container"),
+              expected_hash: null,
             },
           ],
         }),
       })
     );
-    expect(writeback.status).toBe(201);
+    expect(writeback.status, await writeback.clone().text()).toBe(201);
     const writebackTree = await repo.fetch(
       new Request("https://repo/tree", { headers: scopeHeaders })
     );
@@ -359,4 +368,45 @@ describe("Git object and metadata encoding", () => {
     }));
     expect(await merged.json()).toEqual(expect.objectContaining({ fast_forward: true, event: expect.objectContaining({ type: "workspace.merged" }) }));
   });
+});
+
+describe("large binary object storage", () => {
+  it("round-trips a multi-megabyte deliverable through R2 without storing its body in DO state", async () => {
+    const storage = new Map<string, unknown>();
+    const objects = new Map<string, Uint8Array>();
+    const repo = new RepositoryDO({
+      storage: {
+        get: async (key: string) => storage.get(key),
+        put: async (key: string, value: unknown) => { storage.set(key, value); },
+      },
+    } as never, {
+      REPOSITORY_OBJECTS: {
+        head: async (key: string) => objects.has(key),
+        put: async (key: string, value: Uint8Array) => { objects.set(key, value); },
+        get: async (key: string) => objects.has(key) ? {
+          arrayBuffer: async () => objects.get(key)!.buffer,
+        } : null,
+      },
+    } as never);
+    const headers = { "x-repository-scope": JSON.stringify({ tenantId: "t", spaceId: "s", projectId: "p" }) };
+    await repo.fetch(new Request("https://repo/init", { method: "POST", headers }));
+
+    const bytes = "\u00a5".repeat(2 * 1024 * 1024);
+    const write = await repo.fetch(new Request("https://repo/write", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ path: "workspace/evidence.bin", content_base64: btoa(bytes), expected_hash: null }),
+    }));
+    expect(write.status).toBe(200);
+    await repo.fetch(new Request("https://repo/commit", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ metadata, expected_head: null }),
+    }));
+
+    const read = await repo.fetch(new Request("https://repo/file?path=workspace/evidence.bin", { headers }));
+    expect(new Uint8Array(await read.arrayBuffer())).toHaveLength(bytes.length);
+    expect([...objects.values()].some((value) => value.byteLength > 2 * 1024 * 1024)).toBe(true);
+    expect(JSON.stringify([...storage.values()]).length).toBeLessThan(100_000);
+  }, 15_000);
 });

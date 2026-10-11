@@ -1,7 +1,5 @@
 "use client";
 
-export const runtime = "edge";
-
 // One agent's own settings.
 //
 // Per-agent policy already existed as an inline expander tucked inside a dashboard tile, which

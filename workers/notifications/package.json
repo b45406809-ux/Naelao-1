@@ -5,11 +5,13 @@
   "main": "./src/index.ts",
   "scripts": {
     "build": "wrangler deploy --dry-run",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "deploy:staging": "wrangler deploy --env staging",
     "deploy:production": "wrangler deploy --env production"
   },
   "dependencies": {
+    "@naelao/security": "workspace:*",
     "@naelao/types": "workspace:*",
     "@naelao/http": "workspace:*",
     "hono": "^4.6.0"

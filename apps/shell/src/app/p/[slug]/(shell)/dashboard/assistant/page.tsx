@@ -1,6 +1,5 @@
 "use client";
 
-export const runtime = "edge";
 
 // Assistant settings — every configuration for the space's own assistant, on one page with room
 // to explain itself.

@@ -134,6 +134,8 @@ export interface ScriptMetadata {
    * still governs what the eventual execution is allowed to do).
    */
   runtime?: "isolate" | "workflow";
+  code_capabilities?: string[];
+  code_language?: "javascript" | "typescript" | "python";
   /**
    * §A1.17 Phase L: when set on a `requires_tier: 5` script, execution routes to the named
    * Container Marketplace image's own DO/binding instead of the base per-project ToolSandboxDO
@@ -143,6 +145,7 @@ export interface ScriptMetadata {
    * pass; this field's routing hook is real ahead of any image actually going live).
    */
   container_image?: string;
+  container_installation_id?: string;
 
   // Required credentials (resolved via credentials worker before L1 execution; A1.1)
   required_credentials?: string[];
@@ -199,6 +202,8 @@ export interface ScriptRunResult {
    * actually ran after invisible pre-flight promotion/fallback. */
   actual_tier?: ExecutionTier;
   engine?: "sqlite_fs" | "isolate" | "workflow" | "kitesurf" | "chromium" | "container";
+  capability_error?: { code: string; capability?: string; required_tier?: ExecutionTier };
+  runtime_receipt?: { execution_id: string; code_digest?: string; backend: string; wall_ms: number; cpu_ms?: number; memory_limit_mb?: number; output_bytes?: number; cost_usd?: number; cost_source: "provider" | "unreported" };
   /** Milliseconds of wall-clock execution. */
   duration_ms: number;
   /** Reasoning-model tokens consumed by this run (0 for pure script execution). */
@@ -367,6 +372,21 @@ export interface LoopResult {
       error?: string;
     }>;
   };
+  /** Set when the planner asked the person a question and the run is waiting for the answer. */
+  pending_question?: {
+    question_id: string;
+    question: string;
+    options?: string[];
+    questions?: Array<{ question: string; options?: string[] }>;
+    expires_at?: number;
+    steps_completed: Array<{
+      name: string;
+      params: Record<string, unknown>;
+      ok: boolean;
+      output?: unknown;
+      error?: string;
+    }>;
+  };
   /**
    * Actions parked mid-run because they need a human, on a run that CARRIED ON around them and
    * finished. Distinct from `pending_approval`, which is the whole run stopping: here the agent
@@ -455,6 +475,8 @@ export interface TieredCodeRunner {
      *  ctx.mcp loopback (mcp-hub is HMAC-gated) without ever exposing the platform secret itself
      *  to the isolate. */
     tenantId: string;
+    runId?: string;
+    taskId?: string;
     /** Original human invoker, preserved for user-private connector resolution. */
     userId?: string;
     /** §A1.17 Phase K: which R2 workspace (see workspacePrefix()) a Tier 5 container syncs
@@ -465,6 +487,16 @@ export interface TieredCodeRunner {
      *  instead of the base per-project ToolSandboxDO. Absent = the ordinary Phase K sandbox. */
     containerImage?: string;
     containerOptions?: import("@naelao/agent-sdk").Tier6ContainerOptions;
+    workspaceBranch?: string;
+    language?: "javascript" | "typescript" | "python";
+    signal?: AbortSignal;
+    /** Explicit invocation grant. Omission grants pure computation, never storage/network/tools. */
+    capabilities?: readonly string[];
+    installationId?: string;
+    grantVersion?: string;
+    maxTier?: ExecutionTier;
+    limits?: { cpuMs?: number; wallMs?: number; memoryMb?: number; inputBytes?: number; outputBytes?: number };
+    dependencies?: readonly { name: string; version: string; sha256: string }[];
   }): Promise<ScriptRunResult>;
 }
 
@@ -486,10 +518,13 @@ export interface OrchestrationHooks {
   sendToSubAgent?(id: string, task: unknown): Promise<unknown>;
   receiveFromSubAgent?(id: string): Promise<unknown>;
   terminateSubAgent?(id: string): Promise<void>;
-  workflowCreate?(name: string, code: string): Promise<{ id: string }>;
-  workflowRun?(name: string, params: Record<string, unknown>, options?: { detach?: boolean; cleanContext?: boolean; maxContextTokens?: number; contextSources?: string[]; inheritChatHistory?: boolean; workflowClass?: string; budgetKey?: string; reportTarget?: string; escalationTarget?: string }): Promise<unknown>;
+  workflowCreate?(name: string, code: string, options?: { capabilities?: string[] }): Promise<{ id: string }>;
+  workflowRun?(name: string, params: Record<string, unknown>, options?: { startKey?: string; installationId?: string; detach?: boolean; cleanContext?: boolean; maxContextTokens?: number; contextSources?: string[]; inheritChatHistory?: boolean; workflowClass?: string; budgetKey?: string; budgetCredits?: number; reportTarget?: string; escalationTarget?: string }): Promise<unknown>;
   workflowSchedule?(name: string, cron: string): Promise<{ id: string }>;
   workflowStatus?(id: string): Promise<unknown>;
+  workflowCancel?(id: string): Promise<unknown>;
+  workflowSignal?(id: string, type: string, payload: unknown): Promise<unknown>;
+  workflowRetry?(id: string): Promise<unknown>;
   /**
    * Assistant<->project-agent coordination lane (§A1.18 thread model). Unlike spawnSubAgent
    * (a throwaway, isolated child with no identity of its own), this dispatches to an EXISTING
@@ -534,6 +569,20 @@ export interface OrchestrationHooks {
     dispatched: boolean;
     error?: string;
   }>;
+  /** Run bounded speculative model candidates on isolated artifact/container branches. */
+  modelRace?(params: {
+    taskId: string;
+    models: string[];
+    prompt: string;
+    testCommand: string;
+    escrowCredits?: number;
+  }): Promise<{
+    model: string;
+    branch: string;
+    commitOid?: string;
+    attempted: number;
+    aborted: number;
+  }>;
 }
 
 /**
@@ -552,6 +601,7 @@ export interface WorkflowRunner {
     agentId: string;
     tenantId: string;
     projectId?: string;
+    airGappedOnly?: boolean;
   }): Promise<{ id: string }>;
   status(
     id: string
@@ -573,6 +623,12 @@ export interface MemoryRecallResult {
   relation?: string;
   attribute?: string;
   score: number;
+  /** Deterministic query coverage, when a structured-fact adapter can calculate it. */
+  relevance_score?: number;
+  /** Effective role rank of the caller for this recall (0 viewer, 1 editor/member, 2 admin, 3 owner). */
+  role_rank?: number;
+  /** Minimum role rank required by a shared project fact. */
+  required_role_rank?: number;
   user_id?: string;
 }
 
@@ -585,6 +641,7 @@ export interface FabricEntry {
   /** Relevance to a recallFabric() query in [0,1]; 0 for briefFabric() (no query, just recency). */
   score: number;
   createdAt: number;
+  requiredRoleRank?: number;
 }
 
 /** A Layer 6 (LLM Wiki) article — an auto-curated concept/entity definition. */
@@ -593,6 +650,7 @@ export interface WikiArticle {
   definition: string;
   relationships: string[];
   updatedAt: number;
+  requiredRoleRank?: number;
 }
 
 export interface MemoryStore {
@@ -681,8 +739,15 @@ export interface LockGateway {
     remainingMs?: number;
     limit?: number;
     degraded?: boolean;
+    fencingToken?: number;
   }>;
-  release(params: { key: string; holderId: string }): Promise<void>;
+  renew?(params: { key: string; holderId: string; fencingToken: number; ttlMs?: number }): Promise<{ renewed: boolean; expiresAt?: number }>;
+  publishWorkspace?(params: {
+    key: string; holderId: string; fencingToken: number; path: string;
+    operation: "write" | "delete"; expectedHash: string | null; contentBase64?: string;
+    metadata?: Record<string, string>; contentType?: string;
+  }): Promise<{ hash?: string; deleted?: boolean; etag?: string; fencingToken: number }>;
+  release(params: { key: string; holderId: string; fencingToken?: number }): Promise<void>;
   status(key: string): Promise<{ active: number }>;
 }
 
@@ -733,12 +798,16 @@ export interface LlmCallerGateway {
  * ever called; this interface has no opinion on what an op's params mean.
  */
 export interface LocalTunnelGateway {
+  list(): Promise<import("@naelao/agent-sdk").NamedMachine[]>;
   exec(params: {
-    userId: string;
+    machine: string;
+    requestId?: string;
     op: string;
     params: Record<string, unknown>;
-  }): Promise<{ ok: boolean; result?: unknown; error?: string }>;
-  status(userId: string): Promise<{ connected: boolean }>;
+  }): Promise<{ ok: boolean; status?: string; request_id?: string; result?: unknown; error?: string }>;
+  status(machine: string): Promise<{ connected: boolean }>;
+  requestStatus(machine: string, requestId: string): Promise<unknown>;
+  cancel(machine: string, requestId: string): Promise<unknown>;
 }
 
 /**
@@ -756,7 +825,7 @@ export interface LocalTunnelGateway {
 export interface ContainerWorkspaceGateway {
   list(): Promise<{ files: string[] }>;
   read(paths?: string[]): Promise<{ files: Record<string, string> }>;
-  write(files: Record<string, string>): Promise<{ ok: boolean }>;
+  write(files: Record<string, string>, expectedHashes?: Record<string, string | null>): Promise<{ ok: boolean }>;
   remove(paths: string[]): Promise<{ ok: boolean }>;
 }
 
@@ -785,6 +854,20 @@ export interface HITLGateway {
   }): Promise<{
     approvalId: string;
     approved: boolean;
+    pending?: boolean;
+    expiresAt?: number;
+    reason?: string;
+  }>;
+  /** Ask the person for a free-form answer and suspend until it is submitted. */
+  requestQuestion?(params: {
+    runId: string;
+    sessionId: string;
+    question: string;
+    options?: string[];
+    questions?: Array<{ question: string; options?: string[] }>;
+  }): Promise<{
+    questionId: string;
+    answer?: string;
     pending?: boolean;
     expiresAt?: number;
     reason?: string;
@@ -852,6 +935,16 @@ export interface PlanState {
 
 /** Everything the engine needs from the host (NaelaoAgentDO) to operate. */
 export interface ScriptEngineEnv {
+  /** Canonical AVOS/Cowork mode resolved by the host; both modes share this kernel. */
+  templateMode?: import("@naelao/agent-sdk").OperatingModeDispatch["templateMode"];
+  /** Immutable compliance posture for this run. Egress-capable gateways must be absent and the
+   * code runner must reject cloud/browser/network backends when this is true. */
+  airGappedOnly?: boolean;
+  /** Optional Jev or Laya System One sentry. Callers must retain deterministic fail-closed policy
+   * when it is absent, unavailable, or returns a low-confidence answer. */
+  fastDecision?: import("@naelao/agent-sdk").FastDecisionGateway;
+  /** Append-only execution telemetry used to prove, rather than assume, tier distribution. */
+  recordExecution?: (event: { operation: string; tier: ExecutionTier; engine?: string; durationMs: number; ok: boolean; tokensUsed: number }) => void;
   /** Host adapters for declarative, validated per-step context and verification hooks. */
   pipelineRuntime?: import("./step-pipeline.js").PipelineRuntime;
   /** R2 bucket holding the skill library (spaces/{spaceId}/scripts/...). */
@@ -868,6 +961,10 @@ export interface ScriptEngineEnv {
   embedder?: Embedder;
   /** Runner for stored-code tiers (T2-T5). Optional — T1 always works without it. */
   codeRunner?: TieredCodeRunner;
+  codeGrantIsActive?: (scope: Readonly<import("@naelao/agent-sdk").CodeInvocationScope>) => Promise<boolean>;
+  codeAuthorize?: import("@naelao/agent-sdk").ScopedCodeRpcOptions["authorize"];
+  codeDispatch?: import("@naelao/agent-sdk").ScopedCodeRpcOptions["dispatch"];
+  codeProxyRequest?: (scope: Readonly<import("@naelao/agent-sdk").CodeInvocationScope>, input: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>;
   /** Dispatches `runtime:"workflow"` scripts to a durable CF Workflow. Optional — such scripts
    *  fail closed with an honest "unavailable" when absent, same precedent as codeRunner. */
   workflowRunner?: WorkflowRunner;
@@ -943,6 +1040,7 @@ export interface ScriptEngineEnv {
    *  degraded, when absent (same posture as localTunnel — no safe fallback for "pretend the
    *  container exists"). */
   containerWorkspace?: ContainerWorkspaceGateway;
+  resolveContainerCommand?: (command: string) => Promise<import("./container-policy.js").InstalledContainer | undefined>;
   /** Memory OS (structured facts + episodic + semantic recall) — present when the host DO
    *  has initialized its memory tables. Absent in environments that haven't wired it yet. */
   memoryStore?: MemoryStore;
@@ -954,6 +1052,14 @@ export interface ScriptEngineEnv {
   spaceId: string;
   agentId: string;
   tenantId: string;
+  /** Unique attempt identity used as the holder for automatic multi-file workspace locks. */
+  runId?: string;
+  taskId?: string;
+  /** Host cancellation propagated into paid browser/container operations. */
+  executionSignal?: AbortSignal;
+  /** Optional isolated artifact branch. When present, workspace operations use a branch-scoped
+   * R2 prefix so speculative workers cannot mutate the shared project workspace. */
+  workspaceBranch?: string;
   /** For minting the internal HMAC token any direct (non-router) service-binding call to
    *  another worker (spacesWorker, knowledgeWorker, ...) needs — see mintInternalToken,
    *  @naelao/http. Optional so environments that never make such a call (most script tests)
@@ -985,6 +1091,8 @@ export interface ScriptEngineEnv {
    * space-wide. Absent = space-scoped (the Space Assistant, or a legacy unscoped run).
    */
   projectId?: string;
+  /** Mutable authorization rank shared by the local and project memory stores for this run. */
+  memoryRoleRank?: { value: number };
   /**
    * Execution ladder ceiling (1-5) for this run — set on customer-facing bot projects
    * (SpaceDO `projects.execution_ceiling`) so a restricted bot can never use a tier above
@@ -1033,9 +1141,15 @@ export interface ScriptEngineEnv {
  * workspace-scoped; threads within it share one R2 workspace).
  */
 export function workspacePrefix(
-  env: Pick<ScriptEngineEnv, "spaceId" | "projectId">
+  env: Pick<ScriptEngineEnv, "spaceId" | "projectId" | "workspaceBranch">
 ): string {
-  return env.projectId
+  const base = env.projectId
     ? `spaces/${env.spaceId}/projects/${env.projectId}/workspace/`
     : `spaces/${env.spaceId}/workspace/`;
+  if (!env.workspaceBranch) return base;
+  const branch = env.workspaceBranch.replaceAll("\\", "/");
+  if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/u.test(branch) || branch.includes("..")) {
+    throw new Error("workspaceBranch contains an invalid path");
+  }
+  return `${base}branches/${branch}/`;
 }

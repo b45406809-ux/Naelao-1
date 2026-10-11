@@ -137,6 +137,12 @@ export interface LaunchpadTemplate {
   id: string;
   name: string;
   description: string;
+  /** Declarative operating model. AVE runs a venture; Cowork equips a company team. */
+  template_mode?: "ave" | "cowork";
+  /** The domain this vertical is designed around, shown in Discover and onboarding. */
+  vertical?: string;
+  /** How the template frames the automatically provisioned business wallet/budget rail. */
+  wallet_mode?: "business_wallet" | "company_budget";
   /** Core agent ids this template installs (subset/superset of LAUNCHPAD_CORE_AGENTS). */
   agents: string[];
   /** Marketplace skills the template needs wired (commerce/Lemon Squeezy, email, etc.). */
@@ -904,6 +910,189 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
         goal:
           "Onboarding just completed for a Niche Community business. Build a landing/join page as an HTML artifact (artifacts.create) describing the community, its tiers, and a join button pointing at the Whop membership checkout. Draft a welcome message and 3-5 seed discussion prompts for the Community project to give the space life from day one. Set up the auto-welcome flow and a churn-risk check (flag inactive members) on the owner's channel. Store any community FAQ in the knowledge base so the agent can answer from past discussions. Send the owner ONE short message: a link to the join-page artifact, what happens when someone joins, and the first 2-3 things you'll do to get the first members. Respect their autonomy setting.",
       },
+    },
+  },
+  // ── Vertical Cowork studios ──────────────────────────────────────────────
+  // These are deliberately company/team operating models. They keep the owner's mobile
+  // channel, but use it as a private professional copilot and route consequential work for
+  // approval instead of presenting the space as an autonomous business.
+  {
+    id: "cowork-legal-ops",
+    name: "Legal Operations Studio",
+    description: "A private firm workspace for matter intake, contract review, research, deadlines and client updates. The assistant drafts and routes work; attorneys approve legal conclusions and outbound advice.",
+    template_mode: "cowork",
+    vertical: "Legal operations",
+    wallet_mode: "company_budget",
+    agents: ["launchpad-support-v1", "launchpad-content-v1"],
+    skills: ["knowledge-base", "web-search", "file-manager", "email-tool", "mcp-connector"],
+    connectors: ["notion"],
+    free_tier_eligible: true,
+    coming_soon: false,
+    bootstrap: {
+      prompts: [
+        { id: "firm_name", type: "text", question: "What is the firm or legal team called?", required: true },
+        { id: "practice_areas", type: "text", question: "Which practice areas and matter types should it understand?", help: "For example: employment, commercial contracts, litigation or real estate.", required: true },
+        { id: "knowledge_source", type: "connection", connector: "notion", question: "Connect the firm's knowledge workspace.", help: "The assistant uses the connected workspace for approved precedents, policies and matter playbooks.", required: false },
+        { id: "owner_channel", type: "channel", question: "Where should your private professional copilot reach you?", options: ["email", "slack", "whatsapp", "telegram"], required: true },
+        { id: "approval_policy", type: "choice", question: "What should always wait for attorney approval?", options: ["All external messages and legal conclusions", "External messages only", "Only high-risk matters"], required: true },
+      ],
+      projects: [
+        { name: "Matter Intake", default_agent_id: "launchpad-support-v1" },
+        { name: "Contract Review", default_agent_id: "launchpad-content-v1" },
+        { name: "Research & Deadlines", default_agent_id: "launchpad-content-v1" },
+        { name: "Client Communications", default_agent_id: "launchpad-support-v1" },
+      ],
+      first_contact: { goal: "Set up the legal operations workspace around the firm's stated practice areas. Index only the approved knowledge source, propose the matter-intake and deadline workflow, identify approval points, and send the owner a concise plan. Never present generated research as legal advice or send an external client message without the configured approval." },
+    },
+  },
+  {
+    id: "cowork-clinical-operations",
+    name: "Clinical Operations Studio",
+    description: "A healthcare operations workspace for intake, scheduling, policy knowledge and follow-up. The assistant coordinates administrative work while clinical decisions remain with qualified staff.",
+    template_mode: "cowork",
+    vertical: "Clinical operations",
+    wallet_mode: "company_budget",
+    agents: ["launchpad-support-v1", "launchpad-content-v1"],
+    skills: ["knowledge-base", "file-manager", "email-tool", "mcp-connector"],
+    connectors: ["notion"],
+    free_tier_eligible: true,
+    coming_soon: false,
+    bootstrap: {
+      prompts: [
+        { id: "organization_name", type: "text", question: "What clinic, practice or care team is this for?", required: true },
+        { id: "service_lines", type: "text", question: "Which services and operational workflows should it support?", help: "For example: referrals, intake, appointments, authorizations or follow-up.", required: true },
+        { id: "policy_source", type: "connection", connector: "notion", question: "Connect the approved operations and policy workspace.", help: "Use this for staff procedures, service information and escalation rules.", required: false },
+        { id: "owner_channel", type: "channel", question: "Where should the operations copilot reach the team?", options: ["email", "slack", "whatsapp", "telegram"], required: true },
+        { id: "clinical_guardrail", type: "boolean", question: "Require staff approval before anything could affect clinical care?", help: "Keep this on for a strict administrative-only boundary.", required: true },
+      ],
+      projects: [
+        { name: "Intake & Scheduling", default_agent_id: "launchpad-support-v1" },
+        { name: "Care Operations", default_agent_id: "launchpad-content-v1" },
+        { name: "Policies & Knowledge", default_agent_id: "launchpad-content-v1" },
+        { name: "Follow-up Queue", default_agent_id: "launchpad-support-v1" },
+      ],
+      first_contact: { goal: "Create an administrative operating plan for the care team using only the stated service lines and approved policy source. Separate scheduling, intake and follow-up from clinical judgment, surface missing escalation rules, and send the owner the first-week checklist. Do not diagnose, recommend treatment or make a clinical decision." },
+    },
+  },
+  {
+    id: "cowork-finance-fpa",
+    name: "Finance & FP&A Studio",
+    description: "A finance team workspace for close, actuals, budgets, forecasts, variance reviews and board reporting. The assistant prepares analysis with a clear audit trail and routes approvals to the right owner.",
+    template_mode: "cowork",
+    vertical: "Finance and FP&A",
+    wallet_mode: "company_budget",
+    agents: ["launchpad-content-v1", "launchpad-support-v1"],
+    skills: ["knowledge-base", "file-manager", "web-search", "mcp-connector"],
+    connectors: ["notion"],
+    free_tier_eligible: true,
+    coming_soon: false,
+    bootstrap: {
+      prompts: [
+        { id: "company_name", type: "text", question: "What company or finance team is this for?", required: true },
+        { id: "fiscal_calendar", type: "text", question: "What fiscal year and reporting cadence should it use?", help: "For example: calendar year, monthly close, quarterly board pack.", required: true },
+        { id: "finance_source", type: "connection", connector: "notion", question: "Connect the approved finance workspace.", help: "The assistant uses it for reporting definitions, plans and finance operating procedures.", required: false },
+        { id: "owner_channel", type: "channel", question: "Where should the finance copilot send reviews and approval requests?", options: ["email", "slack", "whatsapp", "telegram"], required: true },
+        { id: "approval_policy", type: "choice", question: "Which outputs require finance-owner approval?", options: ["All reports and external figures", "External figures only", "Only exceptions over a threshold"], required: true },
+      ],
+      projects: [
+        { name: "Close & Reconciliation", default_agent_id: "launchpad-content-v1" },
+        { name: "Forecast & Variance", default_agent_id: "launchpad-content-v1" },
+        { name: "Board Reporting", default_agent_id: "launchpad-content-v1" },
+        { name: "Requests & Approvals", default_agent_id: "launchpad-support-v1" },
+      ],
+      first_contact: { goal: "Set up the finance workspace around the stated fiscal calendar and reporting cadence. Draft the close checklist, reporting definitions and approval map from the approved finance workspace, call out every missing source or assumption, and send the owner a first reporting-cycle plan. Never invent financial figures." },
+    },
+  },
+  // ── Autonomous Venture Engine verticals ──────────────────────────────────
+  // These are owner-operated ventures. Their onboarding explicitly establishes the business
+  // wallet/payout rail and an owner command channel, then creates revenue, growth and delivery
+  // projects for the assistant to run continuously.
+  {
+    id: "ave-local-services",
+    name: "Local Services Growth Engine",
+    description: "An autonomous venture for a focused local service: attract leads, qualify demand, book work, coordinate delivery and report revenue from one owner command center.",
+    template_mode: "ave",
+    vertical: "Local services",
+    wallet_mode: "business_wallet",
+    agents: ["launchpad-leadgen-v1", "launchpad-support-v1", "launchpad-fulfillment-v1"],
+    skills: ["commerce", "crm-tool", "email-tool", "web-search", "mcp-connector"],
+    connectors: ["whop"],
+    free_tier_eligible: true,
+    coming_soon: false,
+    bootstrap: {
+      prompts: [
+        { id: "service_offer", type: "text", question: "What service, location and customer should this venture focus on?", required: true },
+        { id: "business_wallet", type: "connection", connector: "whop", question: "Connect the venture's payout and checkout rail.", help: "Every AVE gets an isolated business wallet. Whop is the first live checkout connection for revenue and customer access.", required: true },
+        { id: "owner_channel", type: "channel", question: "Where should your venture operator reach you?", options: ["email", "slack", "whatsapp", "telegram"], required: true },
+        { id: "autonomy", type: "choice", question: "How much should the venture do without asking?", options: ["Draft everything for approval", "Run routine growth and support, ask on exceptions", "Full autonomy within the business limits"], required: true },
+      ],
+      projects: [
+        { name: "Pipeline & Bookings", default_agent_id: "launchpad-leadgen-v1" },
+        { name: "Service Delivery", default_agent_id: "launchpad-fulfillment-v1" },
+        { name: "Customer Desk", default_agent_id: "launchpad-support-v1" },
+        { name: "Revenue & Growth", default_agent_id: "launchpad-leadgen-v1" },
+      ],
+      project_templates: ["whatsapp-support-bot"],
+      first_contact: { goal: "Turn the local service offer into an operating plan. Confirm the isolated business wallet and checkout connection, define the first customer segment and service area, draft the lead-to-booking flow, and send the owner a concrete first-week growth plan with any approvals needed." },
+    },
+  },
+  {
+    id: "ave-vertical-commerce",
+    name: "Vertical Commerce Brand",
+    description: "An autonomous niche commerce venture for a focused product category: shape the offer, manage the catalogue, coordinate fulfilment, support customers and grow demand.",
+    template_mode: "ave",
+    vertical: "Niche commerce",
+    wallet_mode: "business_wallet",
+    agents: ["launchpad-fulfillment-v1", "launchpad-content-v1", "launchpad-support-v1"],
+    skills: ["commerce", "email-tool", "file-manager", "mcp-connector"],
+    connectors: ["whop", "gumroad"],
+    free_tier_eligible: true,
+    coming_soon: false,
+    bootstrap: {
+      prompts: [
+        { id: "category", type: "text", question: "What product category and customer niche should the brand own?", required: true },
+        { id: "business_wallet", type: "connection", connector: "whop", question: "Connect the brand's payout and checkout rail.", help: "The AVE business wallet is isolated to this venture; the connected checkout is the revenue source the agents monitor.", required: true },
+        { id: "catalogue_source", type: "connection", connector: "gumroad", question: "Connect an existing product catalogue, if you have one.", help: "Optional: import products and sales so the venture can start from what already exists.", required: false },
+        { id: "owner_channel", type: "channel", question: "Where should the brand operator reach you?", options: ["email", "slack", "whatsapp", "telegram"], required: true },
+        { id: "autonomy", type: "choice", question: "How should it handle routine commerce work?", options: ["Draft changes for approval", "Run routine catalogue, support and growth work", "Full autonomy within the business limits"], required: true },
+      ],
+      projects: [
+        { name: "Catalogue & Offers", default_agent_id: "launchpad-fulfillment-v1" },
+        { name: "Fulfilment & Support", default_agent_id: "launchpad-support-v1" },
+        { name: "Content & Growth", default_agent_id: "launchpad-content-v1" },
+        { name: "Revenue Review", default_agent_id: "launchpad-fulfillment-v1" },
+      ],
+      project_templates: ["whatsapp-support-bot"],
+      first_contact: { goal: "Set up the niche commerce venture around the chosen category. Confirm the isolated business wallet, inspect the connected catalogue if present, propose the first offer and fulfilment workflow, and send the owner the first campaign and revenue-review plan. Report missing product facts instead of inventing them." },
+    },
+  },
+  {
+    id: "ave-expert-service-studio",
+    name: "Expert Service Studio",
+    description: "An autonomous productized service venture that turns a specialist capability into a repeatable offer, qualified intake, delivery workflow and customer success loop.",
+    template_mode: "ave",
+    vertical: "Productized expert services",
+    wallet_mode: "business_wallet",
+    agents: ["launchpad-leadgen-v1", "launchpad-content-v1", "launchpad-support-v1"],
+    skills: ["commerce", "crm-tool", "file-manager", "web-search", "email-tool", "mcp-connector"],
+    connectors: ["whop", "notion"],
+    free_tier_eligible: true,
+    coming_soon: false,
+    bootstrap: {
+      prompts: [
+        { id: "specialty", type: "text", question: "What expertise and deliverable should this venture sell?", help: "For example: paid audits, research briefs, design sprints or implementation packages.", required: true },
+        { id: "business_wallet", type: "connection", connector: "whop", question: "Connect the venture's payout and checkout rail.", help: "The AVE gets an isolated business wallet and uses the connected checkout for paid intake.", required: true },
+        { id: "offer_constraints", type: "text", question: "What scope, price or turnaround limits should the operator respect?", required: true },
+        { id: "owner_channel", type: "channel", question: "Where should your service operator reach you?", options: ["email", "slack", "whatsapp", "telegram"], required: true },
+        { id: "autonomy", type: "choice", question: "How should it handle leads and delivery?", options: ["Draft offers and deliverables for approval", "Run intake and routine delivery, ask on exceptions", "Full autonomy within the service limits"], required: true },
+      ],
+      projects: [
+        { name: "Offer & Intake", default_agent_id: "launchpad-leadgen-v1" },
+        { name: "Delivery Desk", default_agent_id: "launchpad-content-v1" },
+        { name: "Lead Generation", default_agent_id: "launchpad-leadgen-v1" },
+        { name: "Client Success", default_agent_id: "launchpad-support-v1" },
+      ],
+      first_contact: { goal: "Package the specialist capability into a clear paid offer without making up proof or results. Confirm the isolated business wallet, draft the intake and delivery stages within the stated constraints, create the first lead-generation brief, and send the owner a launch checklist with explicit approval points." },
     },
   },
 ];

@@ -1,46 +1,20 @@
-/**
- * The concrete Execution Ladder backend (spec bottom appendix §8) — implements
- * `TieredCodeRunner` for tiers 2-5. Tier 1 (R2) is handled in-process by execution-ladder.ts
- * and never reaches here.
- *
- *   Tier 2 — V8 Isolate (CF Worker Loader): TS/JS + HTTP fetch. No filesystem, no native bins.
- *   Tier 3 — Tier 2 + best-effort ESM package resolution (fetched from a CDN at call time and
- *            injected as an extra module — there is no real "npm install" inside an isolate).
- *   Tier 4 — Tier 2 isolate with a `ctx.browser` capability proxied to the naelao-browser
- *            Worker (CF Browser Rendering). Agents never get raw CDP (spec §8 note).
- *   Tier 5 — ToolSandboxDO (CF Container, full Linux) generic /exec route.
- *
- * Stored script code is a TypeScript/JS module exporting a named `run`:
- *   export async function run(args, ctx) { ... return result; }
- * `ctx` always exposes `fetch`; Tier 4 additionally exposes `browser.navigate(...)`.
- *
- * §A1.17 Phase I — `ctx.mcp` (Code Mode, Tiers 2-4): when the host wires a `mcpHubWorker`
- * binding, every isolate ALSO gets `ctx.mcp.{call,list_servers,list_tools}`, looping back to the
- * SAME `naelao-mcp-hub` worker the `mcp-connector` prebuilt already uses — so ONE authored
- * script can deterministically chain several MCP servers (get data from A, act on B) instead of
- * that composition living only in the model-driven, one-op-per-turn reasoning loop. The isolate
- * never receives a credential: mcp-hub still resolves auth server-side exactly as it does for
- * the prebuilt path. What the isolate DOES receive is a short-lived (60s), tenant-scoped internal
- * token minted just before isolate construction — never the platform secret itself — so the
- * mcp-hub's `requireInternalHmac` gate is satisfied without widening what a compromised script
- * could do with it.
- *
- * The CF Worker Loader binding (`worker_loaders`) is a 2025 beta primitive — not yet in
- * @cloudflare/workers-types, so its shape is declared locally (same pattern ToolSandboxDO
- * uses for the Container runtime). When the binding is absent (older account / local dev
- * without it configured) tiers 2-4 degrade honestly to "unavailable", matching every other
- * optional binding in this engine (AI, Vectorize, MCP_HUB, ...).
+/** Execution backends: validated fresh Dynamic Workers for JS/TS and provider Python/Wasm;
+ * durable Workflows for long jobs, browser services for perception, cloud/local containers
+ * for authorized native execution. Only explicit scoped RPC capabilities cross into guests.
  */
 
 import { mintInternalToken } from "@naelao/http";
+import { assertBrowserUrl, browserEngineFor, validateBrowserScope, type BrowserActionKind, type BrowserObservation, type BrowserRuntimeScope } from "@naelao/agent-sdk";
+import { browserPerceptionReceipt, chooseBrowserReflex, type BrowserActionCandidate } from "./browser-perception.js";
 import type {
   ExecutionTier,
   ScriptRunResult,
   TieredCodeRunner,
 } from "./types.js";
-import { requiresNativeCompilation } from "./execution-ladder.js";
-import { createVaultProxy } from "./vault-proxy.js";
-import type { ContainerBackend, Tier6ContainerOptions } from "@naelao/agent-sdk";
+import { type ContainerBackend, type Tier6ContainerOptions, type ScopedCodeRpcOptions } from "@naelao/agent-sdk";
+import { runIsolate, codeFailure } from "./isolated-runtime.js";
+import type { CodeRpcBinding } from "./code-rpc-broker.js";
+import { validateContainerScope, sidecarKey, assertBrowserContainerLease, type ContainerInvocationScope, type BrowserContainerLease, type InstalledContainer } from "./container-policy.js";
 
 // ── CF Worker Loader binding (beta) — minimal local typing ─────────────────────────────
 
@@ -48,8 +22,9 @@ export interface WorkerLoaderModuleConfig {
   compatibilityDate: string;
   compatibilityFlags?: string[];
   mainModule: string;
-  modules: Record<string, string>;
-  /** Bindings visible to the dynamically loaded code as `env`. Passed by reference. */
+  modules: Record<string, string | { js: string } | { py: string } | { wasm: ArrayBuffer }>;
+  limits?: { cpuMs: number; subRequests: number };
+  /** Provider-serialized scope and explicit custom RPC binding; no raw host env. */
   env?: Record<string, unknown>;
   /** Restrict outbound fetch from the loaded worker; null disables outbound entirely. */
   globalOutbound?: Fetcher | null;
@@ -58,11 +33,12 @@ export interface WorkerLoaderModuleConfig {
 export interface WorkerLoaderStub {
   getEntrypoint(
     name?: string,
-    options?: { props?: Record<string, unknown> }
+    options?: { props?: Record<string, unknown>; limits?: { cpuMs: number; subRequests: number } }
   ): Fetcher;
 }
 
 export interface WorkerLoaderBinding {
+  load?(config: WorkerLoaderModuleConfig): WorkerLoaderStub;
   get(
     id: string,
     factory: () => WorkerLoaderModuleConfig | Promise<WorkerLoaderModuleConfig>
@@ -72,10 +48,25 @@ export interface WorkerLoaderBinding {
 // ── Options the host (NaelaoAgentDO) supplies when constructing the runner ─────────────
 
 export interface CodeRunnerOptions {
+  /** Loopback custom binding factory; never pass raw services/credentials into guest env. */
+  createRpcBinding?: (options: ScopedCodeRpcOptions, deadline: number) => Promise<{ binding: CodeRpcBinding; close(): void }>;
+  authorizeCodeCapability?: ScopedCodeRpcOptions["authorize"];
+  dispatchCodeCapability?: ScopedCodeRpcOptions["dispatch"];
+  maxConcurrentIsolates?: number;
+  maxConcurrentPerTenant?: number;
+  /** Pinned provider memory ceiling; Workers currently enforce 128 MiB per isolate. */
+  isolateMemoryMb?: number;
+  pythonEnabled?: boolean;
+  approveEscalation?: (params: Parameters<TieredCodeRunner["run"]>[0], capability: string) => Promise<boolean>;
+  /** Fail-closed compliance mode: no browser, MCP, package CDN, or cloud-container egress. */
+  airGappedOnly?: boolean;
   /** The worker_loaders binding. Tiers 2-4 are unavailable without it. */
   loader?: WorkerLoaderBinding;
   /** naelao-browser service binding (Tier 4). */
   browserWorker?: Fetcher;
+  /** Live host grant check; page/model text can never grant a browser operation. */
+  authorizeBrowser?: (scope: BrowserRuntimeScope, operation: string) => Promise<boolean>;
+  browserDecisionGateway?: () => import("@naelao/agent-sdk").FastDecisionGateway | undefined;
   /** naelao-mcp-hub service binding — powers Tiers 2-4's ctx.mcp (§A1.17 Phase I). */
   mcpHubWorker?: Fetcher;
   /** Zero-leak credential egress worker. Only this binding receives logical credential names. */
@@ -83,602 +74,176 @@ export interface CodeRunnerOptions {
   /** Used to mint short-lived internal tokens for the browser/mcp-hub loopbacks — never handed
    *  to the isolate directly. */
   platformSecret?: string;
-  /** ToolSandboxDO namespace (Tier 5, the Phase K base per-project sandbox). */
+  /** ToolSandboxDO namespace (Tier 6, the Phase K base per-project sandbox). */
   toolSandbox?: DurableObjectNamespace;
+  /** Marks container calls as part of a still-active Task DAG run. ToolSandboxDO uses this to
+   *  hold the warm container for five minutes between edit/build/test steps. */
+  activeTask?: boolean;
   /** Browser-owned WebContainer bridge, when a live tab advertises one. */
   webContainer?: Fetcher;
   /** LocalTunnelDO namespace for explicitly selected workstation execution. */
   localTunnel?: DurableObjectNamespace;
+  localMachine?: (params: Parameters<TieredCodeRunner["run"]>[0]) => Promise<import("./types.js").ScriptRunResult>;
   /** §A1.17 Phase L: Container Marketplace image id -> its own DO namespace binding. Empty/absent
    *  today — every catalogue image ships `available:false` (see container-catalogue.ts) until a
    *  real Dockerfile + persistence strategy + wrangler binding lands for it. */
   containerImages?: Record<string, DurableObjectNamespace>;
+  /** Host resolves the active installation and an approved fixed binding, not model text. */
+  authorizeContainer?: (params: Parameters<TieredCodeRunner["run"]>[0]) => Promise<boolean>;
+  resolveSidecar?: (params: Parameters<TieredCodeRunner["run"]>[0]) => Promise<{ installation: InstalledContainer; namespace: DurableObjectNamespace }>;
+  browserContainerLease?: () => Promise<BrowserContainerLease | undefined>;
+  browserCompatible?: (params: Parameters<TieredCodeRunner["run"]>[0]) => Promise<boolean>;
   /** Per-call wall-clock timeout for isolate tiers (2-4). Default 15s. */
   isolateTimeoutMs?: number;
-  /** Per-call wall-clock timeout for the container tier (5). Default 60s. */
+  /** Per-call wall-clock timeout for the container tier (6). Default 60s. */
   containerTimeoutMs?: number;
 }
 
-const DEFAULT_ISOLATE_TIMEOUT_MS = 15_000;
 const DEFAULT_CONTAINER_TIMEOUT_MS = 60_000;
-const ISOLATE_COMPAT_DATE = "2024-12-01";
-
-/**
- * Execution Ladder auto-promotion (AVOS plan, step 3): a Tier 2-4 isolate has NO real OS, no
- * `npm`/`pip`, and (at Tier 2) no package resolution at all — Tier 3's own CDN-ESM-shim
- * (extractBarePackageImports, above) is already the isolate's best attempt at "install a
- * package," and Tier 4 adds only a browser proxy, not a filesystem. So a script whose failure is
- * genuinely "this isolate structurally cannot do that" (an unresolved import — the isolate has
- * no module the CDN shim could find, or Tier 2 didn't even try) is a real, deterministic signal
- * that Tier 5 (a real container: real npm/pip, real files) can plausibly succeed where the
- * isolate never could. Deliberately narrow, and deliberately does NOT include a plain execution
- * timeout: a script that's slow or genuinely stuck is not obviously fixed by a cold-starting
- * container with a longer (60s vs 15s) but still finite timeout — retrying there risks doubling
- * the wall-clock cost of something that was always going to fail, for no real capability gain.
- */
-const ISOLATE_PROMOTION_ERROR_PATTERNS = [
-  /cannot find module/i,
-  /failed to resolve (specifier|module)/i,
-  /no such module/i,
-  /module not found/i,
-  /No module named/i,
-  /ImportError.*native/i,
-  /native.*required/i,
-];
-
-/** Bare (non-relative) import specifiers a Tier-3 script wants resolved from a CDN. */
-function extractBarePackageImports(code: string): string[] {
-  const specs = new Set<string>();
-  const importRe =
-    /\bimport\s+(?:[\w*${},\s]+\s+from\s+)?["']([^"'.][^"']*)["']/g;
-  let m: RegExpExecArray | null;
-  while ((m = importRe.exec(code))) {
-    const spec = m[1];
-    if (spec && !spec.startsWith(".") && !spec.startsWith("naelao:"))
-      specs.add(spec);
-  }
-  return [...specs];
-}
-
-// F10: the isolate previously handed scripts a raw, unguarded `fetch` — any Tier 2/3/4
-// script could reach internal-only addresses (e.g. 169.254.169.254) with no SSRF check at
-// all. This module runs as standalone JS text inside a CF Worker Loader isolate (no bundler,
-// no imports beyond what's in `modules`), so the guard can't be pulled in from
-// @naelao/security — it's inlined here and kept in sync with that package's logic by hand.
-// `globalThis.fetch` is overridden (not just `ctx.fetch`) so a script that calls bare
-// `fetch(...)` directly — bypassing the `ctx` convention — is still guarded.
-const SSRF_GUARD_PRELUDE = `
-const __realFetch = fetch;
-const __SSRF_BLOCKED_RE = [/^localhost$/i, /^127\\./, /^0\\.0\\.0\\.0$/, /^::1$/, /^169\\.254\\./, /^10\\./, /^172\\.(1[6-9]|2\\d|3[01])\\./, /^192\\.168\\./, /^100\\.(6[4-9]|[7-9]\\d|1[01]\\d|12[0-7])\\./, /^fc00:/i, /^fd00:/i, /^fe80:/i, /^0\\./];
-function __isBlockedHost(h) {
-  return __SSRF_BLOCKED_RE.some((re) => re.test(h)) || h.endsWith(".internal") || h.endsWith(".local") || h.endsWith(".localhost");
-}
-async function __resolveIps(hostname) {
-  try {
-    const q = (type) => __realFetch("https://cloudflare-dns.com/dns-query?name=" + encodeURIComponent(hostname) + "&type=" + type, { headers: { accept: "application/dns-json" } }).then((r) => r.ok ? r.json() : null).catch(() => null);
-    const [a, aaaa] = await Promise.all([q("A"), q("AAAA")]);
-    const answers = [...((a && a.Answer) || []), ...((aaaa && aaaa.Answer) || [])];
-    return answers.map((x) => x.data).filter(Boolean);
-  } catch { return []; }
-}
-async function __ssrfGuardedFetch(...args) {
-  const req = args[0];
-  const rawUrl = typeof req === "string" ? req : (req && req.url) || "";
-  let parsed;
-  try { parsed = new URL(rawUrl); } catch { throw new Error("ssrf_blocked: invalid URL"); }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("ssrf_blocked: protocol " + parsed.protocol + " not allowed");
-  const hostname = parsed.hostname.toLowerCase();
-  if (__isBlockedHost(hostname)) throw new Error("ssrf_blocked: host " + hostname + " not allowed");
-  const resolved = await __resolveIps(hostname);
-  if (resolved.some(__isBlockedHost)) throw new Error("ssrf_blocked: host " + hostname + " resolves to a blocked address");
-  return __realFetch(...args);
-}
-globalThis.fetch = __ssrfGuardedFetch;
-`;
-
-/** Builds the single-file isolate module: SSRF guard prelude + user code + a fetch() harness. */
-function buildIsolateModule(userCode: string): string {
-  return `${SSRF_GUARD_PRELUDE}
-${userCode}
-
-export default {
-  async fetch(request, env) {
-    const { args } = await request.json();
-    const ctx = { fetch: (...a) => __ssrfGuardedFetch(...a) };
-    if (env.__BROWSER__) {
-      ctx.browser = {
-        navigate: async (req) => {
-          const r = await env.__BROWSER__.fetch("http://browser/v1/browser/navigate", {
-            method: "POST",
-            headers: { "content-type": "application/json", "x-naelao-internal-token": env.__BROWSER_TOKEN__ || "" },
-            body: JSON.stringify({ engine: env.__BROWSER_ENGINE__ || "kitesurf", ...(typeof req === "string" ? { url: req } : req) }),
-          });
-          const body = await r.json();
-          if (!r.ok) throw new Error("browser.navigate failed: " + (body && body.message ? body.message : r.status));
-          return body;
-        },
-      };
-    }
-    if (env.__MCP_HUB__) {
-      const mcpHeaders = () => ({
-        "content-type": "application/json",
-        "x-naelao-tenant-id": env.__MCP_TENANT__ || "",
-        "x-naelao-user-id": env.__MCP_USER__ || "",
-        "x-naelao-agent-id": env.__MCP_AGENT__ || "",
-        "x-naelao-project-id": env.__MCP_PROJECT__ || "",
-        "x-naelao-internal-token": env.__MCP_TOKEN__ || "",
-      });
-      const mcpFetch = async (path, init) => {
-        const r = await env.__MCP_HUB__.fetch(new Request("http://mcp-hub/v1/spaces/" + env.__MCP_SPACE__ + path, {
-          method: init.method,
-          headers: mcpHeaders(),
-          ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
-        }));
-        const body = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error((body && body.message) || ("mcp-hub " + path + " failed: " + r.status));
-        return body;
-      };
-      const resolveServerId = async (ref) => {
-        const listed = await mcpFetch("/mcp-servers", { method: "GET" });
-        const servers = (listed && listed.data) || [];
-        const match = servers.find((s) => s.id === ref) || servers.find((s) => s.name === ref);
-        if (!match) throw new Error("ctx.mcp: no registered server named '" + ref + "'");
-        return match.id;
-      };
-      ctx.mcp = {
-        list_servers: async () => {
-          const listed = await mcpFetch("/mcp-servers", { method: "GET" });
-          return listed.data || [];
-        },
-        list_tools: async (server) => {
-          const id = await resolveServerId(server);
-          return mcpFetch("/mcp-servers/" + id + "/tools", { method: "GET" });
-        },
-        call: async (server, tool, params) => {
-          const id = await resolveServerId(server);
-          return mcpFetch("/mcp-servers/" + id + "/tools/call", { method: "POST", body: { tool_name: tool, input: params || {} } });
-        },
-      };
-      ctx.connectors = {
-        call: async (alias, tool, params, requiredScopes) => {
-          const headers = mcpHeaders();
-          if (Array.isArray(requiredScopes) && requiredScopes.length) headers["x-naelao-required-scopes"] = requiredScopes.join(",");
-          const r = await env.__MCP_HUB__.fetch(new Request("http://mcp-hub/v1/spaces/" + env.__MCP_SPACE__ + "/connector-aliases/" + encodeURIComponent(alias) + "/tools/call", {
-            method: "POST", headers, body: JSON.stringify({ tool_name: tool, input: params || {} }),
-          }));
-          const body = await r.json().catch(() => ({}));
-          if (!r.ok) throw new Error((body && body.message) || ("connector alias call failed: " + r.status));
-          return body;
-        },
-      };
-    }
-    if (env.__VAULT__) {
-      ctx.vault = {
-        fetchWithAuth: async (url, init) => {
-          if (!init || !init.credentialName) throw new Error("ctx.vault.fetchWithAuth requires credentialName");
-          return env.__VAULT__.fetchWithAuth(url, init);
-        },
-      };
-    }
-    // Deterministic authority fence: project isolates cannot even observe a space property.
-    if (env.__PROJECT_ID__) ctx.project = { id: env.__PROJECT_ID__ };
-    else ctx.space = { id: env.__SPACE_ID__ };
-    if (typeof run !== "function") {
-      return Response.json({ ok: false, error: "script must export an async function named 'run'" }, { status: 500 });
-    }
-    try {
-      const result = await run(args, ctx);
-      return Response.json({ ok: true, result });
-    } catch (err) {
-      return Response.json({ ok: false, error: String((err && err.message) || err) }, { status: 500 });
-    }
-  },
-};
-`;
-}
-
-/** Pyodide is loaded inside the dynamic Worker, never in the orchestration worker. Stdout is
- * captured explicitly so Python has the same result contract as the Linux harness. */
-function buildPythonIsolateModule(): string {
-  return `${SSRF_GUARD_PRELUDE}
-import { loadPyodide } from "pyodide";
-let __runtime;
-export default {
-  async fetch(request) {
-    const { args } = await request.json();
-    const lines = [];
-    __runtime ||= loadPyodide({
-      indexURL: "https://cdn.jsdelivr.net/pyodide/v0.27.7/full/",
-      stdout: (line) => lines.push(line),
-      stderr: (line) => lines.push(line),
-    });
-    try {
-      const pyodide = await __runtime;
-      const result = await pyodide.runPythonAsync(String(args.code || ""));
-      return Response.json({ ok: true, result: { stdout: lines.join("\\n"), result: result == null ? null : String(result) } });
-    } catch (err) {
-      return Response.json({ ok: false, error: String((err && err.message) || err) }, { status: 500 });
-    }
-  },
-};`;
-}
-
-/** Fetch a package's ESM bundle from esm.sh for Tier-3 best-effort npm resolution. */
-async function fetchEsmModule(pkg: string): Promise<string | null> {
-  try {
-    const resp = await fetch(`https://esm.sh/${encodeURIComponent(pkg)}`, {
-      headers: { accept: "application/javascript,text/javascript" },
-    });
-    if (!resp.ok) return null;
-    return await resp.text();
-  } catch {
-    return null;
-  }
-}
-
-async function runIsolate(
-  opts: CodeRunnerOptions,
-  params: {
-    name: string;
-    code: string;
-    tier: ExecutionTier;
-    args: Record<string, unknown>;
-    spaceId: string;
-    agentId: string;
-    tenantId: string;
-    userId?: string;
-    // Widened to accept (and, on auto-promotion, forward) the same optional fields
-    // runContainer expects — absent for the overwhelming majority of Tier 2-4 calls.
-    projectId?: string;
-  }
-): Promise<ScriptRunResult> {
-  const started = Date.now();
-  if (!opts.loader) {
-    return {
-      ok: false,
-      error: `Tier ${params.tier} is unavailable: no worker_loaders binding configured in this environment`,
-      tier: params.tier,
-      duration_ms: Date.now() - started,
-      tokens_used: 0,
-    };
-  }
-
-  const python = params.name === "code-exec.execute_python";
-  const modules: Record<string, string> = {
-    "main.js": python ? buildPythonIsolateModule() : buildIsolateModule(params.code),
-  };
-
-  if (python) {
-    const pyodideModule = await fetchEsmModule("pyodide@0.27.7");
-    if (!pyodideModule) {
-      return { ok: false, error: "Pyodide module could not be loaded", tier: 2, actual_tier: 2, engine: "isolate", duration_ms: Date.now() - started, tokens_used: 0 };
-    }
-    modules.pyodide = pyodideModule;
-  }
-
-  // Tier 3: best-effort resolve bare-specifier imports from a CDN as extra virtual modules.
-  if (params.tier === 3) {
-    const pkgs = extractBarePackageImports(params.code);
-    for (const pkg of pkgs) {
-      const src = await fetchEsmModule(pkg);
-      if (src) modules[pkg] = src;
-    }
-  }
-
-  const env: Record<string, unknown> = {};
-  if (params.tier === 4 || params.tier === 5) {
-    if (!opts.browserWorker) {
-      return {
-        ok: false,
-        error: `Tier ${params.tier} is unavailable: no naelao-browser service binding configured`,
-        tier: params.tier,
-        actual_tier: params.tier,
-        engine: "isolate",
-        duration_ms: Date.now() - started,
-        tokens_used: 0,
-      };
-    }
-    env.__BROWSER__ = opts.browserWorker;
-    env.__BROWSER_TOKEN__ = opts.platformSecret ?? "";
-    env.__BROWSER_ENGINE__ = params.tier === 4 ? "kitesurf" : "chromium";
-  }
-
-  // ctx.mcp is available at every isolate tier (2-4) — Code Mode's core use case is fast,
-  // pure-JS multi-MCP orchestration, not something that should require Tier 4. Mints a
-  // short-lived (60s), tenant-scoped token here in real TS — the isolate only ever receives
-  // the finished token string, never the platform secret itself.
-  if (opts.mcpHubWorker) {
-    env.__MCP_HUB__ = opts.mcpHubWorker;
-    env.__MCP_TOKEN__ = await mintInternalToken(
-      opts.platformSecret ?? "",
-      params.tenantId
-    );
-    env.__MCP_TENANT__ = params.tenantId;
-    env.__MCP_SPACE__ = params.spaceId;
-    env.__MCP_AGENT__ = params.agentId;
-    env.__MCP_USER__ = params.userId ?? "";
-    env.__MCP_PROJECT__ = params.projectId ?? "";
-  }
-
-  if (opts.credentialsWorker && opts.platformSecret) {
-    env.__VAULT__ = createVaultProxy({
-      credentialsWorker: opts.credentialsWorker,
-      platformSecret: opts.platformSecret,
-      tenantId: params.tenantId,
-      spaceId: params.spaceId,
-      agentId: params.agentId,
-      ...(params.userId ? { userId: params.userId } : {}),
-    });
-  }
-  env.__SPACE_ID__ = params.spaceId;
-  if (params.projectId) env.__PROJECT_ID__ = params.projectId;
-
-  // One isolate per (space, script, code revision) — never share isolates across spaces.
-  // `loader.get(id, factory)` caches by id and does NOT re-invoke `factory` (so does not
-  // refresh `env`) while a warm isolate for that id exists. That's fine for env values with no
-  // expiry (browser token, static bindings) but would silently stale-out __MCP_TOKEN__ (60s
-  // freshness window) if the isolate stayed warm longer than that. So ONLY when mcp-hub is
-  // wired, fold a coarse time bucket into the id — well inside the token's freshness window —
-  // forcing a fresh isolate (and a fresh token) periodically. Scripts that never touch ctx.mcp
-  // keep the original stable id, so their isolate-reuse cache hit rate is unaffected.
-  const mcpTimeBucket = opts.mcpHubWorker || opts.credentialsWorker
-    ? `:mcp${Math.floor(Date.now() / 45_000)}`
-    : "";
-  const lockId = `${params.spaceId}:${params.name}:${hashCode(params.code)}${mcpTimeBucket}`;
-
-  try {
-    const stub = opts.loader.get(lockId, () => ({
-      compatibilityDate: ISOLATE_COMPAT_DATE,
-      mainModule: "main.js",
-      modules,
-      env,
-    }));
-    const entrypoint = stub.getEntrypoint();
-
-    const controller = new AbortController();
-    const timeoutMs = opts.isolateTimeoutMs ?? DEFAULT_ISOLATE_TIMEOUT_MS;
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const resp = await entrypoint.fetch(
-        new Request("http://script/run", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ args: params.args }),
-          signal: controller.signal,
-        })
-      );
-      const body = await resp.json<{
-        ok: boolean;
-        result?: unknown;
-        error?: string;
-      }>();
-      return {
-        ok: body.ok,
-        ...(body.ok
-          ? { output: body.result }
-          : { error: body.error ?? `isolate returned ${resp.status}` }),
-        tier: params.tier,
-        actual_tier: params.tier,
-        engine: "isolate",
-        duration_ms: Date.now() - started,
-        tokens_used: 0,
-      };
-    } finally {
-      clearTimeout(timer);
-    }
-  } catch (err) {
-    const aborted = err instanceof Error && err.name === "AbortError";
-    const errMsg = aborted
-      ? `Tier ${params.tier} execution timed out`
-      : String(err instanceof Error ? err.message : err);
-
-    // Auto-promotion — see ISOLATE_PROMOTION_ERROR_PATTERNS's own doc for why only an unresolved-
-    // import failure qualifies (never a timeout, which this branch also handles above but does
-    // NOT match any of the patterns). No-op when Tier 5 itself isn't wired — the caller gets the
-    // original isolate error, which is still more useful than a second "unavailable" on top of it.
-    if (
-      opts.toolSandbox &&
-      !aborted &&
-      (ISOLATE_PROMOTION_ERROR_PATTERNS.some((p) => p.test(errMsg)) ||
-        params.code.includes("import torch"))
-    ) {
-      console.warn(
-        `[execution-ladder] auto-promoting '${params.name}' from Tier ${params.tier} to Tier 6 after: ${errMsg}`
-      );
-      const promoted = await runContainer(opts, {
-        tier: 6,
-        name: params.name,
-        code: params.code,
-        args: params.args,
-        spaceId: params.spaceId,
-        agentId: params.agentId,
-        ...(params.projectId ? { projectId: params.projectId } : {}),
-      });
-      // A successful promotion's `output` is the script's own real return value — left exactly
-      // as runContainer produced it, never annotated. A FAILED promotion gets the isolate's
-      // original error folded in ahead of the container's own, so "why did this fail" reads as
-      // one coherent story instead of only the second attempt's error with no trace of the first.
-      if (promoted.ok) return promoted;
-      return {
-        ...promoted,
-        error: `Tier ${params.tier} failed (${errMsg}); auto-promoted to Tier 6, which also failed: ${promoted.error ?? "unknown error"}`,
-      };
-    }
-
-    return {
-      ok: false,
-      error: errMsg,
-      tier: params.tier,
-      actual_tier: params.tier,
-      engine: "isolate",
-      duration_ms: Date.now() - started,
-      tokens_used: 0,
-    };
-  }
-}
 
 async function runBrowser(
   opts: CodeRunnerOptions,
-  params: {
-    name: string;
-    code: string;
-    args: Record<string, unknown>;
-    spaceId: string;
-    agentId: string;
-    tenantId: string;
-    userId?: string;
-    tier?: ExecutionTier;
-  },
-  engine: "kitesurf" | "chromium"
+  params: Parameters<TieredCodeRunner["run"]>[0],
+  requestedEngine: "kitesurf" | "chromium",
+  sessions: Map<string, BrowserRuntimeScope>
 ): Promise<ScriptRunResult> {
   const started = Date.now();
-  if (!opts.browserWorker) {
-    return {
-      ok: false,
-      error: `Browser engine '${engine}' is unavailable: no naelao-browser service binding configured`,
-      tier: engine === "kitesurf" ? 4 : 5,
-      actual_tier: engine === "kitesurf" ? 4 : 5,
-      engine,
-      duration_ms: Date.now() - started,
-      tokens_used: 0,
-    };
-  }
-  const browserWorker = opts.browserWorker;
-
-  let selectedEngine: "kitesurf" | "chromium" = engine;
+  let engine = requestedEngine;
   let fallbackReason: string | undefined;
-
-  if (
-    engine === "kitesurf" &&
-    Boolean(params.args["needsScreenshot"] || params.args["take_screenshot"] || params.args["pdf"] || params.args["needsWebGL"] || params.args["needsCanvas"])
-  ) {
-    selectedEngine = "chromium";
-    fallbackReason = "visual QA / WebGL requested";
-  }
-
-  const token = await mintInternalToken(
-    opts.platformSecret ?? "",
-    params.tenantId
-  );
-
-  const dispatch = async (eng: "kitesurf" | "chromium") => {
-    const endpoint = params.name === "browser-use.see" ? "/v1/browser/see" : "/v1/browser/navigate";
-    const resp = await browserWorker.fetch(
-      new Request(`http://browser${endpoint}`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-naelao-internal-token": token,
-        },
-        body: JSON.stringify({ ...params.args, engine: eng }),
-      })
-    );
-    const body: {
-      ok?: boolean;
-      result?: unknown;
-      error?: string;
-      message?: string;
-    } = await resp
-      .json<{
-        ok?: boolean;
-        result?: unknown;
-        error?: string;
-        message?: string;
-      }>()
-      .catch(() => ({ ok: resp.ok }));
-    return { resp, body };
-  };
-
+  let scope: BrowserRuntimeScope | undefined;
+  let aborted = false;
+  const operation = params.name.replace(/^browser-use\./, "");
+  const mutation = ["click", "type", "select", "scroll", "act"].includes(operation);
+  const endpoint = mutation ? "act" : operation === "reflex" ? "snapshot" : ["extract", "screenshot"].includes(operation) ? "observe" : operation;
+  const fail = (message: string): ScriptRunResult => ({ ok: false, error: message, tier: engine === "kitesurf" ? 4 : 5,
+    actual_tier: engine === "kitesurf" ? 4 : 5, engine, duration_ms: Date.now() - started, tokens_used: 0 });
+  if (opts.airGappedOnly) return fail("compliance_violation: browser egress is disabled for local-only spaces");
+  if (!opts.browserWorker || !opts.platformSecret || !opts.authorizeBrowser) return fail("browser_runtime_unavailable");
+  if (!params.userId || !params.runId || params.userId === "system") return fail("browser_actor_and_run_required");
+  const maxTier = params.maxTier ?? 4;
+  if (maxTier < 4) return fail("execution_ceiling_exceeded");
+  const sessionId = typeof params.args["session_id"] === "string" ? params.args["session_id"] : crypto.randomUUID();
+  const key = JSON.stringify([params.tenantId, params.spaceId, params.projectId, params.userId, params.runId, sessionId]);
+  const saved = sessions.get(key);
   try {
-    let { resp, body } = await dispatch(selectedEngine);
-
-    if (!resp.ok && selectedEngine === "kitesurf") {
-      selectedEngine = "chromium";
-      fallbackReason = `kitesurf failed (${body.message || resp.status}), elevated to Chromium`;
-      const retry = await dispatch("chromium");
-      resp = retry.resp;
-      body = retry.body;
-    }
-
-    return {
-      ok: resp.ok && body.ok !== false,
-      output: {
-        ...(typeof body.result === "object" && body.result
-          ? (body.result as object)
-          : { data: body.result }),
-        engine: selectedEngine,
-        ...(fallbackReason ? { fallback_reason: fallbackReason } : {}),
-      },
-      tier: selectedEngine === "kitesurf" ? 4 : 5,
-      actual_tier: selectedEngine === "kitesurf" ? 4 : 5,
-      engine: selectedEngine,
-      duration_ms: Date.now() - started,
-      tokens_used: 0,
+    const rawUrl = typeof params.args["url"] === "string" ? params.args["url"] : saved?.authorizedOrigins[0];
+    if (!rawUrl) return fail("browser_url_and_session_required");
+    const origin = new URL(rawUrl).origin;
+    scope = { tenantId: params.tenantId, spaceId: params.spaceId, actorId: params.userId, agentId: params.agentId,
+      runId: params.runId, sessionId, ...(params.projectId ? { projectId: params.projectId } : {}),
+      expiresAt: saved?.expiresAt ?? Date.now() + 600_000, authorizedOrigins: saved?.authorizedOrigins ?? [origin],
+      authorizedActions: [], maxTier: Math.min(maxTier, 6) as 4 | 5 | 6 };
+    validateBrowserScope(scope);
+    assertBrowserUrl(scope, rawUrl);
+    const capability = "browser." + (operation === "act" ? String((params.args["action"] as Record<string, unknown> | undefined)?.["type"] ?? "") : operation);
+    if (!await opts.authorizeBrowser(scope, capability)) return fail("browser_operation_not_authorized");
+    const actions: BrowserActionKind[] = [];
+    for (const action of ["click", "type", "select", "scroll"] as const) if (await opts.authorizeBrowser(scope, "browser." + action)) actions.push(action);
+    scope.authorizedActions = actions;
+    const chosen = browserEngineFor(scope, {
+      visual: requestedEngine === "chromium" || operation === "screenshot" || operation === "see" || Boolean(params.args["needsScreenshot"] || params.args["take_screenshot"]),
+      webgl: Boolean(params.args["needsWebGL"] || params.args["needsCanvas"]),
+      persistentLogin: Boolean(params.args["interactive"]),
+    });
+    engine = chosen.engine; fallbackReason = chosen.reason;
+    // Grant and identity come only from the host. Model arguments cannot replace scope.
+    const body: Record<string, unknown> = { scope,
+      ...(typeof params.args["url"] === "string" ? { url: params.args["url"] } : {}),
+      interactive: Boolean(params.args["interactive"]), pixelAccurate: engine === "chromium", visual: operation === "screenshot" || Boolean(params.args["take_screenshot"]),
+      webgl: Boolean(params.args["needsWebGL"] || params.args["needsCanvas"]),
+      ...(operation === "see" ? { path: String(params.args["path"] ?? "latest") } : {}) };
+    if (mutation) body["action"] = operation === "act" ? params.args["action"] : {
+      type: operation, actionId: String(params.args["action_id"] ?? ""),
+      observationRevision: String(params.args["observation_revision"] ?? ""), handle: params.args["handle"],
+      ...(operation === "type" ? { text: params.args["text"] } : {}),
+      ...(operation === "select" ? { value: params.args["value"] } : {}),
+      ...(operation === "scroll" ? { x: params.args["x"], y: params.args["y"] } : {}),
     };
-  } catch (err) {
-    return {
-      ok: false,
-      error: String(err),
-      tier: selectedEngine === "kitesurf" ? 4 : 5,
-      actual_tier: selectedEngine === "kitesurf" ? 4 : 5,
-      engine: selectedEngine,
-      duration_ms: Date.now() - started,
-      tokens_used: 0,
-    };
+    const headers = { "content-type": "application/json", "x-naelao-tenant-id": params.tenantId,
+      "x-naelao-internal-token": await mintInternalToken(opts.platformSecret, params.tenantId) };
+    const send = (method: string, signal?: AbortSignal) => opts.browserWorker!.fetch(new Request("http://browser/v1/browser/" + method, {
+      method: "POST", headers, body: JSON.stringify(body), ...(signal ? { signal } : {}) }));
+    sessions.set(key, scope);
+    const cancel = () => { aborted = true; void send("cancel").catch(() => undefined); };
+    params.signal?.throwIfAborted();
+    params.signal?.addEventListener("abort", cancel, { once: true });
+    try {
+      // Never replay a failed request on another engine: it may already have acted.
+      const response = await send(endpoint, params.signal);
+      if (params.signal?.aborted || aborted) return fail("browser_session_cancelled");
+      if (operation === "see" && response.ok && response.headers.get("content-type")?.includes("image/png")) {
+        const bytes = await response.arrayBuffer();
+        if (bytes.byteLength > 4 * 1024 * 1024) return fail("browser_screenshot_limit");
+        engine = "chromium";
+        return { ok: true, output: { image_base64: Buffer.from(bytes).toString("base64"), mime_type: "image/png", session_id: sessionId },
+          tier: 5, actual_tier: 5, engine, duration_ms: Date.now() - started, tokens_used: 0 };
+      }
+      let result = await response.json<{ ok?: boolean; result?: BrowserObservation; engine_used?: string; error_code?: string; message?: string }>();
+      if (!response.ok || result.ok === false) return fail(result.error_code ?? "browser_provider_error");
+      if (result.engine_used === "chromium" || result.engine_used === "kitesurf") engine = result.engine_used;
+      if (engine === "chromium" && maxTier < 5) return fail("browser_escalation_exceeds_ceiling");
+      if (operation === "reflex" && result.result) {
+        const candidates = Array.isArray(params.args["candidates"]) ? params.args["candidates"] as BrowserActionCandidate[] : [];
+        const decision = await chooseBrowserReflex(scope, result.result, candidates, opts.browserDecisionGateway?.());
+        if (decision.kind !== "action") return { ok: true, output: decision, tier: engine === "chromium" ? 5 : 4, actual_tier: engine === "chromium" ? 5 : 4, engine, duration_ms: Date.now() - started, tokens_used: 0 };
+        if (!decision.action || !await opts.authorizeBrowser(scope, "browser." + decision.action.type)) return fail("browser_operation_not_authorized");
+        body["action"] = decision.action;
+        const acted = await send("act", params.signal);
+        result = await acted.json<typeof result>();
+        if (!acted.ok || result.ok === false) return fail(result.error_code ?? "browser_action_reconciliation_required");
+        if (params.signal?.aborted) return fail("browser_session_cancelled");
+      }
+      if (operation === "close" || operation === "cancel") sessions.delete(key);
+      return { ok: true, output: result.result ? { ...browserPerceptionReceipt(result.result), ...(fallbackReason ? { escalation_reason: fallbackReason } : {}) } : result,
+        tier: engine === "kitesurf" ? 4 : 5, actual_tier: engine === "kitesurf" ? 4 : 5, engine,
+        duration_ms: Date.now() - started, tokens_used: 0 };
+    } finally { params.signal?.removeEventListener("abort", cancel); }
+  } catch (error) {
+    return fail(error instanceof Error && /^browser_[a-z_]+$/.test(error.message) ? error.message : "browser_connection_interrupted");
   }
 }
 
 async function runContainer(
   opts: CodeRunnerOptions,
-  params: {
-    name: string;
-    code: string;
-    args: Record<string, unknown>;
-    spaceId: string;
-    agentId: string;
-    projectId?: string;
-    containerImage?: string;
-    tier?: ExecutionTier;
-    containerOptions?: Tier6ContainerOptions;
-  }
+  params: Parameters<TieredCodeRunner["run"]>[0]
 ): Promise<ScriptRunResult> {
   const started = Date.now();
+  const branchScope = workspaceBranchScope(params.workspaceBranch);
   const backend: ContainerBackend = params.containerOptions?.backend ?? "cloudflare_container";
+  const fail = (error: string): ScriptRunResult => ({ ok: false, error, tier: 6, actual_tier: 6, engine: "container", duration_ms: Date.now() - started, tokens_used: 0 });
+  if (!params.userId || !params.runId || params.userId === "system" || (params.maxTier ?? 6) < 6 || params.signal?.aborted) return fail("container_authorized_actor_run_required");
+  if (!opts.authorizeContainer || !await opts.authorizeContainer(params)) return fail("container_execution_denied");
+  if (opts.airGappedOnly && backend !== "local_workstation") {
+    return { ok: false, error: "compliance_violation: air-gapped execution only permits the authorized local workstation backend", tier: 6, actual_tier: 6, engine: "container", duration_ms: Date.now() - started, tokens_used: 0 };
+  }
   if (backend === "webcontainer") {
     if (!opts.webContainer) return unavailableBackend(backend, started);
+    const timeoutMs = Math.min(60000, opts.containerTimeoutMs ?? DEFAULT_CONTAINER_TIMEOUT_MS);
+    try {
+      assertBrowserContainerLease(await opts.browserContainerLease?.(), { tenantId: params.tenantId, spaceId: params.spaceId, projectId: params.projectId,
+        actorId: params.userId, agentId: params.agentId, runId: params.runId, executionId: crypto.randomUUID(), timeoutMs, deadline: Date.now() + timeoutMs }, await opts.browserCompatible?.(params) === true);
+    } catch (error) { return fail(error instanceof Error ? error.message : "webcontainer_consent_required"); }
     return runContainerRequest(opts.webContainer, opts, params, started);
   }
   if (backend === "local_workstation") {
-    const userId = params.containerOptions?.localUserId;
-    if (!opts.localTunnel || !userId) return unavailableBackend(backend, started);
-    const tunnel = opts.localTunnel.get(opts.localTunnel.idFromName(`${params.spaceId}:${userId}`));
-    return runContainerRequest(tunnel, opts, params, started, true);
+    if (!params.containerOptions?.localMachineId || !opts.localMachine) return unavailableBackend(backend, started);
+    return opts.localMachine(params);
   }
 
   // §A1.17 Phase L: a script tagged with a Container Marketplace image routes to THAT image's
   // own binding, never the base sandbox — fails closed with a clear message when the image
   // isn't wired yet (every catalogue image ships unavailable today; see container-catalogue.ts).
   if (params.containerImage) {
-    const namespace = opts.containerImages?.[params.containerImage];
-    if (!namespace) {
-      return {
-        ok: false,
-        error: `Container image '${params.containerImage}' is not available in this environment yet`,
-        tier: 6,
-        actual_tier: 6,
-        engine: "container",
-        duration_ms: Date.now() - started,
-        tokens_used: 0,
-      };
-    }
-    // No live image binds a namespace yet (see the comment above), so this branch has no
-    // reachable success path today — the addressing convention (per project, like Phase K's
-    // base sandbox) is documented here for whichever image lands it first.
-    const doId = namespace.idFromName(
-      `slot:${params.containerImage}:${params.spaceId}:${params.projectId ?? "_assistant"}`
-    );
-    const stub = namespace.get(doId);
-    return runContainerRequest(stub, opts, params, started);
+    if (!opts.resolveSidecar || !params.installationId) return fail("container_active_installation_required");
+    try {
+      const { namespace, installation } = await opts.resolveSidecar(params);
+      if (installation.installationId !== params.installationId || installation.contract.image !== params.containerImage) return fail("container_image_installation_mismatch");
+      const timeoutMs = Math.min(opts.containerTimeoutMs ?? DEFAULT_CONTAINER_TIMEOUT_MS, installation.contract.resources.timeoutSeconds * 1000);
+      const scope: ContainerInvocationScope = { tenantId: params.tenantId, spaceId: params.spaceId, projectId: params.projectId, actorId: params.userId,
+        agentId: params.agentId, runId: params.runId, executionId: crypto.randomUUID(), installationId: params.installationId, image: installation.contract.image, timeoutMs, deadline: Date.now() + timeoutMs };
+      const stub = namespace.get(namespace.idFromName(sidecarKey(scope) + branchScope));
+      return runContainerRequest(stub, opts, params, started, false, scope);
+    } catch (error) { return fail(error instanceof Error ? error.message : "container_registry_unavailable"); }
   }
 
   if (!opts.toolSandbox) {
@@ -699,17 +264,19 @@ async function runContainer(
   // space/project scoping. "_assistant" is a fixed per-space slot for the Space Assistant
   // (projectId absent), analogous to workspacePrefix()'s space-scoped fallback.
   const doId = opts.toolSandbox.idFromName(
-    `sandbox:${params.spaceId}:${params.projectId ?? "_assistant"}`
+    `sandbox:${params.spaceId}:${params.projectId ?? "_assistant"}${branchScope}`
   );
   const stub = opts.toolSandbox.get(doId);
   if (params.containerOptions?.migration) {
     if (!opts.webContainer) return unavailableBackend("webcontainer", started);
     const terminated = await opts.webContainer.fetch(new Request("http://webcontainer/process/signal", {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ signal: "SIGTERM" }),
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ signal: "SIGTERM", tenantId: params.tenantId, spaceId: params.spaceId, actorId: params.userId, runId: params.runId, previewId: params.containerOptions.migration.previewId }),
     }));
     if (!terminated.ok) return { ok: false, error: `WebContainer SIGTERM failed (${terminated.status})`, tier: 6, actual_tier: 6, engine: "container", duration_ms: Date.now() - started, tokens_used: 0 };
   }
   if (params.containerOptions?.lockfiles) {
+    const warmed = await runContainerRequest(stub, opts, { ...params, name: "container.prewarm", code: "", args: {} }, started);
+    if (!warmed.ok) return warmed;
     let response: Response;
     try {
       response = await stub.fetch(new Request("http://sandbox/workspace/rehydrate", {
@@ -735,34 +302,44 @@ function unavailableBackend(backend: ContainerBackend, started: number): ScriptR
 async function runContainerRequest(
   stub: Pick<DurableObjectStub, "fetch"> | Fetcher,
   opts: CodeRunnerOptions,
-  params: {
-    name: string;
-    code: string;
-    args: Record<string, unknown>;
-    spaceId: string;
-    agentId: string;
-    projectId?: string;
-  },
+  params: Parameters<TieredCodeRunner["run"]>[0],
   started: number,
-  localTunnel = false
+  localTunnel = false,
+  suppliedScope?: ContainerInvocationScope
 ): Promise<ScriptRunResult> {
   const controller = new AbortController();
-  const timeoutMs = opts.containerTimeoutMs ?? DEFAULT_CONTAINER_TIMEOUT_MS;
+  const timeoutMs = Math.min(60000, suppliedScope?.timeoutMs ?? opts.containerTimeoutMs ?? DEFAULT_CONTAINER_TIMEOUT_MS);
+  const scope: ContainerInvocationScope = suppliedScope ?? { tenantId: params.tenantId, spaceId: params.spaceId, projectId: params.projectId,
+    actorId: params.userId!, agentId: params.agentId, runId: params.runId!, executionId: crypto.randomUUID(), timeoutMs, deadline: Date.now() + timeoutMs };
+  validateContainerScope(scope);
+  const token = opts.platformSecret ? await mintInternalToken(opts.platformSecret, params.tenantId) : undefined;
+  const headers = { "content-type": "application/json", "x-naelao-container-scope": JSON.stringify(scope), ...(token ? { "x-naelao-internal-token": token } : {}) };
+  const cancel = () => {
+    controller.abort();
+    const cancelledScope = { ...scope, timeoutMs: 5000, deadline: Date.now() + 5000 };
+    void stub.fetch(new Request("http://sandbox/cancel", { method: "POST", headers: { ...headers, "x-naelao-container-scope": JSON.stringify(cancelledScope) }, body: "{}" })).catch(() => undefined);
+  };
+  params.signal?.addEventListener("abort", cancel, { once: true });
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const computerEndpoint = localTunnel ? "/exec" : params.name === "computer-use.screenshot"
+    if (params.signal?.aborted) { cancel(); throw new Error("container_cancelled"); }
+    const computerEndpoint = localTunnel ? "/exec" : params.name === "container.prewarm" ? "/prewarm" : params.name === "computer-use.screenshot"
       ? "/computer/screenshot"
       : params.name === "computer-use.action" ? "/computer/action" : "/exec";
     const resp = await stub.fetch(
       new Request(`http://sandbox${computerEndpoint}`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(localTunnel ? { op: "exec", params: { command: params.code, args: params.args } } : {
+        headers: {
+          ...headers,
+          ...(opts.activeTask && !localTunnel ? { "x-avos-task-active": "1" } : {}),
+        },
+        body: JSON.stringify(localTunnel ? { op: "exec", params: { command: params.code, args: params.args }, scope } : {
           name: params.name,
           code: params.code,
           args: params.args,
           spaceId: params.spaceId,
           ...(params.projectId ? { projectId: params.projectId } : {}),
+          ...(params.workspaceBranch ? { workspaceBranch: params.workspaceBranch } : {}),
         }),
         signal: controller.signal,
       })
@@ -784,7 +361,8 @@ async function runContainerRequest(
     return {
       ok: resp.ok && body.ok,
       ...(resp.ok && body.ok
-        ? { output: body.result }
+        ? { output: body.result === undefined ? body : typeof body.result === "object" && body.result !== null && !Array.isArray(body.result)
+          ? { ...body.result, ...("workspace_sync" in body ? { workspace_sync: body.workspace_sync } : {}) } : body.result }
         : { error: body.error ?? `container returned ${resp.status}` }),
       tier: 6,
       actual_tier: 6,
@@ -797,7 +375,7 @@ async function runContainerRequest(
     return {
       ok: false,
       error: aborted
-        ? "Tier 6 execution timed out"
+        ? params.signal?.aborted ? "container_cancelled" : "container_deadline_exceeded"
         : String(err instanceof Error ? err.message : err),
       tier: 6,
       actual_tier: 6,
@@ -807,31 +385,32 @@ async function runContainerRequest(
     };
   } finally {
     clearTimeout(timer);
+    params.signal?.removeEventListener("abort", cancel);
+    if (controller.signal.aborted) cancel();
   }
 }
 
-/** Cheap deterministic string hash (FNV-1a) — used only to key isolate reuse, not security. */
-function hashCode(s: string): string {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
+/** Validate and turn a speculative branch into a stable Durable Object namespace suffix. */
+function workspaceBranchScope(branch?: string): string {
+  if (!branch) return "";
+  const normalized = branch.replaceAll("\\", "/");
+  if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/u.test(normalized) || normalized.includes("..")) {
+    throw new Error("workspaceBranch contains an invalid path");
   }
-  return (h >>> 0).toString(16);
+  return `:branch:${normalized}`;
 }
 
 /** Builds the TieredCodeRunner the host (NaelaoAgentDO) wires into ScriptEngineEnv.codeRunner. */
 export function buildCodeRunner(opts: CodeRunnerOptions): TieredCodeRunner {
+  const browserSessions = new Map<string, BrowserRuntimeScope>();
   return {
     async run(params) {
-      const commandIntent = String(params.args["commands"] ?? params.args["command"] ?? params.args["code"] ?? params.code);
-      if (params.tier !== 6 && requiresNativeCompilation(commandIntent)) {
-        return runContainer(opts, { ...params, tier: 6 });
-      }
+      if (params.signal?.aborted) return codeFailure(params, Date.now(), "code_cancelled_or_timed_out");
+      if (params.maxTier !== undefined && params.tier > params.maxTier) return codeFailure(params, Date.now(), "execution_ceiling_exceeded");
       if (params.tier === 6) return runContainer(opts, params);
       if (params.tier === 4 || params.tier === 5) {
         if (params.name.startsWith("browser-use.")) {
-          return runBrowser(opts, params, params.tier === 4 ? "kitesurf" : "chromium");
+          return runBrowser(opts, params, params.tier === 4 ? "kitesurf" : "chromium", browserSessions);
         }
         if (params.code && params.code.includes("export async function run")) {
           return runIsolate(opts, params);
@@ -839,11 +418,18 @@ export function buildCodeRunner(opts: CodeRunnerOptions): TieredCodeRunner {
         return runBrowser(
           opts,
           params,
-          params.tier === 4 ? "kitesurf" : "chromium"
+          params.tier === 4 ? "kitesurf" : "chromium",
+          browserSessions
         );
       }
-      if (params.tier === 2 || params.tier === 3)
-        return runIsolate(opts, params);
+      if (params.tier === 2 || params.tier === 3) {
+        const result = await runIsolate(opts, params);
+        const capability = result.capability_error;
+        if (capability?.required_tier === 6 && (params.maxTier ?? 2) >= 6 && opts.approveEscalation && await opts.approveEscalation(params, capability.capability ?? capability.code)) {
+          return runContainer(opts, { ...params, tier: 6 });
+        }
+        return result;
+      }
       return {
         ok: false,
         error: `Tier ${params.tier} has no codeRunner backend (Tier 1 must be handled in-process)`,

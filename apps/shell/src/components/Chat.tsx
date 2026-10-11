@@ -9,6 +9,7 @@
 // deliverables exists yet, unlike the rest of this list).
 
 import * as React from "react";
+import Link from "next/link";
 import {
   ApiError,
   getMessages,
@@ -36,11 +37,16 @@ import {
   listAgentDefinitions,
   listAgentTemplates,
   instantiateAgentTemplate,
+  listBusinessMembers,
+  getConnectorStatus,
   type AgentDefinitionSummary,
   type AgentTemplateSummary,
+  type BusinessMember,
+  type ConnectorInfo,
   getShellManifest,
 } from "@/lib/api";
 import type { SessionCredentials } from "@/lib/api";
+import type { Project } from "@/lib/api";
 import {
   getChatSessionId,
   storeChatSessionId,
@@ -55,7 +61,7 @@ import {
   getPreferredEffort,
   storePreferredEffort,
 } from "@/lib/modelPreference";
-import { DEFAULT_WORKING_MODEL, nativeReasoningForEffort, isValidEffortLevel, type EffortLevel } from "@naelao/billing-core";
+import { ALLOWED_MODELS, DEFAULT_WORKING_MODEL, nativeReasoningForEffort, isValidEffortLevel, effortOptionsForModel, type EffortLevel } from "@naelao/billing-core";
 import { ContextUsageMeter } from "./ContextUsageMeter";
 import { AssistantSidePanelBody, sidePanelTabs, type SidePanelTab } from "./AssistantSidePanels";
 import { SubthreadPanel, SubthreadEntry } from "./SubthreadPanel";
@@ -64,15 +70,19 @@ import { ActivitySequence, RevealText } from "./ActivityFeed";
 import { InterruptedRunCard } from "./InterruptedRunCard";
 import { MessageActions } from "./MessageActions";
 import { InlineApprovalCard } from "./InlineApprovalCard";
+import { InlineQuestionCard } from "./InlineQuestionCard";
 import { InlineConnectorCard } from "./InlineConnectorCard";
 import { InlineArtifactCard } from "./InlineArtifactCard";
 import { UpgradeDialog } from "./UpgradeDialog";
 import { SecurityBoundaryCard } from "./SecurityBoundaryCard";
 import { ComposerDock } from "./ComposerDock";
 import { CitationBadges } from "./CitationBadge";
+import { CanvasContainer, type CanvasView } from "./CanvasContainer";
 import type { InspectedElement } from "./HtmlPreviewFrame";
 import { useActiveSpace } from "@/lib/active-space-context";
 import type { ThreadSummary, ConsultedThread } from "@/lib/api";
+import { modelLabel } from "./ModelSelector";
+import { userFacingErrorMessage } from "@/lib/user-facing-errors";
 
 const POLL_INTERVAL_MS = 1500;
 // A STALL deadline, not a total cap. It used to be a flat 60s ceiling on the whole run, which
@@ -89,7 +99,47 @@ const STALL_TIMEOUT_MS = 120_000;
 // a bare red banner. See UpgradeDialog's own doc for what each code offers.
 const BILLING_ERROR_CODES = new Set(["insufficient_credits", "subscription_inactive", "quota_exceeded", "infra_quota_exceeded"]);
 
-type ThreadPanelTab = "stats" | "assistant" | SidePanelTab;
+type WorkspaceTab = "stats" | "assistant" | "threads" | "messages" | "model" | "connectors" | "members" | SidePanelTab | `canvas:${string}`;
+
+function workspaceTabIcon(tab: WorkspaceTab): string {
+  if (tab.startsWith("canvas:")) return "◫";
+  switch (tab) {
+    case "stats": return "∿";
+    case "assistant": return "✦";
+    case "threads": return "#";
+    case "messages": return "≡";
+    case "model": return "◈";
+    case "connectors": return "⌁";
+    case "members": return "♙";
+    case "config": return "⚙";
+    case "memory": return "◉";
+    case "crons": return "◷";
+    case "channels": return "⌁";
+    case "heartbeats": return "♥";
+    case "sub-agents": return "↗";
+    case "files": return "□";
+    case "artifacts": return "▧";
+    case "skills": return "✣";
+    case "notifications": return "♢";
+    case "local-machine": return "▦";
+  }
+  return "•";
+}
+
+const BUILTIN_WORKSPACE_TABS = new Set<string>([
+  "stats", "assistant", "threads", "messages", "model", "connectors", "members",
+  "config", "memory", "crons", "channels", "heartbeats", "sub-agents", "files",
+  "artifacts", "skills", "notifications", "local-machine",
+]);
+
+function isWorkspaceTab(value: unknown): value is WorkspaceTab {
+  return typeof value === "string" && (BUILTIN_WORKSPACE_TABS.has(value) || value.startsWith("canvas:"));
+}
+
+function providerForModel(model: string): string {
+  const prefix = model.split("/")[0] ?? "other";
+  return prefix.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
 
 /** A display name for whoever produced a message, or null when it needs no label.
  *
@@ -103,6 +153,11 @@ function authorLabel(m: Message): string | null {
     .replace(/-v\d+$/, "")
     .replace(/[-_]/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function messagePreview(message: Message): string {
+  const text = message.content.replace(/\s+/g, " ").trim();
+  return text.length > 86 ? `${text.slice(0, 83)}…` : text || "Empty message";
 }
 
 /** item 79: a message's own metadata carries just enough to render the SAME expandable card
@@ -181,6 +236,9 @@ export function Chat({
   initialMessage,
   threadId,
   projectId,
+  project,
+  projectThreads = [],
+  slug,
 }: {
   spaceId: string;
   session: SessionCredentials;
@@ -204,12 +262,21 @@ export function Chat({
    *  id) because this is what the Naelao Agent Templates switcher and upload workspace scoping
    *  both key off. Absent for an assistant session, same as threadId. */
   projectId?: string;
+  /** Project data is present on project threads so its canvas and thread rail can live in the
+   *  same floating workspace card as Stats, Config, Files, and the other tools. */
+  project?: Project;
+  projectThreads?: ThreadSummary[];
+  slug?: string;
 }) {
   // Only used to label/scope the composer dock. Compared against the space this Chat was actually
   // given: the dock's member stack must never describe a DIFFERENT space than the conversation
   // belongs to, which is possible during a space switch before this component remounts.
   const { activeSpaceId, activeSpaceName, isBusinessSpace } = useActiveSpace();
   const dockIsBusinessSpace = isBusinessSpace && activeSpaceId === spaceId;
+  // Existing assistant sessions use the same conversation surface as project threads. The
+  // project-only tabs still key off threadId below, but the header/model/composer treatment is
+  // shared by both durable conversation routes.
+  const conversationMode = Boolean(threadId || sessionId);
 
   const [chatSessionId, setChatSessionId] = React.useState<string | null>(sessionId ?? null);
   const [messages, setMessages] = React.useState<Message[]>([]);
@@ -273,13 +340,114 @@ export function Chat({
   // screenshotting a real phone-width load: the composer/messages were completely invisible
   // behind the panel on first render.
   const [panelOpen, setPanelOpen] = React.useState(true);
+  const [panelWidth, setPanelWidth] = React.useState(250);
+  const [panelResizeStart, setPanelResizeStart] = React.useState<{ x: number; width: number } | null>(null);
+  const startPanelResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setPanelResizeStart({ x: event.clientX, width: panelWidth });
+  };
+  const updatePanelResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!panelResizeStart) return;
+    const maxWidth = Math.min(720, Math.max(360, window.innerWidth * 0.6));
+    setPanelWidth(Math.max(220, Math.min(maxWidth, panelResizeStart.width + panelResizeStart.x - event.clientX)));
+  };
   React.useEffect(() => {
     if (typeof window !== "undefined" && window.matchMedia("(max-width: 900px)").matches) {
       setPanelOpen(false);
     }
   }, []);
-  const [panelTab, setPanelTab] = React.useState<ThreadPanelTab>("stats");
+  const [panelTab, setPanelTab] = React.useState<WorkspaceTab>("stats");
+  const [workspaceTabs, setWorkspaceTabs] = React.useState<WorkspaceTab[]>(["stats"]);
+  const workspaceTabsStorageKey = React.useMemo(
+    () => `naelao:workspace-tabs:${spaceId}:${threadId ? `thread:${threadId}` : `session:${sessionId ?? sessionKey}`}`,
+    [spaceId, threadId, sessionId, sessionKey]
+  );
+  const [workspaceTabsHydratedKey, setWorkspaceTabsHydratedKey] = React.useState<string | null>(null);
+  const [tabMenuOpen, setTabMenuOpen] = React.useState(false);
+  const [canvasMenuOpen, setCanvasMenuOpen] = React.useState(false);
+  const [canvases, setCanvases] = React.useState<Array<{ id: string; label: string; view: CanvasView }>>([]);
+  const openWorkspaceTab = React.useCallback((tab: WorkspaceTab) => {
+    setWorkspaceTabs((current) => current.includes(tab) ? current : [...current, tab]);
+    setPanelTab(tab);
+    setTabMenuOpen(false);
+    setCanvasMenuOpen(false);
+    setPanelOpen(true);
+  }, []);
+  const closeWorkspaceTab = React.useCallback((tab: WorkspaceTab) => {
+    setWorkspaceTabs((current) => {
+      const remaining = current.filter((item) => item !== tab);
+      const next = remaining.length > 0 ? remaining : ["stats" as WorkspaceTab];
+      setPanelTab((active) => active === tab ? next[Math.max(0, Math.min(current.indexOf(tab) - 1, next.length - 1))]! : active);
+      return next;
+    });
+  }, []);
+
+  React.useEffect(() => {
+    setWorkspaceTabsHydratedKey(null);
+    try {
+      const parsed = JSON.parse(window.localStorage.getItem(workspaceTabsStorageKey) ?? "null") as { tabs?: unknown[]; active?: unknown } | null;
+      const saved = parsed?.tabs?.filter(isWorkspaceTab) ?? [];
+      const tabs = saved.length > 0 ? Array.from(new Set(saved)) : ["stats" as WorkspaceTab];
+      const active = isWorkspaceTab(parsed?.active) && tabs.includes(parsed.active) ? parsed.active : tabs[0]!;
+      setWorkspaceTabs(tabs);
+      setPanelTab(active);
+    } catch {
+      setWorkspaceTabs(["stats"]);
+      setPanelTab("stats");
+    } finally {
+      setWorkspaceTabsHydratedKey(workspaceTabsStorageKey);
+    }
+  }, [workspaceTabsStorageKey]);
+
+  React.useEffect(() => {
+    if (workspaceTabsHydratedKey !== workspaceTabsStorageKey) return;
+    window.localStorage.setItem(workspaceTabsStorageKey, JSON.stringify({ tabs: workspaceTabs, active: panelTab }));
+  }, [workspaceTabsHydratedKey, workspaceTabsStorageKey, workspaceTabs, panelTab]);
+  const openCanvas = React.useCallback((id: string, label: string, view: CanvasView) => {
+    const key = `canvas:${id}` as WorkspaceTab;
+    setCanvases((current) => current.some((canvas) => canvas.id === id) ? current : [...current, { id, label, view }]);
+    openWorkspaceTab(key);
+  }, [openWorkspaceTab]);
+  const canvasOptions: Array<{ id: string; label: string; view: CanvasView }> = project ? [
+    { id: "deliverable", label: "Deliverable", view: "deliverable" },
+    { id: "code", label: "Code Canvas", view: "code" },
+    ...(project.kind === "app_studio" || project.channel_config?.app_id ? [{ id: "micro-app", label: "Micro-App", view: "micro-app" as CanvasView }] : []),
+    ...(project.channel_config?.container_enabled ? [{ id: "terminal", label: "Terminal", view: "terminal" as CanvasView }, { id: "gui", label: "GUI Display", view: "gui" as CanvasView }] : []),
+  ] : [];
+  const workspaceTabLabel = React.useCallback((tab: WorkspaceTab): string => {
+    if (tab === "stats") return "Stats";
+    if (tab === "assistant") return "Assistant";
+    if (tab === "threads") return "Threads";
+    if (tab === "messages") return "Messages";
+    if (tab === "model") return "Model";
+    if (tab === "connectors") return "Connected apps";
+    if (tab === "members") return "Members";
+    if (tab.startsWith("canvas:")) return canvases.find((canvas) => `canvas:${canvas.id}` === tab)?.label ?? "Canvas";
+    return sidePanelTabs(Boolean(threadId)).find((item) => item.key === tab)?.label ?? tab;
+  }, [canvases, threadId]);
   const [lastRun, setLastRun] = React.useState<AgentRun | null>(null);
+  const [modelSearch, setModelSearch] = React.useState("");
+  const [modelProvider, setModelProvider] = React.useState("all");
+  const [workspaceMembers, setWorkspaceMembers] = React.useState<BusinessMember[] | null>(null);
+  const [workspaceConnectors, setWorkspaceConnectors] = React.useState<ConnectorInfo[] | null>(null);
+  const modelProviders = React.useMemo(() => Array.from(new Set(ALLOWED_MODELS.map(providerForModel))).sort(), []);
+  const filteredModels = React.useMemo(() => ALLOWED_MODELS.filter((model) => {
+    const matchesProvider = modelProvider === "all" || providerForModel(model) === modelProvider;
+    const query = modelSearch.trim().toLowerCase();
+    return matchesProvider && (!query || model.toLowerCase().includes(query) || modelLabel(model).toLowerCase().includes(query));
+  }), [modelProvider, modelSearch]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    if (workspaceTabs.includes("connectors") && workspaceConnectors === null) {
+      getConnectorStatus(spaceId, session).then((rows) => { if (!cancelled) setWorkspaceConnectors(rows); }).catch(() => { if (!cancelled) setWorkspaceConnectors([]); });
+    }
+    if (workspaceTabs.includes("members") && dockIsBusinessSpace && workspaceMembers === null) {
+      listBusinessMembers(spaceId, session).then((rows) => { if (!cancelled) setWorkspaceMembers(rows); }).catch(() => { if (!cancelled) setWorkspaceMembers([]); });
+    }
+    return () => { cancelled = true; };
+  }, [workspaceTabs, workspaceConnectors, workspaceMembers, spaceId, session, dockIsBusinessSpace]);
   // Model switcher (Claude-Code-style per-session model + capability config) — a client-side
   // preference (modelPreference.ts), NOT the business's own stored default (that's
   // updateModelConfig/the Dashboard tab). Lazily read from localStorage so it survives reloads;
@@ -502,7 +670,7 @@ export function Chat({
         // refreshInterrupted. The standing offer is still open server-side either way, so this
         // isn't lost — just surfaced plainly instead of retried silently forever.
         setSelfHealStatus(null);
-        setError(err instanceof Error ? err.message : "Couldn't continue automatically.");
+        setError(userFacingErrorMessage(err, undefined, "Couldn't continue automatically."));
       }
     },
     [spaceId, session, sessionKey]
@@ -715,7 +883,7 @@ export function Chat({
           }
         }
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to connect");
+        if (!cancelled) setError(userFacingErrorMessage(err, undefined, "Failed to connect"));
       } finally {
         if (!cancelled) setInitializing(false);
       }
@@ -756,6 +924,7 @@ export function Chat({
       answerText: string,
       activitySteps: LiveRunStep[],
       pendingApproval?: AgentRun["pending_approval"],
+      pendingQuestion?: AgentRun["pending_question"],
       deferredApprovals?: AgentRun["deferred_approvals"],
       // What the viewer already watched stream in, so the finalized bubble picks up where the
       // live one left off instead of re-typing it (see Message.revealedPrefix).
@@ -778,6 +947,7 @@ export function Chat({
                 ? { revealedPrefix: m.content ? `${m.content}\n\n${alreadyShown}` : alreadyShown }
                 : {}),
               ...(pendingApproval ? { pendingApproval } : {}),
+              ...(pendingQuestion ? { pendingQuestion } : {}),
               ...(deferredApprovals?.length ? { deferredApprovals: [...(m.deferredApprovals ?? []), ...deferredApprovals] } : {}),
             };
           })
@@ -793,6 +963,7 @@ export function Chat({
           ...(alreadyShown ? { revealedPrefix: alreadyShown } : {}),
           ...(activitySteps.length > 0 ? { activity: activitySteps } : {}),
           ...(pendingApproval ? { pendingApproval } : {}),
+          ...(pendingQuestion ? { pendingQuestion } : {}),
           ...(deferredApprovals?.length ? { deferredApprovals } : {}),
         },
       ]);
@@ -884,13 +1055,13 @@ export function Chat({
           // the user saw the spinner stop and nothing appear, with no way to know the agent was
           // waiting on them.
           if ((run.status === "completed" || run.status === "awaiting_approval") && run.final_answer) {
-            finalizeAnswer(runId, run.final_answer, latestActivity, run.pending_approval, run.deferred_approvals, lastStreamed);
+            finalizeAnswer(runId, run.final_answer, latestActivity, run.pending_approval, run.pending_question, run.deferred_approvals, lastStreamed);
           } else if (run.status === "failed" || run.status === "cancelled") {
             if (!isUserStoppedError(run.error)) {
               if (run.error_code && BILLING_ERROR_CODES.has(run.error_code)) {
                 setBillingWall({ code: run.error_code, message: run.error ?? "You need to top up or subscribe to keep chatting." });
               } else {
-                setError(run.error ?? "The agent run failed");
+                setError(userFacingErrorMessage(run.error, run.error_code, "The agent run failed"));
               }
             }
             // The run left a checkpoint; show the offer to continue it rather than only an error
@@ -922,7 +1093,7 @@ export function Chat({
             setLiveActivity([]);
             setRetryStatus(null);
             clearActiveRunId(spaceId, sessionKey);
-            setError(err instanceof Error ? err.message : "Polling failed");
+            setError(userFacingErrorMessage(err, undefined, "Polling failed"));
           }
         } finally {
           inFlight = false;
@@ -961,6 +1132,7 @@ export function Chat({
             type: string; content?: string; offset?: number; run_id?: string; message?: string; steps?: LiveRunStep[];
             status?: AgentRun["status"]; final_answer?: string; error?: string; error_code?: string;
             pending_approval?: AgentRun["pending_approval"];
+            pending_question?: AgentRun["pending_question"];
             deferred_approvals?: AgentRun["deferred_approvals"];
           };
           if (data.type === "activity" && data.steps?.length) {
@@ -996,13 +1168,13 @@ export function Chat({
             setLastRun({ id: data.run_id ?? runId, status, final_answer: data.final_answer ?? accumulated });
             const answerText = data.final_answer ?? accumulated;
             if ((status === "completed" || status === "awaiting_approval") && answerText) {
-              finalizeAnswer(data.run_id ?? runId, answerText, activitySteps, data.pending_approval, data.deferred_approvals, accumulated);
+              finalizeAnswer(data.run_id ?? runId, answerText, activitySteps, data.pending_approval, data.pending_question, data.deferred_approvals, accumulated);
             } else if (status === "failed" || status === "cancelled") {
               if (!isUserStoppedError(data.error)) {
                 if (data.error_code && BILLING_ERROR_CODES.has(data.error_code)) {
                   setBillingWall({ code: data.error_code, message: data.error ?? "You need to top up or subscribe to keep chatting." });
                 } else {
-                  setError(data.error ?? "The agent run failed");
+                  setError(userFacingErrorMessage(data.error, data.error_code, "The agent run failed"));
                 }
               }
               void handleLiveFailure(sid);
@@ -1029,7 +1201,7 @@ export function Chat({
             setIsLoading(false);
             setLiveActivity([]);
             clearActiveRunId(spaceId, sessionKey);
-            setError(data.message ?? "The agent run failed");
+            setError(userFacingErrorMessage(data.message, data.error_code, "The agent run failed"));
           }
         } catch {
           // malformed SSE chunk — ignore
@@ -1201,6 +1373,7 @@ export function Chat({
     const started = await startSession(spaceId, session, undefined, threadId);
     storeChatSessionId(spaceId, started.id, sessionKey);
     setChatSessionId(started.id);
+    window.dispatchEvent(new CustomEvent("naelao:session-created", { detail: { spaceId, sessionId: started.id, threadId: threadId ?? null } }));
     return started.id;
   }, [chatSessionId, spaceId, session, sessionKey, threadId]);
 
@@ -1298,7 +1471,7 @@ export function Chat({
       if (err instanceof ApiError && err.errorCode && BILLING_ERROR_CODES.has(err.errorCode)) {
         setBillingWall({ code: err.errorCode, message: err.message });
       } else {
-        setError(err instanceof Error ? err.message : "Failed to send message");
+        setError(userFacingErrorMessage(err, err instanceof ApiError ? err.errorCode : undefined, "Failed to send message"));
       }
     }
   }, [isLoading, pendingUploads, inspectedElement, ensureSessionId, spaceId, sessionKey, session, attachToRun, selectedModel, modelIsExplicit, selectedEffort, selectedReasoningLevel, selectedAgentId, sessionId, projectId]);
@@ -1314,6 +1487,15 @@ export function Chat({
   const [queued, setQueued] = React.useState<string[]>([]);
   const queuedRef = React.useRef<string[]>([]);
   queuedRef.current = queued;
+
+  // Generated widgets are validated before rendering. Fold their typed interaction back into
+  // the same planner conversation as a structured user action; if a run is active, queue it so
+  // the interaction cannot be dropped or race the current run.
+  const handleWidgetAction = React.useCallback((widgetId: string, value: unknown) => {
+    const action = `The user interacted with UI widget "${widgetId}". Action value: ${JSON.stringify(value)}. Continue the task using this choice.`;
+    if (isLoading) setQueued((current) => [...current, action]);
+    else void send(action);
+  }, [isLoading, send]);
 
   /** Stop the run in flight — OR, if the agent is between retry attempts (the backoff wait, no
    *  server-side run actually executing), end that retry loop right here. Optimistic on the
@@ -1437,6 +1619,7 @@ export function Chat({
   const attachedApprovalIds = new Set<string>();
   for (const m of messages) {
     if (m.pendingApproval) attachedApprovalIds.add(m.pendingApproval.approval_id);
+    if (m.pendingQuestion) attachedApprovalIds.add(m.pendingQuestion.question_id ?? m.pendingQuestion.approval_id);
     for (const d of m.deferredApprovals ?? []) attachedApprovalIds.add(d.approval_id);
   }
   const unattachedApprovals = sessionApprovals.filter((a) => !attachedApprovalIds.has(a.id));
@@ -1457,18 +1640,39 @@ export function Chat({
   return (
     <div className="chat-layout">
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-        <div className="topbar">
-          <div className="topbar-left">
-            <span className="chat-title">{title}</span>
+        <div className="topbar thread-topbar">
+          <button
+            type="button"
+            className="thread-mobile-control thread-mobile-menu"
+            aria-label="Open menu"
+            title="Open menu"
+            onClick={() => window.dispatchEvent(new CustomEvent("naelao:toggle-mobile-nav"))}
+          >
+            <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="currentColor">
+              <line x1="2" y1="4" x2="14" y2="4" />
+              <line x1="2" y1="8" x2="14" y2="8" />
+              <line x1="2" y1="12" x2="14" y2="12" />
+            </svg>
+          </button>
+          <div className="thread-title-wrap">
+            <div className="thread-title">{title}</div>
+            {conversationMode && (
+              <div className="thread-model-summary">
+                <button type="button" className="thread-model-button" onClick={() => openWorkspaceTab("model")} aria-label="Open model settings">
+                  {modelLabel(selectedModel)} · {effortOptionsForModel(selectedModel).find((option) => option.level === selectedEffort)?.label ?? selectedEffort}⌄
+                </button>
+              </div>
+            )}
           </div>
-          <div className="topbar-actions">
-            <button className="icon-btn" type="button" onClick={() => setPanelOpen((v) => !v)} title="Toggle panel">
-              <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="currentColor">
-                <rect x="2" y="2" width="12" height="12" rx="2" />
-                <line x1="10" y1="2" x2="10" y2="14" />
-              </svg>
-            </button>
-          </div>
+          <button
+            type="button"
+            className="thread-mobile-control thread-workspace-control"
+            aria-label={panelOpen ? "Close workspace panel" : "Open workspace panel"}
+            title={panelOpen ? "Close workspace panel" : "Open workspace panel"}
+            onClick={() => setPanelOpen((current) => !current)}
+          >
+            {workspaceTabIcon(panelTab)}
+          </button>
         </div>
 
         <div className="chat-area">
@@ -1477,14 +1681,13 @@ export function Chat({
             .filter((m) => !delegationReplyIds.has(m.id))
             .map((m) =>
               delegationByRequestId.has(m.id) ? (
-                <AssistantDelegationCard
-                  key={m.id}
-                  request={m}
-                  reply={delegationByRequestId.get(m.id)!.reply}
-                />
+                <div key={m.id} id={`message-point-${m.id}`}>
+                  <AssistantDelegationCard request={m} reply={delegationByRequestId.get(m.id)!.reply} />
+                </div>
               ) : (
               <div
                 key={m.id}
+                id={`message-point-${m.id}`}
                 className={["msg-row", m.role === "user" ? "user" : "", revealedActionsId === m.id ? "revealed" : ""].filter(Boolean).join(" ")}
                 // Tap-to-reveal for touch, where :hover never fires. Harmless on a mouse — the
                 // row is already revealed by hover before any click lands.
@@ -1572,7 +1775,7 @@ export function Chat({
                           that were previously shown as raw characters. */}
                       {m.role === "user"
                         ? m.content
-                        : <RevealText text={m.content} animate={m.justArrived} revealFrom={m.revealedPrefix} markdown />}
+                        : <RevealText text={m.content} animate={m.justArrived} revealFrom={m.revealedPrefix} markdown onAction={handleWidgetAction} />}
                     </div>
                   )}
                   {m.role !== "user" && projectId && m.metadata?.citations?.length ? (
@@ -1602,6 +1805,18 @@ export function Chat({
                       session={session}
                       onResolved={(decision) => {
                         if (decision === "approved") watchForResume(m.pendingApproval!.approval_id, m.id);
+                        void refreshSessionApprovals();
+                      }}
+                    />
+                  )}
+                  {m.role !== "user" && m.pendingQuestion && (
+                    <InlineQuestionCard
+                      spaceId={spaceId}
+                      question={m.pendingQuestion}
+                      session={session}
+                      onAnswered={() => {
+                        const id = m.pendingQuestion!.question_id ?? m.pendingQuestion!.approval_id;
+                        if (id) watchForResume(id, m.id);
                         void refreshSessionApprovals();
                       }}
                     />
@@ -1684,7 +1899,7 @@ export function Chat({
               </div>
               <div style={{ minWidth: 0 }}>
                 {liveActivity.length > 0 && <ActivitySequence steps={liveActivity} animate live />}
-                <div className="bubble"><RevealText text={streamingContent} animate markdown /></div>
+                <div className="bubble"><RevealText text={streamingContent} animate markdown onAction={handleWidgetAction} /></div>
               </div>
             </div>
           )}
@@ -1790,7 +2005,15 @@ export function Chat({
                 <div style={{ fontSize: 11.5, color: "var(--text3)", marginBottom: 4, fontWeight: 600 }}>
                   Waiting on you
                 </div>
-                {unattachedApprovals.map((a) => (
+                {unattachedApprovals.map((a) => a.kind === "question" ? (
+                  <InlineQuestionCard
+                    key={a.id}
+                    spaceId={spaceId}
+                    question={{ approval_id: a.id, question_id: a.id, action_name: "AskUser", question: a.question ?? "Please provide the missing information.", options: (() => { try { return a.options_json ? JSON.parse(a.options_json) as string[] : []; } catch { return []; } })() }}
+                    session={session}
+                    onAnswered={() => { setSessionApprovals((prev) => prev.filter((x) => x.id !== a.id)); watchForResume(a.id); }}
+                  />
+                ) : (
                   <InlineApprovalCard
                     key={a.id}
                     spaceId={spaceId}
@@ -1840,6 +2063,14 @@ export function Chat({
             onModelChange={handleModelChange}
             effort={selectedEffort}
             onEffortChange={handleEffortChange}
+            threadMode={conversationMode}
+            ideas={!threadId && visibleMessages.length === 0 && !input.trim() ? (
+              <div className="composer-ideas" aria-label="Ideas">
+                {['Draft a plan for this venture', 'Review the latest project context', 'Create a useful first deliverable'].map((idea) => (
+                  <button key={idea} type="button" onClick={() => setInput(idea)}>{idea}</button>
+                ))}
+              </div>
+            ) : null}
             spaceName={activeSpaceName ?? undefined}
             isBusinessSpace={dockIsBusinessSpace}
             agentOptions={agentOptions}
@@ -1951,44 +2182,70 @@ export function Chat({
         </div>
       </div>
 
-      {panelOpen && (
+      <div className={`workspace-panel-shell ${panelOpen ? "open" : "collapsed"}`} style={{ width: panelOpen ? panelWidth + 12 : 56 }}>
+      {panelOpen ? (
         <>
           {/* Mobile-only (CSS-gated — see packages/ui's own media query): .thread-panel becomes a
               fixed drawer below 900px, and this is what lets a tap outside it close it, matching
               #sidebar's own backdrop in the shell layout. */}
           <div className="thread-panel-backdrop show" onClick={() => setPanelOpen(false)} />
-          <div className="thread-panel">
-          <div className="tp-header">
-            {/* A project thread genuinely is a "Thread" (SpaceDO's structural table); an
-                assistant/Home conversation is a "Session" (the chat transport) — these are two
-                different tables with two different lifecycles (§A1.18), and the header used to
-                say "Thread" unconditionally even here, which is the literal bug this fixes. */}
-            <span className="tp-header-title">{threadId ? "Thread" : "Session"}</span>
+          <div className="thread-panel" style={{ width: panelWidth }}>
+          <div className="thread-panel-resizer" role="separator" aria-label="Resize workspace panel" aria-orientation="vertical" onPointerDown={startPanelResize} onPointerMove={updatePanelResize} onPointerUp={() => setPanelResizeStart(null)} onPointerCancel={() => setPanelResizeStart(null)} />
+          {tabMenuOpen && (
+            <div className="workspace-tab-menu" role="menu" aria-label="Add workspace tab">
+              {[...(threadId ? [{ key: "assistant" as WorkspaceTab, label: "Assistant" }] : []), { key: "messages" as WorkspaceTab, label: "Messages" }, ...(conversationMode ? [{ key: "model" as WorkspaceTab, label: "Model" }] : []), ...(project ? [{ key: "threads" as WorkspaceTab, label: "Threads" }] : []), ...(dockIsBusinessSpace ? [{ key: "members" as WorkspaceTab, label: "Members" }] : []), { key: "connectors" as WorkspaceTab, label: "Connected apps" }, ...sidePanelTabs(Boolean(threadId)).filter((tab) => tab.key !== "heartbeats").map((tab) => ({ key: tab.key as WorkspaceTab, label: tab.label }))].map((tab) => (
+                <button key={tab.key} type="button" role="menuitem" onClick={() => openWorkspaceTab(tab.key)}>{tab.label}</button>
+              ))}
+            </div>
+          )}
+          {canvasMenuOpen && (
+            <div className="workspace-tab-menu" role="menu" aria-label="Add canvas tab">
+              {canvasOptions.length > 0 ? (
+                canvasOptions.map((canvas) => (
+                  <button key={canvas.id} type="button" role="menuitem" onClick={() => openCanvas(canvas.id, canvas.label, canvas.view)}>{canvas.view === "code" ? "⌘" : "📄"} {canvas.label}</button>
+                ))
+              ) : (
+                <span className="workspace-tab-empty">No canvases available</span>
+              )}
+            </div>
+          )}
+          <div className="tp-tabs" aria-label="Open workspace tabs">
+            <div className="tp-tab-scroll">
+            {workspaceTabs.map((tab) => {
+              const label = workspaceTabLabel(tab);
+              return (
+                <div key={tab} className={["tp-tab", panelTab === tab ? "active" : ""].filter(Boolean).join(" ")}>
+                  <button type="button" className="tp-tab-label" onClick={() => setPanelTab(tab)}>{label}</button>
+                  <button type="button" className="tp-tab-close" aria-label={`Close ${label} tab`} title={`Close ${label} tab`} onClick={() => closeWorkspaceTab(tab)}>×</button>
+                </div>
+              );
+            })}
+            </div>
+            <div className="tp-tab-actions" aria-label="Workspace controls">
+              <button type="button" className="tp-header-btn" aria-label="Add workspace tab" title="Add workspace tab" onClick={() => { setTabMenuOpen((open) => !open); setCanvasMenuOpen(false); }}>+</button>
+              <button type="button" className="tp-header-btn" aria-label="List canvases" title="List canvases" onClick={() => { setCanvasMenuOpen((open) => !open); setTabMenuOpen(false); }}>◫</button>
+              <button type="button" className="tp-header-btn" aria-label="Collapse workspace panel" title="Collapse workspace panel" onClick={() => setPanelOpen(false)}>×</button>
+            </div>
           </div>
-          <div className="tp-tabs">
-            {(
-              [
-                { key: "stats" as ThreadPanelTab, label: "Stats" },
-                ...(threadId ? [{ key: "assistant" as ThreadPanelTab, label: "Assistant" }] : []),
-                // A project thread hides tabs that only make sense whole-business-wide (e.g.
-                // Heartbeats) — see sidePanelTabs' own header for why. Phase 5: Artifacts is now a
-                // real SidePanelTab (was a separate hardcoded "Coming soon." entry here before).
-                ...sidePanelTabs(Boolean(threadId)).map((t) => ({ key: t.key as ThreadPanelTab, label: t.label })),
-              ]
-            ).map((t) => (
-              <button
-                key={t.key}
-                type="button"
-                className={["tp-tab", panelTab === t.key ? "active" : ""].filter(Boolean).join(" ")}
-                onClick={() => setPanelTab(t.key)}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
-          <div className="tp-body">
+          <div className={`tp-body ${panelTab === "stats" ? "tp-body-stats" : ""}`}>
             {panelTab === "assistant" && threadId && (
               <SubthreadPanel spaceId={spaceId} threadId={threadId} session={session} />
+            )}
+            {panelTab === "messages" && (
+              <div className="workspace-messages-panel">
+                <div className="tp-section">Messages</div>
+                {visibleMessages.length === 0 ? <p className="workspace-tab-empty">No messages yet.</p> : visibleMessages.map((message, index) => (
+                  <button
+                    key={message.id}
+                    type="button"
+                    className="workspace-message-link"
+                    onClick={() => document.getElementById(`message-point-${message.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" })}
+                  >
+                    <span className={`workspace-message-dot ${message.role === "user" ? "user" : "assistant"}`} aria-hidden />
+                    <span><strong>{message.role === "user" ? "You" : "Assistant"}</strong><small>{index + 1}</small><span>{messagePreview(message)}</span></span>
+                  </button>
+                ))}
+              </div>
             )}
             {panelTab === "stats" && (
               <>
@@ -2015,7 +2272,57 @@ export function Chat({
                 />
               </>
             )}
-            {panelTab !== "stats" && panelTab !== "assistant" && (
+            {panelTab === "threads" && project && (
+              <div className="workspace-threads">
+                <div className="tp-section"># Team Room</div>
+                {(["tier_1_team", "tier_2_task", "tier_3_consult", "tier_4_scratchpad"] as const).map((tier) => {
+                  const rows = projectThreads.filter((thread) => (thread.thread_tier ?? "tier_2_task") === tier);
+                  const heading = tier === "tier_1_team" ? "Team room" : tier === "tier_2_task" ? "Task threads" : tier === "tier_3_consult" ? "Worker consultations" : "Private scratchpads";
+                  return <React.Fragment key={tier}><div className="tp-section">{heading}</div>{rows.length === 0 ? <p className="workspace-tab-empty">No {heading.toLowerCase()}.</p> : rows.map((thread) => (
+                    <Link key={thread.id} className={["tp-thread-link", thread.id === threadId ? "active" : ""].filter(Boolean).join(" ")} href={slug ? `/p/${slug}/threads/${thread.id}` : "#"}>{tier === "tier_1_team" ? "#" : tier === "tier_4_scratchpad" ? "◌" : "◇"} {thread.title || heading}</Link>
+                  ))}</React.Fragment>;
+                })}
+              </div>
+            )}
+            {panelTab === "model" && conversationMode && (
+              <div className="workspace-model-settings">
+                <div className="tp-section">Active model</div>
+                <div className="workspace-active-model">{modelLabel(selectedModel)} <span>· {effortOptionsForModel(selectedModel).find((option) => option.level === selectedEffort)?.label ?? selectedEffort}</span></div>
+                <div className="workspace-model-filters">
+                  <input type="search" placeholder="Search models…" value={modelSearch} onChange={(event) => setModelSearch(event.target.value)} />
+                  <select aria-label="Filter models by provider" value={modelProvider} onChange={(event) => setModelProvider(event.target.value)}><option value="all">All providers</option>{modelProviders.map((provider) => <option key={provider} value={provider}>{provider}</option>)}</select>
+                </div>
+                <div className="workspace-model-grid">
+                  {filteredModels.map((model) => (
+                    <button key={model} type="button" className={["workspace-model-card", model === selectedModel ? "active" : ""].filter(Boolean).join(" ")} onClick={() => handleModelChange(model)}><span>{modelLabel(model)}</span><small>{providerForModel(model)}</small>{model === selectedModel && <b>Selected</b>}</button>
+                  ))}
+                </div>
+                <div className="tp-section">Effort</div>
+                {effortOptionsForModel(selectedModel).map((option) => (
+                  <button key={option.level} type="button" className={['tp-thread-link', option.level === selectedEffort ? 'active' : ''].filter(Boolean).join(' ')} onClick={() => handleEffortChange(option.level)}>{option.level.toUpperCase()}{option.level === selectedEffort ? " ✓" : ""}</button>
+                ))}
+              </div>
+            )}
+            {panelTab === "connectors" && (
+              <div className="workspace-threads">
+                <div className="tp-section">Connected apps</div>
+                {workspaceConnectors === null ? <p className="workspace-tab-empty">Loading apps…</p> : workspaceConnectors.length === 0 ? <p className="workspace-tab-empty">No apps available yet.</p> : workspaceConnectors.map((connector) => <div key={connector.id} className="workspace-directory-row"><span className={connector.connected ? "connected" : ""}>{connector.logo ? <img src={connector.logo} alt="" /> : connector.name.slice(0, 1)}</span><div><strong>{connector.name}</strong><small>{connector.category}</small></div><b>{connector.connected ? "Connected" : connector.status === "available" ? "Available" : "Soon"}</b></div>)}
+                {slug && <Link className="tp-thread-link active" href={`/p/${slug}/connectors`}>Advanced connected app settings →</Link>}
+              </div>
+            )}
+            {panelTab === "members" && (
+              <div className="workspace-threads">
+                <div className="tp-section">Workspace members</div>
+                {workspaceMembers === null ? <p className="workspace-tab-empty">Loading members…</p> : workspaceMembers.length === 0 ? <p className="workspace-tab-empty">No workspace members found.</p> : workspaceMembers.map((member) => <div key={member.end_user_id} className="workspace-directory-row"><span>{member.end_user_id.slice(0, 2).toUpperCase()}</span><div><strong>{member.end_user_id}</strong><small>Joined {new Date(member.joined_at).toLocaleDateString()}</small></div><b>{member.role}</b></div>)}
+                {slug && <Link className="tp-thread-link active" href={`/p/${slug}/settings`}>Advanced member settings →</Link>}
+              </div>
+            )}
+            {panelTab.startsWith("canvas:") && project && (
+              <div className="workspace-canvas-tab">
+                <CanvasContainer project={project} spaceId={spaceId} creds={session} standalone canvasView={canvases.find((canvas) => `canvas:${canvas.id}` === panelTab)?.view ?? "deliverable"} />
+              </div>
+            )}
+            {panelTab !== "stats" && panelTab !== "assistant" && panelTab !== "threads" && panelTab !== "messages" && panelTab !== "model" && panelTab !== "connectors" && panelTab !== "members" && !panelTab.startsWith("canvas:") && (
               <AssistantSidePanelBody
                 spaceId={spaceId}
                 session={session}
@@ -2026,6 +2333,7 @@ export function Chat({
                 // nothing is explicitly bound.
                 agentId={projectId && selectedAgentId ? selectedAgentId : undefined}
                 projectId={projectId}
+                projectAgentIds={project?.allowed_agent_ids}
                 // lastRun resets on reload (client-only state) — without the fallback, the
                 // Sub-agents tab would say "no run yet in this conversation" right after a
                 // refresh even when the assistant genuinely ran a sub-agent last message. The
@@ -2041,7 +2349,37 @@ export function Chat({
           </div>
         </div>
         </>
+      ) : (
+        <aside className="workspace-tab-rail" aria-label="Collapsed workspace tabs">
+          <button
+            type="button"
+            className="workspace-rail-toggle"
+            aria-label="Open workspace panel"
+            title="Open workspace panel"
+            onClick={() => setPanelOpen(true)}
+          >
+            ‹
+          </button>
+          <div className="workspace-rail-tabs" aria-label="Workspace tabs">
+            {workspaceTabs.map((tab) => {
+              const label = workspaceTabLabel(tab);
+              return (
+                <button
+                  key={tab}
+                  type="button"
+                  className={["workspace-rail-tab", panelTab === tab ? "active" : ""].filter(Boolean).join(" ")}
+                  aria-label={`Open ${label} tab`}
+                  title={label}
+                  onClick={() => { setPanelTab(tab); setPanelOpen(true); }}
+                >
+                  {workspaceTabIcon(tab)}
+                </button>
+              );
+            })}
+          </div>
+        </aside>
       )}
+      </div>
     </div>
   );
 }

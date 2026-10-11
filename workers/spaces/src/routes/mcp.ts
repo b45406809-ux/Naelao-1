@@ -1,4 +1,5 @@
 import type { Hono } from "hono";
+import { putBytesCas, readBytesWithHash } from "../../../agents/src/script-engine/r2-cas.js";
 
 type RpcId = string | number | null;
 type RpcRequest = { jsonrpc?: string; id?: RpcId; method?: string; params?: Record<string, unknown> };
@@ -50,29 +51,30 @@ export function registerProjectMcpRoutes<Env extends { SCRIPTS_R2?: R2Bucket }>(
     try {
       let value: unknown;
       if (tool === "readWorkspaceFile") {
-        const object = await c.env.SCRIPTS_R2.get(prefix + safePath(args["path"]));
+        const key = prefix + safePath(args["path"]);
+        const object = await readBytesWithHash(c.env.SCRIPTS_R2, key);
         if (!object) throw new Error("file not found");
-        value = { content: await object.text(), etag: object.httpEtag };
+        value = { content: new TextDecoder().decode(object.bytes), etag: object.etag };
       } else if (tool === "listDirectory") {
         const path = args["path"] ? `${safePath(args["path"]).replace(/\/$/, "")}/` : "";
         const listing = await c.env.SCRIPTS_R2.list({ prefix: prefix + path, delimiter: "/", limit: 1000 });
-        value = { files: listing.objects.map((o) => o.key.slice(prefix.length)), directories: listing.delimitedPrefixes.map((p) => p.slice(prefix.length)) };
+        value = { files: listing.objects.filter((o) => o.customMetadata?.deleted !== "true").map((o) => o.key.slice(prefix.length)), directories: listing.delimitedPrefixes.map((p) => p.slice(prefix.length)) };
       } else if (tool === "runAstPatch") {
         const key = prefix + safePath(args["path"]);
         const oldText = String(args["oldText"] ?? "");
         if (!oldText) throw new Error("oldText is required");
-        const object = await c.env.SCRIPTS_R2.get(key);
+        const object = await readBytesWithHash(c.env.SCRIPTS_R2, key);
         if (!object) throw new Error("file not found");
-        const source = await object.text();
+        const source = new TextDecoder().decode(object.bytes);
         const first = source.indexOf(oldText);
         if (first < 0) throw new Error("patch target not found");
         if (source.indexOf(oldText, first + oldText.length) >= 0) throw new Error("patch target is ambiguous");
         const updated = source.slice(0, first) + String(args["newText"] ?? "") + source.slice(first + oldText.length);
-        await c.env.SCRIPTS_R2.put(key, updated, { httpMetadata: { contentType: "text/plain; charset=utf-8" } });
+        await putBytesCas(c.env.SCRIPTS_R2, key, new TextEncoder().encode(updated), object.hash, {}, { contentType: "text/plain; charset=utf-8" });
         value = { patched: true, path: args["path"] };
       } else if (tool === "getProjectJournal") {
-        const object = await c.env.SCRIPTS_R2.get(`spaces/${spaceId}/projects/${projectId}/PROJECT.md`);
-        value = { markdown: object ? await object.text() : "" };
+        const object = await readBytesWithHash(c.env.SCRIPTS_R2, `spaces/${spaceId}/projects/${projectId}/PROJECT.md`);
+        value = { markdown: object ? new TextDecoder().decode(object.bytes) : "" };
       } else {
         return rpcError(request.id, -32602, `Unknown project tool: ${tool}`);
       }

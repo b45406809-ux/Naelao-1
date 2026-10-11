@@ -102,4 +102,74 @@ describe("Project-Anchored Automation Architecture (Item 4)", () => {
     );
     expect(resForeign.status).toBe(404);
   });
+
+  it("rejects cross-space projects and cross-project parents when creating tiered threads", async () => {
+    const projects = new Map([
+      ["proj-local", { id: "proj-local", space_id: "space-1", status: "active", visibility: "public" }],
+      ["proj-other", { id: "proj-other", space_id: "space-99", status: "active", visibility: "public" }],
+    ]);
+    const parents = new Map([
+      ["parent-other", { space_id: "space-1", project_id: "proj-other", status: "active" }],
+    ]);
+    const mockCtx = {
+      storage: {
+        sql: {
+          exec(query, ...params) {
+            if (query.includes("FROM projects WHERE id = ?")) {
+              const project = projects.get(String(params[0]));
+              return { toArray: () => (project ? [project] : []) };
+            }
+            if (query.includes("FROM threads WHERE id = ?")) {
+              const parent = parents.get(String(params[0]));
+              return { toArray: () => (parent ? [parent] : []) };
+            }
+            return { toArray: () => [] };
+          },
+        },
+        transactionSync: (fn) => fn(),
+      },
+    };
+    const spaceDO = new SpaceDO(mockCtx, { PLATFORM_SECRET: "secret" });
+
+    const foreignProject = await spaceDO.fetch(new Request("https://space-do/threads", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ space_id: "space-1", project_id: "proj-other", title: "bad" }),
+    }));
+    expect(foreignProject.status).toBe(404);
+
+    const foreignParent = await spaceDO.fetch(new Request("https://space-do/threads", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ space_id: "space-1", project_id: "proj-local", parent_thread_id: "parent-other", title: "bad parent" }),
+    }));
+    expect(foreignParent.status).toBe(400);
+  });
+
+  it("does not reveal a private project's thread by guessed id", async () => {
+    const mockCtx = {
+      storage: {
+        sql: {
+          exec(query, ...params) {
+            if (query.includes("FROM threads WHERE id = ?")) {
+              return { toArray: () => (String(params[0]) === "private-thread" ? [{
+                id: "private-thread", space_id: "space-1", project_id: "private-project",
+                thread_tier: "tier_2_task", created_by: "owner-1", status: "active",
+              }] : []) };
+            }
+            if (query.includes("FROM projects WHERE id = ?")) {
+              return { toArray: () => (String(params[0]) === "private-project" ? [{
+                id: "private-project", space_id: "space-1", visibility: "private", status: "active",
+              }] : []) };
+            }
+            return { toArray: () => [] };
+          },
+        },
+        transactionSync: (fn) => fn(),
+      },
+    };
+    const spaceDO = new SpaceDO(mockCtx, { PLATFORM_SECRET: "secret" });
+    const response = await spaceDO.fetch(new Request("https://space-do/threads/private-thread?viewer_id=outsider"));
+    expect(response.status).toBe(404);
+  });
 });

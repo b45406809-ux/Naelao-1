@@ -10,11 +10,11 @@
 // per template, not a cosmetic label on the same generic agent.
 //
 // "Execution tier" is deliberately NOT a separate enforced field here — the execution ladder
-// (script-engine/execution-ladder.ts) auto-routes per SCRIPT based on that script's own
-// requires_tier, not per agent. A template expresses its tier posture honestly by which scripts
-// it enables: Customer Support never gets code-exec, so it structurally never reaches Tier 2+.
+// (script-engine/execution-ladder.ts) auto-routes per command. Every Naelao agent receives the
+// universal Bash implementation; the manifest and runtime ceiling decide which tiers it can use.
 
 import type { AgentConfig, ScriptsConfig } from "./script-engine/agent-config.js";
+import { UNIVERSAL_AGENT_BASELINE_PREBUILTS } from "./script-engine/agent-topology.js";
 
 const BASE_AGENTS_MD = `# Behavioral Rules
 - Always observe the environment before acting.
@@ -172,6 +172,20 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
     approval_mode: "gate_unless_listed",
     auto_approved_actions: ["business_wallet.balance", "business_wallet.history", "knowledge-base.search", "project-journal.read"],
   },
+  {
+    id: "local-access",
+    name: "Local Access Worker",
+    description: "Works with folders and approved commands on a connected local machine through the secure tunnel.",
+    icon: "agents",
+    category: "dev",
+    instructions:
+      "You are the local access specialist. Use local-machine only for paths and commands covered by active grants. Inspect before changing files, explain what you changed, and never treat a missing grant or disconnected tunnel as permission to fall back to another machine.",
+    system_prompt:
+      "You work through Naelao's local machine tunnel. Stay inside granted folders and exact command permissions, verify results, and report tunnel or grant problems clearly.",
+    prebuilt_scripts: ["local-machine", "code-exec", "file-manager", "project-journal"],
+    approval_mode: "gate_unless_listed",
+    auto_approved_actions: ["local.status", "local.read_file", "project-journal.read"],
+  },
 ];
 
 export function findAgentTemplate(id: string): AgentTemplate | undefined {
@@ -190,7 +204,7 @@ export function agentTemplateSummaries(): Array<Pick<AgentTemplate, "id" | "name
 /** Build a real AgentConfig (the 4 R2 files) from a template — same shape
  *  launchpadAgentToProfile produces for Launchpad's own core agents, generalized. */
 export function agentTemplateToConfig(template: AgentTemplate): AgentConfig {
-  const prebuilt = new Set<string>(["r2-workspace", "memory", "notifications", ...template.prebuilt_scripts]);
+  const prebuilt = new Set<string>(["r2-workspace", "memory", "notifications", ...UNIVERSAL_AGENT_BASELINE_PREBUILTS, ...template.prebuilt_scripts]);
   const scripts: ScriptsConfig = {
     prebuilt: [...prebuilt],
     agent_scripts: "auto",
@@ -222,9 +236,10 @@ export interface CustomAgentInput {
   system_prompt?: string;
   prebuilt_scripts: string[];
   skills?: string[];
+  connectors?: string[];
 }
 export function customAgentToConfig(input: CustomAgentInput): AgentConfig {
-  const prebuilt = new Set<string>(["r2-workspace", "memory", "notifications", ...input.prebuilt_scripts]);
+  const prebuilt = new Set<string>(["r2-workspace", "memory", "notifications", ...UNIVERSAL_AGENT_BASELINE_PREBUILTS, ...input.prebuilt_scripts]);
   const scripts: ScriptsConfig = {
     prebuilt: [...prebuilt],
     agent_scripts: "auto",
@@ -235,13 +250,11 @@ export function customAgentToConfig(input: CustomAgentInput): AgentConfig {
 Custom agent: ${input.name}
 ${input.description ? `Role: ${input.description}\n` : ""}
 ${input.instructions}
+${input.connectors?.length ? `\nConfigured connector scope: ${input.connectors.join(", ")}. Use mcp-connector for these services and do not assume an unselected service is available.\n` : ""}
 
 ${BASE_AGENTS_MD}`,
     systemPrompt: input.system_prompt?.trim() || `You are ${input.name}, a specialist agent. ${input.description ?? ""}`.trim(),
     scripts,
-    // Learned skills attach by name at the space level (script.find resolves them at run time), so
-    // a custom agent starts with none in its own config — same as a template. `input.skills` is
-    // reserved for a future per-agent skill-pin feature.
-    skills: { skills: [] },
+    skills: { skills: (input.skills ?? []).map((name) => ({ name, tier: "space" as const })) },
   };
 }

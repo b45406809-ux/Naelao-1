@@ -18,6 +18,7 @@ import {
   requireInternalHmac,
 } from "@naelao/http";
 import { Hono, type Context } from "hono";
+import { applyDurableObjectJurisdiction } from "@naelao/security";
 export { RepositoryDO } from "./RepositoryDO.js";
 import { repositoryName, assertSegment } from "./repository.js";
 import {
@@ -29,6 +30,7 @@ import {
 
 export interface ArtifactEnv {
   ENVIRONMENT: string;
+  DATA_JURISDICTION?: "eu";
   PLATFORM_SECRET: string;
   ARTIFACT_BUCKET: R2Bucket;
   REPOSITORY_OBJECTS: R2Bucket;
@@ -38,6 +40,7 @@ export interface ArtifactEnv {
 function validateEnv(env: ArtifactEnv): void {
   if (!env.PLATFORM_SECRET)
     throw new Error("Missing required secret: PLATFORM_SECRET");
+  applyDurableObjectJurisdiction(env as unknown as Record<string, unknown>, env.DATA_JURISDICTION, ["REPOSITORY_DO"]);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -98,6 +101,8 @@ app.use(
 
 // Repository operations are routed to exactly one Durable Object per tenant/space/project. The
 // caller cannot select a DO id or R2 prefix directly; both are derived from authenticated scope.
+// The workspace `reconcile` operation uses that same DO to replay canonical R2 files into the
+// branch's Git projection after an interrupted workspace-to-commit handoff.
 app.use(
   "/spaces/:spaceId/projects/:projectId/repository/*",
   requireInternalHmac(

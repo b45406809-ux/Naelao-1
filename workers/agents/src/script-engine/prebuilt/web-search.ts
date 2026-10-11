@@ -27,6 +27,7 @@
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 import { mintInternalToken } from "@naelao/http";
 import { workspacePrefix } from "../types.js";
+import { publishWorkspaceBytesCas, readBytesWithHash } from "../r2-cas.js";
 
 async function proxy(ctx: PrebuiltOpContext, path: string, body: unknown): Promise<unknown> {
   if (!ctx.env.knowledgeWorker) {
@@ -39,6 +40,7 @@ async function proxy(ctx: PrebuiltOpContext, path: string, body: unknown): Promi
       headers: {
         "content-type": "application/json",
         "x-naelao-tenant-id": ctx.env.tenantId,
+        "x-naelao-space-id": ctx.env.spaceId,
         "x-naelao-internal-token": token,
       },
       body: JSON.stringify(body),
@@ -143,12 +145,10 @@ export const webSearch: PrebuiltScript = {
         result.encoding === "base64"
           ? Uint8Array.from(atob(result.content), (ch) => ch.charCodeAt(0))
           : result.content;
-      await bucket.put(`${workspacePrefix(ctx.env)}${path}`, payload, {
-        // Recording the real content type is what lets the Files viewer decide between an
-        // inline preview and a download, instead of guessing from the extension.
-        ...(result.content_type ? { httpMetadata: { contentType: result.content_type } } : {}),
-        customMetadata: { updatedAt: Date.now().toString(), sourceUrl: url },
-      });
+      const storageKey = `${workspacePrefix(ctx.env)}${path}`;
+      const current = await readBytesWithHash(bucket, storageKey);
+      await publishWorkspaceBytesCas(ctx.env, bucket, storageKey, payload instanceof Uint8Array ? payload : new TextEncoder().encode(payload), current?.hash ?? null, { sourceUrl: url },
+        result.content_type ? { contentType: result.content_type } : undefined);
       await ctx.env.onWorkspaceChange?.({ path, operation: "write" });
       return {
         ok: true, path,

@@ -40,6 +40,9 @@ import { assessSkillHealth, isSafeToAutoRun } from "./skill-health.js";
 import { applyPlanOp } from "./prebuilt/plan.js";
 import type { PlanState } from "./types.js";
 import { runAfterStep, runBeforeStep, type StepPipeline } from "./step-pipeline.js";
+import { interceptPlatformCli } from "./virtual-cli.js";
+import { evaluateLoopAfterTool } from "./loop-evaluator.js";
+import { beginConsultation, restoreDeliberationState } from "./deliberation-state.js";
 
 /**
  * Rebuild the run's plan from its recorded history — used at the start of a RESUMED run, where the
@@ -166,8 +169,14 @@ function gateRejectedMessage(actionName: string): string {
 }
 
 /** A decision the reasoning model returns when the library has no ready answer. */
+export interface PlannerQuestion {
+  question: string;
+  options?: string[];
+}
+
 export type ReasonDecision =
   | { action: "run"; name: string; params: Record<string, unknown> }
+  | { action: "ask"; question: string; options?: string[]; questions?: PlannerQuestion[] }
   | { action: "patch"; name: string; code: string; reason: string }
   | { action: "distill"; name: string; code: string; metadata: Partial<ScriptMetadata>; params: Record<string, unknown> }
   | { action: "answer"; text: string }
@@ -259,6 +268,8 @@ export interface Reasoner {
      * conversation.search, rather than being left to answer confidently from a partial record.
      */
     conversation?: ConversationContext;
+    /** Bounded, thresholded memory recalled once at run ingress. Treated as untrusted reference data. */
+    memoryContext?: string;
     /**
      * This is the last step available — there is no next turn to answer in, so the model must
      * finish now (`answer`, or `give_up` if it genuinely cannot). Set only on the final iteration.
@@ -268,6 +279,9 @@ export interface Reasoner {
      * the user as a failure of work that actually happened.
      */
     finalStep?: boolean;
+    /** Set after a capability-isolated worker has completed successfully. The next decision is
+     * terminal: the planner may summarize the receipt, but it must not issue a second command. */
+    workerCompletion?: boolean;
     /**
      * The loop's own real-time progress on THIS run — passed on EVERY L3/L4 turn, not just the
      * final one. Previously the model had no way to see this at all: it found out it was almost
@@ -452,15 +466,21 @@ export interface RunLoopOptions {
    * is never in here — the whole point of suspending at the gate is that it had not run.
    */
   resumeSteps?: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>;
+  /** Answer submitted for a prior planner question; included as a synthetic prior step on resume. */
+  humanAnswer?: string;
   /** Opaque run/session identifiers forwarded to the HITL gateway. */
   runId?: string;
   sessionId?: string;
+  /** Consultation rounds already completed before a durable interruption was resumed. */
+  deliberationRound?: 0 | 1 | 2;
   /**
    * The thread's conversation so far, bounded and possibly compacted. Forwarded verbatim to
    * every reasoning step so the agent has memory of the thread it is replying in — absent for a
    * first message or a non-conversational wake (cron, channel drain).
    */
   conversation?: ConversationContext;
+  /** Bounded, thresholded memory recalled once at run ingress. Forwarded to every reasoning step. */
+  memoryContext?: string;
   /**
    * Optional checkpoint callback (spec: incremental sub-agent progress — a parent shouldn't
    * have to wait for a whole child run to finish to see it's alive and making progress; also the
@@ -614,6 +634,7 @@ export async function runScriptLoop(
    *  exit the run takes — so a run that answered around a parked action still reports it, rather
    *  than the outstanding work quietly disappearing with the reply. */
   let deferredOut: NonNullable<LoopResult["deferred_approvals"]> = [];
+  let deliberation = restoreDeliberationState(opts.deliberationRound);
   /** The ungated work this run actually completed, attached to EVERY exit — including a failure.
    *
    *  Without it a failed run is unresumable: the caller has an error and nothing else, so the only
@@ -623,6 +644,7 @@ export async function runScriptLoop(
   let stepsOut: NonNullable<LoopResult["steps_completed"]> = [];
   const finish = (r: LoopResultCore): LoopResult => ({
     ...r,
+    deliberation_round: deliberation.round,
     trace,
     ...(deferredOut.length > 0 ? { deferred_approvals: deferredOut } : {}),
     ...(stepsOut.length > 0 ? { steps_completed: stepsOut } : {}),
@@ -739,6 +761,7 @@ export async function runScriptLoop(
           operationGroups: tools.disclosureGroups(),
         activeCatalog: await tools.activeCatalog(),
         ...(opts.conversation ? { conversation: opts.conversation } : {}),
+        ...(opts.memoryContext ? { memoryContext: opts.memoryContext } : {}),
         repairTarget: { name: top!.name, failureReason: repairReason ?? "fingerprint drift (partial match)" },
         ...(deltaReporter(opts) ? { onDelta: deltaReporter(opts)! } : {}),
       });
@@ -810,6 +833,9 @@ export async function runScriptLoop(
       // continues the work rather than starting it over.
       const priorSteps: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }> = [
         ...(opts.resumeSteps ?? []),
+        ...(opts.humanAnswer
+          ? [{ name: "human.question_answer", params: {}, ok: true, output: opts.humanAnswer }]
+          : []),
       ];
       // Same array, exposed on every exit by finish() — so a run that fails can be continued
       // from what it had already done rather than restarted from nothing.
@@ -828,13 +854,19 @@ export async function runScriptLoop(
       // The most recent SUCCESSFUL tool result, kept so an agent that runs out of steps without
       // ever composing an answer still returns the work it actually did rather than "gave up".
       let lastGoodRun: { name: string; result: ScriptRunResult } | null = null;
+      /** A successful cabinet delegation is terminal for the administrative request. The
+       * planner gets one final turn to summarize the worker receipt, but cannot start follow-up
+       * verification or synthetic shell commands. */
+      let workerDelegationCompleted = false;
+      /** A high-confidence System One MERGE_PR/ESCALATE verdict gives System 2 one final turn to
+       * summarize or ask the human. It never executes an action itself. */
+      let systemOneFinalStep = false;
       /** `name:params` → the REAL outcome of the first attempt this run — see the repeat guard
        *  below. Only ever set once the outcome is actually known (never for a merely "pending"
        *  gate, which never reaches here). */
       const attemptedCalls = new Map<string, { ok: boolean; output?: unknown; error?: string }>();
-      // A consult result followed by another consult is one deliberation round. Two rounds is a
-      // hard protocol horizon: a third would spend tokens without human authority to break the tie.
-      let deliberationRound = 0;
+      // Explicit protocol state: two consultation rounds is the hard horizon. A third consult
+      // transitions to BLOCKED_AWAITING_HUMAN instead of spending tokens without new authority.
       for (let step = 0; ; step++) {
         // Stopped by a person. Not an error and not a failure: the steps already taken are real
         // and are reported, which is the difference between "I stopped, here is what I did" and a
@@ -883,11 +915,15 @@ export async function runScriptLoop(
         // agent "never reached an answer" — even when the work itself succeeded. Reported live: a
         // project was created, the loop then burned its remaining steps and surfaced an error, so
         // the user retried and created a second one.
-        const isFinalStep = assessment.verdict === "final";
+        const isFinalStep = assessment.verdict === "final" || systemOneFinalStep;
         // Recorded even though the run may well answer normally from here: if it does NOT, this is
         // the only place that knows why it was down to its last turn, and "ran out of time" versus
         // "ran out of budget" versus "made no progress" are three different things for a reader.
-        if (isFinalStep) exhaustionReason = assessment.reason;
+        if (isFinalStep) exhaustionReason = assessment.verdict === "final"
+          ? assessment.reason
+          : systemOneFinalStep
+            ? "System One recommended finalizing after the latest tool result"
+            : "delegated worker completed";
         await reportProgress(opts, {
           phase: "reason",
           detail: isFinalStep ? "Wrapping up…" : `Thinking (step ${step + 1})…`,
@@ -912,14 +948,16 @@ export async function runScriptLoop(
           candidates,
           availableOperations: tools.availableOperations(),
           operationGroups: tools.disclosureGroups(),
-        activeCatalog: await tools.activeCatalog(),
+          activeCatalog: await tools.activeCatalog(),
           ...(opts.conversation ? { conversation: opts.conversation } : {}),
+          ...(opts.memoryContext ? { memoryContext: opts.memoryContext } : {}),
           ...(level === "L3" && top
             ? { repairTarget: { name: top.name, failureReason: repairReason ?? "stale / re-derive" } }
             : {}),
           ...(stepContext.recent.length > 0 ? { priorSteps: stepContext.recent } : {}),
           ...(stepContext.digest.length > 0 ? { earlierSteps: stepContext.digest } : {}),
           ...(isFinalStep ? { finalStep: true } : {}),
+          ...(workerDelegationCompleted ? { workerCompletion: true } : {}),
           progress: {
             step: step + 1,
             max_steps: budget.maxSteps,
@@ -966,15 +1004,16 @@ export async function runScriptLoop(
         // ScriptToolSurface.resolveOperationAlias for what it will and will not resolve.
         if (decision.action === "run") {
           if (decision.name === "thread.consult" || decision.name.endsWith(".consult")) {
-            deliberationRound++;
-            if (deliberationRound > 2) {
+            const transition = beginConsultation(deliberation);
+            deliberation = transition.state;
+            if (!transition.accepted) {
               const message = "Two consultation rounds did not reach consensus; human direction is required.";
               notes.push(`${level} ${message}`);
               pushTrace({ phase: "gate", name: decision.name, detail: "BLOCKED_AWAITING_HUMAN", ok: false });
               return finish(withTokenUsage({
                 level,
                 status: "BLOCKED_AWAITING_HUMAN",
-                deliberation_round: 2,
+                deliberation_round: deliberation.round,
                 result: { ok: false, output: message, error: "BLOCKED_AWAITING_HUMAN", tier: 1, duration_ms: 0, tokens_used: 0 },
                 notes,
               }, usageAcc));
@@ -997,13 +1036,76 @@ export async function runScriptLoop(
         ...(messageOf(reasoner) ? { message: messageOf(reasoner) } : {}),
         });
 
+        if (decision.action === "ask") {
+          if (!env.hitlGateway?.requestQuestion) {
+            return finish({
+              level,
+              result: { ok: false, error: "questionnaire_unavailable: this run cannot ask for interactive input", tier: 1, duration_ms: 0, tokens_used: 0 },
+              notes,
+            });
+          }
+          const questions = decision.questions?.length
+            ? decision.questions.slice(0, 5)
+            : [{ question: decision.question, ...(decision.options?.length ? { options: decision.options } : {}) }];
+          const asked = await env.hitlGateway.requestQuestion({
+            runId,
+            sessionId,
+            question: questions[0]!.question,
+            ...(questions[0]!.options?.length ? { options: questions[0]!.options } : {}),
+            ...(questions.length > 1 ? { questions } : {}),
+          });
+          if (asked.answer !== undefined) {
+            priorSteps.push({ name: "human.question_answer", params: { questions }, ok: true, output: asked.answer });
+            notes.push(`${level} received an answer and continued`);
+            pushTrace({ phase: "gate", detail: "question_answered", ok: true });
+            continue;
+          }
+          if (asked.pending) {
+            pushTrace({ phase: "gate", detail: "awaiting_question_answer" });
+            return finish({
+              level,
+              script_name: "AskUser",
+              notes,
+              pending_question: {
+                question_id: asked.questionId,
+                question: questions[0]!.question,
+                ...(questions[0]!.options?.length ? { options: questions[0]!.options } : {}),
+                ...(questions.length > 1 ? { questions } : {}),
+                ...(asked.expiresAt ? { expires_at: asked.expiresAt } : {}),
+                steps_completed: [...priorSteps],
+              },
+            });
+          }
+          return finish({
+            level,
+            result: { ok: false, error: asked.reason ?? "questionnaire_unavailable: the question could not be opened", tier: 1, duration_ms: 0, tokens_used: 0 },
+            notes,
+          });
+        }
+
         if (decision.action === "run") {
+          if (workerDelegationCompleted) {
+            const isAnotherWorkerDelegation = decision.name === "delegate_to_space_worker" ||
+              (decision.name === "Bash" && (() => {
+                try {
+                  return interceptPlatformCli(String(decision.params.commands ?? decision.params.command ?? decision.params.cmd ?? ""))?.operation === "delegate_to_space_worker";
+                } catch {
+                  return false;
+                }
+              })());
+            if (!isAnotherWorkerDelegation) {
+              notes.push(`${level} ignored a follow-up command after worker completion; summarising the worker receipt`);
+              pushTrace({ phase: "gate", name: decision.name, detail: "skipped_after_worker_completion", params: decision.params });
+              break;
+            }
+            workerDelegationCompleted = false;
+          }
           // The model was told this is its last turn and chose a tool anyway. Running it would
           // spend real money/side effects on work nobody will ever see the result of, since
           // there's no step left to report it in — so it isn't run, and the loop drops straight
           // into the summary path below with whatever already succeeded.
           if (isFinalStep) {
-            notes.push(`${level} chose ${decision.name} on the final step (${assessment.reason}); not run — summarising instead`);
+            notes.push(`${level} chose ${decision.name} on the final step (${assessment.verdict === "final" ? assessment.reason : "worker completion"}); not run — summarising instead`);
             // Without this, the "reason" step just pushed above (carrying the model's own status
             // for THIS action, e.g. "Reading the report") is left as the segment's narration with
             // no row ever recorded for it — the closing-summary decide() call below doesn't push
@@ -1151,7 +1253,32 @@ export async function runScriptLoop(
             ok: result.ok,
             ...(result.ok ? { output: result.output } : { error: result.error ?? "failed" }),
           });
+          const loopEvaluation = await evaluateLoopAfterTool(env.fastDecision, {
+            goal: opts.goal,
+            operation: decision.name,
+            ok: result.ok,
+            ...(result.output !== undefined ? { output: result.output } : {}),
+            ...(result.error ? { error: result.error } : {}),
+            completedSteps: priorSteps.length,
+          });
+          if (loopEvaluation) {
+            notes.push(`${level} System One loop verdict: ${loopEvaluation.value} (${loopEvaluation.provider})`);
+            pushTrace({ phase: "verify", name: decision.name, ok: true, detail: `system_one:${loopEvaluation.value.toLowerCase()}` });
+            priorSteps.push({
+              name: "system_one.loop_evaluation",
+              params: { operation: decision.name },
+              ok: true,
+              output: { recommendation: loopEvaluation.value, confidence: loopEvaluation.confidence, provider: loopEvaluation.provider },
+            });
+            if (loopEvaluation.value === "MERGE_PR" || loopEvaluation.value === "ESCALATE") {
+              systemOneFinalStep = true;
+            }
+          }
           if (result.ok) lastGoodRun = { name: decision.name, result };
+          if (result.ok && decision.name === "delegate_to_space_worker") {
+            workerDelegationCompleted = true;
+            notes.push(`${level} worker delegation completed; closing without follow-up commands`);
+          }
           continue;
         }
 
@@ -1244,9 +1371,11 @@ export async function runScriptLoop(
           operationGroups: tools.disclosureGroups(),
         activeCatalog: await tools.activeCatalog(),
             ...(opts.conversation ? { conversation: opts.conversation } : {}),
+            ...(opts.memoryContext ? { memoryContext: opts.memoryContext } : {}),
             priorSteps: closing.recent,
             ...(closing.digest.length > 0 ? { earlierSteps: closing.digest } : {}),
             finalStep: true,
+            ...(workerDelegationCompleted ? { workerCompletion: true } : {}),
             ...(deltaReporter(opts) ? { onDelta: deltaReporter(opts)! } : {}),
           });
           const summaryUsage = usageOf(reasoner);
@@ -1263,6 +1392,20 @@ export async function runScriptLoop(
         } catch (err) {
           // Never let the recovery attempt itself become the failure the user sees.
           notes.push(`${level} summary attempt failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        if (workerDelegationCompleted && lastGoodRun) {
+          return finish(withTokenUsage({
+            level,
+            script_name: lastGoodRun.name,
+            result: {
+              ok: true,
+              output: formatToolOutput(lastGoodRun.result.output),
+              tier: lastGoodRun.result.tier,
+              duration_ms: lastGoodRun.result.duration_ms,
+              tokens_used: 0,
+            },
+            notes,
+          }, usageAcc));
         }
         // Waiting on a human is the single most actionable thing this message can say, so it leads.
         // Without it the reader is told the agent failed, when what actually happened is that it is

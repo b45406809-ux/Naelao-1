@@ -64,6 +64,7 @@ function RevealText({
   animate,
   revealFrom,
   markdown,
+  onAction,
 }: {
   text: string;
   animate?: boolean | undefined;
@@ -73,6 +74,7 @@ function RevealText({
    *  resolves as soon as its closing marker is revealed — acceptable, and far simpler than
    *  block-level buffering. */
   markdown?: boolean | undefined;
+  onAction?: (widgetId: string, value: unknown) => void;
   /** Text the viewer has ALREADY watched appear, in a different component instance. The growing-
    *  text logic below only extends a reveal within one mounted instance — across a remount the
    *  state is gone, so a bubble that re-mounts with the same text restarts it from empty and
@@ -110,7 +112,7 @@ function RevealText({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [text, animate]);
 
-  return markdown ? <Markdown text={shown} /> : <>{shown}</>;
+  return markdown ? <Markdown text={shown} {...(onAction ? { onAction } : {})} /> : <>{shown}</>;
 }
 
 /** One live-progress checkpoint fires TWICE for a "reason"/"run" step — once right before it
@@ -169,6 +171,50 @@ function mergeSteps(raw: LiveRunStep[]): { step: LiveRunStep; active: boolean }[
  */
 type ToolRow = { step: LiveRunStep; active: boolean; idx: number };
 type ThoughtRow = { step: LiveRunStep; idx: number };
+
+type WorkerCall = {
+  workerId: string;
+  operation?: string;
+  taskParams?: unknown;
+};
+
+function workerCallInfo(params: unknown): WorkerCall | null {
+  if (!params || typeof params !== "object") return null;
+  const record = params as Record<string, unknown>;
+  if (typeof record.worker_id === "string") {
+    const task = record.task && typeof record.task === "object" ? record.task as Record<string, unknown> : undefined;
+    return {
+      workerId: record.worker_id,
+      ...(typeof task?.operation === "string" ? { operation: task.operation } : {}),
+      ...(task?.params !== undefined ? { taskParams: task.params } : {}),
+    };
+  }
+  const command = [record.commands, record.command, record.cmd].find((value): value is string => typeof value === "string");
+  if (!command) return null;
+  const match = command.match(/\bnaelao\s+worker\s+(\S+)\s+(\S+)/i);
+  if (!match) return null;
+  return { workerId: match[1]!, ...(match[2] ? { operation: match[2] } : {}) };
+}
+
+/** Keep the activity UI focused on the argument the tool received. Bash's JSON envelope is an
+ * implementation detail and made the trace look like a raw protocol dump. */
+function displayToolParams(params: unknown): string | null {
+  if (params === undefined || params === null) return null;
+  if (typeof params === "string") return params;
+  if (typeof params === "object") {
+    const record = params as Record<string, unknown>;
+    for (const key of ["commands", "command", "cmd"]) {
+      if (typeof record[key] === "string") return record[key] as string;
+    }
+    const worker = workerCallInfo(params);
+    if (worker) {
+      const suffix = worker.taskParams === undefined ? "" : ` ${JSON.stringify(worker.taskParams)}`;
+      return `${worker.workerId}${worker.operation ? ` · ${worker.operation}` : ""}${suffix}`;
+    }
+    try { return JSON.stringify(params, null, 2); } catch { return null; }
+  }
+  return String(params);
+}
 type Grouped =
   | { kind: "plain"; step: LiveRunStep; active: boolean; idx: number }
   | { kind: "message"; text: string; active: boolean; idx: number }
@@ -275,14 +321,8 @@ function ToolRowView({
   // "failed" a genuinely-attempted-and-errored tool call gets) so this doesn't read as a bug.
   const pending = step.phase === "gate";
   const failed = !pending && step.ok === false;
-  let paramsText: string | null = null;
-  if (step.params !== undefined) {
-    try {
-      paramsText = typeof step.params === "string" ? step.params : JSON.stringify(step.params, null, 2);
-    } catch {
-      paramsText = null;
-    }
-  }
+  const worker = workerCallInfo(step.params);
+  const paramsText = displayToolParams(step.params);
   const expandable = !!paramsText || !!step.output || !!step.detail || step.duration_ms !== undefined;
   return (
     <div style={{ borderTop: "1px solid var(--border, #e5e7eb)" }}>
@@ -295,8 +335,17 @@ function ToolRowView({
           cursor: expandable ? "pointer" : "default", padding: "5px 8px", textAlign: "left",
         }}
       >
-        <span style={{ flex: 1, fontFamily: "var(--font-mono, monospace)" }}>
-          {step.name ?? "tool"}
+        <span style={{ flex: 1, fontFamily: worker ? "inherit" : "var(--font-mono, monospace)" }}>
+          {worker ? (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+              <span aria-hidden style={{ width: 18, height: 18, borderRadius: 6, display: "grid", placeItems: "center", background: active ? "var(--accent-dim)" : failed ? "#ef444422" : "#22c55e22", color: active ? "var(--accent)" : failed ? "#dc2626" : "#16a34a", fontSize: 11 }}>↗</span>
+              <strong>{worker.workerId}</strong>
+              {worker.operation && <code style={{ color: "var(--text3)", fontSize: 10.5 }}>{worker.operation}</code>}
+              <span style={{ fontSize: 10.5, color: active ? "var(--accent)" : failed ? "#dc2626" : "#16a34a" }}>
+                {active ? "running" : failed ? "failed" : "completed"}
+              </span>
+            </span>
+          ) : (step.name ?? "tool")}
           {active && <span className="activity-ellipsis">…</span>}
         </span>
         {!pending && step.duration_ms !== undefined && <span style={{ fontSize: 10.5 }}>{step.duration_ms}ms</span>}
@@ -308,7 +357,7 @@ function ToolRowView({
         <div style={{ fontSize: 11.5, color: "var(--text3)", padding: "0 8px 8px", lineHeight: 1.6 }}>
           {paramsText && (
             <div style={{ marginBottom: 4 }}>
-              <div style={{ fontWeight: 600, color: "var(--text2)", marginBottom: 2 }}>Command</div>
+              <div style={{ fontWeight: 600, color: "var(--text2)", marginBottom: 2 }}>{worker ? "Worker request" : "Command"}</div>
               <pre style={{ margin: 0, padding: 8, background: "var(--surface2)", borderRadius: 8, whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 11 }}>
                 {paramsText}
               </pre>

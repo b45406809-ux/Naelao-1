@@ -1,7 +1,7 @@
 // G-I17: MCP Tool Server Registry — registers MCP servers per Space and proxies tool calls
 import { Hono } from "hono";
 import { errorResponse, requestId, requireInternalHmac, mintInternalToken } from "@naelao/http";
-import { checkSsrf, scanAndScrubEgress } from "@naelao/security";
+import { checkSsrf, isSpaceNetworkEgressDenied, scanAndScrubEgress } from "@naelao/security";
 import { missingToolScopes } from "./connector-policy";
 import type { ConnectorScope } from "./connector-policy";
 import { createHostedOAuthLink, executeComposioAction } from "./composio";
@@ -27,6 +27,22 @@ export interface Env {
    *  credential) so it bills the builder's org rather than being an open, unattributed platform
    *  cost sink. Optional/best-effort — degrades to unmetered (not unblocked) when unwired. */
   BILLING_WORKER?: Fetcher;
+}
+
+/** Built-in connector shims are reachable through MCP Hub only. User-owned MCP servers never
+ * receive this inter-worker proof. */
+async function addManagedConnectorBoundaryHeaders(
+  headers: Record<string, string>,
+  serverUrl: string,
+  env: Env,
+  tenantId: string,
+  spaceId: string,
+): Promise<void> {
+  const url = new URL(serverUrl);
+  if (url.hostname !== "mcp.naelao.com" || !/^\/connectors\/(?:whop|gumroad)\/?$/.test(url.pathname)) return;
+  headers["x-naelao-tenant-id"] = tenantId;
+  headers["x-naelao-space-id"] = spaceId;
+  headers["x-naelao-internal-token"] = await mintInternalToken(env.PLATFORM_SECRET, tenantId);
 }
 
 /** Meter a tool call that resolved to Naelao's platform provider key (never a builder's own BYO
@@ -90,14 +106,15 @@ export function isReservedToolName(toolName: string): boolean {
  * Format: "t=<unix>,aid=<agentId>,v1=<hmac-hex>"; HMAC payload "<spaceId>:<agentId>:<timestamp>".
  * The credentials worker verifies signature + spaceId + 60s freshness before returning plaintext.
  */
-async function generateCredentialToken(platformSecret: string, spaceId: string, agentId: string): Promise<string> {
+async function generateCredentialToken(platformSecret: string, tenantId: string, spaceId: string, agentId: string): Promise<string> {
   const timestamp = Math.floor(Date.now() / 1000);
+  if (![tenantId, spaceId, agentId].every((value) => /^[A-Za-z0-9_-]{1,128}$/.test(value))) throw new Error("invalid_credential_token_scope");
   const key = await crypto.subtle.importKey(
     "raw", new TextEncoder().encode(platformSecret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
   );
-  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${spaceId}:${agentId}:${timestamp}`));
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${tenantId}:${spaceId}:${agentId}::${timestamp}`));
   const hex = Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
-  return `t=${timestamp},aid=${agentId},v1=${hex}`;
+  return `t=${timestamp},aid=${agentId},tid=${tenantId},v3=${hex}`;
 }
 
 type ConnectorProvider = "direct" | "composio";
@@ -214,6 +231,9 @@ app.use("/connectors/composio/*", requireInternalHmac((c) => (c as unknown as { 
 app.post("/connectors/composio/connect", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const spaceId = c.req.header("x-naelao-space-id") ?? "";
+  if (!spaceId) return c.json({ error_code: "bad_request", message: "Missing space" }, 400);
+  if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, spaceId)) return c.json({ error_code: "air_gap_egress_denied", message: "This space does not permit network connectors" }, 403);
   const body = await c.req.json<{ auth_config_id?: string; user_id?: string; callback_url?: string }>();
   if (!body.auth_config_id || !body.user_id || !body.callback_url) return c.json({ error_code: "bad_request", message: "auth_config_id, user_id, and callback_url are required" }, 400);
   try {
@@ -226,6 +246,9 @@ app.post("/connectors/composio/connect", async (c) => {
 app.post("/connectors/composio/execute", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const spaceId = c.req.header("x-naelao-space-id") ?? "";
+  if (!spaceId) return c.json({ error_code: "bad_request", message: "Missing space" }, 400);
+  if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, spaceId)) return c.json({ error_code: "air_gap_egress_denied", message: "This space does not permit network connectors" }, 403);
   const body = await c.req.json<{ connection_id?: string; action?: string; arguments?: Record<string, unknown> }>();
   if (!body.connection_id || !body.action) return c.json({ error_code: "bad_request", message: "connection_id and action are required" }, 400);
   if (isReservedToolName(body.action)) return c.json({ error_code: "reserved_capability", message: "Money-in actions are reserved to Naelao commerce" }, 403);
@@ -233,7 +256,7 @@ app.post("/connectors/composio/execute", async (c) => {
   if (dlp.findings.length) return c.json({ error_code: "egress_dlp_blocked", message: "Connector payload contains protected data" }, 422);
   try {
     const data = await executeComposioAction(c.env, { connectionId: body.connection_id, action: body.action, ...(body.arguments ? { arguments: body.arguments } : {}) });
-    c.executionCtx.waitUntil(recordPlatformKeyUsage(c.env, tenantId, c.req.header("x-naelao-space-id") ?? "", "composio"));
+    c.executionCtx.waitUntil(recordPlatformKeyUsage(c.env, tenantId, spaceId, "composio"));
     return c.json({ result: data });
   } catch (error) {
     return c.json({ error_code: "upstream_error", message: (error as Error).message }, 502);
@@ -303,7 +326,7 @@ export async function buildAuthHeaders(
   if (!env.CREDENTIALS_WORKER) {
     throw new Error("Credential resolution requires CREDENTIALS_WORKER binding");
   }
-  const token = await generateCredentialToken(env.PLATFORM_SECRET, server.space_id, agentId);
+  const token = await generateCredentialToken(env.PLATFORM_SECRET, server.tenant_id, server.space_id, agentId);
   const resp = await env.CREDENTIALS_WORKER.fetch(
     new Request(
       `http://credentials/v1/internal/spaces/${server.space_id}/credentials/${encodeURIComponent(server.auth_secret_name)}/plaintext`,
@@ -564,6 +587,9 @@ app.get("/v1/spaces/:spaceId/mcp-servers/:serverId/tools", async (c) => {
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const spaceId = c.req.param("spaceId");
   const serverId = c.req.param("serverId");
+  if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, spaceId)) {
+    return c.json({ error_code: "air_gap_egress_denied", message: "This space does not permit network connectors" }, 403);
+  }
 
   const server = await c.env.PLATFORM_DB.prepare(
     "SELECT * FROM mcp_servers WHERE id = ? AND space_id = ? AND tenant_id = ? AND enabled = 1"
@@ -607,6 +633,7 @@ app.get("/v1/spaces/:spaceId/mcp-servers/:serverId/tools", async (c) => {
   } catch (err) {
     return c.json({ error_code: "credential_error", message: (err as Error).message }, 502);
   }
+  await addManagedConnectorBoundaryHeaders(headers, server.url, c.env, tenantId, spaceId);
 
   const mcpPayload = {
     jsonrpc: "2.0",
@@ -765,6 +792,9 @@ app.post("/v1/spaces/:spaceId/mcp-servers/:serverId/tools/call", async (c) => {
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const spaceId = c.req.param("spaceId");
   const serverId = c.req.param("serverId");
+  if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, spaceId)) {
+    return c.json({ error_code: "air_gap_egress_denied", message: "This space does not permit network connectors" }, 403);
+  }
 
   const server = await c.env.PLATFORM_DB.prepare(
     "SELECT * FROM mcp_servers WHERE id = ? AND space_id = ? AND tenant_id = ? AND enabled = 1"
@@ -838,6 +868,7 @@ app.post("/v1/spaces/:spaceId/mcp-servers/:serverId/tools/call", async (c) => {
   } catch (err) {
     return c.json({ error_code: "credential_error", message: (err as Error).message }, 502);
   }
+  await addManagedConnectorBoundaryHeaders(headers, server.url, c.env, tenantId, spaceId);
 
   const mcpPayload = {
     jsonrpc: "2.0",

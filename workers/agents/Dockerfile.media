@@ -1,0 +1,14 @@
+FROM node:22-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg util-linux \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+RUN npm install esbuild@0.24.0
+COPY container/server.mjs container/process-supervisor.mjs container/child-runner.mjs container/compile-runner.mjs container/artifact-fs.mjs /app/
+RUN groupadd -g 10001 runtime && useradd -u 10001 -g 10001 -d /home/runtime runtime \
+    && mkdir -p /workspace /home/runtime /tmp/guest /tmp/naelao-control \
+    && chown -R 10001:10001 /workspace /home/runtime /tmp/guest \
+    && chmod 700 /tmp/naelao-control && chmod -R go-w /app \
+    && find / -xdev -type f -perm /6000 -exec chmod a-s {} +
+USER root
+EXPOSE 8080
+CMD ["node", "/app/server.mjs"]

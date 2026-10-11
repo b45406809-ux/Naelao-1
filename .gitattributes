@@ -1,0 +1,3 @@
+# Preserve the frozen requirements byte-for-byte across Windows and cloud checkouts.
+"new plan/New Text Document (12).txt" -text
+"new plan/New Text Document (13).txt" -text

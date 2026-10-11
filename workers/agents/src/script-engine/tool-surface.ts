@@ -26,15 +26,22 @@ import type {
 } from "./types.js";
 import { SkillLibrary } from "./skill-library.js";
 import { scriptFind, indexScriptEmbedding, removeScriptEmbedding } from "./script-find.js";
-import { classifyExecutionRoute, EXECUTION_ENGINES, runStoredScript } from "./execution-ladder.js";
+import { classifyExecutionRouteWithSentry, EXECUTION_ENGINES, runStoredScript } from "./execution-ladder.js";
 import { buildOperationMap, type PrebuiltOp, type PrebuiltScript } from "./prebuilt/index.js";
 import { assertNoReservedViolation } from "./reserved-capabilities.js";
 import { isReadSafeOperation } from "./assistant-access.js";
-import { enforceWriteGuard, requiresMutationGrant } from "@naelao/agent-sdk";
+import { enforceWriteGuardWithSentry } from "@naelao/agent-sdk";
 import { interceptPlatformCli } from "./virtual-cli.js";
 import { workspacePrefix } from "./types.js";
 import type { UniversalAgentRole } from "@naelao/agent-sdk";
 import { isToolAllowedForRole } from "./agent-firewall.js";
+import { isPlannerOperationAllowed, type PlannerScope } from "./agent-topology.js";
+
+function executionEngine(value: unknown): ScriptRunResult["engine"] | undefined {
+  return typeof value === "string" && Object.values(EXECUTION_ENGINES).includes(value as NonNullable<ScriptRunResult["engine"]>)
+    ? value as NonNullable<ScriptRunResult["engine"]>
+    : undefined;
+}
 
 /** Plain edit distance — used only to rank "did you mean" suggestions by how close a guess
  *  actually is, never for anything security-relevant. Op names are short (well under 40 chars),
@@ -70,7 +77,7 @@ export interface OperationGroup {
 }
 
 export type RoomType = "public_team" | "public_channel" | "private_scratchpad";
-export interface ToolSurfaceContext { roomType?: RoomType; role?: UniversalAgentRole }
+export interface ToolSurfaceContext { roomType?: RoomType; role?: UniversalAgentRole; plannerScope?: PlannerScope }
 const PRIVATE_SCRIPT_NAMES = new Set(["business-email", "schedule", "local-machine", "file-manager", "r2-workspace", "code-exec", "wallet", "business-wallet"]);
 const HIGH_PRIVILEGE_OPERATIONS = /(?:^|\.)(?:send|delete|write|edit|bash|execute|provision|add_destination|transfer|payout)(?:$|\.)/i;
 export function isPublicRoom(roomType: RoomType | undefined): boolean { return roomType === "public_team" || roomType === "public_channel"; }
@@ -110,6 +117,22 @@ const CORE_OPERATIONS = new Set<string>([
 /** Consecutive "unknown operation" misses in reduced-disclosure mode before this run
  *  automatically falls back to showing every available operation (see disclosureGroups' doc). */
 const MISS_FALLBACK_THRESHOLD = 2;
+
+/** Internal planner operations are reachable through the Bash coordination grammar, but are not
+ * advertised as separate model tools. Keeping this list here makes the disclosure boundary
+ * structural: prompt/catalog drift cannot accidentally reintroduce direct worker calls. */
+const PLANNER_INTERNAL_OPERATIONS = new Set([
+  "engine.plan_and_delegate_goal",
+  "agent.spawn",
+  "agent.list_models",
+  "thread.list_project_agents",
+  "thread.consult",
+  "thread.delegate",
+  "thread.list",
+  "thread.read",
+  "thread.search",
+  "delegate_to_space_worker",
+]);
 
 /**
  * Old operation name → the name it was renamed to.
@@ -260,6 +283,21 @@ export class ScriptToolSurface {
    *  only while disclosureMode is "reduced" — see the miss-streak comment in run(). */
   private missStreak = 0;
   private readonly role: UniversalAgentRole;
+  private readonly plannerScope: PlannerScope | undefined;
+
+  private recordExecution(operation: string, result: ScriptRunResult): ScriptRunResult {
+    try {
+      this.env.recordExecution?.({
+        operation,
+        tier: result.actual_tier ?? result.tier,
+        ...(result.engine ? { engine: result.engine } : {}),
+        durationMs: result.duration_ms,
+        ok: result.ok,
+        tokensUsed: result.tokens_used,
+      });
+    } catch { /* telemetry cannot affect execution */ }
+    return result;
+  }
 
   constructor(
     private readonly env: ScriptEngineEnv,
@@ -268,6 +306,7 @@ export class ScriptToolSurface {
     context: ToolSurfaceContext = {}
   ) {
     this.role = context.role ?? "DEV_OPERATOR";
+    this.plannerScope = context.plannerScope;
     this.library = new SkillLibrary(env.scriptsBucket, env.spaceId);
     this.ops = buildOperationMap(enabledPrebuilt);
     for (const [name, { prebuilt }] of this.ops) {
@@ -298,6 +337,34 @@ export class ScriptToolSurface {
     };
     this.ops.set("tools.search", { prebuilt: toolsMeta, op: async (args) => this.searchOperations(String(args["query"] ?? "")) });
     this.ops.set("tools.describe", { prebuilt: toolsMeta, op: async (args) => this.describeOperation(String(args["name"] ?? "")) });
+    env.codeAuthorize = async (scope, capability) => {
+      if (scope.tenantId !== env.tenantId || scope.spaceId !== env.spaceId || scope.agentId !== env.agentId || scope.projectId !== env.projectId) return false;
+      if (!env.codeGrantIsActive || !await env.codeGrantIsActive(scope)) return false;
+      if (capability === "proxy.request") return !this.plannerScope && !env.airGappedOnly && Boolean(env.codeProxyRequest) && this.ops.has("code.run_js");
+      const operation = capability === "storage.read" ? "Read" : capability === "storage.write" ? "Write" : capability === "storage.list" ? "Glob"
+        : capability.startsWith("tool:") ? capability.slice(5) : undefined;
+      if (!operation || ["Bash", "code.execute_bash", "code.run_js", "code.execute_python"].includes(operation)) return false;
+      const descriptor = this.ops.get(operation);
+      return Boolean(descriptor && isToolAllowedForRole(this.role, operation, descriptor.prebuilt.requires_tier)
+        && (!this.plannerScope || isPlannerOperationAllowed(this.plannerScope, operation)));
+    };
+    env.codeDispatch = async (scope, capability, input, signal) => {
+      if (signal.aborted || !await env.codeAuthorize!(scope, capability)) throw new Error("code_capability_denied");
+      const args = input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {};
+      if (capability === "proxy.request") return env.codeProxyRequest!(scope, args, signal);
+      const operation = capability === "storage.read" ? "Read" : capability === "storage.write" ? "Write" : capability === "storage.list" ? "Glob" : capability.slice(5);
+      const result = await this.run(operation, args);
+      if (!result.ok) throw new Error(result.error ?? "code_rpc_failed");
+      return result.output;
+    };
+  }
+
+  /** Operations a parent may either see or call without capability delegation. */
+  private isPlannerVisible(name: string): boolean {
+    if (!this.plannerScope) return true;
+    // A persistent planner sees the stable Bash/REPL surface. Coordination remains executable
+    // only after virtual-cli has parsed an explicit `naelao ...` command into a typed dispatch.
+    return !PLANNER_INTERNAL_OPERATIONS.has(name) && isPlannerOperationAllowed(this.plannerScope, name);
   }
 
   /**
@@ -312,6 +379,7 @@ export class ScriptToolSurface {
     const wanted = tokenize(query);
     const scored: Array<{ name: string; script: string; description: string; paramHint?: string; hits: number }> = [];
     for (const [opName, { prebuilt }] of this.ops) {
+      if (!this.isPlannerVisible(opName)) continue;
       const hint = prebuilt.paramHints?.[opName];
       const haystack = new Set(tokenize(`${opName} ${prebuilt.name} ${prebuilt.description} ${hint ?? ""}`));
       const hits = wanted.length === 0 ? 0 : wanted.filter((w) => haystack.has(w)).length;
@@ -337,6 +405,9 @@ export class ScriptToolSurface {
    *  a bad script.run call, so tools.describe and script.run never disagree about what exists. */
   private describeOperation(name: string): unknown {
     const entry = this.ops.get(name);
+    if (entry && !this.isPlannerVisible(name)) {
+      return { ok: false, error: `Unknown operation: ${name}.` };
+    }
     if (!entry) return { ok: false, error: `Unknown operation: ${name}.${this.suggestOperations(name)}` };
     return {
       name,
@@ -353,7 +424,7 @@ export class ScriptToolSurface {
 
   /** Names of all available prebuilt operations (for prompt construction / discovery). */
   availableOperations(): string[] {
-    return [...this.ops.keys()];
+    return [...this.ops.keys()].filter((name) => this.isPlannerVisible(name));
   }
 
   /** Compact zero-turn index. Fetches metadata and object names only, never code.ts bodies. */
@@ -375,6 +446,13 @@ export class ScriptToolSurface {
       const metadata = await this.library.readMetadata(name);
       if (metadata) rows.push(`- \`${name}\` - ${metadata.description.replace(/\s+/g, " ").trim()} - ${JSON.stringify(metadata.parameters)}`);
     }
+    rows.push("## planner coordination Bash commands");
+    rows.push("- `naelao project agents list` - list every agent addressable in the current project - no parameters");
+    rows.push("- `naelao project agents consult --agent-id <id> --message <text>` - privately ask a named project worker for information or a bounded handoff");
+    rows.push("- `naelao project agents delegate --agent-id <id> --task <text>` - delegate bounded work to a named project worker");
+    rows.push("- `naelao worker project_manager_worker <operation> --params <json>` - route an allowlisted project administration operation through the capability-isolated worker");
+    rows.push("## planner interaction");
+    rows.push("- `AskUser` - open a questionnaire with one to five related questions when required information is missing; the run resumes after all answers are submitted");
     const bucket = this.env.workspaceBucket ?? this.env.scriptsBucket;
     const prefix = `${workspacePrefix(this.env)}.avos/bin/`;
     rows.push("## virtual CLI namespaces (avos chore / ext: / auto:)");
@@ -409,6 +487,7 @@ export class ScriptToolSurface {
       { description: string; operations: string[]; paramHints: Record<string, string> }
     >();
     for (const [opName, { prebuilt }] of this.ops) {
+      if (!this.isPlannerVisible(opName)) continue;
       const existing = byScript.get(prebuilt.name);
       const hint = prebuilt.paramHints?.[opName];
       if (existing) {
@@ -709,8 +788,21 @@ export class ScriptToolSurface {
     return { name, params };
   }
 
-  async run(name: string, params: Record<string, unknown> = {}): Promise<ScriptRunResult> {
+  async run(
+    name: string,
+    params: Record<string, unknown> = {},
+    invocation: { delegatedByCabinet?: boolean } = {},
+  ): Promise<ScriptRunResult> {
     const started = Date.now();
+    if (this.plannerScope && !invocation.delegatedByCabinet && !isPlannerOperationAllowed(this.plannerScope, name)) {
+      return {
+        ok: false,
+        error: `planner_capability_boundary: delegate '${name}' to a worker instead of running it from the ${this.plannerScope} planner`,
+        tier: 1,
+        duration_ms: Date.now() - started,
+        tokens_used: 0,
+      };
+    }
     if (!isToolAllowedForRole(this.role, name)) {
       return { ok: false, error: `role_firewall_denied: ${this.role} cannot execute '${name}'`, tier: 1, duration_ms: Date.now() - started, tokens_used: 0 };
     }
@@ -718,11 +810,11 @@ export class ScriptToolSurface {
       ? String(params["commands"] ?? params["command"] ?? params["cmd"] ?? "")
       : `${name} ${JSON.stringify(params)}`;
     try {
-      await enforceWriteGuard(mutationIntent, this.env.mutationGrant, this.env.platformSecret ?? "", {
+      const mutationGrantRequired = await enforceWriteGuardWithSentry(mutationIntent, this.env.mutationGrant, this.env.platformSecret ?? "", {
         subject: this.env.humanInvokerId ?? "system",
         resource: this.env.projectId ?? this.env.spaceId,
-      });
-      if (requiresMutationGrant(mutationIntent) && this.env.consumeMutationGrant && !(await this.env.consumeMutationGrant())) {
+      }, this.env.fastDecision);
+      if (mutationGrantRequired && this.env.consumeMutationGrant && !(await this.env.consumeMutationGrant())) {
         throw new Error("mutation_grant_replayed");
       }
     } catch {
@@ -763,12 +855,12 @@ export class ScriptToolSurface {
       this.missStreak = 0;
       // Bash first attempts the in-isolate virtual POSIX/$PATH runtime (Tier 2); only an
       // unsupported command promotes itself to the container from inside the operation.
-      const route = name === "Bash" ? classifyExecutionRoute(mutationIntent) : undefined;
+      const route = name === "Bash" ? await classifyExecutionRouteWithSentry(mutationIntent, this.env.fastDecision) : undefined;
       const effectiveTier = route?.tier ?? prebuilt.prebuilt.requires_tier;
       if (this.env.maxTier !== undefined && effectiveTier > this.env.maxTier) {
         return {
           ok: false,
-          error: `Tier ${prebuilt.prebuilt.requires_tier} exceeds this project's execution ceiling (${this.env.maxTier}) for script.run('${name}').`,
+          error: `Tier ${effectiveTier} exceeds this project's execution ceiling (${this.env.maxTier}) for script.run('${name}').`,
           tier: effectiveTier,
           actual_tier: effectiveTier,
           engine: route?.engine ?? EXECUTION_ENGINES[effectiveTier],
@@ -779,9 +871,28 @@ export class ScriptToolSurface {
       try {
         const output = await prebuilt.op(params, {
           env: this.env,
+          commands: new Map([...this.ops].map(([operation, value]) => [operation, {
+            operation, requiresTier: value.prebuilt.requires_tier,
+            usage: value.prebuilt.paramHints?.[operation] ?? operation,
+          }])),
+          authorizeShell: async (resource) => {
+            if (resource.kind === "file") {
+              if (resource.access === "write" && (this.plannerScope || this.env.effectiveRole === "viewer")) return false;
+              return isToolAllowedForRole(this.role, resource.access === "write" ? "Edit" : "Read");
+            }
+            const installed = this.ops.get(resource.name);
+            if (installed) return isToolAllowedForRole(this.role, resource.name, installed.prebuilt.requires_tier)
+              && (!this.plannerScope || isPlannerOperationAllowed(this.plannerScope, resource.name));
+            if (this.plannerScope) return new Set(["naelao", "echo", "printf", "pwd", "cat", "ls", "grep", "sed", "awk", "find", "jq", "head", "tail", "sort", "uniq", "wc", "diff", "true", "false"]).has(resource.name);
+            return isToolAllowedForRole(this.role, "Bash");
+          },
           // skills calling skills (§7): a prebuilt op may invoke another op/script.
           run: async (n, p) => {
-            const r = await this.run(n, p ?? {});
+            const r = await this.run(n, p ?? {}, {
+              // Executive Cabinet receives a closure for exactly one allowlisted operation. Its
+              // nested call is therefore capability delegation, not a planner bypass.
+              delegatedByCabinet: prebuilt.prebuilt.name === "executive-cabinet",
+            });
             if (!r.ok) throw new Error(r.error ?? `nested script ${n} failed`);
             return r.output;
           },
@@ -796,7 +907,10 @@ export class ScriptToolSurface {
         // Step 9: generic result-size guard. Read usage from the ORIGINAL output above (the
         // paginated view may replace the primary list), then hand the model the size-limited view.
         const limited = applyToolResultLimit(output, params);
-        return {
+        const reportedEngine = executionEngine((output as { engine?: unknown } | null)?.engine)
+          ?? route?.engine
+          ?? EXECUTION_ENGINES[effectiveTier];
+        return this.recordExecution(name, {
           ok: true,
           output: limited,
           tier: effectiveTier,
@@ -804,7 +918,10 @@ export class ScriptToolSurface {
           tokens_used: usage?.tokens_used ?? 0,
           ...(usage?.input_tokens !== undefined ? { input_tokens: usage.input_tokens } : {}),
           ...(usage?.output_tokens !== undefined ? { output_tokens: usage.output_tokens } : {}),
-        };
+          actual_tier: ((output as { actual_tier?: ExecutionTier } | null)?.actual_tier ?? effectiveTier),
+          engine: reportedEngine,
+          ...((output as { runtime_receipt?: ScriptRunResult["runtime_receipt"] } | null)?.runtime_receipt ? { runtime_receipt: (output as { runtime_receipt: NonNullable<ScriptRunResult["runtime_receipt"]> }).runtime_receipt } : {}),
+        });
       } catch (err) {
         // Growth-layer "click Install" onboarding (mcp-connector.ts's resolveServerId): a thrown
         // Error can carry needsConnector/connectorId/connectorName metadata (same precedent as
@@ -812,16 +929,20 @@ export class ScriptToolSurface {
         // reasoning loop's answer, and any future UI, sees a structured signal rather than only
         // free text buried in the error message.
         const meta = err as unknown as Record<string, unknown>;
-        return {
+        return this.recordExecution(name, {
           ok: false,
           error: err instanceof Error ? err.message : String(err),
-          tier: prebuilt.prebuilt.requires_tier,
+          tier: effectiveTier,
+          actual_tier: effectiveTier,
+          engine: route?.engine ?? EXECUTION_ENGINES[effectiveTier],
           duration_ms: Date.now() - started,
           tokens_used: 0,
+          ...(meta["capability_error"] ? { capability_error: meta["capability_error"] as ScriptRunResult["capability_error"] } : {}),
+          ...(meta["runtime_receipt"] ? { runtime_receipt: meta["runtime_receipt"] as ScriptRunResult["runtime_receipt"] } : {}),
           ...(typeof meta["needsConnector"] === "boolean" ? { needs_connector: meta["needsConnector"] as boolean } : {}),
           ...(typeof meta["connectorId"] === "string" ? { connector_id: meta["connectorId"] as string } : {}),
           ...(typeof meta["connectorName"] === "string" ? { connector_name: meta["connectorName"] as string } : {}),
-        };
+        });
       }
     }
 
@@ -864,6 +985,6 @@ export class ScriptToolSurface {
     // The error, not just the boolean: it is what a later repair is aimed at, and what lets the
     // next run see "failed its last three times, and here is why" instead of a lower number.
     await this.library.recordOutcome(name, result.ok, result.error);
-    return result;
+    return this.recordExecution(name, result);
   }
 }

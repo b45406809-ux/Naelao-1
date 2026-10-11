@@ -4,8 +4,16 @@ import { registerProjectMcpRoutes } from "./mcp.js";
 
 class MemoryBucket {
   data = new Map<string, string>();
-  async get(key: string) { const value = this.data.get(key); return value === undefined ? null : { text: async () => value, httpEtag: "etag" }; }
-  async put(key: string, value: string) { this.data.set(key, value); }
+  private async hash(value: string) { const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)); return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join(""); }
+  async head(key: string) { const value = this.data.get(key); return value === undefined ? null : { key, etag: "etag", size: value.length, customMetadata: { sha256: await this.hash(value) } }; }
+  async get(key: string) { const value = this.data.get(key); return value === undefined ? null : { text: async () => value, arrayBuffer: async () => new TextEncoder().encode(value).buffer, httpEtag: "etag", customMetadata: { sha256: await this.hash(value) } }; }
+  async put(key: string, value: string | Uint8Array, options?: { onlyIf?: { etagMatches?: string; etagDoesNotMatch?: string } }) {
+    const previous = this.data.get(key);
+    if (options?.onlyIf?.etagMatches && previous === undefined) return null;
+    if (options?.onlyIf?.etagDoesNotMatch === "*" && previous !== undefined) return null;
+    this.data.set(key, typeof value === "string" ? value : new TextDecoder().decode(value));
+    return { etag: "etag-next" };
+  }
   async list({ prefix }: { prefix: string }) { return { objects: [...this.data.keys()].filter((k) => k.startsWith(prefix)).map((key) => ({ key })), delimitedPrefixes: [] }; }
 }
 

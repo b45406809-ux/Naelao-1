@@ -1,6 +1,7 @@
 import * as React from "react";
 import { Avatar } from "./Avatar";
 import { CheckIcon, ChevronDownIcon, PlusIcon, SettingsIcon, HierarchyIcon, AccountIcon, SpacesIcon } from "./icons";
+import { useTheme } from "../useTheme";
 
 export interface SpaceSwitcherEntry {
   id: string;
@@ -37,12 +38,36 @@ export function SpaceSwitcher({
   onAccount,
   canCreate = true,
 }: SpaceSwitcherProps) {
+  const { mode, setMode } = useTheme();
+  const dark = mode === "dark";
+
   return (
     <div style={{ position: "relative" }}>
       <div className={["space-switcher-dropdown", open ? "open" : ""].filter(Boolean).join(" ")}>
         <div className="switcher-header">
           Spaces
+          <div className="switcher-header-actions">
           {onManage && <button onClick={onManage}>Manage</button>}
+            <button
+              type="button"
+              className="theme-switcher-button"
+              aria-label={dark ? "Switch to light mode" : "Switch to dark mode"}
+              title={dark ? "Switch to light mode" : "Switch to dark mode"}
+              onClick={(event) => {
+                event.stopPropagation();
+                setMode(dark ? "light" : "dark");
+              }}
+            >
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                {dark ? (
+                  <circle cx="8" cy="8" r="3.25" />
+                ) : (
+                  <path d="M10.8 2.6A5.7 5.7 0 1 0 13.4 11A4.8 4.8 0 0 1 10.8 2.6Z" />
+                )}
+                {!dark && <path d="M11.5 3.5h.01M13 6h.01M12 12h.01" />}
+              </svg>
+            </button>
+          </div>
         </div>
         {entries.map((entry) => (
           <React.Fragment key={entry.id}>

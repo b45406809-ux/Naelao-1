@@ -1,7 +1,5 @@
 "use client";
 
-export const runtime = "edge";
-
 // Analytics — mirrors apps/launchpad/src/index.html's #analytics-view (KPI cards, a bar chart,
 // a per-agent usage table) with real data instead of the mockup's hardcoded numbers, plus the
 // piece the mockup doesn't have at all: heartbeat/scheduled wake-up activity, since the assistant

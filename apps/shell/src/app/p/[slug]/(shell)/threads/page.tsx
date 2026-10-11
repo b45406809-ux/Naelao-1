@@ -1,6 +1,5 @@
 "use client";
 
-export const runtime = "edge";
 
 import * as React from "react";
 import Link from "next/link";
@@ -41,7 +40,8 @@ export default function ThreadsPage() {
       // op now uses (see project-coordination.ts) — otherwise this thread has no session_id and
       // reading it back reports "Session not found" until Chat's own lazy-mint fallback runs,
       // which never links back to this thread row at all.
-      await startSession(activeSpaceId, creds, "New thread", created.id).catch(() => {});
+      const started = await startSession(activeSpaceId, creds, "New thread", created.id).catch(() => null);
+      window.dispatchEvent(new CustomEvent("naelao:session-created", { detail: { spaceId: activeSpaceId, sessionId: started?.id ?? null, threadId: created.id } }));
       router.push(`/p/${product.slug}/threads/${created.id}`);
     } catch (err) {
       show(err instanceof Error ? err.message : "Failed to create thread");

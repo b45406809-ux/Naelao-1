@@ -1,4 +1,5 @@
 import type { SpaceModelPolicy } from "@naelao/agent-sdk";
+export { airGappedOnlyFromConfig } from "@naelao/security";
 
 export interface ModelPolicyValidation {
   ok: boolean;

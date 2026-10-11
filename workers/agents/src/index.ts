@@ -18,12 +18,16 @@ import { HITLApprovalDO } from "./do/HITLApprovalDO.js";
 import { TaskDO } from "./do/TaskDO.js";
 import { ToolSandboxDO } from "./do/ToolSandboxDO.js";
 import { LocalTunnelDO } from "./do/LocalTunnelDO.js";
+import { namedTunnelStub } from "./tunnels/host.js";
+export { CodeRpcBroker } from "./script-engine/code-rpc-broker.js";
 import { LAUNCHPAD_TEMPLATES, LAUNCHPAD_CORE_AGENTS, getLaunchpadTemplate } from "./launchpad/spacetype.js";
 import { resolveBusinessContext, parseSpaceConfigForContext, loadBusinessContext, type BusinessContext } from "./launchpad/business-context.js";
 import { CONNECTOR_CATALOGUE, getConnector, pollableConnectorIds } from "./connectors/catalogue.js";
 import { CONTAINER_IMAGE_CATALOGUE } from "./script-engine/container-catalogue.js";
 import { isCronDue } from "@naelao/events";
 import { SkillLibrary } from "./script-engine/skill-library.js";
+import { workflowRunStub, type DurableWorkflowHostEnv } from "./workflows/workflow-host.js";
+import type { DurableWorkflowIdentity } from "@naelao/agent-sdk";
 import { promoteSkill, inheritTemplateSkills } from "./script-engine/federation.js";
 import { verifyWebhookSignature, normalizeWebhook, webhookGoal } from "./connectors/webhook-normalizer.js";
 import {
@@ -38,7 +42,7 @@ import {
   linkOAuthAccountAndCheckDuplicate,
 } from "./connectors/oauth.js";
 import type { SpaceModelPolicy } from "@naelao/agent-sdk";
-import { validateModelForSpacePolicy } from "./model-policy.js";
+import { airGappedOnlyFromConfig, validateModelForSpacePolicy } from "./model-policy.js";
 export { validateModelForSpacePolicy } from "./model-policy.js";
 import {
   startComposioLink,
@@ -62,8 +66,10 @@ import { seedTemplateProjects, seedGeneralProject } from "./launchpad/bootstrap.
 import { PREBUILT_SCRIPTS } from "./script-engine/prebuilt/index.js";
 import { findAgentTemplate, agentTemplateSummaries, agentTemplateToConfig, customAgentToConfig } from "./agent-templates.js";
 import { ARCHETYPE_PRESETS, isKnownArchetype, clampScriptsToArchetype } from "./script-engine/agent-archetypes.js";
-import { writeAgentConfig } from "./script-engine/agent-config.js";
+import { writeAgentConfig, createAgentConfigLockGateway } from "./script-engine/agent-config.js";
 import { actorAddress, type ThreadTier } from "@naelao/agent-sdk";
+import { applyDurableObjectJurisdiction } from "@naelao/security";
+import { deleteBytesCas, putBytesCas, readBytesWithHash } from "./script-engine/r2-cas.js";
 
 function safeParse(s: string): unknown {
   try { return JSON.parse(s); } catch { return {}; }
@@ -91,15 +97,30 @@ export function normalizeScriptRunResult(raw: unknown, runId: string): {
   reactSteps: unknown[];
   error?: string;
   pending_approval?: { approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number };
+  pending_question?: { question_id: string; question: string; options?: string[]; questions?: Array<{ question: string; options?: string[] }>; expires_at?: number };
   /** Actions the run parked and carried on around — it has a real answer AND outstanding work. */
   deferred_approvals?: Array<{ approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number }>;
 } {
   const r = raw as {
     result?: { ok?: boolean; output?: unknown; error?: unknown };
     error?: string;
-    pending_approval?: { approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number };
+  pending_approval?: { approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number };
+  pending_question?: { question_id: string; question: string; options?: string[]; questions?: Array<{ question: string; options?: string[] }>; expires_at?: number };
     deferred_approvals?: Array<{ approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number }>;
   } | null;
+
+  if (r?.pending_question) {
+    const question = r.pending_question.question;
+    const answer = `I need your answer before I continue: ${question}`;
+    return {
+      runId,
+      status: "awaiting_approval",
+      finalAnswer: answer,
+      final_answer: answer,
+      reactSteps: [],
+      pending_question: r.pending_question,
+    };
+  }
 
   // A run that stopped at a HITL gate has NO `result` and no `error` — which this function used to
   // read as ok-with-an-empty-output, reporting "completed" and a blank answer. That's the blank
@@ -155,11 +176,15 @@ export { NaelaoAgentDO } from "./do/NaelaoAgentDO.js";
 export { HITLApprovalDO } from "./do/HITLApprovalDO.js";
 export { TaskDO } from "./do/TaskDO.js";
 export { ToolSandboxDO } from "./do/ToolSandboxDO.js";
+export { DocumentSandboxDO, MediaSandboxDO } from "./do/ToolSandboxDO.js";
 export { LocalTunnelDO } from "./do/LocalTunnelDO.js";
 export { ConcurrencyDO } from "./do/ConcurrencyDO.js";
 export { RiskGuardDO } from "./do/RiskGuardDO.js";
 export { AgentTaskWorkflow } from "./workflows/AgentTaskWorkflow.js";
 export { ScriptRunWorkflow } from "./workflows/ScriptRunWorkflow.js";
+export { WorkflowRunDO } from "./do/WorkflowRunDO.js";
+export { WorkflowControl } from "./workflows/workflow-control.js";
+export { DynamicWorkflowBinding } from "@cloudflare/dynamic-workflows";
 export { ScheduledReminderWorkflow } from "./workflows/outbound-reminder-workflow.js";
 export { GenericSubagentWorkflow } from "./workflows/generic-subagent-workflow.js";
 export { CompanyAutomationWorkflow } from "./workflows/company-automation-workflow.js";
@@ -168,6 +193,11 @@ export { CompanyAutomationWorkflow } from "./workflows/company-automation-workfl
 
 export interface AgentsEnv {
   ENVIRONMENT: string;
+  DATA_JURISDICTION?: "eu";
+  TYPESAFE_API_KEY?: string;
+  SYSTEM_ONE_ENDPOINT?: string;
+  SYSTEM_ONE_MODEL?: string;
+  SYSTEM_ONE_PROVIDER?: "jev" | "laya";
   /** Optional since the vendor cutover: the CF AI Gateway can hold the Anthropic key itself
    *  (Authenticated Gateway / BYOK — see NAELAO_AIG_TOKEN), so a deployment needs no per-worker
    *  Anthropic key. When BOTH this and NAELAO_AIG_TOKEN are unset, LLM calls fail honestly. */
@@ -266,6 +296,8 @@ export interface AgentsEnv {
   /** Hourly "agent tick" fan-out (heartbeats, connector polls, scheduled jobs) — see
    *  enqueueAgentTicks/handleAgentTicksQueue below. */
   AGENT_TICKS: Queue<AgentTickMessage>;
+  /** Shared lock namespace for multi-file agent-config bundle writes. */
+  CONCURRENCY_DO?: DurableObjectNamespace;
 }
 
 // One message per due tick — the unit of work scheduled()'s enumerate-and-enqueue phase
@@ -300,6 +332,9 @@ interface SpaceRow {
 // call site when neither an Anthropic key nor a gateway token is configured.
 function validateEnv(env: AgentsEnv): void {
   if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
+  applyDurableObjectJurisdiction(env as unknown as Record<string, unknown>, env.DATA_JURISDICTION, [
+    "NAELAO_AGENT_DO", "HITL_APPROVAL_DO", "TASK_DO", "TOOL_SANDBOX", "LOCAL_TUNNEL", "RISK_GUARD", "WORKFLOW_RUN_DO",
+  ]);
 }
 
 const app = new Hono<{ Bindings: AgentsEnv }>();
@@ -363,14 +398,15 @@ async function getAgentDO(
 
 // Short-lived HMAC credential token (mirrors workers/credentials generateCredentialToken) — lets
 // the agents worker resolve a vault secret (e.g. a connector webhook secret) for a space.
-async function generateCredentialToken(platformSecret: string, spaceId: string, agentId: string): Promise<string> {
+async function generateCredentialToken(platformSecret: string, tenantId: string, spaceId: string, agentId: string): Promise<string> {
   const timestamp = Math.floor(Date.now() / 1000);
+  if (![tenantId, spaceId, agentId].every((value) => /^[A-Za-z0-9_-]{1,128}$/.test(value))) throw new Error("invalid_credential_token_scope");
   const key = await crypto.subtle.importKey(
     "raw", new TextEncoder().encode(platformSecret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
   );
-  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${spaceId}:${agentId}:${timestamp}`));
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${tenantId}:${spaceId}:${agentId}::${timestamp}`));
   const hex = Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
-  return `t=${timestamp},aid=${agentId},v1=${hex}`;
+  return `t=${timestamp},aid=${agentId},tid=${tenantId},v3=${hex}`;
 }
 
 // G-AX04: Get TaskDO stub — one DO per space for task state management
@@ -549,7 +585,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
       compliance?: { airGappedOnly?: boolean };
     };
     spacePolicy = cfg.model_policy ?? cfg.productConfig?.modelPolicy;
-    airGappedOnly = cfg.compliance?.airGappedOnly === true || cfg.productConfig?.compliance?.airGappedOnly === true;
+    airGappedOnly = airGappedOnlyFromConfig(spaceRow.config_json);
   } catch { /* malformed configuration is handled conservatively by the ordinary allowlist */ }
 
   const policyModel = rawBody.model ?? (() => {
@@ -1082,6 +1118,7 @@ app.post("/agents/:agentId/script/run", async (c) => {
   // clamp (and handleScriptRun's per-caller billing branches) could never apply to runs
   // entering here.
   const actingRole = c.req.header("x-naelao-role") ?? "";
+  const wakePolicy = await resolveWakeContext(c.env, spaceId, tenantId);
   const doResp = await stub.fetch(
     new Request("http://agent-do/script/run", {
       method: "POST",
@@ -1101,6 +1138,7 @@ app.post("/agents/:agentId/script/run", async (c) => {
         // Inject the platform LLM key so webhook/cron wakes (which carry none) can reason.
         apiKey: c.env.ANTHROPIC_API_KEY ?? "",
         ...(body.model ? { model: body.model } : {}),
+        ...(wakePolicy.airGappedOnly ? { airGappedOnly: true } : {}),
       }),
     })
   );
@@ -1114,7 +1152,7 @@ app.post("/agents/:agentId/script/run", async (c) => {
 // script," never a reasoning session, so they share one dispatch path.
 async function fireScriptDirectly(
   env: AgentsEnv,
-  params: { spaceId: string; tenantId: string; agentId?: string; projectId?: string; scriptName: string; params?: Record<string, unknown> },
+  params: { spaceId: string; tenantId: string; agentId?: string; projectId?: string; scriptName: string; params?: Record<string, unknown>; airGappedOnly?: boolean },
   reqId?: string
 ): Promise<Response> {
   const agentId = params.agentId ?? "naelao-agent";
@@ -1130,6 +1168,7 @@ async function fireScriptDirectly(
         ...(params.projectId ? { projectId: params.projectId } : {}),
         scriptName: params.scriptName,
         params: params.params ?? {},
+        ...(params.airGappedOnly ? { airGappedOnly: true } : {}),
       }),
     })
   );
@@ -1358,29 +1397,39 @@ async function resolveWakeContext(
   env: AgentsEnv,
   spaceId: string,
   tenantId: string
-): Promise<{ model: string; businessContext?: BusinessContext }> {
+): Promise<{ model: string; businessContext?: BusinessContext; airGappedOnly: boolean }> {
   try {
     const row = await env.PLATFORM_DB.prepare(
       "SELECT name, config_json FROM spaces WHERE id = ? AND tenant_id = ?"
     ).bind(spaceId, tenantId).first<{ name: string | null; config_json: string | null }>();
-    if (!row) return { model: DEFAULT_WORKING_MODEL };
+    // A missing space row is an unknown compliance state. Scheduled execution must fail closed
+    // rather than treating an unavailable policy as permission to use a cloud model.
+    if (!row) return { model: DEFAULT_WORKING_MODEL, airGappedOnly: true };
     const cfg = parseSpaceConfigForContext(row.config_json);
     let configured: string | undefined;
     try {
-      const pc = JSON.parse(row.config_json || "{}") as { productConfig?: { modelConfig?: { model?: string } } };
+      const pc = JSON.parse(row.config_json || "{}") as {
+        compliance?: { airGappedOnly?: boolean };
+        productConfig?: { modelConfig?: { model?: string }; compliance?: { airGappedOnly?: boolean } };
+      };
       const m = pc.productConfig?.modelConfig?.model;
       // Re-validated rather than trusted: a stored model that is no longer in the allowlist would
       // otherwise reintroduce exactly the 404 this function exists to prevent.
-      if (m && isAllowedModel(m)) configured = m;
+      if (m && (isAllowedModel(m) || m.startsWith("local/"))) configured = m;
+      const airGappedOnly = airGappedOnlyFromConfig(row.config_json);
+      return {
+        model: configured ?? DEFAULT_WORKING_MODEL,
+        businessContext: resolveBusinessContext({ spaceName: row.name, config: cfg }),
+        airGappedOnly,
+      };
     } catch {
       // fall through to the default
     }
-    return {
-      model: configured ?? DEFAULT_WORKING_MODEL,
-      businessContext: resolveBusinessContext({ spaceName: row.name, config: cfg }),
-    };
+    // Malformed policy is also an unknown compliance state. The eventual local-model check may
+    // reject the wake, but it cannot silently turn this into external AI usage.
+    return { model: configured ?? DEFAULT_WORKING_MODEL, businessContext: resolveBusinessContext({ spaceName: row.name, config: cfg }), airGappedOnly: true };
   } catch {
-    return { model: DEFAULT_WORKING_MODEL };
+    return { model: DEFAULT_WORKING_MODEL, airGappedOnly: true };
   }
 }
 
@@ -1419,7 +1468,7 @@ async function createHeartbeatSession(env: AgentsEnv, spaceId: string, tenantId:
 
 async function wakeAgentGoal(
   env: AgentsEnv,
-  params: { spaceId: string; tenantId: string; agentId?: string; projectId?: string; goal: string },
+  params: { spaceId: string; tenantId: string; agentId?: string; projectId?: string; goal: string; airGappedOnly?: boolean },
   reqId?: string
 ): Promise<Response> {
   const agentId = params.agentId ?? "naelao-agent";
@@ -1476,6 +1525,7 @@ async function wakeAgentGoal(
         context: { trigger: "scheduled_job", decoupled_context: true, max_context_tokens: 2_000 },
         apiKey: env.ANTHROPIC_API_KEY ?? "",
         model: wake.model,
+        ...(params.airGappedOnly || wake.airGappedOnly ? { airGappedOnly: true } : {}),
         ...(wake.businessContext ? { businessContext: wake.businessContext } : {}),
       }),
     })
@@ -1502,6 +1552,39 @@ app.post("/internal/agent-ticks/run", async (c) => {
   return c.json({ ok: true, swept: true });
 });
 
+// Shared by the agents worker and the provisioner: all four-file agent configuration bundles
+// serialize through this worker's ConcurrencyDO namespace. The HMAC scope is the space id, so a
+// service binding cannot acquire a lock for another tenant by changing the request body alone.
+app.post("/internal/agent-config-lock/:operation", async (c) => {
+  const body = (await c.req.json<{ space_id?: string; key?: string; holderId?: string; ttlMs?: number }>().catch(() => null)) ?? {};
+  const spaceId = String(body.space_id ?? "");
+  if (!spaceId || !(await verifyInternalToken(c.req.header("x-naelao-internal-token"), spaceId, c.env.PLATFORM_SECRET))) {
+    return c.json({ error_code: "forbidden", message: "internal only" }, 403);
+  }
+  if (!c.env.CONCURRENCY_DO) return c.json({ error_code: "unavailable", message: "agent-config lock is not bound" }, 503);
+  const gateway = createAgentConfigLockGateway(c.env.CONCURRENCY_DO, spaceId);
+  const operation = c.req.param("operation");
+  if (!body.key || !body.holderId) return c.json({ error_code: "bad_request", message: "key and holderId are required" }, 400);
+  if (operation === "acquire") {
+    return c.json(await gateway.acquire({ key: body.key, holderId: body.holderId, limit: 1, ttlMs: body.ttlMs ?? 30_000 }));
+  }
+  if (operation === "release") {
+    await gateway.release({ key: body.key, holderId: body.holderId });
+    return c.json({ released: true });
+  }
+  return c.json({ error_code: "not_found" }, 404);
+});
+
+app.get("/internal/agent-config-lock/status", async (c) => {
+  const spaceId = c.req.query("space_id") ?? "";
+  const key = c.req.query("key") ?? "";
+  if (!spaceId || !key || !(await verifyInternalToken(c.req.header("x-naelao-internal-token"), spaceId, c.env.PLATFORM_SECRET))) {
+    return c.json({ error_code: "forbidden", message: "internal only" }, 403);
+  }
+  if (!c.env.CONCURRENCY_DO) return c.json({ error_code: "unavailable", message: "agent-config lock is not bound" }, 503);
+  return c.json(await createAgentConfigLockGateway(c.env.CONCURRENCY_DO, spaceId).status(key));
+});
+
 // ── POST /internal/triggers/fire — @naelao/events dispatch target ─────────────
 // SpaceDO calls this after evaluating an event_triggers match (thread.created,
 // project.created, ...). Deliberately NOT the reasoning loop: this runs the named script
@@ -1525,6 +1608,7 @@ app.post("/internal/triggers/fire", async (c) => {
     projectId?: string;
     scriptName: string;
     params?: Record<string, unknown>;
+    airGappedOnly?: boolean;
   }
   const body = await c.req.json<FireBody>().catch(() => null);
   if (!body?.spaceId || !body.tenantId || !body.scriptName) {
@@ -1535,7 +1619,8 @@ app.post("/internal/triggers/fire", async (c) => {
   if (body.tenantId !== headerTenantId) {
     return c.json({ error_code: "forbidden", message: "tenantId does not match the verified internal token" }, 403);
   }
-  const doResp = await fireScriptDirectly(c.env, body, c.get("requestId"));
+  const policy = await resolveWakeContext(c.env, body.spaceId, body.tenantId);
+  const doResp = await fireScriptDirectly(c.env, { ...body, airGappedOnly: policy.airGappedOnly }, c.get("requestId"));
   const doBody = await doResp.json<unknown>();
   return c.json(doBody, doResp.status as 200 | 400 | 404 | 500 | 503);
 });
@@ -1548,6 +1633,19 @@ app.post("/internal/triggers/fire", async (c) => {
 // named script DIRECTLY via ScriptToolSurface, no reasoner) — kept as its own route rather than
 // reused because its caller (a Workflow instance, not SpaceDO) is a structurally different
 // population worth being able to audit/rate-limit separately later.
+app.post("/internal/workflows/effect", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  const body = await c.req.json<{ identity: DurableWorkflowIdentity; key: string; operation: string; params: Record<string, unknown>; idempotencyKey: string }>();
+  if (!body.identity || body.identity.tenantId !== tenantId || body.idempotencyKey !== body.identity.runId + ":" + body.key) return c.json({ error_code: "workflow_scope_mismatch" }, 403);
+  const canonical = await workflowRunStub(c.env as unknown as DurableWorkflowHostEnv, body.identity).authorize(body.identity.runId);
+  if (JSON.stringify(canonical) !== JSON.stringify(body.identity)) return c.json({ error_code: "workflow_scope_mismatch" }, 403);
+  const wake = await resolveWakeContext(c.env, canonical.spaceId, tenantId);
+  const doName = await getDOName("agent", canonical.spaceId + ":" + canonical.agentId, tenantId, c.env.PLATFORM_SECRET);
+  const stub = c.env.NAELAO_AGENT_DO.get(c.env.NAELAO_AGENT_DO.idFromName(doName));
+  return stub.fetch(new Request("http://agent-do/workflow/effect", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, airGappedOnly: wake.airGappedOnly }) }));
+});
+
 app.post("/internal/scripts/run-durable", async (c) => {
   const headerTenantId = c.req.header("x-naelao-tenant-id") ?? "";
   const validToken = await verifyInternalToken(c.req.header("x-naelao-internal-token"), headerTenantId, c.env.PLATFORM_SECRET);
@@ -1561,6 +1659,7 @@ app.post("/internal/scripts/run-durable", async (c) => {
     projectId?: string;
     scriptName: string;
     params?: Record<string, unknown>;
+    airGappedOnly?: boolean;
   }
   const body = await c.req.json<RunDurableBody>().catch(() => null);
   if (!body?.spaceId || !body.tenantId || !body.scriptName) {
@@ -1569,7 +1668,8 @@ app.post("/internal/scripts/run-durable", async (c) => {
   if (body.tenantId !== headerTenantId) {
     return c.json({ error_code: "forbidden", message: "tenantId does not match the verified internal token" }, 403);
   }
-  const doResp = await fireScriptDirectly(c.env, body, c.get("requestId"));
+  const policy = await resolveWakeContext(c.env, body.spaceId, body.tenantId);
+  const doResp = await fireScriptDirectly(c.env, { ...body, airGappedOnly: policy.airGappedOnly }, c.get("requestId"));
   const doBody = await doResp.json<unknown>();
   return c.json(doBody, doResp.status as 200 | 400 | 404 | 500 | 503);
 });
@@ -1626,22 +1726,27 @@ export interface RunPendingApproval {
   action_name: string;
   params?: Record<string, unknown>;
   expires_at?: number;
+  kind?: "approval" | "question";
+  question_id?: string;
+  question?: string;
+  options?: string[];
+  questions?: Array<{ question: string; options?: string[] }>;
 }
 
 async function fetchRunOrTaskStatus(
   env: AgentsEnv, tenantId: string, sessionId: string, spaceId: string, runId: string
-): Promise<{ status: number; body: { id: string; status: string; final_answer?: string; partial_answer?: string; error?: string; error_code?: string; react_steps?: unknown[]; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval; deferred_approvals?: RunPendingApproval[] } }> {
+): Promise<{ status: number; body: { id: string; status: string; final_answer?: string; partial_answer?: string; error?: string; error_code?: string; react_steps?: unknown[]; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval; pending_question?: RunPendingApproval; deferred_approvals?: RunPendingApproval[] } }> {
   const stub = await getAgentDO(env, tenantId, sessionId);
   const doResponse = await stub.fetch(new Request(`http://agent-do/runs/${runId}`, { method: "GET" }));
   if (doResponse.ok) {
-    const doBody = await doResponse.json<{ id: string; status: string; final_answer?: string; partial_answer?: string; error?: string; error_code?: string; react_steps?: unknown[]; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval; deferred_approvals?: RunPendingApproval[] }>();
+    const doBody = await doResponse.json<{ id: string; status: string; final_answer?: string; partial_answer?: string; error?: string; error_code?: string; react_steps?: unknown[]; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval; pending_question?: RunPendingApproval; deferred_approvals?: RunPendingApproval[] }>();
     return { status: 200, body: doBody };
   }
   if (!env.TASK_DO) return { status: doResponse.status, body: { id: runId, status: "failed", error: "run not found" } };
   const taskStub = getTaskDO(env, spaceId);
   const taskResponse = await taskStub.fetch(`http://task-do/tasks/${runId}`);
   if (!taskResponse.ok) return { status: 404, body: { id: runId, status: "failed", error: "run not found" } };
-  const task = await taskResponse.json<{ task_id: string; status: string; result: { final_answer?: string; error_code?: string; pending_approval?: RunPendingApproval; deferred_approvals?: RunPendingApproval[] } | null; error: string | null }>();
+  const task = await taskResponse.json<{ task_id: string; status: string; result: { final_answer?: string; error_code?: string; pending_approval?: RunPendingApproval; pending_question?: RunPendingApproval; deferred_approvals?: RunPendingApproval[] } | null; error: string | null }>();
   return {
     status: 200,
     body: {
@@ -1649,6 +1754,7 @@ async function fetchRunOrTaskStatus(
       status: TASK_STATUS_TO_RUN_STATUS[task.status] ?? "running",
       ...(task.result?.final_answer !== undefined ? { final_answer: task.result.final_answer } : {}),
       ...(task.result?.pending_approval ? { pending_approval: task.result.pending_approval } : {}),
+      ...(task.result?.pending_question ? { pending_question: task.result.pending_question } : {}),
       // A run that opened a real, still-open approval and only then hit a SECOND, unrelated
       // reasoning failure must not have that approval vanish along with the error — see
       // AgentTaskWorkflow's update-result step, which now carries this through even when the
@@ -1876,8 +1982,12 @@ app.get(
       .first<{ id: string }>();
     if (!space) throw notFound("Space");
 
-    // G-D12: Enforce SSE streaming feature gate at the API layer
-    await new EntitlementsChecker(c.env.PLATFORM_DB).requireFeature(tenantId, "sse_streaming");
+    // G-D12: Enforce SSE streaming feature gate at the API layer. Local development uses
+    // the same Free-plan seed data as production, but the chat UI depends on SSE to function
+    // during development; keep the commercial restriction in deployed environments only.
+    if (c.env.ENVIRONMENT !== "development") {
+      await new EntitlementsChecker(c.env.PLATFORM_DB).requireFeature(tenantId, "sse_streaming");
+    }
 
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
     const writer = writable.getWriter();
@@ -1968,6 +2078,7 @@ app.get(
               // no machine-readable code — see fetchRunOrTaskStatus's own comment.
               ...(run.error_code ? { error_code: run.error_code } : {}),
               ...(run.pending_approval ? { pending_approval: run.pending_approval } : {}),
+              ...(run.pending_question ? { pending_question: run.pending_question } : {}),
               // Live-reported bug: a run that parked an approval and continued (rather than fully
               // suspending) never carried this to the client at all — the approval genuinely
               // existed (visible in the separate /approvals inbox) but the chat itself showed
@@ -2682,16 +2793,49 @@ type ByokProvider = (typeof BYOK_PROVIDERS)[number];
 function isByokProvider(p: string): p is ByokProvider {
   return (BYOK_PROVIDERS as readonly string[]).includes(p);
 }
-function byokCredentialName(provider: ByokProvider): string {
+function byokProviderToken(provider: ByokProvider): string {
+  return provider.replace(/-/g, "_");
+}
+function byokCredentialPrefix(provider: ByokProvider): string {
+  return `llm_byok_${byokProviderToken(provider)}`;
+}
+function byokActiveCredentialName(provider: ByokProvider): string {
+  return `llm_byok_active::${byokProviderToken(provider)}`;
+}
+function legacyByokCredentialName(provider: ByokProvider): string {
   return `llm-byok:${provider}`;
 }
 
-/** List which BYOK providers this space has a key configured for — metadata only, never the key. */
+interface ByokCredentialRow {
+  id: string;
+  name: string;
+  description?: string | null;
+  created_at?: string;
+}
+
+interface ByokKeyMetadata {
+  id: string;
+  label: string;
+  created_at?: string;
+  active: boolean;
+}
+
+function isByokKeyName(name: string, provider: ByokProvider): boolean {
+  const prefix = byokCredentialPrefix(provider);
+  return name === prefix || name.startsWith(`${prefix}::`) || name === legacyByokCredentialName(provider);
+}
+
+function labelFromByokDescription(description: string | null | undefined, provider: ByokProvider): string {
+  if (!description || description.startsWith("active-key:")) return `${provider === "groq" ? "Groq" : "Gemini"} key`;
+  return description.replace(/^BYOK LLM key \([^)]*\)$/, `${provider === "groq" ? "Groq" : "Gemini"} key`);
+}
+
+/** List BYOK key metadata only, never the key value. Pointer rows are excluded by consumers. */
 async function listByokCredentials(
   env: Pick<AgentsEnv, "CREDENTIALS_WORKER" | "PLATFORM_SECRET">,
   tenantId: string,
   spaceId: string,
-): Promise<Array<{ id: string; name: string }>> {
+): Promise<ByokCredentialRow[]> {
   if (!env.CREDENTIALS_WORKER) return [];
   const resp = await env.CREDENTIALS_WORKER.fetch(
     new Request(`http://credentials/spaces/${spaceId}/credentials`, {
@@ -2704,18 +2848,160 @@ async function listByokCredentials(
     }),
   );
   if (!resp.ok) return [];
-  const { credentials } = await resp.json<{ credentials?: Array<{ id: string; name: string }> }>().catch(() => ({ credentials: [] as Array<{ id: string; name: string }> }));
-  return (credentials ?? []).filter((cr) => cr.name.startsWith("llm-byok:"));
+  const { credentials } = await resp.json<{ credentials?: ByokCredentialRow[] }>().catch(() => ({ credentials: [] as ByokCredentialRow[] }));
+  return (credentials ?? []).filter((cr) => BYOK_PROVIDERS.some((provider) => isByokKeyName(cr.name, provider) || cr.name === byokActiveCredentialName(provider)));
+}
+
+function providerMetadata(provider: ByokProvider, rows: ByokCredentialRow[]) {
+  const providerRows = rows.filter((row) => isByokKeyName(row.name, provider) && row.name !== byokActiveCredentialName(provider));
+  const pointer = rows.find((row) => row.name === byokActiveCredentialName(provider));
+  const activeName = pointer?.description?.startsWith("active-key:") ? pointer.description.slice("active-key:".length) : null;
+  const keys: ByokKeyMetadata[] = providerRows.map((row) => ({
+    id: row.id,
+    label: labelFromByokDescription(row.description, provider),
+    ...(row.created_at ? { created_at: row.created_at } : {}),
+    active: row.name === activeName || (!activeName && row.name === legacyByokCredentialName(provider)),
+  }));
+  const active = keys.find((key) => key.active);
+  return { provider, configured: keys.length > 0, active_key_id: active?.id ?? null, keys };
+}
+
+async function deleteByokCredential(
+  env: Pick<AgentsEnv, "CREDENTIALS_WORKER" | "PLATFORM_SECRET">,
+  tenantId: string,
+  spaceId: string,
+  id: string,
+): Promise<Response> {
+  return env.CREDENTIALS_WORKER!.fetch(new Request(`http://credentials/spaces/${spaceId}/credentials/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: {
+      "x-naelao-tenant-id": tenantId,
+      "x-naelao-user-id": "byok-system",
+      "x-naelao-role": "admin",
+      "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+    },
+  }));
+}
+
+async function selectByokCredential(
+  env: Pick<AgentsEnv, "CREDENTIALS_WORKER" | "PLATFORM_SECRET">,
+  tenantId: string,
+  spaceId: string,
+  provider: ByokProvider,
+  keyName: string,
+): Promise<Response> {
+  return storeConnectorCredential(env, {
+    tenantId,
+    spaceId,
+    userId: "byok-system",
+    name: byokActiveCredentialName(provider),
+    value: keyName,
+    description: `active-key:${keyName}`,
+    scope: "space",
+  });
 }
 
 app.get("/spaces/:spaceId/llm-byok", async (c) => {
   const tenantId = await requireVerifiedTenant(c);
   const spaceId = c.req.param("spaceId");
   const rows = await listByokCredentials(c.env, tenantId, spaceId);
-  const configured = new Set(rows.map((r) => r.name.replace(/^llm-byok:/, "")));
   return c.json({
-    providers: BYOK_PROVIDERS.map((provider) => ({ provider, configured: configured.has(provider) })),
+    providers: BYOK_PROVIDERS.map((provider) => providerMetadata(provider, rows)),
   });
+});
+
+// ── POST /internal/projects/hibernate — finite project completion fanout ────
+// SpaceDO owns the project DAG and is the source of truth for terminal completion. This route
+// only clears alarms on the actors that can still wake work for that project; it never changes
+// project state and is therefore safe to retry. The HMAC gate prevents a public caller from
+// deleting another tenant's actor alarms.
+app.post("/internal/projects/hibernate", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !(await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))) {
+    return c.json({ error_code: "forbidden", message: "internal only" }, 403);
+  }
+  const body = await c.req.json<{ spaceId?: string; projectId?: string; agentIds?: string[] }>().catch(() => null);
+  if (!body?.spaceId || !body.projectId) {
+    return c.json({ error_code: "bad_request", message: "spaceId and projectId are required" }, 400);
+  }
+  const agentIds = [...new Set((body.agentIds ?? []).filter((id): id is string => typeof id === "string" && id.length > 0))];
+  const results: Array<{ actor: string; ok: boolean }> = [];
+  const canonical = getScopedActorDO(c.env, { spaceId: body.spaceId, projectId: body.projectId });
+  const canonicalResponse = await canonical.fetch(new Request("http://agent-do/project/hibernate", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ projectId: body.projectId }),
+  }));
+  results.push({ actor: `project:${body.projectId}`, ok: canonicalResponse.ok });
+  for (const agentId of agentIds) {
+    const stub = await getAgentDOForSpace(c.env, tenantId, body.spaceId, agentId);
+    const response = await stub.fetch(new Request("http://agent-do/project/hibernate", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectId: body.projectId }),
+    }));
+    results.push({ actor: agentId, ok: response.ok });
+  }
+  return c.json({ ok: results.every((result) => result.ok), projectId: body.projectId, actors: results });
+});
+
+// Project daemon MCP is routed through the authenticated agents worker so the public shell does
+// not receive a Durable Object id or a storage handle. The project actor validates the installed
+// daemon name and performs the bounded operation inside its own SQLite namespace.
+app.post("/spaces/:spaceId/projects/:projectId/daemons/:daemonId/mcp", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !(await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))) {
+    return c.json({ error_code: "forbidden", message: "internal only" }, 403);
+  }
+  const spaceId = c.req.param("spaceId");
+  const projectId = c.req.param("projectId");
+  const daemonId = c.req.param("daemonId");
+  const projectCheck = await c.env.SPACES_WORKER.fetch(new Request(
+    `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}`,
+    { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) } },
+  ));
+  if (!projectCheck.ok) return c.json({ error_code: "not_found", message: "Project not found" }, 404);
+  let workflowScript = "";
+  if (daemonId !== "tree-sitter") {
+    const extensionResponse = await c.env.SPACES_WORKER.fetch(new Request(
+      `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/extensions`,
+      { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) } },
+    ));
+    if (!extensionResponse.ok) return c.json({ error_code: "not_found", message: "Daemon directory unavailable" }, 404);
+    const installed = await extensionResponse.json<{ extensions?: Array<{ manifest?: { daemons?: Array<{ id?: string; workflowScript?: string }> } }> }>();
+    const declaration = (installed.extensions ?? [])
+      .flatMap(extension => extension.manifest?.daemons ?? [])
+      .find(daemon => daemon.id === daemonId && typeof daemon.workflowScript === "string");
+    if (!declaration?.workflowScript) return c.json({ error_code: "not_found", message: "daemon is not installed" }, 404);
+    workflowScript = declaration.workflowScript;
+  }
+  const stub = getScopedActorDO(c.env, { spaceId, projectId });
+  const payload = await c.req.raw.arrayBuffer();
+  const response = await stub.fetch(new Request("http://agent-do/daemon/mcp", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-naelao-daemon-id": daemonId,
+      "x-naelao-space-id": spaceId,
+      "x-naelao-project-id": projectId,
+      "x-naelao-tenant-id": tenantId,
+      ...(workflowScript ? { "x-naelao-daemon-script": workflowScript } : {}),
+    },
+    body: payload,
+  }));
+  return new Response(response.body, { status: response.status, headers: response.headers });
+});
+
+app.put("/spaces/:spaceId/sessions/:sessionId/approvals/:approvalId/answer", async (c) => {
+  const { spaceId, approvalId } = c.req.param();
+  const tenantId = await requireOwnedSpace(c, spaceId);
+  const body = await c.req.json<{ answer?: string }>();
+  const stub = getHitlDo(c.env, spaceId);
+  const res = await stub.fetch(`http://do/requests/${approvalId}/answer`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (res.ok) c.executionCtx.waitUntil(resumeSuspendedRun(c.env, tenantId, spaceId, approvalId));
+  return res;
 });
 
 app.put("/spaces/:spaceId/llm-byok", async (c) => {
@@ -2725,27 +3011,71 @@ app.put("/spaces/:spaceId/llm-byok", async (c) => {
   if (!c.env.CREDENTIALS_WORKER) {
     return c.json({ error_code: "unavailable", message: "Credential vault not bound" }, 503);
   }
-  const body = await c.req.json<{ provider?: string; key?: string }>().catch(() => ({}) as { provider?: string; key?: string });
+  const body = await c.req.json<{ provider?: string; key?: string; label?: string }>().catch(() => ({}) as { provider?: string; key?: string; label?: string });
   if (!body.provider || !isByokProvider(body.provider)) {
     return c.json({ error_code: "bad_request", message: `provider must be one of: ${BYOK_PROVIDERS.join(", ")}` }, 400);
   }
   if (!body.key || !body.key.trim()) {
     return c.json({ error_code: "bad_request", message: "key is required" }, 400);
   }
+  const keyName = `${byokCredentialPrefix(body.provider)}::key_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+  const label = typeof body.label === "string" ? body.label.trim().slice(0, 80) : "";
   const stored = await storeConnectorCredential(c.env, {
     tenantId,
     spaceId,
     userId: userId ?? "",
-    name: byokCredentialName(body.provider),
+    name: keyName,
     value: body.key.trim(),
-    description: `BYOK LLM key (${body.provider})`,
+    description: label || `BYOK LLM key (${body.provider})`,
     scope: "space",
   });
   if (!stored.ok) {
     const detail = await stored.text().catch(() => "");
     return c.json({ error_code: "store_failed", message: `Couldn't store the key (${stored.status}) ${detail}`.trim() }, 502);
   }
-  return c.json({ ok: true, provider: body.provider, configured: true });
+  const selected = await selectByokCredential(c.env, tenantId, spaceId, body.provider, keyName);
+  if (!selected.ok) return c.json({ error_code: "selection_failed", message: `Key was stored but could not be selected (${selected.status})` }, 502);
+  const rows = await listByokCredentials(c.env, tenantId, spaceId);
+  const createdRow = rows.find((row) => row.name === keyName);
+  const metadata = providerMetadata(body.provider, rows);
+  const created = createdRow ? metadata.keys.find((key) => key.id === createdRow.id) : undefined;
+  return c.json(created ?? { ok: true, provider: body.provider, configured: true });
+});
+
+app.post("/spaces/:spaceId/llm-byok/select", async (c) => {
+  const tenantId = await requireVerifiedTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const body = await c.req.json<{ provider?: string; key_id?: string }>().catch(() => ({}) as { provider?: string; key_id?: string });
+  if (!body.provider || !isByokProvider(body.provider) || !body.key_id) return c.json({ error_code: "bad_request", message: "provider and key_id are required" }, 400);
+  const provider = body.provider;
+  const rows = await listByokCredentials(c.env, tenantId, spaceId);
+  const match = rows.find((row) => row.id === body.key_id && isByokKeyName(row.name, provider) && row.name !== byokActiveCredentialName(provider));
+  if (!match) return c.json({ error_code: "not_found", message: "Provider key not found" }, 404);
+  const selected = await selectByokCredential(c.env, tenantId, spaceId, provider, match.name);
+  if (!selected.ok) return c.json({ error_code: "selection_failed", message: "Could not select provider key" }, 502);
+  return c.json({ ok: true, provider, key_id: match.id });
+});
+
+app.post("/spaces/:spaceId/llm-byok/remove", async (c) => {
+  const tenantId = await requireVerifiedTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const body = await c.req.json<{ provider?: string; key_id?: string }>().catch(() => ({}) as { provider?: string; key_id?: string });
+  if (!body.provider || !isByokProvider(body.provider) || !body.key_id) return c.json({ error_code: "bad_request", message: "provider and key_id are required" }, 400);
+  const provider = body.provider;
+  if (!c.env.CREDENTIALS_WORKER) return c.json({ error_code: "unavailable", message: "Credential vault not bound" }, 503);
+  const rows = await listByokCredentials(c.env, tenantId, spaceId);
+  const match = rows.find((row) => row.id === body.key_id && isByokKeyName(row.name, provider) && row.name !== byokActiveCredentialName(provider));
+  if (!match) return c.json({ error_code: "not_found", message: "Provider key not found" }, 404);
+  const del = await deleteByokCredential(c.env, tenantId, spaceId, match.id);
+  if (!del.ok) return c.json({ error_code: "delete_failed", message: `Couldn't remove the key (${del.status})` }, 502);
+  const remaining = (await listByokCredentials(c.env, tenantId, spaceId)).filter((row) => isByokKeyName(row.name, provider) && row.name !== byokActiveCredentialName(provider));
+  const activePointer = rows.find((row) => row.name === byokActiveCredentialName(provider));
+  const activeName = activePointer?.description?.startsWith("active-key:") ? activePointer.description.slice("active-key:".length) : null;
+  if (activeName === match.name) {
+    if (remaining[0]) await selectByokCredential(c.env, tenantId, spaceId, provider, remaining[0].name);
+    else if (activePointer) await deleteByokCredential(c.env, tenantId, spaceId, activePointer.id);
+  }
+  return c.json({ ok: true, provider, key_id: body.key_id });
 });
 
 app.delete("/spaces/:spaceId/llm-byok/:provider", async (c) => {
@@ -2759,20 +3089,13 @@ app.delete("/spaces/:spaceId/llm-byok/:provider", async (c) => {
     return c.json({ error_code: "unavailable", message: "Credential vault not bound" }, 503);
   }
   const rows = await listByokCredentials(c.env, tenantId, spaceId);
-  const match = rows.find((r) => r.name === byokCredentialName(provider));
+  const activePointer = rows.find((r) => r.name === byokActiveCredentialName(provider));
+  const activeName = activePointer?.description?.startsWith("active-key:") ? activePointer.description.slice("active-key:".length) : null;
+  const match = rows.find((r) => r.name === activeName) ?? rows.find((r) => r.name === legacyByokCredentialName(provider));
   if (!match) return c.json({ ok: true, provider, configured: false }); // idempotent
-  const del = await c.env.CREDENTIALS_WORKER.fetch(
-    new Request(`http://credentials/spaces/${spaceId}/credentials/${encodeURIComponent(match.id)}`, {
-      method: "DELETE",
-      headers: {
-        "x-naelao-tenant-id": tenantId,
-        "x-naelao-user-id": "byok-system",
-        "x-naelao-role": "admin",
-        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
-      },
-    }),
-  );
+  const del = await deleteByokCredential(c.env, tenantId, spaceId, match.id);
   if (!del.ok) return c.json({ error_code: "delete_failed", message: `Couldn't remove the key (${del.status})` }, 502);
+  if (activePointer && activeName === match.name) await deleteByokCredential(c.env, tenantId, spaceId, activePointer.id);
   return c.json({ ok: true, provider, configured: false });
 });
 
@@ -3290,15 +3613,20 @@ app.post("/connectors/:platform/webhook/:spaceId", async (c) => {
 
   // Resolve the space + its tenant; ignore events for unknown/inactive spaces (ack 200).
   const space = await c.env.PLATFORM_DB.prepare(
-    "SELECT tenant_id, status FROM spaces WHERE id = ?"
-  ).bind(spaceId).first<{ tenant_id: string; status: string }>();
+    "SELECT tenant_id, status, config_json FROM spaces WHERE id = ?"
+  ).bind(spaceId).first<{ tenant_id: string; status: string; config_json: string | null }>();
   if (!space || space.status !== "active") return c.json({ ok: true, skipped: "space_inactive" });
+  const wake = await resolveWakeContext(c.env, spaceId, space.tenant_id);
+  // A connector webhook is external ingress by definition. Do not even resolve its vaulted
+  // secret for an air-gapped space; acknowledge the provider without admitting whether the
+  // connector or credential exists.
+  if (wake.airGappedOnly) return c.json({ ok: true, skipped: "air_gapped" });
 
   const rawBody = await c.req.text();
 
   // Resolve the webhook signing secret from the vault (the signature IS the auth).
   if (!c.env.CREDENTIALS_WORKER) return c.json({ error_code: "unavailable", message: "credentials not bound" }, 503);
-  const credToken = await generateCredentialToken(c.env.PLATFORM_SECRET, spaceId, "naelao-agent");
+  const credToken = await generateCredentialToken(c.env.PLATFORM_SECRET, space.tenant_id, spaceId, "naelao-agent");
   const secretResp = await c.env.CREDENTIALS_WORKER.fetch(
     new Request(`http://credentials/v1/internal/spaces/${spaceId}/credentials/${encodeURIComponent(connector.webhook.secret_credential_name)}/plaintext`, {
       method: "POST",
@@ -3660,7 +3988,11 @@ async function applyAgentTemplate(
   }
 
   const agentId = `${template.id}-${crypto.randomUUID().slice(0, 8)}`;
-  await writeAgentConfig(env.SCRIPTS_R2, spaceId, agentId, agentTemplateToConfig(template));
+  await writeAgentConfig(env.SCRIPTS_R2, spaceId, agentId, agentTemplateToConfig(template), {
+    ...(env.CONCURRENCY_DO
+      ? { lockGateway: createAgentConfigLockGateway(env.CONCURRENCY_DO, spaceId), holderId: crypto.randomUUID() }
+      : {}),
+  });
 
   const internalToken = await mintInternalToken(env.PLATFORM_SECRET, tenantId);
   const headers = {
@@ -3715,6 +4047,8 @@ interface CustomAgentCreate {
   // than silently narrowed. See agent-archetypes.ts's own header for why this is opt-in
   // validation at CREATION time, not a runtime override of every agent's config.
   archetype?: string;
+  skills?: string[];
+  connectors?: string[];
 }
 async function createCustomAgent(
   env: AgentsEnv,
@@ -3749,7 +4083,14 @@ async function createCustomAgent(
       instructions: input.instructions,
       ...(input.system_prompt ? { system_prompt: input.system_prompt } : {}),
       prebuilt_scripts: scriptsToGrant,
-    })
+      ...(input.skills?.length ? { skills: input.skills } : {}),
+      ...(input.connectors?.length ? { connectors: input.connectors } : {}),
+    }),
+    {
+      ...(env.CONCURRENCY_DO
+        ? { lockGateway: createAgentConfigLockGateway(env.CONCURRENCY_DO, spaceId), holderId: crypto.randomUUID() }
+        : {}),
+    }
   );
 
   const internalToken = await mintInternalToken(env.PLATFORM_SECRET, tenantId);
@@ -3988,6 +4329,9 @@ app.post("/channels/platform-inbound/:channel", async (c) => {
     "SELECT status FROM spaces WHERE id = ?"
   ).bind(paired.spaceId).first<{ status: string }>();
   if (!space || space.status !== "active") return c.json({ ok: true, skipped: "space_inactive" });
+  if ((await resolveWakeContext(c.env, paired.spaceId, paired.tenantId)).airGappedOnly) {
+    return c.json({ ok: true, skipped: "air_gapped" });
+  }
 
   try {
     const stub = await getAgentDOForSpace(c.env, paired.tenantId, paired.spaceId, "naelao-agent", c.get("requestId"));
@@ -4162,11 +4506,14 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
     "SELECT tenant_id, status FROM spaces WHERE id = ?"
   ).bind(spaceId).first<{ tenant_id: string; status: string }>();
   if (!space || space.status !== "active") return c.json({ ok: true, skipped: "space_inactive" });
+  if ((await resolveWakeContext(c.env, spaceId, space.tenant_id)).airGappedOnly) {
+    return c.json({ ok: true, skipped: "air_gapped" });
+  }
 
   const rawBody = await c.req.text();
 
   if (!c.env.CREDENTIALS_WORKER) return c.json({ error_code: "unavailable", message: "credentials not bound" }, 503);
-  const credToken = await generateCredentialToken(c.env.PLATFORM_SECRET, spaceId, "naelao-agent");
+  const credToken = await generateCredentialToken(c.env.PLATFORM_SECRET, space.tenant_id, spaceId, "naelao-agent");
   const credName = CHANNEL_SECRET_CREDENTIAL[channel]!;
   const secretResp = await c.env.CREDENTIALS_WORKER.fetch(
     new Request(`http://credentials/v1/internal/spaces/${spaceId}/credentials/${encodeURIComponent(credName)}/plaintext`, {
@@ -4361,7 +4708,7 @@ app.post("/channels/email/agentmail-inbound/:spaceId", async (c) => {
   if (!c.env.CREDENTIALS_WORKER) return c.json({ error_code: "unavailable" }, 503);
 
   // Resolve the vaulted Svix secret (written at provision time).
-  const credToken = await generateCredentialToken(c.env.PLATFORM_SECRET, spaceId, "naelao-agent");
+  const credToken = await generateCredentialToken(c.env.PLATFORM_SECRET, space.tenant_id, spaceId, "naelao-agent");
   const secretResp = await c.env.CREDENTIALS_WORKER.fetch(new Request(
     `http://credentials/v1/internal/spaces/${spaceId}/credentials/${encodeURIComponent(AGENTMAIL_WEBHOOK_SECRET_CRED)}/plaintext`,
     { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": space.tenant_id, "x-naelao-credential-token": credToken } }
@@ -4479,6 +4826,40 @@ async function requireEndUserBusinessMembership(
     // the shell's own UI for exactly this reason).
     const { role: businessRole } = await resp.json<{ role?: string }>().catch(() => ({ role: undefined }));
     return businessRole === "admin" || businessRole === "owner";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Conversation-scoped read panels are also available to the product user who owns the
+ * conversation. Product users can legitimately chat in the product's root space without a row
+ * in business_memberships; requiring that row made the Workers panel fail even though the same
+ * verified caller could read and run the session. Keep the broader business-member path, then
+ * fall back to SpaceDO's existing end_user_id ownership check for this exact session.
+ */
+async function requireBusinessMembershipOrSessionAccess(
+  c: { env: AgentsEnv; req: { header: (h: string) => string | undefined } },
+  spaceId: string,
+  sessionId: string
+): Promise<boolean> {
+  if (await requireEndUserBusinessMembership(c, spaceId)) return true;
+  const { tenantId, userId, role } = getCallerIdentity(c);
+  if (role !== "product_end_user" || !tenantId || !userId || !sessionId || !c.env.SPACES_WORKER) return false;
+  try {
+    const token = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
+    const response = await c.env.SPACES_WORKER.fetch(new Request(
+      `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/sessions/${encodeURIComponent(sessionId)}`,
+      {
+        headers: {
+          "x-naelao-tenant-id": tenantId,
+          "x-naelao-user-id": userId,
+          "x-naelao-role": "product_end_user",
+          "x-naelao-internal-token": token,
+        },
+      }
+    ));
+    return response.ok;
   } catch {
     return false;
   }
@@ -4666,10 +5047,12 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
 app.get("/spaces/:spaceId/assistant/sub-agents", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = await requireVerifiedTenant(c);
-  if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
   const parentRunId = c.req.query("parent_run_id") ?? "";
   const sessionId = c.req.query("session_id") ?? "";
   const agentId = c.req.query("agent_id") ?? "";
+  if (!(await requireBusinessMembershipOrSessionAccess(c, spaceId, sessionId))) {
+    throw forbidden("You don't have access to this conversation");
+  }
   const stub = sessionId
     ? await getAgentDO(c.env, tenantId, agentId ? `${sessionId}:${agentId}` : sessionId, c.get("requestId"))
     : await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
@@ -4687,7 +5070,7 @@ app.get("/spaces/:spaceId/assistant/files", async (c) => {
   const prefix = `spaces/${spaceId}/workspace/`;
   const listed = await c.env.SCRIPTS_R2.list({ prefix, limit: 200 });
   const files = listed.objects
-    .filter((o) => !o.key.endsWith("/.keep"))
+    .filter((o) => !o.key.endsWith("/.keep") && o.customMetadata?.deleted !== "true")
     .map((o) => ({ path: o.key.slice(prefix.length), size: o.size, uploaded: o.uploaded.toISOString() }));
   return c.json({ data: files, count: files.length });
 });
@@ -4722,7 +5105,8 @@ app.get("/spaces/:spaceId/assistant/files/*", async (c) => {
   const rest = c.req.path.split("/assistant/files/")[1] ?? "";
   const relative = decodeURIComponent(rest).split("/").filter((seg) => seg && seg !== "." && seg !== "..").join("/");
   if (!relative) return c.json({ error_code: "bad_request", message: "file path required" }, 400);
-  const obj = await c.env.SCRIPTS_R2.get(prefix + relative);
+  const current = await readBytesWithHash(c.env.SCRIPTS_R2, prefix + relative);
+  const obj = current ? await c.env.SCRIPTS_R2.get(prefix + relative) : null;
   if (!obj) return c.json({ error_code: "not_found", message: "File not found" }, 404);
   if (obj.size > ASSISTANT_FILE_MAX_BYTES) {
     return c.json({ path: relative, size: obj.size, too_large: true, message: "File exceeds the 2MB inline view limit" });
@@ -4929,8 +5313,9 @@ app.post("/spaces/:spaceId/sessions/:sessionId/uploads", async (c) => {
     const name = safeUploadName(file.name || "file");
     const key = `${prefix}${name}`;
     const bytes = await file.arrayBuffer();
-    await c.env.SCRIPTS_R2.put(key, bytes, {
-      httpMetadata: { contentType: file.type || "application/octet-stream" },
+    const current = await readBytesWithHash(c.env.SCRIPTS_R2, key);
+    await putBytesCas(c.env.SCRIPTS_R2, key, new Uint8Array(bytes), current?.hash ?? null, {}, {
+      contentType: file.type || "application/octet-stream",
     });
     uploaded.push({ name, key, size: bytes.byteLength, content_type: file.type || "application/octet-stream" });
   }
@@ -4945,7 +5330,7 @@ app.get("/spaces/:spaceId/sessions/:sessionId/uploads", async (c) => {
   const projectId = c.req.query("project_id") || undefined;
   const prefix = uploadsPrefix(spaceId, sessionId, projectId);
   const listed = await c.env.SCRIPTS_R2.list({ prefix, limit: MAX_UPLOAD_FILES + 10 });
-  const files = listed.objects.map((o) => ({
+  const files = listed.objects.filter((o) => o.customMetadata?.deleted !== "true").map((o) => ({
     name: o.key.slice(prefix.length),
     key: o.key,
     size: o.size,
@@ -4962,8 +5347,10 @@ app.delete("/spaces/:spaceId/sessions/:sessionId/uploads/:filename", async (c) =
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Workspace storage not bound" }, 503);
   const projectId = c.req.query("project_id") || undefined;
   const prefix = uploadsPrefix(spaceId, sessionId, projectId);
-  await c.env.SCRIPTS_R2.delete(`${prefix}${safeUploadName(filename)}`);
-  return c.json({ deleted: true });
+  const key = `${prefix}${safeUploadName(filename)}`;
+  const current = await readBytesWithHash(c.env.SCRIPTS_R2, key);
+  const result = await deleteBytesCas(c.env.SCRIPTS_R2, key, current?.hash ?? null);
+  return c.json({ deleted: result.deleted });
 });
 
 // Admin hands a thread back to the bot (or takes it over themselves) — the human-takeover
@@ -5255,6 +5642,23 @@ app.post("/spaces/:spaceId/bootstrap/complete", async (c) => {
   // every business genuinely passes through, templated or not.
   await seedGeneralProject(bootstrapDeps, spaceId);
 
+  // Every script-enabled space gets one local-access worker. The template installer is
+  // idempotent per space, so retries and older spaces completing onboarding cannot create
+  // duplicates. Keep this best-effort: a missing local tunnel must not strand onboarding.
+  try {
+    await applyAgentTemplate(
+      c.env,
+      spaceId,
+      tenantId,
+      "local-access",
+      undefined,
+      undefined,
+      bootstrapCallerUserId || undefined
+    );
+  } catch (err) {
+    console.warn(`[bootstrap] local-access worker seed failed for ${spaceId}:`, (err as Error).message);
+  }
+
   // 1b. Stamp the template's project-template presets (a customer_bot preset arrives with its own
   //     execution ceiling, spend cap and STOP/human-takeover rules already wired — exactly what an
   //     owner should never have to assemble by hand). Best-effort: one preset failing must never
@@ -5388,6 +5792,9 @@ app.get("/templates", async (c) => {
       id: t.id,
       name: t.name,
       description: t.description,
+      template_mode: t.template_mode ?? "ave",
+      vertical: t.vertical ?? "Digital business",
+      wallet_mode: t.wallet_mode ?? "business_wallet",
       free_tier_eligible: t.free_tier_eligible,
       connectors: t.connectors ?? [],
       coming_soon: t.coming_soon ?? false,
@@ -5430,6 +5837,9 @@ app.get("/catalog/product", (c) => {
         id: t.id,
         name: t.name,
         description: t.description,
+        template_mode: t.template_mode ?? "ave",
+        vertical: t.vertical ?? "Digital business",
+        wallet_mode: t.wallet_mode ?? "business_wallet",
         coming_soon: t.coming_soon ?? false,
       })),
       CUSTOM_NICHE,
@@ -5454,6 +5864,9 @@ app.get("/catalog/dev", (c) => {
       id: t.id,
       name: t.name,
       description: t.description,
+      template_mode: t.template_mode ?? "ave",
+      vertical: t.vertical ?? "Digital business",
+      wallet_mode: t.wallet_mode ?? "business_wallet",
       coming_soon: t.coming_soon ?? false,
       connectors: t.connectors ?? [],
     })),
@@ -5475,17 +5888,40 @@ app.get("/container-images", async (c) => {
 // verified ingress) because the caller is a native client on someone's own machine, not a
 // browser session — there is no JWT/session to check before the WS upgrade begins.
 app.get("/local-tunnel/connect", async (c) => {
-  if (!c.env.LOCAL_TUNNEL) {
-    return c.json({ error_code: "unavailable", message: "Local-machine-as-container is not configured in this environment" }, 503);
-  }
-  const spaceId = c.req.query("space") ?? "";
-  const userId = c.req.query("user") ?? "";
-  if (!spaceId || !userId) {
-    return c.json({ error_code: "bad_request", message: "space and user query params are required" }, 400);
-  }
-  const doId = c.env.LOCAL_TUNNEL.idFromName(`local-tunnel:${spaceId}:${userId}`);
-  const stub = c.env.LOCAL_TUNNEL.get(doId);
-  return stub.fetch(c.req.raw);
+  return c.json({ error_code: "named_machine_enrollment_required", message: "Enroll a named machine in space settings and connect with @naelao/bridge. Legacy user-only tokens cannot select a machine." }, 409);
+});
+
+// Public outbound bridge ingress. Device proofs/enrollment tickets are verified by the
+// authoritative SpaceDO; identity headers from an unauthenticated client are never trusted.
+app.post("/tunnel/enroll", async c => {
+  const url = new URL(c.req.url);
+  if (url.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) return c.json({ error_code: "tls_required" }, 403);
+  const text = await c.req.text();
+  if (new TextEncoder().encode(text).byteLength > 32768) return c.json({ error_code: "payload_too_large" }, 413);
+  let body: { tenantId: string; spaceId: string; token: string; name: string; publicKey: JsonWebKey; hardware: unknown };
+  try { body = JSON.parse(text); if (!body || typeof body !== "object") throw new Error(); }
+  catch { return c.json({ error_code: "bad_request" }, 400); }
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(body.tenantId) || !/^[A-Za-z0-9_-]{1,128}$/.test(body.spaceId)) return c.json({ error_code: "bad_request" }, 400);
+  const token = await mintInternalToken(c.env.PLATFORM_SECRET, body.tenantId);
+  return c.env.SPACES_WORKER.fetch(new Request("http://spaces-worker/spaces/" + encodeURIComponent(body.spaceId) + "/tunnel-authority", {
+    method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": body.tenantId, "x-naelao-internal-token": token }, body: JSON.stringify({ ...body, action: "enroll" }),
+  }));
+});
+app.post("/tunnel/authenticate", async c => {
+  const url = new URL(c.req.url);
+  if (url.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) return c.json({ error_code: "tls_required" }, 403);
+  const text = await c.req.text();
+  if (new TextEncoder().encode(text).byteLength > 32768) return c.json({ error_code: "payload_too_large" }, 413);
+  let body: { proof: { tenantId: string; spaceId: string; machineId: string } };
+  try { body = JSON.parse(text); if (!body?.proof || typeof body.proof !== "object") throw new Error(); }
+  catch { return c.json({ error_code: "bad_request" }, 400); }
+  const stub = await namedTunnelStub(c.env, body.proof);
+  return stub.fetch(new Request("https://tunnel/authorize", { method: "POST", headers: { "content-type": "application/json" }, body: text }));
+});
+app.get("/tunnel/:tenantId/:spaceId/:machineId/connect", async c => {
+  const stub = await namedTunnelStub(c.env, { tenantId: c.req.param("tenantId"), spaceId: c.req.param("spaceId"), machineId: c.req.param("machineId") });
+  const url = new URL(c.req.url); url.pathname = "/connect";
+  return stub.fetch(new Request(url, c.req.raw));
 });
 
 // GET /templates/:templateId/skills — list the shared template library (names + summaries).
@@ -5909,8 +6345,10 @@ async function sweepUndeliveredNotifications(env: AgentsEnv, spaceId: string, te
 }
 
 async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<void> {
+  const wakePolicy = await resolveWakeContext(env, msg.spaceId, msg.tenantId);
   switch (msg.kind) {
     case "heartbeat": {
+      if (wakePolicy.airGappedOnly) return; // channel drains and notification delivery are egress
       void sweepUndeliveredNotifications(env, msg.spaceId, msg.tenantId);
       const stub = await getAgentDOForSpace(env, msg.tenantId, msg.spaceId, "naelao-agent");
       const beat = await stub.fetch(new Request("http://agent-do/channels/heartbeat", {
@@ -5942,6 +6380,7 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
     }
 
     case "connector_poll": {
+      if (wakePolicy.airGappedOnly) return;
       if (!msg.connectorName) return;
       const kvKey = `connector-poll:${msg.spaceId}:${msg.connectorName}`;
       const since = (await env.AGENT_CACHE.get(kvKey)) ?? new Date(Date.now() - 86_400_000).toISOString();
@@ -5965,6 +6404,7 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
     }
 
     case "daily_digest": {
+      if (wakePolicy.airGappedOnly) return;
       // Tier 2/3 follow-up: a proactive daily digest email. Advances last_digest_sent_at FIRST
       // (before the email even sends) — at-least-once delivery means this message could be
       // redelivered, and it's much better to occasionally SKIP a digest on a redelivery race than
@@ -6066,6 +6506,7 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
               ...(row.agent_id ? { agentId: row.agent_id } : {}),
               ...(row.project_id ? { projectId: row.project_id } : {}),
               goal: row.goal,
+              ...(wakePolicy.airGappedOnly ? { airGappedOnly: true } : {}),
             })
           : await fireScriptDirectly(env, {
               spaceId: row.space_id,
@@ -6074,6 +6515,7 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
               ...(row.project_id ? { projectId: row.project_id } : {}),
               scriptName: row.script_name,
               params: JSON.parse(row.params || "{}") as Record<string, unknown>,
+              ...(wakePolicy.airGappedOnly ? { airGappedOnly: true } : {}),
             });
         if (doResp.status === 409) {
           // wakeAgentGoal's own pending-run check — the assistant is still working a prior wake.
@@ -6125,7 +6567,7 @@ async function handleAgentTicksQueue(batch: MessageBatch<AgentTickMessage>, env:
 
 // Exported for end-to-end tests that drive the assembled app the way the router does, and for
 // the agent-ticks fan-out unit tests (enqueue planning + consumer dispatch).
-export { app, enqueueAgentTicks, handleAgentTick, handleAgentTicksQueue, resolveRunGoal, fetchRunOrTaskStatus, resolveMentionRoster, recordScheduledJobRun, SCHEDULED_JOB_RUN_HISTORY_LIMIT };
+export { app, enqueueAgentTicks, handleAgentTick, handleAgentTicksQueue, resolveRunGoal, fetchRunOrTaskStatus, resolveMentionRoster, recordScheduledJobRun, resolveWakeContext };
 export type { AgentTickMessage };
 
 export default {

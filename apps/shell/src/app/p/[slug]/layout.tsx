@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation";
-import { getProductBySlug } from "@/lib/api";
+import { ApiError, getProductBySlug } from "@/lib/api";
 import { ProductProvider } from "@/lib/product-context";
 import { ProductAuthProvider } from "@/lib/auth-provider";
 
@@ -10,7 +10,10 @@ export default async function ProductLayout({
   children: React.ReactNode;
   params: { slug: string };
 }) {
-  const product = await getProductBySlug(params.slug).catch(() => null);
+  const product = await getProductBySlug(params.slug).catch(error => {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  });
   if (!product) notFound();
 
   return (

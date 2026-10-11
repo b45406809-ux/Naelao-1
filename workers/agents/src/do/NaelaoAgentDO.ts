@@ -8,8 +8,12 @@
 //   - Alarm used for 30s timeout watchdog
 
 import { DurableObject } from "cloudflare:workers";
+import { createWorkflowHooks } from "../workflows/workflow-orchestration.js";
+import { startDurableWorkflow, workflowHash, workflowRunStub, readWorkflowGrant, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
+import type { DurableWorkflowIdentity } from "@naelao/agent-sdk";
 import { mintInternalToken, broadcastSpaceEvent } from "@naelao/http";
 import { getDOName } from "@naelao/crypto";
+import { createNamedTunnelGateway } from "../tunnels/host.js";
 import type { LlmTool, LlmFunctionTool, LlmMessage, ContentBlock } from "@naelao/llm-gateway";
 import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
 import type { SystemBlock } from "@naelao/llm-gateway";
@@ -28,6 +32,7 @@ import {
   loadAgentConfig,
   writeAgentConfig,
   mergeMissingPrebuilt,
+  triageCustomerMessage,
   DEFAULT_NAELAO_AGENT,
   LAUNCHPAD_ASSISTANT_PROFILE,
   type ScriptEngineEnv,
@@ -37,17 +42,22 @@ import {
   type LoopResult,
   type ScriptRunResult,
   type AgentConfig,
+  workspacePrefix,
 } from "../script-engine/index.js";
 import { createTracer } from "@naelao/tracing";
-import { emitWorkflowReceiptCard, verifyCapabilityGrant } from "@naelao/agent-sdk";
-import { issueDelegationClaim, verifyDelegationClaim } from "@naelao/security";
-import { routeMentions } from "../script-engine/mention-router.js";
+import { emitWorkflowReceiptCard, resolveOperatingMode, SystemOneDecisionClient, verifyCapabilityGrant, validateExtensionManifest } from "@naelao/agent-sdk";
+import { applyDurableObjectJurisdiction, issueDelegationClaim, verifyDelegationClaim } from "@naelao/security";
+import { routeMentionsWithSentry } from "../script-engine/mention-router.js";
 import { GatewayReasoner, WorkersAIEmbedder } from "../script-engine/reasoner.js";
 import { resolveAssistantApprovalPlan, type AssistantEffectiveRole } from "../script-engine/assistant-access.js";
 import { buildCodeRunner, type WorkerLoaderBinding } from "../script-engine/code-runner.js";
+import { bindCodeRpc, type CodeRpcBinding } from "../script-engine/code-rpc-broker.js";
+import { resolveContainerBinary, parseApprovedContainerImages, approvedContainer, type InstalledContainer } from "../script-engine/container-policy.js";
+import { createVaultProxy } from "../script-engine/vault-proxy.js";
 import { initMemorySchema, buildMemoryStore, runMemoryMaintenance } from "../script-engine/memory-os.js";
-import { buildProjectMemoryStore, buildHybridMemoryStore } from "../script-engine/project-memory-client.js";
+import { buildProjectMemoryStore, buildHybridMemoryStore, roleRankFor } from "../script-engine/project-memory-client.js";
 import { parseJournal, renderJournal, emptyJournal, journalKey, appendActivity } from "../script-engine/project-journal.js";
+import { putBytesCas, putTextCas, readBytesWithHash, readTextWithHash } from "../script-engine/r2-cas.js";
 import {
   buildConversationContext,
   messagesToSummarize,
@@ -61,6 +71,8 @@ import { isChannelType, getAdapter, type NormalizedInbound } from "../launchpad/
 import type { BusinessContext } from "../launchpad/business-context.js";
 import type { TemplateMode, UniversalAgentManifest, UniversalAgentRole } from "@naelao/agent-sdk";
 import { composeUniversalPrompt, ROLE_MAX_TIER } from "../script-engine/index.js";
+import { framePlannerFirstGoal } from "../script-engine/planner-first.js";
+import { UNIVERSAL_AGENT_BASELINE_PREBUILTS, UNIVERSAL_PLANNER_PREBUILTS } from "../script-engine/agent-topology.js";
 import {
   sanitizeSubAgentOutput,
   safeJsonParse,
@@ -71,6 +83,87 @@ import {
 } from "../script-engine/sub-agent-output.js";
 import { handleExecutiveInbound } from "../channels/executive-channel.js";
 import { persistCustomerConversation } from "../telemetry/customer-telemetry.js";
+import { handleDaemonMcp, treeSitterDaemonTarget } from "../script-engine/daemons/daemon-mcp.js";
+import { TreeSitterIndexer } from "../script-engine/daemons/tree-sitter-indexer.js";
+import { DurableDaemon } from "../script-engine/daemons/durable-daemon.js";
+import { validateModelForSpacePolicy } from "../model-policy.js";
+import type { SpaceModelPolicy } from "@naelao/agent-sdk";
+import { runSpeculativeModelRace, type RacePlan } from "../script-engine/prebuilt/model-race.js";
+
+const INGRESS_MEMORY_SCORE = 0.8;
+const INGRESS_MEMORY_MAX_ITEMS = 6;
+const INGRESS_MEMORY_MAX_CHARS = 4000;
+
+/** Render only already-gated recall results into a small, clearly untrusted prompt attachment. */
+export function renderIngressMemory(
+  results: Array<{ text: string; score: number; relevance_score?: number }>,
+): string | undefined {
+  const admitted = results
+    .filter((result) => Number.isFinite(result.score) && result.score >= INGRESS_MEMORY_SCORE && result.text.trim())
+    .sort((left, right) => right.score - left.score)
+    .slice(0, INGRESS_MEMORY_MAX_ITEMS);
+  if (admitted.length === 0) return undefined;
+  const lines: string[] = [];
+  let chars = 0;
+  for (const result of admitted) {
+    const text = result.text.trim().replace(/[\r\n]+/g, " ").slice(0, 800);
+    const line = `[score=${result.score.toFixed(3)}${result.relevance_score !== undefined ? ` relevance=${result.relevance_score.toFixed(3)}` : ""}] ${text}`;
+    if (chars + line.length > INGRESS_MEMORY_MAX_CHARS) break;
+    lines.push(line);
+    chars += line.length;
+  }
+  return lines.length ? lines.join("\n") : undefined;
+}
+
+/** Extract only server-issued knowledge coordinates from successful tool traces. */
+export function citationsFromTrace(trace: TraceStep[]): Array<{
+  version: 1;
+  ordinal: number;
+  identity: string;
+  document_id: string;
+  chunk_id: string;
+  label?: string;
+}> {
+  const seen = new Set<string>();
+  const citations: Array<{
+    version: 1;
+    ordinal: number;
+    identity: string;
+    document_id: string;
+    chunk_id: string;
+    label?: string;
+  }> = [];
+  for (const step of trace) {
+    if (step.phase !== "run" || step.name !== "knowledge.search" || step.ok !== true || !step.output) continue;
+    let payload: unknown;
+    try { payload = JSON.parse(step.output); } catch { continue; }
+    if (!payload || typeof payload !== "object") continue;
+    const root = payload as { data?: unknown; citations?: unknown };
+    const candidates = [
+      ...(Array.isArray(root.citations) ? root.citations : []),
+      ...(Array.isArray(root.data)
+        ? root.data.flatMap((item) => item && typeof item === "object" && "citation" in item ? [(item as { citation?: unknown }).citation] : [])
+        : []),
+    ];
+    for (const candidate of candidates) {
+      if (!candidate || typeof candidate !== "object") continue;
+      const value = candidate as { document_id?: unknown; chunk_id?: unknown; title?: unknown };
+      if (typeof value.document_id !== "string" || typeof value.chunk_id !== "string" || !value.document_id || !value.chunk_id) continue;
+      const identity = `${value.document_id}:${value.chunk_id}`;
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      citations.push({
+        version: 1,
+        ordinal: citations.length + 1,
+        identity,
+        document_id: value.document_id,
+        chunk_id: value.chunk_id,
+        ...(typeof value.title === "string" && value.title ? { label: value.title } : {}),
+      });
+    }
+  }
+  return citations;
+}
 
 // ── G-AZ01: Agent FSM states and valid transitions ───────────────────────────
 
@@ -171,7 +264,9 @@ interface FinishedRunState {
   status: string;
   final_answer?: string;
   error?: string;
+  error_code?: string;
   pending_approval?: unknown;
+  pending_question?: unknown;
   deferred_approvals?: unknown;
 }
 /** The same clock for a channel reply, where the loop is draining a queue of waiting customers
@@ -903,6 +998,14 @@ export function processAgentException(
 // ── NaelaoAgentDO ────────────────────────────────────────────────────────────
 
 export interface AgentDOEnv {
+  ENVIRONMENT?: string;
+  DATA_JURISDICTION?: "eu";
+  /** Official Jev credential. Set with `wrangler secret put TYPESAFE_API_KEY`. */
+  TYPESAFE_API_KEY?: string;
+  /** Optional Jev-compatible Laya endpoint, for example https://laya.internal/v1/systemone. */
+  SYSTEM_ONE_ENDPOINT?: string;
+  SYSTEM_ONE_MODEL?: string;
+  SYSTEM_ONE_PROVIDER?: "jev" | "laya";
   PLATFORM_SECRET: string;
   KNOWLEDGE_WORKER: Fetcher;
   SPACES_WORKER: Fetcher;
@@ -969,10 +1072,15 @@ export interface AgentDOEnv {
   // ── Execution ladder Tiers 2-5 (spec bottom appendix §8 / code-runner.ts) ──
   /** CF Worker Loader (beta) — backs Tiers 2-4 (V8 isolate, npm-best-effort, browser). */
   LOADER?: WorkerLoaderBinding;
+  DYNAMIC_PYTHON_ENABLED?: string;
   /** naelao-browser service binding — Tier 4 (CF Browser Rendering proxy). */
   BROWSER_WORKER?: Fetcher;
   /** ToolSandboxDO namespace — Tier 5 (CF Container, full Linux). */
   TOOL_SANDBOX?: DurableObjectNamespace;
+  DOCUMENT_SANDBOX?: DurableObjectNamespace;
+  MEDIA_SANDBOX?: DurableObjectNamespace;
+  /** Operator-approved image digests and fixed deployment resource envelopes. */
+  CONTAINER_IMAGE_REGISTRY?: string;
   /** §A1.17 Phase M — local-machine-as-container. One DO per (spaceId, userId); the
    *  `local-machine` prebuilt reports itself unavailable when absent. */
   LOCAL_TUNNEL?: DurableObjectNamespace;
@@ -996,15 +1104,48 @@ export interface AgentDOEnv {
    *  spawn trees can be running at once per space, on top of the existing per-spawn 16 cap. */
   CONCURRENCY_DO?: DurableObjectNamespace;
   /** §A1.17 Phase J — durable dispatch for runtime:"workflow" scripts (ScriptRunWorkflow). */
-  AGENT_SCRIPT_WORKFLOW?: {
-    create(opts: { id?: string; params?: unknown }): Promise<{ id: string; status(): Promise<{ status: string; output?: unknown; error?: unknown }> }>;
-    get(id: string): Promise<{ id: string; status(): Promise<{ status: string; output?: unknown; error?: unknown }> }>;
-  };
+  AGENT_SCRIPT_WORKFLOW?: DurableWorkflowHostEnv["AGENT_SCRIPT_WORKFLOW"];
+  WORKFLOW_RUN_DO?: DurableWorkflowHostEnv["WORKFLOW_RUN_DO"];
 }
 
 export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
+  constructor(ctx: DurableObjectState, env: AgentDOEnv) {
+    super(ctx, env);
+    // DO instances receive their own binding object, separate from the outer
+    // Worker's Hono middleware. Scope cross-DO calls here as well so subagents,
+    // approvals, sandboxes, risk guards, and concurrency locks cannot escape an
+    // EU namespace from inside a running agent.
+    applyDurableObjectJurisdiction(env as unknown as Record<string, unknown>, env.DATA_JURISDICTION, [
+      "HITL_APPROVAL_DO", "TOOL_SANDBOX", "LOCAL_TUNNEL", "RISK_GUARD", "NAELAO_AGENT_DO", "CONCURRENCY_DO", "WORKFLOW_RUN_DO",
+    ]);
+  }
   /** Layer 1: wake-local working context. Never shared across structural thread keys. */
   private readonly workingContexts = new Map<string, ConversationContext>();
+  private async handleWorkflowEffect(request: Request): Promise<Response> {
+    const body = await request.json<{ identity: DurableWorkflowIdentity; key: string; operation: string; params: Record<string, unknown>; idempotencyKey: string; airGappedOnly?: boolean }>();
+    const identity = body.identity;
+    const canonical = await workflowRunStub(this.env, identity).authorize(identity.runId);
+    if (JSON.stringify(canonical) !== JSON.stringify(identity) || !canonical.capabilities.includes(body.operation)) return Response.json({ error: "workflow_scope_mismatch" }, { status: 403 });
+    const grant = await readWorkflowGrant(this.env, identity);
+    const gate = await this.enforceRunGates({ tenantId: identity.tenantId, spaceId: identity.spaceId, projectId: identity.projectId, userId: identity.actorId, callerRole: grant.role, agentId: identity.agentId, sessionId: identity.runId, runId: body.idempotencyKey });
+    if (!gate.ok) return gate.response;
+    const config = this.env.SCRIPTS_R2 ? await loadAgentConfig(this.env.SCRIPTS_R2, identity.spaceId, identity.agentId) : null;
+    if (!config) return Response.json({ error: "workflow_agent_unavailable" }, { status: 503 });
+    if (config.requiresApprovalFor?.includes(body.operation)) return Response.json({ error: "workflow_human_approval_required" }, { status: 409 });
+    const env = await this.buildScriptEngineEnv(identity.spaceId, identity.agentId, identity.tenantId, identity.actorId, identity.projectId,
+      { goal: "Durable workflow step", taskId: body.idempotencyKey, threadId: identity.runId }, body.airGappedOnly === true, undefined, undefined, grant.role);
+    if (!env) return Response.json({ error: "workflow_engine_unavailable" }, { status: 503 });
+    env.runId = body.idempotencyKey;
+    env.taskId = body.idempotencyKey;
+    env.humanInvokerId = identity.actorId;
+    env.effectiveRole = gate.effectiveRole ?? (grant.role === "viewer" ? "viewer" : grant.role === "owner" || grant.role === "admin" ? "owner" : "editor");
+    env.maxTier = gate.maxTier ?? config.manifest?.capabilities.maxTier ?? 3;
+    const tools = new ScriptToolSurface(env, config.scripts.prebuilt, { role: config.manifest?.role ?? "DEV_OPERATOR" });
+    if (!tools.availableOperations().includes(body.operation)) return Response.json({ error: "workflow_operation_not_installed" }, { status: 403 });
+    env.orchestration = this.buildOrchestrationHooks(identity.spaceId, identity.agentId, identity.tenantId, "", body.idempotencyKey, identity.runId, identity.projectId, tools, identity.actorId);
+    const result = await tools.run(body.operation, body.params);
+    return Response.json(JSON.parse(JSON.stringify(result)), { status: result.ok ? 200 : 409 });
+  }
   /** Normalize every assistant/operator into the one kernel configuration used by this DO. */
   assembleUniversalAgent(manifest: UniversalAgentManifest, businessContext?: BusinessContext) {
     const maxTier = Math.max(1, Math.min(ROLE_MAX_TIER[manifest.role] ?? 1, Number(manifest.capabilities.maxTier ?? 1))) as ExecutionTier;
@@ -1184,6 +1325,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         goal         TEXT NOT NULL,
         action_name  TEXT NOT NULL,
         steps_json   TEXT NOT NULL DEFAULT '[]',
+        deliberation_round INTEGER NOT NULL DEFAULT 0,
         status       TEXT NOT NULL DEFAULT 'suspended',
         created_at   TEXT NOT NULL
       )
@@ -1214,6 +1356,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         goal           TEXT NOT NULL,
         reason         TEXT NOT NULL,
         steps_json     TEXT NOT NULL DEFAULT '[]',
+        deliberation_round INTEGER NOT NULL DEFAULT 0,
         status         TEXT NOT NULL DEFAULT 'open',
         continued_run_id TEXT,
         created_at     INTEGER NOT NULL
@@ -1227,6 +1370,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // the SAME pollRun/streamRun machinery an ordinary run uses — reusing the live activity trail
     // and completion handling instead of the client only ever learning about the answer on reload.
     try { this.ctx.storage.sql.exec(`ALTER TABLE suspended_runs ADD COLUMN resumed_run_id TEXT`); } catch { /* exists */ }
+    try { this.ctx.storage.sql.exec(`ALTER TABLE suspended_runs ADD COLUMN deliberation_round INTEGER NOT NULL DEFAULT 0`); } catch { /* exists */ }
+    try { this.ctx.storage.sql.exec(`ALTER TABLE interrupted_runs ADD COLUMN deliberation_round INTEGER NOT NULL DEFAULT 0`); } catch { /* exists */ }
 
     // Background fibers
     this.ctx.storage.sql.exec(`
@@ -1435,6 +1580,36 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         return Response.json({ ok: true, projectId: body.projectId, hibernated: true });
       }
 
+      // Project-scoped daemon MCP. The outer agents route chooses this project actor; this DO
+      // owns the SQLite index and is the only place allowed to execute daemon operations.
+      if (method === "POST" && url.pathname === "/daemon/mcp") {
+        const daemonId = request.headers.get("x-naelao-daemon-id") ?? "";
+        if (daemonId === "tree-sitter") {
+          return handleDaemonMcp(request, treeSitterDaemonTarget(new TreeSitterIndexer(this.ctx.storage.sql)));
+        }
+        const workflowScript = request.headers.get("x-naelao-daemon-script") ?? "";
+        const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+        const projectId = request.headers.get("x-naelao-project-id") ?? "";
+        if (!daemonId || !workflowScript || !tenantId || !projectId) {
+          return Response.json({ error_code: "bad_request", message: "daemon id, workflow script, tenant, and project are required" }, { status: 400 });
+        }
+        if (!this.env.AGENT_SCRIPT_WORKFLOW) return Response.json({ error_code: "unavailable", message: "durable daemon workflow runtime is not configured" }, { status: 503 });
+        const daemon = new DurableDaemon(daemonId, this.ctx.storage.sql, {
+          create: async options => startDurableWorkflow(this.env, {
+            spaceId: request.headers.get("x-naelao-space-id") ?? "", tenantId, projectId,
+            actorId: request.headers.get("x-naelao-user-id") ?? "", agentId: "naelao-agent",
+            name: workflowScript, params: options.params as Record<string, unknown>, startKey: options.id,
+          }),
+          get: id => this.env.AGENT_SCRIPT_WORKFLOW!.get(id),
+        });
+        return handleDaemonMcp(request, {
+          name: daemonId,
+          start: params => daemon.start(params),
+          stop: () => daemon.stop(),
+          status: () => daemon.status(),
+        });
+      }
+
       // POST /run
       if (method === "POST" && url.pathname === "/run") {
         return this.handleRun(request);
@@ -1600,6 +1775,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (method === "POST" && url.pathname === "/triggers/fire") {
         return this.handleTriggerFire(request);
       }
+      if (method === "POST" && url.pathname === "/workflow/effect") return this.handleWorkflowEffect(request);
 
       // POST /approvals/create-external — §A1.17 Phase O: naelao-router's agent-key HTTP gate
       // (a Bearer nak_... agent calling the platform API directly, not through the reasoning
@@ -1683,7 +1859,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!greeting || greeting.length > 500) return Response.json({ error_code: "invalid_greeting" }, { status: 400 });
     const config = { ...body.config, greeting, voiceModel, timezone };
     const key = `spaces/${body.spaceId}/projects/${body.projectId}/workspace/voice_agent_config.json`;
-    await this.env.SCRIPTS_R2.put(key, JSON.stringify(config, null, 2), { httpMetadata: { contentType: "application/json" } });
+    const current = await readBytesWithHash(this.env.SCRIPTS_R2, key);
+    await putBytesCas(this.env.SCRIPTS_R2, key, new TextEncoder().encode(JSON.stringify(config, null, 2)), current?.hash ?? null, {}, { contentType: "application/json" });
     return Response.json({ ok: true, path: "voice_agent_config.json", thread_tier: "tier_2_task", config });
   }
 
@@ -1692,9 +1869,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const spaceId = params.get("space_id") ?? "";
     const projectId = params.get("project_id") ?? "";
     if (!spaceId || !projectId) return Response.json({ error_code: "space_id_and_project_id_required" }, { status: 400 });
-    const object = await this.env.SCRIPTS_R2.get(`spaces/${spaceId}/projects/${projectId}/workspace/voice_agent_config.json`);
+    const object = await readBytesWithHash(this.env.SCRIPTS_R2, `spaces/${spaceId}/projects/${projectId}/workspace/voice_agent_config.json`);
     if (!object) return Response.json({ error_code: "voice_config_not_found" }, { status: 404 });
-    return Response.json({ config: JSON.parse(await object.text()), thread_tier: "tier_2_task" });
+    return Response.json({ config: JSON.parse(new TextDecoder().decode(object.bytes)), thread_tier: "tier_2_task" });
   }
 
   private async forwardVoiceCall(request: Request, action: "start" | "finish"): Promise<Response> {
@@ -1770,19 +1947,57 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   // The authoritative script-first agent model (spec appendix ~6672k). Loads the agent's
   // 4-file config from R2, then runs OBSERVE→FINGERPRINT→FIND→GATE→EXECUTE→VERIFY→DISTILL.
 
-  private buildScriptEngineEnv(spaceId: string, agentId: string, tenantId: string, userId?: string, projectId?: string, commitContext?: { goal: string; taskId: string; threadId: string }): ScriptEngineEnv | null {
+  private async buildScriptEngineEnv(spaceId: string, agentId: string, tenantId: string, userId?: string, projectId?: string, commitContext?: { goal: string; taskId: string; threadId: string }, airGappedOnly = false, templateMode?: TemplateMode, workspaceBranch?: string, callerRole?: string): Promise<ScriptEngineEnv | null> {
     if (!this.env.SCRIPTS_R2) return null;
     const env: ScriptEngineEnv = {
       scriptsBucket: this.env.SCRIPTS_R2,
       spaceId,
       agentId,
       tenantId,
+      airGappedOnly,
+      ...(templateMode ? { templateMode: resolveOperatingMode({ templateMode }).templateMode } : {}),
       platformSecret: this.env.PLATFORM_SECRET,
       ...(userId ? { userId } : {}),
       // Project-scoped workspace (every thread's agent in a project shares one R2 filesystem)
       // vs. the Space Assistant's space-wide workspace — see workspacePrefix() in types.ts.
       ...(projectId ? { projectId } : {}),
+      ...(workspaceBranch ? { workspaceBranch } : {}),
     };
+    const memoryRoleRank = { value: roleRankFor(callerRole) };
+    env.memoryRoleRank = memoryRoleRank;
+    if (!airGappedOnly && (this.env.TYPESAFE_API_KEY || this.env.SYSTEM_ONE_ENDPOINT)) {
+      env.fastDecision = new SystemOneDecisionClient({
+        ...(this.env.SYSTEM_ONE_ENDPOINT ? { endpoint: this.env.SYSTEM_ONE_ENDPOINT } : {}),
+        ...(this.env.TYPESAFE_API_KEY ? { apiKey: this.env.TYPESAFE_API_KEY } : {}),
+        ...(this.env.SYSTEM_ONE_MODEL ? { model: this.env.SYSTEM_ONE_MODEL } : {}),
+        provider: this.env.SYSTEM_ONE_PROVIDER ?? (this.env.SYSTEM_ONE_ENDPOINT ? "laya" : "jev"),
+        ...(this.env.ANALYTICS ? {
+          onDecision: (event) => {
+            try {
+              this.env.ANALYTICS!.writeDataPoint({
+                blobs: ["system_one.decision", tenantId, spaceId, projectId ?? "", agentId, event.provider, "agents", event.policyCode, event.model],
+                doubles: [event.latencyMs, event.usage.inputTokens, event.usage.outputTokens],
+                indexes: [tenantId],
+              });
+            } catch {
+              /* Analytics Engine is best-effort and must never block a policy decision. */
+            }
+          },
+        } : {}),
+      });
+    }
+    // Air-gapped execution must not emit even metadata to a remote Analytics Engine dataset.
+    if (!airGappedOnly && this.env.ANALYTICS) {
+      env.recordExecution = (event) => {
+        try {
+          this.env.ANALYTICS!.writeDataPoint({
+            blobs: ["tool.execution", tenantId, spaceId, projectId ?? "", agentId, event.engine ?? "", event.operation],
+            doubles: [Date.now(), event.durationMs, event.tier, event.ok ? 1 : 0, event.tokensUsed],
+            indexes: [tenantId],
+          });
+        } catch { /* append-only, best effort */ }
+      };
+    }
     env.consumeMutationGrant = async () => {
       if (!env.mutationGrant) return false;
       const grant = await verifyCapabilityGrant(env.mutationGrant, this.env.PLATFORM_SECRET, {
@@ -1846,6 +2061,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               },
             }
           : {}),
+        roleRank: () => memoryRoleRank.value,
       });
       // §A1.17 Phase U: a project-bound run (this DO instance addressed per (thread, agentId) —
       // see T2) composes the local store with SpaceDO's project-scoped Layers 3/4/6, so agents
@@ -1864,14 +2080,20 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // per-session by design; it is the raw per-thread trail, not shared knowledge.
       const memoryScope = projectId || ASSISTANT_MEMORY_SCOPE;
       env.memoryStore = this.env.SPACES_WORKER
-        ? buildHybridMemoryStore(localMemoryStore, buildProjectMemoryStore({
-            spacesWorker: this.env.SPACES_WORKER,
-            platformSecret: this.env.PLATFORM_SECRET,
-            spaceId,
-            tenantId,
-            projectId: memoryScope,
-            mintInternalToken,
-          }))
+        ? buildHybridMemoryStore(
+            localMemoryStore,
+            buildProjectMemoryStore({
+              spacesWorker: this.env.SPACES_WORKER,
+              platformSecret: this.env.PLATFORM_SECRET,
+              spaceId,
+              tenantId,
+              projectId: memoryScope,
+              roleRank: () => memoryRoleRank.value,
+              mintInternalToken,
+              ...(env.fastDecision ? { fastDecision: env.fastDecision } : {}),
+            }),
+            env.fastDecision,
+          )
         : localMemoryStore;
       // Makes the SAME Memory OS maintenance pass the client-driven POST .../compact HTTP route
       // (see that route's own comment) callable AS A TOOL, from inside a run — a model that
@@ -1883,7 +2105,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // §A1.25: lets web-search's grounded_answer op make its own direct LLM call (native
     // web-search tool) — degrades to unavailable (never a silent no-op) when neither credential
     // is configured, same posture as canAuthenticateLlm() elsewhere in this file.
-    if (this.env.ANTHROPIC_API_KEY || this.env.NAELAO_AIG_TOKEN) {
+    if (!airGappedOnly && (this.env.ANTHROPIC_API_KEY || this.env.NAELAO_AIG_TOKEN)) {
       const anthropicKey = this.env.ANTHROPIC_API_KEY ?? "";
       const gatewayConfig = this.aiGatewayConfig();
       env.llmCaller = {
@@ -1944,25 +2166,136 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
     if (this.env.KNOWLEDGE_WORKER) env.knowledgeWorker = this.env.KNOWLEDGE_WORKER;
     if (this.env.SPACES_WORKER) env.spacesWorker = this.env.SPACES_WORKER;
-    if (this.env.NOTIFICATIONS_WORKER) env.notificationsWorker = this.env.NOTIFICATIONS_WORKER;
+    if (!airGappedOnly && this.env.NOTIFICATIONS_WORKER) env.notificationsWorker = this.env.NOTIFICATIONS_WORKER;
     // Self-binding — lets the business-email prebuilt reach /internal/business-email/{provision,send}
     // (the AgentMail path, whose API key lives on the worker, never in the isolate).
-    if (this.env.AGENTS_WORKER) env.agentsWorker = this.env.AGENTS_WORKER;
+    if (!airGappedOnly && this.env.AGENTS_WORKER) env.agentsWorker = this.env.AGENTS_WORKER;
     if (this.env.BILLING_WORKER) env.billingWorker = this.env.BILLING_WORKER;
-    if (this.env.MCP_HUB) env.mcpHubWorker = this.env.MCP_HUB;
-    if (this.env.CREDENTIALS_WORKER) env.credentialsWorker = this.env.CREDENTIALS_WORKER;
+    if (!airGappedOnly && this.env.MCP_HUB) env.mcpHubWorker = this.env.MCP_HUB;
+    if (!airGappedOnly && this.env.CREDENTIALS_WORKER) env.credentialsWorker = this.env.CREDENTIALS_WORKER;
     if (this.env.ARTIFACT_WORKER) env.artifactWorker = this.env.ARTIFACT_WORKER;
 
-    // Execution ladder Tiers 2-5 (code-runner.ts) — degrades tier-by-tier when a binding
+    // Execution ladder Tiers 2-6 (code-runner.ts) — degrades tier-by-tier when a binding
     // (LOADER / BROWSER_WORKER / TOOL_SANDBOX) is absent; Tier 1 (R2) never needs this.
+    // Loopback custom bindings are optional on older pinned runtimes. No plain object or raw
+    // service binding is substituted when the provider cannot serialize this capability.
+    const loopbacks = (this.ctx as unknown as { exports?: { CodeRpcBroker?: (input: { props: { invocationId: string } }) => CodeRpcBinding } }).exports;
+    env.codeGrantIsActive = async (scope) => {
+      if (!scope.userId || scope.userId === "system" || !this.env.SPACES_WORKER) return false;
+      const internal = await mintInternalToken(this.env.PLATFORM_SECRET, scope.tenantId);
+      const response = await this.env.SPACES_WORKER.fetch(new Request("http://spaces-worker/spaces/" + encodeURIComponent(scope.spaceId) + "/members", {
+        headers: { "x-naelao-tenant-id": scope.tenantId, "x-naelao-internal-token": internal },
+      }));
+      if (!response.ok) return false;
+      const members = await response.json<{ data?: Array<{ user_id: string; role: string }> }>();
+      const member = members.data?.find((entry) => entry.user_id === scope.userId);
+      if (!member || roleRankFor(member.role) < memoryRoleRank.value) return false;
+      // Until an installation supplies its own live grant resolver, it cannot inherit an
+      // anonymous space grant by attaching a fabricated installation/version to the invocation.
+      if (scope.installationId || scope.grantVersion) return false;
+      if (!scope.projectId || member.role === "owner" || member.role === "admin") return true;
+      const projectResponse = await this.env.SPACES_WORKER.fetch(new Request("http://spaces-worker/spaces/" + encodeURIComponent(scope.spaceId) + "/projects/" + encodeURIComponent(scope.projectId) + "/members", {
+        headers: { "x-naelao-tenant-id": scope.tenantId, "x-naelao-internal-token": internal, "x-naelao-user-id": scope.userId },
+      }));
+      if (!projectResponse.ok) return false;
+      const projectMembers = await projectResponse.json<{ data?: Array<{ user_id: string; role: string }> }>();
+      return Boolean(projectMembers.data?.some((entry) => entry.user_id === scope.userId && roleRankFor(entry.role) >= memoryRoleRank.value));
+    };
+    if (!airGappedOnly && this.env.CREDENTIALS_WORKER) env.codeProxyRequest = async (scope, input, signal) => {
+      if (signal.aborted || typeof input.url !== "string" || typeof input.credentialName !== "string") throw new Error("code_proxy_request_invalid");
+      const proxy = createVaultProxy({ credentialsWorker: this.env.CREDENTIALS_WORKER!, platformSecret: this.env.PLATFORM_SECRET,
+        tenantId: scope.tenantId, spaceId: scope.spaceId, agentId: scope.agentId,
+        ...(scope.userId ? { userId: scope.userId } : {}), ...(scope.projectId ? { projectId: scope.projectId } : {}),
+        ...(scope.runId ? { runId: scope.runId } : {}), ...(scope.taskId ? { taskId: scope.taskId } : {}) });
+      const response = await proxy.fetchWithAuth(input.url, input as unknown as import("@naelao/agent-sdk").VaultFetchOptions);
+      if (!response.body) return { status: response.status, body: "" };
+      const reader = response.body.getReader(), decoder = new TextDecoder();
+      let body = "", bytes = 0;
+      try {
+        while (true) {
+          if (signal.aborted) { await reader.cancel(); throw new Error("code_invocation_closed"); }
+          const chunk = await reader.read(); if (chunk.done) break;
+          bytes += chunk.value.byteLength;
+          if (bytes > 65_536) { await reader.cancel(); throw new Error("code_proxy_output_limit"); }
+          body += decoder.decode(chunk.value, { stream: true });
+        }
+        return { status: response.status, contentType: response.headers.get("content-type"), body: body + decoder.decode() };
+      } finally { reader.releaseLock(); }
+    };
+    const nativeGrantActive = async (params: { tenantId: string; spaceId: string; agentId: string; projectId?: string; userId?: string; runId?: string }) => {
+      if (params.tenantId !== tenantId || params.spaceId !== spaceId || params.agentId !== agentId || params.projectId !== projectId || params.userId !== userId || !params.runId || env.effectiveRole === "viewer") return false;
+      const invocation = { tenantId: params.tenantId, spaceId: params.spaceId, agentId: params.agentId, projectId: params.projectId, userId: params.userId, runId: params.runId };
+      return Boolean(env.codeGrantIsActive && await env.codeGrantIsActive(invocation) && env.codeAuthorize && await env.codeAuthorize(invocation, "tool:code.execute_bash"));
+    };
+    const installedContainers = async (): Promise<InstalledContainer[]> => {
+      if (!userId || !this.env.SPACES_WORKER) return [];
+      const response = await this.env.SPACES_WORKER.fetch(new Request("http://spaces-worker/spaces/" + encodeURIComponent(spaceId) + "/container-installations?" + new URLSearchParams(projectId ? { project_id: projectId } : {}), {
+        headers: await this.internalHeaders(tenantId, { "x-naelao-user-id": userId }),
+      }));
+      if (!response.ok) throw new Error("container_installation_lookup_unavailable");
+      const result = await response.json<{ installations: Array<{ instance: { instance_id: string; tenant_id: string; space_id: string; project_id?: string; user_id?: string; status: string }; manifest: unknown }> }>();
+      const containers: InstalledContainer[] = [];
+      for (const record of result.installations) {
+        if (record.instance.status !== "active" || record.instance.tenant_id !== tenantId || record.instance.space_id !== spaceId) continue;
+        const manifest = validateExtensionManifest(record.manifest);
+        for (const contract of manifest.containers ?? []) {
+          if (!contract.permissions.some(permission => permission.actions.includes("execute"))) continue;
+          containers.push({ tenantId, spaceId, ...(record.instance.project_id ? { projectId: record.instance.project_id } : {}), ...(record.instance.user_id ? { userId: record.instance.user_id } : {}),
+            installationId: record.instance.instance_id, extensionId: manifest.id, contract });
+        }
+      }
+      return containers;
+    };
+    env.resolveContainerCommand = async command => {
+      if (!userId) return undefined;
+      return resolveContainerBinary(command, await installedContainers(), { tenantId, spaceId, projectId, userId });
+    };
     env.codeRunner = buildCodeRunner({
+      airGappedOnly,
+      authorizeContainer: nativeGrantActive,
+      resolveSidecar: async params => {
+        if (!await nativeGrantActive({ tenantId: params.tenantId, spaceId: params.spaceId, agentId: params.agentId, projectId: params.projectId, userId: params.userId, runId: params.runId })) throw new Error("container_execution_denied");
+        const installation = (await installedContainers()).find(item => item.installationId === params.installationId && item.contract.image === params.containerImage && (!item.projectId || item.projectId === projectId) && (!item.userId || item.userId === userId));
+        if (!installation) throw new Error("container_active_installation_required");
+        const approved = approvedContainer(installation, parseApprovedContainerImages(this.env.CONTAINER_IMAGE_REGISTRY));
+        const namespace = this.env[approved.binding];
+        if (!namespace) throw new Error("container_binding_unavailable");
+        return { installation, namespace };
+      },
+      pythonEnabled: this.env.DYNAMIC_PYTHON_ENABLED === "true",
+      ...(loopbacks?.CodeRpcBroker ? { createRpcBinding: async (options, deadline) => bindCodeRpc(loopbacks.CodeRpcBroker!, options, deadline) } : {}),
+      authorizeCodeCapability: async (scope, capability) => env.codeAuthorize ? env.codeAuthorize(scope, capability) : false,
+      browserDecisionGateway: () => env.fastDecision,
+      authorizeBrowser: async (scope, operation) => {
+        if (airGappedOnly || scope.tenantId !== tenantId || scope.spaceId !== spaceId || scope.agentId !== agentId || scope.projectId !== projectId || scope.actorId !== userId) return false;
+        const invocation = { tenantId, spaceId, agentId, projectId, userId, runId: scope.runId };
+        return Boolean(env.codeGrantIsActive && await env.codeGrantIsActive(invocation)
+          && env.effectiveRole !== "viewer" && env.codeAuthorize && await env.codeAuthorize(invocation, "tool:" + operation));
+      },
+      dispatchCodeCapability: async (scope, capability, input, signal) => {
+        if (!env.codeDispatch) throw new Error("code_rpc_binding_unavailable");
+        return env.codeDispatch(scope, capability, input, signal);
+      },
       ...(this.env.LOADER ? { loader: this.env.LOADER } : {}),
-      ...(this.env.BROWSER_WORKER ? { browserWorker: this.env.BROWSER_WORKER } : {}),
-      ...(this.env.MCP_HUB ? { mcpHubWorker: this.env.MCP_HUB } : {}),
-      ...(this.env.CREDENTIALS_WORKER ? { credentialsWorker: this.env.CREDENTIALS_WORKER } : {}),
+      ...(!airGappedOnly && this.env.BROWSER_WORKER ? { browserWorker: this.env.BROWSER_WORKER } : {}),
+      ...(!airGappedOnly && this.env.MCP_HUB ? { mcpHubWorker: this.env.MCP_HUB } : {}),
+      ...(!airGappedOnly && this.env.CREDENTIALS_WORKER ? { credentialsWorker: this.env.CREDENTIALS_WORKER } : {}),
       ...(this.env.PLATFORM_SECRET ? { platformSecret: this.env.PLATFORM_SECRET } : {}),
       ...(this.env.TOOL_SANDBOX ? { toolSandbox: this.env.TOOL_SANDBOX } : {}),
       ...(this.env.LOCAL_TUNNEL ? { localTunnel: this.env.LOCAL_TUNNEL } : {}),
+      localMachine: async params => {
+        const started = Date.now();
+        try {
+          if (!await nativeGrantActive(params) || !env.localTunnel || typeof params.args.commands !== "string") throw new Error("local_machine_authorized_bash_required");
+          const result = await env.localTunnel.exec({ machine: params.containerOptions!.localMachineId!, op: "exec", params: { command: params.args.commands } });
+          return { ok: result.ok && result.status === "succeeded", output: result.status === "succeeded" ? result.result : result,
+            ...(result.status !== "succeeded" ? { error: result.error ?? ("local_machine_" + result.status + ": inspect " + result.request_id) } : {}),
+            tier: 6, actual_tier: 6, engine: "container", duration_ms: Date.now() - started, tokens_used: 0 };
+        } catch (error) {
+          return { ok: false, error: error instanceof Error ? error.message : "local_machine_failed", tier: 6, actual_tier: 6, engine: "container", duration_ms: Date.now() - started, tokens_used: 0 };
+        }
+      },
+      ...(commitContext ? { activeTask: true } : {}),
     });
 
     // §A1.17 Phase R: the container half of the explicit multi-workspace model — same
@@ -1971,21 +2304,31 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (this.env.TOOL_SANDBOX) {
       const toolSandbox = this.env.TOOL_SANDBOX;
       const sandboxStub = () => toolSandbox.get(toolSandbox.idFromName(`sandbox:${spaceId}:${projectId ?? "_assistant"}`));
+      const warmWorkspace = async () => {
+        if (!env.runId || !userId || !env.codeRunner) throw new Error("container_authorized_actor_run_required");
+        const warmed = await env.codeRunner.run({ name: "container.prewarm", code: "", args: {}, tier: 6, tenantId, spaceId, agentId, projectId,
+          userId, runId: env.runId, signal: env.executionSignal, maxTier: env.maxTier });
+        if (!warmed.ok) throw new Error(warmed.error ?? "container_prewarm_failed");
+      };
       env.containerWorkspace = {
         list: async () => {
-          const resp = await sandboxStub().fetch(new Request("http://sandbox/workspace/list", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }));
+          await warmWorkspace();
+          const resp = await sandboxStub().fetch(new Request("http://sandbox/workspace/list", { method: "POST", headers: { "content-type": "application/json", ...(commitContext ? { "x-avos-task-active": "1" } : {}) }, body: "{}" }));
           return resp.json();
         },
         read: async (paths) => {
-          const resp = await sandboxStub().fetch(new Request("http://sandbox/workspace/read", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ paths }) }));
+          await warmWorkspace();
+          const resp = await sandboxStub().fetch(new Request("http://sandbox/workspace/read", { method: "POST", headers: { "content-type": "application/json", ...(commitContext ? { "x-avos-task-active": "1" } : {}) }, body: JSON.stringify({ paths }) }));
           return resp.json();
         },
-        write: async (files) => {
-          const resp = await sandboxStub().fetch(new Request("http://sandbox/workspace/write", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ files }) }));
+        write: async (files, expectedHashes) => {
+          await warmWorkspace();
+          const resp = await sandboxStub().fetch(new Request("http://sandbox/workspace/write", { method: "POST", headers: { "content-type": "application/json", ...(commitContext ? { "x-avos-task-active": "1" } : {}) }, body: JSON.stringify({ files, expected_hashes: expectedHashes }) }));
           return resp.json();
         },
         remove: async (paths) => {
-          const resp = await sandboxStub().fetch(new Request("http://sandbox/workspace/delete", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ paths }) }));
+          await warmWorkspace();
+          const resp = await sandboxStub().fetch(new Request("http://sandbox/workspace/delete", { method: "POST", headers: { "content-type": "application/json", ...(commitContext ? { "x-avos-task-active": "1" } : {}) }, body: JSON.stringify({ paths }) }));
           return resp.json();
         },
       };
@@ -1995,26 +2338,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // degrades to an honest "unavailable" (execution-ladder.ts) when AGENT_SCRIPT_WORKFLOW
     // isn't wired, same precedent as every other optional binding above.
     if (this.env.AGENT_SCRIPT_WORKFLOW) {
-      const workflowBinding = this.env.AGENT_SCRIPT_WORKFLOW;
       env.workflowRunner = {
         start: async (params) => {
-          if (!params.projectId) throw new Error("projectId is required for workflow execution");
-          const instance = await workflowBinding.create({
-            params: {
-              spaceId: params.spaceId,
-              tenantId: params.tenantId,
-              agentId: params.agentId,
-              projectId: params.projectId,
-              scriptName: params.name,
-              params: params.args,
-            },
-          });
-          return { id: instance.id };
+          if (!userId || !commitContext?.taskId) throw new Error("workflow_requires_actor_and_start_identity");
+          if (airGappedOnly) throw new Error("cloud_workflow_forbidden_by_space_policy");
+          return startDurableWorkflow(this.env, { tenantId, spaceId, agentId, projectId, actorId: userId, name: params.name, params: params.args,
+            startKey: await workflowHash(JSON.stringify([commitContext.taskId, params.name])) });
         },
         status: async (id) => {
-          const instance = await workflowBinding.get(id);
-          const s = await instance.status();
-          return { status: s.status, output: s.output, ...(s.error !== undefined ? { error: String(s.error) } : {}) };
+          if (!userId) throw new Error("workflow_actor_required");
+          const record = await workflowRunStub(this.env, { tenantId, spaceId, runId: id }).status(userId);
+          return { status: record.status, output: record.result, error: record.error };
         },
       };
     }
@@ -2081,6 +2415,44 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             expiresAt: Date.now() + APPROVAL_TTL_MS,
           };
         },
+        requestQuestion: async (params) => {
+          const doId = hitlDO.idFromName(`hitl:${spaceId}`);
+          const stub = hitlDO.get(doId);
+          const createResp = await stub.fetch(new Request("http://hitl/requests", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              run_id: params.runId,
+              session_id: params.sessionId,
+              tool_name: "AskUser",
+              tool_input: { question: params.question, options: params.options ?? [], questions: params.questions ?? [] },
+              action_description: params.question,
+              kind: "question",
+              question: params.question,
+              options: params.options ?? [],
+              questions: params.questions ?? [],
+              ttl_ms: APPROVAL_TTL_MS,
+              resume_do_id: this.ctx.id.toString(),
+            }),
+          }));
+          if (!createResp.ok) return { questionId: "", reason: `questionnaire_unavailable: ${createResp.status}` };
+          const { approval_id } = await createResp.json<{ approval_id: string }>();
+          void this.notifyApprovalRequested(spaceId, tenantId, agentId, approval_id, "AskUser", params.question);
+          const deadline = Date.now() + APPROVAL_INLINE_WAIT_MS;
+          while (Date.now() < deadline) {
+            await new Promise<void>((r) => setTimeout(r, 2_000));
+            const pollResp = await stub.fetch(new Request(`http://hitl/requests/${approval_id}`));
+            const row = await pollResp.json<{ status: string; answer?: string | null; reject_reason?: string | null }>();
+            if (row.status !== "pending") {
+              return {
+                questionId: approval_id,
+                ...(row.status === "answered" && row.answer ? { answer: row.answer } : {}),
+                ...(row.reject_reason ? { reason: row.reject_reason } : {}),
+              };
+            }
+          }
+          return { questionId: approval_id, pending: true, expiresAt: Date.now() + APPROVAL_TTL_MS };
+        },
       };
     }
 
@@ -2091,49 +2463,88 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (this.env.SPACES_WORKER && projectId) {
       const spacesWorker = this.env.SPACES_WORKER;
       env.onWorkspaceChange = async (change) => {
-        // Repository commits are awaited so the tool's completed TraceStep can carry the exact
-        // snapshot it produced. Failures remain best-effort: the workspace mutation is already real.
+        // R2 workspace state is canonical; RepositoryDO is a materialized Git projection. Read
+        // the latest R2 snapshot on every retry and publish it through one expected-head commit.
         let commitOid: string | undefined;
-          try {
-            // Mirror the changed file into the repository and create an auditable commit for
-            // this successful mutating tool turn. R2 workspace reads remain lazy; only the one
-            // path reported by the tool is fetched. A repository failure cannot retroactively
-            // make the already-completed workspace mutation false, so this is best-effort and
-            // emits its commit id when successful for one-click rollback in the thread UI.
-            if (this.env.ARTIFACT_WORKER && commitContext) {
-              const base = `http://artifact-worker/spaces/${spaceId}/projects/${projectId}/repository`;
-              const headers = await this.internalHeaders(tenantId, { "content-type": "application/json" });
-              await this.env.ARTIFACT_WORKER.fetch(new Request(`${base}/init`, { method: "POST", headers, body: "{}" }));
-              if (change.operation === "write") {
-                const object = await env.scriptsBucket.get(`spaces/${spaceId}/projects/${projectId}/workspace/${change.path}`);
-                if (object) await this.env.ARTIFACT_WORKER.fetch(new Request(`${base}/write`, { method: "PUT", headers, body: JSON.stringify({ path: change.path, content_base64: bytesToBase64(new Uint8Array(await object.arrayBuffer())) }) }));
-              } else {
-                await this.env.ARTIFACT_WORKER.fetch(new Request(`${base}/file`, { method: "DELETE", headers, body: JSON.stringify({ path: change.path }) }));
-              }
-              const commitResponse = await this.env.ARTIFACT_WORKER.fetch(new Request(`${base}/commit`, { method: "POST", headers, body: JSON.stringify({
-                message: `${change.operation} ${change.path}`,
-                metadata: { agent_role: agentId, user_goal: commitContext.goal, task_id: commitContext.taskId, rationale: `${change.operation} ${change.path}`, thread_id: commitContext.threadId, tool_turn_id: `${commitContext.taskId}:${change.path}:${Date.now()}` },
-              }) }));
-              if (commitResponse.ok) {
-                const committed = await commitResponse.json<{ commit_id: string }>();
-                commitOid = committed.commit_id;
-                env.lastWorkspaceCommitOid = committed.commit_id;
-                // The Space DO is the ledger's single writer. Attest the immutable human
-                // invoker separately from the assistant actor and project executor.
-                await spacesWorker.fetch(new Request("http://spaces-worker/provenance", {
-                  method: "POST", headers,
-                  body: JSON.stringify({
-                    human_trigger_id: env.humanInvokerId ?? env.userId ?? "system",
-                    assistant_actor_id: agentId,
-                    project_executor_id: projectId,
-                    git_commit_oid: committed.commit_id,
-                    task_id: commitContext.taskId,
-                  }),
-                }));
-                await broadcastSpaceEvent(this.env, tenantId, spaceId, "repository.committed", { project_id: projectId, thread_id: commitContext.threadId, commit_id: committed.commit_id, rollback_commit_id: committed.commit_id });
-              }
+        if (this.env.ARTIFACT_WORKER && commitContext) {
+          const base = `http://artifact-worker/spaces/${spaceId}/projects/${projectId}/repository`;
+          const branch = env.workspaceBranch;
+          const branchQuery = branch ? `?branch=${encodeURIComponent(branch)}` : "";
+          const headers = await this.internalHeaders(tenantId, { "content-type": "application/json" });
+          const initialized = await this.env.ARTIFACT_WORKER.fetch(new Request(`${base}/init`, { method: "POST", headers, body: "{}" }));
+          if (!initialized.ok) throw new Error(`Repository projection initialization failed (${initialized.status})`);
+          let projectionReconciled = false;
+          for (let attempt = 0; attempt < 4; attempt++) {
+            const [headResponse, treeResponse] = await Promise.all([
+              this.env.ARTIFACT_WORKER.fetch(new Request(`${base}/head${branchQuery}`, { headers })),
+              this.env.ARTIFACT_WORKER.fetch(new Request(`${base}/tree${branchQuery}`, { headers })),
+            ]);
+            if (!headResponse.ok || !treeResponse.ok) throw new Error("Repository projection could not read its current revision");
+            const head = await headResponse.json<{ commit_id?: string | null }>();
+            const tree = await treeResponse.json<{ data: Array<{ path: string; hash: string }> }>();
+            const prior = tree.data.find((entry) => entry.path === change.path);
+            const object = await env.scriptsBucket.get(`${workspacePrefix(env)}${change.path}`);
+            const liveObject = object && object.customMetadata?.deleted !== "true" ? object : null;
+            const liveBytes = liveObject ? new Uint8Array(await liveObject.arrayBuffer()) : null;
+            const liveHash = liveObject?.customMetadata?.sha256 ?? (liveBytes
+              ? [...new Uint8Array(await crypto.subtle.digest("SHA-256", liveBytes))].map((byte) => byte.toString(16).padStart(2, "0")).join("")
+              : null);
+            if ((prior?.hash ?? null) === liveHash) {
+              commitOid = head.commit_id ?? undefined;
+              break;
             }
-            await spacesWorker.fetch(new Request(
+            const operation = liveObject ? "write" : "delete";
+            const changes = liveObject ? [{
+              path: change.path,
+              content_base64: bytesToBase64(liveBytes!),
+              expected_hash: prior?.hash ?? null,
+            }] : [{ path: change.path, deleted: true, expected_hash: prior?.hash ?? null }];
+            const commitResponse = await this.env.ARTIFACT_WORKER.fetch(new Request(`${base}/commit`, { method: "POST", headers, body: JSON.stringify({
+              expected_head: head.commit_id ?? null,
+              message: `${operation} ${change.path}`,
+              ...(branch ? { branch } : {}),
+              changes,
+              metadata: { agent_role: agentId, user_goal: commitContext.goal, task_id: commitContext.taskId, rationale: `${operation} ${change.path}`, thread_id: commitContext.threadId, tool_turn_id: `${commitContext.taskId}:${change.path}:${Date.now()}:${attempt}` },
+            }) }));
+            if (commitResponse.status === 409) continue;
+            if (!commitResponse.ok) throw new Error(`Repository projection commit failed (${commitResponse.status}): ${await commitResponse.text()}`);
+            const committed = await commitResponse.json<{ commit_id: string }>();
+            commitOid = committed.commit_id;
+            break;
+          }
+          if (!commitOid) throw new Error("Repository projection remained contended after four compare-and-swap attempts");
+          // Replay any workspace writes whose caller crashed after publishing R2 but before its
+          // repository projection completed. Reconciliation snapshots all live R2 files and
+          // commits the diff against one expected branch head.
+          for (let attempt = 0; attempt < 4; attempt++) {
+            const response = await this.env.ARTIFACT_WORKER.fetch(new Request(`${base}/reconcile${branchQuery}`, {
+              method: "POST", headers,
+              body: JSON.stringify({ ...(branch ? { branch } : {}), metadata: {
+                agent_role: agentId, user_goal: commitContext.goal, task_id: commitContext.taskId,
+                rationale: "Reconcile canonical workspace with repository projection",
+                thread_id: commitContext.threadId, tool_turn_id: `${commitContext.taskId}:reconcile:${Date.now()}:${attempt}`,
+              } }),
+            }));
+            if (response.status === 409) continue;
+            if (!response.ok) throw new Error(`Workspace projection reconciliation failed (${response.status}): ${await response.text()}`);
+            const reconciled = await response.json<{ commit_id?: string | null }>();
+            if (reconciled.commit_id) commitOid = reconciled.commit_id;
+            projectionReconciled = true;
+            break;
+          }
+          if (!projectionReconciled) throw new Error("Workspace projection remained contended during reconciliation");
+          env.lastWorkspaceCommitOid = commitOid;
+          await spacesWorker.fetch(new Request("http://spaces-worker/provenance", {
+            method: "POST", headers,
+            body: JSON.stringify({
+              human_trigger_id: env.humanInvokerId ?? env.userId ?? "system",
+              assistant_actor_id: agentId, project_executor_id: projectId,
+              git_commit_oid: commitOid, task_id: commitContext.taskId,
+            }),
+          }));
+          await broadcastSpaceEvent(this.env, tenantId, spaceId, "repository.committed", { project_id: projectId, thread_id: commitContext.threadId, commit_id: commitOid, rollback_commit_id: commitOid });
+        }
+        await spacesWorker.fetch(new Request(
               `http://spaces-worker/internal/spaces/${spaceId}/events/fire`,
               {
                 method: "POST",
@@ -2146,11 +2557,43 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                 }),
               }
             ));
-          } catch {
-            /* best-effort */
-          }
         return commitOid ? { commit_oid: commitOid } : undefined;
       };
+      // Reconcile at project-run startup as well as after each mutation. A terminated run may
+      // have published R2 just before it died and never reached onWorkspaceChange's projection.
+      if (this.env.ARTIFACT_WORKER && commitContext) {
+        const base = `http://artifact-worker/spaces/${spaceId}/projects/${projectId}/repository`;
+        const branch = env.workspaceBranch;
+        const query = branch ? `?branch=${encodeURIComponent(branch)}` : "";
+        const headers = await this.internalHeaders(tenantId, { "content-type": "application/json" });
+        const initialized = await this.env.ARTIFACT_WORKER.fetch(new Request(`${base}/init`, { method: "POST", headers, body: "{}" }));
+        if (!initialized.ok) throw new Error(`Repository projection initialization failed (${initialized.status})`);
+        let replayed = false;
+        for (let attempt = 0; attempt < 4; attempt++) {
+          const response = await this.env.ARTIFACT_WORKER.fetch(new Request(`${base}/reconcile${query}`, {
+            method: "POST", headers,
+            body: JSON.stringify({ ...(branch ? { branch } : {}), metadata: {
+              agent_role: agentId, user_goal: commitContext.goal, task_id: commitContext.taskId,
+              rationale: "Recover canonical workspace changes after an interrupted run",
+              thread_id: commitContext.threadId, tool_turn_id: `${commitContext.taskId}:startup-reconcile:${Date.now()}:${attempt}`,
+            } }),
+          }));
+          if (response.status === 409) continue;
+          if (!response.ok) throw new Error(`Workspace projection recovery failed (${response.status}): ${await response.text()}`);
+          const result = await response.json<{ commit_id?: string | null; changed?: number }>();
+          if (result.changed && result.commit_id) {
+            await spacesWorker.fetch(new Request("http://spaces-worker/provenance", {
+              method: "POST", headers,
+              body: JSON.stringify({ human_trigger_id: env.humanInvokerId ?? env.userId ?? "system", assistant_actor_id: agentId, project_executor_id: projectId, git_commit_oid: result.commit_id, task_id: commitContext.taskId }),
+            }));
+            await broadcastSpaceEvent(this.env, tenantId, spaceId, "repository.committed", { project_id: projectId, thread_id: commitContext.threadId, commit_id: result.commit_id, rollback_commit_id: result.commit_id });
+            env.lastWorkspaceCommitOid = result.commit_id;
+          }
+          replayed = true;
+          break;
+        }
+        if (!replayed) throw new Error("Workspace projection recovery remained contended after four retries");
+      }
     }
 
     // Exactly-once record of executed actions (see ActionLedger). Always wired — unlike the
@@ -2195,35 +2638,50 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         // grant every acquirer (that would silently defeat the whole point of taking a lock).
         acquire: (params) =>
           this.acquireFileLock(lockNamespace + params.key, params.holderId, params.ttlMs),
-        release: (params) => this.releaseFileLock(lockNamespace + params.key, params.holderId),
+        renew: (params) => this.renewFileLock(lockNamespace + params.key, params.holderId, params.fencingToken, params.ttlMs),
+        publishWorkspace: async (params) => {
+          if (!this.env.CONCURRENCY_DO) throw new Error("Workspace concurrency service is unavailable");
+          const key = lockNamespace + params.key;
+          const stub = this.env.CONCURRENCY_DO.get(this.env.CONCURRENCY_DO.idFromName(key));
+          const response = await stub.fetch(new Request("http://concurrency-do/workspace/publish", {
+            method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify({ ...params, key }),
+          }));
+          if (!response.ok) {
+            const body: { error_code?: string } = await response.json<{ error_code?: string }>().catch(() => ({}));
+            throw new Error(body.error_code === "lease_lost" || body.error_code === "stale_fencing_token"
+              ? "Workspace lease expired before publication; re-read and retry"
+              : "Workspace changed concurrently; re-read before retrying");
+          }
+          return response.json();
+        },
+        release: (params) => this.releaseFileLock(lockNamespace + params.key, params.holderId, params.fencingToken),
         status: (key) => this.concurrencyStatus(lockNamespace + key),
       };
     }
 
-    // Local-machine-as-container (§A1.17 Phase M) — one DO per (spaceId, userId); the
-    // local-machine prebuilt resolves WHICH userId to target from a matching grant, not from
-    // this wiring, so the gateway itself stays a thin per-call address resolver.
+    // Every dispatch selects a live, visible named machine; identity comes from this host.
     if (this.env.LOCAL_TUNNEL) {
-      const localTunnelDO = this.env.LOCAL_TUNNEL;
-      env.localTunnel = {
-        exec: async ({ userId, op, params }) => {
-          const stub = localTunnelDO.get(localTunnelDO.idFromName(`local-tunnel:${spaceId}:${userId}`));
-          const resp = await stub.fetch(new Request("http://local-tunnel/exec", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ op, params }),
-          }));
-          return resp.json<{ ok: boolean; result?: unknown; error?: string }>();
-        },
-        status: async (userId) => {
-          const stub = localTunnelDO.get(localTunnelDO.idFromName(`local-tunnel:${spaceId}:${userId}`));
-          const resp = await stub.fetch(new Request("http://local-tunnel/status"));
-          return resp.json<{ connected: boolean }>();
-        },
-      };
+      env.localTunnel = createNamedTunnelGateway(this.env, { tenantId, spaceId, actorId: userId ?? "",
+        ...(projectId ? { projectId } : {}), runId: () => env.runId,
+        authorize: () => nativeGrantActive({ tenantId, spaceId, projectId, userId, agentId, runId: env.runId }) });
     }
 
     return env;
+  }
+
+  /** Release the extended Tier-6 warm window when work completes or pauses for a person. */
+  private signalContainerLifecycle(spaceId: string, projectId: string | undefined, status: "blocked" | "completed"): void {
+    if (!this.env.TOOL_SANDBOX) return;
+    const namespace = this.env.TOOL_SANDBOX;
+    const stub = namespace.get(namespace.idFromName(`sandbox:${spaceId}:${projectId ?? "_assistant"}`));
+    this.ctx.waitUntil(
+      stub.fetch(new Request("http://sandbox/lifecycle", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ status }),
+      })).then(() => undefined).catch(() => undefined)
+    );
   }
 
   // ── Sub-agents (spec "Advanced Agent SDK Patterns" §3 Sub-Agent Coordination) ───────────
@@ -2333,89 +2791,90 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       hooks.sendToThread = (params) => this.sendToThreadImpl(params, tenantId, apiKey, agentDO);
     }
 
-    // §A1.17 Phase J: the dynamic-workflow prebuilt's ops. A "workflow" here is not a second
-    // parallel store — it's an ordinary stored script (script.create's own skill library)
-    // tagged metadata.runtime:"workflow", so execution-ladder.ts routes script.run for it to
-    // env.workflowRunner (a durable CF Workflow instance) instead of an isolate. That reuse is
-    // why workflow.create/run just delegate to `tools` rather than a bespoke workflow store.
-    if (tools) {
-      hooks.workflowCreate = async (name, code) => {
-        await tools.create({
-          name,
-          code,
-          metadata: {
-            description: `Durable workflow authored via dynamic-workflow.workflow.create`,
-            domain: "orchestration",
-            requires_tier: 2,
-            runtime: "workflow",
-            origin: "distilled",
-          },
-        });
-        return { id: name };
-      };
-      hooks.workflowRun = async (name, params) => {
-        // Workflows never inherit or hold open the caller's conversational request. Dispatch
-        // into a fresh Workflow execution and immediately return a receipt to the UI stream.
-        const runId = crypto.randomUUID();
-        const started = Date.now();
-        this.ctx.waitUntil((async () => {
-          let result: unknown;
-          let failure: unknown;
-          try { result = await tools.run(name, params); } catch (error) { failure = error; }
-          if (this.env.SCRIPTS_R2) {
-            await emitWorkflowReceiptCard({
-              runId, workflowName: name, status: failure ? "failed" : "succeeded",
-              durationMs: Date.now() - started, summary: failure ? "Workflow failed. Inspect logs for details." : "Workflow completed successfully.",
-              stdout: result === undefined ? "" : JSON.stringify(result, null, 2),
-              stderr: failure instanceof Error ? failure.stack ?? failure.message : failure ? String(failure) : "",
-            }, {
-              logs: this.env.SCRIPTS_R2,
-              logUrl: (key) => `/api/workflow-logs/${encodeURIComponent(key)}`,
-              emit: async (card) => { await broadcastSpaceEvent(this.env, tenantId, spaceId, "timeline.receipt", card as unknown as Record<string, unknown>); },
-            });
+    // Model race orchestration is a planner-visible capability. The planner requests one
+    // prebuilt operation; this host owns repository branches, child dispatch, sandbox identity,
+    // and billing holds so the model never receives those service bindings directly.
+    if (this.env.ARTIFACT_WORKER && this.env.NAELAO_AGENT_DO && this.env.TOOL_SANDBOX) {
+      const agentDO = this.env.NAELAO_AGENT_DO;
+      hooks.modelRace = async (params) => {
+        const repository = `http://artifact-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId ?? "")}/repository`;
+        if (!projectId) throw new Error("model race requires a project-scoped run");
+        const headers = await this.internalHeaders(tenantId, { "content-type": "application/json" });
+        let racePlan: RacePlan = "free";
+        if (this.env.BILLING_WORKER) {
+          const quotaResponse = await this.env.BILLING_WORKER.fetch(new Request("http://billing-worker/internal/usage/infra-credits/check", {
+            headers: await this.internalHeaders(tenantId),
+          }));
+          if (quotaResponse.ok) {
+            const quotaBody = await quotaResponse.json<{ plan_tier?: string }>().catch(() => ({} as { plan_tier?: string }));
+            const plan = String(quotaBody.plan_tier ?? "free").toLowerCase();
+            if (plan === "starter" || plan === "pro" || plan === "enterprise") racePlan = plan;
           }
-        })());
-        return { queued: true, runId, workflow: name, context: "clean", max_context_tokens: 2_000 };
-      };
-      hooks.workflowSchedule = async (name, cron) => {
-        // Reuses the existing scheduled_jobs cron dispatcher (runScheduledJobs /
-        // fireScriptDirectly) rather than a second scheduler — a due fire calls
-        // script.run(name) exactly as any other scheduled script would, and the script's own
-        // runtime:"workflow" tag is what routes that particular fire to a Workflow instance
-        // instead of holding an isolate open for however long it runs.
-        if (!this.env.SPACES_WORKER) return { id: "" };
-        try {
-          const resp = await this.env.SPACES_WORKER.fetch(new Request(
-            `http://spaces-worker/spaces/${spaceId}/scheduled-jobs`,
-            {
-              method: "POST",
-              headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
-              body: JSON.stringify({
-                name: `workflow:${name}`,
-                cron_expression: cron,
-                script_name: name,
-                agent_id: agentId,
-                ...(projectId ? { project_id: projectId } : {}),
-              }),
-            }
-          ));
-          if (!resp.ok) return { id: "" };
-          const created = await resp.json<{ id: string }>();
-          return { id: created.id };
-        } catch {
-          return { id: "" };
         }
-      };
-      hooks.workflowStatus = async (id) => {
-        if (!this.env.AGENT_SCRIPT_WORKFLOW) return { ok: false, reason: "workflow runtime not available" };
-        try {
-          const instance = await this.env.AGENT_SCRIPT_WORKFLOW.get(id);
-          return await instance.status();
-        } catch (err) {
-          return { ok: false, reason: err instanceof Error ? err.message : String(err) };
-        }
+        const callRepository = async (operation: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> => {
+          const response = await this.env.ARTIFACT_WORKER!.fetch(new Request(`${repository}/${operation}`, {
+            method: "POST", headers, body: JSON.stringify(payload),
+          }));
+          const body = await response.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+          if (!response.ok) throw new Error(`model race repository ${operation} failed (${response.status}): ${String(body["error"] ?? "unknown error")}`);
+          return body;
+        };
+        const reserveCreditHold = async (credits: number): Promise<{ release(): Promise<void> }> => {
+          if (!this.env.BILLING_WORKER) throw new Error("model race billing reservation is unavailable");
+          const reservationId = `${parentRunId}:model-race:${params.taskId}`;
+          const billingHeaders = await this.internalHeaders(tenantId, { "content-type": "application/json" });
+          const reserve = await this.env.BILLING_WORKER.fetch(new Request("http://billing-worker/internal/workflows/budget/reserve", {
+            method: "POST", headers: billingHeaders,
+            body: JSON.stringify({ reservation_id: reservationId, workflow_id: reservationId, space_id: spaceId, budget_key: "model_race", credits: Math.ceil(credits) }),
+          }));
+          if (!reserve.ok) throw new Error(`model race credit escrow unavailable (${reserve.status})`);
+          return {
+            release: async () => {
+              await this.env.BILLING_WORKER!.fetch(new Request("http://billing-worker/internal/workflows/budget/release", {
+                method: "POST", headers: billingHeaders, body: JSON.stringify({ reservation_id: reservationId }),
+              }));
+            },
+          };
+        };
+        const result = await runSpeculativeModelRace(
+          params.taskId,
+          params.models,
+          params.prompt,
+          params.testCommand,
+          {
+            plan: racePlan,
+            createBranch: async (branch) => { await callRepository("branch", { name: branch, from: "main", temporary: true }); },
+            runWorker: async ({ model, prompt, branch, signal }) => {
+              if (signal.aborted) throw signal.reason;
+              const spawned = await this.spawnSubAgentBatch(
+                [{ goal: prompt, model, workspace_branch: branch, budget_tokens: DEFAULT_SUB_AGENT_BUDGET_TOKENS }],
+                spaceId, agentId, tenantId, apiKey, parentRunId, parentThreadId, projectId, agentDO, userId, currentModel, effort, signal,
+              ) as unknown as { results?: Array<{ ok?: boolean; error?: string }> };
+              const worker = spawned.results?.[0];
+              if (!worker?.ok) throw new Error(worker?.error ?? `model worker '${model}' failed`);
+            },
+            runOracle: async ({ command, branch }) => {
+              const sandbox = this.env.TOOL_SANDBOX!;
+              const stub = sandbox.get(sandbox.idFromName(`sandbox:${spaceId}:${projectId}:branch:${branch}`));
+              const response = await stub.fetch(new Request("http://sandbox/exec", {
+                method: "POST", headers: { "content-type": "application/json", "x-avos-task-active": "1" },
+                body: JSON.stringify({ name: "Bash", code: command, args: { commands: command }, spaceId, projectId, workspaceBranch: branch }),
+              }));
+              const body = await response.json<{ ok?: boolean; result?: unknown; error?: string }>().catch(() => ({} as { ok?: boolean; result?: unknown; error?: string }));
+              if (!response.ok && !body.ok) throw new Error(body.error ?? `oracle failed (${response.status})`);
+              return { exitCode: body.ok ? 0 : 1, ...(typeof body.result === "object" && body.result && typeof (body.result as Record<string, unknown>)["commitOid"] === "string" ? { commitOid: String((body.result as Record<string, unknown>)["commitOid"]) } : {}) };
+            },
+            fastForwardMain: async (branch) => { await callRepository("merge", { source: branch, target: "main" }); },
+            cleanupBranch: async (branch) => { await callRepository("cleanup", { branch }); },
+            reserveCreditHold,
+          },
+          params.escrowCredits,
+        );
+        return result;
       };
     }
+
+    if (tools) Object.assign(hooks, createWorkflowHooks(this.env, { tenantId, spaceId, agentId, projectId, actorId: userId }, parentRunId, tools));
 
     return hooks;
   }
@@ -2458,7 +2917,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
   }
 
-  private async acquireFileLock(key: string, holderId: string, ttlMs?: number): Promise<{ granted: boolean; acquired: boolean; active: number; heldBy?: string; remainingMs?: number; degraded?: boolean }> {
+  private async acquireFileLock(key: string, holderId: string, ttlMs?: number): Promise<{ granted: boolean; acquired: boolean; active: number; heldBy?: string; remainingMs?: number; degraded?: boolean; fencingToken?: number }> {
     if (!this.env.CONCURRENCY_DO) return { granted: false, acquired: false, active: 0, degraded: true };
     try {
       const stub = this.env.CONCURRENCY_DO.get(this.env.CONCURRENCY_DO.idFromName(key));
@@ -2466,19 +2925,30 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ key, holderId, ...(typeof ttlMs === "number" ? { ttlMs } : {}) }),
       }));
-      const result = await resp.json<{ acquired: boolean; heldBy?: string; remainingMs?: number }>();
+      const result = await resp.json<{ acquired: boolean; heldBy?: string; remainingMs?: number; fencingToken?: number }>();
       return { ...result, granted: result.acquired, active: result.acquired ? 1 : 0 };
     } catch {
       return { granted: false, acquired: false, active: 0, degraded: true };
     }
   }
 
-  private async releaseFileLock(key: string, holderId: string): Promise<void> {
+  private async renewFileLock(key: string, holderId: string, fencingToken: number, ttlMs?: number): Promise<{ renewed: boolean; expiresAt?: number }> {
+    if (!this.env.CONCURRENCY_DO) return { renewed: false };
+    const stub = this.env.CONCURRENCY_DO.get(this.env.CONCURRENCY_DO.idFromName(key));
+    const response = await stub.fetch(new Request("http://concurrency-do/locks/renew", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ key, holderId, fencingToken, ...(ttlMs ? { ttlMs } : {}) }),
+    }));
+    const body = await response.json<{ renewed: boolean; expiresAt?: number }>();
+    return body;
+  }
+
+  private async releaseFileLock(key: string, holderId: string, fencingToken?: number): Promise<void> {
     if (!this.env.CONCURRENCY_DO) return;
     try {
       const stub = this.env.CONCURRENCY_DO.get(this.env.CONCURRENCY_DO.idFromName(key));
       await stub.fetch(new Request("http://concurrency-do/locks/release", {
-        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key, holderId }),
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key, holderId, ...(fencingToken ? { fencingToken } : {}) }),
       }));
     } catch { /* expiry is the fail-safe */ }
   }
@@ -2507,7 +2977,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     agentDO: DurableObjectNamespace<NaelaoAgentDO>,
     userId?: string,
     currentModel?: string,
-    effort?: string
+    effort?: string,
+    abortSignal?: AbortSignal
   ): Promise<{ id: string }> {
     // Effort ceiling resolved ONCE for the whole batch — every task in one agent.spawn call
     // shares the same parent run and the same Effort setting, so there's no reason to re-derive
@@ -2544,20 +3015,26 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         try {
           const doId = agentDO.idFromName(`sub:${spaceId}:${subId}`);
           const stub = agentDO.get(doId);
-          const resp = await stub.fetch(new Request("http://agent-do/script/run", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
+          const cancelChild = () => {
+            void stub.fetch(new Request("http://agent-do/cancel", { method: "POST" })).catch(() => undefined);
+          };
+          abortSignal?.addEventListener("abort", cancelChild, { once: true });
+          let resp: Response;
+          try {
+            resp = await stub.fetch(new Request("http://agent-do/script/run", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
               goal,
               spaceId,
               agentId,
               tenantId,
               sessionId: `subagent-${subId}`,
               apiKey,
-              // A child shares its parent's project workspace — it's a subthread of the same
-              // project, not a different filesystem (spec: threads in a project share one R2
-              // workspace).
+              // A normal child shares its parent's project workspace. Speculative race children
+              // may carry workspace_branch, which switches them to an isolated branch prefix.
               ...(projectId ? { projectId } : {}),
+              ...(typeof t["workspace_branch"] === "string" ? { workspaceBranch: String(t["workspace_branch"]) } : {}),
               // F-36: a child acts on behalf of the SAME user as its parent — its own
               // handleScriptRun re-resolves the clamp, so a viewer-clamped parent can't
               // launder a mutation through a spawn.
@@ -2572,9 +3049,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                 // Lets the child report incremental progress back to THIS DO instance
                 // mid-run — see buildSubAgentProgressReporter / handleScriptRun's onProgress wiring.
                 parent_do_id: this.ctx.id.toString(),
-              },
-            }),
-          }));
+              }}),
+              ...(abortSignal ? { signal: abortSignal } : {}),
+            }));
+          } finally {
+            abortSignal?.removeEventListener("abort", cancelChild);
+          }
           const body = await resp.json<{ result?: { ok: boolean; output?: unknown; tokens_used?: number; error?: string } }>().catch(() => ({}) as Record<string, never>);
           const tokensUsed = body.result?.tokens_used ?? 0;
           const ok = resp.ok && !!body.result?.ok;
@@ -2891,6 +3371,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         final_answer?: string;
         error?: string;
         pending_approval?: unknown;
+        pending_question?: unknown;
         deferred_approvals?: unknown;
       };
     }
@@ -3161,6 +3642,34 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     } catch { /* see openDurableRun */ }
   }
 
+  /**
+   * Keep a script-native run queryable when it fails before the main loop starts. Continue
+   * dispatches directly into this DO and the client immediately polls the returned run id; an
+   * early validation or provisioning failure must therefore become a terminal run, not a 404.
+   */
+  private finishScriptFailure(runId: string, error: string, status = 500, errorCode?: string): Response {
+    this.finishLiveRun(runId, {
+      status: "failed",
+      error,
+      ...(errorCode ? { error_code: errorCode } : {}),
+    });
+    return Response.json({ error, ...(errorCode ? { error_code: errorCode } : {}) }, { status });
+  }
+
+  private async finishScriptFailureResponse(runId: string, response: Response): Promise<Response> {
+    const body = await response.clone().json().catch(() => ({} as Record<string, unknown>)) as Record<string, unknown>;
+    const error = typeof body.error === "string"
+      ? body.error
+      : typeof body.message === "string" ? body.message : `HTTP ${response.status}`;
+    const errorCode = typeof body.error_code === "string" ? body.error_code : undefined;
+    this.finishLiveRun(runId, {
+      status: "failed",
+      error,
+      ...(errorCode ? { error_code: errorCode } : {}),
+    });
+    return response;
+  }
+
   /** Drop resolved entries past their TTL, and the oldest resolved ones if the map is still over
    *  its cap. An unresolved run is never pruned — it is still executing. */
   private pruneLiveRuns(): void {
@@ -3232,7 +3741,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    * really run. Newest first, bounded, since this is a panel and not an export.
    */
   private handleListSubAgents(parentRunId: string): Response {
-    const cols = `id, parent_run_id, goal, status, budget_tokens, tokens_used, progress_note, created_at, updated_at`;
+    const cols = `id, parent_run_id, goal, status, budget_tokens, tokens_used, progress_note, result, error, created_at, updated_at`;
     const rows = parentRunId
       ? this.ctx.storage.sql
           .exec(`SELECT ${cols} FROM sub_agents WHERE parent_run_id = ? ORDER BY created_at ASC`, parentRunId)
@@ -3260,19 +3769,32 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    * this DO has no D1 access to know which SpaceType variant applies, and there is no builder UI
    * to individually trim which prebuilt SCRIPTS an agent has, only per-action approval policy, so
    * a script the CURRENT code declares but a persisted list lacks is staleness, never an
-   * intentional trim). Additive only — never removes anything persisted. A project-scoped
-   * specialist agent (a different, per-business agentId, deliberately restricted per the F-36/
-   * item-130 access split) is untouched. Best-effort re-persist so this heals once per agent, not
-   * every run; a write failure never blocks the run itself — the union still applies in memory.
+   * intentional trim). Every persistent agent now also gets the universal planner and execution
+   * baseline; leaf workers are narrowed later, per run, before the tool surface is constructed.
+   * Additive only — never removes anything persisted. Best-effort re-persist so this heals once
+   * per agent, not every run; a write failure never blocks the run itself — the union still
+   * applies in memory.
    */
-  private async loadAgentConfigHealed(bucket: R2Bucket, spaceId: string, agentId: string): Promise<AgentConfig | null> {
+  private async loadAgentConfigHealed(bucket: R2Bucket, spaceId: string, agentId: string, lock?: { gateway: NonNullable<ScriptEngineEnv["lockGateway"]>; holderId: string }): Promise<AgentConfig | null> {
     const config = await loadAgentConfig(bucket, spaceId, agentId);
-    if (!config || agentId !== "naelao-agent") return config;
-    const wanted = [...new Set([...DEFAULT_NAELAO_AGENT.config.scripts.prebuilt, ...LAUNCHPAD_ASSISTANT_PROFILE.config.scripts.prebuilt])];
+    // Every active space has a Space Assistant. Older local spaces can predate the
+    // provisioner queue (or have been left in a partially-provisioned state), so the
+    // four R2 files may be absent even though the space itself is usable. Recreate the
+    // current Launchpad assistant profile on first use; this is idempotent and keeps the
+    // normal provisioner as the source of truth for all specialist agents.
+    if (!config && agentId === "naelao-agent") {
+      const recovered: AgentConfig = { ...LAUNCHPAD_ASSISTANT_PROFILE.config };
+      await writeAgentConfig(bucket, spaceId, agentId, recovered, lock ? { lockGateway: lock.gateway, holderId: lock.holderId } : {}).catch(() => undefined);
+      return recovered;
+    }
+    if (!config) return config;
+    const wanted = agentId === "naelao-agent"
+      ? [...new Set([...DEFAULT_NAELAO_AGENT.config.scripts.prebuilt, ...LAUNCHPAD_ASSISTANT_PROFILE.config.scripts.prebuilt, ...UNIVERSAL_AGENT_BASELINE_PREBUILTS])]
+      : [...UNIVERSAL_AGENT_BASELINE_PREBUILTS];
     const { merged, changed } = mergeMissingPrebuilt(config.scripts, wanted);
     if (!changed) return config;
     const healed: AgentConfig = { ...config, scripts: merged };
-    writeAgentConfig(bucket, spaceId, agentId, healed).catch(() => {
+    writeAgentConfig(bucket, spaceId, agentId, healed, lock ? { lockGateway: lock.gateway, holderId: lock.holderId } : {}).catch(() => {
       /* best-effort — the in-memory union below still applies to THIS run either way */
     });
     return healed;
@@ -3294,14 +3816,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       agentId: string;
       tenantId?: string;
       projectId?: string;
+      workspaceBranch?: string;
       scriptName: string;
       params?: Record<string, unknown>;
+      airGappedOnly?: boolean;
     }>().catch(() => null);
     if (!body?.spaceId || !body.scriptName) {
       return Response.json({ error: "spaceId and scriptName are required" }, { status: 400 });
     }
 
-    const engineEnv = this.buildScriptEngineEnv(body.spaceId, body.agentId, body.tenantId ?? "", undefined, body.projectId);
+    const engineEnv = await this.buildScriptEngineEnv(body.spaceId, body.agentId, body.tenantId ?? "", undefined, body.projectId, undefined, body.airGappedOnly === true);
     if (!engineEnv) {
       return Response.json({ error: "script engine unavailable: SCRIPTS_R2 not bound" }, { status: 503 });
     }
@@ -3363,6 +3887,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       sessionId?: string;
       userId?: string;
       projectId?: string;
+      workspaceBranch?: string;
       context?: Record<string, unknown>;
       apiKey?: string;
       model?: string;
@@ -3386,6 +3911,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
        *  never resolved one, in which case the reasoner simply omits the field. */
       businessContext?: BusinessContext;
       airGappedOnly?: boolean;
+      localMachineId?: string;
       manifest?: UniversalAgentManifest;
       functionalRole?: UniversalAgentRole;
       /** The id the caller already handed to its client, so the persisted trace is reachable
@@ -3395,8 +3921,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
        *  request never reaches this DO except through the router's verified proxy. */
       preApprovedActions?: string[];
       resumeSteps?: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>;
+      humanAnswer?: string;
       /** The ORIGINAL run's id, so the action ledger recognises a resume as the same task. */
       ledgerKey?: string;
+      /** Durable continuation state: the completed deliberation round must survive DO hibernation. */
+      deliberationRound?: number;
       /** Phase 2 item 13 — opt-in progressive tool disclosure (see ScriptEngineEnv's own doc).
        *  Resolved by the caller (index.ts) from an explicit per-request override or the space's
        *  own stored productConfig.modelConfig.progressiveToolDisclosure; defaults to false/full
@@ -3406,6 +3935,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       roomType?: RoomType;
       /** Authoritative project operating mode, resolved from SpaceDO by the worker edge. */
       templateMode?: TemplateMode;
+      /** Resolved by the public router when available; direct internal callers are checked via
+       * the authenticated Spaces worker policy endpoint below. */
+      modelPolicy?: SpaceModelPolicy | null;
     }>();
 
     // Also accept spaceId / agentId / tenantId from internal request headers (set by billing/triggers)
@@ -3433,13 +3965,43 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // back to a fresh id keeps direct callers (channel heartbeats, triggers) working unchanged.
     const runId = body.runId ?? crypto.randomUUID();
 
+    // Register before any gate or provisioning check. Continue uses this id for immediate
+    // polling, and those checks can fail before the normal progress reporter is constructed.
+    this.liveRuns.set(runId, { steps: [], updatedAt: Date.now() });
+    this.openDurableRun(runId, sessionId);
+
     if (body.templateMode !== undefined && body.templateMode !== "autonomous_operator" && body.templateMode !== "autonomous_venture_os" && body.templateMode !== "cowork_studio") {
-      return Response.json({ error: "invalid templateMode", error_code: "bad_request" }, { status: 400 });
+      return this.finishScriptFailure(runId, "invalid templateMode", 400, "bad_request");
     }
     const templateMode: TemplateMode = body.templateMode ?? "cowork_studio";
+    const deliberationRound = body.deliberationRound === undefined
+      ? undefined
+      : Math.max(0, Math.min(2, Math.trunc(body.deliberationRound))) as 0 | 1 | 2;
 
     if (!body.goal || !spaceId) {
-      return Response.json({ error: "goal and spaceId are required" }, { status: 400 });
+      return this.finishScriptFailure(runId, "goal and spaceId are required", 400, "bad_request");
+    }
+    const requestedModel = body.model ?? DEFAULT_WORKING_MODEL;
+    let modelPolicy = body.modelPolicy;
+    if (modelPolicy === undefined && this.env.SPACES_WORKER && tenantId) {
+      try {
+        const token = await mintInternalToken(this.env.PLATFORM_SECRET ?? "", tenantId);
+        const policyResponse = await this.env.SPACES_WORKER.fetch(new Request(
+          `http://spaces-worker/internal/spaces/${encodeURIComponent(spaceId)}/model-policy`,
+          { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": token } },
+        ));
+        if (!policyResponse.ok) {
+          return this.finishScriptFailure(runId, "model policy is unavailable; refusing to run", 503, "model_policy_unavailable");
+        }
+        const policyBody = await policyResponse.json<{ policy?: SpaceModelPolicy | null }>();
+        modelPolicy = policyBody.policy ?? null;
+      } catch {
+        return this.finishScriptFailure(runId, "model policy is unavailable; refusing to run", 503, "model_policy_unavailable");
+      }
+    }
+    const policyResult = validateModelForSpacePolicy(requestedModel, modelPolicy);
+    if (!policyResult.ok) {
+      return this.finishScriptFailure(runId, policyResult.message ?? "model is not certified for this space", 400, policyResult.error_code);
     }
     // A task id identifies shared work (unlike runId, which identifies one attempt). Claim it
     // before any model/tool spend. A losing sibling becomes a spectator and exits cleanly.
@@ -3451,19 +4013,23 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": token },
         body: JSON.stringify({ assistantId: agentId, ttlMinutes: 15 }),
       }));
-      if (!leaseResponse.ok) return new Response(await leaseResponse.text(), { status: leaseResponse.status, headers: { "content-type": "application/json" } });
+      if (!leaseResponse.ok) {
+        const failure = new Response(await leaseResponse.text(), { status: leaseResponse.status, headers: { "content-type": "application/json" } });
+        return this.finishScriptFailureResponse(runId, failure);
+      }
       const lease = await leaseResponse.json<{ success: boolean; activeLead?: string; leaseExpiresAt?: string }>();
       if (!lease.success) {
         void this.logAgentActivity(spaceId, tenantId, agentId, "run_completed", { projectId: projectId ?? null, threadId: sessionId, summary: `Spectating ${sharedTaskId}; ${lease.activeLead ?? "another assistant"} holds the active lease.` });
         return Response.json({ status: "SPECTATING", activeLead: lease.activeLead ?? null, taskId: sharedTaskId, leaseExpiresAt: lease.leaseExpiresAt ?? null, tokensConsumed: 0, suggestedAction: "AUDIT_ACTIVE_PULL_REQUEST" });
       }
     }
-    // Slash-command entry points all converge on the same tool; no parallel goal runner exists.
-    if (/^\/goal(?:\s|$)/.test(body.goal)) {
-      const objective = body.goal.replace(/^\/goal\s*/, "").trim();
-      if (!objective) return Response.json({ error: "/goal requires an objective" }, { status: 400 });
-      body.goal = `Plan and execute this objective with engine.plan_and_delegate_goal. Create a dependency DAG, give every worker only its subtask and file paths, and cap every budget_tokens at 2000. Objective: ${objective}`;
-    }
+    // Planning is the default for every parent-agent turn. `/goal` remains accepted only as a
+    // backwards-compatible spelling; it no longer selects a separate execution path. Ephemeral
+    // workers receive an execution contract instead, otherwise they would recursively plan the
+    // leaf task they were specifically dispatched to finish.
+    const isSubAgent = typeof body.context?.["sub_agent_id"] === "string";
+    body.goal = framePlannerFirstGoal(body.goal, { worker: isSubAgent });
+    if (!body.goal) return this.finishScriptFailure(runId, "goal requires an objective", 400, "bad_request");
 
     // Go-live monetization pass: a business that opted into revenue-cut billing (productConfig.
     // pricingConfig.externalRevenueCut.enabled) but has stopped reporting its tracked revenue
@@ -3476,10 +4042,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // is gated, never a newly-enabled one with zero history).
     const reportingLapsed = await this.checkRevenueReportingLapsed(spaceId, tenantId);
     if (reportingLapsed) {
-      return Response.json(
-        { error: "Whop revenue reporting has lapsed for this business — reconnect it to resume", error_code: "revenue_reporting_lapsed" },
-        { status: 403 }
-      );
+      return this.finishScriptFailure(runId, "Whop revenue reporting has lapsed for this business — reconnect it to resume", 403, "revenue_reporting_lapsed");
     }
 
     // Tier 2 metering follow-up: business_subscriptions (Phase E) was write-only — the Lemon
@@ -3489,17 +4052,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // lookup error — a network hiccup must not silently unblock a gated subscription run.
     const subGate = await this.checkBusinessSubscriptionGate(spaceId, tenantId);
     if (subGate.gated && !subGate.active) {
-      return Response.json(
-        { error: "this business's subscription is not active — resubscribe to resume", error_code: subGate.reason || "subscription_inactive" },
-        { status: 402 }
-      );
+      return this.finishScriptFailure(runId, "this business's subscription is not active — resubscribe to resume", 402, subGate.reason || "subscription_inactive");
     }
 
-    const engineEnv = this.buildScriptEngineEnv(spaceId, agentId, tenantId, userId, projectId, { goal: body.goal, taskId: runId, threadId: sessionId });
+    const engineEnv = await this.buildScriptEngineEnv(spaceId, agentId, tenantId, userId, projectId, { goal: body.goal, taskId: runId, threadId: sessionId }, body.airGappedOnly === true, templateMode, body.workspaceBranch, callerRole);
     if (!engineEnv) {
-      return Response.json({ error: "script engine unavailable: SCRIPTS_R2 not bound" }, { status: 503 });
+      return this.finishScriptFailure(runId, "script engine unavailable: SCRIPTS_R2 not bound", 503, "script_engine_unavailable");
     }
+    engineEnv.runId = runId;
+    engineEnv.taskId = runId;
     engineEnv.humanInvokerId = userId ?? "system";
+    engineEnv.executionSignal = request.signal;
     const mutationGrant = request.headers.get("x-naelao-mutation-grant") ?? body.mutationGrant;
     if (mutationGrant) engineEnv.mutationGrant = mutationGrant;
     // §A1 connector default-vs-personal switch: read once per run, best-effort — a failure or an
@@ -3518,13 +4081,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       spaceId, tenantId, projectId, userId, callerRole,
       sessionId, agentId, runId, sessionCreditCeiling: body.sessionCreditCeiling,
     });
-    if (!gate.ok) return gate.response;
+    if (!gate.ok) return this.finishScriptFailureResponse(runId, gate.response);
     const { hasSpendCap, walletProjectId } = gate;
     if (gate.effectiveRole !== undefined) {
       // "viewer" makes the whole run read-only — enforced structurally in ScriptToolSurface
       // (script.create/update/delete, stored scripts, and non-read-safe prebuilt ops all
       // refuse). editor/owner run unclamped at the six-op surface.
       engineEnv.effectiveRole = gate.effectiveRole;
+    }
+    if (engineEnv.memoryRoleRank) {
+      engineEnv.memoryRoleRank.value = roleRankFor(gate.effectiveRole ?? callerRole);
     }
     if (gate.maxTier !== undefined) {
       engineEnv.maxTier = gate.maxTier;
@@ -3537,18 +4103,29 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
 
     // Load the agent's 4-file config; without it the agent is not provisioned.
-    const config = await this.loadAgentConfigHealed(engineEnv.scriptsBucket, spaceId, agentId);
+    const config = await this.loadAgentConfigHealed(
+      engineEnv.scriptsBucket,
+      spaceId,
+      agentId,
+      engineEnv.lockGateway ? { gateway: engineEnv.lockGateway, holderId: runId } : undefined,
+    );
     if (!config) {
-      return Response.json({ error: `agent '${agentId}' is not provisioned in space '${spaceId}'` }, { status: 404 });
+      return this.finishScriptFailure(runId, `agent '${agentId}' is not provisioned in space '${spaceId}'`, 404, "agent_not_provisioned");
     }
+    const enabledPrebuilts = isSubAgent
+      ? config.scripts.prebuilt.filter((name) => !(UNIVERSAL_PLANNER_PREBUILTS as readonly string[]).includes(name))
+      : config.scripts.prebuilt;
     const fallbackRole: UniversalAgentRole = body.functionalRole ?? (/support|customer/i.test(agentId) ? "CUSTOMER_SUPPORT" : "DEV_OPERATOR");
-    const assembled = this.assembleUniversalAgent(body.manifest ?? {
+    const manifest: UniversalAgentManifest = body.manifest
+      ? { ...body.manifest, capabilities: { ...body.manifest.capabilities, enabledPrebuilts } }
+      : {
       scope: projectId ? "PROJECT_BOUND" : "SPACE_WIDE",
       role: fallbackRole,
       prompts: { systemPrompt: config.systemPrompt, instructions: "Follow the configured agent rules.", ...(config.agentsMd ? { userCustomInstructions: config.agentsMd } : {}) },
-      capabilities: { enabledPrebuilts: config.scripts.prebuilt, maxTier: engineEnv.maxTier ?? 6 },
+      capabilities: { enabledPrebuilts, maxTier: engineEnv.maxTier ?? 6 },
       autonomy: { approvalMode: projectId ? "gate_listed" : "gate_unless_listed", autoApprovedActions: [], requiresApprovalFor: config.requiresApprovalFor ?? [] },
-    }, body.businessContext);
+    };
+    const assembled = this.assembleUniversalAgent(manifest, body.businessContext);
     engineEnv.maxTier = Math.min(engineEnv.maxTier ?? 6, assembled.maxTier) as ExecutionTier;
 
     // Approval policy. A project-bound Naelao Agent keeps the ordinary allowlist-of-gated
@@ -3594,7 +4171,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         alternative: { type: "mcp_v2_elicitation_card", action: "request_ephemeral_action_grant", expires_in_ms: 15_000 },
       });
     }
-    const tools = new ScriptToolSurface(engineEnv, assembled.manifest.capabilities.enabledPrebuilts, { ...(body.roomType ? { roomType: body.roomType } : {}), role: assembled.manifest.role });
+    const tools = new ScriptToolSurface(engineEnv, assembled.manifest.capabilities.enabledPrebuilts, {
+      ...(body.roomType ? { roomType: body.roomType } : {}),
+      role: assembled.manifest.role,
+      // Persistent Space and Project agents plan and coordinate. The workers they dispatch keep
+      // the configured tool set and use the same execution ladder, but do not receive this
+      // planner-only boundary.
+      ...(!isSubAgent ? { plannerScope: projectId ? "project" as const : "space" as const } : {}),
+    });
     // A sub-agent spawned mid-task inherits the SAME project scoping as its parent — it's
     // conceptually a subthread of the same project, not a different workspace. Built after
     // `tools` (§A1.17 Phase J's workflow.create/run ops need it to author/re-run stored
@@ -3610,6 +4194,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const byokOverride = await this.resolveBusinessLlmOverride(spaceId, tenantId, body.model ?? DEFAULT_WORKING_MODEL);
     const reasoner = new GatewayReasoner({
       apiKey: body.apiKey ?? "",
+      localDevelopment: this.env.ENVIRONMENT === "development",
       gateway: {
         accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder",
         gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway",
@@ -3631,17 +4216,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ...(body.businessContext ? { businessContext: body.businessContext } : {}),
       manifest: assembled.manifest,
       airGappedOnly: body.airGappedOnly === true,
-      ...(this.env.AI ? { workersAI: this.env.AI } : {}),
       ...(this.env.LOCAL_TUNNEL && userId ? {
         localCompletion: async (payload: Record<string, unknown>) => {
-          const ns = this.env.LOCAL_TUNNEL!;
-          const stub = ns.get(ns.idFromName(`local-tunnel:${spaceId}:${userId}`));
-          const response = await stub.fetch(new Request("http://local/chat/completions", {
-            method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
-          }));
-          const value = await response.json<unknown>();
-          if (!response.ok) throw new Error((value as { error_code?: string }).error_code ?? "air_gapped_runner_offline");
-          return value;
+          if (typeof body.localMachineId !== "string" || !body.localMachineId || !engineEnv.localTunnel) throw new Error("named_local_model_machine_required");
+          const receipt = await engineEnv.localTunnel.exec({ machine: body.localMachineId, op: "inference", params: payload });
+          if (!receipt.ok || receipt.status !== "succeeded") throw new Error(receipt.error ?? ("local_model_" + receipt.status + ": inspect " + receipt.request_id));
+          return receipt.result;
         },
       } : {}),
       resolveCustomModel: async (modelId: string) => {
@@ -3653,6 +4233,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       },
     });
 
+    let containerLifecycleTerminal: "blocked" | "completed" = "completed";
     try {
       const maxStepsFromContext = body.context?.["max_steps"];
       const maxTokensFromContext = body.context?.["max_tokens"];
@@ -3671,10 +4252,26 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const conversation = isDecoupledScheduledRun
         ? { recent: [], summary: "", compacted: false, totalMessages: 0, omittedMessages: 0 }
         : await this.loadConversationContext(spaceId, projectId ?? "", sessionId, tenantId);
+      // Recall once at ingress so every planner decision sees the same bounded, relevance-gated
+      // project/space context. A failed memory read must never block the actual run.
+      let memoryContext: string | undefined;
+      if (engineEnv.memoryStore) {
+        try {
+          const recalled = await engineEnv.memoryStore.recall({
+            ...(userId ? { userId } : {}),
+            text: body.goal,
+            limit: INGRESS_MEMORY_MAX_ITEMS,
+          });
+          memoryContext = renderIngressMemory(recalled);
+        } catch {
+          memoryContext = undefined;
+        }
+      }
       const result = await runScriptLoop(engineEnv, tools, reasoner, config.scripts.prebuilt, {
         goal: body.goal,
         startupObserve: config.scripts.startup_observe,
         ...(conversation ? { conversation } : {}),
+        ...(memoryContext ? { memoryContext } : {}),
         requiresApprovalFor,
         approvalMode,
         runId,
@@ -3686,6 +4283,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         ...(body.preApprovedActions?.length ? { preApprovedActions: body.preApprovedActions } : {}),
         ...(body.ledgerKey ? { ledgerKey: body.ledgerKey } : {}),
         ...(body.resumeSteps?.length ? { resumeSteps: body.resumeSteps } : {}),
+        ...(body.humanAnswer ? { humanAnswer: body.humanAnswer } : {}),
+        ...(deliberationRound !== undefined ? { deliberationRound } : {}),
         ...(typeof maxStepsFromContext === "number" ? { maxSteps: maxStepsFromContext } : {}),
         ...(typeof maxTokensFromContext === "number" ? { maxTokens: maxTokensFromContext } : {}),
         // How much of its own history the run may carry each turn. Resolved from the model
@@ -3710,7 +4309,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       for (const parked of result.deferred_approvals ?? []) {
         this.persistSuspendedRun(parked, {
           runId, spaceId, tenantId, agentId, sessionId, projectId, userId, callerRole,
-          model: body.model, goal: body.goal,
+          model: body.model, goal: body.goal, deliberationRound: result.deliberation_round,
         });
         void this.logAgentActivity(spaceId, tenantId, agentId, "approval_requested", {
           projectId: projectId ?? null,
@@ -3722,7 +4321,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (result.pending_approval) {
         this.persistSuspendedRun(result.pending_approval, {
           runId, spaceId, tenantId, agentId, sessionId, projectId, userId, callerRole,
-          model: body.model, goal: body.goal,
+          model: body.model, goal: body.goal, deliberationRound: result.deliberation_round,
         });
         void this.logAgentActivity(spaceId, tenantId, agentId, "approval_requested", {
           projectId: projectId ?? null,
@@ -3736,6 +4335,25 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           status: "awaiting_approval",
           pending_approval: result.pending_approval,
           ...(result.deferred_approvals?.length ? { deferred_approvals: result.deferred_approvals } : {}),
+        });
+        return Response.json(result);
+      }
+
+      if (result.pending_question) {
+        this.persistSuspendedRun(result.pending_question, {
+          runId, spaceId, tenantId, agentId, sessionId, projectId, userId, callerRole,
+          model: body.model, goal: body.goal, deliberationRound: result.deliberation_round,
+        });
+        void this.logAgentActivity(spaceId, tenantId, agentId, "approval_requested", {
+          projectId: projectId ?? null,
+          threadId: sessionId,
+          summary: "Waiting for an answer before continuing",
+        });
+        this.persistRunTrace(runId, tenantId, result.trace);
+        this.finishLiveRun(runId, {
+          status: "awaiting_approval",
+          final_answer: `I need your answer before I continue: ${result.pending_question.question}`,
+          pending_question: result.pending_question,
         });
         return Response.json(result);
       }
@@ -3754,6 +4372,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         this.persistInterruptedRun({
           runId, spaceId, tenantId, agentId, sessionId, projectId, userId, callerRole,
           model: body.model, goal: body.goal,
+          deliberationRound: result.deliberation_round,
           reason: result.result.error ?? "the run did not finish",
           steps: result.steps_completed ?? [],
         });
@@ -3813,6 +4432,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           }
         }
         if (createdArtifacts.length) answerMetadata["created_artifacts"] = createdArtifacts;
+        const citations = citationsFromTrace(result.trace ?? []);
+        if (citations.length) answerMetadata["citations"] = citations;
         // The run's own id, so a reload can re-fetch this exact run's activity trail (run_traces,
         // §A1 HX1) instead of losing it — the client's own in-memory `activity` is genuinely
         // client-only and doesn't survive a reload, but the trace itself is durable; this is what
@@ -3928,6 +4549,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // and one dispatched straight into this DO (Continue, sub-agents) has no TaskDO task either
       // — so deleting the entry here is what made the client's next poll 404 on a run that had
       // actually succeeded.
+      containerLifecycleTerminal = result.deferred_approvals?.length ? "blocked" : "completed";
       this.finishLiveRun(runId, {
         status: result.result?.ok === false ? "failed" : "completed",
         ...(typeof result.result?.output === "string" ? { final_answer: result.result.output } : {}),
@@ -3949,6 +4571,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         { status: 500 }
       );
     } finally {
+      this.signalContainerLifecycle(spaceId, projectId, containerLifecycleTerminal);
       // Every normal exit above records a terminal state, which keeps the entry (briefly) rather
       // than dropping it. Anything that reaches here WITHOUT one left the run unresolved — there
       // is nothing to report and no more onProgress will fire, so the live window is over.
@@ -4036,21 +4659,27 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         );
       }
       if (projectId && this.env.SCRIPTS_R2) {
-        try {
-          const key = journalKey(spaceId, projectId);
-          const prior = await this.env.SCRIPTS_R2.get(key);
-          const journal = prior ? parseJournal(await prior.text()) : emptyJournal();
-          const milestone = regenerated.replace(/\s+/g, " ").slice(0, 1000);
+        const key = journalKey(spaceId, projectId);
+        const milestone = regenerated.replace(/\s+/g, " ").slice(0, 1000);
+        let mirrored = false;
+        for (let attempt = 0; attempt < 4; attempt++) {
+          const prior = await readTextWithHash(this.env.SCRIPTS_R2, key);
+          const journal = prior ? parseJournal(prior.text) : emptyJournal();
           const updated = await appendActivity(journal, {
             at: archivedAt,
             actor: "context-compactor",
             summary: `Compacted ${archive.length} earlier messages into project truth: ${milestone}`,
             threadId: sessionId,
           });
-          await this.env.SCRIPTS_R2.put(key, renderJournal(updated.journal));
-        } catch {
-          // Transcript compaction remains valid if the optional R2 mirror is temporarily down.
+          try {
+            await putTextCas(this.env.SCRIPTS_R2, key, renderJournal(updated.journal), prior?.hash ?? null);
+            mirrored = true;
+            break;
+          } catch (error) {
+            if (!(error instanceof Error) || !error.message.includes("changed concurrently")) throw error;
+          }
         }
+        if (!mirrored) throw new Error("Project journal changed repeatedly during memory compaction");
       }
       return { summarized_messages: toSummarize.length, summary_chars: regenerated.length, already_current: false };
     } catch {
@@ -4177,7 +4806,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // replayed event (freshness window bypassed, or delivered twice within it) that hits the
     // unique index is IGNORED, so rowsWritten is 0 — that's the "already handled" signal used
     // below to skip kicking a second drain for a message already in the queue/answered.
-    const mentionRoute = routeMentions(norm.text);
+    const mentionDecisionEnv = body.spaceId && body.tenantId
+      ? await this.buildScriptEngineEnv(body.spaceId, "naelao-agent", body.tenantId, undefined, body.projectId)
+      : null;
+    const mentionRoute = await routeMentionsWithSentry(norm.text, mentionDecisionEnv?.fastDecision);
     const insertResult = this.ctx.storage.sql.exec(
       `INSERT OR IGNORE INTO channel_messages (id, session_id, direction, text, external_id, answered, created_at, turn_holder, referents)
        VALUES (?, ?, 'inbound', ?, ?, 0, ?, ?, ?)`,
@@ -4323,22 +4955,28 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    * caller, and throwing here would turn a correctly-paused run into a failed one.
    */
   private persistSuspendedRun(
-    pending: NonNullable<LoopResult["pending_approval"]> | NonNullable<LoopResult["deferred_approvals"]>[number],
+    pending:
+      | NonNullable<LoopResult["pending_approval"]>
+      | NonNullable<LoopResult["deferred_approvals"]>[number]
+      | NonNullable<LoopResult["pending_question"]>,
     ctx: {
       runId: string; spaceId: string; tenantId: string; agentId: string; sessionId: string;
       projectId?: string | undefined; userId?: string | undefined; callerRole?: string | undefined;
-      model?: string | undefined; goal: string;
+      model?: string | undefined; goal: string; deliberationRound?: number | undefined;
     }
   ): void {
     try {
+      const approvalId = "approval_id" in pending ? pending.approval_id : pending.question_id;
+      const actionName = "action_name" in pending ? pending.action_name : "AskUser";
+      const params = "params" in pending ? pending.params : { question: pending.question, options: pending.options ?? [], ...(pending.questions?.length ? { questions: pending.questions } : {}) };
       this.ctx.storage.sql.exec(
         `INSERT OR REPLACE INTO suspended_runs
            (approval_id, run_id, space_id, tenant_id, agent_id, session_id, project_id, user_id,
-            caller_role, model, goal, action_name, steps_json, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'suspended', ?)`,
-        pending.approval_id, ctx.runId, ctx.spaceId, ctx.tenantId, ctx.agentId, ctx.sessionId,
+            caller_role, model, goal, action_name, steps_json, deliberation_round, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'suspended', ?)`,
+        approvalId, ctx.runId, ctx.spaceId, ctx.tenantId, ctx.agentId, ctx.sessionId,
         ctx.projectId ?? null, ctx.userId ?? null, ctx.callerRole ?? null, ctx.model ?? null,
-        ctx.goal, pending.action_name, JSON.stringify(pending.steps_completed ?? []),
+        ctx.goal, actionName, JSON.stringify(pending.steps_completed ?? []), ctx.deliberationRound ?? 0,
         new Date().toISOString()
       );
     } catch {
@@ -4356,7 +4994,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   private persistInterruptedRun(ctx: {
     runId: string; spaceId: string; tenantId: string; agentId: string; sessionId: string;
     projectId?: string | undefined; userId?: string | undefined; callerRole?: string | undefined;
-    model?: string | undefined; goal: string; reason: string;
+    model?: string | undefined; goal: string; deliberationRound?: number | undefined; reason: string;
     steps: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>;
   }): void {
     try {
@@ -4367,11 +5005,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       this.ctx.storage.sql.exec(
         `INSERT OR REPLACE INTO interrupted_runs
            (run_id, space_id, tenant_id, agent_id, session_id, project_id, user_id, caller_role,
-            model, goal, reason, steps_json, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
+            model, goal, reason, steps_json, deliberation_round, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
         ctx.runId, ctx.spaceId, ctx.tenantId, ctx.agentId, ctx.sessionId,
         ctx.projectId ?? null, ctx.userId ?? null, ctx.callerRole ?? null, ctx.model ?? null,
-        ctx.goal, ctx.reason.slice(0, 2000), JSON.stringify(ctx.steps), Date.now()
+        ctx.goal, ctx.reason.slice(0, 2000), JSON.stringify(ctx.steps), ctx.deliberationRound ?? 0, Date.now()
       );
     } catch {
       /* the failure is already reported to the caller; losing the checkpoint must not add to it */
@@ -4383,7 +5021,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     try {
       const rows = this.ctx.storage.sql
         .exec(
-          `SELECT run_id, goal, reason, steps_json, created_at FROM interrupted_runs
+          `SELECT run_id, goal, reason, steps_json, deliberation_round, created_at FROM interrupted_runs
             WHERE session_id = ? AND status = 'open' ORDER BY created_at DESC LIMIT 1`,
           sessionId
         )
@@ -4474,6 +5112,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         // instead of re-executing.
         ledgerKey: runId,
         resumeSteps: steps,
+        deliberationRound: Math.max(0, Math.min(2, Number(row["deliberation_round"] ?? 0))),
       }),
     }));
 
@@ -4525,8 +5164,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       try {
         const stub = this.env.HITL_APPROVAL_DO.get(this.env.HITL_APPROVAL_DO.idFromName(`hitl:${row["space_id"]}`));
         const resp = await stub.fetch(new Request(`http://hitl/requests/${approvalId}`));
-        const state = await resp.json<{ status?: string }>();
-        approved = state.status === "approved";
+      const state = await resp.json<{ status?: string; answer?: string | null }>();
+        approved = state.status === "approved" || state.status === "answered";
+        if (state.status === "answered" && state.answer) {
+          (row as Record<string, string | null>)["human_answer"] = state.answer;
+        }
       } catch {
         // Unknown resolution: leave the checkpoint claimable again rather than guessing. Guessing
         // "approved" would execute a gated action nobody confirmed; guessing "rejected" would
@@ -4548,6 +5190,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       steps = [];
     }
 
+    const humanAnswer = row["human_answer"] ?? undefined;
     const resumeBody = {
       goal: row["goal"] ?? "",
       spaceId: row["space_id"] ?? "",
@@ -4564,8 +5207,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // prevented, and the cost of it deciding to redo one is a second real side effect.
       runId: crypto.randomUUID(),
       ledgerKey: row["run_id"] ?? undefined,
-      preApprovedActions: [row["action_name"] ?? ""],
+      ...(humanAnswer ? { humanAnswer } : { preApprovedActions: [row["action_name"] ?? ""] }),
       resumeSteps: steps,
+      deliberationRound: Math.max(0, Math.min(2, Number(row["deliberation_round"] ?? 0))),
     };
 
     // Recorded BEFORE the continuation actually executes (which can take as long as the rest of
@@ -5889,7 +6533,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ...pending.map((m) => m.id)
     );
 
-    const engineEnv = this.buildScriptEngineEnv(spaceId, agentId, tenantId);
+    const engineEnv = await this.buildScriptEngineEnv(spaceId, agentId, tenantId);
     if (!engineEnv) return Response.json({ error: "script engine unavailable: SCRIPTS_R2 not bound" }, { status: 503 });
     const config = await this.loadAgentConfigHealed(engineEnv.scriptsBucket, spaceId, agentId);
     if (!config) return Response.json({ error: `agent '${agentId}' is not provisioned in space '${spaceId}'` }, { status: 404 });
@@ -5999,6 +6643,19 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // sweep can touch several projects.
       if (msg.project_id) engineEnv.projectId = msg.project_id;
       else delete engineEnv.projectId;
+      // A single heartbeat can drain rows from several projects. Rebind the shared tool surface
+      // to this message's project-scoped environment so its workspace and Memory OS store cannot
+      // accidentally remain on the assistant-wide scope created for the initial drain.
+      const messageEnv = await this.buildScriptEngineEnv(
+        spaceId,
+        agentId,
+        tenantId,
+        engineEnv.userId,
+        msg.project_id ?? undefined,
+        { goal: msg.text, taskId: msg.id, threadId: msg.session_id },
+      );
+      if (messageEnv) Object.assign(engineEnv, messageEnv);
+      engineEnv.userId = `channel:${msg.channel}:${msg.channel_user_id}`;
 
       // 1. No-code rules (spec: "after the customer says X, this happens") — checked before
       //    any reasoning at all. Zero token cost, deterministic, admin-authored.
@@ -6069,7 +6726,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         continue;
       }
 
-      // 3. Full reasoning loop, under the project's execution ceiling if it has one.
+      // 3. System One triage, then the full reasoning loop. This is advisory context only:
+      // deterministic moderation/rules above remain authoritative and a sentry outage falls back
+      // to bounded keyword decisions rather than blocking the customer queue.
+      const triage = await triageCustomerMessage(msg.text, engineEnv.fastDecision);
+
+      // 4. Full reasoning loop, under the project's execution ceiling if it has one.
       if (projectCfg) {
         engineEnv.maxTier = Math.min(2, projectCfg.execution_ceiling) as ExecutionTier;
       } else if (projectCfgResult?.status === "error") {
@@ -6084,14 +6746,29 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
       let result: Awaited<ReturnType<typeof runScriptLoop>>;
       try {
+        let memoryContext: string | undefined;
+        if (engineEnv.memoryStore) {
+          try {
+            const recalled = await engineEnv.memoryStore.recall({
+              userId: engineEnv.userId,
+              text: msg.text,
+              limit: INGRESS_MEMORY_MAX_ITEMS,
+            });
+            memoryContext = renderIngressMemory(recalled);
+          } catch {
+            memoryContext = undefined;
+          }
+        }
         result = await runScriptLoop(engineEnv, tools, reasoner, ["customer-bot"], {
           goal:
             `A message arrived on ${msg.channel} from user ${msg.channel_user_id}: "${msg.text.slice(0, 2000)}". ` +
+            `System One triage: category=${triage.category}, urgent=${triage.urgent ? "yes" : "no"}. ` +
             "Draft a helpful, grounded reply using only the quarantined customer tools. " +
             "If you cannot answer confidently, reply with exactly \"ESCALATE\" instead of guessing; the platform, not you, dispatches the reply.",
           startupObserve: config.scripts.startup_observe,
           requiresApprovalFor,
           sessionId: msg.session_id,
+          ...(memoryContext ? { memoryContext } : {}),
           contextWindowTokens: contextWindowForModel(model),
           // A customer is waiting on a channel reply, and this loop drains a queue of them — so it
           // gets a tighter clock than an interactive turn. Answering one message thoroughly while
@@ -6959,16 +7636,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     spaceId: string,
     tenantId: string,
     model: string,
-  ): Promise<Partial<Pick<GatewayOpts, "googleAiStudioApiKey" | "groqApiKey">>> {
+  ): Promise<Partial<Pick<GatewayOpts, "googleAiStudioApiKey" | "groqApiKey" | "googleAiStudioApiKeys" | "groqApiKeys">>> {
     const provider = byokProviderForModel(model);
     if (!provider || !this.env.CREDENTIALS_WORKER) return {};
     const field = BYOK_PROVIDER_KEY_FIELD[provider];
     if (!field) return {};
     try {
-      const token = await this.generateCredentialToken(spaceId, "naelao-agent");
-      const resp = await this.env.CREDENTIALS_WORKER.fetch(
-        new Request(
-          `http://credentials/v1/internal/spaces/${spaceId}/credentials/${encodeURIComponent(`llm-byok:${provider}`)}/plaintext`,
+      const token = await this.generateCredentialToken(spaceId, "naelao-agent", tenantId);
+      const readCredential = async (name: string): Promise<string | null> => {
+        const resp = await this.env.CREDENTIALS_WORKER!.fetch(new Request(
+          `http://credentials/v1/internal/spaces/${spaceId}/credentials/${encodeURIComponent(name)}/plaintext`,
           {
             method: "POST",
             headers: {
@@ -6978,26 +7655,76 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             },
             body: "{}",
           },
-        ),
-      );
-      if (!resp.ok) return {};
-      const { value } = await resp.json<{ value?: string }>().catch(() => ({}) as { value?: string });
-      return value ? { [field]: value } : {};
-    } catch {
+        ));
+        if (!resp.ok) {
+          console.warn(`[agent] BYOK credential read failed provider=${provider} name=${name} status=${resp.status}`);
+          return null;
+        }
+        const { value } = await resp.json<{ value?: string }>().catch(() => ({}) as { value?: string });
+        return value ?? null;
+      };
+
+      const listCredentialNames = async (): Promise<string[]> => {
+        const resp = await this.env.CREDENTIALS_WORKER!.fetch(new Request(
+          `http://credentials/spaces/${spaceId}/credentials`,
+          {
+            headers: {
+              "x-naelao-tenant-id": tenantId,
+              "x-naelao-user-id": "byok-system",
+              "x-naelao-role": "admin",
+              "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, tenantId),
+            },
+          },
+        ));
+        if (!resp.ok) return [];
+        const body = await resp.json<{ credentials?: Array<{ name?: string }> }>().catch(() => ({ credentials: [] as Array<{ name?: string }> }));
+        return (body.credentials ?? []).flatMap((row) => typeof row.name === "string" ? [row.name] : []);
+      };
+
+      // The active pointer contains only the selected vault name. Resolve that name, then keep
+      // compatibility with the old single-key entry and the first-generation safe base name.
+      const providerToken = provider.replace(/-/g, "_");
+      const pointer = await readCredential(`llm_byok_active::${providerToken}`);
+      const selectedName = pointer?.startsWith("llm_byok_") ? pointer : null;
+      const prefix = `llm_byok_${providerToken}`;
+      const names = await listCredentialNames();
+      const providerNames = names.filter((name) => name === prefix || name.startsWith(`${prefix}::`) || name === `llm-byok:${provider}`);
+      const orderedNames = Array.from(new Set([
+        ...(selectedName ? [selectedName] : []),
+        ...providerNames,
+        `llm_byok_${providerToken}`,
+        `llm-byok:${provider}`,
+      ]));
+      const keys: string[] = [];
+      for (const name of orderedNames) {
+        const value = await readCredential(name);
+        if (value && !keys.includes(value)) keys.push(value);
+      }
+      console.log(`[agent] BYOK credentials resolved provider=${provider} keys=${keys.length} selected=${Boolean(selectedName)}`);
+      if (!keys.length) return {};
+      const keysField = provider === "google-ai-studio" ? "googleAiStudioApiKeys" : "groqApiKeys";
+      const result = {
+        [field]: keys[0],
+        [keysField]: keys,
+      } as Partial<Pick<GatewayOpts, "googleAiStudioApiKey" | "groqApiKey" | "googleAiStudioApiKeys" | "groqApiKeys">>;
+      return result;
+    } catch (err) {
+      console.warn(`[agent] BYOK credential resolution failed provider=${provider}: ${err instanceof Error ? err.message : String(err)}`);
       return {};
     }
   }
 
   /** Short-lived HMAC credential token — mirrors the agents worker's own generateCredentialToken
    *  (index.ts) and workers/credentials, so the vault accepts this DO as a legitimate resolver. */
-  private async generateCredentialToken(spaceId: string, agentId: string): Promise<string> {
+  private async generateCredentialToken(spaceId: string, agentId: string, tenantId: string): Promise<string> {
     const timestamp = Math.floor(Date.now() / 1000);
+    if (![tenantId, spaceId, agentId].every((value) => /^[A-Za-z0-9_-]{1,128}$/.test(value))) throw new Error("invalid_credential_token_scope");
     const key = await crypto.subtle.importKey(
       "raw", new TextEncoder().encode(this.env.PLATFORM_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
     );
-    const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${spaceId}:${agentId}:${timestamp}`));
+    const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${tenantId}:${spaceId}:${agentId}::${timestamp}`));
     const hex = Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
-    return `t=${timestamp},aid=${agentId},v1=${hex}`;
+    return `t=${timestamp},aid=${agentId},tid=${tenantId},v3=${hex}`;
   }
 
   private resolveFailoverChain(primaryModel: string, anthropicKey: string): { model: string; apiKey: string }[] {

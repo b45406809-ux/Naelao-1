@@ -8,6 +8,10 @@ compatibility_flags = ["nodejs_compat"]
 # downstream workers, so direct workers.dev reachability is a tenant-spoofing hole.
 workers_dev = false
 
+[[analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "naelao_agent_events"
+
 [vars]
 ENVIRONMENT = "development"
 # Public base URL of apps/shell, used to build a clickable email-verification link
@@ -98,6 +102,7 @@ new_sqlite_classes = ["MicroAppDO"]
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"
 database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+migrations_dir = "../../infra/migrations"
 
 [[r2_buckets]]
 binding = "EXPORTS_BUCKET"

@@ -1,7 +1,8 @@
 import type { DurableDaemonState } from "@naelao/agent-sdk";
 
 export interface DaemonSql {
-  exec<T = Record<string, unknown>>(query: string, ...bindings: unknown[]): Iterable<T>;
+  /** Minimal structural surface shared by Cloudflare SqlStorage and the test adapter. */
+  exec(query: string, ...bindings: unknown[]): Iterable<Record<string, unknown>>;
 }
 export interface DaemonWorkflowInstance {
   id: string;
@@ -76,7 +77,10 @@ export class DurableDaemon {
   }
 
   private read(): DaemonStatus | null {
-    const row = [...this.sql.exec<{ name: string; state: DurableDaemonState; workflow_id: string | null; started_at: string | null; stopped_at: string | null; error: string | null }>("SELECT name,state,workflow_id,started_at,stopped_at,error FROM durable_daemons WHERE name = ?", this.name)][0];
+    const row = [...this.sql.exec("SELECT name,state,workflow_id,started_at,stopped_at,error FROM durable_daemons WHERE name = ?", this.name)][0] as {
+      name: string; state: DurableDaemonState; workflow_id: string | null; started_at: string | null;
+      stopped_at: string | null; error: string | null;
+    } | undefined;
     return row ? { name: row.name, state: row.state, workflowId: row.workflow_id, startedAt: row.started_at, stoppedAt: row.stopped_at, error: row.error } : null;
   }
 

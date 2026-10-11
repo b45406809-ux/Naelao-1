@@ -19,6 +19,7 @@ export const runtime = "edge";
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { apiFetch } from "@/lib/api";
+import ByokKeysPanel from "@/components/ByokKeysPanel";
 
 interface Credential {
   id: string;
@@ -132,6 +133,10 @@ export default function CredentialsPage() {
         <button onClick={() => setShowNew(true)} className="px-4 py-2 bg-brand-600 text-white text-sm font-semibold rounded-lg hover:bg-brand-700 whitespace-nowrap">
           + Add Credential
         </button>
+      </div>
+
+      <div className="mb-6">
+        <ByokKeysPanel spaceId={params.spaceId} />
       </div>
 
       {showNew && (

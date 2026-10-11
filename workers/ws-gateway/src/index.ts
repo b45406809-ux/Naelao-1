@@ -1,6 +1,8 @@
 // WebSocket Gateway via Durable Object — one WsHubDO per tenant, manages live WS connections
 // Dashboard clients connect to receive live session/agent events.
 import { DurableObject } from "cloudflare:workers";
+import { mintInternalToken } from "@naelao/http";
+import { restoreWsSessionMeta, type WsSessionMeta } from "./session-meta";
 
 interface Env {
   ENVIRONMENT: string;
@@ -40,20 +42,19 @@ function isAllowedOrigin(origin: string | null, env: Env): boolean {
   return hostname === "naelao.com" || hostname.endsWith(".naelao.com");
 }
 
-interface WsSessionMeta {
-  tenantId: string;
-  spaceId?: string;
-  userId?: string;
-  agentId?: string;
-  sessionId?: string;
-}
-
 interface PresenceState extends Record<string, SqlStorageValue> { user_id: string; file_path: string | null; cursor_line: number | null; cursor_col: number | null; last_seen: number }
 
 interface BroadcastBody {
   spaceId?: string;
   event: string;
   data: unknown;
+}
+
+interface UiActionEvent {
+  type: "mcp.ui_action";
+  action?: unknown;
+  payload?: unknown;
+  projectId?: unknown;
 }
 
 // WsHubDO — one DO per tenant. Manages all WebSocket connections for that tenant.
@@ -90,6 +91,59 @@ export class WsHubDO extends DurableObject<Env> {
           value.cursor_line, value.cursor_col, value.last_seen);
       }
     }, 500);
+  }
+
+  /** Rehydrate a hibernation-surviving socket into the active session index. The WebSocket
+   * attachment is authoritative; the tag fallback keeps older connections readable after a
+   * deploy that predates attachment metadata. Every inbound event goes through this helper so a
+   * socket that wakes the DO is immediately eligible for the next broadcast. */
+  private restoreSession(ws: WebSocket): WsSessionMeta | undefined {
+    const existing = this.sessions.get(ws);
+    if (existing) return existing;
+    const restored = restoreWsSessionMeta(
+      ws.deserializeAttachment() as WsSessionMeta | null,
+      this.ctx.getTags(ws),
+    );
+    if (restored) this.sessions.set(ws, restored);
+    return restored;
+  }
+
+  /** Dispatch a canvas action through the authenticated agent route and report the
+   * observation back to the originating socket. The accepted event is intentionally
+   * separate from the result so the UI can show a running state while the planner works. */
+  private async dispatchUiAction(ws: WebSocket, meta: WsSessionMeta, event: UiActionEvent): Promise<void> {
+    if (!this.env.AGENTS_WORKER) {
+      ws.send(JSON.stringify({ type: "mcp.ui_action.failed", action: event.action, error: "agent_worker_unavailable" }));
+      return;
+    }
+
+    const payload = event.payload && typeof event.payload === "object" && !Array.isArray(event.payload) ? event.payload : {};
+    const escapedPayload = JSON.stringify(payload).replace(/[<&]/g, c => c === "<" ? "\\u003c" : "\\u0026");
+    const action = event.action as string;
+    const goal = `<ui_action_event user="${meta.userId!.replace(/[\"&<>]/g, "_")}" action="${action.replace(/[\"&<>]/g, "_")}" payload="${escapedPayload.replace(/"/g, "&quot;")}" />`;
+    const runResponse = await this.env.AGENTS_WORKER.fetch(new Request(`http://agents/agents/${encodeURIComponent(meta.agentId!)}/script/run`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": meta.tenantId,
+        "x-naelao-space-id": meta.spaceId!,
+        "x-naelao-user-id": meta.userId!,
+        "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, meta.tenantId),
+      },
+      body: JSON.stringify({ goal, spaceId: meta.spaceId, projectId: event.projectId, sessionId: meta.sessionId, context: { immediate: true, source: "mcp_ui" } }),
+    }));
+    const body = await runResponse.json<unknown>().catch(() => null);
+    if (!runResponse.ok) {
+      ws.send(JSON.stringify({ type: "mcp.ui_action.failed", action, status: runResponse.status, error: "agent_action_failed" }));
+      return;
+    }
+    const record = body !== null && typeof body === "object" ? body as Record<string, unknown> : {};
+    ws.send(JSON.stringify({
+      type: runResponse.status === 202 ? "mcp.ui_action.queued" : "mcp.ui_action.completed",
+      action,
+      run_id: typeof record.run_id === "string" ? record.run_id : typeof record.id === "string" ? record.id : undefined,
+      result: body,
+    }));
   }
 
   override async fetch(request: Request): Promise<Response> {
@@ -154,21 +208,7 @@ export class WsHubDO extends DurableObject<Env> {
       // Re-hydrate sessions from the Hibernation API if the DO woke from sleep
       const activeSockets = this.ctx.getWebSockets();
       for (const ws of activeSockets) {
-        // When woken via hibernation, re-populate in-memory map from websocket attachment
-        if (!this.sessions.has(ws)) {
-          const attachment = ws.deserializeAttachment() as WsSessionMeta | null;
-          const attached = this.ctx.getTags(ws);
-          // Tags format: ["tenantId:<tid>", "spaceId:<sid>"]
-          const tenantTag = attached.find((t) => t.startsWith("tenantId:")) ?? "";
-          const spaceTag = attached.find((t) => t.startsWith("spaceId:")) ?? undefined;
-          const restoredMeta: WsSessionMeta = attachment ?? {
-            tenantId: tenantTag.replace("tenantId:", ""),
-            ...(spaceTag !== undefined
-              ? { spaceId: spaceTag.replace("spaceId:", "") }
-              : {}),
-          };
-          this.sessions.set(ws, restoredMeta);
-        }
+        this.restoreSession(ws);
       }
 
       let sent = 0;
@@ -212,7 +252,7 @@ export class WsHubDO extends DurableObject<Env> {
         return;
       }
       if (parsed !== null && typeof parsed === "object" && (parsed as { type?: unknown }).type === "presence.update") {
-        const meta = this.sessions.get(ws) ?? ws.deserializeAttachment() as WsSessionMeta | null;
+        const meta = this.restoreSession(ws);
         const body = parsed as { file_path?: unknown; cursor_line?: unknown; cursor_col?: unknown };
         if (!meta?.userId) { ws.send(JSON.stringify({ error: "user_identity_required" })); return; }
         const value: PresenceState = {
@@ -228,14 +268,13 @@ export class WsHubDO extends DurableObject<Env> {
         for (const [socket, socketMeta] of this.sessions) if (socketMeta.spaceId === meta.spaceId) socket.send(payload);
       }
       if (parsed !== null && typeof parsed === "object" && (parsed as { type?: unknown }).type === "mcp.ui_action") {
-        const meta = this.sessions.get(ws) ?? ws.deserializeAttachment() as WsSessionMeta | null;
-        const event = parsed as { action?: unknown; payload?: unknown; projectId?: unknown };
+        const meta = this.restoreSession(ws);
+        const event = parsed as UiActionEvent;
         if (!meta?.spaceId || !meta.userId || !meta.agentId || !meta.sessionId || typeof event.action !== "string" || !event.action) { ws.send(JSON.stringify({ error: "ui_action_context_required" })); return; }
-        const payload = event.payload && typeof event.payload === "object" && !Array.isArray(event.payload) ? event.payload : {};
-        const escapedPayload = JSON.stringify(payload).replace(/[<&]/g, c => c === "<" ? "\\u003c" : "\\u0026");
-        const goal = `<ui_action_event user="${meta.userId.replace(/[\"&<>]/g, "_")}" action="${event.action.replace(/[\"&<>]/g, "_")}" payload="${escapedPayload.replace(/"/g, "&quot;")}" />`;
-        if (this.env.AGENTS_WORKER) void this.env.AGENTS_WORKER.fetch(new Request(`http://agents/agents/${encodeURIComponent(meta.agentId)}/script/run`, { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": meta.tenantId, "x-naelao-space-id": meta.spaceId, "x-naelao-user-id": meta.userId, "x-naelao-platform-secret": this.env.PLATFORM_SECRET }, body: JSON.stringify({ goal, spaceId: meta.spaceId, projectId: event.projectId, sessionId: meta.sessionId, context: { immediate: true, source: "mcp_ui" } }) }));
         ws.send(JSON.stringify({ type: "mcp.ui_action.accepted", action: event.action }));
+        void this.dispatchUiAction(ws, meta, event).catch(() => {
+          try { ws.send(JSON.stringify({ type: "mcp.ui_action.failed", action: event.action, error: "agent_action_failed" })); } catch { /* closed socket */ }
+        });
       }
     }
   }

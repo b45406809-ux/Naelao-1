@@ -8,6 +8,7 @@ import type {
   Space,
 } from "@naelao/client-sdk";
 export type { Space, Session, Message, ApiResult };
+export { meaningfulFactTokens, projectFactRelevance } from "./project-fact-relevance.js";
 
 // ── Agent tool definition ────────────────────────────────────────────────────
 
@@ -158,11 +159,13 @@ export function createSpaceSDK(
 export * from "./launchpad-runtime.js";
 export * from "./canvas-runtime.js";
 export * from "./workflow-taxonomy.js";
+export * from "./browser-runtime.js";
 export * from "./extensions.js";
 export * from "./types.js";
 export * from "./display-mode.js";
+export * from "./mode-dispatch.js";
+export * from "./cockpit-promotion.js";
 export * from "./runtime-context.js";
-export * from "./extensions.js";
 export * from "./avos-features.js";
 export * from "./artifact-client.js";
 export * from "./widgets.js";
@@ -175,4 +178,6 @@ export * from "./no-code-subagent.js";
 export * from "./project-kinds.js";
 export * from "./project-templates.js";
 export * from "./dogfood-extensions/index.js";
+export * from "./fast-decision.js";
 export * from "./templates/dev-foundry.js";
+export * from "./tunnel-protocol.js";

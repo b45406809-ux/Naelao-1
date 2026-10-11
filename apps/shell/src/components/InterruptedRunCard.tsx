@@ -16,6 +16,7 @@
 import * as React from "react";
 import type { InterruptedRun, SessionCredentials } from "@/lib/api";
 import { resolveInterruptedRun } from "@/lib/api";
+import { userFacingErrorMessage } from "@/lib/user-facing-errors";
 
 export function InterruptedRunCard({
   interrupted,
@@ -65,7 +66,7 @@ export function InterruptedRunCard({
           {interrupted.failure_kind === "user_cancelled" ? "Stopped" : "This didn't finish"}
         </span>
       </div>
-      <p className="interrupted-reason">{interrupted.reason}</p>
+      <p className="interrupted-reason">{userFacingErrorMessage(interrupted.reason, interrupted.failure_kind)}</p>
       {/* What the error actually means, in words. A raw provider string ("4006") leaves the person
           with no way to judge whether continuing now is even worth trying. */}
       {interrupted.explanation && (
