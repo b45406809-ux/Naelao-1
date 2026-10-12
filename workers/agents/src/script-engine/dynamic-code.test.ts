@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { compileDynamicCode } from "./dynamic-code";
+import { loadTypeScriptCompiler } from "./typescript-runtime";
 
 describe("on-demand code compiler", () => {
+  it("loads the compiler lazily and restores temporary runtime globals", async () => {
+    const previous = Object.getOwnPropertyDescriptor(globalThis, "__filename");
+    const compiler = await loadTypeScriptCompiler();
+    expect(compiler.version).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(Object.getOwnPropertyDescriptor(globalThis, "__filename")).toEqual(previous);
+  });
+
   it("transforms a bounded TypeScript run export to cached JavaScript", async () => {
     const source = "export async function run(args: { n: number }) { return { value: args.n + 1 }; }";
     const first = await compileDynamicCode(source);

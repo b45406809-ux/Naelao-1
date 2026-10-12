@@ -226,8 +226,9 @@ restart, router, auth, spaces, agents, and knowledge all reach Wrangler Ready. A
 agent container images built after staging esbuild from pnpm's local installation. A real
 direct-Docker control-channel smoke exercised `/health` and `/exec` on all three images and
 returned `result: 42`; root-owned runtime files are now guest-readable but remain
-non-writable. The Worker-to-DO container binding and TypeScript lazy import when invoked
-inside workerd still need integration evidence; the local AI provider path is unavailable.
+non-writable. A temporary real workerd Worker successfully loaded TypeScript and ran
+`transpileModule` using a short-lived `__filename` compatibility shim. The full Agent
+DO-to-container call path and local AI provider remain unavailable for integration checks.
 WhatsApp media ingress is still text-only. Exact evidence and remaining review are in
 CLOUD-PROGRESS.md; Batch 4 remains active.
 

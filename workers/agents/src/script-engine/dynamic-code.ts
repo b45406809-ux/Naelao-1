@@ -1,4 +1,5 @@
 import type tsTypes from "typescript";
+import { loadTypeScriptCompiler } from "./typescript-runtime.js";
 
 export interface CompiledCode { readonly digest: string; readonly javascript: string; readonly bytes: number }
 const cache = new Map<string, CompiledCode>();
@@ -6,8 +7,7 @@ let cacheBytes = 0;
 const MAX_CACHE_BYTES = 4 * 1024 * 1024;
 
 export async function compileDynamicCode(source: string, language: "javascript" | "typescript" = "typescript"): Promise<CompiledCode> {
-  // Keep the Node-only compiler out of workerd's eager startup graph.
-  const ts = await import("typescript");
+  const ts = await loadTypeScriptCompiler();
   if (new TextEncoder().encode(source).byteLength > 262_144) throw new Error("code_source_limit");
   const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`v1:${ts.version}:${language}:${source}`));
   const digest = Array.from(new Uint8Array(hash), (value) => value.toString(16).padStart(2, "0")).join("");

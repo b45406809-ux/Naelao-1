@@ -1,8 +1,9 @@
 import type tsTypes from "typescript";
+import { loadTypeScriptCompiler } from "../script-engine/typescript-runtime.js";
 
 /** Compile the developer execute(step, ctx) ABI for a Dynamic Workflow isolate. */
 export async function compileWorkflowEntrypoint(scriptSource: string): Promise<{ className: string; source: string }> {
-  const ts = await import("typescript");
+  const ts = await loadTypeScriptCompiler();
   if (new TextEncoder().encode(scriptSource).byteLength > 262_144) throw new Error("workflow_source_limit");
   const tree = ts.createSourceFile("workflow.ts", scriptSource, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TS);
   let execute = false;

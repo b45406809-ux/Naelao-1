@@ -487,37 +487,31 @@ daemon. Escrow bounty and FDE read-only support also need authorization and paym
 workflows. Do not call these complete. The precise remaining source requirements are
 D12 5485–5657; extra name-matched context is listed below.
 
-Fresh Batch 4 local integration evidence (2026-10-12): `infra/scripts/start-dev.mjs`
-stages pnpm-installed esbuild dependencies before Wrangler builds the three Agent
-container images, removing their Docker-time npm downloads. All three images built in
-Docker. Root Wrangler is pinned to 4.149.0 because Wrangler 3 does not parse the
-repository's current `[[containers]]` configuration. The launch script uses `--local`
-and worker-specific inspector ports. Initially, the Agents Worker crashed while eagerly evaluating the Node-only TypeScript
-compiler bundle in workerd (`ReferenceError: __filename is not defined`) despite
-`nodejs_compat`. Both compiler imports are now deferred until code/workflow compilation
-is requested. After restart, router, auth, spaces, agents, and knowledge all reach Wrangler
-Ready. Runtime compilation inside workerd and actual container invocation still need an
-integration exercise. Router transcription tests (6),
-conformance tests (4), terminal folding tests (2), and TransactionCoordinatorDO failure
-tests (2; mocked SQL/provider) pass. Local AI binding cannot verify Whisper provider
-acceptance; the Ogg worker fallback forwards bounded raw Ogg and must be verified against
-official provider documentation or a live binding before claiming provider support. The
-proxy returns CONNECT HTTP 403 for official docs, and no production Cloudflare service
-was contacted. B4 remains IN PROGRESS.
+Fresh Batch 4 integration evidence (2026-10-12): root Wrangler is pinned to 4.149.0
+because v3 rejects the existing `[[containers]]` config. `infra/scripts/start-dev.mjs`
+stages pnpm-installed esbuild dependencies, uses `--local`, and assigns worker-specific
+Inspector ports. All five selected Workers reached Wrangler Ready. The Node-only TypeScript
+compiler is now lazy-loaded; a temporary real workerd Worker invoked the compatibility
+loader, `createSourceFile`, and `transpileModule` successfully. The full Agent `script/run`
+path has not yet been exercised through its DO and Worker Loader boundaries.
 
-Batch 4 follow-up (2026-10-12): deferring `typescript` imports fixed the eager workerd
-startup crash. `corepack pnpm@9.12.0 dev --workers-only` started all five selected
-Workers; each reached Wrangler Ready. Wrangler 4.149.0 `deploy --dry-run` for Agents
-successfully bundled the Worker and built all three container images from the staged
-esbuild dependency. Agent suite: 56 files / 222 tests pass; Agents typecheck passes.
-Router transcription suite: 6 tests pass; router typecheck passes. Saga failure suite:
-2 tests pass (mock boundaries). Conformance: 4 tests pass; terminal folding: 2 tests
-pass; Spaces and Shell typechecks pass. Frozen pnpm 9 install with lifecycle scripts
-suppressed passes and the `@eshaz/web-worker` patch is present in the installed module.
-The live local runtime proves service startup and image builds only; it does not prove
-container invocation, TypeScript compilation inside workerd, Cloudflare AI format
-acceptance, or real provider saga side effects. Do not mark Batch 4 done until those
-runtime paths are tested or concrete external limitations are recorded.
+Direct Docker execution exposed and fixed an image-permission defect: source files are
+mode 0600 in this workspace, so Docker copied `/app/compile-runner.mjs` unreadable to the
+unprivileged guest. All three Dockerfiles now add read/execute bits while keeping runtime
+files root-owned and non-writable by UID 10001. Authenticated `/health` and `/exec` smoke
+requests ran a TypeScript `run()` returning 42 successfully in toolsandbox, documentsandbox,
+and mediasandbox images. These were actual local Docker image requests, not DO-to-container
+or production Cloudflare calls. Wrangler 4.149.0 Agent deploy dry-run also bundles and builds
+all three images.
+
+Fresh checks: Agent suite 56 files / 223 tests and Agent typecheck pass; router typecheck
+and transcription suite (6 tests) pass; conformance (4), terminal folding (2), and saga
+failure (2, mocked SQL/provider) tests pass; Spaces/Shell typechecks pass. Frozen pnpm 9
+install with lifecycle scripts suppressed passes, and the worker-safe `@eshaz/web-worker`
+patch is present in node_modules. Local AI cannot verify Whisper/Ogg provider acceptance;
+official docs fetches return proxy CONNECT 403. The real Agent DO-to-container RPC, production
+AI format acceptance, and external saga side effects remain unverified; B4 remains IN
+PROGRESS.
 
 Batch 3 name-matched source review (2026-10-12): searched the unread tails of both
 requirements documents for regression/certification, state-delta, synthetic fixture,
