@@ -399,8 +399,9 @@ Branch: `Mcbt5s-Backup-2`. One sequential implementation worker. No live deploy.
 
 Batches 1–9 are committed and pushed through `9fdb303` on `Mcbt5s-Backup-2`.
 The final ten-batch coverage audit is complete; it found no locally actionable gaps.
-Fresh B10 tests/typechecks passed after that audit. Next, commit and push B10, then
-verify the branch and clean worktree. Platform and live-test gates are itemized above.
+Fresh B10 tests/typechecks passed after that audit. The final B10 audit/progress closeout
+was committed and pushed as `e6db18b`; branch and worktree verification follows. Platform
+and live-test gates are itemized above.
 
 
 ## Final 1–10 coverage pass (2026-10-12)
@@ -409,4 +410,4 @@ verify the branch and clean worktree. Platform and live-test gates are itemized 
 - Rechecked the substantive local requirements: durable orchestration/review and scoped artifacts (B1); tenant gadget and preview controls (B2); state-delta certification, auth, notifications and billing/royalties (B3); terminal/audio/tunnel/RAG/saga behavior (B4); model placement and guarded prewarm (B5); eval, traces and conformance (B6); channel envelopes and tunnel replay/cancellation (B7); BYOK, air-gap and preview tooling (B8); provider routing and tenant-owned OAuth (B9); runtime limits, artifact storage, workflows, loaders, browser accessibility, hibernation, Vectorize and residency (B10). Existing implementations were retained where evidence showed them sound; no missing local implementation emerged from this pass.
 - Fresh B10 verification after the audit: `corepack pnpm@9.12.0 --filter @naelao/agents-worker exec vitest run src/workflows/reconciliation-a2.test.ts src/script-engine/project-journal-hibernation.test.ts src/batch10-workflows.test.ts src/do/ToolSandboxDO.test.ts src/script-engine/dynamic-code.test.ts` — 5 files / 18 tests passed; Artifact Worker `test` — 2 files / 9 tests passed; Agents, Artifact and Workflows typechecks passed.
 - Remaining dependencies require external configuration or live infrastructure, not further local implementation: owned preview DNS/wildcard route (B2); shared identity issuer and optional escrow contract if that feature is enabled (B3); Wrangler DO-to-Container bridge and provider acceptance (B4); deployed model/Container behavior (B5); deployed Gateway/Loader/Workflow behavior (B6); physical named-machine bridge and channel/provider credentials (B7); actual cloudflared and provider/Gateway project checks (B8); configured Pipedream and tenant OAuth providers (B9); deployed Cloudflare bindings and end-to-end residency/provider checks (B10). B1 native file-scoped mounts also remain a runtime capability gate. These checks were not represented as proven by mocks.
-- Final local status: all ten batches are implemented and verified to the extent available in this repository and local test harnesses. Platform-gated items above are explicitly partial pending external setup. Batch 10 is ready to commit and push after this audit.
+- Final local status: all ten batches are implemented and verified to the extent available in this repository and local test harnesses. Platform-gated items above are explicitly partial pending external setup. Batch 10 local work and final audit are complete; closeout commit/push: `e6db18b`.
