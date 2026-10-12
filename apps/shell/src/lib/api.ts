@@ -1504,7 +1504,7 @@ export async function pairAssistantChannel(
 export async function updateAssistantChannel(
   spaceId: string,
   session: SessionCredentials,
-  body: { action: "connect" | "disconnect" | "enable"; channel: string; secret?: string; project_id?: string }
+  body: { action: "connect" | "disconnect" | "enable"; channel: string; secret?: string; project_id?: string; media_access_token?: string }
 ): Promise<ChannelConnectResult> {
   return apiFetch<ChannelConnectResult>(`/v1/spaces/${spaceId}/assistant/channels`, {
     method: "POST",

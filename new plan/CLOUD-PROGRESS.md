@@ -8,7 +8,7 @@ Branch: `Mcbt5s-Backup-2`. One sequential implementation worker. No live deploy.
 | 1 | PARTIAL_NEEDS_PLATFORM — local work complete; external gates below |
 | 2 | PARTIAL_NEEDS_PLATFORM — local runtime complete; owned preview zone/route required |
 | 3 | PARTIAL_NEEDS_PLATFORM — independent local implementation and checks complete; optional escrow and shared identity provider remain gated |
-| 4 | IN PROGRESS — local Docker/worker checks pass; DO/provider/media integration remains |
+| 4 | PARTIAL_NEEDS_PLATFORM — local suites and audio ingress pass; Worker DO-to-Container integration, live AI/media acceptance and external saga effects remain unproven |
 | 5 | UNASSESSED |
 | 6 | UNASSESSED |
 | 7 | UNASSESSED |
@@ -131,13 +131,35 @@ Branch: `Mcbt5s-Backup-2`. One sequential implementation worker. No live deploy.
 - Fresh B4 evidence: Agents 56 files / 223 tests; router typecheck and transcription
   6 tests; conformance 4, terminal folding 2, saga failure 2; frozen pinned install;
   local Workers health 200. Actual Agent DO-to-container RPC, provider media acceptance,
-  cloud tunnel and external saga effects remain unproven. Keep B4 IN PROGRESS.
+  cloud tunnel and external saga effects remain unproven. The refreshed full-suite counts
+  and current voice-note follow-up are recorded below.
+- Batch 4 follow-up: Meta and Twilio WhatsApp voice notes are now recognized and
+  transcribed only after platform sender authorization or per-space webhook signature
+  verification. Media downloads use the encrypted Meta access-token credential (BYO)
+  or configured Twilio credentials; provider credentials are never forwarded to the
+  Agent DO. Downloads enforce HTTPS, exact provider-host/path checks, MIME allowlists,
+  8 MiB streamed size cap, redirect refusal and 15-second timeout. Selected `local/*`
+  models fail closed rather than falling back to Workers AI. Meta's current official
+  media docs confirm ID lookup, bearer-authenticated media download, audio MIME types
+  and 16 MiB vendor maximum; the platform's lower cap is deliberate. Cloudflare Whisper
+  docs returned proxy 403; transcription output is mocked locally. Agents full suite
+  58 files / 232 tests and Spaces full suite 23 files / 67 tests pass; Agents and Shell
+  typechecks pass; focused voice/interactive suite 8/8 passes. Earlier real local
+  ToolSandboxDO request reached the DO and settled local budget but Wrangler failed
+  Container readiness with `Network connection lost`; direct Docker `/health` and `/exec`
+  work. This remains a local runtime limitation pending a viable DO/Container bridge.
+- B4 review: incoming media processing is implemented for the app's Meta/Twilio route
+  and BYO Meta webhook. Actual Meta/Twilio acceptance, the Workers AI model response,
+  named local tunnel connectivity, and external saga side effects are not live-tested.
+  No user credential or Cloudflare deployment was used. Continue with Batch 5 while
+  preserving these explicit external/runtime gates.
 
 ## Next action / checkpoints
 
-Batch 3 independent local work and checks are complete; preserve its platform gates above
-and continue prompt 4. Commit/push batch-scoped changes after each batch without combining
-later-batch work. Continue prompts 4–10 sequentially, recording evidence after each. Only
-after batch 10, make one coverage pass over batches 1–10. Human-only prerequisites should
-be listed after their independent local work is complete. Current work is uncommitted;
-HEAD before this turn was `f49cb4b` on `Mcbt5s-Backup-2`.
+Batch 3 independent local work and checks are complete and pushed (`7220466`, followed by
+test-harness correction `d7f8362`). Batch 4's local work is complete; retain its
+runtime/provider gates above and continue prompt 5. Commit/push batch-scoped changes after
+each batch without combining later-batch work. Continue prompts 5–10 sequentially,
+recording evidence after each. Only after batch 10, make one coverage pass over batches
+1–10. Human-only prerequisites should be listed after their independent local work is
+complete. Current Batch 4 work is uncommitted on `Mcbt5s-Backup-2`.

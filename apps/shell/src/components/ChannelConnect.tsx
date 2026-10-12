@@ -93,6 +93,7 @@ export function ChannelConnect({
   const [advanced, setAdvanced] = React.useState<ChannelId | null>(null);
   const [pairing, setPairing] = React.useState<ChannelPairing | null>(null);
   const [secret, setSecret] = React.useState("");
+  const [mediaAccessToken, setMediaAccessToken] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [webhookUrl, setWebhookUrl] = React.useState<{ channel: string; url: string } | null>(null);
@@ -129,9 +130,11 @@ export function ChannelConnect({
         action,
         channel,
         ...(action === "connect" ? { secret } : {}),
+        ...(action === "connect" && channel === "whatsapp" && mediaAccessToken.trim() ? { media_access_token: mediaAccessToken.trim() } : {}),
       });
       if (action === "connect") {
         setSecret("");
+        setMediaAccessToken("");
         setAdvanced(null);
         setOpen(null);
         if (res.webhook_url) setWebhookUrl({ channel, url: res.webhook_url });
@@ -266,6 +269,25 @@ export function ChannelConnect({
                         Find it in {ch.where}. It is encrypted and stored in the credential vault — the assistant
                         never sees it.
                       </p>
+                      {ch.id === "whatsapp" && (
+                        <>
+                          <label style={{ fontSize: 11.5, color: "var(--text2)", display: "block", marginBottom: 4 }}>
+                            WhatsApp Cloud API Access Token (for voice notes)
+                          </label>
+                          <input
+                            type="password"
+                            className="search-bar"
+                            style={{ width: "100%" }}
+                            value={mediaAccessToken}
+                            placeholder="Optional bearer token from Meta"
+                            onChange={(e) => setMediaAccessToken(e.target.value)}
+                            autoComplete="off"
+                          />
+                          <p style={{ fontSize: 11, color: "var(--text3)", margin: "6px 0 10px", lineHeight: 1.5 }}>
+                            Needed only to download voice-note media. It is stored encrypted and never sent to the agent.
+                          </p>
+                        </>
+                      )}
                       <button
                         type="button"
                         className="btn-primary"

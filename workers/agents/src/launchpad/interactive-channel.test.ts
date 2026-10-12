@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getAdapter } from "./channels.js";
+import { getAdapter, twilioWhatsappAdapter } from "./channels.js";
 describe("mobile review ingress identity", () => {
   it("accepts Telegram controls only from the sender's private chat", () => {
     const adapter = getAdapter("telegram")!;
@@ -13,5 +13,16 @@ describe("mobile review ingress identity", () => {
     const payload = (id: string) => ({ entry: [{ changes: [{ value: { messages: [{ from: "123", id: "event", timestamp: "1", interactive: { button_reply: { id } } }] } }] }] });
     expect(adapter.normalizeInbound(payload("review:approval"))).toMatchObject({ channel_user_id: "123", text: "review:approval" });
     expect(adapter.normalizeInbound(payload("approve:approval"))).toBeNull();
+  });
+  it("retains only voice-note identity until the signed media is authorized and transcribed", () => {
+    const adapter = getAdapter("whatsapp")!;
+    const payload = { entry: [{ changes: [{ value: { messages: [{ from: "15551234567", id: "wamid-audio", timestamp: "1", type: "audio", audio: { id: "meta-media" } }] } }] }] };
+    expect(adapter.normalizeInbound(payload)).toMatchObject({ channel_user_id: "15551234567", external_id: "wamid-audio", text: "" });
+  });
+  it("recognizes Twilio voice media while requiring a real message id", () => {
+    const adapter = twilioWhatsappAdapter;
+    expect(adapter.normalizeInbound({ From: "whatsapp:+15551234567", MessageSid: "SM1", NumMedia: "1", MediaContentType0: "audio/ogg" }))
+      .toMatchObject({ channel_user_id: "+15551234567", external_id: "SM1", text: "" });
+    expect(adapter.normalizeInbound({ From: "whatsapp:+15551234567", NumMedia: "1", MediaContentType0: "audio/ogg" })).toBeNull();
   });
 });

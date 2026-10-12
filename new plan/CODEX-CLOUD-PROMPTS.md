@@ -211,30 +211,7 @@ examples or invent unavailable isolation guarantees. Implement and test the
 final requirements, preserve tunnels and local models, record evidence, and stop.
 ```
 
-**Progress (2026-10-12): IN PROGRESS — primary range reviewed; implementation and integration checks continue.** Read primary D12 5658–7973 in ascending bounded windows;
-read required D12/D13 look-aheads and extra D12 12764–13206 for model/modality
-amendments. Existing provider-usage metering, terminal Bash rendering, durable private
-tool-output R2 storage, named LocalTunnelDO execution, permission-filtered RAG, saga
-coordinator, and local workerd launcher were verified in code. Completed-log folding
-has focused unit tests. Ogg/Opus has real-fixture and invalid-input tests, but local
-workerd cannot run the decoder path: it hangs on decoder flush. The Worker now forwards
-the bounded original Ogg to Workers AI; a local request fails closed because local AI
-is unavailable. Provider acceptance of this format is not verified. Saga
-compensation/failure tests use mocked SQL and provider fetch. Router typecheck and
-focused tests pass; lockfile passes pinned pnpm 9 frozen install. Speculative Clef/Jev model IDs,
-modality, latency, prices, and FUSE/edge-container persistence claims remain
-unverified (official docs request returned proxy CONNECT HTTP 403), so no
-vendor-specific routing or fabricated persistence guarantee was added. Initially the
-agent Worker eagerly evaluated the Node-only TypeScript compiler and crashed workerd on
-`__filename`. Both compiler imports are now deferred to code/workflow compilation; after
-restart, router, auth, spaces, agents, and knowledge all reach Wrangler Ready. All three
-agent container images built after staging esbuild from pnpm's local installation. A real
-direct-Docker control-channel smoke exercised `/health` and `/exec` on all three images and
-returned `result: 42`; root-owned runtime files are now guest-readable but remain
-non-writable. A temporary real workerd Worker successfully loaded TypeScript and ran
-`transpileModule` using a short-lived `__filename` compatibility shim. The full Agent
-DO-to-container call path and local AI provider remain unavailable for integration checks.
-WhatsApp media ingress is still text-only. Fresh setup evidence: frozen pnpm install passes; Wrangler 4.149.0 reports all three local Agent container bindings available; the extended local stack reached Ready on all 11 selected Workers. A temporary internally signed request reached the real local ToolSandboxDO, settled its local budget, then failed Container readiness with Wrangler `Network connection lost`; the temporary local-only route was removed. Direct authenticated Docker `/health` and `/exec` smokes pass, but this does not prove the DO-to-container path. Fixed the migration-0064 payout table collision; Wrangler applied local D1 migrations 0064–0082 successfully. Repository-wide typecheck passes 80/80 tasks using the pinned pnpm 9 shim. Agent 56/223, Spaces 21/62, Router 2/6, Agent SDK 18/66, and WS Gateway 2/3 focused suites pass. The root test suite currently fails broadly (143 files, 421 tests; 2,708 pass); see CLOUD-PROGRESS.md. Browser Worker type errors found during this check were fixed. Root Wrangler 4.149.0 Agent and Browser dry-runs pass; invoking worker-local Wrangler 3.114.17 fails to parse `containers` and is not the supported command. A cloud setup draft is saved and requires user review/publish; Wrangler is unauthenticated for live deploys. AI format acceptance and provider saga effects remain unverified. Batch 4 remains IN PROGRESS.
+**Progress (2026-10-12): PARTIAL_NEEDS_PLATFORM — local implementation complete; continue with Batch 5.** Read primary D12 5658–7973 in ascending windows, required D12/D13 look-aheads, and extra D12 12764–13206. Existing metering, terminal folding, private R2 tool output, LocalTunnelDO routing, filtered RAG, saga recovery, and workerd launcher remain in place. Cloudflare's local decoder flush hangs, so the Worker forwards bounded Ogg to Workers AI; local model spaces fail closed instead of cloud-falling-back. Meta/Twilio WhatsApp voice notes now require an authorized paired sender or valid per-space webhook, fetch audio using vaulted credentials, enforce provider URL/path, MIME and streamed 8 MiB limits, then transcribe. Local-model spaces receive an explicit unsupported response. Meta's official media docs confirm media-ID lookup, bearer-authenticated download and supported audio types; Cloudflare Whisper docs returned proxy 403, so transcription output remains mocked. Agent suite: 58 files / 232 tests; Spaces: 23 files / 67 tests; Agents and Shell typechecks pass. Direct Docker `/health` and `/exec` pass on all three images; a signed local request reached real ToolSandboxDO and settled its local budget, but Wrangler then failed Container readiness with `Network connection lost`. Saga external provider effects, voice-model output, cloud tunnel execution and live media acceptance remain unproven. No live Cloudflare deployment or vendor call was made. See CLOUD-PROGRESS.md for exact gates.
 
 5. **Document 12: lines 7974–10197**
 

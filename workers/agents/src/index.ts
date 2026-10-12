@@ -55,6 +55,7 @@ import {
 } from "./connectors/composio.js";
 import { listDirectory, resolveConnectTarget, curatedLogos } from "./connectors/directory.js";
 import { isChannelType, getAdapter, twilioWhatsappAdapter, type ChannelType } from "./launchpad/channels.js";
+import { hasWhatsAppVoiceNote, transcribeTwilioWhatsAppVoice, transcribeWhatsAppVoiceNote } from "./launchpad/whatsapp-media.js";
 import {
   isPairableChannel, issuePairingToken, consumePairingToken, buildPairing,
   extractPairingToken, PAIRING_TTL_SECONDS, type PairableChannel,
@@ -3802,10 +3803,12 @@ app.post("/channels/:channel/connect", async (c) => {
   if (!isChannelType(channel)) throw notFound("Channel");
   if (!c.env.CREDENTIALS_WORKER) return c.json({ error_code: "unavailable", message: "credentials not bound" }, 503);
 
-  type ConnectChannelBody = { space_id: string; secret: string; project_id?: string };
+  type ConnectChannelBody = { space_id: string; secret: string; project_id?: string; media_access_token?: string };
   const body = await c.req.json<ConnectChannelBody>().catch(() => ({ space_id: "", secret: "" }) as ConnectChannelBody);
   if (!body.space_id) throw badRequest("space_id is required");
   if (!body.secret) throw badRequest("secret is required (signing secret / public key)");
+  if (channel !== "whatsapp" && body.media_access_token) return c.json({ error_code: "media_access_token_only_supported_for_whatsapp" }, 400);
+  if (body.media_access_token && body.media_access_token.length > 8192) return c.json({ error_code: "media_access_token_too_large" }, 400);
 
   // Fixes two pre-existing bugs that made this 502 on every real call: the credentials worker's
   // CRUD route has NO /v1 prefix (only its internal plaintext-resolution route does — the old
@@ -3822,6 +3825,17 @@ app.post("/channels/:channel/connect", async (c) => {
   });
   if (!credResp.ok && credResp.status !== 409) {
     return c.json({ error_code: "credential_store_failed", message: await credResp.text() }, 502);
+  }
+  if (body.media_access_token) {
+    const mediaResp = await storeConnectorCredential(c.env, {
+      tenantId,
+      spaceId: body.space_id,
+      userId,
+      name: "WHATSAPP_MEDIA_ACCESS_TOKEN",
+      value: body.media_access_token,
+      description: "WhatsApp Cloud API media download access token",
+    });
+    if (!mediaResp.ok && mediaResp.status !== 409) return c.json({ error_code: "credential_store_failed", message: await mediaResp.text() }, 502);
   }
 
   // project_id binds this channel to a specific customer-bot project (e.g. "WhatsApp Support
@@ -4407,9 +4421,8 @@ app.post("/channels/platform-inbound/:channel", async (c) => {
   if (channel === "slack" && parsed["type"] === "url_verification") {
     return c.json({ challenge: parsed["challenge"] });
   }
-  const raw = channel === "slack" && parsed["event"] ? (parsed["event"] as Record<string, unknown>) : parsed;
-
-  const inbound = activeAdapter.normalizeInbound(raw);
+  let raw = channel === "slack" && parsed["event"] ? (parsed["event"] as Record<string, unknown>) : parsed;
+  let inbound = activeAdapter.normalizeInbound(raw);
   if (!inbound) return c.json({ ok: true, skipped: "not_a_message" });
 
   // A pairing message looks like an ordinary message and must never be treated as one — the token
@@ -4440,8 +4453,40 @@ app.post("/channels/platform-inbound/:channel", async (c) => {
     "SELECT status FROM spaces WHERE id = ?"
   ).bind(paired.spaceId).first<{ status: string }>();
   if (!space || space.status !== "active") return c.json({ ok: true, skipped: "space_inactive" });
-  if ((await resolveWakeContext(c.env, paired.spaceId, paired.tenantId)).airGappedOnly) {
+  const wakeContext = await resolveWakeContext(c.env, paired.spaceId, paired.tenantId);
+  if (wakeContext.airGappedOnly) {
     return c.json({ ok: true, skipped: "air_gapped" });
+  }
+
+  // Voice media is fetched and transcribed only after the sender is paired to an active space.
+  // Never send unpaired users' audio to an external AI service. Spaces selecting a local model
+  // fail closed until a local audio transcriber can be bound; no Cloudflare fallback is allowed.
+  if (channel === "whatsapp" && !inbound.text) {
+    if (wakeContext.model.startsWith("local/")) return c.json({ error_code: "voice_transcription_not_available_for_selected_model" }, 422);
+    try {
+      if (viaTwilio) {
+        parsed = await transcribeTwilioWhatsAppVoice(parsed as Record<string, string>, {
+          ...(c.env.TWILIO_ACCOUNT_SID ? { accountSid: c.env.TWILIO_ACCOUNT_SID } : {}),
+          ...(c.env.TWILIO_AUTH_TOKEN ? { authToken: c.env.TWILIO_AUTH_TOKEN } : {}),
+          ai: c.env.AI,
+        });
+        raw = parsed;
+      } else {
+        raw = await transcribeWhatsAppVoiceNote(raw, {
+          ...(c.env.WHATSAPP_ACCESS_TOKEN ? { accessToken: c.env.WHATSAPP_ACCESS_TOKEN } : {}),
+          ai: c.env.AI,
+        });
+      }
+      inbound = activeAdapter.normalizeInbound(raw);
+      if (!inbound?.text) return c.json({ error_code: "voice_transcription_failed" }, 503);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "whatsapp_voice_transcription_failed";
+      const rejected = reason === "whatsapp_media_rejected" || reason === "whatsapp_media_url_rejected" ||
+        reason === "whatsapp_media_size_mismatch" || reason === "whatsapp_media_too_large" ||
+        reason === "whatsapp_voice_transcription_empty_or_too_large";
+      console.warn(`[channels] WhatsApp voice note ${rejected ? "rejected" : "unavailable"}: ${reason}`);
+      return c.json({ error_code: rejected ? "unsupported_voice_note" : "voice_transcription_unavailable" }, { status: rejected ? 422 : 503 });
+    }
   }
 
   const desktopCommand = /^(?:desktop|open canvas)(?: dd_([a-f0-9]{32}))?$|^\/start dd_([a-f0-9]{32})$/i.exec(inbound.text.trim());
@@ -4635,7 +4680,8 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
     "SELECT tenant_id, status FROM spaces WHERE id = ?"
   ).bind(spaceId).first<{ tenant_id: string; status: string }>();
   if (!space || space.status !== "active") return c.json({ ok: true, skipped: "space_inactive" });
-  if ((await resolveWakeContext(c.env, spaceId, space.tenant_id)).airGappedOnly) {
+  const wakeContext = await resolveWakeContext(c.env, spaceId, space.tenant_id);
+  if (wakeContext.airGappedOnly) {
     return c.json({ ok: true, skipped: "air_gapped" });
   }
 
@@ -4675,6 +4721,29 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
   // Slack wraps the actual message in `event`; Discord/email payloads are already top-level.
   const raw = channel === "slack" && parsed["event"] ? (parsed["event"] as Record<string, unknown>) : parsed;
 
+  let normalizedRaw = raw;
+  if (channel === "whatsapp" && hasWhatsAppVoiceNote(raw)) {
+    if (wakeContext.model.startsWith("local/")) return c.json({ error_code: "voice_transcription_not_available_for_selected_model" }, 422);
+    const mediaTokenResponse = await c.env.CREDENTIALS_WORKER.fetch(new Request(
+      `http://credentials/v1/internal/spaces/${spaceId}/credentials/WHATSAPP_MEDIA_ACCESS_TOKEN/plaintext`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": space.tenant_id, "x-naelao-credential-token": credToken },
+      }
+    ));
+    if (!mediaTokenResponse.ok) return c.json({ error_code: "whatsapp_media_access_token_missing" }, 503);
+    const { value: mediaToken } = await mediaTokenResponse.json<{ value: string }>();
+    try {
+      normalizedRaw = await transcribeWhatsAppVoiceNote(raw, { accessToken: mediaToken, ai: c.env.AI });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "whatsapp_voice_transcription_failed";
+      const rejected = reason === "whatsapp_media_rejected" || reason === "whatsapp_media_url_rejected" ||
+        reason === "whatsapp_media_size_mismatch" || reason === "whatsapp_media_too_large" ||
+        reason === "whatsapp_voice_transcription_empty_or_too_large";
+      console.warn(`[channels] BYO WhatsApp voice note ${rejected ? "rejected" : "unavailable"}: ${reason}`);
+      return c.json({ error_code: rejected ? "unsupported_voice_note" : "voice_transcription_unavailable" }, { status: rejected ? 422 : 503 });
+    }
+  }
+
   // Resolve which project (if any) this channel is bound to — a customer-bot project runs
   // under a restricted execution ceiling + its own rules instead of the default agent.
   const link = await c.env.PLATFORM_DB.prepare(
@@ -4687,7 +4756,7 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        raw,
+        raw: normalizedRaw,
         projectId: link?.project_id ?? undefined,
         spaceId,
         tenantId: space.tenant_id,
@@ -5098,6 +5167,7 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
     channel?: string;
     secret?: string;
     project_id?: string;
+    media_access_token?: string;
   };
   const body = await c.req.json<ChannelActionBody>().catch(() => ({}) as ChannelActionBody);
 
@@ -5132,6 +5202,8 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
 
   if (!c.env.CREDENTIALS_WORKER) return c.json({ error_code: "unavailable", message: "credentials not bound" }, 503);
   if (!body.secret) throw badRequest("secret is required (the signing secret or public key from the provider)");
+  if (channel !== "whatsapp" && body.media_access_token) return c.json({ error_code: "media_access_token_only_supported_for_whatsapp" }, 400);
+  if (body.media_access_token && body.media_access_token.length > 8192) return c.json({ error_code: "media_access_token_too_large" }, 400);
 
   const credResp = await storeConnectorCredential(c.env, {
     tenantId,
@@ -5143,6 +5215,17 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
   });
   if (!credResp.ok && credResp.status !== 409) {
     return c.json({ error_code: "credential_store_failed", message: await credResp.text() }, 502);
+  }
+  if (body.media_access_token) {
+    const mediaResp = await storeConnectorCredential(c.env, {
+      tenantId,
+      spaceId,
+      userId,
+      name: "WHATSAPP_MEDIA_ACCESS_TOKEN",
+      value: body.media_access_token,
+      description: "WhatsApp Cloud API media download access token",
+    });
+    if (!mediaResp.ok && mediaResp.status !== 409) return c.json({ error_code: "credential_store_failed", message: await mediaResp.text() }, 502);
   }
 
   await c.env.PLATFORM_DB.prepare(

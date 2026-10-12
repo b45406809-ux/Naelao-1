@@ -232,10 +232,11 @@ const whatsappAdapter: ChannelAdapter = {
     const textBody = (message["text"] as Record<string, unknown> | undefined)?.["body"];
     const reply = (message["interactive"] as Record<string, unknown> | undefined)?.["button_reply"] as Record<string, unknown> | undefined;
     const text = typeof textBody === "string" ? textBody : typeof reply?.["id"] === "string" && /^review:[a-zA-Z0-9_-]{1,48}$/.test(reply["id"]) ? reply["id"] : undefined;
-    if (!from || !id || !text) return null; // non-text message (image/audio/...) — not handled yet
+    const isVoiceNote = message["type"] === "audio" && typeof (message["audio"] as Record<string, unknown> | undefined)?.["id"] === "string";
+    if (!from || !id || (text === undefined && !isVoiceNote)) return null; // unsupported non-text messages remain ignored
 
     const ts = str(message, "timestamp");
-    return { channel: "whatsapp", channel_user_id: from, text, external_id: id, timestamp: ts ? Number(ts) * 1000 : Date.now() };
+    return { channel: "whatsapp", channel_user_id: from, text: text ?? "", external_id: id, timestamp: ts ? Number(ts) * 1000 : Date.now() };
   },
   formatOutbound(msg) {
     return { messaging_product: "whatsapp", type: "text", text: { body: msg.text } };
@@ -346,7 +347,8 @@ export const twilioWhatsappAdapter: ChannelAdapter = {
     const from = (str(raw, "From") ?? "").replace(/^whatsapp:/, "");
     const text = str(raw, "Body") ?? "";
     const id = str(raw, "MessageSid") ?? str(raw, "SmsMessageSid") ?? "";
-    if (!from || !text.trim() || !id) return null;
+    const isVoiceNote = Number(str(raw, "NumMedia") ?? 0) > 0 && (str(raw, "MediaContentType0") ?? "").startsWith("audio/");
+    if (!from || (!text.trim() && !isVoiceNote) || !id) return null;
     return { channel: "whatsapp", channel_user_id: from, text, external_id: id, timestamp: Date.now() };
   },
   formatOutbound(msg) {
