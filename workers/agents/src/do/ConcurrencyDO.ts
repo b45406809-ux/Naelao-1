@@ -34,6 +34,7 @@ const SWEEP_INTERVAL_MS = 5 * 60 * 1000; // spec: "auto-release abandoned slots"
 const DEFAULT_TTL_MS = 30 * 60 * 1000; // a slot no one explicitly releases within 30m is stale
 const FILE_LOCK_TTL_MS = 30_000;
 export const SLOT_HOLD_TTL_MS = 15_000;
+export const NODE_LEASE_TTL_MS = 15_000;
 
 export interface ConcurrencyDOEnv {
   PLATFORM_SECRET?: string;
@@ -70,6 +71,12 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
       expires_at INTEGER NOT NULL, confirmed INTEGER NOT NULL DEFAULT 0
     )`);
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_appointment_holds_expiry ON appointment_slot_holds(expires_at)`);
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS node_leases (
+      resource_key TEXT NOT NULL, node_id TEXT NOT NULL, holder_type TEXT NOT NULL CHECK(holder_type IN ('HUMAN','AGENT')),
+      holder_id TEXT NOT NULL, acquired_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+      PRIMARY KEY(resource_key,node_id)
+    )`);
+    this.ctx.storage.sql.exec("CREATE INDEX IF NOT EXISTS idx_node_leases_expiry ON node_leases(expires_at)");
     this.initialized = true;
   }
 
@@ -107,6 +114,10 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
       if (request.method === "POST" && url.pathname === "/locks/force-release") {
         return this.forceReleaseLock(request);
       }
+      if (request.method === "POST" && url.pathname === "/node-leases/claim") return this.claimNodeLease(request);
+      if (request.method === "POST" && url.pathname === "/node-leases/renew") return this.renewNodeLease(request);
+      if (request.method === "POST" && url.pathname === "/node-leases/release") return this.releaseNodeLease(request);
+      if (request.method === "GET" && url.pathname === "/node-leases/status") return this.nodeLeaseStatus(url);
       if (request.method === "POST" && url.pathname === "/outbound/pace") {
         const body = await request.json<{ domain?: string; maxPerSecond?: number }>().catch(() => ({} as { domain?: string; maxPerSecond?: number }));
         if (!body.domain) return Response.json({ error_code: "bad_request", message: "domain is required" }, { status: 400 });
@@ -238,11 +249,67 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
     return Response.json({ released: true, forced: true });
   }
 
+  private parseNodeLease(body: unknown): { resourceKey: string; nodeId: string; holderId: string; holderType: "HUMAN" | "AGENT" } | undefined {
+    if (!body || typeof body !== "object" || Array.isArray(body)) return undefined;
+    const value = body as Record<string, unknown>;
+    if (typeof value.resourceKey !== "string" || !/^[A-Za-z0-9._:/-]{1,256}$/.test(value.resourceKey) ||
+        typeof value.nodeId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(value.nodeId) ||
+        typeof value.holderId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(value.holderId) ||
+        (value.holderType !== "HUMAN" && value.holderType !== "AGENT")) return undefined;
+    return { resourceKey: value.resourceKey, nodeId: value.nodeId, holderId: value.holderId, holderType: value.holderType };
+  }
+
+  private async claimNodeLease(request: Request): Promise<Response> {
+    const body = await request.json().catch(() => undefined);
+    const lease = this.parseNodeLease(body);
+    if (!lease) return Response.json({ error_code: "bad_request", message: "valid resourceKey, nodeId, holderId and holderType are required" }, { status: 400 });
+    const now = Date.now();
+    const current = this.ctx.storage.sql.exec("SELECT holder_type,holder_id,expires_at FROM node_leases WHERE resource_key=? AND node_id=?", lease.resourceKey, lease.nodeId).toArray() as Array<{ holder_type: "HUMAN" | "AGENT"; holder_id: string; expires_at: number }>;
+    const held = current[0];
+    if (held && held.expires_at > now && (held.holder_id !== lease.holderId || held.holder_type !== lease.holderType) && !(held.holder_type === "AGENT" && lease.holderType === "HUMAN")) {
+      return Response.json({ acquired: false, heldBy: held.holder_id, holderType: held.holder_type, expiresAt: held.expires_at, remainingMs: held.expires_at - now }, { status: 409 });
+    }
+    const expiresAt = now + NODE_LEASE_TTL_MS;
+    this.ctx.storage.sql.exec(`INSERT INTO node_leases(resource_key,node_id,holder_type,holder_id,acquired_at,expires_at) VALUES(?,?,?,?,?,?)
+      ON CONFLICT(resource_key,node_id) DO UPDATE SET holder_type=excluded.holder_type,holder_id=excluded.holder_id,acquired_at=excluded.acquired_at,expires_at=excluded.expires_at`,
+      lease.resourceKey, lease.nodeId, lease.holderType, lease.holderId, now, expiresAt);
+    await this.scheduleNextAlarm();
+    return Response.json({ acquired: true, ...lease, expiresAt, ttlMs: NODE_LEASE_TTL_MS });
+  }
+
+  private async renewNodeLease(request: Request): Promise<Response> {
+    const body = await request.json().catch(() => undefined);
+    const lease = this.parseNodeLease(body);
+    if (!lease) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const now = Date.now(); const expiresAt = now + NODE_LEASE_TTL_MS;
+    const result = this.ctx.storage.sql.exec("UPDATE node_leases SET expires_at=? WHERE resource_key=? AND node_id=? AND holder_type=? AND holder_id=? AND expires_at>?", expiresAt, lease.resourceKey, lease.nodeId, lease.holderType, lease.holderId, now);
+    await this.scheduleNextAlarm();
+    return result.rowsWritten ? Response.json({ renewed: true, expiresAt, ttlMs: NODE_LEASE_TTL_MS }) : Response.json({ renewed: false, error_code: "lease_lost" }, { status: 409 });
+  }
+
+  private async releaseNodeLease(request: Request): Promise<Response> {
+    const body = await request.json().catch(() => undefined);
+    const lease = this.parseNodeLease(body);
+    if (!lease) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const result = this.ctx.storage.sql.exec("DELETE FROM node_leases WHERE resource_key=? AND node_id=? AND holder_type=? AND holder_id=?", lease.resourceKey, lease.nodeId, lease.holderType, lease.holderId);
+    await this.scheduleNextAlarm();
+    return Response.json({ released: result.rowsWritten > 0 });
+  }
+
+  private nodeLeaseStatus(url: URL): Response {
+    const resourceKey = url.searchParams.get("resourceKey") ?? ""; const nodeId = url.searchParams.get("nodeId") ?? "";
+    if (!/^[A-Za-z0-9._:/-]{1,256}$/.test(resourceKey) || !/^[A-Za-z0-9._:-]{1,128}$/.test(nodeId)) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const row = (this.ctx.storage.sql.exec("SELECT holder_type,holder_id,expires_at FROM node_leases WHERE resource_key=? AND node_id=?", resourceKey, nodeId).toArray() as Array<{ holder_type: string; holder_id: string; expires_at: number }>)[0];
+    if (!row || row.expires_at <= Date.now()) return Response.json({ active: false });
+    return Response.json({ active: true, ...row, remainingMs: row.expires_at - Date.now() });
+  }
+
   private async scheduleNextAlarm(): Promise<void> {
     const rows = this.ctx.storage.sql.exec(`SELECT MIN(expires_at) AS expires_at FROM (
       SELECT expires_at FROM slots UNION ALL
       SELECT expires_at FROM locks UNION ALL
-      SELECT expires_at FROM appointment_slot_holds WHERE confirmed=0
+      SELECT expires_at FROM appointment_slot_holds WHERE confirmed=0 UNION ALL
+      SELECT expires_at FROM node_leases
     )`).toArray() as Array<{ expires_at: number | null }>;
     const next = rows[0]?.expires_at;
     // Cancellation is important for ephemeral slot-hold DOs: keeping a five-minute alarm
@@ -378,6 +445,7 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
     this.ctx.storage.sql.exec(`DELETE FROM slots WHERE expires_at < ?`, Date.now());
     this.ctx.storage.sql.exec(`DELETE FROM locks WHERE expires_at <= ?`, Date.now());
     this.ctx.storage.sql.exec(`DELETE FROM appointment_slot_holds WHERE confirmed=0 AND expires_at <= ?`, Date.now());
+    this.ctx.storage.sql.exec(`DELETE FROM node_leases WHERE expires_at <= ?`, Date.now());
     await this.scheduleNextAlarm();
   }
 }

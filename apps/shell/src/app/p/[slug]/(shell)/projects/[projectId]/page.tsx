@@ -41,18 +41,17 @@ import {
 import { ProjectKindPanel } from "@/components/ProjectKindPanel";
 import { CustomerBotAutomation } from "@/components/CustomerBotAutomation";
 import { AgentPolicyPanel } from "@/components/AgentPolicyPanel";
-import { PROJECT_KINDS, getProjectKindManifest } from "@naelao/agent-sdk";
 
 const STATUS_BADGE: Record<string, "green" | "amber" | "blue" | undefined> = {
   active: "green",
   archived: undefined,
 };
 
-const CONFIGURED_PROJECT_KINDS = ["workspace", "customer_bot", ...PROJECT_KINDS] as const;
+const CONFIGURED_PROJECT_KINDS = ["workspace", "customer_bot"] as const;
 function projectKindLabel(kind: string): string {
   if (kind === "workspace") return "Workspace";
   if (kind === "customer_bot") return "Customer bot";
-  return getProjectKindManifest(kind)?.label ?? kind.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  return kind.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 export default function ProjectDetailPage() {
@@ -530,7 +529,7 @@ export default function ProjectDetailPage() {
             <div className="settings-row-sub">Customer-bot projects get a capped execution ceiling, a daily spend cap, and no-code rules</div>
           </div>
           <FormSelect value={draftKind} onChange={(e) => setDraftKind(e.target.value)} style={{ maxWidth: 220 }}>
-            {CONFIGURED_PROJECT_KINDS.map((kind) => (
+            {[...new Set<string>([...CONFIGURED_PROJECT_KINDS, draftKind])].map((kind) => (
               <option key={kind} value={kind}>{projectKindLabel(kind)}</option>
             ))}
           </FormSelect>

@@ -15,4 +15,12 @@ describe("immutable extension kernel", () => {
       expect(validateExtensionManifest(manifest).gadgets[0]?.scope).toBe(scope);
     }
   });
+  it("accepts ordered forward-only schema migrations and rejects executable or unordered definitions", () => {
+    const manifest = { ...valid, gadgets: [{ id: "notes", name: "Notes", viewportComponent: "./view.ts", scope: "PROJECT_SHARED", gadgetTier: 2, defaultSchemaSql: "CREATE TABLE notes(id TEXT)", migrations: [
+      { version: 1, description: "add note state", up: "ALTER TABLE notes ADD COLUMN state TEXT NOT NULL DEFAULT 'draft';" },
+      { version: 2, description: "index state", up: "CREATE INDEX notes_state ON notes(state);" },
+    ] }] };
+    expect(validateExtensionManifest(manifest).gadgets[0]?.migrations).toHaveLength(2);
+    expect(() => validateExtensionManifest({ ...manifest, gadgets: [{ ...manifest.gadgets[0], migrations: [{ version: 2, description: "second", up: "CREATE TABLE x(id TEXT)" }, { version: 1, description: "first", up: "CREATE TABLE y(id TEXT)" }] }] })).toThrow("migration_versions_must_increase");
+  });
 });

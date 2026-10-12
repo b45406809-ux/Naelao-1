@@ -3,8 +3,8 @@ import {
   PROJECT_KINDS,
   PROJECT_KIND_MANIFESTS,
   acceptCanvasEvent,
-  validateGeneratedWidget,
 } from "../../packages/agent-sdk/src/canvas-runtime";
+import { validateGeneratedWidget } from "../../packages/agent-sdk/src/widgets";
 import {
   gadgetStorageKey,
   requireExtensionPermission,
@@ -13,8 +13,9 @@ import {
 import { WORKFLOW_CLASS_POLICIES } from "../../packages/agent-sdk/src/workflow-taxonomy";
 
 describe("configuration-driven canvas and extension security", () => {
-  it("defines exactly the seven foundational project manifests", () => {
+  it("defines only the two maintained first-party canvas shells", () => {
     expect(Object.keys(PROJECT_KIND_MANIFESTS)).toEqual(PROJECT_KINDS);
+    expect(PROJECT_KINDS).toEqual(["DualPane.Document", "DualPane.DataGrid"]);
   });
   it("validates iframe origin and schema and refuses executable generated widgets", () => {
     expect(() =>
@@ -26,8 +27,11 @@ describe("configuration-driven canvas and extension security", () => {
     ).toThrow("origin");
     expect(() =>
       validateGeneratedWidget({
-        kind: "approval",
-        props: { script: "alert(1)" },
+        type: "action_card",
+        id: "approval",
+        title: "Approve patch",
+        action: "approve",
+        script: "alert(1)",
       })
     ).toThrow("executable");
   });

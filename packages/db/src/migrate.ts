@@ -135,6 +135,7 @@ export function applyMigrations(
   storage: MigratableStorage,
   migrations: Migration[]
 ): void {
+  validateMigrationSequence(migrations);
   const sql = storage.sql;
   storage.transactionSync(() => {
     sql.exec(`

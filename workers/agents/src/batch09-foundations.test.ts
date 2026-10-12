@@ -22,40 +22,16 @@ describe("Batch 09 foundations", () => {
     );
   });
 
-  it("declares nine distinct canvas-first project kinds including the quant desk", () => {
+  it("declares only the maintained Document and DataGrid shells", () => {
     const manifests = Object.values(PROJECT_KIND_MANIFESTS);
-    expect(manifests).toHaveLength(9);
-    expect(new Set(manifests.map((item) => item.viewportComponent)).size).toBe(
-      9
-    );
-    expect(PROJECT_KIND_MANIFESTS.quant_desk.viewportComponent).toBe(
-      "QuantDeskCanvas"
-    );
+    expect(manifests).toHaveLength(2);
+    expect(new Set(manifests.map((item) => item.viewportComponent)).size).toBe(2);
     for (const manifest of manifests) {
-      expect(defaultViewportFor(manifest.kind)).toMatchObject({
+      expect(defaultViewportFor(manifest.layout)).toMatchObject({
         component: manifest.viewportComponent,
         canvasPrimary: true,
       });
-      expect(manifest.allowedLadderTiers.length).toBeGreaterThan(0);
     }
   });
 
-  it("caps customer bots at tier 2 while product development reaches tier 6", () => {
-    expect(PROJECT_KIND_MANIFESTS.customer_bot.allowedLadderTiers).toEqual([
-      1, 2,
-    ]);
-    expect(
-      PROJECT_KIND_MANIFESTS.customer_bot.allowedLadderTiers
-    ).not.toContain(6);
-    expect(PROJECT_KIND_MANIFESTS.product_dev.allowedLadderTiers).toContain(6);
-  });
-
-  it("assigns explicit autonomous and cowork defaults", () => {
-    expect(PROJECT_KIND_MANIFESTS.customer_bot.defaultAutonomy).toBe(
-      "autonomous_venture_os"
-    );
-    expect(PROJECT_KIND_MANIFESTS.doc_studio.defaultAutonomy).toBe(
-      "cowork_studio"
-    );
-  });
 });

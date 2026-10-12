@@ -7,7 +7,7 @@ Authority: Documents 12 then 13 only; original TXT files unchanged. Branch:
 | --- | --- |
 | 1 | PARTIAL_NEEDS_PLATFORM — local implementation complete; exact external gates below |
 | 2 | PARTIAL_NEEDS_PLATFORM — runtime implemented; verified preview DNS/Worker route must be configured |
-| 3 | UNASSESSED |
+| 3 | IN PROGRESS |
 | 4 | UNASSESSED |
 | 5 | UNASSESSED |
 | 6 | UNASSESSED |
@@ -317,4 +317,76 @@ proxy HTTP 403. Batch 2 source reading has started; see its closeout below.
   tests. `DYNAMIC_PAGE_HOST_SUFFIX` is fail-closed when unset. Exact deployment
   action: configure the verified suffix, point wildcard tenant subdomains to the
   Spaces Worker, then run one deployed cross-origin/cookie-isolation/form-replay
-  smoke journey. Batch 3 has not started.
+  smoke journey. Batch 3 is now IN PROGRESS; see the Batch 3 section below.
+
+## Batch 3 (2026-10-12) — IN PROGRESS
+
+Primary D12 3591–5657 was read in ascending ~180-line windows. Required look-aheads
+consulted: D12 6690–6901, 7141–7548, 10694–11000, 11423–11481, 11707–11776,
+12213–12347; D13 1–236 and 1324–1374. Matching later contexts found by searching
+unread sources and read before design: D12 6334–6475 (OCC/node leases), 10404–10490
+and 10565–10625 (marketplace conformance evidence), D13 130–170 (fixture gate / human
+escalation). Further matched contexts: D12 6628–6657 (Canvas broadcast), 7440–7474
+(offline conflict handling), 7940–7955 (local end-to-end test target), 12025–12158
+(presence/channel waterfall, authenticated WhatsApp action and SpaceDO source-of-truth
+hydration), and 12220–12239 (native platform vs userland settlement). Earlier B2
+consultation already included D12 11786–11820 and 12115–12160.
+No vendor URL, JEV/Clef capability, latency, unit price, or illustrative SQL/API sample
+was treated as verified. D12 4953–4986 explicitly supersedes the proposed domain-kind
+explosion and subjective natural-language regex linters; D12 4994–5129's JEV latency,
+cost, model and calibration claims remain unverified, so semantic lint contracts now
+fail closed instead of implying a provider exists. D13 connector ownership requires
+tenant-owned credentials, not FDE-provided keys.
+
+Changes/evidence so far:
+
+- Replaced the nine hard-coded domain canvas manifests, per-kind prompts and tier caps
+  with two maintained shells (`DualPane.Document`, `DualPane.DataGrid`). Business
+  project kinds remain owned by the existing business-feature registry; template
+  mode/viewport now comes from template config. Generic custom canvas mounts run in
+  the existing sandboxed MicroApp iframe; typed bridge messages are project-bound,
+  data-only, bounded, and reject stale/malformed revisions. Files: agent-sdk
+  `canvas-runtime.ts`, `extensions.ts`, `mode-dispatch.ts`, shell `CanvasContainer.tsx`,
+  project detail selector and API types. This avoids executing third-party React in
+  the shell and reduces CSS/runtime collision exposure.
+- Added deterministic structural-rule runner with a hard two-repair-pass cap and
+  unresolved-warning result. Semantic linter manifests are rejected without a
+  validated provider. Generated widgets now reject executable/unknown fields (fixed
+  a pre-existing gap exposed by the focused security test).
+- Extension gadget manifests now validate ordered forward SQL migrations; gadget
+  initialization limits SQL to CREATE TABLE/INDEX and additive ALTER ADD COLUMN,
+  applies pending versions inside `transactionSync`, and fails closed on invalid SQL
+  or missing atomic transaction support. Host-wide migration runner now validates
+  duplicate versions before execution. Added real node:sqlite tests for replay and
+  rollback on migration failure. MicroApp DO SQL remains a mocked boundary.
+- Added durable 15-second node lease endpoints to ConcurrencyDO, with atomic DO
+  ownership, expiry alarms, same-owner renewal/release, conflict responses, and
+  human-over-agent priority. Current document canvas has no live node-editing API;
+  current file edits already use the existing file lock/CAS path, so the new node
+  lease is an available primitive and not yet wired to semantic-node mutations.
+- Existing root `pnpm dev` launcher (`infra/scripts/start-dev.mjs`) already starts
+  local Workers/workerd plus shell/dashboard; no new duplicate emulator was added.
+  Existing templates use starter artifacts; blank lead/receptionist templates now
+  seed clearly synthetic, non-operative examples.
+
+Fresh verification: agent-sdk typecheck/build and all 17 test files / 62 tests pass;
+Spaces typecheck and focused gadget/page tests pass (4 tests); Agents typecheck and
+ConcurrencyDO/foundations tests pass (8 tests); Shell typecheck passes; real SQLite
+migration/replay tests (2), contract/canvas security tests (9) pass; `git diff --check`
+pending. All DO/network/route checks are local mocks except the root migration tests,
+which execute actual SQLite transactions. No live Cloudflare resources or external
+services were contacted.
+
+Exact remaining batch-3 work before marking complete: wire node leases into a real
+semantic document editor (none exists; `DocumentRedlineCanvas` is read-only); build
+and connect cryptographic WhatsApp-to-desktop Desk-Drop session exchange; add a
+versioned, install-time interactive welcome/hydration action surface beyond the
+current synthetic starter files; enforce a marketplace publish gate based on
+deterministic state-delta conformance (the existing eval worker has LLM-judged runs
+and cannot honestly certify the specified deterministic gate); deliver mobile/FDE
+escalation beyond existing human approval cards; and reconcile marketplace earnings
+through an authorized payout rail (the repository has per-payment ledgers but no
+validated scheduled payout integration). Do not claim these as complete or simulate
+provider payouts. Next action: finish local infrastructure and tests for these seams,
+then record any genuinely credential/owner-only live verification gates; only after
+all repository-implementable work is complete may this batch be closed.

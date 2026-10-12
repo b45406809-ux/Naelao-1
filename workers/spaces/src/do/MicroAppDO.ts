@@ -47,10 +47,10 @@ export function gadgetActorId(namespace: Pick<DurableObjectNamespace, "idFromNam
   return namespace.idFromName(gadgetStorageKey(input));
 }
 
-function validDdl(sql: string): string[] {
-  if (sql.length > 64_000 || /\b(?:ATTACH|DETACH|PRAGMA|VACUUM|DROP|ALTER)\b/i.test(sql)) throw new Error("unsafe_gadget_schema");
+function validDdl(sql: string, allowAdditiveAlter = false): string[] {
+  if (sql.length > 64_000 || /\b(?:ATTACH|DETACH|PRAGMA|VACUUM|DROP|RENAME|TRIGGER|VIEW)\b/i.test(sql) || (!allowAdditiveAlter && /\bALTER\b/i.test(sql))) throw new Error("unsafe_gadget_schema");
   const statements = sql.split(";").map((part) => part.trim()).filter(Boolean);
-  if (!statements.every((statement) => /^CREATE\s+(?:TABLE|INDEX)\s+(?:IF\s+NOT\s+EXISTS\s+)?[a-zA-Z_]/i.test(statement))) throw new Error("gadget_schema_ddl_only");
+  if (!statements.every((statement) => /^CREATE\s+(?:TABLE|INDEX)\s+(?:IF\s+NOT\s+EXISTS\s+)?[a-zA-Z_]/i.test(statement) || (allowAdditiveAlter && /^ALTER\s+TABLE\s+[a-zA-Z_][\w]*\s+ADD\s+COLUMN\s+[a-zA-Z_][\w]*\s+(?:TEXT|INTEGER|REAL|BLOB)(?:\s+NOT\s+NULL)?(?:\s+DEFAULT\s+(?:NULL|-?\d+(?:\.\d+)?|'[^']{0,256}'))?$/i.test(statement)))) throw new Error("gadget_schema_ddl_only");
   return statements;
 }
 
@@ -62,6 +62,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     if (this.initialized) return;
     this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS gadget_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS gadget_data (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS gadget_schema_migrations (version INTEGER PRIMARY KEY, description TEXT NOT NULL, applied_at TEXT NOT NULL DEFAULT (datetime('now')));
       CREATE TABLE IF NOT EXISTS gadget_public_pages (slug TEXT PRIMARY KEY, html TEXT NOT NULL, actions_json TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS consumed_public_action_nonces (nonce TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);`);
     this.initialized = true;
@@ -162,7 +163,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
   }
 
   private async initialize(request: Request): Promise<Response> {
-    const body = await request.json<{ appId?: string; scope?: GadgetScope; gadgetTier?: GadgetTier; defaultSchemaSql?: string; html?: string }>();
+    const body = await request.json<{ appId?: string; scope?: GadgetScope; gadgetTier?: GadgetTier; defaultSchemaSql?: string; migrations?: Array<{ version: number; description: string; up: string }>; html?: string }>();
     if (!body.appId || !/^[a-z][a-z0-9_-]{1,63}$/.test(body.appId) || !body.scope || !body.gadgetTier) return Response.json({ error: "valid appId, scope and gadgetTier are required" }, { status: 400 });
     if ((body.gadgetTier === 1 && !["USER_PRIVATE", "PROJECT_USER", "SPACE_USER"].includes(body.scope)) ||
       (body.gadgetTier === 2 && !["PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER"].includes(body.scope)) ||
@@ -175,10 +176,29 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     if (existingTier !== undefined && existingTier !== body.gadgetTier) return Response.json({ error: "gadget_tier_immutable" }, { status: 409 });
     const existingScope = this.metadata("scope");
     if (existingScope !== undefined && existingScope !== body.scope) return Response.json({ error: "gadget_scope_immutable" }, { status: 409 });
-    for (const statement of validDdl(body.defaultSchemaSql ?? "")) this.ctx.storage.sql.exec(statement);
+    const migrations = body.migrations ?? [];
+    if (!Array.isArray(migrations) || migrations.length > 128) throw new Error("invalid_gadget_migrations");
+    let priorVersion = 0;
+    for (const migration of migrations) {
+      if (!migration || !Number.isSafeInteger(migration.version) || migration.version <= priorVersion || typeof migration.description !== "string" || !migration.description.trim() || migration.description.length > 256 || typeof migration.up !== "string") throw new Error("invalid_gadget_migration");
+      validDdl(migration.up, true);
+      priorVersion = migration.version;
+    }
     const html = body.html ?? `<main id="app" data-naelao-gadget="${body.appId}"></main>`;
     if (typeof html !== "string" || new TextEncoder().encode(html).byteLength > 512_000) throw new Error("gadget_bundle_too_large");
-    this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES ('app_id',?),('scope',?),('gadget_tier',?),('html',?)", body.appId, body.scope, String(body.gadgetTier), html);
+    const apply = () => {
+      for (const statement of validDdl(body.defaultSchemaSql ?? "")) this.ctx.storage.sql.exec(statement);
+      for (const migration of migrations) {
+        const applied = [...this.ctx.storage.sql.exec<{ version: number }>("SELECT version FROM gadget_schema_migrations WHERE version=?", migration.version)][0];
+        if (applied) continue;
+        for (const statement of validDdl(migration.up, true)) this.ctx.storage.sql.exec(statement);
+        this.ctx.storage.sql.exec("INSERT INTO gadget_schema_migrations(version,description) VALUES(?,?)", migration.version, migration.description);
+      }
+      this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES ('app_id',?),('scope',?),('gadget_tier',?),('html',?)", body.appId, body.scope, String(body.gadgetTier), html);
+    };
+    if ((body.defaultSchemaSql || migrations.length) && typeof this.ctx.storage.transactionSync === "function") this.ctx.storage.transactionSync(apply);
+    else if (body.defaultSchemaSql || migrations.length) throw new Error("atomic_gadget_migration_unavailable");
+    else apply();
     return Response.json({ initialized: true, appId: body.appId, scope: body.scope, gadgetTier: body.gadgetTier }, { status: 201 });
   }
 

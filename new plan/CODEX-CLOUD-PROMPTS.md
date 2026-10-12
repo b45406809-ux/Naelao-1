@@ -185,6 +185,17 @@ features and hardcoded domain behavior where the source calls for extensions.
 Update the cloud coverage/progress record with actual evidence and stop here.
 ```
 
+**Progress (2026-10-12): IN PROGRESS — core changes implemented; operational pillars still open.**
+Document/DataGrid are now the only maintained shells; third-party mounts remain in
+the isolated app iframe. Typed project-scoped canvas messages, two-pass deterministic
+lint correction, ordered transactional gadget migrations, and durable 15-second
+node leases are implemented and locally tested. Existing starter artifacts and local
+Worker launcher were reused. The node lease is not yet connected to semantic edits
+because the current document canvas is read-only. Desk-Drop, a full hydration action
+surface, deterministic marketplace publication certification, mobile/FDE escalation,
+and authorized scheduled payouts remain unfinished. Exact evidence and next actions
+are in CLOUD-PROGRESS.md; batch 3 is not done and remains the current mission.
+
 4. **Document 12: lines 5658–7973**
 
 ```text

@@ -22,7 +22,7 @@ import type {
 } from "@naelao/events";
 import { broadcastSpaceEvent, mintInternalToken } from "@naelao/http";
 import type { MessageRole } from "@naelao/types";
-import { defaultViewportFor, DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, getProjectKindManifest, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateExtensionManifest, scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
+import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateExtensionManifest, scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
 import { instantiateBlueprint as compileBlueprint } from "@naelao/agent-sdk";
 import type { DisplayMode, ExtensionManifest, SpaceBlueprint, TemplateMode } from "@naelao/agent-sdk";
 import { promoteCockpit } from "@naelao/agent-sdk";
@@ -4140,8 +4140,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     // against the Business Feature Projects registry; role-gate feature kinds; stamp
     // is_singleton_kind so the DB partial unique index (F-32) is the real singleton guarantee.
     const kind = body.kind ?? "workspace";
-    const projectKindManifest = getProjectKindManifest(kind);
-    if (!isKnownProjectKind(kind) && !projectKindManifest) {
+    if (!isKnownProjectKind(kind)) {
       return Response.json(
         {
           error_code: "bad_request",
@@ -4150,12 +4149,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         { status: 400 }
       );
     }
-    const requestedTier = body.execution_ceiling ?? projectKindManifest?.allowedLadderTiers.at(-1) ?? 5;
-    if (!Number.isInteger(requestedTier) || requestedTier < 1 || requestedTier > 6 || (projectKindManifest && !projectKindManifest.allowedLadderTiers.includes(requestedTier))) {
-      return Response.json({ error_code: "invalid_ladder_tier", message: `Tier ${requestedTier} is not allowed for '${kind}'` }, { status: 400 });
+    const requestedTier = body.execution_ceiling ?? 5;
+    if (!Number.isInteger(requestedTier) || requestedTier < 1 || requestedTier > 6) {
+      return Response.json({ error_code: "invalid_ladder_tier", message: `Tier ${requestedTier} is outside the supported execution range` }, { status: 400 });
     }
-    const templateMode = body.template_mode ?? projectKindManifest?.defaultAutonomy ?? "cowork_studio";
-    const viewportConfig = projectKindManifest ? defaultViewportFor(projectKindManifest.kind) : { component: "WorkspaceViewport", copilotPlacement: "side_panel", canvasPrimary: true };
+    const templateMode = body.template_mode ?? "cowork_studio";
+    const viewportConfig = { component: "WorkspaceViewport", copilotPlacement: "side_panel", canvasPrimary: true };
     const featureKind = getBusinessFeatureKind(kind);
     let isSingletonKind = 0;
     if (featureKind) {
@@ -4873,8 +4872,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (body.kind !== undefined) {
       // F-33: validate against the registry (not a hardcoded set) and stamp is_singleton_kind so
       // the singleton index applies even when kind is set via PATCH (the legacy seedWallet path).
-      const requestedKindManifest = getProjectKindManifest(body.kind);
-      if (!isKnownProjectKind(body.kind) && !requestedKindManifest) {
+      if (!isKnownProjectKind(body.kind)) {
         return Response.json(
           {
             error_code: "bad_request",
@@ -4905,25 +4903,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         }
       }
       try {
-        if (requestedKindManifest) {
-          execute(
-            this.ctx.storage.sql as never,
-            "UPDATE projects SET kind = ?, is_singleton_kind = ?, template_mode = ?, viewport_config = ? WHERE id = ?",
-            body.kind,
-            singleton,
-            requestedKindManifest.defaultAutonomy,
-            JSON.stringify(defaultViewportFor(requestedKindManifest.kind)),
-            projectId
-          );
-        } else {
-          execute(
-            this.ctx.storage.sql as never,
-            "UPDATE projects SET kind = ?, is_singleton_kind = ? WHERE id = ?",
-            body.kind,
-            singleton,
-            projectId
-          );
-        }
+        execute(
+          this.ctx.storage.sql as never,
+          "UPDATE projects SET kind = ?, is_singleton_kind = ? WHERE id = ?",
+          body.kind,
+          singleton,
+          projectId
+        );
       } catch (err) {
         if (singleton && /UNIQUE|constraint/i.test((err as Error).message)) {
           const dup = queryOne<{ id: string }>(

@@ -1,5 +1,3 @@
-import type { ProjectKind } from "./canvas-runtime.js";
-import { getProjectKindManifest } from "./canvas-runtime.js";
 import type { TemplateMode } from "./types.js";
 
 /** Both product modes use the same script-first kernel; this resolves their host policy. */
@@ -17,13 +15,8 @@ function canonicalMode(mode: TemplateMode | undefined): "autonomous_venture_os" 
   return undefined;
 }
 
-export function resolveOperatingMode(input?: { templateMode?: TemplateMode; projectKind?: ProjectKind | string }): OperatingModeDispatch {
+export function resolveOperatingMode(input?: { templateMode?: TemplateMode; projectKind?: string }): OperatingModeDispatch {
   const explicit = canonicalMode(input?.templateMode);
   if (explicit) return { templateMode: explicit, source: "explicit", product: explicit === "cowork_studio" ? "cowork" : "avos", canvasPrimary: true, proactiveWakes: true };
-  if (input?.projectKind) {
-    const manifest = getProjectKindManifest(input.projectKind);
-    const mode = manifest ? canonicalMode(manifest.defaultAutonomy) : undefined;
-    if (mode) return { templateMode: mode, source: "project_kind", product: mode === "cowork_studio" ? "cowork" : "avos", canvasPrimary: true, proactiveWakes: true };
-  }
   return { templateMode: "cowork_studio", source: "default", product: "cowork", canvasPrimary: true, proactiveWakes: true };
 }

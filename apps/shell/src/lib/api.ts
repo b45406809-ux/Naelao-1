@@ -888,6 +888,7 @@ export interface Project {
   // WS-4.2 / F-40: a project's kind — 'workspace'/'customer_bot' plus any Business Feature kind
   // (wallet, storefront, crm, ...). The project-page shell mounts the natively-built panel for it.
   kind?: string;
+  viewport_config?: { component?: string; resourceId?: string; canvasPrimary?: boolean; copilotPlacement?: string; mount?: string; tab?: string };
   execution_ceiling?: number;
   daily_spend_cap_credits?: number;
   channel_config?: Record<string, unknown>;

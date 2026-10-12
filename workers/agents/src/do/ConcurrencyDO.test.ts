@@ -6,6 +6,7 @@ function harness() {
   const fences = new Map<string, number>();
   const pacers = new Map<string, number>();
   const holds = new Map<string, { holder_id: string; acquired_at: number; expires_at: number; confirmed: number }>();
+  const nodeLeases = new Map<string, { resource_key: string; node_id: string; holder_type: "HUMAN" | "AGENT"; holder_id: string; acquired_at: number; expires_at: number }>();
   let alarm: number | null = null;
   const sql = {
     exec(query: string, ...args: unknown[]) {
@@ -35,8 +36,25 @@ function harness() {
       } else if (query.includes("DELETE FROM appointment_slot_holds WHERE slot_key")) {
         const row = holds.get(String(args[0]));
         if (row?.holder_id === args[1] && !row.confirmed) holds.delete(String(args[0]));
+      } else if (query.includes("DELETE FROM node_leases WHERE expires_at")) {
+        for (const [key, row] of nodeLeases) if (row.expires_at <= Number(args[0])) nodeLeases.delete(key);
+      } else if (query.includes("INSERT INTO node_leases")) {
+        const key = `${args[0]}:${args[1]}`;
+        nodeLeases.set(key, { resource_key: String(args[0]), node_id: String(args[1]), holder_type: args[2] as "HUMAN" | "AGENT", holder_id: String(args[3]), acquired_at: Number(args[4]), expires_at: Number(args[5]) });
+      } else if (query.includes("UPDATE node_leases SET expires_at")) {
+        const key = `${args[1]}:${args[2]}`; const row = nodeLeases.get(key);
+        const changed = Boolean(row?.holder_type === args[3] && row.holder_id === args[4] && row.expires_at > Number(args[5]));
+        if (changed) row!.expires_at = Number(args[0]);
+        return { rowsWritten: changed ? 1 : 0, toArray: () => [] };
+      } else if (query.includes("DELETE FROM node_leases WHERE resource_key")) {
+        const key = `${args[0]}:${args[1]}`; const row = nodeLeases.get(key);
+        if (row?.holder_type === args[2] && row.holder_id === args[3]) nodeLeases.delete(key);
+        return { rowsWritten: row?.holder_type === args[2] && row.holder_id === args[3] ? 1 : 0, toArray: () => [] };
       }
       const toArray = () => {
+        if (query.includes("SELECT holder_type,holder_id,expires_at FROM node_leases")) {
+          const row = nodeLeases.get(`${args[0]}:${args[1]}`); return row ? [row] : [];
+        }
         if (query.includes("SELECT holder_id, expires_at, fencing_token FROM locks")) {
           const row = locks.get(String(args[0])); return row ? [row] : [];
         }
@@ -53,6 +71,7 @@ function harness() {
           const expiries = [
             ...[...locks.values()].map((x) => x.expires_at),
             ...[...holds.values()].filter((x) => !x.confirmed).map((x) => x.expires_at),
+            ...[...nodeLeases.values()].map((x) => x.expires_at),
           ];
           return [{ expires_at: expiries.length ? Math.min(...expiries) : null }];
         }
@@ -69,7 +88,7 @@ function harness() {
     },
   };
   const ctx = { storage: { sql, getAlarm: async () => alarm, setAlarm: async (value: number) => { alarm = value; }, deleteAlarm: async () => { alarm = null; } } };
-  return { instance: new ConcurrencyDO(ctx as never, {}), locks, holds, getAlarm: () => alarm };
+  return { instance: new ConcurrencyDO(ctx as never, {}), locks, holds, nodeLeases, getAlarm: () => alarm };
 }
 
 describe("ConcurrencyDO file mutexes", () => {
@@ -109,6 +128,33 @@ describe("ConcurrencyDO appointment slot holds", () => {
     expect(h.holds.size).toBe(0);
     expect(h.getAlarm()).toBeNull();
     expect(await acquire("caller-b")).toMatchObject({ success: true, holderId: "caller-b" });
+    vi.useRealTimers();
+  });
+});
+
+describe("ConcurrencyDO node leases", () => {
+  it("serializes node edits, lets a human preempt an agent, and requires exact owner to renew/release", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const h = harness();
+    const send = (path: string, body: Record<string, unknown>) => h.instance.fetch(new Request(`http://do/node-leases/${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }));
+    const agent = { resourceKey: "space:s:project:p", nodeId: "clause-8", holderId: "agent-1", holderType: "AGENT" };
+    const human = { ...agent, holderId: "user-1", holderType: "HUMAN" };
+    expect(await (await send("claim", agent)).json()).toMatchObject({ acquired: true, ttlMs: 15_000 });
+    expect((await send("claim", { ...agent, holderId: "agent-2" })).status).toBe(409);
+    expect(await (await send("claim", human)).json()).toMatchObject({ acquired: true, holderType: "HUMAN" });
+    expect((await send("renew", agent)).status).toBe(409);
+    expect(await (await send("release", agent)).json()).toMatchObject({ released: false });
+    expect(await (await send("release", human)).json()).toMatchObject({ released: true });
+    vi.useRealTimers();
+  });
+
+  it("expires abandoned node leases after the fixed heartbeat window", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const h = harness();
+    const request = () => h.instance.fetch(new Request("http://do/node-leases/claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resourceKey: "space:s", nodeId: "row-1", holderId: "user", holderType: "HUMAN" }) }));
+    expect((await request()).status).toBe(200);
+    vi.advanceTimersByTime(15_000); await h.instance.alarm();
+    expect(h.nodeLeases.size).toBe(0);
     vi.useRealTimers();
   });
 });

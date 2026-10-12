@@ -39,6 +39,8 @@ describe("isolated public dynamic pages", () => {
     } };
     const instance = new MicroAppDO({ storage: { sql, deleteAlarm: async () => undefined, setAlarm: async () => undefined } } as never, { PLATFORM_SECRET: "test-secret" });
     expect((await instance.fetch(new Request("https://do/initialize", { method: "POST", body: JSON.stringify({ appId: "contracts", scope: "SPACE_SHARED", gadgetTier: 3 }) }))).status).toBe(201);
+    const unsafeMigration = await instance.fetch(new Request("https://do/initialize", { method: "POST", body: JSON.stringify({ appId: "contracts", scope: "SPACE_SHARED", gadgetTier: 3, migrations: [{ version: 1, description: "drop table", up: "DROP TABLE gadget_data;" }] }) }));
+    expect(unsafeMigration.status).toBe(400);
 
     const unsafe = await instance.fetch(new Request("https://do/page/publish", { method: "POST", body: JSON.stringify({ slug: "sign", html: "<script>alert(1)</script>", actions: { submit: { key: "result", fields: ["email"] } } }) }));
     expect(unsafe.status).toBe(400);

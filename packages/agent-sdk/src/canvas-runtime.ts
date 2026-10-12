@@ -1,120 +1,42 @@
-export const PROJECT_KINDS = [
-  "product_dev",
-  "doc_studio",
-  "voice_agent",
-  "customer_bot",
-  "model_studio",
-  "growth_engine",
-  "app_studio",
-  "finance_grid",
-  "quant_desk",
-] as const;
-export type ProjectKind = (typeof PROJECT_KINDS)[number];
+import type { ViewportConfiguration } from "./types.js";
 
-import type { TemplateMode, ViewportConfiguration } from "./types.js";
+/** The two first-party shells are deliberately layout contracts, not vertical products. */
+export const CANVAS_LAYOUTS = ["DualPane.Document", "DualPane.DataGrid"] as const;
+export type CanvasLayout = (typeof CANVAS_LAYOUTS)[number];
 
-export interface ProjectKindManifest {
-  kind: ProjectKind;
-  canvas:
-    | "code"
-    | "document"
-    | "calls"
-    | "conversation"
-    | "model"
-    | "campaign"
-    | "application"
-    | "trading";
-  capabilities: readonly string[];
-  label: string;
-  viewportComponent: string;
-  allowedLadderTiers: readonly number[];
-  defaultAutonomy: TemplateMode;
-  domainSystemPrompt: string;
-  linterRules: readonly string[];
+export interface CanvasLayoutManifest {
+  layout: CanvasLayout;
+  viewportComponent: "DocumentRedlineCanvas" | "SpreadsheetFormulaGrid";
+  viewport: "document_redline" | "spreadsheet_formula_grid";
 }
 
-/** Kinds are data, not tenant-specific tables or components. */
-export const PROJECT_KIND_MANIFESTS: Readonly<
-  Record<ProjectKind, ProjectKindManifest>
-> = Object.freeze({
-  product_dev: {
-    kind: "product_dev",
-    canvas: "code",
-    capabilities: ["files", "git", "preview"],
-    label: "Product Development", viewportComponent: "CodeWorkspaceCanvas", allowedLadderTiers: [1,2,3,4,5,6], defaultAutonomy: "cowork_studio", domainSystemPrompt: "Build production software with AST-aware edits and atomic Git history.", linterRules: ["typecheck", "tests", "no-secrets"],
-  },
-  doc_studio: {
-    kind: "doc_studio",
-    canvas: "document",
-    capabilities: ["files", "redline", "citations"],
-    label: "Document Studio", viewportComponent: "DocumentRedlineCanvas", allowedLadderTiers: [1,2], defaultAutonomy: "cowork_studio", domainSystemPrompt: "Draft and redline documents while preserving citations and defined terms.", linterRules: ["defined-terms", "delaware-contract", "citation-integrity"],
-  },
-  voice_agent: {
-    kind: "voice_agent",
-    canvas: "calls",
-    capabilities: ["scripts", "recordings", "metrics"],
-    label: "Voice Agent", viewportComponent: "VoiceAgentCanvas", allowedLadderTiers: [1,2], defaultAutonomy: "cowork_studio", domainSystemPrompt: "Assist live calls, preserve consent, and confirm calendar bookings.", linterRules: ["recording-consent", "booking-confirmation"],
-  },
-  customer_bot: {
-    kind: "customer_bot",
-    canvas: "conversation",
-    capabilities: ["knowledge", "handoff", "evals"],
-    label: "Customer Bot", viewportComponent: "CustomerBotCanvas", allowedLadderTiers: [1,2], defaultAutonomy: "autonomous_venture_os", domainSystemPrompt: "Resolve support requests only from approved knowledge and escalate uncertainty.", linterRules: ["prompt-injection", "pii-egress", "faq-grounding"],
-  },
-  model_studio: {
-    kind: "model_studio",
-    canvas: "model",
-    capabilities: ["datasets", "evals", "deploy"],
-    label: "Model Studio", viewportComponent: "ModelStudioCanvas", allowedLadderTiers: [1,2,5], defaultAutonomy: "cowork_studio", domainSystemPrompt: "Curate synthetic data and evaluate LoRA training runs reproducibly.", linterRules: ["dataset-provenance", "eval-split", "model-card"],
-  },
-  growth_engine: {
-    kind: "growth_engine",
-    canvas: "campaign",
-    capabilities: ["calendar", "assets", "analytics"],
-    label: "Growth Engine", viewportComponent: "GrowthEngineCanvas", allowedLadderTiers: [4], defaultAutonomy: "autonomous_venture_os", domainSystemPrompt: "Research qualified leads and draft compliant, personalized outreach.", linterRules: ["robots-policy", "unsubscribe", "contact-consent"],
-  },
-  app_studio: {
-    kind: "app_studio",
-    canvas: "application",
-    capabilities: ["schema", "preview", "publish"],
-    label: "App Studio", viewportComponent: "AppStudioCanvas", allowedLadderTiers: [1,2], defaultAutonomy: "cowork_studio", domainSystemPrompt: "Build and preview focused micro-apps against isolated Facet SQLite data.", linterRules: ["schema-safety", "accessibility", "input-validation"],
-  },
-  finance_grid: {
-    kind: "finance_grid", canvas: "trading", capabilities: ["files", "formulas", "python"],
-    label: "Finance Grid", viewportComponent: "SpreadsheetFormulaGrid", allowedLadderTiers: [1,2,5,6],
-    defaultAutonomy: "cowork_studio", domainSystemPrompt: "Build auditable financial models with live formula and Python-backed calculation updates.",
-    linterRules: ["formula-integrity", "source-provenance", "model-audit"],
-  },
-  quant_desk: {
-    kind: "quant_desk", canvas: "trading", capabilities: ["r2_ticks", "backtest", "risk_guard"],
-    label: "Quant Desk", viewportComponent: "QuantDeskCanvas", allowedLadderTiers: [1,2,6],
-    defaultAutonomy: "cowork_studio", domainSystemPrompt: "Backtest against immutable tick data and submit every live order through RiskGuardDO.",
-    linterRules: ["riskguard-required", "no-model-risk-overrides", "reproducible-backtest"],
-  },
+export const CANVAS_LAYOUT_MANIFESTS: Readonly<Record<CanvasLayout, CanvasLayoutManifest>> = Object.freeze({
+  "DualPane.Document": { layout: "DualPane.Document", viewportComponent: "DocumentRedlineCanvas", viewport: "document_redline" },
+  "DualPane.DataGrid": { layout: "DualPane.DataGrid", viewportComponent: "SpreadsheetFormulaGrid", viewport: "spreadsheet_formula_grid" },
 });
 
+/** Kept as a source-compatible alias; this is no longer a domain ProjectKind registry. */
+export const PROJECT_KINDS = CANVAS_LAYOUTS;
+export type ProjectKind = CanvasLayout;
+export type ProjectKindManifest = CanvasLayoutManifest;
+export const PROJECT_KIND_MANIFESTS = CANVAS_LAYOUT_MANIFESTS;
+
+export function getCanvasLayout(layout: string): CanvasLayoutManifest | undefined {
+  return CANVAS_LAYOUT_MANIFESTS[layout as CanvasLayout];
+}
+
+/** Deprecated compatibility helper. Domain project kinds now use their template viewport. */
 export function getProjectKindManifest(kind: string): ProjectKindManifest | undefined {
-  return PROJECT_KIND_MANIFESTS[kind as ProjectKind];
+  return getCanvasLayout(kind);
 }
 
-export function defaultViewportFor(kind: ProjectKind): ViewportConfiguration {
-  return { component: PROJECT_KIND_MANIFESTS[kind].viewportComponent, copilotPlacement: "docked", canvasPrimary: true };
+export function defaultViewportFor(layout: CanvasLayout): ViewportConfiguration {
+  return { component: CANVAS_LAYOUT_MANIFESTS[layout].viewportComponent, copilotPlacement: "docked", canvasPrimary: true };
 }
 
-export type CanvasMessage =
-  | { type: "canvas.ready"; projectId: string }
-  | {
-      type: "canvas.action";
-      projectId: string;
-      action: string;
-      payload: Record<string, string | number | boolean | null>;
-    };
-
-/** Stable viewport identifiers shared by agents and the shell's polymorphic canvas host. */
 export const CANVAS_VIEWPORTS = [
   "document_redline", "spreadsheet_formula_grid", "code_workspace", "micro_app",
-  "container_terminal", "virtual_desktop", "voice_agent", "customer_bot",
-  "model_studio", "growth_engine",
+  "container_terminal", "virtual_desktop", "canvas_mount",
 ] as const;
 export type CanvasViewport = (typeof CANVAS_VIEWPORTS)[number];
 
@@ -129,49 +51,58 @@ export function isCanvasMountDescriptor(value: unknown): value is CanvasMountDes
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const item = value as Record<string, unknown>;
   return typeof item.viewport === "string" && (CANVAS_VIEWPORTS as readonly string[]).includes(item.viewport)
-    && (item.resourceId === undefined || typeof item.resourceId === "string")
-    && (item.title === undefined || typeof item.title === "string")
+    && (item.resourceId === undefined || (typeof item.resourceId === "string" && item.resourceId.length <= 256))
+    && (item.title === undefined || (typeof item.title === "string" && item.title.length <= 256))
     && (item.live === undefined || typeof item.live === "boolean");
 }
 
-export function parseCanvasMessage(
-  value: unknown,
-  expectedProjectId: string
-): CanvasMessage {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new Error("invalid canvas message");
+export type CanvasMessage =
+  | { type: "canvas.ready"; projectId: string; protocolVersion?: 1 }
+  | { type: "canvas.state"; projectId: string; revision: number; data: Record<string, string | number | boolean | null> }
+  | { type: "canvas.action"; projectId: string; action: string; payload: Record<string, string | number | boolean | null>; baseRevision?: number };
+
+/** Parse the versioned, data-only host/Canvas bridge. It never accepts executable payloads. */
+export function parseCanvasMessage(value: unknown, expectedProjectId: string): CanvasMessage {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid canvas message");
   const v = value as Record<string, unknown>;
-  if (
-    (v.type !== "canvas.ready" && v.type !== "canvas.action") ||
-    v.projectId !== expectedProjectId
-  )
-    throw new Error("invalid canvas message");
-  if (v.type === "canvas.action") {
-    if (
-      typeof v.action !== "string" ||
-      !v.action ||
-      !v.payload ||
-      typeof v.payload !== "object" ||
-      Array.isArray(v.payload)
-    )
-      throw new Error("invalid canvas action");
-    for (const item of Object.values(v.payload as Record<string, unknown>)) {
-      if (
-        item !== null &&
-        !["string", "number", "boolean"].includes(typeof item)
-      )
-        throw new Error("invalid canvas payload");
-    }
+  if (!["canvas.ready", "canvas.state", "canvas.action"].includes(String(v.type)) || v.projectId !== expectedProjectId || (v.protocolVersion !== undefined && v.protocolVersion !== 1)) throw new Error("invalid canvas message");
+  if (v.type === "canvas.state") {
+    if (!Number.isSafeInteger(v.revision) || Number(v.revision) < 0 || !v.data || typeof v.data !== "object" || Array.isArray(v.data)) throw new Error("invalid canvas state");
+    const state = Object.entries(v.data as Record<string, unknown>);
+    if (state.length > 128 || state.some(([key, item]) => key.length > 128 || (item !== null && !["string", "number", "boolean"].includes(typeof item)) || (typeof item === "string" && item.length > 16_384) || (typeof item === "number" && !Number.isFinite(item)))) throw new Error("invalid canvas state");
+    return v as CanvasMessage;
   }
+  if (v.type === "canvas.ready") return v as CanvasMessage;
+  if (typeof v.action !== "string" || !/^[a-z][a-z0-9_.:-]{0,127}$/i.test(v.action) || !v.payload || typeof v.payload !== "object" || Array.isArray(v.payload)) throw new Error("invalid canvas action");
+  const entries = Object.entries(v.payload as Record<string, unknown>);
+  if (entries.length > 128 || entries.some(([key, item]) => key.length > 128 || (item !== null && !["string", "number", "boolean"].includes(typeof item)) || (typeof item === "string" && item.length > 16_384) || (typeof item === "number" && !Number.isFinite(item)))) throw new Error("invalid canvas payload");
+  if (v.baseRevision !== undefined && (!Number.isSafeInteger(v.baseRevision) || Number(v.baseRevision) < 0)) throw new Error("invalid canvas revision");
   return v as unknown as CanvasMessage;
 }
 
-export function acceptCanvasEvent(
-  event: Pick<MessageEvent, "origin" | "data">,
-  allowedOrigin: string,
-  projectId: string
-): CanvasMessage {
-  if (event.origin !== allowedOrigin)
-    throw new Error("untrusted canvas origin");
+export function acceptCanvasEvent(event: Pick<MessageEvent, "origin" | "data">, allowedOrigin: string, projectId: string): CanvasMessage {
+  if (event.origin !== allowedOrigin) throw new Error("untrusted canvas origin");
   return parseCanvasMessage(event.data, projectId);
+}
+
+export interface StructuralDiagnostic { ruleId: string; message: string; path?: string; }
+export type StructuralRule<T> = (candidate: T) => readonly StructuralDiagnostic[];
+export type CorrectionAttempt<T> = (candidate: T, diagnostics: readonly StructuralDiagnostic[], attempt: number) => Promise<T>;
+export interface StructuralLintResult<T> { candidate: T; diagnostics: readonly StructuralDiagnostic[]; correctionAttempts: number; warning: boolean; }
+
+/** Deterministic validators only; semantic checks require a separately validated provider. */
+export function runStructuralRules<T>(candidate: T, rules: readonly StructuralRule<T>[]): StructuralDiagnostic[] {
+  return rules.flatMap((rule) => [...rule(candidate)]);
+}
+
+/** Run validation plus at most two repair passes, then return the candidate with amber-warning state. */
+export async function validateWithBoundedCorrections<T>(candidate: T, rules: readonly StructuralRule<T>[], correct: CorrectionAttempt<T>): Promise<StructuralLintResult<T>> {
+  let diagnostics = runStructuralRules(candidate, rules);
+  let correctionAttempts = 0;
+  while (diagnostics.length && correctionAttempts < 2) {
+    correctionAttempts++;
+    candidate = await correct(candidate, diagnostics, correctionAttempts);
+    diagnostics = runStructuralRules(candidate, rules);
+  }
+  return { candidate, diagnostics, correctionAttempts, warning: diagnostics.length > 0 };
 }

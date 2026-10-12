@@ -1,4 +1,5 @@
-import { assertExtensionId, type ExtensionId, type GadgetScope, type GadgetTier, type RuntimeScope, type KernelLayout, type ExecutionMode, type PermissionAction } from "./types.js";
+import { assertExtensionId, type ExtensionId, type GadgetScope, type GadgetTier, type RuntimeScope, type ExecutionMode, type PermissionAction } from "./types.js";
+import type { CanvasLayout } from "./canvas-runtime.js";
 
 export interface ExtensionGadgetManifest {
   id: string;
@@ -7,6 +8,7 @@ export interface ExtensionGadgetManifest {
   scope: GadgetScope;
   gadgetTier: GadgetTier;
   defaultSchemaSql: string;
+  migrations?: readonly ExtensionSqlMigration[];
 }
 
 export interface ExtensionDaemonManifest {
@@ -49,6 +51,20 @@ const FORBIDDEN_SCRIPT = /(?:NaelaoAgentDO|WriteGuard|Gatekeeper|system\s*prompt
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(`invalid_extension_manifest:${message}`);
+}
+
+function validateExtensionMigrations(value: unknown): void {
+  assert(Array.isArray(value) && value.length <= 128, "invalid_migrations");
+  let previous = 0;
+  for (const item of value) {
+    assert(item !== null && typeof item === "object" && !Array.isArray(item), "invalid_migration");
+    const migration = item as Record<string, unknown>;
+    assert(Object.keys(migration).every(key => ["version", "description", "up"].includes(key)), "invalid_migration_field");
+    assert(Number.isSafeInteger(migration.version) && Number(migration.version) > previous, "migration_versions_must_increase");
+    assert(typeof migration.description === "string" && migration.description.trim().length > 0 && migration.description.length <= 256, "invalid_migration_description");
+    assert(typeof migration.up === "string" && migration.up.length > 0 && migration.up.length <= 64_000, "invalid_migration_sql");
+    previous = Number(migration.version);
+  }
 }
 
 function rejectKernelOverrides(value: unknown): void {
@@ -95,6 +111,7 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
     assert(item.gadgetTier !== 3 || ["PROJECT_BOUND", "PROJECT_SHARED", "SPACE_WIDE", "SPACE_SHARED"].includes(String(item.scope)), "tier_3_scope_invalid");
     assert(typeof item.defaultSchemaSql === "string" && item.defaultSchemaSql.length <= 64_000, "invalid_schema");
     assert(!FORBIDDEN_SCRIPT.test(item.defaultSchemaSql), "unsafe_schema");
+    if (item.migrations !== undefined) validateExtensionMigrations(item.migrations);
   }
   for (const item of raw.daemons as Record<string, unknown>[]) {
     assert(item && typeof item === "object", "invalid_daemon");
@@ -160,8 +177,9 @@ export interface ExtensionContractBase {
   budget?: BudgetContract;
   cancellation?: CancellationContract;
 }
-export interface GadgetContract extends ExtensionContractBase { kind: "gadget"; scope: GadgetScope; schemaSql?: string; }
-export interface CanvasContract extends ExtensionContractBase { kind: "canvas"; layout: KernelLayout; component: string; dynamicPage: boolean; }
+export interface ExtensionSqlMigration { version: number; description: string; up: string; }
+export interface GadgetContract extends ExtensionContractBase { kind: "gadget"; scope: GadgetScope; schemaSql?: string; migrations?: readonly ExtensionSqlMigration[]; }
+export interface CanvasContract extends ExtensionContractBase { kind: "canvas"; layout: CanvasLayout | "CanvasMount"; component: string; dynamicPage: boolean; }
 export interface ChannelContract extends ExtensionContractBase { kind: "channel"; provider: string; inboundEvents: readonly string[]; outboundEvents: readonly string[]; }
 export interface ContainerContract extends ExtensionContractBase {
   kind: "container";
@@ -188,7 +206,7 @@ const CONTRACT_BASE_KEYS = new Set(["schemaVersion", "kind", "id", "version", "p
 function contractAssert(condition: unknown, message: string): asserts condition { if (!condition) throw new Error(`invalid_extension_contract:${message}`); }
 function rejectUnknownContractKeys(raw: Record<string, unknown>, allowed: Set<string>): void { for (const key of Object.keys(raw)) contractAssert(allowed.has(key), `unknown_field:${key}`); }
 function validateContractBase(raw: Record<string, unknown>, kind: ExtensionPrimitiveKind): void {
-  const specific = kind === "gadget" ? ["scope", "schemaSql"] : kind === "canvas" ? ["layout", "component", "dynamicPage"] : kind === "channel" ? ["provider", "inboundEvents", "outboundEvents"] : kind === "container" ? ["image", "resources", "exportedBinaries", "mounts", "networkPolicy", "webContainerCompatible"] : kind === "linter" ? ["mode", "entry", "failureMode"] : ["executionMode", "steps", "toolNames"];
+  const specific = kind === "gadget" ? ["scope", "schemaSql", "migrations"] : kind === "canvas" ? ["layout", "component", "dynamicPage"] : kind === "channel" ? ["provider", "inboundEvents", "outboundEvents"] : kind === "container" ? ["image", "resources", "exportedBinaries", "mounts", "networkPolicy", "webContainerCompatible"] : kind === "linter" ? ["mode", "entry", "failureMode"] : ["executionMode", "steps", "toolNames"];
   rejectUnknownContractKeys(raw, new Set([...CONTRACT_BASE_KEYS, ...specific]));
   contractAssert(raw.schemaVersion === "1.0", `unsupported_schema_version:${String(raw.schemaVersion)}`);
   contractAssert(raw.kind === kind, `kind_mismatch:${kind}`);
@@ -227,8 +245,18 @@ export function parseExtensionPrimitive(value: unknown): ExtensionPrimitiveManif
   contractAssert(CONTRACT_KINDS.has(raw.kind as ExtensionPrimitiveKind), `unknown_primitive_kind:${String(raw.kind)}`);
   const kind = raw.kind as ExtensionPrimitiveKind;
   validateContractBase(raw, kind);
-  if (kind === "gadget") { contractAssert(CONTRACT_SCOPE.has(raw.scope as GadgetScope), "invalid_scope"); if (raw.schemaSql !== undefined) contractAssert(typeof raw.schemaSql === "string" && raw.schemaSql.length <= 64000, "invalid_schema_sql"); }
-  if (kind === "canvas") contractAssert(["DualPane", "CanvasFirst"].includes(String(raw.layout)) && typeof raw.component === "string" && CONTRACT_PATH.test(raw.component) && typeof raw.dynamicPage === "boolean", "invalid_canvas");
+  if (kind === "gadget") {
+    contractAssert(CONTRACT_SCOPE.has(raw.scope as GadgetScope), "invalid_scope");
+    if (raw.schemaSql !== undefined) contractAssert(typeof raw.schemaSql === "string" && raw.schemaSql.length <= 64000, "invalid_schema_sql");
+    if (raw.migrations !== undefined) {
+      try { validateExtensionMigrations(raw.migrations); } catch (error) { throw new Error(`invalid_extension_contract:${error instanceof Error ? error.message.replace("invalid_extension_manifest:", "") : "invalid_migrations"}`); }
+    }
+  }
+  if (kind === "canvas") {
+    contractAssert(["DualPane.Document", "DualPane.DataGrid", "CanvasMount"].includes(String(raw.layout)), "invalid_canvas_layout");
+    contractAssert(typeof raw.component === "string" && CONTRACT_PATH.test(raw.component), "invalid_canvas_component");
+    contractAssert(typeof raw.dynamicPage === "boolean", "invalid_canvas_dynamic_page");
+  }
   if (kind === "channel") contractAssert(typeof raw.provider === "string" && CONTRACT_ID.test(raw.provider) && Array.isArray(raw.inboundEvents) && Array.isArray(raw.outboundEvents), "invalid_channel");
   if (kind === "container") {
     contractAssert(typeof raw.image === "string" && raw.image.length <= 300 && /^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$/.test(raw.image), "immutable_image_digest_required");
@@ -251,7 +279,9 @@ export function parseExtensionPrimitive(value: unknown): ExtensionPrimitiveManif
       }
     }
   }
-  if (kind === "linter") contractAssert(["deterministic", "semantic"].includes(String(raw.mode)) && CONTRACT_PATH.test(String(raw.entry)) && ["warn", "block"].includes(String(raw.failureMode)), "invalid_linter");
+  if (kind === "linter") {
+    contractAssert(raw.mode === "deterministic" && CONTRACT_PATH.test(String(raw.entry)) && ["warn", "block"].includes(String(raw.failureMode)), "deterministic_linter_required");
+  }
   if (kind === "workflow") contractAssert(["interactive", "headless"].includes(String(raw.executionMode)) && Array.isArray(raw.steps) && (raw.steps as unknown[]).every((item) => typeof item === "string" && CONTRACT_PATH.test(item)) && Array.isArray(raw.toolNames) && (raw.toolNames as unknown[]).every((item) => typeof item === "string" && CONTRACT_ID.test(item)), "invalid_workflow");
   return Object.freeze(raw as unknown as ExtensionPrimitiveManifest);
 }

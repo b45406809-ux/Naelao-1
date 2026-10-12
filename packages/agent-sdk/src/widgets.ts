@@ -26,6 +26,15 @@ export function validateGeneratedWidget(value: unknown): GeneratedWidget {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid widget");
   const v = value as Record<string, unknown>;
   const type = v.type;
+  const allowed = type === "datetime" ? ["type", "id", "label", "value", "min", "max"]
+    : type === "range" ? ["type", "id", "label", "min", "max", "step", "value"]
+    : type === "multi_select" ? ["type", "id", "label", "options", "selected"]
+    : type === "decision_table" ? ["type", "id", "columns", "rows"]
+    : type === "action_card" ? ["type", "id", "title", "description", "action", "progress"] : [];
+  for (const key of Object.keys(v)) {
+    if (["script", "html", "code", "onload", "onclick"].includes(key.toLowerCase())) throw new Error("executable widget fields are forbidden");
+    if (!allowed.includes(key)) throw new Error(`unknown widget field: ${key}`);
+  }
   const id = text(v.id, "id", 100);
   if (type === "datetime") return { type, id, label: text(v.label, "label"), ...(v.value === undefined ? {} : { value: text(v.value, "value") }), ...(v.min === undefined ? {} : { min: text(v.min, "min") }), ...(v.max === undefined ? {} : { max: text(v.max, "max") }) };
   if (type === "range") {
