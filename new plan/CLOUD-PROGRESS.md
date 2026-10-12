@@ -14,7 +14,7 @@ Branch: `Mcbt5s-Backup-2`. One sequential implementation worker. No live deploy.
 | 7 | PARTIAL_NEEDS_PLATFORM — local channel/tunnel behavior and checks complete; live named-machine bridge and provider delivery remain unproven |
 | 8 | PARTIAL_NEEDS_PLATFORM — local model/BYOK/preview work complete; live provider and Quick Tunnel behavior remains unexercised |
 | 9 | PARTIAL_NEEDS_PLATFORM — all local connector requirements implemented; live provider/OAuth verification requires tenant/platform credentials |
-| 10 | UNASSESSED |
+| 10 | COMPLETE_LOCALLY — final runtime review and ten-batch coverage pass complete; external checks remain |
 
 ## Source ledger and reconciled decisions
 
@@ -36,7 +36,7 @@ Branch: `Mcbt5s-Backup-2`. One sequential implementation worker. No live deploy.
 - Batch 5: primary D12 7974–10197; required look-aheads D12 11523–11706 and
   12764–13344; D13 964–1111 and 1324–1374. Read in ascending 150-line windows.
   Searching unread later sections found matching D12 13340–13447 and D13 724–727,
-  761–762, 1387–1394; these were read and recorded. Batches 6–10 are not yet assessed.
+  761–762, 1387–1394; these were read and recorded. Batches 6–10 were later assessed sequentially and are recorded below.
   Read each prompt's windows in order; search unread tails before design. The two TXT
   files have not been modified. No historical plan/checkpoint was used as product authority.
 - Later corrections govern: avoid the domain-kind explosion and subjective prose
@@ -192,11 +192,58 @@ Branch: `Mcbt5s-Backup-2`. One sequential implementation worker. No live deploy.
   and live APIs are not needed for this batch.
 - B9 verification: focused connector/security/OAuth suite 9 files / 101 tests;
   Agents suite 58 files / 235 tests; Agent SDK 21 / 77; MCP Hub 3 / 7. Agents,
-  MCP Hub, Spaces and Agent SDK typechecks pass. Shell typecheck is being rerun after
-  correcting its API import. Vendor API and DNS were mocked; no live Pipedream project,
+  MCP Hub, Spaces, Agent SDK and Shell typechecks pass after correcting the Shell API
+  import. Vendor API and DNS were mocked; no live Pipedream project,
   tenant OAuth provider, Cloudflare deployment, or credential was used. Source-derived
   implementation is complete locally; retain the platform gate until a configured
-  deployment exercises provider behavior.
+  deployment exercises provider behavior. B9 commit/push: `9fdb303`.
+
+## Batch 10 current work and evidence
+
+- Primary D13 735–1398 was re-read in ascending bounded windows (735–919, 920–1110,
+  1111–1250, 1251–1398). Before design/audit, searched both source files for Git/WASM,
+  R2/Pointer-LFS, Dynamic Worker Loader, Workflow checkpointing, AXTree, container
+  idle, System 1/JeV, WebSocket hibernation, subrequest budgets, SQLite, Vectorize,
+  CPU offload, jurisdiction, and `waitUntil`. Matching D12 contexts consulted:
+  2071–2078, 2447–2468, 3725–3744, 5900–5957, 8995–9087, 12852–12904,
+  13135–13173, 13335–13439; D13 primary contexts 768–1107, 1122–1371. B8's
+  already-read D12 12764–13666 and vendor research were reused. Original TXT files
+  remain unchanged.
+- Current official Cloudflare docs checked on 2026-10-12: Workers account limits
+  (`https://developers.cloudflare.com/workers/platform/limits/`), Workflows limits
+  (`https://developers.cloudflare.com/workflows/reference/limits/`), Vectorize limits
+  (`https://developers.cloudflare.com/vectorize/platform/limits/`), SQLite-backed DO
+  storage (`https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/`),
+  Dynamic Workers (`https://developers.cloudflare.com/dynamic-workers/`), and R2 data
+  location (`https://developers.cloudflare.com/r2/reference/data-location/`). Current
+  docs list 50 subrequests/invocation on Free and 10,000 on Paid (configurable up to
+  10M), CPU up to 10ms Free or 5 minutes Paid, Workflow event/step result limits of
+  1 MiB, and Vectorize metadata of 10 KiB/vector. Thus D13's general 50ms CPU, 50
+  subrequests, and 1 KiB Workflow cap are not current universal platform limits.
+  R2 jurisdiction restrictions guarantee storage/processing within the chosen
+  jurisdiction. Location hints are best effort, apply at bucket creation, and do not
+  establish end-to-end residency for Worker ingress or model/provider egress.
+- Reconciled the illustrative architecture with actual code: Git-compatible Git object
+  IDs use WebCrypto and immutable R2 objects, not an unverified fixed 4 MiB Zig arena;
+  large Artifact Worker blobs already go to R2 (there is no need to duplicate a 256 KiB
+  threshold in SQLite); authored Workflow outputs use an authorized, digest-scoped R2
+  artifact pointer, with a conservative 256 KiB internal journal cap; source compilation
+  is pre-bundled or handled by the existing compiler path before `env.LOADER` evaluates
+  modules; Browser Worker already extracts indexed Chromium AX nodes; ToolSandboxDO
+  persists idle deadlines and uses a 60 second alarm; WebSocket state restores from
+  serialized attachments; RAG keeps document text outside Vectorize metadata; heavy
+  work uses existing Workflow/Container execution paths; data placement uses jurisdiction
+  bindings and tenant egress policy. The illustrative setTimeout-based SQLite deadline
+  cannot interrupt synchronous SQL, so it was not copied. No speculative 60ms Jev race,
+  undocumented endpoint, unsupported EU model ID, generic 35-call yield counter, or
+  advertised latency/economics was introduced.
+- Fresh B10 checks: Artifact Worker 2 files / 9 tests, including a multi-megabyte R2
+  object and a Git known-object hash; Agents targeted Workflow/Loader/Container/journal set
+  5 files / 18 tests (confirmed in the final rerun). Artifact, Workflows, and Agents typechecks passed. The Workflows
+  package has no test script; the Agents workflow harness tests are source/static plus
+  local mocks, not a live Cloudflare Workflow checkpoint/sleep. Full Agents tests were
+  58 files / 235 tests during B9 verification. The final B10 coverage pass and regression
+  rerun passed. No Cloudflare deployment or live provider check was run.
 
 ## Batch 1 and 2 coverage
 
@@ -346,13 +393,20 @@ Branch: `Mcbt5s-Backup-2`. One sequential implementation worker. No live deploy.
   needed: deployed model binding invocation, real Clef multimodal input/output, production
   data-residency behavior, and DO-to-Container speculative warm. The source's 60ms Jev
   racing failover was not asserted because its API/cancellation contract is unverified.
-  Keep this partial status and proceed with Batch 6.
+  Local requirements are complete; deployed model/runtime checks remain external.
 
 ## Next action / checkpoints
 
-Batch 3 independent local work and checks are complete and pushed (`7220466`, followed by
-test-harness correction `d7f8362`). Batches 4–7 local work/checks are complete and pushed;
-retain their runtime/provider gates above. Batch 8 local work/checks is complete; commit and
-push its scoped changes, then continue prompts 9–10 sequentially. Only after batch 10, make
-one coverage pass over batches 1–10. Human-only prerequisites should be listed after their
-independent local work is complete. Current branch is `Mcbt5s-Backup-2`.
+Batches 1–9 are committed and pushed through `9fdb303` on `Mcbt5s-Backup-2`.
+The final ten-batch coverage audit is complete; it found no locally actionable gaps.
+Fresh B10 tests/typechecks passed after that audit. Next, commit and push B10, then
+verify the branch and clean worktree. Platform and live-test gates are itemized above.
+
+
+## Final 1–10 coverage pass (2026-10-12)
+
+- Reconciled the ten numbered prompts against their primary ranges, recorded later-source amendments and per-batch implementation/evidence notes. Used the recorded bounded source windows; source files remain unchanged. No historical plan/checkpoint was used as product authority.
+- Rechecked the substantive local requirements: durable orchestration/review and scoped artifacts (B1); tenant gadget and preview controls (B2); state-delta certification, auth, notifications and billing/royalties (B3); terminal/audio/tunnel/RAG/saga behavior (B4); model placement and guarded prewarm (B5); eval, traces and conformance (B6); channel envelopes and tunnel replay/cancellation (B7); BYOK, air-gap and preview tooling (B8); provider routing and tenant-owned OAuth (B9); runtime limits, artifact storage, workflows, loaders, browser accessibility, hibernation, Vectorize and residency (B10). Existing implementations were retained where evidence showed them sound; no missing local implementation emerged from this pass.
+- Fresh B10 verification after the audit: `corepack pnpm@9.12.0 --filter @naelao/agents-worker exec vitest run src/workflows/reconciliation-a2.test.ts src/script-engine/project-journal-hibernation.test.ts src/batch10-workflows.test.ts src/do/ToolSandboxDO.test.ts src/script-engine/dynamic-code.test.ts` — 5 files / 18 tests passed; Artifact Worker `test` — 2 files / 9 tests passed; Agents, Artifact and Workflows typechecks passed.
+- Remaining dependencies require external configuration or live infrastructure, not further local implementation: owned preview DNS/wildcard route (B2); shared identity issuer and optional escrow contract if that feature is enabled (B3); Wrangler DO-to-Container bridge and provider acceptance (B4); deployed model/Container behavior (B5); deployed Gateway/Loader/Workflow behavior (B6); physical named-machine bridge and channel/provider credentials (B7); actual cloudflared and provider/Gateway project checks (B8); configured Pipedream and tenant OAuth providers (B9); deployed Cloudflare bindings and end-to-end residency/provider checks (B10). B1 native file-scoped mounts also remain a runtime capability gate. These checks were not represented as proven by mocks.
+- Final local status: all ten batches are implemented and verified to the extent available in this repository and local test harnesses. Platform-gated items above are explicitly partial pending external setup. Batch 10 is ready to commit and push after this audit.
