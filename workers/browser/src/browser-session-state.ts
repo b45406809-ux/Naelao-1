@@ -11,7 +11,7 @@ export interface BrowserSessionRecord {
 export interface BrowserStateStorage {
   get<T>(key: string): Promise<T | undefined>;
   put<T>(key: string, value: T): Promise<void>;
-  transaction<T>(callback: (storage: BrowserStateStorage) => Promise<T>): Promise<T>;
+  transaction<T>(callback: (storage: Pick<BrowserStateStorage, "get" | "put">) => Promise<T>): Promise<T>;
 }
 export function sameBrowserOwner(a: BrowserRuntimeScope, b: BrowserRuntimeScope): boolean {
   return ["tenantId", "spaceId", "projectId", "actorId", "agentId", "runId", "sessionId"].every(key => a[key as keyof BrowserRuntimeScope] === b[key as keyof BrowserRuntimeScope]);

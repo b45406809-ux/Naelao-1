@@ -407,9 +407,9 @@ and Shell typechecks pass. This implements the WhatsApp connection CTA only; it 
 not provide a WhatsApp-to-browser authentication session.
 
 Fresh verification: Agent SDK build/typecheck and all 18 files / 66 tests; Spaces
- typecheck and all 21 files / 62 tests; Shell typecheck; WS Gateway typecheck and
- UI-action delegation test (2 files / 3 tests); Agents typecheck and semantic CAS
- tests (6); WS node-lease/concurrency tests (8) all pass. The complete SpaceDO
+typecheck and all 21 files / 62 tests; Shell typecheck; WS Gateway typecheck and
+UI-action delegation test (2 files / 3 tests); Agents typecheck and semantic CAS
+tests (6); WS node-lease/concurrency tests (8) all pass. The complete SpaceDO
  migration list including migration 65 applies twice against real in-memory SQLite;
  staged R2 upload failure cleanup and zero SQLite writes are covered by mock-boundary
  tests. Wrangler 4.149.0 Spaces dry-run confirms the configured SCRIPTS_R2 binding.
@@ -567,6 +567,36 @@ this was a wrong CLI selection, corrected by invoking root Wrangler 4.149.0. The
 stack was stopped after verification. Local mode reports `naelao-calls` unavailable and
 Workers AI unsupported; this does not block the verified router or container smoke, but
 features depending on those providers remain unverified.
+
+Phase 3/4 continuation (2026-10-12): revisited the exact Batch 3 publish-gate and
+support sections at D12 5370–5550 and D13 149–168 while auditing the still-open
+marketplace requirement. The listing submission and publish routes in
+`workers/spaces/src/routes/marketplace.ts` currently validate pricing only; the
+SpaceType review worker accepts `pending` listings without an artifact-bound
+regression receipt. `evaluateBlueprintSecurity` and the export dry-run check
+security/instantiation but do not prove golden-fixture behavior. This is a local
+implementation gap, so Batch 3 remains IN PROGRESS; do not treat it as a credential
+blocker or claim that the publish gate is complete. The fixture format, trusted
+oracle, and both publish-entrypoint integration still need implementation.
+
+Batch 4 continuation (2026-10-12): Wrangler 4.149.0 `wrangler dev --local` listed
+all three Agent container bindings as available and started the Agent Worker; the
+extended local stack reached Ready for all 11 selected Workers. This proves local
+container binding availability, but the authorized AgentDO-to-container call was
+not exercised: the workspace has no live user grant/session and production provider
+credentials, and the script loop cannot be used as evidence without them. Fixed
+four independent Browser Worker type errors (optional exact-optional flags, DO
+transaction callback shape, optional Browser field assignment, and an incomplete
+Hono middleware return). `workers/browser` typecheck passes; repository-wide
+`corepack pnpm@9.12.0 typecheck` passes 80/80 tasks when PATH directs Turbo to the
+repository-pinned pnpm 9 instead of the environment's pnpm 11 fallback. The root
+test command first failed because `packages/sdk` has no test files; its script now
+uses `--passWithNoTests`. The rerun reached the full suite but failed with 143 test
+files and 421 tests failing (2,708 passed), including many unrelated route, policy
+and script-engine tests. Focused Batch 3/4 suites remain the relevant green evidence.
+Batch 4 remains IN PROGRESS: full authorized DO-to-container execution, runtime
+AI/Ogg acceptance, and real settlement-provider effects remain unverified; see above
+for the separate local Docker `/health` and `/exec` smoke evidence.
 
 Cloud environment setup skill: read the current saved config, ran the frozen install and
 startup/health checks, then saved draft

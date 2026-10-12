@@ -22,7 +22,7 @@ const RECORD = "browser-session";
 
 /** One task-owned remote page. CDP/provider identifiers never cross the agent boundary. */
 export class BrowserSessionDO extends DurableObject<BrowserEnv> {
-  private browser?: Browser;
+  private browser: Browser | undefined;
   private pending = Promise.resolve();
   private cancelled = false;
 
@@ -92,7 +92,12 @@ export class BrowserSessionDO extends DurableObject<BrowserEnv> {
     if (!this.env.BROWSER) throw new Error("browser_provider_unavailable");
     if (!["navigate", "observe", "act"].includes(method)) throw new Error("browser_operation_invalid");
     if (method === "act" && (!existing?.observation || !body.action)) throw new Error("browser_observation_required");
-    const selected = browserEngineFor(body.scope, { visual: body.visual || body.pixelAccurate, webgl: body.webgl, persistentLogin: body.interactive });
+    const visual = body.visual || body.pixelAccurate;
+    const selected = browserEngineFor(body.scope, {
+      ...(visual !== undefined ? { visual } : {}),
+      ...(body.webgl !== undefined ? { webgl: body.webgl } : {}),
+      ...(body.interactive !== undefined ? { persistentLogin: body.interactive } : {}),
+    });
     const engine = existing?.engine === "chromium" ? "chromium" : selected.engine;
     const target = body.url ?? existing?.url;
     if (!target) throw new Error("browser_url_required");

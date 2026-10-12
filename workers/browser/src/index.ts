@@ -13,6 +13,7 @@ app.use("/v1/*", async (c, next) => {
     return c.json({ error_code: "unauthorized", message: "Browser authorization required" }, 401);
   }
   await next();
+  return;
 });
 app.post("/v1/browser/:operation", async c => {
   const operation = c.req.param("operation");
