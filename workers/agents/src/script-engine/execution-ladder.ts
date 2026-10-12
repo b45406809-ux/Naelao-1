@@ -84,7 +84,7 @@ export function classifyExecutionRoute(command: string): { tier: ExecutionTier; 
 export async function classifyExecutionRouteWithSentry(
   command: string,
   sentry?: Pick<FastDecisionGateway, "noul">
-): Promise<{ tier: ExecutionTier; engine: ExecutionEngine; reason: string; sentry?: { provider: "jev" | "laya"; confidence?: number; model?: string } }> {
+): Promise<{ tier: ExecutionTier; engine: ExecutionEngine; reason: string; sentry?: { provider: "jev" | "laya" | "clef"; confidence?: number; model?: string } }> {
   const baseline = classifyExecutionRoute(command);
   if (!sentry || baseline.tier === 6 || baseline.reason === "command_not_found" || baseline.tier === 1) return baseline;
   try {

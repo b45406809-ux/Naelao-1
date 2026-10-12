@@ -1,5 +1,5 @@
-/** Typed, text-free System One decisions shared by deterministic policy and Jev/Laya. */
-export type FastDecisionProvider = "deterministic" | "jev" | "laya";
+/** Typed, text-free System One decisions shared by deterministic policy and model providers. */
+export type FastDecisionProvider = "deterministic" | "jev" | "laya" | "clef";
 
 export interface FastDecisionMeta {
   provider: FastDecisionProvider;
@@ -50,6 +50,8 @@ export interface FastDecisionGateway {
   choice<T extends string>(input: { state: SystemOneState; instructions: SystemOneInstructions; criteria: Readonly<Record<T, SystemOneInstructions | null>>; policyCode: string }): Promise<ChoiceDecision<T>>;
   score(input: { state: SystemOneState; instructions: SystemOneInstructions; criteria: readonly SystemOneInstructions[]; policyCode: string }): Promise<ScoreDecision>;
   noul(input: { state: SystemOneState; instructions: SystemOneInstructions; criteria?: { true?: SystemOneInstructions; false?: SystemOneInstructions }; policyCode: string; threshold?: number }): Promise<NoulDecision>;
+  /** Optional single-pass runtime prediction. Implementations must return false on uncertainty. */
+  preflightRuntime?(state: SystemOneState): Promise<{ needsContainer: boolean; needsBrowser: boolean; confidence: number } | undefined>;
 }
 
 export interface SystemOneClientOptions {
@@ -57,11 +59,13 @@ export interface SystemOneClientOptions {
   endpoint?: string;
   apiKey?: string;
   model?: string;
-  provider?: "jev" | "laya";
+  provider?: "jev" | "laya" | "clef";
+  /** Workers AI Clef binding. Supplied only for an explicitly selected cloud route. */
+  runClef?: (model: string, input: Record<string, unknown>) => Promise<unknown>;
   fetch?: typeof globalThis.fetch;
   maxRetries?: number;
   onDecision?: (event: {
-    provider: "jev" | "laya";
+  provider: "jev" | "laya" | "clef";
     policyCode: string;
     model: string;
     latencyMs: number;
@@ -111,7 +115,8 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
   private readonly endpoint: string;
   private readonly apiKey: string | undefined;
   private readonly model: string;
-  private readonly provider: "jev" | "laya";
+  private readonly provider: "jev" | "laya" | "clef";
+  private readonly runClef: SystemOneClientOptions["runClef"];
   private readonly fetcher: typeof globalThis.fetch;
   private readonly maxRetries: number;
   private readonly onDecision: SystemOneClientOptions["onDecision"];
@@ -119,8 +124,10 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
   constructor(options: SystemOneClientOptions = {}) {
     this.endpoint = options.endpoint ?? DEFAULT_JEV_ENDPOINT;
     this.apiKey = options.apiKey;
-    this.model = options.model ?? "jev-latest";
+    this.model = options.model ?? (options.provider === "clef" ? "@cf/cloudflare/clef-flash" : "jev-latest");
     this.provider = options.provider ?? "jev";
+    this.runClef = options.runClef;
+    if (this.provider === "clef" && !this.runClef) throw new Error("system_one_clef_binding_required");
     this.fetcher = options.fetch ?? globalThis.fetch;
     this.maxRetries = options.maxRetries ?? 2;
     this.onDecision = options.onDecision;
@@ -133,6 +140,17 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
 
   private async request(question: Record<string, unknown>, state: SystemOneState): Promise<{ answer: SystemOneAnswer; meta: Omit<FastDecisionMeta, "policyCode"> }> {
     const started = Date.now();
+    if (this.provider === "clef") {
+      const result = await this.runClef!(this.model, {
+        model: this.model.replace(/^@cf\/cloudflare\//, ""),
+        state,
+        questions: { decision: question },
+      }) as { answers?: Record<string, unknown>; usage?: unknown };
+      const answer = result?.answers?.["decision"] as SystemOneAnswer | undefined;
+      if (!answer || typeof answer !== "object") throw new Error("system_one_missing_answer");
+      const usageMeta = result.usage === undefined ? {} : { usage: usage(result.usage) };
+      return { answer, meta: { provider: "clef", model: this.model, latencyMs: Date.now() - started, ...usageMeta } };
+    }
     let response: Response | undefined;
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       response = await this.fetcher(this.endpoint, {
@@ -181,5 +199,28 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
     const probability = boundedProbability(answer.noul, "noul");
     this.observe(input.policyCode, meta);
     return Object.freeze({ kind: "noul", value: probability >= threshold, probability, confidence: Math.max(probability, 1 - probability), policyCode: input.policyCode, ...meta });
+  }
+
+  /** One Clef forward pass predicts whether the current prompt may need expensive runtimes. */
+  async preflightRuntime(state: SystemOneState): Promise<{ needsContainer: boolean; needsBrowser: boolean; confidence: number } | undefined> {
+    if (this.provider !== "clef") return undefined;
+    const result = await this.runClef!(this.model, {
+      model: this.model.replace(/^@cf\/cloudflare\//, ""),
+      state,
+      questions: {
+        needsContainer: { type: "noul", instructions: "Could completing this task require executing shell commands, native builds, package installation, or a Linux container?" },
+        needsBrowser: { type: "noul", instructions: "Could completing this task require navigating a website or interacting with a browser?" },
+      },
+    }) as { answers?: Record<string, unknown> };
+    const answers = result?.answers;
+    const container = answers?.["needsContainer"] as { noul?: unknown } | undefined;
+    const browser = answers?.["needsBrowser"] as { noul?: unknown } | undefined;
+    const containerProbability = boundedProbability(container?.noul, "noul");
+    const browserProbability = boundedProbability(browser?.noul, "noul");
+    return {
+      needsContainer: containerProbability >= 0.8,
+      needsBrowser: browserProbability >= 0.8,
+      confidence: Math.max(containerProbability, 1 - containerProbability, browserProbability, 1 - browserProbability),
+    };
   }
 }

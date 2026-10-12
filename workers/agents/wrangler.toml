@@ -307,12 +307,15 @@ NAELAO_GATEWAY_ID = "naelao-gateway"
 #   wrangler secret put NAELAO_AIG_TOKEN
 # When NAELAO_AIG_TOKEN is unset AND no ANTHROPIC_API_KEY is provided, LLM calls fail honestly.
 #
-# System One decision sentry. Hosted Jev uses the official endpoint and secret:
+# System One decision sentry. The verified Cloudflare Clef route uses the existing AI binding:
+#   SYSTEM_ONE_PROVIDER="clef"
+#   SYSTEM_ONE_MODEL="@cf/cloudflare/clef-flash"  # or clef / clef-omni when appropriate
+# Clef is opt-in; do not set it for spaces whose residency/egress policy forbids cloud inference.
+# Jev remains an explicitly configured provider and requires its own current vendor validation:
 #   wrangler secret put TYPESAFE_API_KEY
-# To self-host the open-source Laya model, run `pip install "laya[serve]"`, publish its
-# Jev-compatible /v1/systemone route, and set SYSTEM_ONE_ENDPOINT plus
-# SYSTEM_ONE_PROVIDER="laya". SYSTEM_ONE_MODEL is optional (defaults to jev-latest, an alias
-# accepted by Laya). A missing sentry never weakens deterministic routing.
+# A separately operated, policy-authorized endpoint can be set with SYSTEM_ONE_ENDPOINT and
+# SYSTEM_ONE_PROVIDER="laya"; its wire contract and placement must be verified by its operator.
+# A missing sentry never weakens deterministic routing.
 #
 # Google AI Studio (Gemini) — a genuinely separate provider relationship, BYOK to a real Google
 # key (not held by the CF Gateway itself). Lets the model switcher offer Gemini models

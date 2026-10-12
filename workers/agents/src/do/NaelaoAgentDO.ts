@@ -1010,7 +1010,7 @@ export interface AgentDOEnv {
   /** Optional Jev-compatible Laya endpoint, for example https://laya.internal/v1/systemone. */
   SYSTEM_ONE_ENDPOINT?: string;
   SYSTEM_ONE_MODEL?: string;
-  SYSTEM_ONE_PROVIDER?: "jev" | "laya";
+  SYSTEM_ONE_PROVIDER?: "jev" | "laya" | "clef";
   PLATFORM_SECRET: string;
   KNOWLEDGE_WORKER: Fetcher;
   SPACES_WORKER: Fetcher;
@@ -2014,12 +2014,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       throw new Error(JSON.stringify({error_code:result.status,diagnostic_id:result.diagnosticId,diagnostics:result.diagnostics,correction_attempts:result.correctionAttempts}));
     };
     env.memoryRoleRank = memoryRoleRank;
-    if (!airGappedOnly && (this.env.TYPESAFE_API_KEY || this.env.SYSTEM_ONE_ENDPOINT)) {
+    const systemOneConfigured = this.env.SYSTEM_ONE_PROVIDER === "clef"
+      ? Boolean(this.env.AI)
+      : Boolean(this.env.TYPESAFE_API_KEY || this.env.SYSTEM_ONE_ENDPOINT);
+    if (!airGappedOnly && systemOneConfigured) {
       env.fastDecision = new SystemOneDecisionClient({
         ...(this.env.SYSTEM_ONE_ENDPOINT ? { endpoint: this.env.SYSTEM_ONE_ENDPOINT } : {}),
         ...(this.env.TYPESAFE_API_KEY ? { apiKey: this.env.TYPESAFE_API_KEY } : {}),
         ...(this.env.SYSTEM_ONE_MODEL ? { model: this.env.SYSTEM_ONE_MODEL } : {}),
         provider: this.env.SYSTEM_ONE_PROVIDER ?? (this.env.SYSTEM_ONE_ENDPOINT ? "laya" : "jev"),
+        ...(this.env.SYSTEM_ONE_PROVIDER === "clef" && this.env.AI ? { runClef: (model, input) => this.env.AI!.run(model as Parameters<Ai["run"]>[0], input as Parameters<Ai["run"]>[1]) } : {}),
         ...(this.env.ANALYTICS ? {
           onDecision: (event) => {
             try {
@@ -4532,6 +4536,21 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // scripts) — read lazily at call time, so ordering relative to runScriptLoop is safe.
     const consultLog: Array<{ thread_id: string; agent_id: string; title: string }> = [];
     engineEnv.orchestration = this.buildOrchestrationHooks(spaceId, agentId, tenantId, body.apiKey ?? "", runId, sessionId, projectId, tools, userId, consultLog, body.model, body.effort, engineEnv);
+    // Speculatively warm only the already-authorized project container, off the response path.
+    // The typed predictor can only request a warm; it cannot execute a command or change routing.
+    // Local-only runs and viewer/low-tier actors never send the goal to a hosted model or warm a
+    // cloud runtime. A false positive expires under ToolSandboxDO's existing 60-second alarm.
+    if (!body.airGappedOnly && projectId && userId && engineEnv.effectiveRole !== "viewer"
+      && (engineEnv.maxTier ?? 0) >= 6 && engineEnv.codeRunner && engineEnv.fastDecision?.preflightRuntime) {
+      const actorId = userId;
+      this.ctx.waitUntil(engineEnv.fastDecision.preflightRuntime({ goal: body.goal.slice(0, 8_000) }).then(async (prediction) => {
+        if (!prediction?.needsContainer || prediction.confidence < 0.8 || request.signal.aborted) return;
+        const warmed = await engineEnv.codeRunner!.run({ name: "container.prewarm", code: "", args: {}, tier: 6,
+          tenantId, spaceId, agentId, projectId, userId: actorId, runId,
+          ...(engineEnv.executionSignal ? { signal: engineEnv.executionSignal } : {}), maxTier: engineEnv.maxTier ?? 6 });
+        if (!warmed.ok) throw new Error(warmed.error ?? "speculative_container_prewarm_failed");
+      }).catch(() => { /* Prediction and prewarm are best-effort; normal execution stays reactive. */ }));
+    }
     // Every template has a proactive assistant/REPL; product taxonomy never clamps the engine.
     await this.ctx.storage.setAlarm(Date.now() + 60_000);
     const reasoningRequest = NaelaoAgentDO.resolveReasoningRequest(body.model, body.reasoningEffort);

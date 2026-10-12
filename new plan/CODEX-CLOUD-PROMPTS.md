@@ -229,6 +229,8 @@ named services or performance figures. Implement the primary range's final
 requirements, test successful and failure paths, update coverage and stop here.
 ```
 
+**Progress (2026-10-12): PARTIAL_NEEDS_PLATFORM — local implementation complete; continuing with Batch 6.** Read D12 7974–10197 in ascending bounded windows, required look-aheads D12 11523–11706 and 12764–13344, and D13 964–1111 and 1324–1374. Searched unread tails for Clef/Jev/System 1/runtime corrections and read matching contexts D12 13340–13447 and D13 724–727, 761–762, 1387–1394. Cloudflare's current official Workers AI catalog and Clef model pages confirm `@cf/cloudflare/clef-flash` (24,576 context, $0.038/M input), `clef` (65,536, $0.24/M), and `clef-omni` (64,000, $0.15/M); typed `state`/`questions` decisions and audio/video input are documented. Jev endpoint compatibility and all latency figures were not verified. Added an opt-in Clef provider to the shared decision client, bundled container/browser preflight, and a high-confidence, off-path project container warm that respects air-gap, role, project, and tier gates; existing ToolSandboxDO 60-second idle alarm remains the false-positive bound. Browser-reflex action selection and bounded AXTree observations were already implemented. No live Workers AI call or deployment was made; actual model output and speculative DO-to-Container warm timing remain unproven. Agent SDK: 9 fast-decision tests pass and typecheck passes; Agents: 58 files / 232 tests pass and typecheck passes. Continue with Batch 6; detailed coverage is in CLOUD-PROGRESS.md.
+
 6. **Document 12: lines 10198–11776**
 
 ```text

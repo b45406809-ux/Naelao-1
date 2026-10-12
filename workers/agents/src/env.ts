@@ -12,7 +12,7 @@ export interface Env extends DurableWorkflowHostEnv {
   TYPESAFE_API_KEY?: string;
   SYSTEM_ONE_ENDPOINT?: string;
   SYSTEM_ONE_MODEL?: string;
-  SYSTEM_ONE_PROVIDER?: "jev" | "laya";
+  SYSTEM_ONE_PROVIDER?: "jev" | "laya" | "clef";
   ANTHROPIC_API_KEY: string;
   PLATFORM_SECRET: string;
   PLATFORM_DB: D1Database;

@@ -9,7 +9,7 @@ Branch: `Mcbt5s-Backup-2`. One sequential implementation worker. No live deploy.
 | 2 | PARTIAL_NEEDS_PLATFORM — local runtime complete; owned preview zone/route required |
 | 3 | PARTIAL_NEEDS_PLATFORM — independent local implementation and checks complete; optional escrow and shared identity provider remain gated |
 | 4 | PARTIAL_NEEDS_PLATFORM — local suites and audio ingress pass; Worker DO-to-Container integration, live AI/media acceptance and external saga effects remain unproven |
-| 5 | UNASSESSED |
+| 5 | PARTIAL_NEEDS_PLATFORM — local model routing/prewarm work and checks complete; deployed binding/model/runtime behavior remains unproven |
 | 6 | UNASSESSED |
 | 7 | UNASSESSED |
 | 8 | UNASSESSED |
@@ -33,9 +33,12 @@ Branch: `Mcbt5s-Backup-2`. One sequential implementation worker. No live deploy.
 - Batch 4 primary D12 5658–7973; required look-aheads D12 11136–11776,
   12348–12763, 13207–13344; D13 735–1398. Additional matching contexts:
   D12 12764–13206 and 11707–11776.
-- Batches 5–10 sources and extra matching contexts are not yet assessed. Read each
-  prompt's windows in order; search unread tails before design. The two TXT files
-  have not been modified. No historical plan/checkpoint was used as product authority.
+- Batch 5: primary D12 7974–10197; required look-aheads D12 11523–11706 and
+  12764–13344; D13 964–1111 and 1324–1374. Read in ascending 150-line windows.
+  Searching unread later sections found matching D12 13340–13447 and D13 724–727,
+  761–762, 1387–1394; these were read and recorded. Batches 6–10 are not yet assessed.
+  Read each prompt's windows in order; search unread tails before design. The two TXT
+  files have not been modified. No historical plan/checkpoint was used as product authority.
 - Later corrections govern: avoid the domain-kind explosion and subjective prose
   regex linters (D12 4953–4986); treat JEV/Clef names, prices, latency and model
   capabilities as unverified; platform subscriptions/template sales/FDE payouts
@@ -154,12 +157,52 @@ Branch: `Mcbt5s-Backup-2`. One sequential implementation worker. No live deploy.
   No user credential or Cloudflare deployment was used. Continue with Batch 5 while
   preserving these explicit external/runtime gates.
 
+## Batch 5 current status
+
+- Official Cloudflare Workers AI model catalog and model pages were fetched on
+  2026-10-12. They list `@cf/cloudflare/clef-flash` (24,576 token context,
+  $0.038/M input), `@cf/cloudflare/clef` (65,536, $0.24/M), and
+  `@cf/cloudflare/clef-omni` (64,000, $0.15/M). Documentation confirms the
+  typed `{ model, state, questions }` API and that Clef-omni accepts audio/video;
+  media tokenization differs from the source's estimates. These catalog facts validate
+  only documented interfaces/pricing, not latency, deployed availability, runtime
+  binding success, model accuracy, or data residency. Jev's alleged endpoint/schema
+  compatibility and latency were not independently verified.
+- Added an explicit `SYSTEM_ONE_PROVIDER=clef` option backed by the existing Workers AI
+  `AI` binding. FastDecision validates allowed choice/probability output, score/noul
+  shapes and usage when supplied. It keeps deterministic fail-safe callers unchanged;
+  no cloud decision client is created for local-only execution. A Clef-only bundled
+  runtime preflight sends one bounded prompt to the two typed needs-container/browser
+  questions; only a >=0.8 container probability may request a warm. After run gates and
+  agent configuration, eligible project/member runs register the warm through
+  `ctx.waitUntil()`. The worker may only warm the already scoped `container.prewarm`
+  operation; it cannot execute commands. Viewer, lower-tier, unscoped, and air-gap runs
+  do not warm. Existing ToolSandboxDO's 60-second idle alarm bounds false positives.
+- Existing browser reflex verifies a model may choose only from authorized candidate
+  actions, requires 0.95 confidence by default, and hands uncertainty back to the planner;
+  observations cap text at 1,200 chars and elements at 80. No current Browser Worker
+  prewarm operation exists, so browser startup remains demand-driven. The project-level
+  prewarm has no live DO-to-Container proof (Wrangler local bridge blocker is documented
+  under B4); no live Workers AI request was made. No cloud latency or usage result is claimed.
+- Fresh checks: `corepack pnpm@9.12.0 --filter @naelao/agent-sdk test --
+  src/fast-decision.test.ts` (9 tests), agent-sdk typecheck, Agents full suite (58 files /
+  232 tests), Agents typecheck, and `git diff --check` all pass. Fast-decision tests cover
+  model input/typed output, one-pass bundled preflight, confidence threshold, missing
+  binding, invalid choice and malformed probabilities. Changes are in `packages/agent-sdk`
+  fast-decision client/tests and Agents DO/env/execution-ladder integration.
+- B5 local requirements are implemented and checks pass. External/runtime evidence still
+  needed: deployed model binding invocation, real Clef multimodal input/output, production
+  data-residency behavior, and DO-to-Container speculative warm. The source's 60ms Jev
+  racing failover was not asserted because its API/cancellation contract is unverified.
+  Keep this partial status and proceed with Batch 6.
+
 ## Next action / checkpoints
 
 Batch 3 independent local work and checks are complete and pushed (`7220466`, followed by
 test-harness correction `d7f8362`). Batch 4's local work is complete; retain its
-runtime/provider gates above and continue prompt 5. Commit/push batch-scoped changes after
-each batch without combining later-batch work. Continue prompts 5–10 sequentially,
+runtime/provider gates above. Batch 5's independent local work and checks are complete;
+retain its live/runtime gates and continue prompt 6. Commit/push batch-scoped changes after
+each batch without combining later-batch work. Continue prompts 6–10 sequentially,
 recording evidence after each. Only after batch 10, make one coverage pass over batches
 1–10. Human-only prerequisites should be listed after their independent local work is
 complete. Current Batch 4 work is uncommitted on `Mcbt5s-Backup-2`.
