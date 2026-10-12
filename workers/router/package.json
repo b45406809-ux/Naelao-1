@@ -14,13 +14,14 @@
     "@naelao/crypto": "workspace:*",
     "@naelao/http": "workspace:*",
     "@naelao/types": "workspace:*",
-    "hono": "^4.6.14"
+    "hono": "^4.6.14",
+    "ogg-opus-decoder": "1.7.5"
   },
   "devDependencies": {
-    "typescript": "*",
+    "@cloudflare/vitest-pool-workers": "*",
     "@cloudflare/workers-types": "*",
-    "wrangler": "*",
+    "typescript": "*",
     "vitest": "*",
-    "@cloudflare/vitest-pool-workers": "*"
+    "wrangler": "*"
   }
 }

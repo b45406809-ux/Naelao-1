@@ -216,16 +216,21 @@ examples or invent unavailable isolation guarantees. Implement and test the
 final requirements, preserve tunnels and local models, record evidence, and stop.
 ```
 
-**Progress (2026-10-12): IN PROGRESS.** Read primary D12 5658–7973 in ascending
-bounded windows; read required D12/D13 look-aheads and extra D12 12764–13206 for
-model/modality amendments. Existing provider-usage metering, terminal Bash rendering,
-named LocalTunnelDO execution, permission-filtered RAG, saga coordinator, and local
-workerd launcher were verified in code. Added completed-log folding with expansion
-in `TerminalStreamBlock` and focused tests; typecheck/test verification and remaining
-B4 gap analysis are underway. Speculative Clef/Jev model IDs, modality, latency, and
-prices remain unverified (official docs request returned proxy CONNECT HTTP 403), so
-no vendor-specific routing was added. See CLOUD-PROGRESS.md. Batch 4 is active; do
-not mark complete yet.
+**Progress (2026-10-12): IN PROGRESS — local code and focused checks complete; full
+primary review remains.** Read primary D12 5658–7973 in ascending bounded windows;
+read required D12/D13 look-aheads and extra D12 12764–13206 for model/modality
+amendments. Existing provider-usage metering, terminal Bash rendering, durable private
+tool-output R2 storage, named LocalTunnelDO execution, permission-filtered RAG, saga
+coordinator, and local workerd launcher were verified in code. Completed-log folding
+has focused unit tests. Ogg/Opus transcription normalization has real-fixture and
+invalid-input tests; a router Wrangler dry-run bundles it. Saga compensation/failure
+tests use mocked SQL and provider fetch. Router typecheck and all focused tests pass;
+lockfile now passes pinned pnpm 9 frozen install. Speculative Clef/Jev model IDs,
+modality, latency, prices, and FUSE/edge-container persistence claims remain
+unverified (official docs request returned proxy CONNECT HTTP 403), so no
+vendor-specific routing or fabricated persistence guarantee was added. WhatsApp media
+ingress is still text-only. Exact evidence and remaining review are in
+CLOUD-PROGRESS.md; Batch 4 remains active.
 
 5. **Document 12: lines 7974–10197**
 

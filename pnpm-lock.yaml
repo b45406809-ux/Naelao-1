@@ -266,6 +266,19 @@ importers:
         specifier: '*'
         version: 2.1.9(@types/node@26.0.0)
 
+  packages/bridge:
+    dependencies:
+      '@naelao/agent-sdk':
+        specifier: workspace:*
+        version: link:../agent-sdk
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.5
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+
   packages/client-sdk:
     dependencies:
       '@naelao/types':
@@ -625,6 +638,9 @@ importers:
 
   workers/agents:
     dependencies:
+      '@cloudflare/dynamic-workflows':
+        specifier: 0.1.1
+        version: 0.1.1
       '@naelao/agent-sdk':
         specifier: workspace:*
         version: link:../../packages/agent-sdk
@@ -661,13 +677,16 @@ importers:
       hono:
         specifier: ^4.6.0
         version: 4.12.27
+      shell-quote:
+        specifier: ^1.8.1
+        version: 1.12.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
     devDependencies:
       '@cloudflare/workers-types':
         specifier: ^4.20241205.0
         version: 4.20260623.1
-      typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@26.0.0)
@@ -799,6 +818,9 @@ importers:
 
   workers/browser:
     dependencies:
+      '@naelao/agent-sdk':
+        specifier: workspace:*
+        version: link:../../packages/agent-sdk
       '@naelao/http':
         specifier: workspace:*
         version: link:../../packages/http
@@ -1167,6 +1189,9 @@ importers:
       hono:
         specifier: ^4.6.14
         version: 4.12.27
+      ogg-opus-decoder:
+        specifier: 1.7.5
+        version: 1.7.5
     devDependencies:
       '@cloudflare/vitest-pool-workers':
         specifier: '*'
@@ -1382,6 +1407,9 @@ importers:
 
   workers/workflows:
     dependencies:
+      '@naelao/agent-sdk':
+        specifier: workspace:*
+        version: link:../../packages/agent-sdk
       '@naelao/http':
         specifier: workspace:*
         version: link:../../packages/http
@@ -1480,6 +1508,10 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@cloudflare/dynamic-workflows@0.1.1':
+    resolution: {integrity: sha512-sVomQI/cCOHr/Tu/qefnpECctG38ayrePxsUJm8UqllV1HCX9hQ1EW0cFo4HCdU+avQsPVfPiknnlk0oRySlig==}
+    engines: {node: '>=22'}
+
   '@cloudflare/kv-asset-handler@0.3.4':
     resolution: {integrity: sha512-YLPHc8yASwjNkmcDMQMY35yiWjoKAKnhUbPRszBRS0YgH+IXtsMp61j+yTcnCE3oO2DgP0U3iejLC8FTtKDC8Q==}
     engines: {node: '>=16.13'}
@@ -1512,6 +1544,7 @@ packages:
 
   '@cloudflare/vitest-pool-workers@0.5.41':
     resolution: {integrity: sha512-J0uYmOKJgyo/az5nV8QHlR6xQ+HHB6S65tOEutkvUPbuPDbFlBPRT+XHJhSTNNvZGeM1t2qZIzxp0WGmXLtNlQ==}
+    deprecated: '@cloudflare/vitest-pool-workers has been renamed to @cloudflare/vitest-plugin. This package will not receive future updates.'
     peerDependencies:
       '@vitest/runner': 2.0.x - 2.1.x
       '@vitest/snapshot': 2.0.x - 2.1.x
@@ -2029,6 +2062,9 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@eshaz/web-worker@1.2.2':
+    resolution: {integrity: sha512-WxXiHFmD9u/owrzempiDlBB1ZYqiLnm9s6aPc8AlFQalq2tKmqdmMr9GXOupDgzXtqnBipj8Un0gkIm7Sjf8mw==}
+
   '@fastify/busboy@2.1.1':
     resolution: {integrity: sha512-vBZP4NlzfOlerQTnba4aqZoMhE/a9HY7HRqoOPaETQcSQuWEIyZMHGfVu6w9wGtGK5fED5qRs2DteVCjOH60sA==}
     engines: {node: '>=14'}
@@ -2418,6 +2454,9 @@ packages:
   '@types/node-forge@1.3.14':
     resolution: {integrity: sha512-mhVF2BnD4BO+jtOp7z1CdzaK4mbuK0LLQYAvdOLqHTavxFNq4zA1EmYkpnFjP8HOUzedfQkRnp0E2ulSAYSzAw==}
 
+  '@types/node@22.20.5':
+    resolution: {integrity: sha512-U2+DNr+wSjpsTS/wZGYHq7GcwfuSmKiKvoPvK22zwTlRhU91yOniN4qRR5KhIjvif7ysw/dz/hKmfDH0Ris4aA==}
+
   '@types/node@26.0.0':
     resolution: {integrity: sha512-vf2YFi1iY9lHGwNJMs01biZFbKJkrZR1T6/MlzjhJLPdntOHLhTrDSnSVcdtvjihi4VQNlrFRIxLsDBlQpAipA==}
 
@@ -2472,6 +2511,12 @@ packages:
 
   '@vitest/utils@2.1.9':
     resolution: {integrity: sha512-v0psaMSkNJ3A2NMrUEHFRzJtDPFn+/VWZ5WxImB21T9fjucJRmS7xCS3ppEnARb9y11OAzaD+P2Ps+b+BGX5iQ==}
+
+  '@wasm-audio-decoders/common@9.0.7':
+    resolution: {integrity: sha512-WRaUuWSKV7pkttBygml/a6dIEpatq2nnZGFIoPTc5yPLkxL6Wk4YaslPM98OPQvWacvNZ+Py9xROGDtrFBDzag==}
+
+  '@wasm-audio-decoders/opus-ml@0.0.3':
+    resolution: {integrity: sha512-SEeTmk0eb3q5etJA/NHCRWW6BivTx9tqvNTmG0kg2ynuATEQRUZnwQE6Ibvl1BBvqIGHqI57+qyJMWmJBwb5XQ==}
 
   '@xmldom/xmldom@0.8.14':
     resolution: {integrity: sha512-T4EDRUBVZYRldYApjEJiU0e1stYWaRAX7CuSnKzrpwdZKo53zGV8/pqfzV6FfwNl9YThD2OumQYvqtvjvgG7aQ==}
@@ -2704,6 +2749,9 @@ packages:
   cliui@8.0.1:
     resolution: {integrity: sha512-BSeNnyus75C4//NQ9gQt1/csTXyo/8Sb+afLAkzAptFuMsod9HFokGNudZpi/oQV73hnVK+sR+5PVRMd+Dr7YQ==}
     engines: {node: '>=12'}
+
+  codec-parser@2.5.0:
+    resolution: {integrity: sha512-Ru9t80fV8B0ZiixQl8xhMTLru+dzuis/KQld32/x5T/+3LwZb0/YvQdSKytX9JqCnRdiupvAvyYJINKrXieziQ==}
 
   codepage@1.15.0:
     resolution: {integrity: sha512-3g6NUTPd/YtuuGrhMnOMRjFc+LJw/bnMp3+0r/Wcz3IXUuCosKRJvMphm5+Q+bvTVGcJJuRvVLuYba+WojaFaA==}
@@ -3471,6 +3519,9 @@ packages:
     resolution: {integrity: sha512-RSn9F68PjH9HqtltsSnqYC1XXoWe9Bju5+213R98cNGttag9q9yAOTzdbsqvIa7aNm5WffBZFpWYr2aWrklWAw==}
     engines: {node: '>= 6'}
 
+  ogg-opus-decoder@1.7.5:
+    resolution: {integrity: sha512-08WfRbuBBew1H63PqQ3zj2B/J0Eh9ISfNOTi+Dk6vuXmkBGSx8BiPJGOJ470EYeKezTa7/GhOAwHe3XlXwOZMw==}
+
   ohash@1.1.6:
     resolution: {integrity: sha512-TBu7PtV8YkAZn0tSxobKY2n2aAQva936lhRrj6957aDaCf9IEtqsKbgMzXE/F/sjqYOwmrukeORHNLe5glk7Cg==}
 
@@ -3482,6 +3533,9 @@ packages:
 
   option@0.2.4:
     resolution: {integrity: sha512-pkEqbDyl8ou5cpq+VsnQbe/WlEy5qS7xPzMS1U55OCG9KPvwFD46zDbxQIj3egJSFc3D+XhYOPUzz49zQAVy7A==}
+
+  opus-decoder@0.7.12:
+    resolution: {integrity: sha512-6zpHFDi/MhYvMwyYiuJPqJ2lcRkfm7wHblSvT3lUtx/kLvHkunoe/rhTn1dLKxqVGLeQj3gQi7CnR0N2p3RuOg==}
 
   pac-proxy-agent@7.2.0:
     resolution: {integrity: sha512-TEB8ESquiLMc0lV8vcd5Ql/JAKAoyzHFXaStwjkzpOpC5Yv+pIzLfHvjTSdf3vpa2bMiUQrg9i6276yn8666aA==}
@@ -3735,6 +3789,10 @@ packages:
     resolution: {integrity: sha512-haPVm1EkS9pgvHrQ/F3Xy+hgcuMV0Wm9vfIBSiwZ05k+xgb0PkBQpGsAA/oWdDobNaZTH5ppvHtzCFbnSEwHVw==}
     engines: {node: ^18.17.0 || ^20.3.0 || >=21.0.0}
 
+  shell-quote@1.12.0:
+    resolution: {integrity: sha512-PcByqNyT/38F2kDNi006HAMRJaULuBzq/FOsw3qdZvX/GA9W/jamDaRskgHjubHiftXK5sIFxLNkvrXUwcof6Q==}
+    engines: {node: '>= 0.4'}
+
   shellac@0.8.0:
     resolution: {integrity: sha512-M3F2vzYIM7frKOs0+kgs/ITMlXhGpgtqs9HxDPciz3bckzAqqfd4LrBn+CCmSbICyJS+Jz5UDkmkR1jE+m+g+Q==}
 
@@ -3743,6 +3801,9 @@ packages:
 
   simple-swizzle@0.2.4:
     resolution: {integrity: sha512-nAu1WFPQSMNr2Zn9PGSZK9AGn4t/y97lEm+MXTtUDwfP0ksAIX4nO+6ruD9Jwut4C49SB1Ws+fbXsm/yScWOHw==}
+
+  simple-yenc@1.0.4:
+    resolution: {integrity: sha512-5gvxpSd79e9a3V4QDYUqnqxeD4HGlhCakVpb6gMnDD7lexJggSBJRBO5h52y/iJrdXRilX9UCuDaIJhSWm5OWw==}
 
   smart-buffer@4.2.0:
     resolution: {integrity: sha512-94hK0Hh8rPqQl2xXc3HsaBoOXKV20MToPkcXvwbISWLEs+64sBq5kFgn2kJDHb1Pry9yrP0dxrCI9RRci7RXKg==}
@@ -3922,6 +3983,9 @@ packages:
 
   underscore@1.13.8:
     resolution: {integrity: sha512-DXtD3ZtEQzc7M8m4cXotyHR+FAS18C64asBYY5vqZexfYryNNnDc02W4hKg3rdQuqOYas1jkseX0+nZXjTXnvQ==}
+
+  undici-types@6.21.0:
+    resolution: {integrity: sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==}
 
   undici-types@8.3.0:
     resolution: {integrity: sha512-j375ScV60dom+YkPFIfTLcOiPxkN/buHz5GobjLhixFuANaNs3C9l4GmrWqejgXWJ7BbJcFYpTEUkS1Ge8bpZQ==}
@@ -4182,6 +4246,8 @@ snapshots:
 
   '@biomejs/cli-win32-x64@1.9.4':
     optional: true
+
+  '@cloudflare/dynamic-workflows@0.1.1': {}
 
   '@cloudflare/kv-asset-handler@0.3.4':
     dependencies:
@@ -4515,6 +4581,8 @@ snapshots:
   '@esbuild/win32-x64@0.24.2':
     optional: true
 
+  '@eshaz/web-worker@1.2.2': {}
+
   '@fastify/busboy@2.1.1': {}
 
   '@img/sharp-darwin-arm64@0.33.5':
@@ -4798,6 +4866,10 @@ snapshots:
     dependencies:
       '@types/node': 26.0.0
 
+  '@types/node@22.20.5':
+    dependencies:
+      undici-types: 6.21.0
+
   '@types/node@26.0.0':
     dependencies:
       undici-types: 8.3.0
@@ -4863,6 +4935,15 @@ snapshots:
       '@vitest/pretty-format': 2.1.9
       loupe: 3.2.1
       tinyrainbow: 1.2.0
+
+  '@wasm-audio-decoders/common@9.0.7':
+    dependencies:
+      '@eshaz/web-worker': 1.2.2
+      simple-yenc: 1.0.4
+
+  '@wasm-audio-decoders/opus-ml@0.0.3':
+    dependencies:
+      '@wasm-audio-decoders/common': 9.0.7
 
   '@xmldom/xmldom@0.8.14': {}
 
@@ -5059,6 +5140,8 @@ snapshots:
       string-width: 4.2.3
       strip-ansi: 6.0.1
       wrap-ansi: 7.0.0
+
+  codec-parser@2.5.0: {}
 
   codepage@1.15.0: {}
 
@@ -6045,6 +6128,13 @@ snapshots:
 
   object-hash@3.0.0: {}
 
+  ogg-opus-decoder@1.7.5:
+    dependencies:
+      '@wasm-audio-decoders/common': 9.0.7
+      '@wasm-audio-decoders/opus-ml': 0.0.3
+      codec-parser: 2.5.0
+      opus-decoder: 0.7.12
+
   ohash@1.1.6: {}
 
   ohash@2.0.11: {}
@@ -6054,6 +6144,10 @@ snapshots:
       wrappy: 1.0.2
 
   option@0.2.4: {}
+
+  opus-decoder@0.7.12:
+    dependencies:
+      '@wasm-audio-decoders/common': 9.0.7
 
   pac-proxy-agent@7.2.0:
     dependencies:
@@ -6389,6 +6483,8 @@ snapshots:
       '@img/sharp-win32-x64': 0.33.5
     optional: true
 
+  shell-quote@1.12.0: {}
+
   shellac@0.8.0:
     dependencies:
       reghex: 1.0.2
@@ -6399,6 +6495,8 @@ snapshots:
     dependencies:
       is-arrayish: 0.3.4
     optional: true
+
+  simple-yenc@1.0.4: {}
 
   smart-buffer@4.2.0: {}
 
@@ -6615,6 +6713,8 @@ snapshots:
       through: 2.3.8
 
   underscore@1.13.8: {}
+
+  undici-types@6.21.0: {}
 
   undici-types@8.3.0: {}
 

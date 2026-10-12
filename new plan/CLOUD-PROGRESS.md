@@ -430,4 +430,32 @@ Fresh changes: `apps/shell/src/components/TerminalStreamBlock.tsx` now folds
 completed output above an estimated 1,500 tokens while retaining head/tail and
 allowing expansion. `apps/shell/src/lib/terminal-output.ts` owns the estimator/fold
 policy. `tests/unit/terminal-output.test.ts` covers short/long output and structured
-stdout/stderr normalization. Verification in progress; do not mark B4 complete.
+stdout/stderr normalization. Existing `workers/agents/src/script-engine/tool-output.ts`
+already encrypts and stores full oversized output privately in R2, registers expiry,
+and returns a bounded preview with a Read path; the shell's fold UI is presentation
+only and does not replace that durable path.
+
+Additional B4 changes: router transcription now accepts real Ogg/Opus audio by
+decoding it to mono 16kHz PCM WAV before Workers AI Whisper. The request remains
+bounded to 10 MiB compressed input and 180 seconds decoded audio. `ogg-opus-decoder`
+runtime supports the 16kHz constructor option and async decode; its published types
+misstate both, so the narrow adapter casts are documented and covered by a real
+ffmpeg-generated Ogg fixture test plus invalid-container test. This does not add
+WhatsApp media download/dispatch; the current channel adapter still does not handle
+incoming non-text media. `TransactionCoordinatorDO.test.ts` adds two mocked-boundary
+failure-path tests: reverse-order compensation and persistent `failed` status when a
+compensation returns 503. These tests verify coordinator behavior, not real provider
+side effects.
+
+The pinned pnpm 9 frozen install initially failed because the committed lock omitted
+manifest importers/dependencies (including `packages/bridge`); regenerated and
+validated `pnpm-lock.yaml` with `corepack pnpm install --lockfile-only --no-frozen-lockfile`
+followed by `CI=true corepack pnpm install --frozen-lockfile --ignore-scripts`.
+Fresh checks: router typecheck; router tests (2 files / 4 tests, including real Opus
+decode); Spaces transaction coordinator tests (2 tests, mocked SQL and provider
+fetch); Wrangler router deploy dry-run (bundle 4,355.65 KiB, no upload); `git diff
+--check`. No live Cloudflare services called. The broader B4 verification matrix
+cannot be honestly claimed: proposed FUSE/edge-container persistence tiers and exact
+provider behavior are not present or verified here. Keep B4 in progress until all
+repository-implementable primary requirements are reviewed and either implemented or
+recorded precisely as an external prerequisite.
