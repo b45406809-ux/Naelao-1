@@ -96,6 +96,34 @@ describe("eval worker — suite creation + text mode (unchanged behavior)", () =
   });
 });
 
+describe("eval worker — synthetic fixture generation", () => {
+  it("returns bounded model-generated fixtures for human review without creating a suite", async () => {
+    const db = makeDb();
+    const cases = Array.from({ length: 2 }, (_, i) => ({ input: `task ${i}`, expected_output: `answer ${i}`, criteria: "accurate" }));
+    fetchMock.mockImplementation(async () => new Response(JSON.stringify({
+      content: [{ type: "text", text: JSON.stringify(cases) }],
+    }), { status: 200 }));
+    const res = await req("/evals/fixtures/generate", { method: "POST", body: JSON.stringify({ description: "demo", count: 2 }) }, makeEnv(db));
+    expect(res.status).toBe(200);
+    const body = await res.json<{ cases: typeof cases; requires_review: boolean; count: number }>();
+    expect(body.cases).toEqual(cases);
+    expect(body.count).toBe(2);
+    expect(body.requires_review).toBe(true);
+    expect((db.db.prepare("SELECT COUNT(*) AS n FROM eval_suites").all() as Array<{ n: number }>)[0]?.n).toBe(0);
+  });
+
+  it("rejects invalid bounds and malformed model output", async () => {
+    const db = makeDb();
+    const env = makeEnv(db);
+    const invalid = await req("/evals/fixtures/generate", { method: "POST", body: JSON.stringify({ description: "demo", count: 51 }) }, env);
+    expect(invalid.status).toBe(400);
+    fetchMock.mockImplementation(async () => new Response(JSON.stringify({ content: [{ type: "text", text: "[]" }] }), { status: 200 }));
+    const malformed = await req("/evals/fixtures/generate", { method: "POST", body: JSON.stringify({ description: "demo", count: 1 }) }, env);
+    expect(malformed.status).toBe(502);
+    expect((await malformed.json<{ error_code: string }>()).error_code).toBe("invalid_model_output");
+  });
+});
+
 describe("eval worker — agent mode dispatches a REAL /agent/run per case", () => {
   it("requires session_id for mode=agent", async () => {
     const db = makeDb();

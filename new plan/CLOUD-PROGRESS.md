@@ -10,7 +10,7 @@ Branch: `Mcbt5s-Backup-2`. One sequential implementation worker. No live deploy.
 | 3 | PARTIAL_NEEDS_PLATFORM — independent local implementation and checks complete; optional escrow and shared identity provider remain gated |
 | 4 | PARTIAL_NEEDS_PLATFORM — local suites and audio ingress pass; Worker DO-to-Container integration, live AI/media acceptance and external saga effects remain unproven |
 | 5 | PARTIAL_NEEDS_PLATFORM — local model routing/prewarm work and checks complete; deployed binding/model/runtime behavior remains unproven |
-| 6 | UNASSESSED |
+| 6 | PARTIAL_NEEDS_PLATFORM — local implementation and checks complete; deployed Gateway/Loader/Workflow behavior remains unproven |
 | 7 | UNASSESSED |
 | 8 | UNASSESSED |
 | 9 | UNASSESSED |
@@ -45,6 +45,38 @@ Branch: `Mcbt5s-Backup-2`. One sequential implementation worker. No live deploy.
   are native billing while customer commerce stays userland (D12 12213–12347).
   Provider-facing production claims require current vendor evidence. Workspace
   residency/egress gates remain authoritative; no cloud fallback for local-only work.
+
+- Batch 6: primary D12 10198–11776, read in ascending bounded windows. Required
+  look-aheads D12 11777–12347, 12348–12763, 12764–13344 and D13 1–236,
+  735–1398. Before design, searched unread D12/D13 tails for evaluation,
+  conformance, templates, token ledger, terminal UX, ingress and worker constraints;
+  read matching contexts D12 11786–11815, 11986, 12102, 12225–12347,
+  12477–12763, 13340–13447, 13642–13663 and D13 88–110, 149–175,
+  197–236, 724–727, 761–762, 964–1111, 1324–1374, 1387–1394. D12 12764–13344
+  was read for Batch 5 and reused without rereading; its range is in that ledger.
+  Later constraints make state-delta conformance the certification evidence;
+  generated prose cases remain reviewable fixtures only. Rejected an illustrative
+  region-prefixed endpoint and unsupported Jev cancellation/latency claims. The
+  D12 13642–13663 proprietary cloud eval endpoint has no verified authenticated
+  contract, so no upload/deployed dependency was invented.
+- Batch 6 changes: dashboard Eval Suite Run now requires a chosen existing session
+  and submits `mode: agent`, ensuring its cases exercise real `/agent/run` plus
+  trace checks rather than silently judging raw input text. Added bounded,
+  tenant-authenticated `POST /evals/fixtures/generate` through the existing AI
+  Gateway. It returns exactly the requested schema-validated fictional cases
+  (default 40, hard maximum 50), sets `requires_review`, and neither stores nor
+  runs/certifies them. The dashboard can populate its draft JSON for review.
+  State-delta conformance runner/workflow, isolated Worker Loader execution, trace
+  checks, and tenant/project/role barriers already existed and were preserved.
+  Fixed an adjacent stale Spaces market-radar provider return annotation so Clef's
+  actual SDK provider union typechecks.
+- Batch 6 fresh evidence: targeted eval/trace/conformance suite 4 files / 55 tests
+  passed; Dashboard typecheck passed; Eval Worker and Spaces typechecks passed;
+  Eval Worker Wrangler dry-run bundled 117.89 KiB / 29.24 KiB gzip with D1 and
+  Agents service bindings; `git diff --check` passed. The generator model response,
+  D1, Worker Loader, Workflow, and real agent dispatch were mocked/local test
+  behaviors, not live Cloudflare integration. No deployment or live model request.
+  No historical plan files used; original TXT requirements unchanged.
 
 ## Batch 1 and 2 coverage
 
@@ -199,10 +231,8 @@ Branch: `Mcbt5s-Backup-2`. One sequential implementation worker. No live deploy.
 ## Next action / checkpoints
 
 Batch 3 independent local work and checks are complete and pushed (`7220466`, followed by
-test-harness correction `d7f8362`). Batch 4's local work is complete; retain its
-runtime/provider gates above. Batch 5's independent local work and checks are complete;
-retain its live/runtime gates and continue prompt 6. Commit/push batch-scoped changes after
-each batch without combining later-batch work. Continue prompts 6–10 sequentially,
-recording evidence after each. Only after batch 10, make one coverage pass over batches
-1–10. Human-only prerequisites should be listed after their independent local work is
-complete. Current Batch 4 work is uncommitted on `Mcbt5s-Backup-2`.
+test-harness correction `d7f8362`). Batches 4 and 5 local work/checks are complete; retain
+their runtime/provider gates above. Batch 6 local work/checks are complete; commit and push
+its scoped changes, then continue prompts 7–10 sequentially. Only after batch 10, make one
+coverage pass over batches 1–10. Human-only prerequisites should be listed after their
+independent local work is complete. Current branch is `Mcbt5s-Backup-2`.

@@ -37,6 +37,12 @@ export default function EvalPage() {
   const [running, setRunning] = useState<string | null>(null);
   const [showNew, setShowNew] = useState(false);
   const [form, setForm] = useState({ name: "", description: "", test_cases: "[]" });
+  const [sessionId, setSessionId] = useState("");
+  const [runMessage, setRunMessage] = useState("");
+  const [runError, setRunError] = useState("");
+  const [generatingFixtures, setGeneratingFixtures] = useState(false);
+  const [fixtureMessage, setFixtureMessage] = useState("");
+  const [fixtureError, setFixtureError] = useState("");
 
   useEffect(() => {
     void loadSuites();
@@ -59,11 +65,24 @@ export default function EvalPage() {
   }
 
   async function runEval(suiteId: string) {
+    if (!sessionId.trim()) {
+      setRunError("Enter an existing agent session ID to run the suite against the actual agent.");
+      setRunMessage("");
+      return;
+    }
     setRunning(suiteId);
+    setRunError("");
+    setRunMessage("");
     try {
-      await apiFetch(`/v1/evals/${suiteId}/run`, { method: "POST" });
+      const result = await apiFetch<{ run_id: string; mode: string; case_count: number; avg_score: number; agent_errors: number; judge_errors: number }>(
+        `/v1/evals/${suiteId}/run`,
+        { method: "POST", body: JSON.stringify({ mode: "agent", session_id: sessionId.trim() }) },
+      );
+      setRunMessage(`Agent run ${result.run_id}: ${result.case_count} cases, average score ${result.avg_score.toFixed(2)}, ${result.agent_errors} agent errors, ${result.judge_errors} judge errors.`);
       await loadSuites();
-    } catch { /* ignore */ } finally { setRunning(null); }
+    } catch (error) {
+      setRunError(error instanceof Error ? error.message : "Agent evaluation failed.");
+    } finally { setRunning(null); }
   }
 
   async function createSuite() {
@@ -79,16 +98,41 @@ export default function EvalPage() {
     } catch { /* ignore */ }
   }
 
+  async function generateFixtures() {
+    setGeneratingFixtures(true);
+    setFixtureMessage("");
+    setFixtureError("");
+    try {
+      const result = await apiFetch<{ cases: Array<{ input: string; expected_output: string; criteria: string; tags?: string[] }>; count: number; requires_review: boolean }>(
+        "/v1/evals/fixtures/generate",
+        { method: "POST", body: JSON.stringify({ description: form.description, count: 40 }) },
+      );
+      setForm(current => ({ ...current, test_cases: JSON.stringify(result.cases, null, 2) }));
+      setFixtureMessage(`Generated ${result.count} synthetic cases. Review and edit them before creating the suite; generation does not run or certify them.`);
+    } catch (error) {
+      setFixtureError(error instanceof Error ? error.message : "Fixture generation failed.");
+    } finally { setGeneratingFixtures(false); }
+  }
+
   return (
     <div className="max-w-5xl mx-auto">
       <div className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Eval Suites</h1>
-          <p className="text-gray-500 mt-1">LLM-judged evaluation runs for this Space</p>
+          <p className="text-gray-500 mt-1">Run evaluation cases against a real agent session and inspect trace-backed checks.</p>
         </div>
         <button onClick={() => setShowNew(true)} className="px-4 py-2 bg-brand-600 text-white text-sm font-semibold rounded-lg hover:bg-brand-700">
           + New Suite
         </button>
+      </div>
+
+      <div className="mb-4 rounded-lg border border-gray-200 bg-white p-4">
+        <label htmlFor="eval-session-id" className="block text-sm font-medium text-gray-700">Agent session ID</label>
+        <p className="mb-2 text-xs text-gray-500">Choose an existing session in this Space. The suite sends each case as a goal to the agent.</p>
+        <input id="eval-session-id" value={sessionId} onChange={event => setSessionId(event.currentTarget.value)}
+          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-mono" placeholder="session_…" />
+        {runMessage && <p role="status" className="mt-2 text-sm text-green-700">{runMessage}</p>}
+        {runError && <p role="alert" className="mt-2 text-sm text-red-700">{runError}</p>}
       </div>
 
       {showNew && (
@@ -107,6 +151,12 @@ export default function EvalPage() {
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Test Cases (JSON array)</label>
+              <button type="button" disabled={generatingFixtures || !form.description.trim()} onClick={() => void generateFixtures()}
+                className="mb-2 rounded border border-gray-300 px-3 py-1.5 text-xs text-gray-700 disabled:opacity-50">
+                {generatingFixtures ? "Generating…" : "Generate 40 synthetic cases"}
+              </button>
+              {fixtureMessage && <p role="status" className="mb-2 text-xs text-green-700">{fixtureMessage}</p>}
+              {fixtureError && <p role="alert" className="mb-2 text-xs text-red-700">{fixtureError}</p>}
               <textarea rows={6} value={form.test_cases} onChange={(e) => setForm({ ...form, test_cases: e.target.value })}
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-500"
                 placeholder='[{"input": "What is 2+2?", "expected": "4"}]' />
@@ -142,7 +192,7 @@ export default function EvalPage() {
                   </button>
                   <button
                     onClick={() => void runEval(suite.id)}
-                    disabled={running === suite.id || suite.status === "running"}
+                    disabled={running === suite.id || suite.status === "running" || !sessionId.trim()}
                     className="px-3 py-1.5 bg-brand-600 text-white text-xs font-semibold rounded-lg hover:bg-brand-700 disabled:opacity-50"
                   >
                     {running === suite.id ? "Running…" : "Run"}

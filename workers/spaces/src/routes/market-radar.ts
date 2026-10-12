@@ -1,4 +1,4 @@
-import { deterministicScore, SystemOneDecisionClient, type FastDecisionGateway, type SpaceBlueprint } from "@naelao/agent-sdk";
+import { deterministicScore, SystemOneDecisionClient, type FastDecisionGateway, type FastDecisionProvider, type SpaceBlueprint } from "@naelao/agent-sdk";
 import { getDOName } from "@naelao/crypto";
 import type { Context, Hono } from "hono";
 import { createBusinessForEndUser } from "../business-create.js";
@@ -28,7 +28,7 @@ export function scoreMarketSignal(
 export async function scoreMarketSignalWithSentry(
   signal: Pick<MarketSignal, "search_surge_pct" | "saturation_index">,
   gateway?: FastDecisionGateway,
-): Promise<{ score: number; provider: "deterministic" | "jev" | "laya" }> {
+): Promise<{ score: number; provider: FastDecisionProvider }> {
   const fallback = scoreMarketSignal(signal);
   if (!gateway) return { score: fallback, provider: "deterministic" };
   try {

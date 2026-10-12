@@ -57,6 +57,8 @@ interface Env {
    *  hardcoded `claude-haiku-4-5-20251001` does not exist on every account's AI Gateway (it does
    *  not on this one — CLAUDE.md item 68), which made every judged case fail. */
   EVAL_JUDGE_MODEL?: string;
+  /** Optional model for synthetic test cases. */
+  EVAL_FIXTURE_MODEL?: string;
 }
 
 interface EvalCase {
@@ -140,6 +142,7 @@ interface JudgedCase {
 }
 
 const DEFAULT_JUDGE_MODEL = "claude-haiku-4-5-20251001";
+const DEFAULT_FIXTURE_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
 /** Score (0-10) at or above which a case counts as passed in eval_runs' pass/fail tallies.
  *  The continuous score stays the primary signal — this only feeds the coarse counters. */
@@ -161,6 +164,23 @@ function extractJsonObject(text: string): string {
   const start = raw.indexOf("{");
   const end = raw.lastIndexOf("}");
   return start !== -1 && end > start ? raw.slice(start, end + 1) : raw;
+}
+
+function extractJsonArray(text: string): string {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const raw = fenced?.[1] ?? text;
+  const start = raw.indexOf("[");
+  const end = raw.lastIndexOf("]");
+  return start !== -1 && end > start ? raw.slice(start, end + 1) : raw;
+}
+
+function validGeneratedCases(value: unknown, count: number): value is Array<{ input: string; expected_output: string; criteria: string; tags?: string[] }> {
+  if (!Array.isArray(value) || value.length !== count) return false;
+  return value.every((item) => item && typeof item === "object"
+    && typeof item.input === "string" && item.input.trim().length > 0 && item.input.length <= 2_000
+    && typeof item.expected_output === "string" && item.expected_output.trim().length > 0 && item.expected_output.length <= 2_000
+    && typeof item.criteria === "string" && item.criteria.trim().length > 0 && item.criteria.length <= 1_000
+    && (item.tags === undefined || (Array.isArray(item.tags) && item.tags.length <= 8 && item.tags.every((tag: unknown) => typeof tag === "string" && tag.length <= 48))));
 }
 
 function validateEnv(env: Env): void {
@@ -347,6 +367,57 @@ async function runAgentForCase(
 const app = new Hono<{ Bindings: Env }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
+
+// Generate reviewable synthetic cases. This route never saves, runs, or certifies the output;
+// generated prose cannot stand in for trace checks or state-delta conformance.
+app.post("/evals/fixtures/generate", async (c) => {
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+
+  let body: { description?: unknown; count?: unknown };
+  try { body = await c.req.json(); }
+  catch { return c.json({ error_code: "bad_request", message: "Expected a JSON request body" }, 400); }
+  const description = typeof body.description === "string" ? body.description.trim() : "";
+  const count = body.count === undefined ? 40 : body.count;
+  if (!description || description.length > 4_000 || !Number.isInteger(count) || (count as number) < 1 || (count as number) > 50) {
+    return c.json({ error_code: "bad_request", message: "description (1–4000 characters) and count (1–50) are required" }, 400);
+  }
+  const gateway = gatewayConfig(c.env);
+  if (!gateway || !canAuthenticateLlm(gateway, c.env.EVAL_LLM_KEY ?? "")) {
+    return c.json({ error_code: "unavailable", message: "Synthetic fixture generation requires a configured AI Gateway" }, 503);
+  }
+
+  try {
+    const response = await fetch(universalGatewayUrl(gateway), {
+      method: "POST",
+      headers: universalGatewayHeaders(gateway),
+      body: buildUniversalBody({
+        apiKey: c.env.EVAL_LLM_KEY ?? "",
+        ...(c.env.CF_API_TOKEN ? { cfApiToken: c.env.CF_API_TOKEN } : {}),
+        gatewayOpts: gateway,
+        ctx: { spaceId: "eval-fixture-generator", skipCache: true },
+        query: {
+          model: c.env.EVAL_FIXTURE_MODEL ?? DEFAULT_FIXTURE_MODEL,
+          max_tokens: 8_000,
+          system: "Generate realistic fictional evaluation cases. Return only a JSON array. Do not include real personal data, credentials, or private customer information.",
+          messages: [{ role: "user", content: `Create exactly ${count} varied synthetic test cases for this evaluation domain. Include routine, ambiguous, failure, and safety-boundary cases where appropriate. Each item must contain non-empty strings input, expected_output, and criteria, and may include a short tags array. Do not include trace_checks because those require actual system instrumentation. Domain: ${description}` }],
+        },
+      }),
+      signal: AbortSignal.timeout(45_000),
+    });
+    if (!response.ok) return c.json({ error_code: "generation_failed", message: `Fixture model gateway returned HTTP ${response.status}` }, 502);
+    const { text } = normalizeUniversalResponse(await response.json());
+    let generated: unknown;
+    try { generated = JSON.parse(extractJsonArray(text)); }
+    catch { return c.json({ error_code: "invalid_model_output", message: "Fixture model did not return a JSON array" }, 502); }
+    if (!validGeneratedCases(generated, count as number)) {
+      return c.json({ error_code: "invalid_model_output", message: "Fixture model output failed schema validation" }, 502);
+    }
+    return c.json({ cases: generated, count: generated.length, model: c.env.EVAL_FIXTURE_MODEL ?? DEFAULT_FIXTURE_MODEL, requires_review: true });
+  } catch {
+    return c.json({ error_code: "generation_failed", message: "Synthetic fixture generation failed" }, 502);
+  }
+});
 
 // Routes are registered WITHOUT the /v1 prefix, matching every other worker: naelao-router mounts
 // the public API at /v1 and proxyTo strips that prefix before forwarding. This worker previously
