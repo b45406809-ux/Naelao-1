@@ -26,8 +26,8 @@ function harness() {
               if (query.startsWith("INSERT INTO marketplace_listings")) {
                 listing = {
                   id: values[0], space_type_id: values[1], tenant_id: values[2],
-                  pricing_model: values[8], price_cents: values[9], plan_gated_features_json: values[10],
-                  conformance_artifact_json: values[11], conformance_certificate_json: values[12],
+                  pricing_model: values[9], price_cents: values[10], plan_gated_features_json: values[11],
+                  conformance_artifact_json: values[12], conformance_certificate_json: values[13],
                 };
               } else if (query.startsWith("UPDATE marketplace_listings")) updates++;
               return { success: true };
