@@ -18,6 +18,39 @@ export interface ProjectTemplate {
   systemPrompt: string;
   tasks: readonly BlueprintTask[];
   starterFiles: readonly BlueprintStarterFile[];
+  /** Small synthetic rows stored in the space's SQLite for an install-time audit demo. */
+  demoFixtures?: readonly DemoFixtureRow[];
+  /** Workspace JSON artifact the welcome action asks the project agent to audit. */
+  sampleAuditPath?: string;
+}
+
+export interface DemoFixtureRow {
+  id: string;
+  kind: string;
+  data: Record<string, string | number | boolean | null>;
+}
+
+/** Validate declarative rows before storing them in the project-owned demo table. */
+export function validateDemoFixtureRows(value: unknown): DemoFixtureRow[] | undefined {
+  if (!Array.isArray(value) || value.length > 100) return undefined;
+  const ids = new Set<string>();
+  const rows: DemoFixtureRow[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+    const row = raw as Record<string, unknown>;
+    if (typeof row.id !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(row.id) || ids.has(row.id) ||
+        typeof row.kind !== "string" || !/^[a-z][a-z0-9._-]{0,63}$/.test(row.kind) ||
+        !row.data || typeof row.data !== "object" || Array.isArray(row.data)) return undefined;
+    let json: string;
+    try { json = JSON.stringify(row.data); } catch { return undefined; }
+    if (json.length > 16_384) return undefined;
+    const data = JSON.parse(json) as Record<string, unknown>;
+    if (Object.keys(data).some((key) => key === "__proto__" || key === "constructor" || key === "prototype")) return undefined;
+    if (Object.values(data).some((item) => item !== null && !["string", "number", "boolean"].includes(typeof item))) return undefined;
+    ids.add(row.id);
+    rows.push({ id: row.id, kind: row.kind, data: data as DemoFixtureRow["data"] });
+  }
+  return rows;
 }
 
 export interface BlueprintHydrationSeed {
@@ -29,6 +62,7 @@ export interface BlueprintHydrationSeed {
 
 export function createProjectHydrationSeed(definition: ProjectTemplate, name = definition.name): BlueprintHydrationSeed {
   const sample = definition.starterFiles[0];
+  const auditPath = definition.sampleAuditPath ?? sample?.path;
   return {
     version: 1,
     title: `Welcome to ${name}`,
@@ -36,7 +70,7 @@ export function createProjectHydrationSeed(definition: ProjectTemplate, name = d
     actions: [
       ...(sample ? [
       { id: "open-starter", label: "Open starter file", kind: "open_file", path: sample.path },
-      { id: "review-starter", label: "Ask the assistant to review it", kind: "review_file", path: sample.path },
+      { id: "review-starter", label: definition.sampleAuditPath ? "Run sample audit" : "Ask the assistant to review it", kind: "review_file", path: auditPath! },
       ] as const : []),
       { id: "connect-whatsapp", label: "Connect WhatsApp", kind: "open_channel_settings", channel: "whatsapp" },
     ],
@@ -76,7 +110,20 @@ export const PROJECT_TEMPLATES: Readonly<Record<ProjectTemplateId, ProjectTempla
       { id: "redline", title: "Prepare a tracked redline", dependencies: ["risk-review"] },
       { id: "approval", title: "Request human approval of final language", dependencies: ["redline"] },
     ],
-    starterFiles: [{ path: "deliverables/starter-nda.md", content: "# Mutual Non-Disclosure Agreement\n\n**Parties:** [Party A] and [Party B]\n\n## Confidential Information\nEach party will protect non-public information disclosed for the Purpose.\n\n## Term\nThese obligations continue for three years after disclosure.\n" }],
+    sampleAuditPath: "demo/nda-audit-fixtures.json",
+    starterFiles: [
+      { path: "deliverables/starter-nda.md", content: "# Synthetic Mutual Non-Disclosure Agreement\n\nThis is sample text for demonstration only. It is not legal advice and must be reviewed by a qualified professional before any real use.\n\n**Parties:** [Party A] and [Party B]\n\n## Confidential Information\nEach party will protect non-public information disclosed solely to evaluate the stated Purpose.\n\n## Term\nThese obligations continue for three years after disclosure.\n" },
+      { path: "demo/nda-audit-fixtures.json", content: JSON.stringify({ fixture_set: "nda-demo-v1", synthetic: true, cases: [
+        { id: "purpose-present", clause: "The parties may use the information solely to evaluate the proposed transaction.", expected: ["purpose_present"] },
+        { id: "purpose-omitted", clause: "The recipient will protect confidential information.", expected: ["purpose_missing"] },
+        { id: "synthetic-party", clause: "[Party A] and [Party B] are placeholders, not real entities.", expected: ["placeholder_party"] },
+      ] }, null, 2) + "\n" },
+    ],
+    demoFixtures: [
+      { id: "purpose-present", kind: "nda_clause", data: { synthetic: true, clause: "The parties may use the information solely to evaluate the proposed transaction.", expected: "purpose_present" } },
+      { id: "purpose-omitted", kind: "nda_clause", data: { synthetic: true, clause: "The recipient will protect confidential information.", expected: "purpose_missing" } },
+      { id: "synthetic-party", kind: "nda_clause", data: { synthetic: true, clause: "[Party A] and [Party B] are placeholders, not real entities.", expected: "placeholder_party" } },
+    ],
   }),
   tpl_proj_financial_valuation: template({
     id: "tpl_proj_financial_valuation", name: "Financial Valuation", kind: "finance_grid", canvasLayout: "DualPane.DataGrid", templateMode: "autonomous_operator",
@@ -128,5 +175,5 @@ export function projectTemplateAsBlueprintProject(definition: ProjectTemplate, n
   return { name, kind: definition.kind, templateMode: definition.templateMode, viewports: { ...definition.viewport },
     systemPrompt: definition.systemPrompt, initialTasks: definition.tasks.map(task => ({ ...task, dependencies: [...(task.dependencies ?? [])] })),
     starterFiles: definition.starterFiles.map(file => ({ ...file })),
-    configuration: { hydrationSeed: createProjectHydrationSeed(definition, name) } };
+    configuration: { hydrationSeed: createProjectHydrationSeed(definition, name), ...(definition.demoFixtures ? { demoFixtures: definition.demoFixtures.map(row => ({ ...row, data: { ...row.data } })) } : {}) } };
 }

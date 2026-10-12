@@ -22,7 +22,7 @@ import type {
 } from "@naelao/events";
 import { broadcastSpaceEvent, mintInternalToken } from "@naelao/http";
 import type { MessageRole } from "@naelao/types";
-import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateExtensionManifest, scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
+import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
 import { instantiateBlueprint as compileBlueprint } from "@naelao/agent-sdk";
 import type { DisplayMode, ExtensionManifest, SpaceBlueprint, TemplateMode } from "@naelao/agent-sdk";
 import { promoteCockpit } from "@naelao/agent-sdk";
@@ -1693,7 +1693,26 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS machine_enrollments_expiry ON machine_enrollments(expires_at);
     `,
   },
+  {
+    version: 65,
+    description: "structured synthetic fixture rows for project hydration audits",
+    up: `
+      CREATE TABLE IF NOT EXISTS project_demo_fixtures (
+        project_id TEXT NOT NULL,
+        fixture_id TEXT NOT NULL,
+        fixture_kind TEXT NOT NULL,
+        data_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (project_id, fixture_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_project_demo_fixtures_kind
+        ON project_demo_fixtures(project_id, fixture_kind, fixture_id);
+    `,
+  },
 ];
+
+/** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
+export const SPACE_DO_MIGRATIONS = MIGRATIONS;
 
 export const PROVENANCE_GENESIS_HASH = "0".repeat(64);
 
@@ -1705,6 +1724,8 @@ export async function provenanceHmac(secret: string, fields: readonly string[]):
 
 export interface SpaceDOEnv {
   PLATFORM_SECRET: string;
+  /** Project starter artifacts are mirrored into the workspace bucket at install time. */
+  SCRIPTS_R2?: R2Bucket;
   ACTION_RECEIPT_HMAC_KEY?: string;
   ACTION_RECEIPT_HMAC_KEY_PREV?: string;
   ACTION_RECEIPT_KEY_VERSION?: string;
@@ -2762,44 +2783,92 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const compiled = compileBlueprint(blueprint, targetSpaceId);
     const ids = new Map<string, string>();
     for (const project of compiled.projects) ids.set(project.id ?? project.name, crypto.randomUUID());
-    let taskCount = 0;
-    let fileCount = 0;
+    const preparedFiles: Array<{ projectId: string; path: string; content: string; contentHash: string; sizeBytes: number }> = [];
+    const fixturesByProject = new Map<string, ReturnType<typeof validateDemoFixtureRows>>();
+    let totalSeedBytes = 0;
     for (const project of compiled.projects) {
       const projectId = ids.get(project.id ?? project.name)!;
-      execute(this.ctx.storage.sql as never,
-        `INSERT INTO projects (id, space_id, name, description, status, kind, created_at, template_mode, viewport_config)
-         VALUES (?, ?, ?, '', 'active', ?, ?, ?, ?)`,
-        projectId, targetSpaceId, project.name, project.kind, new Date().toISOString(), project.templateMode, JSON.stringify(project.viewports));
-      const hydrationSeed = validateProjectHydrationSeed(project.configuration?.hydrationSeed, new Set(project.starterFiles.map(file => file.path)));
-      if (hydrationSeed) execute(this.ctx.storage.sql as never,
-        "UPDATE projects SET channel_config = ? WHERE id = ? AND space_id = ?", JSON.stringify({ hydration_seed: hydrationSeed }), projectId, targetSpaceId);
-      const ceiling = project.configuration?.executionCeiling;
-      if (typeof ceiling === "number" && ceiling >= 1 && ceiling <= 6) execute(this.ctx.storage.sql as never, "UPDATE projects SET execution_ceiling = ? WHERE id = ?", ceiling, projectId);
-      if (project.systemPrompt) {
-        const agentId = crypto.randomUUID();
-        execute(this.ctx.storage.sql as never, "INSERT INTO agent_definitions (id, space_id, name, config_json) VALUES (?, ?, ?, ?)", agentId, targetSpaceId, `${project.name} Agent`, JSON.stringify({ system_prompt: project.systemPrompt }));
-        execute(this.ctx.storage.sql as never, "UPDATE projects SET default_agent_id = ? WHERE id = ?", agentId, projectId);
-      }
-      const taskIds = new Map(project.initialTasks.map((task) => [task.id ?? task.title, crypto.randomUUID()]));
-      for (const task of project.initialTasks) {
-        execute(this.ctx.storage.sql as never,
-          "INSERT INTO tasks (id, space_id, project_id, title, status, dependencies, assigned_agent, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-          taskIds.get(task.id ?? task.title)!, targetSpaceId, projectId, task.title, task.status ?? "pending",
-          JSON.stringify((task.dependencies ?? []).map((dependency) => taskIds.get(dependency) ?? dependency)), task.assignedAgent ?? null, new Date().toISOString(), new Date().toISOString());
-        taskCount++;
+      if (project.configuration?.demoFixtures !== undefined) {
+        const fixtures = validateDemoFixtureRows(project.configuration.demoFixtures);
+        if (!fixtures) throw new Error("invalid_demo_fixture_rows");
+        fixturesByProject.set(projectId, fixtures);
       }
       for (const file of project.starterFiles) {
-        const hash = await sha256Hex(file.content);
-        execute(this.ctx.storage.sql as never,
-          "INSERT INTO workspace_files (project_id, path, content, content_hash, size_bytes, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-          projectId, file.path, file.content, hash, new TextEncoder().encode(file.content).byteLength, new Date().toISOString());
-        fileCount++;
+        const path = file.path.replace(/^\/+/, "");
+        if (!path || path.split("/").some((segment) => !segment || segment === "." || segment === "..")) throw new Error("invalid_starter_artifact_path");
+        const sizeBytes = new TextEncoder().encode(file.content).byteLength;
+        totalSeedBytes += sizeBytes;
+        if (sizeBytes > 2 * 1024 * 1024 || totalSeedBytes > 10 * 1024 * 1024) throw new Error("starter_artifact_size_limit");
+        preparedFiles.push({ projectId, path, content: file.content, contentHash: await sha256Hex(file.content), sizeBytes });
       }
     }
-    return { projectIds: [...ids.values()], taskCount, fileCount };
+
+    // Upload new-project artifacts before making the projects visible in SQLite. If any object
+    // write fails, clean up the staged keys so retries do not leave orphaned sample files.
+    const stagedKeys: string[] = [];
+    try {
+      for (const file of preparedFiles) {
+        const key = `spaces/${targetSpaceId}/projects/${file.projectId}/workspace/${file.path}`;
+        if (this.env.SCRIPTS_R2) {
+          const extension = file.path.split(".").pop()?.toLowerCase();
+          const contentType = extension === "json" ? "application/json; charset=utf-8"
+            : extension === "csv" ? "text/csv; charset=utf-8"
+              : "text/plain; charset=utf-8";
+          await this.env.SCRIPTS_R2.put(key, file.content, {
+            httpMetadata: { contentType },
+            customMetadata: { seeded: "true", blueprintId: compiled.id },
+          });
+          stagedKeys.push(key);
+        }
+      }
+      let taskCount = 0;
+      this.ctx.storage.transactionSync(() => {
+        for (const project of compiled.projects) {
+          const projectId = ids.get(project.id ?? project.name)!;
+          execute(this.ctx.storage.sql as never,
+            `INSERT INTO projects (id, space_id, name, description, status, kind, created_at, template_mode, viewport_config)
+             VALUES (?, ?, ?, '', 'active', ?, ?, ?, ?)`,
+            projectId, targetSpaceId, project.name, project.kind, new Date().toISOString(), project.templateMode, JSON.stringify(project.viewports));
+          const hydrationSeed = validateProjectHydrationSeed(project.configuration?.hydrationSeed, new Set(project.starterFiles.map(file => file.path)));
+          if (hydrationSeed) execute(this.ctx.storage.sql as never,
+            "UPDATE projects SET channel_config = ? WHERE id = ? AND space_id = ?", JSON.stringify({ hydration_seed: hydrationSeed }), projectId, targetSpaceId);
+          const ceiling = project.configuration?.executionCeiling;
+          if (typeof ceiling === "number" && ceiling >= 1 && ceiling <= 6) execute(this.ctx.storage.sql as never, "UPDATE projects SET execution_ceiling = ? WHERE id = ?", ceiling, projectId);
+          if (project.systemPrompt) {
+            const agentId = crypto.randomUUID();
+            execute(this.ctx.storage.sql as never, "INSERT INTO agent_definitions (id, space_id, name, config_json) VALUES (?, ?, ?, ?)", agentId, targetSpaceId, `${project.name} Agent`, JSON.stringify({ system_prompt: project.systemPrompt }));
+            execute(this.ctx.storage.sql as never, "UPDATE projects SET default_agent_id = ? WHERE id = ?", agentId, projectId);
+          }
+          const taskIds = new Map(project.initialTasks.map((task) => [task.id ?? task.title, crypto.randomUUID()]));
+          for (const task of project.initialTasks) {
+            execute(this.ctx.storage.sql as never,
+              "INSERT INTO tasks (id, space_id, project_id, title, status, dependencies, assigned_agent, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              taskIds.get(task.id ?? task.title)!, targetSpaceId, projectId, task.title, task.status ?? "pending",
+              JSON.stringify((task.dependencies ?? []).map((dependency) => taskIds.get(dependency) ?? dependency)), task.assignedAgent ?? null, new Date().toISOString(), new Date().toISOString());
+            taskCount++;
+          }
+          for (const file of preparedFiles.filter((item) => item.projectId === projectId)) {
+            execute(this.ctx.storage.sql as never,
+              "INSERT INTO workspace_files (project_id, path, content, content_hash, size_bytes, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+              projectId, file.path, file.content, file.contentHash, file.sizeBytes, new Date().toISOString());
+          }
+          for (const fixture of fixturesByProject.get(projectId) ?? []) {
+            execute(this.ctx.storage.sql as never,
+              "INSERT INTO project_demo_fixtures (project_id, fixture_id, fixture_kind, data_json) VALUES (?, ?, ?, ?)",
+              projectId, fixture.id, fixture.kind, JSON.stringify(fixture.data));
+          }
+        }
+      });
+      return { projectIds: [...ids.values()], taskCount, fileCount: preparedFiles.length };
+    } catch (error) {
+      if (this.env.SCRIPTS_R2 && stagedKeys.length) {
+        await Promise.allSettled(stagedKeys.map((key) => this.env.SCRIPTS_R2!.delete(key)));
+      }
+      throw error;
+    }
   }
 
-  /** Atomically-shaped, local-only stamping path: no network or queue work is on the hot path. */
+  /** Stamp a template by staging workspace artifacts in R2, then committing all DO rows atomically. */
   async stampProjectTemplate(
     spaceId: string,
     templateId: string,

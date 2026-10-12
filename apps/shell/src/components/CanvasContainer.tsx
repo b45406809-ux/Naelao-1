@@ -91,7 +91,7 @@ export function CanvasContainer({ project, spaceId, creds, maximized = false, on
       <span className="canvas-eyebrow">Getting started</span><h3>{hydrationSeed.title}</h3><p>{hydrationSeed.description}</p>
       <div className="clause-actions">{hydrationSeed.actions.map(action => <button key={action.id} type="button" className="btn btn-primary btn-sm" onClick={() => {
         if (action.kind === "open_file") onSelect(action.path);
-        else if (action.kind === "review_file") onAction("template.review_starter", { path: action.path });
+        else if (action.kind === "review_file") onAction(action.label === "Run sample audit" ? "template.run_sample_audit" : "template.review_starter", { path: action.path, ...(action.label === "Run sample audit" ? { mode: "synthetic_fixture_audit" } : {}) });
         else {
           const slug = window.location.pathname.split("/")[2];
           if (slug) window.location.assign(`/p/${encodeURIComponent(slug)}/dashboard/assistant`);

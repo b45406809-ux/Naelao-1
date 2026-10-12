@@ -7,7 +7,7 @@ Authority: Documents 12 then 13 only; original TXT files unchanged. Branch:
 | --- | --- |
 | 1 | PARTIAL_NEEDS_PLATFORM — local implementation complete; exact external gates below |
 | 2 | PARTIAL_NEEDS_PLATFORM — runtime implemented; verified preview DNS/Worker route must be configured |
-| 3 | IN PROGRESS — semantic leases, install actions, and mobile text escalation implemented; key integration gates remain |
+| 3 | IN PROGRESS — semantic leases, R2/SQLite hydration fixtures, sample-audit delegation, and mobile text escalation implemented; key integration gates remain |
 | 4 | IN PROGRESS |
 | 5 | UNASSESSED |
 | 6 | UNASSESSED |
@@ -406,17 +406,22 @@ template validation tests: 3 pass; Spaces gadget/market-radar checks: 7 pass; Sp
 and Shell typechecks pass. This implements the WhatsApp connection CTA only; it does
 not provide a WhatsApp-to-browser authentication session.
 
-Fresh verification: agent-sdk build and all 65 tests; Agents typecheck and semantic
-CAS tests (6); Spaces typecheck and install/contact tests (6); Shell typecheck; WS
-gateway typecheck and node-lease/concurrency tests (8) all pass. Official Cloudflare
-documentation fetches still return proxy CONNECT HTTP 403. Batch 3 remains IN
-PROGRESS: the repository has no Desk-Drop tunnel/auth broker to connect, no
-deterministic state-delta certification runner or trusted publish-certificate
-path, and no tested scheduled FDE payout integration. Existing per-payment royalty
-ledger, authenticated payout request/withdrawal ledger and manual ops fulfillment
-remain the implemented payout path; do not equate them with a scheduled provider
-transfer. Do not mark B3 complete until the remaining implementable gates and source
-coverage review are resolved or precisely isolated as external requirements.
+Fresh verification: Agent SDK build/typecheck and all 18 files / 66 tests; Spaces
+ typecheck and all 21 files / 62 tests; Shell typecheck; WS Gateway typecheck and
+ UI-action delegation test (2 files / 3 tests); Agents typecheck and semantic CAS
+ tests (6); WS node-lease/concurrency tests (8) all pass. The complete SpaceDO
+ migration list including migration 65 applies twice against real in-memory SQLite;
+ staged R2 upload failure cleanup and zero SQLite writes are covered by mock-boundary
+ tests. Wrangler 4.149.0 Spaces dry-run confirms the configured SCRIPTS_R2 binding.
+ No live R2 object or Cloudflare service was contacted. Batch 3 remains IN PROGRESS:
+ the repository has no Desk-Drop tunnel/auth broker, no deterministic state-delta
+ certification runner or trusted artifact-bound publish-certificate path, and no
+ scheduled FDE payout integration. Existing per-payment royalty ledger and
+ authenticated payout request/withdrawal/manual ops flow are not a scheduled
+ settlement daemon. Interactive WhatsApp approval cards/voice and FDE read-only
+ support/bounty authorization remain absent. Do not mark B3 complete until remaining
+ local and provider-dependent requirements are resolved or precisely isolated as
+ external prerequisites.
 
 ## Batch 4 (2026-10-12) — IN PROGRESS
 
@@ -475,17 +480,26 @@ repository-implementable primary requirements are reviewed and either implemente
 recorded precisely as an external prerequisite.
 
 Fresh Batch 3/4 continuation checkpoint (2026-10-12): Batch 3 remains IN PROGRESS.
-The semantic editor, validated install welcome actions (including fixed-route Connect
-WhatsApp navigation), and presence-aware verified executive-contact mobile text approval
-path described above are implemented and tested. Hydration still lacks preloaded R2
-demo artifacts, structured SQLite fixture rows and a runnable sample-audit action.
-Remaining work is the WhatsApp-to-desktop Desk-Drop/session broker, an artifact-bound
-deterministic marketplace regression certificate covering both publish entry points,
-interactive urgent mobile cards/voice, and payout reconciliation through an authorized
-platform-native rail. Existing request/manual payout flows are not a scheduled settlement
-daemon. Escrow bounty and FDE read-only support also need authorization and payment
-workflows. Do not call these complete. The precise remaining source requirements are
-D12 5485–5657; extra name-matched context is listed below.
+Its newly completed hydration path stages bounded starter files in the configured
+project R2 workspace, inserts validated synthetic fixture rows in SpaceDO SQLite using
+replay-safe migration 65, and presents a Run sample audit action. The shell sends that
+action through the authenticated WebSocket UI-action path to the same project/session
+agent; a focused test confirms the delegation boundary. The source-required Desk-Drop/
+session broker, trusted artifact-bound deterministic marketplace regression gate for
+both publish routes, interactive urgent mobile cards/voice, FDE support/bounty
+authorization, and authorized scheduled payout reconciliation remain open. Batch 4
+remains IN PROGRESS; see its sections below for current local workerd, Docker, and
+provider evidence.
+
+Fresh hydration verification: Agent SDK build/typecheck plus all 18 files / 66 tests pass;
+Spaces typecheck plus all 21 files / 62 tests pass; Shell typecheck passes; WS Gateway
+typecheck and the UI-action delegation test pass (2 files / 3 tests). `corepack
+pnpm@9.12.0 exec wrangler deploy --dry-run --config workers/spaces/wrangler.toml`
+uses root Wrangler 4.149.0 and includes the configured SCRIPTS_R2 binding. No live R2
+object or Cloudflare resource was contacted. Files changed: `packages/agent-sdk/src/
+project-templates.ts` and its tests; `workers/spaces/src/do/SpaceDO.ts`, its replay
+test, and `remediation-pass-2.test.ts`; `apps/shell/src/components/CanvasContainer.tsx`;
+and `workers/ws-gateway/src/ui-action-delegation.test.ts`.
 
 Fresh Batch 4 integration evidence (2026-10-12): root Wrangler is pinned to 4.149.0
 because v3 rejects the existing `[[containers]]` config. `infra/scripts/start-dev.mjs`

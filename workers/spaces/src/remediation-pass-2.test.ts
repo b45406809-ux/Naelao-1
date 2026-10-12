@@ -13,6 +13,11 @@ const cursor = (rows: unknown[] = []) => ({
 describe("project template stamping", () => {
   it("stamps kind, canvas, task DAG, agent, and content-addressed files under 800ms", async () => {
     const writes: Array<{ query: string; params: unknown[] }> = [];
+    const objects = new Map<string, string>();
+    const r2 = {
+      put: vi.fn(async (key: string, value: string) => { objects.set(key, value); }),
+      delete: vi.fn(async (key: string) => { objects.delete(key); }),
+    };
     let agentId: string | null = null;
     const ctx = { storage: { sql: { exec(query: string, ...params: unknown[]) {
       writes.push({ query, params });
@@ -20,13 +25,13 @@ describe("project template stamping", () => {
       if (query.includes("SELECT default_agent_id FROM projects")) return cursor([{ default_agent_id: agentId }]);
       return cursor();
     } }, transactionSync: (fn: () => unknown) => fn() } };
-    const instance = new SpaceDO(ctx as never, { PLATFORM_SECRET: "secret" });
+    const instance = new SpaceDO(ctx as never, { PLATFORM_SECRET: "secret", SCRIPTS_R2: r2 as never });
     (instance as unknown as { initialized: boolean }).initialized = true;
     const started = performance.now();
     const result = await instance.stampProjectTemplate("space_102", "tpl_proj_contract_redliner", { name: "Acme NDA" });
 
     expect(performance.now() - started).toBeLessThan(800);
-    expect(result).toMatchObject({ templateId: "tpl_proj_contract_redliner", kind: "doc_studio", taskCount: 4, fileCount: 1 });
+    expect(result).toMatchObject({ templateId: "tpl_proj_contract_redliner", kind: "doc_studio", taskCount: 4, fileCount: 2 });
     const projectInsert = writes.find(write => write.query.includes("INSERT INTO projects"));
     expect(projectInsert?.params).toContain("doc_studio");
     expect(projectInsert?.params).toContain(JSON.stringify(PROJECT_TEMPLATES.tpl_proj_contract_redliner.viewport));
@@ -38,8 +43,35 @@ describe("project template stamping", () => {
     expect(installedHydration.hydration_seed).toMatchObject({ version: 1, title: "Welcome to Acme NDA" });
     expect(installedHydration.hydration_seed.actions).toHaveLength(3);
     expect(installedHydration.hydration_seed.actions[0]).toMatchObject({ id: "open-starter", kind: "open_file", path: "deliverables/starter-nda.md" });
+    expect(installedHydration.hydration_seed.actions[1]).toMatchObject({ id: "review-starter", label: "Run sample audit", path: "demo/nda-audit-fixtures.json" });
     expect(installedHydration.hydration_seed.actions[2]).toMatchObject({ id: "connect-whatsapp", kind: "open_channel_settings", channel: "whatsapp" });
+    expect(writes.filter(write => write.query.includes("INSERT INTO project_demo_fixtures"))).toHaveLength(3);
+    const projectId = String(projectInsert?.params[0]);
+    expect(objects.get(`spaces/space_102/projects/${projectId}/workspace/demo/nda-audit-fixtures.json`)).toContain('"synthetic": true');
+    expect(objects.get(`spaces/space_102/projects/${projectId}/workspace/deliverables/starter-nda.md`)).toContain("not legal advice");
+    expect(r2.put).toHaveBeenCalledTimes(2);
     expect(writes.some(write => write.query.includes("UPDATE agent_definitions SET name") && write.params[0] === "Legal Drafter")).toBe(true);
+  });
+
+  it("cleans staged R2 artifacts and leaves SQLite untouched when an artifact upload fails", async () => {
+    const writes: Array<{ query: string; params: unknown[] }> = [];
+    const objects = new Map<string, string>();
+    let calls = 0;
+    const r2 = {
+      put: vi.fn(async (key: string, value: string) => {
+        calls++;
+        if (calls === 2) throw new Error("bucket unavailable");
+        objects.set(key, value);
+      }),
+      delete: vi.fn(async (key: string) => { objects.delete(key); }),
+    };
+    const ctx = { storage: { sql: { exec(query: string, ...params: unknown[]) { writes.push({ query, params }); return cursor(); } }, transactionSync: (fn: () => unknown) => fn() } };
+    const instance = new SpaceDO(ctx as never, { PLATFORM_SECRET: "secret", SCRIPTS_R2: r2 as never });
+    (instance as unknown as { initialized: boolean }).initialized = true;
+    await expect(instance.stampProjectTemplate("space_102", "tpl_proj_contract_redliner")).rejects.toThrow("bucket unavailable");
+    expect(r2.delete).toHaveBeenCalledTimes(1);
+    expect(objects.size).toBe(0);
+    expect(writes.some(write => write.query.includes("INSERT INTO projects"))).toBe(false);
   });
 });
 
