@@ -17,6 +17,7 @@ import { registerBusinessRoutes } from "./business-routes.js";
 import { ALLOWED_MODELS, isAllowedModel, isValidEffortLevel, isPersonalPlanTier, PERSONAL_PLAN_LIMITS, type PersonalPlanTier } from "@naelao/billing-core";
 import { registerProjectMcpRoutes } from "./routes/mcp.js";
 import { registerGadgetMcpRoutes } from "./routes/gadget-mcp.js";
+import { registerDynamicPageRoutes } from "./routes/dynamic-pages.js";
 import { registerRecipeRoutes } from "./routes/recipes.js";
 import { registerMarketplaceRoutes } from "./routes/marketplace.js";
 import { registerGraduationRoutes } from "./routes/graduation.js";
@@ -46,6 +47,10 @@ export interface Env {
   /** Three-Tier Platform Model, Phase 2 — one per (productId, endUserId). */
   PRODUCT_USER_DO: DurableObjectNamespace;
   MICRO_APP_DO: DurableObjectNamespace;
+  /** Registrable application-domain suffix used to reject cookie-sharing preview subdomains. */
+  APPLICATION_HOST_SUFFIX?: string;
+  /** Dedicated wildcard suffix for tenant-isolated public dynamic pages; unset disables publishing. */
+  DYNAMIC_PAGE_HOST_SUFFIX?: string;
   NAELAO_CONFIG_KV: KVNamespace;
   EXPORTS_BUCKET: R2Bucket;
   /** F-39: agent workspace bucket (read-only file viewer). Optional so tests/dev without R2 degrade. */
@@ -89,6 +94,7 @@ const app = new Hono<{ Bindings: Env }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
 registerGadgetMcpRoutes(app);
+registerDynamicPageRoutes(app);
 registerRecipeRoutes(app);
 registerMarketplaceRoutes(app);
 registerGraduationRoutes(app);

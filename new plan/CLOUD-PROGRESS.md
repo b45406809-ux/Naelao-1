@@ -6,7 +6,7 @@ Authority: Documents 12 then 13 only; original TXT files unchanged. Branch:
 | Batch | Status |
 | --- | --- |
 | 1 | PARTIAL_NEEDS_PLATFORM — local implementation complete; exact external gates below |
-| 2 | PARTIAL_NEEDS_PLATFORM — gadget paths implemented; isolated public pages/actions remain |
+| 2 | PARTIAL_NEEDS_PLATFORM — runtime implemented; verified preview DNS/Worker route must be configured |
 | 3 | UNASSESSED |
 | 4 | UNASSESSED |
 | 5 | UNASSESSED |
@@ -290,22 +290,31 @@ proxy HTTP 403. Batch 2 source reading has started; see its closeout below.
   jurisdiction endpoint claims were not treated as validated capabilities.
 - Batch 2 changes: `packages/agent-sdk/src/types.ts` and `extensions.ts` add the
   four canonical storage scopes and preserve the three legacy names. Gadget keys
-  isolate project/user facets. `workers/spaces/src/routes/gadget-mcp.ts` now
-  routes app/data/MCP calls only after tenant and active space-member checks;
-  install requires owner/admin and exactly the path-matching `SPACE_SHARED`
-  tier-3 gadget. `MicroAppDO.ts` prevents tier/scope mutation and returns a
-  private no-store app response with restrictive CSP, nosniff, and no referrer.
-  Tests added/updated in SDK extension, Spaces extension, route, and DO lifecycle
-  suites. No SQL migration was needed.
-- Batch 2 verification: `pnpm --dir workers/spaces test` (16 files / 51 tests),
+  isolate project/user facets. `workers/spaces/src/routes/gadget-mcp.ts` routes
+  app/data/MCP calls only after tenant and active space-member checks; install
+  requires owner/admin and exactly the path-matching `SPACE_SHARED` tier-3 gadget.
+  `MicroAppDO.ts` prevents tier/scope mutation and returns a private no-store app
+  response with restrictive CSP, nosniff, and no referrer. Added a dynamic-page
+  registry and renderer inside the gadget DO; publish requires the admin route,
+  public requests must arrive on `${tenant_id}.${DYNAMIC_PAGE_HOST_SUFFIX}`, and
+  the same suffix cannot be used as the application origin. Static HTML rejects
+  script/event-handler/JavaScript URL content; response CSP forbids framing and
+  script injection. Forms receive short-lived HMAC-signed action tokens bound to
+  space/app/page/action/key/field allowlist; nonce insertion is durable and unique,
+  so replay is rejected. `workers/spaces/src/routes/dynamic-pages.ts` fails closed
+  when the suffix is missing and checks same-origin POSTs. Added a Wrangler comment
+  documenting required wildcard route setup; no SQL migration was needed.
+- Batch 2 verification: `pnpm --dir workers/spaces test` (18 files / 57 tests),
   `pnpm --dir workers/spaces typecheck`, `pnpm --dir packages/agent-sdk test`
   (17 files / 59 tests), `pnpm --dir packages/agent-sdk typecheck`, and
-  `git diff --check` pass. Tests are local mocks; no live Cloudflare resources
+  `git diff --check` pass. Dynamic-page action signatures use real Web Crypto in
+  local tests; routing and SQLite replay are mocked. No live Cloudflare resources
   were contacted. Official Cloudflare docs fetch still fails with proxy HTTP 403.
-- Batch 2 remains partial: repository has no dynamic-page publication store/route
-  on an isolated preview origin and no single-use public form action lifecycle.
-  Same-origin gadget UI is sandboxed, but that does not satisfy the distinct-origin
-  external portal requirement. Next action within batch 2 is to implement the
-  preview-page registry/handler, origin validation and one-use signed action
-  storage, or document the exact domain/route dependency if deployment ownership
-  prevents safely selecting the preview hostname. Batch 3 has not started.
+- Batch 2 repository implementation is complete, status remains
+  PARTIAL_NEEDS_PLATFORM until a platform owner configures an owned dedicated
+  preview domain suffix and wildcard Worker route. No domain ownership or live CF
+  credentials are present to verify that route, and user waived live Cloudflare
+  tests. `DYNAMIC_PAGE_HOST_SUFFIX` is fail-closed when unset. Exact deployment
+  action: configure the verified suffix, point wildcard tenant subdomains to the
+  Spaces Worker, then run one deployed cross-origin/cookie-isolation/form-replay
+  smoke journey. Batch 3 has not started.

@@ -1,10 +1,22 @@
 import { DurableObject } from "cloudflare:workers";
 import type { GadgetActorScope, GadgetScope, GadgetTier } from "@naelao/agent-sdk";
+import { signHmac, verifyHmac } from "@naelao/crypto";
 
 export interface MicroAppDOEnv { PLATFORM_SECRET: string }
 
 export const TIER_ONE_STORAGE_LIMIT_BYTES = 25 * 1024 * 1024;
 export const TIER_ONE_IDLE_TTL_MS = 14 * 86_400 * 1000;
+const PUBLIC_ACTION_TTL_MS = 15 * 60 * 1000;
+
+interface PublicPageAction { key: string; fields: string[] }
+interface PublicPageClaims { spaceId: string; appId: string; slug: string; action: string; key: string; fields: string[]; nonce: string; exp: number }
+function pagePathPart(value: string): boolean { return /^[a-z0-9][a-z0-9_-]{0,62}$/.test(value); }
+function encodeToken(value: string): string { return btoa(value).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, ""); }
+function decodeToken(value: string): string {
+  if (!/^[A-Za-z0-9_-]{1,4096}$/.test(value)) throw new Error("invalid_public_action_token");
+  const base64 = value.replaceAll("-", "+").replaceAll("_", "/");
+  return atob(base64 + "=".repeat((4 - base64.length % 4) % 4));
+}
 
 /** The exact stable name passed to DurableObjectNamespace.idFromName. */
 export function gadgetStorageKey(input: GadgetActorScope): string {
@@ -49,7 +61,9 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
   private ensureBaseSchema(): void {
     if (this.initialized) return;
     this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS gadget_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS gadget_data (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS gadget_data (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS gadget_public_pages (slug TEXT PRIMARY KEY, html TEXT NOT NULL, actions_json TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS consumed_public_action_nonces (nonce TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);`);
     this.initialized = true;
   }
 
@@ -59,6 +73,9 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     try {
       if (request.method === "POST" && url.pathname === "/initialize") return await this.initialize(request);
       if (request.method === "GET" && url.pathname === "/app") return this.renderApp();
+      if (request.method === "POST" && url.pathname === "/page/publish") return await this.publishPage(request);
+      if (request.method === "GET" && url.pathname === "/page/render") return await this.renderPublicPage(url);
+      if (request.method === "POST" && url.pathname === "/page/action") return await this.submitPublicAction(request, url);
       if (request.method === "GET" && url.pathname === "/api/data") return this.readData(url);
       if (request.method === "POST" && url.pathname === "/api/data") return await this.writeData(request);
       if (request.method === "DELETE" && url.pathname === "/api/data") return this.deleteData(url);
@@ -175,6 +192,83 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       "referrer-policy": "no-referrer",
       "cache-control": "private, no-store",
     } });
+  }
+
+  private async publishPage(request: Request): Promise<Response> {
+    const body = await request.json<{ slug?: string; html?: string; actions?: Record<string, PublicPageAction> }>();
+    if (!body.slug || !pagePathPart(body.slug) || typeof body.html !== "string" || !body.actions || typeof body.actions !== "object" || Array.isArray(body.actions)) {
+      return Response.json({ error: "invalid_public_page" }, { status: 400 });
+    }
+    if (new TextEncoder().encode(body.html).byteLength > 512_000 || /<\s*script\b|\bon[a-z]+\s*=|javascript\s*:/i.test(body.html)) {
+      return Response.json({ error: "active_content_not_allowed" }, { status: 400 });
+    }
+    const actions: Record<string, PublicPageAction> = {};
+    for (const [name, action] of Object.entries(body.actions)) {
+      if (!pagePathPart(name) || !action || typeof action !== "object" || !pagePathPart(action.key) || !Array.isArray(action.fields) || action.fields.length > 32 ||
+        !action.fields.every(field => typeof field === "string" && /^[a-z][a-z0-9_-]{0,63}$/.test(field)) || new Set(action.fields).size !== action.fields.length) {
+        return Response.json({ error: "invalid_public_page_action" }, { status: 400 });
+      }
+      actions[name] = { key: action.key, fields: [...action.fields] };
+    }
+    if (Object.keys(actions).length === 0 || Object.keys(actions).length > 16) return Response.json({ error: "public_page_action_required" }, { status: 400 });
+    for (const name of Object.keys(actions)) if (!body.html.includes(`{{NAELAO_ACTION_TOKEN:${name}}}`)) return Response.json({ error: "action_token_placeholder_missing" }, { status: 400 });
+    this.ctx.storage.sql.exec("INSERT INTO gadget_public_pages(slug,html,actions_json,updated_at) VALUES (?,?,?,?) ON CONFLICT(slug) DO UPDATE SET html=excluded.html,actions_json=excluded.actions_json,updated_at=excluded.updated_at", body.slug, body.html, JSON.stringify(actions), new Date().toISOString());
+    return Response.json({ published: true, slug: body.slug }, { status: 201 });
+  }
+
+  private async renderPublicPage(url: URL): Promise<Response> {
+    const slug = url.searchParams.get("slug") ?? "";
+    if (!pagePathPart(slug)) return Response.json({ error: "not_found" }, { status: 404 });
+    const row = [...this.ctx.storage.sql.exec<{ html: string; actions_json: string }>("SELECT html,actions_json FROM gadget_public_pages WHERE slug = ?", slug)][0];
+    if (!row) return Response.json({ error: "not_found" }, { status: 404 });
+    const actions = JSON.parse(row.actions_json) as Record<string, PublicPageAction>;
+    let html = row.html;
+    for (const [name, action] of Object.entries(actions)) {
+      const unsigned: PublicPageClaims = { spaceId: url.searchParams.get("spaceId") ?? "", appId: this.appId(), slug, action: name, key: action.key, fields: action.fields, nonce: crypto.randomUUID(), exp: Date.now() + PUBLIC_ACTION_TTL_MS };
+      const payload = encodeToken(JSON.stringify(unsigned));
+      const token = `${payload}.${await signHmac(payload, this.env.PLATFORM_SECRET)}`;
+      html = html.replaceAll(`{{NAELAO_ACTION_TOKEN:${name}}}`, token);
+    }
+    return new Response(html, { headers: {
+      "content-type": "text/html; charset=utf-8",
+      "content-security-policy": "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'",
+      "cross-origin-opener-policy": "same-origin",
+      "cross-origin-resource-policy": "same-origin",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "no-referrer",
+      "cache-control": "private, no-store",
+    } });
+  }
+
+  private async submitPublicAction(request: Request, url: URL): Promise<Response> {
+    const body = await request.json<{ token?: string; payload?: Record<string, unknown> }>();
+    if (typeof body.token !== "string" || !body.payload || typeof body.payload !== "object" || Array.isArray(body.payload)) return Response.json({ error: "invalid_action_request" }, { status: 400 });
+    const [payload, signature, extra] = body.token.split(".");
+    if (!payload || !signature || extra !== undefined || !await verifyHmac(payload, signature, this.env.PLATFORM_SECRET)) return Response.json({ error: "invalid_public_action_token" }, { status: 403 });
+    let claims: PublicPageClaims;
+    try { claims = JSON.parse(decodeToken(payload)) as PublicPageClaims; }
+    catch { return Response.json({ error: "invalid_public_action_token" }, { status: 403 }); }
+    const slug = url.searchParams.get("slug") ?? "";
+    const spaceId = url.searchParams.get("spaceId") ?? "";
+    const action = url.searchParams.get("action") ?? "";
+    if (claims.slug !== slug || claims.spaceId !== spaceId || claims.appId !== this.appId() || claims.action !== action || claims.exp <= Date.now() || !pagePathPart(claims.nonce)) {
+      return Response.json({ error: "expired_or_mismatched_public_action_token" }, { status: 403 });
+    }
+    const current = [...this.ctx.storage.sql.exec<{ actions_json: string }>("SELECT actions_json FROM gadget_public_pages WHERE slug = ?", slug)][0];
+    const allowed = current ? (JSON.parse(current.actions_json) as Record<string, PublicPageAction>)[action] : undefined;
+    if (!allowed || allowed.key !== claims.key || JSON.stringify(allowed.fields) !== JSON.stringify(claims.fields)) return Response.json({ error: "public_action_revoked" }, { status: 403 });
+    const submitted = body.payload;
+    const fields = Object.keys(submitted);
+    if (fields.length === 0 || fields.length > claims.fields.length || fields.some(field => !claims.fields.includes(field)) || new TextEncoder().encode(JSON.stringify(submitted)).byteLength > 16_384) {
+      return Response.json({ error: "public_action_payload_rejected" }, { status: 400 });
+    }
+    try {
+      this.ctx.storage.sql.exec("INSERT INTO consumed_public_action_nonces(nonce,expires_at) VALUES (?,?)", claims.nonce, claims.exp);
+    } catch { return Response.json({ error: "public_action_token_replayed" }, { status: 409 }); }
+    const now = new Date().toISOString();
+    this.ctx.storage.sql.exec("INSERT INTO gadget_data(key,value_json,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at", claims.key, JSON.stringify(submitted), now);
+    this.ctx.storage.sql.exec("DELETE FROM consumed_public_action_nonces WHERE expires_at <= ?", Date.now());
+    return Response.json({ accepted: true }, { status: 202 });
   }
 
   private readData(url: URL): Response {

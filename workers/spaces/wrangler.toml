@@ -28,6 +28,11 @@ PRODUCT_SHELL_URL = "https://naelao-shell.pages.dev"
 #   wrangler secret put CF_API_TOKEN      (zone-scoped: SSL and Certificates: Edit)
 #   wrangler secret put CF_SAAS_ZONE_ID   (the naelao.com SaaS zone id)
 # When unset, custom-domain requests are recorded as pending_dns (no live API call).
+#
+# Public dynamic pages require a separately owned preview zone, for example a dedicated
+# registrable suffix with a wildcard Worker route to this Worker. Set
+# APPLICATION_HOST_SUFFIX and DYNAMIC_PAGE_HOST_SUFFIX only after verifying they are
+# separate cookie domains and provisioning the wildcard route. Pages stay disabled otherwise.
 
 [[durable_objects.bindings]]
 name = "SPACE_DO"
