@@ -526,3 +526,19 @@ The live local runtime proves service startup and image builds only; it does not
 container invocation, TypeScript compilation inside workerd, Cloudflare AI format
 acceptance, or real provider saga side effects. Do not mark Batch 4 done until those
 runtime paths are tested or concrete external limitations are recorded.
+
+Batch 3 name-matched source review (2026-10-12): searched the unread tails of both
+requirements documents for regression/certification, state-delta, synthetic fixture,
+mobile escalation, Desk-Drop, escrow, and royalty/payout terms before making further
+architecture decisions. Read D12 10200–10360 (objective state-delta oracles and the
+illustrative local harness), 11642–11706 (Eval Studio examples), 12013–12090
+(presence-based channel waterfall), 12213–12347 (native platform payments versus
+userland business transactions), 13638–13663 (proposed cloud-offloaded proprietary
+certification), and D13 149–168 (synthetic fixtures and mobile HITL synthesis).
+These are recorded as extra name-matched look-aheads, not new Batch 3 primary scope.
+Reconciliation: D12 13643's `eval.naelao.com`/Ed25519 receipt and provider benchmark
+claims are examples, not deployed capabilities; D12 12213 explicitly keeps userland
+customer payments outside native settlement; D12 12066's presence waterfall does not
+supply a browser session-auth design. Existing Eval trace checks are not a trusted
+artifact-bound certification receipt. Batch 3 remains IN PROGRESS pending the local
+implementation review/gaps listed above.
