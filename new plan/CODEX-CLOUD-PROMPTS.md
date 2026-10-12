@@ -223,8 +223,11 @@ vendor-specific routing or fabricated persistence guarantee was added. Initially
 agent Worker eagerly evaluated the Node-only TypeScript compiler and crashed workerd on
 `__filename`. Both compiler imports are now deferred to code/workflow compilation; after
 restart, router, auth, spaces, agents, and knowledge all reach Wrangler Ready. All three
-agent container images built after staging esbuild from pnpm's local installation. The
-runtime compile/container invocation and AI provider path still need integration evidence.
+agent container images built after staging esbuild from pnpm's local installation. A real
+direct-Docker control-channel smoke exercised `/health` and `/exec` on all three images and
+returned `result: 42`; root-owned runtime files are now guest-readable but remain
+non-writable. The Worker-to-DO container binding and TypeScript lazy import when invoked
+inside workerd still need integration evidence; the local AI provider path is unavailable.
 WhatsApp media ingress is still text-only. Exact evidence and remaining review are in
 CLOUD-PROGRESS.md; Batch 4 remains active.
 

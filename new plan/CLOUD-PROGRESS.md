@@ -534,3 +534,16 @@ customer payments outside native settlement; D12 12066's presence waterfall does
 supply a browser session-auth design. Existing Eval trace checks are not a trusted
 artifact-bound certification receipt. Batch 3 remains IN PROGRESS pending the local
 implementation review/gaps listed above.
+
+Batch 4 container execution follow-up (2026-10-12): an authenticated direct Docker
+smoke found the guest could not read `/app/compile-runner.mjs` (`EACCES`) because local
+source files are mode 0600 and Docker preserves source modes. Updated all three Agent
+Dockerfiles to `chmod -R a+rX /app` before removing group/other write permission; the
+code remains root-owned and the guest remains UID 10001 with no capabilities. Rebuilt
+toolsandbox, document-sandbox, and media-sandbox images. For each image, initialized the
+control channel, confirmed `/health`, and POSTed a TypeScript `run()` returning 42 to
+`/exec`; all returned `{ok:true,result:42}`. These were direct local Docker requests to
+the actual image server, not a Durable Object/Cloudflare production execution. The five
+Wrangler dev Workers remained Ready in parallel. The actual Agent DO-to-container RPC,
+TypeScript lazy import inside workerd, and real AI/provider behavior are still not
+verified; keep Batch 4 in progress.

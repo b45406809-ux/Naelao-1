@@ -7,7 +7,7 @@ COPY container/server.mjs container/process-supervisor.mjs container/child-runne
 RUN groupadd -g 10001 runtime && useradd -u 10001 -g 10001 -d /home/runtime runtime \
     && mkdir -p /workspace /home/runtime /tmp/guest /tmp/naelao-control \
     && chown -R 10001:10001 /workspace /home/runtime /tmp/guest \
-    && chmod 700 /tmp/naelao-control && chmod -R go-w /app \
+    && chmod 700 /tmp/naelao-control && chmod -R a+rX /app && chmod -R go-w /app \
     && find / -xdev -type f -perm /6000 -exec chmod a-s {} +
 USER root
 EXPOSE 8080
