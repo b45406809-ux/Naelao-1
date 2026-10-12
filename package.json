@@ -14,6 +14,7 @@
     "lint": "biome check .",
     "typecheck": "turbo run typecheck",
     "dev": "node infra/scripts/start-dev.mjs",
+    "share": "node infra/scripts/start-dev.mjs --share",
     "audit:eu-residency": "node infra/scripts/verify-eu-residency.mjs",
     "verify:system-one": "node infra/scripts/verify-system-one.mjs",
     "capture:runtime-economics": "node infra/scripts/capture-runtime-economics.mjs",

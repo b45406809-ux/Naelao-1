@@ -5,12 +5,15 @@ import { dirname, resolve, join } from 'node:path';
 import { cpSync, mkdirSync, openSync, closeSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { localTopology } from './dev-topology.mjs';
+import { parseProtectedPreviewArgs, startProtectedPreviewTunnel } from './protected-preview.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const require = createRequire(join(root, 'package.json'));
 const agentsRequire = createRequire(join(root, 'workers/agents/package.json'));
 const topology = localTopology(root);
-const args = new Set(process.argv.slice(2));
+const forwardedArgs = process.argv.slice(2).filter(value => value !== '--');
+const args = new Set(forwardedArgs);
+const preview = parseProtectedPreviewArgs(forwardedArgs);
 const CORE = ['router', 'auth', 'spaces', 'agents', 'knowledge'];
 const EXTENDED = [...CORE, 'provisioner', 'notifications', 'credentials', 'billing', 'eval', 'ws-gateway'];
 // Keep existing local accounts/products. Every worker must use this exact absolute directory.
@@ -96,6 +99,20 @@ try {
       launch(app, appRequire.resolve('next/dist/bin/next'), ['dev', '-p', String(port)], join(root, 'apps', app));
       console.log(`${app}: http://localhost:${port}`);
     }
+  }
+  if (preview.share) {
+    const tunnel = startProtectedPreviewTunnel({
+      allowedEmails: preview.allowedEmails,
+      port: 3100,
+      onUrl: url => {
+        console.log(`Protected preview: ${url}`);
+        console.log('Cloudflare will ask each allowed visitor for an email one-time PIN in a browser.');
+        console.log('Quick Tunnels do not support SSE; live chat uses its polling fallback, and the hostname changes when the tunnel restarts.');
+      },
+      onError: error => { console.error(`Could not start protected preview (${error.message}). Install cloudflared and confirm it is on PATH.`); stop(1); },
+      onExit: (code, signal) => { if (!stopping) { console.error(`Protected preview tunnel stopped (${signal ?? code}).`); stop(code || 1); } },
+    });
+    children.push(tunnel);
   }
   console.log(`Shared data: ${persist}\nLogs: ${logDir}\nWaiting for workers to compile; inspect their logs for readiness.`);
 } catch (error) { console.error(error.message); stop(1); }

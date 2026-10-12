@@ -287,6 +287,8 @@ support. Record evidence, outstanding dependencies and coverage. Stop here;
 the next batch begins Document 13.
 ```
 
+**Progress (2026-10-12): PARTIAL_NEEDS_PLATFORM — local B8 work and checks complete; continue with Batch 9.** Added the per-request `cf-aig-no-wholesale: true` guard to provider BYOK routes, with a Gemini request assertion; tests prove air-gapped spaces reject cloud models before network access and `local/*` uses only its configured local runner. Added `pnpm share -- --for <email>` with explicit recipient validation for a protected temporary Quick Tunnel to local Shell, plus setup/limitations documentation. 3 focused files / 30 tests, Agents 58 files / 235 tests, Agents typecheck and syntax/diff checks pass. The official docs confirm Quick Tunnel email OTP and note temporary URLs/no SSE; `cloudflared` is absent, so the process is mocked and no live tunnel or provider request was made. Existing Gateway settings/credentials, private tunnel routing and local-model support remain in place. See CLOUD-PROGRESS.md for source windows, official docs, and open live dependencies; proceed to Batch 9.
+
 9. **Document 13: lines 1–734**
 
 ```text

@@ -76,6 +76,7 @@ describe("googleAiStudioGatewayUrl / Headers", () => {
   it("puts the real Google key in the plain Authorization header (BYOK), not a Cloudflare token", () => {
     const h = googleAiStudioGatewayHeaders({ accountId: "a", gatewayId: "g", googleAiStudioApiKey: GOOGLE_KEY });
     expect(h["authorization"]).toBe(`Bearer ${GOOGLE_KEY}`);
+    expect(h["cf-aig-no-wholesale"]).toBe("true");
   });
 
   it("carries cf-aig-authorization when the gateway requires it (this account's does — confirmed live)", () => {
@@ -104,7 +105,7 @@ describe("canAuthenticateLlm — model-aware for Gemini", () => {
 
 describe("GatewayReasoner — routes a Gemini model to the compat endpoint", () => {
   const SNAPSHOT: ObserveSnapshot = { type: "compute", timestamp: Date.now(), fingerprint: "fp1" };
-  const input = { goal: "g", level: "L2" as const, snapshot: SNAPSHOT, candidates: [], availableOperations: ["script.run"] };
+  const input = { goal: "g", level: "L2" as const, snapshot: SNAPSHOT, candidates: [], availableOperations: ["Bash"] };
   afterEach(() => vi.restoreAllMocks());
 
   it("gives up honestly, naming the missing secret, when no Google key is configured — never fires a doomed request", async () => {
@@ -129,7 +130,7 @@ describe("GatewayReasoner — routes a Gemini model to the compat endpoint", () 
       capturedUrl = url;
       capturedHeaders = init.headers as Record<string, string>;
       return new Response(JSON.stringify({
-        choices: [{ message: { content: JSON.stringify({ action: "answer", text: "done" }) } }],
+        choices: [{ message: { tool_calls: [{ function: { name: "Bash", arguments: JSON.stringify({ command: "echo done", doing: "Answering" }) } }] } }],
         usage: { prompt_tokens: 5, completion_tokens: 5 },
       }), { status: 200 });
     }));
@@ -140,10 +141,11 @@ describe("GatewayReasoner — routes a Gemini model to the compat endpoint", () 
       model: GEMINI_FLASH,
     });
     const decision = await reasoner.decide(input);
-    expect(decision).toEqual({ action: "answer", text: "done" });
+    expect(decision).toMatchObject({ action: "run", name: "Bash", params: { commands: "echo done" } });
     expect(capturedUrl).toBe("https://gateway.ai.cloudflare.com/v1/acct-1/naelao-gateway/compat/chat/completions");
     expect(capturedHeaders["authorization"]).toBe(`Bearer ${GOOGLE_KEY}`);
     expect(capturedHeaders["cf-aig-authorization"]).toBe(`Bearer ${AIG}`);
+    expect(capturedHeaders["cf-aig-no-wholesale"]).toBe("true");
   });
 
   it("a non-Gemini model on the SAME reasoner instance still uses the ordinary REST API endpoint (no cross-contamination)", async () => {

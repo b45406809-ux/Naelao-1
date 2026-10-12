@@ -12,7 +12,7 @@ Branch: `Mcbt5s-Backup-2`. One sequential implementation worker. No live deploy.
 | 5 | PARTIAL_NEEDS_PLATFORM — local model routing/prewarm work and checks complete; deployed binding/model/runtime behavior remains unproven |
 | 6 | PARTIAL_NEEDS_PLATFORM — local implementation and checks complete; deployed Gateway/Loader/Workflow behavior remains unproven |
 | 7 | PARTIAL_NEEDS_PLATFORM — local channel/tunnel behavior and checks complete; live named-machine bridge and provider delivery remain unproven |
-| 8 | UNASSESSED |
+| 8 | PARTIAL_NEEDS_PLATFORM — local model/BYOK/preview work complete; live provider and Quick Tunnel behavior remains unexercised |
 | 9 | UNASSESSED |
 | 10 | UNASSESSED |
 
@@ -109,6 +109,52 @@ Branch: `Mcbt5s-Backup-2`. One sequential implementation worker. No live deploy.
   verified owner/admin contact registry; automated voice escalation and a generic
   extension-supplied presence waterfall still lack a verified provider contract.
   No deployment or live credential use.
+
+- Batch 8: primary D12 12764–13666 was read in ascending windows of 150 lines
+  (final window includes lines 13664–13666). Required look-ahead D13 735–1398 was
+  previously read in bounded windows for B6; matching context was reread at D13
+  260–285, 1060–1111 and 1324–1374. Before design, searched both source tails for
+  model, BYOK, fallback, preview, CLI, cloud tunnel, residency, Clef, Jev, Laya and
+  proprietary-evaluation references. Additional matching windows read: D12
+  13330–13479 and 13580–13666. No unrelated historical plan/checkpoint was used;
+  original TXT files remain unchanged.
+- Batch 8 reconciliation: retain explicit provider BYOK and credentialed model
+  paths; Cloudflare AI Gateway's documented `cf-aig-no-wholesale: true` prevents
+  per-request Unified Billing substitution when a tenant provider key fails. Added
+  this header to compat BYOK requests and verified the constructed request. Existing
+  `airGappedOnly` policy refuses cloud model requests before fetch and routes
+  `local/*` only through the configured local completion bridge; new tests prove both.
+  Existing explicit fallback-chain support remains opt-in. Did not adopt D12's
+  unsupported claims of keyless third-party Workers AI binding calls, automatic
+  under-10ms racing/caching, fixed price/latency figures, or its D13 Jev race,
+  invented EU model endpoint, and proprietary `eval.naelao.com` flow. Cloudflare's
+  current official AI Gateway Unified Billing, BYOK and Dynamic Routing docs confirm
+  the supported provider-key and configured-routing model; tenant data policy still
+  decides placement and must not be bypassed by fallback. Source URLs checked
+  2026-10-12: `https://developers.cloudflare.com/ai-gateway/features/unified-billing/`,
+  `https://developers.cloudflare.com/ai-gateway/configuration/bring-your-own-keys/`,
+  and `https://developers.cloudflare.com/ai-gateway/features/dynamic-routing/`.
+- Batch 8 preview/tooling: added `pnpm share -- --for <email>` for a temporary
+  Cloudflare Quick Tunnel to the local shell, passing one `--allowed-mail` per
+  explicit recipient without shell interpolation. Invalid/wildcard recipients are
+  rejected. The guide records browser email OTP, temporary hostnames, lack of SSE,
+  polling fallback, and that the named-machine WSS tunnel remains the persistent
+  private connectivity route. Official Quick Tunnel docs confirm these limits and
+  the flag (`https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/`).
+  Current Cloudflare `cloudflared` source confirms `flags.AllowedMail` is read as a
+  `StringSlice`, so repeating the flag for multiple explicit addresses is supported
+  (`https://github.com/cloudflare/cloudflared/blob/master/cmd/cloudflared/tunnel/quick_tunnel.go`).
+  `cloudflared` is not installed here; child-process behavior is mocked,
+  no public tunnel was opened, and no live Cloudflare/provider test was run.
+- Batch 8 checks: pinned `corepack pnpm@9.12.0 install --frozen-lockfile` restored
+  dependencies after the environment's newer pnpm ignored the legacy patchedDependencies
+  setting. Protected preview, model placement, and Gemini/BYOK gateway tests: 3 files /
+  30 tests pass. Agents full suite: 58 files / 235 tests; Agents typecheck and JS syntax /
+  `git diff --check` pass. The older broad `tests/unit/reasoner-tool-calling.test.ts`
+  contains existing assertions against the retired JSON-action tool interface; its
+  failures are outside B8, while new placement tests were kept in a passing dedicated
+  file. No deployed gateway setting, provider credential, or live model behavior was
+  changed or claimed.
 
 ## Batch 1 and 2 coverage
 
@@ -263,8 +309,8 @@ Branch: `Mcbt5s-Backup-2`. One sequential implementation worker. No live deploy.
 ## Next action / checkpoints
 
 Batch 3 independent local work and checks are complete and pushed (`7220466`, followed by
-test-harness correction `d7f8362`). Batches 4 and 5 local work/checks are complete; retain
-their runtime/provider gates above. Batch 6 local work/checks are complete; commit and push
-its scoped changes, then continue prompts 8–10 sequentially. Only after batch 10, make one
-coverage pass over batches 1–10. Human-only prerequisites should be listed after their
+test-harness correction `d7f8362`). Batches 4–7 local work/checks are complete and pushed;
+retain their runtime/provider gates above. Batch 8 local work/checks is complete; commit and
+push its scoped changes, then continue prompts 9–10 sequentially. Only after batch 10, make
+one coverage pass over batches 1–10. Human-only prerequisites should be listed after their
 independent local work is complete. Current branch is `Mcbt5s-Backup-2`.

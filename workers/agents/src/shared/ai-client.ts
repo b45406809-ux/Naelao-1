@@ -174,6 +174,10 @@ export function compatGatewayHeaders(opts: GatewayOpts, model: string): Record<s
     "content-type": "application/json",
     ...(key ? { authorization: `Bearer ${key}` } : {}),
     ...(opts.aigToken ? { "cf-aig-authorization": `Bearer ${opts.aigToken}` } : {}),
+    // This request has an explicit tenant-owned provider key. Prevent AI Gateway Unified Billing
+    // from substituting Cloudflare-managed credentials if the tenant key is invalid or revoked.
+    // Cloudflare documents cf-aig-no-wholesale=true for per-request BYOK-only behavior.
+    "cf-aig-no-wholesale": "true",
   };
 }
 
