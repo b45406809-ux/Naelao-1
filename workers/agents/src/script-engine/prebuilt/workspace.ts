@@ -14,6 +14,7 @@
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 import { workspacePrefix } from "../types.js";
 import { deleteWorkspaceBytesCas, publishWorkspaceBytesCas, readBytesWithHash, sha256Bytes } from "../r2-cas.js";
+import { documentClauseNodeId } from "@naelao/agent-sdk";
 
 type WorkspaceName = "r2" | "container";
 
@@ -159,8 +160,47 @@ export const workspace: PrebuiltScript = {
       `workspace; bounded at ${SYNC_MAX_FILES} files / ${SYNC_MAX_TOTAL_BYTES} bytes total).`,
     "workspace.sync_from_container": "No arguments — copies every file the container currently " +
       "has back into the R2 workspace, at the SAME relative paths.",
+    "document.replace_clause": "path, zero-based clause_index, exact expected_clause, and replacement. Uses a human-priority 15s node lease plus content-hash CAS; if another human is editing it, returns a proposal without changing the document.",
   },
   operations: {
+    async "document.replace_clause"(args, ctx) {
+      const path = reqStr(args, "path");
+      const expected = reqStr(args, "expected_clause");
+      const replacement = args["replacement"];
+      const clauseIndex = args["clause_index"];
+      if (typeof replacement !== "string" || !Number.isSafeInteger(clauseIndex) || (clauseIndex as number) < 0 || expected.length > 20_000 || replacement.length > 20_000 || expected.includes("\u0000") || replacement.includes("\u0000")) {
+        throw new Error("invalid_document_clause_edit");
+      }
+      const projectId = ctx.env.projectId;
+      const leaseGateway = ctx.env.documentNodeLeaseGateway;
+      const holderId = ctx.env.runId ?? `agent:${ctx.env.agentId}`;
+      if (!projectId || !leaseGateway) throw new Error("document_node_leases_unavailable");
+      const nodeId = documentClauseNodeId(path, clauseIndex as number);
+      const lease = await leaseGateway.claim({ projectId, nodeId, holderId, holderType: "AGENT" });
+      if (!lease.acquired) return { ok: false, status: "proposal_required", node_id: nodeId, held_by: lease.heldBy, holder_type: lease.holderType, message: "A person is editing this clause. Preserve the requested replacement as a proposal for explicit human review; do not overwrite it." };
+      try {
+        const storageKey = key(ctx, path);
+        const current = await readBytesWithHash(bucket(ctx), storageKey);
+        if (!current) return { ok: false, status: "not_found", path };
+        const source = new TextDecoder().decode(current.bytes);
+        const clauses = source.split(/\n\s*\n/);
+        if (clauses[clauseIndex as number] !== expected) return { ok: false, status: "revision_conflict", path, node_id: nodeId };
+        clauses[clauseIndex as number] = replacement;
+        if (!(await leaseGateway.renew({ projectId, nodeId, holderId, holderType: "AGENT" })).renewed) {
+          return { ok: false, status: "proposal_required", node_id: nodeId, message: "The document edit lease was taken over; do not retry without a fresh read and human review." };
+        }
+        try {
+          await publishWorkspaceBytesCas(ctx.env, bucket(ctx), storageKey, new TextEncoder().encode(clauses.join("\n\n")), current.hash);
+        } catch (error) {
+          if (error instanceof Error && error.message.includes("changed concurrently")) return { ok: false, status: "revision_conflict", path, node_id: nodeId };
+          throw error;
+        }
+        return { ok: true, status: "updated", path, node_id: nodeId };
+      } finally {
+        await leaseGateway.release({ projectId, nodeId, holderId, holderType: "AGENT" });
+      }
+    },
+
     async "workspace.sync_to_container"(args, ctx) {
       if (!ctx.env.containerWorkspace) throw new Error("container workspace unavailable: TOOL_SANDBOX not configured");
       const pathPrefix = typeof args["path"] === "string" ? (args["path"] as string) : "";

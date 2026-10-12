@@ -1160,6 +1160,20 @@ app.get("/spaces/:spaceId/projects/:projectId/workspace/files/*", async (c) => {
   return readWorkspaceObject(obj, relative);
 });
 
+// The space worker authorizes node-level document editing; lease owner identity always comes
+// from the verified shell session, never from a client-supplied holder_id.
+app.use("/spaces/:spaceId/projects/:projectId/document-nodes/:nodeId/lease", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/document-nodes/:nodeId/lease", requireBusinessMembership({ POST: "member" }));
+app.post("/spaces/:spaceId/projects/:projectId/document-nodes/:nodeId/lease", async (c) => {
+  const { spaceId, projectId, nodeId } = c.req.param();
+  const identity = getCallerIdentity(c);
+  if (!identity.tenantId || !identity.userId || !/^[A-Za-z0-9._:-]{1,128}$/.test(nodeId)) return c.json({ error_code: "bad_request" }, 400);
+  const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
+  const access = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}?viewer_id=${encodeURIComponent(identity.userId)}`, "GET");
+  if (!access.ok) return new Response(access.body, { status: access.status, headers: { "content-type": "application/json" } });
+  return forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/document-nodes/${encodeURIComponent(nodeId)}/lease?space_id=${encodeURIComponent(spaceId)}&viewer_id=${encodeURIComponent(identity.userId)}`, "POST", await c.req.text());
+});
+
 // F-36: the effective role an assistant has in a project when acting for a given user (member GET
 // gate — anyone who can read the member list can read this derived value).
 app.use("/spaces/:spaceId/projects/:projectId/assistant-access", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));

@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { listWorkspaceFiles, readWorkspaceFile, type Project, type WorkspaceFile, type WorkspaceFileContent } from "@/lib/api";
+import { listWorkspaceFiles, readWorkspaceFile, updateDocumentNodeLease, type Project, type WorkspaceFile, type WorkspaceFileContent } from "@/lib/api";
 import { CodeCanvas } from "./viewports/DomainCanvases";
 import { DocumentRedlineCanvas } from "./viewports/DocumentRedlineCanvas";
 import { SpreadsheetFormulaGrid } from "./viewports/SpreadsheetFormulaGrid";
@@ -12,6 +12,22 @@ import { VirtualDesktopGuiCanvas } from "./viewports/VirtualDesktopGuiCanvas";
 type Creds = { sessionToken: string; endUserId: string };
 type HeaderTab = "canvases" | "files" | "details";
 export type CanvasView = "deliverable" | "code" | "micro-app" | "terminal" | "gui";
+type HydrationAction = { id: string; label: string; kind: "open_file" | "review_file"; path: string };
+
+function parseHydrationSeed(value: unknown): { title: string; description: string; actions: HydrationAction[] } | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  const seed = row.hydration_seed;
+  if (!seed || typeof seed !== "object" || Array.isArray(seed)) return null;
+  const data = seed as Record<string, unknown>;
+  if (data.version !== 1 || typeof data.title !== "string" || typeof data.description !== "string" || !Array.isArray(data.actions)) return null;
+  const actions = data.actions.filter((action): action is HydrationAction => {
+    if (!action || typeof action !== "object" || Array.isArray(action)) return false;
+    const item = action as Record<string, unknown>;
+    return typeof item.id === "string" && typeof item.label === "string" && (item.kind === "open_file" || item.kind === "review_file") && typeof item.path === "string";
+  });
+  return { title: data.title, description: data.description, actions };
+}
 
 export function CanvasContainer({ project, spaceId, creds, maximized = false, onMaximize = () => {}, standalone = false, canvasView }: { project: Project; spaceId: string; creds: Creds; maximized?: boolean; onMaximize?(): void; standalone?: boolean; canvasView?: CanvasView }) {
   const [files, setFiles] = React.useState<WorkspaceFile[]>([]);
@@ -22,6 +38,7 @@ export function CanvasContainer({ project, spaceId, creds, maximized = false, on
   const [view, setView] = React.useState<CanvasView>(canvasView ?? (project.channel_config?.app_id || hasCanvasMount ? "micro-app" : "deliverable"));
   const [terminalLines, setTerminalLines] = React.useState<string[]>([]);
   const [connected, setConnected] = React.useState(false);
+  const [welcomeDismissed, setWelcomeDismissed] = React.useState(false);
   const socket = React.useRef<WebSocket | null>(null);
   const selectedRef = React.useRef(selected);
   React.useEffect(() => { selectedRef.current = selected; }, [selected]);
@@ -46,18 +63,32 @@ export function CanvasContainer({ project, spaceId, creds, maximized = false, on
   }, [spaceId, project.id, project.default_agent_id, creds.endUserId, refresh]);
   const onSelect = React.useCallback((path: string) => { void readWorkspaceFile(spaceId, project.id, path, creds).then(setSelected); }, [spaceId, project.id, creds.sessionToken, creds.endUserId]);
   const onAction = React.useCallback((action: string, payload: Record<string, unknown> = {}) => { const event = { type: "mcp.ui_action", projectId: project.id, user: creds.endUserId, action, payload }; window.dispatchEvent(new CustomEvent("naelao:mcp-ui-action", { detail: event })); if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify(event)); }, [project.id, creds.endUserId]);
+  const onLease = React.useCallback(async (operation: "claim" | "renew" | "release", nodeId: string) => {
+    try { return await updateDocumentNodeLease(spaceId, project.id, nodeId, operation, creds); }
+    catch (error) {
+      const apiError = typeof error === "object" && error ? error as { errorCode?: unknown; status?: unknown } : {};
+      return { error_code: typeof apiError.errorCode === "string" ? apiError.errorCode : apiError.status === 409 ? "node_lease_conflict" : "node_lease_unavailable" };
+    }
+  }, [spaceId, project.id, creds.sessionToken, creds.endUserId]);
 
   const hasContainer = Boolean(project.channel_config?.container_enabled);
   const views: { id: CanvasView; label: string }[] = [{ id: "deliverable", label: "📄 Deliverable" }, { id: "code", label: "⌘ Code Canvas" }];
   if (project.channel_config?.app_id || hasCanvasMount) views.push({ id: "micro-app", label: hasCanvasMount ? "🧩 Extension Canvas" : "📱 Micro-App" });
   if (hasContainer) views.push({ id: "terminal", label: "💻 Terminal" }, { id: "gui", label: "🖥️ GUI Display" });
-  const props = { files, selected, onSelect, onAction, bare: standalone };
+  const props = { files, selected, onSelect, onAction, onLease, bare: standalone };
   const component = project.viewport_config?.component;
   const deliverable = component === "DocumentRedlineCanvas" ? <DocumentRedlineCanvas {...props} /> : component === "SpreadsheetFormulaGrid" ? <SpreadsheetFormulaGrid {...props} /> : <CodeCanvas {...props} />;
   const activeView = canvasView ?? view;
   const desktopUrl = typeof project.channel_config?.desktop_stream_url === "string" ? project.channel_config.desktop_stream_url : null;
+  const hydrationSeed = parseHydrationSeed(project.channel_config);
+  React.useEffect(() => setWelcomeDismissed(false), [project.id]);
 
-  const canvas = <div className="canvas-viewport">{activeView === "deliverable" && (hasCanvasMount ? <MicroAppCanvas spaceId={spaceId} appId={appId} projectId={project.id} onAction={onAction} /> : deliverable)}{activeView === "code" && <CodeCanvas {...props} />}{activeView === "micro-app" && <MicroAppCanvas spaceId={spaceId} appId={appId} projectId={project.id} onAction={onAction} />}{activeView === "terminal" && <ContainerTerminalCanvas lines={terminalLines} connected={connected} />}{activeView === "gui" && <VirtualDesktopGuiCanvas {...(desktopUrl ? { streamUrl: desktopUrl } : {})} />}</div>;
+  const canvas = <div className="canvas-viewport">
+    {hydrationSeed && !welcomeDismissed && <section className="card" aria-label="Template welcome" data-testid="template-welcome" style={{ margin: 12, padding: 14 }}>
+      <span className="canvas-eyebrow">Getting started</span><h3>{hydrationSeed.title}</h3><p>{hydrationSeed.description}</p>
+      <div className="clause-actions">{hydrationSeed.actions.map(action => <button key={action.id} type="button" className="btn btn-primary btn-sm" onClick={() => action.kind === "open_file" ? onSelect(action.path) : onAction("template.review_starter", { path: action.path })}>{action.label}</button>)}<button type="button" className="btn btn-ghost btn-sm" onClick={() => setWelcomeDismissed(true)}>Dismiss</button></div>
+    </section>}
+    {activeView === "deliverable" && (hasCanvasMount ? <MicroAppCanvas spaceId={spaceId} appId={appId} projectId={project.id} onAction={onAction} /> : deliverable)}{activeView === "code" && <CodeCanvas {...props} />}{activeView === "micro-app" && <MicroAppCanvas spaceId={spaceId} appId={appId} projectId={project.id} onAction={onAction} />}{activeView === "terminal" && <ContainerTerminalCanvas lines={terminalLines} connected={connected} />}{activeView === "gui" && <VirtualDesktopGuiCanvas {...(desktopUrl ? { streamUrl: desktopUrl } : {})} />}</div>;
   if (standalone) return <section className={`canvas-container canvas-standalone${maximized ? " maximized" : ""}`} aria-label={canvasView === "code" ? "Code canvas" : "Canvas"} data-testid="canvas-container">{canvas}</section>;
   return <section className={`canvas-container${maximized ? " maximized" : ""}`} aria-label="Canvas container" data-testid="canvas-container">
     <header className="canvas-header"><nav aria-label="Canvas sections">{(["canvases", "files", "details"] as HeaderTab[]).map(id => <button key={id} type="button" aria-selected={tab === id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>{id === "canvases" ? "📄 Canvases" : id === "files" ? "📁 Files" : "ℹ️ Details"}</button>)}</nav><button type="button" className="canvas-maximize" onClick={onMaximize} aria-label={maximized ? "Restore canvas" : "Maximize canvas"}>{maximized ? "⤡ Restore" : "⤢ Maximize"}</button></header>

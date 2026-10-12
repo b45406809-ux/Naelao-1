@@ -20,6 +20,42 @@ export interface ProjectTemplate {
   starterFiles: readonly BlueprintStarterFile[];
 }
 
+export interface BlueprintHydrationSeed {
+  version: 1;
+  title: string;
+  description: string;
+  actions: Array<{ id: string; label: string; kind: "open_file" | "review_file"; path: string }>;
+}
+
+export function createProjectHydrationSeed(definition: ProjectTemplate, name = definition.name): BlueprintHydrationSeed {
+  const sample = definition.starterFiles[0];
+  return {
+    version: 1,
+    title: `Welcome to ${name}`,
+    description: "This workspace includes starter material. Review it first; replace synthetic examples with approved project data before using it for real work.",
+    actions: sample ? [
+      { id: "open-starter", label: "Open starter file", kind: "open_file", path: sample.path },
+      { id: "review-starter", label: "Ask the assistant to review it", kind: "review_file", path: sample.path },
+    ] : [],
+  };
+}
+
+export function validateProjectHydrationSeed(value: unknown, starterPaths: ReadonlySet<string>): BlueprintHydrationSeed | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const seed = value as Record<string, unknown>;
+  if (seed.version !== 1 || typeof seed.title !== "string" || !seed.title.trim() || seed.title.length > 120 ||
+      typeof seed.description !== "string" || seed.description.length > 500 || !Array.isArray(seed.actions) || seed.actions.length > 6) return undefined;
+  const actions: BlueprintHydrationSeed["actions"] = [];
+  for (const raw of seed.actions) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+    const action = raw as Record<string, unknown>;
+    if (typeof action.id !== "string" || !/^[a-z0-9-]{1,48}$/.test(action.id) || typeof action.label !== "string" || !action.label.trim() || action.label.length > 80 ||
+        (action.kind !== "open_file" && action.kind !== "review_file") || typeof action.path !== "string" || !starterPaths.has(action.path)) return undefined;
+    actions.push({ id: action.id, label: action.label, kind: action.kind, path: action.path });
+  }
+  return { version: 1, title: seed.title, description: seed.description, actions };
+}
+
 const template = (value: ProjectTemplate): ProjectTemplate => Object.freeze(value);
 
 export const PROJECT_TEMPLATES: Readonly<Record<ProjectTemplateId, ProjectTemplate>> = Object.freeze({
@@ -84,5 +120,6 @@ export function getProjectTemplate(id: string): ProjectTemplate | undefined {
 export function projectTemplateAsBlueprintProject(definition: ProjectTemplate, name = definition.name): BlueprintProject {
   return { name, kind: definition.kind, templateMode: definition.templateMode, viewports: { ...definition.viewport },
     systemPrompt: definition.systemPrompt, initialTasks: definition.tasks.map(task => ({ ...task, dependencies: [...(task.dependencies ?? [])] })),
-    starterFiles: definition.starterFiles.map(file => ({ ...file })) };
+    starterFiles: definition.starterFiles.map(file => ({ ...file })),
+    configuration: { hydrationSeed: createProjectHydrationSeed(definition, name) } };
 }

@@ -160,6 +160,7 @@ export function createSpaceSDK(
 // Launchpad shell use the exact same contracts as the workers.
 export * from "./launchpad-runtime.js";
 export * from "./canvas-runtime.js";
+export * from "./document-node.js";
 export * from "./workflow-taxonomy.js";
 export * from "./browser-runtime.js";
 export * from "./extensions.js";

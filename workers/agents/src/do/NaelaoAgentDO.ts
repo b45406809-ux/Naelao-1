@@ -2674,6 +2674,30 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       };
     }
 
+    if (this.env.CONCURRENCY_DO && projectId) {
+      const nodeNamespace = this.env.CONCURRENCY_DO.get(this.env.CONCURRENCY_DO.idFromName(`node-leases:${spaceId}`));
+      const holderId = commitContext?.taskId ?? `agent:${agentId}:${crypto.randomUUID()}`;
+      const resourceKey = `space:${spaceId}:project:${projectId}`;
+      const callNodeLease = async (operation: "claim" | "renew" | "release", nodeId: string) => {
+        const response = await nodeNamespace.fetch(new Request(`http://concurrency-do/node-leases/${operation}`, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ resourceKey, nodeId, holderId, holderType: "AGENT" }),
+        }));
+        let result: Record<string, unknown> = {};
+        try { result = await response.json<Record<string, unknown>>(); } catch { /* preserve the lease failure below */ }
+        if (!response.ok && response.status !== 409) throw new Error(`document_node_lease_${response.status}`);
+        return result;
+      };
+      env.documentNodeLeaseGateway = {
+        claim: async ({ nodeId }) => {
+          const result = await callNodeLease("claim", nodeId);
+          return { acquired: result.acquired === true, ...(typeof result.heldBy === "string" ? { heldBy: result.heldBy } : {}), ...(typeof result.holderType === "string" ? { holderType: result.holderType } : {}) };
+        },
+        renew: async ({ nodeId }) => ({ renewed: (await callNodeLease("renew", nodeId)).renewed === true }),
+        release: async ({ nodeId }) => ({ released: (await callNodeLease("release", nodeId)).released === true }),
+      };
+    }
+
     // Every dispatch selects a live, visible named machine; identity comes from this host.
     if (this.env.LOCAL_TUNNEL) {
       env.localTunnel = createNamedTunnelGateway(this.env, { tenantId, spaceId, actorId: userId ?? "",
@@ -5751,9 +5775,29 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // backstop either way, so erring toward sending here costs nothing but an extra email.
       const present = await this.isAnyoneCurrentlyPresent(spaceId, tenantId);
       if (present) return;
+      const contactHeaders = await this.internalHeaders(tenantId);
+      const executiveRes = await this.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/internal/spaces/${spaceId}/executive/contacts?space_id=${encodeURIComponent(spaceId)}`,
+        { headers: contactHeaders }
+      ));
+      const mobileContacts = executiveRes.ok
+        ? (await executiveRes.json<{ data?: Array<{ channel: "whatsapp" | "telegram"; contact_id: string }> }>()).data ?? []
+        : [];
+      const approvalText = `Approval needed: agent '${agentId}' wants to ${actionName}. ${description}\n\nOpen Naelao Approvals to review. Approval id: ${approvalId}.`;
+      for (const contact of mobileContacts) {
+        const sent = await this.env.NOTIFICATIONS_WORKER.fetch(new Request("http://notifications-worker/internal/notify", {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
+          body: JSON.stringify({ channel: contact.channel, space_id: spaceId, to: contact.contact_id, body: approvalText }),
+        }));
+        if (sent.ok) return;
+      }
+
+      // Keep email as the backstop when no verified mobile contact exists or mobile delivery
+      // fails. Approval decisions remain behind the authenticated Naelao approvals UI.
       const contactRes = await this.env.SPACES_WORKER.fetch(new Request(
         `http://spaces-worker/internal/spaces/${spaceId}/owner-contact`,
-        { headers: await this.internalHeaders(tenantId) }
+        { headers: contactHeaders }
       ));
       if (!contactRes.ok) return;
       const contact = await contactRes.json<{ found: boolean; email?: string }>();
@@ -5761,13 +5805,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       await this.env.NOTIFICATIONS_WORKER.fetch(new Request("http://notifications-worker/internal/notify", {
         method: "POST",
         headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
-        body: JSON.stringify({
-          channel: "email",
-          space_id: spaceId,
-          to: contact.email,
+        body: JSON.stringify({ channel: "email", space_id: spaceId, to: contact.email,
           subject: `Approval needed: agent '${agentId}' wants to ${actionName}`,
-          body: `${description}\n\nApproval id: ${approvalId}. Review and approve or reject it from your Naelao dashboard.`,
-        }),
+          body: `${approvalText} Review and approve or reject it from your authenticated Naelao dashboard.` }),
       }));
     } catch {
       // best-effort — never block or fail the approval flow over a notification hiccup

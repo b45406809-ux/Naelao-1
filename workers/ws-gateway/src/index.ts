@@ -3,6 +3,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { mintInternalToken } from "@naelao/http";
 import { restoreWsSessionMeta, type WsSessionMeta } from "./session-meta";
+import { blocksNodeEdit } from "./node-lease-gate";
 
 interface Env {
   ENVIRONMENT: string;
@@ -55,6 +56,10 @@ interface UiActionEvent {
   action?: unknown;
   payload?: unknown;
   projectId?: unknown;
+}
+
+function actionIsDocumentMutation(action: unknown): boolean {
+  return action === "redline.accept_clause" || action === "redline.apply_patch";
 }
 
 // WsHubDO — one DO per tenant. Manages all WebSocket connections for that tenant.
@@ -118,6 +123,23 @@ export class WsHubDO extends DurableObject<Env> {
     }
 
     const payload = event.payload && typeof event.payload === "object" && !Array.isArray(event.payload) ? event.payload : {};
+    const nodeId = typeof (payload as Record<string, unknown>).nodeId === "string" ? String((payload as Record<string, unknown>).nodeId) : "";
+    if (actionIsDocumentMutation(event.action) && nodeId && typeof event.projectId === "string") {
+      const leaseResponse = await this.env.AGENTS_WORKER.fetch(new Request("http://agents/internal/document-node-lease/status", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": meta.tenantId, "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, meta.tenantId) },
+        body: JSON.stringify({ tenant_id: meta.tenantId, space_id: meta.spaceId, project_id: event.projectId, node_id: nodeId, holder_id: meta.userId, holder_type: "HUMAN" }),
+      }));
+      if (!leaseResponse.ok) {
+        ws.send(JSON.stringify({ type: "mcp.ui_action.failed", action: event.action, error: "node_lease_check_unavailable" }));
+        return;
+      }
+      const status = await leaseResponse.json<{ active?: boolean; holder_type?: string; holder_id?: string }>();
+      if (blocksNodeEdit(status, meta.userId!)) {
+        ws.send(JSON.stringify({ type: "mcp.ui_action.blocked", action: event.action, error: "document_node_locked", node_id: nodeId }));
+        return;
+      }
+    }
     const escapedPayload = JSON.stringify(payload).replace(/[<&]/g, c => c === "<" ? "\\u003c" : "\\u0026");
     const action = event.action as string;
     const goal = `<ui_action_event user="${meta.userId!.replace(/[\"&<>]/g, "_")}" action="${action.replace(/[\"&<>]/g, "_")}" payload="${escapedPayload.replace(/"/g, "&quot;")}" />`;

@@ -22,7 +22,7 @@ import type {
 } from "@naelao/events";
 import { broadcastSpaceEvent, mintInternalToken } from "@naelao/http";
 import type { MessageRole } from "@naelao/types";
-import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateExtensionManifest, scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
+import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateExtensionManifest, scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
 import { instantiateBlueprint as compileBlueprint } from "@naelao/agent-sdk";
 import type { DisplayMode, ExtensionManifest, SpaceBlueprint, TemplateMode } from "@naelao/agent-sdk";
 import { promoteCockpit } from "@naelao/agent-sdk";
@@ -1908,6 +1908,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return consumed ? Response.json({ consumed: true }) : Response.json({ error: "invalid_expired_or_replayed_grant" }, { status: 403 });
       }
       if (method === "PUT" && url.pathname === "/internal/executive-contacts") return this.putExecutiveContact(request);
+      if (method === "GET" && url.pathname === "/internal/executive-contacts") return this.listExecutiveContacts(url);
       if (method === "POST" && url.pathname === "/internal/executive/verify") return this.verifyExecutiveContact(request);
       if (method === "POST" && url.pathname === "/internal/emergency-stop") return this.handleEmergencyStop(request);
       if (method === "POST" && url.pathname === "/internal/customer-conversations") return this.recordCustomerConversation(request);
@@ -2652,6 +2653,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && taskLeaseMatch?.[1]) {
         return this.claimTaskLease(taskLeaseMatch[1], request);
       }
+      const documentNodeLeaseMatch = url.pathname.match(/^\/projects\/([^/]+)\/document-nodes\/([^/]+)\/lease$/);
+      if (method === "POST" && documentNodeLeaseMatch?.[1] && documentNodeLeaseMatch[2]) {
+        return this.handleDocumentNodeLease(decodeURIComponent(documentNodeLeaseMatch[1]), decodeURIComponent(documentNodeLeaseMatch[2]), url, request);
+      }
       if (method === "POST" && url.pathname === "/intent-deduplicate") {
         return this.checkActiveIntentDeduplication(request);
       }
@@ -2765,6 +2770,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         `INSERT INTO projects (id, space_id, name, description, status, kind, created_at, template_mode, viewport_config)
          VALUES (?, ?, ?, '', 'active', ?, ?, ?, ?)`,
         projectId, targetSpaceId, project.name, project.kind, new Date().toISOString(), project.templateMode, JSON.stringify(project.viewports));
+      const hydrationSeed = validateProjectHydrationSeed(project.configuration?.hydrationSeed, new Set(project.starterFiles.map(file => file.path)));
+      if (hydrationSeed) execute(this.ctx.storage.sql as never,
+        "UPDATE projects SET channel_config = ? WHERE id = ? AND space_id = ?", JSON.stringify({ hydration_seed: hydrationSeed }), projectId, targetSpaceId);
       const ceiling = project.configuration?.executionCeiling;
       if (typeof ceiling === "number" && ceiling >= 1 && ceiling <= 6) execute(this.ctx.storage.sql as never, "UPDATE projects SET execution_ceiling = ? WHERE id = ?", ceiling, projectId);
       if (project.systemPrompt) {
@@ -2836,6 +2844,18 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
        ON CONFLICT(space_id,channel,contact_id) DO UPDATE SET user_id=excluded.user_id, verified_at=datetime('now')`,
       body.space_id, body.user_id, body.channel, contact);
     return Response.json({ verified: true }, { status: 201 });
+  }
+
+  private listExecutiveContacts(url: URL): Response {
+    const spaceId = url.searchParams.get("space_id") ?? "";
+    if (!spaceId) return Response.json({ error: "space_id_required" }, { status: 400 });
+    const contacts = this.ctx.storage.sql.exec(
+      `SELECT ec.user_id, ec.channel, ec.contact_id FROM executive_contacts ec
+       JOIN space_members sm ON sm.space_id=ec.space_id AND sm.user_id=ec.user_id
+       WHERE ec.space_id=? AND sm.role IN ('owner','admin') ORDER BY sm.role='owner' DESC, ec.verified_at ASC`,
+      spaceId,
+    ).toArray() as Array<{ user_id: string; channel: "whatsapp" | "telegram"; contact_id: string }>;
+    return Response.json({ data: contacts });
   }
 
   private async verifyExecutiveContact(request: Request): Promise<Response> {
@@ -8592,6 +8612,26 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       { ...row, dependencies: safeJsonParseArr(row!.dependencies) as string[], file_paths: safeJsonParseArr(row!.file_paths ?? "[]") as string[] },
       { status: 201 }
     );
+  }
+
+  private async handleDocumentNodeLease(projectId: string, nodeId: string, url: URL, request: Request): Promise<Response> {
+    const viewerId = url.searchParams.get("viewer_id") ?? "";
+    const spaceId = url.searchParams.get("space_id") ?? "";
+    if (!viewerId || !/^[A-Za-z0-9._:-]{1,128}$/.test(nodeId)) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const project = queryOne<{ tenant_id: string; space_id: string }>(this.ctx.storage.sql as never,
+      "SELECT tenant_id, space_id FROM projects WHERE id = ? AND space_id = ?", projectId, spaceId);
+    if (!project) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+    if (!this.env.AGENTS_WORKER) return Response.json({ error_code: "unavailable", message: "Node lease coordinator is unavailable" }, { status: 503 });
+    const body = await request.json<{ operation?: string }>().catch(() => ({} as { operation?: string }));
+    const operation = body.operation;
+    if (!operation || !["claim", "renew", "release", "status"].includes(operation)) return Response.json({ error_code: "bad_request", message: "A supported lease operation is required" }, { status: 400 });
+    const tenantId = project.tenant_id;
+    const response = await this.env.AGENTS_WORKER.fetch(new Request(`http://agents-worker/internal/document-node-lease/${operation}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, tenantId) },
+      body: JSON.stringify({ tenant_id: tenantId, space_id: project.space_id, project_id: projectId, node_id: nodeId, holder_id: viewerId, holder_type: "HUMAN" }),
+    }));
+    return new Response(response.body, { status: response.status, headers: { "content-type": "application/json" } });
   }
 
   private async claimTaskLease(taskId: string, request: Request): Promise<Response> {

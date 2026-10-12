@@ -185,19 +185,8 @@ features and hardcoded domain behavior where the source calls for extensions.
 Update the cloud coverage/progress record with actual evidence and stop here.
 ```
 
-**Progress (2026-10-12): IN PROGRESS — core changes implemented; operational pillars still open.**
-Document/DataGrid are now the only maintained shells; third-party mounts remain in
-the isolated app iframe. Typed project-scoped canvas messages, two-pass deterministic
-lint correction, ordered transactional gadget migrations, and durable 15-second
-node leases are implemented and locally tested. Existing starter artifacts and local
-Worker launcher were reused. The node lease is not yet connected to semantic edits
-because the current document canvas is read-only. Desk-Drop, a full hydration action
-surface, deterministic marketplace publication certification, mobile/FDE escalation,
-and authorized scheduled payouts remain unfinished. Exact evidence and next actions
-are in CLOUD-PROGRESS.md; WIP snapshot `8ff5540` is pushed on
-`Mcbt5s-Backup-2`; Batch 3 is not done and must be revisited before the full 10-batch
-run is closed. The latest user request asks to continue into Batch 4 without pausing;
-Batch 4 is now the active mission while Batch 3's exact gaps remain tracked.
+**Progress (2026-10-12): IN PROGRESS — lease-backed semantic editing and install hydration implemented; remaining gates are active.**
+Human canvas focus claims and renews node leases, WS gateway document mutations fail closed when a different human holds the node, and `document.replace_clause` acquires a human-priority agent lease plus content-hash CAS. Added a versioned, bounded starter hydration seed and install welcome actions. Agent SDK (65 tests), agent lease/CAS tests (6), WS lease/concurrency tests (8), Spaces hydration tests (5), and Agents, Spaces, Shell, and WS typechecks pass. The next work is Desk-Drop/session transfer, deterministic marketplace conformance certification, mobile/FDE escalation, and completing the payout reconciliation against the later native-settlement correction. Official Cloudflare docs are blocked by the network proxy (CONNECT 403), so protected Quick Tunnel claims remain unverified. Batch 3 is not done; finish these local seams and tests, document real external dependencies, then advance to Batch 4. See CLOUD-PROGRESS.md for exact evidence.
 
 4. **Document 12: lines 5658–7973**
 

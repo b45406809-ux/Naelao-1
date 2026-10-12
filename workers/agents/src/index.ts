@@ -1589,6 +1589,36 @@ app.get("/internal/agent-config-lock/status", async (c) => {
   return c.json(await createAgentConfigLockGateway(c.env.CONCURRENCY_DO, spaceId).status(key));
 });
 
+// Semantic document-node leases are routed through the space's actor so clients never choose a
+// raw Durable Object name. The signed service caller supplies the tenant and project scope; the
+// node key itself is always derived here from those validated fields.
+app.post("/internal/document-node-lease/:operation", async (c) => {
+  const body = await c.req.json<{ tenant_id?: string; space_id?: string; project_id?: string; node_id?: string; holder_id?: string; holder_type?: "HUMAN" | "AGENT" }>().catch(() => null);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const spaceId = String(body?.space_id ?? "");
+  const projectId = String(body?.project_id ?? "");
+  const nodeId = String(body?.node_id ?? "");
+  const holderId = String(body?.holder_id ?? "");
+  const holderType = body?.holder_type;
+  if (!tenantId || body?.tenant_id !== tenantId || !(await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))) {
+    return c.json({ error_code: "forbidden", message: "internal only" }, 403);
+  }
+  if (!spaceId || !projectId || !/^[A-Za-z0-9._:-]{1,160}$/.test(nodeId) || !holderId || !["HUMAN", "AGENT"].includes(String(holderType))) {
+    return c.json({ error_code: "bad_request", message: "space_id, project_id, node_id, holder_id and holder_type are required" }, 400);
+  }
+  if (!c.env.CONCURRENCY_DO) return c.json({ error_code: "unavailable", message: "node lease coordinator is not bound" }, 503);
+  const operation = c.req.param("operation");
+  if (!["claim", "renew", "release", "status"].includes(operation)) return c.json({ error_code: "not_found" }, 404);
+  const namespaceKey = `node-leases:${spaceId}`;
+  const stub = c.env.CONCURRENCY_DO.get(c.env.CONCURRENCY_DO.idFromName(namespaceKey));
+  const path = operation === "status" ? `/node-leases/status?resourceKey=${encodeURIComponent(`space:${spaceId}:project:${projectId}`)}&nodeId=${encodeURIComponent(nodeId)}` : `/node-leases/${operation}`;
+  const response = await stub.fetch(new Request(`http://concurrency-do${path}`, {
+    method: operation === "status" ? "GET" : "POST",
+    ...(operation === "status" ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify({ resourceKey: `space:${spaceId}:project:${projectId}`, nodeId, holderId, holderType }) }),
+  }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json" } });
+});
+
 // ── POST /internal/triggers/fire — @naelao/events dispatch target ─────────────
 // SpaceDO calls this after evaluating an event_triggers match (thread.created,
 // project.created, ...). Deliberately NOT the reasoning loop: this runs the named script

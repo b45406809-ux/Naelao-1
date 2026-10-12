@@ -404,6 +404,30 @@ migration + canvas security tests 6 pass; shell typecheck passes. No production
 Cloudflare resources were contacted. This is not completion evidence for those
 remaining B3 requirements. B3 must be revisited before the overall run is closed.
 
+Fresh continuation checkpoint (2026-10-12): semantic editing and install hydration
+are now implemented. The DocumentRedline canvas claims/renews/releases node leases;
+the WS gateway gates document UI mutations on lease status; and the agent's
+`document.replace_clause` operation acquires a human-priority lease, verifies exact
+source text, CAS-writes the project file, and releases in `finally`. The hydration
+seed is validated, starter-file-scoped, persisted at install, and shown in the shell
+with open/review/dismiss actions. Approval escalation now queries active verified
+WhatsApp/Telegram executive contacts, attempts mobile notification when nobody is
+present, then falls back to the existing email notification; decisions remain behind
+the authenticated dashboard. Added a SpaceDO test that confirms the contact query
+filters to current owner/admin memberships.
+
+Fresh verification: agent-sdk build and all 65 tests; Agents typecheck and semantic
+CAS tests (6); Spaces typecheck and install/contact tests (6); Shell typecheck; WS
+gateway typecheck and node-lease/concurrency tests (8) all pass. Official Cloudflare
+documentation fetches still return proxy CONNECT HTTP 403. Batch 3 remains IN
+PROGRESS: the repository has no Desk-Drop tunnel/auth broker to connect, no
+deterministic state-delta certification runner or trusted publish-certificate
+path, and no tested scheduled FDE payout integration. Existing per-payment royalty
+ledger, authenticated payout request/withdrawal ledger and manual ops fulfillment
+remain the implemented payout path; do not equate them with a scheduled provider
+transfer. Do not mark B3 complete until the remaining implementable gates and source
+coverage review are resolved or precisely isolated as external requirements.
+
 ## Batch 4 (2026-10-12) — IN PROGRESS
 
 Primary D12 5658–7973 read ascending in bounded windows: 5658–5837, 5838–6017,

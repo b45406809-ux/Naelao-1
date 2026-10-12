@@ -757,6 +757,12 @@ export interface LockGateway {
   status(key: string): Promise<{ active: number }>;
 }
 
+export interface DocumentNodeLeaseGateway {
+  claim(params: { projectId: string; nodeId: string; holderId: string; holderType: "HUMAN" | "AGENT" }): Promise<{ acquired: boolean; heldBy?: string; holderType?: string }>;
+  renew(params: { projectId: string; nodeId: string; holderId: string; holderType: "HUMAN" | "AGENT" }): Promise<{ renewed: boolean }>;
+  release(params: { projectId: string; nodeId: string; holderId: string; holderType: "HUMAN" | "AGENT" }): Promise<{ released: boolean }>;
+}
+
 /**
  * §A1.25: lets a prebuilt op make its OWN direct LLM call rather than going through the
  * reasoner's decide() loop — needed for web-search's `grounded_answer` op, which wants
@@ -1040,6 +1046,8 @@ export interface ScriptEngineEnv {
   /** Generic named-lock primitive — present when CONCURRENCY_DO is wired up (the `lock`
    *  prebuilt reports itself degraded, not unavailable, when absent — see LockGateway). */
   lockGateway?: LockGateway;
+  /** Human-vs-agent semantic document edit leases. Absent means semantic edits fail closed. */
+  documentNodeLeaseGateway?: DocumentNodeLeaseGateway;
   /** Local-machine-as-container (§A1.17 Phase M) — present when LOCAL_TUNNEL is wired up. The
    *  `local-machine` prebuilt reports itself unavailable, not degraded, when absent (unlike
    *  lockGateway, there's no safe fallback behavior for "pretend the local machine exists"). */

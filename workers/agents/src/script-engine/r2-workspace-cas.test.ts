@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { r2Workspace } from "./prebuilt/r2-workspace.js";
 import { fileManager } from "./prebuilt/file-manager.js";
 import { workspace } from "./prebuilt/workspace.js";
+import { documentClauseNodeId } from "@naelao/agent-sdk";
 
 function makeContext() {
   const files = new Map<string, { content: string; hash: string; etag: string; customMetadata?: Record<string, string> }>();
@@ -93,5 +94,36 @@ describe("r2-workspace SHA-256 CAS", () => {
       { type: "acquire", key: "workspace:container-to-r2", holderId: "run-1", limit: 1, ttlMs: 30_000 },
       { type: "release", key: "workspace:container-to-r2", holderId: "run-1" },
     ]);
+  });
+});
+
+describe("human-priority semantic clause edits", () => {
+  it("returns a proposal and preserves the file when a human owns the clause lease", async () => {
+    const { ctx, files } = makeContext();
+    const write = r2Workspace.operations["write_file"]!;
+    await write({ path: "agreement.md", content: "Section 8\n\nOld cap", expectedHash: null }, ctx as never);
+    const withLease = { ...ctx, env: { ...ctx.env, runId: "run-1", documentNodeLeaseGateway: {
+      claim: async () => ({ acquired: false, heldBy: "partner", holderType: "HUMAN" }),
+      renew: async () => ({ renewed: false }), release: async () => ({ released: false }),
+    } } };
+    const result = await workspace.operations["document.replace_clause"]!({ path: "agreement.md", clause_index: 1, expected_clause: "Old cap", replacement: "New cap" }, withLease as never) as { status: string };
+    expect(result.status).toBe("proposal_required");
+    expect([...files.values()][0]?.content).toBe("Section 8\n\nOld cap");
+  });
+
+  it("claims, CAS-writes, and releases the same project-scoped node lease", async () => {
+    const { ctx, files } = makeContext();
+    const write = r2Workspace.operations["write_file"]!;
+    await write({ path: "agreement.md", content: "Section 8\n\nOld cap", expectedHash: null }, ctx as never);
+    const events: string[] = [];
+    const withLease = { ...ctx, env: { ...ctx.env, runId: "run-1", documentNodeLeaseGateway: {
+      claim: async (input: { projectId: string; nodeId: string; holderId: string; holderType: string }) => { events.push(`claim:${input.projectId}:${input.nodeId}:${input.holderType}`); return { acquired: true }; },
+      renew: async () => ({ renewed: true }),
+      release: async (input: { nodeId: string }) => { events.push(`release:${input.nodeId}`); return { released: true }; },
+    } } };
+    const result = await workspace.operations["document.replace_clause"]!({ path: "agreement.md", clause_index: 1, expected_clause: "Old cap", replacement: "New cap" }, withLease as never) as { status: string; node_id: string };
+    expect(result).toMatchObject({ status: "updated", node_id: documentClauseNodeId("agreement.md", 1) });
+    expect([...files.values()][0]?.content).toBe("Section 8\n\nNew cap");
+    expect(events).toEqual([`claim:p1:${documentClauseNodeId("agreement.md", 1)}:AGENT`, `release:${documentClauseNodeId("agreement.md", 1)}`]);
   });
 });

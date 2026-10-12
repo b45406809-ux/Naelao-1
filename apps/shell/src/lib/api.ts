@@ -1931,6 +1931,15 @@ export async function readWorkspaceFile(spaceId: string, projectId: string, path
   return apiFetch(`/v1/spaces/${spaceId}/projects/${projectId}/workspace/files/${path.split("/").map(encodeURIComponent).join("/")}`, { session });
 }
 
+export type DocumentNodeLeaseOperation = "claim" | "renew" | "release";
+export async function updateDocumentNodeLease(
+  spaceId: string, projectId: string, nodeId: string, operation: DocumentNodeLeaseOperation, session: SessionCredentials
+): Promise<{ acquired?: boolean; renewed?: boolean; released?: boolean; error_code?: string; holderType?: string; holderId?: string }> {
+  return apiFetch(`/v1/spaces/${spaceId}/projects/${projectId}/document-nodes/${encodeURIComponent(nodeId)}/lease`, {
+    method: "POST", body: JSON.stringify({ operation }), session,
+  });
+}
+
 export async function listBusinessProducts(spaceId: string, session: SessionCredentials): Promise<LaunchpadProduct[]> {
   const res = await apiFetch<{ data: LaunchpadProduct[] }>(`/v1/spaces/${spaceId}/products`, { session });
   return res.data;
