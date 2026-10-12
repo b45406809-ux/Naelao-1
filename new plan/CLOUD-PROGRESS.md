@@ -538,6 +538,29 @@ toolsandbox, document-sandbox, and media-sandbox images. For each image, initial
 control channel, confirmed `/health`, and POSTed a TypeScript `run()` returning 42 to
 `/exec`; all returned `{ok:true,result:42}`. These were direct local Docker requests to
 the actual image server, not a Durable Object/Cloudflare production execution. The five
-Wrangler dev Workers remained Ready in parallel. The actual Agent DO-to-container RPC,
-TypeScript lazy import inside workerd, and real AI/provider behavior are still not
-verified; keep Batch 4 in progress.
+Wrangler dev Workers remained Ready in parallel. The actual Agent DO-to-container RPC and real AI/provider behavior remain
+unverified; the separate temporary workerd compiler smoke passed as recorded below. Keep
+Batch 4 in progress.
+
+Fresh environment and Batch 4 continuation (2026-10-12): `corepack pnpm@9.12.0
+install --frozen-lockfile --ignore-scripts` completed for all 64 workspace projects. A
+fresh `corepack pnpm@9.12.0 dev --workers-only` launch reached Wrangler Ready on router,
+auth, spaces, agents, and knowledge; `GET http://127.0.0.1:8080/health` returned HTTP 200
+with `{"status":"ok","env":"development"}`. The Agents root `wrangler deploy --dry-run`
+with Wrangler 4.149.0 bundled and built all three container images. A first attempt to use
+the worker package's Wrangler 3.114.17 failed parsing the existing `[[containers]]` array;
+this was a wrong CLI selection, corrected by invoking root Wrangler 4.149.0. The local
+stack was stopped after verification. Local mode reports `naelao-calls` unavailable and
+Workers AI unsupported; this does not block the verified router or container smoke, but
+features depending on those providers remain unverified.
+
+Cloud environment setup skill: read the current saved config, ran the frozen install and
+startup/health checks, then saved draft
+`f7a2b608-3045-440a-b759-5cbc4bcce7d1~cecfgdraft_6accc06edf4081a281d7b6b23ecadf44`.
+It replaces stale setup instructions with the pinned frozen install and tested local Worker
+startup instructions, and requests official Cloudflare/OpenAI/TypeScript/pnpm/testing and
+WhatsApp/Telegram/Twilio/Stripe/Whop documentation hosts. The save returned `status: saved`
+and `requires_publish: true`; this is a draft, not an applied or published environment.
+No Cloudflare token variables are present and `wrangler whoami` reports unauthenticated.
+Live Cloudflare deployment checks therefore remain unavailable; no live resources were
+contacted. This does not block local work.

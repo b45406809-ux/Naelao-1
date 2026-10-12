@@ -229,8 +229,7 @@ returned `result: 42`; root-owned runtime files are now guest-readable but remai
 non-writable. A temporary real workerd Worker successfully loaded TypeScript and ran
 `transpileModule` using a short-lived `__filename` compatibility shim. The full Agent
 DO-to-container call path and local AI provider remain unavailable for integration checks.
-WhatsApp media ingress is still text-only. Exact evidence and remaining review are in
-CLOUD-PROGRESS.md; Batch 4 remains active.
+WhatsApp media ingress is still text-only. Fresh setup evidence: frozen pnpm install passes, all five local Workers reach Ready, and router `/health` returns 200. Root Wrangler 4.149.0 Agent dry-run succeeds; invoking worker-local Wrangler 3.114.17 fails to parse `containers` and is not the supported command. A cloud setup draft is saved and requires user review/publish; Wrangler is unauthenticated for live deploys. The full Agent DO-to-container RPC, AI format acceptance, and provider saga effects remain unverified. See CLOUD-PROGRESS.md; Batch 4 remains IN PROGRESS.
 
 5. **Document 12: lines 7974–10197**
 
