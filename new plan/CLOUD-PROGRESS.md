@@ -7,8 +7,8 @@ Authority: Documents 12 then 13 only; original TXT files unchanged. Branch:
 | --- | --- |
 | 1 | PARTIAL_NEEDS_PLATFORM — local implementation complete; exact external gates below |
 | 2 | PARTIAL_NEEDS_PLATFORM — runtime implemented; verified preview DNS/Worker route must be configured |
-| 3 | IN PROGRESS — semantic leases, R2/SQLite hydration fixtures, sample-audit delegation, and mobile text escalation implemented; key integration gates remain |
-| 4 | IN PROGRESS |
+| 3 | IN PROGRESS — semantic leases, R2/SQLite hydration, sample-audit delegation, mobile text escalation, and separated builder/Whop payout ledgers; publish certification and other gates remain |
+| 4 | IN PROGRESS — focused suites/typechecks pass; local DO-to-container bridge and provider/runtime integration remain unverified |
 | 5 | UNASSESSED |
 | 6 | UNASSESSED |
 | 7 | UNASSESSED |
@@ -639,3 +639,9 @@ and `requires_publish: true`; this is a draft, not an applied or published envir
 No Cloudflare token variables are present and `wrangler whoami` reports unauthenticated.
 Live Cloudflare deployment checks therefore remain unavailable; no live resources were
 contacted. This does not block local work.
+
+Next action: continue Batch 3 with a deterministic fixture/oracle contract and an
+artifact-bound certificate gate on every marketplace/blueprint publish path. Inspect
+both route families and add failure/pass tests before implementing the next Batch 3 gap.
+Do not mark Batch 3 complete or advance to Batch 5; after all locally implementable
+Batch 3 work, resume the remaining Batch 4 integration gates.
