@@ -598,6 +598,17 @@ Batch 4 remains IN PROGRESS: full authorized DO-to-container execution, runtime
 AI/Ogg acceptance, and real settlement-provider effects remain unverified; see above
 for the separate local Docker `/health` and `/exec` smoke evidence.
 
+Actual local DO-to-container attempt (2026-10-12): used a temporary development-only
+route to call the real `ToolSandboxDO` with an internally signed scoped request, then
+removed the route. The call reached the DO and its local billing reservation was
+settled, but Wrangler's container bridge logged `Network connection lost`; the
+20-second control readiness loop returned `container_startup_interrupted` before
+`/exec`. No production Cloudflare endpoint or user data was involved. This narrows the
+integration gap to Wrangler/workerd's local Container bridge in this environment; the
+separate authenticated direct-Docker `/health` and `/exec` smokes still pass. The test
+did not bypass the production grant boundary in shipped code and proves no authorized
+AgentDO-to-container call.
+
 Cloud environment setup skill: read the current saved config, ran the frozen install and
 startup/health checks, then saved draft
 `f7a2b608-3045-440a-b759-5cbc4bcce7d1~cecfgdraft_6accc06edf4081a281d7b6b23ecadf44`.
