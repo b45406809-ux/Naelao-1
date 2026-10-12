@@ -9,7 +9,7 @@ describe("blueprint compiler", () => {
     const compiled = instantiateBlueprint(valid, "space_target");
     expect(compiled).not.toBe(valid);
     expect(compiled.metadata.targetSpaceId).toBe("space_target");
-    expect(compiled.projects[0]?.starterFiles[0]?.path).toBe("workspace/src/index.ts");
+    expect(compiled.projects[0]?.starterFiles[0]?.path).toBe("src/index.ts");
   });
   it("rejects traversal", () => expect(() => instantiateBlueprint({ ...valid, projects: [{ ...valid.projects[0]!, starterFiles: [{ path: "../secret", content: "" }] }] }, "space")).toThrow("Unsafe"));
 });

@@ -20,9 +20,13 @@ import { createBusinessWhopOAuthCheckout } from "./whop-oauth-billing.js";
 import { reserveOwnerPayout, settleSpaceWallet } from "./wallet-checkout.js";
 import { normalizePlanTier, PLANS } from "@naelao/billing-core";
 import { registerPartnerPortalRoutes } from "./partner-portal.js";
+import { reconcileDeveloperPayouts } from "./payout-reconciliation.js";
+import { registerMarketplaceLicenseRoutes } from "./marketplace-licenses.js";
 export { settleTemplateSubscriptionPayment } from "./settlement.js";
 
 export interface BillingEnv {
+  /** Optional native FDE payout rail; separate from customer/business-wallet billing. */
+  STRIPE_CONNECT_SECRET_KEY?: string;
   ENVIRONMENT: string;
   /** Shared inter-worker HMAC secret (mintInternalToken/requireInternalHmac, @naelao/http) —
    *  needed to call spaces worker's internal routes directly (bypassing naelao-router). */
@@ -126,6 +130,7 @@ function validateEnv(env: BillingEnv): void {
 const app = new Hono<{ Bindings: BillingEnv }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
+registerMarketplaceLicenseRoutes(app);
 registerPartnerPortalRoutes(app);
 
 app.post("/billing/business-wallet/settle", async (c) => {
@@ -1430,5 +1435,6 @@ async function handleQueue(
 
 export default {
   fetch: app.fetch,
+  async scheduled(event: ScheduledController, env: BillingEnv, ctx: ExecutionContext) { ctx.waitUntil(reconcileDeveloperPayouts(env, Date.now(), event.cron === "0 0 * * *")); },
   queue: handleQueue as unknown as ExportedHandlerQueueHandler<BillingEnv>,
 } satisfies ExportedHandler<BillingEnv>;

@@ -1978,6 +1978,41 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ...(workspaceBranch ? { workspaceBranch } : {}),
     };
     const memoryRoleRank = { value: roleRankFor(callerRole) };
+    env.artifactValidationState = {};
+    if(projectId && this.env.SPACES_WORKER) env.validateWorkspaceMutation = async input => {
+      // A private execution policy never falls back to a cloud validator with artifact bytes.
+      if(airGappedOnly) throw new Error("private_workspace_cloud_publication_denied");
+      const prefix=workspacePrefix(env);if(!input.key.startsWith(prefix)) throw new Error("artifact_workspace_scope_mismatch");
+      if(input.bytes.byteLength>2*1024*1024) throw new Error("artifact_validation_size_limit");
+      const path=`/workspace/${input.key.slice(prefix.length).replace(/^\/+/,"")}`;
+      const state=env.artifactValidationState!;
+      const token=await mintInternalToken(this.env.PLATFORM_SECRET,tenantId);
+      const post=(action:string,body:unknown)=>this.env.SPACES_WORKER!.fetch(new Request(`http://spaces-worker/internal/spaces/${spaceId}/artifact-validation/${action}`,{method:"POST",headers:{"content-type":"application/json","x-naelao-tenant-id":tenantId,"x-naelao-internal-token":token},body:JSON.stringify(body)}));
+      const response=await post("check",{project_id:projectId,path,content:new TextDecoder().decode(input.bytes),work_key:commitContext?.taskId??state.workKey??input.runId??"unscoped",...(commitContext?.taskId?{task_id:commitContext.taskId}:{})});
+      if(!response.ok) throw new Error("artifact_validation_unavailable");
+      const result=await response.json<{allowed:boolean;status:string;diagnosticId?:string;approvalId?:string;diagnostics?:unknown;correctionAttempts?:number}>();
+      if(result.allowed) return;
+      if(result.status==="REQUIRES_HUMAN_INTERVENTION" && result.diagnosticId) {
+        let approvalId=result.approvalId;let expiresAt:number|undefined;
+        let waiting=true;
+        if(!approvalId && env.hitlGateway) {
+          const approval=await env.hitlGateway.requestApproval({runId:input.runId??state.workKey??crypto.randomUUID(),sessionId:state.sessionId??"artifact-validation",actionName:state.actionName??"artifact.linter_intervention",actionInput:{...state.actionInput,artifact_diagnostic_id:result.diagnosticId},description:"The artifact still fails structural validation after two repair attempts. Review its diagnostics before resuming corrections."});
+          approvalId=approval.approvalId;expiresAt=approval.expiresAt;
+          waiting=approval.pending===true;
+          const attached=await post("approval",{id:result.diagnosticId,approval_id:approvalId});
+          if(attached.ok) approvalId=(await attached.json<{approvalId?:string}>()).approvalId??approvalId;
+          if(approval.approved) await post("resume",{id:result.diagnosticId,approval_id:approvalId});
+        }
+        if(approvalId && result.approvalId && this.env.HITL_APPROVAL_DO) {
+          const stub=this.env.HITL_APPROVAL_DO.get(this.env.HITL_APPROVAL_DO.idFromName(`hitl:${spaceId}`));
+          const statusResponse=await stub.fetch(new Request(`http://hitl/requests/${encodeURIComponent(approvalId)}`));
+          const decision=await statusResponse.json<{status:string}>();waiting=decision.status==="pending";
+          if(decision.status==="approved") await post("resume",{id:result.diagnosticId,approval_id:approvalId});
+        }
+        if(approvalId && waiting) state.pending={approvalId,diagnosticId:result.diagnosticId,...(expiresAt?{expiresAt}:{})};
+      }
+      throw new Error(JSON.stringify({error_code:result.status,diagnostic_id:result.diagnosticId,diagnostics:result.diagnostics,correction_attempts:result.correctionAttempts}));
+    };
     env.memoryRoleRank = memoryRoleRank;
     if (!airGappedOnly && (this.env.TYPESAFE_API_KEY || this.env.SYSTEM_ONE_ENDPOINT)) {
       env.fastDecision = new SystemOneDecisionClient({
@@ -2402,7 +2437,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           // always knows what's going on, and uses a channel script to tell the user." Fire this
           // concurrently with the poll below (never awaited) — a slow/failed notification must
           // never delay or fail the approval flow itself.
-          void this.notifyApprovalRequested(spaceId, tenantId, agentId, approval_id, params.actionName, params.description);
+          this.ctx.waitUntil(this.notifyApprovalRequested(spaceId, tenantId, agentId, approval_id, params.actionName, params.description));
 
           // Short courtesy poll, not a deadline. Someone already looking at the approval answers
           // within seconds, and holding the request open for them keeps the common interactive
@@ -2451,7 +2486,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           }));
           if (!createResp.ok) return { questionId: "", reason: `questionnaire_unavailable: ${createResp.status}` };
           const { approval_id } = await createResp.json<{ approval_id: string }>();
-          void this.notifyApprovalRequested(spaceId, tenantId, agentId, approval_id, "AskUser", params.question);
+          this.ctx.waitUntil(this.notifyApprovalRequested(spaceId, tenantId, agentId, approval_id, "AskUser", params.question));
           const deadline = Date.now() + APPROVAL_INLINE_WAIT_MS;
           while (Date.now() < deadline) {
             await new Promise<void>((r) => setTimeout(r, 2_000));
@@ -4156,7 +4191,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!createResp.ok) return Response.json({ error: "failed to create approval" }, { status: 502 });
     const { approval_id } = await createResp.json<{ approval_id: string }>();
 
-    void this.notifyApprovalRequested(body.spaceId, body.tenantId, body.agentId, approval_id, body.actionKey, body.description);
+    this.ctx.waitUntil(this.notifyApprovalRequested(body.spaceId, body.tenantId, body.agentId, approval_id, body.actionKey, body.description));
 
     return Response.json({
       approval_id,
@@ -5768,27 +5803,24 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     if (!this.env.NOTIFICATIONS_WORKER || !this.env.SPACES_WORKER || !tenantId) return;
     try {
-      // Ask-before-emailing: someone actively in the space right now sees this via the in-app
-      // notification / inline approval card (item 84) the moment it happens — an immediate email
-      // on top of that is noise, not signal. Nobody present (or the presence check itself
-      // failing) is treated the same as "away" — the hourly notification sweep is the real
-      // backstop either way, so erring toward sending here costs nothing but an extra email.
-      const present = await this.isAnyoneCurrentlyPresent(spaceId, tenantId);
-      if (present) return;
       const contactHeaders = await this.internalHeaders(tenantId);
       const executiveRes = await this.env.SPACES_WORKER.fetch(new Request(
         `http://spaces-worker/internal/spaces/${spaceId}/executive/contacts?space_id=${encodeURIComponent(spaceId)}`,
         { headers: contactHeaders }
       ));
       const mobileContacts = executiveRes.ok
-        ? (await executiveRes.json<{ data?: Array<{ channel: "whatsapp" | "telegram"; contact_id: string }> }>()).data ?? []
+        ? (await executiveRes.json<{ data?: Array<{ user_id: string; channel: "whatsapp" | "telegram"; contact_id: string }> }>()).data ?? []
         : [];
+      // Suppress mobile/email only when a verified executive contact is active. An unrelated
+      // viewer in the space must not hide an urgent approval from its owner or admin.
+      const executivePresent = await Promise.all(mobileContacts.map(contact => this.isUserCurrentlyPresent(spaceId, tenantId, contact.user_id)));
+      if (executivePresent.some(Boolean)) return;
       const approvalText = `Approval needed: agent '${agentId}' wants to ${actionName}. ${description}\n\nOpen Naelao Approvals to review. Approval id: ${approvalId}.`;
       for (const contact of mobileContacts) {
         const sent = await this.env.NOTIFICATIONS_WORKER.fetch(new Request("http://notifications-worker/internal/notify", {
           method: "POST",
           headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
-          body: JSON.stringify({ channel: contact.channel, space_id: spaceId, to: contact.contact_id, body: approvalText }),
+          body: JSON.stringify({ channel: contact.channel, space_id: spaceId, to: contact.contact_id, body: approvalText, actions: [{ id: `review:${approvalId}`, label: "Review approval" }] }),
         }));
         if (sent.ok) return;
       }
@@ -5836,16 +5868,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
   }
 
-  /** Whether anyone has a fresh presence heartbeat in this space right now — see
-   *  requireBusinessMembership's own pass-through for a non-product_end_user caller, which is
-   *  what lets this internal-token call reach the route at all. Any failure reads as "not
-   *  present" (the safer default for an escalation decision: erring toward sending a
-   *  notification is harmless, erring toward silence is not). */
-  private async isAnyoneCurrentlyPresent(spaceId: string, tenantId: string): Promise<boolean> {
-    if (!this.env.SPACES_WORKER || !tenantId) return false;
+  /** Whether this verified owner/admin has a fresh heartbeat in the space. */
+  private async isUserCurrentlyPresent(spaceId: string, tenantId: string, userId: string): Promise<boolean> {
+    if (!this.env.SPACES_WORKER || !tenantId || !userId) return false;
     try {
       const resp = await this.env.SPACES_WORKER.fetch(new Request(
-        `http://spaces-worker/spaces/${spaceId}/presence`,
+        `http://spaces-worker/spaces/${spaceId}/presence?user_id=${encodeURIComponent(userId)}`,
         { headers: await this.internalHeaders(tenantId) }
       ));
       if (!resp.ok) return false;
@@ -6369,7 +6397,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }),
     }));
     const { approval_id } = await createResp.json<{ approval_id: string }>();
-    void this.notifyApprovalRequested(spaceId, tenantId, agentId, approval_id, "session_budget_continue", `Session ${sessionId} reached its credit budget ceiling`);
+    this.ctx.waitUntil(this.notifyApprovalRequested(spaceId, tenantId, agentId, approval_id, "session_budget_continue", `Session ${sessionId} reached its credit budget ceiling`));
     return {
       ok: false,
       response: Response.json(

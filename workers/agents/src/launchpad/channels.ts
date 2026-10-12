@@ -230,7 +230,8 @@ const whatsappAdapter: ChannelAdapter = {
     const from = str(message, "from");
     const id = str(message, "id");
     const textBody = (message["text"] as Record<string, unknown> | undefined)?.["body"];
-    const text = typeof textBody === "string" ? textBody : undefined;
+    const reply = (message["interactive"] as Record<string, unknown> | undefined)?.["button_reply"] as Record<string, unknown> | undefined;
+    const text = typeof textBody === "string" ? textBody : typeof reply?.["id"] === "string" && /^review:[a-zA-Z0-9_-]{1,48}$/.test(reply["id"]) ? reply["id"] : undefined;
     if (!from || !id || !text) return null; // non-text message (image/audio/...) — not handled yet
 
     const ts = str(message, "timestamp");
@@ -277,8 +278,16 @@ const whatsappAdapter: ChannelAdapter = {
 const telegramAdapter: ChannelAdapter = {
   type: "telegram",
   normalizeInbound(raw) {
-    // An update carries exactly one of many possible payloads. Only real text messages are
-    // actionable — edits, joins, polls and callback queries are not something to answer.
+    const callback = raw["callback_query"] as Record<string, unknown> | undefined;
+    if (callback) {
+      const message = callback["message"] as Record<string, unknown> | undefined;
+      const chat = message?.["chat"] as Record<string, unknown> | undefined;
+      const from = callback["from"] as Record<string, unknown> | undefined;
+      const data = callback["data"];
+      // Executive controls require a private human conversation, never a shared group identity.
+      if (!from || chat?.["type"] !== "private" || chat["id"] !== from["id"] || typeof data !== "string" || !/^review:[a-zA-Z0-9_-]{1,48}$/.test(data)) return null;
+      return { channel: "telegram", channel_user_id: String(from["id"]), text: data, external_id: `callback:${String(callback["id"])}`, timestamp: Date.now() };
+    }
     const message = raw["message"] as Record<string, unknown> | undefined;
     if (!message) return null;
     const text = typeof message["text"] === "string" ? message["text"] : "";

@@ -1080,6 +1080,8 @@ export interface ScriptEngineEnv {
   /** Unique attempt identity used as the holder for automatic multi-file workspace locks. */
   runId?: string;
   taskId?: string;
+  validateWorkspaceMutation?: (input: { key: string; bytes: Uint8Array; runId?: string }) => Promise<void>;
+  artifactValidationState?: { workKey?: string; sessionId?: string; actionName?: string; actionInput?: Record<string,unknown>; pending?: { approvalId: string; expiresAt?: number; diagnosticId: string } };
   /** Host cancellation propagated into paid browser/container operations. */
   executionSignal?: AbortSignal;
   /** Optional isolated artifact branch. When present, workspace operations use a branch-scoped

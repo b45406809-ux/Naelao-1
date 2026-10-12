@@ -7,6 +7,7 @@
 //   POST   /spaces/:spaceId/sessions/:sessionId/agent/runs/:runId/cancel
 
 import { Hono, type Context } from "hono";
+import { resolveEndUserBusinessRole } from "../../spaces/src/business-auth.js";
 import { errorResponse, requestId, notFound, badRequest, unauthorized, forbidden, mintInternalToken, verifyInternalToken } from "@naelao/http";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { contextWindowForModel, isAllowedModel, ALLOWED_MODELS, DEFAULT_WORKING_MODEL, isValidReasoningLevel, capabilityForModel, isValidEffortLevel, type EffortLevel } from "@naelao/billing-core";
@@ -2475,9 +2476,23 @@ app.get("/spaces/:spaceId/sessions/:sessionId/approvals", async (c) => {
   return stub.fetch(`http://do${url}`);
 });
 
+async function requireApprovalAuthority(c: Parameters<typeof requireOwnedSpace>[0], spaceId: string): Promise<string> {
+  const tenantId=await requireOwnedSpace(c,spaceId);const userId=c.req.header("x-naelao-user-id")??"";const role=c.req.header("x-naelao-role");
+  if(!userId) throw unauthorized("Human approval authority required");
+  if(role==="product_end_user") {
+    const membership=await resolveEndUserBusinessRole(c.env.PLATFORM_DB,spaceId,userId);
+    if(membership!=="owner" && membership!=="admin") throw forbidden("Owner or admin approval authority required");
+  } else {
+    if(role!=="owner" && role!=="admin") throw forbidden("Owner or admin approval authority required");
+    const membership=await c.env.PLATFORM_DB.prepare("SELECT role FROM org_members WHERE org_id=? AND user_id=?").bind(tenantId,userId).first<{role:string}>();
+    if(membership?.role!=="owner" && membership?.role!=="admin") throw forbidden("Approval membership was revoked");
+  }
+  return tenantId;
+}
+
 app.put("/spaces/:spaceId/sessions/:sessionId/approvals/:approvalId/approve", async (c) => {
   const { spaceId, approvalId } = c.req.param();
-  const tenantId = await requireOwnedSpace(c, spaceId);
+  const tenantId = await requireApprovalAuthority(c, spaceId);
   const stub = getHitlDo(c.env, spaceId);
   const res = await stub.fetch(`http://do/requests/${approvalId}/approve`, { method: "PUT" });
   // Approving is only half the job: if a run suspended waiting on this, it has to actually pick
@@ -2497,7 +2512,14 @@ async function resumeSuspendedRun(env: AgentsEnv, tenantId: string, spaceId: str
     // addressed per space:project:thread, so guessing (e.g. always the Space Assistant) would
     // reach the wrong instance for any project-scoped run and silently find no checkpoint.
     const hitl = getHitlDo(env, spaceId);
-    const row = await (await hitl.fetch(`http://do/requests/${approvalId}`)).json<{ resume_do_id?: string | null }>();
+    const row = await (await hitl.fetch(`http://do/requests/${approvalId}`)).json<{ resume_do_id?: string | null; status?: string; tool_input?: string }>();
+    if(row.status==="approved" && row.tool_input && env.SPACES_WORKER) {
+      const input=JSON.parse(row.tool_input) as {artifact_diagnostic_id?:string};
+      if(input.artifact_diagnostic_id) {
+        const cleared=await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/internal/spaces/${spaceId}/artifact-validation/resume`,{method:"POST",headers:{"content-type":"application/json","x-naelao-tenant-id":tenantId,"x-naelao-internal-token":await mintInternalToken(env.PLATFORM_SECRET,tenantId)},body:JSON.stringify({id:input.artifact_diagnostic_id,approval_id:approvalId})}));
+        if(!cleared.ok && cleared.status!==409) return;
+      }
+    }
     if (!row.resume_do_id) return; // opened by the HTTP agent-key gate — no loop to resume
     const stub = env.NAELAO_AGENT_DO.get(env.NAELAO_AGENT_DO.idFromString(row.resume_do_id));
     await stub.fetch(
@@ -2553,7 +2575,7 @@ app.get("/spaces/:spaceId/sessions/:sessionId/approvals/:approvalId", async (c) 
 
 app.put("/spaces/:spaceId/sessions/:sessionId/approvals/:approvalId/reject", async (c) => {
   const { spaceId, approvalId } = c.req.param();
-  await requireOwnedSpace(c, spaceId);
+  await requireApprovalAuthority(c, spaceId);
   const body = await c.req.json<{ reason?: string }>().catch(() => ({}));
   const stub = getHitlDo(c.env, spaceId);
   return stub.fetch(`http://do/requests/${approvalId}/reject`, {
@@ -3081,7 +3103,7 @@ app.post("/spaces/:spaceId/projects/:projectId/pull-request-cards/:cardId/decisi
 
 app.put("/spaces/:spaceId/sessions/:sessionId/approvals/:approvalId/answer", async (c) => {
   const { spaceId, approvalId } = c.req.param();
-  const tenantId = await requireOwnedSpace(c, spaceId);
+  const tenantId = await requireApprovalAuthority(c, spaceId);
   const body = await c.req.json<{ answer?: string }>();
   const stub = getHitlDo(c.env, spaceId);
   const res = await stub.fetch(`http://do/requests/${approvalId}/answer`, {
@@ -4420,6 +4442,24 @@ app.post("/channels/platform-inbound/:channel", async (c) => {
   if (!space || space.status !== "active") return c.json({ ok: true, skipped: "space_inactive" });
   if ((await resolveWakeContext(c.env, paired.spaceId, paired.tenantId)).airGappedOnly) {
     return c.json({ ok: true, skipped: "air_gapped" });
+  }
+
+  const desktopCommand = /^(?:desktop|open canvas)(?: dd_([a-f0-9]{32}))?$|^\/start dd_([a-f0-9]{32})$/i.exec(inbound.text.trim());
+  const reviewCommand = /^review:[a-zA-Z0-9_-]{1,48}$/.test(inbound.text.trim());
+  if ((channel === "whatsapp" || channel === "telegram") && (desktopCommand || reviewCommand)) {
+    if (channel === "telegram" && !raw["callback_query"] && ((raw["message"] as Record<string, unknown> | undefined)?.["chat"] as Record<string, unknown> | undefined)?.["type"] !== "private") return c.json({ ok: true, skipped: "private_chat_required" });
+    const challengeId = desktopCommand?.[1] ?? desktopCommand?.[2];
+    const issued = await c.env.SPACES_WORKER.fetch(new Request("http://spaces-worker/internal/desk-drop/issue", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": paired.tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, paired.tenantId) },
+      body: JSON.stringify({ spaceId: paired.spaceId, channel, contact: inbound.channel_user_id, projectId: reviewCommand ? undefined : paired.projectId ?? undefined, challengeId, destination: reviewCommand ? "approvals" : "dashboard" }),
+    }));
+    const result = issued.ok ? await issued.json<{ token?: string; browser_ready?: boolean }>() : null;
+    const origin = c.env.PUBLIC_AGENTS_URL ? new URL(c.env.PUBLIC_AGENTS_URL).origin : null;
+    await replyOnPlatformChannel(c.env, channel, inbound.channel_user_id, result?.browser_ready ? "Desktop approved. Click Open canvas in the browser you scanned."
+      : result?.token && origin
+      ? `Open your canvas within 90 seconds: ${origin}/v1/desk-drop/redeem?token=${result.token}`
+      : "Desktop access requires a verified owner or admin contact and a configured workspace link.");
+    return c.json({ ok: true, desktop_link_sent: !!result && !!origin });
   }
 
   try {

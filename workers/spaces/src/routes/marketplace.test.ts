@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
-import { certifyArtifact, MIN_MARKETPLACE_FIXTURES, type ConformanceSuite } from "@naelao/security";
+import { certifyStateDeltaArtifact, MIN_MARKETPLACE_FIXTURES, type ConformanceSuite } from "@naelao/security";
 import { registerMarketplaceRoutes } from "./marketplace.js";
 
 function buildSuite(): ConformanceSuite {
@@ -59,7 +59,7 @@ describe("marketplace conformance publication gate", () => {
   it("requires and rechecks the persisted receipt immediately before publishing", async () => {
     const h = harness();
     const artifact = { id: "type-a", version: 1 };
-    const { certificate } = await certifyArtifact(artifact, buildSuite(), "secret");
+    const certificate = await certifyStateDeltaArtifact(artifact, buildSuite(), { runner: "naelao-state-delta-v1", passed: 50, total: 50, securityViolations: 0, tokensUsed: 0, maximumCostUpperBoundUsd: 0.025, diagnostics: [] }, "secret", "tenant-a");
     const submitted = await h.app.request("/marketplace/listings", {
       method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a" },
       body: JSON.stringify({ space_type_id: "type-a", author_name: "A", name: "Test", description: "Test", pricing_model: "freemium_tiered", price_cents: 0, conformance_artifact: artifact, conformance_certificate: certificate }),
@@ -76,7 +76,7 @@ describe("marketplace conformance publication gate", () => {
   it("blocks publication if the stored artifact changed after certification", async () => {
     const h = harness();
     const artifact = { id: "type-a", version: 1 };
-    const { certificate } = await certifyArtifact(artifact, buildSuite(), "secret");
+    const certificate = await certifyStateDeltaArtifact(artifact, buildSuite(), { runner: "naelao-state-delta-v1", passed: 50, total: 50, securityViolations: 0, tokensUsed: 0, maximumCostUpperBoundUsd: 0.025, diagnostics: [] }, "secret", "tenant-a");
     const submitted = await h.app.request("/marketplace/listings", {
       method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a" },
       body: JSON.stringify({ space_type_id: "type-a", author_name: "A", name: "Test", description: "Test", pricing_model: "freemium_tiered", price_cents: 0, conformance_artifact: artifact, conformance_certificate: certificate }),

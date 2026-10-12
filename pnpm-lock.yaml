@@ -804,6 +804,9 @@ importers:
       '@naelao/http':
         specifier: workspace:*
         version: link:../../packages/http
+      '@naelao/security':
+        specifier: workspace:*
+        version: link:../../packages/security
       '@naelao/types':
         specifier: workspace:*
         version: link:../../packages/types
@@ -1032,9 +1035,15 @@ importers:
 
   workers/marketplace:
     dependencies:
+      '@naelao/billing-core':
+        specifier: workspace:*
+        version: link:../../packages/billing-core
       '@naelao/http':
         specifier: workspace:*
         version: link:../../packages/http
+      '@naelao/security':
+        specifier: workspace:*
+        version: link:../../packages/security
       '@naelao/types':
         specifier: workspace:*
         version: link:../../packages/types

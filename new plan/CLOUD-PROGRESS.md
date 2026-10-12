@@ -1,14 +1,14 @@
 # Cloud implementation progress
 
-Authority: Documents 12 then 13 only; original TXT files unchanged. Branch:
-`Mcbt5s-Backup-2`. One sequential implementation worker; no deployment.
+Authority: only the original Document 12, then Document 13, plus repository instructions.
+Branch: `Mcbt5s-Backup-2`. One sequential implementation worker. No live deploy.
 
 | Batch | Status |
 | --- | --- |
-| 1 | PARTIAL_NEEDS_PLATFORM — local implementation complete; exact external gates below |
-| 2 | PARTIAL_NEEDS_PLATFORM — runtime implemented; verified preview DNS/Worker route must be configured |
-| 3 | IN PROGRESS — semantic leases, R2/SQLite hydration, sample-audit delegation, mobile text escalation, and separated builder/Whop payout ledgers; publish certification and other gates remain |
-| 4 | IN PROGRESS — focused suites/typechecks pass; local DO-to-container bridge and provider/runtime integration remain unverified |
+| 1 | PARTIAL_NEEDS_PLATFORM — local work complete; external gates below |
+| 2 | PARTIAL_NEEDS_PLATFORM — local runtime complete; owned preview zone/route required |
+| 3 | PARTIAL_NEEDS_PLATFORM — independent local implementation and checks complete; optional escrow and shared identity provider remain gated |
+| 4 | IN PROGRESS — local Docker/worker checks pass; DO/provider/media integration remains |
 | 5 | UNASSESSED |
 | 6 | UNASSESSED |
 | 7 | UNASSESSED |
@@ -16,663 +16,128 @@ Authority: Documents 12 then 13 only; original TXT files unchanged. Branch:
 | 9 | UNASSESSED |
 | 10 | UNASSESSED |
 
-## Sources and reconciled amendments
+## Source ledger and reconciled decisions
 
-- Read primary D12 1–1564, ascending windows <=180 lines. Look-aheads read:
-  D12 6127–6560, 6965–7086, 11001–11135, 11707–11776, 12348–12763,
-  13207–13344; D13 735–1062, 1147–1398. Later subsystem searches covered
-  planner/delegation/DAG/oracle/replay, tokens/terminal, capabilities/egress,
-  encryption/scratchpad, roles and branch/review corrections. Additional contexts
-  consulted: D12 1695–1765, 7375–7415, 8310–8470, 10700–10732,
-  11136–11315; D13 253–285. Batch-1 gap search reread D12 1–150,
-  1380–1525, 10735–10775, and 11745–11782. Relevant primary snippets reread
-  when editing.
-- Read CODEX-CLOUD-PROMPTS.md shared rules and onboarding setup skill. Installed
-  dependencies with unchanged lockfile; reusable local tooling is outside Git in
-  /workspace/.onboarding. No historical checkpoint establishes completion.
-- Later arbitrary-role/vertical amendments: domain names describe userland
-  configuration, never platform privileges. Top planners cannot directly edit;
-  depth-2 planners may delegate, depth-3 workers cannot. Preserve both cloud and
-  authorized private-machine/local inference. LOCAL_ONLY has no cloud fallback;
-  internet tunnels are not physically disconnected installations.
-- Current official Cloudflare production docs checked: Worker Loader
-  `get(id, factory).getEntrypoint()` (closed beta), Workflows result/payload 1 MiB
-  rather than illustrative 1 KB, and TCP connect TLS options. The latter do
-  not document an expected-server-hostname override for pinned-IP TLS.
-  Existing DNS preflight plus hostname fetch is not proven DNS pinning.
+- Batch 1: D12 1–1564; required look-aheads D12 6127–6560, 6965–7086,
+  11001–11135, 11707–11776, 12348–12763, 13207–13344; D13 735–1062,
+  1147–1398. Additional matching contexts: D12 1695–1765, 7375–7415,
+  8310–8470, 10700–10732, 11136–11315; D13 253–285.
+- Batch 2: D12 1565–3590; look-aheads D12 6127–6690, 11001–11135,
+  11707–11776, 12213–12559; D13 237–734, 1223–1374. Additional contexts:
+  D12 2710–3140, 3320–3589; D13 701–734, 1324–1374.
+- Batch 3: D12 3591–5657; look-aheads D12 6690–6901, 7141–7548,
+  10694–11000, 11423–11481, 11707–11776, 12213–12347; D13 1–236,
+  1324–1374. Matching later contexts: D12 6334–6475, 6628–6657,
+  7440–7474, 7940–7955, 10200–10360, 10404–10490, 10565–10625,
+  11642–11706, 12013–12158, 12220–12347, 13638–13663; D13 130–170.
+- Batch 4 primary D12 5658–7973; required look-aheads D12 11136–11776,
+  12348–12763, 13207–13344; D13 735–1398. Additional matching contexts:
+  D12 12764–13206 and 11707–11776.
+- Batches 5–10 sources and extra matching contexts are not yet assessed. Read each
+  prompt's windows in order; search unread tails before design. The two TXT files
+  have not been modified. No historical plan/checkpoint was used as product authority.
+- Later corrections govern: avoid the domain-kind explosion and subjective prose
+  regex linters (D12 4953–4986); treat JEV/Clef names, prices, latency and model
+  capabilities as unverified; platform subscriptions/template sales/FDE payouts
+  are native billing while customer commerce stays userland (D12 12213–12347).
+  Provider-facing production claims require current vendor evidence. Workspace
+  residency/egress gates remain authoritative; no cloud fallback for local-only work.
 
-## Changes and substantive coverage
+## Batch 1 and 2 coverage
 
-- Durable task DAG: dependencies, cycles/budgets, bounded dispatch, checkpoint
-  before effects, failure blocking, lost acknowledgements and restart recovery.
-  Uncertain effects become needs_review rather than blindly running again. Wave
-  failures observe sibling completion. Space tasks use deterministic IDs and real
-  scoped edge routes. Files: goal-dag.ts/tests, prebuilt/goal-planner.ts,
-  NaelaoAgentDO.ts, SpaceDO.ts, spaces/index.ts.
-- Genuine child DO/session execution with host-signed identity, actor, model,
-  role, depth, budget, execution ceiling, branch and local-only placement. No
-  parent transcript or ingress memory supplied. Arbitrary roles; no hardcoded
-  support/growth capability ceilings. Fail-closed shared admission caps each
-  root at 12 active leaves; cancellation reaches children. Files:
-  delegation-contract.ts/tests, do/delegation-admission.test.ts, agent-firewall.ts,
-  topology/tool-surface/reasoner, SDK types. File slices are not yet an enforced
-  native filesystem boundary; 2K output budgets are not a 2K total prompt proof.
-- Race orchestration uses isolated branches, actual authorized CodeRunner
-  oracle exit codes, reconciled worker changes and measured diffs. Bounded waves,
-  passing-result scoring, cancel-and-settle losers before cleanup/escrow release,
-  durable replay receipt and explicit interrupted state. Shared workspaces produce
-  backend review cards; solo merges require unchanged main. Ordinary delegation
-  now reserves a task branch, checkpoints even an empty base, and finalizes via
-  durable task-publication.ts/tests. Cards have stable IDs/idempotent insertion.
-- Git-to-R2 publication journal/CAS protects merge/rebase and branch hydration.
-  Reconstruction resumes partial writes without repeating already published files;
-  competing writers get 409, interrupted storage gets 503. Root listing/search
-  and reconciliation exclude branch backing files. Machine binaries stay outside
-  branch deliverables. Files: artifact/RepositoryDO.ts, plan/07-git-mesh.test.ts,
-  workspace-paths/types, r2-workspace/prebuilt and fixtures.
-- Outputs over 1500 estimated tokens are encrypted per space into private scoped
-  R2 logs, with durable windowed Read, bounded previews, logical retention and
-  visible persistence failure. Private log mutation/direct copying is rejected.
-  Files: tool-output.ts, crypto/index.ts, r2-workspace prebuilt, tool-surface,
-  loop, repl-primitives tests. Physical expiry deletion remains unimplemented.
-- Real intermediate Bash stdout/stderr through authenticated container output
-  polling/live run checkpoints; bounded buffers, UTF-8 chunk decoding, late-update
-  protection. Complete bounded native stdout/stderr and thrown errors survive
-  failure for encrypted offload; exceeding execution limits is explicit.
-  Safe ANSI color/bold terminal rendering. Explicit see/browser.see
-  gives only the newest valid image to the next provider turn; historical images
-  are stripped. Files: container supervisor/server, CodeRunner/code-exec/loop,
-  child-runner, TerminalStreamBlock/terminal-output, perception.ts/tests,
-  reasoner/AI client.
-- Token estimates consistently ceil(chars/3.85); validated directional provider
-  usage persists in traces/answer metadata and appears separately in UI. Actual
-  provider totals drive billing. Files: SDK token-accounting, context/loop/DO,
-  Chat, ContextUsageMeter, API metadata.
-- Browser-memory scratchpad AES-GCM key, ciphertext-only notes, owner-scoped
-  backend reads/writes, agent execution denied for private scratchpad sessions.
-  Navigation/account scope resets prevent stale UI updates. Files: SDK scratchpad,
-  PrivateScratchpad, ProjectCanvas/thread page, SpaceDO, private-scratchpad tests.
-- Capability claims enforce exact optional scopes, bounded expiry/revocation,
-  verified signatures and malformed claim rejection. Missing runtime is failure.
-  Workflow compiler rejects arbitrary thread creation; durable pointer checkpoints
-  and authorized tunnel/container mocks corrected. Worker exact-optional/R2/API
-  typing repaired without skipping checks. Files: security/capability-policy,
-  workflows, SDK tunnel protocol, container-policy/DOs and focused fixtures.
-- High-confidence injection signatures now stop direct agent ingress after private
-  attempt tracking; the generic error omits a detector oracle. Tool outputs and
-  errors with recognized injection signatures are quarantined before recent
-  observations or compacted digests return to the model. Delegated task file paths
-  are HMAC-bound, enforced across VFS/virtual Bash/list/grep, and native Python or
-  Tier-5/6 execution is denied for scoped workers until a provider mount can enforce
-  the slice. Files: agents/index.ts, prompt-injection-quarantine.test.ts,
-  script-engine/step-context.ts/test, delegation-contract.ts/test, workspace-paths.ts,
-  r2-workspace.ts/test, prebuilt/code-exec.ts, NaelaoAgentDO.ts, and SDK types.
-- Complete script reasoner requests now have a conservative preflight context
-  bound covering system text, JSON context, tool schemas and optional image bytes.
-  Optional history is trimmed while preserving the goal and valid JSON; requests
-  whose fixed prompt/schema alone exceed the model budget fail closed. Model window
-  comes from the host's selected model. Added focused tests in
-  `request-context-budget.ts/test` and wired the interactive/channel reasoners.
+- B1 implemented bounded durable task DAG/delegation, authenticated review cards,
+  replay-safe merge/publication, terminal streaming/folding, encrypted output logs,
+  context preflight, ingress/tool-result quarantine, scoped artifact I/O and private
+  scratchpad/session reset. Focused suites, typechecks and local SQLite/Git/Bash
+  failure checks passed at the B1 closeout. Commit/push: `c2875e5`.
+- B1 platform gates still require a real deployment for DO/R2/Workflow/container,
+  provider and browser integration; the current scoped native filesystem tiers cannot
+  enforce file mounts. These are recorded limitations, not local unit-test claims.
+- B2 added canonical gadget scopes, tenant/member authorization, restrictive iframe
+  policy, safe static dynamic pages and single-use HMAC form actions. Spaces 18 files /
+  57 tests; SDK 17 files / 59 tests; both typechecks and diff check passed at closeout.
+  Live Cloudflare was not used. Runtime stays fail-closed pending an owned preview
+  suffix and wildcard Worker route, then a deployed cookie/CORS/form-replay smoke.
 
-## Verification and limitations
+## Batch 3 current work and evidence
 
-- Final selected regression workspace: 82 files / 363 tests passed, including
-  admission, DAG, ordinary task publication, race and Git restart/failure checks
-  (/tmp/batch1-final-regressions.log). Subsequent native diagnostic refinements:
-  ladder/sandbox/terminal 28/28 and real child/Bash terminal harness 4/4.
-- Final capability/REPL/presentation: 63/63; Spaces private/thread/task: 6/6;
-  internal-token gate: 23/23 (/tmp/batch1-final-unit-evidence.log,
-  batch1-final-spaces-evidence.log, batch1-auth-final2.log). Runs overlap;
-  these are not a combined unique-test count. No skipped tests added.
-- Commands: Vitest from repository root using batch1.workspace.mjs (agents, SDK,
-  plan tests), from tests using tests.workspace.mjs (units); Spaces/auth use
-  separate bounded workspaces. All under /workspace/.onboarding, maxWorkers=2,
-  minWorkers=1. Logs in /tmp/batch1-*.log. pnpm wrapper PATH is
-  `/workspace/.onboarding/bin:$PATH`.
-- Agents, Spaces, artifact, shell, crypto and security typecheck all pass
-  (/tmp/batch1-final-types.log); subsequent native worker typecheck also passes.
-  SDK build passed. git diff --check and all changed container JS syntax checks
-  pass. Both source hashes match the initial hashes; branch remains correct.
-- Real Web Crypto encryption/signature checks, native Git object verification and
-  real Node/Bash streaming/exit failure are proven locally. DO/R2/provider/bridge
-  integration is mocked. No live Cloudflare Loader/Workflows/container/AI,
-  browser journey or private-machine tunnel proof. Wrangler 3 cannot parse the
-  repository's containers configuration; no live credentials configured.
+- Existing sound canvas/shell behavior was retained. Leases, hydration and sample-audit
+  delegation remain in place. Legacy SpaceType marketplace now uses actual migration
+  0026 schema; discovery/search response shapes match the web client. Submission and
+  review require tenant-bound state-delta receipts; free forks are immutable and
+  replay-safe; paid forks require billing.
+- State-delta certification now uses fresh bounded Worker Loader executions and host
+  SQLite/file assertions, with private scratch tables, execution/budget limits and
+  per-fixture cleanup. Workflow payloads are digest-pinned and pointer-based; certified
+  output and activation are gated. The local real-worker smoke proves 50/50 pass,
+  49/50 regression rejection, 0/50 on caught private-state access, and R2 hydration.
+  Workflow/cache tests are mocked; production Workflow and DO/R2 service execution are
+  not claimed. Certificates cover the declared installed entry contract, not a proof
+  that every production agent dispatch mode is behaviorally equivalent.
+- Added structural JSON artifact rules, immutable project policy, two repair attempts,
+  durable intervention/diagnostic lock, owner/admin approval, and matching-approval
+  resume through the shared R2 CAS write hook. Linter diagnostics expose field names
+  and structural messages, never values. Focused restart/resume tests pass.
+- Added Desk-Drop hashed, expiring single-use tickets, preview-safe redemption, owner/
+  admin verification, HttpOnly cookie backed by ProductUserDO, same-origin Shell proxy,
+  QR challenge, logout revocation and CORS/CSRF checks. SQL tests pass; login callbacks
+  are mocked. Builder-owner to browser identity and full browser/session parity remain
+  open. WhatsApp executive contact matching now accepts digit-only provider sender IDs.
+- Added Telegram/Meta review cards that only open authenticated approvals, private
+  Telegram callback checks, and recipient-specific owner/admin presence suppression.
+  Notifications and DO callback tests pass; no live provider delivery was attempted.
+- Added native developer payout reservation/reconciliation, idempotent transfer retries,
+  captured-payment royalty ledger with 40% pioneer / 25% standard for cycles 1–6,
+  20% cycles 7–12 and 5% thereafter; cycle age survives plan changes. Certified
+  graduation assigns the first 50 pioneer ranks. Paid fixed-license checkout uses the
+  listing's stored price, captures a verified webhook, grants one tenant fork, and
+  reserves 100% of the license gross for the developer. A second charge is held for
+  refund reconciliation, never a second license/payout. Recurring template checkout
+  now creates a server-priced monthly LS variant, stores a paused row, stamps
+  `template_subscription_id`, and activates/settles only on captured payment. The LS
+  adapter distinguishes a renewal's subscription resource ID from its order/payment
+  ID. Signed mocked webhook replay with real local SQLite proves separate renewal
+  orders advance cycles once each. Official LS docs returned proxy 403, so event-field
+  compatibility is not live-verified. Stripe Connect and live LS checks are unrun.
+  The FDE emergency bounty is source-optional; no blueprint currently configures it.
+  Escrow custody/refunds, acceptance, read-only diagnostic handoff and payout are not
+  implemented and must not be advertised as available.
+- Main changed paths: `workers/marketplace`, `workers/billing`, `workers/spaces`,
+  `workers/agents`, `workers/notifications`, `workers/router`, `apps/shell`,
+  `packages/agent-sdk`, `packages/security`, `packages/http`, migrations 0084–0091,
+  and focused tests under `tests/unit` and worker/package `src` directories.
+- Fresh checks: pinned `corepack pnpm@9.12.0 install --frozen-lockfile`; current
+  focused suite 13 files / 29 tests passed; payout/royalty/license tests include actual
+  node:sqlite replay; marketplace, billing, spaces and agents typechecks; root Wrangler
+  4.149.0 dry-runs for billing, marketplace and Spaces; local D1 migrations 0084–0091
+  applied (0084–0086 already existed; 0087–0091 freshly applied); state-delta real
+  smoke passed; `git diff --check` passed before the latest fixture-only change. Billing,
+  marketplace, Spaces and Agents typechecks pass. No live Cloudflare/provider request.
+- B3 review: no shared builder/mobile identity issuer or mapping exists in this repo's
+  configured auth contracts, so Desk-Drop keeps separate builder and ProductUserDO
+  identities and fails closed at that boundary. Escrow custody/refund and FDE payout
+  policy is likewise not defined; optional bounty remains unavailable because no current
+  blueprint enables it. These are platform gates, not claimed implementations. The
+  independent local requirements and verification for B3 are complete; continue to B4.
 
-## Exact continuation / open batch-1 requirements
+## Batch 4 current status
 
-Finish batch 1; do not start batch 2 or mark this done from reading alone.
-The authenticated review-card flow has now been added: ordinary task publication
-and `project.pull_request.submit` results carry card data into chat; admins/owners
-are checked against the SpaceDO member roster; explicit merge/request-changes/
-reject decisions are available; merge checks current main against the reviewed
-base and handles recovery when merge succeeded before card status persistence.
-Merged events and terminal card status persist through Spaces/SpaceDO routes.
-Files: agents index/project-coordination/NaelaoAgentDO/task-publication, Spaces
-index/SpaceDO, shell API/Chat/InlinePullRequestCard/ProjectPullRequestPanel. Auth
-and replay are mocked at service boundaries; live DO/R2/browser integration is
-not proven. A project-wide review panel lists and refreshes cards across project
-threads, in addition to the exact-turn chat card. No user-facing batch-2 work has
-started.
+- Terminal folding and bounded audio transcription are implemented. Real Ogg/Opus
+  fixtures decode locally; workerd decoder flush hangs, so the Worker path forwards
+  bounded Ogg to its configured AI binding. Provider acceptance is unverified; incoming
+  WhatsApp media is not wired. Saga compensation tests cover reverse order and failed
+  compensation status. TypeScript runtime compiler works in workerd; local Docker
+  `/health` and `/exec` returned 42 in all three images after image permission repair.
+- Fresh B4 evidence: Agents 56 files / 223 tests; router typecheck and transcription
+  6 tests; conformance 4, terminal folding 2, saga failure 2; frozen pinned install;
+  local Workers health 200. Actual Agent DO-to-container RPC, provider media acceptance,
+  cloud tunnel and external saga effects remain unproven. Keep B4 IN PROGRESS.
 
-Fresh checks after this change: Agents `tsc --noEmit`; Spaces `tsc --noEmit`;
-Shell `tsc --noEmit`; `workers/agents` `src/pull-request-review.test.ts` (2/2,
-including non-admin denial and merge/status-write replay); `workers/spaces`
-`src/do/pull-request-cards.test.ts` and `src/private-scratchpad.test.ts` (3/3);
-root `tests/unit/project-coordination-prebuilt.test.ts` (28/28); `git diff
---check`. All passed on `Mcbt5s-Backup-2`.
+## Next action / checkpoints
 
-After expiry indexing and project-wide card refresh were added, repeated agents,
-Spaces and shell `tsc --noEmit` checks pass; Agents PR-review + expiry tests pass
-(4/4); Spaces PR-card + scratchpad tests pass (3/3); root project-coordination +
-REPL/output tests pass (73/73); `git diff --check` passes. The CLI Goals launcher
-also reports `goals stable true` when queried through the script.
-
-Private tool-output logs now register a content-free R2 key/expiry in AGENT_CACHE;
-the worker's five-minute cron deletes expired R2 objects in bounded 1,000-key
-pages (up to ten pages per invocation) and carries a KV cursor across runs.
-Registration failure removes the just-written R2 object and fails the output.
-Files: script-engine/tool-output.ts/types.ts, tool-output-expiry.ts/test,
-NaelaoAgentDO.ts, agents/index.ts, agents/wrangler.toml, repl-primitives tests.
-This is locally mocked; actual Cron/KV/R2 operation is not verified. For very
-large indexes, deletion latency depends on cursor cycle time; the code makes
-bounded forward progress rather than claiming an exact deadline under arbitrary
-volume.
-
-The current session closed one concrete ingress gap: detected high-confidence
-prompt-injection text was recorded/rate-limited but still proceeded into the
-planner. `workers/agents/src/index.ts` now returns a generic response after
-tracking and does not dispatch the flagged goal; an integration test verifies
-tracking, non-revealing response, and early termination. Agents typecheck and
-that route test pass.
-
-Batch 1's repository-implementable work is complete. Fresh regression rerun after
-the context bound: Agents tests 55 files / 218 tests passed; Agents typecheck passed;
-Spaces scratchpad/gadget tests 4 files / 12 tests passed; Spaces typecheck and
-`git diff --check` passed. The context-boundary test passed 2/2. Current branch and
-both original source hashes were reconfirmed. User waived live Cloudflare checks.
-
-Remaining gates require capabilities/data not present in this checkout, so they are
-not claimed as complete or simulated:
-
-1. DNS pinning plus correct TLS host verification needs a transport that connects
-   to the validated address while authenticating the intended hostname. Existing
-   hostname fetch can resolve again; the runtime path here does not prove both.
-   No insecure fallback was added.
-2. The repo has known-pattern injection detection, not the proposed JEV semantic
-   model/score. No supported semantic classifier or validation corpus is configured;
-   ingress and tool-result known-pattern matches do fail closed. Do not claim a
-   fabricated >0.70 semantic score.
-3. Production legacy private-scratchpad rows cannot be inspected from this checkout.
-   New writes are ciphertext-only; lost ephemeral browser keys prevent migration of
-   any historical plaintext. Do not automatically purge user rows. Deployment owner
-   must inspect legacy records before asserting historical at-rest privacy.
-4. Native container read-only rootfs/seccomp/FUSE/network confinement requires a
-   provider image/runtime exposing those controls and a conformance check. The
-   current policy rejects unsupported mounts, and scoped workers fail closed for
-   native execution. No live Cloudflare test was attempted per the user's waiver.
-
-The extension path currently has no extension-provided SQL execution API: schema
-input is restricted to CREATE TABLE/INDEX and data operations use host-authored
-parameterized statements. Gadget actor keys separate space/project/user scope;
-actual host storage and Cloudflare isolation remain mocked. A new host-adapter
-test verifies tenant ownership is checked before DO lookup and that gadget MCP
-routes to the expected space key. Own agent system prompts
-and AGENTS.md directives are passed to reasoners, and child configuration follows
-the selected worker agent id. External documentation fetches in this turn returned
-proxy HTTP 403. Batch 2 source reading has started; see its closeout below.
-
-## Resume note (2026-10-12)
-
-- Reconfirmed branch `Mcbt5s-Backup-2`; no pre-existing `AGENTS.md` existed.
-  Added root `AGENTS.md` as a task-resume runbook. It points future turns here
-  and to the prompts, protects TXT sources, and forbids marking unread/unverified
-  batches done. Prompt 1 now carries the same IN PROGRESS status directly below
-  its copy-and-paste block; prompt 2 remains inactive.
-- Codex CLI `codex features list` reports `goals stable false`; the persistent
-  command is `codex features enable goals`. It failed to write
-  `/run/codex-environment/codex-home/config.toml` because the mount is read-only,
-  including after a narrowly scoped write permission was granted. This is a
-  cloud-session/app-setting blocker, not a batch requirement or code change.
-- Confirmed the suggested environment override works for child CLI processes:
-  `CODEX_FEATURES_GOALS=true codex features list` reports `goals stable true`.
-  Added executable `scripts/codex-goals.sh` to export that variable then exec
-  Codex; running `scripts/codex-goals.sh features list` verified `goals stable
-  true`. This does not modify the already-running app process.
-- Added `scripts/codex-goals.sh run` as a shortcut to the supported
-  non-interactive `codex exec` command; this CLI has no `codex task run`.
-  Attempted the user's full 1–10 goal through that entry point. The read-only
-  default Codex home first blocked app-server initialization. Retried with a
-  temporary writable `CODEX_HOME` and removed temporary auth material after
-  stopping; startup succeeded, but the CLI could not reach its model endpoint:
-  proxy returned HTTP 403 for `wss://chatgpt.com/backend-api/codex/responses`
-  (and the ps/mcp endpoint). No autonomous goal work ran. Continue this mission
-  in the current session; CLI execution remains blocked by environment proxy.
-- Retried the full goal on 2026-10-12 after the user enabled network access,
-  again with a temporary writable Codex home. The retry reached the same HTTP
-  403 proxy denial for the Codex responses WebSocket and ps/mcp HTTPS endpoint;
-  stopped it after retries and removed the temporary auth copy. This confirms
-  network enablement did not unblock this CLI route. Batch work remains with
-  the current interactive session.
-- Batch-1 security follow-up reviewed D12 380–450, 1390–1564 and D13 738–810.
-  Added ingress quarantine for detected injection attempts and route-level test
-  `workers/agents/src/prompt-injection-quarantine.test.ts`; command
-  `pnpm --dir workers/agents exec vitest run src/prompt-injection-quarantine.test.ts`
-  passes (1/1), and `pnpm --dir workers/agents exec tsc --noEmit` passes. Then
-  bound task `file_paths` into the host-signed worker delegation contract and
-  enforced exact file access in the R2 VFS, virtual POSIX Bash, and listing/grep;
-  native Python/Tier-5/6 execution is denied for scoped workers until the runtime
-  can enforce file slices. Added a tool-result quarantine before recent and
-  compacted observations re-enter model context. Fresh command
-  `pnpm --dir workers/agents exec vitest run src/script-engine/r2-workspace.test.ts
-  src/script-engine/delegation-contract.test.ts src/prompt-injection-quarantine.test.ts
-  src/script-engine/step-context.test.ts` passes (10/10); Agents typecheck and
-  `git diff --check` pass. Batch 1 local context/ingress/file-slice work is now
-  complete; see the closeout gates above for external transport, semantic
-  classifier, historical-data, and native-container requirements.
-- Current code review reconfirmed review-card backend creation/list exists but
-  `workspace_publication`/`inline_pull_request` now render in Chat on turns where
-  a task publication or submit result returns review-card data. Merge route,
-  status CAS, SpaceDO roster authorization and recovery have focused tests. A
-  separate shared-room card listing/update surface still needs verification.
-- Batch 1 local work is complete with four exact external gates documented above.
-  User requested one commit/push per batch. Created and pushed
-  `c2875e5 feat(batch-1): implement planner, security and collaboration foundations`
-  to `origin/Mcbt5s-Backup-2` before beginning batch 2.
-- Batch 2 primary D12 1565–3590 was read in ascending bounded windows. Specified
-  D12 look-aheads 6127–6690, 11001–11135, 11707–11776, 12213–12559 and D13
-  237–734, 1223–1374 were consulted. Additional amendment contexts read: D12
-  2710–3140, 3320–3589, 1660–1800 and D13 701–734, 1324–1374. Later source
-  correction overrides raw JSX/React `env.LOADER` claims: Loader executes
-  precompiled modules; simple pages need zero-compiler safe HTML, separate
-  `*.avos-preview.net` origin, CSP and single-use HMAC action tokens; complex UI
-  goes to Tier 6. Illustrative provider, model, price, latency, scale and
-  jurisdiction endpoint claims were not treated as validated capabilities.
-- Batch 2 changes: `packages/agent-sdk/src/types.ts` and `extensions.ts` add the
-  four canonical storage scopes and preserve the three legacy names. Gadget keys
-  isolate project/user facets. `workers/spaces/src/routes/gadget-mcp.ts` routes
-  app/data/MCP calls only after tenant and active space-member checks; install
-  requires owner/admin and exactly the path-matching `SPACE_SHARED` tier-3 gadget.
-  `MicroAppDO.ts` prevents tier/scope mutation and returns a private no-store app
-  response with restrictive CSP, nosniff, and no referrer. Added a dynamic-page
-  registry and renderer inside the gadget DO; publish requires the admin route,
-  public requests must arrive on `${tenant_id}.${DYNAMIC_PAGE_HOST_SUFFIX}`, and
-  the same suffix cannot be used as the application origin. Static HTML rejects
-  script/event-handler/JavaScript URL content; response CSP forbids framing and
-  script injection. Forms receive short-lived HMAC-signed action tokens bound to
-  space/app/page/action/key/field allowlist; nonce insertion is durable and unique,
-  so replay is rejected. `workers/spaces/src/routes/dynamic-pages.ts` fails closed
-  when the suffix is missing and checks same-origin POSTs. Added a Wrangler comment
-  documenting required wildcard route setup; no SQL migration was needed.
-- Batch 2 verification: `pnpm --dir workers/spaces test` (18 files / 57 tests),
-  `pnpm --dir workers/spaces typecheck`, `pnpm --dir packages/agent-sdk test`
-  (17 files / 59 tests), `pnpm --dir packages/agent-sdk typecheck`, and
-  `git diff --check` pass. Dynamic-page action signatures use real Web Crypto in
-  local tests; routing and SQLite replay are mocked. No live Cloudflare resources
-  were contacted. Official Cloudflare docs fetch still fails with proxy HTTP 403.
-- Batch 2 repository implementation is complete, status remains
-  PARTIAL_NEEDS_PLATFORM until a platform owner configures an owned dedicated
-  preview domain suffix and wildcard Worker route. No domain ownership or live CF
-  credentials are present to verify that route, and user waived live Cloudflare
-  tests. `DYNAMIC_PAGE_HOST_SUFFIX` is fail-closed when unset. Exact deployment
-  action: configure the verified suffix, point wildcard tenant subdomains to the
-  Spaces Worker, then run one deployed cross-origin/cookie-isolation/form-replay
-  smoke journey. Batch 3 is now IN PROGRESS; see the Batch 3 section below.
-
-## Batch 3 (2026-10-12) — IN PROGRESS
-
-Primary D12 3591–5657 was read in ascending ~180-line windows. Required look-aheads
-consulted: D12 6690–6901, 7141–7548, 10694–11000, 11423–11481, 11707–11776,
-12213–12347; D13 1–236 and 1324–1374. Matching later contexts found by searching
-unread sources and read before design: D12 6334–6475 (OCC/node leases), 10404–10490
-and 10565–10625 (marketplace conformance evidence), D13 130–170 (fixture gate / human
-escalation). Further matched contexts: D12 6628–6657 (Canvas broadcast), 7440–7474
-(offline conflict handling), 7940–7955 (local end-to-end test target), 12025–12158
-(presence/channel waterfall, authenticated WhatsApp action and SpaceDO source-of-truth
-hydration), and 12220–12239 (native platform vs userland settlement). Earlier B2
-consultation already included D12 11786–11820 and 12115–12160.
-No vendor URL, JEV/Clef capability, latency, unit price, or illustrative SQL/API sample
-was treated as verified. D12 4953–4986 explicitly supersedes the proposed domain-kind
-explosion and subjective natural-language regex linters; D12 4994–5129's JEV latency,
-cost, model and calibration claims remain unverified, so semantic lint contracts now
-fail closed instead of implying a provider exists. D13 connector ownership requires
-tenant-owned credentials, not FDE-provided keys.
-
-Changes/evidence so far:
-
-- Replaced the nine hard-coded domain canvas manifests, per-kind prompts and tier caps
-  with two maintained shells (`DualPane.Document`, `DualPane.DataGrid`). Business
-  project kinds remain owned by the existing business-feature registry; template
-  mode/viewport now comes from template config. Generic custom canvas mounts run in
-  the existing sandboxed MicroApp iframe; typed bridge messages are project-bound,
-  data-only, bounded, and reject stale/malformed revisions. Files: agent-sdk
-  `canvas-runtime.ts`, `extensions.ts`, `mode-dispatch.ts`, shell `CanvasContainer.tsx`,
-  project detail selector and API types. This avoids executing third-party React in
-  the shell and reduces CSS/runtime collision exposure.
-- Added deterministic structural-rule runner with a hard two-repair-pass cap and
-  unresolved-warning result. Semantic linter manifests are rejected without a
-  validated provider. Generated widgets now reject executable/unknown fields (fixed
-  a pre-existing gap exposed by the focused security test).
-- Extension gadget manifests now validate ordered forward SQL migrations; gadget
-  initialization limits SQL to CREATE TABLE/INDEX and additive ALTER ADD COLUMN,
-  applies pending versions inside `transactionSync`, and fails closed on invalid SQL
-  or missing atomic transaction support. Host-wide migration runner now validates
-  duplicate versions before execution. Added real node:sqlite tests for replay and
-  rollback on migration failure. MicroApp DO SQL remains a mocked boundary.
-- Added durable 15-second node lease endpoints to ConcurrencyDO, with atomic DO
-  ownership, expiry alarms, same-owner renewal/release, conflict responses, and
-  human-over-agent priority. Current document canvas has no live node-editing API;
-  current file edits already use the existing file lock/CAS path, so the new node
-  lease is an available primitive and not yet wired to semantic-node mutations.
-- Existing root `pnpm dev` launcher (`infra/scripts/start-dev.mjs`) already starts
-  local Workers/workerd plus shell/dashboard; no new duplicate emulator was added.
-  Existing templates use starter artifacts; blank lead/receptionist templates now
-  seed clearly synthetic, non-operative examples.
-
-Fresh verification: agent-sdk typecheck/build and all 17 test files / 62 tests pass;
-Spaces typecheck and focused gadget/page tests pass (4 tests); Agents typecheck and
-ConcurrencyDO/foundations tests pass (8 tests); Shell typecheck passes; real SQLite
-migration/replay tests (2), contract/canvas security tests (9) pass; `git diff --check`
-pending. All DO/network/route checks are local mocks except the root migration tests,
-which execute actual SQLite transactions. No live Cloudflare resources or external
-services were contacted.
-
-Historical Batch 3 baseline (superseded by the fresh continuation below): the initial
-foundation checkpoint lacked node-level semantic editing, interactive install hydration,
-and mobile approval escalation. Those three seams were subsequently implemented; do not
-use the older status list above as current state. Foundation commits `8ff5540` and
-`af97b21` are pushed on `Mcbt5s-Backup-2`; the latter contains the semantic editing,
-hydration starter, and verified executive-contact notification work described below.
-
-Fresh continuation checkpoint (2026-10-12): semantic editing and install hydration
-are now implemented. The DocumentRedline canvas claims/renews/releases node leases;
-the WS gateway gates document UI mutations on lease status; and the agent's
-`document.replace_clause` operation acquires a human-priority lease, verifies exact
-source text, CAS-writes the project file, and releases in `finally`. The hydration
-seed is validated, starter-file-scoped, persisted at install, and shown in the shell
-with open/review/dismiss actions. It now also offers a validated Connect WhatsApp
-action to the existing assistant channel screen via a fixed internal route; arbitrary
-seed URLs are rejected. Approval escalation now queries active verified
-WhatsApp/Telegram executive contacts, attempts mobile notification when nobody is
-present, then falls back to the existing email notification; decisions remain behind
-the authenticated dashboard. Added a SpaceDO test that confirms the contact query
-filters to current owner/admin memberships.
-
-Additional B3 implementation (2026-10-12): added the fixed-route `open_channel_settings`
-hydration action to `packages/agent-sdk/src/project-templates.ts`, persisted schema
-validation and the welcome CTA in `apps/shell/src/components/CanvasContainer.tsx`, plus
-tests rejecting arbitrary URL actions. Agent SDK all tests: 18 files / 65 tests pass;
-template validation tests: 3 pass; Spaces gadget/market-radar checks: 7 pass; Spaces
-and Shell typechecks pass. This implements the WhatsApp connection CTA only; it does
-not provide a WhatsApp-to-browser authentication session.
-
-Fresh verification: Agent SDK build/typecheck and all 18 files / 66 tests; Spaces
-typecheck and all 21 files / 62 tests; Shell typecheck; WS Gateway typecheck and
-UI-action delegation test (2 files / 3 tests); Agents typecheck and semantic CAS
-tests (6); WS node-lease/concurrency tests (8) all pass. The complete SpaceDO
- migration list including migration 65 applies twice against real in-memory SQLite;
- staged R2 upload failure cleanup and zero SQLite writes are covered by mock-boundary
- tests. Wrangler 4.149.0 Spaces dry-run confirms the configured SCRIPTS_R2 binding.
- No live R2 object or Cloudflare service was contacted. Batch 3 remains IN PROGRESS:
- the repository has no Desk-Drop tunnel/auth broker, no deterministic state-delta
- certification runner or trusted artifact-bound publish-certificate path, and no
- scheduled FDE payout integration. Existing per-payment royalty ledger and
- authenticated payout request/withdrawal/manual ops flow are not a scheduled
- settlement daemon. Interactive WhatsApp approval cards/voice and FDE read-only
- support/bounty authorization remain absent. Do not mark B3 complete until remaining
- local and provider-dependent requirements are resolved or precisely isolated as
- external prerequisites.
-
-## Batch 4 (2026-10-12) — IN PROGRESS
-
-Primary D12 5658–7973 read ascending in bounded windows: 5658–5837, 5838–6017,
-6018–6197, 6198–6377, 6378–6557, 6558–6737, 6738–6917, 6918–7097,
-7098–7277, 7278–7457, 7458–7637, 7638–7817, 7818–7973.
-Required look-aheads read in bounded windows: D12 11136–11776, 12348–12763,
-13207–13344; D13 735–1398. Name-matched extra D12 context searched/read:
-12764–13206 (Clef model/modality/pricing claims); D12 11707–11776 (microkernel
-and channel abstraction corrections). Earlier B3 read D12 6690–6901,
-7141–7548 and D13 1–236, 1324–1374; overlapping content was not re-read.
-
-Reconciliation so far: do not treat the illustrative Zig/WASM Git engine, FUSE
-bridge, 1KB workflow payload ceiling, exact CPU/subrequest limits, fake Clef/Jev
-model IDs/prices/latencies, or model modality as verified product capabilities.
-The exact official Cloudflare models documentation fetch failed with proxy CONNECT
-HTTP 403; no code will route to those speculative model IDs. Later D13 runtime
-examples are treated as design prompts, not authoritative APIs. Existing sound
-surfaces found: usage ledger reads provider usage fields; ActivityFeed renders Bash
-as a terminal block; named LocalTunnelDO/bridge execution exists; RAG applies
-clearance filters before retrieval; TransactionCoordinatorDO implements sagas;
-root `pnpm dev` already launches the local Workers/workerd stack.
-
-Fresh changes: `apps/shell/src/components/TerminalStreamBlock.tsx` now folds
-completed output above an estimated 1,500 tokens while retaining head/tail and
-allowing expansion. `apps/shell/src/lib/terminal-output.ts` owns the estimator/fold
-policy. `tests/unit/terminal-output.test.ts` covers short/long output and structured
-stdout/stderr normalization. Existing `workers/agents/src/script-engine/tool-output.ts`
-already encrypts and stores full oversized output privately in R2, registers expiry,
-and returns a bounded preview with a Read path; the shell's fold UI is presentation
-only and does not replace that durable path.
-
-Additional B4 changes: router transcription bounds requests to 10 MiB; desktop/Node
-Ogg/Opus requests decode to mono 16kHz PCM WAV, and a real ffmpeg-generated Ogg fixture
-test plus invalid-container test cover that decoder path. Workerd hangs on decoder
-flush, so the Worker path forwards bounded raw Ogg to its configured AI binding; local
-AI is unavailable and official provider acceptance could not be verified. Do not claim
-provider compatibility until that check is possible. This does not add WhatsApp media
-download/dispatch; the current channel adapter still does not handle incoming non-text
-media. `TransactionCoordinatorDO.test.ts` adds two mocked-boundary
-failure-path tests: reverse-order compensation and persistent `failed` status when a
-compensation returns 503. These tests verify coordinator behavior, not real provider
-side effects.
-
-The pinned pnpm 9 frozen install initially failed because the committed lock omitted
-manifest importers/dependencies (including `packages/bridge`); regenerated and
-validated `pnpm-lock.yaml` with `corepack pnpm install --lockfile-only --no-frozen-lockfile`
-followed by `CI=true corepack pnpm install --frozen-lockfile --ignore-scripts`.
-Fresh checks: router typecheck; router tests (2 files / 4 tests, including real Opus
-decode); Spaces transaction coordinator tests (2 tests, mocked SQL and provider
-fetch); Wrangler router deploy dry-run (bundle 4,355.65 KiB, no upload); `git diff
---check`. No live Cloudflare services called. The broader B4 verification matrix
-cannot be honestly claimed: proposed FUSE/edge-container persistence tiers and exact
-provider behavior are not present or verified here. Keep B4 in progress until all
-repository-implementable primary requirements are reviewed and either implemented or
-recorded precisely as an external prerequisite.
-
-Fresh Batch 3/4 continuation checkpoint (2026-10-12): Batch 3 remains IN PROGRESS.
-Its newly completed hydration path stages bounded starter files in the configured
-project R2 workspace, inserts validated synthetic fixture rows in SpaceDO SQLite using
-replay-safe migration 65, and presents a Run sample audit action. The shell sends that
-action through the authenticated WebSocket UI-action path to the same project/session
-agent; a focused test confirms the delegation boundary. The source-required Desk-Drop/
-session broker, trusted artifact-bound deterministic marketplace regression gate for
-both publish routes, interactive urgent mobile cards/voice, FDE support/bounty
-authorization, and authorized scheduled payout reconciliation remain open. Batch 4
-remains IN PROGRESS; see its sections below for current local workerd, Docker, and
-provider evidence.
-
-Fresh hydration verification: Agent SDK build/typecheck plus all 18 files / 66 tests pass;
-Spaces typecheck plus all 21 files / 62 tests pass; Shell typecheck passes; WS Gateway
-typecheck and the UI-action delegation test pass (2 files / 3 tests). `corepack
-pnpm@9.12.0 exec wrangler deploy --dry-run --config workers/spaces/wrangler.toml`
-uses root Wrangler 4.149.0 and includes the configured SCRIPTS_R2 binding. No live R2
-object or Cloudflare resource was contacted. Files changed: `packages/agent-sdk/src/
-project-templates.ts` and its tests; `workers/spaces/src/do/SpaceDO.ts`, its replay
-test, and `remediation-pass-2.test.ts`; `apps/shell/src/components/CanvasContainer.tsx`;
-and `workers/ws-gateway/src/ui-action-delegation.test.ts`.
-
-Fresh Batch 4 integration evidence (2026-10-12): root Wrangler is pinned to 4.149.0
-because v3 rejects the existing `[[containers]]` config. `infra/scripts/start-dev.mjs`
-stages pnpm-installed esbuild dependencies, uses `--local`, and assigns worker-specific
-Inspector ports. All five selected Workers reached Wrangler Ready. The Node-only TypeScript
-compiler is now lazy-loaded; a temporary real workerd Worker invoked the compatibility
-loader, `createSourceFile`, and `transpileModule` successfully. The full Agent `script/run`
-path has not yet been exercised through its DO and Worker Loader boundaries.
-
-Direct Docker execution exposed and fixed an image-permission defect: source files are
-mode 0600 in this workspace, so Docker copied `/app/compile-runner.mjs` unreadable to the
-unprivileged guest. All three Dockerfiles now add read/execute bits while keeping runtime
-files root-owned and non-writable by UID 10001. Authenticated `/health` and `/exec` smoke
-requests ran a TypeScript `run()` returning 42 successfully in toolsandbox, documentsandbox,
-and mediasandbox images. These were actual local Docker image requests, not DO-to-container
-or production Cloudflare calls. Wrangler 4.149.0 Agent deploy dry-run also bundles and builds
-all three images.
-
-Fresh checks: Agent suite 56 files / 223 tests and Agent typecheck pass; router typecheck
-and transcription suite (6 tests) pass; conformance (4), terminal folding (2), and saga
-failure (2, mocked SQL/provider) tests pass; Spaces/Shell typechecks pass. Frozen pnpm 9
-install with lifecycle scripts suppressed passes, and the worker-safe `@eshaz/web-worker`
-patch is present in node_modules. Local AI cannot verify Whisper/Ogg provider acceptance;
-official docs fetches return proxy CONNECT 403. The real Agent DO-to-container RPC, production
-AI format acceptance, and external saga side effects remain unverified; B4 remains IN
-PROGRESS.
-
-Batch 3 name-matched source review (2026-10-12): searched the unread tails of both
-requirements documents for regression/certification, state-delta, synthetic fixture,
-mobile escalation, Desk-Drop, escrow, and royalty/payout terms before making further
-architecture decisions. Read D12 10200–10360 (objective state-delta oracles and the
-illustrative local harness), 11642–11706 (Eval Studio examples), 12013–12090
-(presence-based channel waterfall), 12213–12347 (native platform payments versus
-userland business transactions), 13638–13663 (proposed cloud-offloaded proprietary
-certification), and D13 149–168 (synthetic fixtures and mobile HITL synthesis).
-These are recorded as extra name-matched look-aheads, not new Batch 3 primary scope.
-Reconciliation: D12 13643's `eval.naelao.com`/Ed25519 receipt and provider benchmark
-claims are examples, not deployed capabilities; D12 12213 explicitly keeps userland
-customer payments outside native settlement; D12 12066's presence waterfall does not
-supply a browser session-auth design. Existing Eval trace checks are not a trusted
-artifact-bound certification receipt. Batch 3 remains IN PROGRESS pending the local
-implementation review/gaps listed above.
-
-Batch 4 container execution follow-up (2026-10-12): an authenticated direct Docker
-smoke found the guest could not read `/app/compile-runner.mjs` (`EACCES`) because local
-source files are mode 0600 and Docker preserves source modes. Updated all three Agent
-Dockerfiles to `chmod -R a+rX /app` before removing group/other write permission; the
-code remains root-owned and the guest remains UID 10001 with no capabilities. Rebuilt
-toolsandbox, document-sandbox, and media-sandbox images. For each image, initialized the
-control channel, confirmed `/health`, and POSTed a TypeScript `run()` returning 42 to
-`/exec`; all returned `{ok:true,result:42}`. These were direct local Docker requests to
-the actual image server, not a Durable Object/Cloudflare production execution. The five
-Wrangler dev Workers remained Ready in parallel. The actual Agent DO-to-container RPC and real AI/provider behavior remain
-unverified; the separate temporary workerd compiler smoke passed as recorded below. Keep
-Batch 4 in progress.
-
-Fresh environment and Batch 4 continuation (2026-10-12): `corepack pnpm@9.12.0
-install --frozen-lockfile --ignore-scripts` completed for all 64 workspace projects. A
-fresh `corepack pnpm@9.12.0 dev --workers-only` launch reached Wrangler Ready on router,
-auth, spaces, agents, and knowledge; `GET http://127.0.0.1:8080/health` returned HTTP 200
-with `{"status":"ok","env":"development"}`. The Agents root `wrangler deploy --dry-run`
-with Wrangler 4.149.0 bundled and built all three container images. A first attempt to use
-the worker package's Wrangler 3.114.17 failed parsing the existing `[[containers]]` array;
-this was a wrong CLI selection, corrected by invoking root Wrangler 4.149.0. The local
-stack was stopped after verification. Local mode reports `naelao-calls` unavailable and
-Workers AI unsupported; this does not block the verified router or container smoke, but
-features depending on those providers remain unverified.
-
-Phase 3/4 continuation (2026-10-12): revisited the exact Batch 3 publish-gate and
-support sections at D12 5370–5550 and D13 149–168 while auditing the still-open
-marketplace requirement. The listing submission and publish routes in
-`workers/spaces/src/routes/marketplace.ts` currently validate pricing only; the
-SpaceType review worker accepts `pending` listings without an artifact-bound
-regression receipt. `evaluateBlueprintSecurity` and the export dry-run check
-security/instantiation but do not prove golden-fixture behavior. This is a local
-implementation gap, so Batch 3 remains IN PROGRESS; do not treat it as a credential
-blocker or claim that the publish gate is complete. The fixture format, trusted
-oracle, and both publish-entrypoint integration still need implementation.
-
-Batch 4 continuation (2026-10-12): Wrangler 4.149.0 `wrangler dev --local` listed
-all three Agent container bindings as available and started the Agent Worker; the
-extended local stack reached Ready for all 11 selected Workers. This proves local
-container binding availability, but the authorized AgentDO-to-container call was
-not exercised: the workspace has no live user grant/session and production provider
-credentials, and the script loop cannot be used as evidence without them. Fixed
-four independent Browser Worker type errors (optional exact-optional flags, DO
-transaction callback shape, optional Browser field assignment, and an incomplete
-Hono middleware return). `workers/browser` typecheck passes; repository-wide
-`corepack pnpm@9.12.0 typecheck` passes 80/80 tasks when PATH directs Turbo to the
-repository-pinned pnpm 9 instead of the environment's pnpm 11 fallback. The root
-test command first failed because `packages/sdk` has no test files; its script now
-uses `--passWithNoTests`. The rerun reached the full suite but failed with 143 test
-files and 421 tests failing (2,708 passed), including many unrelated route, policy
-and script-engine tests. Focused Batch 3/4 suites remain the relevant green evidence.
-Batch 4 remains IN PROGRESS: full authorized DO-to-container execution, runtime
-AI/Ogg acceptance, and real settlement-provider effects remain unverified; see above
-for the separate local Docker `/health` and `/exec` smoke evidence.
-
-Focused recheck after the continuation changes: Agent Worker 56 files / 223 tests,
-Spaces 21 / 62, Router transcription/Opus 2 / 6, Agent SDK 18 / 66, and WS UI-action
-delegation/node-lease 2 / 3 pass; Browser Worker, Shell, Agent SDK, Spaces and the
-repository-wide 80-task typecheck pass. Root Wrangler 4.149.0 Agent and Browser
-`deploy --dry-run` both pass (the Agent dry-run rebuilt all three images). The broad
-root test suite remains red as recorded above.
-
-Resolved local D1 migration defect: the shared local `naelao-platform` D1 had migrations
-through 0063, and migration 0064 failed because it tried to create the Whop wallet's
-`payout_requests` table/index over the existing builder withdrawal table from migration
-0053 (which has `tenant_id`, not `space_id`). This breaks both local setup and the B3
-builder-vs-business payout separation. Whop now uses `whop_payout_requests`; migration
-0066 adds expiry to that table, leaving builder payouts on their original schema. Added
-a real SQLite regression test applying 0053/0064/0066 and proving both ledgers remain
-independent. The Whop wallet tests now include the legacy 0053 schema and pass (27/27).
-After this fix, Wrangler applied pending local D1 migrations 0064–0082 successfully;
-the test-only 0081 table was dropped before that normal migration run. No remote D1 was
-accessed. Production migration state remains unverified because the environment is not
-authenticated to Cloudflare.
-
-Actual local DO-to-container attempt (2026-10-12): used a temporary development-only
-route to call the real `ToolSandboxDO` with an internally signed scoped request, then
-removed the route. The call reached the DO and its local billing reservation was
-settled, but Wrangler's container bridge logged `Network connection lost`; the
-20-second control readiness loop returned `container_startup_interrupted` before
-`/exec`. No production Cloudflare endpoint or user data was involved. This narrows the
-integration gap to Wrangler/workerd's local Container bridge in this environment; the
-separate authenticated direct-Docker `/health` and `/exec` smokes still pass. The test
-did not bypass the production grant boundary in shipped code and proves no authorized
-AgentDO-to-container call.
-
-Cloud environment setup skill: read the current saved config, ran the frozen install and
-startup/health checks, then saved draft
-`f7a2b608-3045-440a-b759-5cbc4bcce7d1~cecfgdraft_6accc06edf4081a281d7b6b23ecadf44`.
-It replaces stale setup instructions with the pinned frozen install and tested local Worker
-startup instructions, and requests official Cloudflare/OpenAI/TypeScript/pnpm/testing and
-WhatsApp/Telegram/Twilio/Stripe/Whop documentation hosts. The save returned `status: saved`
-and `requires_publish: true`; this is a draft, not an applied or published environment.
-No Cloudflare token variables are present and `wrangler whoami` reports unauthenticated.
-Live Cloudflare deployment checks therefore remain unavailable; no live resources were
-contacted. This does not block local work.
-
-Batch 3 publish-gate implementation (2026-10-12): added a bounded deterministic suite
-runner in `packages/security/src/marketplace-conformance.ts`. It accepts only a
-declarative literal-match linter and at least 50 unique fixtures, returns per-fixture
-diagnostics, and never executes submitted code or invokes a model. Passing certificates
-are HMAC-signed and bind stable hashes of both the blueprint artifact and suite. Blueprint
-export now requires a passing suite before writing its R2 envelope; activation checks the
-signature and artifact hash before instantiation. Owner marketplace submission now requires
-an artifact whose ID matches the submitted SpaceType plus a valid receipt, stores both, and
-rechecks them immediately before publish. Migration 0083 adds the receipt columns. Three
-route-level tests cover missing receipts, valid submission/publish, and artifact tampering.
-Four focused runner tests pass, and the security package and Spaces typechecks pass. Local
-Wrangler applied migration 0083. D13 149–168's 50-fixture count is later than
-D12 5564's 20 historical fixtures and controls this conformance gate; D12 10404–10440's
-state-delta/isolated-SpaceDO assertions still require a true runtime executor. The present
-runner proves the declarative lint contract, not arbitrary worker behavior. The separately
-implemented legacy SpaceType marketplace worker still has its own submission/admin-approval
-path and has not yet been wired to these receipts; the full platform-wide gate remains
-incomplete. No false claim of full conformance is made.
-
-Changed so far in this continuation: `packages/security/src/index.ts`,
-`packages/security/src/marketplace-conformance.ts`,
-`packages/security/src/marketplace-conformance.test.ts`, `workers/spaces/src/index.ts`,
-`workers/spaces/src/routes/marketplace.ts`, `workers/spaces/src/routes/marketplace.test.ts`,
-and `infra/migrations/0083_marketplace_conformance_receipts.sql`. Checks: security tests
-19/19; Spaces tests 22 files / 65 tests; security and Spaces typechecks; local Wrangler
-applied migration 0083 and a second apply reported no migrations pending; `git diff --check`
-passes. Committed and pushed as WIP `54d61d9` to `origin/Mcbt5s-Backup-2`; worktree is
-clean. Batch 3 is not complete and this commit does not mark it complete. No Cloudflare live
-test used.
-
-Next: wire receipts into the separate legacy SpaceType marketplace submission/admin-review
-worker (first verify and repair its D1 schema path), then exhaust remaining locally implementable Batch 3 requirements
-(owner-to-browser identity bridge, urgent interactive escalation, and payout reconciliation)
-and rerun focused integration checks. Only after Batch 3 is fully evidenced, resume Batch 4's
-exact DO-to-container bridge and other runtime gates.
-User has also requested Batches 5 and 6 after Batches 3 and 4; do not skip either batch.
+Batch 3 independent local work and checks are complete; preserve its platform gates above
+and continue prompt 4. Commit/push batch-scoped changes after each batch without combining
+later-batch work. Continue prompts 4–10 sequentially, recording evidence after each. Only
+after batch 10, make one coverage pass over batches 1–10. Human-only prerequisites should
+be listed after their independent local work is complete. Current work is uncommitted;
+HEAD before this turn was `f49cb4b` on `Mcbt5s-Backup-2`.

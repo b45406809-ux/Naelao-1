@@ -1,4 +1,6 @@
 import { parseScratchpadCiphertext } from "@naelao/agent-sdk";
+import { parseArtifactLinters, lintArtifact } from "@naelao/agent-sdk";
+import { normalizeWorkspacePath } from "../../../agents/src/script-engine/workspace-paths.js";
 import { DurableObject } from "cloudflare:workers";
 import { applyMigrations, execute, queryAll, queryOne, validateMigrationSequence } from "@naelao/db";
 import type { Migration } from "@naelao/db";
@@ -1709,6 +1711,23 @@ const MIGRATIONS: Migration[] = [
         ON project_demo_fixtures(project_id, fixture_kind, fixture_id);
     `,
   },
+  {
+    version: 66,
+    description: "durable structural linter repair ceiling and diagnostic-only intervention records",
+    up: `
+      ALTER TABLE tasks ADD COLUMN intervention_status TEXT;
+      ALTER TABLE projects ADD COLUMN artifact_linter_policy TEXT NOT NULL DEFAULT '[]';
+      CREATE TABLE artifact_linter_failures (
+        id TEXT PRIMARY KEY, space_id TEXT NOT NULL, project_id TEXT NOT NULL,
+        path TEXT NOT NULL, work_key TEXT NOT NULL, task_id TEXT,
+        failures INTEGER NOT NULL DEFAULT 0, diagnostics_json TEXT NOT NULL,
+        status TEXT NOT NULL, approval_id TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(project_id,path,work_key)
+      );
+    `,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -1945,6 +1964,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         if (!body.blueprint || !body.target_space_id) return Response.json({ error: "blueprint and target_space_id are required" }, { status: 400 });
         return Response.json(await this.instantiateBlueprint(body.blueprint, body.target_space_id), { status: 201 });
       }
+      if (method === "POST" && url.pathname === "/artifact-validation/check") return this.checkArtifactValidation(request);
+      if (method === "POST" && url.pathname === "/artifact-validation/approval") return this.attachArtifactApproval(request);
+      if (method === "POST" && url.pathname === "/artifact-validation/resume") return this.resumeArtifactValidation(request);
+      if (method === "GET" && url.pathname === "/artifact-validation/diagnostic") return this.getArtifactDiagnostic(url);
       if (method === "POST" && url.pathname === "/project-templates/stamp") {
         const body = await request.json<{ space_id?: string; template_id?: string; overrides?: { name?: string } }>();
         if (!body.space_id || !body.template_id) return Response.json({ error: "space_id and template_id are required" }, { status: 400 });
@@ -2529,8 +2552,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && url.pathname === "/presence") {
         return this.heartbeatPresence(request);
       }
-      // GET /presence?space_id=&project_id= — members currently active (fresh heartbeat),
-      // optionally scoped to one project.
+      // GET /presence?space_id=&project_id=&user_id= — members currently active (fresh heartbeat),
+      // optionally scoped to one project or a decision-maker for notification suppression.
       if (method === "GET" && url.pathname === "/presence") {
         return this.listPresence(url.searchParams);
       }
@@ -2746,13 +2769,61 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
   }
 
+  private async checkArtifactValidation(request: Request): Promise<Response> {
+    const body = await request.json<{ space_id: string; project_id: string; path: string; content: string; work_key: string; task_id?: string }>();
+    if (!body.space_id || !body.project_id || !body.work_key || body.work_key.length > 200 || typeof body.path !== "string" || typeof body.content !== "string" || body.content.length > 2 * 1024 * 1024) return Response.json({ error: "invalid_artifact_validation" }, { status: 400 });
+    const project = queryOne<{ artifact_linter_policy: string }>(this.ctx.storage.sql as never, "SELECT artifact_linter_policy FROM projects WHERE id=? AND space_id=?", body.project_id, body.space_id);
+    if (!project) return Response.json({ error: "project_not_found" }, { status: 404 });
+    const policy = parseArtifactLinters(JSON.parse(project.artifact_linter_policy));
+    const diagnostics = lintArtifact(body.path, body.content, policy);
+    const result = this.ctx.storage.transactionSync(() => {
+      const previous = queryOne<{ id: string; failures: number; status: string; approval_id: string | null }>(this.ctx.storage.sql as never,
+        "SELECT id, failures, status, approval_id FROM artifact_linter_failures WHERE project_id=? AND path=? AND work_key=?", body.project_id, body.path, body.work_key);
+      if (previous?.status === "REQUIRES_HUMAN_INTERVENTION") return { allowed: false, status: previous.status, diagnosticId: previous.id, approvalId: previous.approval_id, diagnostics };
+      if (!diagnostics.length) {
+        if(previous) execute(this.ctx.storage.sql as never,"UPDATE artifact_linter_failures SET status='PASSED',failures=0,diagnostics_json='[]',updated_at=datetime('now') WHERE id=?",previous.id);
+        return { allowed: true, status: "PASSED", diagnostics: [] };
+      }
+      const id = previous?.id ?? crypto.randomUUID(); const failures = (previous?.failures ?? 0) + 1;
+      const status = failures >= 3 ? "REQUIRES_HUMAN_INTERVENTION" : "REPAIR_REQUIRED";
+      execute(this.ctx.storage.sql as never, `INSERT INTO artifact_linter_failures (id,space_id,project_id,path,work_key,task_id,failures,diagnostics_json,status)
+        VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(project_id,path,work_key) DO UPDATE SET failures=excluded.failures,diagnostics_json=excluded.diagnostics_json,status=excluded.status,updated_at=datetime('now')`, id, body.space_id, body.project_id, body.path, body.work_key, body.task_id ?? null, failures, JSON.stringify(diagnostics), status);
+      if (status === "REQUIRES_HUMAN_INTERVENTION" && body.task_id) execute(this.ctx.storage.sql as never,
+        "UPDATE tasks SET status='blocked',intervention_status='REQUIRES_HUMAN_INTERVENTION',updated_at=datetime('now') WHERE id=? AND space_id=? AND project_id=? AND status IN ('pending','in_progress','blocked')", body.task_id, body.space_id, body.project_id);
+      return { allowed: false, status, diagnosticId: id, approvalId: previous?.approval_id ?? null, diagnostics, correctionAttempts: Math.min(2, failures - 1) };
+    });
+    return Response.json(result);
+  }
+  private async attachArtifactApproval(request: Request): Promise<Response> {
+    const body = await request.json<{ id: string; space_id: string; approval_id: string }>();
+    if (!body.id || !body.space_id || !body.approval_id) return Response.json({ error: "invalid_approval" }, { status: 400 });
+    execute(this.ctx.storage.sql as never, "UPDATE artifact_linter_failures SET approval_id=? WHERE id=? AND space_id=? AND status='REQUIRES_HUMAN_INTERVENTION' AND approval_id IS NULL", body.approval_id, body.id, body.space_id);
+    const row=queryOne<{ approval_id: string | null }>(this.ctx.storage.sql as never, "SELECT approval_id FROM artifact_linter_failures WHERE id=? AND space_id=?",body.id,body.space_id);
+    return Response.json({ approvalId: row?.approval_id ?? null });
+  }
+  private async resumeArtifactValidation(request: Request): Promise<Response> {
+    const body=await request.json<{ id: string; space_id: string; approval_id: string }>();
+    return this.ctx.storage.transactionSync(() => {
+      const row=queryOne<{task_id:string|null;project_id:string}>(this.ctx.storage.sql as never, "SELECT task_id,project_id FROM artifact_linter_failures WHERE id=? AND space_id=? AND approval_id=? AND status='REQUIRES_HUMAN_INTERVENTION'", body.id,body.space_id,body.approval_id);
+      if(!row) return Response.json({resumed:false},{status:409});
+      execute(this.ctx.storage.sql as never,"UPDATE artifact_linter_failures SET status='REVIEWED_BY_HUMAN',failures=0,approval_id=NULL,updated_at=datetime('now') WHERE id=?",body.id);
+      if(row.task_id) execute(this.ctx.storage.sql as never,"UPDATE tasks SET status='in_progress',intervention_status=NULL,updated_at=datetime('now') WHERE id=? AND space_id=? AND project_id=? AND status='blocked' AND intervention_status='REQUIRES_HUMAN_INTERVENTION'",row.task_id,body.space_id,row.project_id);
+      return Response.json({resumed:true});
+    });
+  }
+  private getArtifactDiagnostic(url: URL): Response {
+    const row=queryOne<{id:string;project_id:string;path:string;diagnostics_json:string;status:string;approval_id:string|null}>(this.ctx.storage.sql as never,"SELECT id,project_id,path,diagnostics_json,status,approval_id FROM artifact_linter_failures WHERE id=? AND space_id=?", url.searchParams.get("id")??"",url.searchParams.get("space_id")??"");
+    if(!row) return Response.json({error:"not_found"},{status:404});
+    const {diagnostics_json,...snapshot}=row;return Response.json({...snapshot,diagnostics:JSON.parse(diagnostics_json)});
+  }
+
   /** Produce the raw portable representation. The public worker always scrubs it before R2. */
   async exportBlueprint(spaceId: string): Promise<SpaceBlueprint> {
     this.ensureInit();
     const projects = queryAll<{
-      id: string; name: string; kind: string; template_mode: TemplateMode; viewport_config: string; default_agent_id: string | null; execution_ceiling: number; channel_config: string;
+      id: string; name: string; kind: string; template_mode: TemplateMode; viewport_config: string; default_agent_id: string | null; execution_ceiling: number; channel_config: string; artifact_linter_policy: string;
     }>(this.ctx.storage.sql as never,
-      "SELECT id, name, kind, template_mode, viewport_config, default_agent_id, execution_ceiling, channel_config FROM projects WHERE space_id = ? AND status != 'archived' ORDER BY created_at, id", spaceId);
+      "SELECT id, name, kind, template_mode, viewport_config, default_agent_id, execution_ceiling, channel_config, artifact_linter_policy FROM projects WHERE space_id = ? AND status != 'archived' ORDER BY created_at, id", spaceId);
     const exportedProjects = projects.map((project) => {
       const agent = project.default_agent_id ? queryOne<{ config_json: string }>(this.ctx.storage.sql as never,
         "SELECT config_json FROM agent_definitions WHERE id = ? AND space_id = ?", project.default_agent_id, spaceId) : null;
@@ -2764,10 +2835,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       return {
         id: project.id, name: project.name, kind: project.kind, templateMode: project.template_mode,
         viewports: safeJsonParseObj(project.viewport_config),
-        configuration: { executionCeiling: project.execution_ceiling, channel: safeJsonParseObj(project.channel_config) },
+        configuration: { executionCeiling: project.execution_ceiling, channel: safeJsonParseObj(project.channel_config), artifactLinters: parseArtifactLinters(JSON.parse(project.artifact_linter_policy)) },
         systemPrompt: typeof config.system_prompt === "string" ? config.system_prompt : "",
         initialTasks: tasks.map((task) => ({ id: task.id, title: task.title, status: task.status, dependencies: safeJsonParseArr(task.dependencies).filter((id): id is string => typeof id === "string"), ...(task.assigned_agent ? { assignedAgent: task.assigned_agent } : {}) })),
-        starterFiles: files.map((file) => ({ path: file.path, content: file.content })),
+        starterFiles: files.map((file) => ({ path: `/workspace/${file.path.replace(/^\/+/, "")}`, content: file.content })),
       };
     });
     const extensions = queryAll<{ extension_id: string }>(this.ctx.storage.sql as never, "SELECT extension_id FROM installed_extensions ORDER BY extension_id");
@@ -2794,7 +2865,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         fixturesByProject.set(projectId, fixtures);
       }
       for (const file of project.starterFiles) {
-        const path = file.path.replace(/^\/+/, "");
+        const path = normalizeWorkspacePath(file.path);
         if (!path || path.split("/").some((segment) => !segment || segment === "." || segment === "..")) throw new Error("invalid_starter_artifact_path");
         const sizeBytes = new TextEncoder().encode(file.content).byteLength;
         totalSeedBytes += sizeBytes;
@@ -2830,8 +2901,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
              VALUES (?, ?, ?, '', 'active', ?, ?, ?, ?)`,
             projectId, targetSpaceId, project.name, project.kind, new Date().toISOString(), project.templateMode, JSON.stringify(project.viewports));
           const hydrationSeed = validateProjectHydrationSeed(project.configuration?.hydrationSeed, new Set(project.starterFiles.map(file => file.path)));
-          if (hydrationSeed) execute(this.ctx.storage.sql as never,
-            "UPDATE projects SET channel_config = ? WHERE id = ? AND space_id = ?", JSON.stringify({ hydration_seed: hydrationSeed }), projectId, targetSpaceId);
+          const artifactLinters = parseArtifactLinters(project.configuration?.artifactLinters);
+          execute(this.ctx.storage.sql as never,"UPDATE projects SET artifact_linter_policy=? WHERE id=? AND space_id=?",JSON.stringify(artifactLinters),projectId,targetSpaceId);
+          if (hydrationSeed || artifactLinters.length) execute(this.ctx.storage.sql as never,
+            "UPDATE projects SET channel_config = ? WHERE id = ? AND space_id = ?", JSON.stringify({ ...(hydrationSeed ? { hydration_seed: hydrationSeed } : {}), ...(artifactLinters.length ? { artifact_linters: artifactLinters } : {}) }), projectId, targetSpaceId);
           const ceiling = project.configuration?.executionCeiling;
           if (typeof ceiling === "number" && ceiling >= 1 && ceiling <= 6) execute(this.ctx.storage.sql as never, "UPDATE projects SET execution_ceiling = ? WHERE id = ?", ceiling, projectId);
           if (project.systemPrompt) {
@@ -2929,11 +3002,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
   private async verifyExecutiveContact(request: Request): Promise<Response> {
     const body = await request.json<{ space_id?: string; channel?: string; contact_id?: string }>();
-    const contact = body.channel === "whatsapp" ? (body.contact_id ?? "").replace(/[^+\d]/g, "") : (body.contact_id ?? "").trim();
+    const whatsapp = body.channel === "whatsapp";
+    const contact = whatsapp ? (body.contact_id ?? "").replace(/\D/g, "") : (body.contact_id ?? "").trim();
     const row = queryOne(this.ctx.storage.sql as never,
       `SELECT ec.user_id, sm.role FROM executive_contacts ec
        JOIN space_members sm ON sm.space_id=ec.space_id AND sm.user_id=ec.user_id
-       WHERE ec.space_id=? AND ec.channel=? AND ec.contact_id=? AND sm.role IN ('owner','admin')`,
+       WHERE ec.space_id=? AND ec.channel=? AND ${whatsapp ? "REPLACE(ec.contact_id, '+', '')" : "ec.contact_id"}=? AND sm.role IN ('owner','admin')`,
       body.space_id ?? "", body.channel ?? "", contact);
     return Response.json({ verified: Boolean(row), ...(row ? { member: row } : {}) }, { status: row ? 200 : 403 });
   }
@@ -4574,7 +4648,20 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private listPresence(params: URLSearchParams): Response {
     const spaceId = params.get("space_id") ?? "";
     const projectId = params.get("project_id");
-    const rows = projectId
+    const userId = params.get("user_id");
+    const rows = projectId && userId
+      ? queryAll<{ user_id: string; project_id: string | null; thread_id: string | null; last_seen_at: number; file_path: string | null; cursor_line: number | null; cursor_col: number | null }>(
+          this.ctx.storage.sql as never,
+          "SELECT user_id, project_id, thread_id, last_seen_at, file_path, cursor_line, cursor_col FROM presence WHERE space_id = ? AND project_id = ? AND user_id = ?",
+          spaceId, projectId, userId
+        )
+      : userId
+      ? queryAll<{ user_id: string; project_id: string | null; thread_id: string | null; last_seen_at: number; file_path: string | null; cursor_line: number | null; cursor_col: number | null }>(
+          this.ctx.storage.sql as never,
+          "SELECT user_id, project_id, thread_id, last_seen_at, file_path, cursor_line, cursor_col FROM presence WHERE space_id = ? AND user_id = ?",
+          spaceId, userId
+        )
+      : projectId
       ? queryAll<{
           user_id: string;
           project_id: string | null;

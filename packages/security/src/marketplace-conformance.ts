@@ -23,6 +23,14 @@ export interface ConformanceCertificate {
   total: number;
   issuedAt: string;
   signature: string;
+  evidence?: "literal-lint" | "state-delta";
+  issuerTenantId?: string;
+}
+export interface StateDeltaConformanceReport {
+  runner: "naelao-state-delta-v1";
+  passed: number; total: number; securityViolations: number;
+  tokensUsed: number; maximumCostUpperBoundUsd: number;
+  diagnostics: Array<{ fixtureId: string; error: string }>;
 }
 
 const ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -99,13 +107,20 @@ export async function certifyArtifact(artifact: unknown, suite: ConformanceSuite
     suiteSha256: await sha256(stable(suite)),
     passed: report.passed,
     total: report.total,
-    issuedAt,
+    issuedAt, evidence: "literal-lint" as const,
   };
   return { report, certificate: { ...unsigned, signature: await hmac(secret, payload(unsigned)) } };
 }
 
-export async function verifyArtifactCertificate(artifact: unknown, certificate: ConformanceCertificate | undefined, secret: string): Promise<boolean> {
-  if (!certificate || !secret || certificate.runner !== CONFORMANCE_RUNNER_VERSION || certificate.passed !== certificate.total || certificate.total < MIN_MARKETPLACE_FIXTURES) return false;
+/** Called only after the host-owned SQL/file oracle has independently assessed the worker. */
+export async function certifyStateDeltaArtifact(artifact: unknown, suite: unknown, report: StateDeltaConformanceReport, secret: string, issuerTenantId: string): Promise<ConformanceCertificate | undefined> {
+  if (!secret || !issuerTenantId || report.runner !== "naelao-state-delta-v1" || report.passed !== report.total || report.total < MIN_MARKETPLACE_FIXTURES || report.securityViolations !== 0 || report.maximumCostUpperBoundUsd > 0.05 || report.tokensUsed !== 0 || report.diagnostics.length) return undefined;
+  const unsigned = { runner: report.runner, artifactSha256: await sha256(stable(artifact)), suiteSha256: await sha256(stable(suite)), passed: report.passed, total: report.total, issuedAt: new Date().toISOString(), evidence: "state-delta" as const, issuerTenantId };
+  return { ...unsigned, signature: await hmac(secret, payload(unsigned)) };
+}
+
+export async function verifyArtifactCertificate(artifact: unknown, certificate: ConformanceCertificate | undefined, secret: string, requiredEvidence?: "state-delta"): Promise<boolean> {
+  if (!certificate || !secret || ![CONFORMANCE_RUNNER_VERSION,"naelao-state-delta-v1"].includes(certificate.runner) || certificate.passed !== certificate.total || !Number.isInteger(certificate.total) || certificate.total < MIN_MARKETPLACE_FIXTURES || certificate.total > 500 || (requiredEvidence && (certificate.evidence !== requiredEvidence || certificate.runner !== "naelao-state-delta-v1" || !certificate.issuerTenantId))) return false;
   const { signature, ...unsigned } = certificate;
   return certificate.artifactSha256 === await sha256(stable(artifact)) &&
     signature === await hmac(secret, payload(unsigned));

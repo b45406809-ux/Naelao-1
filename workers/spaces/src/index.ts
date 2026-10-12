@@ -20,12 +20,18 @@ import { registerGadgetMcpRoutes } from "./routes/gadget-mcp.js";
 import { registerDynamicPageRoutes } from "./routes/dynamic-pages.js";
 import { registerRecipeRoutes } from "./routes/recipes.js";
 import { registerMarketplaceRoutes } from "./routes/marketplace.js";
+import { registerDeskDropRoutes } from "./routes/desk-drop.js";
+import { conformanceDigest, type BlueprintConformanceParams } from "./BlueprintConformanceWorkflow.js";
+import { runStateDeltaFixture, validateStateDeltaSuite, type StateDeltaSuite, type StateDeltaFixture } from "./state-delta-conformance.js";
+import type { WorkerLoaderBinding } from "../../agents/src/script-engine/code-runner.js";
 import { registerGraduationRoutes } from "./routes/graduation.js";
 import { registerMarketRadarRoutes } from "./routes/market-radar.js";
 import { applyDurableObjectJurisdiction, certifyArtifact, evaluateBlueprintSecurity, sanitizeAndScrubBlueprint, verifyArtifactCertificate, type ConformanceSuite, type ConformanceCertificate } from "@naelao/security";
 import type { SpaceBlueprint } from "@naelao/agent-sdk";
 
 export { SpaceDO } from "./do/SpaceDO.js";
+export { ConformanceSandboxDO, ConformanceState } from "./conformance-state.js";
+export { BlueprintConformanceWorkflow } from "./BlueprintConformanceWorkflow.js";
 export { LockDO } from "./do/LockDO.js";
 export { FeatureFlagDO } from "./do/FeatureFlagDO.js";
 export { TransactionCoordinatorDO } from "./do/TransactionCoordinatorDO.js";
@@ -36,6 +42,10 @@ export { MicroAppDO } from "./do/MicroAppDO.js";
 export { gadgetActorId, gadgetStorageKey } from "./do/MicroAppDO.js";
 
 export interface Env {
+  LOADER?: WorkerLoaderBinding;
+  CONFORMANCE_SANDBOX_DO?: DurableObjectNamespace;
+  CONFORMANCE_EXECUTOR?: Fetcher;
+  BLUEPRINT_CONFORMANCE_WORKFLOW?: Workflow<BlueprintConformanceParams>;
   ENVIRONMENT: string;
   DATA_JURISDICTION?: "eu";
   PLATFORM_SECRET: string;
@@ -67,6 +77,8 @@ export interface Env {
   /** Notifications worker — password-reset emails (product-end-user-routes.ts). */
   NOTIFICATIONS_WORKER?: Fetcher;
   PRODUCT_SHELL_URL?: string;
+  TELEGRAM_BOT_USERNAME?: string;
+  WHATSAPP_PHONE_NUMBER?: string;
   /** Either Meta Cloud API or Twilio may deliver passwordless WhatsApp challenges. */
   WHATSAPP_ACCESS_TOKEN?: string;
   WHATSAPP_PHONE_NUMBER_ID?: string;
@@ -86,7 +98,7 @@ export interface Env {
 function validateEnv(env: Env): void {
   if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
   applyDurableObjectJurisdiction(env as unknown as Record<string, unknown>, env.DATA_JURISDICTION, [
-    "SPACE_DO", "SPACE_TYPE_REGISTRY_DO", "BUILDER_ACCOUNT_DO", "PRODUCT_USER_DO", "MICRO_APP_DO",
+    "SPACE_DO", "SPACE_TYPE_REGISTRY_DO", "BUILDER_ACCOUNT_DO", "PRODUCT_USER_DO", "MICRO_APP_DO", "CONFORMANCE_SANDBOX_DO",
   ]);
 }
 
@@ -97,6 +109,51 @@ registerGadgetMcpRoutes(app);
 registerDynamicPageRoutes(app);
 registerRecipeRoutes(app);
 registerMarketplaceRoutes(app);
+registerDeskDropRoutes(app, {
+  async verifyContact(rawEnv, spaceId, tenantId, channel, contact) {
+    const env = rawEnv as Env;
+    const owned = await env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND status = 'active'").bind(spaceId, tenantId).first();
+    if (!owned) return null;
+    const res = await forwardToSpaceDO(await spaceDoStub(env, spaceId, tenantId), "/internal/executive/verify", "POST", JSON.stringify({ space_id: spaceId, channel, contact_id: contact }));
+    const result = await res.json<{ verified?: boolean; member?: { user_id: string } }>();
+    return result.verified ? result.member?.user_id ?? null : null;
+  },
+  async openSession(rawEnv, spaceId, userId) {
+    const env = rawEnv as Env;
+    // Contact verification never substitutes for fresh business authorization at redemption.
+    const role = await resolveEndUserBusinessRole(env.PLATFORM_DB, spaceId, userId);
+    if (role !== "owner" && role !== "admin") return null;
+    const root = await resolveProductRootSpace(env, spaceId);
+    if (!root) return null;
+    const product = await env.PLATFORM_DB.prepare("SELECT product_slug FROM spaces WHERE id = ?").bind(root.id).first<{ product_slug: string | null }>();
+    if (!product?.product_slug) return null;
+    const response = await (await productUserDoStub(env, root.id, userId, root.tenant_id)).fetch(new Request("http://do/sessions", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ auth_provider: "verified-mobile-desk-drop" }),
+    }));
+    if (!response.ok) return null;
+    const session = await response.json<{ session_token: string; expires_at: string }>();
+    return { token: session.session_token, expiresAt: session.expires_at, productId: root.id, slug: product.product_slug };
+  },
+  async verifySession(rawEnv, session) {
+    const env = rawEnv as Env;
+    if (!await resolveEndUserBusinessRole(env.PLATFORM_DB, session.spaceId, session.userId)) return false;
+    const root = await resolveProductRootSpace(env, session.spaceId);
+    if (!root || root.id !== session.productId) return false;
+    const response = await (await productUserDoStub(env, root.id, session.userId, root.tenant_id)).fetch(new Request("http://do/sessions/verify", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_token: session.token }),
+    }));
+    return response.ok && (await response.json<{ valid: boolean }>()).valid;
+  },
+  async revokeSession(rawEnv, session) {
+    const env = rawEnv as Env;
+    const root = await resolveProductRootSpace(env, session.spaceId);
+    if (!root || root.id !== session.productId) return;
+    const stub = await productUserDoStub(env, root.id, session.userId, root.tenant_id);
+    const verify = await stub.fetch(new Request("http://do/sessions/verify", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_token: session.token }) }));
+    const verified = await verify.json<{ valid: boolean; session_id?: string }>();
+    if (verified.valid && verified.session_id) await stub.fetch(new Request("http://do/sessions/revoke", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_id: verified.session_id }) }));
+  },
+});
 registerGraduationRoutes(app);
 registerMarketRadarRoutes(app);
 
@@ -107,6 +164,14 @@ function getCallerIdentity(c: { req: { header: (h: string) => string | undefined
     userId: c.req.header("x-naelao-user-id") ?? "",
     role: c.req.header("x-naelao-role") ?? "viewer",
   };
+}
+async function canExportBlueprint(c: { env: Env; req: { header(h: string): string | undefined } }, spaceId: string): Promise<boolean> {
+  const { role, userId } = getCallerIdentity(c);
+  if (role === "product_end_user") {
+    const membership = await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, userId);
+    return membership === "owner" || membership === "admin";
+  }
+  return role === "owner" || role === "admin";
 }
 
 // ── GET /spaces — list spaces for tenant ────────────────────────────────────
@@ -192,6 +257,7 @@ app.post("/spaces/:spaceId/export-template", async (c) => {
   const { tenantId } = getCallerIdentity(c);
   const spaceId = c.req.param("spaceId");
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  if (!await canExportBlueprint(c, spaceId)) return c.json({ error_code: "owner_or_admin_required" }, 403);
   const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'").bind(spaceId, tenantId).first();
   if (!owned) throw notFound("Space");
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Blueprint storage not configured" }, 503);
@@ -200,32 +266,70 @@ app.post("/spaces/:spaceId/export-template", async (c) => {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ space_id: spaceId }),
   }));
   if (!rawResponse.ok) return new Response(rawResponse.body, { status: rawResponse.status });
-  const blueprint = sanitizeAndScrubBlueprint(await rawResponse.json()) as unknown as SpaceBlueprint;
+  const rawBlueprint = await rawResponse.json<SpaceBlueprint>();
+  const exportOptions = await c.req.json<{ stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }>().catch(() => ({} as { stateDeltaSuite?: StateDeltaSuite; entries?: Record<string, string> }));
+  if (exportOptions.stateDeltaSuite) rawBlueprint.metadata.stateDeltaSuite = exportOptions.stateDeltaSuite;
+  for (const project of rawBlueprint.projects) {
+    const entry = project.id ? exportOptions.entries?.[project.id] : undefined;
+    if (entry) project.configuration = { ...project.configuration, conformance_entry: entry };
+  }
+  const blueprint = sanitizeAndScrubBlueprint(rawBlueprint) as unknown as SpaceBlueprint;
   const security = evaluateBlueprintSecurity(blueprint);
   if (!security.publishable) return c.json({ error_code: "blueprint_rejected", security }, 422);
 
-  // Marketplace publication requires the bounded deterministic suite attached to the
-  // blueprint. Provider-judged scores are deliberately not accepted as certification.
-  const suite = blueprint.metadata.conformanceSuite as ConformanceSuite | undefined;
-  const conformance = suite ? await certifyArtifact(blueprint, suite, c.env.PLATFORM_SECRET) : undefined;
-  if (!conformance?.certificate) return c.json({
-    error_code: "conformance_gate_failed",
-    diagnostics: conformance?.report.diagnostics ?? [{ fixtureId: "suite", expected: "at least 50 valid fixtures", actual: "missing_or_invalid" }],
-    passed: conformance?.report.passed ?? 0,
-    total: conformance?.report.total ?? 0,
-  }, 422);
+  const suite = blueprint.metadata.stateDeltaSuite as StateDeltaSuite | undefined;
+  if (!suite || !validateStateDeltaSuite(suite, blueprint)) return c.json({ error_code: "conformance_gate_failed", message: "At least 50 state-delta fixtures covering every installed worker entry are required" }, 422);
+  if (!c.env.BLUEPRINT_CONFORMANCE_WORKFLOW || !c.env.LOADER || !c.env.CONFORMANCE_SANDBOX_DO || !c.env.CONFORMANCE_EXECUTOR) return c.json({ error_code: "conformance_runtime_unavailable" }, 503);
+  const jobId = crypto.randomUUID(); const key = `conformance-jobs/${tenantId}/${jobId}.json`;
+  const payload = JSON.stringify({ blueprint, suite, security });
+  if (payload.length > 5 * 1024 * 1024) return c.json({ error_code: "conformance_artifact_size_limit" }, 413);
+  await c.env.SCRIPTS_R2.put(key, payload, { httpMetadata: { contentType: "application/json" } });
+  await c.env.PLATFORM_DB.prepare("INSERT INTO blueprint_export_jobs (id, tenant_id, space_id, artifact_key) VALUES (?, ?, ?, ?)").bind(jobId, tenantId, spaceId, key).run();
+  await c.env.BLUEPRINT_CONFORMANCE_WORKFLOW.create({ id: jobId, params: { tenantId, jobId, key, digest: await conformanceDigest(payload) } });
+  return c.json({ jobId, status: "testing", statusUrl: `/spaces/${spaceId}/export-template/${jobId}`, artifactUrl: `/spaces/${spaceId}/export-template-artifact/${jobId}` }, 202);
+});
 
-  // A separate DO proves schema, project, task and filesystem installation before publication.
-  const testSpaceId = `blueprint-test-${blueprint.id}`;
-  const testId = c.env.SPACE_DO.idFromName(await getDOName("space", testSpaceId, tenantId, c.env.PLATFORM_SECRET));
-  const dryRun = await c.env.SPACE_DO.get(testId).fetch(new Request("http://space-do/blueprints/instantiate", {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ blueprint, target_space_id: testSpaceId }),
-  }));
-  if (!dryRun.ok) return c.json({ error_code: "sandbox_dry_run_failed", details: await dryRun.text() }, 422);
-  await c.env.SCRIPTS_R2.put(`blueprints/${blueprint.id}.json`, JSON.stringify({ blueprint: { ...blueprint, securityRating: security.rating }, conformanceCertificate: conformance.certificate }, null, 2), {
-    httpMetadata: { contentType: "application/json" }, customMetadata: { safetyRating: security.rating, schemaVersion: "2.0" },
-  });
-  return c.json({ blueprintId: blueprint.id, key: `blueprints/${blueprint.id}.json`, security, conformance: conformance.report, dryRun: await dryRun.json() }, 201);
+app.get("/spaces/:spaceId/export-template-artifact/:jobId", async c => {
+  const { tenantId } = getCallerIdentity(c);
+  if (!await canExportBlueprint(c, c.req.param("spaceId"))) return c.json({ error_code: "owner_or_admin_required" }, 403);
+  const job = await c.env.PLATFORM_DB.prepare("SELECT artifact_key FROM blueprint_export_jobs WHERE id = ? AND space_id = ? AND tenant_id = ?").bind(c.req.param("jobId"), c.req.param("spaceId"), tenantId).first<{ artifact_key: string }>();
+  if (!job) throw notFound("Blueprint export");
+  const object = await c.env.SCRIPTS_R2?.get(job.artifact_key);
+  if (!object) throw notFound("Blueprint export artifact");
+  const { blueprint } = await object.json<{ blueprint: SpaceBlueprint }>();
+  return c.json({ artifact: blueprint });
+});
+
+app.get("/spaces/:spaceId/export-template/:jobId", async c => {
+  const { tenantId } = getCallerIdentity(c);
+  if (!await canExportBlueprint(c, c.req.param("spaceId"))) return c.json({ error_code: "owner_or_admin_required" }, 403);
+  const job = await c.env.PLATFORM_DB.prepare("SELECT id FROM blueprint_export_jobs WHERE id = ? AND space_id = ? AND tenant_id = ?").bind(c.req.param("jobId"), c.req.param("spaceId"), tenantId).first();
+  if (!job) throw notFound("Blueprint export");
+  if (!c.env.BLUEPRINT_CONFORMANCE_WORKFLOW) return c.json({ error_code: "conformance_runtime_unavailable" }, 503);
+  const instance = await c.env.BLUEPRINT_CONFORMANCE_WORKFLOW.get(c.req.param("jobId"));
+  return c.json(await instance.status());
+});
+
+app.post("/internal/conformance/fixture", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  const stateFactory = (c.executionCtx as unknown as { exports?: { ConformanceState?: (options: { props: { sandboxId: string } }) => Fetcher } }).exports?.ConformanceState;
+  if (!stateFactory || !c.env.LOADER || !c.env.CONFORMANCE_SANDBOX_DO) return c.json({ error_code: "conformance_runtime_unavailable" }, 503);
+  const { blueprint, fixture } = await c.req.json<{ blueprint: SpaceBlueprint; fixture: StateDeltaFixture }>();
+  try { await runStateDeltaFixture(c.env, stateFactory, blueprint, fixture); return c.json({ passed: true }); }
+  catch (error) { return c.json({ passed: false, error: (error as Error).message.slice(0, 500) }); }
+});
+
+app.post("/internal/spaces/:spaceId/artifact-validation/:action", async c => {
+  const tenantId=c.req.header("x-naelao-tenant-id")??"";const spaceId=c.req.param("spaceId");
+  if(!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"),tenantId,c.env.PLATFORM_SECRET)) return c.json({error_code:"forbidden"},403);
+  const owned=await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id=? AND tenant_id=? AND status='active'").bind(spaceId,tenantId).first();
+  if(!owned) throw notFound("Space");
+  const action=c.req.param("action");if(!["check","approval","resume","diagnostic"].includes(action)) return c.json({error_code:"not_found"},404);
+  const body=await c.req.json<Record<string,unknown>>();
+  const stub=await spaceDoStub(c.env,spaceId,tenantId);
+  if(action==="diagnostic") return forwardToSpaceDO(stub,`/artifact-validation/diagnostic?${new URLSearchParams({space_id:spaceId,id:String(body.id??"")})}`,"GET");
+  return forwardToSpaceDO(stub,`/artifact-validation/${action}`,"POST",JSON.stringify({...body,space_id:spaceId}));
 });
 
 app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
@@ -245,8 +349,30 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
     artifactForVerification,
     storedValue.conformanceCertificate,
     c.env.PLATFORM_SECRET,
+    "state-delta",
   )) return c.json({ error_code: "conformance_certificate_invalid" }, 422);
   const blueprint = certifiedBlueprint!;
+  // A valid publisher receipt alone does not grant every tenant a template license.
+  // Publisher-owned exports may be activated directly; imported artifacts need a
+  // tenant-scoped fork/entitlement created by the marketplace billing path.
+  if (storedValue.conformanceCertificate.issuerTenantId !== tenantId) {
+    const fork = await c.env.PLATFORM_DB.prepare(
+      `SELECT f.certificate_json, f.artifact_json
+       FROM marketplace_forks f JOIN marketplace_listings l ON l.id = f.listing_id
+       WHERE f.tenant_id = ? AND f.blueprint_id = ? AND l.status = 'published' LIMIT 1`
+    ).bind(tenantId, c.req.param("blueprintId")).first<{ certificate_json: string; artifact_json: string }>();
+    if (!fork) return c.json({ error_code: "template_license_required" }, 402);
+    try {
+      const forkCertificate = JSON.parse(fork.certificate_json) as ConformanceCertificate;
+      const forkArtifact = JSON.parse(fork.artifact_json) as SpaceBlueprint;
+      if (forkCertificate.signature !== storedValue.conformanceCertificate.signature ||
+          JSON.stringify(forkArtifact) !== JSON.stringify(blueprint)) {
+        return c.json({ error_code: "template_license_mismatch" }, 403);
+      }
+    } catch {
+      return c.json({ error_code: "template_license_mismatch" }, 403);
+    }
+  }
   const security = evaluateBlueprintSecurity(blueprint);
   if (!security.publishable) return c.json({ error_code: "blueprint_rejected", security }, 422);
   const targetId = c.env.SPACE_DO.idFromName(await getDOName("space", spaceId, tenantId, c.env.PLATFORM_SECRET));
@@ -2217,6 +2343,8 @@ app.get("/spaces/:spaceId/presence", async (c) => {
   const qs = new URLSearchParams({ space_id: spaceId });
   const projectId = c.req.query("project_id");
   if (projectId) qs.set("project_id", projectId);
+  const userId = c.req.query("user_id");
+  if (userId) qs.set("user_id", userId);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const res = await forwardToSpaceDO(stub, `/presence?${qs.toString()}`, "GET");
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });

@@ -7,6 +7,9 @@ import {
 import type { Hono } from "hono";
 import type { BillingEnv } from "./index.js";
 import { developerCommissionBps } from "./settlement.js";
+import { reserveDeveloperPayout } from "./payout-reconciliation.js";
+import { createLsProductVariant } from "./ls-products.js";
+import { LemonSqueezyProvider } from "@naelao/billing-core";
 
 export interface TemplateSubscriptionInput {
   space_id: string;
@@ -95,11 +98,35 @@ export function registerPartnerPortalRoutes(
         400
       );
     }
+    if (!c.env.LEMON_SQUEEZY_API_KEY || !c.env.LEMON_SQUEEZY_STORE_ID) return c.json({ error_code: "billing_provider_unavailable" }, 503);
     const id = crypto.randomUUID();
+    const partner = await c.env.PLATFORM_DB.prepare("SELECT pioneer_rank FROM developer_partner_profiles WHERE user_id = ? AND status = 'active'")
+      .bind(attribution.developerId).first<{ pioneer_rank: number | null }>();
+    const pioneerEligible = partner?.pioneer_rank !== null && Number(partner?.pioneer_rank) <= 50;
+    let product: Awaited<ReturnType<typeof createLsProductVariant>>;
+    let checkoutUrl: string;
+    try {
+      product = await createLsProductVariant({ apiKey: c.env.LEMON_SQUEEZY_API_KEY, storeId: c.env.LEMON_SQUEEZY_STORE_ID }, {
+        name: `Naelao template ${input.template_id}`.slice(0, 100),
+        description: "Monthly Naelao template subscription",
+        price_cents: input.requested_price_cents,
+        kind: "subscription",
+      });
+      const provider = new LemonSqueezyProvider({ LEMON_SQUEEZY_API_KEY: c.env.LEMON_SQUEEZY_API_KEY, LEMON_SQUEEZY_STORE_ID: c.env.LEMON_SQUEEZY_STORE_ID });
+      const checkout = await provider.createCheckout({
+        spaceId: input.space_id,
+        variantOrPriceId: product.lsVariantId,
+        metadata: { kind: "template_subscription", template_subscription_id: id },
+      });
+      checkoutUrl = checkout.url;
+    } catch (error) {
+      console.error("template subscription checkout provisioning failed", (error as Error).message.slice(0, 300));
+      return c.json({ error_code: "template_checkout_unavailable" }, 503);
+    }
     await c.env.PLATFORM_DB.prepare(
       `INSERT INTO template_subscriptions
-       (id, space_id, template_id, developer_user_id, attribution_channel, base_plan_price_cents, first_month_price_cents, extension_wholesale_cents, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')`
+       (id, space_id, template_id, developer_user_id, attribution_channel, base_plan_price_cents, first_month_price_cents, extension_wholesale_cents, pioneer_eligible, ls_product_id, ls_variant_id, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'paused')`
     )
       .bind(
         id,
@@ -109,7 +136,10 @@ export function registerPartnerPortalRoutes(
         attribution.channel,
         input.plan_price_cents,
         input.requested_price_cents,
-        floor.floorCents - input.plan_price_cents
+        floor.floorCents - input.plan_price_cents,
+        pioneerEligible ? 1 : 0,
+        product.lsProductId,
+        product.lsVariantId,
       )
       .run();
     return c.json(
@@ -118,7 +148,9 @@ export function registerPartnerPortalRoutes(
         attribution_channel: attribution.channel,
         developer_user_id: attribution.developerId,
         wholesale_floor_cents: floor.floorCents,
-        commission_bps: developerCommissionBps(attribution.channel),
+        commission_bps: pioneerEligible ? 4_000 : developerCommissionBps(attribution.channel),
+        checkout_url: checkoutUrl,
+        status: "pending_payment",
       },
       201
     );
@@ -141,11 +173,14 @@ export function registerPartnerPortalRoutes(
       .bind(userId)
       .all<Record<string, unknown>>();
     const balance = await c.env.PLATFORM_DB.prepare(
-      `SELECT COALESCE(SUM(developer_cents), 0) AS lifetime_cents,
-              COALESCE(SUM(CASE WHEN payout_id IS NULL THEN developer_cents ELSE 0 END), 0) AS pending_cents
-       FROM developer_earnings_ledger WHERE developer_user_id = ?`
+      `SELECT COALESCE(SUM(amount_cents), 0) AS lifetime_cents,
+              COALESCE(SUM(CASE WHEN payout_id IS NULL THEN amount_cents ELSE 0 END), 0) AS pending_cents
+       FROM (
+         SELECT developer_cents AS amount_cents, payout_id FROM developer_earnings_ledger WHERE developer_user_id = ?
+         UNION ALL SELECT amount_cents, payout_id FROM developer_license_earnings WHERE developer_user_id = ?
+       )`
     )
-      .bind(userId)
+      .bind(userId, userId)
       .first<{ lifetime_cents: number; pending_cents: number }>();
     return c.json({
       clients: results.map((row) => ({
@@ -171,13 +206,8 @@ export function registerPartnerPortalRoutes(
         { error_code: "unauthorized", message: "Missing user" },
         401
       );
-    const pending = await c.env.PLATFORM_DB.prepare(
-      "SELECT COALESCE(SUM(developer_cents), 0) AS cents FROM developer_earnings_ledger WHERE developer_user_id = ? AND payout_id IS NULL"
-    )
-      .bind(userId)
-      .first<{ cents: number }>();
-    const amount = pending?.cents ?? 0;
-    if (amount <= 0)
+    const reserved = await reserveDeveloperPayout(c.env.PLATFORM_DB, userId);
+    if (!reserved)
       return c.json(
         {
           error_code: "no_pending_earnings",
@@ -185,18 +215,18 @@ export function registerPartnerPortalRoutes(
         },
         400
       );
-    const payoutId = crypto.randomUUID();
-    await c.env.PLATFORM_DB.batch([
-      c.env.PLATFORM_DB.prepare(
-        "INSERT INTO developer_payouts (id, developer_user_id, amount_cents, status) VALUES (?, ?, ?, 'queued')"
-      ).bind(payoutId, userId, amount),
-      c.env.PLATFORM_DB.prepare(
-        "UPDATE developer_earnings_ledger SET payout_id = ? WHERE developer_user_id = ? AND payout_id IS NULL"
-      ).bind(payoutId, userId),
-    ]);
     return c.json(
-      { id: payoutId, amount_cents: amount, currency: "USD", status: "queued" },
+      { ...reserved, currency: "USD", status: "queued" },
       202
     );
+  });
+
+  app.put("/billing/partner/auto-payout", async c => {
+    const userId = c.req.header("x-naelao-user-id") ?? "";
+    if (!userId) return c.json({ error_code: "unauthorized" }, 401);
+    const { enabled } = await c.req.json<{ enabled: boolean }>();
+    if (typeof enabled !== "boolean") return c.json({ error_code: "bad_request" }, 400);
+    const result = await c.env.PLATFORM_DB.prepare("UPDATE developer_partner_profiles SET auto_payout_enabled = ? WHERE user_id = ? AND status = 'active' RETURNING user_id").bind(enabled ? 1 : 0, userId).first();
+    return result ? c.json({ enabled }) : c.json({ error_code: "partner_profile_required" }, 404);
   });
 }

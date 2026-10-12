@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
 import { logIn, requestWhatsAppLogin, verifyWhatsAppLogin } from "@/lib/productAccount";
+import { DeskDropLogin } from "@/components/DeskDropLogin";
 
 export default function LoginPage() {
   const product = useProduct();
@@ -111,6 +112,7 @@ export default function LoginPage() {
           </h1>
         )}
         <p style={{ color: "var(--text2)", fontSize: 13, marginBottom: 20 }}>Sign in to continue</p>
+        <DeskDropLogin productId={product.space_id} />
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 14, padding: 4, background: "var(--bg)", borderRadius: 10 }}>
           <button type="button" onClick={() => { setMode("password"); setError(null); }} style={{ padding: 8, border: 0, borderRadius: 7, background: mode === "password" ? "var(--surface)" : "transparent", color: "var(--text)", cursor: "pointer" }}>Password</button>

@@ -17,11 +17,23 @@ database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 binding = "SPACE_TYPES_INDEX"
 index_name = "naelao-space-types"
 
+[[services]]
+binding = "BILLING_WORKER"
+service = "naelao-billing"
+
 [vars]
 ENVIRONMENT = "development"
 
 [env.staging]
 vars = { ENVIRONMENT = "staging" }
 
+[[env.staging.services]]
+binding = "BILLING_WORKER"
+service = "naelao-billing"
+
 [env.production]
 vars = { ENVIRONMENT = "production" }
+
+[[env.production.services]]
+binding = "BILLING_WORKER"
+service = "naelao-billing"

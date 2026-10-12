@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { requestId, jwtAuth, errorResponse, unauthorized, mintInternalToken } from "@naelao/http";
+import { requestId, jwtAuth, errorResponse, unauthorized, mintInternalToken, readDeskSession } from "@naelao/http";
 import { signHmac } from "@naelao/crypto";
 import type { NaelaoJwtClaims } from "@naelao/types";
 import { transcribeAudio } from "./routes/transcribe";
@@ -28,6 +28,7 @@ export interface Env {
   ANALYTICS_WORKER?: Fetcher;
   /** F-2: billing worker — the public Lemon Squeezy webhook ingress proxies here. */
   BILLING_WORKER?: Fetcher;
+  MARKETPLACE_WORKER?: Fetcher;
   AI: Ai;
 }
 
@@ -196,6 +197,7 @@ app.use("*", async (c, next) => {
       status: 204,
       headers: {
         "Access-Control-Allow-Origin": allowed,
+        "Access-Control-Allow-Credentials": "true",
         "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Request-Id, X-Naelao-End-User-Id",
         "Access-Control-Max-Age": "86400",
@@ -221,6 +223,7 @@ app.use("*", async (c, next) => {
   // F-6: same reason — the response's ACAO reflects the request Origin, so mark it Vary: Origin.
   freshHeaders.append("Vary", "Origin");
   if (allowed) freshHeaders.set("Access-Control-Allow-Origin", allowed);
+  if (allowed) freshHeaders.set("Access-Control-Allow-Credentials", "true");
   c.res = new Response(c.res.body, { status: c.res.status, statusText: c.res.statusText, headers: freshHeaders });
   return;
 });
@@ -231,6 +234,24 @@ app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
 app.get("/health", (c) =>
   c.json({ status: "ok", env: c.env.ENVIRONMENT, ts: Date.now() })
 );
+for (const path of ["/v1/marketplace", "/v1/marketplace/:id", "/v1/marketplace/:id/reviews"]) app.get(path, async c => {
+  if (!c.env.MARKETPLACE_WORKER) return c.json({ error_code: "marketplace_unavailable" }, 503);
+  return c.env.MARKETPLACE_WORKER.fetch(new Request(c.req.url, { method: "GET" }));
+});
+// Public ticket redemption authenticates itself; internal issuance is never proxied here.
+app.all("/v1/desk-drop/:action", async c => {
+  if (!["redeem", "session", "logout", "challenge", "status"].includes(c.req.param("action"))) return c.json({ error_code: "not_found" }, 404);
+  const limited = await checkPreAuthRateLimit(c, "desk-drop", 20);
+  if (!limited.allowed) return c.json({ error_code: "rate_limited" }, 429);
+  if (c.req.method !== "GET") {
+    const origin = c.req.header("origin");
+    const ownOrigin = new URL(c.req.url).origin;
+    const allowed = origin === ownOrigin || !!origin && ((c.env.CORS_ALLOWLIST ?? "").split(",").map(v => v.trim()).includes(origin) || await isDynamicOriginAllowed(c.env, origin));
+    if (!allowed) return c.json({ error_code: "origin_required" }, 403);
+  }
+  const url = new URL(c.req.url); url.pathname = url.pathname.replace(/^\/v1/, "");
+  return c.env.SPACES_WORKER.fetch(new Request(url, { method: c.req.method, headers: c.req.raw.headers, ...(c.req.method === "GET" ? {} : { body: await c.req.arrayBuffer() }) }));
+});
 
 // Browser dictation intentionally has its own small, rate-limited media endpoint. It accepts no
 // caller-selected model or prompt, so user audio can only reach the fixed Whisper binding.
@@ -828,7 +849,13 @@ function agentActionKey(method: string, path: string, spaceId: string): string {
 // ── Protected API routes ─────────────────────────────────────────────────────
 const api = new Hono<{ Bindings: Env }>();
 api.use("*", async (c, next) => {
-  const authHeader = c.req.header("authorization") ?? "";
+  const desk = readDeskSession(c.req.header("cookie"));
+  const cookieAuth = !c.req.header("authorization") && desk;
+  if (cookieAuth && !["GET", "HEAD", "OPTIONS"].includes(c.req.method)) {
+    const origin = c.req.header("origin") ?? "";
+    if (!origin || !((c.env.CORS_ALLOWLIST ?? "").split(",").map(v => v.trim()).includes(origin) || await isDynamicOriginAllowed(c.env, origin))) throw unauthorized("Cookie requests require an authorized origin");
+  }
+  const authHeader = c.req.header("authorization") ?? (desk ? `Bearer ${desk.token}` : "");
   const headerMatch = /^Bearer\s+(nps_\S+)$/.exec(authHeader);
   // The browser's native EventSource API cannot set custom headers, so the SSE stream endpoint
   // (.../agent/runs/:runId/stream) has no way to carry a Bearer header. Previously we accepted
@@ -865,7 +892,7 @@ api.use("*", async (c, next) => {
   }
 
   const sessionToken = headerMatch?.[1] ?? (queryToken?.startsWith("nps_") ? queryToken : undefined);
-  const endUserId = c.req.header("x-naelao-end-user-id") ?? queryEndUserId;
+  const endUserId = cookieAuth ? desk.userId : c.req.header("x-naelao-end-user-id") ?? queryEndUserId;
   const productId = matchProductEndUserPath(c.req.path);
 
   if (sessionToken && endUserId && productId) {
@@ -1054,8 +1081,11 @@ async function proxyTo(
   claims: NaelaoJwtClaims | undefined,
   req: Request,
   platformSecret: string,
+  preserveV1 = false,
 ): Promise<Response> {
   const headers = new Headers(req.headers);
+  const desk = readDeskSession(req.headers.get("cookie") ?? undefined);
+  if (!headers.has("authorization") && desk && claims?.role === "product_end_user" && claims.sub === desk.userId) headers.set("authorization", `Bearer ${desk.token}`);
   // B2 fix: strip client-supplied identity/internal headers UNCONDITIONALLY before setting
   // them from verified claims below. Previously these were only overwritten inside
   // `if (claims)`, so any route reachable without auth would forward the caller's own
@@ -1088,7 +1118,7 @@ async function proxyTo(
   // Strip the /v1 mount prefix so downstream workers (which define routes WITHOUT
   // /v1, e.g. /spaces, /business) actually match. Mirrors the auth-route rewrite.
   const u = new URL(req.url);
-  u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
+  if (!preserveV1) u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
   return worker.fetch(new Request(u.toString(), {
     method: req.method,
     headers,
@@ -1096,6 +1126,15 @@ async function proxyTo(
     duplex: "half",
   } as RequestInit));
 }
+
+for (const path of ["/marketplace", "/marketplace/*"]) api.all(path, async c => {
+  if (!c.env.MARKETPLACE_WORKER) return c.json({ error_code: "marketplace_unavailable" }, 503);
+  return proxyTo(c.env.MARKETPLACE_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, true);
+});
+for (const path of ["/billing/partner/*", "/billing/template-subscriptions"]) api.all(path, async c => {
+  if (!c.env.BILLING_WORKER) return c.json({ error_code: "billing_unavailable" }, 503);
+  return proxyTo(c.env.BILLING_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET);
+});
 
 // Eval suites (G-Q03 / §A1 Harness Excellence HX3) → eval worker.
 //

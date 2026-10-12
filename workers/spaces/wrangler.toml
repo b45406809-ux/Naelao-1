@@ -8,6 +8,22 @@ compatibility_flags = ["nodejs_compat"]
 # downstream workers, so direct workers.dev reachability is a tenant-spoofing hole.
 workers_dev = false
 
+[[worker_loaders]]
+binding = "LOADER"
+
+[[durable_objects.bindings]]
+name = "CONFORMANCE_SANDBOX_DO"
+class_name = "ConformanceSandboxDO"
+
+[[workflows]]
+binding = "BLUEPRINT_CONFORMANCE_WORKFLOW"
+name = "BlueprintConformanceWorkflow"
+class_name = "BlueprintConformanceWorkflow"
+
+[[services]]
+binding = "CONFORMANCE_EXECUTOR"
+service = "naelao-spaces"
+
 [[analytics_engine_datasets]]
 binding = "ANALYTICS"
 dataset = "naelao_agent_events"
@@ -102,6 +118,10 @@ new_sqlite_classes = ["ProductUserDO"]
 [[migrations]]
 tag = "v8"
 new_sqlite_classes = ["MicroAppDO"]
+
+[[migrations]]
+tag = "v9"
+new_sqlite_classes = ["ConformanceSandboxDO"]
 
 [[d1_databases]]
 binding = "PLATFORM_DB"

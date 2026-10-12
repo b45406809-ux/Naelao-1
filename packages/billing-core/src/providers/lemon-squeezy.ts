@@ -94,6 +94,7 @@ export class LemonSqueezyProvider implements BillingProvider {
       event.meta?.custom_data?.["spaceId"] ?? attrs.custom_data?.["spaceId"] ?? "";
 
     const isOrder = eventName.startsWith("order_");
+    const isSubscriptionPayment = eventName.startsWith("subscription_payment_");
     const amountCents = parseInt(String(attrs["total"] ?? attrs["total_usd"] ?? "0"), 10) || 0;
 
     const providerStatus = !isOrder && attrs["status"] ? String(attrs["status"]) : null;
@@ -104,11 +105,20 @@ export class LemonSqueezyProvider implements BillingProvider {
       provider: "lemon_squeezy",
       spaceId,
       customerId: String(attrs["customer_id"] ?? ""),
-      subscriptionId: isOrder ? null : (event.data?.id ?? null),
+      subscriptionId: isOrder ? (attrs["subscription_id"] ? String(attrs["subscription_id"]) : null)
+        : isSubscriptionPayment ? String(attrs["subscription_id"] ?? event.data?.id ?? "") || null
+        : (event.data?.id ?? null),
       // S0.3: previously discarded for order events (only kept for subscriptions) — this is the
       // real, stable LS event/resource id and must survive for BOTH kinds so it can serve as the
       // canonical idempotency key (webhook dedup + order recording), not a synthetic derived one.
-      providerEventId: event.data?.id ?? null,
+      // Payment webhooks can reference the long-lived subscription resource as data.id.
+      // Prefer the captured order/payment/invoice id when the provider includes one; updated_at
+      // is a stable per-resource event discriminator on retries. Without either, the caller hashes
+      // the complete raw event body instead of treating the subscription id as a payment id.
+      providerEventId: isSubscriptionPayment
+        ? String(attrs["order_id"] ?? attrs["payment_id"] ?? attrs["invoice_id"] ??
+          (attrs["updated_at"] ? `${event.data?.id ?? "subscription"}:${eventName}:${attrs["updated_at"]}` : "")) || null
+        : event.data?.id ?? null,
       variantOrPriceId: String(attrs["variant_id"] ?? attrs["first_order_item"] ?? ""),
       amountCents,
       currency: String(attrs["currency"] ?? "USD"),

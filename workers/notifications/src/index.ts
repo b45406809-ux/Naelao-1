@@ -94,9 +94,10 @@ async function resolveChannelCredential(
 /** One reply, out to a chat channel. Returns why it didn't go rather than throwing. */
 async function sendChatMessage(
   env: NotificationsEnv,
-  opts: { channel: string; tenantId: string; spaceId: string; to: string; message: string }
+  opts: { channel: string; tenantId: string; spaceId: string; to: string; message: string; actions?: Array<{ id: string; label: string }> }
 ): Promise<{ delivered: boolean; reason?: string; status?: number }> {
   const { channel, to, message } = opts;
+  const actions = opts.actions?.filter(action => /^review:[a-zA-Z0-9_-]{1,48}$/.test(action.id) && typeof action.label === "string" && action.label.length > 0 && action.label.length <= 20).slice(0, 3) ?? [];
   const credName = CHANNEL_SEND_CREDENTIAL[channel];
   if (!credName) return { delivered: false, reason: `no send path for channel '${channel}'` };
   if (!to) return { delivered: false, reason: "missing recipient" };
@@ -130,7 +131,8 @@ async function sendChatMessage(
       resp = await fetch(`https://api.telegram.org/bot${cred}/sendMessage`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ chat_id: to, text: message }),
+        body: JSON.stringify({ chat_id: to, text: message, ...(actions.length ? { reply_markup: { inline_keyboard: [actions.map(action => ({ text: action.label, callback_data: action.id }))] } } : {}) }),
+        signal: AbortSignal.timeout(8_000),
       });
     } else if (channel === "slack") {
       resp = await fetch("https://slack.com/api/chat.postMessage", {
@@ -179,13 +181,17 @@ async function sendChatMessage(
       resp = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${accessToken}` },
-        body: JSON.stringify({ messaging_product: "whatsapp", to, type: "text", text: { body: message } }),
+        body: JSON.stringify(actions.length ? { messaging_product: "whatsapp", to, type: "interactive", interactive: {
+          type: "button", body: { text: message.slice(0, 1024) }, action: { buttons: actions.map(action => ({ type: "reply", reply: { id: action.id, title: action.label } })) },
+        } } : { messaging_product: "whatsapp", to, type: "text", text: { body: message } }),
+        signal: AbortSignal.timeout(8_000),
       });
     } else {
       return { delivered: false, reason: `no send path for channel '${channel}'` };
     }
 
     if (!resp.ok) return { delivered: false, reason: `${channel} returned ${resp.status}`, status: resp.status };
+    if (channel === "telegram" && !(await resp.clone().json<{ ok?: boolean }>().catch(() => ({ ok: false }))).ok) return { delivered: false, reason: "telegram rejected the message", status: resp.status };
     return { delivered: true };
   } catch (err) {
     return { delivered: false, reason: `${channel} send failed: ${(err as Error).message}` };
@@ -632,6 +638,7 @@ app.post("/internal/notify", async (c) => {
     html?: string;
     /** Chat channels carry their text here rather than in `body`. */
     message?: string;
+    actions?: Array<{ id: string; label: string }>;
   }>();
 
   if (body.channel === "email") {
@@ -663,6 +670,7 @@ app.post("/internal/notify", async (c) => {
       spaceId: body.space_id ?? "",
       to: String(body.to ?? ""),
       message: String(body.message ?? body.body ?? ""),
+      ...(body.actions ? { actions: body.actions } : {}),
     });
     return c.json(
       { delivered: result.delivered, channel: chatChannel, ...(result.reason ? { reason: result.reason } : {}) },

@@ -1,165 +1,60 @@
 import type { SpaceBlueprint } from "@naelao/agent-sdk";
-import { getDOName } from "@naelao/crypto";
-import {
-  evaluateBlueprintSecurity,
-  sanitizeAndScrubBlueprint,
-} from "@naelao/security";
+import { evaluateBlueprintSecurity, verifyArtifactCertificate, type ConformanceCertificate } from "@naelao/security";
 import type { Hono } from "hono";
 import type { Env } from "../index.js";
+import { resolveEndUserBusinessRole } from "../business-auth.js";
 
-export const GRADUATION_STAGES = [
-  "consulting_embed",
-  "blueprint_staged",
-  "marketplace_published",
-] as const;
+export const GRADUATION_STAGES = ["consulting_embed", "blueprint_staged", "marketplace_published"] as const;
 
-async function callSpaceDo(
-  env: Env,
-  tenantId: string,
-  doName: string,
-  path: string,
-  body: unknown
-): Promise<Response> {
-  const id = env.SPACE_DO.idFromName(
-    await getDOName("space", doName, tenantId, env.PLATFORM_SECRET)
-  );
-  return env.SPACE_DO.get(id).fetch(
-    new Request(`http://space-do${path}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    })
-  );
-}
-
-/** One transaction records the immutable three-stage audit trail and publishes its verified listing. */
+/** Graduation publishes the already-tested immutable artifact, never a fresh untested export. */
 export function registerGraduationRoutes(app: Hono<{ Bindings: Env }>): void {
-  app.post("/spaces/:spaceId/graduate", async (c) => {
+  app.post("/spaces/:spaceId/graduate", async c => {
     const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
     const developerId = c.req.header("x-naelao-user-id") ?? "";
-    if (!tenantId || !developerId)
-      return c.json(
-        { error_code: "unauthorized", message: "Missing developer identity" },
-        401
-      );
-    if (!c.env.SCRIPTS_R2)
-      return c.json(
-        {
-          error_code: "unavailable",
-          message: "Blueprint storage not configured",
-        },
-        503
-      );
+    if (!tenantId || !developerId) return c.json({ error_code: "unauthorized" }, 401);
+    if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable" }, 503);
     const spaceId = c.req.param("spaceId");
-    const space = await c.env.PLATFORM_DB.prepare(
-      "SELECT id, name, spacetype_id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'"
-    )
-      .bind(spaceId, tenantId)
-      .first<{ id: string; name: string; spacetype_id: string }>();
-    if (!space)
-      return c.json(
-        { error_code: "not_found", message: "Space not found" },
-        404
-      );
-    const existing = await c.env.PLATFORM_DB.prepare(
-      "SELECT listing_id FROM fde_graduations WHERE space_id = ? AND stage = 'marketplace_published'"
-    )
-      .bind(spaceId)
-      .first<{ listing_id: string }>();
-    if (existing)
-      return c.json(
-        { error_code: "already_graduated", listing_id: existing.listing_id },
-        409
-      );
-
-    const exported = await callSpaceDo(
-      c.env,
-      tenantId,
-      spaceId,
-      "/blueprints/export",
-      { space_id: spaceId }
-    );
-    if (!exported.ok)
-      return c.json(
-        {
-          error_code: "blueprint_export_failed",
-          details: await exported.text(),
-        },
-        422
-      );
-    const blueprint = sanitizeAndScrubBlueprint(
-      await exported.json()
-    ) as unknown as SpaceBlueprint;
+    const role = c.req.header("x-naelao-role");
+    const membership = role === "product_end_user" ? await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, developerId) : role;
+    if (membership !== "owner" && membership !== "admin") return c.json({ error_code: "owner_or_admin_required" }, 403);
+    const space = await c.env.PLATFORM_DB.prepare("SELECT id, name FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'").bind(spaceId, tenantId).first<{ id: string; name: string }>();
+    if (!space) return c.json({ error_code: "not_found" }, 404);
+    const existing = await c.env.PLATFORM_DB.prepare("SELECT listing_id FROM fde_graduations WHERE space_id = ? AND stage = 'marketplace_published'").bind(spaceId).first<{ listing_id: string }>();
+    if (existing) return c.json({ error_code: "already_graduated", listing_id: existing.listing_id }, 409);
+    const body = await c.req.json<{ conformance_job_id?: string }>().catch(() => ({} as { conformance_job_id?: string }));
+    if (!body.conformance_job_id) return c.json({ error_code: "conformance_job_required", message: "Complete a blueprint export conformance job first" }, 422);
+    const job = await c.env.PLATFORM_DB.prepare("SELECT artifact_key FROM blueprint_export_jobs WHERE id = ? AND tenant_id = ? AND space_id = ?").bind(body.conformance_job_id, tenantId, spaceId).first<{ artifact_key: string }>();
+    if (!job) return c.json({ error_code: "conformance_job_not_found" }, 404);
+    const original = await c.env.SCRIPTS_R2.get(job.artifact_key);
+    if (!original) return c.json({ error_code: "conformance_artifact_missing" }, 422);
+    const { blueprint: source } = await original.json<{ blueprint: SpaceBlueprint }>();
+    const stored = await c.env.SCRIPTS_R2.get(`blueprints/${source.id}.json`);
+    if (!stored) return c.json({ error_code: "conformance_not_certified" }, 422);
+    const envelope = await stored.json<{ blueprint: SpaceBlueprint & { securityRating?: string }; conformanceCertificate: ConformanceCertificate }>();
+    const blueprint = { ...envelope.blueprint }; delete blueprint.securityRating;
+    if (envelope.conformanceCertificate?.issuerTenantId !== tenantId || !await verifyArtifactCertificate(blueprint, envelope.conformanceCertificate, c.env.PLATFORM_SECRET, "state-delta") || !await verifyArtifactCertificate(source, envelope.conformanceCertificate, c.env.PLATFORM_SECRET, "state-delta")) return c.json({ error_code: "conformance_certificate_invalid" }, 422);
     const security = evaluateBlueprintSecurity(blueprint);
-    if (!security.publishable)
-      return c.json({ error_code: "blueprint_rejected", security }, 422);
-
-    const sandboxSpaceId = `graduation-sandbox-${blueprint.id}`;
-    const validation = await callSpaceDo(
-      c.env,
-      tenantId,
-      sandboxSpaceId,
-      "/blueprints/instantiate",
-      { blueprint, target_space_id: sandboxSpaceId }
-    );
-    if (!validation.ok)
-      return c.json(
-        {
-          error_code: "sandbox_validation_failed",
-          details: await validation.text(),
-        },
-        422
-      );
-    const dryRun = await validation.json();
+    if (!security.publishable) return c.json({ error_code: "blueprint_rejected", security }, 422);
     const listingId = crypto.randomUUID();
-    await c.env.SCRIPTS_R2.put(
-      `blueprints/${blueprint.id}.json`,
-      JSON.stringify({ ...blueprint, securityRating: security.rating }),
-      {
-        httpMetadata: { contentType: "application/json" },
-        customMetadata: {
-          safetyRating: security.rating,
-          graduationSpaceId: spaceId,
-        },
-      }
-    );
+    const developerDigest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(developerId)));
+    const developerHandle = `fde-${[...developerDigest].slice(0, 20).map(value => value.toString(16).padStart(2, "0")).join("")}`;
     await c.env.PLATFORM_DB.batch([
-      ...GRADUATION_STAGES.map((stage) =>
-        c.env.PLATFORM_DB.prepare(
-          "INSERT INTO fde_graduations (id, space_id, developer_id, stage, blueprint_id, listing_id) VALUES (?, ?, ?, ?, ?, ?)"
-        ).bind(
-          crypto.randomUUID(),
-          spaceId,
-          developerId,
-          stage,
-          stage === "consulting_embed" ? null : blueprint.id,
-          stage === "marketplace_published" ? listingId : null
-        )
-      ),
-      c.env.PLATFORM_DB.prepare(
-        `INSERT INTO marketplace_listings
-         (id, space_type_id, tenant_id, author_name, name, description, category, pricing, pricing_model, price_cents, plan_gated_features_json, status, blueprint_id, published_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'vertical-saas', 'free', 'freemium_tiered', 0, '["growth","pro"]', 'published', ?, datetime('now'))`
-      ).bind(
-        listingId,
-        space.spacetype_id,
-        tenantId,
-        developerId,
-        space.name,
-        `Graduated and security-verified blueprint for ${space.name}`,
-        blueprint.id
-      ),
+      ...GRADUATION_STAGES.map(stage => c.env.PLATFORM_DB.prepare("INSERT INTO fde_graduations (id, space_id, developer_id, stage, blueprint_id, listing_id) VALUES (?, ?, ?, ?, ?, ?)")
+        .bind(crypto.randomUUID(), spaceId, developerId, stage, stage === "consulting_embed" ? null : blueprint.id, stage === "marketplace_published" ? listingId : null)),
+      c.env.PLATFORM_DB.prepare(`INSERT INTO marketplace_listings
+        (id, space_type_id, tenant_id, developer_user_id, author_name, name, description, category, pricing, pricing_model, price_cents, plan_gated_features_json, status, blueprint_id, published_at, conformance_artifact_json, conformance_certificate_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'vertical-saas', 'free', 'freemium_tiered', 0, '["growth","pro"]', 'published', ?, datetime('now'), ?, ?)`)
+        .bind(listingId, blueprint.id, tenantId, developerId, developerId, space.name, `Certified blueprint for ${space.name}`, blueprint.id, JSON.stringify(blueprint), JSON.stringify(envelope.conformanceCertificate)),
+      // Certification is the cohort entry point. D1 serializes this batch so at most fifty
+      // successfully graduated developers receive a pioneer rank.
+      c.env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO developer_partner_profiles (user_id, handle, status) VALUES (?, ?, 'active')")
+        .bind(developerId, developerHandle),
+      c.env.PLATFORM_DB.prepare(`UPDATE developer_partner_profiles
+        SET pioneer_rank = (SELECT COALESCE(MAX(pioneer_rank), 0) + 1 FROM developer_partner_profiles WHERE pioneer_rank IS NOT NULL)
+        WHERE user_id = ? AND pioneer_rank IS NULL
+          AND (SELECT COUNT(*) FROM developer_partner_profiles WHERE pioneer_rank IS NOT NULL) < 50`)
+        .bind(developerId),
     ]);
-    return c.json(
-      {
-        space_id: spaceId,
-        stage: "marketplace_published",
-        blueprint_id: blueprint.id,
-        listing_id: listingId,
-        security,
-        dry_run: dryRun,
-      },
-      201
-    );
+    return c.json({ space_id: spaceId, stage: "marketplace_published", blueprint_id: blueprint.id, listing_id: listingId, security }, 201);
   });
 }

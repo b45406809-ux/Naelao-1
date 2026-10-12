@@ -30,6 +30,7 @@ describe("marketplace conformance", () => {
     const artifact = { id: "blueprint-a", version: 2 };
     const result = await certifyArtifact(artifact, suite(), "test-secret", "2026-10-12T00:00:00.000Z");
     expect(await verifyArtifactCertificate(artifact, result.certificate, "test-secret")).toBe(true);
+    expect(await verifyArtifactCertificate(artifact, result.certificate, "test-secret", "state-delta")).toBe(false);
     expect(await verifyArtifactCertificate({ ...artifact, version: 3 }, result.certificate, "test-secret")).toBe(false);
     expect(await verifyArtifactCertificate(artifact, result.certificate, "wrong-secret")).toBe(false);
   });

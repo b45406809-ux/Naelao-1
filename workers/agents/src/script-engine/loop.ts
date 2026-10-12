@@ -564,6 +564,7 @@ export async function runScriptLoop(
   const sessionId = opts.sessionId ?? "unknown";
   const preApproved = new Set(opts.preApprovedActions ?? []);
   const ledgerKey = opts.ledgerKey ?? runId;
+  if(env.artifactValidationState) { env.artifactValidationState.workKey=ledgerKey;env.artifactValidationState.sessionId=sessionId; }
 
   /**
    * Run an action, unless the ledger says it already ran under this key — in which case return
@@ -571,6 +572,7 @@ export async function runScriptLoop(
    * be safe: on a resume the model is shown its completed steps, but showing is not preventing.
    */
   const invoke = async (name: string, params: Record<string, unknown>): Promise<ScriptRunResult> => {
+    if(env.artifactValidationState) { env.artifactValidationState.actionName=name;env.artifactValidationState.actionInput=params; }
     const previous = env.onToolOutput;
     env.onToolOutput = output => { void reportProgress(opts, { phase: "run", name, params,
       output: [output.stdout, output.stderr].filter(Boolean).join("\n").slice(-6500) }); };
@@ -682,6 +684,10 @@ export async function runScriptLoop(
       },
     });
   };
+  const suspendArtifactIntervention=(level:EscalationLevel,name:string,params:Record<string,unknown>,stepsCompleted:Array<{name:string;params:Record<string,unknown>;ok:boolean;output?:unknown;error?:string}>) => {
+    const pending=env.artifactValidationState?.pending;
+    return pending?suspend(level,{verdict:"pending",approvalId:pending.approvalId,...(pending.expiresAt?{expiresAt:pending.expiresAt}:{})},name,params,stepsCompleted):undefined;
+  };
 
   // 1-2. OBSERVE + FINGERPRINT
   await reportProgress(opts, { phase: "observe", detail: "Observing current state" });
@@ -748,6 +754,7 @@ export async function runScriptLoop(
       }
       await reportProgress(opts, { phase: "run", name: top!.name, detail: `Running ${top!.name}`, params });
       const result = await runOnce(top!.name, params);
+      const artifactPause=suspendArtifactIntervention(level,top!.name,params,opts.resumeSteps??[]);if(artifactPause)return artifactPause;
       notes.push(`L1 run ${top!.name}: ${result.ok ? "ok" : "fail"}`);
       pushTrace({
         phase: "run", name: top!.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used,
@@ -795,6 +802,7 @@ export async function runScriptLoop(
         }
         await reportProgress(opts, { phase: "run", name: decision.name, detail: `Running ${decision.name}` });
         const result = await runOnce(decision.name, params);
+        const artifactPause=suspendArtifactIntervention(level,decision.name,params,opts.resumeSteps??[]);if(artifactPause)return artifactPause;
         notes.push(`L2 patched ${decision.name}: ${result.ok ? "ok" : "fail"}`);
         pushTrace({ phase: "run", name: decision.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used, ok: result.ok, detail: result.error, ...(result.commit_oid ? { commit_oid: result.commit_oid } : {}) });
         // Automatic rollback on immediate failure (spec §10.3).
@@ -1230,6 +1238,7 @@ export async function runScriptLoop(
           }
           await reportProgress(opts, { phase: "run", name: decision.name, detail: `Running ${decision.name}`, params: decision.params });
           const result = await runOnce(decision.name, decision.params);
+          const artifactPause=suspendArtifactIntervention(level,decision.name,decision.params,stepsOut.filter(step=>step.ok));if(artifactPause)return artifactPause;
           // A slow tool eats the wall clock exactly as a slow model does, so the deadline margin
           // has to be measured over the whole turn, not just the reasoning half of it.
           longestStepMs = Math.max(longestStepMs, Date.now() - reasonStart);

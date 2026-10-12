@@ -34,10 +34,10 @@ export async function apiFetch<T>(path: string, options: RequestInit & {
   const headers = new Headers(fetchOptions.headers);
   headers.set("Content-Type", "application/json");
   if (session) {
-    headers.set("Authorization", `Bearer ${session.sessionToken}`);
+    if (session.sessionToken !== "cookie") headers.set("Authorization", `Bearer ${session.sessionToken}`);
     headers.set("x-naelao-end-user-id", session.endUserId);
   }
-  return requestJson<T>(`${API_URL}${path}`, { ...fetchOptions, headers }, { onRetry, retries });
+  return requestJson<T>(`${session?.sessionToken === "cookie" ? "/api/naelao" : API_URL}${path}`, { ...fetchOptions, headers, ...(session?.sessionToken === "cookie" ? { credentials: "include" as const } : {}) }, { onRetry, retries });
 }
 // ── Public, pre-login lookups ────────────────────────────────────────────────
 
@@ -608,6 +608,7 @@ export async function getStreamUrl(spaceId: string, sessionId: string, runId: st
     const params = new URLSearchParams({ stream_ticket: ticket.ticket, end_user_id: session.endUserId });
     return `${API_URL}/v1/spaces/${spaceId}/sessions/${sessionId}/agent/runs/${runId}/stream?${params.toString()}`;
   } catch {
+    if (session.sessionToken === "cookie") throw new Error("Stream authorization is temporarily unavailable");
     // Legacy fallback: raw session token in URL (logged but functional — used during local dev).
     const params = new URLSearchParams({ session_token: session.sessionToken, end_user_id: session.endUserId });
     return `${API_URL}/v1/spaces/${spaceId}/sessions/${sessionId}/agent/runs/${runId}/stream?${params.toString()}`;
@@ -2096,11 +2097,11 @@ export async function uploadChatFiles(
   for (const f of files) form.append("files", f);
   if (projectId) form.append("project_id", projectId);
   const headers: Record<string, string> = {
-    Authorization: `Bearer ${session.sessionToken}`,
+    ...(session.sessionToken === "cookie" ? {} : { Authorization: `Bearer ${session.sessionToken}` }),
     "x-naelao-end-user-id": session.endUserId,
   };
-  const res = await fetch(`${API_URL}/v1/spaces/${spaceId}/sessions/${sessionId}/uploads`, {
-    method: "POST", headers, body: form,
+  const res = await fetch(`${session.sessionToken === "cookie" ? "/api/naelao" : API_URL}/v1/spaces/${spaceId}/sessions/${sessionId}/uploads`, {
+    method: "POST", headers, body: form, ...(session.sessionToken === "cookie" ? { credentials: "include" as const } : {}),
   });
   const body = (await res.json()) as { uploaded?: ChatUpload[]; message?: string; error_code?: string };
   if (!res.ok) throw new ApiError(body.message ?? "Upload failed", res.status, body.error_code);

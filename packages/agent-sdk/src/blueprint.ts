@@ -9,7 +9,8 @@ export function instantiateBlueprint(blueprint: SpaceBlueprint, targetSpaceId: s
   for (const project of copy.projects) {
     if (!project.name.trim() || !project.kind.trim()) throw new Error("Every project requires name and kind");
     for (const file of project.starterFiles) {
-      file.path = file.path.replace(/^\/+/, "");
+      if(file.path.startsWith("/") && !file.path.startsWith("/workspace/")) throw new Error(`Unsafe starter file path: ${file.path}`);
+      file.path = file.path.replace(/^\/workspace\//, "").replace(/^\/+/, "");
       if (!file.path || file.path.split("/").includes("..")) throw new Error(`Unsafe starter file path: ${file.path}`);
     }
   }

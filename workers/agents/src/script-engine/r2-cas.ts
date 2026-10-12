@@ -3,6 +3,7 @@
 
 interface WorkspaceCasEnv {
   runId?: string;
+  validateWorkspaceMutation?: (input: { key: string; bytes: Uint8Array; runId?: string }) => Promise<void>;
   lockGateway?: {
     acquire(input: { key: string; holderId: string; limit: number; ttlMs?: number }): Promise<{ granted: boolean; fencingToken?: number; heldBy?: string }>;
     publishWorkspace?(input: {
@@ -39,6 +40,7 @@ export async function publishWorkspaceBytesCas(
   metadata: Record<string, string> = {},
   httpMetadata?: R2HTTPMetadata,
 ): Promise<CasWriteResult> {
+  if(env.validateWorkspaceMutation) await env.validateWorkspaceMutation({key,bytes,...(env.runId?{runId:env.runId}:{})});
   const gateway = env.lockGateway;
   if (!gateway?.publishWorkspace || !env.runId) return putBytesCas(bucket, key, bytes, expectedHash, metadata, httpMetadata);
   const lockKey = `workspace-file:${key}`;

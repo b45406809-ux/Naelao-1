@@ -9,6 +9,12 @@ compatibility_flags = ["nodejs_compat"]
 # everywhere else; this worker was missed.
 workers_dev = false
 
+[triggers]
+crons = ["0 0 * * *", "15 * * * *"]
+# Optional native FDE settlement: STRIPE_CONNECT_SECRET_KEY, active Connect destinations,
+# an authorized partner opt-in or withdrawal request, and a funded Stripe platform balance.
+# This does not move a userland business wallet or a Lemon Squeezy balance.
+
 [[d1_databases]]
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"

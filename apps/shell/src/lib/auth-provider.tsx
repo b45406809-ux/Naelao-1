@@ -31,15 +31,27 @@ export function ProductAuthProvider({
   const [isHydrated, setIsHydrated] = React.useState(false);
 
   React.useEffect(() => {
+    let cancelled = false;
+    setSessionState(null); setIsHydrated(false);
     if (isSignedIn(spaceId)) {
       setSessionState(getProductSession(spaceId));
+      setIsHydrated(true);
+    } else {
+      const api = "/api/naelao";
+      void fetch(`${api}/v1/desk-drop/session?productId=${encodeURIComponent(spaceId)}`, { credentials: "include" })
+        .then(async res => res.ok ? await res.json() as ProductEndUser : null)
+        .then(next => { if (!cancelled) setSessionState(next); })
+        .catch(() => {})
+        .finally(() => { if (!cancelled) setIsHydrated(true); });
     }
-    setIsHydrated(true);
+    return () => { cancelled = true; };
   }, [spaceId]);
 
   const setSession = React.useCallback((next: ProductEndUser | null) => setSessionState(next), []);
 
   const signOutFn = React.useCallback(() => {
+    const api = "/api/naelao";
+    void fetch(`${api}/v1/desk-drop/logout`, { method: "POST", credentials: "include" });
     logOut(spaceId);
     setSessionState(null);
   }, [spaceId]);

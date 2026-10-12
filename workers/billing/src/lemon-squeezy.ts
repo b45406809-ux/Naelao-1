@@ -20,6 +20,8 @@ import { LemonSqueezyProvider, computeResellerAttribution, isLedgerEvent, billin
 import type { NormalizedBillingEvent, BillingRelationship } from "@naelao/billing-core";
 import { mintInternalToken } from "@naelao/http";
 import { invalidateQuotaCache } from "./quota.js";
+import { settleTemplateSubscriptionPayment } from "./settlement.js";
+import { settleMarketplaceLicenseEvent } from "./marketplace-licenses.js";
 
 /**
  * ARCH-REVENUE-6: the maximum builder revenue share, in basis points. A builder configures their
@@ -555,6 +557,42 @@ async function recordBusinessSubscription(
   ).run();
   console.log(`[billing/ls] Business subscription ${status}: business=${event.spaceId} plan=${planId}`);
   return true;
+}
+
+/** Record native template royalties only on a captured provider payment event. */
+async function settleNativeTemplateRoyalty(event: NormalizedBillingEvent, env: LemonSqueezyEnv): Promise<boolean> {
+  if (event.type !== "payment.success") return false;
+  const mapped = event.subscriptionId
+    ? (await env.PLATFORM_DB.prepare("SELECT id FROM template_subscriptions WHERE provider_subscription_id = ? AND space_id = ?")
+      .bind(event.subscriptionId, event.spaceId).first<{ id: string }>())?.id
+    : undefined;
+  if (event.metadata?.kind !== "template_subscription" && !mapped) return false;
+  const subscriptionId = event.metadata?.template_subscription_id ?? mapped;
+  if (!subscriptionId || !event.providerEventId || !Number.isSafeInteger(event.amountCents) || event.amountCents <= 0) {
+    throw new Error("captured template payment is missing an id, subscription, or positive amount");
+  }
+  const subscription = await env.PLATFORM_DB.prepare("SELECT id FROM template_subscriptions WHERE id = ? AND space_id = ? AND status IN ('active','paused')")
+    .bind(subscriptionId, event.spaceId).first<{ id: string }>();
+  if (!subscription) throw new Error("captured template payment has no active matching subscription");
+  await settleTemplateSubscriptionPayment(env.PLATFORM_DB, event.spaceId, event.amountCents, event.providerEventId, event.subscriptionId);
+  return true;
+}
+
+async function syncNativeTemplateSubscriptionStatus(event: NormalizedBillingEvent, env: LemonSqueezyEnv): Promise<boolean> {
+  if (!event.type.startsWith("subscription.")) return false;
+  const id = event.metadata?.kind === "template_subscription" ? event.metadata.template_subscription_id : undefined;
+  if (!id && !event.subscriptionId) return false;
+  const status = event.type === "subscription.cancelled" || event.type === "subscription.expired" || event.providerStatus === "cancelled" || event.providerStatus === "expired"
+    ? "cancelled"
+    : event.type === "subscription.paused" || event.providerStatus === "paused" || event.providerStatus === "past_due" || event.providerStatus === "unpaid"
+      ? "paused"
+      : event.type === "subscription.resumed" || event.type === "subscription.updated" ? "active" : "paused";
+  const result = await env.PLATFORM_DB.prepare(`UPDATE template_subscriptions SET
+    status = CASE WHEN paid_cycles_total > 0 THEN ? WHEN ? = 'cancelled' THEN 'cancelled' ELSE 'paused' END,
+    provider_subscription_id = COALESCE(provider_subscription_id, ?), updated_at = datetime('now')
+    WHERE space_id = ? AND ((? IS NOT NULL AND id = ?) OR (? IS NOT NULL AND provider_subscription_id = ?))`)
+    .bind(status, status, event.subscriptionId, event.spaceId, id ?? null, id ?? null, event.subscriptionId, event.subscriptionId).run();
+  return result.meta.changes > 0;
 }
 
 /**
@@ -1151,6 +1189,44 @@ export async function handleLemonSqueezyWebhook(
     return Response.json({ ok: true, kind: "platform_plan" });
   }
 
+  // Marketplace license purchases are platform-native one-time sales, not a business's
+  // userland order. Grant the tenant fork and developer earning before the generic space flow.
+  if (topCustom["kind"] === "marketplace_license") {
+    const licenseEventId = event.providerEventId ?? `hash:${await sha256Hex(rawBody)}`;
+    const firstDelivery = await markEventProcessedOnce("lemon_squeezy", licenseEventId, event.type, env.PLATFORM_DB);
+    if (!firstDelivery) return Response.json({ ok: true, duplicate: true, kind: "marketplace_license" });
+    try {
+      await settleMarketplaceLicenseEvent(event, env);
+    } catch (err) {
+      console.error("[billing/ls] marketplace license settlement failed:", (err as Error).message);
+      await unmarkEventProcessed("lemon_squeezy", licenseEventId, env.PLATFORM_DB);
+      return Response.json({ error: "processing_failed", failed: ["marketplace license settlement"] }, { status: 500 });
+    }
+    return Response.json({ ok: true, kind: "marketplace_license" });
+  }
+
+  const mappedTemplateSubscription = event.subscriptionId
+    ? await env.PLATFORM_DB.prepare("SELECT id FROM template_subscriptions WHERE provider_subscription_id = ? AND space_id = ?")
+      .bind(event.subscriptionId, event.spaceId).first<{ id: string }>()
+    : null;
+  const templateSubscriptionId = topCustom["kind"] === "template_subscription"
+    ? String(topCustom["template_subscription_id"] ?? "")
+    : mappedTemplateSubscription?.id;
+  if (templateSubscriptionId) {
+    const templateEventId = event.providerEventId ?? `hash:${await sha256Hex(rawBody)}`;
+    const firstDelivery = await markEventProcessedOnce("lemon_squeezy", templateEventId, event.type, env.PLATFORM_DB);
+    if (!firstDelivery) return Response.json({ ok: true, duplicate: true, kind: "template_subscription" });
+    try {
+      if (event.type === "payment.success") await settleNativeTemplateRoyalty(event, env);
+      else if (event.type.startsWith("subscription.")) await syncNativeTemplateSubscriptionStatus(event, env);
+    } catch (err) {
+      console.error("[billing/ls] template royalty/status failed:", (err as Error).message);
+      await unmarkEventProcessed("lemon_squeezy", templateEventId, env.PLATFORM_DB);
+      return Response.json({ error: "processing_failed", failed: ["template subscription settlement"] }, { status: 500 });
+    }
+    return Response.json({ ok: true, kind: "template_subscription" });
+  }
+
   // 3. Resolve the Naelao space from spaceId in the event
   if (!event.spaceId) {
     console.warn("[billing/ls] Event missing spaceId — cannot dispatch to agent");
@@ -1207,6 +1283,8 @@ export async function handleLemonSqueezyWebhook(
   //     (payment.success only) — both keyed off checkout metadata.kind, so they never collide
   //     with the seat/product paths above (each event matches at most one of these four kinds).
   await runHandler("business subscription recording", () => recordBusinessSubscription(event, env));
+  await runHandler("native template subscription status", () => syncNativeTemplateSubscriptionStatus(event, env));
+  await runHandler("native template royalty settlement", () => settleNativeTemplateRoyalty(event, env));
   await runHandler("credit pack grant", () => grantCreditPackPurchase(event, env));
   await runHandler("personal plan grant", () => grantPersonalPlanPurchase(event, env));
   await runHandler("wallet top-up grant", () => grantWalletTopupPurchase(event, env));

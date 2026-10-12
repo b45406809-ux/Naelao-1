@@ -80,6 +80,10 @@ service = "naelao-analytics"
 binding = "BILLING_WORKER"
 service = "naelao-billing"
 
+[[services]]
+binding = "MARKETPLACE_WORKER"
+service = "naelao-marketplace"
+
 [env.staging]
 name = "naelao-router-staging"
 vars = { ENVIRONMENT = "staging", CORS_ALLOWLIST = "https://staging-dashboard.naelao.com,https://staging-portal.naelao.com,https://staging-app.naelao.com", PRODUCT_SHELL_URL = "https://staging-app.naelao.com" }

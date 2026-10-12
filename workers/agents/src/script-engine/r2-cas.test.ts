@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { putTextCas, readTextWithHash, R2CasConflictError, sha256Text } from "./r2-cas.js";
+import { publishWorkspaceBytesCas, putTextCas, readTextWithHash, R2CasConflictError, sha256Text } from "./r2-cas.js";
 
 type Entry = { text: string; etag: string; customMetadata?: Record<string, string> };
 
@@ -43,5 +43,21 @@ describe("shared R2 compare-and-swap", () => {
     expect(observed?.hash).toBe(await sha256Text("old"));
     await expect(putTextCas(bucket, "legacy", "new", observed!.hash)).resolves.toEqual({ hash: await sha256Text("new") });
     expect((await bucket.head("legacy"))?.customMetadata?.sha256).toBe(await sha256Text("new"));
+  });
+
+  it("validates workspace bytes before taking a lease or writing R2", async () => {
+    const bucket = fakeBucket();
+    let leaseRequested = false;
+    await expect(publishWorkspaceBytesCas({
+      runId: "run-1",
+      validateWorkspaceMutation: async ({ key, bytes }) => {
+        expect(key).toBe("workspace.json");
+        expect(new TextDecoder().decode(bytes)).toBe('{"invalid":true}');
+        throw new Error("human_intervention_required");
+      },
+      lockGateway: { acquire: async () => { leaseRequested = true; throw new Error("must not lease invalid bytes"); }, publishWorkspace: async () => ({}), release: async () => {} },
+    }, bucket, "workspace.json", new TextEncoder().encode('{"invalid":true}'), null)).rejects.toThrow("human_intervention_required");
+    expect(leaseRequested).toBe(false);
+    expect(await bucket.head("workspace.json")).toBeNull();
   });
 });

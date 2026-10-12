@@ -9,6 +9,7 @@ export default defineConfig({
     },
   },
   test: {
+    server: { deps: { inline: ["@cloudflare/dynamic-workflows", "@cloudflare/containers"] } },
     globals: true,
     environment: "node",
     include: ["**/*.test.ts"],

@@ -35,7 +35,7 @@ export function registerMarketplaceRoutes<T extends MarketplaceEnv>(
       );
     const body = await c.req.json<ListingBody>();
     if (!body.conformance_artifact || body.conformance_artifact.id !== body.space_type_id ||
-        !await verifyArtifactCertificate(body.conformance_artifact, body.conformance_certificate, c.env.PLATFORM_SECRET)) {
+        !await verifyArtifactCertificate(body.conformance_artifact, body.conformance_certificate, c.env.PLATFORM_SECRET, "state-delta") || body.conformance_certificate?.issuerTenantId !== tenantId) {
       return c.json({ error_code: "conformance_certificate_invalid", message: "A passing artifact-bound certificate is required" }, 422);
     }
     const validation = validateMarketplacePricing(body);
@@ -50,13 +50,14 @@ export function registerMarketplaceRoutes<T extends MarketplaceEnv>(
     const id = crypto.randomUUID();
     await c.env.PLATFORM_DB.prepare(
       `INSERT INTO marketplace_listings
-       (id, space_type_id, tenant_id, author_name, name, description, category, pricing, pricing_model, price_cents, plan_gated_features_json, conformance_artifact_json, conformance_certificate_json, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`
+       (id, space_type_id, tenant_id, developer_user_id, author_name, name, description, category, pricing, pricing_model, price_cents, plan_gated_features_json, conformance_artifact_json, conformance_certificate_json, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`
     )
       .bind(
         id,
         body.space_type_id,
         tenantId,
+        c.req.header("x-naelao-user-id") ?? null,
         body.author_name,
         body.name,
         body.description,
@@ -105,7 +106,7 @@ export function registerMarketplaceRoutes<T extends MarketplaceEnv>(
       return c.json({ error_code: "conformance_certificate_invalid" }, 422);
     }
     if (!artifact || artifact.id !== listing.space_type_id ||
-        !await verifyArtifactCertificate(artifact, certificate, c.env.PLATFORM_SECRET)) {
+        !await verifyArtifactCertificate(artifact, certificate, c.env.PLATFORM_SECRET, "state-delta") || certificate.issuerTenantId !== tenantId) {
       return c.json({ error_code: "conformance_certificate_invalid" }, 422);
     }
     let gates: string[] = [];
