@@ -17,7 +17,7 @@
  *                   wallet_transactions row and fires @naelao/events wallet.revenue_received.
  *   platform fee  → transferPlatformFee (payment-splits transfer) runs on the billing cron, not
  *                   per-transaction, sweeping Naelao's own cut into the platform's Whop wallet.
- *   revenue out   → payout_requests: an assistant or owner requests a payout; the FIRST payout
+ *   revenue out   → whop_payout_requests: an assistant or owner requests a payout; the FIRST payout
  *                   to a destination requires an emailed one-time approval link (safety
  *                   invariant #5); once a destination is verified, subsequent payouts execute
  *                   directly (still logged, still auditable, never silent).
@@ -217,7 +217,7 @@ async function fireWalletEvent(
       })
     );
   } catch {
-    // Best-effort — the wallet_transactions/payout_requests row already recorded the truth.
+    // Best-effort — the wallet_transactions/whop_payout_requests row already recorded the truth.
   }
 }
 
@@ -445,7 +445,7 @@ export function registerWhopWalletRoutes(app: Hono<{ Bindings: BillingEnv }>): v
           amountCents: body.amount_cents,
         });
         await c.env.PLATFORM_DB.prepare(
-          `INSERT INTO payout_requests (id, space_id, destination_id, amount_cents, note, status, requested_by, whop_withdrawal_id, updated_at)
+          `INSERT INTO whop_payout_requests (id, space_id, destination_id, amount_cents, note, status, requested_by, whop_withdrawal_id, updated_at)
            VALUES (?, ?, ?, ?, ?, 'executed', ?, ?, datetime('now'))`
         ).bind(requestId, spaceId, destination.id, body.amount_cents, body.note ?? null, body.requested_by ?? null, withdrawal.withdrawal_id).run();
         await c.env.PLATFORM_DB.prepare(
@@ -459,7 +459,7 @@ export function registerWhopWalletRoutes(app: Hono<{ Bindings: BillingEnv }>): v
         return c.json({ payout: { id: requestId, status: "executed", withdrawal_id: withdrawal.withdrawal_id } }, 201);
       } catch (err) {
         await c.env.PLATFORM_DB.prepare(
-          `INSERT INTO payout_requests (id, space_id, destination_id, amount_cents, note, status, requested_by)
+      `INSERT INTO whop_payout_requests (id, space_id, destination_id, amount_cents, note, status, requested_by)
            VALUES (?, ?, ?, ?, ?, 'failed', ?)`
         ).bind(requestId, spaceId, destination.id, body.amount_cents, body.note ?? null, body.requested_by ?? null).run();
         return c.json({ error_code: "payout_failed", message: (err as Error).message }, 502);
@@ -471,7 +471,7 @@ export function registerWhopWalletRoutes(app: Hono<{ Bindings: BillingEnv }>): v
     const approvalTokenHash = await sha256Hex(approvalToken);
     const expiresAt = new Date(Date.now() + PAYOUT_APPROVAL_TTL_MS).toISOString();
     await c.env.PLATFORM_DB.prepare(
-      `INSERT INTO payout_requests (id, space_id, destination_id, amount_cents, note, status, approval_token_hash, requested_by, expires_at)
+      `INSERT INTO whop_payout_requests (id, space_id, destination_id, amount_cents, note, status, approval_token_hash, requested_by, expires_at)
        VALUES (?, ?, ?, ?, ?, 'pending_approval', ?, ?, ?)`
     ).bind(requestId, spaceId, destination.id, body.amount_cents, body.note ?? null, approvalTokenHash, body.requested_by ?? null, expiresAt).run();
 
@@ -508,7 +508,7 @@ export function registerWhopWalletRoutes(app: Hono<{ Bindings: BillingEnv }>): v
     const g = await guard(c, spaceId, { requirePrivileged: true });
     if (!g.ok) return c.json(g.error, g.status);
     const { results } = await c.env.PLATFORM_DB.prepare(
-      "SELECT id, destination_id, amount_cents, note, status, created_at FROM payout_requests WHERE space_id = ? ORDER BY created_at DESC LIMIT 100"
+      "SELECT id, destination_id, amount_cents, note, status, created_at FROM whop_payout_requests WHERE space_id = ? ORDER BY created_at DESC LIMIT 100"
     ).bind(spaceId).all();
     return c.json({ payouts: results ?? [] });
   });
@@ -534,7 +534,7 @@ async function checkPayoutApproval(
   if (!token) return { ok: false, response: new Response("Missing approval token", { status: 400 }) };
   const tokenHash = await sha256Hex(token);
   const request = await env.PLATFORM_DB.prepare(
-    "SELECT id, space_id, destination_id, amount_cents, status, approval_token_hash, expires_at FROM payout_requests WHERE id = ?"
+    "SELECT id, space_id, destination_id, amount_cents, status, approval_token_hash, expires_at FROM whop_payout_requests WHERE id = ?"
   ).bind(requestId).first<PayoutApprovalLookup>();
   if (!request || request.status !== "pending_approval" || !request.approval_token_hash) {
     return { ok: false, response: new Response("This payout request is no longer pending approval.", { status: 410 }) };
@@ -599,7 +599,7 @@ export async function confirmPayoutApproval(env: BillingEnv, requestId: string, 
   // Atomic status flip — see the function header. `meta.changes !== 1` means someone else (or an
   // earlier attempt) already claimed this request.
   const flip = await env.PLATFORM_DB.prepare(
-    "UPDATE payout_requests SET status = 'approved', updated_at = datetime('now') WHERE id = ? AND status = 'pending_approval'"
+    "UPDATE whop_payout_requests SET status = 'approved', updated_at = datetime('now') WHERE id = ? AND status = 'pending_approval'"
   ).bind(request.id).run();
   if (flip.meta.changes !== 1) {
     return new Response("This payout request is no longer pending approval.", { status: 410 });
@@ -607,7 +607,7 @@ export async function confirmPayoutApproval(env: BillingEnv, requestId: string, 
 
   const wallet = await getSubMerchant(env.PLATFORM_DB, request.space_id);
   if (!wallet || !wallet.company_id) {
-    await env.PLATFORM_DB.prepare("UPDATE payout_requests SET status = 'failed', updated_at = datetime('now') WHERE id = ?").bind(request.id).run();
+    await env.PLATFORM_DB.prepare("UPDATE whop_payout_requests SET status = 'failed', updated_at = datetime('now') WHERE id = ?").bind(request.id).run();
     return new Response("Wallet unavailable.", { status: 503 });
   }
 
@@ -617,7 +617,7 @@ export async function confirmPayoutApproval(env: BillingEnv, requestId: string, 
       amountCents: request.amount_cents,
     });
     await env.PLATFORM_DB.batch([
-      env.PLATFORM_DB.prepare("UPDATE payout_requests SET status = 'executed', whop_withdrawal_id = ?, updated_at = datetime('now') WHERE id = ?").bind(withdrawal.withdrawal_id, request.id),
+      env.PLATFORM_DB.prepare("UPDATE whop_payout_requests SET status = 'executed', whop_withdrawal_id = ?, updated_at = datetime('now') WHERE id = ?").bind(withdrawal.withdrawal_id, request.id),
       env.PLATFORM_DB.prepare("UPDATE payout_destinations SET status = 'verified' WHERE id = ?").bind(request.destination_id),
       env.PLATFORM_DB.prepare(
         `INSERT INTO wallet_transactions (id, space_id, type, amount_cents, currency, description, external_ref)
@@ -630,7 +630,7 @@ export async function confirmPayoutApproval(env: BillingEnv, requestId: string, 
     });
     return htmlPage("<p>Payout approved and sent. You can close this page.</p>", 200);
   } catch (err) {
-    await env.PLATFORM_DB.prepare("UPDATE payout_requests SET status = 'failed', updated_at = datetime('now') WHERE id = ?").bind(request.id).run();
+    await env.PLATFORM_DB.prepare("UPDATE whop_payout_requests SET status = 'failed', updated_at = datetime('now') WHERE id = ?").bind(request.id).run();
     return new Response(`Payout failed: ${(err as Error).message}`, { status: 502 });
   }
 }
@@ -711,14 +711,14 @@ export async function handleWhopWebhook(request: Request, env: BillingEnv): Prom
   }
 
   if (event.type === "payout_completed" || event.type === "payout_failed") {
-    // Reconcile against the payout_requests row Naelao itself created when the withdrawal was
+    // Reconcile against the whop_payout_requests row Naelao itself created when the withdrawal was
     // initiated (request_payout / the approval flow) — matched by Whop's own withdrawal id
     // (event.externalId), which is exactly what got stored on whop_withdrawal_id at execution
     // time. Never blindly append a second ledger row for a payout already recorded there — that
     // would double-count every completed payout (once at execution, once again here).
     const matched = event.externalId
       ? await env.PLATFORM_DB.prepare(
-          "SELECT id, destination_id, amount_cents, status FROM payout_requests WHERE whop_withdrawal_id = ? AND space_id = ?"
+          "SELECT id, destination_id, amount_cents, status FROM whop_payout_requests WHERE whop_withdrawal_id = ? AND space_id = ?"
         ).bind(event.externalId, wallet.space_id).first<{ id: string; destination_id: string; amount_cents: number; status: string }>()
       : null;
 
@@ -740,7 +740,7 @@ export async function handleWhopWebhook(request: Request, env: BillingEnv): Prom
     // idempotency guard (a redelivery sees status already 'failed' and does nothing further).
     if (matched && matched.status !== "failed") {
       await env.PLATFORM_DB.batch([
-        env.PLATFORM_DB.prepare("UPDATE payout_requests SET status = 'failed', updated_at = datetime('now') WHERE id = ?").bind(matched.id),
+        env.PLATFORM_DB.prepare("UPDATE whop_payout_requests SET status = 'failed', updated_at = datetime('now') WHERE id = ?").bind(matched.id),
         // Reverse the debit recorded at execution time — the money never actually left the
         // wallet. This was previously recorded as a NEGATIVE 'expense' transaction (wrong
         // direction entirely — a failed payout returning funds showed as money spent).
@@ -755,7 +755,7 @@ export async function handleWhopWebhook(request: Request, env: BillingEnv): Prom
       // next payout requires owner approval again instead of silently skipping straight to
       // execution against a destination with a 0% success rate.
       const otherSuccess = await env.PLATFORM_DB.prepare(
-        "SELECT 1 FROM payout_requests WHERE destination_id = ? AND status = 'executed' LIMIT 1"
+        "SELECT 1 FROM whop_payout_requests WHERE destination_id = ? AND status = 'executed' LIMIT 1"
       ).bind(matched.destination_id).first();
       if (!otherSuccess) {
         await env.PLATFORM_DB.prepare(

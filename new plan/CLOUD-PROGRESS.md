@@ -598,6 +598,26 @@ Batch 4 remains IN PROGRESS: full authorized DO-to-container execution, runtime
 AI/Ogg acceptance, and real settlement-provider effects remain unverified; see above
 for the separate local Docker `/health` and `/exec` smoke evidence.
 
+Focused recheck after the continuation changes: Agent Worker 56 files / 223 tests,
+Spaces 21 / 62, Router transcription/Opus 2 / 6, Agent SDK 18 / 66, and WS UI-action
+delegation/node-lease 2 / 3 pass; Browser Worker, Shell, Agent SDK, Spaces and the
+repository-wide 80-task typecheck pass. Root Wrangler 4.149.0 Agent and Browser
+`deploy --dry-run` both pass (the Agent dry-run rebuilt all three images). The broad
+root test suite remains red as recorded above.
+
+Resolved local D1 migration defect: the shared local `naelao-platform` D1 had migrations
+through 0063, and migration 0064 failed because it tried to create the Whop wallet's
+`payout_requests` table/index over the existing builder withdrawal table from migration
+0053 (which has `tenant_id`, not `space_id`). This breaks both local setup and the B3
+builder-vs-business payout separation. Whop now uses `whop_payout_requests`; migration
+0066 adds expiry to that table, leaving builder payouts on their original schema. Added
+a real SQLite regression test applying 0053/0064/0066 and proving both ledgers remain
+independent. The Whop wallet tests now include the legacy 0053 schema and pass (27/27).
+After this fix, Wrangler applied pending local D1 migrations 0064–0082 successfully;
+the test-only 0081 table was dropped before that normal migration run. No remote D1 was
+accessed. Production migration state remains unverified because the environment is not
+authenticated to Cloudflare.
+
 Actual local DO-to-container attempt (2026-10-12): used a temporary development-only
 route to call the real `ToolSandboxDO` with an internally signed scoped request, then
 removed the route. The call reached the DO and its local billing reservation was

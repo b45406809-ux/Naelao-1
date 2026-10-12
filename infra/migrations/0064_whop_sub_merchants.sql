@@ -71,7 +71,9 @@ CREATE INDEX IF NOT EXISTS idx_payout_destinations_space ON payout_destinations(
 -- A payout only ever executes after an explicit owner approval (safety invariant #5 — first
 -- payout per destination requires the owner to click an emailed approval link; subsequent
 -- payouts to an already-verified destination are assistant-driven but still logged here).
-CREATE TABLE IF NOT EXISTS payout_requests (
+-- The platform already has `payout_requests` from migration 0053 for builder withdrawals.
+-- Business-wallet withdrawals are a separate ledger with a different state machine and keys.
+CREATE TABLE IF NOT EXISTS whop_payout_requests (
   id                  TEXT PRIMARY KEY,
   space_id            TEXT NOT NULL,
   destination_id      TEXT NOT NULL,
@@ -86,4 +88,4 @@ CREATE TABLE IF NOT EXISTS payout_requests (
   updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_payout_requests_space ON payout_requests(space_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_whop_payout_requests_space ON whop_payout_requests(space_id, created_at DESC);

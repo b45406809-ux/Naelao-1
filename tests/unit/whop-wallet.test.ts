@@ -25,6 +25,7 @@ const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as Ex
 const SPACES_SQL = `CREATE TABLE spaces (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active');`;
 const MIGRATIONS = [
   SPACES_SQL,
+  readFileSync(join(__dirname, "../../infra/migrations/0053_payout_requests.sql"), "utf8"),
   readFileSync(join(__dirname, "../../infra/migrations/0064_whop_sub_merchants.sql"), "utf8"),
   readFileSync(join(__dirname, "../../infra/migrations/0065_whop_kyc_onboarding.sql"), "utf8"),
   readFileSync(join(__dirname, "../../infra/migrations/0066_payout_request_expiry.sql"), "utf8"),
@@ -427,7 +428,7 @@ describe("payout approval gating (safety invariant #5)", () => {
     })();
     const expiresAt = opts.expiresAt === undefined ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() : opts.expiresAt;
     await db.prepare(
-      `INSERT INTO payout_requests (id, space_id, destination_id, amount_cents, status, approval_token_hash, expires_at)
+      `INSERT INTO whop_payout_requests (id, space_id, destination_id, amount_cents, status, approval_token_hash, expires_at)
        VALUES ('req-1', 'space-a', 'dest-1', 2000, 'pending_approval', ?, ?)`
     ).bind(tokenHash, expiresAt).run();
   }
@@ -453,7 +454,7 @@ describe("payout approval gating (safety invariant #5)", () => {
     expect(html).toContain('method="POST"');
     // The GET render must NEVER call Whop's withdrawal API or change any status.
     expect(calls.length).toBe(0);
-    const request = await db.prepare("SELECT status FROM payout_requests WHERE id = 'req-1'").first<{ status: string }>();
+    const request = await db.prepare("SELECT status FROM whop_payout_requests WHERE id = 'req-1'").first<{ status: string }>();
     expect(request?.status).toBe("pending_approval");
   });
 
@@ -483,7 +484,7 @@ describe("payout approval gating (safety invariant #5)", () => {
     // Exactly one withdrawal call — never a double-execute.
     expect(calls.filter((c) => /\/withdrawals$/.test(c.url)).length).toBe(1);
 
-    const request = await db.prepare("SELECT status, whop_withdrawal_id FROM payout_requests WHERE id = 'req-1'").first<{ status: string; whop_withdrawal_id: string }>();
+    const request = await db.prepare("SELECT status, whop_withdrawal_id FROM whop_payout_requests WHERE id = 'req-1'").first<{ status: string; whop_withdrawal_id: string }>();
     expect(request?.status).toBe("executed");
     expect(request?.whop_withdrawal_id).toBe("wd_1");
     const dest = await db.prepare("SELECT status FROM payout_destinations WHERE id = 'dest-1'").first<{ status: string }>();
@@ -513,7 +514,7 @@ describe("payout approval gating (safety invariant #5)", () => {
     const resp = await confirmPayoutApproval(env, "req-1", "plaintext-token");
     expect(resp.status).toBe(410);
     expect(calls.length).toBe(0);
-    const request = await db.prepare("SELECT status FROM payout_requests WHERE id = 'req-1'").first<{ status: string }>();
+    const request = await db.prepare("SELECT status FROM whop_payout_requests WHERE id = 'req-1'").first<{ status: string }>();
     expect(request?.status).toBe("pending_approval");
   });
 
@@ -534,7 +535,7 @@ describe("payout approval gating (safety invariant #5)", () => {
       env as never, execCtx
     );
     expect(res.status).toBe(201);
-    const row = await db.prepare("SELECT expires_at FROM payout_requests WHERE space_id = 'space-a'").first<{ expires_at: string | null }>();
+    const row = await db.prepare("SELECT expires_at FROM whop_payout_requests WHERE space_id = 'space-a'").first<{ expires_at: string | null }>();
     expect(row?.expires_at).toBeTruthy();
     const daysOut = (new Date(row!.expires_at!).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
     expect(daysOut).toBeGreaterThan(6.9);
@@ -607,7 +608,7 @@ describe("withdrawal.completed / withdrawal.failed webhook reconciliation", () =
        VALUES ('dest-1', 'space-a', 'bank', 'Chase checking', 'cred-1', ?)`
     ).bind(opts.destStatus ?? "verified").run();
     await db.prepare(
-      `INSERT INTO payout_requests (id, space_id, destination_id, amount_cents, status, whop_withdrawal_id)
+      `INSERT INTO whop_payout_requests (id, space_id, destination_id, amount_cents, status, whop_withdrawal_id)
        VALUES ('req-1', 'space-a', 'dest-1', 2000, 'executed', 'wd_1')`
     ).run();
     // The debit recorded synchronously at execution time (mirrors confirmPayoutApproval's own insert).
@@ -647,7 +648,7 @@ describe("withdrawal.completed / withdrawal.failed webhook reconciliation", () =
     const res = await postWithdrawalEvent(env, "withdrawal.failed", "wd_1", "evt_wf_1");
     expect(res.status).toBe(200);
 
-    const request = await db.prepare("SELECT status FROM payout_requests WHERE id = 'req-1'").first<{ status: string }>();
+    const request = await db.prepare("SELECT status FROM whop_payout_requests WHERE id = 'req-1'").first<{ status: string }>();
     expect(request?.status).toBe("failed");
 
     const { results } = await db.prepare("SELECT type, amount_cents FROM wallet_transactions WHERE space_id = 'space-a'").all();
@@ -669,7 +670,7 @@ describe("withdrawal.completed / withdrawal.failed webhook reconciliation", () =
     await seedExecutedPayout(db);
     // A second, earlier payout to the SAME destination that already succeeded.
     await db.prepare(
-      `INSERT INTO payout_requests (id, space_id, destination_id, amount_cents, status, whop_withdrawal_id)
+      `INSERT INTO whop_payout_requests (id, space_id, destination_id, amount_cents, status, whop_withdrawal_id)
        VALUES ('req-0', 'space-a', 'dest-1', 1000, 'executed', 'wd_0')`
     ).run();
     const env = makeEnv(db);
