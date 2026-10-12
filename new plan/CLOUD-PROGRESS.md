@@ -390,3 +390,5 @@ validated scheduled payout integration). Do not claim these as complete or simul
 provider payouts. Next action: finish local infrastructure and tests for these seams,
 then record any genuinely credential/owner-only live verification gates; only after
 all repository-implementable work is complete may this batch be closed.
+The in-progress foundation snapshot is committed and pushed as `8ff5540` on
+`Mcbt5s-Backup-2`; it does not mark batch 3 complete.

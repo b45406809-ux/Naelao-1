@@ -194,7 +194,8 @@ Worker launcher were reused. The node lease is not yet connected to semantic edi
 because the current document canvas is read-only. Desk-Drop, a full hydration action
 surface, deterministic marketplace publication certification, mobile/FDE escalation,
 and authorized scheduled payouts remain unfinished. Exact evidence and next actions
-are in CLOUD-PROGRESS.md; batch 3 is not done and remains the current mission.
+are in CLOUD-PROGRESS.md; WIP snapshot `8ff5540` is pushed on
+`Mcbt5s-Backup-2`; batch 3 is not done and remains the current mission.
 
 4. **Document 12: lines 5658–7973**
 
