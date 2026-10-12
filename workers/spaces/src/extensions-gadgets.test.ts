@@ -15,4 +15,14 @@ describe("gadget actor scope", () => {
     expect(gadgetStorageKey({ appId: "todo", scope: "PROJECT_BOUND", spaceId: "s", projectId: "p" })).toBe("gadget:todo:project:p");
     expect(gadgetStorageKey({ appId: "todo", scope: "USER_PRIVATE", spaceId: "s", userId: "u" })).toBe("gadget:todo:space:s:user:u");
   });
+
+  it("implements all four canonical installation facets", () => {
+    const projectShared = gadgetStorageKey({ appId: "todo", scope: "PROJECT_SHARED", spaceId: "s", projectId: "p" });
+    const projectUser = gadgetStorageKey({ appId: "todo", scope: "PROJECT_USER", spaceId: "s", projectId: "p", userId: "u" });
+    const spaceShared = gadgetStorageKey({ appId: "todo", scope: "SPACE_SHARED", spaceId: "s" });
+    const spaceUser = gadgetStorageKey({ appId: "todo", scope: "SPACE_USER", spaceId: "s", userId: "u" });
+    expect(new Set([projectShared, projectUser, spaceShared, spaceUser]).size).toBe(4);
+    expect(gadgetStorageKey({ appId: "todo", scope: "PROJECT_SHARED", spaceId: "other", projectId: "p" })).not.toBe(projectShared);
+    expect(gadgetStorageKey({ appId: "todo", scope: "PROJECT_USER", spaceId: "s", projectId: "p", userId: "v" })).not.toBe(projectUser);
+  });
 });

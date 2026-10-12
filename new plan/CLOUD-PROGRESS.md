@@ -6,7 +6,7 @@ Authority: Documents 12 then 13 only; original TXT files unchanged. Branch:
 | Batch | Status |
 | --- | --- |
 | 1 | PARTIAL_NEEDS_PLATFORM — local implementation complete; exact external gates below |
-| 2 | UNASSESSED |
+| 2 | PARTIAL_NEEDS_PLATFORM — gadget paths implemented; isolated public pages/actions remain |
 | 3 | UNASSESSED |
 | 4 | UNASSESSED |
 | 5 | UNASSESSED |
@@ -220,7 +220,7 @@ test verifies tenant ownership is checked before DO lookup and that gadget MCP
 routes to the expected space key. Own agent system prompts
 and AGENTS.md directives are passed to reasoners, and child configuration follows
 the selected worker agent id. External documentation fetches in this turn returned
-proxy HTTP 403. Batch 2 remains UNASSESSED and has not started.
+proxy HTTP 403. Batch 2 source reading has started; see its closeout below.
 
 ## Resume note (2026-10-12)
 
@@ -275,6 +275,37 @@ proxy HTTP 403. Batch 2 remains UNASSESSED and has not started.
   a task publication or submit result returns review-card data. Merge route,
   status CAS, SpaceDO roster authorization and recovery have focused tests. A
   separate shared-room card listing/update surface still needs verification.
-- Current active action: Batch 1 local work is complete with four exact external
-  gates documented above. Do not mark the external guarantees as proven. Batch 2
-  remains unstarted pending the next numbered prompt.
+- Batch 1 local work is complete with four exact external gates documented above.
+  User requested one commit/push per batch. Created and pushed
+  `c2875e5 feat(batch-1): implement planner, security and collaboration foundations`
+  to `origin/Mcbt5s-Backup-2` before beginning batch 2.
+- Batch 2 primary D12 1565–3590 was read in ascending bounded windows. Specified
+  D12 look-aheads 6127–6690, 11001–11135, 11707–11776, 12213–12559 and D13
+  237–734, 1223–1374 were consulted. Additional amendment contexts read: D12
+  2710–3140, 3320–3589, 1660–1800 and D13 701–734, 1324–1374. Later source
+  correction overrides raw JSX/React `env.LOADER` claims: Loader executes
+  precompiled modules; simple pages need zero-compiler safe HTML, separate
+  `*.avos-preview.net` origin, CSP and single-use HMAC action tokens; complex UI
+  goes to Tier 6. Illustrative provider, model, price, latency, scale and
+  jurisdiction endpoint claims were not treated as validated capabilities.
+- Batch 2 changes: `packages/agent-sdk/src/types.ts` and `extensions.ts` add the
+  four canonical storage scopes and preserve the three legacy names. Gadget keys
+  isolate project/user facets. `workers/spaces/src/routes/gadget-mcp.ts` now
+  routes app/data/MCP calls only after tenant and active space-member checks;
+  install requires owner/admin and exactly the path-matching `SPACE_SHARED`
+  tier-3 gadget. `MicroAppDO.ts` prevents tier/scope mutation and returns a
+  private no-store app response with restrictive CSP, nosniff, and no referrer.
+  Tests added/updated in SDK extension, Spaces extension, route, and DO lifecycle
+  suites. No SQL migration was needed.
+- Batch 2 verification: `pnpm --dir workers/spaces test` (16 files / 51 tests),
+  `pnpm --dir workers/spaces typecheck`, `pnpm --dir packages/agent-sdk test`
+  (17 files / 59 tests), `pnpm --dir packages/agent-sdk typecheck`, and
+  `git diff --check` pass. Tests are local mocks; no live Cloudflare resources
+  were contacted. Official Cloudflare docs fetch still fails with proxy HTTP 403.
+- Batch 2 remains partial: repository has no dynamic-page publication store/route
+  on an isolated preview origin and no single-use public form action lifecycle.
+  Same-origin gadget UI is sandboxed, but that does not satisfy the distinct-origin
+  external portal requirement. Next action within batch 2 is to implement the
+  preview-page registry/handler, origin validation and one-use signed action
+  storage, or document the exact domain/route dependency if deployment ownership
+  prevents safely selecting the preview hostname. Batch 3 has not started.

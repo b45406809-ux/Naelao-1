@@ -53,6 +53,9 @@ describe("three-tier gadget lifecycle", () => {
       if (query.includes("SELECT value FROM gadget_metadata WHERE key = 'app_id'")) {
         const value = metadata.get("app_id"); return cursor(value === undefined ? [] : [{ value }]);
       }
+      if (query.includes("SELECT value FROM gadget_metadata WHERE key = 'html'")) {
+        const value = metadata.get("html"); return cursor(value === undefined ? [] : [{ value }]);
+      }
       if (query.startsWith("INSERT OR REPLACE INTO gadget_metadata")) {
         metadata.set("app_id", String(params[0])); metadata.set("scope", String(params[1]));
         metadata.set("gadget_tier", String(params[2])); metadata.set("html", String(params[3]));
@@ -74,6 +77,19 @@ describe("three-tier gadget lifecycle", () => {
     const response = await harness.instance.fetch(new Request("https://app/api/data", { method: "POST", body: JSON.stringify({ key: "x", value: "value" }) }));
     expect(response.status).toBe(413);
     expect(await response.json()).toMatchObject({ error: "storage_limit_exceeded", limitBytes: TIER_ONE_STORAGE_LIMIT_BYTES });
+  });
+
+  it("keeps gadget canvases script-isolated and preserves immutable actor scope", async () => {
+    const harness = tierOneHarness();
+    const initialize = (scope: "USER_PRIVATE" | "SPACE_WIDE", gadgetTier: 1 | 3) => harness.instance.fetch(new Request("https://app/initialize", {
+      method: "POST", body: JSON.stringify({ appId: "notes", scope, gadgetTier, html: "<main>safe</main>" }),
+    }));
+    expect((await initialize("USER_PRIVATE", 1)).status).toBe(201);
+    const page = await harness.instance.fetch(new Request("https://app/app"));
+    expect(page.headers.get("content-security-policy")).toContain("script-src 'self'");
+    expect(page.headers.get("content-security-policy")?.split(";").find(part => part.trim().startsWith("script-src"))).not.toContain("unsafe-inline");
+    expect(page.headers.get("cache-control")).toBe("private, no-store");
+    expect((await initialize("SPACE_WIDE", 3)).status).toBe(409);
   });
 
   it("wipes Tier 1 storage and marks the actor deleted when its alarm fires", async () => {

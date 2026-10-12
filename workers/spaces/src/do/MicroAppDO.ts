@@ -10,13 +10,25 @@ export const TIER_ONE_IDLE_TTL_MS = 14 * 86_400 * 1000;
 export function gadgetStorageKey(input: GadgetActorScope): string {
   if (!/^[a-zA-Z0-9_-]{1,128}$/.test(input.appId)) throw new Error("invalid_gadget_app_id");
   if (!input.spaceId) throw new Error("gadget_space_id_required");
-  if (input.scope === "SPACE_WIDE") return `gadget:${input.appId}:space:${input.spaceId}`;
+  if (input.scope === "SPACE_WIDE" || input.scope === "SPACE_SHARED") return `gadget:${input.appId}:space:${input.spaceId}`;
+  if (input.scope === "SPACE_USER" || input.scope === "USER_PRIVATE") {
+    if (!input.userId) throw new Error("gadget_user_id_required");
+    return `gadget:${input.appId}:space:${input.spaceId}:user:${input.userId}`;
+  }
   if (input.scope === "PROJECT_BOUND") {
     if (!input.projectId) throw new Error("gadget_project_id_required");
     return `gadget:${input.appId}:project:${input.projectId}`;
   }
-  if (!input.userId) throw new Error("gadget_user_id_required");
-  return `gadget:${input.appId}:space:${input.spaceId}:user:${input.userId}`;
+  if (input.scope === "PROJECT_SHARED") {
+    if (!input.projectId) throw new Error("gadget_project_id_required");
+    return `gadget:${input.appId}:space:${input.spaceId}:project:${input.projectId}`;
+  }
+  if (input.scope === "PROJECT_USER") {
+    if (!input.projectId) throw new Error("gadget_project_id_required");
+    if (!input.userId) throw new Error("gadget_user_id_required");
+    return `gadget:${input.appId}:space:${input.spaceId}:project:${input.projectId}:user:${input.userId}`;
+  }
+  throw new Error("invalid_gadget_scope");
 }
 
 export function gadgetActorId(namespace: Pick<DurableObjectNamespace, "idFromName">, input: GadgetActorScope): DurableObjectId {
@@ -134,18 +146,21 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
 
   private async initialize(request: Request): Promise<Response> {
     const body = await request.json<{ appId?: string; scope?: GadgetScope; gadgetTier?: GadgetTier; defaultSchemaSql?: string; html?: string }>();
-    if (!body.appId || !body.scope || !body.gadgetTier) return Response.json({ error: "appId, scope and gadgetTier are required" }, { status: 400 });
-    if ((body.gadgetTier === 1 && body.scope !== "USER_PRIVATE") || (body.gadgetTier === 2 && body.scope !== "PROJECT_BOUND") ||
-      (body.gadgetTier === 3 && body.scope !== "PROJECT_BOUND" && body.scope !== "SPACE_WIDE")) {
+    if (!body.appId || !/^[a-z][a-z0-9_-]{1,63}$/.test(body.appId) || !body.scope || !body.gadgetTier) return Response.json({ error: "valid appId, scope and gadgetTier are required" }, { status: 400 });
+    if ((body.gadgetTier === 1 && !["USER_PRIVATE", "PROJECT_USER", "SPACE_USER"].includes(body.scope)) ||
+      (body.gadgetTier === 2 && !["PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER"].includes(body.scope)) ||
+      (body.gadgetTier === 3 && !["PROJECT_BOUND", "PROJECT_SHARED", "SPACE_WIDE", "SPACE_SHARED"].includes(body.scope))) {
       return Response.json({ error: "gadget_tier_scope_mismatch" }, { status: 400 });
     }
     const existing = [...this.ctx.storage.sql.exec<{ value: string }>("SELECT value FROM gadget_metadata WHERE key = 'app_id'")][0];
     if (existing && existing.value !== body.appId) return Response.json({ error: "actor_already_owned" }, { status: 409 });
-    for (const statement of validDdl(body.defaultSchemaSql ?? "")) this.ctx.storage.sql.exec(statement);
-    const html = body.html ?? `<main id="app"></main><script type="module">window.__NAELAO_GADGET__=${JSON.stringify(body.appId)}</script>`;
-    if (html.length > 512_000) throw new Error("gadget_bundle_too_large");
     const existingTier = this.gadgetTier();
     if (existingTier !== undefined && existingTier !== body.gadgetTier) return Response.json({ error: "gadget_tier_immutable" }, { status: 409 });
+    const existingScope = this.metadata("scope");
+    if (existingScope !== undefined && existingScope !== body.scope) return Response.json({ error: "gadget_scope_immutable" }, { status: 409 });
+    for (const statement of validDdl(body.defaultSchemaSql ?? "")) this.ctx.storage.sql.exec(statement);
+    const html = body.html ?? `<main id="app" data-naelao-gadget="${body.appId}"></main>`;
+    if (typeof html !== "string" || new TextEncoder().encode(html).byteLength > 512_000) throw new Error("gadget_bundle_too_large");
     this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES ('app_id',?),('scope',?),('gadget_tier',?),('html',?)", body.appId, body.scope, String(body.gadgetTier), html);
     return Response.json({ initialized: true, appId: body.appId, scope: body.scope, gadgetTier: body.gadgetTier }, { status: 201 });
   }
@@ -153,7 +168,13 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
   private renderApp(): Response {
     const row = [...this.ctx.storage.sql.exec<{ value: string }>("SELECT value FROM gadget_metadata WHERE key = 'html'")][0];
     if (!row) return Response.json({ error: "gadget_not_initialized" }, { status: 404 });
-    return new Response(row.value, { headers: { "content-type": "text/html; charset=utf-8", "content-security-policy": "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'" } });
+    return new Response(row.value, { headers: {
+      "content-type": "text/html; charset=utf-8",
+      "content-security-policy": "default-src 'none'; script-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'self'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "no-referrer",
+      "cache-control": "private, no-store",
+    } });
   }
 
   private readData(url: URL): Response {

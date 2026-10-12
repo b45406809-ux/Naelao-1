@@ -141,8 +141,12 @@ runtime supports file-scoped mounts. A complete-request context preflight now
 counts system, user, tool schema, and image context with a conservative reserve.
 Agents tests (55 files / 218 tests), Spaces tests (12 tests, including host routing), both worker
 typechecks, and `git diff --check` pass. See `new plan/CLOUD-PROGRESS.md` for the
-four exact remaining external gates and evidence. Batch 2 remains UNASSESSED and
-has not started. The user waived live Cloudflare tests.
+four exact remaining external gates and evidence. Batch 1 was committed and pushed as
+`c2875e5` on `Mcbt5s-Backup-2`; user waived live Cloudflare tests. Batch 2 is now
+PARTIAL: canonical gadget scopes, tenant/member-checked app routes and CSP hardening
+are implemented and tested. The isolated public dynamic-page origin and single-use
+form action runtime remain unimplemented; a real preview domain/Worker route is not
+configured in this repository. See CLOUD-PROGRESS.md. Batch 3 has not started.
 
 2. **Document 12: lines 1565–3590**
 
@@ -160,6 +164,8 @@ architecture yourself. Implement and test all final requirements owned by
 the primary range, including their integration with existing code. Record
 additional later ranges consulted, decisions, results and blockers. Stop here.
 ```
+
+**Progress (2026-10-12): PARTIAL — local gadget and extension work implemented; public page hosting remains open.** Four canonical installation scopes (`PROJECT_SHARED`, `PROJECT_USER`, `SPACE_SHARED`, `SPACE_USER`) now map to isolated durable gadget facets while legacy scope names remain compatible. Gadget app/data/MCP routes validate tenant ownership and active space membership; initialization is admin-only and constrained to the named `SPACE_SHARED` tier-3 actor. The app iframe response now uses a restrictive CSP and no-store/security headers. Spaces tests pass (16 files / 51 tests), agent-sdk tests pass (17 files / 59 tests), both typechecks and `git diff --check` pass. The corrected dynamic-page requirement still needs a separate preview origin plus single-use signed form actions; no preview domain/route exists here, and Cloudflare docs access returned proxy 403. User waived live Cloudflare tests. Batch 2 is not marked complete until that missing runtime is implemented or explicitly gated after the remaining repository work is exhausted.
 
 3. **Document 12: lines 3591–5657**
 

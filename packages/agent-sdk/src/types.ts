@@ -1,5 +1,7 @@
 /** Public contracts for code authored against the universal AVOS runtime. */
 export type RuntimeScope = "USER_PRIVATE" | "SPACE_WIDE" | "PROJECT_BOUND";
+/** Canonical installation scopes plus legacy names retained for already-installed manifests. */
+export type GadgetScope = RuntimeScope | "PROJECT_SHARED" | "PROJECT_USER" | "SPACE_SHARED" | "SPACE_USER";
 
 /** Canonical public identifiers. Component kinds are never inferred from shape. */
 export type TemplateId = `tpl_${string}`;
@@ -67,7 +69,6 @@ export interface CustomerBotContext {
   readonly escalateToHuman: (reason: string) => Promise<void>;
 }
 
-export type GadgetScope = RuntimeScope;
 export type GadgetTier = 1 | 2 | 3;
 
 /** Lifecycle declaration enforced by MicroAppDO, rather than trusted to UI code. */

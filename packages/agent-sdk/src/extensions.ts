@@ -1,10 +1,10 @@
-import { assertExtensionId, type ExtensionId, type GadgetTier, type RuntimeScope, type KernelLayout, type ExecutionMode, type PermissionAction } from "./types.js";
+import { assertExtensionId, type ExtensionId, type GadgetScope, type GadgetTier, type RuntimeScope, type KernelLayout, type ExecutionMode, type PermissionAction } from "./types.js";
 
 export interface ExtensionGadgetManifest {
   id: string;
   name: string;
   viewportComponent: string;
-  scope: RuntimeScope;
+  scope: GadgetScope;
   gadgetTier: GadgetTier;
   defaultSchemaSql: string;
 }
@@ -81,18 +81,18 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
     for (const capability of raw.capabilityRequirements as string[]) assert(granted.has(capability), `gatekeeper_capability_denied:${capability}`);
   }
   assert(Array.isArray(raw.gadgets) && Array.isArray(raw.daemons) && Array.isArray(raw.commands), "arrays_required");
-  const scopes = new Set<RuntimeScope>(["SPACE_WIDE", "PROJECT_BOUND", "USER_PRIVATE"]);
+  const scopes = new Set<GadgetScope>(["SPACE_WIDE", "PROJECT_BOUND", "USER_PRIVATE", "PROJECT_SHARED", "PROJECT_USER", "SPACE_SHARED", "SPACE_USER"]);
   const ids = new Set<string>();
   for (const item of raw.gadgets as Record<string, unknown>[]) {
     assert(item && typeof item === "object", "invalid_gadget");
     assert(typeof item.id === "string" && ID.test(item.id) && !ids.has(item.id), "invalid_gadget_id"); ids.add(item.id);
     assert(typeof item.name === "string" && item.name.trim().length > 0, "invalid_gadget_name");
     assert(typeof item.viewportComponent === "string" && SAFE_PATH.test(item.viewportComponent), "invalid_viewport");
-    assert(scopes.has(item.scope as RuntimeScope), "invalid_gadget_scope");
+    assert(scopes.has(item.scope as GadgetScope), "invalid_gadget_scope");
     assert(item.gadgetTier === 1 || item.gadgetTier === 2 || item.gadgetTier === 3, "invalid_gadget_tier");
-    assert(item.gadgetTier !== 1 || item.scope === "USER_PRIVATE", "tier_1_must_be_user_private");
-    assert(item.gadgetTier !== 2 || item.scope === "PROJECT_BOUND", "tier_2_must_be_project_bound");
-    assert(item.gadgetTier !== 3 || item.scope === "PROJECT_BOUND" || item.scope === "SPACE_WIDE", "tier_3_scope_invalid");
+    assert(item.gadgetTier !== 1 || ["USER_PRIVATE", "PROJECT_USER", "SPACE_USER"].includes(String(item.scope)), "tier_1_must_be_user_private");
+    assert(item.gadgetTier !== 2 || ["PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER"].includes(String(item.scope)), "tier_2_scope_invalid");
+    assert(item.gadgetTier !== 3 || ["PROJECT_BOUND", "PROJECT_SHARED", "SPACE_WIDE", "SPACE_SHARED"].includes(String(item.scope)), "tier_3_scope_invalid");
     assert(typeof item.defaultSchemaSql === "string" && item.defaultSchemaSql.length <= 64_000, "invalid_schema");
     assert(!FORBIDDEN_SCRIPT.test(item.defaultSchemaSql), "unsafe_schema");
   }
@@ -146,7 +146,7 @@ export function gadgetStorageKey(tenantId: string, spaceId: string, projectId: s
 // independent from this wire schema so old manifests can be adapted safely.
 export type ExtensionSchemaVersion = "1.0";
 export type ExtensionPrimitiveKind = "gadget" | "canvas" | "channel" | "container" | "linter" | "workflow";
-export interface PermissionDeclaration { scope: RuntimeScope; actions: readonly PermissionAction[]; resource: string; }
+export interface PermissionDeclaration { scope: GadgetScope; actions: readonly PermissionAction[]; resource: string; }
 export interface LifecycleContract { onInstall?: string; onLoad?: string; onUnload?: string; onDelete?: string; }
 export interface BudgetContract { maxCredits?: number; maxDurationSeconds?: number; maxConcurrency?: number; }
 export interface CancellationContract { owner: "invoker" | "project" | "space_owner" | "admin"; graceSeconds: number; }
@@ -160,7 +160,7 @@ export interface ExtensionContractBase {
   budget?: BudgetContract;
   cancellation?: CancellationContract;
 }
-export interface GadgetContract extends ExtensionContractBase { kind: "gadget"; scope: RuntimeScope; schemaSql?: string; }
+export interface GadgetContract extends ExtensionContractBase { kind: "gadget"; scope: GadgetScope; schemaSql?: string; }
 export interface CanvasContract extends ExtensionContractBase { kind: "canvas"; layout: KernelLayout; component: string; dynamicPage: boolean; }
 export interface ChannelContract extends ExtensionContractBase { kind: "channel"; provider: string; inboundEvents: readonly string[]; outboundEvents: readonly string[]; }
 export interface ContainerContract extends ExtensionContractBase {
@@ -182,7 +182,7 @@ const CONTRACT_KINDS = new Set<ExtensionPrimitiveKind>(["gadget", "canvas", "cha
 const CONTRACT_ID = /^[a-z][a-z0-9._-]{1,63}$/;
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const CONTRACT_PATH = /^[A-Za-z0-9_./-]{1,160}$/;
-const CONTRACT_SCOPE = new Set<RuntimeScope>(["USER_PRIVATE", "SPACE_WIDE", "PROJECT_BOUND"]);
+const CONTRACT_SCOPE = new Set<GadgetScope>(["USER_PRIVATE", "SPACE_WIDE", "PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER", "SPACE_SHARED", "SPACE_USER"]);
 const CONTRACT_ACTIONS = new Set<PermissionAction>(["read", "write", "execute", "network", "admin"]);
 const CONTRACT_BASE_KEYS = new Set(["schemaVersion", "kind", "id", "version", "permissions", "capabilityRequirements", "lifecycle", "budget", "cancellation"]);
 function contractAssert(condition: unknown, message: string): asserts condition { if (!condition) throw new Error(`invalid_extension_contract:${message}`); }
@@ -227,7 +227,7 @@ export function parseExtensionPrimitive(value: unknown): ExtensionPrimitiveManif
   contractAssert(CONTRACT_KINDS.has(raw.kind as ExtensionPrimitiveKind), `unknown_primitive_kind:${String(raw.kind)}`);
   const kind = raw.kind as ExtensionPrimitiveKind;
   validateContractBase(raw, kind);
-  if (kind === "gadget") { contractAssert(CONTRACT_SCOPE.has(raw.scope as RuntimeScope), "invalid_scope"); if (raw.schemaSql !== undefined) contractAssert(typeof raw.schemaSql === "string" && raw.schemaSql.length <= 64000, "invalid_schema_sql"); }
+  if (kind === "gadget") { contractAssert(CONTRACT_SCOPE.has(raw.scope as GadgetScope), "invalid_scope"); if (raw.schemaSql !== undefined) contractAssert(typeof raw.schemaSql === "string" && raw.schemaSql.length <= 64000, "invalid_schema_sql"); }
   if (kind === "canvas") contractAssert(["DualPane", "CanvasFirst"].includes(String(raw.layout)) && typeof raw.component === "string" && CONTRACT_PATH.test(raw.component) && typeof raw.dynamicPage === "boolean", "invalid_canvas");
   if (kind === "channel") contractAssert(typeof raw.provider === "string" && CONTRACT_ID.test(raw.provider) && Array.isArray(raw.inboundEvents) && Array.isArray(raw.outboundEvents), "invalid_channel");
   if (kind === "container") {
