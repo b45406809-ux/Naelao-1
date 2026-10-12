@@ -19,3 +19,4 @@ export * from "./data-residency.js";
 export * from "./air-gap.js";
 export * from "./egress-policy.js";
 export * from "./capability-policy.js";
+export * from "./marketplace-conformance.js";

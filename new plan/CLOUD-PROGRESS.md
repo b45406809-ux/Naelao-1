@@ -640,8 +640,37 @@ No Cloudflare token variables are present and `wrangler whoami` reports unauthen
 Live Cloudflare deployment checks therefore remain unavailable; no live resources were
 contacted. This does not block local work.
 
-Next action: continue Batch 3 with a deterministic fixture/oracle contract and an
-artifact-bound certificate gate on every marketplace/blueprint publish path. Inspect
-both route families and add failure/pass tests before implementing the next Batch 3 gap.
-Do not mark Batch 3 complete or advance to Batch 5; after all locally implementable
-Batch 3 work, resume the remaining Batch 4 integration gates.
+Batch 3 publish-gate implementation (2026-10-12): added a bounded deterministic suite
+runner in `packages/security/src/marketplace-conformance.ts`. It accepts only a
+declarative literal-match linter and at least 50 unique fixtures, returns per-fixture
+diagnostics, and never executes submitted code or invokes a model. Passing certificates
+are HMAC-signed and bind stable hashes of both the blueprint artifact and suite. Blueprint
+export now requires a passing suite before writing its R2 envelope; activation checks the
+signature and artifact hash before instantiation. Owner marketplace submission now requires
+an artifact whose ID matches the submitted SpaceType plus a valid receipt, stores both, and
+rechecks them immediately before publish. Migration 0083 adds the receipt columns. Three
+route-level tests cover missing receipts, valid submission/publish, and artifact tampering.
+Four focused runner tests pass, and the security package and Spaces typechecks pass. Local
+Wrangler applied migration 0083. D13 149–168's 50-fixture count is later than
+D12 5564's 20 historical fixtures and controls this conformance gate; D12 10404–10440's
+state-delta/isolated-SpaceDO assertions still require a true runtime executor. The present
+runner proves the declarative lint contract, not arbitrary worker behavior. The separately
+implemented legacy SpaceType marketplace worker still has its own submission/admin-approval
+path and has not yet been wired to these receipts; the full platform-wide gate remains
+incomplete. No false claim of full conformance is made.
+
+Changed so far in this continuation: `packages/security/src/index.ts`,
+`packages/security/src/marketplace-conformance.ts`,
+`packages/security/src/marketplace-conformance.test.ts`, `workers/spaces/src/index.ts`,
+`workers/spaces/src/routes/marketplace.ts`, `workers/spaces/src/routes/marketplace.test.ts`,
+and `infra/migrations/0083_marketplace_conformance_receipts.sql`. Checks: security tests
+19/19; Spaces tests 22 files / 65 tests; security and Spaces typechecks; local Wrangler
+applied migration 0083 and a second apply reported no migrations pending; `git diff --check`
+passes. No Cloudflare live test used.
+
+Next: wire receipts into the separate legacy SpaceType marketplace submission/admin-review
+worker (first verify and repair its D1 schema path), then exhaust remaining locally implementable Batch 3 requirements
+(owner-to-browser identity bridge, urgent interactive escalation, and payout reconciliation)
+and rerun focused integration checks. Only after Batch 3 is fully evidenced, resume Batch 4's
+exact DO-to-container bridge and other runtime gates.
+User has also requested Batches 5 and 6 after Batches 3 and 4; do not skip either batch.

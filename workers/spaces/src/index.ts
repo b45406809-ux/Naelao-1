@@ -22,7 +22,7 @@ import { registerRecipeRoutes } from "./routes/recipes.js";
 import { registerMarketplaceRoutes } from "./routes/marketplace.js";
 import { registerGraduationRoutes } from "./routes/graduation.js";
 import { registerMarketRadarRoutes } from "./routes/market-radar.js";
-import { applyDurableObjectJurisdiction, evaluateBlueprintSecurity, sanitizeAndScrubBlueprint } from "@naelao/security";
+import { applyDurableObjectJurisdiction, certifyArtifact, evaluateBlueprintSecurity, sanitizeAndScrubBlueprint, verifyArtifactCertificate, type ConformanceSuite, type ConformanceCertificate } from "@naelao/security";
 import type { SpaceBlueprint } from "@naelao/agent-sdk";
 
 export { SpaceDO } from "./do/SpaceDO.js";
@@ -204,6 +204,17 @@ app.post("/spaces/:spaceId/export-template", async (c) => {
   const security = evaluateBlueprintSecurity(blueprint);
   if (!security.publishable) return c.json({ error_code: "blueprint_rejected", security }, 422);
 
+  // Marketplace publication requires the bounded deterministic suite attached to the
+  // blueprint. Provider-judged scores are deliberately not accepted as certification.
+  const suite = blueprint.metadata.conformanceSuite as ConformanceSuite | undefined;
+  const conformance = suite ? await certifyArtifact(blueprint, suite, c.env.PLATFORM_SECRET) : undefined;
+  if (!conformance?.certificate) return c.json({
+    error_code: "conformance_gate_failed",
+    diagnostics: conformance?.report.diagnostics ?? [{ fixtureId: "suite", expected: "at least 50 valid fixtures", actual: "missing_or_invalid" }],
+    passed: conformance?.report.passed ?? 0,
+    total: conformance?.report.total ?? 0,
+  }, 422);
+
   // A separate DO proves schema, project, task and filesystem installation before publication.
   const testSpaceId = `blueprint-test-${blueprint.id}`;
   const testId = c.env.SPACE_DO.idFromName(await getDOName("space", testSpaceId, tenantId, c.env.PLATFORM_SECRET));
@@ -211,10 +222,10 @@ app.post("/spaces/:spaceId/export-template", async (c) => {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ blueprint, target_space_id: testSpaceId }),
   }));
   if (!dryRun.ok) return c.json({ error_code: "sandbox_dry_run_failed", details: await dryRun.text() }, 422);
-  await c.env.SCRIPTS_R2.put(`blueprints/${blueprint.id}.json`, JSON.stringify({ ...blueprint, securityRating: security.rating }, null, 2), {
+  await c.env.SCRIPTS_R2.put(`blueprints/${blueprint.id}.json`, JSON.stringify({ blueprint: { ...blueprint, securityRating: security.rating }, conformanceCertificate: conformance.certificate }, null, 2), {
     httpMetadata: { contentType: "application/json" }, customMetadata: { safetyRating: security.rating, schemaVersion: "2.0" },
   });
-  return c.json({ blueprintId: blueprint.id, key: `blueprints/${blueprint.id}.json`, security, dryRun: await dryRun.json() }, 201);
+  return c.json({ blueprintId: blueprint.id, key: `blueprints/${blueprint.id}.json`, security, conformance: conformance.report, dryRun: await dryRun.json() }, 201);
 });
 
 app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
@@ -225,7 +236,17 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
   if (!owned) throw notFound("Space");
   const stored = await c.env.SCRIPTS_R2?.get(`blueprints/${c.req.param("blueprintId")}.json`);
   if (!stored) throw notFound("Blueprint");
-  const blueprint = await stored.json<SpaceBlueprint>();
+  const storedValue = await stored.json<SpaceBlueprint | { blueprint: SpaceBlueprint; conformanceCertificate: ConformanceCertificate }>();
+  const isCertifiedEnvelope = "blueprint" in storedValue && "conformanceCertificate" in storedValue;
+  const certifiedBlueprint = isCertifiedEnvelope ? storedValue.blueprint : undefined;
+  const artifactForVerification = certifiedBlueprint ? { ...certifiedBlueprint } : {};
+  delete (artifactForVerification as SpaceBlueprint & { securityRating?: unknown }).securityRating;
+  if (!isCertifiedEnvelope || !await verifyArtifactCertificate(
+    artifactForVerification,
+    storedValue.conformanceCertificate,
+    c.env.PLATFORM_SECRET,
+  )) return c.json({ error_code: "conformance_certificate_invalid" }, 422);
+  const blueprint = certifiedBlueprint!;
   const security = evaluateBlueprintSecurity(blueprint);
   if (!security.publishable) return c.json({ error_code: "blueprint_rejected", security }, 422);
   const targetId = c.env.SPACE_DO.idFromName(await getDOName("space", spaceId, tenantId, c.env.PLATFORM_SECRET));
