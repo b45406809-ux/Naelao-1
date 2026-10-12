@@ -9,6 +9,28 @@ export function terminalText(text: string): string {
   for (const key of ["result", "output"]) if (row[key] !== undefined) return terminalText(typeof row[key] === "string" ? row[key] : JSON.stringify(row[key]));
   return text;
 }
+
+export interface FoldedTerminalOutput {
+  folded: boolean;
+  estimatedTokens: number;
+  hiddenLines: number;
+  preview: string;
+}
+
+/** Fold completed command output to keep long build/test logs from dominating the chat stream. */
+export function foldTerminalOutput(text: string, tokenLimit = 1_500): FoldedTerminalOutput {
+  const estimatedTokens = Math.ceil(text.length / 3.85);
+  if (estimatedTokens <= tokenLimit) return { folded: false, estimatedTokens, hiddenLines: 0, preview: text };
+  const head = text.slice(0, 1_200);
+  const tail = text.slice(-400);
+  const hidden = text.slice(head.length, Math.max(head.length, text.length - tail.length));
+  return {
+    folded: true,
+    estimatedTokens,
+    hiddenLines: Math.max(1, hidden.split("\n").length - 1),
+    preview: `${head}\n… output folded …\n${tail}`,
+  };
+}
 export interface AnsiSegment { text: string; color?: string | undefined; bold: boolean }
 const colors = ["#111827", "#f87171", "#34d399", "#fbbf24", "#60a5fa", "#c084fc", "#22d3ee", "#e5e7eb"];
 /** Render only text and bounded SGR styling. OSC hyperlinks and cursor controls carry no authority. */

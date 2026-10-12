@@ -195,7 +195,9 @@ because the current document canvas is read-only. Desk-Drop, a full hydration ac
 surface, deterministic marketplace publication certification, mobile/FDE escalation,
 and authorized scheduled payouts remain unfinished. Exact evidence and next actions
 are in CLOUD-PROGRESS.md; WIP snapshot `8ff5540` is pushed on
-`Mcbt5s-Backup-2`; batch 3 is not done and remains the current mission.
+`Mcbt5s-Backup-2`; Batch 3 is not done and must be revisited before the full 10-batch
+run is closed. The latest user request asks to continue into Batch 4 without pausing;
+Batch 4 is now the active mission while Batch 3's exact gaps remain tracked.
 
 4. **Document 12: lines 5658–7973**
 
@@ -213,6 +215,17 @@ constraints. Research vendor assumptions; do not mechanically implement obsolete
 examples or invent unavailable isolation guarantees. Implement and test the
 final requirements, preserve tunnels and local models, record evidence, and stop.
 ```
+
+**Progress (2026-10-12): IN PROGRESS.** Read primary D12 5658–7973 in ascending
+bounded windows; read required D12/D13 look-aheads and extra D12 12764–13206 for
+model/modality amendments. Existing provider-usage metering, terminal Bash rendering,
+named LocalTunnelDO execution, permission-filtered RAG, saga coordinator, and local
+workerd launcher were verified in code. Added completed-log folding with expansion
+in `TerminalStreamBlock` and focused tests; typecheck/test verification and remaining
+B4 gap analysis are underway. Speculative Clef/Jev model IDs, modality, latency, and
+prices remain unverified (official docs request returned proxy CONNECT HTTP 403), so
+no vendor-specific routing was added. See CLOUD-PROGRESS.md. Batch 4 is active; do
+not mark complete yet.
 
 5. **Document 12: lines 7974–10197**
 

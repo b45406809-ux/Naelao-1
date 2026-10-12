@@ -7,8 +7,8 @@ Authority: Documents 12 then 13 only; original TXT files unchanged. Branch:
 | --- | --- |
 | 1 | PARTIAL_NEEDS_PLATFORM — local implementation complete; exact external gates below |
 | 2 | PARTIAL_NEEDS_PLATFORM — runtime implemented; verified preview DNS/Worker route must be configured |
-| 3 | IN PROGRESS |
-| 4 | UNASSESSED |
+| 3 | INCOMPLETE — implemented foundation; operational requirements remain open |
+| 4 | IN PROGRESS |
 | 5 | UNASSESSED |
 | 6 | UNASSESSED |
 | 7 | UNASSESSED |
@@ -392,3 +392,42 @@ then record any genuinely credential/owner-only live verification gates; only af
 all repository-implementable work is complete may this batch be closed.
 The in-progress foundation snapshot is committed and pushed as `8ff5540` on
 `Mcbt5s-Backup-2`; it does not mark batch 3 complete.
+
+Fresh Batch 3 checkpoint (2026-10-12): prior claims rechecked; the missing
+semantic editor, Desk-Drop, trusted marketplace regression gate, full interactive
+installation hydration, mobile/FDE escalation path, and scheduled payouts remain
+unimplemented. Local focused checks rerun with direct binaries after pnpm's
+auto-repair found a pre-existing lockfile/`packages/bridge/package.json` mismatch:
+agent-sdk typecheck/build pass; canvas/extensions/mode-dispatch 16 tests pass;
+Spaces gadget/MCP 9 tests pass; Agents `ConcurrencyDO` 6 tests pass; real SQLite
+migration + canvas security tests 6 pass; shell typecheck passes. No production
+Cloudflare resources were contacted. This is not completion evidence for those
+remaining B3 requirements. B3 must be revisited before the overall run is closed.
+
+## Batch 4 (2026-10-12) — IN PROGRESS
+
+Primary D12 5658–7973 read ascending in bounded windows: 5658–5837, 5838–6017,
+6018–6197, 6198–6377, 6378–6557, 6558–6737, 6738–6917, 6918–7097,
+7098–7277, 7278–7457, 7458–7637, 7638–7817, 7818–7973.
+Required look-aheads read in bounded windows: D12 11136–11776, 12348–12763,
+13207–13344; D13 735–1398. Name-matched extra D12 context searched/read:
+12764–13206 (Clef model/modality/pricing claims); D12 11707–11776 (microkernel
+and channel abstraction corrections). Earlier B3 read D12 6690–6901,
+7141–7548 and D13 1–236, 1324–1374; overlapping content was not re-read.
+
+Reconciliation so far: do not treat the illustrative Zig/WASM Git engine, FUSE
+bridge, 1KB workflow payload ceiling, exact CPU/subrequest limits, fake Clef/Jev
+model IDs/prices/latencies, or model modality as verified product capabilities.
+The exact official Cloudflare models documentation fetch failed with proxy CONNECT
+HTTP 403; no code will route to those speculative model IDs. Later D13 runtime
+examples are treated as design prompts, not authoritative APIs. Existing sound
+surfaces found: usage ledger reads provider usage fields; ActivityFeed renders Bash
+as a terminal block; named LocalTunnelDO/bridge execution exists; RAG applies
+clearance filters before retrieval; TransactionCoordinatorDO implements sagas;
+root `pnpm dev` already launches the local Workers/workerd stack.
+
+Fresh changes: `apps/shell/src/components/TerminalStreamBlock.tsx` now folds
+completed output above an estimated 1,500 tokens while retaining head/tail and
+allowing expansion. `apps/shell/src/lib/terminal-output.ts` owns the estimator/fold
+policy. `tests/unit/terminal-output.test.ts` covers short/long output and structured
+stdout/stderr normalization. Verification in progress; do not mark B4 complete.
