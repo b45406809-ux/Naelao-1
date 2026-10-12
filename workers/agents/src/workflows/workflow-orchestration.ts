@@ -16,7 +16,7 @@ export function createWorkflowHooks(env: DurableWorkflowHostEnv, scope: { tenant
     },
     workflowRun: async (name, params, options = {}) => {
       const startKey = options.startKey ?? await workflowHash(JSON.stringify([parentRunId, name]));
-      const result = await startDurableWorkflow(env, { ...scope, actorId: actor(), name, params, startKey, workflowClass: options.workflowClass as WorkflowClass | undefined,
+      const result = await startDurableWorkflow(env, { ...scope, actorId: actor(), name, params, startKey, ...(options.workflowClass ? { workflowClass: options.workflowClass as WorkflowClass } : {}),
         budgetKey: options.budgetKey, budgetCredits: options.budgetCredits, installationId: options.installationId });
       return { ...result, instanceId: result.id, workflow: name, context: "clean", max_context_tokens: options.maxContextTokens ?? 2000 };
     },

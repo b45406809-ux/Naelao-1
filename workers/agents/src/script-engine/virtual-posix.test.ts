@@ -20,11 +20,11 @@ describe("virtual POSIX shell", () => {
   });
 
   it("keeps simple shell status commands in the virtual runtime", async () => {
-    await expect(executeVirtualPosix("echo \"Project created successfully\"", fs)).resolves.toEqual({
+    await expect(executeVirtualPosix("echo \"Project created successfully\"", fs)).resolves.toMatchObject({
       exit_code: 0,
       stdout: "Project created successfully",
     });
-    await expect(executeVirtualPosix("pwd", fs)).resolves.toEqual({
+    await expect(executeVirtualPosix("pwd", fs)).resolves.toMatchObject({
       exit_code: 0,
       stdout: "/workspace",
     });
@@ -74,7 +74,7 @@ describe("virtual POSIX shell", () => {
         run: async () => undefined,
       }
     );
-    expect(output).toBe("hello");
+    expect(output).toMatchObject({ result: "hello" });
     expect(run).toHaveBeenCalledWith(
       expect.objectContaining({
         name: "avos-bin.hello",

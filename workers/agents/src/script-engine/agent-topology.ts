@@ -15,12 +15,13 @@ export const UNIVERSAL_AGENT_BASELINE_PREBUILTS = [
 ] as const;
 
 const UNIVERSAL_REPL_OPERATIONS = new Set([
-  "Bash", "Read", "Edit", "tools.search", "tools.describe",
+  "Bash", "Read", "tools.search", "tools.describe",
 ]);
 
 const PLANNER_OPERATIONS = new Set([
   "engine.plan_and_delegate_goal",
   "agent.spawn",
+  "model.race",
   "agent.list_models",
   "thread.list_project_agents",
   "thread.consult",
@@ -31,7 +32,7 @@ const PLANNER_OPERATIONS = new Set([
 ]);
 
 /**
- * A persistent agent is intentionally a planner. It can use the universal shell surface and
+ * A persistent agent is intentionally a planner. It can inspect through the shell surface and
  * coordinate workers, but it cannot directly invoke a worker-owned domain operation. A cabinet
  * delegation is marked internally by ScriptToolSurface and is the only way a Space planner may
  * execute the cabinet worker's bounded operation.

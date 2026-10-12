@@ -29,8 +29,8 @@ describe("Execution Ladder & Code Runner", () => {
       engine: "sqlite_fs",
     });
     expect(classifyExecutionRoute("node script.ts")).toMatchObject({
-      tier: 2,
-      engine: "isolate",
+      tier: 6,
+      engine: "container",
     });
     expect(classifyExecutionRoute("workflow run nightly")).toMatchObject({
       tier: 3,
@@ -52,10 +52,10 @@ describe("Execution Ladder & Code Runner", () => {
     );
   });
 
-  it("routes pure Python to Pyodide and native imports to the container", () => {
+  it("routes Python shell processes to the native container", () => {
     expect(
       classifyExecutionRoute('python3 -c "import math; print(math.pi)"')
-    ).toMatchObject({ tier: 2 });
+    ).toMatchObject({ tier: 6 });
     expect(classifyExecutionRoute('python3 -c "import torch"')).toMatchObject({
       tier: 6,
     });
@@ -84,6 +84,7 @@ describe("Execution Ladder & Code Runner", () => {
       accessibility_text: "Page",
       screenshot_path: "/tmp/latest.png",
       screenshot_saved: true,
+      untrusted: true,
     });
   });
 
@@ -101,14 +102,14 @@ describe("Execution Ladder & Code Runner", () => {
 
   it("lets System One elevate an ambiguous command but never lower deterministic native work", async () => {
     const noul = vi.fn(async () => ({ kind: "noul" as const, value: true, probability: 0.91, confidence: 0.91, provider: "jev" as const, model: "jev-1.13.0", policyCode: "execution_native_preflight_v1" }));
-    await expect(classifyExecutionRouteWithSentry("node opaque-addon.js", { noul })).resolves.toMatchObject({ tier: 6, engine: "container", reason: "jev_native_preflight", sentry: { provider: "jev" } });
-    await expect(classifyExecutionRouteWithSentry("cargo build", { noul })).resolves.toMatchObject({ tier: 6, reason: "deterministic_native_preflight" });
+    await expect(classifyExecutionRouteWithSentry("ext:opaque run", { noul })).resolves.toMatchObject({ tier: 6, engine: "container", reason: "jev_native_preflight", sentry: { provider: "jev" } });
+    await expect(classifyExecutionRouteWithSentry("cargo build", { noul })).resolves.toMatchObject({ tier: 6, reason: "declared_native_command" });
     expect(noul).toHaveBeenCalledTimes(1);
   });
 
   it("falls back to the deterministic route when System One is unavailable", async () => {
     const noul = vi.fn(async () => { throw new Error("offline"); });
-    await expect(classifyExecutionRouteWithSentry("node app.js", { noul })).resolves.toMatchObject({ tier: 2, engine: "isolate", reason: "isolate_runtime" });
+    await expect(classifyExecutionRouteWithSentry("ext:app run", { noul })).resolves.toMatchObject({ tier: 2, engine: "isolate", reason: "registered_capability" });
   });
   it("keeps native planner actions on compatibility retries", () => {
     const body = JSON.parse(buildUniversalBody({
@@ -210,43 +211,15 @@ describe("Execution Ladder & Code Runner", () => {
     expect(tierLabel(6)).toBe("T6 container-sandbox");
   });
 
-  it("routes browser scripts to Kitesurf with fallback to Chromium", async () => {
-    const calls = [];
-    const mockBrowserWorker = {
-      fetch: vi.fn(async (req) => {
-        const body = await req.json();
-        calls.push(body.engine ?? "unknown");
-        if (body.engine === "kitesurf") {
-          return Response.json(
-            { message: "Unsupported DOM feature" },
-            { status: 400 }
-          );
-        }
-        return Response.json({ ok: true, result: { title: "Rendered page" } });
-      }),
-    };
-
-    const runner = buildCodeRunner({
-      browserWorker: mockBrowserWorker,
-      platformSecret: "secret",
+  it("never replays a failed browser operation on another engine", async () => {
+    const requests: Request[] = [];
+    const browserWorker = { fetch: async (request: Request) => { requests.push(request); return Response.json({ ok: false, error_code: "provider_failed" }, { status: 400 }); } };
+    const result = await buildCodeRunner({ browserWorker, platformSecret: "secret", authorizeBrowser: async () => true }).run({
+      name: "browser-use.navigate", code: "", tier: 4, args: { url: "https://example.com" }, spaceId: "s1", agentId: "a1", tenantId: "t1", userId: "u1", runId: "run", maxTier: 6,
     });
-
-    const res = await runner.run({
-      name: "scrape",
-      code: "",
-      tier: 4,
-      args: { url: "https://example.com" },
-      spaceId: "s1",
-      agentId: "a1",
-      tenantId: "t1",
-    });
-
-    expect(calls).toEqual(["kitesurf", "chromium"]);
-    expect(res.ok).toBe(true);
-    expect(res.output).toMatchObject({
-      engine: "chromium",
-      fallback_reason: expect.stringContaining("elevated to Chromium"),
-    });
+    expect(result).toMatchObject({ ok: false, error: "provider_failed" });
+    expect(requests).toHaveLength(1);
+    expect(JSON.parse(await requests[0]!.clone().text()).pixelAccurate).toBe(false);
   });
 
   it("auto-elevates directly to Chromium when screenshots or WebGL are required", async () => {
@@ -254,24 +227,25 @@ describe("Execution Ladder & Code Runner", () => {
     const mockBrowserWorker = {
       fetch: vi.fn(async (req) => {
         const body = await req.json();
-        calls.push(body.engine ?? "unknown");
-        return Response.json({ ok: true, result: { screenshot: "png-data" } });
+        calls.push(body.pixelAccurate ? "chromium" : "kitesurf");
+        return Response.json({ ok: true, result: { schemaVersion: 1, sessionId: "browser-session", revision: "revision", url: "https://example.com", text: "Page", elements: [], screenshot: { path: "latest", expiresAt: Date.now() + 30000 } } });
       }),
     };
 
     const runner = buildCodeRunner({
       browserWorker: mockBrowserWorker,
       platformSecret: "secret",
+      authorizeBrowser: async () => true,
     });
 
     const res = await runner.run({
-      name: "screenshot-test",
+      name: "browser-use.screenshot",
       code: "",
       tier: 4,
       args: { url: "https://example.com", needsScreenshot: true },
       spaceId: "s1",
       agentId: "a1",
-      tenantId: "t1",
+      tenantId: "t1", userId: "u1", runId: "run", maxTier: 6,
     });
 
     expect(calls).toEqual(["chromium"]);
@@ -284,10 +258,10 @@ describe("Execution Ladder & Code Runner", () => {
       idFromName: vi.fn(() => ({ toString: () => "sandbox" })),
       get: vi.fn(() => ({ fetch: vi.fn(async () => Response.json({ ok: true })) })),
     };
-    const runner = buildCodeRunner({ airGappedOnly: true, browserWorker, toolSandbox: toolSandbox as never });
+    const runner = buildCodeRunner({ airGappedOnly: true, browserWorker, toolSandbox: toolSandbox as never, authorizeContainer: async () => true });
 
     const browser = await runner.run({ name: "scrape", code: "", tier: 4, args: { url: "https://example.com" }, spaceId: "s1", agentId: "a1", tenantId: "t1" });
-    const container = await runner.run({ name: "Bash", code: "curl https://example.com", tier: 6, args: {}, spaceId: "s1", agentId: "a1", tenantId: "t1" });
+    const container = await runner.run({ name: "Bash", code: "curl https://example.com", tier: 6, args: {}, spaceId: "s1", agentId: "a1", tenantId: "t1", userId: "u1", runId: "run" });
 
     expect(browser).toMatchObject({ ok: false, error: expect.stringContaining("compliance_violation") });
     expect(container).toMatchObject({ ok: false, error: expect.stringContaining("local workstation") });
@@ -304,7 +278,7 @@ describe("Execution Ladder & Code Runner", () => {
       }),
       get: vi.fn(() => ({ fetch: vi.fn(async () => Response.json({ ok: true, result: "done" })) })),
     };
-    const runner = buildCodeRunner({ toolSandbox: toolSandbox as never });
+    const runner = buildCodeRunner({ toolSandbox: toolSandbox as never, authorizeContainer: async () => true, platformSecret: "secret" });
 
     const result = await runner.run({
       name: "Bash",
@@ -315,7 +289,7 @@ describe("Execution Ladder & Code Runner", () => {
       agentId: "a1",
       tenantId: "t1",
       projectId: "p1",
-      workspaceBranch: "race/task/model-a",
+      workspaceBranch: "race/task/model-a", userId: "u1", runId: "run", maxTier: 6,
     });
 
     expect(result.ok).toBe(true);

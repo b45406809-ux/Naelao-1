@@ -1,4 +1,5 @@
 "use client";
+import { TerminalStreamBlock } from "./TerminalStreamBlock";
 
 // The activity sequence — Claude Code's own "thinking → tool call → reply → tool call → … →
 // final answer" pattern, applied to the script-native loop's real trace steps (observe/find/gate/
@@ -353,7 +354,7 @@ function ToolRowView({
         {failed && <span style={{ color: "#dc2626", fontSize: 11 }}>failed</span>}
         {expandable && <span style={{ color: "var(--text3)", fontSize: 10 }}>{isOpen ? "▲" : "▼"}</span>}
       </button>
-      {isOpen && expandable && (
+      {!worker && step.name === "Bash" && !pending ? <TerminalStreamBlock command={paramsText ?? undefined} output={failed ? step.detail : step.output} failed={failed} active={active} /> : isOpen && expandable && (
         <div style={{ fontSize: 11.5, color: "var(--text3)", padding: "0 8px 8px", lineHeight: 1.6 }}>
           {paramsText && (
             <div style={{ marginBottom: 4 }}>

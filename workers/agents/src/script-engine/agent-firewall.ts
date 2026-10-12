@@ -3,27 +3,16 @@ import { verifyScopedCapabilityToken, type CapabilityClaims, type CapabilityVeri
 
 export interface FirewallTool { name?: string; function?: { name?: string }; [key: string]: unknown }
 
-const SUPPORT_ALLOWED = /^(?:knowledge\.search|faq\.search|ticket\.(?:create|read)|tools\.(?:search|describe)|conversation\.search)$/i;
-const GROWTH_DENIED = /(?:^|\.)(?:bash|terminal|container|compiler|code_exec|git)(?:\.|$)/i;
-const UNIVERSAL_SHELL_SURFACE = /^(?:Bash|Read|Edit)$/;
-
-export const ROLE_MAX_TIER: Record<UniversalAgentRole, number> = {
-  CUSTOMER_SUPPORT: 2, GROWTH_OPERATOR: 4, DEV_OPERATOR: 6, ARCHITECT_DELEGATE: 6, CUSTOM: 6,
-};
+// Domain role names are descriptive user configuration, never platform privileges.
+// Installation capabilities, planner boundaries and the verified execution ceiling enforce access.
+export const ROLE_MAX_TIER: Readonly<Record<string, number>> = Object.freeze({});
 
 export function toolName(tool: FirewallTool | string): string {
   return typeof tool === "string" ? tool : tool.function?.name ?? tool.name ?? "";
 }
 
 export function isToolAllowedForRole(role: UniversalAgentRole, name: string, tier = 1): boolean {
-  if (!name || tier > (ROLE_MAX_TIER[role] ?? 1)) return false;
-  // Every Naelao runtime, including a leaf worker, uses the same Bash/Read/Edit action surface.
-  // The execution ladder and the role's tier ceiling decide what the command may reach; role
-  // policies still constrain every named platform capability behind that shell surface.
-  if (UNIVERSAL_SHELL_SURFACE.test(name)) return true;
-  if (role === "CUSTOMER_SUPPORT") return SUPPORT_ALLOWED.test(name);
-  if (role === "GROWTH_OPERATOR") return !GROWTH_DENIED.test(name);
-  return true;
+  return Boolean(role.trim() && name && Number.isInteger(tier) && tier >= 1 && tier <= 6);
 }
 
 /** Physically omit capabilities before a model can observe their definitions. */

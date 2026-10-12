@@ -3010,6 +3010,60 @@ app.delete("/spaces/:spaceId/tasks/:taskId", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
+// Review cards are scoped shared-workspace artifacts, reached through verified worker identity.
+app.use("/spaces/:spaceId/pull-request-cards", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use("/spaces/:spaceId/pull-request-cards", requireBusinessMembership({ GET: "member", POST: "member" }));
+app.get("/spaces/:spaceId/pull-request-cards", async c => {
+  const spaceId = c.req.param("spaceId"), tenantId = c.req.header("x-naelao-tenant-id");
+  if (!tenantId || !spaceId) return c.json({ error_code: "unauthorized" }, 401);
+  const projectId = c.req.query("project_id");
+  if (!projectId) return c.json({ error_code: "project_required" }, 400);
+  return forwardToSpaceDO(await spaceDoStub(c.env, spaceId, tenantId), `/pull-request-cards?${new URLSearchParams({ space_id: spaceId, project_id: projectId })}`, "GET");
+});
+app.post("/spaces/:spaceId/pull-request-cards", async c => {
+  const spaceId = c.req.param("spaceId"), tenantId = c.req.header("x-naelao-tenant-id");
+  if (!tenantId || !spaceId) return c.json({ error_code: "unauthorized" }, 401);
+  const body = await c.req.json<Record<string, unknown>>();
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  return stub.fetch(new Request("http://space-do/pull-request-cards", { method: "POST", headers: c.req.raw.headers,
+    body: JSON.stringify({ ...body, space_id: spaceId }) }));
+});
+
+// Internal repository merge notifications emitted only after the agents worker has checked the
+// acting person's SpaceDO membership. Keep the event route behind a tenant-bound internal token.
+app.post("/spaces/:spaceId/workspace-events", async c => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !(await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)))
+    return c.json({ error_code: "forbidden", message: "internal only" }, 403);
+  const body = await c.req.json<{ space_id?: string; project_id?: string; event?: { type?: string } }>().catch(() => ({} as { space_id?: string; project_id?: string; event?: { type?: string } }));
+  if (body.space_id !== spaceId || !body.project_id || body.event?.type !== "workspace.merged")
+    return c.json({ error_code: "bad_request", message: "space, project and merged event are required" }, 400);
+  return forwardToSpaceDO(await spaceDoStub(c.env, spaceId, tenantId), "/workspace-events", "POST", JSON.stringify(body));
+});
+app.post("/spaces/:spaceId/pull-request-cards/:cardId/status", async c => {
+  const { spaceId, cardId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !(await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)))
+    return c.json({ error_code: "forbidden", message: "internal only" }, 403);
+  const body = await c.req.json<{ project_id?: string; status?: string }>().catch(() => ({} as { project_id?: string; status?: string }));
+  if (!body.project_id) return c.json({ error_code: "project_required" }, 400);
+  return forwardToSpaceDO(await spaceDoStub(c.env, spaceId, tenantId),
+    `/pull-request-cards/${encodeURIComponent(cardId)}/status`, "POST",
+    JSON.stringify({ ...body, space_id: spaceId }));
+});
+
+// Leasing uses the same worker/person boundary as other task mutations.
+app.use("/spaces/:spaceId/tasks/:taskId/lease", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use("/spaces/:spaceId/tasks/:taskId/lease", requireBusinessMembership({ POST: "member" }));
+app.post("/spaces/:spaceId/tasks/:taskId/lease", async c => {
+  const { spaceId, taskId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id");
+  if (!tenantId || !spaceId || !taskId) return c.json({ error_code: "unauthorized" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  return forwardToSpaceDO(stub, `/tasks/${encodeURIComponent(taskId)}/lease`, "POST", await c.req.text());
+});
+
 // GET /spaces/:spaceId/sub-spaces — list the product's space registry (root + departments).
 app.get("/spaces/:spaceId/sub-spaces", async (c) => {
   const spaceId = c.req.param("spaceId");

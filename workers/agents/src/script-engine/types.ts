@@ -282,6 +282,9 @@ export interface TraceStep {
   tier?: number | undefined;
   duration_ms?: number | undefined;
   tokens?: number | undefined;
+  input_tokens?: number | undefined;
+  output_tokens?: number | undefined;
+  usage_source?: "provider" | undefined;
   ok?: boolean | undefined;
   detail?: string | undefined;
   /** A reasoning-capable model's own chain-of-thought for this "reason" step, when the model
@@ -490,6 +493,7 @@ export interface TieredCodeRunner {
     workspaceBranch?: string;
     language?: "javascript" | "typescript" | "python";
     signal?: AbortSignal;
+    onOutput?: (output: { stdout: string; stderr: string }) => void;
     /** Explicit invocation grant. Omission grants pure computation, never storage/network/tools. */
     capabilities?: readonly string[];
     installationId?: string;
@@ -506,6 +510,8 @@ export interface TieredCodeRunner {
  * when absent the corresponding prebuilt operations report themselves unavailable.
  */
 export interface OrchestrationHooks {
+  finalizeWorkspace?(): Promise<import("./task-publication.js").TaskPublication | undefined>;
+  executeGoalDag?(objective: string, tasks: import("./prebuilt/goal-planner.js").GoalTask[]): Promise<import("./goal-dag.js").GoalDagJournal>;
   persistGoalTasks?(tasks: Array<{ id: string; title: string; subtask_spec: string; assigned_role: string; model?: string; file_paths: string[]; dependencies?: string[]; budget_tokens: number }>): Promise<void>;
   /** Sequential handoff. A successful call transfers the durable turn lock and never returns
    * control to the caller's tool loop. */
@@ -961,6 +967,9 @@ export interface ScriptEngineEnv {
   embedder?: Embedder;
   /** Runner for stored-code tiers (T2-T5). Optional — T1 always works without it. */
   codeRunner?: TieredCodeRunner;
+  /** Set by the host tool surface; guest RPC cannot grant native execution. */
+  nativeExecutionAllowed?: boolean;
+  onToolOutput?: (output: { stdout: string; stderr: string }) => void;
   codeGrantIsActive?: (scope: Readonly<import("@naelao/agent-sdk").CodeInvocationScope>) => Promise<boolean>;
   codeAuthorize?: import("@naelao/agent-sdk").ScopedCodeRpcOptions["authorize"];
   codeDispatch?: import("@naelao/agent-sdk").ScopedCodeRpcOptions["dispatch"];
@@ -1052,6 +1061,14 @@ export interface ScriptEngineEnv {
   spaceId: string;
   agentId: string;
   tenantId: string;
+  /** Host-owned session scope for private temporary tool logs. */
+  outputSessionId?: string;
+  /** Host-owned durable index that physically deletes encrypted tool logs after their TTL. */
+  scheduleToolOutputExpiry?: (storageKey: string, expiresAt: number) => Promise<void>;
+  localModelMachine?: string;
+  delegationDepth?: 1 | 2 | 3;
+  delegationPlanner?: boolean;
+  rootRunId?: string;
   /** Unique attempt identity used as the holder for automatic multi-file workspace locks. */
   runId?: string;
   taskId?: string;
@@ -1060,6 +1077,8 @@ export interface ScriptEngineEnv {
   /** Optional isolated artifact branch. When present, workspace operations use a branch-scoped
    * R2 prefix so speculative workers cannot mutate the shared project workspace. */
   workspaceBranch?: string;
+  /** Host-verified exact deliverable paths for a delegated task. An empty list grants no files. */
+  workspaceFileScope?: string[];
   /** For minting the internal HMAC token any direct (non-router) service-binding call to
    *  another worker (spacesWorker, knowledgeWorker, ...) needs — see mintInternalToken,
    *  @naelao/http. Optional so environments that never make such a call (most script tests)
@@ -1114,6 +1133,8 @@ export interface ScriptEngineEnv {
    * instruction.
    */
   effectiveRole?: "owner" | "editor" | "viewer";
+  /** Verified caller identity is preserved for child billing; mutation clamps are separate. */
+  callerRole?: string;
   /**
    * Progressive tool disclosure (Phase 2 item 13) — when true, `available_operations` in the
    * reasoner payload is REDUCED to a small always-visible core set plus `tools.search`/
@@ -1140,6 +1161,12 @@ export interface ScriptEngineEnv {
  * agent within the SAME project reads/writes the SAME filesystem (spec: a project is
  * workspace-scoped; threads within it share one R2 workspace).
  */
+/** Machine scripts stay outside deliverable prefixes, including branch-scoped runs. */
+export function machinePrefix(env: Pick<ScriptEngineEnv, "spaceId" | "projectId" | "workspaceBranch">): string {
+  const base = workspacePrefix({ spaceId: env.spaceId, ...(env.projectId ? { projectId: env.projectId } : {}) }).replace(/workspace\/$/, "avos/");
+  return env.workspaceBranch ? `${base}branches/${env.workspaceBranch}/` : base;
+}
+
 export function workspacePrefix(
   env: Pick<ScriptEngineEnv, "spaceId" | "projectId" | "workspaceBranch">
 ): string {

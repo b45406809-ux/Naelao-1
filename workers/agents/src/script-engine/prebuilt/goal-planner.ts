@@ -1,29 +1,28 @@
 import type { UniversalAgentRole } from "@naelao/agent-sdk";
 import type { PrebuiltScript } from "./index.js";
 
-const UNIVERSAL_AGENT_ROLES = new Set<UniversalAgentRole>([
-  "DEV_OPERATOR", "GROWTH_OPERATOR", "CUSTOMER_SUPPORT", "ARCHITECT_DELEGATE", "CUSTOM",
-]);
-
 export interface GoalTask {
   id: string;
   title: string;
   subtask_spec: string;
   assigned_role: UniversalAgentRole;
   model?: string;
+  agent_id?: string;
+  planner?: boolean;
   file_paths: string[];
   dependencies?: string[];
   budget_tokens: number;
 }
 
 export function validateGoalDag(tasks: GoalTask[]): void {
+  if (tasks.length > 12) throw new Error("goal plan exceeds 12 tasks");
   if (!tasks.length) throw new Error("goal plan must contain at least one task");
   const ids = new Set(tasks.map((task) => task.id));
   if (ids.size !== tasks.length) throw new Error("goal task ids must be unique");
   for (const task of tasks) {
-    if (!task.id || !task.title || !task.subtask_spec || !Array.isArray(task.file_paths)) throw new Error(`invalid goal task '${task.id}'`);
-    if (!UNIVERSAL_AGENT_ROLES.has(task.assigned_role)) throw new Error(`task '${task.id}' has an invalid assigned_role`);
-    if (task.budget_tokens < 1 || task.budget_tokens > 2_000) throw new Error(`task '${task.id}' budget_tokens must be within 1..2000`);
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(task.id) || !task.title || !task.subtask_spec || !Array.isArray(task.file_paths)) throw new Error(`invalid goal task '${task.id}'`);
+    if (typeof task.assigned_role !== "string" || !task.assigned_role.trim() || task.assigned_role.length > 128) throw new Error(`task '${task.id}' has an invalid assigned_role`);
+    if (!Number.isSafeInteger(task.budget_tokens) || task.budget_tokens < 1 || task.budget_tokens > 2_000) throw new Error(`task '${task.id}' budget_tokens must be within 1..2000`);
     for (const dependency of task.dependencies ?? []) if (!ids.has(dependency) || dependency === task.id) throw new Error(`task '${task.id}' has invalid dependency '${dependency}'`);
   }
   const visiting = new Set<string>(), visited = new Set<string>();
@@ -40,15 +39,18 @@ export function validateGoalDag(tasks: GoalTask[]): void {
 function parseTasks(value: unknown): GoalTask[] {
   if (!Array.isArray(value)) throw new Error("tasks must be an array");
   const tasks = value.map((raw, index) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("invalid goal task");
     const task = raw as Record<string, unknown>;
     return {
       id: String(task.id ?? `task-${index + 1}`), title: String(task.title ?? ""),
       subtask_spec: String(task.subtask_spec ?? ""),
-      assigned_role: String(task.assigned_role ?? "DEV_OPERATOR") as UniversalAgentRole,
+      assigned_role: String(task.assigned_role ?? "worker") as UniversalAgentRole,
       ...(typeof task.model === "string" ? { model: task.model } : {}),
+      ...(typeof task.agent_id === "string" ? { agent_id: task.agent_id } : {}),
+      ...(task.planner === true ? { planner: true } : {}),
       file_paths: Array.isArray(task.file_paths) ? task.file_paths.map(String) : [],
       dependencies: Array.isArray(task.dependencies) ? task.dependencies.map(String) : [],
-      budget_tokens: Math.min(2_000, Number(task.budget_tokens ?? 1_800)),
+      budget_tokens: task.budget_tokens === undefined ? 1_800 : task.budget_tokens as number,
     };
   });
   validateGoalDag(tasks); return tasks;
@@ -57,7 +59,7 @@ function parseTasks(value: unknown): GoalTask[] {
 export const goalPlanner: PrebuiltScript = {
   name: "goal-planner", domain: "orchestration", requires_tier: 2,
   description: "Persist a frontier-planned task DAG and concurrently dispatch isolated edge workers.",
-  paramHints: { "engine.plan_and_delegate_goal": "objective and tasks required. Each task: id, title, subtask_spec, assigned_role, model?, file_paths, dependencies?, budget_tokens<=2000." },
+  paramHints: { "engine.plan_and_delegate_goal": "objective and tasks required. Each task: id, title, subtask_spec, assigned_role, model?, agent_id? (own configured worker), planner? (depth-2 subplanner), file_paths, dependencies?, budget_tokens<=2000." },
   operations: {
     async "engine.plan_and_delegate_goal"(args, ctx) {
       const objective = String(args.objective ?? "").trim();
@@ -66,13 +68,10 @@ export const goalPlanner: PrebuiltScript = {
       const persist = ctx.env.orchestration?.persistGoalTasks;
       const spawn = ctx.env.orchestration?.spawnSubAgent;
       if (!persist || !spawn) throw new Error("goal orchestration is unavailable");
-      await persist(tasks);
-      // The worker sees only its specification and named file boundary; never parent history.
-      const receipt = await spawn({ tasks: tasks.map((task) => ({
-        goal: `<isolated_subtask>\n${task.subtask_spec}\n</isolated_subtask>\n<file_boundary>${task.file_paths.join(", ")}</file_boundary>`,
-        role: task.assigned_role, ...(task.model ? { model: task.model } : {}), maxTokens: task.budget_tokens,
-      })) });
-      return { objective, tasks, dispatch: receipt, context_isolation: "subtask_and_file_slice_only", max_context_tokens: 2_000 };
+      if (!ctx.env.orchestration?.executeGoalDag) throw new Error("durable goal orchestration is unavailable");
+      const dispatch = await ctx.env.orchestration.executeGoalDag(objective, tasks);
+      if (tasks.some(task => dispatch.tasks[task.id]?.status !== "completed")) throw new Error(`goal_dag_incomplete:${JSON.stringify(dispatch)}`);
+      return { objective, tasks, dispatch, context_isolation: "no_parent_conversation", max_output_tokens_per_worker: 2_000 };
     },
   },
 };

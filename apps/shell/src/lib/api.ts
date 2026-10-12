@@ -25,7 +25,7 @@ export async function transcribeVoice(audio: Blob): Promise<string> {
 
 export { ApiError } from "./request";
 
-async function apiFetch<T>(path: string, options: RequestInit & {
+export async function apiFetch<T>(path: string, options: RequestInit & {
   session?: SessionCredentials;
   onRetry?: (attempt: number, max: number) => void;
   retries?: number;
@@ -200,7 +200,12 @@ export interface Message {
    *  not-yet-connected app (script-engine's tool-surface.ts) — rendered as an inline "Connect X"
    *  card at this exact turn instead of the connector name only ever appearing in prose. */
   metadata?: {
+    provider_usage?: { input_tokens: number; output_tokens: number };
     consulted_threads?: ConsultedThread[];
+    workspace_publication?: {
+      status?: string;
+      review?: { id: string; thread_id?: string | null; status?: string; card?: Record<string, unknown> };
+    };
     needs_connector?: boolean;
     connector_id?: string;
     connector_name?: string;
@@ -217,6 +222,7 @@ export interface Message {
       on_behalf_of_user?: boolean;
       awaiting_reply?: boolean;
     };
+
     /** Step 5/7/11: artifacts the assistant CREATED during this run — rendered inline as a
      *  preview (iframe for HTML + download) at this turn, like Claude showing an artifact. */
     created_artifacts?: Array<{ artifact_id: string; filename: string; content_type?: string }>;
@@ -253,6 +259,25 @@ export interface Message {
   revealedPrefix?: string;
 }
 
+export async function decidePullRequestCard(spaceId: string, projectId: string, cardId: string,
+  decision: "merge" | "request_changes" | "reject", session?: SessionCredentials): Promise<{ id: string; status: string }> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/pull-request-cards/${encodeURIComponent(cardId)}/decision`, {
+    method: "POST", body: JSON.stringify({ decision }), ...(session ? { session } : {}),
+  });
+}
+
+export interface PullRequestCard {
+  id: string; status: string; thread_id?: string | null; title?: string; baseBranch?: string;
+  forkBranch?: string; baseCommit?: string; headCommit?: string; reasoning?: string; files?: Array<Record<string, unknown>>;
+}
+
+export async function listPullRequestCards(spaceId: string, projectId: string, session?: SessionCredentials): Promise<PullRequestCard[]> {
+  const response = await apiFetch<{ data?: PullRequestCard[] }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/pull-request-cards?project_id=${encodeURIComponent(projectId)}`,
+    session ? { session } : {});
+  return response.data ?? [];
+}
+
 export async function resolveCitation(
   spaceId: string,
   projectId: string,
@@ -282,6 +307,9 @@ export interface LiveRunStep {
   tier?: number;
   duration_ms?: number;
   tokens?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  usage_source?: "provider";
   /** A reasoning-capable model's own chain-of-thought for a "reason" step, when the model
    *  returned one. Rendered as a separate collapsed "Thoughts" block, not folded into `detail`. */
   thinking?: string;
@@ -816,6 +844,7 @@ export interface ContextUsageBreakdown {
 
 export interface ContextUsage {
   current_tokens: number;
+  estimation_method?: string;
   model: string;
   model_window: number;
   percent_full: number;

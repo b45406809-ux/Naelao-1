@@ -34,8 +34,8 @@ export interface ScopedInstallationIdentity {
   spaceId: string;
   extensionId: string;
   scope: InstallationScope;
-  projectId?: string;
-  userId?: string;
+  projectId?: string | undefined;
+  userId?: string | undefined;
 }
 export interface ScopedInstallationRecord extends ScopedInstallationIdentity {
   instanceId: string;
@@ -112,8 +112,8 @@ import type { LaunchpadSpace, RuntimeContextAdapters, LaunchpadRuntimeContext } 
 /** Authority stays in the host. Guest code receives only a JSON RPC facade; every call is
  * reauthorized, including after an await, so an expired/revoked grant cannot remain warm. */
 export interface CodeInvocationScope {
-  tenantId: string; spaceId: string; agentId: string; projectId?: string; userId?: string;
-  runId?: string; taskId?: string; installationId?: string; grantVersion?: string;
+  tenantId: string; spaceId: string; agentId: string; projectId?: string | undefined; userId?: string | undefined;
+  runId?: string | undefined; taskId?: string; installationId?: string | undefined; grantVersion?: string;
 }
 export interface ScopedCodeRpcOptions {
   scope: Readonly<CodeInvocationScope>;

@@ -45,7 +45,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { runGuest, cancelExecution, cancelAllExecutions } from "./process-supervisor.mjs";
+import { runGuest, cancelExecution, cancelAllExecutions, executionOutput } from "./process-supervisor.mjs";
 import { ArtifactFS } from "./artifact-fs.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -243,7 +243,7 @@ async function execScript(name, code, args, execution) {
     const child = await runGuest(process.execPath, ["/app/child-runner.mjs"], {
       ...execution, message: { modulePath: out, mode: "run", args: args ?? {} },
     });
-    return { ...child.result, logs: (child.stdout + child.stderr).slice(0, 16000) };
+    return { ...child.result, logs: child.stdout + child.stderr };
   } catch (err) {
     return { ok: false, error: String(err).slice(0, 2000) };
   } finally {
@@ -284,6 +284,10 @@ createServer((req, res) => {
   if (!controlToken || req.headers["x-naelao-container-control"] !== controlToken) { res.writeHead(403).end(); return; }
   if (req.method === "GET" && path === "/health") {
     res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, guest_uid: 10001, guest_capabilities: "none", no_new_privileges: true })); return;
+  }
+  if (req.method === "GET" && path === "/output") {
+    const output = executionOutput(String(req.headers["x-naelao-execution-id"] ?? ""));
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(output)); return;
   }
   if (req.method === "POST" && path === "/cancel") {
     cancelExecution(req.headers["x-naelao-execution-id"]);

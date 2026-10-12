@@ -132,13 +132,18 @@ function isSyncableWorkspacePath(path: string): boolean {
 export class ToolSandboxDO extends DurableObject {
   private lastUsedAt = Date.now();
   private executionQueue: Promise<void> = Promise.resolve();
-  private activeExecution?: { id: string; controller: AbortController };
+  private activeExecution: { id: string; controller: AbortController } | undefined;
 
   override fetch(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
+    if (path === "/output") return this.output(request);
     if (path === "/cancel") return this.cancel(request);
     const execution = this.executionQueue.then(() => ["/exec", "/shell", "/build", "/prewarm", "/computer/action", "/computer/screenshot"].includes(path)
-      ? this.executeScoped(request) : this.handleRequest(request));
+      ? this.executeScoped(request) : (async () => {
+        try { await this.authenticatedScope(request); }
+        catch { return Response.json({ ok: false, error: "container_scope_denied" }, { status: 403 }); }
+        return this.handleRequest(request);
+      })());
     this.executionQueue = execution.then(() => undefined, () => undefined);
     return execution;
   }
@@ -168,6 +173,17 @@ export class ToolSandboxDO extends DurableObject {
     if (previous && previous !== owner) throw new Error("container_owner_mismatch");
     await this.ctx.storage.put("container_owner", owner);
     return scope;
+  }
+
+  private async output(request: Request): Promise<Response> {
+    let scope: ContainerInvocationScope;
+    try { scope = await this.authenticatedScope(request); } catch { return Response.json({ error: "container_scope_denied" }, { status: 403 }); }
+    const record = await this.ctx.storage.get<ExecutionRecord>("execution:" + scope.executionId);
+    if (!record || JSON.stringify(record.scope) !== JSON.stringify(scope)) return Response.json({ error: "container_execution_not_found" }, { status: 404 });
+    if (!this.container?.running) return Response.json({ stdout: "", stderr: "" });
+    return this.container.getTcpPort(HARNESS_PORT).fetch(new Request("http://sandbox/output", {
+      headers: { "x-naelao-execution-id": scope.executionId }, signal: request.signal,
+    }));
   }
 
   private async ensureMeter(scope: ContainerInvocationScope): Promise<void> {
@@ -292,7 +308,7 @@ export class ToolSandboxDO extends DurableObject {
     if (!bucket) throw new Error("Canonical workspace R2 binding is unavailable");
     let cursor: string | undefined;
     do {
-      const page = await bucket.list({ prefix, ...(cursor ? { cursor } : {}), limit: 1000, include: ["customMetadata"] });
+      const page = await bucket.list({ prefix, ...(cursor ? { cursor } : {}), limit: 1000, include: ["customMetadata"] } as R2ListOptions & { include: string[] });
       for (const item of page.objects) {
         if (item.customMetadata?.deleted === "true") continue;
         const path = item.key.slice(prefix.length);

@@ -10,6 +10,10 @@ process.once("message", async ({ modulePath, mode, args }) => {
     if (Buffer.byteLength(encoded) > 2 * 1024 * 1024) throw new Error("container_result_limit");
     process.send?.(JSON.parse(encoded), () => process.exit(0));
   } catch (error) {
-    process.send?.({ ok: false, error: String(error).slice(0, 2000) }, () => process.exit(1));
+    const fullError = String(error);
+    const encoded = JSON.stringify({ ok: false, error: fullError });
+    const failure = Buffer.byteLength(encoded) <= 2 * 1024 * 1024 ? JSON.parse(encoded)
+      : { ok: false, error: "container_error_limit: full error exceeded 2 MiB; unavailable beyond the execution limit", output_truncated: true };
+    process.send?.(failure, () => process.exit(1));
   }
 });

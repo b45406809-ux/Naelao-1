@@ -1,3 +1,5 @@
+export { createScratchpadKey, sealScratchpad, openScratchpad, parseScratchpadCiphertext } from "./scratchpad.js";
+export { estimateTextTokens, validProviderUsage } from "./token-accounting.js";
 // Builder-facing SDK for programmatic Space/session access and agent tool building
 
 import type {

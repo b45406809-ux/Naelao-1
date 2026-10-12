@@ -8,7 +8,7 @@ import type { AgentTaskParams } from "./AgentTaskWorkflow.js";
 export async function checkpointAgentTask(env: Env, runId: string, params: AgentTaskParams, native: WorkflowStep): Promise<{ step: WorkflowStep; identity: DurableWorkflowIdentity }> {
   if (!params.userId) throw new Error("agent_task_workflow_actor_required");
   if (!env.SCRIPTS_R2 || !env.WORKFLOW_BUILD_ID || !/^[a-f0-9]{64}$/.test(env.WORKFLOW_BUILD_ID)) throw new Error("agent_task_workflow_build_pin_required");
-  const scope = { tenantId: params.tenantId, spaceId: params.spaceId, projectId: params.projectId, actorId: params.userId, agentId: params.agentId ?? "naelao-agent", runId };
+  const scope = { tenantId: params.tenantId, spaceId: params.spaceId, ...(params.projectId ? { projectId: params.projectId } : {}), actorId: params.userId, agentId: params.agentId ?? "naelao-agent", runId };
   const stub = workflowRunStub(env, scope);
   const previous = await stub.existing();
   let identity = previous?.identity;

@@ -73,6 +73,8 @@ import { InlineApprovalCard } from "./InlineApprovalCard";
 import { InlineQuestionCard } from "./InlineQuestionCard";
 import { InlineConnectorCard } from "./InlineConnectorCard";
 import { InlineArtifactCard } from "./InlineArtifactCard";
+import { InlinePullRequestCard } from "./InlinePullRequestCard";
+import { ProjectPullRequestPanel } from "./ProjectPullRequestPanel";
 import { UpgradeDialog } from "./UpgradeDialog";
 import { SecurityBoundaryCard } from "./SecurityBoundaryCard";
 import { ComposerDock } from "./ComposerDock";
@@ -1676,6 +1678,7 @@ export function Chat({
         </div>
 
         <div className="chat-area">
+          {projectId && <ProjectPullRequestPanel spaceId={spaceId} projectId={projectId} session={session} />}
           {visibleMessages
             // Already shown inside its delegation card above — never a second bubble.
             .filter((m) => !delegationReplyIds.has(m.id))
@@ -1857,6 +1860,14 @@ export function Chat({
                       <SubthreadEntry spaceId={spaceId} thread={consultThreadSummary(spaceId, c)} session={session} inline />
                     </div>
                   ))}
+                  {m.role !== "user" && projectId && m.metadata?.workspace_publication?.review?.card && (
+                    <InlinePullRequestCard
+                      spaceId={spaceId}
+                      projectId={projectId}
+                      review={m.metadata.workspace_publication.review}
+                      session={session}
+                    />
+                  )}
                   {/* Step 5/7/11: an artifact the assistant created this turn — inline preview
                       (iframe for HTML) + download, right under the reply, like Claude. */}
                   {m.role !== "user" && m.metadata?.created_artifacts?.map((art) => (
@@ -2263,6 +2274,12 @@ export function Chat({
                     {lastRun?.status ?? "—"}
                   </span>
                 </div>
+                <div className="tp-stat"><span className="tp-stat-label">Live output estimate</span><span className="tp-stat-val">{Math.ceil((liveActivity.filter(step => step.partial).map(step => step.message ?? step.narration ?? step.output ?? "").join("")).length / 3.85)} tokens</span></div>
+                <div className="tp-stat"><span className="tp-stat-label">Provider usage (input / output)</span><span className="tp-stat-val">{(() => {
+                  const persisted = messages.flatMap<{ input_tokens?: number; output_tokens?: number }>(message => message.metadata?.provider_usage ? [message.metadata.provider_usage] : message.activity?.filter(step => step.usage_source === "provider") ?? []);
+                  const reported = [...persisted, ...liveActivity.filter(step => step.usage_source === "provider")];
+                  return reported.length ? `${reported.reduce((n, step) => n + (step.input_tokens ?? 0), 0)} / ${reported.reduce((n, step) => n + (step.output_tokens ?? 0), 0)}` : "Unavailable";
+                })()}</span></div>
                 <ContextUsageMeter
                   spaceId={spaceId}
                   sessionId={chatSessionId}

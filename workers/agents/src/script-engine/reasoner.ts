@@ -1,3 +1,4 @@
+import { preparePerception } from "./perception.js";
 /**
  * Concrete Reasoner + Embedder for the script-first loop, wired over the canonical AI
  * client (spec §15 — every LLM call routes through CF AI Gateway Universal Endpoint).
@@ -17,6 +18,8 @@ import type { UniversalAgentManifest } from "@naelao/agent-sdk";
 import { composeUniversalPrompt } from "./prompt-assembly.js";
 import type { PlannerQuestion, Reasoner, ReasonDecision, ReasonerUsage } from "./loop.js";
 import type { Embedder } from "./types.js";
+import { contextWindowForModel } from "@naelao/billing-core";
+import { boundReasonerRequestContext } from "./request-context-budget.js";
 
 export const DEPTH_MODELS = Object.freeze({
   1: "anthropic/claude-3-7-sonnet",
@@ -65,6 +68,9 @@ export interface ReasonerDeps {
   /** Local development may use the bound Workers AI runtime when Gateway secrets are absent. */
   localDevelopment?: boolean;
   model?: string;
+  /** Resolved from the selected provider model by the host; bounds the complete request, not
+   * only the run-history block. */
+  contextWindowTokens?: number;
   /** F-12: ordered cross-provider failover chain (each {model, apiKey}). The CF AI Gateway tries
    *  the primary then each of these until one succeeds. Empty/absent = no failover (single provider). */
   fallbacks?: FailoverModel[];
@@ -553,7 +559,7 @@ const PARAMS_PARAM_OBJECT = {
  * schemas' own headers for why this can't be one shared shape. `answer`/`give_up` never touch
  * `params`, so they're identical either way.
  */
-export function decisionTools(_model: string | undefined): ToolSpec[] {
+export function decisionTools(_model: string | undefined, availableOperations?: readonly string[]): ToolSpec[] {
   return [
     {
       name: "Bash",
@@ -613,7 +619,7 @@ export function decisionTools(_model: string | undefined): ToolSpec[] {
         required: ["path", "old_text", "new_text", "doing"],
       },
     },
-  ];
+  ].filter((tool) => tool.name === "AskUser" || !availableOperations || availableOperations.includes(tool.name));
 }
 
 /** Action names are identical across both schema variants — build once from either. */
@@ -754,7 +760,7 @@ const MAX_TRANSIENT_RETRIES = 2;
 
 /** Build the Workers AI input without ever replacing the private adapter with a cloud model ID. */
 export function privateLoraInferenceInput(
-  messages: Array<{ role: string; content: string }>,
+  messages: Array<{ role: string; content: string | Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }> }>,
   tools: ToolSpec[],
   loraAdapterId: string,
   maxTokens: number
@@ -768,7 +774,7 @@ export function privateLoraInferenceInput(
 export function privateLoraGatewayBody(opts: {
   baseModel: string;
   system: string;
-  messages: Array<{ role: string; content: string }>;
+  messages: Array<{ role: string; content: string | Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }> }>;
   tools: ToolSpec[];
   loraAdapterId: string;
   maxTokens: number;
@@ -861,11 +867,19 @@ export class GatewayReasoner implements Reasoner {
     }
   }
 
+  private readonly seenVisionSteps = new WeakSet<object>();
+
   async decide(input: Parameters<Reasoner["decide"]>[0]): Promise<ReasonDecision> {
     this.lastUsage = undefined;
     this.lastThinking = undefined;
     this.lastNarration = undefined;
     this.lastMessage = undefined;
+    const perception = preparePerception(input.priorSteps ?? []);
+    const visionStep = input.priorSteps?.slice().reverse().find(step => step.name !== "system_one.loop_evaluation");
+    if (perception.imageUrl && visionStep) {
+      if (this.seenVisionSteps.has(visionStep)) delete perception.imageUrl;
+      else this.seenVisionSteps.add(visionStep);
+    }
     const userContent = JSON.stringify({
       // Who this agent is, repeated into the payload the model is answering about.
       //
@@ -941,7 +955,7 @@ export class GatewayReasoner implements Reasoner {
       // On a long run the older half of that history is folded into `earlier_steps`, a one-line
       // record per step, so the loop can keep going past the point where the raw history would
       // have overflowed the model's context. See step-context.ts.
-      ...renderStepsForReasoner(input.priorSteps ?? [], input.earlierSteps ?? [], REASONER_OBSERVATION_CHARS),
+      ...renderStepsForReasoner(perception.steps, input.earlierSteps ?? [], REASONER_OBSERVATION_CHARS),
       // Last step — see DECISION_INSTRUCTIONS' own note. Only present when true, so an ordinary
       // step's payload is byte-identical to before.
       ...(input.finalStep ? { final_step: true } : {}),
@@ -969,13 +983,23 @@ export class GatewayReasoner implements Reasoner {
         : {}),
     });
 
+    const queryModel = this.deps.model ?? this.deps.ctx.model ?? "claude-haiku-4-5-20251001";
+    const systemPrompt = this.deps.manifest
+      ? composeUniversalPrompt({ manifest: this.deps.manifest, ...(this.deps.businessContext ? { businessContext: this.deps.businessContext } : {}), protocol: DECISION_INSTRUCTIONS, ...(input.activeCatalog ? { activeCatalog: input.activeCatalog } : {}) })
+      : composeSystemPrompt(this.deps.agentPrompt, this.deps.businessContext, this.deps.founderDirectives, input.activeCatalog);
+    const tools = decisionTools(queryModel, input.availableOperations);
+    const boundedContext = boundReasonerRequestContext(
+      systemPrompt,
+      userContent,
+      { tools, imageChars: perception.imageUrl?.length ?? 0 },
+      this.deps.contextWindowTokens ?? contextWindowForModel(queryModel),
+    );
+    const boundedPayload = JSON.parse(boundedContext.user) as Record<string, unknown>;
     const query = {
-      model: this.deps.model ?? this.deps.ctx.model ?? "claude-haiku-4-5-20251001",
+      model: queryModel,
       max_tokens: 1500,
-      system: this.deps.manifest
-        ? composeUniversalPrompt({ manifest: this.deps.manifest, ...(this.deps.businessContext ? { businessContext: this.deps.businessContext } : {}), protocol: DECISION_INSTRUCTIONS, ...(input.activeCatalog ? { activeCatalog: input.activeCatalog } : {}) })
-        : composeSystemPrompt(this.deps.agentPrompt, this.deps.businessContext, this.deps.founderDirectives, input.activeCatalog),
-      messages: [{ role: "user", content: userContent }],
+      system: boundedContext.system,
+      messages: [{ role: "user", content: perception.imageUrl ? [{ type: "text" as const, text: JSON.stringify(boundedPayload) }, { type: "image_url" as const, image_url: { url: perception.imageUrl } }] : boundedContext.user }],
     };
 
     const isLocalModel = query.model.startsWith("local/");
@@ -1040,7 +1064,7 @@ export class GatewayReasoner implements Reasoner {
         }
         const localResult = await this.deps.localCompletion({
           model: query.model.slice("local/".length), messages: [{ role: "system", content: query.system }, ...query.messages],
-          tools: decisionTools(query.model), tool_choice: "auto", max_tokens: query.max_tokens, stream: false,
+          tools: decisionTools(query.model, input.availableOperations), tool_choice: "auto", max_tokens: query.max_tokens, stream: false,
         });
         resp = Response.json(localResult);
       } else if (isCustomModel) {
@@ -1058,7 +1082,7 @@ export class GatewayReasoner implements Reasoner {
             baseModel: manifest.baseModel,
             system: query.system,
             messages: query.messages,
-            tools: decisionTools(query.model),
+            tools: decisionTools(query.model, input.availableOperations),
             loraAdapterId: manifest.loraAdapterId,
             maxTokens: query.max_tokens,
             toolChoice: "auto",
@@ -1082,7 +1106,7 @@ export class GatewayReasoner implements Reasoner {
             gatewayOpts: requestGateway,
             ctx: this.deps.ctx,
             query: { ...query, model: directModel },
-            tools: decisionTools(query.model),
+            tools: decisionTools(query.model, input.availableOperations),
             toolChoice: "auto",
             ...(this.deps.reasoning ? { reasoning: this.deps.reasoning } : {}),
             ...(compatibilityRetries ? { compatibilityMode: "minimal" as const } : {}),
@@ -1098,7 +1122,7 @@ export class GatewayReasoner implements Reasoner {
           gatewayOpts: requestGateway,
           ctx: { ...this.deps.ctx, skipCache: true },
           query: isByok ? { ...query, model: compatProviderModelId(query.model) } : query,
-          tools: decisionTools(query.model),
+          tools: decisionTools(query.model, input.availableOperations),
           toolChoice: "auto",
           ...(this.deps.fallbacks && this.deps.fallbacks.length > 0 ? { fallbacks: this.deps.fallbacks } : {}),
           ...(this.deps.reasoning ? { reasoning: this.deps.reasoning } : {}),

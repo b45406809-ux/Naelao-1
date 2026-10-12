@@ -6,6 +6,8 @@ export function compileWorkflowEntrypoint(scriptSource: string): { className: st
   const tree = ts.createSourceFile("workflow.ts", scriptSource, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TS);
   let execute = false;
   const visit = (node: ts.Node): void => {
+    if ((ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "ctx" && ["threads", "session", "messages"].includes(node.name.text))
+      || (ts.isElementAccessExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "ctx" && node.argumentExpression && ts.isStringLiteral(node.argumentExpression) && ["threads", "session", "messages"].includes(node.argumentExpression.text))) throw new Error("workflow_conversational_context_forbidden");
     if (ts.isImportDeclaration(node) || ts.isImportEqualsDeclaration(node) || ts.isExportAssignment(node)
       || ts.isExportDeclaration(node) && node.moduleSpecifier) throw new Error("workflow_ambient_import_forbidden");
     if (ts.canHaveModifiers(node) && ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword)) throw new Error("workflow_default_export_forbidden");

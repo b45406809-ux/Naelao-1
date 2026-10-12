@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,6 +9,7 @@ import { encodeGitObject, objectKey, type RepositoryScope } from "../../workers/
 
 const scope: RepositoryScope = { tenantId: "tenant-git", spaceId: "space-git", projectId: "project-git" };
 const headers = { "x-repository-scope": JSON.stringify(scope) };
+const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const metadata = {
   agent_role: "project-worker", user_goal: "verify durable Git behavior", task_id: "task-git-1",
   rationale: "checkpointed implementation", thread_id: "thread-git-1", tool_turn_id: "turn-git-1",
@@ -15,7 +17,7 @@ const metadata = {
 const tempDirs: string[] = [];
 afterEach(() => { for (const path of tempDirs.splice(0)) rmSync(path, { recursive: true, force: true }); });
 
-function durableFixture() {
+function durableFixture(withWorkspace = false) {
   const tables = new Map<string, Array<Record<string, unknown>>>();
   const rows = (name: string) => { let value = tables.get(name); if (!value) { value = []; tables.set(name, value); } return value; };
   const sql = {
@@ -45,35 +47,44 @@ function durableFixture() {
     },
   };
   const objects = new Map<string, Uint8Array>();
+  const custom = new Map<string, Record<string, string>>(), etags = new Map<string, string>(), kv = new Map<string, unknown>();
+  let revision = 0;
   const bucket = {
-    async head(key: string) { return objects.has(key) ? { key } : null; },
-    async put(key: string, value: Uint8Array) { objects.set(key, new Uint8Array(value)); return { key }; },
+    async head(key: string) { return objects.has(key) ? { key, size: objects.get(key)!.byteLength, customMetadata: custom.get(key), etag: etags.get(key) } : null; },
+    async put(key: string, value: Uint8Array | string, options?: { customMetadata?: Record<string, string>; onlyIf?: { etagMatches?: string; etagDoesNotMatch?: string } }) {
+      if (options?.onlyIf?.etagMatches && etags.get(key) !== options.onlyIf.etagMatches) return null;
+      if (options?.onlyIf?.etagDoesNotMatch === "*" && objects.has(key)) return null;
+      objects.set(key, typeof value === "string" ? new TextEncoder().encode(value) : new Uint8Array(value));
+      custom.set(key, options?.customMetadata ?? {}); etags.set(key, String(++revision));
+      return { key, etag: etags.get(key) };
+    },
     async get(key: string) {
       const data = objects.get(key);
-      return data ? { arrayBuffer: async () => data.slice().buffer } : null;
+      return data ? { size: data.length, customMetadata: custom.get(key), arrayBuffer: async () => data.slice().buffer } : null;
     },
     async list(options: { prefix?: string; cursor?: string } = {}) {
       const keys = [...objects.keys()].filter((key) => key.startsWith(options.prefix ?? ""));
       const start = options.cursor ? Number(options.cursor) : 0;
       const page = keys.slice(start, start + 1000);
       const truncated = start + page.length < keys.length;
-      return { objects: page.map((key) => ({ key, size: objects.get(key)!.length })), truncated, cursor: truncated ? String(start + page.length) : undefined };
+      return { objects: page.map((key) => ({ key, size: objects.get(key)!.length, customMetadata: custom.get(key) })), truncated, cursor: truncated ? String(start + page.length) : undefined };
     },
     async delete(key: string) { objects.delete(key); },
   };
   const storage = {
     sql,
     transactionSync(fn: () => void) { fn(); },
-    get: async () => undefined,
-    put: async () => undefined,
+    get: async (key: string) => kv.get(key),
+    put: async (key: string, value: unknown) => { kv.set(key, structuredClone(value)); },
+    delete: async (key: string) => kv.delete(key),
   };
-  const makeRepo = () => new RepositoryDO({ storage, blockConcurrencyWhile: (fn: () => Promise<Response>) => fn() } as never, { REPOSITORY_OBJECTS: bucket } as never);
-  return { makeRepo, objects };
+  const makeRepo = () => new RepositoryDO({ storage, blockConcurrencyWhile: (fn: () => Promise<Response>) => fn() } as never, { REPOSITORY_OBJECTS: bucket, ...(withWorkspace ? { WORKSPACE_R2: bucket } : {}) } as never);
+  return { makeRepo, objects, bucket, kv };
 }
 
 async function request(repo: RepositoryDO, operation: string, method = "POST", body?: unknown, query = ""): Promise<Response> {
   return repo.fetch(new Request(`https://repo/${operation}${query}`, {
-    method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    method, headers, ...(body === undefined ? {} : { body: JSON.stringify(operation === "write" && typeof body === "object" && body ? { expected_hash: null, ...body } : body) }),
   }));
 }
 
@@ -100,7 +111,7 @@ describe("Step 07 durable Git mesh", () => {
     expect(firstWrite.status, await firstWrite.clone().text()).toBe(200);
     const binaryWrite = await request(repo, "write", "PUT", { path: "assets/raw.bin", content_base64: btoa(String.fromCharCode(...binary)) });
     expect(binaryWrite.status, await binaryWrite.clone().text()).toBe(200);
-    const firstResponse = await request(repo, "commit", "POST", { message: "initial", metadata });
+    const firstResponse = await request(repo, "commit", "POST", { expected_head: null, message: "initial", metadata });
     expect(firstResponse.status, await firstResponse.clone().text()).toBe(201);
     const first = await firstResponse.json() as { commit_id: string; tree_id: string };
     const nativeDir = mkdtempSync(join(tmpdir(), "naelao-git-native-")); tempDirs.push(nativeDir);
@@ -120,14 +131,14 @@ describe("Step 07 durable Git mesh", () => {
 
     const branch = await request(repo, "branch", "POST", { name: "task/restore", from: first.commit_id, temporary: true });
     expect(branch.status).toBe(201);
-    await request(repo, "write", "PUT", { branch: "task/restore", path: "src/main.ts", content: "export const value = 2;\n" });
-    const secondResponse = await request(repo, "commit", "POST", { branch: "task/restore", message: "update", metadata: { ...metadata, tool_turn_id: "turn-git-2" } });
+    await request(repo, "write", "PUT", { branch: "task/restore", path: "src/main.ts", expected_hash: hash("export const value = 1;\n"), content: "export const value = 2;\n" });
+    const secondResponse = await request(repo, "commit", "POST", { branch: "task/restore", expected_head: first.commit_id, message: "update", metadata: { ...metadata, tool_turn_id: "turn-git-2" } });
     const second = await secondResponse.json() as { commit_id: string };
     expect(secondResponse.status).toBe(201);
 
     const restarted = makeRepo();
     expect((await request(restarted, "commit-object", "GET", undefined, `?oid=${second.commit_id}`)).status).toBe(200);
-    const rollback = await request(restarted, "rollback", "POST", { branch: "task/restore", commit_id: first.commit_id, metadata: { ...metadata, tool_turn_id: "turn-restore" } });
+    const rollback = await request(restarted, "rollback", "POST", { branch: "task/restore", expected_head: second.commit_id, commit_id: first.commit_id, metadata: { ...metadata, tool_turn_id: "turn-restore" } });
     const restored = await rollback.json() as { commit_id: string; restored_from: string; parent: string };
     expect(rollback.status).toBe(201);
     expect(restored).toMatchObject({ restored_from: first.commit_id, parent: second.commit_id });
@@ -141,12 +152,12 @@ describe("Step 07 durable Git mesh", () => {
     const repo = makeRepo();
     await request(repo, "init");
     const baseWrite = await request(repo, "write", "PUT", { path: "base.txt", content: "base" }); expect(baseWrite.status, await baseWrite.clone().text()).toBe(200);
-    const baseResponse = await request(repo, "commit", "POST", { metadata }); expect(baseResponse.status, await baseResponse.clone().text()).toBe(201); const base = await baseResponse.json() as { commit_id: string };
+    const baseResponse = await request(repo, "commit", "POST", { expected_head: null, metadata }); expect(baseResponse.status, await baseResponse.clone().text()).toBe(201); const base = await baseResponse.json() as { commit_id: string };
     const branchResponse = await request(repo, "branch", "POST", { name: "feature", from: base.commit_id }); expect(branchResponse.status, await branchResponse.clone().text()).toBe(201);
     const mainWrite = await request(repo, "write", "PUT", { path: "main.txt", content: "main" }); expect(mainWrite.status, await mainWrite.clone().text()).toBe(200);
-    const mainResponse = await request(repo, "commit", "POST", { metadata: { ...metadata, tool_turn_id: "main-turn" } }); expect(mainResponse.status, await mainResponse.clone().text()).toBe(201); const mainCommit = await mainResponse.json() as { commit_id: string };
+    const mainResponse = await request(repo, "commit", "POST", { expected_head: base.commit_id, metadata: { ...metadata, tool_turn_id: "main-turn" } }); expect(mainResponse.status, await mainResponse.clone().text()).toBe(201); const mainCommit = await mainResponse.json() as { commit_id: string };
     const featureWrite = await request(repo, "write", "PUT", { branch: "feature", path: "feature.txt", content: "feature" }); expect(featureWrite.status, await featureWrite.clone().text()).toBe(200);
-    const featureCommitResponse = await request(repo, "commit", "POST", { branch: "feature", metadata: { ...metadata, tool_turn_id: "feature-turn" } }); expect(featureCommitResponse.status, await featureCommitResponse.clone().text()).toBe(201);
+    const featureCommitResponse = await request(repo, "commit", "POST", { branch: "feature", expected_head: base.commit_id, metadata: { ...metadata, tool_turn_id: "feature-turn" } }); expect(featureCommitResponse.status, await featureCommitResponse.clone().text()).toBe(201);
     const mergedResponse = await request(repo, "merge", "POST", { target: "main", source: "feature", expected_head: mainCommit.commit_id, metadata: { ...metadata, tool_turn_id: "merge-turn" } });
     expect(mergedResponse.status, await mergedResponse.clone().text()).toBe(201);
     const merged = await mergedResponse.json() as { parents: string[] };
@@ -154,10 +165,10 @@ describe("Step 07 durable Git mesh", () => {
 
     const headBeforeConflict = await (await request(repo, "head", "GET")).json() as { commit_id: string };
     await request(repo, "branch", "POST", { name: "conflict", from: headBeforeConflict.commit_id });
-    await request(repo, "write", "PUT", { branch: "conflict", path: "base.txt", content: "branch change" });
-    await request(repo, "commit", "POST", { branch: "conflict", metadata: { ...metadata, tool_turn_id: "conflict-turn" } });
-    await request(repo, "write", "PUT", { path: "base.txt", content: "main change" });
-    const newMain = await (await request(repo, "commit", "POST", { metadata: { ...metadata, tool_turn_id: "main-conflict-turn" } })).json() as { commit_id: string };
+    await request(repo, "write", "PUT", { branch: "conflict", path: "base.txt", expected_hash: hash("base"), content: "branch change" });
+    await request(repo, "commit", "POST", { branch: "conflict", expected_head: headBeforeConflict.commit_id, metadata: { ...metadata, tool_turn_id: "conflict-turn" } });
+    await request(repo, "write", "PUT", { path: "base.txt", expected_hash: hash("base"), content: "main change" });
+    const newMain = await (await request(repo, "commit", "POST", { expected_head: headBeforeConflict.commit_id, metadata: { ...metadata, tool_turn_id: "main-conflict-turn" } })).json() as { commit_id: string };
     const conflict = await request(repo, "merge", "POST", { target: "main", source: "conflict", expected_head: newMain.commit_id });
     expect(conflict.status).toBe(409);
     expect((await (await request(repo, "head", "GET")).json() as { commit_id: string }).commit_id).toBe(newMain.commit_id);
@@ -168,7 +179,7 @@ describe("Step 07 durable Git mesh", () => {
     const repo = makeRepo();
     await request(repo, "init");
     const keptWrite = await request(repo, "write", "PUT", { path: "kept.txt", content: "reachable" }); expect(keptWrite.status, await keptWrite.clone().text()).toBe(200);
-    const commitResponse = await request(repo, "commit", "POST", { metadata });
+    const commitResponse = await request(repo, "commit", "POST", { expected_head: null, metadata });
     expect(commitResponse.status, await commitResponse.clone().text()).toBe(201);
     const commit = await commitResponse.json() as { commit_id: string };
     await request(repo, "branch", "POST", { name: "temp/gc", from: commit.commit_id, temporary: true });
@@ -191,4 +202,85 @@ describe("Step 07 durable Git mesh", () => {
     expect(corruptRead.status).toBe(500);
     expect(await corruptRead.text()).toContain("integrity");
   });
+});
+
+
+describe("canonical workspace branch publication", () => {
+  it("supports a first delegated task starting from an empty committed workspace", async () => {
+    const f = durableFixture(true), repo = f.makeRepo();
+    await request(repo, "init");
+    const committed = await request(repo, "commit", "POST", { expected_head: null, metadata });
+    expect(committed.status, await committed.clone().text()).toBe(201);
+    expect((await request(repo, "branch", "POST", { name: "task/first", from: "main" })).status).toBe(201);
+    const key = `spaces/${scope.spaceId}/projects/${scope.projectId}/workspace/branches/task/first/first.txt`;
+    await f.bucket.put(key, "first", { customMetadata: { sha256: hash("first") } });
+    expect((await request(repo, "reconcile", "POST", { branch: "task/first", metadata })).status).toBe(200);
+    const diff = await request(repo, "pull-request-diff", "GET", undefined, "?baseBranch=main&forkBranch=task%2Ffirst");
+    expect(diff.status).toBe(200);
+    expect(((await diff.json()) as { files: Array<{ path: string }> }).files.map(file => file.path)).toEqual(["first.txt"]);
+  });
+  it("materializes a branch and keeps merged files after restart and reconciliation", async () => {
+    const f = durableFixture(true), repo = f.makeRepo();
+    await request(repo, "init");
+    await request(repo, "write", "PUT", { path: "source.ts", content: "base" });
+    const base = await (await request(repo, "commit", "POST", { expected_head: null, metadata })).json() as { commit_id: string };
+    const root = `spaces/${scope.spaceId}/projects/${scope.projectId}/workspace/`;
+    await f.bucket.put(root + "source.ts", "base", { customMetadata: { sha256: hash("base") } });
+    expect((await request(repo, "branch", "POST", { name: "task/change", from: base.commit_id })).status).toBe(201);
+    expect(new TextDecoder().decode(f.objects.get(root + "branches/task/change/source.ts"))).toBe("base");
+    await f.bucket.put(root + "branches/task/change/source.ts", "new", { customMetadata: { sha256: hash("new") } });
+    const reconciled = await request(repo, "reconcile", "POST", { branch: "task/change", metadata });
+    expect(reconciled.status, await reconciled.clone().text()).toBe(200);
+    const merged = await request(repo, "merge", "POST", { source: "task/change", target: "main", expected_head: base.commit_id });
+    expect(merged.status, await merged.clone().text()).toBe(200);
+    expect(new TextDecoder().decode(f.objects.get(root + "source.ts"))).toBe("new");
+    const restarted = f.makeRepo();
+    const main = await request(restarted, "reconcile", "POST", { metadata });
+    expect(main.status, await main.clone().text()).toBe(200);
+    const tree = await (await request(restarted, "tree", "GET")).json() as { data: Array<{ path: string }> };
+    expect(tree.data.map(entry => entry.path)).toEqual(["source.ts"]);
+    expect(f.kv.has("workspace_publication")).toBe(false);
+  });
+});
+
+it("replays a partial branch publication after reconstruction without writing the first file twice", async () => {
+  const f = durableFixture(true), repo = f.makeRepo();
+  await request(repo, "init");
+  for (const path of ["a.txt", "b.txt"]) await request(repo, "write", "PUT", { path, content: path });
+  const base = await (await request(repo, "commit", "POST", { expected_head: null, metadata })).json() as { commit_id: string };
+  const originalPut = f.bucket.put.bind(f.bucket);
+  let failing = true, firstWrites = 0;
+  f.bucket.put = async (key, value, options) => {
+    if (key.endsWith("branches/task/replay/a.txt")) firstWrites++;
+    if (failing && key.endsWith("branches/task/replay/b.txt")) throw new Error("storage interrupted");
+    return originalPut(key, value, options);
+  };
+  const interrupted = await request(repo, "branch", "POST", { name: "task/replay", from: base.commit_id });
+  expect(interrupted.status).toBe(503); expect(f.kv.has("workspace_publication")).toBe(true);
+  failing = false;
+  const recovered = await request(f.makeRepo(), "tree", "GET", undefined, "?branch=task%2Freplay");
+  expect(recovered.status, await recovered.clone().text()).toBe(200);
+  expect(((await recovered.json()) as { data: Array<{ path: string }> }).data.map(file => file.path)).toEqual(["a.txt", "b.txt"]);
+  expect(firstWrites).toBe(1); expect(f.kv.has("workspace_publication")).toBe(false);
+});
+
+it("preserves a competing workspace writer during publication recovery", async () => {
+  const f = durableFixture(true), repo = f.makeRepo();
+  await request(repo, "init");
+  for (const path of ["a.txt", "b.txt"]) await request(repo, "write", "PUT", { path, content: path });
+  const base = await (await request(repo, "commit", "POST", { expected_head: null, metadata })).json() as { commit_id: string };
+  const originalPut = f.bucket.put.bind(f.bucket);
+  let failing = true;
+  f.bucket.put = async (key, value, options) => {
+    if (failing && key.endsWith("branches/task/conflict/b.txt")) throw new Error("storage interrupted");
+    return originalPut(key, value, options);
+  };
+  expect((await request(repo, "branch", "POST", { name: "task/conflict", from: base.commit_id })).status).toBe(503);
+  failing = false;
+  const key = `spaces/${scope.spaceId}/projects/${scope.projectId}/workspace/branches/task/conflict/b.txt`;
+  await f.bucket.put(key, "competing", { customMetadata: { sha256: hash("competing") } });
+  const response = await request(f.makeRepo(), "tree", "GET", undefined, "?branch=task%2Fconflict");
+  expect(response.status).toBe(409);
+  expect(new TextDecoder().decode(f.objects.get(key))).toBe("competing");
+  expect(f.kv.has("workspace_publication")).toBe(true);
 });

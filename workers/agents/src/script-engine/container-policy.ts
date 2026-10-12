@@ -1,12 +1,12 @@
 import { parseExtensionPrimitive, type ContainerContract } from "@naelao/agent-sdk";
 
 export interface ContainerInvocationScope {
-  tenantId: string; spaceId: string; projectId?: string; actorId: string; agentId: string;
-  runId: string; executionId: string; installationId?: string; image?: string;
+  tenantId: string; spaceId: string; projectId?: string | undefined; actorId: string; agentId: string;
+  runId: string; executionId: string; installationId?: string | undefined; image?: string;
   deadline: number; timeoutMs: number;
 }
 export interface InstalledContainer {
-  tenantId: string; spaceId: string; projectId?: string; userId?: string;
+  tenantId: string; spaceId: string; projectId?: string | undefined; userId?: string | undefined;
   installationId: string; extensionId: string; contract: ContainerContract;
 }
 export interface ApprovedContainerImage {
@@ -39,7 +39,7 @@ export function parseApprovedContainerImages(json: string | undefined): Approved
   });
 }
 /** Resolve actual active installations visible to this actor; never infer a grant from a CLI name. */
-export function resolveContainerBinary(command: string, installations: readonly InstalledContainer[], owner: { tenantId: string; spaceId: string; projectId?: string; userId: string }): InstalledContainer | undefined {
+export function resolveContainerBinary(command: string, installations: readonly InstalledContainer[], owner: { tenantId: string; spaceId: string; projectId?: string | undefined; userId: string }): InstalledContainer | undefined {
   const matches: InstalledContainer[] = [];
   for (const item of installations) {
     if (item.tenantId !== owner.tenantId || item.spaceId !== owner.spaceId || item.projectId && item.projectId !== owner.projectId || item.userId && item.userId !== owner.userId) continue;
@@ -64,7 +64,7 @@ export function sidecarKey(scope: ContainerInvocationScope): string {
   return "sidecar:" + JSON.stringify([scope.tenantId, scope.spaceId, scope.projectId, scope.installationId, scope.runId, scope.image]);
 }
 export interface BrowserContainerLease {
-  actorId: string; tenantId: string; spaceId: string; projectId?: string; runId: string;
+  actorId: string; tenantId: string; spaceId: string; projectId?: string | undefined; runId: string;
   expiresAt: number; consent: boolean; live: boolean; crossOriginIsolated: boolean;
 }
 export function assertBrowserContainerLease(lease: BrowserContainerLease | undefined, scope: ContainerInvocationScope, compatible: boolean, now = Date.now()): void {

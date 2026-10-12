@@ -1,9 +1,10 @@
+import type { LocalTunnelDO } from "../do/LocalTunnelDO.js";
 import { getDOName } from "@naelao/crypto";
 import { assertMachineIdentity } from "@naelao/agent-sdk";
 import type { NamedMachine } from "@naelao/agent-sdk";
 import { mintInternalToken } from "@naelao/http";
 import type { LocalTunnelGateway } from "../script-engine/types.js";
-export async function namedTunnelStub(env: { PLATFORM_SECRET: string; LOCAL_TUNNEL?: DurableObjectNamespace }, identity: { tenantId: string; spaceId: string; machineId: string }): Promise<DurableObjectStub> {
+export async function namedTunnelStub(env: { PLATFORM_SECRET: string; LOCAL_TUNNEL?: DurableObjectNamespace<LocalTunnelDO> | undefined }, identity: { tenantId: string; spaceId: string; machineId: string }): Promise<DurableObjectStub<LocalTunnelDO>> {
   assertMachineIdentity(identity);
   if (!env.LOCAL_TUNNEL) throw new Error("tunnel_mesh_unavailable");
   const key = await getDOName("named-machine", identity.spaceId + ":" + identity.machineId, identity.tenantId, env.PLATFORM_SECRET);
@@ -12,7 +13,7 @@ export async function namedTunnelStub(env: { PLATFORM_SECRET: string; LOCAL_TUNN
 
 /** The host supplies immutable actor/run scope. A command only selects a visible alias. */
 export function createNamedTunnelGateway(
-  env: { PLATFORM_SECRET: string; LOCAL_TUNNEL?: DurableObjectNamespace; SPACES_WORKER: Fetcher },
+  env: { PLATFORM_SECRET: string; LOCAL_TUNNEL?: DurableObjectNamespace<LocalTunnelDO> | undefined; SPACES_WORKER: Fetcher },
   scope: { tenantId: string; spaceId: string; actorId: string; projectId?: string; runId: () => string | undefined; authorize: () => Promise<boolean> },
 ): LocalTunnelGateway {
   async function headers() {

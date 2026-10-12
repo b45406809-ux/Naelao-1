@@ -18,15 +18,25 @@ import type { PrebuiltOpContext } from "../../workers/agents/src/script-engine/p
 import type { ScriptEngineEnv } from "../../workers/agents/src/script-engine/types.js";
 import { mintCapabilityGrant } from "@naelao/agent-sdk";
 import { interceptPlatformCli, parseCliWords } from "../../workers/agents/src/script-engine/virtual-cli.js";
+import { sha256Text } from "../../workers/agents/src/script-engine/r2-cas.js";
 
 /** A fuller in-memory R2 fake than the size-guard test's own — this one actually supports
  *  prefix-scoped list(), which Grep/Glob need. */
 function makeR2(initial: Record<string, string> = {}): R2Bucket {
   const store = new Map<string, string>(Object.entries(initial));
+  const revisions = new Map<string, string>(Object.keys(initial).map(key => [key, `initial:${key}`]));
+  const metadata = new Map<string, Record<string, string>>();
+  let revision = 0;
   return {
-    async put(key: string, value: unknown) {
-      store.set(key, String(value));
-      return {} as R2Object;
+    async put(key: string, value: string | Uint8Array, options?: R2PutOptions) {
+      const condition = options?.onlyIf as R2Conditional | undefined;
+      if (condition?.etagMatches && revisions.get(key) !== condition.etagMatches) return null;
+      if (condition?.etagDoesNotMatch === "*" && store.has(key)) return null;
+      store.set(key, typeof value === "string" ? value : new TextDecoder().decode(value));
+      const etag = `revision:${++revision}`;
+      revisions.set(key, etag);
+      metadata.set(key, options?.customMetadata ?? {});
+      return { etag } as R2Object;
     },
     async get(key: string, opts?: { range?: { offset: number; length: number } }) {
       if (!store.has(key)) return null;
@@ -36,12 +46,12 @@ function makeR2(initial: Record<string, string> = {}): R2Bucket {
         const slice = full.slice(offset, offset + length);
         return { size: full.length, uploaded: new Date("2026-01-01T00:00:00Z"), async text() { return slice; } } as unknown as R2ObjectBody;
       }
-      return { size: full.length, uploaded: new Date("2026-01-01T00:00:00Z"), async text() { return full; } } as unknown as R2ObjectBody;
+      return { size: full.length, etag: revisions.get(key), customMetadata: metadata.get(key), uploaded: new Date("2026-01-01T00:00:00Z"), async text() { return full; }, async arrayBuffer() { return new TextEncoder().encode(full).buffer; } } as unknown as R2ObjectBody;
     },
     async head(key: string) {
       if (!store.has(key)) return null;
       const full = store.get(key)!;
-      return { size: full.length, uploaded: new Date("2026-01-01T00:00:00Z") } as unknown as R2Object;
+      return { size: full.length, etag: revisions.get(key), customMetadata: metadata.get(key), uploaded: new Date("2026-01-01T00:00:00Z") } as unknown as R2Object;
     },
     async delete(key: string) {
       store.delete(key);
@@ -62,6 +72,7 @@ function makeCtx(bucket: R2Bucket, extra: Partial<ScriptEngineEnv> = {}): Prebui
     agentId: "agent-1",
     tenantId: "tenant-1",
     scriptsBucket: bucket,
+    scheduleToolOutputExpiry: async () => undefined,
     ...extra,
   } as unknown as ScriptEngineEnv;
   return { env, run: async () => ({}) };
@@ -100,22 +111,22 @@ describe("production WriteGuard wiring", () => {
 describe("terminal-native platform CLI", () => {
   it("parses quotes without evaluating shell expansion", () => {
     expect(parseCliWords('schedule --cron "0 2 * * *" nightly')).toEqual(["schedule", "--cron", "0 2 * * *", "nightly"]);
-    expect(() => parseCliWords("workflow run $(steal-secret)")).toThrow("unsafe_cli_syntax");
+    expect(() => parseCliWords("workflow run $(steal-secret)")).toThrow("shell_substitution_not_supported");
   });
 
   it("intercepts workflow, schedule, vision, and scoped extension commands", () => {
     expect(interceptPlatformCli("workflow run nightly --detach")).toEqual({ operation: "workflow.run", params: { name: "nightly", params: {}, detach: true } });
     expect(interceptPlatformCli('schedule --cron "0 2 * * *" nightly')).toEqual({ operation: "workflow.schedule", params: { cron: "0 2 * * *", name: "nightly" } });
-    expect(interceptPlatformCli("see https://example.test/dashboard")).toMatchObject({ operation: "browser.screenshot" });
-    expect(interceptPlatformCli("ext:reconcile --month jan")).toEqual({ operation: "reconcile", params: { argv: ["--month", "jan"] } });
+    expect(interceptPlatformCli("see https://example.test/dashboard")).toMatchObject({ operation: "browser.see" });
+    expect(interceptPlatformCli("ext:reconcile --month jan")).toEqual({ operation: "ext:reconcile", params: { argv: ["--month", "jan"] } });
   });
 
   it("dispatches through the same production operation and authorization surface", async () => {
     const workflowRun = vi.fn(async (name: string) => ({ id: `wf:${name}` }));
     const env = makeCtx(makeR2(), { orchestration: { workflowRun } }).env;
     const result = await new ScriptToolSurface(env, ["dynamic-workflow"]).run("Bash", { command: "workflow run nightly --detach" });
-    expect(result).toMatchObject({ ok: true, output: { id: "wf:nightly" } });
-    expect(workflowRun).toHaveBeenCalledWith("nightly", {});
+    expect(result).toMatchObject({ ok: true, output: { result: { id: "wf:nightly" } } });
+    expect(workflowRun).toHaveBeenCalledWith("nightly", {}, expect.objectContaining({ detach: true, inheritChatHistory: false, maxContextTokens: 2000 }));
   });
 });
 
@@ -156,9 +167,19 @@ describe("Read — line-windowed view", () => {
 });
 
 describe("Edit — surgical exact-text replace", () => {
+  it("refuses a stale edit across separate worker surfaces without overwriting the winning revision", async () => {
+    const bucket = makeR2({ "spaces/space-1/workspace/a.ts": "old" });
+    const workerA = makeCtx(bucket), workerB = makeCtx(bucket);
+    const expectedHash = await sha256Text("old");
+    await Edit({ path: "a.ts", oldString: "old", newString: "winner", expectedHash }, workerA);
+    await expect(Edit({ path: "a.ts", oldString: "winner", newString: "stale", expectedHash }, workerB)).rejects.toThrow(/Conflict/);
+    const restartedWorker = makeCtx(bucket);
+    await expect(Read({ path: "a.ts" }, restartedWorker)).resolves.toMatchObject({ content: "1 | winner" });
+  });
+
   it("replaces a unique occurrence", async () => {
     const ctx = makeCtx(makeR2({ "spaces/space-1/workspace/a.ts": "const x = 1;\nconst y = 2;\n" }));
-    const result = (await Edit({ path: "a.ts", oldString: "const x = 1;", newString: "const x = 42;" }, ctx)) as {
+    const result = (await Edit({ path: "a.ts", oldString: "const x = 1;", newString: "const x = 42;", expectedHash: await sha256Text("const x = 1;\nconst y = 2;\n") }, ctx)) as {
       ok: boolean; replacements: number;
     };
     expect(result.ok).toBe(true);
@@ -172,7 +193,7 @@ describe("Edit — surgical exact-text replace", () => {
     // wrong (the model guessed the return value) — the hint scan matches on the CORRECT line.
     const ctx = makeCtx(makeR2({ "spaces/space-1/workspace/a.ts": "function foo() {\n  return 1;\n}\n" }));
     const result = (await Edit(
-      { path: "a.ts", oldString: "function foo() {\n  return 2;\n}", newString: "x" },
+      { path: "a.ts", oldString: "function foo() {\n  return 2;\n}", newString: "x", expectedHash: await sha256Text("function foo() {\n  return 1;\n}\n") },
       ctx
     )) as { ok: boolean; error: string; hint: string };
     expect(result.ok).toBe(false);
@@ -182,7 +203,7 @@ describe("Edit — surgical exact-text replace", () => {
 
   it("refuses an ambiguous (multi-occurrence) match rather than guessing", async () => {
     const ctx = makeCtx(makeR2({ "spaces/space-1/workspace/a.ts": "foo();\nfoo();\n" }));
-    const result = (await Edit({ path: "a.ts", oldString: "foo();", newString: "bar();" }, ctx)) as {
+    const result = (await Edit({ path: "a.ts", oldString: "foo();", newString: "bar();", expectedHash: await sha256Text("foo();\nfoo();\n") }, ctx)) as {
       ok: boolean; error: string;
     };
     expect(result.ok).toBe(false);
@@ -191,7 +212,7 @@ describe("Edit — surgical exact-text replace", () => {
 
   it("reports file-not-found without touching anything", async () => {
     const ctx = makeCtx(makeR2({}));
-    const result = (await Edit({ path: "nope.ts", oldString: "x", newString: "y" }, ctx)) as { ok: boolean };
+    const result = (await Edit({ path: "nope.ts", oldString: "x", newString: "y", expectedHash: null }, ctx)) as { ok: boolean };
     expect(result.ok).toBe(false);
   });
 });
@@ -199,7 +220,7 @@ describe("Edit — surgical exact-text replace", () => {
 describe("Write — same store as write_file", () => {
   it("writes and reads back through Read", async () => {
     const ctx = makeCtx(makeR2({}));
-    const result = (await Write({ path: "new.txt", content: "hello" }, ctx)) as { ok: boolean; path: string };
+    const result = (await Write({ path: "new.txt", content: "hello", expectedHash: null }, ctx)) as { ok: boolean; path: string };
     expect(result.ok).toBe(true);
     const read = (await Read({ path: "new.txt" }, ctx)) as { content: string };
     expect(read.content).toBe("1 | hello");
@@ -208,7 +229,7 @@ describe("Write — same store as write_file", () => {
   it("fires onWorkspaceChange like write_file does", async () => {
     const events: Array<{ path: string; operation: string }> = [];
     const ctx = makeCtx(makeR2({}), { onWorkspaceChange: (e) => events.push(e) });
-    await Write({ path: "a.txt", content: "x" }, ctx);
+    await Write({ path: "a.txt", content: "x", expectedHash: null }, ctx);
     expect(events).toEqual([{ path: "a.txt", operation: "write" }]);
   });
 });
@@ -247,6 +268,25 @@ describe("Grep — regex search across the whole workspace, not one file", () =>
 });
 
 describe("Glob — pattern-based listing, ** must cross directory depth", () => {
+  it("scopes a directory to its descendants, excluding similarly named siblings", async () => {
+    const ctx = makeCtx(makeR2({
+      "spaces/space-1/workspace/src/a.ts": "TODO",
+      "spaces/space-1/workspace/src-private/secret.ts": "TODO",
+    }));
+    await expect(Glob({ path: "src" }, ctx)).resolves.toMatchObject({ files: ["src/a.ts"] });
+    await expect(Grep({ path: "src", pattern: "TODO" }, ctx)).resolves.toMatchObject({ total_matches: 1 });
+    await expect(r2Workspace.operations.list_directory!({ path: "src" }, ctx)).resolves.toMatchObject({ count: 1 });
+    await expect(Glob({ path: "../" }, ctx)).rejects.toThrow("workspace_path_traversal");
+    await expect(Glob({ path: "/etc" }, ctx)).rejects.toThrow("deliverable_must_be_in_workspace");
+  });
+
+  it.each(["", ".", "/workspace", "/workspace/"])("accepts directory root %j without allowing root file mutations", async (path) => {
+    const ctx = makeCtx(makeR2({ "spaces/space-1/workspace/a.txt": "x" }));
+    await expect(Glob({ path }, ctx)).resolves.toMatchObject({ files: ["a.txt"] });
+    await expect(r2Workspace.operations.list_directory!({ path }, ctx)).resolves.toMatchObject({ count: 1 });
+    await expect(Write({ path: path || "/workspace", content: "bad", expectedHash: null }, ctx)).rejects.toThrow();
+  });
+
   it("** matches files nested more than one directory deep (the bug this port fixed)", async () => {
     const ctx = makeCtx(
       makeR2({
@@ -286,7 +326,7 @@ describe("Bash — a failed command must resolve to ok:false, not a swallowed su
       },
     } as unknown as Partial<ScriptEngineEnv>);
     const bash = codeExec.operations["Bash"]!;
-    await expect(bash({ commands: "false" }, ctx)).rejects.toThrow(/exit code 1/);
+    await expect(bash({ commands: "npm test" }, ctx)).rejects.toThrow(/exit code 1/);
   });
 
   it("returns the runner's output unchanged on success", async () => {
@@ -298,8 +338,15 @@ describe("Bash — a failed command must resolve to ok:false, not a swallowed su
       },
     } as unknown as Partial<ScriptEngineEnv>);
     const bash = codeExec.operations["Bash"]!;
-    const result = await bash({ commands: "echo hi" }, ctx);
-    expect(result).toEqual({ exit_code: 0, stdout: "hi" });
+    const result = await bash({ commands: "npm test" }, ctx);
+    expect(result).toMatchObject({ exit_code: 0, stdout: "hi" });
+  });
+
+  it("reports an unavailable container as failure at the production tool boundary", async () => {
+    const env = makeCtx(makeR2({})).env;
+    const result = await new ScriptToolSurface(env, ["code-exec"]).run("Bash", { commands: "npm test" });
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining("no code runner configured") });
+    expect(result.output).toBeUndefined();
   });
 
   it("code.execute_bash and Bash are the same operation (aliased, not duplicated)", () => {
@@ -356,5 +403,38 @@ describe("gating — reads are safe/auto-approved, writes/exec stay gated", () =
     expect(LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED).not.toContain("Edit");
     expect(LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED).not.toContain("Write");
     expect(LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED).not.toContain("Bash");
+  });
+});
+
+describe("private durable tool output", () => {
+  it("offloads large results, reads windows after restart and isolates other sessions", async () => {
+    const { offloadToolOutput, estimateTokens } = await import("../../workers/agents/src/script-engine/tool-output.js");
+    const bucket = makeR2(), original = Array.from({ length: 500 }, (_, i) => `line-${i + 1}: ${"x".repeat(20)}`).join("\n");
+    const scheduleExpiry = vi.fn(async () => undefined);
+    const ctx = makeCtx(bucket, { platformSecret: "test-only-encryption-secret", outputSessionId: "session-a", runId: "run-a", scheduleToolOutputExpiry: scheduleExpiry });
+    const limited = await offloadToolOutput(ctx.env, original) as { preview: string; output_path: string; instruction: string };
+    expect(scheduleExpiry).toHaveBeenCalledOnce();
+    expect(scheduleExpiry.mock.calls[0]![0]).toContain("private/tool-output/");
+    expect(scheduleExpiry.mock.calls[0]![1]).toBeGreaterThan(Date.now());
+    expect(estimateTokens(JSON.stringify(limited))).toBeLessThanOrEqual(1500);
+    expect(limited.instruction).toContain("line_start/line_end");
+    const restart = makeCtx(bucket, { platformSecret: "test-only-encryption-secret", outputSessionId: "session-a", runId: "run-b" });
+    await expect(Read({ path: limited.output_path, line_start: 490, line_end: 491 }, restart)).resolves.toMatchObject({ content: expect.stringContaining("line-490") });
+    await expect(Read({ path: limited.output_path }, makeCtx(bucket, { outputSessionId: "session-b" }))).resolves.toMatchObject({ exists: false });
+    await expect(Write({ path: limited.output_path, content: "tamper", expectedHash: null }, restart)).rejects.toThrow("read_only");
+    await expect(r2Workspace.operations.copy_file!({ from: limited.output_path, to: "published.log", expectedHash: null }, restart)).rejects.toThrow("private_tool_output_cannot_be_published");
+  });
+  it("fails honestly if a full log cannot be persisted", async () => {
+    const { offloadToolOutput } = await import("../../workers/agents/src/script-engine/tool-output.js");
+    const bucket = makeR2(); bucket.put = vi.fn(async () => { throw new Error("storage unavailable"); });
+    await expect(offloadToolOutput(makeCtx(bucket, { platformSecret: "test-only-encryption-secret", outputSessionId: "session-a" }).env, "x".repeat(7000))).rejects.toThrow("storage unavailable");
+  });
+  it("enforces output retention on private Read", async () => {
+    const { offloadToolOutput } = await import("../../workers/agents/src/script-engine/tool-output.js");
+    const bucket = makeR2(), ctx = makeCtx(bucket, { platformSecret: "test-only-encryption-secret", outputSessionId: "session-a" });
+    const result = await offloadToolOutput(ctx.env, "x".repeat(7000)) as { output_path: string };
+    vi.useFakeTimers(); vi.setSystemTime(Date.now() + 25 * 3600_000);
+    try { await expect(Read({ path: result.output_path }, ctx)).resolves.toMatchObject({ exists: false }); }
+    finally { vi.useRealTimers(); }
   });
 });

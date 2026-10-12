@@ -221,7 +221,7 @@ dead_letter_queue = "naelao-agent-ticks-dlq"
 # Hourly → poll webhook-less connectors (e.g. Gumroad) + drain each space's channel heartbeat
 # (unanswered messages) + Memory OS maintenance. (The old "0 2 * * *" daily trigger drove the
 # retired BusinessDO/ProductDO nightly Whop cycle — removed alongside those DOs.)
-crons = ["0 * * * *"]
+crons = ["0 * * * *", "*/5 * * * *"]
 
 [[services]]
 binding = "KNOWLEDGE_WORKER"

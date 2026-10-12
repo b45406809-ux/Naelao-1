@@ -1,3 +1,4 @@
+import { assertWorkspaceFileAllowed, isWorkspaceFileAllowed, normalizeWorkspacePath } from "./workspace-paths.js";
 import type { ScriptEngineEnv, ScriptRunResult } from "./types.js";
 import { workspacePrefix } from "./types.js";
 import { deleteWorkspaceBytesCas, publishWorkspaceBytesCas, readBytesWithHash } from "./r2-cas.js";
@@ -10,7 +11,9 @@ export async function virtualFsRead(
   path: string
 ): Promise<string | null> {
   const bucket = env.workspaceBucket ?? env.scriptsBucket;
-  const key = `${workspacePrefix(env)}${path.replace(/^\/+/, "")}`;
+  const key = `${workspacePrefix(env)}${assertWorkspaceFileAllowed(env.workspaceFileScope, path)}`;
+  const head = await bucket.head(key);
+  if (!head || head.customMetadata?.["deleted"] === "true") return null;
   const object = await readBytesWithHash(bucket, key);
   if (!object) return null;
   return textDecoder.decode(object.bytes);
@@ -23,7 +26,7 @@ export async function virtualFsWrite(
   expectedHash: string | null
 ): Promise<void> {
   const bucket = env.workspaceBucket ?? env.scriptsBucket;
-  const key = `${workspacePrefix(env)}${path.replace(/^\/+/, "")}`;
+  const key = `${workspacePrefix(env)}${assertWorkspaceFileAllowed(env.workspaceFileScope, path)}`;
   const { hash } = await publishWorkspaceBytesCas(env, bucket, key, textEncoder.encode(content), expectedHash);
   await env.onWorkspaceChange?.({ path, operation: "write" });
 }
@@ -34,7 +37,7 @@ export async function virtualFsDelete(
   expectedHash: string | null
 ): Promise<void> {
   const bucket = env.workspaceBucket ?? env.scriptsBucket;
-  const key = `${workspacePrefix(env)}${path.replace(/^\/+/, "")}`;
+  const key = `${workspacePrefix(env)}${assertWorkspaceFileAllowed(env.workspaceFileScope, path)}`;
   const result = await deleteWorkspaceBytesCas(env, bucket, key, expectedHash);
   if (result.deleted) await env.onWorkspaceChange?.({ path, operation: "delete" });
 }
@@ -44,18 +47,21 @@ export async function virtualFsList(
   prefix = ""
 ): Promise<Array<{ path: string; size: number }>> {
   const bucket = env.workspaceBucket ?? env.scriptsBucket;
-  const base = `${workspacePrefix(env)}${prefix.replace(/^\/+/, "")}`;
+  const clean = prefix && ![".", "/workspace", "/workspace/"].includes(prefix) ? normalizeWorkspacePath(prefix) : "";
+  const base = `${workspacePrefix(env)}${clean ? clean.replace(/\/+$/, "") + "/" : ""}`;
   const objects: Array<{ path: string; size: number }> = [];
   let cursor: string | undefined;
   do {
     const listing = await bucket.list(
-      { prefix: base, ...(cursor ? { cursor } : {}), include: ["customMetadata"] }
+      { prefix: base, ...(cursor ? { cursor } : {}), include: ["customMetadata"] } as R2ListOptions & { include: string[] }
     );
     for (const item of listing.objects) {
       if (item.customMetadata?.["deleted"] === "true") continue;
       if (!env.workspaceBranch && item.key.slice(workspacePrefix(env).length).startsWith("branches/")) continue;
+      const path = item.key.slice(workspacePrefix(env).length);
+      if (!isWorkspaceFileAllowed(env.workspaceFileScope, path)) continue;
       objects.push({
-        path: item.key.slice(workspacePrefix(env).length),
+        path,
         size: item.size,
       });
     }

@@ -8,6 +8,7 @@
 // the "New Session" button) created reuses its real linked session instead of Chat's own
 // lazy-mint fallback minting a second, unlinked one.
 
+import { PrivateScratchpad } from "@/components/PrivateScratchpad";
 import * as React from "react";
 import { useParams } from "next/navigation";
 import { Chat } from "@/components/Chat";
@@ -69,6 +70,7 @@ export default function ThreadChatPage() {
   // session even for a thread that already HAS one.
   if (!thread) return <div className="page-view">Loading…</div>;
 
+  if (thread.thread_tier === "tier_4_scratchpad") return thread.session_id ? <PrivateScratchpad spaceId={activeSpaceId} sessionId={thread.session_id} session={creds} /> : <p>Scratchpad session unavailable.</p>;
   if (thread.project_id && !project) return <div className="page-view">Loading project…</div>;
   if (project) return <ProjectCanvas project={project} threads={projectThreads} thread={thread} spaceId={activeSpaceId} slug={product.slug} session={creds} supportContact={supportContact} />;
   return (

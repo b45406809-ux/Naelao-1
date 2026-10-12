@@ -1,3 +1,4 @@
+import { parseScratchpadCiphertext } from "@naelao/agent-sdk";
 import { DurableObject } from "cloudflare:workers";
 import { applyMigrations, execute, queryAll, queryOne, validateMigrationSequence } from "@naelao/db";
 import type { Migration } from "@naelao/db";
@@ -1942,8 +1943,24 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // GET /sessions/:id
       const sessionMatch = url.pathname.match(/^\/sessions\/([^/]+)$/);
       if (method === "GET" && sessionMatch?.[1]) {
+        const privateThread = queryOne<{ created_by: string }>(this.ctx.storage.sql as never, "SELECT created_by FROM threads WHERE session_id = ? AND thread_tier = 'tier_4_scratchpad'", sessionMatch[1]);
+        if (privateThread && privateThread.created_by !== request.headers.get("x-naelao-user-id")) return Response.json({ error_code: "not_found" }, { status: 404 });
         const endUserId = url.searchParams.get("end_user_id") ?? undefined;
-        return this.getSession(sessionMatch[1], endUserId);
+        const response = this.getSession(sessionMatch[1], endUserId);
+        if (privateThread && response.ok) return Response.json({ ...await response.json<Record<string, unknown>>(), private_scratchpad: true });
+        return response;
+      }
+      // A session URL must not bypass the private thread boundary.
+      const privateSession = url.pathname.match(/^\/sessions\/([^/]+)(?:\/.*)?$/)?.[1];
+      if (privateSession) {
+        const privateThread = queryOne<{ created_by: string }>(this.ctx.storage.sql as never, "SELECT created_by FROM threads WHERE session_id = ? AND thread_tier = 'tier_4_scratchpad'", privateSession);
+        if (privateThread) {
+          if (privateThread.created_by !== request.headers.get("x-naelao-user-id")) return Response.json({ error_code: "not_found" }, { status: 404 });
+          if (request.method === "POST" && url.pathname.endsWith("/messages")) {
+            const message = await request.clone().json<{ content?: string }>();
+            if (typeof message.content !== "string" || !parseScratchpadCiphertext(message.content)) return Response.json({ error_code: "scratchpad_ciphertext_required" }, { status: 400 });
+          }
+        }
       }
       // POST /sessions/:id/messages
       const msgMatch = url.pathname.match(/^\/sessions\/([^/]+)\/messages$/);
@@ -2508,6 +2525,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       if (method === "GET" && url.pathname === "/pull-request-cards") {
         return this.listPullRequestCards(url.searchParams);
+      }
+      if (method === "POST" && url.pathname.startsWith("/pull-request-cards/") && url.pathname.endsWith("/status")) {
+        return this.updatePullRequestCardStatus(request, decodeURIComponent(url.pathname.split("/")[2] ?? ""));
       }
       if (method === "POST" && url.pathname === "/workspace-events") {
         const body = await request.json<{ space_id?: string; project_id?: string; event?: { type?: string } }>().catch(() => ({} as { space_id?: string; project_id?: string; event?: { type?: string } }));
@@ -8531,10 +8551,18 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         { status: 400 }
       );
     }
+    // Explicit goal DAG IDs are idempotent and retain exact dependency identity.
+    if (body.id) {
+      const existing = queryOne<{ space_id: string; project_id: string | null; thread_id: string | null; title: string; subtask_spec: string | null; dependencies: string }>(this.ctx.storage.sql as never, "SELECT space_id, project_id, thread_id, title, subtask_spec, dependencies FROM tasks WHERE id = ?", body.id);
+      if (existing) {
+        if (existing.space_id !== body.space_id || existing.project_id !== (body.project_id ?? null) || existing.thread_id !== (body.thread_id ?? null) || existing.title !== body.title || existing.subtask_spec !== (body.subtask_spec ?? null) || existing.dependencies !== JSON.stringify(body.dependencies ?? [])) return Response.json({ error: "task_id_conflict" }, { status: 409 });
+        return Response.json({ id: body.id, replayed: true });
+      }
+    }
     // The creation boundary owns de-duplication: callers cannot accidentally bypass it by
     // forgetting to invoke the advisory endpoint first. Explicit embeddings come from the
     // reasoner's provider; the deterministic lexical vector is the offline-safe fallback.
-    if (body.project_id && (body.prompt_text || body.title)) {
+    if (!body.id && body.project_id && (body.prompt_text || body.title)) {
       const dedupResponse = await this.checkActiveIntentDeduplication(new Request("http://space/intent-deduplicate", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -8779,14 +8807,23 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const room = queryOne<{ id: string }>(this.ctx.storage.sql as never,
       "SELECT id FROM threads WHERE space_id = ? AND project_id = ? AND thread_tier = 'tier_1_team' AND status = 'active' ORDER BY created_at LIMIT 1", spaceId, projectId);
     const id = String(card["id"] ?? crypto.randomUUID()), now = new Date().toISOString();
+    const normalizedCard = { ...card, id };
+    const existing = queryOne<{ payload: string; thread_id: string | null }>(this.ctx.storage.sql as never,
+      "SELECT payload, thread_id FROM pull_request_cards WHERE id = ? AND space_id = ? AND project_id = ?", id, spaceId, projectId);
+    if (existing) {
+      const previous = JSON.parse(existing.payload) as Record<string, unknown>;
+      if (previous["baseCommit"] !== card["baseCommit"] || previous["headCommit"] !== card["headCommit"] || previous["forkBranch"] !== card["forkBranch"])
+        return Response.json({ error_code: "review_card_identity_conflict" }, { status: 409 });
+      return Response.json({ id, thread_id: existing.thread_id, tier: "tier_1_team", card: previous });
+    }
     execute(this.ctx.storage.sql as never,
       `INSERT INTO pull_request_cards (id, space_id, project_id, thread_id, base_branch, fork_branch, title, author, reasoning, payload, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id, spaceId, projectId, room?.id ?? null, String(card["baseBranch"] ?? "main"), String(card["forkBranch"] ?? ""),
-      String(card["title"] ?? "Pull request"), String(card["author"] ?? "agent"), String(card["reasoning"] ?? ""), JSON.stringify(card), now, now);
+      String(card["title"] ?? "Pull request"), String(card["author"] ?? "agent"), String(card["reasoning"] ?? ""), JSON.stringify(normalizedCard), now, now);
     const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
     await broadcastSpaceEvent(this.env, tenantId, spaceId, "workspace.pull_request", { project_id: projectId, thread_id: room?.id ?? null, card: { ...card, id } });
-    return Response.json({ id, thread_id: room?.id ?? null, tier: "tier_1_team", card: { ...card, id } }, { status: 201 });
+    return Response.json({ id, thread_id: room?.id ?? null, tier: "tier_1_team", card: normalizedCard }, { status: 201 });
   }
 
   private listPullRequestCards(params: URLSearchParams): Response {
@@ -8794,6 +8831,30 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const rows = queryAll<{ payload: string; status: string; thread_id: string | null }>(this.ctx.storage.sql as never,
       "SELECT payload, status, thread_id FROM pull_request_cards WHERE space_id = ? AND project_id = ? ORDER BY created_at DESC LIMIT 100", spaceId, projectId);
     return Response.json({ data: rows.map((row) => ({ ...JSON.parse(row.payload) as object, status: row.status, thread_id: row.thread_id })) });
+  }
+
+  private async updatePullRequestCardStatus(request: Request, cardId: string): Promise<Response> {
+    const body = await request.json<{ space_id?: string; project_id?: string; status?: string }>().catch(() => ({} as { space_id?: string; project_id?: string; status?: string }));
+    const status = body.status;
+    if (!cardId || !body.space_id || !body.project_id || !["merged", "revisions_requested", "rejected"].includes(String(status)))
+      return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const db = this.ctx.storage.sql as never;
+    const current = queryOne<{ status: string }>(db,
+      "SELECT status FROM pull_request_cards WHERE id = ? AND space_id = ? AND project_id = ?",
+      cardId, body.space_id, body.project_id);
+    if (!current) return Response.json({ error_code: "not_found" }, { status: 404 });
+    if (current.status !== "open") return current.status === status
+      ? Response.json({ id: cardId, status })
+      : Response.json({ error_code: "review_card_already_resolved", status: current.status }, { status: 409 });
+    const updated = queryOne<{ status: string }>(db,
+      "UPDATE pull_request_cards SET status = ?, updated_at = ? WHERE id = ? AND space_id = ? AND project_id = ? AND status = 'open' RETURNING status",
+      status, new Date().toISOString(), cardId, body.space_id, body.project_id);
+    if (updated) return Response.json({ id: cardId, status: updated.status });
+    const latest = queryOne<{ status: string }>(db,
+      "SELECT status FROM pull_request_cards WHERE id = ? AND space_id = ? AND project_id = ?",
+      cardId, body.space_id, body.project_id);
+    return latest?.status === status ? Response.json({ id: cardId, status })
+      : Response.json({ error_code: "review_card_already_resolved", status: latest?.status }, { status: 409 });
   }
 
   // ── Event triggers (@naelao/events) — no-code "after X happens, run script Y" ─────────────

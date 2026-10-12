@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import { mintInternalToken } from "@naelao/http";
 import { ToolSandboxDO } from "./ToolSandboxDO.js";
 
 describe("ToolSandboxDO Runtime and State Coordination", () => {
-  function createTestSandbox() {
+  async function createTestSandbox() {
     const storage = new Map();
     let alarmTime = null;
     let containerRunning = false;
@@ -14,7 +15,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       start: vi.fn(() => {
         containerRunning = true;
       }),
-      stop: vi.fn(() => { containerRunning = false; }),
+      destroy: vi.fn(async () => { containerRunning = false; }),
       getTcpPort: () => ({
         fetch: async (req) => {
           const url = new URL(req.url);
@@ -51,12 +52,23 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       },
     };
 
-    const sandbox = new ToolSandboxDO(mockCtx, {});
+    const realSandbox = new ToolSandboxDO(mockCtx, {
+      PLATFORM_SECRET: "test-secret",
+      BILLING_WORKER: { fetch: async () => Response.json({ ok: true }) },
+    } as never);
+    const sandbox = { alarm: () => realSandbox.alarm(), fetch: async (request: Request) => {
+      const headers = new Headers(request.headers);
+      headers.set("x-naelao-internal-token", await mintInternalToken("test-secret", "tenant"));
+      headers.set("x-naelao-container-scope", JSON.stringify({ tenantId: "tenant", spaceId: "space", actorId: "owner", agentId: "worker", runId: "run",
+        executionId: crypto.randomUUID(), timeoutMs: 55000, deadline: Date.now() + 55000 }));
+      return realSandbox.fetch(new Request(request, { headers }));
+    } };
+    await sandbox.fetch(new Request("https://sandbox/prewarm", { method: "POST", body: "{}" }));
     return { sandbox, storage, getAlarmTime: () => alarmTime, mockContainer };
   }
 
   it("coordinates 4D shell state and rejects conflicting revisions", async () => {
-    const { sandbox } = createTestSandbox();
+    const { sandbox } = await createTestSandbox();
     const initRes = await sandbox.fetch(
       new Request("https://sandbox/session/state", {
         method: "POST",
@@ -90,7 +102,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
   });
 
   it("CAS-syncs workspace hashes, tracks lockfiles, and excludes node_modules", async () => {
-    const { sandbox, storage } = createTestSandbox();
+    const { sandbox, storage } = await createTestSandbox();
     const first = await sandbox.fetch(new Request("https://sandbox/workspace/state-sync", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ files: { "package.json": { content: "{}", expected_hash: null }, "node_modules/x/a.js": { content: "ignored" } } }),
@@ -106,7 +118,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
   });
 
   it("requires hashes on normal container workspace writes", async () => {
-    const { sandbox, storage } = createTestSandbox();
+    const { sandbox, storage } = await createTestSandbox();
     const missing = await sandbox.fetch(new Request("https://sandbox/workspace/write", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ files: { "src/main.ts": "one" } }),
@@ -132,7 +144,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
   });
 
   it("implements virtual display automation endpoints", async () => {
-    const { sandbox } = createTestSandbox();
+    const { sandbox } = await createTestSandbox();
     const captureRes = await sandbox.fetch(
       new Request("https://sandbox/display/capture", { method: "POST" })
     );
@@ -151,7 +163,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
   });
 
   it("schedules 60s idle alarm on activity", async () => {
-    const { sandbox, getAlarmTime } = createTestSandbox();
+    const { sandbox, getAlarmTime } = await createTestSandbox();
     const start = Date.now();
     await sandbox.fetch(
       new Request("https://sandbox/workspace/list", { method: "POST" })
@@ -162,7 +174,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
   it("keeps an active Task DAG container warm for 300s", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000_000);
-    const { sandbox, getAlarmTime, mockContainer } = createTestSandbox();
+    const { sandbox, getAlarmTime, mockContainer } = await createTestSandbox();
     await sandbox.fetch(new Request("https://sandbox/exec", {
       method: "POST",
       headers: { "content-type": "application/json", "x-avos-task-active": "1" },
@@ -171,7 +183,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     expect(getAlarmTime()).toBe(1_300_000);
     vi.setSystemTime(1_060_000);
     await sandbox.alarm();
-    expect(mockContainer.stop).not.toHaveBeenCalled();
+    expect(mockContainer.destroy).not.toHaveBeenCalled();
     expect(getAlarmTime()).toBe(1_300_000);
     vi.useRealTimers();
   });
@@ -179,7 +191,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
   it("returns to the 60s window when a task completes", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000_000);
-    const { sandbox, storage, getAlarmTime } = createTestSandbox();
+    const { sandbox, storage, getAlarmTime } = await createTestSandbox();
     await sandbox.fetch(new Request("https://sandbox/exec", {
       method: "POST",
       headers: { "content-type": "application/json", "x-avos-task-active": "1" },
@@ -201,14 +213,14 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
   it("stays warm before 60s and snapshots then hibernates at 60s", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000_000);
-    const { sandbox, storage, mockContainer } = createTestSandbox();
+    const { sandbox, storage, mockContainer } = await createTestSandbox();
     await sandbox.fetch(new Request("https://sandbox/workspace/list", { method: "POST" }));
     vi.setSystemTime(1_059_999);
     await sandbox.alarm();
-    expect(mockContainer.stop).not.toHaveBeenCalled();
+    expect(mockContainer.destroy).not.toHaveBeenCalled();
     vi.setSystemTime(1_060_000);
     await sandbox.alarm();
-    expect(mockContainer.stop).toHaveBeenCalledWith("SIGTERM");
+    expect(mockContainer.destroy).toHaveBeenCalledOnce();
     expect(storage.get("container_status")).toBe("hibernated");
     vi.useRealTimers();
   });

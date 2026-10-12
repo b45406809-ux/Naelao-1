@@ -207,15 +207,16 @@ export const projectCoordination: PrebuiltScript = {
     },
     "project.pull_request.merge": async (a, c) => {
       if (!c.env.userId) throw new Error("A human reviewer is required to merge a pull request");
-      const authorization = await spacesCall(c, "GET",
-        `/hierarchy-authorize?target_space_id=${encodeURIComponent(c.env.spaceId)}&user_id=${encodeURIComponent(c.env.userId)}&action=admin`) as { permitted?: boolean; role?: string };
-      if (!authorization.permitted || (authorization.role !== "admin" && authorization.role !== "owner"))
+      // Membership comes from SpaceDO's authoritative roster, never the caller-supplied role.
+      const members = await spacesCall(c, "GET", `/spaces/${encodeURIComponent(c.env.spaceId)}/members`) as { data?: Array<{ user_id?: string; role?: string }> };
+      const reviewerRole = members.data?.find(member => member.user_id === c.env.userId)?.role;
+      if (reviewerRole !== "admin" && reviewerRole !== "owner")
         throw new Error("Only an admin or owner may merge a pull request");
       const merged = await repositoryCall(c, "mergePullRequest", "POST", {
         baseBranch: String(a["base_branch"] ?? "main"), forkBranch: String(a["fork_branch"] ?? ""),
-        reviewerId: c.env.userId, reviewerRank: authorization.role,
+        reviewerId: c.env.userId, reviewerRank: reviewerRole,
       }) as { event?: Record<string, unknown> };
-      await spacesCall(c, "POST", "/workspace-events", { space_id: c.env.spaceId, project_id: c.env.projectId, event: merged.event });
+      await spacesCall(c, "POST", `/spaces/${encodeURIComponent(c.env.spaceId)}/workspace-events`, { space_id: c.env.spaceId, project_id: c.env.projectId, event: merged.event });
       return merged;
     },
     "project.upstream.status": (a, c) => repositoryCall(c, "getDivergenceStatus", "GET", {

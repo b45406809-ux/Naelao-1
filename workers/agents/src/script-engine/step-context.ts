@@ -1,3 +1,5 @@
+import { detectPromptInjection } from "@naelao/moderation";
+
 /**
  * In-loop step compaction — what makes an unbounded agent loop actually possible.
  *
@@ -39,7 +41,6 @@ export interface LoopStep {
   output?: unknown;
   error?: string;
 }
-
 export interface StepContextLimits {
   /** Token budget for the whole steps block of the reasoner payload. */
   maxTokens: number;
@@ -74,12 +75,19 @@ export interface CompactedSteps {
 /** Rough token estimate. chars/4 is the convention already used across this codebase for
  *  budgeting (see conversation-context.ts); an estimate for sizing, never for billing. */
 export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
+  return Math.ceil(text.length / 3.85);
 }
 
 function asText(value: unknown): string {
   if (value === undefined || value === null) return "";
   return typeof value === "string" ? value : safeStringify(value);
+}
+
+/** Known hostile instructions in tool output are quarantined before compaction or model replay. */
+function safeObservationText(text: string): string {
+  return detectPromptInjection(text).length > 0
+    ? "[untrusted tool result quarantined: suspected prompt injection; content withheld]"
+    : text;
 }
 
 /** JSON.stringify that survives a cyclic or otherwise unserialisable tool result. A step whose
@@ -95,7 +103,7 @@ function safeStringify(value: unknown): string {
 
 /** What one step costs in the payload, including the structural overhead of its own JSON. */
 export function estimateStepTokens(step: LoopStep, maxObservationChars: number): number {
-  const body = step.ok ? truncate(asText(step.output), maxObservationChars) : String(step.error ?? "failed").slice(0, 500);
+  const body = step.ok ? truncate(safeObservationText(asText(step.output)), maxObservationChars) : safeObservationText(String(step.error ?? "failed")).slice(0, 500);
   return estimateTokens(step.name) + estimateTokens(safeStringify(step.params)) + estimateTokens(body) + 12;
 }
 
@@ -107,9 +115,12 @@ function truncate(text: string, maxChars: number): string {
 /** A copy of the step with its observation cut to the budget. Never mutates the input — the caller's
  *  array is the one that backs checkpoints and must keep the real values. */
 function truncateStepOutput(step: LoopStep, maxChars: number): LoopStep {
-  if (!step.ok) return step;
-  const text = asText(step.output);
-  if (text.length <= maxChars) return step;
+  if (!step.ok) {
+    const error = safeObservationText(String(step.error ?? "failed")).slice(0, 500);
+    return error === step.error ? step : { ...step, error };
+  }
+  const text = safeObservationText(asText(step.output));
+  if (text === asText(step.output) && text.length <= maxChars) return step;
   return { ...step, output: truncate(text, maxChars) };
 }
 
@@ -125,10 +136,10 @@ export function summarizeStep(step: LoopStep, index: number): string {
   const params = safeStringify(step.params ?? {});
   const args = params.length > 160 ? `${params.slice(0, 160)}…` : params;
   if (!step.ok) {
-    const err = String(step.error ?? "failed");
+    const err = safeObservationText(String(step.error ?? "failed"));
     return `${index}. ${step.name}(${args}) → FAILED: ${err.length > 160 ? `${err.slice(0, 160)}…` : err}`;
   }
-  const out = asText(step.output).replace(/\s+/g, " ").trim();
+  const out = safeObservationText(asText(step.output)).replace(/\s+/g, " ").trim();
   if (!out) return `${index}. ${step.name}(${args}) → ok`;
   return `${index}. ${step.name}(${args}) → ok: ${out.length > 160 ? `${out.slice(0, 160)}…` : out}`;
 }
@@ -191,8 +202,8 @@ export function renderStepsForReasoner(
     // API). Presented as an observation, never as instructions — the system prompt says so — and
     // truncated so one large result can't crowd out the rest of the payload.
     ...(s.ok
-      ? { result: truncate(asText(s.output), maxObservationChars) }
-      : { error: String(s.error ?? "failed").slice(0, 500) }),
+      ? { result: truncate(safeObservationText(asText(s.output)), maxObservationChars) }
+      : { error: safeObservationText(String(s.error ?? "failed")).slice(0, 500) }),
   }));
   if (digest.length === 0) return { steps_so_far: recent };
   return {

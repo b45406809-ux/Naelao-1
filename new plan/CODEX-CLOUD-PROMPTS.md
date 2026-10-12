@@ -131,6 +131,19 @@ to the primary range. Record decisions and fresh evidence in CLOUD-PROGRESS.md.
 Do not substitute a plan-only response for implementation. Stop after this batch.
 ```
 
+**Progress (2026-10-12): PARTIAL — local implementation complete; platform/data gates remain.** Review-card decision/merge UI, roster
+authorization, replay handling, project review panel, and private output-log
+expiry indexing are implemented with focused mocked tests. Injection attempts are
+now quarantined at ingress; known injection text in tool results is withheld
+before model replay. Task file paths are host-signed and enforced by VFS and
+virtual Bash; scoped workers cannot use native Python/Tier-5/6 paths until the
+runtime supports file-scoped mounts. A complete-request context preflight now
+counts system, user, tool schema, and image context with a conservative reserve.
+Agents tests (55 files / 218 tests), Spaces tests (12 tests, including host routing), both worker
+typechecks, and `git diff --check` pass. See `new plan/CLOUD-PROGRESS.md` for the
+four exact remaining external gates and evidence. Batch 2 remains UNASSESSED and
+has not started. The user waived live Cloudflare tests.
+
 2. **Document 12: lines 1565–3590**
 
 ```text

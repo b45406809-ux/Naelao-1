@@ -35,23 +35,38 @@ async function sign(input: string, secret: string): Promise<string> {
 function validateScope(scope: CapabilityScope): void {
   for (const label of ["tenantId", "spaceId", "projectId", "installationId"] as const) {
     const value = scope[label];
-    if (value !== undefined && (!value || !IDENTIFIER.test(value))) throw new CapabilityDeniedError(`invalid_${label}`);
+    if (value !== undefined && (typeof value !== "string" || !value || !IDENTIFIER.test(value))) throw new CapabilityDeniedError(`invalid_${label}`);
   }
   if (!scope.tenantId || !scope.spaceId) throw new CapabilityDeniedError("scope_required");
 }
 
-export async function issueScopedCapabilityToken(input: Omit<CapabilityClaims, "issuedAt" | "tokenId"> & { ttlSeconds: number }, secret: string, now = Math.floor(Date.now() / 1000)): Promise<string> {
+function validateClaims(claims: CapabilityClaims): void {
+  validateScope(claims);
+  for (const field of ["issuer", "audience", "actorId", "operation", "resource", "tokenId"] as const) {
+    if (typeof claims[field] !== "string" || !claims[field] || claims[field].length > 2048) throw new CapabilityDeniedError("invalid_claims");
+  }
+  if (!Number.isSafeInteger(claims.issuedAt) || claims.issuedAt < 0 || !Number.isSafeInteger(claims.expiresAt)
+    || claims.expiresAt <= claims.issuedAt || claims.expiresAt - claims.issuedAt > 900
+    || !Number.isSafeInteger(claims.revocationEpoch) || claims.revocationEpoch < 0) throw new CapabilityDeniedError("invalid_claims");
+}
+
+export async function issueScopedCapabilityToken(input: Omit<CapabilityClaims, "issuedAt" | "expiresAt" | "tokenId"> & { ttlSeconds: number }, secret: string, now = Math.floor(Date.now() / 1000)): Promise<string> {
   if (!secret) throw new CapabilityDeniedError("issuer_secret_required");
   validateScope(input);
   if (!input.issuer || !input.audience || !input.actorId || !input.operation || !input.resource || !Number.isInteger(input.ttlSeconds) || input.ttlSeconds < 1 || input.ttlSeconds > 900) throw new CapabilityDeniedError("invalid_claims");
   const header = encode(JSON.stringify({ alg: "HS256", typ: "NAELAO-CAP" }));
   const claims: CapabilityClaims = { ...input, issuedAt: now, expiresAt: now + input.ttlSeconds, tokenId: crypto.randomUUID() };
+  validateClaims(claims);
   const payload = encode(JSON.stringify(claims));
   return `${header}.${payload}.${await sign(`${header}.${payload}`, secret)}`;
 }
 
 export async function verifyScopedCapabilityToken(token: string, secret: string, context: CapabilityVerificationContext): Promise<CapabilityClaims> {
   if (!token || !secret) throw new CapabilityDeniedError("token_required");
+  if (typeof token !== "string" || token.length > 32768) throw new CapabilityDeniedError("malformed_token");
+  validateScope(context);
+  if (!Number.isSafeInteger(context.revocationEpoch) || context.revocationEpoch < 0
+    || (context.now !== undefined && !Number.isSafeInteger(context.now))) throw new CapabilityDeniedError("invalid_verification_context");
   const parts = token.split(".");
   if (parts.length !== 3) throw new CapabilityDeniedError("malformed_token");
   const header = parts[0]!;
@@ -60,17 +75,23 @@ export async function verifyScopedCapabilityToken(token: string, secret: string,
   try {
     const parsedHeader = JSON.parse(decode(header)) as { alg?: string; typ?: string };
     if (parsedHeader.alg !== "HS256" || parsedHeader.typ !== "NAELAO-CAP") throw new CapabilityDeniedError("invalid_header");
-    const expected = await sign(`${header}.${payload}`, secret);
-    if (expected !== signature) throw new CapabilityDeniedError("invalid_signature");
+    // Preserve the existing wire encoding, but use the cryptographic verifier instead of
+    // comparing MAC strings in JavaScript. The legacy signature encodes a Latin-1 string.
+    const mac = decode(signature);
+    if (mac.length !== 32 || [...mac].some(char => char.charCodeAt(0) > 255)) throw new CapabilityDeniedError("invalid_signature");
+    const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
+    if (!await crypto.subtle.verify("HMAC", key, Uint8Array.from(mac, char => char.charCodeAt(0)), encoder.encode(`${header}.${payload}`))) throw new CapabilityDeniedError("invalid_signature");
     const claims = JSON.parse(decode(payload)) as CapabilityClaims;
-    validateScope(claims);
+    validateClaims(claims);
     const now = context.now ?? Math.floor(Date.now() / 1000);
     if (claims.issuer !== context.issuer || claims.audience !== context.audience) throw new CapabilityDeniedError("issuer_or_audience_mismatch");
     if (claims.issuedAt > now + 30 || claims.expiresAt <= now) throw new CapabilityDeniedError("expired_token");
     if (claims.revocationEpoch < context.revocationEpoch) throw new CapabilityDeniedError("revoked_token");
     for (const key of ["tenantId", "spaceId", "projectId", "installationId", "actorId", "operation", "resource"] as const) {
       const expectedValue = context[key];
-      if (expectedValue !== undefined && claims[key] !== expectedValue) throw new CapabilityDeniedError(`scope_mismatch:${key}`);
+      // Absence is a scope too. A project/installation-bound token cannot be promoted to
+      // space authority by omitting that boundary from the verification context.
+      if (claims[key] !== expectedValue) throw new CapabilityDeniedError(`scope_mismatch:${key}`);
     }
     return Object.freeze(claims);
   } catch (error) {

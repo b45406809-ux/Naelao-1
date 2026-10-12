@@ -26,7 +26,7 @@
  */
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
-import { workspacePrefix, type ExecutionTier } from "../types.js";
+import { machinePrefix, workspacePrefix, type ExecutionTier } from "../types.js";
 import { assertNoReservedViolation } from "../reserved-capabilities.js";
 import { canRunVirtually, executeVirtualPosix } from "../virtual-posix.js";
 import { parseCliWords, interceptPlatformWords } from "../virtual-cli.js";
@@ -37,6 +37,7 @@ import { VirtualCliDispatcher } from "../virtual-cli.js";
 import { createVaultProxy } from "../vault-proxy.js";
 import { inspectMutation } from "@naelao/security";
 import { isDeclaredNativeCommand } from "../execution-ladder.js";
+import { assertWorkspaceFileAllowed } from "../workspace-paths.js";
 
 const PYTHON_HARNESS = `
 import { execFileSync } from "node:child_process";
@@ -63,10 +64,8 @@ export async function run(args, ctx) {
 }
 `;
 
-const BASH_HARNESS = `
+export const BASH_HARNESS = `
 import { exec } from "node:child_process";
-import { promisify } from "node:util";
-const execAsync = promisify(exec);
 
 export async function run(args, ctx) {
   const commands = args.commands || args.command || args.cmd;
@@ -75,12 +74,22 @@ export async function run(args, ctx) {
   const cwd = args.working_dir || (ctx && ctx.workspaceDir) || "/workspace";
 
   try {
-    const { stdout, stderr } = await execAsync(commands, {
+    const child = exec(commands, {
       cwd,
       timeout: timeoutMs,
       encoding: "utf8",
       shell: "/bin/bash",
-      maxBuffer: 4 * 1024 * 1024,
+      maxBuffer: 2 * 1024 * 1024,
+    });
+    child.stdout?.on("data", chunk => process.stdout.write(chunk));
+    child.stderr?.on("data", chunk => process.stderr.write(chunk));
+    const { stdout, stderr } = await new Promise((resolve, reject) => {
+      // Observe streams live and retain the complete bounded terminal result.
+      let stdout = "", stderr = "";
+      child.stdout?.on("data", chunk => { stdout += chunk; });
+      child.stderr?.on("data", chunk => { stderr += chunk; });
+      child.once("error", reject);
+      child.once("close", code => code === 0 ? resolve({ stdout, stderr }) : reject(Object.assign(new Error("Command failed"), { code, stdout, stderr })));
     });
     const cleanOut = (stdout || "").trim();
     // A genuinely silent success (no stdout, no stderr) — give the model something to read
@@ -94,9 +103,9 @@ export async function run(args, ctx) {
     // failed command must resolve to ok:false at the ScriptToolSurface level, not a normally-
     // returned "failure-shaped" object the outer wrapper would read as a success.
     const stderrText = String((err && (err.stderr || err.message)) || "Command failed");
-    const last15 = stderrText.trim().split(/\\r?\\n/).slice(-15).join("\\n");
+    const fullLog = String(err && err.stdout || "") + "\\n" + stderrText;
     const exitCode = (err && err.code) || 1;
-    throw new Error(\`Command failed with exit code \${exitCode}:\\n\${last15}\`);
+    throw new Error(\`Command failed with exit code \${exitCode}:\\n\${fullLog}\`);
   }
 }
 `;
@@ -109,11 +118,10 @@ async function runTier(
   args: Record<string, unknown>,
   sidecar?: import("../container-policy.js").InstalledContainer
 ): Promise<unknown> {
+  if (ctx.env.workspaceFileScope !== undefined && (tier >= 5 || name === "code-exec.execute_python"))
+    throw new Error("worker_file_scope_native_execution_unavailable");
   if (!ctx.env.codeRunner) {
-    return {
-      ok: false,
-      reason: `Tier ${tier} unavailable: no code runner configured in this environment`,
-    };
+    throw new Error(`Tier ${tier} unavailable: no code runner configured in this environment`);
   }
   const result = await ctx.env.codeRunner.run({
     name,
@@ -130,6 +138,7 @@ async function runTier(
     ...(ctx.env.runId ? { runId: ctx.env.runId } : {}),
     ...(ctx.env.taskId ? { taskId: ctx.env.taskId } : {}),
     ...(ctx.env.projectId ? { projectId: ctx.env.projectId } : {}),
+    ...(ctx.env.onToolOutput ? { onOutput: ctx.env.onToolOutput } : {}),
     ...(ctx.env.executionSignal ? { signal: ctx.env.executionSignal } : {}),
     ...(sidecar ? { containerImage: sidecar.contract.image, installationId: sidecar.installationId } : {}),
   });
@@ -168,24 +177,27 @@ async function runBash(
       : undefined;
     const result = await executeVirtualPosix(command, {
       read: async (path) => {
-        const value = await readBytesWithHash(bucket, `${prefix}${path}`);
-        observed.set(path, value?.hash ?? null);
+        const scopedPath = assertWorkspaceFileAllowed(ctx.env.workspaceFileScope, path);
+        const value = await readBytesWithHash(bucket, `${prefix}${scopedPath}`);
+        observed.set(scopedPath, value?.hash ?? null);
         return value ? new TextDecoder().decode(value.bytes) : undefined;
       },
       list: async () => (await virtualFsList(ctx.env)).map((entry) => entry.path),
       write: async (path, contents) => {
-        if (!observed.has(path)) observed.set(path, (await readBytesWithHash(bucket, `${prefix}${path}`))?.hash ?? null);
-        await virtualFsWrite(ctx.env, path, contents, observed.get(path)!);
-        observed.set(path, await sha256Text(contents));
+        const scopedPath = assertWorkspaceFileAllowed(ctx.env.workspaceFileScope, path);
+        if (!observed.has(scopedPath)) observed.set(scopedPath, (await readBytesWithHash(bucket, `${prefix}${scopedPath}`))?.hash ?? null);
+        await virtualFsWrite(ctx.env, scopedPath, contents, observed.get(scopedPath)!);
+        observed.set(scopedPath, await sha256Text(contents));
       },
       remove: async (path) => {
-        if (!observed.has(path)) observed.set(path, (await readBytesWithHash(bucket, `${prefix}${path}`))?.hash ?? null);
-        await virtualFsDelete(ctx.env, path, observed.get(path)!);
-        observed.set(path, null);
+        const scopedPath = assertWorkspaceFileAllowed(ctx.env.workspaceFileScope, path);
+        if (!observed.has(scopedPath)) observed.set(scopedPath, (await readBytesWithHash(bucket, `${prefix}${scopedPath}`))?.hash ?? null);
+        await virtualFsDelete(ctx.env, scopedPath, observed.get(scopedPath)!);
+        observed.set(scopedPath, null);
       },
     }, {
       ...(cli ? { cli } : {}),
-      authorize: ctx.authorizeShell,
+      ...(ctx.authorizeShell ? { authorize: ctx.authorizeShell } : {}),
       deadline: Date.now() + Math.max(1, Math.min(120, Number(args["timeout"]) || 30)) * 1000,
       maxOutputBytes: 65_536,
       resolve: async (words, stdin, execution) => {
@@ -221,7 +233,7 @@ async function runBash(
   const first = parsedShell[0]?.commands[0]?.argv[0];
   if (parsedShell.length === 1 && parsedShell[0]!.commands.length === 1 && !parsedShell[0]!.commands[0]!.redirects.length && first && /^[a-zA-Z][\w-]*$/.test(first)) {
     if (ctx.authorizeShell && !await ctx.authorizeShell({ kind: "command", name: first })) throw new Error(`shell_permission_denied:${first}`);
-    const avosPrefix = prefix.replace(/workspace\/$/, "avos/");
+    const avosPrefix = machinePrefix(ctx.env);
     const module = await bucket.get(`${avosPrefix}bin/${first}.ts`);
     if (module) {
       if (!ctx.env.codeRunner)

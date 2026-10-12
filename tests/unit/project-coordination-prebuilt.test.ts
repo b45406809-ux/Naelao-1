@@ -38,6 +38,41 @@ function makeEnv(calls: Call[], responder?: (call: Call) => unknown, orchestrati
 const noopRun = async () => ({});
 
 describe("project-coordination prebuilt", () => {
+  describe("project.pull_request.merge", () => {
+    function mergeEnv(role: string, calls: Call[]) {
+      const base = makeEnv(calls, () => ({ data: [{ user_id: "reviewer-1", role }] }));
+      const artifactWorker = {
+        async fetch(reqInput: Request | string, init?: RequestInit) {
+          const req = typeof reqInput === "string" ? new Request(reqInput, init) : reqInput;
+          const body = await req.clone().json().catch(() => null);
+          calls.push({ method: req.method, url: req.url, headers: Object.fromEntries(req.headers), body });
+          return Response.json({ event: { type: "workspace.merged", branch: "main", source: "task/1" } });
+        },
+      };
+      return { ...base, artifactWorker, projectId: "project-1", userId: "reviewer-1" } as ScriptEngineEnv;
+    }
+
+    it("checks the SpaceDO roster and denies a member before calling the repository", async () => {
+      const calls: Call[] = [];
+      const env = mergeEnv("member", calls);
+      await expect(projectCoordination.operations["project.pull_request.merge"]!(
+        { fork_branch: "task/1" }, { env, run: noopRun }
+      )).rejects.toThrow(/Only an admin or owner/);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.url).toContain("/spaces/space-1/members");
+    });
+
+    it("merges only after an owner check and records the workspace event", async () => {
+      const calls: Call[] = [];
+      const env = mergeEnv("owner", calls);
+      await expect(projectCoordination.operations["project.pull_request.merge"]!(
+        { fork_branch: "task/1" }, { env, run: noopRun }
+      )).resolves.toMatchObject({ event: { type: "workspace.merged" } });
+      expect(calls.some(call => call.url.includes("mergePullRequest"))).toBe(true);
+      expect(calls.some(call => call.url.endsWith("/spaces/space-1/workspace-events"))).toBe(true);
+    });
+  });
+
   describe("thread.consult", () => {
     it("requires agent_id and message", async () => {
       const orchestration: OrchestrationHooks = { consultAgent: async () => ({ ok: true }) };

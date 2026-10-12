@@ -12,6 +12,7 @@ import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { contextWindowForModel, isAllowedModel, ALLOWED_MODELS, DEFAULT_WORKING_MODEL, isValidReasoningLevel, capabilityForModel, isValidEffortLevel, type EffortLevel } from "@naelao/billing-core";
 import { getDOName } from "@naelao/crypto";
 import { detectPromptInjection, detectPolicyViolations } from "@naelao/moderation";
+import { expireToolOutputs } from "./script-engine/tool-output-expiry.js";
 import { parseMentions, creatableFeatureKindsForRole, detectImplicitSignals, classifyFailure, type MentionableAgent } from "@naelao/events";
 import { NaelaoAgentDO, ASSISTANT_MEMORY_SCOPE } from "./do/NaelaoAgentDO.js";
 import { HITLApprovalDO } from "./do/HITLApprovalDO.js";
@@ -534,7 +535,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
     return c.json({ error_code: "content_blocked", message: "This message violates content policy" }, 400);
   }
 
-  // G-AO17: Runtime prompt injection detection — silent detection, no oracle
+  // G-AO17: Runtime prompt injection detection — silent quarantine, no oracle.
   const injectionFlags = detectPromptInjection(body.goal);
   if (injectionFlags.length > 0) {
     // Record attempt and check rate-limit without revealing detection to user
@@ -559,6 +560,9 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
     } catch {
       // Best-effort — never block legitimate users due to injection tracking failures
     }
+    // Detection without quarantine would still hand the hostile text to the planner. Keep the
+    // response generic so callers do not get a detector oracle, but never execute this turn.
+    return c.json({ error_code: "request_unavailable", message: "Unable to process this request" }, 400);
   }
 
   // Fetch space from D1 (validate tenant ownership)
@@ -2143,7 +2147,7 @@ app.get("/spaces/:spaceId/sessions/:sessionId/context-usage", async (c) => {
     if (resp.ok) {
       const data = await resp.json<{ data?: Array<{ content: string }> }>();
       const totalChars = (data.data ?? []).reduce((sum, m) => sum + (m.content?.length ?? 0), 0);
-      currentTokens = Math.ceil(totalChars / 4); // same chars-per-token approximation used elsewhere
+      currentTokens = Math.ceil(totalChars / 3.85); // calibrated estimate; provider usage is billed separately
     }
   } catch {
     // Message history unreachable — report 0 rather than failing the whole endpoint.
@@ -2163,7 +2167,7 @@ app.get("/spaces/:spaceId/sessions/:sessionId/context-usage", async (c) => {
   const overheadTokens = Math.min(OVERHEAD_TOKENS_ESTIMATE, Math.max(0, modelWindow - currentTokens));
   const freeTokens = Math.max(0, modelWindow - currentTokens - overheadTokens);
   const breakdown = [
-    { key: "conversation", label: "Conversation", tokens: currentTokens, estimated: false },
+    { key: "conversation", label: "Conversation", tokens: currentTokens, estimated: true },
     { key: "overhead", label: "System prompt & tools", tokens: overheadTokens, estimated: true },
     { key: "free", label: "Free space", tokens: freeTokens, estimated: false },
   ];
@@ -2183,6 +2187,7 @@ app.get("/spaces/:spaceId/sessions/:sessionId/context-usage", async (c) => {
 
   return c.json({
     current_tokens: currentTokens,
+    estimation_method: "characters/3.85",
     model,
     model_window: modelWindow,
     percent_full: percentFull,
@@ -2988,6 +2993,60 @@ app.post("/spaces/:spaceId/projects/:projectId/daemons/:daemonId/mcp", async (c)
     body: payload,
   }));
   return new Response(response.body, { status: response.status, headers: response.headers });
+});
+
+// Human decision endpoint for inline PR cards. It reloads the card and SpaceDO roster, so neither
+// branch names nor reviewer rank supplied by the client can authorize a merge.
+app.post("/spaces/:spaceId/projects/:projectId/pull-request-cards/:cardId/decision", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const userId = c.req.header("x-naelao-user-id") ?? "";
+  if (!tenantId || !userId || !(await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)))
+    return c.json({ error_code: "forbidden" }, 403);
+  if (!c.env.ARTIFACT_WORKER) return c.json({ error_code: "unavailable" }, 503);
+  const { spaceId, projectId, cardId } = c.req.param();
+  const requestBody = await c.req.json<{ decision?: string }>().catch(() => ({} as { decision?: string }));
+  const status = requestBody.decision === "merge" ? "merged" : requestBody.decision === "request_changes" ? "revisions_requested" : requestBody.decision === "reject" ? "rejected" : "";
+  if (!status) return c.json({ error_code: "bad_request" }, 400);
+  const headers = { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId), "x-naelao-user-id": userId };
+  const membersResponse = await c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/members`, { headers }));
+  if (!membersResponse.ok) return c.json({ error_code: "membership_unavailable" }, 503);
+  const roster = await membersResponse.json<{ data?: Array<{ user_id: string; role: string }> }>();
+  const reviewerRole = roster.data?.find(member => member.user_id === userId)?.role;
+  if (reviewerRole !== "owner" && reviewerRole !== "admin") return c.json({ error_code: "forbidden", message: "Space owner or admin required" }, 403);
+  const cardsResponse = await c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/pull-request-cards?project_id=${encodeURIComponent(projectId)}`, { headers }));
+  if (!cardsResponse.ok) return c.json({ error_code: "review_cards_unavailable" }, 503);
+  const cards = await cardsResponse.json<{ data?: Array<Record<string, unknown>> }>();
+  const card = cards.data?.find(value => value.id === cardId);
+  if (!card) return c.json({ error_code: "not_found" }, 404);
+  if (card.status !== "open") return card.status === status ? c.json({ id: cardId, status }) : c.json({ error_code: "review_card_already_resolved" }, 409);
+  if (status === "merged") {
+    const repo = `http://artifact-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/repository`;
+    const currentHeadResponse = await c.env.ARTIFACT_WORKER.fetch(new Request(`${repo}/head?branch=${encodeURIComponent(String(card.baseBranch ?? "main"))}`, { headers }));
+    if (!currentHeadResponse.ok) return new Response(currentHeadResponse.body, { status: currentHeadResponse.status, headers: { "content-type": "application/json" } });
+    const currentHead = await currentHeadResponse.json<{ commit_id?: string }>();
+    if (!currentHead.commit_id) return c.json({ error_code: "repository_head_unavailable" }, 503);
+    const compareResponse = await c.env.ARTIFACT_WORKER.fetch(new Request(`${repo}/compare?${new URLSearchParams({ base: String(card.headCommit ?? ""), head: currentHead.commit_id })}`, { headers }));
+    if (!compareResponse.ok) return new Response(compareResponse.body, { status: compareResponse.status, headers: { "content-type": "application/json" } });
+    const comparison = await compareResponse.json<{ behind?: number }>();
+    // If the branch head is already an ancestor of main, a prior merge succeeded and only
+    // status persistence was interrupted. Complete the card without replaying the side effect.
+    const alreadyMerged = comparison.behind === 0;
+    if (!alreadyMerged) {
+      if (currentHead.commit_id !== card.baseCommit) return c.json({ error_code: "review_base_changed", message: "Main changed after this review; refresh the diff before merging" }, 409);
+      const mergeResponse = await c.env.ARTIFACT_WORKER.fetch(new Request(`${repo}/mergePullRequest`, { method: "POST", headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ baseBranch: String(card.baseBranch ?? "main"), forkBranch: String(card.forkBranch ?? ""), expected_head: String(card.baseCommit ?? ""), reviewerId: userId, reviewerRank: reviewerRole }) }));
+      if (!mergeResponse.ok) return new Response(mergeResponse.body, { status: mergeResponse.status, headers: { "content-type": "application/json" } });
+      const result = await mergeResponse.json<Record<string, unknown>>();
+      if (result.event) await c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/workspace-events`, {
+        method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ space_id: spaceId, project_id: projectId, event: result.event }),
+      }));
+    }
+  }
+  const saved = await c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/pull-request-cards/${encodeURIComponent(cardId)}/status`, {
+    method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ project_id: projectId, status }),
+  }));
+  if (!saved.ok) return new Response(saved.body, { status: saved.status, headers: { "content-type": "application/json" } });
+  return c.json({ id: cardId, status });
 });
 
 app.put("/spaces/:spaceId/sessions/:sessionId/approvals/:approvalId/answer", async (c) => {
@@ -6572,7 +6631,11 @@ export type { AgentTickMessage };
 
 export default {
   fetch: app.fetch,
-  async scheduled(_controller: ScheduledController, env: AgentsEnv, _ctx: ExecutionContext): Promise<void> {
+  async scheduled(controller: ScheduledController, env: AgentsEnv, _ctx: ExecutionContext): Promise<void> {
+    if (controller.cron === "*/5 * * * *") {
+      if (env.SCRIPTS_R2) await expireToolOutputs(env.AGENT_CACHE, env.SCRIPTS_R2);
+      return;
+    }
     // Hourly cron → enumerate-and-enqueue the agent-tick fan-out (connector polls, channel
     // heartbeats, time-based scheduled jobs — spec §05 cron-jobs.json). See
     // enqueueAgentTicks/handleAgentTicksQueue above for why this is a queue fan-out rather than a

@@ -36,7 +36,21 @@ export function normalizeWorkspacePath(input: string): string {
     parts.push(part);
   }
   if (!parts.length) throw new Error("workspace_file_path_required");
+  // Branch backing objects share an R2 prefix, but are outside every deliverable root.
+  if (parts[0] === "branches") throw new Error("workspace_branch_namespace_reserved");
   return parts.join("/");
+}
+
+/** Exact host-granted paths for delegated workers; undefined preserves the full project scope. */
+export function isWorkspaceFileAllowed(scope: readonly string[] | undefined, path: string): boolean {
+  const normalized = normalizeWorkspacePath(path);
+  return scope === undefined || scope.some(granted => normalizeWorkspacePath(granted) === normalized);
+}
+
+export function assertWorkspaceFileAllowed(scope: readonly string[] | undefined, path: string): string {
+  const normalized = normalizeWorkspacePath(path);
+  if (!isWorkspaceFileAllowed(scope, normalized)) throw new Error("worker_file_scope_denied");
+  return normalized;
 }
 
 /** Normalize a machine-only path and require that it remains below /.avos/. */

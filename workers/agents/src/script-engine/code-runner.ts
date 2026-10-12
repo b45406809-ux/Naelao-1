@@ -82,7 +82,7 @@ export interface CodeRunnerOptions {
   /** Browser-owned WebContainer bridge, when a live tab advertises one. */
   webContainer?: Fetcher;
   /** LocalTunnelDO namespace for explicitly selected workstation execution. */
-  localTunnel?: DurableObjectNamespace;
+  localTunnel?: DurableObjectNamespace<import("../do/LocalTunnelDO.js").LocalTunnelDO>;
   localMachine?: (params: Parameters<TieredCodeRunner["run"]>[0]) => Promise<import("./types.js").ScriptRunResult>;
   /** §A1.17 Phase L: Container Marketplace image id -> its own DO namespace binding. Empty/absent
    *  today — every catalogue image ships `available:false` (see container-catalogue.ts) until a
@@ -175,7 +175,7 @@ async function runBrowser(
         const bytes = await response.arrayBuffer();
         if (bytes.byteLength > 4 * 1024 * 1024) return fail("browser_screenshot_limit");
         engine = "chromium";
-        return { ok: true, output: { image_base64: Buffer.from(bytes).toString("base64"), mime_type: "image/png", session_id: sessionId },
+        return { ok: true, output: { image_base64: btoa(Array.from(new Uint8Array(bytes), byte => String.fromCharCode(byte)).join("")), mime_type: "image/png", session_id: sessionId },
           tier: 5, actual_tier: 5, engine, duration_ms: Date.now() - started, tokens_used: 0 };
       }
       let result = await response.json<{ ok?: boolean; result?: BrowserObservation; engine_used?: string; error_code?: string; message?: string }>();
@@ -220,7 +220,7 @@ async function runContainer(
     if (!opts.webContainer) return unavailableBackend(backend, started);
     const timeoutMs = Math.min(60000, opts.containerTimeoutMs ?? DEFAULT_CONTAINER_TIMEOUT_MS);
     try {
-      assertBrowserContainerLease(await opts.browserContainerLease?.(), { tenantId: params.tenantId, spaceId: params.spaceId, projectId: params.projectId,
+      assertBrowserContainerLease(await opts.browserContainerLease?.(), { tenantId: params.tenantId, spaceId: params.spaceId, ...(params.projectId ? { projectId: params.projectId } : {}),
         actorId: params.userId, agentId: params.agentId, runId: params.runId, executionId: crypto.randomUUID(), timeoutMs, deadline: Date.now() + timeoutMs }, await opts.browserCompatible?.(params) === true);
     } catch (error) { return fail(error instanceof Error ? error.message : "webcontainer_consent_required"); }
     return runContainerRequest(opts.webContainer, opts, params, started);
@@ -239,7 +239,7 @@ async function runContainer(
       const { namespace, installation } = await opts.resolveSidecar(params);
       if (installation.installationId !== params.installationId || installation.contract.image !== params.containerImage) return fail("container_image_installation_mismatch");
       const timeoutMs = Math.min(opts.containerTimeoutMs ?? DEFAULT_CONTAINER_TIMEOUT_MS, installation.contract.resources.timeoutSeconds * 1000);
-      const scope: ContainerInvocationScope = { tenantId: params.tenantId, spaceId: params.spaceId, projectId: params.projectId, actorId: params.userId,
+      const scope: ContainerInvocationScope = { tenantId: params.tenantId, spaceId: params.spaceId, ...(params.projectId ? { projectId: params.projectId } : {}), actorId: params.userId,
         agentId: params.agentId, runId: params.runId, executionId: crypto.randomUUID(), installationId: params.installationId, image: installation.contract.image, timeoutMs, deadline: Date.now() + timeoutMs };
       const stub = namespace.get(namespace.idFromName(sidecarKey(scope) + branchScope));
       return runContainerRequest(stub, opts, params, started, false, scope);
@@ -309,7 +309,7 @@ async function runContainerRequest(
 ): Promise<ScriptRunResult> {
   const controller = new AbortController();
   const timeoutMs = Math.min(60000, suppliedScope?.timeoutMs ?? opts.containerTimeoutMs ?? DEFAULT_CONTAINER_TIMEOUT_MS);
-  const scope: ContainerInvocationScope = suppliedScope ?? { tenantId: params.tenantId, spaceId: params.spaceId, projectId: params.projectId,
+  const scope: ContainerInvocationScope = suppliedScope ?? { tenantId: params.tenantId, spaceId: params.spaceId, ...(params.projectId ? { projectId: params.projectId } : {}),
     actorId: params.userId!, agentId: params.agentId, runId: params.runId!, executionId: crypto.randomUUID(), timeoutMs, deadline: Date.now() + timeoutMs };
   validateContainerScope(scope);
   const token = opts.platformSecret ? await mintInternalToken(opts.platformSecret, params.tenantId) : undefined;
@@ -321,6 +321,21 @@ async function runContainerRequest(
   };
   params.signal?.addEventListener("abort", cancel, { once: true });
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let polling = false, completed = false, lastOutput = "";
+  const poll = async () => {
+    if (!params.onOutput || polling || completed || controller.signal.aborted) return;
+    polling = true;
+    try {
+      const response = await stub.fetch(new Request("http://sandbox/output", { headers, signal: controller.signal }));
+      if (!response.ok) return;
+      const output = await response.json<{ stdout?: unknown; stderr?: unknown }>();
+      if (typeof output.stdout !== "string" || typeof output.stderr !== "string" || output.stdout.length + output.stderr.length > 2 * 1024 * 1024) return;
+      const serialized = JSON.stringify(output);
+      if (!completed && !controller.signal.aborted && serialized !== lastOutput) { lastOutput = serialized; params.onOutput({ stdout: output.stdout, stderr: output.stderr }); }
+    } catch { /* A progress outage never changes execution or retries a command. */ }
+    finally { polling = false; }
+  };
+  const outputTimer = params.onOutput ? setInterval(() => { void poll(); }, 500) : undefined;
   try {
     if (params.signal?.aborted) { cancel(); throw new Error("container_cancelled"); }
     const computerEndpoint = localTunnel ? "/exec" : params.name === "container.prewarm" ? "/prewarm" : params.name === "computer-use.screenshot"
@@ -363,7 +378,7 @@ async function runContainerRequest(
       ...(resp.ok && body.ok
         ? { output: body.result === undefined ? body : typeof body.result === "object" && body.result !== null && !Array.isArray(body.result)
           ? { ...body.result, ...("workspace_sync" in body ? { workspace_sync: body.workspace_sync } : {}) } : body.result }
-        : { error: body.error ?? `container returned ${resp.status}` }),
+        : { error: `${body.error ?? `container returned ${resp.status}`}${typeof body.logs === "string" && body.logs ? `\n\nFull terminal output:\n${body.logs}` : ""}` }),
       tier: 6,
       actual_tier: 6,
       engine: "container",
@@ -384,6 +399,8 @@ async function runContainerRequest(
       tokens_used: 0,
     };
   } finally {
+    completed = true;
+    if (outputTimer !== undefined) clearInterval(outputTimer);
     clearTimeout(timer);
     params.signal?.removeEventListener("abort", cancel);
     if (controller.signal.aborted) cancel();

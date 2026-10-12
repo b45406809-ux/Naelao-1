@@ -291,7 +291,7 @@ export function buildUniversalBody(opts: {
     model: string;
     max_tokens: number;
     system: string;
-    messages: Array<{ role: string; content: string }>;
+    messages: Array<{ role: string; content: string | Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }> }>;
   };
   /** No longer encoded into the body — see the note above. */
   fallbacks?: FailoverModel[];

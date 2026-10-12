@@ -1,6 +1,9 @@
 import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 
 const active = new Map();
+const outputs = new Map();
+export function executionOutput(id) { return outputs.get(id)?.value ?? { stdout: "", stderr: "" }; }
 const MAX_OUTPUT = 2 * 1024 * 1024;
 const SAFE_ENV = new Set(["LANG", "LC_ALL", "TERM", "DISPLAY", "TZ"]);
 export function guestEnvironment(extra = {}) {
@@ -23,6 +26,10 @@ export function runGuest(command, argv, { id, cwd = "/workspace", env, signal, t
   });
   return new Promise((resolve, reject) => {
     let stdout = "", stderr = "", bytes = 0, result, failure, settled = false;
+    for (const [key, output] of outputs) if (output.expiresAt < Date.now()) outputs.delete(key);
+    while (outputs.size >= 32) outputs.delete(outputs.keys().next().value);
+    const snapshot = { value: { stdout: "", stderr: "" }, expiresAt: Date.now() + 120000 };
+    outputs.set(id, snapshot);
     const kill = () => {
       if (!child.pid) return;
       try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); }
@@ -42,7 +49,9 @@ export function runGuest(command, argv, { id, cwd = "/workspace", env, signal, t
       else resolve({ stdout, stderr, status: code ?? 1, ...(message ? { result: result ?? { ok: false, error: "container_child_no_result" } } : {}) });
     };
     for (const [stream, append] of [[child.stdout, value => { stdout += value; }], [child.stderr, value => { stderr += value; }]]) {
-      stream?.on("data", chunk => { bytes += chunk.length; if (bytes > MAX_OUTPUT) cancel("container_output_limit"); else append(chunk.toString("utf8")); });
+      const decoder = new StringDecoder("utf8");
+      stream?.on("data", chunk => { bytes += chunk.length; if (bytes > MAX_OUTPUT) cancel("container_output_limit"); else { append(decoder.write(chunk)); snapshot.value = { stdout, stderr }; } });
+      stream?.on("end", () => { append(decoder.end()); snapshot.value = { stdout, stderr }; });
     }
     child.on("message", value => {
       if (result !== undefined) return;

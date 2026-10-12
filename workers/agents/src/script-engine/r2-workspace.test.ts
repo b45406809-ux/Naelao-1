@@ -8,6 +8,7 @@ import {
   virtualFsWrite,
 } from "./r2-workspace.js";
 import { workspacePrefix } from "./types.js";
+import { codeExec } from "./prebuilt/code-exec.js";
 
 function createMockEnv() {
   const store = new Map();
@@ -18,12 +19,12 @@ function createMockEnv() {
       const data = store.get(key);
       return data ? { arrayBuffer: async () => data.buffer } : null;
     },
-    head: async (key) => store.has(key) ? { customMetadata: { sha256: metadata.get(key) }, etag: etags.get(key) } : null,
+    head: async (key) => store.has(key) ? { customMetadata: metadata.get(key), etag: etags.get(key) } : null,
     put: async (key, value, options) => {
       if (options?.onlyIf?.etagMatches && etags.get(key) !== options.onlyIf.etagMatches) return undefined;
       if (options?.onlyIf?.etagDoesNotMatch === "*" && store.has(key)) return undefined;
       store.set(key, value);
-      metadata.set(key, options?.customMetadata?.sha256 ?? null);
+      metadata.set(key, options?.customMetadata ?? {});
       const etag = `etag-${store.size}-${Date.now()}`;
       etags.set(key, etag);
       return { etag };
@@ -34,7 +35,7 @@ function createMockEnv() {
     list: async ({ prefix }) => {
       const objects = [...store.keys()]
         .filter((k) => k.startsWith(prefix))
-        .map((key) => ({ key, size: store.get(key).byteLength }));
+        .map((key) => ({ key, size: store.get(key).byteLength, customMetadata: metadata.get(key) }));
       return { objects, truncated: false };
     },
   };
@@ -46,6 +47,7 @@ function createMockEnv() {
     projectId: "proj-1",
     agentId: "agent-1",
     tenantId: "tenant-1",
+    workspaceFileScope: undefined as string[] | undefined,
   };
 }
 
@@ -89,6 +91,22 @@ describe("R2 Virtual POSIX Workspace", () => {
     expect(matches).toEqual([
       { path: "src/api.ts", line: 2, match: "export function findMe() {}" },
     ]);
+  });
+
+  it("enforces the host-signed exact file slice for reads, writes, deletes and listings", async () => {
+    const env = createMockEnv();
+    await virtualFsWrite(env, "src/owned.ts", "owned", null);
+    await virtualFsWrite(env, "src/other.ts", "other", null);
+    env.workspaceFileScope = ["src/owned.ts"];
+
+    expect(await virtualFsRead(env, "src/owned.ts")).toBe("owned");
+    await expect(virtualFsRead(env, "src/other.ts")).rejects.toThrow("worker_file_scope_denied");
+    await expect(virtualFsWrite(env, "src/other.ts", "changed", null)).rejects.toThrow("worker_file_scope_denied");
+    await expect(virtualFsDelete(env, "src/other.ts", null)).rejects.toThrow("worker_file_scope_denied");
+    expect(await virtualFsList(env, "src")).toEqual([{ path: "src/owned.ts", size: 5 }]);
+    expect(await virtualFsGrep(env, "other", "src")).toEqual([]);
+    await expect(codeExec.operations.Bash({ commands: "cat src/other.ts" }, { env, run: async () => undefined })).rejects.toThrow("worker_file_scope_denied");
+    await expect(codeExec.operations["code.execute_python"]({ code: "open('src/other.ts').read()" }, { env, run: async () => undefined })).rejects.toThrow("worker_file_scope_native_execution_unavailable");
   });
 
   it("executes virtual shell commands directly", async () => {

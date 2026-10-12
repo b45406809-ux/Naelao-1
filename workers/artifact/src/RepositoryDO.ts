@@ -219,6 +219,63 @@ export class RepositoryDO extends DurableObject<Env> {
     return { kept, deleted };
   }
 
+  /** Journal Git-to-workspace publication before effects. Replay never overwrites a new writer. */
+  private async publishWorkspaceState(scope: RepositoryScope, state: RepoState, branch: string, before: Entries): Promise<void> {
+    if (!this.env.WORKSPACE_R2) { await this.save(state); return; }
+    const after = state.worktrees[branch] ?? {};
+    const changes = [...new Set([...Object.keys(before), ...Object.keys(after)])]
+      .filter(path => before[path]?.hash !== after[path]?.hash)
+      .map(path => ({ path, expected: before[path]?.hash ?? null, next: after[path] ?? null }));
+    const root = `repositories/${scope.tenantId}/${scope.spaceId}/${scope.projectId}/publications/`;
+    const key = root + crypto.randomUUID() + ".json";
+    await this.env.REPOSITORY_OBJECTS.put(key, JSON.stringify({ scope, state, branch, changes }));
+    await this.ctx.storage.put("workspace_publication", { key, scope });
+    await this.recoverWorkspacePublication(scope);
+  }
+
+  private async recoverWorkspacePublication(scope: RepositoryScope): Promise<void> {
+    try {
+      await this.replayWorkspacePublication(scope);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Storage operation failed";
+      throw new Error(message.startsWith("workspace_publication_") ? message : `workspace_publication_interrupted:${message}`);
+    }
+  }
+
+  private async replayWorkspacePublication(scope: RepositoryScope): Promise<void> {
+    const pending = await this.ctx.storage.get<{ key: string; scope: RepositoryScope }>("workspace_publication");
+    if (!pending) return;
+    if (JSON.stringify(pending.scope) !== JSON.stringify(scope) || !this.env.WORKSPACE_R2) throw new Error("workspace_publication_scope_conflict");
+    const saved = await this.env.REPOSITORY_OBJECTS.get(pending.key);
+    if (!saved) throw new Error("workspace_publication_journal_missing");
+    const journal = JSON.parse(new TextDecoder().decode(await saved.arrayBuffer())) as {
+      scope: RepositoryScope; state: RepoState; branch: string;
+      changes: Array<{ path: string; expected: string | null; next: TreeEntry | null }>;
+    };
+    const root = `spaces/${scope.spaceId}/projects/${scope.projectId}/workspace/`;
+    const prefix = journal.branch === "main" ? root : `${root}branches/${journal.branch}/`;
+    for (const change of journal.changes) {
+      const key = prefix + normalizePath(change.path);
+      const head = await this.env.WORKSPACE_R2.head(key);
+      const live = head && head.customMetadata?.deleted !== "true";
+      const currentHash = live ? head.customMetadata?.sha256 ?? await sha256(new Uint8Array(await (await this.env.WORKSPACE_R2.get(key))!.arrayBuffer())) : null;
+      const desiredHash = change.next?.hash ?? null;
+      // A previous attempt already published this file. A fresh competing write is a conflict.
+      if (currentHash === desiredHash) continue;
+      if (currentHash !== change.expected) throw new Error(`workspace_publication_conflict:${change.path}`);
+      const bytes = change.next ? (await this.readVerifiedObject(scope, change.next.oid)).body : new Uint8Array();
+      if (change.next && (bytes.byteLength !== change.next.size || await sha256(bytes) !== change.next.hash)) throw new Error("workspace_publication_blob_corrupt");
+      const result = await this.env.WORKSPACE_R2.put(key, bytes, {
+        onlyIf: head ? { etagMatches: head.etag } : { etagDoesNotMatch: "*" },
+        customMetadata: { ...(change.next ? { sha256: change.next.hash } : {}), deleted: change.next ? "false" : "true" },
+      });
+      if (!result) throw new Error(`workspace_publication_conflict:${change.path}`);
+    }
+    await this.save(journal.state);
+    await this.ctx.storage.delete("workspace_publication");
+    await this.env.REPOSITORY_OBJECTS.delete(pending.key);
+  }
+
   private resolve(
     state: RepoState,
     value: string | null | undefined
@@ -358,7 +415,6 @@ export class RepositoryDO extends DurableObject<Env> {
   }
 
   async fetch(request: Request): Promise<Response> {
-    if (request.method === "GET") return this.handle(request);
     // Keep the state read, expected-hash comparison, immutable object write and ref/state update
     // inside one Durable Object input gate. This is the SQLite equivalent of an atomic CAS.
     return typeof this.ctx.blockConcurrencyWhile === "function"
@@ -369,6 +425,7 @@ export class RepositoryDO extends DurableObject<Env> {
   private async handle(request: Request): Promise<Response> {
     try {
       const scope = this.scope(request);
+      await this.recoverWorkspacePublication(scope);
       const url = new URL(request.url);
       let op = url.pathname.replace(/^\/+/, "");
       // Stable binding names used by SDK callers; the compact HTTP names remain backwards compatible.
@@ -439,6 +496,7 @@ export class RepositoryDO extends DurableObject<Env> {
         do {
           const page = await this.env.WORKSPACE_R2.list(cursor ? { prefix, cursor } : { prefix });
           for (const item of page.objects) {
+            if (item.key.slice(prefix.length).startsWith("branches/")) continue;
             if (item.customMetadata?.deleted === "true" || item.key.endsWith("/.keep")) continue;
             const path = normalizePath(item.key.slice(prefix.length));
             const object = await this.env.WORKSPACE_R2.get(item.key);
@@ -729,7 +787,7 @@ export class RepositoryDO extends DurableObject<Env> {
           ? structuredClone(state.commits[from]!.entries)
           : {};
         if (body.temporary === true) state.temporary.push(name);
-        await this.save(state);
+        await this.publishWorkspaceState(scope, state, name, {});
         return Response.json(
           { branch: name, commit_id: state.refs[name], copy_on_write: true },
           { status: 201 }
@@ -755,7 +813,7 @@ export class RepositoryDO extends DurableObject<Env> {
         if (!base || !head) return jsonError("Reference not found", 404);
         const files = await this.changedFiles(scope, state.commits[base]!.entries, state.commits[head]!.entries);
         const card = {
-          type: "inline_pull_request", id: crypto.randomUUID(), title: String(body.title ?? `Merge ${forkName} into ${baseName}`),
+          type: "inline_pull_request", id: typeof body.card_id === "string" ? body.card_id : crypto.randomUUID(), title: String(body.title ?? `Merge ${forkName} into ${baseName}`),
           author: String(body.author ?? "agent"), reasoning: String(body.reasoning ?? ""), baseBranch: baseName,
           forkBranch: forkName, baseCommit: base, headCommit: head, files,
           additions: files.reduce((sum, file) => sum + file.additions, 0),
@@ -806,7 +864,8 @@ export class RepositoryDO extends DurableObject<Env> {
         const encoded = await encodeGitObject("commit", commitBody(hierarchy.root.oid, upstream, `Rebase ${targetName} onto ${upstreamName}`, metadata, createdAt));
         await this.putObject(scope, encoded.oid, encoded.bytes);
         state.commits[encoded.oid] = { oid: encoded.oid, tree: hierarchy.root.oid, parent: upstream, parents: [upstream], message: `Rebase ${targetName} onto ${upstreamName}`, metadata, createdAt, entries: structuredClone(rebased) };
-        state.refs[targetName] = encoded.oid; state.worktrees[targetName] = rebased; await this.save(state);
+        state.refs[targetName] = encoded.oid; state.worktrees[targetName] = rebased;
+        await this.publishWorkspaceState(scope, state, targetName, targetEntries);
         return Response.json({ status: "AUTO_REBASED", commitsBehind, baseCommit: common, upstreamHead: upstream, commit_id: encoded.oid, overlappingFiles: [] });
       }
       if (op === "merge-pull-request" && request.method === "POST") {
@@ -884,14 +943,14 @@ export class RepositoryDO extends DurableObject<Env> {
         const source = state.refs[sourceName];
         if (!source || target === undefined)
           return jsonError("Reference not found", 404);
+        if (body.expected_head !== undefined && body.expected_head !== target)
+          return jsonError("Head changed", 409);
         if (!target || this.ancestors(state, source).has(target)) {
-          if (body.expected_head !== undefined && body.expected_head !== target)
-            return jsonError("Head changed", 409);
           state.refs[targetName] = source;
           state.worktrees[targetName] = structuredClone(
             state.commits[source]!.entries
           );
-          await this.save(state);
+          await this.publishWorkspaceState(scope, state, targetName, target ? state.commits[target]!.entries : {});
           return Response.json({
             commit_id: source,
             fast_forward: true,
@@ -965,7 +1024,7 @@ export class RepositoryDO extends DurableObject<Env> {
           entries: structuredClone(merged),
         };
         state.refs[targetName] = encoded.oid;
-        await this.save(state);
+        await this.publishWorkspaceState(scope, state, targetName, ours);
         return Response.json(
           {
             commit_id: encoded.oid,
@@ -1102,7 +1161,10 @@ export class RepositoryDO extends DurableObject<Env> {
       return jsonError("Route not found", 404);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Invalid request";
-      return jsonError(message, /integrity check failed|object missing|malformed tree|reachable commit metadata missing/i.test(message) ? 500 : 400);
+      const status = message.startsWith("workspace_publication_conflict:") ? 409
+        : message.startsWith("workspace_publication_interrupted:") ? 503
+        : /workspace_publication_|integrity check failed|object missing|malformed tree|reachable commit metadata missing/i.test(message) ? 500 : 400;
+      return jsonError(message, status);
     }
   }
 }

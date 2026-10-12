@@ -39,7 +39,7 @@ export function validateMachineGrants(grants: readonly MachineGrant[], now = Dat
   for (const grant of grants) {
     if (!grant || !MACHINE_ID.test(grant.id) || ids.has(grant.id) || !MACHINE_ID.test(grant.actorId) || grant.actorId === "system"
       || grant.projectId && !MACHINE_ID.test(grant.projectId) || !Number.isFinite(grant.expiresAt) || grant.expiresAt <= now
-      || !Array.isArray(grant.commands) || grant.commands.length > 128 || grant.commands.some(cmd => typeof cmd !== "string" || !cmd.trim() || cmd.length > 8192)
+      || !Array.isArray(grant.commands) || grant.commands.length > 128 || grant.commands.some((cmd: unknown) => typeof cmd !== "string" || !cmd.trim() || cmd.length > 8192)
       || typeof grant.inference !== "boolean" || !Array.isArray(grant.roots) || grant.roots.length > 32) throw new Error("tunnel_grant_invalid");
     ids.add(grant.id);
     for (const root of grant.roots) if (!root || typeof root.path !== "string" || root.path.length > 1024 || !/^(?:\/|[A-Za-z]:[\\/])/.test(root.path) || !["read", "write", "readwrite"].includes(root.access)) throw new Error("tunnel_root_grant_invalid");
@@ -58,7 +58,7 @@ export async function verifyMachineProof(machine: NamedMachine, proof: MachinePr
     validateMachinePublicKey(machine.publicKey);
     const key = await crypto.subtle.importKey("jwk", machine.publicKey, { name: "Ed25519" }, false, ["verify"]);
     const bytes = Uint8Array.from(atob(signature.replaceAll("-", "+").replaceAll("_", "/") + "=="), c => c.charCodeAt(0));
-    return await crypto.subtle.verify("Ed25519", key, bytes, machineProofBytes(proof));
+    return await crypto.subtle.verify("Ed25519", key, bytes, new Uint8Array(machineProofBytes(proof)));
   } catch { return false; }
 }
 export async function tunnelHash(value: string): Promise<string> {

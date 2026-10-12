@@ -72,7 +72,8 @@ export class WorkflowJournal {
       const record = await storage.get<WorkflowJournalRecord>("run");
       if (!record || record.status !== "failed" || record.attempt >= maxAttempts || record.identity.expiresAt <= Date.now()) throw new Error("workflow_retry_not_allowed");
       // External-effect records deliberately survive an explicit provider restart.
-      const updated = { ...record, status: "queued" as const, error: undefined, result: undefined, attempt: record.attempt + 1, launched: false, cleanupPending: false, updatedAt: Date.now() };
+      const { error: _error, result: _result, ...retained } = record;
+      const updated = { ...retained, status: "queued" as const, attempt: record.attempt + 1, launched: false, cleanupPending: false, updatedAt: Date.now() };
       await storage.put("run", updated);
       return updated;
     });

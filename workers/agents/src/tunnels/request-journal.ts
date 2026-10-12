@@ -1,9 +1,9 @@
 export interface TunnelRequestRecord {
-  id: string; tenantId: string; spaceId: string; machineId: string; actorId: string; projectId?: string; runId: string;
+  id: string; tenantId: string; spaceId: string; machineId: string; actorId: string; projectId?: string | undefined; runId: string;
   operation: string; payloadHash: string; generation: number; deadline: number;
   status: "prepared" | "sent" | "running" | "succeeded" | "failed" | "cancelled" | "indeterminate";
   nextOutputSequence: number; outputBytes: number; stdout: string; stderr: string;
-  result?: unknown; error?: string; createdAt: number; updatedAt: number;
+  result?: unknown; error?: string | undefined; createdAt: number; updatedAt: number;
 }
 export interface TunnelJournalStorage {
   get<T>(key: string): Promise<T | undefined>;

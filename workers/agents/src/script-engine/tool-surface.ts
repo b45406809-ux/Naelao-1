@@ -1,3 +1,4 @@
+import { offloadToolOutput } from "./tool-output.js";
 /**
  * The complete agent tool surface (spec §3) — exactly six operations. Everything the agent
  * can do flows through these; there are no other hardcoded tools.
@@ -33,7 +34,7 @@ import { isReadSafeOperation } from "./assistant-access.js";
 import { enforceWriteGuardWithSentry } from "@naelao/agent-sdk";
 import { interceptPlatformCli } from "./virtual-cli.js";
 import { workspacePrefix } from "./types.js";
-import type { UniversalAgentRole } from "@naelao/agent-sdk";
+import { validProviderUsage, type UniversalAgentRole } from "@naelao/agent-sdk";
 import { isToolAllowedForRole } from "./agent-firewall.js";
 import { isPlannerOperationAllowed, type PlannerScope } from "./agent-topology.js";
 
@@ -311,6 +312,10 @@ export class ScriptToolSurface {
     this.ops = buildOperationMap(enabledPrebuilt);
     for (const [name, { prebuilt }] of this.ops) {
       if (!isToolAllowedForRole(this.role, name, prebuilt.requires_tier)) this.ops.delete(name);
+      // A planner must not retain a file mutation capability, even if its configured prebuilt
+      // list includes the worker's workspace tools. Coordination operations remain installed
+      // for typed delegation; domain actions are still guarded at invocation.
+      if (this.plannerScope && ["Edit", "Write"].includes(name)) this.ops.delete(name);
     }
     if (isPublicRoom(context.roomType)) {
       for (const [name, { prebuilt }] of this.ops) {
@@ -337,6 +342,7 @@ export class ScriptToolSurface {
     };
     this.ops.set("tools.search", { prebuilt: toolsMeta, op: async (args) => this.searchOperations(String(args["query"] ?? "")) });
     this.ops.set("tools.describe", { prebuilt: toolsMeta, op: async (args) => this.describeOperation(String(args["name"] ?? "")) });
+    env.nativeExecutionAllowed = !this.plannerScope && this.ops.has("Bash");
     env.codeAuthorize = async (scope, capability) => {
       if (scope.tenantId !== env.tenantId || scope.spaceId !== env.spaceId || scope.agentId !== env.agentId || scope.projectId !== env.projectId) return false;
       if (!env.codeGrantIsActive || !await env.codeGrantIsActive(scope)) return false;
@@ -903,10 +909,10 @@ export class ScriptToolSurface {
         // so it's billed exactly like reasoner-driven tokens are (settleRunBilling reads
         // ScriptRunResult.tokens_used/input_tokens/output_tokens via withTokenUsage). An op that
         // never touches an LLM leaves this at 0, unchanged from before this feature existed.
-        const usage = (output as { usage?: { tokens_used?: number; input_tokens?: number; output_tokens?: number } } | null)?.usage;
+        const usage = validProviderUsage((output as { usage?: unknown } | null)?.usage);
         // Step 9: generic result-size guard. Read usage from the ORIGINAL output above (the
         // paginated view may replace the primary list), then hand the model the size-limited view.
-        const limited = applyToolResultLimit(output, params);
+        const limited = name === "browser.see" ? output : await offloadToolOutput(this.env, pageArg(params, "limit", "_limit", "offset", "_offset") !== undefined ? applyToolResultLimit(output, params) : output);
         const reportedEngine = executionEngine((output as { engine?: unknown } | null)?.engine)
           ?? route?.engine
           ?? EXECUTION_ENGINES[effectiveTier];
@@ -915,7 +921,7 @@ export class ScriptToolSurface {
           output: limited,
           tier: effectiveTier,
           duration_ms: Date.now() - started,
-          tokens_used: usage?.tokens_used ?? 0,
+          tokens_used: usage ? usage.input_tokens + usage.output_tokens : 0,
           ...(usage?.input_tokens !== undefined ? { input_tokens: usage.input_tokens } : {}),
           ...(usage?.output_tokens !== undefined ? { output_tokens: usage.output_tokens } : {}),
           actual_tier: ((output as { actual_tier?: ExecutionTier } | null)?.actual_tier ?? effectiveTier),
@@ -929,16 +935,27 @@ export class ScriptToolSurface {
         // reasoning loop's answer, and any future UI, sees a structured signal rather than only
         // free text buried in the error message.
         const meta = err as unknown as Record<string, unknown>;
+        const fullError = err instanceof Error ? err.message : String(err);
+        let deliveredError = fullError;
+        try {
+          const bounded = await offloadToolOutput(this.env, fullError);
+          if (typeof bounded !== "string") {
+            const log = bounded as { instruction: string; preview: string };
+            deliveredError = `${log.instruction}\n${log.preview}`;
+          }
+        } catch (storageError) {
+          deliveredError = `Full error output could not be saved: ${String(storageError)}\n${fullError.slice(0, 4000)}`;
+        }
         return this.recordExecution(name, {
           ok: false,
-          error: err instanceof Error ? err.message : String(err),
+          error: deliveredError,
           tier: effectiveTier,
           actual_tier: effectiveTier,
           engine: route?.engine ?? EXECUTION_ENGINES[effectiveTier],
           duration_ms: Date.now() - started,
           tokens_used: 0,
-          ...(meta["capability_error"] ? { capability_error: meta["capability_error"] as ScriptRunResult["capability_error"] } : {}),
-          ...(meta["runtime_receipt"] ? { runtime_receipt: meta["runtime_receipt"] as ScriptRunResult["runtime_receipt"] } : {}),
+          ...(meta["capability_error"] ? { capability_error: meta["capability_error"] as NonNullable<ScriptRunResult["capability_error"]> } : {}),
+          ...(meta["runtime_receipt"] ? { runtime_receipt: meta["runtime_receipt"] as NonNullable<ScriptRunResult["runtime_receipt"]> } : {}),
           ...(typeof meta["needsConnector"] === "boolean" ? { needs_connector: meta["needsConnector"] as boolean } : {}),
           ...(typeof meta["connectorId"] === "string" ? { connector_id: meta["connectorId"] as string } : {}),
           ...(typeof meta["connectorName"] === "string" ? { connector_name: meta["connectorName"] as string } : {}),
@@ -985,6 +1002,7 @@ export class ScriptToolSurface {
     // The error, not just the boolean: it is what a later repair is aimed at, and what lets the
     // next run see "failed its last three times, and here is why" instead of a lower number.
     await this.library.recordOutcome(name, result.ok, result.error);
+    if (result.ok && result.output !== undefined) result.output = await offloadToolOutput(this.env, result.output);
     return this.recordExecution(name, result);
   }
 }

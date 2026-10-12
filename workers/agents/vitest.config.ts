@@ -32,6 +32,7 @@ export default defineConfig({
   },
   test: {
     environment: "node",
+    server: { deps: { inline: ["@cloudflare/dynamic-workflows"] } },
     include: ["src/**/*.test.ts", "container/**/*.test.mjs"],
   },
 });

@@ -1,3 +1,4 @@
+import { toolOutputKey, toolOutputReadBucket } from "../tool-output.js";
 /**
  * r2-workspace (spec §12.1) — maps file operations to Tier 1 direct R2.
  * Default for all agents. The R2 workspace is the agent's persistent filesystem; it
@@ -25,7 +26,7 @@
  */
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
-import { workspacePrefix } from "../types.js";
+import { machinePrefix, workspacePrefix } from "../types.js";
 import { normalizeAvosPath, normalizeWorkspacePath } from "../workspace-paths.js";
 import { deleteWorkspaceBytesCas, publishWorkspaceBytesCas, readBytesWithHash } from "../r2-cas.js";
 
@@ -36,17 +37,24 @@ const MAX_READABLE_FILE_BYTES = 200_000;
 
 /** Resolve the workspace bucket (falls back to the scripts bucket if not separate). */
 function bucket(ctx: PrebuiltOpContext): R2Bucket {
-  return ctx.env.workspaceBucket ?? ctx.env.scriptsBucket;
+  return toolOutputReadBucket(ctx.env);
 }
 
 /** All workspace keys are scoped under the run's workspace prefix (space- or project-scoped). */
 function key(ctx: PrebuiltOpContext, path: string): string {
   if (String(path).replaceAll("\\", "/").startsWith("/.avos/")) {
     const machinePath = normalizeAvosPath(String(path)).slice("/.avos/".length);
-    return `${workspacePrefix(ctx.env).replace(/workspace\/$/, "avos/")}${machinePath}`;
+    if (machinePath.startsWith("tmp/tool_out_")) return toolOutputKey(ctx.env, normalizeAvosPath(String(path)));
+    return `${machinePrefix(ctx.env)}${machinePath}`;
   }
   const clean = normalizeWorkspacePath(String(path));
   return `${workspacePrefix(ctx.env)}${clean}`;
+}
+
+/** Directories may name the workspace root; file operations must still require a file. */
+function directoryKey(ctx: PrebuiltOpContext, path: string): string {
+  if (["", ".", "/workspace", "/workspace/"].includes(path)) return workspacePrefix(ctx.env);
+  return `${key(ctx, path).replace(/\/+$/, "")}/`;
 }
 
 function reqStr(args: Record<string, unknown>, name: string): string {
@@ -107,6 +115,7 @@ async function writeFileImpl(
   content: string,
   expectedHash: string | null
 ): Promise<{ ok: true; path: string; size: number; hash: string }> {
+  if (path.replaceAll("\\", "/").startsWith("/.avos/tmp/tool_out_")) throw new Error("tool_output_read_only");
   const storageKey = key(ctx, path);
   let hash: string;
   try { ({ hash } = await publishWorkspaceBytesCas(ctx.env, bucket(ctx), storageKey, new TextEncoder().encode(content), expectedHash)); }
@@ -127,6 +136,7 @@ async function copyBinaryImpl(
   bytes: ArrayBuffer,
   expectedHash: string | null,
 ): Promise<{ ok: true; path: string; size: number; hash: string }> {
+  if (path.replaceAll("\\", "/").startsWith("/.avos/tmp/tool_out_")) throw new Error("tool_output_read_only");
   const storageKey = key(ctx, path);
   let hash: string;
   try { ({ hash } = await publishWorkspaceBytesCas(ctx.env, bucket(ctx), storageKey, new Uint8Array(bytes), expectedHash)); }
@@ -156,7 +166,7 @@ async function readWindowed(
   message?: string;
 }> {
   const head = await bucket(ctx).head(key(ctx, path));
-  if (!head || head.customMetadata?.["deleted"] === "true") return { exists: false };
+  if (!head || (head.customMetadata?.["deleted"] === "true" || Number(head.customMetadata?.["expiresAt"] ?? Infinity) <= Date.now())) return { exists: false };
   if (head.size > MAX_SEARCHABLE_FILE_BYTES) {
     return {
       exists: true,
@@ -198,7 +208,7 @@ async function editFile(
 ): Promise<{ ok: boolean; path: string; replacements?: number; error?: string; hint?: string }> {
   if (!oldString) throw new Error("'oldString' (string) is required");
   const head = await bucket(ctx).head(key(ctx, path));
-  if (!head || head.customMetadata?.["deleted"] === "true") return { ok: false, path, error: `File not found: ${path}` };
+  if (!head || (head.customMetadata?.["deleted"] === "true" || Number(head.customMetadata?.["expiresAt"] ?? Infinity) <= Date.now())) return { ok: false, path, error: `File not found: ${path}` };
   if (head.size > MAX_READABLE_FILE_BYTES) {
     return {
       ok: false,
@@ -263,7 +273,7 @@ async function grepWorkspace(
   } catch {
     throw new Error(`'${pattern}' is not a valid regular expression`);
   }
-  const prefix = key(ctx, pathPrefix);
+  const prefix = directoryKey(ctx, pathPrefix);
   const wsPrefix = workspacePrefix(ctx.env);
   const matches: Array<{ file: string; line_number: number; text: string }> = [];
   let filesScanned = 0;
@@ -272,6 +282,7 @@ async function grepWorkspace(
   do {
     const listing = await bucket(ctx).list(cursor ? { prefix, cursor } : { prefix });
     for (const objMeta of listing.objects) {
+      if (objMeta.key.slice(workspacePrefix(ctx.env).length).startsWith("branches/")) continue;
       if (objMeta.key.endsWith("/.keep") || objMeta.customMetadata?.["deleted"] === "true" || objMeta.size > MAX_SEARCHABLE_FILE_BYTES) continue;
       if (filesScanned >= MAX_GREP_FILES_SCANNED) { truncated = true; break; }
       filesScanned++;
@@ -342,7 +353,7 @@ async function globWorkspace(
   pattern: string | undefined,
   pathPrefix = ""
 ): Promise<{ path: string; files: string[]; count: number; truncated: boolean }> {
-  const prefix = key(ctx, pathPrefix);
+  const prefix = directoryKey(ctx, pathPrefix);
   const wsPrefix = workspacePrefix(ctx.env);
   const allFiles: string[] = [];
   let cursor: string | undefined;
@@ -351,6 +362,7 @@ async function globWorkspace(
   do {
     const listing = await bucket(ctx).list(cursor ? { prefix, cursor } : { prefix });
     for (const obj of listing.objects) {
+      if (obj.key.slice(workspacePrefix(ctx.env).length).startsWith("branches/")) continue;
       if (obj.key.endsWith("/.keep") || obj.customMetadata?.["deleted"] === "true") continue;
       allFiles.push(obj.key.slice(wsPrefix.length));
       if (allFiles.length >= CAP) { truncated = true; break; }
@@ -424,7 +436,7 @@ export const r2Workspace: PrebuiltScript = {
         const off = Math.max(0, offset ?? 0);
         const len = Math.min(length ?? MAX_READABLE_FILE_BYTES, MAX_READABLE_FILE_BYTES);
         const head = await bucket(ctx).head(k);
-        if (!head || head.customMetadata?.["deleted"] === "true") return { exists: false, content: null };
+        if (!head || (head.customMetadata?.["deleted"] === "true" || Number(head.customMetadata?.["expiresAt"] ?? Infinity) <= Date.now())) return { exists: false, content: null };
         const obj = await bucket(ctx).get(k, { range: { offset: off, length: len } });
         if (!obj) return { exists: false, content: null };
         const total = obj.size;
@@ -450,7 +462,7 @@ export const r2Workspace: PrebuiltScript = {
       // Full read. get() returns the object with its real `.size` metadata, so the oversize check
       // still happens before the body is materialized into a payload that could blow the turn.
       const head = await bucket(ctx).head(k);
-      if (!head || head.customMetadata?.["deleted"] === "true") return { exists: false, content: null };
+      if (!head || (head.customMetadata?.["deleted"] === "true" || Number(head.customMetadata?.["expiresAt"] ?? Infinity) <= Date.now())) return { exists: false, content: null };
       const obj = await bucket(ctx).get(k);
       if (!obj) return { exists: false, content: null };
       if (obj.size > MAX_READABLE_FILE_BYTES) {
@@ -473,7 +485,7 @@ export const r2Workspace: PrebuiltScript = {
       const query = reqStr(args, "query");
       const k = key(ctx, path);
       const head = await bucket(ctx).head(k);
-      if (!head || head.customMetadata?.["deleted"] === "true") return { exists: false };
+      if (!head || (head.customMetadata?.["deleted"] === "true" || Number(head.customMetadata?.["expiresAt"] ?? Infinity) <= Date.now())) return { exists: false };
       if (head.size > MAX_SEARCHABLE_FILE_BYTES) {
         return {
           exists: true,
@@ -508,7 +520,7 @@ export const r2Workspace: PrebuiltScript = {
     // the hard way.
     async stat_file(args, ctx) {
       const head = await bucket(ctx).head(key(ctx, reqStr(args, "path")));
-      if (!head || head.customMetadata?.["deleted"] === "true") return { exists: false };
+      if (!head || (head.customMetadata?.["deleted"] === "true" || Number(head.customMetadata?.["expiresAt"] ?? Infinity) <= Date.now())) return { exists: false };
       return {
         exists: true,
         size: head.size,
@@ -526,12 +538,13 @@ export const r2Workspace: PrebuiltScript = {
     },
 
     async list_directory(args, ctx) {
-      const prefix = key(ctx, typeof args["path"] === "string" ? (args["path"] as string) : "");
+      const prefix = directoryKey(ctx, typeof args["path"] === "string" ? (args["path"] as string) : "");
       const out: Array<{ key: string; size: number; uploaded: string }> = [];
       let cursor: string | undefined;
       do {
         const listing = await bucket(ctx).list(cursor ? { prefix, cursor } : { prefix });
         for (const o of listing.objects) {
+          if (o.key.slice(workspacePrefix(ctx.env).length).startsWith("branches/")) continue;
           if (o.customMetadata?.["deleted"] === "true") continue;
           out.push({ key: o.key, size: o.size, uploaded: o.uploaded.toISOString() });
         }
@@ -542,7 +555,8 @@ export const r2Workspace: PrebuiltScript = {
 
     async delete_file(args, ctx) {
       const path = reqStr(args, "path");
-      const storageKey = key(ctx, path);
+      if (path.replaceAll("\\", "/").startsWith("/.avos/tmp/tool_out_")) throw new Error("tool_output_read_only");
+  const storageKey = key(ctx, path);
       const expectedHash = requiredExpectedHash(args);
       try {
         const result = await deleteWorkspaceBytesCas(ctx.env, bucket(ctx), storageKey, expectedHash);
@@ -552,13 +566,16 @@ export const r2Workspace: PrebuiltScript = {
     },
 
     async copy_file(args, ctx) {
+      if (reqStr(args, "from").replaceAll("\\", "/").startsWith("/.avos/tmp/tool_out_")) throw new Error("private_tool_output_cannot_be_published");
       const from = await readBytesWithHash(bucket(ctx), key(ctx, reqStr(args, "from")));
       if (!from) throw new Error("source file not found");
       return copyBinaryImpl(ctx, reqStr(args, "to"), from.bytes.slice().buffer as ArrayBuffer, requiredExpectedHash(args));
     },
 
     async move_file(args, ctx) {
-      const fromKey = key(ctx, reqStr(args, "from"));
+      const fromPath = reqStr(args, "from");
+      if (fromPath.replaceAll("\\", "/").startsWith("/.avos/tmp/tool_out_")) throw new Error("tool_output_read_only");
+      const fromKey = key(ctx, fromPath);
       const from = await readBytesWithHash(bucket(ctx), fromKey);
       if (!from) throw new Error("source file not found");
       const result = await copyBinaryImpl(ctx, reqStr(args, "to"), from.bytes.slice().buffer as ArrayBuffer, requiredExpectedHash(args));

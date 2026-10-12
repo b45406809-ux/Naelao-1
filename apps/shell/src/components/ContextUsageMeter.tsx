@@ -151,7 +151,7 @@ export function ContextUsageMeter({
   return (
     <div className="context-usage-meter" style={{ display: "flex", flexDirection: "column", gap: 6, padding: "8px 0" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12, color: "var(--text3)" }}>
-        <span>Context window</span>
+        <span title="Estimated from characters / 3.85. Provider usage below is billed separately.">Estimated context window</span>
         <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
           {formatCount(usage.current_tokens)} / {formatCount(usage.model_window)} ({usage.percent_full}%)
           {sessionId && (

@@ -236,3 +236,10 @@ function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
   }
   return diff === 0;
 }
+
+/** Independent non-exportable space keys; no HSM or disk-encryption claim is implied. */
+export async function deriveSpaceDataKey(masterSecret: string, tenantId: string, spaceId: string): Promise<CryptoKey> {
+  if (!masterSecret || !tenantId || !spaceId) throw new Error("space_encryption_scope_required");
+  const material = await crypto.subtle.importKey("raw", new TextEncoder().encode(masterSecret), "HKDF", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({ name: "HKDF", hash: "SHA-256", salt: new TextEncoder().encode("naelao:space-data:v1"), info: new TextEncoder().encode(JSON.stringify([tenantId, spaceId])) }, material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}

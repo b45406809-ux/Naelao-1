@@ -1,3 +1,4 @@
+import { validProviderUsage } from "@naelao/agent-sdk";
 /**
  * The script-first loop (spec §2) + escalation ladder (spec §5), implemented as the agent
  * behavior that runs inside NaelaoAgentDO.
@@ -569,13 +570,20 @@ export async function runScriptLoop(
    * what it returned then. This is what makes re-entering a run safe rather than merely likely to
    * be safe: on a resume the model is shown its completed steps, but showing is not preventing.
    */
+  const invoke = async (name: string, params: Record<string, unknown>): Promise<ScriptRunResult> => {
+    const previous = env.onToolOutput;
+    env.onToolOutput = output => { void reportProgress(opts, { phase: "run", name, params,
+      output: [output.stdout, output.stderr].filter(Boolean).join("\n").slice(-6500) }); };
+    try { return await tools.run(name, params); }
+    finally { if (previous) env.onToolOutput = previous; else delete env.onToolOutput; }
+  };
   const runOnce = async (name: string, params: Record<string, unknown>): Promise<ScriptRunResult> => {
     const injected = await runBeforeStep(opts.pipeline, env.pipelineRuntime);
     if (injected.length) notes.push(`pipeline context: ${JSON.stringify(injected).slice(0, 2000)}`);
     const ledger = env.actionLedger;
     delete env.lastWorkspaceCommitOid;
     if (!ledger) {
-      const result = await tools.run(name, params);
+      const result = await invoke(name, params);
       const verification = result.ok ? await runAfterStep(opts.pipeline, env.pipelineRuntime) : { ok: true, failures: [] };
       const verified = verification.ok ? result : { ...result, ok: false, error: `post-step verification failed: ${JSON.stringify(verification.failures)}` };
       return env.lastWorkspaceCommitOid ? { ...verified, commit_oid: env.lastWorkspaceCommitOid } : verified;
@@ -592,7 +600,7 @@ export async function runScriptLoop(
       // A ledger that can't be read must not block real work. The exposure is a possible repeat
       // on replay — the same risk as having no ledger at all, which is where this started.
     }
-    let result = await tools.run(name, params);
+    let result = await invoke(name, params);
     if (result.ok) { const verification = await runAfterStep(opts.pipeline, env.pipelineRuntime); if (!verification.ok) result = { ...result, ok: false, error: `post-step verification failed: ${JSON.stringify(verification.failures)}` }; }
     if (env.lastWorkspaceCommitOid) result = { ...result, commit_oid: env.lastWorkspaceCommitOid };
     if (result.ok) {
@@ -620,7 +628,7 @@ export async function runScriptLoop(
    *  duration/token count. Capped so one large tool result can never bloat run_traces or the live
    *  progress payload; a failure result already has its own message in `error`/`detail`, so this
    *  is only ever attached on success. */
-  const OUTPUT_CAP = 4000;
+  const OUTPUT_CAP = 6500;
   const formatToolOutput = (output: unknown): string | undefined => {
     if (output === undefined) return undefined;
     try {
@@ -771,6 +779,7 @@ export async function runScriptLoop(
         name: top?.name,
         detail: decision.action,
         tokens: usage.input + usage.output,
+        ...(validProviderUsage(reasoner.lastUsage) ? { input_tokens: usage.input, output_tokens: usage.output, usage_source: "provider" as const } : {}),
         duration_ms: Date.now() - reasonStart,
         ...(thinkingOf(reasoner) ? { thinking: thinkingOf(reasoner) } : {}),
         ...(narrationOf(reasoner) ? { narration: narrationOf(reasoner) } : {}),
@@ -1030,6 +1039,7 @@ export async function runScriptLoop(
           name: decision.action === "run" || decision.action === "patch" || decision.action === "distill" ? decision.name : undefined,
           detail: decision.action,
           tokens: stepUsage.input + stepUsage.output,
+          ...(validProviderUsage(reasoner.lastUsage) ? { input_tokens: stepUsage.input, output_tokens: stepUsage.output, usage_source: "provider" as const } : {}),
           duration_ms: Date.now() - reasonStart,
           ...(thinkingOf(reasoner) ? { thinking: thinkingOf(reasoner) } : {}),
           ...(narrationOf(reasoner) ? { narration: narrationOf(reasoner) } : {}),
@@ -1450,7 +1460,7 @@ function stableStringify(value: unknown): string {
 
 /** Reads the reasoner's most recently reported usage; zeros when unreported. */
 function usageOf(reasoner: Reasoner): { input: number; output: number } {
-  const u = reasoner.lastUsage;
+  const u = validProviderUsage(reasoner.lastUsage);
   return u ? { input: u.input_tokens, output: u.output_tokens } : { input: 0, output: 0 };
 }
 

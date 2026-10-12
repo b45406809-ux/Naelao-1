@@ -279,12 +279,8 @@ export interface KnowledgeClearance {
 }
 
 /** Declarative identity for every Naelao runtime. The kernel is shared; only this data varies. */
-export type UniversalAgentRole =
-  | "DEV_OPERATOR"
-  | "GROWTH_OPERATOR"
-  | "CUSTOMER_SUPPORT"
-  | "ARCHITECT_DELEGATE"
-  | "CUSTOM";
+/** A role describes a worker; authority comes from its manifest and attested grants. */
+export type UniversalAgentRole = string;
 
 export interface UniversalAgentManifest {
   scope: RuntimeScope;

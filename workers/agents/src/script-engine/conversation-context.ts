@@ -110,7 +110,7 @@ export function splitForCompaction(messages: ConversationMessage[], recentTurns 
 /** Rough token estimate. chars/4 is the convention already used elsewhere in this codebase for
  *  budgeting; it is an estimate for sizing, never for billing. */
 export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
+  return Math.ceil(text.length / 3.85);
 }
 
 function truncateMessage(m: ConversationMessage, maxChars: number): ConversationMessage {

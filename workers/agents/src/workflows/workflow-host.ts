@@ -7,13 +7,13 @@ import type { WorkflowRunDO } from "../do/WorkflowRunDO.js";
 export interface WorkflowProviderInstance { id: string; status(): Promise<{ status: string; output?: unknown; error?: unknown }>; terminate(): Promise<void>; restart(): Promise<void>; sendEvent(event: { type: string; payload: unknown }): Promise<void> }
 export interface DurableWorkflowHostEnv {
   PLATFORM_SECRET: string;
-  SCRIPTS_R2?: R2Bucket;
-  WORKFLOW_RUN_DO?: DurableObjectNamespace<WorkflowRunDO>;
-  AGENT_SCRIPT_WORKFLOW?: { create(options: { id?: string; params?: unknown }): Promise<WorkflowProviderInstance>; get(id: string): Promise<WorkflowProviderInstance> };
+  SCRIPTS_R2?: R2Bucket | undefined;
+  WORKFLOW_RUN_DO?: DurableObjectNamespace<WorkflowRunDO> | undefined;
+  AGENT_SCRIPT_WORKFLOW?: { create(options: { id?: string; params?: unknown }): Promise<WorkflowProviderInstance>; get(id: string): Promise<WorkflowProviderInstance> } | undefined;
   SPACES_WORKER: Fetcher;
-  AGENTS_WORKER?: Fetcher;
-  BILLING_WORKER?: Fetcher;
-  LOADER?: WorkerLoaderBinding;
+  AGENTS_WORKER?: Fetcher | undefined;
+  BILLING_WORKER?: Fetcher | undefined;
+  LOADER?: WorkerLoaderBinding | undefined;
 }
 export async function workflowHash(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
@@ -79,14 +79,14 @@ export async function readWorkflowArtifact(env: DurableWorkflowHostEnv, identity
   return JSON.parse(text);
 }
 export interface StartDurableWorkflowOptions {
-  tenantId: string; spaceId: string; projectId?: string; actorId: string; agentId: string;
+  tenantId: string; spaceId: string; projectId?: string | undefined; actorId: string; agentId: string;
   name: string; params: Record<string, unknown>; startKey: string;
-  workflowClass?: WorkflowClass; budgetKey?: string; budgetCredits?: number;
-  installationId?: string; expiresAt?: number;
+  workflowClass?: WorkflowClass | undefined; budgetKey?: string | undefined; budgetCredits?: number | undefined;
+  installationId?: string | undefined; expiresAt?: number;
 }
 export async function startDurableWorkflow(env: DurableWorkflowHostEnv, options: StartDurableWorkflowOptions): Promise<{ id: string; queued: boolean; durable: true }> {
   if (!env.SCRIPTS_R2 || !env.AGENT_SCRIPT_WORKFLOW || !env.LOADER) throw new Error("dynamic_workflow_runtime_unavailable");
-  const runId = await durableWorkflowRunId(options, options.startKey);
+  const runId = await durableWorkflowRunId({ tenantId: options.tenantId, spaceId: options.spaceId, actorId: options.actorId, ...(options.projectId ? { projectId: options.projectId } : {}) }, options.startKey);
   const stub = workflowRunStub(env, { ...options, runId });
   // A repeated start keeps its original code pin and expiry even after a code update.
   const prior = await stub.existing();
@@ -99,18 +99,18 @@ export async function startDurableWorkflow(env: DurableWorkflowHostEnv, options:
   }
   const script = await new SkillLibrary(env.SCRIPTS_R2, options.spaceId).read(options.name);
   if (!script?.code || script.metadata.runtime !== "workflow") throw new Error("workflow_script_not_found");
-  const grant = await readWorkflowGrant(env, options);
+  const grant = await readWorkflowGrant(env, { tenantId: options.tenantId, spaceId: options.spaceId, agentId: options.agentId, actorId: options.actorId, ...(options.projectId ? { projectId: options.projectId } : {}), ...(options.installationId ? { installationId: options.installationId } : {}) });
   const workflowClass = options.workflowClass ?? "ephemeral_task";
   if (workflowClass === "company_automation" && (options.projectId || !["owner", "admin"].includes(grant.role))) throw new Error("workflow_owner_required");
   if (workflowClass === "vertical_extension" && (!options.projectId || !options.installationId)) throw new Error("workflow_installation_required");
   const codeDigest = await workflowHash(script.code);
-  const identity: DurableWorkflowIdentity = { schema: 1, runId, tenantId: options.tenantId, spaceId: options.spaceId, projectId: options.projectId, actorId: options.actorId, agentId: options.agentId, installationId: options.installationId,
+  const identity: DurableWorkflowIdentity = { schema: 1, runId, tenantId: options.tenantId, spaceId: options.spaceId, ...(options.projectId ? { projectId: options.projectId } : {}), actorId: options.actorId, agentId: options.agentId, ...(options.installationId ? { installationId: options.installationId } : {}),
     startKey: options.startKey, definitionId: options.name, codeDigest, codeKey: "workflow-code/" + options.tenantId + "/" + options.spaceId + "/" + codeDigest + ".js", grantVersion: grant.version,
     reservationId: runId, expiresAt: options.expiresAt ?? Date.now() + 90 * 86400_000, workflowClass, capabilities: script.metadata.code_capabilities ?? [] };
   validateDurableWorkflowIdentity(identity);
   await env.SCRIPTS_R2.put(identity.codeKey, script.code, { httpMetadata: { contentType: "application/javascript" } });
   const input = await putWorkflowArtifact(env, identity, options.params);
-  await stub.initialize(identity, input, { budgetKey: options.budgetKey, budgetCredits: options.budgetCredits });
+  await stub.initialize(identity, input, { ...(options.budgetKey ? { budgetKey: options.budgetKey } : {}), ...(options.budgetCredits !== undefined ? { budgetCredits: options.budgetCredits } : {}) });
   await stub.launch();
   return { id: runId, queued: true, durable: true };
 }
