@@ -1,11 +1,12 @@
-import ts from "typescript";
+import type tsTypes from "typescript";
 
 /** Compile the developer execute(step, ctx) ABI for a Dynamic Workflow isolate. */
-export function compileWorkflowEntrypoint(scriptSource: string): { className: string; source: string } {
+export async function compileWorkflowEntrypoint(scriptSource: string): Promise<{ className: string; source: string }> {
+  const ts = await import("typescript");
   if (new TextEncoder().encode(scriptSource).byteLength > 262_144) throw new Error("workflow_source_limit");
   const tree = ts.createSourceFile("workflow.ts", scriptSource, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TS);
   let execute = false;
-  const visit = (node: ts.Node): void => {
+  const visit = (node: tsTypes.Node): void => {
     if ((ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "ctx" && ["threads", "session", "messages"].includes(node.name.text))
       || (ts.isElementAccessExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "ctx" && node.argumentExpression && ts.isStringLiteral(node.argumentExpression) && ["threads", "session", "messages"].includes(node.argumentExpression.text))) throw new Error("workflow_conversational_context_forbidden");
     if (ts.isImportDeclaration(node) || ts.isImportEqualsDeclaration(node) || ts.isExportAssignment(node)

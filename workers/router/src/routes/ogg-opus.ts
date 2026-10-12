@@ -1,9 +1,8 @@
-import { OggOpusDecoder } from "ogg-opus-decoder";
+import type { OggOpusDecoder as OggOpusDecoderClass } from "ogg-opus-decoder";
 
 export const MAX_DECODED_AUDIO_SECONDS = 180;
 const SAMPLE_RATE = 16_000;
 const MAX_DECODED_SAMPLES = SAMPLE_RATE * MAX_DECODED_AUDIO_SECONDS;
-const OGG_CHUNK_BYTES = 64 * 1024;
 
 interface DecodedChunk {
   channelData: Float32Array[];
@@ -13,8 +12,7 @@ interface DecodedChunk {
 
 interface OpusDecoder {
   ready: Promise<void>;
-  decode(data: Uint8Array): DecodedChunk;
-  flush(): Promise<DecodedChunk>;
+  decodeFile(data: Uint8Array): Promise<DecodedChunk>;
   free(): void;
 }
 
@@ -57,14 +55,22 @@ function toWav(chunks: Int16Array[], sampleCount: number): Uint8Array {
 /** Decode Ogg/Opus in bounded chunks and normalize it to 16kHz mono PCM WAV. */
 export async function decodeOggOpusToWav(
   input: Uint8Array,
-  createDecoder: DecoderFactory = () => new OggOpusDecoder(
-    { sampleRate: SAMPLE_RATE } as unknown as ConstructorParameters<typeof OggOpusDecoder>[0]
-  ) as unknown as OpusDecoder
+  createDecoder?: DecoderFactory
 ): Promise<Uint8Array> {
   if (input.byteLength < 4 || input[0] !== 0x4f || input[1] !== 0x67 || input[2] !== 0x67 || input[3] !== 0x53) {
     throw new Error("audio_ogg_container_invalid");
   }
-  const decoder = createDecoder();
+  // Do not load this package while the router module starts. Its top-level exports include a
+  // browser/Node Web Worker subclass; workerd has no global Worker and would otherwise crash
+  // before any route can serve. Import only after an Ogg request reaches this path.
+  let decoder: OpusDecoder;
+  if (createDecoder) decoder = createDecoder();
+  else {
+    const { OggOpusDecoder } = await import("ogg-opus-decoder");
+    decoder = new OggOpusDecoder(
+      { sampleRate: SAMPLE_RATE } as unknown as ConstructorParameters<typeof OggOpusDecoderClass>[0]
+    ) as unknown as OpusDecoder;
+  }
   const pcm: Int16Array[] = [];
   let sampleCount = 0;
   try {
@@ -74,10 +80,10 @@ export async function decodeOggOpusToWav(
       sampleCount += appendMonoPcm16(decoded.channelData, pcm);
       if (sampleCount > MAX_DECODED_SAMPLES) throw new Error("audio_duration_exceeds_limit");
     };
-    for (let offset = 0; offset < input.byteLength; offset += OGG_CHUNK_BYTES) {
-      consume(await decoder.decode(input.subarray(offset, Math.min(input.byteLength, offset + OGG_CHUNK_BYTES))));
-    }
-    consume(await decoder.flush());
+    // decodeFile processes the complete Ogg stream, including its final page/granule position.
+    // A separate flush after decode() causes a second WASM decoder reset in workerd and can
+    // strand the request; decoding the bounded whole payload avoids that reset path.
+    consume(await decoder.decodeFile(input));
     if (sampleCount === 0) throw new Error("audio_opus_decode_empty");
     return toWav(pcm, sampleCount);
   } finally {

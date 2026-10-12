@@ -1,4 +1,4 @@
-import ts from "typescript";
+import type tsTypes from "typescript";
 
 export interface CompiledCode { readonly digest: string; readonly javascript: string; readonly bytes: number }
 const cache = new Map<string, CompiledCode>();
@@ -6,6 +6,8 @@ let cacheBytes = 0;
 const MAX_CACHE_BYTES = 4 * 1024 * 1024;
 
 export async function compileDynamicCode(source: string, language: "javascript" | "typescript" = "typescript"): Promise<CompiledCode> {
+  // Keep the Node-only compiler out of workerd's eager startup graph.
+  const ts = await import("typescript");
   if (new TextEncoder().encode(source).byteLength > 262_144) throw new Error("code_source_limit");
   const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`v1:${ts.version}:${language}:${source}`));
   const digest = Array.from(new Uint8Array(hash), (value) => value.toString(16).padStart(2, "0")).join("");
@@ -14,7 +16,7 @@ export async function compileDynamicCode(source: string, language: "javascript" 
   const file = ts.createSourceFile(language === "javascript" ? "guest.js" : "guest.ts", source, ts.ScriptTarget.ES2022, true,
     language === "javascript" ? ts.ScriptKind.JS : ts.ScriptKind.TS);
   let hasRun = false;
-  const visit = (node: ts.Node): void => {
+  const visit = (node: tsTypes.Node): void => {
     if (ts.isImportDeclaration(node) || ts.isImportEqualsDeclaration(node) || ts.isExportDeclaration(node) && node.moduleSpecifier)
       throw new Error("code_dependency_not_declared: use a pinned capability/package artifact instead of ambient imports");
     if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword || ts.isIdentifier(node.expression) && ["eval", "require", "Function"].includes(node.expression.text)))

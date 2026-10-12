@@ -1,0 +1,20 @@
+diff --git a/cjs/browser.js b/cjs/browser.js
+index e9a5c1e9cdc8c6eea714b8a2122851517f317a63..b11a548c75d9d7503ed1b93c3ff5a649e8caa27d 100644
+--- a/cjs/browser.js
++++ b/cjs/browser.js
+@@ -13,4 +13,13 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-module.exports = Worker;
+\ No newline at end of file
++// Cloudflare workerd intentionally has no browser Worker global. Consumers that only need
++// the decoder's synchronous WASM implementation still import this base class indirectly;
++// defer the unsupported-runtime failure until a caller actually tries to construct a Worker.
++module.exports = typeof Worker !== 'undefined'
++  ? Worker
++  : class UnsupportedWebWorker {
++      constructor() {
++        throw new Error('Web Workers are not available in this runtime');
++      }
++    };

@@ -28,8 +28,9 @@ describe("space air-gap boundary wiring", () => {
 
   it("keeps the execution host fail-closed for cloud/browser paths", async () => {
     const source = await readFile(resolve(root, "workers/agents/src/script-engine/code-runner.ts"), "utf8");
+    const isolate = await readFile(resolve(root, "workers/agents/src/script-engine/isolated-runtime.ts"), "utf8");
     expect(source).toContain("airGappedOnly");
-    expect(source).toContain("globalOutbound: null");
     expect(source).toContain("air-gapped execution only permits the authorized local workstation backend");
+    expect(isolate).toContain("globalOutbound: null");
   });
 });

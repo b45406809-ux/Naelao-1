@@ -25,11 +25,35 @@ describe("Ogg/Opus normalization", () => {
   it("normalizes multipart Ogg audio before dispatching it to Whisper", async () => {
     let audio: number[] = [];
     const AI = { run: async (_model: string, input: { audio: number[] }) => { audio = input.audio; return { text: "hello" }; } } as unknown as Ai;
+    const original = Object.getOwnPropertyDescriptor(globalThis, "Worker");
+    Object.defineProperty(globalThis, "Worker", { configurable: true, value: class TestWorker {} });
     const form = new FormData();
     form.set("audio", new Blob([ogg], { type: "audio/ogg" }), "voice.ogg");
-    const response = await transcribeAudio(new Request("https://router/api/voice/transcribe", { method: "POST", body: form }), { AI });
-    expect(response.status).toBe(200);
-    expect(audio.slice(0, 4)).toEqual([82, 73, 70, 70]);
-    expect(audio.slice(8, 12)).toEqual([87, 65, 86, 69]);
+    try {
+      const response = await transcribeAudio(new Request("https://router/api/voice/transcribe", { method: "POST", body: form }), { AI });
+      expect(response.status).toBe(200);
+      expect(audio.slice(0, 4)).toEqual([82, 73, 70, 70]);
+      expect(audio.slice(8, 12)).toEqual([87, 65, 86, 69]);
+    } finally {
+      if (original) Object.defineProperty(globalThis, "Worker", original);
+      else delete (globalThis as { Worker?: unknown }).Worker;
+    }
+  });
+
+  it("keeps the Worker runtime off the Web Worker based decoder and forwards bounded Ogg to Whisper", async () => {
+    let audio: number[] = [];
+    const AI = { run: async (_model: string, input: { audio: number[] }) => { audio = input.audio; return { text: "hello" }; } } as unknown as Ai;
+    const original = Object.getOwnPropertyDescriptor(globalThis, "Worker");
+    Object.defineProperty(globalThis, "Worker", { configurable: true, value: undefined });
+    try {
+      const response = await transcribeAudio(new Request("https://router/api/voice/transcribe", {
+        method: "POST", headers: { "content-type": "audio/ogg" }, body: ogg,
+      }), { AI });
+      expect(response.status).toBe(200);
+      expect(audio).toEqual([...ogg]);
+    } finally {
+      if (original) Object.defineProperty(globalThis, "Worker", original);
+      else delete (globalThis as { Worker?: unknown }).Worker;
+    }
   });
 });

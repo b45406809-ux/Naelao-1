@@ -26,6 +26,7 @@ repomix/outputs/
 
 # Local development server logs
 .dev/
+workers/agents/container/.vendor/
 workers/*/wrangler.dev.generated.toml
 test-results/
 tests/.plan-state/

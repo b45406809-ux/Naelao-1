@@ -24,7 +24,11 @@ export async function transcribeAudio(request: Request, env: TranscriptionEnv): 
   if (!bytes.byteLength) return Response.json({ ok: false, error: "Audio body is empty" }, { status: 400 });
   if (bytes.byteLength > MAX_DICTATION_BYTES) return Response.json({ ok: false, error: "Audio exceeds 10 MiB" }, { status: 413 });
   let normalized: Uint8Array = new Uint8Array(bytes);
-  if (audioContentType.startsWith("audio/ogg")) {
+  const hasWebWorkerRuntime = typeof (globalThis as unknown as { Worker?: unknown }).Worker === "function";
+  if (audioContentType.startsWith("audio/ogg") && hasWebWorkerRuntime) {
+    // ogg-opus-decoder's final flush hangs in the tested local workerd runtime. Keep it out of
+    // the Worker path and forward the bounded Ogg bytes to the configured AI binding. Provider
+    // acceptance of raw Ogg is unverified; the binding failure is handled below as a 503.
     try {
       normalized = await decodeOggOpusToWav(normalized);
     } catch (error) {
@@ -33,7 +37,12 @@ export async function transcribeAudio(request: Request, env: TranscriptionEnv): 
       return Response.json({ ok: false, error: code }, { status });
     }
   }
-  const result = await env.AI.run(WHISPER_MODEL as Parameters<Ai["run"]>[0], { audio: [...normalized] }) as { text?: string };
+  let result: { text?: string };
+  try {
+    result = await env.AI.run(WHISPER_MODEL as Parameters<Ai["run"]>[0], { audio: [...normalized] }) as { text?: string };
+  } catch {
+    return Response.json({ ok: false, error: "transcription_provider_unavailable" }, { status: 503 });
+  }
   const text = result.text?.trim() ?? "";
   return Response.json({ ok: true, text });
 }

@@ -55,7 +55,7 @@ export const dynamicWorkflow: PrebuiltScript = {
           ok: false,
           reason: "workflow registry not available in this environment",
         };
-      const compiled = compileWorkflowEntrypoint(String(args.code ?? ""));
+      const compiled = await compileWorkflowEntrypoint(String(args.code ?? ""));
       const capabilities = args.capabilities === undefined ? [] : args.capabilities;
       if (!Array.isArray(capabilities) || capabilities.some((op) => typeof op !== "string")) throw new Error("workflow_capabilities_invalid");
       return await h.workflowCreate(String(args.name ?? ""), compiled.source, { capabilities });

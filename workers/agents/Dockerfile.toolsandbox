@@ -10,8 +10,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 python3
 
 WORKDIR /app
 
-# Harness deps (esbuild for build/transpile gate).
-RUN npm install esbuild@0.24.0
+# The local dev launcher stages pnpm-installed, platform-matched esbuild packages here. Keeping
+# dependency resolution outside Docker makes local builds reproducible behind TLS-intercepting
+# proxies and avoids package-manager access from the sandbox image build.
+COPY container/.vendor/node_modules /app/node_modules
 
 COPY container/server.mjs /app/server.mjs
 COPY container/child-runner.mjs /app/child-runner.mjs

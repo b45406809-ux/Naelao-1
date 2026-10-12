@@ -10,7 +10,7 @@
   "scripts": {
     "build": "turbo run build",
     "test": "turbo run test",
-    "test:conformance": "node packages/agent-sdk/node_modules/vitest/vitest.mjs run --config harness/conformance/vitest.config.ts",
+    "test:conformance": "vitest run --config harness/conformance/vitest.config.ts",
     "lint": "biome check .",
     "typecheck": "turbo run typecheck",
     "dev": "node infra/scripts/start-dev.mjs",
@@ -30,6 +30,11 @@
     "turbo": "^2.3.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8",
-    "wrangler": "^3.91.0"
+    "wrangler": "^4.149.0"
+  },
+  "pnpm": {
+    "patchedDependencies": {
+      "@eshaz/web-worker@1.2.2": "patches/@eshaz__web-worker@1.2.2.patch"
+    }
   }
 }

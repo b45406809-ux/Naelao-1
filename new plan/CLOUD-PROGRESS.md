@@ -459,14 +459,14 @@ already encrypts and stores full oversized output privately in R2, registers exp
 and returns a bounded preview with a Read path; the shell's fold UI is presentation
 only and does not replace that durable path.
 
-Additional B4 changes: router transcription now accepts real Ogg/Opus audio by
-decoding it to mono 16kHz PCM WAV before Workers AI Whisper. The request remains
-bounded to 10 MiB compressed input and 180 seconds decoded audio. `ogg-opus-decoder`
-runtime supports the 16kHz constructor option and async decode; its published types
-misstate both, so the narrow adapter casts are documented and covered by a real
-ffmpeg-generated Ogg fixture test plus invalid-container test. This does not add
-WhatsApp media download/dispatch; the current channel adapter still does not handle
-incoming non-text media. `TransactionCoordinatorDO.test.ts` adds two mocked-boundary
+Additional B4 changes: router transcription bounds requests to 10 MiB; desktop/Node
+Ogg/Opus requests decode to mono 16kHz PCM WAV, and a real ffmpeg-generated Ogg fixture
+test plus invalid-container test cover that decoder path. Workerd hangs on decoder
+flush, so the Worker path forwards bounded raw Ogg to its configured AI binding; local
+AI is unavailable and official provider acceptance could not be verified. Do not claim
+provider compatibility until that check is possible. This does not add WhatsApp media
+download/dispatch; the current channel adapter still does not handle incoming non-text
+media. `TransactionCoordinatorDO.test.ts` adds two mocked-boundary
 failure-path tests: reverse-order compensation and persistent `failed` status when a
 compensation returns 503. These tests verify coordinator behavior, not real provider
 side effects.
@@ -483,3 +483,46 @@ cannot be honestly claimed: proposed FUSE/edge-container persistence tiers and e
 provider behavior are not present or verified here. Keep B4 in progress until all
 repository-implementable primary requirements are reviewed and either implemented or
 recorded precisely as an external prerequisite.
+
+Fresh Batch 3/4 continuation checkpoint (2026-10-12): Batch 3 remains IN PROGRESS.
+The semantic editor, install hydration starter UI, and verified executive-contact mobile
+notification path described above are implemented and tested. Remaining product-level
+work is the WhatsApp-to-desktop Desk-Drop/session broker, an artifact-bound deterministic
+marketplace regression certificate that covers both publish entry points, and payout
+reconciliation through an authorized platform-native rail. Existing request/manual
+payout flows are not a scheduled settlement daemon. Escrow bounty and FDE read-only
+support also need an implemented authorization and payment workflow. Do not call these
+complete. The precise remaining source requirements are D12 5485–5657; the earlier
+look-ahead amendments and relevant later name matches are already recorded above.
+
+Fresh Batch 4 local integration evidence (2026-10-12): `infra/scripts/start-dev.mjs`
+stages pnpm-installed esbuild dependencies before Wrangler builds the three Agent
+container images, removing their Docker-time npm downloads. All three images built in
+Docker. Root Wrangler is pinned to 4.149.0 because Wrangler 3 does not parse the
+repository's current `[[containers]]` configuration. The launch script uses `--local`
+and worker-specific inspector ports. Initially, the Agents Worker crashed while eagerly evaluating the Node-only TypeScript
+compiler bundle in workerd (`ReferenceError: __filename is not defined`) despite
+`nodejs_compat`. Both compiler imports are now deferred until code/workflow compilation
+is requested. After restart, router, auth, spaces, agents, and knowledge all reach Wrangler
+Ready. Runtime compilation inside workerd and actual container invocation still need an
+integration exercise. Router transcription tests (6),
+conformance tests (4), terminal folding tests (2), and TransactionCoordinatorDO failure
+tests (2; mocked SQL/provider) pass. Local AI binding cannot verify Whisper provider
+acceptance; the Ogg worker fallback forwards bounded raw Ogg and must be verified against
+official provider documentation or a live binding before claiming provider support. The
+proxy returns CONNECT HTTP 403 for official docs, and no production Cloudflare service
+was contacted. B4 remains IN PROGRESS.
+
+Batch 4 follow-up (2026-10-12): deferring `typescript` imports fixed the eager workerd
+startup crash. `corepack pnpm@9.12.0 dev --workers-only` started all five selected
+Workers; each reached Wrangler Ready. Wrangler 4.149.0 `deploy --dry-run` for Agents
+successfully bundled the Worker and built all three container images from the staged
+esbuild dependency. Agent suite: 56 files / 222 tests pass; Agents typecheck passes.
+Router transcription suite: 6 tests pass; router typecheck passes. Saga failure suite:
+2 tests pass (mock boundaries). Conformance: 4 tests pass; terminal folding: 2 tests
+pass; Spaces and Shell typechecks pass. Frozen pnpm 9 install with lifecycle scripts
+suppressed passes and the `@eshaz/web-worker` patch is present in the installed module.
+The live local runtime proves service startup and image builds only; it does not prove
+container invocation, TypeScript compilation inside workerd, Cloudflare AI format
+acceptance, or real provider saga side effects. Do not mark Batch 4 done until those
+runtime paths are tested or concrete external limitations are recorded.

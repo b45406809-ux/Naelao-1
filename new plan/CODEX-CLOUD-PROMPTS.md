@@ -205,20 +205,27 @@ examples or invent unavailable isolation guarantees. Implement and test the
 final requirements, preserve tunnels and local models, record evidence, and stop.
 ```
 
-**Progress (2026-10-12): IN PROGRESS — local code and focused checks complete; full
+**Progress (2026-10-12): IN PROGRESS — implementation and focused checks continue; full
 primary review remains.** Read primary D12 5658–7973 in ascending bounded windows;
 read required D12/D13 look-aheads and extra D12 12764–13206 for model/modality
 amendments. Existing provider-usage metering, terminal Bash rendering, durable private
 tool-output R2 storage, named LocalTunnelDO execution, permission-filtered RAG, saga
 coordinator, and local workerd launcher were verified in code. Completed-log folding
-has focused unit tests. Ogg/Opus transcription normalization has real-fixture and
-invalid-input tests; a router Wrangler dry-run bundles it. Saga compensation/failure
-tests use mocked SQL and provider fetch. Router typecheck and all focused tests pass;
-lockfile now passes pinned pnpm 9 frozen install. Speculative Clef/Jev model IDs,
+has focused unit tests. Ogg/Opus has real-fixture and invalid-input tests, but local
+workerd cannot run the decoder path: it hangs on decoder flush. The Worker now forwards
+the bounded original Ogg to Workers AI; a local request fails closed because local AI
+is unavailable. Provider acceptance of this format is not verified. Saga
+compensation/failure tests use mocked SQL and provider fetch. Router typecheck and
+focused tests pass; lockfile passes pinned pnpm 9 frozen install. Speculative Clef/Jev model IDs,
 modality, latency, prices, and FUSE/edge-container persistence claims remain
 unverified (official docs request returned proxy CONNECT HTTP 403), so no
-vendor-specific routing or fabricated persistence guarantee was added. WhatsApp media
-ingress is still text-only. Exact evidence and remaining review are in
+vendor-specific routing or fabricated persistence guarantee was added. Initially the
+agent Worker eagerly evaluated the Node-only TypeScript compiler and crashed workerd on
+`__filename`. Both compiler imports are now deferred to code/workflow compilation; after
+restart, router, auth, spaces, agents, and knowledge all reach Wrangler Ready. All three
+agent container images built after staging esbuild from pnpm's local installation. The
+runtime compile/container invocation and AI provider path still need integration evidence.
+WhatsApp media ingress is still text-only. Exact evidence and remaining review are in
 CLOUD-PROGRESS.md; Batch 4 remains active.
 
 5. **Document 12: lines 7974–10197**

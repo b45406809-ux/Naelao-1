@@ -2,12 +2,13 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve, join } from 'node:path';
-import { mkdirSync, openSync, closeSync } from 'node:fs';
+import { cpSync, mkdirSync, openSync, closeSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { localTopology } from './dev-topology.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const require = createRequire(join(root, 'package.json'));
+const agentsRequire = createRequire(join(root, 'workers/agents/package.json'));
 const topology = localTopology(root);
 const args = new Set(process.argv.slice(2));
 const CORE = ['router', 'auth', 'spaces', 'agents', 'knowledge'];
@@ -49,9 +50,24 @@ function launch(name, entry, argv, cwd = root) {
   child.on('exit', code => { if (!stopping) { console.error(`${name} stopped (${code}). See .dev/logs/${name}.log`); stop(1); } });
 }
 
+function stageAgentContainerDependencies() {
+  const platformPackage = `@esbuild/${process.platform}-${process.arch}`;
+  const esbuildPackage = dirname(agentsRequire.resolve('esbuild/package.json'));
+  // pnpm keeps esbuild's optional native package in its virtual-store hoist. It is
+  // present when esbuild itself can run, but is not necessarily resolvable from the
+  // worker package's dependency graph because it is an optional peer of esbuild.
+  const platformPackageDir = resolve(root, 'node_modules/.pnpm/node_modules', platformPackage);
+  const stagedModules = join(root, 'workers/agents/container/.vendor/node_modules');
+  rmSync(stagedModules, { recursive: true, force: true });
+  mkdirSync(join(stagedModules, '@esbuild'), { recursive: true });
+  cpSync(esbuildPackage, join(stagedModules, 'esbuild'), { recursive: true, dereference: true });
+  cpSync(platformPackageDir, join(stagedModules, platformPackage), { recursive: true, dereference: true });
+}
+
 try {
   const workerDirs = args.has('--extended') ? EXTENDED : CORE;
   const selectedWorkers = workerDirs.map(dir => topology.workers.find(worker => worker.dir === dir)).filter(Boolean);
+  if (selectedWorkers.some(worker => worker.dir === 'agents')) stageAgentContainerDependencies();
   await Promise.all(selectedWorkers.map(worker => assertFree(worker.port)));
   if (!args.has('--workers-only')) { await assertFree(3000); await assertFree(3100); }
   if (topology.unavailable.length) console.warn(`No local implementation for: ${topology.unavailable.join(', ')}. Features depending on these services require a configured provider.`);
@@ -63,7 +79,9 @@ try {
   const optionalAiVars = ['NAELAO_AIG_TOKEN', 'CF_API_TOKEN']
     .flatMap(name => process.env[name] ? ['--var', `${name}:${process.env[name]}`] : []);
   for (const worker of selectedWorkers) {
-    launch(worker.dir, wrangler, ['dev', '--config', `workers/${worker.dir}/wrangler.toml`, '--port', String(worker.port), '--persist-to', persist,
+    // Each Wrangler process starts its own workerd and Inspector. Give Inspector a stable,
+    // worker-specific port; Wrangler's default is shared and parallel workers race to bind it.
+    launch(worker.dir, wrangler, ['dev', '--local', '--config', `workers/${worker.dir}/wrangler.toml`, '--port', String(worker.port), '--inspector-port', String(worker.port + 10000), '--persist-to', persist,
       '--var', `JWT_SECRET:${process.env.JWT_SECRET ?? 'local-dev-jwt-secret-change-me'}`,
       '--var', `PLATFORM_SECRET:${process.env.PLATFORM_SECRET ?? 'local-dev-platform-secret-change-me'}`,
       // The credentials worker encrypts every stored secret at rest. Keep local dev bootable
