@@ -22,7 +22,9 @@ function makeEnv(opts: { credential?: string | null } = {}) {
     RESEND_API_URL: "https://api.resend.com/emails",
     WEBHOOK_SIGNING_SECRET: "whsec",
     PLATFORM_SECRET: "platform-secret",
-    PLATFORM_DB: { prepare: () => ({ bind: () => ({ run: async () => ({}), first: async () => null }) }) },
+    // Network delivery is fail-closed when policy is absent. These tests exercise provider
+    // formatting, so use a real row with an explicit non-air-gapped policy.
+    PLATFORM_DB: { prepare: () => ({ bind: () => ({ run: async () => ({}), first: async () => ({ config_json: "{}" }) }) }) },
     CREDENTIALS_WORKER: {
       fetch: async () =>
         opts.credential === null

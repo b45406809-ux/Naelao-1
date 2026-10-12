@@ -15,6 +15,8 @@
  * Pure and dependency-free so it is unit-testable.
  */
 
+export { toNormalizedInboundMessage } from "../../../../packages/agent-sdk/src/channel-envelope.js";
+
 export type ChannelType = "email" | "slack" | "discord" | "whatsapp" | "telegram";
 
 export interface NormalizedInbound {

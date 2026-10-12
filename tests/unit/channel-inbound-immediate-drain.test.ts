@@ -14,26 +14,31 @@ import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
 // drains from double-processing the same message.
 
 function makeR2(): R2Bucket {
-  const store = new Map<string, string>();
+  const store = new Map<string, { text: string; etag: string; customMetadata: Record<string, string> }>();
+  let revision = 0;
   const bucket = {
-    async put(key: string, value: unknown) {
-      store.set(key, typeof value === "string" ? value : String(value));
-      return {} as R2Object;
+    async put(key: string, value: unknown, options?: { customMetadata?: Record<string, string> }) {
+      const text = typeof value === "string" ? value : value instanceof Uint8Array ? new TextDecoder().decode(value) : String(value);
+      const etag = String(++revision);
+      store.set(key, { text, etag, customMetadata: options?.customMetadata ?? {} });
+      return { etag } as R2Object;
     },
     async get(key: string) {
-      if (!store.has(key)) return null;
-      const text = store.get(key)!;
-      return { size: text.length, uploaded: new Date(), async text() { return text; }, get body() { return text; } } as unknown as R2ObjectBody;
+      const row = store.get(key);
+      if (!row) return null;
+      const bytes = new TextEncoder().encode(row.text);
+      return { size: bytes.byteLength, uploaded: new Date(), async text() { return row.text; }, async arrayBuffer() { return bytes.slice().buffer; }, get body() { return row.text; } } as unknown as R2ObjectBody;
     },
     async head(key: string) {
-      return store.has(key) ? ({} as R2Object) : null;
+      const row = store.get(key);
+      return row ? ({ etag: row.etag, customMetadata: row.customMetadata } as unknown as R2Object) : null;
     },
     async delete(keys: string | string[]) {
       for (const k of Array.isArray(keys) ? keys : [keys]) store.delete(k);
     },
     async list(opts?: { prefix?: string }) {
       const prefix = opts?.prefix ?? "";
-      const objects = [...store.keys()].filter((k) => k.startsWith(prefix)).map((k) => ({ key: k, size: store.get(k)!.length, uploaded: new Date(), etag: "x" }));
+      const objects = [...store.keys()].filter((k) => k.startsWith(prefix)).map((k) => ({ key: k, size: store.get(k)!.text.length, uploaded: new Date(), etag: store.get(k)!.etag }));
       return { objects, truncated: false, cursor: undefined } as unknown as R2Objects;
     },
   };

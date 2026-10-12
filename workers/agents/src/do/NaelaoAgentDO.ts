@@ -72,7 +72,7 @@ import {
   type ConversationContext,
   type ConversationMessage,
 } from "../script-engine/conversation-context.js";
-import { isChannelType, getAdapter, type NormalizedInbound } from "../launchpad/channels.js";
+import { isChannelType, getAdapter, toNormalizedInboundMessage, type NormalizedInbound } from "../launchpad/channels.js";
 import type { BusinessContext } from "../launchpad/business-context.js";
 import type { TemplateMode, UniversalAgentManifest, UniversalAgentRole } from "@naelao/agent-sdk";
 import { composeUniversalPrompt } from "../script-engine/index.js";
@@ -5114,6 +5114,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const body = await request.json<InboundBody>().catch(() => ({}) as InboundBody);
     const norm: NormalizedInbound | null = adapter.normalizeInbound(body.raw ?? {});
     if (!norm) return Response.json({ ignored: true }); // bot echo / not actionable
+    const envelope = toNormalizedInboundMessage({ channel: norm.channel, senderId: norm.channel_user_id,
+      text: norm.text, externalId: norm.external_id, timestamp: norm.timestamp });
 
     // WhatsApp/Telegram owner contacts form a private control plane. Verification is performed
     // against SpaceDO's live owner/admin membership on every message, so removing an admin takes
@@ -5199,11 +5201,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const mentionDecisionEnv = body.spaceId && body.tenantId
       ? await this.buildScriptEngineEnv(body.spaceId, "naelao-agent", body.tenantId, undefined, body.projectId)
       : null;
-    const mentionRoute = await routeMentionsWithSentry(norm.text, mentionDecisionEnv?.fastDecision);
+    const mentionRoute = await routeMentionsWithSentry(envelope.payload.text, mentionDecisionEnv?.fastDecision);
     const insertResult = this.ctx.storage.sql.exec(
       `INSERT OR IGNORE INTO channel_messages (id, session_id, direction, text, external_id, answered, created_at, turn_holder, referents)
        VALUES (?, ?, 'inbound', ?, ?, 0, ?, ?, ?)`,
-      crypto.randomUUID(), sessionId, norm.text, norm.external_id, norm.timestamp,
+      crypto.randomUUID(), sessionId, envelope.payload.text, norm.external_id, norm.timestamp,
       mentionRoute.turnHolder, JSON.stringify(mentionRoute.referents)
     );
     const isNewMessage = insertResult.rowsWritten > 0;

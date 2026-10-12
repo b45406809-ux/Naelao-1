@@ -11,7 +11,7 @@ Branch: `Mcbt5s-Backup-2`. One sequential implementation worker. No live deploy.
 | 4 | PARTIAL_NEEDS_PLATFORM — local suites and audio ingress pass; Worker DO-to-Container integration, live AI/media acceptance and external saga effects remain unproven |
 | 5 | PARTIAL_NEEDS_PLATFORM — local model routing/prewarm work and checks complete; deployed binding/model/runtime behavior remains unproven |
 | 6 | PARTIAL_NEEDS_PLATFORM — local implementation and checks complete; deployed Gateway/Loader/Workflow behavior remains unproven |
-| 7 | UNASSESSED |
+| 7 | PARTIAL_NEEDS_PLATFORM — local channel/tunnel behavior and checks complete; live named-machine bridge and provider delivery remain unproven |
 | 8 | UNASSESSED |
 | 9 | UNASSESSED |
 | 10 | UNASSESSED |
@@ -77,6 +77,38 @@ Branch: `Mcbt5s-Backup-2`. One sequential implementation worker. No live deploy.
   D1, Worker Loader, Workflow, and real agent dispatch were mocked/local test
   behaviors, not live Cloudflare integration. No deployment or live model request.
   No historical plan files used; original TXT requirements unchanged.
+- Batch 7: primary D12 11777–12763 read in ascending bounded windows. D12
+  12348–12763 was already read as Batch 4 look-ahead; 12764–13344 as Batch 5
+  look-ahead; both were reused. D13 look-aheads 108–178, 1147–1189, 1324–1374
+  were read. Before design, searched unread source tails for channel, presence,
+  tunnel, named-machine, disconnect, replay and cancellation terms; matching
+  contexts read/reused: D12 12789–12802, 12840–12904, 13105–13180, 13270–13337,
+  13322, 13439–13573, 13642–13663; D13 149–178, 924 (Workflow restart/payload
+  limit), 1147–1189, 1324–1374. No unrelated historical file was used.
+- Batch 7 decisions and changes: current official Cloudflare Quick Tunnels docs
+  confirm `--allowed-mail` email OTP without visitor Cloudflare accounts. The same
+  docs say plain Quick Tunnels are public to anyone with the URL by default, OTP
+  auth needs a browser, SSE is unsupported, and each hostname is temporary; those
+  are unsuitable as a private-machine persistent production tunnel. This repo's
+  named machine tunnel remains the explicit outbound WSS, tenant/space/machine,
+  actor/project grant route. Read D13's region-prefixed `@cf/eu-jurisdiction/...`
+  example as illustrative only; no unsupported regional model endpoint added.
+  Added a shared, safe-metadata Universal Message Envelope and wired verified
+  channel ingress through it. Tunnel behavior already persisted journal/identity
+  and failed closed; added regressions proving grant denial before dispatch,
+  disconnect=>indeterminate, DO restart/reconnect replay does not dispatch twice,
+  and cancellation stays indeterminate until the machine acknowledges it. Fixed
+  two test fixtures: R2 CAS now stores/reads bytes properly; outbound notification
+  tests explicitly seed a non-air-gapped D1 policy (missing policy remains denied).
+- Batch 7 evidence: Agents full suite 58 files / 235 tests; targeted channel and
+  tunnel integration suite 5 files / 44 tests; LocalTunnelDO direct suite 6/6;
+  channel envelope 2/2; Agents, Agent SDK and bridge typechecks pass. These run
+  against local mocks/DO storage shims; no real bridge daemon, physical host,
+  Cloudflare WebSocket, Meta/Telegram/Slack credentials, carrier call, or tunnel
+  restart was live-tested. Current approval notification routes remain through the
+  verified owner/admin contact registry; automated voice escalation and a generic
+  extension-supplied presence waterfall still lack a verified provider contract.
+  No deployment or live credential use.
 
 ## Batch 1 and 2 coverage
 
@@ -233,6 +265,6 @@ Branch: `Mcbt5s-Backup-2`. One sequential implementation worker. No live deploy.
 Batch 3 independent local work and checks are complete and pushed (`7220466`, followed by
 test-harness correction `d7f8362`). Batches 4 and 5 local work/checks are complete; retain
 their runtime/provider gates above. Batch 6 local work/checks are complete; commit and push
-its scoped changes, then continue prompts 7–10 sequentially. Only after batch 10, make one
+its scoped changes, then continue prompts 8–10 sequentially. Only after batch 10, make one
 coverage pass over batches 1–10. Human-only prerequisites should be listed after their
 independent local work is complete. Current branch is `Mcbt5s-Backup-2`.

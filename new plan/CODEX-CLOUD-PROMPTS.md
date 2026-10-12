@@ -268,6 +268,8 @@ and complete the final requirements, exercise authentication, permissions,
 disconnect/restart/replay and safe cancellation, record results and stop here.
 ```
 
+**Progress (2026-10-12): PARTIAL_NEEDS_PLATFORM — local implementation and checks complete; continue with Batch 8.** Added a shared Universal Message Envelope for verified channel ingress and tunnel regressions for unauthorized grants, disconnect-to-indeterminate, persisted replay after a DO restart, and cancellation acknowledgment. Agents: 58 files / 235 tests; targeted channels/tunnel: 44 tests; Agent SDK envelope: 2 tests; Agents/SDK/bridge typechecks pass. Cloudflare Quick Tunnel docs confirm `--allowed-mail` OTP, but default public URL, browser-only auth, temporary hostname, and no SSE make it unsuitable as the named-machine production mesh; the existing outbound-WSS tunnel remains the path. No physical bridge, Cloudflare WebSocket or live provider credentials were exercised. See `new plan/CLOUD-PROGRESS.md` for source ranges and gates.
+
 8. **Document 12: lines 12764–13666**
 
 ```text

@@ -11,6 +11,7 @@ import type {
 } from "@naelao/client-sdk";
 export type { Space, Session, Message, ApiResult };
 export { meaningfulFactTokens, projectFactRelevance } from "./project-fact-relevance.js";
+export { toNormalizedInboundMessage, type InboundEnvelopeInput, type NormalizedInboundMessage } from "./channel-envelope.js";
 
 // ── Agent tool definition ────────────────────────────────────────────────────
 
