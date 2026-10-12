@@ -12,7 +12,7 @@ import { VirtualDesktopGuiCanvas } from "./viewports/VirtualDesktopGuiCanvas";
 type Creds = { sessionToken: string; endUserId: string };
 type HeaderTab = "canvases" | "files" | "details";
 export type CanvasView = "deliverable" | "code" | "micro-app" | "terminal" | "gui";
-type HydrationAction = { id: string; label: string; kind: "open_file" | "review_file"; path: string };
+type HydrationAction = { id: string; label: string; kind: "open_file" | "review_file"; path: string } | { id: string; label: string; kind: "open_channel_settings"; channel: "whatsapp" };
 
 function parseHydrationSeed(value: unknown): { title: string; description: string; actions: HydrationAction[] } | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -24,7 +24,10 @@ function parseHydrationSeed(value: unknown): { title: string; description: strin
   const actions = data.actions.filter((action): action is HydrationAction => {
     if (!action || typeof action !== "object" || Array.isArray(action)) return false;
     const item = action as Record<string, unknown>;
-    return typeof item.id === "string" && typeof item.label === "string" && (item.kind === "open_file" || item.kind === "review_file") && typeof item.path === "string";
+    return typeof item.id === "string" && typeof item.label === "string" && (
+      ((item.kind === "open_file" || item.kind === "review_file") && typeof item.path === "string") ||
+      (item.kind === "open_channel_settings" && item.channel === "whatsapp")
+    );
   });
   return { title: data.title, description: data.description, actions };
 }
@@ -86,7 +89,14 @@ export function CanvasContainer({ project, spaceId, creds, maximized = false, on
   const canvas = <div className="canvas-viewport">
     {hydrationSeed && !welcomeDismissed && <section className="card" aria-label="Template welcome" data-testid="template-welcome" style={{ margin: 12, padding: 14 }}>
       <span className="canvas-eyebrow">Getting started</span><h3>{hydrationSeed.title}</h3><p>{hydrationSeed.description}</p>
-      <div className="clause-actions">{hydrationSeed.actions.map(action => <button key={action.id} type="button" className="btn btn-primary btn-sm" onClick={() => action.kind === "open_file" ? onSelect(action.path) : onAction("template.review_starter", { path: action.path })}>{action.label}</button>)}<button type="button" className="btn btn-ghost btn-sm" onClick={() => setWelcomeDismissed(true)}>Dismiss</button></div>
+      <div className="clause-actions">{hydrationSeed.actions.map(action => <button key={action.id} type="button" className="btn btn-primary btn-sm" onClick={() => {
+        if (action.kind === "open_file") onSelect(action.path);
+        else if (action.kind === "review_file") onAction("template.review_starter", { path: action.path });
+        else {
+          const slug = window.location.pathname.split("/")[2];
+          if (slug) window.location.assign(`/p/${encodeURIComponent(slug)}/dashboard/assistant`);
+        }
+      }}>{action.label}</button>)}<button type="button" className="btn btn-ghost btn-sm" onClick={() => setWelcomeDismissed(true)}>Dismiss</button></div>
     </section>}
     {activeView === "deliverable" && (hasCanvasMount ? <MicroAppCanvas spaceId={spaceId} appId={appId} projectId={project.id} onAction={onAction} /> : deliverable)}{activeView === "code" && <CodeCanvas {...props} />}{activeView === "micro-app" && <MicroAppCanvas spaceId={spaceId} appId={appId} projectId={project.id} onAction={onAction} />}{activeView === "terminal" && <ContainerTerminalCanvas lines={terminalLines} connected={connected} />}{activeView === "gui" && <VirtualDesktopGuiCanvas {...(desktopUrl ? { streamUrl: desktopUrl } : {})} />}</div>;
   if (standalone) return <section className={`canvas-container canvas-standalone${maximized ? " maximized" : ""}`} aria-label={canvasView === "code" ? "Code canvas" : "Canvas"} data-testid="canvas-container">{canvas}</section>;

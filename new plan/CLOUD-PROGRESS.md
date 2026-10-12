@@ -7,7 +7,7 @@ Authority: Documents 12 then 13 only; original TXT files unchanged. Branch:
 | --- | --- |
 | 1 | PARTIAL_NEEDS_PLATFORM — local implementation complete; exact external gates below |
 | 2 | PARTIAL_NEEDS_PLATFORM — runtime implemented; verified preview DNS/Worker route must be configured |
-| 3 | INCOMPLETE — implemented foundation; operational requirements remain open |
+| 3 | IN PROGRESS — semantic leases, install actions, and mobile text escalation implemented; key integration gates remain |
 | 4 | IN PROGRESS |
 | 5 | UNASSESSED |
 | 6 | UNASSESSED |
@@ -377,32 +377,12 @@ pending. All DO/network/route checks are local mocks except the root migration t
 which execute actual SQLite transactions. No live Cloudflare resources or external
 services were contacted.
 
-Exact remaining batch-3 work before marking complete: wire node leases into a real
-semantic document editor (none exists; `DocumentRedlineCanvas` is read-only); build
-and connect cryptographic WhatsApp-to-desktop Desk-Drop session exchange; add a
-versioned, install-time interactive welcome/hydration action surface beyond the
-current synthetic starter files; enforce a marketplace publish gate based on
-deterministic state-delta conformance (the existing eval worker has LLM-judged runs
-and cannot honestly certify the specified deterministic gate); deliver mobile/FDE
-escalation beyond existing human approval cards; and reconcile marketplace earnings
-through an authorized payout rail (the repository has per-payment ledgers but no
-validated scheduled payout integration). Do not claim these as complete or simulate
-provider payouts. Next action: finish local infrastructure and tests for these seams,
-then record any genuinely credential/owner-only live verification gates; only after
-all repository-implementable work is complete may this batch be closed.
-The in-progress foundation snapshot is committed and pushed as `8ff5540` on
-`Mcbt5s-Backup-2`; it does not mark batch 3 complete.
-
-Fresh Batch 3 checkpoint (2026-10-12): prior claims rechecked; the missing
-semantic editor, Desk-Drop, trusted marketplace regression gate, full interactive
-installation hydration, mobile/FDE escalation path, and scheduled payouts remain
-unimplemented. Local focused checks rerun with direct binaries after pnpm's
-auto-repair found a pre-existing lockfile/`packages/bridge/package.json` mismatch:
-agent-sdk typecheck/build pass; canvas/extensions/mode-dispatch 16 tests pass;
-Spaces gadget/MCP 9 tests pass; Agents `ConcurrencyDO` 6 tests pass; real SQLite
-migration + canvas security tests 6 pass; shell typecheck passes. No production
-Cloudflare resources were contacted. This is not completion evidence for those
-remaining B3 requirements. B3 must be revisited before the overall run is closed.
+Historical Batch 3 baseline (superseded by the fresh continuation below): the initial
+foundation checkpoint lacked node-level semantic editing, interactive install hydration,
+and mobile approval escalation. Those three seams were subsequently implemented; do not
+use the older status list above as current state. Foundation commits `8ff5540` and
+`af97b21` are pushed on `Mcbt5s-Backup-2`; the latter contains the semantic editing,
+hydration starter, and verified executive-contact notification work described below.
 
 Fresh continuation checkpoint (2026-10-12): semantic editing and install hydration
 are now implemented. The DocumentRedline canvas claims/renews/releases node leases;
@@ -410,11 +390,21 @@ the WS gateway gates document UI mutations on lease status; and the agent's
 `document.replace_clause` operation acquires a human-priority lease, verifies exact
 source text, CAS-writes the project file, and releases in `finally`. The hydration
 seed is validated, starter-file-scoped, persisted at install, and shown in the shell
-with open/review/dismiss actions. Approval escalation now queries active verified
+with open/review/dismiss actions. It now also offers a validated Connect WhatsApp
+action to the existing assistant channel screen via a fixed internal route; arbitrary
+seed URLs are rejected. Approval escalation now queries active verified
 WhatsApp/Telegram executive contacts, attempts mobile notification when nobody is
 present, then falls back to the existing email notification; decisions remain behind
 the authenticated dashboard. Added a SpaceDO test that confirms the contact query
 filters to current owner/admin memberships.
+
+Additional B3 implementation (2026-10-12): added the fixed-route `open_channel_settings`
+hydration action to `packages/agent-sdk/src/project-templates.ts`, persisted schema
+validation and the welcome CTA in `apps/shell/src/components/CanvasContainer.tsx`, plus
+tests rejecting arbitrary URL actions. Agent SDK all tests: 18 files / 65 tests pass;
+template validation tests: 3 pass; Spaces gadget/market-radar checks: 7 pass; Spaces
+and Shell typechecks pass. This implements the WhatsApp connection CTA only; it does
+not provide a WhatsApp-to-browser authentication session.
 
 Fresh verification: agent-sdk build and all 65 tests; Agents typecheck and semantic
 CAS tests (6); Spaces typecheck and install/contact tests (6); Shell typecheck; WS
@@ -485,15 +475,17 @@ repository-implementable primary requirements are reviewed and either implemente
 recorded precisely as an external prerequisite.
 
 Fresh Batch 3/4 continuation checkpoint (2026-10-12): Batch 3 remains IN PROGRESS.
-The semantic editor, install hydration starter UI, and verified executive-contact mobile
-notification path described above are implemented and tested. Remaining product-level
-work is the WhatsApp-to-desktop Desk-Drop/session broker, an artifact-bound deterministic
-marketplace regression certificate that covers both publish entry points, and payout
-reconciliation through an authorized platform-native rail. Existing request/manual
-payout flows are not a scheduled settlement daemon. Escrow bounty and FDE read-only
-support also need an implemented authorization and payment workflow. Do not call these
-complete. The precise remaining source requirements are D12 5485–5657; the earlier
-look-ahead amendments and relevant later name matches are already recorded above.
+The semantic editor, validated install welcome actions (including fixed-route Connect
+WhatsApp navigation), and presence-aware verified executive-contact mobile text approval
+path described above are implemented and tested. Hydration still lacks preloaded R2
+demo artifacts, structured SQLite fixture rows and a runnable sample-audit action.
+Remaining work is the WhatsApp-to-desktop Desk-Drop/session broker, an artifact-bound
+deterministic marketplace regression certificate covering both publish entry points,
+interactive urgent mobile cards/voice, and payout reconciliation through an authorized
+platform-native rail. Existing request/manual payout flows are not a scheduled settlement
+daemon. Escrow bounty and FDE read-only support also need authorization and payment
+workflows. Do not call these complete. The precise remaining source requirements are
+D12 5485–5657; extra name-matched context is listed below.
 
 Fresh Batch 4 local integration evidence (2026-10-12): `infra/scripts/start-dev.mjs`
 stages pnpm-installed esbuild dependencies before Wrangler builds the three Agent

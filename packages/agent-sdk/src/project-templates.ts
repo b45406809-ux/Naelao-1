@@ -24,7 +24,7 @@ export interface BlueprintHydrationSeed {
   version: 1;
   title: string;
   description: string;
-  actions: Array<{ id: string; label: string; kind: "open_file" | "review_file"; path: string }>;
+  actions: Array<{ id: string; label: string; kind: "open_file" | "review_file"; path: string } | { id: string; label: string; kind: "open_channel_settings"; channel: "whatsapp" }>;
 }
 
 export function createProjectHydrationSeed(definition: ProjectTemplate, name = definition.name): BlueprintHydrationSeed {
@@ -33,10 +33,13 @@ export function createProjectHydrationSeed(definition: ProjectTemplate, name = d
     version: 1,
     title: `Welcome to ${name}`,
     description: "This workspace includes starter material. Review it first; replace synthetic examples with approved project data before using it for real work.",
-    actions: sample ? [
+    actions: [
+      ...(sample ? [
       { id: "open-starter", label: "Open starter file", kind: "open_file", path: sample.path },
       { id: "review-starter", label: "Ask the assistant to review it", kind: "review_file", path: sample.path },
-    ] : [],
+      ] as const : []),
+      { id: "connect-whatsapp", label: "Connect WhatsApp", kind: "open_channel_settings", channel: "whatsapp" },
+    ],
   };
 }
 
@@ -49,8 +52,12 @@ export function validateProjectHydrationSeed(value: unknown, starterPaths: Reado
   for (const raw of seed.actions) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
     const action = raw as Record<string, unknown>;
-    if (typeof action.id !== "string" || !/^[a-z0-9-]{1,48}$/.test(action.id) || typeof action.label !== "string" || !action.label.trim() || action.label.length > 80 ||
-        (action.kind !== "open_file" && action.kind !== "review_file") || typeof action.path !== "string" || !starterPaths.has(action.path)) return undefined;
+    if (typeof action.id !== "string" || !/^[a-z0-9-]{1,48}$/.test(action.id) || typeof action.label !== "string" || !action.label.trim() || action.label.length > 80) return undefined;
+    if (action.kind === "open_channel_settings" && action.channel === "whatsapp") {
+      actions.push({ id: action.id, label: action.label, kind: "open_channel_settings", channel: "whatsapp" });
+      continue;
+    }
+    if ((action.kind !== "open_file" && action.kind !== "review_file") || typeof action.path !== "string" || !starterPaths.has(action.path)) return undefined;
     actions.push({ id: action.id, label: action.label, kind: action.kind, path: action.path });
   }
   return { version: 1, title: seed.title, description: seed.description, actions };
