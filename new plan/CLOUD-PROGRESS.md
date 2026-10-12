@@ -666,7 +666,9 @@ Changed so far in this continuation: `packages/security/src/index.ts`,
 and `infra/migrations/0083_marketplace_conformance_receipts.sql`. Checks: security tests
 19/19; Spaces tests 22 files / 65 tests; security and Spaces typechecks; local Wrangler
 applied migration 0083 and a second apply reported no migrations pending; `git diff --check`
-passes. No Cloudflare live test used.
+passes. Committed and pushed as WIP `54d61d9` to `origin/Mcbt5s-Backup-2`; worktree is
+clean. Batch 3 is not complete and this commit does not mark it complete. No Cloudflare live
+test used.
 
 Next: wire receipts into the separate legacy SpaceType marketplace submission/admin-review
 worker (first verify and repair its D1 schema path), then exhaust remaining locally implementable Batch 3 requirements
