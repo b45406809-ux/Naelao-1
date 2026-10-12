@@ -36,8 +36,9 @@ describe("project template stamping", () => {
     const hydrationWrite = writes.find(write => write.query.includes("UPDATE projects SET channel_config"));
     const installedHydration = JSON.parse(String(hydrationWrite?.params[0]));
     expect(installedHydration.hydration_seed).toMatchObject({ version: 1, title: "Welcome to Acme NDA" });
-    expect(installedHydration.hydration_seed.actions).toHaveLength(2);
+    expect(installedHydration.hydration_seed.actions).toHaveLength(3);
     expect(installedHydration.hydration_seed.actions[0]).toMatchObject({ id: "open-starter", kind: "open_file", path: "deliverables/starter-nda.md" });
+    expect(installedHydration.hydration_seed.actions[2]).toMatchObject({ id: "connect-whatsapp", kind: "open_channel_settings", channel: "whatsapp" });
     expect(writes.some(write => write.query.includes("UPDATE agent_definitions SET name") && write.params[0] === "Legal Drafter")).toBe(true);
   });
 });
