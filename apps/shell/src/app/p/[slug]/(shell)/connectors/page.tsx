@@ -19,6 +19,8 @@ import { useActiveSpace } from "@/lib/active-space-context";
 import {
   getConnectorStatus,
   getConnectorDirectory,
+  getTenantCustomOAuthRedirectUri,
+  startTenantCustomOAuth,
   connectorProvider,
   type ConnectorInfo,
   type DirectoryApp,
@@ -33,6 +35,7 @@ import { AppCard, type AppCardModel } from "@/components/AppCard";
 import { ConnectorAliases } from "@/components/ConnectorAliases";
 
 type Tab = "popular" | "connected" | "az";
+type ProviderOverride = "auto" | "composio" | "pipedream";
 
 const TABS: Array<{ key: Tab; label: string }> = [
   { key: "popular", label: "Most used" },
@@ -52,9 +55,12 @@ export default function ConnectorsPage() {
   const [loading, setLoading] = React.useState(true);
   const [query, setQuery] = React.useState("");
   const [tab, setTab] = React.useState<Tab>("popular");
+  const [providerOverride, setProviderOverride] = React.useState<ProviderOverride>("auto");
   const [busyId, setBusyId] = React.useState<string | null>(null);
   const [manualKeyFor, setManualKeyFor] = React.useState<ConnectorInfo | null>(null);
   const [manualKeyValue, setManualKeyValue] = React.useState("");
+  const [customOAuth, setCustomOAuth] = React.useState({ connector_id: "", display_name: "", client_id: "", client_secret: "", authorization_url: "", token_url: "", scopes: "", mcp_url: "" });
+  const [customOAuthRedirectUri, setCustomOAuthRedirectUri] = React.useState("");
 
   const [directory, setDirectory] = React.useState<DirectoryApp[] | null>(null);
   const [directoryNote, setDirectoryNote] = React.useState<string | null>(null);
@@ -77,6 +83,16 @@ export default function ConnectorsPage() {
   React.useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  React.useEffect(() => {
+    if (!creds || !/^[a-z][a-z0-9_]{1,31}$/.test(customOAuth.connector_id)) { setCustomOAuthRedirectUri(""); return; }
+    const timer = setTimeout(() => {
+      void getTenantCustomOAuthRedirectUri(activeSpaceId, creds, customOAuth.connector_id)
+        .then((response) => setCustomOAuthRedirectUri(response.redirect_uri))
+        .catch(() => setCustomOAuthRedirectUri(""));
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [activeSpaceId, creds, customOAuth.connector_id]);
 
   // Land back here after any redirect-based connect flow (hosted Composio/Pipedream, or a bespoke
   // OAuth app) — every flow marks `${id}_connected=1` / `${id}_oauth_error=` on return.
@@ -164,14 +180,14 @@ export default function ConnectorsPage() {
     setBusyId(model.id);
     try {
       if (curated) {
-        const { needsManualKey } = await startConnectorConnect(activeSpaceId, creds, curated, window.location.href);
+        const { needsManualKey } = await startConnectorConnect(activeSpaceId, creds, curated, window.location.href, providerOverride === "auto" ? undefined : providerOverride);
         if (needsManualKey) {
           setManualKeyFor(curated);
           setManualKeyValue("");
           setBusyId(null);
         }
       } else {
-        await startDirectoryConnect(activeSpaceId, creds, model.id, window.location.href);
+        await startDirectoryConnect(activeSpaceId, creds, model.id, window.location.href, providerOverride === "auto" ? undefined : providerOverride);
       }
       // Hosted/OAuth flows: the browser is already navigating away, leave the button busy.
     } catch (err) {
@@ -192,6 +208,22 @@ export default function ConnectorsPage() {
     } catch (err) {
       show(err instanceof Error ? err.message : "Failed to connect");
     } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function handleCustomOAuthSubmit() {
+    if (!creds) return;
+    setBusyId("custom-oauth");
+    try {
+      const { authorize_url } = await startTenantCustomOAuth(activeSpaceId, creds, {
+        ...customOAuth,
+        scopes: customOAuth.scopes.split(/[ ,]+/).map((scope) => scope.trim()).filter(Boolean),
+      }, window.location.href);
+      setCustomOAuth({ connector_id: "", display_name: "", client_id: "", client_secret: "", authorization_url: "", token_url: "", scopes: "", mcp_url: "" });
+      window.location.href = authorize_url;
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Could not start the custom OAuth connection");
       setBusyId(null);
     }
   }
@@ -222,7 +254,7 @@ export default function ConnectorsPage() {
         description: a.description || a.categories.slice(0, 3).join(" · ") || "Connect it and your assistant can use it.",
         logo: a.logo,
         provider: a.provider,
-        connected: false,
+        connected: Boolean(a.connected),
         recommended: false,
       })),
     [directory]
@@ -238,12 +270,12 @@ export default function ConnectorsPage() {
 
   const cards: AppCardModel[] =
     tab === "connected"
-      ? curatedCards.filter((c) => c.connected)
+      ? [...curatedCards.filter((c) => c.connected), ...directoryCards.filter((c) => c.connected)]
       : // Recommended and already-connected apps lead; the ranked directory follows. Both halves
         // are then rendered as one continuous grid, so the boundary isn't a visible wall.
         [...matchingCurated.filter((c) => c.connected), ...matchingCurated.filter((c) => !c.connected), ...directoryCards];
 
-  const connectedCount = curatedCards.filter((c) => c.connected).length;
+  const connectedCount = curatedCards.filter((c) => c.connected).length + directoryCards.filter((c) => c.connected).length;
 
   if (loading) return <div className="page-view">Loading…</div>;
 
@@ -273,6 +305,14 @@ export default function ConnectorsPage() {
       </div>
 
       <div className="marketplace-filters">
+        <label style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--text3)", fontSize: 12 }}>
+          Hosted apps connect through
+          <select aria-label="Connector provider" value={providerOverride} onChange={(event) => setProviderOverride(event.target.value as ProviderOverride)}>
+            <option value="auto">Recommended</option>
+            <option value="composio">Composio</option>
+            <option value="pipedream">Pipedream</option>
+          </select>
+        </label>
         {TABS.map((t) => (
           <button
             key={t.key}
@@ -322,6 +362,28 @@ export default function ConnectorsPage() {
           </div>
         </div>
       )}
+
+      <details className="settings-block" style={{ marginBottom: 16 }}>
+        <summary style={{ cursor: "pointer", fontWeight: 600 }}>Connect a custom OAuth app</summary>
+        <p className="settings-row-sub" style={{ margin: "8px 0 12px" }}>Use an OAuth app owned by your organization. Add this callback URL to that app, and approve the OAuth and MCP hosts in this space&apos;s egress settings. The client secret and resulting tokens are stored in the encrypted space vault.</p>
+        {customOAuthRedirectUri && <p className="settings-row-sub" style={{ marginBottom: 12 }}>OAuth redirect URI: <code>{customOAuthRedirectUri}</code></p>}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>
+          <FormInput placeholder="Connector id (e.g. port_edi)" value={customOAuth.connector_id} onChange={(e) => setCustomOAuth({ ...customOAuth, connector_id: e.target.value })} />
+          <FormInput placeholder="Display name" value={customOAuth.display_name} onChange={(e) => setCustomOAuth({ ...customOAuth, display_name: e.target.value })} />
+          <FormInput placeholder="OAuth client ID" value={customOAuth.client_id} onChange={(e) => setCustomOAuth({ ...customOAuth, client_id: e.target.value })} />
+          <FormInput type="password" placeholder="OAuth client secret" value={customOAuth.client_secret} onChange={(e) => setCustomOAuth({ ...customOAuth, client_secret: e.target.value })} />
+          <FormInput placeholder="Authorization URL (HTTPS)" value={customOAuth.authorization_url} onChange={(e) => setCustomOAuth({ ...customOAuth, authorization_url: e.target.value })} />
+          <FormInput placeholder="Token URL (HTTPS)" value={customOAuth.token_url} onChange={(e) => setCustomOAuth({ ...customOAuth, token_url: e.target.value })} />
+          <FormInput placeholder="MCP endpoint (HTTPS)" value={customOAuth.mcp_url} onChange={(e) => setCustomOAuth({ ...customOAuth, mcp_url: e.target.value })} />
+          <FormInput placeholder="Scopes separated by spaces or commas" value={customOAuth.scopes} onChange={(e) => setCustomOAuth({ ...customOAuth, scopes: e.target.value })} />
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12 }}>
+          <Button size="sm" onClick={() => void handleCustomOAuthSubmit()} disabled={busyId === "custom-oauth" || !Object.entries(customOAuth).filter(([key]) => key !== "scopes").every(([, value]) => value.trim())}>
+            {busyId === "custom-oauth" ? "Starting…" : "Seal credentials & authorize"}
+          </Button>
+          <span className="settings-row-sub">Owner/admin access and explicit space egress grants are required.</span>
+        </div>
+      </details>
 
       {cards.length === 0 ? (
         <p style={{ color: "var(--text3)", fontSize: 13, marginBottom: 24 }}>

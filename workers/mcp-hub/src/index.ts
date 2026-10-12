@@ -5,6 +5,7 @@ import { checkSsrf, isSpaceNetworkEgressDenied, scanAndScrubEgress } from "@nael
 import { missingToolScopes } from "./connector-policy";
 import type { ConnectorScope } from "./connector-policy";
 import { createHostedOAuthLink, executeComposioAction } from "./composio";
+import { pipedreamConnected, pipedreamListTools, pipedreamToolCall } from "./pipedream";
 
 export interface Env {
   ENVIRONMENT: string;
@@ -19,6 +20,12 @@ export interface Env {
    *  never leaves this worker. Optional: when unset and a connector has no BYO credential, calls
    *  degrade honestly with `provider_not_configured`. */
   COMPOSIO_API_KEY?: string;
+  /** Pipedream client credentials are platform-owned and exchanged server-side for short-lived
+   * access tokens. The secret and access token never enter the connector registry. */
+  PIPEDREAM_CLIENT_ID?: string;
+  PIPEDREAM_CLIENT_SECRET?: string;
+  PIPEDREAM_PROJECT_ID?: string;
+  PIPEDREAM_ENVIRONMENT?: string;
   /** OAuth2 connectors ("Connect with Whop" etc.): buildAuthHeaders proactively refreshes a
    *  near-expiry access token by calling this internal endpoint — only the agents worker holds
    *  the connector's OAuth client secret, so refresh logic lives there, not here. */
@@ -117,7 +124,7 @@ async function generateCredentialToken(platformSecret: string, tenantId: string,
   return `t=${timestamp},aid=${agentId},tid=${tenantId},v3=${hex}`;
 }
 
-type ConnectorProvider = "direct" | "composio";
+type ConnectorProvider = "direct" | "composio" | "pipedream";
 
 export interface McpServer {
   id: string;
@@ -129,7 +136,7 @@ export interface McpServer {
   auth_secret_name: string | null; // references space_credentials table
   enabled: number; // 0 or 1 (D1 stores booleans as integers)
   connector_provider: ConnectorProvider;
-  /** Provider's opaque connection reference (Composio connected_account_id). Never the underlying OAuth token. */
+  /** Provider's opaque connection reference. For Pipedream this is the external user id; never an OAuth token. */
   provider_connection_id: string | null;
   created_at: string;
   updated_at: string;
@@ -458,7 +465,7 @@ app.get("/v1/spaces/:spaceId/mcp-servers", async (c) => {
   const spaceId = c.req.param("spaceId");
 
   const { results } = await c.env.PLATFORM_DB.prepare(
-    "SELECT id, name, url, auth_type, enabled, created_at FROM mcp_servers WHERE space_id = ? AND tenant_id = ?"
+    "SELECT id, name, url, auth_type, enabled, connector_provider, provider_connection_id, created_at FROM mcp_servers WHERE space_id = ? AND tenant_id = ?"
   )
     .bind(spaceId, tenantId)
     .all();
@@ -482,8 +489,8 @@ app.post("/v1/spaces/:spaceId/mcp-servers", async (c) => {
   }>();
 
   const connectorProvider: ConnectorProvider = body.connector_provider ?? "direct";
-  if (!["direct", "composio"].includes(connectorProvider)) {
-    return c.json({ error_code: "bad_request", message: "connector_provider must be 'direct' or 'composio'" }, 400);
+  if (!["direct", "composio", "pipedream"].includes(connectorProvider)) {
+    return c.json({ error_code: "bad_request", message: "connector_provider must be 'direct', 'composio', or 'pipedream'" }, 400);
   }
 
   // For provider-routed connectors a url is optional (the provider resolves the endpoint);
@@ -514,8 +521,20 @@ app.post("/v1/spaces/:spaceId/mcp-servers", async (c) => {
     }
   }
 
-  if (connectorProvider === "composio" && !body.provider_connection_id) {
-    return c.json({ error_code: "bad_request", message: "provider_connection_id is required for Composio connectors" }, 400);
+  if (connectorProvider !== "direct" && !body.provider_connection_id) {
+    return c.json({ error_code: "bad_request", message: `provider_connection_id is required for ${connectorProvider} connectors` }, 400);
+  }
+
+  // The provider is an immutable workspace-level pin for a given app. Explicitly reconnecting
+  // with the same provider is allowed; switching provider requires removing the old connector.
+  const pinned = await c.env.PLATFORM_DB.prepare(
+    "SELECT connector_provider FROM mcp_servers WHERE space_id = ? AND tenant_id = ? AND name = ? LIMIT 1"
+  ).bind(spaceId, tenantId, body.name).first<{ connector_provider: ConnectorProvider }>();
+  if (pinned) {
+    if (pinned.connector_provider !== connectorProvider) {
+      return c.json({ error_code: "connector_provider_pinned", message: `This workspace already pins ${body.name} to ${pinned.connector_provider}; remove it before changing providers` }, 409);
+    }
+    return c.json({ error_code: "connector_already_registered", message: `${body.name} is already registered in this workspace` }, 409);
   }
 
   const id = crypto.randomUUID();
@@ -614,6 +633,15 @@ app.get("/v1/spaces/:spaceId/mcp-servers/:serverId/tools", async (c) => {
     }
     return c.json(await composioListTools(server.provider_connection_id, keyRes.apiKey));
   }
+  if (server.connector_provider === "pipedream") {
+    if (!server.provider_connection_id) return c.json({ error_code: "bad_request", message: "Pipedream external user id missing" }, 400);
+    try { return c.json(await pipedreamListTools(c.env, server.name)); }
+    catch (error) {
+      const message = (error as Error).message;
+      if (message.includes("not configured")) return c.json({ error_code: "provider_not_configured", message: "Pipedream is not configured on this platform" }, 503);
+      return c.json({ error_code: "provider_error", message: "Pipedream could not list actions for this app" }, 502);
+    }
+  }
 
   // S0.5: re-validate at CALL TIME, not just registration — a hostname that resolved to a
   // public IP when registered can be repointed via DNS afterward (rebinding) to an internal
@@ -687,6 +715,9 @@ app.post("/v1/spaces/:spaceId/connector-aliases", async (c) => {
   if (!/^[a-z][a-z0-9_]{1,63}$/.test(body.alias ?? "") || !["space_shared", "project_bound", "user_personal"].includes(body.scope)) {
     return c.json({ error_code: "bad_request", message: "Invalid alias or scope" }, 400);
   }
+  // The durable schema intentionally uses compact storage values (space/project/user); map the
+  // public authorization vocabulary at this boundary rather than writing values its CHECK rejects.
+  const storedScope = body.scope === "space_shared" ? "space" : body.scope === "project_bound" ? "project" : "user";
   const callerUser = c.req.header("x-naelao-user-id") ?? "";
   const userId = body.scope === "user_personal" ? callerUser : null;
   const projectId = body.scope === "project_bound" ? body.project_id ?? null : null;
@@ -701,7 +732,7 @@ app.post("/v1/spaces/:spaceId/connector-aliases", async (c) => {
   const existing = await c.env.PLATFORM_DB.prepare(
     `SELECT id FROM connector_aliases WHERE tenant_id=? AND space_id=? AND alias=? AND scope=?
       AND ifnull(project_id,'')=ifnull(?,'') AND ifnull(user_id,'')=ifnull(?,'')`
-  ).bind(tenantId, spaceId, body.alias, body.scope, projectId, userId).first<{ id: string }>();
+  ).bind(tenantId, spaceId, body.alias, storedScope, projectId, userId).first<{ id: string }>();
   const id = existing?.id ?? crypto.randomUUID();
   if (existing) {
     await c.env.PLATFORM_DB.prepare(
@@ -710,10 +741,10 @@ app.post("/v1/spaces/:spaceId/connector-aliases", async (c) => {
     ).bind(body.server_id, JSON.stringify(scopes), id, tenantId, spaceId).run();
   } else {
     await c.env.PLATFORM_DB.prepare(
-      `INSERT INTO connector_aliases
+    `INSERT INTO connector_aliases
        (id,tenant_id,space_id,alias,scope,project_id,user_id,server_id,granted_scopes_json)
        VALUES (?,?,?,?,?,?,?,?,?)`
-    ).bind(id, tenantId, spaceId, body.alias, body.scope, projectId, userId, body.server_id, JSON.stringify(scopes)).run();
+    ).bind(id, tenantId, spaceId, body.alias, storedScope, projectId, userId, body.server_id, JSON.stringify(scopes)).run();
   }
   await c.env.PLATFORM_DB.prepare(
     `INSERT INTO connector_alias_audit (id,tenant_id,space_id,alias_id,alias,action,actor_id,project_id)
@@ -743,13 +774,14 @@ app.post("/v1/spaces/:spaceId/connector-aliases/:alias/tools/call", async (c) =>
   if (requiredScope && !["space_shared", "project_bound", "user_personal"].includes(requiredScope)) {
     return c.json({ error_code: "bad_request", message: "Invalid connector scope" }, 400);
   }
+  const storedRequiredScope = requiredScope === "space_shared" ? "space" : requiredScope === "project_bound" ? "project" : requiredScope === "user_personal" ? "user" : "";
   const row = await c.env.PLATFORM_DB.prepare(
     `SELECT id, server_id, scope, granted_scopes_json FROM connector_aliases
      WHERE tenant_id=? AND space_id=? AND alias=?
-       AND ((scope='user_personal' AND user_id=?) OR (scope='project_bound' AND project_id=?) OR scope='space_shared')
+       AND ((scope='user' AND user_id=?) OR (scope='project' AND project_id=?) OR scope='space')
        AND (?='' OR scope=?)
-     ORDER BY CASE scope WHEN 'user_personal' THEN 3 WHEN 'project_bound' THEN 2 ELSE 1 END DESC LIMIT 1`
-  ).bind(tenantId, spaceId, c.req.param("alias"), userId, projectId, requiredScope, requiredScope)
+     ORDER BY CASE scope WHEN 'user' THEN 3 WHEN 'project' THEN 2 ELSE 1 END DESC LIMIT 1`
+  ).bind(tenantId, spaceId, c.req.param("alias"), userId, projectId, storedRequiredScope, storedRequiredScope)
     .first<{ id: string; server_id: string; scope: string; granted_scopes_json: string }>();
   if (!row) return c.json({ error_code: "not_found", message: "Connector alias not found in the requested scope" }, 404);
   const callBody: { tool_name?: string } = await c.req.raw.clone().json<{ tool_name?: string }>().catch(() => ({}));
@@ -778,7 +810,7 @@ app.post("/v1/spaces/:spaceId/connector-aliases/:alias/tools/call", async (c) =>
      VALUES (?,?,?,?,?,'called',?,?)`
   ).bind(crypto.randomUUID(), tenantId, spaceId, row.id, c.req.param("alias"), userId || "system", projectId || null).run();
   const headers = new Headers(c.req.raw.headers);
-  headers.set("x-naelao-connector-scope", row.scope);
+  headers.set("x-naelao-connector-scope", row.scope === "user" ? "personal" : row.scope === "project" ? "project" : "business");
   return app.fetch(new Request(
     `https://mcp-hub.internal/v1/spaces/${encodeURIComponent(spaceId)}/mcp-servers/${encodeURIComponent(row.server_id)}/tools/call`,
     { method: "POST", headers, body: await c.req.raw.text() }
@@ -850,6 +882,18 @@ app.post("/v1/spaces/:spaceId/mcp-servers/:serverId/tools/call", async (c) => {
       return c.json({ error_code: "upstream_error", message: providerResult.error }, 502);
     }
     return c.json({ result: providerResult.result });
+  }
+  if (server.connector_provider === "pipedream") {
+    if (!server.provider_connection_id) return c.json({ error_code: "bad_request", message: "Pipedream external user id missing" }, 400);
+    try {
+      c.executionCtx.waitUntil(recordPlatformKeyUsage(c.env, tenantId, spaceId, "pipedream"));
+      return c.json({ result: await pipedreamToolCall(c.env, server.provider_connection_id, body.tool_name, body.input) });
+    } catch (error) {
+      const message = (error as Error).message;
+      if (message.includes("not configured")) return c.json({ error_code: "provider_not_configured", message: "Pipedream is not configured on this platform" }, 503);
+      if (message.includes("token exchange failed")) return c.json({ error_code: "provider_auth_failed", message: "Pipedream platform authentication failed" }, 502);
+      return c.json({ error_code: "upstream_error", message: "Pipedream action failed" }, 502);
+    }
   }
 
   // S0.5: re-validate at CALL TIME, not just registration — see the tools/list handler above.

@@ -15,10 +15,12 @@ export async function startConnectorConnect(
   spaceId: string,
   session: SessionCredentials,
   connector: ConnectorInfo,
-  returnUrl: string
+  returnUrl: string,
+  preferredProvider?: "composio" | "pipedream"
 ): Promise<{ needsManualKey: boolean }> {
   if (connector.composio || connector.pipedream) {
-    const { connect_url } = await startProviderConnect(spaceId, session, connector.id, returnUrl);
+    const provider = preferredProvider ?? (connector.pipedream && !connector.composio ? "pipedream" : undefined);
+    const { connect_url } = await startProviderConnect(spaceId, session, connector.id, returnUrl, provider);
     window.location.href = connect_url;
     return { needsManualKey: false };
   }
@@ -39,9 +41,10 @@ export async function startDirectoryConnect(
   spaceId: string,
   session: SessionCredentials,
   appId: string,
-  returnUrl: string
+  returnUrl: string,
+  preferredProvider?: "composio" | "pipedream"
 ): Promise<void> {
-  const { connect_url } = await startProviderConnect(spaceId, session, appId, returnUrl);
+  const { connect_url } = await startProviderConnect(spaceId, session, appId, returnUrl, preferredProvider);
   window.location.href = connect_url;
 }
 

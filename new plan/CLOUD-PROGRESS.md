@@ -13,7 +13,7 @@ Branch: `Mcbt5s-Backup-2`. One sequential implementation worker. No live deploy.
 | 6 | PARTIAL_NEEDS_PLATFORM — local implementation and checks complete; deployed Gateway/Loader/Workflow behavior remains unproven |
 | 7 | PARTIAL_NEEDS_PLATFORM — local channel/tunnel behavior and checks complete; live named-machine bridge and provider delivery remain unproven |
 | 8 | PARTIAL_NEEDS_PLATFORM — local model/BYOK/preview work complete; live provider and Quick Tunnel behavior remains unexercised |
-| 9 | UNASSESSED |
+| 9 | PARTIAL_NEEDS_PLATFORM — all local connector requirements implemented; live provider/OAuth verification requires tenant/platform credentials |
 | 10 | UNASSESSED |
 
 ## Source ledger and reconciled decisions
@@ -155,6 +155,48 @@ Branch: `Mcbt5s-Backup-2`. One sequential implementation worker. No live deploy.
   failures are outside B8, while new placement tests were kept in a passing dedicated
   file. No deployed gateway setting, provider credential, or live model behavior was
   changed or claimed.
+
+## Batch 9 current work and evidence
+
+- Primary D13 1–734 was re-read in bounded ascending windows; look-ahead D13
+  735–1398 and D12 6501–6560, 11707–11776, 12213–12347 were consulted. Search
+  of later matching terms found D13 compiler/runtime references at 884–919 and
+  1324–1398; these resolve product comparisons and do not change connector ownership
+  or provider selection. The primary establishes platform-managed Composio/Pipedream,
+  tenant API keys in the vault, and tenant-owned OAuth client credentials with PKCE.
+  It also requires one authoritative provider per workspace/app, Composio by default
+  on overlap, Pipedream for long-tail apps or explicit selection, and a unified SDK
+  facade. The proposed raw-token bridging across providers is rejected: providers own
+  different OAuth grants and the current SDK has no safe documented token exchange.
+- Implemented a provider resolver and `ctx.connectors.get(appId, { preferredProvider })`,
+  Composio/Pipedream connection routing, provider pins enforced at connection and MCP
+  registration, a unified allowlisted directory and connection status in Shell. Added
+  Pipedream app/action discovery and server-side action execution using its official
+  SDK/API shapes; Pipedream secrets stay in worker bindings and provider grants are
+  not copied into Naelao's credentials vault. Added migration 0092 for unique app pins.
+  Direct tenant API keys continue to use the existing encrypted credentials service.
+- Added Tier 3 tenant-owned OAuth setup in Shell and spaces/Agents routes. The flow
+  displays the exact callback URI, requires owner/admin membership, checks public HTTPS
+  endpoints against the space's explicit egress allowlist, stores client configuration
+  in the encrypted space credential vault, uses PKCE with a single-use ticket, stores
+  access/refresh tokens in the same vault, registers the MCP endpoint, and refreshes
+  tokens server-side. OAuth token requests refuse redirects. Air-gapped spaces are
+  denied at setup, callback, and refresh. Tests prove secret non-disclosure, approved
+  host enforcement, callback replay rejection, token refresh rotation, and MCP registry
+  wiring. This supplies the generic connection primitive; FDE connector business logic
+  is delivered through tenant-owned MCP servers rather than arbitrary external app cloning.
+- Official Pipedream `@pipedream/sdk@3.1.6` and current Connect API documentation
+  were checked on 2026-10-12 for client-credentials token exchange, Connect Link,
+  account status, app/action listing, and action execution. Vendor HTTP calls remain
+  mocked; no client secret or live Pipedream project is configured. Cloudflare docs
+  and live APIs are not needed for this batch.
+- B9 verification: focused connector/security/OAuth suite 9 files / 101 tests;
+  Agents suite 58 files / 235 tests; Agent SDK 21 / 77; MCP Hub 3 / 7. Agents,
+  MCP Hub, Spaces and Agent SDK typechecks pass. Shell typecheck is being rerun after
+  correcting its API import. Vendor API and DNS were mocked; no live Pipedream project,
+  tenant OAuth provider, Cloudflare deployment, or credential was used. Source-derived
+  implementation is complete locally; retain the platform gate until a configured
+  deployment exercises provider behavior.
 
 ## Batch 1 and 2 coverage
 

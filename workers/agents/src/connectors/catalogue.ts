@@ -101,6 +101,10 @@ export interface ConnectorComposioSpec {
   auth_config_id_env: string;
 }
 
+/** Pipedream Connect route for a verified hosted app. The host enables only slugs it has
+ * confirmed in the matching Pipedream project; this is metadata, never a token or account id. */
+export interface ConnectorPipedreamSpec { app_slug: string }
+
 export interface ConnectorDefinition {
   id: string;
   name: string;
@@ -134,6 +138,7 @@ export interface ConnectorDefinition {
    *  of a bespoke OAuth app or a manual API key. Mutually exclusive with `oauth` in practice
    *  (not enforced) — a connector picks whichever mechanism its real platform actually supports. */
   composio?: ConnectorComposioSpec;
+  pipedream?: ConnectorPipedreamSpec;
   /**
    * Canonical MCP endpoint for the platform's shim (Naelao-hosted, or the platform's own hosted
    * MCP server e.g. Higgsfield's). Absent for coming-soon entries AND for composio-

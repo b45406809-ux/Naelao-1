@@ -127,7 +127,7 @@ export interface ProviderConnectTicket {
    * Optional: a ticket minted before this existed (10-minute TTL, so at most one deploy's worth)
    * still parses, and the callback falls back to catalogue lookup for those.
    */
-  provider?: "composio";
+  provider?: "composio" | "pipedream";
   /** The name the MCP server is registered under — the curated connector id, or a directory
    *  app's bare slug. */
   connectorId?: string;

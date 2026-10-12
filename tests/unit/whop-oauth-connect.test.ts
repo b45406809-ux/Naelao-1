@@ -87,6 +87,7 @@ function makeEnv(overrides: Partial<AgentsEnv> = {}): AgentsEnv & {
 
   return {
     PLATFORM_SECRET: SECRET,
+    PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ config_json: "{}" }) }) }) } as unknown as D1Database,
     PUBLIC_AGENTS_URL: "https://agents.naelao.com",
     WHOP_OAUTH_CLIENT_ID: "app_test123",
     WHOP_OAUTH_CLIENT_SECRET: "secret_test",

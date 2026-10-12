@@ -379,13 +379,20 @@ export interface ProjectMcpClientOptions {
 }
 
 /** A connector selected by a stable semantic name, never by a physical account handle. */
+import type { ConnectorProviderPreference } from "./connector-provider.js";
+
 export interface RuntimeConnector {
   call(tool: string, params?: Record<string, unknown>, requiredScopes?: readonly string[]): Promise<unknown>;
   readonly [tool: string]: unknown;
 }
-export interface RuntimeConnectors { use(aliasName: string): RuntimeConnector; }
+export interface RuntimeConnectors {
+  /** Provider-neutral lookup; the host resolves and enforces the workspace's authoritative pin. */
+  get(appId: string, options?: ConnectorProviderPreference): RuntimeConnector;
+  /** Backward-compatible alias for get(appId). */
+  use(aliasName: string): RuntimeConnector;
+}
 export interface RuntimeConnectorAdapter {
-  call(aliasName: string, tool: string, params: Record<string, unknown>, requiredScopes: readonly string[]): Promise<unknown>;
+  call(aliasName: string, tool: string, params: Record<string, unknown>, requiredScopes: readonly string[], options?: ConnectorProviderPreference): Promise<unknown>;
 }
 
 export interface RuntimeRun {

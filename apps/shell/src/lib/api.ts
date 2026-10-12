@@ -2226,6 +2226,8 @@ export interface ConnectorInfo {
   /** Pipedream Connect — the second hosted "click Install" provider (item 57), e.g. Notion.
    *  Mutually exclusive with `composio` in practice, same real-catalogue precedent as that field. */
   pipedream?: unknown;
+  /** The durable workspace provider pin for an already connected app. */
+  connected_provider?: "composio" | "pipedream" | "direct";
   /** "space" (default, absent = space): one shared connection for the whole business. "user":
    *  each member connects their OWN account — never visible to or usable by anyone else. */
   scope_model?: "space" | "user";
@@ -2319,6 +2321,8 @@ export interface DirectoryApp {
   /** Position in the provider's own popularity ordering, 0 = most reached for. Present only in
    *  the default `popular` sort, and only for a provider that actually ranks. */
   rank?: number;
+  connected?: boolean;
+  connected_provider?: "composio" | "pipedream" | "direct";
 }
 
 export interface DirectoryPage {
@@ -2378,6 +2382,25 @@ export async function startOAuthConnect(
   });
 }
 
+export async function startTenantCustomOAuth(
+  spaceId: string,
+  session: SessionCredentials,
+  config: { connector_id: string; display_name: string; client_id: string; client_secret: string; authorization_url: string; token_url: string; scopes: string[]; mcp_url: string },
+  returnUrl: string,
+): Promise<{ authorize_url: string; redirect_uri: string }> {
+  return apiFetch(`/v1/spaces/${spaceId}/connectors/custom-oauth-start`, {
+    method: "POST", body: JSON.stringify({ ...config, return_url: returnUrl }), session,
+  });
+}
+
+export async function getTenantCustomOAuthRedirectUri(
+  spaceId: string,
+  session: SessionCredentials,
+  connectorId: string,
+): Promise<{ redirect_uri: string }> {
+  return apiFetch(`/v1/spaces/${spaceId}/connectors/custom-oauth-redirect?connector_id=${encodeURIComponent(connectorId)}`, { session });
+}
+
 /** Composio "click Install" hosted-connect flow (G-1/G-3 growth layer) — same real-browser-
  *  navigation contract as startOAuthConnect above (no credential in the URL, only an opaque
  *  single-use ticket); the caller does `window.location.href = connect_url` itself. */
@@ -2385,11 +2408,12 @@ export async function startProviderConnect(
   spaceId: string,
   session: SessionCredentials,
   platform: string,
-  returnUrl: string
+  returnUrl: string,
+  preferredProvider?: "composio" | "pipedream"
 ): Promise<{ connect_url: string }> {
   return apiFetch(`/v1/spaces/${spaceId}/connectors/provider-connect-start`, {
     method: "POST",
-    body: JSON.stringify({ platform, return_url: returnUrl }),
+    body: JSON.stringify({ platform, return_url: returnUrl, ...(preferredProvider ? { preferred_provider: preferredProvider } : {}) }),
     session,
   });
 }

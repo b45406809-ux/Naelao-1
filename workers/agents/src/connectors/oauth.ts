@@ -100,6 +100,7 @@ export async function exchangeCodeForTokens(params: {
 }): Promise<OAuthTokens> {
   const resp = await fetch(params.tokenUrl, {
     method: "POST",
+    redirect: "error",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       grant_type: "authorization_code",
@@ -131,6 +132,7 @@ export async function refreshTokens(params: {
 }): Promise<OAuthTokens> {
   const resp = await fetch(params.tokenUrl, {
     method: "POST",
+    redirect: "error",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       grant_type: "refresh_token",

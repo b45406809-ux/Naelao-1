@@ -2062,6 +2062,7 @@ app.get("/spaces/:spaceId/connectors/directory", async (c) => {
   const cursor = c.req.query("cursor");
   const limit = c.req.query("limit");
   const sort = c.req.query("sort");
+  params.set("space_id", c.req.param("spaceId"));
   if (q) params.set("q", q);
   if (cursor) params.set("cursor", cursor);
   if (limit) params.set("limit", limit);
@@ -2206,19 +2207,39 @@ app.post("/spaces/:spaceId/connectors/oauth-start", async (c) => {
   });
 });
 
+// Tenant-provided OAuth apps use the same admin boundary as platform OAuth. Forward credentials
+// only to the Agents worker's vault-sealing setup route; they are never echoed to the client.
+app.use("/spaces/:spaceId/connectors/custom-oauth-start", requireBusinessMembership({ POST: "admin" }));
+app.use("/spaces/:spaceId/connectors/custom-oauth-redirect", requireBusinessMembership({ GET: "admin" }));
+app.get("/spaces/:spaceId/connectors/custom-oauth-redirect", async (c) => {
+  const id = c.req.query("connector_id") ?? "";
+  if (!id) return c.json({ error_code: "bad_request", message: "connector_id is required" }, 400);
+  return proxyToAgentsWorker(c, `/connectors/custom-oauth/${encodeURIComponent(id)}/oauth/redirect-uri`, "GET");
+});
+app.post("/spaces/:spaceId/connectors/custom-oauth-start", async (c) => {
+  const body = await c.req.json<{ connector_id?: string; return_url?: string; display_name?: string; client_id?: string; client_secret?: string; authorization_url?: string; token_url?: string; scopes?: string[]; mcp_url?: string }>().catch(() => ({} as Record<string, never>));
+  if (!body.connector_id || !body.return_url) return c.json({ error_code: "bad_request", message: "connector_id and return_url are required" }, 400);
+  return proxyToAgentsWorker(c, `/connectors/custom-oauth/${encodeURIComponent(body.connector_id)}/oauth/start`, "POST", {
+    space_id: c.req.param("spaceId"), return_url: body.return_url, display_name: body.display_name,
+    client_id: body.client_id, client_secret: body.client_secret, authorization_url: body.authorization_url,
+    token_url: body.token_url, scopes: body.scopes, mcp_url: body.mcp_url,
+  });
+});
+
 // Composio "click Install" hosted-connect flow (G-1/G-3 growth layer) — same admin-only gate and
 // platform-in-body shape as oauth-start above (same router-corruption reasoning: never a dynamic
 // :platform URL segment on a spaces-worker route). Returns {connect_url}; the frontend does a real
 // browser navigation to it (see composio.ts's header).
 app.use("/spaces/:spaceId/connectors/provider-connect-start", requireBusinessMembership({ POST: "admin" }));
 app.post("/spaces/:spaceId/connectors/provider-connect-start", async (c) => {
-  const body = await c.req.json<{ platform?: string; return_url?: string }>().catch(() => ({}) as Record<string, never>);
+  const body = await c.req.json<{ platform?: string; return_url?: string; preferred_provider?: "composio" | "pipedream" }>().catch(() => ({}) as Record<string, never>);
   const platform = body.platform ?? "";
   if (!platform) return c.json({ error_code: "bad_request", message: "platform is required" }, 400);
   if (!body.return_url) return c.json({ error_code: "bad_request", message: "return_url is required" }, 400);
   return proxyToAgentsWorker(c, `/connectors/${encodeURIComponent(platform)}/provider-connect/start`, "POST", {
     space_id: c.req.param("spaceId"),
     return_url: body.return_url,
+    ...(body.preferred_provider ? { preferred_provider: body.preferred_provider } : {}),
   });
 });
 

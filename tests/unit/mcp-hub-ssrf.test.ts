@@ -15,13 +15,17 @@ const PLATFORM_SECRET = "test-platform-secret";
 const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
 
 const MIGRATIONS = [
+  readFileSync(join(__dirname, "../../infra/migrations/0003_spaces.sql"), "utf8"),
   readFileSync(join(__dirname, "../../infra/migrations/0012_mcp_servers.sql"), "utf8"),
   readFileSync(join(__dirname, "../../infra/migrations/0037_mcp_servers_auth.sql"), "utf8"),
   readFileSync(join(__dirname, "../../infra/migrations/0060_mcp_server_connector_provider.sql"), "utf8"),
+  readFileSync(join(__dirname, "../../infra/migrations/0092_mcp_connector_provider_pin.sql"), "utf8"),
 ];
 
 function makeEnv(overrides: Record<string, unknown> = {}) {
-  return { ENVIRONMENT: "test", PLATFORM_SECRET, PLATFORM_DB: createFakeD1(MIGRATIONS), ...overrides };
+  const db = createFakeD1(MIGRATIONS);
+  for (const id of ["space-1", "space-p", "space-a"]) void db.prepare("INSERT INTO spaces (id, tenant_id, spacetype_id, name) VALUES (?, 'tenant-1', 'type-1', ?)").bind(id, id).run();
+  return { ENVIRONMENT: "test", PLATFORM_SECRET, PLATFORM_DB: db, ...overrides };
 }
 
 async function seedServer(env: ReturnType<typeof makeEnv>, opts: { id: string; spaceId: string; tenantId: string; name: string; url: string }) {
@@ -162,7 +166,9 @@ describe("mcp-hub Phase P — Composio/Pipedream provider routing", () => {
   afterEach(() => { globalThis.fetch = originalFetch; });
 
   function makeEnvP(overrides: Record<string, unknown> = {}) {
-    return { ENVIRONMENT: "test", PLATFORM_SECRET, PLATFORM_DB: createFakeD1(MIGRATIONS), ...overrides };
+    const db = createFakeD1(MIGRATIONS);
+    for (const id of ["space-1", "space-p", "space-a"]) void db.prepare("INSERT INTO spaces (id, tenant_id, spacetype_id, name) VALUES (?, 'tenant-1', 'type-1', ?)").bind(id, id).run();
+    return { ENVIRONMENT: "test", PLATFORM_SECRET, PLATFORM_DB: db, ...overrides };
   }
 
   it("registers a Composio connector and stores connector_provider + provider_connection_id", async () => {
@@ -201,6 +207,22 @@ describe("mcp-hub Phase P — Composio/Pipedream provider routing", () => {
     expect(res.status).toBe(400);
     const body = await res.json<{ message: string }>();
     expect(body.message).toMatch(/provider_connection_id/);
+  });
+
+  it("pins one provider per workspace/app and requires removal before changing providers", async () => {
+    const env = makeEnvP();
+    const token = await mintInternalToken(PLATFORM_SECRET, "tenant-p");
+    const register = (provider: string, connectionId: string) => mcpHubWorker.fetch(
+      req("/v1/spaces/space-p/mcp-servers", {
+        method: "POST",
+        headers: { "x-naelao-tenant-id": "tenant-p", "x-naelao-internal-token": token },
+        body: JSON.stringify({ name: "notion", connector_provider: provider, provider_connection_id: connectionId }),
+      }), env as never, execCtx
+    );
+    expect((await register("composio", "ca-1")).status).toBe(201);
+    const switched = await register("pipedream", "naelao-space:space-p");
+    expect(switched.status).toBe(409);
+    expect(await switched.json()).toMatchObject({ error_code: "connector_provider_pinned" });
   });
 
   it("rejects an invalid connector_provider value", async () => {

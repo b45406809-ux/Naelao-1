@@ -58,6 +58,7 @@ function makeEnv(overrides: Partial<AgentsEnv> = {}): AgentsEnv & {
   };
   return {
     PLATFORM_SECRET: SECRET,
+    PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ config_json: "{}" }) }) }) } as unknown as D1Database,
     PUBLIC_AGENTS_URL: "https://agents.naelao.com",
     COMPOSIO_API_KEY: "composio_test_key",
     COMPOSIO_TWITTER_AUTH_CONFIG_ID: "ac_twitter_123",

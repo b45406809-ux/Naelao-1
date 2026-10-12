@@ -5,7 +5,7 @@ import { mintInternalToken } from "@naelao/http";
 
 // Pipedream Connect "click Install" hosted-connect flow — the second hosted provider behind the
 // SAME /provider-connect/* routes and shell UI as Composio (composio-connector-connect.test.ts).
-// Notion is the catalogue's Pipedream-routed connector (catalogue.ts).
+// Pipedream is selected only through an explicit provider override and app allowlist.
 //
 // Safety invariants under test (mirrors the Composio suite):
 //   1. The start route only builds a real connect_url when the OAuth client id/secret/project id
@@ -59,10 +59,12 @@ function makeEnv(overrides: Partial<AgentsEnv> = {}): AgentsEnv & {
   };
   return {
     PLATFORM_SECRET: SECRET,
+    PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ config_json: "{}" }) }) }) } as unknown as D1Database,
     PUBLIC_AGENTS_URL: "https://agents.naelao.com",
     PIPEDREAM_CLIENT_ID: "pd_client_test",
     PIPEDREAM_CLIENT_SECRET: "pd_secret_test",
     PIPEDREAM_PROJECT_ID: "proj_test123",
+    PIPEDREAM_SUPPORTED_APPS: "notion",
     AGENT_CACHE: new FakeKv() as unknown as KVNamespace,
     MCP_HUB: mcpHub as unknown as Fetcher,
     ANALYTICS: { writeDataPoint() {} },
@@ -78,7 +80,8 @@ afterEach(() => {
   calls = [];
 });
 
-function mockPipedream(opts: { tokenStatus?: number; tokenBody?: unknown; connectStatus?: number; connectBody?: unknown; accountsBody?: unknown }) {
+function mockPipedream(opts: { tokenStatus?: number; tokenBody?: unknown; connectStatus?: number; connectBody?: unknown; accountsBody?: unknown; appSlug?: string }) {
+  const appSlug = opts.appSlug ?? "notion";
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
     const headers: Record<string, string> = {};
@@ -97,7 +100,8 @@ function mockPipedream(opts: { tokenStatus?: number; tokenBody?: unknown; connec
       expect(headers["authorization"]).toBe("Bearer pd_access_tok");
       expect(headers["x-pd-environment"]).toBe("development");
       expect(body.external_user_id).toBe("naelao-space:space-a");
-      expect(body.success_redirect_uri).toContain("/connectors/notion/provider-connect/callback?ticket=");
+      expect(body.success_redirect_uri).toContain(`/connectors/${encodeURIComponent(appSlug === "regional-crm" ? "pipedream:regional-crm" : appSlug)}/provider-connect/callback?ticket=`);
+      expect(body.app_id).toBe(appSlug);
       return new Response(
         JSON.stringify(opts.connectBody ?? { connect_link_url: "https://pipedream.com/_static/connect.html?token=abc" }),
         { status: opts.connectStatus ?? 200 }
@@ -107,33 +111,33 @@ function mockPipedream(opts: { tokenStatus?: number; tokenBody?: unknown; connec
       expect(headers["authorization"]).toBe("Bearer pd_access_tok");
       const qs = new URL(url).searchParams;
       expect(qs.get("external_user_id")).toBe("naelao-space:space-a");
-      expect(qs.get("app")).toBe("notion");
-      return Response.json(opts.accountsBody ?? { data: [{ id: "acct_1", app: "notion" }] });
+      expect(qs.get("app")).toBe(appSlug);
+      return Response.json(opts.accountsBody ?? { data: [{ id: "acct_1", app: { name_slug: appSlug }, healthy: true }] });
     }
     return realFetch(input as never, init);
   }) as typeof globalThis.fetch;
 }
 
-async function startReq(env: AgentsEnv, platform = "notion", spaceId = "space-a") {
+async function startReq(env: AgentsEnv, platform = "notion", spaceId = "space-a", preferredProvider: "composio" | "pipedream" = "pipedream") {
   const token = await mintInternalToken(SECRET, "tenant-a");
   return app.fetch(
     new Request(`https://agents.naelao.com/connectors/${platform}/provider-connect/start`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": "user-1", "x-naelao-internal-token": token },
-      body: JSON.stringify({ space_id: spaceId, return_url: "https://shell.naelao.com/p/acme/spaces/space-a" }),
+      body: JSON.stringify({ space_id: spaceId, return_url: "https://shell.naelao.com/p/acme/spaces/space-a", preferred_provider: preferredProvider }),
     }),
     env as never
   );
 }
 
 describe("POST /connectors/:platform/provider-connect/start (Pipedream)", () => {
-  it("exchanges client credentials for an access token, then returns a connect_url with ?app= appended", async () => {
+  it("exchanges client credentials for an access token and returns Pipedream's Connect Link", async () => {
     const env = makeEnv();
     mockPipedream({});
     const res = await startReq(env);
-    expect(res.status).toBe(200);
+    expect(res.status, await res.clone().text()).toBe(200);
     const { connect_url } = await res.json<{ connect_url: string }>();
-    expect(connect_url).toBe("https://pipedream.com/_static/connect.html?token=abc&app=notion");
+    expect(connect_url).toBe("https://pipedream.com/_static/connect.html?token=abc");
     // Token was fetched before the connect-token call, using the real client credentials.
     const tokenCall = calls.find((c) => c.url === "https://api.pipedream.com/v1/oauth/token");
     expect(tokenCall).toBeTruthy();
@@ -142,11 +146,42 @@ describe("POST /connectors/:platform/provider-connect/start (Pipedream)", () => 
     expect(calls.some((c) => c.url === "https://api.pipedream.com/v1/connect/proj_test123/tokens")).toBe(true);
   });
 
+  it("routes a verified Pipedream-only directory app without requiring a Composio catalogue row", async () => {
+    const env = makeEnv({ PIPEDREAM_SUPPORTED_APPS: "regional-crm" });
+    mockPipedream({ appSlug: "regional-crm" });
+    const res = await startReq(env, "pipedream:regional-crm");
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(calls.find((call) => call.url.endsWith("/tokens"))?.body).toMatchObject({ app_id: "regional-crm" });
+  });
+
   it("degrades honestly to provider_not_configured when the OAuth client is unset", async () => {
     const env = makeEnv({ PIPEDREAM_CLIENT_ID: undefined });
     const res = await startReq(env);
     expect(res.status).toBe(503);
     expect((await res.json<{ error_code: string }>()).error_code).toBe("provider_not_configured");
+  });
+
+  it("keeps Composio as the default and only starts Pipedream on an explicit allowed override", async () => {
+    const env = makeEnv({ COMPOSIO_API_KEY: undefined });
+    const res = await startReq(env, "notion", "space-a", "composio");
+    expect(res.status).toBe(503);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("does not expose Pipedream for apps outside the configured allowlist", async () => {
+    const env = makeEnv({ PIPEDREAM_SUPPORTED_APPS: "" });
+    const res = await startReq(env);
+    expect(res.status).toBe(409);
+    expect((await res.json<{ error_code: string }>()).error_code).toBe("provider_connect_unavailable");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("fails closed before contacting the provider when the space is air-gapped", async () => {
+    const env = makeEnv({ PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ config_json: '{"compliance":{"airGappedOnly":true}}' }) }) }) } as unknown as D1Database });
+    const res = await startReq(env);
+    expect(res.status).toBe(403);
+    expect((await res.json<{ error_code: string }>()).error_code).toBe("air_gap_egress_denied");
+    expect(calls).toHaveLength(0);
   });
 
   it("degrades honestly to provider_not_configured when the project id is unset", async () => {

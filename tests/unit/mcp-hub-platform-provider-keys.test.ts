@@ -20,16 +20,20 @@ const PIPEDREAM_CLIENT_SECRET = "pd_secret_test";
 const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
 
 const MIGRATIONS = [
+  readFileSync(join(__dirname, "../../infra/migrations/0003_spaces.sql"), "utf8"),
   readFileSync(join(__dirname, "../../infra/migrations/0012_mcp_servers.sql"), "utf8"),
   readFileSync(join(__dirname, "../../infra/migrations/0037_mcp_servers_auth.sql"), "utf8"),
   readFileSync(join(__dirname, "../../infra/migrations/0060_mcp_server_connector_provider.sql"), "utf8"),
+  readFileSync(join(__dirname, "../../infra/migrations/0092_mcp_connector_provider_pin.sql"), "utf8"),
 ];
 
 function makeEnv(overrides: Record<string, unknown> = {}) {
+  const db = createFakeD1(MIGRATIONS);
+  for (const id of ["space-1", "space-p", "space-a"]) void db.prepare("INSERT INTO spaces (id, tenant_id, spacetype_id, name) VALUES (?, 'tenant-1', 'type-1', ?)").bind(id, id).run();
   return {
     ENVIRONMENT: "test",
     PLATFORM_SECRET,
-    PLATFORM_DB: createFakeD1(MIGRATIONS),
+    PLATFORM_DB: db,
     ...overrides,
   };
 }
@@ -104,6 +108,8 @@ function mockProviderFetch(capture: { url?: string; headers?: Record<string, str
     const h: Record<string, string> = {};
     new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)).forEach((v, k) => { h[k] = v; });
     capture.headers = h;
+    if (url.endsWith("/actions/run")) return Response.json({ ret: { ok: true } });
+    if (url.includes("/actions?")) return Response.json({ data: [] });
     return Response.json({ data: { ok: true }, items: [] });
   }) as typeof fetch;
 }
@@ -124,7 +130,7 @@ describe("mcp-hub — platform-provided provider keys (G-BF02)", () => {
   it("exchanges the platform Pipedream OAuth client for a live access token, never a static key", async () => {
     const capture: { url?: string; headers?: Record<string, string> } = {};
     mockProviderFetch(capture);
-    const env = makeEnv({ PIPEDREAM_CLIENT_ID, PIPEDREAM_CLIENT_SECRET });
+    const env = makeEnv({ PIPEDREAM_CLIENT_ID, PIPEDREAM_CLIENT_SECRET, PIPEDREAM_PROJECT_ID: "proj-test" });
     await seedProviderServer(env, { id: "srv-pd", provider: "pipedream" });
 
     const res = await callTool(env, "srv-pd");
@@ -136,6 +142,20 @@ describe("mcp-hub — platform-provided provider keys (G-BF02)", () => {
     expect(capture.headers?.["authorization"]).not.toContain(PIPEDREAM_CLIENT_SECRET);
   });
 
+  it("routes Pipedream calls and tool discovery through its official Connect API", async () => {
+    const capture: { url?: string; headers?: Record<string, string> } = {};
+    mockProviderFetch(capture);
+    const env = makeEnv({ PIPEDREAM_CLIENT_ID, PIPEDREAM_CLIENT_SECRET, PIPEDREAM_PROJECT_ID: "proj-test" });
+    await seedProviderServer(env, { id: "srv-pd-actions", provider: "pipedream", connectionId: "naelao-space:space-1" });
+    const call = await callTool(env, "srv-pd-actions", "google_sheets-add-row", { spreadsheet_id: "sheet-1" });
+    expect(call.status).toBe(200);
+    expect(capture.url).toContain("/actions/run");
+    expect(capture.headers?.authorization).toBe("Bearer pd-derived-access-token");
+    const tools = await listTools(env, "srv-pd-actions");
+    expect(tools.status).toBe(200);
+    expect(capture.url).toContain("/actions?");
+  });
+
   it("degrades honestly (502 provider_auth_failed) when the Pipedream token exchange itself fails", async () => {
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
@@ -145,7 +165,7 @@ describe("mcp-hub — platform-provided provider keys (G-BF02)", () => {
     // A distinct client id forces a fresh (uncached) token exchange — the module-scoped
     // access-token cache is keyed by client_id, and the previous test legitimately warmed the
     // cache for PIPEDREAM_CLIENT_ID.
-    const env = makeEnv({ PIPEDREAM_CLIENT_ID: "pd_client_test_broken", PIPEDREAM_CLIENT_SECRET });
+    const env = makeEnv({ PIPEDREAM_CLIENT_ID: "pd_client_test_broken", PIPEDREAM_CLIENT_SECRET, PIPEDREAM_PROJECT_ID: "proj-test" });
     await seedProviderServer(env, { id: "srv-pd-broken", provider: "pipedream" });
 
     const res = await callTool(env, "srv-pd-broken");

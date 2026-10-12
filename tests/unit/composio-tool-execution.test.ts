@@ -19,19 +19,23 @@ const PLATFORM_COMPOSIO_KEY = "naelao-platform-composio-key";
 const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
 
 const MIGRATIONS = [
+  readFileSync(join(__dirname, "../../infra/migrations/0003_spaces.sql"), "utf8"),
   readFileSync(join(__dirname, "../../infra/migrations/0012_mcp_servers.sql"), "utf8"),
   readFileSync(join(__dirname, "../../infra/migrations/0037_mcp_servers_auth.sql"), "utf8"),
   readFileSync(join(__dirname, "../../infra/migrations/0060_mcp_server_connector_provider.sql"), "utf8"),
+  readFileSync(join(__dirname, "../../infra/migrations/0092_mcp_connector_provider_pin.sql"), "utf8"),
   readFileSync(join(__dirname, "../../infra/migrations/0075_phase1_runtime_security.sql"), "utf8"),
   readFileSync(join(__dirname, "../../infra/migrations/0076_connector_alias_hardening.sql"), "utf8"),
 ];
 
 function makeEnv(overrides: Record<string, unknown> = {}) {
+  const db = createFakeD1(MIGRATIONS);
+  for (const id of ["space-1", "space-p", "space-a"]) void db.prepare("INSERT INTO spaces (id, tenant_id, spacetype_id, name) VALUES (?, 'tenant-1', 'type-1', ?)").bind(id, id).run();
   return {
     ENVIRONMENT: "test",
     PLATFORM_SECRET,
     COMPOSIO_API_KEY: PLATFORM_COMPOSIO_KEY,
-    PLATFORM_DB: createFakeD1(MIGRATIONS),
+    PLATFORM_DB: db,
     ...overrides,
   };
 }
@@ -81,12 +85,12 @@ describe("composio tool execution — real v3 API shape", () => {
     globalThis.fetch = (async () => Response.json({ data: { id: 9 }, successful: true })) as typeof fetch;
     const env = makeEnv();
     await seedComposioServer(env, "srv-alias");
-    const created = await aliasRequest(env, "", { method: "POST", body: JSON.stringify({ alias: "primary_inbox", scope: "user", server_id: "srv-alias", granted_scopes: ["mail:read"] }) });
+    const created = await aliasRequest(env, "", { method: "POST", body: JSON.stringify({ alias: "primary_inbox", scope: "user_personal", server_id: "srv-alias", granted_scopes: ["email.read"] }) });
     expect(created.status).toBe(201);
     const row = await created.json() as { id: string };
-    const missing = await aliasRequest(env, "/primary_inbox/tools/call", { method: "POST", headers: { "x-naelao-connector-scope": "user", "x-naelao-required-scopes": "mail:write" }, body: JSON.stringify({ tool_name: "MAIL_SEND", input: {} }) });
+    const missing = await aliasRequest(env, "/primary_inbox/tools/call", { method: "POST", headers: { "x-naelao-connector-scope": "user_personal", "x-naelao-required-scopes": "email.send" }, body: JSON.stringify({ tool_name: "send_email", input: {} }) });
     expect(missing.status).toBe(409);
-    expect(await missing.json()).toMatchObject({ error_code: "incremental_reauthorization_required", card: { missing_scopes: ["mail:write"] } });
+    expect(await missing.json()).toMatchObject({ error_code: "scope_upgrade_required", card: { missing_scopes: ["email.send"] } });
     const listed = await aliasRequest(env, "");
     expect((await listed.json() as { data: unknown[] }).data).toHaveLength(1);
     expect((await aliasRequest(env, `/${row.id}`, { method: "DELETE" })).status).toBe(200);

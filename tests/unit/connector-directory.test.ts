@@ -178,12 +178,13 @@ describe("listDirectory", () => {
       COMPOSIO_API_KEY: "k",
       PIPEDREAM_CLIENT_ID: "id",
       PIPEDREAM_CLIENT_SECRET: "secret",
+      PIPEDREAM_SUPPORTED_APPS: "notion,slack",
     });
 
     expect(page.apps.map((a) => a.slug).sort()).toEqual(["asana", "notion", "slack"]);
     expect(page.providers.every((p) => p.available)).toBe(true);
     const notion = page.apps.find((a) => a.slug === "notion")!;
-    expect(notion.provider).toBe("pipedream"); // the curated side won, not the first-seen one
+    expect(notion.provider).toBe("composio"); // Composio is the overlap default
     expect(notion.curated_as).toBe("notion");
   });
 
@@ -199,6 +200,7 @@ describe("listDirectory", () => {
       COMPOSIO_API_KEY: "k",
       PIPEDREAM_CLIENT_ID: "id",
       PIPEDREAM_CLIENT_SECRET: "secret",
+      PIPEDREAM_SUPPORTED_APPS: "slack",
     });
     expect(page.apps.map((a) => a.slug)).toEqual(["slack"]);
     expect(page.providers.find((p) => p.provider === "composio")).toMatchObject({ available: false });
@@ -234,7 +236,7 @@ describe("listDirectory", () => {
       return json({ data: [{ name_slug: "slack", name: "Slack" }] }); // short page → no cursor
     });
 
-    const env = { COMPOSIO_API_KEY: "k", PIPEDREAM_CLIENT_ID: "id", PIPEDREAM_CLIENT_SECRET: "s" };
+    const env = { COMPOSIO_API_KEY: "k", PIPEDREAM_CLIENT_ID: "id", PIPEDREAM_CLIENT_SECRET: "s", PIPEDREAM_SUPPORTED_APPS: "slack" };
     const first = await listDirectory(env, { limit: 50 });
     expect(first.next_cursor).toBeTruthy();
 
@@ -265,6 +267,7 @@ describe("listDirectory ordering", () => {
       COMPOSIO_API_KEY: "k",
       PIPEDREAM_CLIENT_ID: "id",
       PIPEDREAM_CLIENT_SECRET: "s",
+      PIPEDREAM_SUPPORTED_APPS: "gmail,github,aaa_alphabetically_first",
     });
 
     expect(sortParam).toBe("usage");
@@ -286,7 +289,7 @@ describe("listDirectory ordering", () => {
     });
 
     const page = await listDirectory(
-      { COMPOSIO_API_KEY: "k", PIPEDREAM_CLIENT_ID: "id", PIPEDREAM_CLIENT_SECRET: "s" },
+      { COMPOSIO_API_KEY: "k", PIPEDREAM_CLIENT_ID: "id", PIPEDREAM_CLIENT_SECRET: "s", PIPEDREAM_SUPPORTED_APPS: "airtable" },
       { sort: "name" }
     );
 
@@ -309,6 +312,7 @@ describe("listDirectory ordering", () => {
       COMPOSIO_API_KEY: "k",
       PIPEDREAM_CLIENT_ID: "id",
       PIPEDREAM_CLIENT_SECRET: "s",
+      PIPEDREAM_SUPPORTED_APPS: "zoom,airtable",
     });
 
     expect(page.apps.map((a) => a.name)).toEqual(["Airtable", "Zoom"]);
@@ -330,6 +334,7 @@ describe("listDirectory ordering", () => {
       COMPOSIO_API_KEY: "k",
       PIPEDREAM_CLIENT_ID: "id",
       PIPEDREAM_CLIENT_SECRET: "s",
+      PIPEDREAM_SUPPORTED_APPS: "airtable,zoom",
     });
 
     // Heavier weight wins over the alphabetical order it would otherwise have had.
@@ -350,6 +355,7 @@ describe("listDirectory ordering", () => {
       COMPOSIO_API_KEY: "k",
       PIPEDREAM_CLIENT_ID: "id",
       PIPEDREAM_CLIENT_SECRET: "s",
+      PIPEDREAM_SUPPORTED_APPS: "notion",
     });
 
     expect(page.apps).toHaveLength(1);
@@ -374,6 +380,7 @@ describe("listDirectory ordering", () => {
       COMPOSIO_API_KEY: "k",
       PIPEDREAM_CLIENT_ID: "id",
       PIPEDREAM_CLIENT_SECRET: "s",
+      PIPEDREAM_SUPPORTED_APPS: "gmail",
     });
 
     expect(page.apps.map((a) => a.slug)).toEqual(["gmail"]);

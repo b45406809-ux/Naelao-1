@@ -287,6 +287,10 @@ database_name = "naelao-platform"
 database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 migrations_dir = "../../infra/migrations"
 
+# Optional hosted-connector settings: PIPEDREAM_CLIENT_ID, PIPEDREAM_CLIENT_SECRET and
+# PIPEDREAM_PROJECT_ID are platform credentials set with `wrangler secret put`. Set
+# PIPEDREAM_ENVIRONMENT and an explicit PIPEDREAM_SUPPORTED_APPS comma-list as plain vars
+# only after verifying those app slugs are enabled in the project; unset disables overrides.
 [vars]
 DYNAMIC_PYTHON_ENABLED = "true"
 ENVIRONMENT = "development"

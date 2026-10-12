@@ -17,15 +17,19 @@ const PLATFORM_SECRET = "test-platform-secret";
 const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
 
 const MIGRATIONS = [
+  readFileSync(join(__dirname, "../../infra/migrations/0003_spaces.sql"), "utf8"),
   readFileSync(join(__dirname, "../../infra/migrations/0012_mcp_servers.sql"), "utf8"),
   readFileSync(join(__dirname, "../../infra/migrations/0037_mcp_servers_auth.sql"), "utf8"),
   readFileSync(join(__dirname, "../../infra/migrations/0060_mcp_server_connector_provider.sql"), "utf8"),
+  readFileSync(join(__dirname, "../../infra/migrations/0092_mcp_connector_provider_pin.sql"), "utf8"),
   readFileSync(join(__dirname, "../../infra/migrations/0075_phase1_runtime_security.sql"), "utf8"),
   readFileSync(join(__dirname, "../../infra/migrations/0076_connector_alias_hardening.sql"), "utf8"),
 ];
 
 function makeEnv(overrides: Record<string, unknown> = {}) {
-  return { ENVIRONMENT: "test", PLATFORM_SECRET, PLATFORM_DB: createFakeD1(MIGRATIONS), ...overrides };
+  const db = createFakeD1(MIGRATIONS);
+  for (const id of ["space-1", "space-p", "space-a"]) void db.prepare("INSERT INTO spaces (id, tenant_id, spacetype_id, name) VALUES (?, 'tenant-1', 'type-1', ?)").bind(id, id).run();
+  return { ENVIRONMENT: "test", PLATFORM_SECRET, PLATFORM_DB: db, ...overrides };
 }
 
 function req(path: string, init: RequestInit & { headers?: Record<string, string> } = {}): Request {

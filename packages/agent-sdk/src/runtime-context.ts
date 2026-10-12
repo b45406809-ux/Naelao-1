@@ -203,11 +203,12 @@ export class TurnDelegatedError extends Error {
 }
 
 function connectorSurface(adapter: CreateRuntimeContextOptions["services"]["connectors"]): RuntimeConnectors {
-  return Object.freeze({
-    use(aliasName: string): RuntimeConnector {
+  const get = (aliasName: string, options?: import("./connector-provider.js").ConnectorProviderPreference): RuntimeConnector => {
       if (!CONNECTOR_ALIAS_RE.test(aliasName)) throw new Error("Invalid connector alias");
       const call = (tool: string, params: Record<string, unknown> = {}, scopes: readonly string[] = []) =>
-        adapter.call(aliasName, tool, params, scopes);
+        options?.preferredProvider
+          ? adapter.call(aliasName, tool, params, scopes, options)
+          : adapter.call(aliasName, tool, params, scopes);
       return new Proxy(Object.freeze({ call }) as RuntimeConnector, {
         get(target, property, receiver) {
           if (property === "then") return undefined;
@@ -220,8 +221,8 @@ function connectorSurface(adapter: CreateRuntimeContextOptions["services"]["conn
           return (params: Record<string, unknown> = {}) => call(tool, params);
         },
       });
-    },
-  });
+  };
+  return Object.freeze({ get, use: (aliasName: string) => get(aliasName) });
 }
 
 const WORKSPACE_ROOT = "/workspace";

@@ -307,6 +307,8 @@ connector ownership/pinning and integration requirements. Verify existing
 behavior yourself, update coverage and stop after this batch.
 ```
 
+**Progress (2026-10-12): PARTIAL_NEEDS_PLATFORM — local B9 implementation and checks complete; continue with Batch 10 after the B9 commit.** Added the unified SDK resolver, Composio-default/Pipedream-long-tail routing, provider pinning, allowlisted directory, Pipedream hosted connection/action proxy, migration 0092, and an owner/admin tenant OAuth setup/callback/refresh flow backed by the encrypted space vault and explicit egress grants. Focused connector/security/OAuth suite: 9 files / 101 tests; Agents 58/235, Agent SDK 21/77, MCP Hub 3/7; Agents, Spaces, MCP Hub, and Agent SDK typechecks pass. Shell typecheck is rerunning after an import fix. All external APIs are mocked; a live Pipedream project or tenant OAuth provider is not configured. See `new plan/CLOUD-PROGRESS.md` for details. Commit/push B9, then proceed to Batch 10.
+
 10. **Document 13: lines 735–1398, then full coverage reconciliation**
 
 ```text

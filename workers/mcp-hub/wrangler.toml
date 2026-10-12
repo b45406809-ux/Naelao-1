@@ -16,6 +16,9 @@ workers_dev = false
 #                        BYO space-credential model, which stays for a builder's OWN provider
 #                        project. Optional: unset → provider-routed calls without a BYO
 #                        credential return provider_not_configured.
+#   PIPEDREAM_CLIENT_ID / PIPEDREAM_CLIENT_SECRET / PIPEDREAM_PROJECT_ID — optional Connect API
+#                        credentials, exchanged server-side. Set the same project/environment
+#                        as Agents; never store them in mcp_servers.
 
 [[d1_databases]]
 binding = "PLATFORM_DB"

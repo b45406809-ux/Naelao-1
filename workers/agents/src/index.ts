@@ -45,6 +45,7 @@ import {
 } from "./connectors/oauth.js";
 import type { SpaceModelPolicy } from "@naelao/agent-sdk";
 import { airGappedOnlyFromConfig, validateModelForSpacePolicy } from "./model-policy.js";
+import { authorizeEgressUrl, readSpaceEgressPolicy } from "@naelao/security";
 export { validateModelForSpacePolicy } from "./model-policy.js";
 import {
   startComposioLink,
@@ -53,7 +54,8 @@ import {
   providerTicketKey,
   ensureComposioAuthConfig,
 } from "./connectors/composio.js";
-import { listDirectory, resolveConnectTarget, curatedLogos } from "./connectors/directory.js";
+import { listDirectory, resolveConnectTarget, curatedLogos, type DirectoryApp } from "./connectors/directory.js";
+import { startPipedreamConnect, pipedreamConnectionActive } from "./connectors/pipedream.js";
 import { isChannelType, getAdapter, twilioWhatsappAdapter, type ChannelType } from "./launchpad/channels.js";
 import { hasWhatsAppVoiceNote, transcribeTwilioWhatsAppVoice, transcribeWhatsAppVoiceNote } from "./launchpad/whatsapp-media.js";
 import {
@@ -71,7 +73,7 @@ import { findAgentTemplate, agentTemplateSummaries, agentTemplateToConfig, custo
 import { ARCHETYPE_PRESETS, isKnownArchetype, clampScriptsToArchetype } from "./script-engine/agent-archetypes.js";
 import { writeAgentConfig, createAgentConfigLockGateway } from "./script-engine/agent-config.js";
 import { actorAddress, type ThreadTier } from "@naelao/agent-sdk";
-import { applyDurableObjectJurisdiction } from "@naelao/security";
+import { applyDurableObjectJurisdiction, isSpaceNetworkEgressDenied } from "@naelao/security";
 import { deleteBytesCas, putBytesCas, readBytesWithHash } from "./script-engine/r2-cas.js";
 
 function safeParse(s: string): unknown {
@@ -251,6 +253,12 @@ export interface AgentsEnv {
    *  configuration to INITIATE the hosted-auth redirect. mcp-hub holds its own copy of this same
    *  secret for the tool-call proxy side; this copy is only used to start/poll the connection. */
   COMPOSIO_API_KEY?: string;
+  PIPEDREAM_CLIENT_ID?: string;
+  PIPEDREAM_CLIENT_SECRET?: string;
+  PIPEDREAM_PROJECT_ID?: string;
+  PIPEDREAM_ENVIRONMENT?: string;
+  /** Explicit app slug allowlist. An unset/empty list means no Pipedream app is advertised or selectable. */
+  PIPEDREAM_SUPPORTED_APPS?: string;
   /** AgentMail — auto-provisioned, INBOUND-capable business mailbox (AgentMail hosts the domain,
    *  so no Naelao DNS zone is needed — see channels/agentmail.ts). A Workers Secret; unset = the
    *  whole email feature degrades honestly (send falls back to Resend, no inbound). */
@@ -2658,7 +2666,13 @@ app.get("/connectors", async (c) => {
 // "that provider is unavailable" in the response rather than an error — half a directory beats
 // none, as long as we say which half is missing.
 app.get("/connectors/directory", async (c) => {
-  await requireVerifiedTenant(c);
+  const tenantId = await requireVerifiedTenant(c);
+  const spaceId = c.req.query("space_id") ?? "";
+  if (spaceId) {
+    const ownedSpace = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'")
+      .bind(spaceId, tenantId).first<{ id: string }>();
+    if (!ownedSpace) throw notFound("Space");
+  }
   const search = c.req.query("q")?.trim() || undefined;
   const cursor = c.req.query("cursor") || undefined;
   const limit = Number(c.req.query("limit") ?? 40) || 40;
@@ -2668,15 +2682,32 @@ app.get("/connectors/directory", async (c) => {
 
   const cacheKey = `connector-directory:v3:${sort}:${search ?? ""}:${cursor ?? ""}:${limit}`;
   const cached = await c.env.AGENT_CACHE.get(cacheKey);
-  if (cached) return c.json({ ...(safeParse(cached) as Record<string, unknown>), cached: true });
-
-  const page = await listDirectory(c.env, { search, cursor, limit, sort });
+  const page = cached
+    ? safeParse(cached) as Awaited<ReturnType<typeof listDirectory>>
+    : await listDirectory(c.env, { search, cursor, limit, sort });
   // Only cache a page that actually has something in it — caching an empty result from a
   // transient provider failure for an hour would make a working directory look permanently dead.
-  if (page.apps.length > 0) {
+  if (!cached && page.apps.length > 0) {
     await c.env.AGENT_CACHE.put(cacheKey, JSON.stringify(page), { expirationTtl: 3600 });
   }
-  return c.json({ ...page, cached: false });
+  let connected = false;
+  if (spaceId && c.env.MCP_HUB) {
+    try {
+      const resp = await c.env.MCP_HUB.fetch(new Request(`http://mcp-hub/v1/spaces/${encodeURIComponent(spaceId)}/mcp-servers`, {
+        headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+      }));
+      if (resp.ok) {
+        const { data } = await resp.json<{ data?: Array<{ name: string; connector_provider?: string }> }>();
+        const pins = new Map((data ?? []).map((row) => [row.name, row.connector_provider ?? "direct"]));
+        page.apps = page.apps.map((app) => {
+          const provider = pins.get(app.slug);
+          return provider ? { ...app, connected: true, connected_provider: provider as "direct" | "composio" | "pipedream", provider: provider === "pipedream" ? "pipedream" : provider === "composio" ? "composio" : app.provider } : app;
+        });
+        connected = true;
+      }
+    } catch { /* keep directory usable; status degrades to not connected when MCP Hub is unavailable */ }
+  }
+  return c.json({ ...page, cached: Boolean(cached), ...(spaceId && !connected ? { status_unavailable: true } : {}) });
 });
 
 // GET /connectors/status?space_id= — catalogue annotated with which are already connected.
@@ -2693,6 +2724,7 @@ app.get("/connectors/status", async (c) => {
   if (!spaceId) throw badRequest("space_id is required");
 
   const connectedNames = new Set<string>();
+  const connectedProviders = new Map<string, string>();
   if (c.env.MCP_HUB) {
     try {
       const resp = await c.env.MCP_HUB.fetch(
@@ -2704,8 +2736,11 @@ app.get("/connectors/status", async (c) => {
         })
       );
       if (resp.ok) {
-        const { data } = await resp.json<{ data?: Array<{ name: string }> }>();
-        for (const s of data ?? []) connectedNames.add(s.name);
+        const { data } = await resp.json<{ data?: Array<{ name: string; connector_provider?: string }> }>();
+        for (const s of data ?? []) {
+          connectedNames.add(s.name);
+          if (s.connector_provider) connectedProviders.set(s.name, s.connector_provider);
+        }
       }
     } catch {
       // Best-effort — status falls back to "not connected" if the hub is unreachable.
@@ -2745,6 +2780,7 @@ app.get("/connectors/status", async (c) => {
     connectors: CONNECTOR_CATALOGUE.map((conn) => ({
       ...conn,
       ...(logos[conn.id] ? { logo: logos[conn.id] } : {}),
+      ...(connectedProviders.has(conn.id) ? { connected_provider: connectedProviders.get(conn.id) } : {}),
       connected: conn.scope_model === "user"
         ? ownUserCredentialNames.has(conn.auth.credential_name)
         : connectedNames.has(conn.id),
@@ -2835,6 +2871,23 @@ async function storeConnectorCredential(
       }),
     })
   );
+}
+
+async function resolveConnectorCredential(
+  env: Pick<AgentsEnv, "CREDENTIALS_WORKER" | "PLATFORM_SECRET">,
+  tenantId: string,
+  spaceId: string,
+  name: string,
+): Promise<string | null> {
+  if (!env.CREDENTIALS_WORKER) return null;
+  const credentialToken = await generateCredentialToken(env.PLATFORM_SECRET, tenantId, spaceId, "naelao-agent");
+  const response = await env.CREDENTIALS_WORKER.fetch(new Request(
+    `http://credentials/v1/internal/spaces/${encodeURIComponent(spaceId)}/credentials/${encodeURIComponent(name)}/plaintext`,
+    { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-credential-token": credentialToken } },
+  ));
+  if (!response.ok) return null;
+  const body = await response.json<{ value?: string }>().catch(() => ({} as { value?: string }));
+  return typeof body.value === "string" ? body.value : null;
 }
 
 // ── Step 28: business-wide BYOK LLM keys (AI Studio / Groq) ──────────────────
@@ -3322,6 +3375,87 @@ app.post("/connectors/:platform/connect", async (c) => {
 // navigate the browser to. Authenticated (requireVerifiedTenant) since this call itself is a plain
 // fetch, not a page navigation — only the NEXT hop (the browser following authorize_url) has no
 // custom headers available.
+interface TenantOAuthConfig {
+  client_id: string; client_secret: string; authorization_url: string; token_url: string;
+  scopes: string[]; mcp_url: string; display_name: string;
+}
+function tenantOAuthCredentialName(id: string, kind: "config" | "tokens"): string { return `TENANT_OAUTH_${id.toUpperCase()}_${kind.toUpperCase()}`; }
+function validTenantOAuthId(value: string): boolean { return /^[a-z][a-z0-9_]{1,31}$/.test(value); }
+app.get("/connectors/custom-oauth/:connectorId/oauth/redirect-uri", async (c) => {
+  await requireVerifiedTenant(c);
+  const id = c.req.param("connectorId");
+  if (!validTenantOAuthId(id)) throw badRequest("connectorId must be a lower-case identifier");
+  if (!c.env.PUBLIC_AGENTS_URL) return c.json({ error_code: "oauth_unavailable" }, 503);
+  return c.json({ redirect_uri: `${c.env.PUBLIC_AGENTS_URL.replace(/\/$/, "")}/connectors/custom-oauth/${encodeURIComponent(id)}/oauth/callback` });
+});
+// Tenant BYO-OAuth: custom connector client configuration and tokens are space-scoped vault
+// values. The browser receives only the authorize URL; the client secret and tokens never appear
+// in redirects or API responses.
+app.post("/connectors/custom-oauth/:connectorId/oauth/start", async (c) => {
+  const tenantId = await requireVerifiedTenant(c);
+  const { userId, role } = getCallerIdentity(c);
+  if (role !== "owner" && role !== "admin") throw forbidden("Only a space owner or admin may configure a shared OAuth connector");
+  const id = c.req.param("connectorId");
+  if (!validTenantOAuthId(id)) throw badRequest("connectorId must be a lower-case identifier");
+  interface StartBody extends TenantOAuthConfig { space_id: string; return_url: string }
+  const body = await c.req.json<StartBody>().catch(() => ({} as StartBody));
+  if (!body.space_id || !body.return_url || !body.client_id || !body.client_secret || !body.display_name || !body.mcp_url) throw badRequest("space_id, return_url, mcp_url, display_name and OAuth client credentials are required");
+  if (!Array.isArray(body.scopes) || body.scopes.length > 32 || body.scopes.some((scope) => typeof scope !== "string" || scope.length > 128)) throw badRequest("scopes must be an array of at most 32 strings");
+  if (!isTrustedConnectorReturnUrl(body.return_url, c.env)) throw badRequest("return_url must use an approved Naelao app origin");
+  if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, body.space_id)) return c.json({ error_code: "air_gap_egress_denied" }, 403);
+  try {
+    const policy = await readSpaceEgressPolicy(c.env.PLATFORM_DB, body.space_id);
+    await Promise.all([body.authorization_url, body.token_url, body.mcp_url].map((url) => authorizeEgressUrl(url, policy)));
+  } catch { return c.json({ error_code: "unsafe_oauth_endpoint", message: "OAuth and MCP endpoints must use HTTPS hosts approved by this space" }, 400); }
+  if (!c.env.CREDENTIALS_WORKER || !c.env.PUBLIC_AGENTS_URL) return c.json({ error_code: "oauth_unavailable" }, 503);
+  const config: TenantOAuthConfig = { client_id: body.client_id, client_secret: body.client_secret, authorization_url: body.authorization_url, token_url: body.token_url, scopes: body.scopes, mcp_url: body.mcp_url, display_name: body.display_name.slice(0, 100) };
+  const configName = tenantOAuthCredentialName(id, "config");
+  const saved = await storeConnectorCredential(c.env, { tenantId, spaceId: body.space_id, userId, name: configName, value: JSON.stringify(config), description: `${config.display_name} OAuth client configuration` });
+  if (!saved.ok) return c.json({ error_code: "credential_store_failed" }, 502);
+  const { verifier, challenge } = await generatePkce();
+  const platform = `custom-oauth:${id}`;
+  const redirectUri = `${c.env.PUBLIC_AGENTS_URL.replace(/\/$/, "")}/connectors/custom-oauth/${encodeURIComponent(id)}/oauth/callback`;
+  const ticket = await issueOAuthTicket(c.env.AGENT_CACHE, { verifier, spaceId: body.space_id, tenantId, userId, returnUrl: body.return_url, platform });
+  return c.json({ authorize_url: buildAuthorizeUrl({ authorizeUrl: config.authorization_url, clientId: config.client_id, redirectUri, scopes: config.scopes, state: ticket, codeChallenge: challenge }), redirect_uri: redirectUri });
+});
+
+app.get("/connectors/custom-oauth/:connectorId/oauth/callback", async (c) => {
+  const id = c.req.param("connectorId");
+  if (!validTenantOAuthId(id)) return c.text("Unknown connector", 404);
+  const ticket = c.req.query("state") ? await consumeOAuthTicket(c.env.AGENT_CACHE, c.req.query("state")!) : null;
+  if (!ticket || ticket.platform !== `custom-oauth:${id}`) return c.text("This connection link expired or was already used. Try again.", 400);
+  const fail = (reason: string) => { const url = new URL(ticket.returnUrl); url.searchParams.set(`${id}_oauth_error`, reason); return c.redirect(url.toString(), 302); };
+  if (c.req.query("error")) return fail("authorization_denied");
+  const code = c.req.query("code");
+  if (!code || !c.env.PUBLIC_AGENTS_URL || !c.env.CREDENTIALS_WORKER || !c.env.MCP_HUB) return fail("oauth_unavailable");
+  if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, ticket.spaceId)) return fail("air_gap_egress_denied");
+  const raw = await resolveConnectorCredential(c.env, ticket.tenantId, ticket.spaceId, tenantOAuthCredentialName(id, "config"));
+  let config: TenantOAuthConfig;
+  try { config = JSON.parse(raw ?? "null") as TenantOAuthConfig; } catch { return fail("oauth_configuration_missing"); }
+  try { await authorizeEgressUrl(config.token_url, await readSpaceEgressPolicy(c.env.PLATFORM_DB, ticket.spaceId)); }
+  catch { return fail("oauth_configuration_invalid"); }
+  try {
+    const redirectUri = `${c.env.PUBLIC_AGENTS_URL.replace(/\/$/, "")}/connectors/custom-oauth/${encodeURIComponent(id)}/oauth/callback`;
+    const tokens = await exchangeCodeForTokens({ tokenUrl: config.token_url, clientId: config.client_id, clientSecret: config.client_secret, code, codeVerifier: ticket.verifier, redirectUri });
+    const tokenName = tenantOAuthCredentialName(id, "tokens");
+    const saved = await storeConnectorCredential(c.env, { tenantId: ticket.tenantId, spaceId: ticket.spaceId, userId: ticket.userId, name: tokenName, value: JSON.stringify(tokens), description: `${config.display_name} OAuth tokens` });
+    if (!saved.ok) return fail("credential_store_failed");
+    const internalToken = await mintInternalToken(c.env.PLATFORM_SECRET, ticket.tenantId);
+    const base = `http://mcp-hub/v1/spaces/${encodeURIComponent(ticket.spaceId)}/mcp-servers`;
+    const headers = { "x-naelao-tenant-id": ticket.tenantId, "x-naelao-internal-token": internalToken };
+    const listed = await c.env.MCP_HUB.fetch(new Request(base, { headers }));
+    if (!listed.ok) return fail("mcp_registry_unavailable");
+    const rows = await listed.json<{ data?: Array<{ id: string; name: string }> }>();
+    const name = `custom-oauth:${id}`;
+    const existing = rows.data?.find((row) => row.name === name);
+    const body = JSON.stringify({ name, url: config.mcp_url, auth_type: "oauth2", auth_secret_name: tokenName });
+    const response = await c.env.MCP_HUB.fetch(new Request(`${base}${existing ? `/${encodeURIComponent(existing.id)}` : ""}`, { method: existing ? "PATCH" : "POST", headers: { ...headers, "content-type": "application/json", "x-naelao-user-id": ticket.userId }, body }));
+    if (!response.ok) return fail("mcp_registration_failed");
+    const success = new URL(ticket.returnUrl); success.searchParams.set(`${id}_connected`, "1");
+    return c.redirect(success.toString(), 302);
+  } catch { return fail("oauth_exchange_failed"); }
+});
+
 app.post("/connectors/:platform/oauth/start", async (c) => {
   const tenantId = await requireVerifiedTenant(c);
   const { userId } = getCallerIdentity(c);
@@ -3340,6 +3474,9 @@ app.post("/connectors/:platform/oauth/start", async (c) => {
   const body = await c.req.json<StartBody>().catch(() => ({ space_id: "", return_url: "" } as StartBody));
   if (!body.space_id) throw badRequest("space_id is required");
   if (!body.return_url) throw badRequest("return_url is required");
+  if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, body.space_id)) {
+    return c.json({ error_code: "air_gap_egress_denied", message: "This space does not permit network connectors" }, 403);
+  }
 
   const { verifier, challenge } = await generatePkce();
   const nonce = generateNonce();
@@ -3481,7 +3618,7 @@ async function upsertProviderMcpServer(
   env: AgentsEnv,
   ticket: { spaceId: string; tenantId: string; connectionId: string },
   connectorId: string,
-  provider: "composio"
+  provider: "composio" | "pipedream"
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   if (!env.MCP_HUB) return { ok: false, reason: "connectors_unavailable" };
   const mcpInternalToken = await mintInternalToken(env.PLATFORM_SECRET, ticket.tenantId);
@@ -3492,8 +3629,10 @@ async function upsertProviderMcpServer(
   );
   let serverId: string | null = null;
   if (listResp.ok) {
-    const { data } = await listResp.json<{ data?: Array<{ id: string; name: string }> }>();
-    serverId = (data ?? []).find((s) => s.name === connectorId)?.id ?? null;
+    const { data } = await listResp.json<{ data?: Array<{ id: string; name: string; connector_provider?: string }> }>();
+    const existing = (data ?? []).find((s) => s.name === connectorId);
+    if (existing && existing.connector_provider && existing.connector_provider !== provider) return { ok: false, reason: "connector_provider_pinned" };
+    serverId = existing?.id ?? null;
   }
   const upsertBody = {
     name: connectorId,
@@ -3515,11 +3654,23 @@ async function upsertProviderMcpServer(
       new Request(`http://mcp-hub/v1/spaces/${ticket.spaceId}/mcp-servers/${serverId}`, {
         method: "PATCH",
         headers: { "content-type": "application/json", "x-naelao-tenant-id": ticket.tenantId, "x-naelao-internal-token": mcpInternalToken },
-        body: JSON.stringify({ enabled: true }),
+      body: JSON.stringify({ enabled: true }),
       })
     );
   }
   return { ok: true };
+}
+
+function isTrustedConnectorReturnUrl(raw: string, env: AgentsEnv): boolean {
+  try {
+    const url = new URL(raw);
+    if ((url.protocol !== "https:" && url.protocol !== "http:") || url.username || url.password) return false;
+    if (env.PUBLIC_AGENTS_URL && url.origin === new URL(env.PUBLIC_AGENTS_URL).origin) return true;
+    if (url.protocol === "https:" && (url.hostname === "naelao.com" || url.hostname.endsWith(".naelao.com") || url.hostname === "naelao.app" || url.hostname.endsWith(".naelao.app"))) return true;
+    return env.ENVIRONMENT === "development" && (url.hostname === "localhost" || url.hostname === "127.0.0.1");
+  } catch {
+    return false;
+  }
 }
 
 // POST /connectors/:platform/provider-connect/start — the hosted "click Install" flow (G-1/G-3
@@ -3538,7 +3689,7 @@ app.post("/connectors/:platform/provider-connect/start", async (c) => {
   const connector = target.kind === "curated" ? getConnector(target.id) : null;
   if (target.kind === "curated") {
     if (!connector) throw notFound("Connector");
-    if (!connector.composio) {
+    if (!connector.composio && !connector.pipedream) {
       return c.json({ error_code: "provider_connect_not_supported", message: `${connector.name} has no hosted connect flow` }, 400);
     }
     if (connector.status !== "available") {
@@ -3552,10 +3703,16 @@ app.post("/connectors/:platform/provider-connect/start", async (c) => {
   const connectorId = target.kind === "curated" ? target.id : target.slug;
   const displayName = target.kind === "curated" ? connector!.name : target.slug;
 
-  interface StartBody { space_id: string; return_url: string }
+  interface StartBody { space_id: string; return_url: string; preferred_provider?: "composio" | "pipedream" }
   const body = await c.req.json<StartBody>().catch(() => ({ space_id: "", return_url: "" } as StartBody));
   if (!body.space_id) throw badRequest("space_id is required");
   if (!body.return_url) throw badRequest("return_url is required");
+  if (!isTrustedConnectorReturnUrl(body.return_url, c.env)) {
+    return c.json({ error_code: "bad_request", message: "return_url must use an approved Naelao app origin" }, 400);
+  }
+  if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, body.space_id)) {
+    return c.json({ error_code: "air_gap_egress_denied", message: "This space does not permit network connectors" }, 403);
+  }
 
   if (!c.env.PUBLIC_AGENTS_URL) {
     return c.json({ error_code: "provider_not_configured", message: `${displayName} is not configured on this platform yet` }, 503);
@@ -3568,12 +3725,48 @@ app.post("/connectors/:platform/provider-connect/start", async (c) => {
 
   const appSlug =
     target.kind === "curated"
-      ? (connector!.composio?.toolkit_slug ?? "")
+      ? (connector!.composio?.toolkit_slug ?? connector!.pipedream?.app_slug ?? "")
       : target.slug;
+
+  const provider = body.preferred_provider ?? (target.kind === "directory" ? target.provider : connector!.composio ? "composio" : "pipedream");
+  if (provider !== "composio" && provider !== "pipedream") {
+    return c.json({ error_code: "provider_not_supported", message: "Choose a supported hosted connector provider" }, 400);
+  }
+  if (provider === "pipedream") {
+    const allowedApps = new Set((c.env.PIPEDREAM_SUPPORTED_APPS ?? "").split(",").map((item) => item.trim().toLowerCase()).filter(Boolean));
+    if (!allowedApps.has(appSlug.toLowerCase())) {
+      return c.json({ error_code: "provider_connect_unavailable", message: `${displayName} is not enabled for Pipedream in this environment` }, 409);
+    }
+    if (!c.env.PIPEDREAM_CLIENT_ID || !c.env.PIPEDREAM_CLIENT_SECRET || !c.env.PIPEDREAM_PROJECT_ID) {
+      return c.json({ error_code: "provider_not_configured", message: "Pipedream is not configured on this platform yet" }, 503);
+    }
+  }
+
+  // Existing app rows are the authoritative provider pin. Never silently move a connection or
+  // attempt to bridge its OAuth token between integration providers.
+  if (c.env.MCP_HUB) {
+    const token = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
+    const existingResp = await c.env.MCP_HUB.fetch(new Request(`http://mcp-hub/v1/spaces/${body.space_id}/mcp-servers`, {
+      headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": token },
+    }));
+    if (existingResp.ok) {
+      const existing = await existingResp.json<{ data?: Array<{ name: string; connector_provider?: string }> }>();
+      const pinned = existing.data?.find((server) => server.name === connectorId)?.connector_provider;
+      if (pinned && pinned !== provider) return c.json({ error_code: "connector_provider_pinned", message: `This workspace already pins ${connectorId} to ${pinned}; remove it before changing providers` }, 409);
+    }
+  }
 
   let connectUrl: string;
   let connectionId: string;
-  {
+  if (provider === "pipedream") {
+    try {
+      const started = await startPipedreamConnect(c.env, { spaceId: body.space_id, appSlug, successRedirectUri: callbackUrl });
+      connectUrl = started.connectUrl;
+      connectionId = started.externalUserId;
+    } catch (err) {
+      return c.json({ error_code: "provider_connect_failed", message: (err as Error).message }, 502);
+    }
+  } else {
     const apiKey = c.env.COMPOSIO_API_KEY;
     if (!apiKey) {
       return c.json({ error_code: "provider_not_configured", message: `${displayName} is not configured on this platform yet` }, 503);
@@ -3618,7 +3811,7 @@ app.post("/connectors/:platform/provider-connect/start", async (c) => {
       spaceId: body.space_id, tenantId, userId, returnUrl: body.return_url, platform, connectionId,
       // Resolved here, not re-derived in the callback: a directory app has no catalogue row for
       // the callback to look up, and carrying it means the two halves can never disagree.
-      provider: "composio", connectorId, appSlug,
+      provider, connectorId, appSlug,
     }),
     { expirationTtl: 600 }
   );
@@ -3652,11 +3845,15 @@ app.get("/connectors/:platform/provider-connect/callback", async (c) => {
   };
 
   try {
-    const apiKey = c.env.COMPOSIO_API_KEY;
-    if (!apiKey) return failRedirect("provider_not_configured");
-    const status = await getComposioConnectionStatus(apiKey, ticket.connectionId);
-    if (status !== "ACTIVE") return failRedirect(`connection_${status.toLowerCase()}`);
-    const provider = "composio" as const;
+    const provider = ticket.provider ?? "composio";
+    if (provider === "pipedream") {
+      if (!await pipedreamConnectionActive(c.env, { externalUserId: ticket.connectionId, appSlug })) return failRedirect("connection_none");
+    } else {
+      const apiKey = c.env.COMPOSIO_API_KEY;
+      if (!apiKey) return failRedirect("provider_not_configured");
+      const status = await getComposioConnectionStatus(apiKey, ticket.connectionId);
+      if (status !== "ACTIVE") return failRedirect(`connection_${status.toLowerCase()}`);
+    }
 
     const upserted = await upsertProviderMcpServer(c.env, ticket, connectorId, provider);
     if (!upserted.ok) return failRedirect(upserted.reason);
@@ -3677,6 +3874,22 @@ app.post("/internal/connectors/oauth/refresh", async (c) => {
   const tenantId = await requireVerifiedTenant(c);
   interface RefreshBody { space_id: string; platform: string; refresh_token: string }
   const body = await c.req.json<RefreshBody>().catch(() => ({ space_id: "", platform: "", refresh_token: "" } as RefreshBody));
+  if (body.platform.startsWith("custom-oauth:")) {
+    const id = body.platform.slice("custom-oauth:".length);
+    if (!validTenantOAuthId(id) || !body.refresh_token || !body.space_id) return c.json({ error_code: "bad_request" }, 400);
+    if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, body.space_id)) return c.json({ error_code: "air_gap_egress_denied" }, 403);
+    const raw = await resolveConnectorCredential(c.env, tenantId, body.space_id, tenantOAuthCredentialName(id, "config"));
+    let config: TenantOAuthConfig;
+    try { config = JSON.parse(raw ?? "null") as TenantOAuthConfig; } catch { return c.json({ error_code: "oauth_configuration_missing" }, 400); }
+    try { await authorizeEgressUrl(config.token_url, await readSpaceEgressPolicy(c.env.PLATFORM_DB, body.space_id)); }
+    catch { return c.json({ error_code: "oauth_configuration_invalid" }, 400); }
+    try {
+      const tokens = await refreshTokens({ tokenUrl: config.token_url, clientId: config.client_id, clientSecret: config.client_secret, refreshToken: body.refresh_token });
+      const stored = await storeConnectorCredential(c.env, { tenantId, spaceId: body.space_id, userId: "system:oauth-refresh", name: tenantOAuthCredentialName(id, "tokens"), value: JSON.stringify(tokens), description: `${config.display_name} OAuth tokens` });
+      if (!stored.ok) return c.json({ error_code: "credential_store_failed" }, 502);
+      return c.json({ access_token: tokens.access_token, expires_at: tokens.expires_at });
+    } catch { return c.json({ error_code: "refresh_failed" }, 502); }
+  }
   const connector = getConnector(body.platform);
   if (!connector?.oauth) return c.json({ error_code: "oauth_not_supported" }, 400);
   const clientId = (c.env as unknown as Record<string, string | undefined>)[connector.oauth.client_id_env];
