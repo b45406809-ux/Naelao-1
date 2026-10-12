@@ -147,7 +147,7 @@ PARTIAL_NEEDS_PLATFORM: canonical gadget scopes, tenant/member-checked app route
 CSP hardening, a dynamic-page registry/renderer, per-tenant hostname enforcement,
 and single-use HMAC form actions are implemented and tested. Deployment still needs
 an owned preview zone and wildcard Worker route; pages fail closed until
-`DYNAMIC_PAGE_HOST_SUFFIX` is configured. See CLOUD-PROGRESS.md. Batch 3 has not started.
+`DYNAMIC_PAGE_HOST_SUFFIX` is configured. See CLOUD-PROGRESS.md. Batch 3 is IN PROGRESS, and Batch 4 is IN PROGRESS; see CLOUD-PROGRESS.md for current evidence and open gates.
 
 2. **Document 12: lines 1565–3590**
 
@@ -166,7 +166,7 @@ the primary range, including their integration with existing code. Record
 additional later ranges consulted, decisions, results and blockers. Stop here.
 ```
 
-**Progress (2026-10-12): PARTIAL_NEEDS_PLATFORM — local runtime implemented; deploy route needs an owned preview zone.** Four canonical installation scopes (`PROJECT_SHARED`, `PROJECT_USER`, `SPACE_SHARED`, `SPACE_USER`) map to isolated durable gadget facets while legacy scope names remain compatible. Gadget app/data/MCP routes validate tenant ownership and active space membership; initialization is admin-only and constrained to the named `SPACE_SHARED` tier-3 actor. The app iframe uses restrictive CSP/no-store/security headers. Public pages have a registry, static safe-HTML renderer, tenant-specific host enforcement on a suffix separate from the app origin, strict CSP, and action-bound, expiring, single-use HMAC tokens that can write only declared keys/fields. Spaces tests pass (18 files / 57 tests), agent-sdk tests pass (17 files / 59 tests), both typechecks and `git diff --check` pass. Cloudflare documentation fetch returned proxy 403; live tests were waived. The runtime remains disabled until an owned preview suffix and wildcard Worker route are configured. Batch 3 has not started.
+**Progress (2026-10-12): PARTIAL_NEEDS_PLATFORM — local runtime implemented; deploy route needs an owned preview zone.** Four canonical installation scopes (`PROJECT_SHARED`, `PROJECT_USER`, `SPACE_SHARED`, `SPACE_USER`) map to isolated durable gadget facets while legacy scope names remain compatible. Gadget app/data/MCP routes validate tenant ownership and active space membership; initialization is admin-only and constrained to the named `SPACE_SHARED` tier-3 actor. The app iframe uses restrictive CSP/no-store/security headers. Public pages have a registry, static safe-HTML renderer, tenant-specific host enforcement on a suffix separate from the app origin, strict CSP, and action-bound, expiring, single-use HMAC tokens that can write only declared keys/fields. Spaces tests pass (18 files / 57 tests), agent-sdk tests pass (17 files / 59 tests), both typechecks and `git diff --check` pass. Cloudflare documentation fetch returned proxy 403; live tests were waived. The runtime remains disabled until an owned preview suffix and wildcard Worker route are configured. Batch 3 is IN PROGRESS, and Batch 4 is IN PROGRESS; see CLOUD-PROGRESS.md for current evidence and open gates.
 
 3. **Document 12: lines 3591–5657**
 
@@ -205,8 +205,7 @@ examples or invent unavailable isolation guarantees. Implement and test the
 final requirements, preserve tunnels and local models, record evidence, and stop.
 ```
 
-**Progress (2026-10-12): IN PROGRESS — implementation and focused checks continue; full
-primary review remains.** Read primary D12 5658–7973 in ascending bounded windows;
+**Progress (2026-10-12): IN PROGRESS — primary range reviewed; implementation and integration checks continue.** Read primary D12 5658–7973 in ascending bounded windows;
 read required D12/D13 look-aheads and extra D12 12764–13206 for model/modality
 amendments. Existing provider-usage metering, terminal Bash rendering, durable private
 tool-output R2 storage, named LocalTunnelDO execution, permission-filtered RAG, saga
