@@ -1,0 +1,250 @@
+NAELAO FOUNDRY SPACE AND PLATFORM PLAN
+Conversation-derived working plan
+Source period: 2026-10-10 through 2026-10-12 (timestamps retained as UTC in transcript)
+
+PURPOSE AND SOURCE RULES
+
+This plan is derived from the uploaded Google AI Studio export named
+"Tokenizers vs. Embedding Models Explained" and the clean transcript at
+"new plan/Tokenizers vs. Embedding Models Explained.messages.txt".
+
+The user's messages express product intent. AI model messages are conversation
+context and candidate designs; they are not product requirements unless the user
+later adopts them. Do not treat model-generated claims about APIs, products,
+latency, pricing, legal compliance, or architecture as verified facts. Validate
+such claims before implementation. Later explicit user corrections control over
+earlier ideas. Keep deferred work deferred unless the user brings it back into
+current scope.
+
+The extraction starts at the exact user message beginning "i wa.t fou.dry space
+template..." (export timestamp 2026-10-10T20:03:42Z) and continues through the
+last message. It writes only non-empty visible user/model text, excludes chunks
+marked isThought, and omits empty or non-text-only entries. It does not copy the
+export's JSON, system instruction, tool metadata, or internal thought text.
+
+CURRENT PRODUCT DIRECTION
+
+1. Make Foundry Space template creation accessible to non-technical domain
+   experts. A domain expert should be able to describe their domain and turn that
+   knowledge into a usable template without needing to write code or configure
+   infrastructure. Conversation, domain materials, and guided validation are
+   candidate authoring mechanisms; the exact UX and validation contract remain
+   to be designed. The product goal is that successful experts can become FDEs
+   and share or offer their domain templates.
+
+2. Support domain-specific workers while preserving each person's data
+   boundaries. The user described a doctor creating a patient-facing worker that
+   can be installed by a patient and invoked through that patient's own
+   assistant, including an isolated WhatsApp identity per user/number. The
+   worker may use the doctor's approved knowledge and the patient's information
+   only under explicit authorization. The worker should execute in the user's
+   space; installing a worker must not silently grant the builder access to the
+   user's personal files. The user distinguished knowledge sharing from
+   sharing a live worker instance. Treat a worker package installed into a
+   user's Space as separate from any shared runtime state, identity, or patient
+   data. The user also raised optional bidirectional sharing/export of workers,
+   data, skills, projects, and other Naelao assets. Design these as separate,
+   selectable permissions and flows.
+
+   Before implementing healthcare examples, define consent, identity, revocation,
+   audit, data retention, and escalation boundaries with appropriate domain
+   review. Do not claim HIPAA or other regulatory compliance from architecture
+   sketches alone, and do not present a general assistant as a substitute for a
+   licensed clinician.
+
+3. Give FDEs a first-party route to report product gaps. The user expects local
+   Foundry Assistants to prepare feature requests when an FDE encounters a
+   missing capability (for example, a regional payment rail), rather than
+   relying on the FDE to contact the founder manually. The user also intends to
+   create a private Naelao Space template, perhaps organized as a project or
+   subspace, for managing FDE requests. Treat assistant-generated requests as
+   proposals for human review, not automatic permission to change billing,
+   production behavior, or platform code.
+
+4. Add a Markdown-for-agents capability to the universal CLI. The user linked
+   Cloudflare's Markdown-for-Agents announcement and asked that the capability
+   become a CLI command. The command name, runtime contract, and supported
+   sources are undecided. Check current official documentation and the existing
+   CLI before choosing an interface; the names suggested in model replies are
+   examples only.
+
+5. Revisit the workspace and extension model before expanding space-wide
+   execution. The user raised project-to-space/subspace evolution, including how
+   running linters, extensions, dynamic workflows, containers, state, and
+   permissions move. The user's preferred direction to investigate is a
+   distinct Space workspace for isolated space-wide services/extensions and a
+   separate Assistant workspace for assistant-specific work. Keep project
+   execution distinct from both. Avoid a design where an extension installed in
+   one project depends invisibly on that project's continued existence when
+   another project uses it.
+
+   Resolve explicitly: ownership and billing of shared extensions; lifecycle
+   and migration of running processes; project vs. Space vs. Assistant scope;
+   multiple linters and per-worker lint profiles; resource limits for many
+   micro-apps/extensions; and how cooperating extensions exchange files. The
+   user has not selected a final shared-filesystem design. Compare explicit,
+   permissioned shared storage with packaging/coupling tradeoffs before fixing
+   the interface. Never make sharing implicit.
+
+6. Preserve a simple front door to agent work. The user reaffirmed a direct
+   worker path for simple requests and a planner/worker swarm path for complex
+   requests, with the system choosing the path so users do not have to select an
+   orchestration topology. The user wants the planner to oversee complex runs,
+   detect errors, adjust configuration during execution, show useful progress,
+   and keep the user's conversation with one assistant. Prebuilt swarm patterns
+   are a candidate way to cover common tasks. User-created subagents were
+   previously expected to run through dynamic workflows; retain that boundary
+   unless changed by the user.
+
+   The user later explicitly deferred broader agent-swarm expansion as part of
+   enterprise and mass-market growth. Therefore, do not treat the detailed
+   topologies, scout placement, worker-count heuristics, or prebuilt swarm
+   catalog proposed in model replies as immediate implementation scope. Keep
+   them as a future design track. If reactivated, first settle when direct
+   workers vs. planner runs are chosen, how worker counts scale, what the planner
+   may change mid-run, and how oversight cost is bounded. The user's mention of
+   Jev/Clef selecting a path is an idea to validate, not proof of model latency,
+   capability, or API support.
+
+7. Make worker failures and platform behavior testable and observable. The user
+   asked what happens when a user-created worker fails, and asked for automated,
+   monitored testing from end-to-end and load tests through stress tests and
+   generated scenarios. Define failure containment, safe retries/recovery,
+   visible status, and no-corruption guarantees. Build a test strategy that
+   covers unit/contract, integration, end-to-end, scenario, load/stress/soak,
+   restart/replay, and injected dependency failures, with monitoring tied to
+   user-visible outcomes. Exact tools, thresholds, and automatic recovery rules
+   remain open; model-generated claims and example numbers are not approved.
+
+8. Explore context reduction without losing source fidelity. The final user
+   question asks whether Jev/Clef could reduce oversized inputs so an AI reads
+   the relevant parts. Treat this as a research/design item: distinguish exact
+   token counting from embeddings and semantic retrieval; preserve the original
+   source and citations; make summaries/retrieval traceable; and test recall and
+   omission risk. Do not discard source content or rely on an unverified Jev or
+   Clef endpoint, tokenizer, pricing, latency, or accuracy claim.
+
+EXPLICITLY DEFERRED OR NOT YET APPROVED
+
+- On 2026-10-12T17:04Z the user said to add later the broader strategy for the
+  roughly 75% of people not currently using LLMs, enterprise plans, and agent
+  swarms, while focusing on current Naelao first. Keep offline/feature-phone,
+  broad localization, mass-market acquisition, and enterprise packaging out of
+  the immediate build unless the user reopens them. The specific FDE feedback
+  loop and workspace questions later in the conversation remain recorded above.
+- A $1,200 enterprise plan was asked about but not approved. Pricing, quotas,
+  five-hour/weekly resets, credits, and enterprise entitlements need a separate
+  decision; model examples are not product policy.
+- Joining industry groups or finding experts on LinkedIn was suggested by the
+  user as a sourcing idea, not authorization to scrape or contact people. Any
+  sourcing work needs platform-policy, privacy, consent, and outreach review.
+- Claude Code "mods" as a vertical extension model was asked about, but no
+  compatibility or cloning decision was made. Research the actual extension
+  contracts before deciding.
+- Marketplace royalties, automated certification, specific model routing,
+  provider lists, worker limits, exact swarm topologies, and vendor price or
+  performance figures in AI replies remain proposals unless separately adopted.
+
+CHRONOLOGICAL RECONCILIATION
+
+- 2026-10-10T20:03Z: initial product goal: make a Foundry Space template simple
+  enough for a non-technical domain expert to create a domain template and
+  become an FDE.
+- 2026-10-10T20:07Z: expert sourcing through groups/LinkedIn is raised as an
+  idea; it is not an instruction to scrape or contact anyone.
+- 2026-10-10T23:13–23:34Z: user extends the idea to doctor/patient delegation,
+  patient-owned data, knowledge sharing, and selectable bidirectional asset
+  sharing. Preserve those as distinct trust boundaries; don't treat model
+  answers' compliance or vendor claims as accepted.
+- 2026-10-11T08:32–09:57Z: user supplies a Cloudflare Markdown-for-Agents
+  reference, asks for a universal CLI command, then asks about Claude Code mods
+  as vertical extensions. The feature request is explicit; API/compatibility
+  design is still unverified.
+- 2026-10-11T10:06Z: user explicitly defers broad mass-market, enterprise, and
+  swarm expansion to later, prioritizing current Naelao and learning from FDEs.
+- 2026-10-12T08:53–10:12Z: user discusses automatic planner topology selection,
+  planner oversight, prebuilt swarm patterns, dynamic-workflow subagents, and a
+  direct-worker/planner-swarm split. Retain as future direction, subject to the
+  later deferral; don't promote model-generated numeric limits to requirements.
+- 2026-10-12T11:05–11:15Z: user requests comprehensive automated and monitored
+  testing, from end-to-end through stress and scenario tests.
+- 2026-10-12T15:39–17:20Z: usage and enterprise pricing are explored, then
+  explicitly deferred. User adds that FDE assistants should originate feature
+  requests and describes a private Foundry operations Space/template.
+- 2026-10-12T20:24–21:07Z: user raises project-to-space migration, separate
+  assistant/space workspaces, multi-linter and extension resource issues, and
+  cross-extension filesystem sharing. These are design questions and
+  constraints to resolve; the final interface is not yet approved.
+- 2026-10-12T21:19Z: user asks about Jev/Clef for reducing oversized context to
+  relevant information. This remains a research item with source fidelity and
+  evidence requirements.
+
+SUGGESTED DELIVERY ORDER
+
+Phase 1 — Validate the current product boundary and inventory existing behavior.
+Map current Foundry template authoring, CLI, worker dispatch, Dynamic Workflows,
+spaces/projects, extensions, filesystems, and test/monitoring paths. Mark each
+item implemented, partial, absent, or unverified. This plan alone is not proof
+that any feature is already implemented.
+
+Phase 2 — Decide the trust and ownership model for installed domain workers.
+Define builder vs. installer ownership, code/knowledge/data separation,
+per-user identity, explicit grants, revocation, audit, and data locality. Use
+the patient/doctor example as a high-sensitivity design test, not as a claim of
+clinical readiness.
+
+Phase 3 — Prototype the non-code Foundry authoring path. Validate that a domain
+expert can provide sources, describe a workflow, review a generated template,
+run representative simulations, understand limitations, and publish/share only
+after explicit review. Define what "become an FDE" means operationally before
+claiming certification or monetization.
+
+Phase 4 — Specify workspace and extension lifecycle. Resolve Project, Space,
+and Assistant scopes; project-to-space migration; independent extension
+ownership/execution; multiple linters; resource budgets; and opt-in shared
+storage. Test isolation and failure behavior before expanding the catalog.
+
+Phase 5 — Build FDE request intake and operational testing foundations. Make
+assistant-created requests reviewable, attributable, and approval-gated. Add
+automated scenario and end-to-end coverage plus load, stress, replay, and
+failure-injection tests with production monitoring.
+
+Phase 6 — Validate supporting capabilities. Research and implement the
+Markdown CLI contract against current official docs. Separately evaluate
+token-count-aware retrieval/context pruning with replayable evaluation sets.
+Keep mass-market, enterprise pricing, and expanded swarm execution in the
+deferred roadmap until explicitly reactivated.
+
+ACCEPTANCE CHECKS FOR A FUTURE IMPLEMENTATION TASK
+
+- A non-technical domain expert can author, inspect, test, and revise a template
+  without writing code; any automated certification/marketplace claims have a
+  separately approved evidence standard.
+- A user can install a domain worker without granting its builder access to
+  user-owned data. The user can see and revoke each knowledge/data/channel
+  permission, and one user's channel or data cannot leak to another.
+- Project, Space, and Assistant workspaces have clear ownership, lifecycle,
+  resource limits, and isolation. Project-to-space migration accounts for
+  active runs and does not silently orphan or duplicate them.
+- Multiple lint profiles can be scoped to the files/workers they govern, and
+  the system reports conflicts and resource use instead of blocking unrelated
+  work without explanation.
+- Any filesystem sharing between extensions is explicit, authorized, and
+  testable; default isolation remains intact.
+- Worker faults, restarts, retries, and partial completion are observable and
+  cannot corrupt shared project state. Automated tests cover normal and failure
+  paths across the supported execution environments.
+- The Markdown CLI and any context-pruning feature use verified interfaces;
+  source text remains recoverable and model-generated summaries are not
+  represented as exact source.
+
+ARTIFACTS CREATED
+
+- new plan/extract_ai_studio_messages.py — reusable plain-text extractor.
+- new plan/Tokenizers vs. Embedding Models Explained.messages.txt — filtered
+  conversation, user/model messages only, no thought chunks or JSON wrapper.
+- new plan/FOUNDRY-SPACE-AND-PLATFORM-PLAN.txt — this reconciled working plan.
+
+This plan is a source-derived design handoff, not an instruction to implement
+every listed future item immediately. Confirm current code and validate external
+assumptions when a numbered implementation mission is opened.
