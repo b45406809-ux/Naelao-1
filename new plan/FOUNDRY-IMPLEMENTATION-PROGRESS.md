@@ -87,3 +87,16 @@ Current verification for this follow-up:
 - `workers/knowledge/src/web-fetch.test.ts`
 
 The source plan and transcript were left unchanged.
+
+## Post-review implementation pass (2026-10-13)
+
+Status: local corrections implemented; verification recorded below. This pass addresses concrete gaps found by the repository review without expanding orchestration, token reduction, cross-Space data sharing, or channel identity sharing.
+
+- Added the `foundry-inbox` prebuilt operation. It requires a run and agent identity, bounds request fields/evidence, calls a tenant-authenticated internal Spaces route, and records the actor from trusted run headers. The Spaces route ignores caller-supplied `requested_by`; requests remain owner-reviewed records and do not mutate code or create workers. Foundry-installed workers receive this operation.
+- Incoming cross-Space grants are labeled as incoming in the UI and no longer show a revoke control that the active Space cannot authorize. A revoke attempt against a grant not owned by the requested source Space now returns 404 with `revoked: false`; tests prove the live capability remains active after that denied attempt.
+- Published template source-reference labels are carried into the installed worker as JSON-escaped provenance metadata. Instructions state that source content is not shared and labels are not instructions; the worker is told to use only corresponding material already present in its target Space. These labels are not resolved against a source catalog and do not transfer knowledge. Source-catalog resolution and explicit per-document sharing remain open because the current Spaces service has no source-reference resolver and the product plan requires an explicit data-sharing boundary.
+- Re-traced extension execution: the installation-specific R2 prefix is enforced on the signed container sidecar, but this repository has no normal extension-code dispatch path to supply a verified installation identity to ordinary `buildScriptEngineEnv` runs. No client-provided installation ID was added. Extending that to non-container extensions requires an actual authenticated extension execution contract.
+
+Files changed in this pass: `workers/agents/src/script-engine/prebuilt/foundry-inbox.ts`, `workers/agents/src/script-engine/prebuilt/foundry-inbox.test.ts`, `workers/agents/src/script-engine/prebuilt/index.ts`, `workers/spaces/src/index.ts`, `workers/spaces/src/do/SpaceDO.ts`, `workers/spaces/src/foundry-and-cross-space.test.ts`, and `apps/shell/src/app/p/[slug]/(shell)/foundry/page.tsx`.
+
+Verification: `CI=true corepack pnpm@9.12.0 --filter @naelao/agents-worker test` passed (59 files / 242 tests); `... --filter naelao-spaces test` passed (24 files / 76 tests, including the install, actor-attribution, spoofing, and incoming-revoke cases); focused Foundry test passed (9 tests); Agents, Spaces, and Shell typechecks passed; Shell production build passed and emitted `/p/[slug]/foundry`; `git diff --check` passed. Tests use local DO/Worker stubs and do not establish live Cloudflare behavior. No live deployment check was run.

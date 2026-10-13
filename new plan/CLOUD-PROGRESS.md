@@ -16,6 +16,10 @@ Branch: `Mcbt5s-Backup-2`. One sequential implementation worker. No live deploy.
 | 9 | PARTIAL_NEEDS_PLATFORM — all local connector requirements implemented; live provider/OAuth verification requires tenant/platform credentials |
 | 10 | COMPLETE_LOCALLY — final runtime review and ten-batch coverage pass complete; external checks remain |
 
+## Post-batch review follow-up (2026-10-13)
+
+This follow-up does not change the numbered batch assessments above. Added an agent-run Foundry inbox tool with server-derived actor attribution; corrected incoming grant revocation UX and backend false-success behavior; and preserved publisher source-reference labels as escaped provenance in installed worker instructions without sharing source content. Fresh tests: Agents 59 files / 242 tests; Spaces 24 files / 76 tests, plus a focused Foundry rerun (9 tests). Agents/Spaces/Shell typechecks, Shell build, and `git diff --check` passed. No live Cloudflare checks were run. Remaining architecture gaps: no normal non-container extension dispatch to provide a verified installation workspace scope, no source-reference catalog resolver, no explicit per-document cross-Space grants, and no channel-native cross-Space bridge. These require additional authenticated execution/data-sharing contracts; do not represent them as implemented.
+
 ## Source ledger and reconciled decisions
 
 - Batch 1: D12 1–1564; required look-aheads D12 6127–6560, 6965–7086,

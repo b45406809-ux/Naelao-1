@@ -49,7 +49,7 @@ function harness() {
         if (row && row.grantee_space_id === grantee && row.target_space_id === target && row.resource_id === resource && row.revoked_at === null && String(row.expires_at) > String(now)) rows = [{ id }];
       } else if (statement.startsWith("update cross_space_grants")) {
         const [revoked_at, id, target] = args; const row = grants.get(String(id));
-        if (row && row.target_space_id === target && row.revoked_at === null) row.revoked_at = revoked_at;
+        if (row && row.target_space_id === target && row.revoked_at === null) { row.revoked_at = revoked_at; rows = [{ id }]; }
       }
       return { rowsWritten: 1, toArray: () => rows };
     },
@@ -111,6 +111,16 @@ describe("revocable cross-Space capabilities", () => {
     const response = await h.instance.fetch(new Request("https://space/cross-space-grants", { method: "POST", body: JSON.stringify({ grantee_space_id: "user-space", target_space_id: "doctor-space", resource_id: "*", granted_by: "owner", expires_at: new Date(Date.now() + 60_000).toISOString() }) }));
     expect(response.status).toBe(400);
   });
+  it("does not report revocation when the active Space is only the grantee", async () => {
+    const h = harness();
+    const created = await h.instance.fetch(new Request("https://space/cross-space-grants", { method: "POST", body: JSON.stringify({ grantee_space_id: "destination", target_space_id: "source", resource_id: "worker:agent-1", granted_by: "source-owner", expires_at: new Date(Date.now() + 60_000).toISOString(), permissions: ["invoke"] }) }));
+    const grant = await created.json() as { id: string; capability_token: string };
+    const wrongOwner = await h.instance.fetch(new Request(`https://space/cross-space-grants/${grant.id}?space_id=destination`, { method: "DELETE" }));
+    expect(wrongOwner.status).toBe(404);
+    expect(await wrongOwner.json()).toMatchObject({ revoked: false });
+    const permittedBefore = await h.instance.fetch(new Request(`https://space/cross-space-check?${new URLSearchParams({ user_id: "u", requesting_space_id: "destination", target_space_id: "source", resource_id: "worker:agent-1", permission: "invoke", capability_token: grant.capability_token })}`));
+    expect(await permittedBefore.json()).toMatchObject({ permitted: true });
+  });
   it("limits permissions and grant lifetime", async () => {
     const h = harness();
     const base = { grantee_space_id: "user-space", target_space_id: "doctor-space", resource_id: "worker:agent-1", granted_by: "owner" };
@@ -171,5 +181,66 @@ describe("Foundry worker invocation route", () => {
     expect(new URL(forwardedRequest.url).pathname).toBe("/agents/worker-7/script/run");
     expect(forwardedRequest.headers.get("x-naelao-space-id")).toBe("source-space");
     expect(await forwardedRequest.json()).toEqual({ goal: "Read the published customs checklist.", spaceId: "source-space", tenantId: "tenant-1" });
+  });
+});
+
+describe("agent feature request ingress", () => {
+  it("requires an internal run identity and derives the request actor on the worker side", async () => {
+    const forwarded: Request[] = [];
+    const spaceStub = { fetch: vi.fn(async (request: Request) => { forwarded.push(request); return Response.json({ id: "request-1", status: "open" }, { status: 201 }); }) };
+    const env = {
+      PLATFORM_SECRET: "test-secret",
+      PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ id: "space-a" }) }) }) },
+      SPACE_DO: { idFromName: (name: string) => name, get: () => spaceStub },
+    } as never;
+    const { mintInternalToken } = await import("@naelao/http");
+    const unauthenticated = await spacesWorker.fetch(new Request("https://spaces.test/internal/spaces/space-a/foundry/requests", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a" }, body: JSON.stringify({ title: "x", problem: "y", workflow: "z", evidence: [] }),
+    }), env);
+    expect(unauthenticated.status).toBe(403);
+    expect(spaceStub.fetch).not.toHaveBeenCalled();
+    const headers = {
+      "content-type": "application/json",
+      "x-naelao-tenant-id": "tenant-a",
+      "x-naelao-internal-token": await mintInternalToken("test-secret", "tenant-a"),
+      "x-naelao-agent-id": "assistant-a",
+      "x-naelao-run-id": "run-a",
+      "x-naelao-user-id": "user-a",
+    };
+    const response = await spacesWorker.fetch(new Request("https://spaces.test/internal/spaces/space-a/foundry/requests", {
+      method: "POST", headers,
+      body: JSON.stringify({ requested_by: "forged-human", title: "Improve workflow", problem: "Missing validation.", workflow: "Review first.", evidence: [] }),
+    }), env);
+    expect(response.status).toBe(201);
+    expect(JSON.parse(await forwarded[0]!.clone().text())).toMatchObject({ requested_by: "assistant:assistant-a:run:run-a:invoked-by:user-a", space_id: "space-a" });
+    expect(JSON.parse(await forwarded[0]!.text())).not.toHaveProperty("requested_by", "forged-human");
+  });
+});
+
+describe("Foundry template installation", () => {
+  it("carries source reference labels as provenance and enables the review-only inbox tool", async () => {
+    let installedBody: Record<string, unknown> | undefined;
+    const sourceSpace = {
+      fetch: vi.fn(async (request: Request) => {
+        const path = new URL(request.url).pathname;
+        if (path === "/hierarchy-authorize") return Response.json({ authorized: true });
+        if (path === "/cross-space-check") return Response.json({ permitted: true });
+        if (path === "/foundry/templates/template-1") return Response.json({ name: "Domain Helper", description: "A published helper", definition: {
+          expertise: "customs", audience: "operators", outcome: "prepare a draft", workflow: "review sources",
+          safetyLimits: "ask first", instructions: "Use supported sources only.", sourceReferences: ["kb:origin-policy"], toolAllowlist: ["knowledge-base"],
+        } });
+        return Response.json({ error: "unexpected route" }, { status: 404 });
+      }),
+    };
+    const agents = { fetch: vi.fn(async (request: Request) => { installedBody = await request.json() as Record<string, unknown>; return Response.json({ id: "worker-1" }, { status: 201 }); }) };
+    const env = { PLATFORM_SECRET: "test-secret", SPACE_DO: { idFromName: (name: string) => name, get: () => sourceSpace }, AGENTS_WORKER: agents } as never;
+    const response = await spacesWorker.fetch(new Request("https://spaces.test/spaces/target/foundry/install-template", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": "owner-a", "x-naelao-role": "owner" },
+      body: JSON.stringify({ source_space_id: "source", template_id: "template-1", capability_token: "scoped-token" }),
+    }), env);
+    expect(response.status).toBe(201);
+    expect(installedBody?.prebuilt_scripts).toContain("foundry-inbox");
+    expect(installedBody?.instructions).toContain("kb:origin-policy");
+    expect(installedBody?.instructions).toContain("provenance only; source content is not shared");
   });
 });

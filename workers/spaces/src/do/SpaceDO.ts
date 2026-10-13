@@ -4029,7 +4029,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       !shortText(definition.expertise, 2000) || !shortText(definition.audience, 500) || !shortText(definition.outcome, 1000) ||
       !shortText(definition.workflow, 3000) || !shortText(definition.safetyLimits, 2000) || !shortText(definition.instructions, 6000) ||
       !boundedList(definition.sourceReferences, 30, 300) || !boundedList(definition.toolAllowlist, 8, 64) ||
-      (definition.toolAllowlist as string[]).some((tool) => !["knowledge-base", "web-search", "file-manager"].includes(tool))) {
+      (definition.toolAllowlist as string[]).some((tool) => !["knowledge-base", "web-search", "file-manager", "foundry-inbox"].includes(tool))) {
       return Response.json({ error_code: "bad_request", message: "A template needs bounded domain, audience, outcome, workflow, safety limits, reviewed tool choices, and source references" }, { status: 400 });
     }
     const now = new Date().toISOString();
@@ -4055,7 +4055,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       !shortText(definition.expertise, 2000) || !shortText(definition.audience, 500) || !shortText(definition.outcome, 1000) ||
       !shortText(definition.workflow, 3000) || !shortText(definition.safetyLimits, 2000) || !shortText(definition.instructions, 6000) ||
       !boundedList(definition.sourceReferences, 30, 300) || !boundedList(definition.toolAllowlist, 8, 64) ||
-      (definition.toolAllowlist as string[]).some((tool) => !["knowledge-base", "web-search", "file-manager"].includes(tool))) {
+      (definition.toolAllowlist as string[]).some((tool) => !["knowledge-base", "web-search", "file-manager", "foundry-inbox"].includes(tool))) {
       return Response.json({ error_code: "bad_request", message: "A bounded and reviewed template definition is required" }, { status: 400 });
     }
     const now = new Date().toISOString();
@@ -4090,7 +4090,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const checks = [
       { id: "domain-context", passed: typeof definition.expertise === "string" && Boolean(definition.expertise.trim()) && typeof definition.audience === "string" && Boolean(definition.audience.trim()) && typeof definition.outcome === "string" && Boolean(definition.outcome.trim()) },
       { id: "workflow-and-safety", passed: typeof definition.workflow === "string" && Boolean(definition.workflow.trim()) && typeof definition.safetyLimits === "string" && Boolean(definition.safetyLimits.trim()) },
-      { id: "bounded-tools", passed: Array.isArray(definition.toolAllowlist) && definition.toolAllowlist.length <= 8 && definition.toolAllowlist.every((tool) => ["knowledge-base", "web-search", "file-manager"].includes(String(tool))) },
+      { id: "bounded-tools", passed: Array.isArray(definition.toolAllowlist) && definition.toolAllowlist.length <= 8 && definition.toolAllowlist.every((tool) => ["knowledge-base", "web-search", "file-manager", "foundry-inbox"].includes(String(tool))) },
       { id: "approval-and-data-boundary", passed: definition.approvalMode === "always_ask" && typeof definition.instructions === "string" && definition.instructions.length <= 6000 },
       { id: "source-references", passed: Array.isArray(definition.sourceReferences) && definition.sourceReferences.length <= 30 && definition.sourceReferences.every((source) => typeof source === "string" && source.length <= 300) },
     ];
@@ -10064,11 +10064,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
   private revokeCrossSpace(id: string, targetSpaceId: string): Response {
     if (!targetSpaceId) return Response.json({ error_code: "bad_request", message: "space_id is required" }, { status: 400 });
-    execute(
+    const changed = queryAll<{ id: string }>(
       this.ctx.storage.sql as never,
-      "UPDATE cross_space_grants SET revoked_at = ? WHERE id = ? AND target_space_id = ? AND revoked_at IS NULL",
+      "UPDATE cross_space_grants SET revoked_at = ? WHERE id = ? AND target_space_id = ? AND revoked_at IS NULL RETURNING id",
       new Date().toISOString(), id, targetSpaceId
     );
+    if (changed.length === 0) return Response.json({ error_code: "grant_not_found_or_not_owned", revoked: false }, { status: 404 });
     return Response.json({ revoked: true, id, target_space_id: targetSpaceId });
   }
 
