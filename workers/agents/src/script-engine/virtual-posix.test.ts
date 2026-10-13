@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { executeVirtualPosix } from "./virtual-posix.js";
 import { normalizeWorkspacePath } from "./workspace-paths.js";
 import { codeExec } from "./prebuilt/code-exec.js";
+import { VirtualCliDispatcher } from "./virtual-cli.js";
 
 describe("virtual POSIX shell", () => {
   const files = new Map([["data.txt", "alpha 1\nbeta 2\nalpha 3\n"]]);
@@ -28,6 +29,19 @@ describe("virtual POSIX shell", () => {
       exit_code: 0,
       stdout: "/workspace",
     });
+  });
+
+  it("routes fetch-md through the virtual shell without starting a container", async () => {
+    const fetchMarkdown = vi.fn(async () => ({
+      url: "https://example.com/guide",
+      status: 200,
+      content: "# Guide",
+      content_type: "text/markdown",
+      format: "markdown",
+    }));
+    const cli = new VirtualCliDispatcher({ tenantId: "tenant", spaceId: "space", fetchMarkdown });
+    await expect(executeVirtualPosix("fetch-md https://example.com/guide", fs, { cli })).resolves.toMatchObject({ exit_code: 0, stdout: "# Guide" });
+    expect(fetchMarkdown).toHaveBeenCalledOnce();
   });
 
   it("rejects traversal and the machine namespace", () => {

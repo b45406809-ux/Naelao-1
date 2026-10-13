@@ -38,6 +38,7 @@ import { createVaultProxy } from "../vault-proxy.js";
 import { inspectMutation } from "@naelao/security";
 import { isDeclaredNativeCommand } from "../execution-ladder.js";
 import { assertWorkspaceFileAllowed } from "../workspace-paths.js";
+import { mintInternalToken } from "@naelao/http";
 
 const PYTHON_HARNESS = `
 import { execFileSync } from "node:child_process";
@@ -167,12 +168,36 @@ async function runBash(
   const observed = new Map<string, string | null>();
   let actualTier: ExecutionTier = 1;
   if (canRunVirtually(command, (name) => ctx.commands?.has(name) ?? false)) {
-    const cli = ctx.env.credentialsWorker && ctx.env.platformSecret
+    const cli = (ctx.env.credentialsWorker || ctx.env.knowledgeWorker) && ctx.env.platformSecret
       ? new VirtualCliDispatcher({
-          vault: createVaultProxy({ credentialsWorker: ctx.env.credentialsWorker, platformSecret: ctx.env.platformSecret, tenantId: ctx.env.tenantId, spaceId: ctx.env.spaceId, agentId: ctx.env.agentId, ...(ctx.env.projectId ? { projectId: ctx.env.projectId } : {}), ...(ctx.env.userId ? { userId: ctx.env.userId } : {}), ...(ctx.env.runId ? { runId: ctx.env.runId } : {}), ...(ctx.env.taskId ? { taskId: ctx.env.taskId } : {}) }),
+          ...(ctx.env.credentialsWorker ? { vault: createVaultProxy({ credentialsWorker: ctx.env.credentialsWorker, platformSecret: ctx.env.platformSecret, tenantId: ctx.env.tenantId, spaceId: ctx.env.spaceId, agentId: ctx.env.agentId, ...(ctx.env.projectId ? { projectId: ctx.env.projectId } : {}), ...(ctx.env.userId ? { userId: ctx.env.userId } : {}), ...(ctx.env.runId ? { runId: ctx.env.runId } : {}), ...(ctx.env.taskId ? { taskId: ctx.env.taskId } : {}) }) } : {}),
           tenantId: ctx.env.tenantId,
           spaceId: ctx.env.spaceId,
           ...(ctx.env.projectId ? { projectId: ctx.env.projectId } : {}),
+          fetchMarkdown: async (url) => {
+            if (!ctx.env.knowledgeWorker) throw new Error("fetch-md unavailable: knowledge worker is not configured");
+            const token = await mintInternalToken(ctx.env.platformSecret!, ctx.env.tenantId);
+            const response = await ctx.env.knowledgeWorker.fetch(new Request("http://knowledge-worker/internal/web-search/fetch", {
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+                "x-naelao-tenant-id": ctx.env.tenantId,
+                "x-naelao-space-id": ctx.env.spaceId,
+                "x-naelao-internal-token": token,
+              },
+              body: JSON.stringify({ url, format: "markdown" }),
+            }));
+            const payload = await response.json() as { url?: string; status?: number; content?: string; content_type?: string; format?: string; truncated?: boolean; message?: string };
+            if (!response.ok) throw new Error(`fetch-md request failed (${response.status}): ${payload.message ?? "request rejected"}`);
+            return {
+              url: payload.url ?? url,
+              status: payload.status ?? 502,
+              content: payload.content ?? "",
+              ...(payload.content_type ? { content_type: payload.content_type } : {}),
+              ...(payload.format ? { format: payload.format } : {}),
+              ...(payload.truncated ? { truncated: true } : {}),
+            };
+          },
         })
       : undefined;
     const result = await executeVirtualPosix(command, {

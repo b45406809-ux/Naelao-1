@@ -2,6 +2,37 @@ import { describe, expect, it, vi } from "vitest";
 import { VirtualCliDispatcher } from "./virtual-cli.js";
 
 describe("VirtualCliDispatcher", () => {
+  it("requests Markdown-for-agents through the scoped fetch callback and reports honest fallbacks", async () => {
+    const fetchMarkdown = vi.fn(async () => ({
+      url: "https://example.com/guide.md",
+      status: 200,
+      content: "# Guide",
+      content_type: "text/markdown; charset=utf-8",
+      format: "markdown",
+    }));
+    const cli = new VirtualCliDispatcher({ tenantId: "tenant", spaceId: "space", fetchMarkdown });
+    await expect(cli.execute(["fetch-md", "https://example.com/guide.md"])).resolves.toMatchObject({ exit_code: 0, stdout: "# Guide" });
+    expect(fetchMarkdown).toHaveBeenCalledWith("https://example.com/guide.md");
+
+    const htmlCli = new VirtualCliDispatcher({ tenantId: "tenant", spaceId: "space", fetchMarkdown: vi.fn(async () => ({
+      url: "https://example.com/",
+      status: 200,
+      content: "<h1>Example</h1>",
+      content_type: "text/html",
+      format: "source",
+    })) });
+    await expect(htmlCli.execute(["fetch-md", "https://example.com/"])).resolves.toMatchObject({
+      exit_code: 0,
+      stderr: expect.stringContaining("unconverted source"),
+    });
+  });
+
+  it("validates fetch-md input and surfaces non-success status", async () => {
+    const cli = new VirtualCliDispatcher({ tenantId: "t", spaceId: "s", fetchMarkdown: vi.fn(async () => ({ url: "https://example.com/", status: 503, content: "unavailable" })) });
+    await expect(cli.execute(["fetch-md", "file:///etc/passwd"])).rejects.toThrow("usage: fetch-md");
+    await expect(cli.execute(["fetch-md", "https://example.com/"])).resolves.toMatchObject({ exit_code: 1, stderr: expect.stringContaining("HTTP 503") });
+  });
+
   it.each([
     [["stripe", "customers", "list"], "STRIPE_KEY", "api.stripe.com"],
     [["gh", "repos", "list"], "GITHUB_TOKEN", "api.github.com"],

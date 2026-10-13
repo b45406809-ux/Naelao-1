@@ -58,6 +58,11 @@ export default function AgentsPage() {
   const [projectsLoading, setProjectsLoading] = React.useState(false);
   // Step 17: custom agent builder.
   const [customOpen, setCustomOpen] = React.useState(false);
+  const [guidedDomainMode, setGuidedDomainMode] = React.useState(false);
+  const [domainExpertise, setDomainExpertise] = React.useState("");
+  const [domainAudience, setDomainAudience] = React.useState("");
+  const [domainWorkflow, setDomainWorkflow] = React.useState("");
+  const [domainLimits, setDomainLimits] = React.useState("");
   const [caps, setCaps] = React.useState<AssistantCapabilities | null>(null);
   const [cName, setCName] = React.useState("");
   const [cDesc, setCDesc] = React.useState("");
@@ -121,8 +126,16 @@ export default function AgentsPage() {
     }
   }
 
-  async function openCustomBuilder() {
+  async function openCustomBuilder(guided = false) {
     if (!creds) return;
+    setGuidedDomainMode(guided);
+    if (guided) {
+      setCName(""); setCDesc("");
+      setDomainExpertise(""); setDomainAudience(""); setDomainWorkflow(""); setDomainLimits("");
+      setCTools(new Set(["knowledge-base"]));
+      setCSkills(new Set()); setCConnectors(new Set());
+      setCMode("always_ask"); setCProject(""); setCArchetype("");
+    }
     setCustomOpen(true);
     if (!caps) getAssistantCapabilities(activeSpaceId, creds).then(setCaps).catch(() => setCaps({ prebuilts: [], skills: [], prebuilt_count: 0, skill_count: 0 }));
     if (projects.length === 0) listProjects(activeSpaceId, creds).then(setProjects).catch(() => {});
@@ -135,17 +148,28 @@ export default function AgentsPage() {
 
   async function submitCustomAgent() {
     if (!creds || creating) return;
-    if (!cName.trim() || !cInstr.trim()) { show("Name and instructions are required"); return; }
+    if (!cName.trim() || (guidedDomainMode ? !domainExpertise.trim() || !domainAudience.trim() || !domainWorkflow.trim() || !domainLimits.trim() : !cInstr.trim())) {
+      show(guidedDomainMode ? "Complete the domain, audience, workflow, and safety fields" : "Name and instructions are required");
+      return;
+    }
+    const guidedInstructions = guidedDomainMode ? [
+      `You are a domain worker for ${cName.trim()}.`,
+      `Domain expertise supplied by the creator:\n${domainExpertise.trim()}`,
+      `Intended audience and outcome:\n${domainAudience.trim()}`,
+      `Workflow to follow:\n${domainWorkflow.trim()}`,
+      `Safety limits and escalation rules:\n${domainLimits.trim()}`,
+      "Use only information the user provides in this conversation and knowledge explicitly available in this user's own Space. State uncertainty, identify missing sources, and ask before taking actions. Do not claim professional credentials, regulatory compliance, or access to a template creator's private data.",
+    ].join("\n\n") : cInstr.trim();
     setCreating(true);
     try {
       const created = await createCustomAgent(activeSpaceId, creds, {
         name: cName.trim(),
         ...(cDesc.trim() ? { description: cDesc.trim() } : {}),
-        instructions: cInstr.trim(),
-        prebuilt_scripts: [...cTools],
-        skills: [...cSkills],
-        connectors: [...cConnectors],
-        approval_mode: cMode,
+        instructions: guidedInstructions,
+        prebuilt_scripts: guidedDomainMode ? ["knowledge-base"] : [...cTools],
+        skills: guidedDomainMode ? [] : [...cSkills],
+        connectors: guidedDomainMode ? [] : [...cConnectors],
+        approval_mode: guidedDomainMode ? "always_ask" : cMode,
         ...(cProject ? { project_id: cProject } : {}),
         // AVOS plan step 5 — the archetype, when one is chosen, clamps the tool list above to what
         // that role is allowed. Omitted entirely when unset, so an unrestricted custom agent is
@@ -154,6 +178,7 @@ export default function AgentsPage() {
       });
       setCustomOpen(false);
       setCName(""); setCDesc(""); setCInstr(""); setCProject(""); setCArchetype("");
+      setDomainExpertise(""); setDomainAudience(""); setDomainWorkflow(""); setDomainLimits("");
       setCTools(new Set()); setCSkills(new Set()); setCConnectors(new Set());
       // The archetype may have silently dropped some of the tools that were checked — say so,
       // rather than letting the agent later look like it "can't do what it was configured to do"
@@ -200,7 +225,8 @@ export default function AgentsPage() {
             alongside your assistant. Open one to set what it may do on its own.
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <Button variant="secondary" onClick={() => void openCustomBuilder(true)}>Create domain worker</Button>
           <Button variant="secondary" onClick={() => void openCustomBuilder()}>+ Create custom worker</Button>
           <Button onClick={() => void openTemplatePicker()}>+ Add worker</Button>
         </div>
@@ -294,21 +320,42 @@ export default function AgentsPage() {
         )}
       </Modal>
       {/* Step 17: custom agent builder — instructions, tool list, autonomy, project. */}
-      <Modal open={customOpen} onClose={() => setCustomOpen(false)} title="Create a custom worker">
+      <Modal open={customOpen} onClose={() => setCustomOpen(false)} title={guidedDomainMode ? "Create a domain worker" : "Create a custom worker"}>
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <label style={{ fontSize: 12.5 }}>
             <div style={{ color: "var(--text3)", marginBottom: 4 }}>Name</div>
             <input value={cName} onChange={(e) => setCName(e.target.value)} placeholder="e.g. SEO Writer" style={inputStyle} />
           </label>
-          <label style={{ fontSize: 12.5 }}>
+          {!guidedDomainMode && <label style={{ fontSize: 12.5 }}>
             <div style={{ color: "var(--text3)", marginBottom: 4 }}>Short description (optional)</div>
             <input value={cDesc} onChange={(e) => setCDesc(e.target.value)} placeholder="What it does, in a line" style={inputStyle} />
-          </label>
-          <label style={{ fontSize: 12.5 }}>
+          </label>}
+          {guidedDomainMode ? <>
+            <p style={{ color: "var(--text3)", fontSize: 12, margin: 0 }}>Describe the worker in everyday language. This creates an approval-gated worker in the active Space; packaging, sharing, or publishing it is a separate step.</p>
+            <label style={{ fontSize: 12.5 }}>
+              <div style={{ color: "var(--text3)", marginBottom: 4 }}>What expertise should it use?</div>
+              <textarea value={domainExpertise} onChange={(e) => setDomainExpertise(e.target.value)} rows={3} placeholder="Describe the domain knowledge and principles the worker should apply…" style={{ ...inputStyle, resize: "vertical" }} />
+            </label>
+            <label style={{ fontSize: 12.5 }}>
+              <div style={{ color: "var(--text3)", marginBottom: 4 }}>Who will use it, and what should it help them do?</div>
+              <textarea value={domainAudience} onChange={(e) => setDomainAudience(e.target.value)} rows={2} placeholder="For example: help new staff prepare a checklist before a supervisor reviews it…" style={{ ...inputStyle, resize: "vertical" }} />
+            </label>
+            <label style={{ fontSize: 12.5 }}>
+              <div style={{ color: "var(--text3)", marginBottom: 4 }}>What steps should it follow?</div>
+              <textarea value={domainWorkflow} onChange={(e) => setDomainWorkflow(e.target.value)} rows={3} placeholder="Describe the usual steps, including what information it should ask for…" style={{ ...inputStyle, resize: "vertical" }} />
+            </label>
+            <label style={{ fontSize: 12.5 }}>
+              <div style={{ color: "var(--text3)", marginBottom: 4 }}>What must it avoid, and when should it ask a person for help?</div>
+              <textarea value={domainLimits} onChange={(e) => setDomainLimits(e.target.value)} rows={3} placeholder="List prohibited actions, sensitive information boundaries, and escalation cases…" style={{ ...inputStyle, resize: "vertical" }} />
+            </label>
+            <div role="note" style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, color: "var(--text3)", fontSize: 12 }}>
+              Tool actions require approval. The worker uses this Space&apos;s knowledge only; it does not inherit a creator&apos;s private files or data from another Space. Add and review approved source material in this Space before relying on it.
+            </div>
+          </> : <label style={{ fontSize: 12.5 }}>
             <div style={{ color: "var(--text3)", marginBottom: 4 }}>Instructions</div>
             <textarea value={cInstr} onChange={(e) => setCInstr(e.target.value)} rows={5} placeholder="How this agent should behave, what it's for, any rules it must follow…" style={{ ...inputStyle, resize: "vertical" }} />
-          </label>
-          <div style={{ fontSize: 12.5 }}>
+          </label>}
+          {!guidedDomainMode && <div style={{ fontSize: 12.5 }}>
             <div style={{ color: "var(--text3)", marginBottom: 6 }}>Tools it can use</div>
             {caps === null ? (
               <div style={{ color: "var(--text3)", fontSize: 12 }}>Loading…</div>
@@ -327,20 +374,20 @@ export default function AgentsPage() {
               </div>
             )}
             <div style={{ color: "var(--text3)", fontSize: 10.5, marginTop: 4 }}>r2-workspace, memory and notifications are always included.</div>
-          </div>
-          <div style={{ fontSize: 12.5 }}>
+          </div>}
+          {!guidedDomainMode && <div style={{ fontSize: 12.5 }}>
             <div style={{ color: "var(--text3)", marginBottom: 6 }}>Skills directory</div>
             <div className="workspace-directory-grid" style={{ maxHeight: 210, overflowY: "auto" }}>
               {skillDirectory.length === 0 ? <span style={{ color: "var(--text3)", fontSize: 12 }}>No installable skills are available yet.</span> : skillDirectory.map((skill) => <label key={skill.name} className="workspace-directory-card" style={{ minHeight: 0, cursor: "pointer" }}><span><input type="checkbox" checked={cSkills.has(skill.name)} onChange={(event) => setCSkills((current) => { const next = new Set(current); event.target.checked ? next.add(skill.name) : next.delete(skill.name); return next; })} /> <strong>{skill.name}</strong></span><p>{skill.description}</p></label>)}
             </div>
-          </div>
-          <div style={{ fontSize: 12.5 }}>
+          </div>}
+          {!guidedDomainMode && <div style={{ fontSize: 12.5 }}>
             <div style={{ color: "var(--text3)", marginBottom: 6 }}>Connected apps</div>
             <div className="workspace-directory-grid" style={{ maxHeight: 210, overflowY: "auto" }}>
               {connectorDirectory.length === 0 ? <span style={{ color: "var(--text3)", fontSize: 12 }}>No connected apps are available yet.</span> : connectorDirectory.map((connector) => <label key={connector.id} className="workspace-directory-card" style={{ minHeight: 0, cursor: "pointer", opacity: connector.connected ? 1 : .6 }}><span><input type="checkbox" disabled={!connector.connected} checked={cConnectors.has(connector.id)} onChange={(event) => setCConnectors((current) => { const next = new Set(current); event.target.checked ? next.add(connector.id) : next.delete(connector.id); return next; })} /> <strong>{connector.name}</strong></span><p>{connector.connected ? connector.category : "Connect this app first"}</p></label>)}
             </div>
-          </div>
-          <label style={{ fontSize: 12.5 }}>
+          </div>}
+          {!guidedDomainMode && <label style={{ fontSize: 12.5 }}>
             <div style={{ color: "var(--text3)", marginBottom: 4 }}>Archetype (optional)</div>
             <select value={cArchetype} onChange={(e) => setCArchetype(e.target.value)} style={inputStyle}>
               <option value="">No restriction — use exactly the tools checked above</option>
@@ -352,15 +399,15 @@ export default function AgentsPage() {
                 {" "}Anything checked above outside this role&apos;s allowed tools won&apos;t be granted.
               </div>
             )}
-          </label>
-          <label style={{ fontSize: 12.5 }}>
+          </label>}
+          {!guidedDomainMode && <label style={{ fontSize: 12.5 }}>
             <div style={{ color: "var(--text3)", marginBottom: 4 }}>Autonomy</div>
             <select value={cMode} onChange={(e) => setCMode(e.target.value as typeof cMode)} style={inputStyle}>
               <option value="always_ask">Always ask before acting</option>
               <option value="gate_unless_listed">Ask for anything not pre-approved</option>
               <option value="yolo">Full autonomy (never ask)</option>
             </select>
-          </label>
+          </label>}
           <label style={{ fontSize: 12.5 }}>
             <div style={{ color: "var(--text3)", marginBottom: 4 }}>Project (optional)</div>
             <select value={cProject} onChange={(e) => setCProject(e.target.value)} style={inputStyle}>
@@ -370,7 +417,7 @@ export default function AgentsPage() {
           </label>
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
             <Button variant="secondary" onClick={() => setCustomOpen(false)}>Cancel</Button>
-            <Button disabled={creating || !cName.trim() || !cInstr.trim()} onClick={() => void submitCustomAgent()}>
+            <Button disabled={creating || !cName.trim() || (guidedDomainMode ? !domainExpertise.trim() || !domainAudience.trim() || !domainWorkflow.trim() || !domainLimits.trim() : !cInstr.trim())} onClick={() => void submitCustomAgent()}>
               {creating ? "Creating…" : "Create worker"}
             </Button>
           </div>

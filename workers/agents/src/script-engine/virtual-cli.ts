@@ -143,11 +143,12 @@ export interface VirtualCliVault {
 export interface SynthesizedCliStore { read(path: string): Promise<string | null>; write(path: string, source: string): Promise<void> }
 export interface VirtualCliDaemonRegistry { execute(name: string, argv: string[]): Promise<unknown> }
 export interface VirtualCliNamespaceRegistry { execute(name: string, argv: string[]): Promise<unknown> }
-export interface VirtualCliContext { vault: VirtualCliVault; tenantId: string; spaceId: string; projectId?: string; daemons?: VirtualCliDaemonRegistry; automations?: VirtualCliNamespaceRegistry; chores?: VirtualCliNamespaceRegistry }
+export interface MarkdownFetchResult { url: string; status: number; content: string; content_type?: string; format?: string; truncated?: boolean }
+export interface VirtualCliContext { vault?: VirtualCliVault; tenantId: string; spaceId: string; projectId?: string; fetchMarkdown?: (url: string) => Promise<MarkdownFetchResult>; daemons?: VirtualCliDaemonRegistry; automations?: VirtualCliNamespaceRegistry; chores?: VirtualCliNamespaceRegistry }
 export interface VirtualCliResult { exit_code: number; stdout: string; stderr?: string }
 
 const API_COMMANDS = new Set(["stripe", "gh", "r2", "resend", "twilio"]);
-export function isRegisteredVirtualCli(name: string): boolean { return API_COMMANDS.has(name) || name === "jq"; }
+export function isRegisteredVirtualCli(name: string): boolean { return API_COMMANDS.has(name) || name === "jq" || name === "fetch-md"; }
 
 function bodyAndFlags(args: string[]): { positional: string[]; body: Record<string, unknown> } {
   const positional: string[] = [];
@@ -201,6 +202,19 @@ export class VirtualCliDispatcher {
       return { exit_code: 0, stdout: JSON.stringify(await this.ctx.chores.execute(args[1], args.slice(2)), null, 2) };
     }
     if (command === "jq") return { exit_code: 0, stdout: jqValue(args[0] ?? ".", stdin) };
+    if (command === "fetch-md") {
+      if (args.length !== 1 || !/^https?:\/\//i.test(args[0]!)) throw new Error("usage: fetch-md <http(s)-url>");
+      if (!this.ctx.fetchMarkdown) throw new Error("fetch-md unavailable: knowledge worker is not configured");
+      const result = await this.ctx.fetchMarkdown(args[0]!);
+      if (result.status < 200 || result.status >= 300) {
+        return { exit_code: 1, stdout: "", stderr: `fetch-md failed (HTTP ${result.status})${result.content ? `: ${result.content.slice(0, 300)}` : ""}` };
+      }
+      const notes = [
+        result.format === "markdown" ? undefined : `Server returned ${result.content_type || "an unspecified content type"}; content is unconverted source, not Markdown-for-agents.`,
+        result.truncated ? "Response was truncated at the platform content limit." : undefined,
+      ].filter(Boolean).join(" ");
+      return { exit_code: 0, stdout: result.content, ...(notes ? { stderr: notes } : {}) };
+    }
     if (!API_COMMANDS.has(command)) return null;
     const { positional, body } = bodyAndFlags(args);
     let url: string; let credentialName: string; let method = "GET";
@@ -228,6 +242,7 @@ export class VirtualCliDispatcher {
       url = `https://api.twilio.com/2010-04-01/${encodeURIComponent(resource)}/${encodeURIComponent(action)}.json`;
       credentialName = "TWILIO_AUTH_TOKEN"; method = action === "list" || action === "get" ? "GET" : "POST";
     }
+    if (!this.ctx.vault) throw new Error("virtual_cli_credentials_unavailable");
     const response = await this.ctx.vault.fetchWithAuth(url, { credentialName, method, ...(method !== "GET" ? { body } : {}), headers: { "content-type": "application/json" } });
     return { exit_code: 0, stdout: await responseText(response) };
   }

@@ -1237,23 +1237,87 @@ app.post("/internal/web-search/search", async (c) => {
 app.post("/internal/web-search/fetch", async (c) => {
   const denied = await requireWebToolEgress(c);
   if (denied) return denied;
-  const body = await c.req.json<{ url?: string }>().catch(() => ({} as { url?: string }));
+  const body = await c.req.json<{ url?: string; format?: "markdown" | "html" }>().catch(() => ({} as { url?: string; format?: "markdown" | "html" }));
   const rawUrl = (body.url ?? "").trim();
   if (!rawUrl) return c.json({ error_code: "bad_request", message: "url required" }, 400);
-
-  // SSRF guard (DoH resolution) — the agent can pass any URL, so re-check at fetch time, exactly
-  // like mcp-hub/browser do. Keyless: page fetch is a universal capability regardless of provider.
-  const ssrf = await checkSsrf(rawUrl);
-  if (ssrf.blocked) return c.json({ error_code: "forbidden", message: ssrf.reason ?? "url failed SSRF validation" }, 403);
-
+  if (body.format !== undefined && body.format !== "markdown" && body.format !== "html") {
+    return c.json({ error_code: "bad_request", message: "format must be markdown or html" }, 400);
+  }
+  let target: URL;
   try {
-    const resp = await fetch(rawUrl, { headers: { "user-agent": "naelao-agent/1.0" }, redirect: "follow" });
-    const text = (await resp.text()).slice(0, WEB_SEARCH_CONTENT_CAP);
-    return c.json({ url: rawUrl, status: resp.status, content: text });
+    target = new URL(rawUrl);
+    if (!(target.protocol === "http:" || target.protocol === "https:") || target.username || target.password) throw new Error("unsupported URL");
+  } catch {
+    return c.json({ error_code: "bad_request", message: "url must be an http(s) URL without embedded credentials" }, 400);
+  }
+  try {
+    // Handle redirects ourselves so every destination receives the SSRF and space-egress checks.
+    // Automatic redirect following would validate only the first URL and could reach a private IP.
+    let resp: Response | undefined;
+    for (let hop = 0; hop <= 5; hop++) {
+      const ssrf = await checkSsrf(target.href);
+      if (ssrf.blocked) return c.json({ error_code: "forbidden", message: ssrf.reason ?? "url failed SSRF validation" }, 403);
+      resp = await fetch(target.href, {
+        headers: {
+          "user-agent": "naelao-agent/1.0",
+          accept: body.format === "markdown" ? "text/markdown, text/html;q=0.9, */*;q=0.8" : "text/html, */*;q=0.8",
+        },
+        redirect: "manual",
+      });
+      if (![301, 302, 303, 307, 308].includes(resp.status)) break;
+      const location = resp.headers.get("location");
+      if (!location) return c.json({ error_code: "bad_gateway", message: "redirect response omitted Location" }, 502);
+      if (hop === 5) return c.json({ error_code: "bad_gateway", message: "redirect limit exceeded" }, 502);
+      target = new URL(location, target);
+      if (!(target.protocol === "http:" || target.protocol === "https:") || target.username || target.password) {
+        return c.json({ error_code: "forbidden", message: "redirect destination must be an http(s) URL without embedded credentials" }, 403);
+      }
+    }
+    if (!resp) throw new Error("fetch produced no response");
+    const { content, truncated } = await readBoundedText(resp, WEB_SEARCH_CONTENT_CAP);
+    const contentType = resp.headers.get("content-type") ?? "";
+    return c.json({
+      url: target.href,
+      status: resp.status,
+      content,
+      content_type: contentType,
+      format: contentType.toLowerCase().startsWith("text/markdown") ? "markdown" : "source",
+      markdown_requested: body.format === "markdown",
+      truncated,
+    });
   } catch (err) {
     return c.json({ url: rawUrl, status: 0, content: "", error: String(err) }, 502);
   }
 });
+
+async function readBoundedText(response: Response, maxBytes: number): Promise<{ content: string; truncated: boolean }> {
+  if (!response.body) return { content: "", truncated: false };
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let bytesRead = 0;
+  let content = "";
+  let truncated = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const remaining = maxBytes - bytesRead;
+      if (value.byteLength > remaining) {
+        if (remaining > 0) content += decoder.decode(value.subarray(0, remaining), { stream: true });
+        content += decoder.decode();
+        truncated = true;
+        await reader.cancel();
+        break;
+      }
+      bytesRead += value.byteLength;
+      content += decoder.decode(value, { stream: true });
+    }
+    if (!truncated) content += decoder.decode();
+  } finally {
+    reader.releaseLock();
+  }
+  return { content, truncated };
+}
 
 app.post("/internal/web-search/extract", async (c) => {
   const denied = await requireWebToolEgress(c);
