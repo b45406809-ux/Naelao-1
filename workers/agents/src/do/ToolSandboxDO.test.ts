@@ -1,6 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
 import { mintInternalToken } from "@naelao/http";
-import { ToolSandboxDO } from "./ToolSandboxDO.js";
+import { sandboxWorkspacePrefix, ToolSandboxDO } from "./ToolSandboxDO.js";
+
+describe("sandbox workspace ownership", () => {
+  it("keeps the Space Assistant, each Space-wide extension, and projects in distinct durable prefixes", () => {
+    expect(sandboxWorkspacePrefix({ spaceId: "space" })).toBe("spaces/space/workspace/");
+    expect(sandboxWorkspacePrefix({ spaceId: "space", installationId: "install-a" }))
+      .toBe("spaces/space/space-workspace/extensions/install-a/workspace/");
+    expect(sandboxWorkspacePrefix({ spaceId: "space", installationId: "install-b" }))
+      .not.toBe(sandboxWorkspacePrefix({ spaceId: "space", installationId: "install-a" }));
+    expect(sandboxWorkspacePrefix({ spaceId: "space", projectId: "project" }))
+      .toBe("spaces/space/projects/project/workspace/");
+    expect(sandboxWorkspacePrefix({ spaceId: "space", projectId: "project", installationId: "install-a" }))
+      .toBe("spaces/space/projects/project/workspace/");
+  });
+});
 
 describe("ToolSandboxDO Runtime and State Coordination", () => {
   async function createTestSandbox() {

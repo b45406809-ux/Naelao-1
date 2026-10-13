@@ -1251,6 +1251,67 @@ export async function createCustomAgent(
   return apiFetch(`/v1/spaces/${spaceId}/agent-templates`, { method: "POST", body: JSON.stringify({ custom }), session });
 }
 
+export interface FoundryTemplateDefinition {
+  expertise: string; audience: string; outcome: string; workflow: string; safetyLimits: string; instructions: string;
+  sourceReferences: string[]; toolAllowlist: string[]; approvalMode?: "always_ask";
+}
+export interface FoundryTemplate {
+  id: string; space_id: string; created_by: string; name: string; description: string; status: "draft" | "in_review" | "published" | "rejected";
+  version: number; validated_version: number; validation_json: string; reviewed_by: string | null; review_note: string | null; created_at: string; updated_at: string; published_at: string | null;
+  definition: FoundryTemplateDefinition;
+}
+export interface FoundryFeatureRequest {
+  id: string; space_id: string; requested_by: string; title: string; problem: string; workflow: string; evidence: string[];
+  status: "open" | "accepted" | "declined" | "delivered"; reviewed_by: string | null; review_note: string | null; created_at: string; updated_at: string;
+}
+export interface CrossSpaceGrant {
+  id: string; grantee_space_id: string; target_space_id: string; resource_id: string; granted_by: string; created_at: string;
+  expires_at: string; revoked_at: string | null;
+}
+export async function listFoundryTemplates(spaceId: string, session: SessionCredentials) {
+  const result = await apiFetch<{ data: FoundryTemplate[] }>(`/v1/spaces/${spaceId}/foundry/templates`, { session }); return result.data;
+}
+export async function createFoundryTemplate(spaceId: string, session: SessionCredentials, input: { name: string; description: string; definition: FoundryTemplateDefinition }) {
+  return apiFetch<{ id: string; status: string; version: number }>(`/v1/spaces/${spaceId}/foundry/templates`, { method: "POST", body: JSON.stringify(input), session });
+}
+export async function updateFoundryTemplate(spaceId: string, templateId: string, session: SessionCredentials, input: { name: string; description: string; definition: FoundryTemplateDefinition }) {
+  return apiFetch<{ id: string; status: string; version: number }>(`/v1/spaces/${spaceId}/foundry/templates/${encodeURIComponent(templateId)}`, { method: "PUT", body: JSON.stringify(input), session });
+}
+export async function testFoundryTemplate(spaceId: string, templateId: string, session: SessionCredentials) {
+  return apiFetch<{ id: string; kind: string; passed: boolean; checks: Array<{ id: string; passed: boolean }>; tested_version: number }>(`/v1/spaces/${spaceId}/foundry/templates/${encodeURIComponent(templateId)}/test`, { method: "POST", body: "{}", session });
+}
+export async function transitionFoundryTemplate(spaceId: string, templateId: string, session: SessionCredentials, input: { action: "submit" | "review"; decision?: "publish" | "reject"; review_note?: string }) {
+  const path = input.action === "submit" ? `/foundry/templates/${encodeURIComponent(templateId)}/submit` : `/foundry/templates/${encodeURIComponent(templateId)}/review`;
+  return apiFetch(`/v1/spaces/${spaceId}${path}`, { method: "POST", body: JSON.stringify(input), session });
+}
+export async function listFoundryRequests(spaceId: string, session: SessionCredentials) {
+  const result = await apiFetch<{ data: FoundryFeatureRequest[] }>(`/v1/spaces/${spaceId}/foundry/requests`, { session }); return result.data;
+}
+export async function createFoundryRequest(spaceId: string, session: SessionCredentials, input: { title: string; problem: string; workflow: string; evidence?: string[] }) {
+  return apiFetch<{ id: string; status: string }>(`/v1/spaces/${spaceId}/foundry/requests`, { method: "POST", body: JSON.stringify(input), session });
+}
+export async function forwardFoundryRequest(targetSpaceId: string, session: SessionCredentials, input: { from_space_id: string; capability_token: string; title: string; problem: string; workflow: string }) {
+  return apiFetch<{ id: string; status: string }>(`/v1/spaces/${targetSpaceId}/foundry/forward-request`, { method: "POST", body: JSON.stringify(input), session });
+}
+export async function reviewFoundryRequest(spaceId: string, requestId: string, session: SessionCredentials, input: { status: "accepted" | "declined" | "delivered"; review_note?: string }) {
+  return apiFetch(`/v1/spaces/${spaceId}/foundry/requests/${encodeURIComponent(requestId)}`, { method: "PATCH", body: JSON.stringify(input), session });
+}
+export async function createCrossSpaceGrant(spaceId: string, session: SessionCredentials, input: { grantee_space_id: string; resource_id: string; expires_at: string; permissions?: Array<"read" | "invoke"> }) {
+  return apiFetch<{ id: string; capability_token: string; resource_id: string; permissions: string[] }>(`/v1/spaces/${spaceId}/cross-space-grants`, { method: "POST", body: JSON.stringify({ ...input, target_space_id: spaceId }), session });
+}
+export async function listCrossSpaceGrants(spaceId: string, session: SessionCredentials) {
+  const result = await apiFetch<{ data: CrossSpaceGrant[] }>(`/v1/spaces/${spaceId}/cross-space-grants`, { session }); return result.data;
+}
+export async function revokeCrossSpaceGrant(spaceId: string, grantId: string, session: SessionCredentials) {
+  return apiFetch(`/v1/spaces/${spaceId}/cross-space-grants/${encodeURIComponent(grantId)}`, { method: "DELETE", session });
+}
+export async function installFoundryTemplate(spaceId: string, session: SessionCredentials, input: { source_space_id: string; template_id: string; capability_token: string; name?: string; project_id?: string }) {
+  return apiFetch<{ agent_id?: string; agent_definition_id?: string; custom?: boolean }>(`/v1/spaces/${spaceId}/foundry/install-template`, { method: "POST", body: JSON.stringify(input), session });
+}
+export async function invokeSharedWorker(spaceId: string, session: SessionCredentials, input: { source_space_id: string; agent_id: string; capability_token: string; goal: string }) {
+  return apiFetch<{ result?: unknown; output?: unknown; error?: string; status?: string }>(`/v1/spaces/${spaceId}/foundry/invoke-worker`, { method: "POST", body: JSON.stringify(input), session });
+}
+
 /** AVOS plan step 5 — the capability-firewall archetype presets a custom agent can opt into. */
 export interface ArchetypePreset {
   role: string;

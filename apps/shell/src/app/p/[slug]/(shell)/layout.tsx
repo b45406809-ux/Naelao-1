@@ -54,6 +54,7 @@ const DEFAULT_MORE_NAV: SidebarNavEntry[] = [
   // waiting: a permanently-visible empty inbox trains people to ignore it, which defeats the one
   // job it has.
   { key: "agents", icon: "agents", label: "Workers" },
+  { key: "foundry", icon: "marketplace", label: "Foundry" },
   { key: "analytics", icon: "analytics", label: "Analytics" },
   { key: "knowledge", icon: "knowledge", label: "Knowledge" },
   // Step 20: the Plugins directory — native business-feature "plugins" (Wallet, CRM, Business

@@ -4,6 +4,42 @@ Updated: 2026-10-13
 Branch: `Mcbt5s-Backup-2`
 Authority: `FOUNDRY-SPACE-AND-PLATFORM-PLAN.txt` and its cited transcript. The transcript is context for user intent; model-generated vendor or architecture claims are not treated as requirements.
 
+## Current follow-up: first four requested items
+
+Status: implemented; validation below is current for this follow-up. The user explicitly asked to skip expanded orchestration and token reduction. Those two items are out of scope here.
+
+The user clarified that Space-wide extensions receive their own Space Workspace, separate from the Space Assistant workspace. Implemented these boundaries:
+
+- Space Assistant storage uses `spaces/{spaceId}/workspace/`.
+- Project storage remains `spaces/{spaceId}/projects/{projectId}/workspace/`.
+- Each Space-wide extension installation has its own `spaces/{spaceId}/space-workspace/extensions/{installationId}/workspace/` prefix. Different installations cannot read one another's files. Project-installed extensions retain their existing project workspace; only a no-project, Space-wide extension uses the dedicated extension prefix. Container runs preserve the signed installation scope.
+- Added a reviewed, revisioned per-Space Foundry template lifecycle. Deterministic structural checks gate review; only the current checked revision can be submitted and published. The checks do not simulate model behavior. Installing a published template creates a worker in the target Space and uses target-Space knowledge; source files, channels, members, and credentials are not cloned.
+- Added a per-Space feature request inbox with explicit owner review states, plus optional forwarding through a specific `feature-inbox:submit` capability. Submission records a request only; it does not change code or create a worker.
+- Added exact-resource, expiring, revocable cross-Space capabilities for reading one published template, invoking one named worker, or submitting to one feature inbox. Cross-Space worker invocation is available through the Foundry API/UI, requires target-Space membership and source-owner authorization, and forwards only the submitted goal. It does not mount target files or reuse the target user's channel identity.
+- Added the Foundry UI and navigation for authoring/checking/submitting templates, reviewing requests, creating scoped grants, installing a template, and invoking an explicitly shared worker.
+
+Boundaries and open limitations:
+
+- Space-wide extension workspaces are distinct from the Space Assistant workspace and from project workspaces. This pass does not add broad filesystem sharing between them.
+- Cross-Space invocation is a direct Foundry UI/API path. A WhatsApp/channel-native bridge is not included; the invoking user's channel identity remains local to the target Space.
+- Template checks are deterministic configuration checks, not live model simulations. Global public marketplace publication is not included; lifecycle and review are Space-scoped.
+- Cross-Space feature requests require an explicit inbox capability. There is no implicit platform-wide FDE destination or automatic implementation.
+- No live Cloudflare deployment or credential-backed test was run. Worker dry runs and mocked/in-memory tests do not establish live deployment behavior.
+
+Files changed in this follow-up: `workers/agents/src/do/ToolSandboxDO.ts`, `workers/agents/src/do/ToolSandboxDO.test.ts`, `workers/agents/src/script-engine/types.ts`, `workers/agents/src/script-engine/r2-workspace.test.ts`, `workers/spaces/src/do/SpaceDO.ts`, `workers/spaces/src/do/SpaceDO-migrations.test.ts`, `workers/spaces/src/foundry-and-cross-space.test.ts`, `workers/spaces/src/index.ts`, `apps/shell/src/app/p/[slug]/(shell)/layout.tsx`, `apps/shell/src/app/p/[slug]/(shell)/foundry/page.tsx`, and `apps/shell/src/lib/api.ts`.
+
+Current verification for this follow-up:
+
+- Focused route and SpaceDO lifecycle/capability test: `corepack pnpm --filter naelao-spaces exec vitest run src/foundry-and-cross-space.test.ts` — 6 tests passed. The invocation test verifies denial makes no source worker call and an allowed call forwards only the explicit goal and source-Space identifiers.
+- `corepack pnpm --filter naelao-spaces test` — 24 files / 73 tests passed, including migration replay and Foundry lifecycle/grant tests.
+- `corepack pnpm --filter naelao-spaces typecheck` — passed.
+- `corepack pnpm --filter @naelao/agents-worker test` — 58 files / 240 tests passed, including extension workspace isolation.
+- `corepack pnpm --filter @naelao/agents-worker typecheck` — passed.
+- `corepack pnpm --filter @naelao/shell typecheck` and `corepack pnpm --filter @naelao/shell build` — passed; build emitted `/p/[slug]/foundry`.
+- `corepack pnpm exec wrangler deploy --dry-run --config workers/spaces/wrangler.toml` and the equivalent Agents Worker command — passed. These are local bundle/config checks only, not live deployment tests.
+- `git diff --check` — passed before commit.
+- Source TXT/transcript files were left unchanged.
+
 ## Implemented in this pass
 
 - Added a guided domain-worker creator to the existing Workers page. It captures expertise, intended audience/outcome, workflow, and safety limits in plain language, turns those into worker instructions, and creates a worker in the active Space through the existing custom-agent API. It defaults to the existing `knowledge-base` tool and `always_ask` approval mode. The UI says the worker uses only the active Space's knowledge and that packaging/sharing is a separate action. This is a space-local authoring path, not a published template marketplace or cross-space installer.
@@ -34,13 +70,10 @@ Authority: `FOUNDRY-SPACE-AND-PLATFORM-PLAN.txt` and its cited transcript. The t
 
 ## Remaining work / concrete dependencies
 
-- Build a reviewed template package and publish/install flow. The current guided form creates a private Space worker, not a portable template. Product choices remain around draft revisions, source-material attachment, simulation criteria, licensing, and owner approval before publication.
-- Add a durable FDE feature-request inbox and owner review UI. The plan names a private operations Space but does not identify its space ID, target, review roles, retention, or whether tenant submissions may be visible to platform operators. The current deployment has no configured destination contract. Assistant proposals must not change product behavior automatically.
-- Specify and review cross-space worker installation, explicit knowledge/data/channel grants, per-user WhatsApp identities, revocation, audit, and retention before implementing the sensitive path. Patient/doctor examples remain unvalidated and are not a compliance claim.
-- Resolve Space/Assistant/Project extension ownership, shared-resource billing, active-run migration, multi-linter conflict policy, resource ceilings, and an explicit shared-filesystem API before expanding shared execution. Existing project and assistant workspaces remain intact.
-- Existing worker tests and runtime receipts provide pieces of the proposed test/monitoring strategy, but production end-to-end, load/stress/soak, replay, and monitored scenario coverage were not established by this pass.
-- Exact-token context accounting and Jev/Clef integration remain research items. Preserve source text and citations; do not replace approximate token counts with an unverified vendor claim.
-- Mass-market/feature-phone, broad localization, enterprise pricing, and extra swarm catalog work remain undefined/deferred in the source plan. The latest request reopens only additions that fit current boundaries; it does not authorize invented pricing, unreviewed regulated workflows, or unbounded orchestration.
+- The current feature scope is implemented. It does not include global marketplace publication, a channel-native cross-Space WhatsApp bridge, implicit platform-wide FDE routing, or model-behavior simulation tests.
+- Production end-to-end, load/stress/soak, and monitored live deployment coverage remain unestablished. Cloudflare credentials/live tests were not needed for this pass and were explicitly waived for the requested work.
+- Exact-token context accounting, expanded orchestration, and token reduction are excluded from this follow-up. Preserve earlier bounded orchestration and approximate context estimates.
+- Mass-market/feature-phone, broad localization, enterprise pricing, and extra swarm catalog work remain deferred; no new product promises were added for them.
 
 ## Changed files
 

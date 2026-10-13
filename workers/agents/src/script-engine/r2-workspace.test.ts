@@ -41,6 +41,7 @@ function createMockEnv() {
   };
 
   return {
+    store,
     scriptsBucket: mockBucket,
     workspaceBucket: mockBucket,
     spaceId: "space-1",
@@ -57,7 +58,25 @@ describe("R2 Virtual POSIX Workspace", () => {
       .toBe("spaces/space-1/projects/proj-1/workspace/branches/race/task/model/");
     expect(workspacePrefix({ spaceId: "space-1", projectId: "proj-1" }))
       .toBe("spaces/space-1/projects/proj-1/workspace/");
+    expect(workspacePrefix({ spaceId: "space-1", projectId: "proj-1", spaceWorkspaceExtensionId: "install-1" }))
+      .toBe("spaces/space-1/projects/proj-1/workspace/");
+    expect(workspacePrefix({ spaceId: "space-1", spaceWorkspaceExtensionId: "install-1" }))
+      .toBe("spaces/space-1/space-workspace/extensions/install-1/workspace/");
+    expect(workspacePrefix({ spaceId: "space-1" })).toBe("spaces/space-1/workspace/");
     expect(() => workspacePrefix({ spaceId: "space-1", projectId: "proj-1", workspaceBranch: "../escape" })).toThrow("invalid path");
+    expect(() => workspacePrefix({ spaceId: "space-1", spaceWorkspaceExtensionId: "../escape" })).toThrow("invalid identifier");
+  });
+  it("keeps Space-wide extension files out of the Space Assistant and peer extension workspaces", async () => {
+    const base = createMockEnv();
+    const assistant = { ...base, projectId: undefined, spaceWorkspaceExtensionId: undefined };
+    const extensionA = { ...base, projectId: undefined, spaceWorkspaceExtensionId: "install-a" };
+    const extensionB = { ...base, projectId: undefined, spaceWorkspaceExtensionId: "install-b" };
+    await virtualFsWrite(extensionA, "reports/private.txt", "extension A data", null);
+    expect(await virtualFsRead(extensionA, "reports/private.txt")).toBe("extension A data");
+    expect(await virtualFsRead(extensionB, "reports/private.txt")).toBeNull();
+    expect(await virtualFsRead(assistant, "reports/private.txt")).toBeNull();
+    expect([...base.store.keys()]).toContain("spaces/space-1/space-workspace/extensions/install-a/workspace/reports/private.txt");
+    expect([...base.store.keys()]).toHaveLength(1);
   });
   async function hash(content: string): Promise<string> {
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(content));

@@ -1,0 +1,175 @@
+import { describe, expect, it, vi } from "vitest";
+import { SpaceDO } from "./do/SpaceDO.js";
+import spacesWorker from "./index.js";
+
+function harness() {
+  const templates = new Map<string, Record<string, unknown>>();
+  const requests = new Map<string, Record<string, unknown>>();
+  const grants = new Map<string, Record<string, unknown>>();
+  const sql = {
+    exec(query: string, ...args: unknown[]) {
+      const statement = query.trim().toLowerCase();
+      let rows: Record<string, unknown>[] = [];
+      if (statement.startsWith("insert into foundry_templates")) {
+        const [id, space_id, created_by, name, description, definition_json, created_at, updated_at] = args;
+        const row = { id, space_id, created_by, name, description, definition_json, status: "draft", version: 1, validated_version: 0, validation_json: "{}", reviewed_by: null, review_note: null, created_at, updated_at, published_at: null };
+        templates.set(String(id), row);
+      } else if (statement.startsWith("select definition_json,version,status from foundry_templates")) {
+        const row = templates.get(String(args[0])); if (row) rows = [row];
+      } else if (statement.startsWith("select * from foundry_templates where id=?")) {
+        const row = templates.get(String(args[0]));
+        if (row && row.space_id === args[1] && (!statement.includes("status='published'") || row.status === "published")) rows = [row];
+      } else if (statement.startsWith("update foundry_templates")) {
+        if (statement.startsWith("update foundry_templates set validated_version=")) {
+          const [validated_version, validation_json, updated_at, id, version] = args; const row = templates.get(String(id));
+          if (row && row.version === version && ["draft", "rejected"].includes(String(row.status))) { row.validated_version = validated_version; row.validation_json = validation_json; row.updated_at = updated_at; }
+        } else {
+        const revising = statement.startsWith("update foundry_templates set name=");
+        const submitting = !revising && statement.includes("status in ('draft','rejected')");
+        const id = String(submitting ? args[1] : revising ? args[4] : args[6]); const row = templates.get(id);
+        if (row && (submitting ? ["draft", "rejected"].includes(String(row.status)) && row.validated_version === row.version : revising ? ["draft", "rejected"].includes(String(row.status)) : row.status === "in_review" && row.validated_version === row.version)) {
+          if (submitting) { row.status = "in_review"; row.reviewed_by = null; row.review_note = null; row.updated_at = args[0]; rows = [{ status: row.status }]; }
+          else if (revising) { row.name = args[0]; row.description = args[1]; row.definition_json = args[2]; row.updated_at = args[3]; row.version = Number(row.version) + 1; row.validated_version = 0; rows = [{ status: row.status, version: row.version }]; }
+          else { row.status = args[0]; row.version = Number(row.version) + Number(args[1]); row.reviewed_by = args[2]; row.review_note = args[3]; row.updated_at = args[4]; row.published_at = args[5]; rows = [{ status: row.status, version: row.version }]; }
+        }
+        }
+      } else if (statement.startsWith("insert into foundry_feature_requests")) {
+        const [id, space_id, requested_by, title, problem, workflow, evidence_json, created_at, updated_at] = args;
+        requests.set(String(id), { id, space_id, requested_by, title, problem, workflow, evidence_json, status: "open", reviewed_by: null, review_note: null, created_at, updated_at });
+      } else if (statement.startsWith("update foundry_feature_requests")) {
+        const id = String(args[4]); const row = requests.get(id);
+        if (row && ["open", "accepted"].includes(String(row.status))) {
+          row.status = args[0]; row.reviewed_by = args[1]; row.review_note = args[2]; row.updated_at = args[3]; rows = [{ status: row.status }];
+        }
+      } else if (statement.startsWith("insert into cross_space_grants")) {
+        const [id, grantee_space_id, target_space_id, resource_id, granted_by, created_at, expires_at] = args;
+        grants.set(String(id), { id, grantee_space_id, target_space_id, resource_id, granted_by, created_at, expires_at, revoked_at: null });
+      } else if (statement.startsWith("select id from cross_space_grants where id = ?")) {
+        const [id, grantee, target, resource, now] = args; const row = grants.get(String(id));
+        if (row && row.grantee_space_id === grantee && row.target_space_id === target && row.resource_id === resource && row.revoked_at === null && String(row.expires_at) > String(now)) rows = [{ id }];
+      } else if (statement.startsWith("update cross_space_grants")) {
+        const [revoked_at, id, target] = args; const row = grants.get(String(id));
+        if (row && row.target_space_id === target && row.revoked_at === null) row.revoked_at = revoked_at;
+      }
+      return { rowsWritten: 1, toArray: () => rows };
+    },
+  };
+  const instance = new SpaceDO({ storage: { sql, transactionSync: (fn: () => unknown) => fn(), setAlarm: async () => undefined, deleteAlarm: async () => undefined } } as never,
+    { PLATFORM_SECRET: "test-secret" } as never);
+  return { instance, templates, requests, grants };
+}
+
+describe("reviewed Foundry workflows", () => {
+  it("keeps a template draft private until it is submitted and reviewed for publication", async () => {
+    const h = harness();
+    const definition = { expertise: "customs filing", audience: "FDE", outcome: "prepare a draft", workflow: "collect sources", safetyLimits: "ask a human", instructions: "Use only knowledge from the target Space and always ask before actions.", sourceReferences: ["kb:policy"], toolAllowlist: ["knowledge-base"] };
+    const created = await h.instance.fetch(new Request("https://space/foundry/templates", { method: "POST", body: JSON.stringify({ space_id: "s1", created_by: "u1", name: "Trade Desk", description: "Source-backed draft worker", definition }) }));
+    expect(created.status).toBe(201);
+    const { id } = await created.json() as { id: string };
+    expect(h.templates.get(id)?.status).toBe("draft");
+    const revised = await h.instance.fetch(new Request(`https://space/foundry/templates/${id}`, { method: "PUT", body: JSON.stringify({ updated_by: "u1", name: "Trade Desk v2", description: "Revised draft", definition: { ...definition, sourceReferences: ["kb:policy-v2"] } }) }));
+    expect(await revised.json()).toMatchObject({ id, status: "draft", version: 2 });
+    const tested = await h.instance.fetch(new Request(`https://space/foundry/templates/${id}/test`, { method: "POST" }));
+    expect(await tested.json()).toMatchObject({ passed: true, kind: "deterministic_configuration_checks", tested_version: 2 });
+    const invalid = await h.instance.fetch(new Request("https://space/foundry/templates", { method: "POST", body: JSON.stringify({ space_id: "s1", created_by: "u1", name: "Unsafe", description: "x", definition: { ...definition, toolAllowlist: ["wallet"] } }) }));
+    expect(invalid.status).toBe(400);
+    const submitted = await h.instance.fetch(new Request(`https://space/foundry/templates/${id}/submit`, { method: "POST" }));
+    expect(await submitted.json()).toMatchObject({ status: "in_review" });
+    const published = await h.instance.fetch(new Request(`https://space/foundry/templates/${id}/review`, { method: "POST", body: JSON.stringify({ decision: "publish", reviewed_by: "owner-1", review_note: "Tested with synthetic examples" }) }));
+    expect(await published.json()).toMatchObject({ status: "published", version: 3, reviewed_by: "owner-1" });
+    expect((await h.instance.fetch(new Request(`https://space/foundry/templates/${id}?space_id=s1&published_only=true`))).status).toBe(200);
+  });
+
+  it("stores assistant-generated feature requests for owner review without applying changes", async () => {
+    const h = harness();
+    const created = await h.instance.fetch(new Request("https://space/foundry/requests", { method: "POST", body: JSON.stringify({ space_id: "s1", requested_by: "assistant-run-1", title: "Add a customs document checklist", problem: "The current workflow misses origin evidence.", workflow: "Gather required source fields before producing a draft.", evidence: ["project:shipment-7"] }) }));
+    expect(created.status).toBe(201);
+    const { id } = await created.json() as { id: string };
+    expect(h.requests.get(id)?.status).toBe("open");
+    expect(h.requests.get(id)).not.toHaveProperty("code_change");
+    const reviewed = await h.instance.fetch(new Request(`https://space/foundry/requests/${id}`, { method: "PATCH", body: JSON.stringify({ status: "accepted", reviewed_by: "owner-1", review_note: "Add to planning" }) }));
+    expect(await reviewed.json()).toMatchObject({ status: "accepted", reviewed_by: "owner-1" });
+  });
+});
+
+describe("revocable cross-Space capabilities", () => {
+  it("issues an exact resource token and immediately denies it after its grant is revoked", async () => {
+    const h = harness();
+    const created = await h.instance.fetch(new Request("https://space/cross-space-grants", { method: "POST", body: JSON.stringify({ grantee_space_id: "user-space", target_space_id: "doctor-space", resource_id: "worker-template:template-1", granted_by: "doctor-owner", expires_at: new Date(Date.now() + 60_000).toISOString(), permissions: ["read"] }) }));
+    expect(created.status).toBe(201);
+    const grant = await created.json() as { id: string; capability_token: string };
+    const check = (resourceId = "worker-template:template-1") => h.instance.fetch(new Request(`https://space/cross-space-check?${new URLSearchParams({ user_id: "user-1", requesting_space_id: "user-space", target_space_id: "doctor-space", resource_id: resourceId, permission: "read", capability_token: grant.capability_token })}`));
+    expect(await (await check()).json()).toMatchObject({ permitted: true });
+    expect(await (await check("worker-template:other")).json()).toMatchObject({ permitted: false });
+    const revoked = await h.instance.fetch(new Request(`https://space/cross-space-grants/${grant.id}?space_id=doctor-space`, { method: "DELETE" }));
+    expect(await revoked.json()).toMatchObject({ revoked: true });
+    expect(await (await check()).json()).toMatchObject({ permitted: false, reason: "Capability grant was revoked or expired." });
+  });
+
+  it("rejects wildcard resource grants", async () => {
+    const h = harness();
+    const response = await h.instance.fetch(new Request("https://space/cross-space-grants", { method: "POST", body: JSON.stringify({ grantee_space_id: "user-space", target_space_id: "doctor-space", resource_id: "*", granted_by: "owner", expires_at: new Date(Date.now() + 60_000).toISOString() }) }));
+    expect(response.status).toBe(400);
+  });
+  it("limits permissions and grant lifetime", async () => {
+    const h = harness();
+    const base = { grantee_space_id: "user-space", target_space_id: "doctor-space", resource_id: "worker:agent-1", granted_by: "owner" };
+    const broadPermission = await h.instance.fetch(new Request("https://space/cross-space-grants", { method: "POST", body: JSON.stringify({ ...base, expires_at: new Date(Date.now() + 60_000).toISOString(), permissions: ["admin"] }) }));
+    expect(broadPermission.status).toBe(400);
+    const longGrant = await h.instance.fetch(new Request("https://space/cross-space-grants", { method: "POST", body: JSON.stringify({ ...base, expires_at: new Date(Date.now() + 31 * 24 * 60 * 60 * 1000).toISOString(), permissions: ["invoke"] }) }));
+    expect(longGrant.status).toBe(400);
+  });
+});
+
+describe("Foundry worker invocation route", () => {
+  function routeHarness(permitted: boolean) {
+    const forwarded: Request[] = [];
+    const sourceSpaceStub = {
+      fetch: vi.fn(async (request: Request) => {
+        const url = new URL(request.url);
+        if (url.pathname === "/hierarchy-authorize") return Response.json({ authorized: true });
+        if (url.pathname === "/cross-space-check") return Response.json({ permitted });
+        return Response.json({ error: "unexpected SpaceDO route" }, { status: 404 });
+      }),
+    };
+    const agents = {
+      fetch: vi.fn(async (request: Request) => {
+        forwarded.push(request);
+        return Response.json({ ok: true, run_id: "source-run-1" }, { status: 202 });
+      }),
+    };
+    const env = {
+      PLATFORM_SECRET: "test-secret",
+      SPACE_DO: { idFromName: (name: string) => name, get: () => sourceSpaceStub },
+      AGENTS_WORKER: agents,
+    } as never;
+    return { env, agents, forwarded };
+  }
+
+  const invocation = () => new Request("https://spaces.test/spaces/target-space/foundry/invoke-worker", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-naelao-tenant-id": "tenant-1",
+      "x-naelao-user-id": "user-1",
+      "x-naelao-role": "owner",
+    },
+    body: JSON.stringify({ source_space_id: "source-space", agent_id: "worker-7", capability_token: "scoped-grant", goal: "Read the published customs checklist." }),
+  });
+
+  it("requires an active exact-resource invoke grant before calling the source worker", async () => {
+    const denied = routeHarness(false);
+    const deniedResponse = await spacesWorker.fetch(invocation(), denied.env);
+    expect(deniedResponse.status).toBe(403);
+    expect(denied.agents.fetch).not.toHaveBeenCalled();
+
+    const allowed = routeHarness(true);
+    const allowedResponse = await spacesWorker.fetch(invocation(), allowed.env);
+    expect(allowedResponse.status).toBe(202);
+    expect(allowed.agents.fetch).toHaveBeenCalledOnce();
+    const forwardedRequest = allowed.forwarded[0]!;
+    expect(new URL(forwardedRequest.url).pathname).toBe("/agents/worker-7/script/run");
+    expect(forwardedRequest.headers.get("x-naelao-space-id")).toBe("source-space");
+    expect(await forwardedRequest.json()).toEqual({ goal: "Read the published customs checklist.", spaceId: "source-space", tenantId: "tenant-1" });
+  });
+});

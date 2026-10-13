@@ -58,9 +58,12 @@ interface ContainerRuntime {
   stop?(signal?: string): Promise<void> | void;
 }
 
-interface SandboxWorkspaceScope {
+export interface SandboxWorkspaceScope {
   spaceId: string;
   projectId?: string;
+  /** Space-wide extension instance. Its files live under Space Workspace, never the
+   *  Space Assistant workspace. Project extensions continue using their project workspace. */
+  installationId?: string;
   branch?: string;
 }
 
@@ -101,6 +104,23 @@ interface StoredShellState {
 
 export function isPortableWorkspacePath(path: string): boolean {
   return !path.replace(/\\/g, "/").split("/").includes("node_modules");
+}
+
+export function sandboxWorkspacePrefix(scope: SandboxWorkspaceScope): string {
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(scope.spaceId)) throw new Error("invalid workspace space");
+  const project = scope.projectId;
+  if (project && !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(project)) throw new Error("invalid workspace project");
+  if (scope.installationId && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(scope.installationId)) throw new Error("invalid workspace installation");
+  const branch = scope.branch?.replaceAll("\\", "/");
+  if (branch && (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(branch) || branch.includes(".."))) throw new Error("invalid workspace branch");
+  // Project-installed extensions retain the existing shared project workspace. Only a
+  // Space-wide extension (no project scope) receives its own Space Workspace prefix.
+  const base = project
+    ? `spaces/${scope.spaceId}/projects/${project}/workspace/`
+    : scope.installationId
+      ? `spaces/${scope.spaceId}/space-workspace/extensions/${scope.installationId}/workspace/`
+      : `spaces/${scope.spaceId}/workspace/`;
+  return branch ? `${base}branches/${branch}/` : base;
 }
 
 async function hashState(state: Omit<StoredShellState, "stateHash">): Promise<string> {
@@ -292,15 +312,7 @@ export class ToolSandboxDO extends DurableObject {
   }
 
   private workspacePrefix(scope: SandboxWorkspaceScope): string {
-    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(scope.spaceId)) throw new Error("invalid workspace space");
-    const project = scope.projectId;
-    if (project && !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(project)) throw new Error("invalid workspace project");
-    const branch = scope.branch?.replaceAll("\\", "/");
-    if (branch && (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(branch) || branch.includes(".."))) throw new Error("invalid workspace branch");
-    const base = project
-      ? `spaces/${scope.spaceId}/projects/${project}/workspace/`
-      : `spaces/${scope.spaceId}/workspace/`;
-    return branch ? `${base}branches/${branch}/` : base;
+    return sandboxWorkspacePrefix(scope);
   }
 
   private async *listR2Workspace(prefix: string): AsyncGenerator<{ path: string; bytes: Uint8Array; hash: string }> {
@@ -474,9 +486,11 @@ export class ToolSandboxDO extends DurableObject {
     let execScope: SandboxWorkspaceScope | undefined;
     if (url.pathname === "/exec" && request.method === "POST") {
       const body = await request.clone().json<{ spaceId?: string; projectId?: string; workspaceBranch?: string }>().catch((): { spaceId?: string; projectId?: string; workspaceBranch?: string } => ({}));
+      const containerScope = JSON.parse(request.headers.get("x-naelao-container-scope") ?? "null") as ContainerInvocationScope | null;
       if (body.spaceId) execScope = {
         spaceId: body.spaceId,
         ...(body.projectId ? { projectId: body.projectId } : {}),
+        ...(containerScope?.installationId ? { installationId: containerScope.installationId } : {}),
         ...(body.workspaceBranch ? { branch: body.workspaceBranch } : {}),
       };
     }

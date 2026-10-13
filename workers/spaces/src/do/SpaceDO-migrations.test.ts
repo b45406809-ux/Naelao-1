@@ -4,7 +4,7 @@ import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim";
 import { SPACE_DO_MIGRATIONS } from "./SpaceDO";
 
 describe("SpaceDO migration replay", () => {
-  it("creates the project demo-fixture table and replays every migration exactly once", () => {
+  it("creates project and Foundry tables and replays every migration exactly once", () => {
     const storage = createDOStorage();
     applyMigrations(
       storage as unknown as {
@@ -25,12 +25,18 @@ describe("SpaceDO migration replay", () => {
         "SELECT name FROM sqlite_master WHERE type='table' AND name='project_demo_fixtures'"
       )
       .toArray();
+    const foundryTemplateTable = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name='foundry_templates'").toArray();
+    const foundryRequestTable = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name='foundry_feature_requests'").toArray();
+    const foundrySchema = storage.sql.exec<{ sql: string }>("SELECT sql FROM sqlite_master WHERE type='table' AND name='foundry_templates'").toArray()[0]?.sql;
     const applied = storage.sql
       .exec<{ count: number }>(
-        "SELECT COUNT(*) AS count FROM _migrations WHERE version = 65"
+        "SELECT COUNT(*) AS count FROM _migrations WHERE version = 67"
       )
       .toArray();
     expect(table).toHaveLength(1);
+    expect(foundryTemplateTable).toHaveLength(1);
+    expect(foundryRequestTable).toHaveLength(1);
+    expect(foundrySchema).toContain("validated_version");
     expect(applied[0]?.count).toBe(1);
     storage.sql.exec(
       "INSERT INTO project_demo_fixtures (project_id, fixture_id, fixture_kind, data_json) VALUES (?, ?, ?, ?)",

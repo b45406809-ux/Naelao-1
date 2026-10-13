@@ -1120,6 +1120,10 @@ export interface ScriptEngineEnv {
    * space-wide. Absent = space-scoped (the Space Assistant, or a legacy unscoped run).
    */
   projectId?: string;
+  /** A space-wide extension gets a durable workspace in the Space Workspace namespace. It is
+   *  deliberately separate from the Space Assistant's personal workspace and keyed by the
+   *  installation instance, so two extensions cannot see each other's files by default. */
+  spaceWorkspaceExtensionId?: string;
   /** Mutable authorization rank shared by the local and project memory stores for this run. */
   memoryRoleRank?: { value: number };
   /**
@@ -1178,11 +1182,18 @@ export function machinePrefix(env: Pick<ScriptEngineEnv, "spaceId" | "projectId"
 }
 
 export function workspacePrefix(
-  env: Pick<ScriptEngineEnv, "spaceId" | "projectId" | "workspaceBranch">
+  env: Pick<ScriptEngineEnv, "spaceId" | "projectId" | "workspaceBranch" | "spaceWorkspaceExtensionId">
 ): string {
+  if (env.spaceWorkspaceExtensionId && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(env.spaceWorkspaceExtensionId)) {
+    throw new Error("spaceWorkspaceExtensionId contains an invalid identifier");
+  }
+  // Project-installed extensions keep the shared project workspace. A Space-wide extension
+  // gets its own Space Workspace only when there is no project scope.
   const base = env.projectId
     ? `spaces/${env.spaceId}/projects/${env.projectId}/workspace/`
-    : `spaces/${env.spaceId}/workspace/`;
+    : env.spaceWorkspaceExtensionId
+      ? `spaces/${env.spaceId}/space-workspace/extensions/${env.spaceWorkspaceExtensionId}/workspace/`
+      : `spaces/${env.spaceId}/workspace/`;
   if (!env.workspaceBranch) return base;
   const branch = env.workspaceBranch.replaceAll("\\", "/");
   if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/u.test(branch) || branch.includes("..")) {

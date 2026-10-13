@@ -29,7 +29,7 @@ import { instantiateBlueprint as compileBlueprint } from "@naelao/agent-sdk";
 import type { DisplayMode, ExtensionManifest, SpaceBlueprint, TemplateMode } from "@naelao/agent-sdk";
 import { promoteCockpit } from "@naelao/agent-sdk";
 import { projectFactRelevance } from "@naelao/agent-sdk";
-import { consumeEphemeralActionGrant, mintEphemeralActionGrant, type EphemeralActionGrant, verifyCapabilityToken } from "@naelao/security";
+import { consumeEphemeralActionGrant, issueCapabilityToken, mintEphemeralActionGrant, type EphemeralActionGrant, verifyCapabilityToken } from "@naelao/security";
 import { signActionReceipt, verifyActionReceiptChain, type ActionReceipt, type ActionReceiptDraft } from "@naelao/tracing";
 import { MACHINE_NAME, assertMachineIdentity, validateMachinePublicKey, validateMachineHardware, validateMachineGrants, verifyMachineProof, tunnelHash, type NamedMachine, type MachineHardware, type MachineGrant, type MachineProof } from "@naelao/agent-sdk";
 
@@ -1728,6 +1728,31 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 67,
+    description: "review-gated Foundry templates and assistant-generated feature requests",
+    up: `
+      CREATE TABLE IF NOT EXISTS foundry_templates (
+        id TEXT PRIMARY KEY, space_id TEXT NOT NULL, created_by TEXT NOT NULL,
+        name TEXT NOT NULL, description TEXT NOT NULL, definition_json TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('draft','in_review','published','rejected')),
+        version INTEGER NOT NULL DEFAULT 1, validated_version INTEGER NOT NULL DEFAULT 0,
+        validation_json TEXT NOT NULL DEFAULT '{}', reviewed_by TEXT, review_note TEXT,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL, published_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_foundry_templates_space_status
+        ON foundry_templates(space_id,status,updated_at DESC);
+      CREATE TABLE IF NOT EXISTS foundry_feature_requests (
+        id TEXT PRIMARY KEY, space_id TEXT NOT NULL, requested_by TEXT NOT NULL,
+        title TEXT NOT NULL, problem TEXT NOT NULL, workflow TEXT NOT NULL,
+        evidence_json TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL
+          CHECK (status IN ('open','accepted','declined','delivered')),
+        reviewed_by TEXT, review_note TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_foundry_requests_space_status
+        ON foundry_feature_requests(space_id,status,created_at DESC);
+    `,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -2728,6 +2753,20 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && url.pathname === "/rfcs") {
         return this.triggerSponsorRfc(request);
       }
+      if (url.pathname === "/foundry/templates" && method === "GET") return this.listFoundryTemplates(url.searchParams);
+      if (url.pathname === "/foundry/templates" && method === "POST") return this.createFoundryTemplate(request);
+      const foundryTemplateGet = url.pathname.match(/^\/foundry\/templates\/([^/]+)$/);
+      if (foundryTemplateGet?.[1] && method === "GET") return this.getFoundryTemplate(decodeURIComponent(foundryTemplateGet[1]), url.searchParams);
+      if (foundryTemplateGet?.[1] && method === "PUT") return this.updateFoundryTemplate(decodeURIComponent(foundryTemplateGet[1]), request);
+      const foundryTemplateTest = url.pathname.match(/^\/foundry\/templates\/([^/]+)\/test$/);
+      if (foundryTemplateTest?.[1] && method === "POST") return this.testFoundryTemplate(decodeURIComponent(foundryTemplateTest[1]));
+      const foundryTemplateMatch = url.pathname.match(/^\/foundry\/templates\/([^/]+)\/(submit|review)$/);
+      if (foundryTemplateMatch?.[1] && foundryTemplateMatch[2] === "submit" && method === "POST") return this.submitFoundryTemplate(decodeURIComponent(foundryTemplateMatch[1]));
+      if (foundryTemplateMatch?.[1] && foundryTemplateMatch[2] === "review" && method === "POST") return this.reviewFoundryTemplate(decodeURIComponent(foundryTemplateMatch[1]), request);
+      if (url.pathname === "/foundry/requests" && method === "GET") return this.listFoundryRequests(url.searchParams);
+      if (url.pathname === "/foundry/requests" && method === "POST") return this.createFoundryRequest(request);
+      const foundryRequestMatch = url.pathname.match(/^\/foundry\/requests\/([^/]+)$/);
+      if (foundryRequestMatch?.[1] && method === "PATCH") return this.reviewFoundryRequest(decodeURIComponent(foundryRequestMatch[1]), request);
       const taskIdMatch = url.pathname.match(/^\/tasks\/([^/]+)$/);
       // PATCH /tasks/:id — status/title/dependencies/assigned_agent, any subset.
       if (method === "PATCH" && taskIdMatch?.[1]) {
@@ -2749,7 +2788,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // DELETE /cross-space-grants/:id
       const grantMatch = url.pathname.match(/^\/cross-space-grants\/([^/]+)$/);
       if (method === "DELETE" && grantMatch?.[1]) {
-        return this.revokeCrossSpace(grantMatch[1]);
+        return this.revokeCrossSpace(grantMatch[1], url.searchParams.get("space_id") ?? "");
       }
       // GET /cross-space-check?user_id=&requesting_space_id=&target_space_id=&grant_type=
       if (method === "GET" && url.pathname === "/cross-space-check") {
@@ -3956,6 +3995,163 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         config: JSON.parse(r.config_json) as unknown,
       })),
     });
+  }
+
+  private listFoundryTemplates(params: URLSearchParams): Response {
+    const spaceId = params.get("space_id") ?? "";
+    if (!spaceId) return Response.json({ error_code: "bad_request", message: "space_id is required" }, { status: 400 });
+    const rows = queryAll<{ id: string; space_id: string; created_by: string; name: string; description: string; definition_json: string; status: string; version: number; reviewed_by: string | null; review_note: string | null; created_at: string; updated_at: string; published_at: string | null }>(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM foundry_templates WHERE space_id = ? ORDER BY updated_at DESC,id",
+      spaceId,
+    );
+    return Response.json({ data: rows.map((row) => ({ ...row, definition: JSON.parse(row.definition_json) as Record<string, unknown> })) });
+  }
+
+  private getFoundryTemplate(id: string, params: URLSearchParams): Response {
+    const spaceId = params.get("space_id") ?? "";
+    if (!spaceId) return Response.json({ error_code: "bad_request", message: "space_id is required" }, { status: 400 });
+    const row = queryOne<{ id: string; space_id: string; created_by: string; name: string; description: string; definition_json: string; status: string; version: number; reviewed_by: string | null; review_note: string | null; created_at: string; updated_at: string; published_at: string | null }>(
+      this.ctx.storage.sql as never,
+      `SELECT * FROM foundry_templates WHERE id=? AND space_id=? ${params.get("published_only") === "true" ? "AND status='published'" : ""}`,
+      id, spaceId,
+    );
+    if (!row) return Response.json({ error_code: "not_found" }, { status: 404 });
+    return Response.json({ ...row, definition: JSON.parse(row.definition_json) as Record<string, unknown> });
+  }
+
+  private async createFoundryTemplate(request: Request): Promise<Response> {
+    const body = await request.json<{ space_id?: string; created_by?: string; name?: string; description?: string; definition?: Record<string, unknown> }>().catch(() => ({} as { space_id?: string; created_by?: string; name?: string; description?: string; definition?: Record<string, unknown> }));
+    const definition = body.definition;
+    const shortText = (value: unknown, max: number) => typeof value === "string" && value.trim().length > 0 && value.trim().length <= max;
+    const boundedList = (value: unknown, maxItems: number, maxLength: number) => Array.isArray(value) && value.length <= maxItems && value.every((item) => typeof item === "string" && item.trim().length > 0 && item.length <= maxLength);
+    if (!body.space_id || !body.created_by || !shortText(body.name, 120) || !shortText(body.description, 500) || !definition ||
+      !shortText(definition.expertise, 2000) || !shortText(definition.audience, 500) || !shortText(definition.outcome, 1000) ||
+      !shortText(definition.workflow, 3000) || !shortText(definition.safetyLimits, 2000) || !shortText(definition.instructions, 6000) ||
+      !boundedList(definition.sourceReferences, 30, 300) || !boundedList(definition.toolAllowlist, 8, 64) ||
+      (definition.toolAllowlist as string[]).some((tool) => !["knowledge-base", "web-search", "file-manager"].includes(tool))) {
+      return Response.json({ error_code: "bad_request", message: "A template needs bounded domain, audience, outcome, workflow, safety limits, reviewed tool choices, and source references" }, { status: 400 });
+    }
+    const now = new Date().toISOString();
+    const id = crypto.randomUUID();
+    execute(this.ctx.storage.sql as never,
+      `INSERT INTO foundry_templates(id,space_id,created_by,name,description,definition_json,status,version,created_at,updated_at)
+       VALUES(?,?,?,?,?,?,'draft',1,?,?)`,
+      id, body.space_id, body.created_by, body.name!.trim(), body.description!.trim(), JSON.stringify({
+        expertise: (definition.expertise as string).trim(), audience: (definition.audience as string).trim(), outcome: (definition.outcome as string).trim(),
+        workflow: (definition.workflow as string).trim(), safetyLimits: (definition.safetyLimits as string).trim(), instructions: (definition.instructions as string).trim(),
+        sourceReferences: (definition.sourceReferences as string[]).map((item) => item.trim()),
+        toolAllowlist: [...new Set(definition.toolAllowlist as string[])], approvalMode: "always_ask",
+      }), now, now);
+    return Response.json({ id, space_id: body.space_id, status: "draft", version: 1, created_at: now }, { status: 201 });
+  }
+
+  private async updateFoundryTemplate(id: string, request: Request): Promise<Response> {
+    const body = await request.json<{ updated_by?: string; name?: string; description?: string; definition?: Record<string, unknown> }>().catch(() => ({} as { updated_by?: string; name?: string; description?: string; definition?: Record<string, unknown> }));
+    const definition = body.definition;
+    const shortText = (value: unknown, max: number) => typeof value === "string" && value.trim().length > 0 && value.trim().length <= max;
+    const boundedList = (value: unknown, maxItems: number, maxLength: number) => Array.isArray(value) && value.length <= maxItems && value.every((item) => typeof item === "string" && item.trim().length > 0 && item.length <= maxLength);
+    if (!body.updated_by || !shortText(body.name, 120) || !shortText(body.description, 500) || !definition ||
+      !shortText(definition.expertise, 2000) || !shortText(definition.audience, 500) || !shortText(definition.outcome, 1000) ||
+      !shortText(definition.workflow, 3000) || !shortText(definition.safetyLimits, 2000) || !shortText(definition.instructions, 6000) ||
+      !boundedList(definition.sourceReferences, 30, 300) || !boundedList(definition.toolAllowlist, 8, 64) ||
+      (definition.toolAllowlist as string[]).some((tool) => !["knowledge-base", "web-search", "file-manager"].includes(tool))) {
+      return Response.json({ error_code: "bad_request", message: "A bounded and reviewed template definition is required" }, { status: 400 });
+    }
+    const now = new Date().toISOString();
+    const updated = queryOne<{ status: string; version: number }>(this.ctx.storage.sql as never,
+      `UPDATE foundry_templates SET name=?,description=?,definition_json=?,version=version+1,validated_version=0,validation_json='{}',updated_at=?
+       WHERE id=? AND status IN ('draft','rejected') RETURNING status,version`,
+      body.name!.trim(), body.description!.trim(), JSON.stringify({
+        expertise: (definition.expertise as string).trim(), audience: (definition.audience as string).trim(), outcome: (definition.outcome as string).trim(),
+        workflow: (definition.workflow as string).trim(), safetyLimits: (definition.safetyLimits as string).trim(), instructions: (definition.instructions as string).trim(),
+        sourceReferences: (definition.sourceReferences as string[]).map((item) => item.trim()), toolAllowlist: [...new Set(definition.toolAllowlist as string[])], approvalMode: "always_ask",
+      }), now, id);
+    if (!updated) return Response.json({ error_code: "not_found_or_not_editable" }, { status: 409 });
+    return Response.json({ id, status: updated.status, version: updated.version, updated_by: body.updated_by });
+  }
+
+  private submitFoundryTemplate(id: string): Response {
+    const now = new Date().toISOString();
+    const updated = queryOne<{ status: string }>(this.ctx.storage.sql as never,
+      `UPDATE foundry_templates SET status='in_review',reviewed_by=NULL,review_note=NULL,updated_at=?
+       WHERE id=? AND status IN ('draft','rejected') AND validated_version=version RETURNING status`, now, id);
+    if (!updated) return Response.json({ error_code: "template_checks_required", message: "Run the template configuration checks before submitting it for review" }, { status: 409 });
+    return Response.json({ id, status: updated.status });
+  }
+
+  private testFoundryTemplate(id: string): Response {
+    const row = queryOne<{ definition_json: string; version: number; status: string }>(this.ctx.storage.sql as never,
+      "SELECT definition_json,version,status FROM foundry_templates WHERE id=?", id);
+    if (!row || !["draft", "rejected"].includes(row.status)) return Response.json({ error_code: "not_found_or_not_testable" }, { status: 409 });
+    let definition: Record<string, unknown>;
+    try { definition = JSON.parse(row.definition_json) as Record<string, unknown>; }
+    catch { return Response.json({ error_code: "template_definition_invalid" }, { status: 422 }); }
+    const checks = [
+      { id: "domain-context", passed: typeof definition.expertise === "string" && Boolean(definition.expertise.trim()) && typeof definition.audience === "string" && Boolean(definition.audience.trim()) && typeof definition.outcome === "string" && Boolean(definition.outcome.trim()) },
+      { id: "workflow-and-safety", passed: typeof definition.workflow === "string" && Boolean(definition.workflow.trim()) && typeof definition.safetyLimits === "string" && Boolean(definition.safetyLimits.trim()) },
+      { id: "bounded-tools", passed: Array.isArray(definition.toolAllowlist) && definition.toolAllowlist.length <= 8 && definition.toolAllowlist.every((tool) => ["knowledge-base", "web-search", "file-manager"].includes(String(tool))) },
+      { id: "approval-and-data-boundary", passed: definition.approvalMode === "always_ask" && typeof definition.instructions === "string" && definition.instructions.length <= 6000 },
+      { id: "source-references", passed: Array.isArray(definition.sourceReferences) && definition.sourceReferences.length <= 30 && definition.sourceReferences.every((source) => typeof source === "string" && source.length <= 300) },
+    ];
+    const passed = checks.every((check) => check.passed);
+    const result = { kind: "deterministic_configuration_checks", passed, checks, tested_version: row.version, tested_at: new Date().toISOString() };
+    execute(this.ctx.storage.sql as never,
+      "UPDATE foundry_templates SET validated_version=?,validation_json=?,updated_at=? WHERE id=? AND version=? AND status IN ('draft','rejected')",
+      passed ? row.version : 0, JSON.stringify(result), result.tested_at, id, row.version);
+    return Response.json({ id, ...result });
+  }
+
+  private async reviewFoundryTemplate(id: string, request: Request): Promise<Response> {
+    const body = await request.json<{ decision?: string; reviewed_by?: string; review_note?: string }>().catch(() => ({} as { decision?: string; reviewed_by?: string; review_note?: string }));
+    if (!body.reviewed_by || !["publish", "reject"].includes(body.decision ?? "") || (body.review_note?.length ?? 0) > 2000)
+      return Response.json({ error_code: "bad_request", message: "reviewed_by, a publish/reject decision, and a bounded review note are required" }, { status: 400 });
+    const published = body.decision === "publish";
+    const now = new Date().toISOString();
+    const updated = queryOne<{ status: string; version: number }>(this.ctx.storage.sql as never,
+      `UPDATE foundry_templates SET status=?,version=version+?,reviewed_by=?,review_note=?,updated_at=?,published_at=?
+       WHERE id=? AND status='in_review' AND validated_version=version RETURNING status,version`,
+      published ? "published" : "rejected", published ? 1 : 0, body.reviewed_by, body.review_note?.trim() ?? "", now, published ? now : null, id);
+    if (!updated) return Response.json({ error_code: "not_found_or_not_in_review" }, { status: 409 });
+    return Response.json({ id, status: updated.status, version: updated.version, reviewed_by: body.reviewed_by });
+  }
+
+  private listFoundryRequests(params: URLSearchParams): Response {
+    const spaceId = params.get("space_id") ?? "";
+    if (!spaceId) return Response.json({ error_code: "bad_request", message: "space_id is required" }, { status: 400 });
+    const rows = queryAll<{ id: string; space_id: string; requested_by: string; title: string; problem: string; workflow: string; evidence_json: string; status: string; reviewed_by: string | null; review_note: string | null; created_at: string; updated_at: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM foundry_feature_requests WHERE space_id = ? ORDER BY created_at DESC,id",
+      spaceId,
+    );
+    return Response.json({ data: rows.map((row) => ({ ...row, evidence: JSON.parse(row.evidence_json) as string[] })) });
+  }
+
+  private async createFoundryRequest(request: Request): Promise<Response> {
+    const body = await request.json<{ space_id?: string; requested_by?: string; title?: string; problem?: string; workflow?: string; evidence?: string[] }>().catch(() => ({} as { space_id?: string; requested_by?: string; title?: string; problem?: string; workflow?: string; evidence?: string[] }));
+    const text = (value: unknown, max: number) => typeof value === "string" && value.trim().length > 0 && value.trim().length <= max;
+    if (!body.space_id || !body.requested_by || !text(body.title, 160) || !text(body.problem, 3000) || !text(body.workflow, 3000) ||
+      (body.evidence !== undefined && (!Array.isArray(body.evidence) || body.evidence.length > 12 || body.evidence.some((item) => typeof item !== "string" || item.length > 500)))) {
+      return Response.json({ error_code: "bad_request", message: "A request needs a title, problem, workflow, and bounded evidence references" }, { status: 400 });
+    }
+    const now = new Date().toISOString();
+    const id = crypto.randomUUID();
+    execute(this.ctx.storage.sql as never,
+      `INSERT INTO foundry_feature_requests(id,space_id,requested_by,title,problem,workflow,evidence_json,status,created_at,updated_at)
+       VALUES(?,?,?,?,?,?,?,'open',?,?)`, id, body.space_id, body.requested_by, body.title!.trim(), body.problem!.trim(), body.workflow!.trim(), JSON.stringify(body.evidence ?? []), now, now);
+    return Response.json({ id, space_id: body.space_id, status: "open", created_at: now }, { status: 201 });
+  }
+
+  private async reviewFoundryRequest(id: string, request: Request): Promise<Response> {
+    const body = await request.json<{ status?: string; reviewed_by?: string; review_note?: string }>().catch(() => ({} as { status?: string; reviewed_by?: string; review_note?: string }));
+    if (!body.reviewed_by || !["accepted", "declined", "delivered"].includes(body.status ?? "") || (body.review_note?.length ?? 0) > 2000)
+      return Response.json({ error_code: "bad_request", message: "A reviewed_by identity, accepted/declined/delivered status, and bounded review note are required" }, { status: 400 });
+    const now = new Date().toISOString();
+    const updated = queryOne<{ status: string }>(this.ctx.storage.sql as never,
+      `UPDATE foundry_feature_requests SET status=?,reviewed_by=?,review_note=?,updated_at=?
+       WHERE id=? AND status IN ('open','accepted') RETURNING status`, body.status, body.reviewed_by, body.review_note?.trim() ?? "", now, id);
+    if (!updated) return Response.json({ error_code: "not_found_or_closed" }, { status: 409 });
+    return Response.json({ id, status: updated.status, reviewed_by: body.reviewed_by });
   }
 
   private async createAgentDefinition(request: Request): Promise<Response> {
@@ -9788,6 +9984,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       resource_id: string;
       granted_by: string;
       expires_at: string;
+      permissions?: string[];
     }>();
     if (
       !body.grantee_space_id || !body.target_space_id || !body.resource_id ||
@@ -9811,13 +10008,23 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         { status: 400 }
       );
     }
-    if (Number.isNaN(Date.parse(body.expires_at)) || body.expires_at <= new Date().toISOString()) {
+    if (body.resource_id === "*" || !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$/.test(body.resource_id)) {
+      return Response.json({ error_code: "bad_request", message: "resource_id must name one specific worker, knowledge resource, or other capability" }, { status: 400 });
+    }
+    const permissions = body.permissions ?? ["read"];
+    if (!permissions.length || permissions.some((permission) => !["read", "invoke"].includes(permission)) || new Set(permissions).size !== permissions.length) {
+      return Response.json({ error_code: "bad_request", message: "Only explicit read and invoke permissions can be granted" }, { status: 400 });
+    }
+    const expiresAt = Date.parse(body.expires_at);
+    const nowMs = Date.now();
+    if (!Number.isFinite(expiresAt) || expiresAt <= nowMs || expiresAt > nowMs + 30 * 24 * 60 * 60 * 1000) {
       return Response.json(
-        { error_code: "bad_request", message: "expires_at must be a future ISO timestamp" },
+        { error_code: "bad_request", message: "expires_at must be within the next 30 days" },
         { status: 400 }
       );
     }
     const id = crypto.randomUUID();
+    const normalizedExpiry = new Date(expiresAt).toISOString();
     execute(
       this.ctx.storage.sql as never,
       `INSERT INTO cross_space_grants (id, grantee_space_id, target_space_id, resource_id, granted_by, created_at, expires_at)
@@ -9828,37 +10035,41 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       body.resource_id,
       body.granted_by,
       new Date().toISOString(),
-      body.expires_at
+      normalizedExpiry
     );
-    return Response.json({ id, resource_id: body.resource_id }, { status: 201 });
+    const capabilityToken = await issueCapabilityToken({
+      granteeSpaceId: body.grantee_space_id,
+      targetSpaceId: body.target_space_id,
+      resourceId: body.resource_id,
+      permissions,
+      exp: expiresAt,
+      nonce: id,
+    }, this.env.PLATFORM_SECRET);
+    return Response.json({ id, resource_id: body.resource_id, permissions, expires_at: normalizedExpiry, capability_token: capabilityToken }, { status: 201 });
   }
 
   private listCrossSpaceGrants(params: URLSearchParams): Response {
     const spaceId = params.get("space_id");
-    const rows = spaceId
-      ? queryAll<CrossSpaceGrantRow>(
-          this.ctx.storage.sql as never,
-          `SELECT * FROM cross_space_grants
-           WHERE (target_space_id = ? OR grantee_space_id = ?) AND revoked_at IS NULL
-           ORDER BY created_at DESC`,
-          spaceId,
-          spaceId
-        )
-      : queryAll<CrossSpaceGrantRow>(
-          this.ctx.storage.sql as never,
-          "SELECT * FROM cross_space_grants WHERE revoked_at IS NULL ORDER BY created_at DESC"
-        );
+    if (!spaceId) return Response.json({ error_code: "bad_request", message: "space_id is required" }, { status: 400 });
+    const rows = queryAll<CrossSpaceGrantRow>(
+      this.ctx.storage.sql as never,
+      `SELECT * FROM cross_space_grants
+       WHERE (target_space_id = ? OR grantee_space_id = ?) AND revoked_at IS NULL
+       ORDER BY created_at DESC`,
+      spaceId,
+      spaceId
+    );
     return Response.json({ data: rows });
   }
 
-  private revokeCrossSpace(id: string): Response {
+  private revokeCrossSpace(id: string, targetSpaceId: string): Response {
+    if (!targetSpaceId) return Response.json({ error_code: "bad_request", message: "space_id is required" }, { status: 400 });
     execute(
       this.ctx.storage.sql as never,
-      "UPDATE cross_space_grants SET revoked_at = ? WHERE id = ?",
-      new Date().toISOString(),
-      id
+      "UPDATE cross_space_grants SET revoked_at = ? WHERE id = ? AND target_space_id = ? AND revoked_at IS NULL",
+      new Date().toISOString(), id, targetSpaceId
     );
-    return Response.json({ revoked: true, id });
+    return Response.json({ revoked: true, id, target_space_id: targetSpaceId });
   }
 
   // GET /cross-space-check — THE CRITICAL PATH (§49). Default DENIED on any error.
@@ -9894,7 +10105,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           permission,
         });
         if (capability) {
-          return Response.json({ permitted: true, reason: "Valid scoped capability token.", resource_id: resourceId });
+          const grant = queryOne<{ id: string }>(this.ctx.storage.sql as never,
+            `SELECT id FROM cross_space_grants WHERE id = ? AND grantee_space_id = ? AND target_space_id = ?
+             AND resource_id = ? AND revoked_at IS NULL AND expires_at > ? LIMIT 1`,
+            capability.nonce, requestingSpaceId, targetSpaceId, resourceId, new Date().toISOString());
+          if (grant) return Response.json({ permitted: true, reason: "Active scoped capability token.", resource_id: resourceId, permissions: capability.permissions });
+          return Response.json({ permitted: false, reason: "Capability grant was revoked or expired.", resource_id: null });
         }
         return Response.json({ permitted: false, reason: "Invalid, expired, or mismatched capability token.", resource_id: null });
       }

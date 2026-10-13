@@ -3330,22 +3330,204 @@ app.patch("/spaces/:spaceId/sub-spaces/:subId", async (c) => {
 });
 
 // ── Cross-space access grants (spec §49 checkPermission) ─────────────────────
+app.use("/spaces/:spaceId/foundry/templates", requireBusinessMembership({ GET: "member", POST: "admin" }));
+app.use("/spaces/:spaceId/foundry/templates/*", requireBusinessMembership({ GET: "member", POST: "admin" }));
+app.use("/spaces/:spaceId/foundry/requests", requireBusinessMembership({ GET: "admin", POST: "member" }));
+app.use("/spaces/:spaceId/foundry/requests/*", requireBusinessMembership({ GET: "admin", POST: "admin", PATCH: "admin" }));
+
+async function authorizeFoundrySpace(env: Env, spaceId: string, tenantId: string, userId: string, action: "read" | "manage") {
+  const stub = await spaceDoStub(env, spaceId, tenantId);
+  const auth = await forwardToSpaceDO(stub,
+    `/hierarchy-authorize?user_id=${encodeURIComponent(userId)}&target_space_id=${encodeURIComponent(spaceId)}&action=${action}`, "GET");
+  return { stub, auth };
+}
+
+app.get("/spaces/:spaceId/foundry/templates", async (c) => {
+  const spaceId = c.req.param("spaceId"); const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const { stub, auth } = await authorizeFoundrySpace(c.env, spaceId, tenantId, userId, "read");
+  if (!auth.ok) return c.json({ error_code: "forbidden" }, 403);
+  return stub.fetch(new Request(`http://space/foundry/templates?space_id=${encodeURIComponent(spaceId)}`));
+});
+
+app.post("/spaces/:spaceId/foundry/templates", async (c) => {
+  const spaceId = c.req.param("spaceId"); const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const { stub, auth } = await authorizeFoundrySpace(c.env, spaceId, tenantId, userId, "manage");
+  if (!auth.ok) return c.json({ error_code: "forbidden" }, 403);
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}));
+  return stub.fetch(new Request("http://space/foundry/templates", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ...body, space_id: spaceId, created_by: userId }) }));
+});
+
+app.put("/spaces/:spaceId/foundry/templates/:templateId", async (c) => {
+  const spaceId = c.req.param("spaceId"); const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const { stub, auth } = await authorizeFoundrySpace(c.env, spaceId, tenantId, userId, "manage");
+  if (!auth.ok) return c.json({ error_code: "forbidden" }, 403);
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+  return stub.fetch(new Request(`http://space/foundry/templates/${encodeURIComponent(c.req.param("templateId"))}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, updated_by: userId }) }));
+});
+
+app.get("/spaces/:spaceId/foundry/templates/:templateId/export", async (c) => {
+  const sourceSpaceId = c.req.param("spaceId"); const { tenantId, userId } = getCallerIdentity(c);
+  const requestingSpaceId = c.req.query("requesting_space_id") ?? "";
+  const capabilityToken = c.req.query("capability_token") ?? "";
+  if (!tenantId || !userId || !requestingSpaceId || !capabilityToken) return c.json({ error_code: "unauthorized", message: "A destination Space and scoped capability token are required" }, 401);
+  const target = await authorizeFoundrySpace(c.env, requestingSpaceId, tenantId, userId, "read");
+  if (!target.auth.ok) return c.json({ error_code: "forbidden", message: "Destination Space membership is required" }, 403);
+  const source = await spaceDoStub(c.env, sourceSpaceId, tenantId);
+  const checkQuery = new URLSearchParams({ user_id: userId, requesting_space_id: requestingSpaceId, target_space_id: sourceSpaceId,
+    resource_id: `worker-template:${c.req.param("templateId")}`, permission: "read", capability_token: capabilityToken });
+  const permission = await forwardToSpaceDO(source, `/cross-space-check?${checkQuery}`, "GET");
+  const permitted = await permission.json<{ permitted?: boolean }>().catch(() => ({ permitted: false }));
+  if (!permission.ok || !permitted.permitted) return c.json({ error_code: "cross_space_grant_required" }, 403);
+  return source.fetch(new Request(`http://space/foundry/templates/${encodeURIComponent(c.req.param("templateId"))}?space_id=${encodeURIComponent(sourceSpaceId)}&published_only=true`));
+});
+
+app.post("/spaces/:spaceId/foundry/install-template", requireBusinessMembership({ POST: "admin" }), async (c) => {
+  const targetSpaceId = c.req.param("spaceId"); const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const target = await authorizeFoundrySpace(c.env, targetSpaceId, tenantId, userId, "manage");
+  if (!target.auth.ok) return c.json({ error_code: "forbidden" }, 403);
+  const body = await c.req.json<{ source_space_id?: string; template_id?: string; capability_token?: string; name?: string; project_id?: string }>().catch(() => ({} as { source_space_id?: string; template_id?: string; capability_token?: string; name?: string; project_id?: string }));
+  if (!body.source_space_id || !body.template_id || !body.capability_token) return c.json({ error_code: "bad_request", message: "source_space_id, template_id, and capability_token are required" }, 400);
+  const source = await spaceDoStub(c.env, body.source_space_id, tenantId);
+  const permissionQuery = new URLSearchParams({ user_id: userId, requesting_space_id: targetSpaceId, target_space_id: body.source_space_id,
+    resource_id: `worker-template:${body.template_id}`, permission: "read", capability_token: body.capability_token });
+  const permissionResponse = await forwardToSpaceDO(source, `/cross-space-check?${permissionQuery}`, "GET");
+  const permission = await permissionResponse.json<{ permitted?: boolean }>().catch(() => ({ permitted: false }));
+  if (!permissionResponse.ok || !permission.permitted) return c.json({ error_code: "cross_space_grant_required" }, 403);
+  const templateResponse = await source.fetch(new Request(`http://space/foundry/templates/${encodeURIComponent(body.template_id)}?space_id=${encodeURIComponent(body.source_space_id)}&published_only=true`));
+  if (!templateResponse.ok) return new Response(templateResponse.body, { status: templateResponse.status, headers: { "content-type": "application/json" } });
+  const template = await templateResponse.json<{ name: string; description: string; definition: { expertise: string; audience: string; outcome: string; workflow: string; safetyLimits: string; instructions: string; toolAllowlist: string[] } }>();
+  const definition = template.definition;
+  const instructions = [definition.instructions, `Domain expertise:\n${definition.expertise}`, `Intended audience:\n${definition.audience}`, `Expected outcome:\n${definition.outcome}`, `Workflow:\n${definition.workflow}`, `Safety limits:\n${definition.safetyLimits}`, "Use only the target Space's own knowledge and connected data. The template publisher's source files, members, channels, and credentials are not shared with this installed worker. Ask before consequential actions and state uncertainty."].join("\n\n");
+  return proxyToAgentsWorker(c, "/agents/custom", "POST", { space_id: targetSpaceId, name: body.name?.trim() || template.name,
+    description: template.description, instructions, prebuilt_scripts: definition.toolAllowlist, approval_mode: "always_ask",
+    ...(body.project_id ? { project_id: body.project_id } : {}) });
+});
+
+app.post("/spaces/:spaceId/foundry/invoke-worker", requireBusinessMembership({ POST: "member" }), async (c) => {
+  const targetSpaceId = c.req.param("spaceId"); const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const body = await c.req.json<{ source_space_id?: string; agent_id?: string; capability_token?: string; goal?: string }>().catch(() => ({} as { source_space_id?: string; agent_id?: string; capability_token?: string; goal?: string }));
+  if (!body.source_space_id || !body.agent_id || !body.capability_token || typeof body.goal !== "string" || !body.goal.trim() || body.goal.length > 10_000) {
+    return c.json({ error_code: "bad_request", message: "source_space_id, agent_id, capability_token, and a prompt under 10,000 characters are required" }, 400);
+  }
+  const target = await authorizeFoundrySpace(c.env, targetSpaceId, tenantId, userId, "read");
+  if (!target.auth.ok) return c.json({ error_code: "forbidden", message: "Membership in the calling Space is required" }, 403);
+  const source = await spaceDoStub(c.env, body.source_space_id, tenantId);
+  const permissionQuery = new URLSearchParams({ user_id: userId, requesting_space_id: targetSpaceId, target_space_id: body.source_space_id,
+    resource_id: `worker:${body.agent_id}`, permission: "invoke", capability_token: body.capability_token });
+  const permissionResponse = await forwardToSpaceDO(source, `/cross-space-check?${permissionQuery}`, "GET");
+  const permission = await permissionResponse.json<{ permitted?: boolean }>().catch(() => ({ permitted: false }));
+  if (!permissionResponse.ok || !permission.permitted) return c.json({ error_code: "cross_space_grant_required" }, 403);
+  if (!c.env.AGENTS_WORKER) return c.json({ error_code: "agents_unavailable" }, 503);
+  // The owner-granted capability names this one worker. The target user's own space and channel
+  // identity are never mounted into the source run; only the prompt they explicitly submit is sent.
+  const run = await c.env.AGENTS_WORKER.fetch(new Request(`http://agents-worker/agents/${encodeURIComponent(body.agent_id)}/script/run`, {
+    method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+      "x-naelao-user-id": userId, "x-naelao-role": c.req.header("x-naelao-role") ?? "member",
+      "x-naelao-space-id": body.source_space_id,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+    body: JSON.stringify({ goal: body.goal.trim(), spaceId: body.source_space_id, tenantId }),
+  }));
+  return new Response(run.body, { status: run.status, headers: { "content-type": run.headers.get("content-type") ?? "application/json" } });
+});
+
+app.post("/spaces/:spaceId/foundry/templates/:templateId/submit", async (c) => {
+  const spaceId = c.req.param("spaceId"); const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const { stub, auth } = await authorizeFoundrySpace(c.env, spaceId, tenantId, userId, "manage");
+  if (!auth.ok) return c.json({ error_code: "forbidden" }, 403);
+  return stub.fetch(new Request(`http://space/foundry/templates/${encodeURIComponent(c.req.param("templateId"))}/submit`, { method: "POST" }));
+});
+
+app.post("/spaces/:spaceId/foundry/templates/:templateId/test", async (c) => {
+  const spaceId = c.req.param("spaceId"); const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const { stub, auth } = await authorizeFoundrySpace(c.env, spaceId, tenantId, userId, "manage");
+  if (!auth.ok) return c.json({ error_code: "forbidden" }, 403);
+  return stub.fetch(new Request(`http://space/foundry/templates/${encodeURIComponent(c.req.param("templateId"))}/test`, { method: "POST" }));
+});
+
+app.post("/spaces/:spaceId/foundry/templates/:templateId/review", async (c) => {
+  const spaceId = c.req.param("spaceId"); const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const { stub, auth } = await authorizeFoundrySpace(c.env, spaceId, tenantId, userId, "manage");
+  if (!auth.ok) return c.json({ error_code: "forbidden" }, 403);
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}));
+  return stub.fetch(new Request(`http://space/foundry/templates/${encodeURIComponent(c.req.param("templateId"))}/review`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, reviewed_by: userId }) }));
+});
+
+app.get("/spaces/:spaceId/foundry/requests", async (c) => {
+  const spaceId = c.req.param("spaceId"); const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const { stub, auth } = await authorizeFoundrySpace(c.env, spaceId, tenantId, userId, "manage");
+  if (!auth.ok) return c.json({ error_code: "forbidden" }, 403);
+  return stub.fetch(new Request(`http://space/foundry/requests?space_id=${encodeURIComponent(spaceId)}`));
+});
+
+app.post("/spaces/:spaceId/foundry/requests", async (c) => {
+  const spaceId = c.req.param("spaceId"); const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const { stub, auth } = await authorizeFoundrySpace(c.env, spaceId, tenantId, userId, "read");
+  if (!auth.ok) return c.json({ error_code: "forbidden" }, 403);
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}));
+  return stub.fetch(new Request("http://space/foundry/requests", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, space_id: spaceId, requested_by: userId }) }));
+});
+
+app.post("/spaces/:spaceId/foundry/forward-request", async (c) => {
+  const targetSpaceId = c.req.param("spaceId"); const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const body = await c.req.json<{ from_space_id?: string; capability_token?: string; title?: string; problem?: string; workflow?: string; evidence?: string[] }>().catch(() => ({} as { from_space_id?: string; capability_token?: string; title?: string; problem?: string; workflow?: string; evidence?: string[] }));
+  if (!body.from_space_id || !body.capability_token) return c.json({ error_code: "bad_request", message: "from_space_id and an inbox capability token are required" }, 400);
+  const source = await authorizeFoundrySpace(c.env, body.from_space_id, tenantId, userId, "read");
+  if (!source.auth.ok) return c.json({ error_code: "forbidden", message: "Membership in the submitting Space is required" }, 403);
+  const destination = await spaceDoStub(c.env, targetSpaceId, tenantId);
+  const permissionQuery = new URLSearchParams({ user_id: userId, requesting_space_id: body.from_space_id, target_space_id: targetSpaceId,
+    resource_id: "feature-inbox:submit", permission: "invoke", capability_token: body.capability_token });
+  const permissionResponse = await forwardToSpaceDO(destination, `/cross-space-check?${permissionQuery}`, "GET");
+  const permission = await permissionResponse.json<{ permitted?: boolean }>().catch(() => ({ permitted: false }));
+  if (!permissionResponse.ok || !permission.permitted) return c.json({ error_code: "cross_space_grant_required" }, 403);
+  return destination.fetch(new Request("http://space/foundry/requests", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ space_id: targetSpaceId, requested_by: `${body.from_space_id}:${userId}`, title: body.title, problem: body.problem, workflow: body.workflow, evidence: body.evidence }) }));
+});
+
+app.patch("/spaces/:spaceId/foundry/requests/:requestId", async (c) => {
+  const spaceId = c.req.param("spaceId"); const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const { stub, auth } = await authorizeFoundrySpace(c.env, spaceId, tenantId, userId, "manage");
+  if (!auth.ok) return c.json({ error_code: "forbidden" }, 403);
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}));
+  return stub.fetch(new Request(`http://space/foundry/requests/${encodeURIComponent(c.req.param("requestId"))}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, reviewed_by: userId }) }));
+});
+
 app.all("/spaces/:spaceId/cross-space-grants/:grantId?", async (c) => {
   const spaceId = c.req.param("spaceId");
   const grantId = c.req.param("grantId");
-  const { tenantId } = getCallerIdentity(c);
-  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized", message: "Missing tenant or user" }, 401);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const auth = await forwardToSpaceDO(stub, `/hierarchy-authorize?user_id=${encodeURIComponent(userId)}&target_space_id=${encodeURIComponent(spaceId)}&action=manage`, "GET");
+  if (!auth.ok) return c.json({ error_code: "forbidden", message: "Space administration is required to manage cross-Space grants" }, 403);
 
   const url = new URL(c.req.url);
-  const doPath = grantId
-    ? `/cross-space-grants/${grantId}`
-    : `/cross-space-grants${url.search}`;
+  let doPath: string;
+  if (c.req.method === "POST") {
+    const body = await c.req.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+    if (body.target_space_id !== spaceId) return c.json({ error_code: "bad_request", message: "Grant must be created by the Space that owns the shared resource" }, 400);
+    doPath = "/cross-space-grants";
+    const response = await forwardToSpaceDO(stub, doPath, "POST", JSON.stringify({ ...body, granted_by: userId }));
+    return new Response(response.body, { status: response.status, headers: { "content-type": "application/json" } });
+  }
+  if (c.req.method === "DELETE") doPath = `/cross-space-grants/${encodeURIComponent(grantId ?? "")}?space_id=${encodeURIComponent(spaceId)}`;
+  else doPath = `/cross-space-grants?space_id=${encodeURIComponent(spaceId)}`;
   const res = await forwardToSpaceDO(
     stub,
     doPath,
     c.req.method,
-    c.req.method === "POST" ? c.req.raw.body : undefined
   );
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
