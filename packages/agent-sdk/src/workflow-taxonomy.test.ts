@@ -35,4 +35,10 @@ describe("workflow routing", () => {
     expect(() => routeWorkflow({ workflowClass: "company_automation", spaceId: "s", projectId: "p", budgetCredits: 1 })).toThrow("rooted at the space");
     expect(() => routeWorkflow({ workflowClass: "vertical_extension", spaceId: "s", projectId: "p", extensionId: "ext_ok", budgetCredits: 1 })).not.toThrow();
   });
+
+  it("routes a vertical extension installed for a whole Space under installation ownership", () => {
+    expect(routeWorkflow({ workflowClass: "vertical_extension", spaceId: "s", installationId: "install-a", extensionId: "ext_ok", budgetCredits: 1 }))
+      .toMatchObject({ budgetKey: "workflow:vertical_extension:ext_ok:install-a", reportTarget: "executive_channel_and_founder_telegram" });
+    expect(() => routeWorkflow({ workflowClass: "vertical_extension", spaceId: "s", installationId: "install-a", budgetCredits: 1 })).toThrow("extensionId");
+  });
 });

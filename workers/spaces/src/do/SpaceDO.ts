@@ -1753,6 +1753,27 @@ const MIGRATIONS: Migration[] = [
         ON foundry_feature_requests(space_id,status,created_at DESC);
     `,
   },
+  {
+    version: 68,
+    description: "accepted per-document knowledge grants and cross-Space access audit",
+    up: `
+      CREATE TABLE accepted_cross_space_documents (
+        id TEXT PRIMARY KEY, grantee_space_id TEXT NOT NULL, target_space_id TEXT NOT NULL,
+        document_id TEXT NOT NULL, accepted_by TEXT NOT NULL, capability_token TEXT NOT NULL,
+        expires_at TEXT NOT NULL, accepted_at TEXT NOT NULL, revoked_at TEXT,
+        UNIQUE(grantee_space_id,target_space_id,document_id,accepted_by)
+      );
+      CREATE INDEX idx_accepted_cross_space_documents_user
+        ON accepted_cross_space_documents(grantee_space_id,accepted_by,revoked_at,expires_at);
+      CREATE TABLE cross_space_access_audit (
+        id TEXT PRIMARY KEY, grantee_space_id TEXT NOT NULL, target_space_id TEXT NOT NULL,
+        resource_id TEXT NOT NULL, actor_id TEXT NOT NULL, action TEXT NOT NULL,
+        created_at TEXT NOT NULL, details_json TEXT NOT NULL DEFAULT '{}'
+      );
+      CREATE INDEX idx_cross_space_access_audit_scope
+        ON cross_space_access_audit(target_space_id,grantee_space_id,created_at DESC);
+    `,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -2759,7 +2780,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (foundryTemplateGet?.[1] && method === "GET") return this.getFoundryTemplate(decodeURIComponent(foundryTemplateGet[1]), url.searchParams);
       if (foundryTemplateGet?.[1] && method === "PUT") return this.updateFoundryTemplate(decodeURIComponent(foundryTemplateGet[1]), request);
       const foundryTemplateTest = url.pathname.match(/^\/foundry\/templates\/([^/]+)\/test$/);
-      if (foundryTemplateTest?.[1] && method === "POST") return this.testFoundryTemplate(decodeURIComponent(foundryTemplateTest[1]));
+      if (foundryTemplateTest?.[1] && method === "POST") return this.testFoundryTemplate(decodeURIComponent(foundryTemplateTest[1]), request);
       const foundryTemplateMatch = url.pathname.match(/^\/foundry\/templates\/([^/]+)\/(submit|review)$/);
       if (foundryTemplateMatch?.[1] && foundryTemplateMatch[2] === "submit" && method === "POST") return this.submitFoundryTemplate(decodeURIComponent(foundryTemplateMatch[1]));
       if (foundryTemplateMatch?.[1] && foundryTemplateMatch[2] === "review" && method === "POST") return this.reviewFoundryTemplate(decodeURIComponent(foundryTemplateMatch[1]), request);
@@ -2785,6 +2806,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "GET" && url.pathname === "/cross-space-grants") {
         return this.listCrossSpaceGrants(url.searchParams);
       }
+      if (method === "POST" && url.pathname === "/cross-space-grants/accept-document") return this.acceptCrossSpaceDocument(request);
+      if (method === "GET" && url.pathname === "/cross-space-grants/accepted-document") return this.getAcceptedCrossSpaceDocument(url.searchParams);
+      if (method === "DELETE" && url.pathname === "/cross-space-grants/accepted-document") return this.revokeAcceptedCrossSpaceDocument(url.searchParams);
+      if (method === "POST" && url.pathname === "/cross-space-audit") return this.recordCrossSpaceAccess(request);
       // DELETE /cross-space-grants/:id
       const grantMatch = url.pathname.match(/^\/cross-space-grants\/([^/]+)$/);
       if (method === "DELETE" && grantMatch?.[1]) {
@@ -4080,19 +4105,27 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ id, status: updated.status });
   }
 
-  private testFoundryTemplate(id: string): Response {
+  private async testFoundryTemplate(id: string, request: Request): Promise<Response> {
+    const body = await request.json<{ source_reference_checks?: Array<{ id: string; title?: string; resolved: boolean; reason?: string }>; manual_reference_count?: number }>().catch(() => ({} as { source_reference_checks?: Array<{ id: string; title?: string; resolved: boolean; reason?: string }>; manual_reference_count?: number }));
     const row = queryOne<{ definition_json: string; version: number; status: string }>(this.ctx.storage.sql as never,
       "SELECT definition_json,version,status FROM foundry_templates WHERE id=?", id);
     if (!row || !["draft", "rejected"].includes(row.status)) return Response.json({ error_code: "not_found_or_not_testable" }, { status: 409 });
     let definition: Record<string, unknown>;
     try { definition = JSON.parse(row.definition_json) as Record<string, unknown>; }
     catch { return Response.json({ error_code: "template_definition_invalid" }, { status: 422 }); }
+    const expectedKnowledgeIds = Array.isArray(definition.sourceReferences)
+      ? [...new Set(definition.sourceReferences.filter((reference): reference is string => typeof reference === "string" && reference.startsWith("kb:")).map((reference) => reference.slice(3)))]
+      : [];
+    const sourceChecks = Array.isArray(body.source_reference_checks) ? body.source_reference_checks : [];
+    const checksById = new Map(sourceChecks.map((check) => [check.id, check]));
+    const knowledgeSourcesResolved = expectedKnowledgeIds.every((id) => checksById.get(id)?.resolved === true);
     const checks = [
       { id: "domain-context", passed: typeof definition.expertise === "string" && Boolean(definition.expertise.trim()) && typeof definition.audience === "string" && Boolean(definition.audience.trim()) && typeof definition.outcome === "string" && Boolean(definition.outcome.trim()) },
       { id: "workflow-and-safety", passed: typeof definition.workflow === "string" && Boolean(definition.workflow.trim()) && typeof definition.safetyLimits === "string" && Boolean(definition.safetyLimits.trim()) },
       { id: "bounded-tools", passed: Array.isArray(definition.toolAllowlist) && definition.toolAllowlist.length <= 8 && definition.toolAllowlist.every((tool) => ["knowledge-base", "web-search", "file-manager", "foundry-inbox"].includes(String(tool))) },
       { id: "approval-and-data-boundary", passed: definition.approvalMode === "always_ask" && typeof definition.instructions === "string" && definition.instructions.length <= 6000 },
       { id: "source-references", passed: Array.isArray(definition.sourceReferences) && definition.sourceReferences.length <= 30 && definition.sourceReferences.every((source) => typeof source === "string" && source.length <= 300) },
+      { id: "knowledge-source-resolution", passed: knowledgeSourcesResolved, sources: sourceChecks.map((source) => ({ id: source.id, title: source.title, resolved: source.resolved, reason: source.reason })), manual_reference_count: Math.max(0, Math.min(30, Number(body.manual_reference_count ?? 0))) },
     ];
     const passed = checks.every((check) => check.passed);
     const result = { kind: "deterministic_configuration_checks", passed, checks, tested_version: row.version, tested_at: new Date().toISOString() };
@@ -10071,6 +10104,67 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     );
     if (changed.length === 0) return Response.json({ error_code: "grant_not_found_or_not_owned", revoked: false }, { status: 404 });
     return Response.json({ revoked: true, id, target_space_id: targetSpaceId });
+  }
+
+  private async acceptCrossSpaceDocument(request: Request): Promise<Response> {
+    const body = await request.json<{ grantee_space_id?: string; target_space_id?: string; document_id?: string; accepted_by?: string; capability_token?: string }>().catch(() => ({} as { grantee_space_id?: string; target_space_id?: string; document_id?: string; accepted_by?: string; capability_token?: string }));
+    if (!body.grantee_space_id || !body.target_space_id || !body.document_id || !body.accepted_by || !body.capability_token || body.capability_token.length > 32768) {
+      return Response.json({ error_code: "bad_request" }, { status: 400 });
+    }
+    const resourceId = `knowledge-document:${body.document_id}`;
+    const capability = await verifyCapabilityToken(body.capability_token, this.env.PLATFORM_SECRET, {
+      granteeSpaceId: body.grantee_space_id, targetSpaceId: body.target_space_id, resourceId, permission: "read",
+    });
+    if (!capability) return Response.json({ error_code: "invalid_document_capability" }, { status: 403 });
+    const id = crypto.randomUUID();
+    const expiresAt = new Date(capability.exp).toISOString();
+    execute(this.ctx.storage.sql as never,
+      `INSERT INTO accepted_cross_space_documents(id,grantee_space_id,target_space_id,document_id,accepted_by,capability_token,expires_at,accepted_at,revoked_at)
+       VALUES(?,?,?,?,?,?,?,?,NULL)
+       ON CONFLICT(grantee_space_id,target_space_id,document_id,accepted_by) DO UPDATE SET
+         id=excluded.id,capability_token=excluded.capability_token,expires_at=excluded.expires_at,accepted_at=excluded.accepted_at,revoked_at=NULL`,
+      id, body.grantee_space_id, body.target_space_id, body.document_id, body.accepted_by, body.capability_token, expiresAt, new Date().toISOString());
+    return Response.json({ accepted: true, id, target_space_id: body.target_space_id, document_id: body.document_id, expires_at: expiresAt }, { status: 201 });
+  }
+
+  private getAcceptedCrossSpaceDocument(params: URLSearchParams): Response {
+    const granteeSpaceId = params.get("grantee_space_id") ?? "";
+    const targetSpaceId = params.get("target_space_id") ?? "";
+    const documentId = params.get("document_id") ?? "";
+    const acceptedBy = params.get("accepted_by") ?? "";
+    if (!granteeSpaceId || !targetSpaceId || !documentId || !acceptedBy) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const row = queryOne<{ id: string; capability_token: string; expires_at: string }>(this.ctx.storage.sql as never,
+      `SELECT id,capability_token,expires_at FROM accepted_cross_space_documents
+       WHERE grantee_space_id=? AND target_space_id=? AND document_id=? AND accepted_by=? AND revoked_at IS NULL AND expires_at>?`,
+      granteeSpaceId, targetSpaceId, documentId, acceptedBy, new Date().toISOString());
+    return row ? Response.json({ accepted: true, ...row }) : Response.json({ accepted: false }, { status: 404 });
+  }
+
+  private revokeAcceptedCrossSpaceDocument(params: URLSearchParams): Response {
+    const granteeSpaceId = params.get("grantee_space_id") ?? "";
+    const targetSpaceId = params.get("target_space_id") ?? "";
+    const documentId = params.get("document_id") ?? "";
+    const acceptedBy = params.get("accepted_by") ?? "";
+    if (!granteeSpaceId || !targetSpaceId || !documentId || !acceptedBy) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const rows = queryAll<{ id: string }>(this.ctx.storage.sql as never,
+      `UPDATE accepted_cross_space_documents SET revoked_at=? WHERE grantee_space_id=? AND target_space_id=? AND document_id=? AND accepted_by=? AND revoked_at IS NULL RETURNING id`,
+      new Date().toISOString(), granteeSpaceId, targetSpaceId, documentId, acceptedBy);
+    if (!rows.length) return Response.json({ error_code: "accepted_grant_not_found", revoked: false }, { status: 404 });
+    return Response.json({ revoked: true, document_id: documentId });
+  }
+
+  private async recordCrossSpaceAccess(request: Request): Promise<Response> {
+    const body = await request.json<{ grantee_space_id?: string; target_space_id?: string; resource_id?: string; actor_id?: string; action?: string }>().catch(() => ({} as { grantee_space_id?: string; target_space_id?: string; resource_id?: string; actor_id?: string; action?: string }));
+    if (!body.grantee_space_id || !body.target_space_id || !body.actor_id || !body.resource_id?.startsWith("knowledge-document:") || body.action !== "read") {
+      return Response.json({ error_code: "bad_request" }, { status: 400 });
+    }
+    const id = crypto.randomUUID();
+    const createdAt = new Date().toISOString();
+    execute(this.ctx.storage.sql as never,
+      "INSERT INTO cross_space_access_audit(id,grantee_space_id,target_space_id,resource_id,actor_id,action,created_at,details_json) VALUES(?,?,?,?,?,?,?,?)",
+      id, body.grantee_space_id, body.target_space_id, body.resource_id, body.actor_id, "read", createdAt, "{}");
+    execute(this.ctx.storage.sql as never, "DELETE FROM cross_space_access_audit WHERE created_at < ?", new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString());
+    return Response.json({ audited: true, id, created_at: createdAt });
   }
 
   // GET /cross-space-check — THE CRITICAL PATH (§49). Default DENIED on any error.

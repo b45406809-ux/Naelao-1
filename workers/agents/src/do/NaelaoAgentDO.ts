@@ -14,7 +14,7 @@ import { scheduleToolOutputExpiry } from "../script-engine/tool-output-expiry.js
 
 import { DurableObject } from "cloudflare:workers";
 import { createWorkflowHooks } from "../workflows/workflow-orchestration.js";
-import { startDurableWorkflow, workflowHash, workflowRunStub, readWorkflowGrant, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
+import { startDurableWorkflow, workflowHash, workflowRunStub, readWorkflowGrant, workflowWorkspaceExtensionId, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
 import type { DurableWorkflowIdentity } from "@naelao/agent-sdk";
 import { mintInternalToken, broadcastSpaceEvent } from "@naelao/http";
 import { getDOName } from "@naelao/crypto";
@@ -1144,6 +1144,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const env = await this.buildScriptEngineEnv(identity.spaceId, identity.agentId, identity.tenantId, identity.actorId, identity.projectId,
       { goal: "Durable workflow step", taskId: body.idempotencyKey, threadId: identity.runId }, body.airGappedOnly === true, undefined, undefined, grant.role);
     if (!env) return Response.json({ error: "workflow_engine_unavailable" }, { status: 503 });
+    const extensionWorkspaceId = workflowWorkspaceExtensionId(identity);
+    if (extensionWorkspaceId) env.spaceWorkspaceExtensionId = extensionWorkspaceId;
     env.runId = body.idempotencyKey;
     env.taskId = body.idempotencyKey;
     env.humanInvokerId = identity.actorId;

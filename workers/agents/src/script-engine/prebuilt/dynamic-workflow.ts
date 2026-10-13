@@ -69,6 +69,7 @@ export const dynamicWorkflow: PrebuiltScript = {
         workflowClass,
         spaceId: ctx.env.spaceId,
         ...(ctx.env.projectId ? { projectId: ctx.env.projectId } : {}),
+        ...(typeof args.installation_id === "string" ? { installationId: args.installation_id } : {}),
         ...(extensionId ? { extensionId } : {}),
         invokerId: ctx.env.humanInvokerId ?? "system",
         budgetCredits: Number(args.budget_credits ?? 1),
@@ -93,6 +94,7 @@ export const dynamicWorkflow: PrebuiltScript = {
           escalationTarget: route.escalationTarget,
           ...(typeof args.start_key === "string" ? { startKey: args.start_key } : {}),
           ...(typeof args.installation_id === "string" ? { installationId: args.installation_id } : {}),
+          ...(extensionId ? { extensionId } : {}),
         }
       );
       return {

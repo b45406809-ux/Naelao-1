@@ -670,6 +670,9 @@ importers:
       '@naelao/moderation':
         specifier: workspace:*
         version: link:../../packages/moderation
+      '@naelao/rag':
+        specifier: workspace:^
+        version: link:../../packages/rag
       '@naelao/security':
         specifier: workspace:*
         version: link:../../packages/security

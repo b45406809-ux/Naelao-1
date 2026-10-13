@@ -173,6 +173,10 @@ service = "naelao-ws-gateway"
 binding = "NOTIFICATIONS_WORKER"
 service = "naelao-notifications"
 
+[[services]]
+binding = "KNOWLEDGE_WORKER"
+service = "naelao-knowledge"
+
 [env.staging]
 # wrangler does NOT merge [env.X].vars with the top-level [vars] block — it replaces it
 # entirely, so PRODUCT_SHELL_URL must be repeated here or it's undefined in staging. Override
@@ -190,6 +194,10 @@ service = "naelao-agents"
 [[env.staging.services]]
 binding = "NOTIFICATIONS_WORKER"
 service = "naelao-notifications"
+
+[[env.staging.services]]
+binding = "KNOWLEDGE_WORKER"
+service = "naelao-knowledge"
 
 [env.production]
 # See [env.staging]'s comment above — same wrangler vars-replacement gotcha. Real deploys of this
@@ -209,3 +217,7 @@ service = "naelao-agents"
 [[env.production.services]]
 binding = "NOTIFICATIONS_WORKER"
 service = "naelao-notifications"
+
+[[env.production.services]]
+binding = "KNOWLEDGE_WORKER"
+service = "naelao-knowledge"

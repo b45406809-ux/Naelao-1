@@ -27,7 +27,11 @@ export async function workflowHeaders(env: DurableWorkflowHostEnv, tenantId: str
   return { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId), ...(actorId ? { "x-naelao-user-id": actorId } : {}) };
 }
 /** Changes to membership, installation or agent configuration invalidate resumed grants. */
-export async function readWorkflowGrant(env: DurableWorkflowHostEnv, scope: Pick<DurableWorkflowIdentity, "tenantId" | "spaceId" | "projectId" | "actorId" | "agentId" | "installationId">): Promise<{ version: string; role: string }> {
+export interface WorkflowInstallationGrant {
+  instance: { tenant_id: string; space_id: string; project_id?: string | null; user_id?: string | null; scope?: string; status: string };
+  manifest: { id?: string; daemons?: Array<{ workflowScript?: string }> };
+}
+export async function readWorkflowGrant(env: DurableWorkflowHostEnv, scope: Pick<DurableWorkflowIdentity, "tenantId" | "spaceId" | "projectId" | "actorId" | "agentId" | "installationId">): Promise<{ version: string; role: string; installation?: WorkflowInstallationGrant }> {
   if (!env.SCRIPTS_R2 || !scope.actorId || scope.actorId === "system") throw new Error("workflow_actor_required");
   const headers = await workflowHeaders(env, scope.tenantId, scope.actorId);
   const base = "http://spaces-worker/spaces/" + encodeURIComponent(scope.spaceId);
@@ -45,11 +49,11 @@ export async function readWorkflowGrant(env: DurableWorkflowHostEnv, scope: Pick
     projectMember = rows.data?.find((row) => row.user_id === scope.actorId) ?? null;
     if (!projectMember && role !== "owner" && role !== "admin") throw new Error("workflow_project_membership_revoked");
   }
-  let installation: unknown = null;
+  let installation: WorkflowInstallationGrant | null = null;
   if (scope.installationId) {
     const installed = await env.SPACES_WORKER.fetch(new Request(base + "/workflow-installations/" + encodeURIComponent(scope.installationId), { headers }));
     if (!installed.ok) throw new Error("workflow_installation_revoked");
-    const record = await installed.json<{ instance: { tenant_id: string; space_id: string; project_id?: string; user_id?: string; status: string }; manifest: unknown }>();
+    const record = await installed.json<WorkflowInstallationGrant>();
     const instance = record.instance;
     if (instance.status !== "active" || instance.tenant_id !== scope.tenantId || instance.space_id !== scope.spaceId || instance.project_id && instance.project_id !== scope.projectId || instance.user_id && instance.user_id !== scope.actorId) throw new Error("workflow_installation_scope_mismatch");
     installation = record;
@@ -59,7 +63,22 @@ export async function readWorkflowGrant(env: DurableWorkflowHostEnv, scope: Pick
     if (!object) throw new Error("workflow_agent_not_provisioned");
     return [file, await workflowHash(await object.text())];
   }));
-  return { role, version: await workflowHash(JSON.stringify([member, projectMember, installation, config])) };
+  return { role, version: await workflowHash(JSON.stringify([member, projectMember, installation, config])), ...(installation ? { installation } : {}) };
+}
+
+/** SkillLibrary names are single path segments; extension manifests declare relative script paths. */
+export function extensionWorkflowName(path: string): string | null {
+  if (!/^\.\/[A-Za-z0-9._-]{1,128}\.(?:ts|js|mjs)$/.test(path)) return null;
+  return path.slice(2).replace(/\.(?:ts|js|mjs)$/, "");
+}
+export function workflowWorkspaceExtensionId(identity: Pick<DurableWorkflowIdentity, "workflowClass" | "projectId" | "installationId">): string | undefined {
+  return identity.workflowClass === "vertical_extension" && !identity.projectId ? identity.installationId : undefined;
+}
+export function assertDeclaredExtensionWorkflow(installation: WorkflowInstallationGrant | undefined, name: string, extensionId: string | undefined): void {
+  if (!installation?.manifest.daemons?.some((daemon) => typeof daemon.workflowScript === "string" && extensionWorkflowName(daemon.workflowScript) === name)) {
+    throw new Error("workflow_script_not_declared_by_installation");
+  }
+  if (!extensionId || installation.manifest.id !== extensionId) throw new Error("workflow_extension_identity_mismatch");
 }
 export async function putWorkflowArtifact(env: DurableWorkflowHostEnv, identity: DurableWorkflowIdentity, value: unknown): Promise<WorkflowCheckpointPointer> {
   if (!env.SCRIPTS_R2) throw new Error("workflow_artifacts_unavailable");
@@ -82,7 +101,7 @@ export interface StartDurableWorkflowOptions {
   tenantId: string; spaceId: string; projectId?: string | undefined; actorId: string; agentId: string;
   name: string; params: Record<string, unknown>; startKey: string;
   workflowClass?: WorkflowClass | undefined; budgetKey?: string | undefined; budgetCredits?: number | undefined;
-  installationId?: string | undefined; expiresAt?: number;
+  installationId?: string | undefined; extensionId?: string | undefined; expiresAt?: number;
 }
 export async function startDurableWorkflow(env: DurableWorkflowHostEnv, options: StartDurableWorkflowOptions): Promise<{ id: string; queued: boolean; durable: true }> {
   if (!env.SCRIPTS_R2 || !env.AGENT_SCRIPT_WORKFLOW || !env.LOADER) throw new Error("dynamic_workflow_runtime_unavailable");
@@ -93,6 +112,10 @@ export async function startDurableWorkflow(env: DurableWorkflowHostEnv, options:
   const inputDigest = await workflowHash(serializeWorkflowCheckpoint(options.params, 4 * 1024 * 1024));
   if (prior) {
     if (prior.inputDigest !== inputDigest || prior.identity.agentId !== options.agentId || prior.identity.installationId !== options.installationId || prior.identity.definitionId !== options.name || prior.identity.workflowClass !== (options.workflowClass ?? "ephemeral_task")) throw new Error("workflow_start_key_conflict");
+    if (prior.identity.workflowClass === "vertical_extension") {
+      const replayGrant = await readWorkflowGrant(env, { tenantId: options.tenantId, spaceId: options.spaceId, agentId: options.agentId, actorId: options.actorId, ...(options.projectId ? { projectId: options.projectId } : {}), ...(options.installationId ? { installationId: options.installationId } : {}) });
+      assertDeclaredExtensionWorkflow(replayGrant.installation, options.name, options.extensionId);
+    }
     await stub.authorize(runId);
     await stub.launch();
     return { id: runId, queued: prior.status === "queued", durable: true };
@@ -102,7 +125,10 @@ export async function startDurableWorkflow(env: DurableWorkflowHostEnv, options:
   const grant = await readWorkflowGrant(env, { tenantId: options.tenantId, spaceId: options.spaceId, agentId: options.agentId, actorId: options.actorId, ...(options.projectId ? { projectId: options.projectId } : {}), ...(options.installationId ? { installationId: options.installationId } : {}) });
   const workflowClass = options.workflowClass ?? "ephemeral_task";
   if (workflowClass === "company_automation" && (options.projectId || !["owner", "admin"].includes(grant.role))) throw new Error("workflow_owner_required");
-  if (workflowClass === "vertical_extension" && (!options.projectId || !options.installationId)) throw new Error("workflow_installation_required");
+  if (workflowClass === "vertical_extension") {
+    if (!options.installationId) throw new Error("workflow_installation_required");
+    assertDeclaredExtensionWorkflow(grant.installation, options.name, options.extensionId);
+  }
   const codeDigest = await workflowHash(script.code);
   const identity: DurableWorkflowIdentity = { schema: 1, runId, tenantId: options.tenantId, spaceId: options.spaceId, ...(options.projectId ? { projectId: options.projectId } : {}), actorId: options.actorId, agentId: options.agentId, ...(options.installationId ? { installationId: options.installationId } : {}),
     startKey: options.startKey, definitionId: options.name, codeDigest, codeKey: "workflow-code/" + options.tenantId + "/" + options.spaceId + "/" + codeDigest + ".js", grantVersion: grant.version,

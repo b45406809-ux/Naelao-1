@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { SpaceDO } from "./do/SpaceDO.js";
 import spacesWorker from "./index.js";
+import { mintInternalToken } from "@naelao/http";
 
 function harness() {
   const templates = new Map<string, Record<string, unknown>>();
@@ -69,7 +70,7 @@ describe("reviewed Foundry workflows", () => {
     expect(h.templates.get(id)?.status).toBe("draft");
     const revised = await h.instance.fetch(new Request(`https://space/foundry/templates/${id}`, { method: "PUT", body: JSON.stringify({ updated_by: "u1", name: "Trade Desk v2", description: "Revised draft", definition: { ...definition, sourceReferences: ["kb:policy-v2"] } }) }));
     expect(await revised.json()).toMatchObject({ id, status: "draft", version: 2 });
-    const tested = await h.instance.fetch(new Request(`https://space/foundry/templates/${id}/test`, { method: "POST" }));
+    const tested = await h.instance.fetch(new Request(`https://space/foundry/templates/${id}/test`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ source_reference_checks: [{ id: "policy-v2", title: "Policy", resolved: true }], manual_reference_count: 0 }) }));
     expect(await tested.json()).toMatchObject({ passed: true, kind: "deterministic_configuration_checks", tested_version: 2 });
     const invalid = await h.instance.fetch(new Request("https://space/foundry/templates", { method: "POST", body: JSON.stringify({ space_id: "s1", created_by: "u1", name: "Unsafe", description: "x", definition: { ...definition, toolAllowlist: ["wallet"] } }) }));
     expect(invalid.status).toBe(400);
@@ -180,6 +181,7 @@ describe("Foundry worker invocation route", () => {
     const forwardedRequest = allowed.forwarded[0]!;
     expect(new URL(forwardedRequest.url).pathname).toBe("/agents/worker-7/script/run");
     expect(forwardedRequest.headers.get("x-naelao-space-id")).toBe("source-space");
+    expect(forwardedRequest.headers.get("x-naelao-role")).toBe("viewer");
     expect(await forwardedRequest.json()).toEqual({ goal: "Read the published customs checklist.", spaceId: "source-space", tenantId: "tenant-1" });
   });
 });
@@ -242,5 +244,114 @@ describe("Foundry template installation", () => {
     expect(installedBody?.prebuilt_scripts).toContain("foundry-inbox");
     expect(installedBody?.instructions).toContain("kb:origin-policy");
     expect(installedBody?.instructions).toContain("provenance only; source content is not shared");
+    expect(installedBody?.instructions).toContain("knowledge.shared_document");
+    expect(installedBody?.instructions).toContain('document_id:"<identifier>"');
+    expect(installedBody?.instructions).toContain('source_space_id:"source"');
+  });
+});
+
+describe("accepted Foundry document sharing", () => {
+  function sharingHarness(sourcePermitted: boolean) {
+    const forwarded: Request[] = [];
+    const target = { fetch: vi.fn(async (request: Request) => {
+      const url = new URL(request.url); forwarded.push(request);
+      if (url.pathname === "/hierarchy-authorize") return Response.json({ authorized: true });
+      if (url.pathname === "/cross-space-grants/accepted-document") {
+        if (request.method === "DELETE") return Response.json({ revoked: true, document_id: "doc-1" });
+        return Response.json({ accepted: true, capability_token: "accepted-capability" });
+      }
+      if (url.pathname === "/cross-space-grants/accept-document") return Response.json({ accepted: true }, { status: 201 });
+      if (url.pathname === "/cross-space-check") return Response.json({ permitted: sourcePermitted });
+      if (url.pathname === "/cross-space-audit") return Response.json({ audited: true });
+      return Response.json({ error: "unexpected target route" }, { status: 404 });
+    }) };
+    const source = { fetch: vi.fn(async (request: Request) => {
+      const url = new URL(request.url); forwarded.push(request);
+      if (url.pathname === "/cross-space-check") return Response.json({ permitted: sourcePermitted });
+      if (url.pathname === "/cross-space-audit") return Response.json({ audited: true });
+      return Response.json({ error: "unexpected source route" }, { status: 404 });
+    }) };
+    const knowledge = { fetch: vi.fn(async (request: Request) => {
+      forwarded.push(request);
+      return Response.json({ document: { id: "doc-1", title: "Policy", content: "Sanitized approved text", chunk_count: 1 } });
+    }) };
+    const env = { PLATFORM_SECRET: "test-secret", KNOWLEDGE_WORKER: knowledge,
+      SPACE_DO: { idFromName: (name: string) => name, get: () => target } } as never;
+    const headers = async () => ({ "x-naelao-tenant-id": "tenant-1", "x-naelao-user-id": "user-1",
+      "x-naelao-internal-token": await mintInternalToken("test-secret", "tenant-1"), "content-type": "application/json" });
+    return { env, target, source, knowledge, forwarded, headers };
+  }
+
+  it("accepts an exact user grant, rechecks source revocation before reading, and audits the read", async () => {
+    const h = sharingHarness(true);
+    const accept = await spacesWorker.fetch(new Request("https://spaces.test/spaces/target-space/foundry/accept-document", {
+      method: "POST", headers: await h.headers(), body: JSON.stringify({ source_space_id: "source-space", document_id: "doc-1", capability_token: "scoped-token" }),
+    }), h.env);
+    expect(accept.status).toBe(201);
+    expect(h.target.fetch).toHaveBeenCalledWith(expect.any(Request));
+    const storedAcceptance = h.forwarded.map(request => request.url).find(url => url.endsWith("/cross-space-grants/accept-document"));
+    expect(storedAcceptance).toBeTruthy();
+
+    const read = await spacesWorker.fetch(new Request("https://spaces.test/internal/spaces/target-space/foundry/shared-document", {
+      method: "POST", headers: { ...(await h.headers()), "x-naelao-agent-id": "worker-1", "x-naelao-run-id": "run-1" },
+      body: JSON.stringify({ source_space_id: "source-space", document_id: "doc-1" }),
+    }), h.env);
+    expect(read.status).toBe(200);
+    expect(await read.json()).toMatchObject({ document: { id: "doc-1", content: "Sanitized approved text" } });
+    expect(h.knowledge.fetch).toHaveBeenCalledOnce();
+    expect(h.forwarded.some(request => new URL(request.url).pathname === "/cross-space-audit")).toBe(true);
+  });
+
+  it("fails closed on revoked source grants and supports per-user acceptance revocation", async () => {
+    const h = sharingHarness(false);
+    const read = await spacesWorker.fetch(new Request("https://spaces.test/internal/spaces/target-space/foundry/shared-document", {
+      method: "POST", headers: { ...(await h.headers()), "x-naelao-agent-id": "worker-1", "x-naelao-run-id": "run-2" },
+      body: JSON.stringify({ source_space_id: "source-space", document_id: "doc-1" }),
+    }), h.env);
+    expect(read.status).toBe(403);
+    expect(h.knowledge.fetch).not.toHaveBeenCalled();
+
+    const revoked = await spacesWorker.fetch(new Request("https://spaces.test/spaces/target-space/foundry/accept-document?source_space_id=source-space&document_id=doc-1", {
+      method: "DELETE", headers: await h.headers(),
+    }), h.env);
+    expect(revoked.status).toBe(200);
+    expect(await revoked.json()).toMatchObject({ revoked: true, document_id: "doc-1" });
+  });
+});
+
+describe("Foundry template knowledge-reference checks", () => {
+  it("resolves only the template's exact kb references before saving validation evidence", async () => {
+    let validationBody: Record<string, unknown> | undefined;
+    const sourceSpace = { fetch: vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/hierarchy-authorize") return Response.json({ authorized: true });
+      if (request.method === "GET" && url.pathname === "/foundry/templates/template-1") return Response.json({ definition: { sourceReferences: ["kb:doc-1", "manual:policy"] } });
+      if (request.method === "POST" && url.pathname === "/foundry/templates/template-1/test") { validationBody = await request.json() as Record<string, unknown>; return Response.json({ passed: true }); }
+      return Response.json({ error: "unexpected SpaceDO route" }, { status: 404 });
+    }) };
+    const knowledge = { fetch: vi.fn(async (request: Request) => {
+      expect(new URL(request.url).pathname).toBe("/internal/spaces/source-space/kb/references/resolve");
+      expect(await request.json()).toEqual({ document_ids: ["doc-1"] });
+      return Response.json({ documents: [{ id: "doc-1", title: "Published policy", resolved: true }] });
+    }) };
+    const env = { PLATFORM_SECRET: "test-secret", KNOWLEDGE_WORKER: knowledge,
+      SPACE_DO: { idFromName: (name: string) => name, get: () => sourceSpace } } as never;
+    const response = await spacesWorker.fetch(new Request("https://spaces.test/spaces/source-space/foundry/templates/template-1/test", {
+      method: "POST", headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-user-id": "owner-1" },
+    }), env);
+    expect(response.status).toBe(200);
+    expect(validationBody).toEqual({ source_reference_checks: [{ id: "doc-1", title: "Published policy", resolved: true }], manual_reference_count: 1 });
+  });
+
+  it("fails closed if a source reference cannot be resolved", async () => {
+    const sourceSpace = { fetch: vi.fn(async (request: Request) => new URL(request.url).pathname === "/hierarchy-authorize"
+      ? Response.json({ authorized: true })
+      : Response.json({ definition: { sourceReferences: ["kb:doc-1"] } })) };
+    const env = { PLATFORM_SECRET: "test-secret", SPACE_DO: { idFromName: (name: string) => name, get: () => sourceSpace } } as never;
+    const response = await spacesWorker.fetch(new Request("https://spaces.test/spaces/source-space/foundry/templates/template-1/test", {
+      method: "POST", headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-user-id": "owner-1" },
+    }), env);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ error_code: "knowledge_reference_resolver_unavailable" });
   });
 });

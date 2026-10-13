@@ -1305,6 +1305,13 @@ export async function listCrossSpaceGrants(spaceId: string, session: SessionCred
 export async function revokeCrossSpaceGrant(spaceId: string, grantId: string, session: SessionCredentials) {
   return apiFetch(`/v1/spaces/${spaceId}/cross-space-grants/${encodeURIComponent(grantId)}`, { method: "DELETE", session });
 }
+export async function acceptFoundryDocumentGrant(spaceId: string, session: SessionCredentials, input: { source_space_id: string; document_id: string; capability_token: string }) {
+  return apiFetch<{ accepted: boolean; id: string; expires_at: string }>(`/v1/spaces/${spaceId}/foundry/accept-document`, { method: "POST", body: JSON.stringify(input), session });
+}
+export async function revokeFoundryDocumentGrant(spaceId: string, session: SessionCredentials, input: { source_space_id: string; document_id: string }) {
+  const query = new URLSearchParams(input);
+  return apiFetch(`/v1/spaces/${spaceId}/foundry/accept-document?${query}`, { method: "DELETE", session });
+}
 export async function installFoundryTemplate(spaceId: string, session: SessionCredentials, input: { source_space_id: string; template_id: string; capability_token: string; name?: string; project_id?: string }) {
   return apiFetch<{ agent_id?: string; agent_definition_id?: string; custom?: boolean }>(`/v1/spaces/${spaceId}/foundry/install-template`, { method: "POST", body: JSON.stringify(input), session });
 }

@@ -245,6 +245,48 @@ app.use("/spaces/:spaceId/kb/*", async (c, next) => {
   await next();
 });
 
+// Foundry's source-reference checker and explicit cross-Space document-share route call these
+// authenticated service endpoints. They return indexed/sanitized KB content only; callers must
+// perform the source Space capability check before requesting a document body.
+app.use("/internal/spaces/:spaceId/kb/*", requireInternalHmac((c) => (c as unknown as { env: KnowledgeEnv }).env.PLATFORM_SECRET));
+app.post("/internal/spaces/:spaceId/kb/references/resolve", async (c) => {
+  const tenantId = requireTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const body = await c.req.json<{ document_ids?: unknown }>().catch(() => ({} as { document_ids?: unknown }));
+  if (!Array.isArray(body.document_ids) || body.document_ids.length > 30 || body.document_ids.some((id) => typeof id !== "string" || id.length > 160)) {
+    throw badRequest("document_ids must be an array of at most 30 IDs");
+  }
+  const ids = [...new Set(body.document_ids as string[])];
+  if (ids.length === 0) return c.json({ documents: [] });
+  const placeholders = ids.map(() => "?").join(",");
+  const { results } = await c.env.PLATFORM_DB.prepare(
+    `SELECT id, title, status, project_id FROM kb_documents WHERE tenant_id=? AND space_id=? AND id IN (${placeholders})`
+  ).bind(tenantId, spaceId, ...ids).all<{ id: string; title: string; status: string; project_id: string | null }>();
+  const byId = new Map(results.map((row) => [row.id, row]));
+  return c.json({ documents: ids.map((id) => {
+    const row = byId.get(id);
+    return row ? { id, title: row.title, status: row.status, project_id: row.project_id, resolved: row.status === "indexed" && row.project_id === null }
+      : { id, resolved: false, reason: "not_found" };
+  }) });
+});
+
+app.get("/internal/spaces/:spaceId/kb/documents/:documentId/shared", async (c) => {
+  const tenantId = requireTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const documentId = c.req.param("documentId");
+  const doc = await c.env.PLATFORM_DB.prepare(
+    "SELECT id,title,source_url,status,project_id FROM kb_documents WHERE id=? AND tenant_id=? AND space_id=?"
+  ).bind(documentId, tenantId, spaceId).first<{ id: string; title: string; source_url: string | null; status: string; project_id: string | null }>();
+  if (!doc || doc.status !== "indexed" || doc.project_id !== null) throw notFound("Shareable knowledge document");
+  const { results } = await c.env.PLATFORM_DB.prepare(
+    "SELECT chunk_index,content FROM kb_chunks WHERE document_id=? AND tenant_id=? AND space_id=? AND project_id=? AND deleted_at IS NULL ORDER BY chunk_index"
+  ).bind(documentId, tenantId, spaceId, "_space").all<{ chunk_index: number; content: string }>();
+  if (!results.length || results.some((row, index) => row.chunk_index !== index)) throw notFound("Shareable knowledge document");
+  const content = results.map((row) => row.content).join("\n\n");
+  if (new TextEncoder().encode(content).byteLength > 250_000) return c.json({ error_code: "document_share_size_limit" }, 413);
+  return c.json({ document: { id: doc.id, title: doc.title, source_url: doc.source_url, content, chunk_count: results.length } });
+});
+
 // ── GET /spaces/:spaceId/kb/documents ─────────────────────────────────────────
 
 app.get("/spaces/:spaceId/kb/documents", async (c) => {
