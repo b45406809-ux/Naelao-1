@@ -1,7 +1,7 @@
 # Continuation implementation progress
 
 Branch: `Mcbt5s-Backup-2`. Source: the 66-message continuation transcript.
-Current task: **05 — IN PROGRESS**. Tasks 01–04: **IMPLEMENTED against available architecture; task 03 has a documented deployment boundary below**. Tasks 06–33: **UNASSESSED**.
+Current task: **06 — IN PROGRESS**. Tasks 01–05: **IMPLEMENTED against available architecture; task 03 has a documented deployment boundary below**. Tasks 07–33: **UNASSESSED**.
 
 ## Extraction and task-map checkpoint
 
@@ -56,10 +56,17 @@ Current task: **05 — IN PROGRESS**. Tasks 01–04: **IMPLEMENTED against avail
 
 ## Task 05 — in progress
 
-- Primary: 451–574 (USER 451–453; AI MODEL 454–574). This pair is newly in focus; its lines were previously read only as task 04 look-ahead and do not count as task completion.
-- Initial next action: reread the primary in bounded windows, search the later transcript for exact subsystem terms from the five proposed issues (AST/reference graph, package/registry isolation, SQLite/event-loop batching, webhook ordering/causality, model deprecation/profile translation), then read every matching context with line numbers before choosing what exists or needs implementation.
-- Treat the model's exact timings, provider internals, malicious-package behavior, zero-cost claims and proposed APIs as unverified hypotheses. Inspect current code/tests independently; do not implement five new subsystems unless source reconciliation and repository evidence support them.
+- Primary 451–574 was reread in one bounded 124-line window. Amendment/dependency reads: 575–693 (user narrows AST/LSP to an extension used by templates), 694–749 (user rejects the immutable proxy and requests trusted sources), plus relevant later matches 1158–1182, 1321–1355, 2340–2362, 4492–4512 and 4745–4765. Full transcript search found no later matches for generic 50k-row/`executeBatch` batching or webhook causality beyond the primary proposal.
+- Audited the five proposed risks against current code. The existing tree-sitter-named indexer is explicitly a lexical heuristic, not a parser/reference graph; the next user message's LSP micro-app correction owns its feature design (task 06). The registry proxy was explicitly rejected by the user and is replaced by trusted-source/egress and lockfile-policy discussion in task 07. The public MicroApp API inserts one record per call and caps reads at 500; there is no 50,000-row batch interface or evidence for an `executeBatch` interceptor. The webhook ingress verifies signatures, archives raw events and dispatches a queue, but causal prerequisites are domain-specific and cannot safely be inferred from provider timestamps generically. Cognitive profiles are a later feature area (pair 11 onward) and must be reconciled there with current model inventory and user/tenant routing.
+- Rejected the proposed vendor latency/price/credit values, generic causal ordering, imaginary Cloudflare `executeBatch` interception and silently mutating untrusted installs. No independent code change was safe for this audit pair; the concrete AST, dependency and model-profile work is deliberately handled in the later user-owned pairs identified above, rather than duplicated or implemented from model speculation.
+- Task 05 is complete as an evidence-backed architecture review; task 06 is now current. No tests were needed for this read-only audit. Earlier task 04 tests/typechecks and push remain recorded above.
+
+## Task 06 — in progress
+
+- Primary: 575–693 (USER 575–577; AI MODEL 578–693), previously read as task 05 look-ahead only. Reread in bounded windows as the current mission.
+- Search later text for LSP/indexer/virtual Bash/template/project workspace/parser/storage terms; inspect the current lexical AST daemon, project workspace, scoped extension tools and parser dependencies. Preserve the user's amended design: an optional project-template micro-app/extension with private SQLite facet, exposed through the existing virtual command path; do not make it a core mandatory kernel feature or claim Tree-sitter WASM exists unless the repo actually supplies it.
+- Exact next action: reread 575–693, review matching later corrections and the current daemon/CLI/extension architecture, then implement the viable extension behavior and record any precise parser/deployment boundary.
 
 ## Exact next action
 
-Finish the task 04 commit/push, then continue task 05 sequentially from primary 451–574. Do not mark task 05 complete based only on its earlier look-ahead read. Read the primary and relevant later corrections in bounded windows, inspect repository code/tests, implement supported requirements, verify, update the plan/progress, and push a task checkpoint before advancing.
+Task 04 is pushed as `fd46de8`. Task 05's reconciliation is recorded and task 06 is current. Read its primary 575–693 as the active range, search/read later corrections, implement the optional project-scoped LSP extension path using available code, verify its boundary, update plan/progress, and push the task checkpoint before task 07.
