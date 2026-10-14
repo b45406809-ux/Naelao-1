@@ -33,6 +33,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       getTcpPort: () => ({
         fetch: async (req) => {
           const url = new URL(req.url);
+          if (url.pathname === "/workspace/list") return Response.json({ files: [] });
           if (url.pathname.endsWith("/display/capture")) {
             return new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
           }
@@ -68,6 +69,8 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
 
     const realSandbox = new ToolSandboxDO(mockCtx, {
       PLATFORM_SECRET: "test-secret",
+      SCRIPTS_R2: { list: async () => ({ objects: [], truncated: false }), get: async () => null },
+      CONCURRENCY_DO: {},
       BILLING_WORKER: { fetch: async () => Response.json({ ok: true }) },
     } as never);
     const sandbox = { alarm: () => realSandbox.alarm(), fetch: async (request: Request) => {

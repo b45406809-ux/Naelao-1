@@ -1,7 +1,7 @@
 # Continuation implementation progress
 
 Branch: `Mcbt5s-Backup-2`. Source: the 66-message continuation transcript.
-Current task: **02 — IN PROGRESS**. Task 01: **IMPLEMENTED, local evidence below**. Tasks 03–33: **UNASSESSED**.
+Current task: **03 — IN PROGRESS**. Tasks 01–02: **IMPLEMENTED, local evidence below**. Tasks 04–33: **UNASSESSED**.
 
 ## Extraction and task-map checkpoint
 
@@ -24,6 +24,16 @@ Current task: **02 — IN PROGRESS**. Task 01: **IMPLEMENTED, local evidence bel
 - Official CF Python Worker documentation fetched successfully and confirms Pyodide/V8. Installed CF Worker Loader types include Python modules and resource limits. Google docs were denied by the environment's network proxy; Google internals remain unverified, and no product claim depends on them.
 - Extraction/range checkpoint `6da706a` is pushed to origin/Mcbt5s-Backup-2.
 
+## Task 02 — implemented against existing specialized runtime foundations
+
+- Primary 56–210 and its required later pairs were manually read during task 01 (see ranges above). Searched later transcript for Python/sandbox/air-gap references; additional context recorded above. Do not duplicate the initial read.
+- Reused actual media/document Dockerfiles, fixed bindings, image-digest registry, installed binary resolution, task sidecar naming and dedicated extension workspace boundaries. The marketplace's stale all-unavailable catalogue and discovery/install path belong to task 03; not marked implemented here.
+- Corrected `ToolSandboxDO.ts`: derive execution workspace from the authenticated scope, verify deployed digest before exposing files, refresh canonical project files for warm executions, and remove previously tracked files deleted by another runtime. CAS conflicts keep the concurrent writer and a durable reconciliation journal.
+- Added `specialized-workspaces.test.ts`: real sandbox/real SQLite-backed ConcurrencyDO with R2/native transport doubles; tests binary sharing between separate runtimes, warm updates/deletions, object reconstruction, foreign-project isolation, wrong-image denial before hydration, body-scope denial and CAS failure/restart preservation. Adjusted existing sandbox fixtures to provide the canonical empty workspace that executions now require.
+- `docs/specialized-runtime-workspaces.md` records actual boundaries. R2/CAS remains the verified workspace mechanism; no imaginary SQLite-FUSE engine, gVisor deployment, fixed boot times or zero-cost billing was introduced. Slim images are Linux user-space, not OS-free. Installed OCI image reuse does not authorize sharing live extension state.
+- Verification: Agents targeted Python/specialized workspace/sandbox suites — 17 tests passed; Agents typecheck passed. Tests/plan `14-containers` and `09-artifactfs` — 15 tests passed. Two original sandbox-fixture assertions initially failed because the fixture omitted canonical storage; corrected the fixture and reran successfully, without weakening the assertions.
+- Live Docker image/provider execution unrun. Current HTTP workspace file-size/count bounds remain; large-media/provider expansion is owned by tasks 18/28. Template install discovery and credit-sharing promotion are owned by tasks 03/04.
+
 ## Exact next action
 
-Commit/push task 01, then continue task 02. Primary 56–210 and all its listed look-ahead pairs have already been manually read; do not reread them wholesale. Inspect specialized media/document bindings, workspace hydration/publication and runtime binary routing. Verify installed specialized runtimes share only their authorized project workspace and identify/implement any missing behavior; preserve task 01. Future look-ahead-only tasks remain UNASSESSED.
+Commit/push task 02. Continue task 03 (211–338; its primary and most look-aheads have been read, but task 17/21 full pairs still require manual bounded reading). Inspect container catalogue API, marketplace/template installation, missing-runtime command recovery and durable extension scheduling. Fix/install actual approved runtime discovery without falsely advertising unavailable marketplace entries or merging unrelated extension state. Finish task 03 before starting 04. Preserve task 01–02 and track each later pair independently.

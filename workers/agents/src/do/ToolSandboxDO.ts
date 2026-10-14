@@ -345,6 +345,17 @@ export class ToolSandboxDO extends DurableObject {
       if (!response.ok) throw new Error(`Workspace hydration failed (${response.status}): ${path}`);
       expectedHashes[path] = hash;
     }
+    // A second runtime may have deleted a canonical file while this container was warm.
+    // Remove only previously tracked deliverables; local dependencies/control files are not
+    // canonical workspace data and must not be erased by a refresh.
+    const previous = await this.ctx.storage.get<Record<string, string>>("workspace_hashes") ?? {};
+    const removed = Object.keys(previous).filter(path => isSyncableWorkspacePath(path) && !(path in expectedHashes));
+    if (removed.length) {
+      const response = await container.getTcpPort(HARNESS_PORT).fetch(new Request("http://sandbox/workspace/delete", {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ paths: removed }),
+      }));
+      if (!response.ok) throw new Error(`Workspace refresh deletion failed (${response.status})`);
+    }
     await this.ctx.storage.put("workspace_scope", scope);
     await this.ctx.storage.put("workspace_hashes", expectedHashes);
   }
@@ -487,9 +498,12 @@ export class ToolSandboxDO extends DurableObject {
     if (url.pathname === "/exec" && request.method === "POST") {
       const body = await request.clone().json<{ spaceId?: string; projectId?: string; workspaceBranch?: string }>().catch((): { spaceId?: string; projectId?: string; workspaceBranch?: string } => ({}));
       const containerScope = JSON.parse(request.headers.get("x-naelao-container-scope") ?? "null") as ContainerInvocationScope | null;
-      if (body.spaceId) execScope = {
-        spaceId: body.spaceId,
-        ...(body.projectId ? { projectId: body.projectId } : {}),
+      if (!containerScope || body.spaceId !== undefined && body.spaceId !== containerScope.spaceId
+        || body.projectId !== undefined && body.projectId !== containerScope.projectId)
+        return Response.json({ ok: false, error: "sandbox_workspace_identity_mismatch" }, { status: 403 });
+      execScope = {
+        spaceId: containerScope.spaceId,
+        ...(containerScope.projectId ? { projectId: containerScope.projectId } : {}),
         ...(containerScope?.installationId ? { installationId: containerScope.installationId } : {}),
         ...(body.workspaceBranch ? { branch: body.workspaceBranch } : {}),
       };
@@ -635,11 +649,10 @@ export class ToolSandboxDO extends DurableObject {
       );
     }
 
-    // Cold-start the container on demand; it sleeps again when idle (configured via sleepAfter
-    // in wrangler). /workspace is genuinely empty on a cold start (see the file header) — the
-    // caller (workspace.copy) is responsible for staging anything it needs before running code
-    // that depends on it.
-    if (!container.running) {
+    // Allocate only reserved capacity. Hydration follows image verification, on both cold
+    // and warm execution: another runtime may have published project files since the last run.
+    const coldStart = !container.running;
+    if (coldStart) {
       if (request.signal.aborted) throw new Error("container_cancelled");
       if (!await this.ctx.storage.get("container_meter")) return Response.json({ ok: false, error: "container_capacity_reservation_required" }, { status: 403 });
       if (!container.destroy) return Response.json({ ok: false, error: "container_hard_stop_unsupported" }, { status: 503 });
@@ -659,15 +672,6 @@ export class ToolSandboxDO extends DurableObject {
       }
       if (!ready || request.signal.aborted) throw new Error("container_startup_interrupted");
       await this.ctx.storage.put("container_status", "running");
-      if (url.pathname === "/prewarm") { /* reserve/start capacity only; no artifact hydration */ }
-      else if (execScope && (this.env as unknown as SandboxBindings).SCRIPTS_R2) {
-        await this.hydrateWorkspace(container, execScope);
-      } else {
-        const snapshot = await this.ctx.storage.get<Record<string, string>>("workspace_snapshot");
-        if (snapshot && Object.keys(snapshot).length) {
-        await container.getTcpPort(HARNESS_PORT).fetch(new Request("http://sandbox/workspace/write", { method: "POST", headers: { "content-type": "application/json", "x-avos-restore": "1" }, body: JSON.stringify({ files: snapshot }) }));
-        }
-      }
     }
 
     if (request.signal.aborted) throw new Error("container_cancelled");
@@ -689,7 +693,14 @@ export class ToolSandboxDO extends DurableObject {
 
     if (url.pathname !== "/prewarm" && execScope && (this.env as unknown as SandboxBindings).SCRIPTS_R2) {
       const currentScope = await this.ctx.storage.get<SandboxWorkspaceScope>("workspace_scope");
-      if (!currentScope) await this.hydrateWorkspace(container, execScope);
+      if (coldStart || !currentScope || url.pathname === "/exec") await this.hydrateWorkspace(container, execScope);
+    } else if (url.pathname !== "/prewarm" && coldStart) {
+      const snapshot = await this.ctx.storage.get<Record<string, string>>("workspace_snapshot");
+      if (snapshot && Object.keys(snapshot).length) {
+        await container.getTcpPort(HARNESS_PORT).fetch(new Request("http://sandbox/workspace/write", {
+          method: "POST", headers: { "content-type": "application/json", "x-avos-restore": "1" }, body: JSON.stringify({ files: snapshot }),
+        }));
+      }
     }
 
     if (url.pathname === "/shell" && request.method === "POST") {

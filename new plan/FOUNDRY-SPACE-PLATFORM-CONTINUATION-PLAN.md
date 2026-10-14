@@ -32,7 +32,7 @@ Status: **IMPLEMENTED — locally verified; live provider checks unrun**. See th
 Primary read: **lines 56–210** (USER 56–58; AI MODEL 59–210).
 Bounded primary windows: 56–210.
 Later amendment/dependency pairs: 211–338 (task 03); 339–450 (task 04); 451–574 (task 05); 575–693 (task 06); 694–749 (task 07); 1755–1970 (task 14); 2174–2355 (task 16); 2592–2772 (task 18); 3943–4139 (task 25); 4442–4647 (task 28); 4648–4794 (task 29); 4795–4982 (task 30)
-Status: **UNASSESSED**. Evidence and exact next action belong in the progress file.
+Status: **IMPLEMENTED — existing runtimes reused, workspace defects fixed and locally verified**. See task 02 evidence; live image execution unrun.
 
 ## Task 03
 
