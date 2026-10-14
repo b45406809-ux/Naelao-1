@@ -5,9 +5,9 @@ import { Button, Card, CardDesc, CardTitle, Toast, useToast } from "@naelao/ui";
 import { useActiveSpace } from "@/lib/active-space-context";
 import { useProductAuth } from "@/lib/auth-provider";
 import {
-  acceptFoundryDocumentGrant, createCrossSpaceGrant, createFoundryRequest, createFoundryTemplate, forwardFoundryRequest, installFoundryTemplate, invokeSharedWorker,
+  acceptFoundryDocumentGrant, acceptFoundryWorkerGrant, createCrossSpaceGrant, createFoundryRequest, createFoundryTemplate, forwardFoundryRequest, installFoundryTemplate, invokeSharedWorker,
   listCrossSpaceGrants, listFoundryRequests, listFoundryTemplates, reviewFoundryRequest, testFoundryTemplate, updateFoundryTemplate,
-  revokeCrossSpaceGrant, revokeFoundryDocumentGrant, transitionFoundryTemplate,
+  revokeCrossSpaceGrant, revokeFoundryDocumentGrant, revokeFoundryWorkerGrant, transitionFoundryTemplate,
   type CrossSpaceGrant, type FoundryFeatureRequest, type FoundryTemplate,
 } from "@/lib/api";
 
@@ -54,6 +54,9 @@ export default function FoundryPage() {
   const [documentSourceSpace, setDocumentSourceSpace] = React.useState("");
   const [documentId, setDocumentId] = React.useState("");
   const [documentCapability, setDocumentCapability] = React.useState("");
+  const [workerGrantSourceSpace, setWorkerGrantSourceSpace] = React.useState("");
+  const [workerGrantAgentId, setWorkerGrantAgentId] = React.useState("");
+  const [workerGrantCapability, setWorkerGrantCapability] = React.useState("");
 
   const refresh = React.useCallback(async () => {
     if (!credentials) return;
@@ -115,7 +118,7 @@ export default function FoundryPage() {
       const result = await createCrossSpaceGrant(activeSpaceId, credentials, { grantee_space_id: grantSpace, resource_id: grantResource, permissions: [...permissions], expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() });
       setGrantToken(result.capability_token);
       setGrants(await listCrossSpaceGrants(activeSpaceId, credentials));
-      show("Read-only grant created. Copy its token to the destination Space user so they can accept it.");
+      show("Scoped grant created. Copy its token to the destination Space user so they can accept it.");
     } catch (error) { show(error instanceof Error ? error.message : "Grant creation failed"); }
   }
 
@@ -128,6 +131,17 @@ export default function FoundryPage() {
   async function revokeDocumentAcceptance() {
     if (!credentials) return;
     await run(() => revokeFoundryDocumentGrant(activeSpaceId, credentials, { source_space_id: documentSourceSpace, document_id: documentId }), "Your document acceptance was revoked");
+  }
+
+  async function acceptWorkerGrant(event: React.FormEvent) {
+    event.preventDefault(); if (!credentials) return;
+    await run(() => acceptFoundryWorkerGrant(activeSpaceId, credentials, { source_space_id: workerGrantSourceSpace, agent_id: workerGrantAgentId, capability_token: workerGrantCapability }), "Exact worker grant accepted for your user account");
+    setWorkerGrantCapability("");
+  }
+
+  async function revokeWorkerAcceptance() {
+    if (!credentials) return;
+    await run(() => revokeFoundryWorkerGrant(activeSpaceId, credentials, { source_space_id: workerGrantSourceSpace, agent_id: workerGrantAgentId }), "Your worker acceptance was revoked");
   }
 
   async function installTemplate(event: React.FormEvent) {
@@ -203,6 +217,10 @@ export default function FoundryPage() {
       <Card><CardTitle>Accept a shared knowledge document</CardTitle><CardDesc>Acceptance is scoped to your user in this Space. The source owner can revoke access; each read is checked again and audited. Agents may receive the document contents when you use the shared-knowledge tool.</CardDesc>
         <form onSubmit={(event) => void acceptDocument(event)} className="foundry-form"><input required value={documentSourceSpace} onChange={(event) => setDocumentSourceSpace(event.target.value)} placeholder="Source Space ID" style={inputStyle} /><input required value={documentId} onChange={(event) => setDocumentId(event.target.value)} placeholder="Source knowledge document ID" style={inputStyle} /><textarea required rows={3} value={documentCapability} onChange={(event) => setDocumentCapability(event.target.value)} placeholder="Read-only document capability token" style={areaStyle} /><Button disabled={busy}>Accept exact document access</Button></form>
         {documentSourceSpace && documentId ? <Button variant="secondary" disabled={busy} onClick={() => void revokeDocumentAcceptance()}>Revoke my acceptance for this document</Button> : null}
+      </Card>
+      <Card><CardTitle>Accept a shared worker for your verified channel</CardTitle><CardDesc>Acceptance is scoped to your user. Only your currently verified WhatsApp or Telegram contact can start this exact worker, and its source grant is rechecked on every call. Send “FOUNDRY RUN &lt;source-space-id&gt; &lt;worker-id&gt;” on the first line and the prompt on the next line. The source run receives viewer access; your channel address and Space role are never forwarded.</CardDesc>
+        <form onSubmit={(event) => void acceptWorkerGrant(event)} className="foundry-form"><input required value={workerGrantSourceSpace} onChange={(event) => setWorkerGrantSourceSpace(event.target.value)} placeholder="Source Space ID" style={inputStyle} /><input required value={workerGrantAgentId} onChange={(event) => setWorkerGrantAgentId(event.target.value)} placeholder="Exact worker ID" style={inputStyle} /><textarea required rows={3} value={workerGrantCapability} onChange={(event) => setWorkerGrantCapability(event.target.value)} placeholder="Worker invoke capability token (never send this in chat)" style={areaStyle} /><Button disabled={busy}>Accept exact worker for channel calls</Button></form>
+        {workerGrantSourceSpace && workerGrantAgentId ? <Button variant="secondary" disabled={busy} onClick={() => void revokeWorkerAcceptance()}>Revoke my worker acceptance</Button> : null}
       </Card>
       <Card><CardTitle>Install from another Space</CardTitle><CardDesc>The owner of the source Space must first publish the template and issue you a capability token.</CardDesc>
         <form onSubmit={(event) => void installTemplate(event)} className="foundry-form"><input required value={installSourceSpace} onChange={(event) => setInstallSourceSpace(event.target.value)} placeholder="Source Space ID" style={inputStyle} /><input required value={installTemplateId} onChange={(event) => setInstallTemplateId(event.target.value)} placeholder="Published template ID" style={inputStyle} /><textarea required rows={3} value={installCapability} onChange={(event) => setInstallCapability(event.target.value)} placeholder="Capability token" style={areaStyle} /><Button disabled={busy}>Install worker into this Space</Button></form>

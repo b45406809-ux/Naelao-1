@@ -7,6 +7,7 @@ function harness() {
   const templates = new Map<string, Record<string, unknown>>();
   const requests = new Map<string, Record<string, unknown>>();
   const grants = new Map<string, Record<string, unknown>>();
+  const acceptedWorkers = new Map<string, Record<string, unknown>>();
   const sql = {
     exec(query: string, ...args: unknown[]) {
       const statement = query.trim().toLowerCase();
@@ -51,13 +52,23 @@ function harness() {
       } else if (statement.startsWith("update cross_space_grants")) {
         const [revoked_at, id, target] = args; const row = grants.get(String(id));
         if (row && row.target_space_id === target && row.revoked_at === null) { row.revoked_at = revoked_at; rows = [{ id }]; }
+      } else if (statement.startsWith("insert into accepted_cross_space_workers")) {
+        const [id, grantee_space_id, target_space_id, agent_id, accepted_by, capability_token, expires_at, accepted_at] = args;
+        const key = [grantee_space_id, target_space_id, agent_id, accepted_by].join(":");
+        acceptedWorkers.set(key, { id, grantee_space_id, target_space_id, agent_id, accepted_by, capability_token, expires_at, accepted_at, revoked_at: null });
+      } else if (statement.startsWith("select id,capability_token,expires_at from accepted_cross_space_workers")) {
+        const [grantee, target, agent, user, now] = args; const row = acceptedWorkers.get([grantee, target, agent, user].join(":"));
+        if (row && row.revoked_at === null && String(row.expires_at) > String(now)) rows = [row];
+      } else if (statement.startsWith("update accepted_cross_space_workers")) {
+        const [revoked_at, grantee, target, agent, user] = args; const key = [grantee, target, agent, user].join(":"); const row = acceptedWorkers.get(key);
+        if (row && row.revoked_at === null) { row.revoked_at = revoked_at; rows = [{ id: row.id }]; }
       }
       return { rowsWritten: 1, toArray: () => rows };
     },
   };
   const instance = new SpaceDO({ storage: { sql, transactionSync: (fn: () => unknown) => fn(), setAlarm: async () => undefined, deleteAlarm: async () => undefined } } as never,
     { PLATFORM_SECRET: "test-secret" } as never);
-  return { instance, templates, requests, grants };
+  return { instance, templates, requests, grants, acceptedWorkers };
 }
 
 describe("reviewed Foundry workflows", () => {
@@ -130,6 +141,24 @@ describe("revocable cross-Space capabilities", () => {
     const longGrant = await h.instance.fetch(new Request("https://space/cross-space-grants", { method: "POST", body: JSON.stringify({ ...base, expires_at: new Date(Date.now() + 31 * 24 * 60 * 60 * 1000).toISOString(), permissions: ["invoke"] }) }));
     expect(longGrant.status).toBe(400);
   });
+
+  it("stores an exact worker acceptance per user and makes revocation immediate", async () => {
+    const h = harness();
+    const created = await h.instance.fetch(new Request("https://space/cross-space-grants", { method: "POST", body: JSON.stringify({
+      grantee_space_id: "target-space", target_space_id: "source-space", resource_id: "worker:worker-1", granted_by: "source-owner",
+      expires_at: new Date(Date.now() + 60_000).toISOString(), permissions: ["invoke"],
+    }) }));
+    const grant = await created.json() as { capability_token: string };
+    const accepted = await h.instance.fetch(new Request("https://space/cross-space-grants/accept-worker", { method: "POST", body: JSON.stringify({
+      grantee_space_id: "target-space", target_space_id: "source-space", agent_id: "worker-1", accepted_by: "member-1", capability_token: grant.capability_token,
+    }) }));
+    expect(accepted.status).toBe(201);
+    const acceptedUrl = "https://space/cross-space-grants/accepted-worker?" + new URLSearchParams({ grantee_space_id: "target-space", target_space_id: "source-space", agent_id: "worker-1", accepted_by: "member-1" });
+    expect(await (await h.instance.fetch(new Request(acceptedUrl))).json()).toMatchObject({ accepted: true, capability_token: grant.capability_token });
+    expect((await h.instance.fetch(new Request(acceptedUrl, { method: "DELETE" }))).status).toBe(200);
+    expect(await (await h.instance.fetch(new Request(acceptedUrl))).json()).toMatchObject({ accepted: false });
+    expect(h.acceptedWorkers.values().next().value).toMatchObject({ accepted_by: "member-1", revoked_at: expect.any(String) });
+  });
 });
 
 describe("Foundry worker invocation route", () => {
@@ -183,6 +212,59 @@ describe("Foundry worker invocation route", () => {
     expect(forwardedRequest.headers.get("x-naelao-space-id")).toBe("source-space");
     expect(forwardedRequest.headers.get("x-naelao-role")).toBe("viewer");
     expect(await forwardedRequest.json()).toEqual({ goal: "Read the published customs checklist.", spaceId: "source-space", tenantId: "tenant-1" });
+  });
+
+  it("requires the live mapped executive contact, per-user acceptance, and source grant before channel invocation", async () => {
+    const forwarded: Request[] = [];
+    let linkedUser = "user-1";
+    let accepted = true;
+    let permitted = true;
+    const spaceStub = { fetch: vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/hierarchy-authorize") return Response.json({ authorized: true });
+      if (url.pathname === "/internal/executive/verify") return linkedUser
+        ? Response.json({ verified: true, member: { user_id: linkedUser, role: "admin" } })
+        : Response.json({ verified: false }, { status: 403 });
+      if (url.pathname === "/cross-space-grants/accepted-worker") return accepted
+        ? Response.json({ accepted: true, capability_token: "stored-capability" })
+        : Response.json({ accepted: false }, { status: 404 });
+      if (url.pathname === "/cross-space-check") return Response.json({ permitted });
+      if (url.pathname === "/cross-space-audit") return Response.json({ audited: true });
+      return Response.json({ error: "unexpected route" }, { status: 404 });
+    }) };
+    const agents = { fetch: vi.fn(async (request: Request) => { forwarded.push(request); return Response.json({ run_id: "run-queued", status: "queued" }, { status: 202 }); }) };
+    const env = { PLATFORM_SECRET: "test-secret", SPACE_DO: { idFromName: (name: string) => name, get: () => spaceStub }, AGENTS_WORKER: agents } as never;
+    const request = () => new Request("https://spaces.test/internal/spaces/target-space/foundry/channel-invoke", {
+      method: "POST", headers: {
+        "content-type": "application/json", "x-naelao-tenant-id": "tenant-1", "x-naelao-user-id": "user-1",
+        "x-naelao-channel": "whatsapp", "x-naelao-channel-contact": "+15551234567",
+        "x-naelao-internal-token": "",
+      }, body: JSON.stringify({ sourceSpaceId: "source-space", agentId: "worker-1", goal: "Summarize the shared policy." }),
+    });
+    const make = async () => {
+      const req = request(); req.headers.set("x-naelao-internal-token", await mintInternalToken("test-secret", "tenant-1"));
+      return spacesWorker.fetch(req, env);
+    };
+
+    expect((await spacesWorker.fetch(request(), env)).status).toBe(403);
+    expect(agents.fetch).not.toHaveBeenCalled();
+    expect((await make()).status).toBe(202);
+    expect(agents.fetch).toHaveBeenCalledOnce();
+    const run = forwarded[0]!;
+    expect(new URL(run.url).pathname).toBe("/agents/worker-1/script/run");
+    expect(run.headers.get("x-naelao-role")).toBe("viewer");
+    expect(run.headers.get("x-naelao-user-id")).toBe("user-1");
+    expect(run.headers.get("x-naelao-channel-contact")).toBeNull();
+    expect(await run.json()).toEqual({ goal: "Summarize the shared policy.", spaceId: "source-space", tenantId: "tenant-1" });
+    expect(new URL(spaceStub.fetch.mock.calls.find(([r]) => new URL(r.url).pathname === "/cross-space-check")![0].url).searchParams.get("resource_id")).toBe("worker:worker-1");
+
+    linkedUser = "someone-else";
+    expect((await make()).status).toBe(403);
+    linkedUser = "user-1"; accepted = false;
+    expect((await make()).status).toBe(403);
+    accepted = true; permitted = false;
+    expect((await make()).status).toBe(403);
+    expect(agents.fetch).toHaveBeenCalledOnce();
   });
 });
 

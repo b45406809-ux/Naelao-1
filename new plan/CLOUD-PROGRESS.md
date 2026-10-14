@@ -422,3 +422,12 @@ and live-test gates are itemized above.
 - Added authenticated manifest-linked durable extension workflows. A Space-wide workflow uses only its verified installation workspace; project scope remains project-bound. Cross-Space worker runs are clamped to `viewer` in the source Space.
 - Fresh evidence: Spaces 24 files / 80 tests; Knowledge 4 / 14; Agents 61 / 246; Agent SDK workflow tests 6 / 6; affected typechecks, Shell build, Spaces/Knowledge/Agents Wrangler dry runs, and `git diff --check` passed. These do not prove deployed behavior.
 - Remaining Foundry product dependency: channel-native cross-Space worker invocation. Channel sessions use a `channel:<provider>:<sender>` actor, not a linked authenticated member, and there is no accepted worker-grant channel route or reply delivery contract. It is tracked in `FOUNDRY-REMAINING.md`; no channel identity or target role is forwarded as a workaround.
+
+## Foundry channel-invocation follow-up (2026-10-14)
+
+- Closed the previously open local channel-invocation gap using the existing verified WhatsApp/Telegram owner/admin contact link. Added per-user acceptance and revocation for an exact worker grant, then rechecks that acceptance, live contact mapping, and active source capability for each invocation. The source receives only viewer role and user attribution; a source audit row is written before invoking.
+- Supported command: `FOUNDRY RUN <source-space-id> <worker-id>` on the first line followed by a prompt up to 10,000 characters. Tokens remain in Foundry UI, never in chat. Unknown/external senders cannot use the command.
+- The ingress returns an immediate receipt, and a Durable Object background task sends the bounded result or failure notice to the same channel contact when the synchronous script run completes. Deployed notification delivery and long-running background task lifetime remain unverified; no Cloudflare credentials/live test was used.
+- Provider webhook event IDs are durably claimed before scheduling work, with a 30-day cleanup window, so a replay cannot start a second run.
+- Fresh checks: Spaces full suite 24 files / 82 tests; Agents full suite 62 files / 249 tests; Spaces, Agents, and Shell typechecks; Shell production build; Spaces and Agents Wrangler 4 dry runs; `git diff --check` passed. These are local test and bundle/config results, not live Cloudflare behavior.
+- Exact changes and limitations are recorded in `FOUNDRY-IMPLEMENTATION-PROGRESS.md` and `FOUNDRY-REMAINING.md`. Source TXT requirements were not edited.

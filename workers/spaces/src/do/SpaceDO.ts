@@ -1774,6 +1774,20 @@ const MIGRATIONS: Migration[] = [
         ON cross_space_access_audit(target_space_id,grantee_space_id,created_at DESC);
     `,
   },
+  {
+    version: 69,
+    description: "accepted per-user cross-Space worker grants for verified channel invocation",
+    up: `
+      CREATE TABLE accepted_cross_space_workers (
+        id TEXT PRIMARY KEY, grantee_space_id TEXT NOT NULL, target_space_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL, accepted_by TEXT NOT NULL, capability_token TEXT NOT NULL,
+        expires_at TEXT NOT NULL, accepted_at TEXT NOT NULL, revoked_at TEXT,
+        UNIQUE(grantee_space_id,target_space_id,agent_id,accepted_by)
+      );
+      CREATE INDEX idx_accepted_cross_space_workers_user
+        ON accepted_cross_space_workers(grantee_space_id,accepted_by,revoked_at,expires_at);
+    `,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -2809,6 +2823,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && url.pathname === "/cross-space-grants/accept-document") return this.acceptCrossSpaceDocument(request);
       if (method === "GET" && url.pathname === "/cross-space-grants/accepted-document") return this.getAcceptedCrossSpaceDocument(url.searchParams);
       if (method === "DELETE" && url.pathname === "/cross-space-grants/accepted-document") return this.revokeAcceptedCrossSpaceDocument(url.searchParams);
+      if (method === "POST" && url.pathname === "/cross-space-grants/accept-worker") return this.acceptCrossSpaceWorker(request);
+      if (method === "GET" && url.pathname === "/cross-space-grants/accepted-worker") return this.getAcceptedCrossSpaceWorker(url.searchParams);
+      if (method === "DELETE" && url.pathname === "/cross-space-grants/accepted-worker") return this.revokeAcceptedCrossSpaceWorker(url.searchParams);
       if (method === "POST" && url.pathname === "/cross-space-audit") return this.recordCrossSpaceAccess(request);
       // DELETE /cross-space-grants/:id
       const grantMatch = url.pathname.match(/^\/cross-space-grants\/([^/]+)$/);
@@ -10153,16 +10170,65 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ revoked: true, document_id: documentId });
   }
 
+  private async acceptCrossSpaceWorker(request: Request): Promise<Response> {
+    const body = await request.json<{ grantee_space_id?: string; target_space_id?: string; agent_id?: string; accepted_by?: string; capability_token?: string }>().catch(() => ({} as { grantee_space_id?: string; target_space_id?: string; agent_id?: string; accepted_by?: string; capability_token?: string }));
+    if (!body.grantee_space_id || !body.target_space_id || !body.agent_id || !body.accepted_by || !body.capability_token || body.capability_token.length > 32768) {
+      return Response.json({ error_code: "bad_request" }, { status: 400 });
+    }
+    const capability = await verifyCapabilityToken(body.capability_token, this.env.PLATFORM_SECRET, {
+      granteeSpaceId: body.grantee_space_id, targetSpaceId: body.target_space_id,
+      resourceId: `worker:${body.agent_id}`, permission: "invoke",
+    });
+    if (!capability) return Response.json({ error_code: "invalid_worker_capability" }, { status: 403 });
+    const id = crypto.randomUUID();
+    const expiresAt = new Date(capability.exp).toISOString();
+    execute(this.ctx.storage.sql as never,
+      `INSERT INTO accepted_cross_space_workers(id,grantee_space_id,target_space_id,agent_id,accepted_by,capability_token,expires_at,accepted_at,revoked_at)
+       VALUES(?,?,?,?,?,?,?,?,NULL)
+       ON CONFLICT(grantee_space_id,target_space_id,agent_id,accepted_by) DO UPDATE SET
+         id=excluded.id,capability_token=excluded.capability_token,expires_at=excluded.expires_at,accepted_at=excluded.accepted_at,revoked_at=NULL`,
+      id, body.grantee_space_id, body.target_space_id, body.agent_id, body.accepted_by, body.capability_token, expiresAt, new Date().toISOString());
+    return Response.json({ accepted: true, id, target_space_id: body.target_space_id, agent_id: body.agent_id, expires_at: expiresAt }, { status: 201 });
+  }
+
+  private getAcceptedCrossSpaceWorker(params: URLSearchParams): Response {
+    const granteeSpaceId = params.get("grantee_space_id") ?? "";
+    const targetSpaceId = params.get("target_space_id") ?? "";
+    const agentId = params.get("agent_id") ?? "";
+    const acceptedBy = params.get("accepted_by") ?? "";
+    if (!granteeSpaceId || !targetSpaceId || !agentId || !acceptedBy) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const row = queryOne<{ id: string; capability_token: string; expires_at: string }>(this.ctx.storage.sql as never,
+      `SELECT id,capability_token,expires_at FROM accepted_cross_space_workers
+       WHERE grantee_space_id=? AND target_space_id=? AND agent_id=? AND accepted_by=? AND revoked_at IS NULL AND expires_at>?`,
+      granteeSpaceId, targetSpaceId, agentId, acceptedBy, new Date().toISOString());
+    return row ? Response.json({ accepted: true, ...row }) : Response.json({ accepted: false }, { status: 404 });
+  }
+
+  private revokeAcceptedCrossSpaceWorker(params: URLSearchParams): Response {
+    const granteeSpaceId = params.get("grantee_space_id") ?? "";
+    const targetSpaceId = params.get("target_space_id") ?? "";
+    const agentId = params.get("agent_id") ?? "";
+    const acceptedBy = params.get("accepted_by") ?? "";
+    if (!granteeSpaceId || !targetSpaceId || !agentId || !acceptedBy) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const rows = queryAll<{ id: string }>(this.ctx.storage.sql as never,
+      `UPDATE accepted_cross_space_workers SET revoked_at=? WHERE grantee_space_id=? AND target_space_id=? AND agent_id=? AND accepted_by=? AND revoked_at IS NULL RETURNING id`,
+      new Date().toISOString(), granteeSpaceId, targetSpaceId, agentId, acceptedBy);
+    if (!rows.length) return Response.json({ error_code: "accepted_grant_not_found", revoked: false }, { status: 404 });
+    return Response.json({ revoked: true, agent_id: agentId });
+  }
+
   private async recordCrossSpaceAccess(request: Request): Promise<Response> {
     const body = await request.json<{ grantee_space_id?: string; target_space_id?: string; resource_id?: string; actor_id?: string; action?: string }>().catch(() => ({} as { grantee_space_id?: string; target_space_id?: string; resource_id?: string; actor_id?: string; action?: string }));
-    if (!body.grantee_space_id || !body.target_space_id || !body.actor_id || !body.resource_id?.startsWith("knowledge-document:") || body.action !== "read") {
+    const validRead = body.resource_id?.startsWith("knowledge-document:") && body.action === "read";
+    const validInvoke = body.resource_id?.startsWith("worker:") && body.action === "invoke";
+    if (!body.grantee_space_id || !body.target_space_id || !body.actor_id || !(validRead || validInvoke)) {
       return Response.json({ error_code: "bad_request" }, { status: 400 });
     }
     const id = crypto.randomUUID();
     const createdAt = new Date().toISOString();
     execute(this.ctx.storage.sql as never,
       "INSERT INTO cross_space_access_audit(id,grantee_space_id,target_space_id,resource_id,actor_id,action,created_at,details_json) VALUES(?,?,?,?,?,?,?,?)",
-      id, body.grantee_space_id, body.target_space_id, body.resource_id, body.actor_id, "read", createdAt, "{}");
+      id, body.grantee_space_id, body.target_space_id, body.resource_id, body.actor_id, body.action, createdAt, "{}");
     execute(this.ctx.storage.sql as never, "DELETE FROM cross_space_access_audit WHERE created_at < ?", new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString());
     return Response.json({ audited: true, id, created_at: createdAt });
   }

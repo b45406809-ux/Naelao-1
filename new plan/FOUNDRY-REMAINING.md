@@ -1,20 +1,10 @@
-# Remaining Foundry implementation decision
+# Foundry channel invocation
 
-Updated: 2026-10-13
+Updated: 2026-10-14
 Branch: `Mcbt5s-Backup-2`
 
-## Channel-native cross-Space worker invocation
+Status: implemented locally. The bridge is limited to a WhatsApp or Telegram contact that is currently linked to an owner/admin member of the destination Space. A member accepts the exact source worker grant in Foundry UI; the source grant must still be active each time a channel command is used. External customer contacts are not supported by this path.
 
-This is the only locally identified Foundry gap left after the 2026-10-13 implementation pass. The direct Foundry UI/API invocation remains available and is source-role clamped to `viewer`; exact-document sharing is implemented with per-user acceptance and revocation.
+The command is `FOUNDRY RUN <source-space-id> <worker-id>` on the first line, followed by a prompt of at most 10,000 characters. Capability tokens are never sent in chat. Provider event IDs are claimed durably for 30 days so webhook replay cannot start a duplicate run. The ingress immediately acknowledges the request; the background run sends a bounded result (or a failure notice) to the same channel contact after completion. The source run receives the linked user's attribution and `viewer` role only. The source grant, verified contact mapping, worker ID, and user acceptance are all checked at invocation; successful authorization is audited in the source Space. Removing the channel link, membership, acceptance, or source grant blocks subsequent calls.
 
-The current inbound channel worker represents senders as `channel:<provider>:<sender>`. It does not establish that the sender is a member of the target Space. Foundry accepts exact-document grants and worker invocations for authenticated Space users. There is no existing member-to-channel identity link, accepted worker-grant lookup for an inbound message, or channel reply delivery contract for cross-Space runs. Treating an arbitrary phone/handle as a member, forwarding the target Space's owner/admin role, or passing a bearer grant through chat would bypass those boundaries.
-
-Before implementing this bridge, choose the identity contract:
-
-- Is it limited to an owner/admin who has explicitly linked and verified their own WhatsApp/Telegram contact to a Space account, or does it need to support external customer identities too?
-- Should a worker grant be accepted in the Foundry UI and then usable from that linked channel, or should each channel invocation require a separate confirmation?
-- Should a channel call wait for the worker result and reply in the same thread, or acknowledge a queued run and deliver the result later?
-
-Once those choices are fixed, implement the accepted-grant lookup, same-actor authorization, minimal source role, bounded invocation input, audit, cancellation/expiry behavior, and reply delivery together. Do not infer consent from channel membership or expose the source worker's credentials/data beyond its explicit capabilities.
-
-Current state: no code changes are needed to the implemented UI/API or document-sharing path while this decision is pending. Relevant source behavior and evidence are recorded in `FOUNDRY-IMPLEMENTATION-PROGRESS.md` and `CLOUD-PROGRESS.md`.
+Implementation is in migration 69 and the Spaces/Agents/Shell paths recorded in `FOUNDRY-IMPLEMENTATION-PROGRESS.md`. Local tests cover migration replay, exact-user acceptance/revocation, contact/grant denial, minimal source role, and bounded parser input. The background same-channel notification is wired but is not directly exercised end to end. Tests use local worker/DO stubs; no live provider delivery or Cloudflare deployment was tested. Long-running background completion depends on the deployed Workers runtime honoring the Durable Object `waitUntil` lifetime and is not live-verified.

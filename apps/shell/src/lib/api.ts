@@ -1312,6 +1312,13 @@ export async function revokeFoundryDocumentGrant(spaceId: string, session: Sessi
   const query = new URLSearchParams(input);
   return apiFetch(`/v1/spaces/${spaceId}/foundry/accept-document?${query}`, { method: "DELETE", session });
 }
+export async function acceptFoundryWorkerGrant(spaceId: string, session: SessionCredentials, input: { source_space_id: string; agent_id: string; capability_token: string }) {
+  return apiFetch<{ accepted: boolean; id: string; expires_at: string }>(`/v1/spaces/${spaceId}/foundry/accept-worker`, { method: "POST", body: JSON.stringify(input), session });
+}
+export async function revokeFoundryWorkerGrant(spaceId: string, session: SessionCredentials, input: { source_space_id: string; agent_id: string }) {
+  const query = new URLSearchParams(input);
+  return apiFetch(`/v1/spaces/${spaceId}/foundry/accept-worker?${query}`, { method: "DELETE", session });
+}
 export async function installFoundryTemplate(spaceId: string, session: SessionCredentials, input: { source_space_id: string; template_id: string; capability_token: string; name?: string; project_id?: string }) {
   return apiFetch<{ agent_id?: string; agent_definition_id?: string; custom?: boolean }>(`/v1/spaces/${spaceId}/foundry/install-template`, { method: "POST", body: JSON.stringify(input), session });
 }

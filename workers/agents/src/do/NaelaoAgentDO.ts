@@ -87,6 +87,7 @@ import {
   MAX_CONCURRENT_SUB_AGENT_TREES,
 } from "../script-engine/sub-agent-output.js";
 import { handleExecutiveInbound } from "../channels/executive-channel.js";
+import { claimFoundryChannelEvent, parseFoundryChannelCommand, releaseFoundryChannelEvent } from "../channels/foundry-command.js";
 import { persistCustomerConversation } from "../telemetry/customer-telemetry.js";
 import { handleDaemonMcp, treeSitterDaemonTarget } from "../script-engine/daemons/daemon-mcp.js";
 import { TreeSitterIndexer } from "../script-engine/daemons/tree-sitter-indexer.js";
@@ -1503,6 +1504,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     `);
     this.ctx.storage.sql.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_msg_dedupe ON channel_messages(session_id, direction, external_id)`);
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_channel_msg_unanswered ON channel_messages(direction, answered, created_at)`);
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS foundry_channel_events (
+      space_id TEXT NOT NULL, channel TEXT NOT NULL, sender_id TEXT NOT NULL, external_id TEXT NOT NULL,
+      claimed_at INTEGER NOT NULL, PRIMARY KEY(space_id,channel,sender_id,external_id)
+    )`);
     try { this.ctx.storage.sql.exec(`ALTER TABLE channel_messages ADD COLUMN turn_holder TEXT`); } catch { /* exists */ }
     try { this.ctx.storage.sql.exec(`ALTER TABLE channel_messages ADD COLUMN referents TEXT NOT NULL DEFAULT '[]'`); } catch { /* exists */ }
     this.ctx.storage.sql.exec(`
@@ -5124,6 +5129,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // effect immediately. Unknown senders fall through to the quarantined customer plane.
     if ((norm.channel === "whatsapp" || norm.channel === "telegram") && body.spaceId && body.tenantId) {
       const headers = await this.internalHeaders(body.tenantId, { "content-type": "application/json" });
+      let executiveUserId: string | null = null;
+      let foundryHandled = false;
       const executive = await handleExecutiveInbound({
         spaceId: body.spaceId, tenantId: body.tenantId, channel: norm.channel,
         senderId: norm.channel_user_id, text: norm.text,
@@ -5133,7 +5140,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             `http://spaces-worker/internal/spaces/${encodeURIComponent(input.spaceId)}/executive/verify`,
             { method: "POST", headers, body: JSON.stringify({ space_id: input.spaceId, channel: input.channel, contact_id: input.senderId }) },
           ));
-          return response.ok;
+          const verification: { verified?: boolean; member?: { user_id?: string; role?: string } } = response.ok
+            ? await response.json<{ verified?: boolean; member?: { user_id?: string; role?: string } }>().catch(() => ({} as { verified?: boolean; member?: { user_id?: string; role?: string } }))
+            : {};
+          executiveUserId = verification.verified && (verification.member?.role === "owner" || verification.member?.role === "admin")
+            ? verification.member.user_id ?? null : null;
+          return Boolean(executiveUserId);
         },
         freeze: async (input) => {
           const response = await this.env.SPACES_WORKER.fetch(new Request(
@@ -5149,7 +5161,73 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           const response = await guard.fetch(new Request("http://risk-guard/emergency-freeze", { method: "POST" }));
           if (!response.ok) throw new Error(`risk_guard_freeze_failed:${response.status}`);
         },
-        routeToRootAssistant: async () => { /* fall through to the root agent inbox below */ },
+        routeToRootAssistant: async (input) => {
+          if (!/^FOUNDRY\s+RUN\b/i.test(input.text.trimStart())) return; // ordinary executive messages keep their existing inbox path
+          foundryHandled = true;
+          if (!claimFoundryChannelEvent(this.ctx.storage.sql, { spaceId: input.spaceId, channel: input.channel, senderId: input.senderId, externalId: norm.external_id })) return;
+          const command = parseFoundryChannelCommand(input.text);
+          const reply = async (text: string) => {
+            if (!this.env.NOTIFICATIONS_WORKER) throw new Error("executive_confirmation_channel_unavailable");
+            const response = await this.env.NOTIFICATIONS_WORKER.fetch(new Request("http://notifications-worker/internal/notify", {
+              method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": body.tenantId! },
+              body: JSON.stringify({ channel: input.channel, space_id: body.spaceId, to: input.senderId, body: text }),
+            }));
+            if (!response.ok) throw new Error(`executive_confirmation_failed:${response.status}`);
+          };
+          const replyBeforeStarting = async (text: string) => {
+            try { await reply(text); }
+            catch (error) {
+              releaseFoundryChannelEvent(this.ctx.storage.sql, { spaceId: input.spaceId, channel: input.channel, senderId: input.senderId, externalId: norm.external_id });
+              throw error;
+            }
+          };
+          if (!command || !executiveUserId) {
+            await replyBeforeStarting("Use: FOUNDRY RUN <source-space-id> <worker-id> on the first line, then the prompt on the next line (maximum 10,000 characters). Accept the exact worker grant in Foundry first.");
+            return;
+          }
+          const invokeHeaders = new Headers(headers);
+          invokeHeaders.set("x-naelao-user-id", executiveUserId);
+          invokeHeaders.set("x-naelao-channel", input.channel);
+          invokeHeaders.set("x-naelao-channel-contact", input.senderId);
+          const invoke = () => this.env.SPACES_WORKER.fetch(new Request(
+              `http://spaces-worker/internal/spaces/${encodeURIComponent(input.spaceId)}/foundry/channel-invoke`,
+              { method: "POST", headers: invokeHeaders, body: JSON.stringify(command) },
+            ));
+          await replyBeforeStarting("Your Foundry request was received. I’ll check its access and send a result here if authorized.");
+          this.ctx.waitUntil((async () => {
+            try {
+              const response = await invoke();
+              if (!response.ok) {
+                const result = await response.json<{ error_code?: string }>().catch(() => ({} as { error_code?: string }));
+                const message = response.status === 403
+                  ? "The worker request was denied because the verified contact, accepted worker, or source grant is no longer valid."
+                  : "The worker could not finish starting. Check the source Space and worker IDs, then try again.";
+                await reply(message);
+                console.warn(`[foundry-channel] invoke denied/failed code=${result.error_code ?? response.status}`);
+                return;
+              }
+              const result = await response.json<{ run_id?: string; task_id?: string; status?: string; final_answer?: string; error?: string; result?: { output?: unknown; error?: string } }>()
+                .catch(() => ({} as { run_id?: string; task_id?: string; status?: string; final_answer?: string; error?: string; result?: { output?: unknown; error?: string } }));
+              const output = typeof result.final_answer === "string" ? result.final_answer
+                : typeof result.result?.output === "string" ? result.result.output : "";
+              const runId = result.run_id ?? result.task_id;
+              if (output.trim()) {
+                const clipped = output.length > 3500 ? `${output.slice(0, 3500)}\n\n[Result shortened; open Foundry to view the full run.]` : output;
+                await reply(`Foundry worker result${runId ? ` (${runId})` : ""}:\n${clipped}`);
+              } else {
+                const failure = result.error ?? result.result?.error;
+                await reply(failure
+                  ? `The Foundry worker could not complete${runId ? ` (${runId})` : ""}: ${failure.slice(0, 500)}`
+                  : `The Foundry worker run finished without a text result${runId ? ` (${runId})` : ""}.`);
+              }
+            } catch (error) {
+              console.error("[foundry-channel] background invoke failed:", error instanceof Error ? error.message : String(error));
+              await reply("The Foundry worker could not finish. Check its run in Foundry and try again if needed.");
+            }
+          })().catch((error) => {
+            console.error("[foundry-channel] result notification failed:", error instanceof Error ? error.message : String(error));
+          }));
+        },
         send: async ({ channel, senderId, text }) => {
           if (!this.env.NOTIFICATIONS_WORKER) throw new Error("executive_confirmation_channel_unavailable");
           const response = await this.env.NOTIFICATIONS_WORKER.fetch(new Request("http://notifications-worker/internal/notify", {
@@ -5160,6 +5238,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         },
       });
       if (executive.emergencyStopped) return Response.json({ handled: true, emergency_stopped: true });
+      if (foundryHandled) return Response.json({ handled: true, foundry: true });
     }
 
     const rows = this.ctx.storage.sql

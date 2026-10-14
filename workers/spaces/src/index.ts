@@ -3577,6 +3577,32 @@ app.delete("/spaces/:spaceId/foundry/accept-document", async (c) => {
   return target.stub.fetch(new Request(`http://space/cross-space-grants/accepted-document?${new URLSearchParams({ grantee_space_id: granteeSpaceId, target_space_id: sourceSpaceId, document_id: documentId, accepted_by: userId })}`, { method: "DELETE" }));
 });
 
+app.post("/spaces/:spaceId/foundry/accept-worker", async (c) => {
+  const granteeSpaceId = c.req.param("spaceId"); const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const target = await authorizeFoundrySpace(c.env, granteeSpaceId, tenantId, userId, "read");
+  if (!target.auth.ok) return c.json({ error_code: "forbidden" }, 403);
+  const body = await c.req.json<{ source_space_id?: string; agent_id?: string; capability_token?: string }>().catch(() => ({} as { source_space_id?: string; agent_id?: string; capability_token?: string }));
+  if (!body.source_space_id || !body.agent_id || !body.capability_token) return c.json({ error_code: "bad_request", message: "source_space_id, agent_id, and capability_token are required" }, 400);
+  const source = await spaceDoStub(c.env, body.source_space_id, tenantId);
+  const check = await forwardToSpaceDO(source, `/cross-space-check?${new URLSearchParams({ user_id: userId, requesting_space_id: granteeSpaceId,
+    target_space_id: body.source_space_id, resource_id: `worker:${body.agent_id}`, permission: "invoke", capability_token: body.capability_token })}`, "GET");
+  const permission = await check.json<{ permitted?: boolean }>().catch(() => ({ permitted: false }));
+  if (!check.ok || !permission.permitted) return c.json({ error_code: "cross_space_grant_required" }, 403);
+  return target.stub.fetch(new Request("http://space/cross-space-grants/accept-worker", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ grantee_space_id: granteeSpaceId, target_space_id: body.source_space_id, agent_id: body.agent_id, accepted_by: userId, capability_token: body.capability_token }) }));
+});
+
+app.delete("/spaces/:spaceId/foundry/accept-worker", async (c) => {
+  const granteeSpaceId = c.req.param("spaceId"); const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const target = await authorizeFoundrySpace(c.env, granteeSpaceId, tenantId, userId, "read");
+  if (!target.auth.ok) return c.json({ error_code: "forbidden" }, 403);
+  const sourceSpaceId = c.req.query("source_space_id") ?? ""; const agentId = c.req.query("agent_id") ?? "";
+  if (!sourceSpaceId || !agentId) return c.json({ error_code: "bad_request" }, 400);
+  return target.stub.fetch(new Request(`http://space/cross-space-grants/accepted-worker?${new URLSearchParams({ grantee_space_id: granteeSpaceId, target_space_id: sourceSpaceId, agent_id: agentId, accepted_by: userId })}`, { method: "DELETE" }));
+});
+
 app.use("/internal/spaces/:spaceId/foundry/shared-document", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.post("/internal/spaces/:spaceId/foundry/shared-document", async (c) => {
   const granteeSpaceId = c.req.param("spaceId"); const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
@@ -3604,6 +3630,44 @@ app.post("/internal/spaces/:spaceId/foundry/shared-document", async (c) => {
     resource_id: `knowledge-document:${body.document_id}`, actor_id: userId, action: "read" }));
   if (!audit.ok) return c.json({ error_code: "cross_space_audit_unavailable" }, 503);
   return documentResponse;
+});
+
+app.use("/internal/spaces/:spaceId/foundry/channel-invoke", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.post("/internal/spaces/:spaceId/foundry/channel-invoke", async (c) => {
+  const granteeSpaceId = c.req.param("spaceId"); const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const userId = c.req.header("x-naelao-user-id") ?? ""; const channel = c.req.header("x-naelao-channel") ?? "";
+  const contactId = c.req.header("x-naelao-channel-contact") ?? "";
+  if (!tenantId || !userId || !["whatsapp", "telegram"].includes(channel) || !contactId) return c.json({ error_code: "verified_channel_identity_required" }, 401);
+  const body = await c.req.json<{ sourceSpaceId?: string; agentId?: string; goal?: string }>().catch(() => ({} as { sourceSpaceId?: string; agentId?: string; goal?: string }));
+  if (!body.sourceSpaceId || !body.agentId || typeof body.goal !== "string" || !body.goal.trim() || body.goal.length > 10_000) return c.json({ error_code: "bad_request" }, 400);
+  const grantee = await authorizeFoundrySpace(c.env, granteeSpaceId, tenantId, userId, "read");
+  if (!grantee.auth.ok) return c.json({ error_code: "forbidden" }, 403);
+  const linked = await grantee.stub.fetch(new Request("http://space/internal/executive/verify", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ space_id: granteeSpaceId, channel, contact_id: contactId }) }));
+  const verification: { verified?: boolean; member?: { user_id?: string; role?: string } } = linked.ok
+    ? await linked.json<{ verified?: boolean; member?: { user_id?: string; role?: string } }>().catch(() => ({} as { verified?: boolean; member?: { user_id?: string; role?: string } }))
+    : {};
+  if (!verification.verified || verification.member?.user_id !== userId || !["owner", "admin"].includes(verification.member?.role ?? "")) return c.json({ error_code: "verified_channel_identity_required" }, 403);
+  const acceptedQuery = new URLSearchParams({ grantee_space_id: granteeSpaceId, target_space_id: body.sourceSpaceId, agent_id: body.agentId, accepted_by: userId });
+  const accepted = await grantee.stub.fetch(new Request(`http://space/cross-space-grants/accepted-worker?${acceptedQuery}`));
+  if (!accepted.ok) return c.json({ error_code: "worker_grant_not_accepted" }, 403);
+  const acceptance = await accepted.json<{ capability_token: string }>();
+  const source = await spaceDoStub(c.env, body.sourceSpaceId, tenantId);
+  const permission = await forwardToSpaceDO(source, `/cross-space-check?${new URLSearchParams({ user_id: userId, requesting_space_id: granteeSpaceId,
+    target_space_id: body.sourceSpaceId, resource_id: `worker:${body.agentId}`, permission: "invoke", capability_token: acceptance.capability_token })}`, "GET");
+  const check = await permission.json<{ permitted?: boolean }>().catch(() => ({ permitted: false }));
+  if (!permission.ok || !check.permitted) return c.json({ error_code: "cross_space_grant_revoked_or_expired" }, 403);
+  const audit = await forwardToSpaceDO(source, "/cross-space-audit", "POST", JSON.stringify({ grantee_space_id: granteeSpaceId, target_space_id: body.sourceSpaceId,
+    resource_id: `worker:${body.agentId}`, actor_id: userId, action: "invoke" }));
+  if (!audit.ok) return c.json({ error_code: "cross_space_audit_unavailable" }, 503);
+  if (!c.env.AGENTS_WORKER) return c.json({ error_code: "agents_unavailable" }, 503);
+  const run = await c.env.AGENTS_WORKER.fetch(new Request(`http://agents-worker/agents/${encodeURIComponent(body.agentId)}/script/run`, {
+    method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-user-id": userId,
+      "x-naelao-role": "viewer", "x-naelao-space-id": body.sourceSpaceId,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+    body: JSON.stringify({ goal: body.goal.trim(), spaceId: body.sourceSpaceId, tenantId }),
+  }));
+  return new Response(run.body, { status: run.status, headers: { "content-type": run.headers.get("content-type") ?? "application/json" } });
 });
 
 app.patch("/spaces/:spaceId/foundry/requests/:requestId", async (c) => {
