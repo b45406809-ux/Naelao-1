@@ -25,7 +25,7 @@ All 33 tasks start UNASSESSED. Read the progress file first, then resume the exa
 Primary read: **lines 1–55** (USER 1–3; AI MODEL 4–55).
 Bounded primary windows: 1–55.
 Later amendment/dependency pairs: 56–210 (task 02); 211–338 (task 03); 339–450 (task 04); 451–574 (task 05); 575–693 (task 06); 694–749 (task 07); 1755–1970 (task 14); 2174–2355 (task 16); 2592–2772 (task 18); 3943–4139 (task 25); 4442–4647 (task 28); 4648–4794 (task 29); 4795–4982 (task 30)
-Status: **UNASSESSED**. Evidence and exact next action belong in the progress file.
+Status: **IMPLEMENTED — locally verified; live provider checks unrun**. See the task 01 record in the progress file.
 
 ## Task 02
 

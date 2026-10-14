@@ -5,9 +5,11 @@
  * r2-workspace.ts's Read/Edit/Write/Grep/Glob use (resolved via tool-surface.ts's
  * RENAMED_OPERATIONS, "bash"/"execute_bash" -> "Bash").
  *
- * Per the spec's own routing rule ("DO NOT use execute_python for simple JS calculations"):
- *   - run_js     → Tier 2 isolate (codemode) — fast, no container, no file I/O.
- *   - execute_python / execute_bash → Tier 5 container (SandboxDO) — real OS, files, pip/apt.
+ *   - run_js         → Tier 2 isolate — no ambient file or network access.
+ *   - execute_python → Tier 2 provider Python/Wasm — bounded pure computation.
+ *   - execute_bash   → virtual commands first, then authorized Tier 6 native execution.
+ * Python dependencies/OS work require explicit authorized native execution; an unavailable
+ * lightweight runtime never silently allocates a container.
  *
  * The Tier-5 harnesses below are platform-authored (not agent-authored), so they carry the
  * same trust level as every other prebuilt op; the agent only ever supplies `args`, never code
@@ -141,6 +143,7 @@ async function runTier(
     ...(ctx.env.projectId ? { projectId: ctx.env.projectId } : {}),
     ...(ctx.env.onToolOutput ? { onOutput: ctx.env.onToolOutput } : {}),
     ...(ctx.env.executionSignal ? { signal: ctx.env.executionSignal } : {}),
+    ...(name === "code-exec.execute_python" ? { language: "python" as const, limits: { wallMs: Number(args["timeout"] ?? 30) * 1000 } } : {}),
     ...(sidecar ? { containerImage: sidecar.contract.image, installationId: sidecar.installationId } : {}),
   });
   if (!result.ok) throw Object.assign(new Error(result.error ?? `${name} failed`), { capability_error: result.capability_error, runtime_receipt: result.runtime_receipt });
@@ -299,7 +302,7 @@ async function runBash(
 export const codeExec: PrebuiltScript = {
   name: "code-exec",
   description:
-    "Execute Python or Bash in a real sandbox container, or fast JS in a V8 isolate.",
+    "Run bounded Python/Wasm or JavaScript without a container; execute virtual Bash commands and authorized native workloads when needed.",
   domain: "container",
   requires_tier: 1,
   paramHints: {
@@ -311,15 +314,20 @@ export const codeExec: PrebuiltScript = {
       "Same as code.execute_bash — commands (string, REQUIRED). timeout (number, optional " +
       "seconds). working_dir (string, optional).",
     "code.execute_python":
-      "code (string, REQUIRED — a Python script body). timeout (number, " +
-      "optional seconds, default 30). install_deps (string[], optional — pip packages to install " +
-      "first).",
+      "code (string, REQUIRED — a Python script body). input (object, optional — " +
+      "available as args in Python). timeout (number, optional seconds, greater than 0 " +
+      "and at most 30, default 30). Pure computation in a fresh Python/Wasm isolate; " +
+      "no project filesystem, network or pip installs. For native dependencies/files use " +
+      "an explicitly authorized container or local-machine command.",
     "code.run_js":
       "code (string, REQUIRED — a `run(args, ctx)` module body, no file I/O). args " +
       "(object, optional — passed through to the module's own args param).",
   },
   operations: {
     "code.execute_python": (a, c) => {
+      if (typeof a["code"] !== "string" || !a["code"].trim()) throw new Error("code is required: provide a non-empty Python script");
+      if (a["timeout"] !== undefined && (typeof a["timeout"] !== "number" || !Number.isFinite(a["timeout"]) || a["timeout"] <= 0 || a["timeout"] > 30))
+        throw new Error("python_timeout_invalid: timeout must be greater than 0 and at most 30 seconds");
       return runTier(c, "code-exec.execute_python", PYTHON_HARNESS, 2, a);
     },
     "code.execute_bash": runBash,
