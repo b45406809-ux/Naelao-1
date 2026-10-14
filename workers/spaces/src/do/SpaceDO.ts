@@ -1971,6 +1971,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           url.searchParams.get("tenant_id"), url.searchParams.get("space_id"), url.searchParams.get("user_id"), url.searchParams.get("project_id"), url.searchParams.get("project_id"), url.searchParams.get("user_id"));
         return Response.json({ installations: rows.map(row => { const { manifest_json, ...instance } = row; return { instance, manifest: JSON.parse(manifest_json) }; }) });
       }
+      if (url.pathname === "/extension-installations" && method === "GET") {
+        const rows = queryAll<{ instance_id: string; project_id: string | null; scope: string; status: string; installed_at: string }>(this.ctx.storage.sql as never,
+          "SELECT instance_id,project_id,scope,status,installed_at FROM extension_instances WHERE tenant_id=? AND space_id=? AND extension_id=? AND status='active' ORDER BY installed_at",
+          url.searchParams.get("tenant_id"), url.searchParams.get("space_id"), url.searchParams.get("extension_id"));
+        return Response.json({ installations: rows });
+      }
       if (url.pathname === "/workflow-installation" && method === "GET") {
         const rows = queryAll<{ instance_id: string; manifest_json: string }>(this.ctx.storage.sql as never,
           "SELECT i.*, e.manifest_json, e.updated_at AS manifest_updated_at FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.instance_id=? AND i.tenant_id=? AND i.space_id=? AND i.status='active'",
@@ -10478,7 +10484,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   private async installExtension(request: Request): Promise<Response> {
-    const body = await request.json<{ manifest?: unknown; installedBy?: string; gatekeeperCapabilities?: string[]; tenantId?: string; spaceId?: string; scope?: InstallationScope; projectId?: string; userId?: string }>();
+    const body = await request.json<{ manifest?: unknown; installedBy?: string; gatekeeperCapabilities?: string[]; tenantId?: string; spaceId?: string; scope?: InstallationScope; projectId?: string; userId?: string; promoteExisting?: boolean }>();
     if (!body.installedBy) return Response.json({ error: "installedBy is required" }, { status: 400 });
     if (body.scope && (!body.tenantId || !body.spaceId)) return Response.json({ error: "tenantId and spaceId are required for scoped installations" }, { status: 400 });
     let manifest: ExtensionManifest;
@@ -10486,6 +10492,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     catch (error) { return Response.json({ error: error instanceof Error ? error.message : "invalid_extension_manifest" }, { status: 400 }); }
     if (body.scope && !["SPACE_SHARED", "SPACE_USER", "PROJECT_SHARED", "PROJECT_USER"].includes(body.scope))
       return Response.json({ error: "installation_scope_invalid" }, { status: 400 });
+    if (body.promoteExisting && body.scope !== "SPACE_SHARED") return Response.json({ error: "promotion_requires_space_shared_scope" }, { status: 400 });
     let ownerKey: string | undefined;
     let instanceId: string | undefined;
     if (body.scope && body.tenantId && body.spaceId) {
@@ -10537,6 +10544,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
              VALUES(?,?,?,?,?,?,?,?,?,'active',?,NULL)
              ON CONFLICT(instance_id) DO UPDATE SET installed_by=excluded.installed_by,status='active',removed_at=NULL`,
             instanceId, manifest.id, body.tenantId, body.spaceId, body.projectId ?? null, body.userId ?? null, body.scope, ownerKey, body.installedBy, now);
+          if (body.promoteExisting) {
+            const projectInstalls = queryOne<{ count: number }>(this.ctx.storage.sql as never,
+              "SELECT COUNT(*) AS count FROM extension_instances WHERE extension_id=? AND tenant_id=? AND space_id=? AND scope='PROJECT_SHARED' AND status='active'",
+              manifest.id, body.tenantId, body.spaceId);
+            if (!projectInstalls || projectInstalls.count < 1) throw new Error("extension_promotion_source_missing");
+            execute(this.ctx.storage.sql as never,
+              "UPDATE extension_instances SET status='removed',removed_at=? WHERE extension_id=? AND tenant_id=? AND space_id=? AND scope='PROJECT_SHARED' AND status='active'",
+              now, manifest.id, body.tenantId, body.spaceId);
+          }
         }
       });
     } catch (error) {

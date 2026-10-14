@@ -1,7 +1,7 @@
 # Continuation implementation progress
 
 Branch: `Mcbt5s-Backup-2`. Source: the 66-message continuation transcript.
-Current task: **04 — IN PROGRESS**. Tasks 01–03: **IMPLEMENTED against available architecture; task 03 has a documented deployment boundary below**. Tasks 05–33: **UNASSESSED**.
+Current task: **05 — IN PROGRESS**. Tasks 01–04: **IMPLEMENTED against available architecture; task 03 has a documented deployment boundary below**. Tasks 06–33: **UNASSESSED**.
 
 ## Extraction and task-map checkpoint
 
@@ -45,11 +45,21 @@ Current task: **04 — IN PROGRESS**. Tasks 01–03: **IMPLEMENTED against avail
 - Added `runtime-discovery.test.ts`, `extension-runtime-install.test.ts`, and deployment-catalogue/container-slot assertions. Local targeted tests passed: runtime discovery (3), SpaceDO restart/install (2), virtual CLI (6), container marketplace (8), and container execution policy/lifecycle (11). `@naelao/agents-worker`, Spaces, Shell, and Router typechecks passed. `wrangler deploy --dry-run --config workers/agents/wrangler.toml` built the three Docker images and resolved configured bindings; this is local packaging, not live deployment.
 - Open deployment boundary: the product does not let an FDE build/publish arbitrary new OCI images or attach them to Wrangler bindings, and Foundry templates do not yet declare runtime dependencies. Operators can deploy a new fixed binding and digest; a separate build/publish and template-dependency workflow is still needed for arbitrary FDE-created marketplace runtimes. Do not mark this limitation as live-tested or credential-resolved.
 
-## Task 04 — in progress
+## Task 04 — implemented for current deployed runtime profiles
 
-- Primary 339–450 and required look-aheads 451–574, 575–693, 694–749, 2174–2355, 3068–3284, 3943–4139, and 4795–4982 have been read in bounded windows. Later amendment text in task 04 and additional subsystem search still need reconciliation before design.
-- Exact next action: inspect the current extension/workspace promotion and authorization code against the task 04 request. Preserve the prior clarification that a promoted space-wide extension gets its own Space workspace, separate from the Space Assistant. Implement and test only the confirmed behavior, then update this checkpoint before task 05.
+- Primary 339–450 and look-aheads 451–574, 575–693, 694–749, 2174–2355, 3068–3284, 3943–4139, and 4795–4982 were read in bounded windows. A full transcript keyword search for promotion, project/Space workspace, credit-eating extensions and timeout terms found only the current task's proposal (no later correction). The separate Space extension workspace requirement also follows the user's direct clarification in the conversation.
+- Implemented an owner-reviewed installation-scope choice in Foundry for the actually deployed FFmpeg and LibreOffice profiles. Installing a profile in another project returns a promotion-confirmation response. The UI gives the owner a choice to promote, keep it isolated, or cancel; the warning accurately says promotion deactivates project installs, does not move files, and does not guarantee savings. The SpaceDO checks for source installs and transactionally activates the Space grant while deactivating all project-shared grants. It does not claim SQLite migration or shared processing queues.
+- Fixed execution scope propagation so SPACE_SHARED/SPACE_USER installations use `spaces/<space>/space-workspace/extensions/<installationId>/workspace/` even when a project initiated the run. Project scope and authorization identity remain attached to the invocation. Added regression coverage proving a Space-shared extension cannot read Project or Space Assistant workspace files and promotion leaves one active shared instance while retiring project installs.
+- Updated `docs/runtime-discovery-and-installation.md`: container work is bounded to at most 60 seconds (lower manifest limit applies), cancellation/deadlines abort, and durable Workflows own waits/scheduling. No free-idle or credit-savings claim is made.
+- Verification: `specialized-workspaces.test.ts` 5 passed; `extension-runtime-install.test.ts` 3 passed. Agents, Spaces and Shell typechecks passed. No live Cloudflare test was run; the user explicitly said it was unnecessary. This implementation covers currently deployed fixed runtime profiles; there is no separate generic FDE marketplace-extension installer in this checkout, so arbitrary FDE extension promotion is outside the currently exposed installation path and remains tied to task 03's deployment boundary.
+- Task 04 files are ready for the required branch checkpoint; commit and push before proceeding beyond task 05 review.
+
+## Task 05 — in progress
+
+- Primary: 451–574 (USER 451–453; AI MODEL 454–574). This pair is newly in focus; its lines were previously read only as task 04 look-ahead and do not count as task completion.
+- Initial next action: reread the primary in bounded windows, search the later transcript for exact subsystem terms from the five proposed issues (AST/reference graph, package/registry isolation, SQLite/event-loop batching, webhook ordering/causality, model deprecation/profile translation), then read every matching context with line numbers before choosing what exists or needs implementation.
+- Treat the model's exact timings, provider internals, malicious-package behavior, zero-cost claims and proposed APIs as unverified hypotheses. Inspect current code/tests independently; do not implement five new subsystems unless source reconciliation and repository evidence support them.
 
 ## Exact next action
 
-Commit/push task 02. Continue task 03 (211–338; its primary and most look-aheads have been read, but task 17/21 full pairs still require manual bounded reading). Inspect container catalogue API, marketplace/template installation, missing-runtime command recovery and durable extension scheduling. Fix/install actual approved runtime discovery without falsely advertising unavailable marketplace entries or merging unrelated extension state. Finish task 03 before starting 04. Preserve task 01–02 and track each later pair independently.
+Finish the task 04 commit/push, then continue task 05 sequentially from primary 451–574. Do not mark task 05 complete based only on its earlier look-ahead read. Read the primary and relevant later corrections in bounded windows, inspect repository code/tests, implement supported requirements, verify, update the plan/progress, and push a task checkpoint before advancing.

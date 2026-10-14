@@ -6,9 +6,9 @@ import { useActiveSpace } from "@/lib/active-space-context";
 import { useProductAuth } from "@/lib/auth-provider";
 import {
   acceptFoundryDocumentGrant, acceptFoundryWorkerGrant, createCrossSpaceGrant, createFoundryRequest, createFoundryTemplate, forwardFoundryRequest, installFoundryTemplate, invokeSharedWorker,
-  installRuntime, listCrossSpaceGrants, listFoundryRequests, listFoundryTemplates, listRuntimeCatalogue, reviewFoundryRequest, testFoundryTemplate, updateFoundryTemplate,
+  installRuntime, listCrossSpaceGrants, listFoundryRequests, listFoundryTemplates, listProjects, listRuntimeCatalogue, reviewFoundryRequest, testFoundryTemplate, updateFoundryTemplate,
   revokeCrossSpaceGrant, revokeFoundryDocumentGrant, revokeFoundryWorkerGrant, transitionFoundryTemplate,
-  type CrossSpaceGrant, type FoundryFeatureRequest, type FoundryTemplate, type RuntimeCatalogueEntry,
+  type CrossSpaceGrant, type FoundryFeatureRequest, type FoundryTemplate, type Project, type RuntimeCatalogueEntry,
 } from "@/lib/api";
 
 const inputStyle: React.CSSProperties = { width: "100%", padding: "8px 10px", fontSize: 13, borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface1, var(--bg))", color: "var(--text1)" };
@@ -60,6 +60,9 @@ export default function FoundryPage() {
   const [runtimeCatalogue, setRuntimeCatalogue] = React.useState<RuntimeCatalogueEntry[]>([]);
   const [runtimeCatalogueLoaded, setRuntimeCatalogueLoaded] = React.useState(false);
   const [runtimeCatalogueError, setRuntimeCatalogueError] = React.useState("");
+  const [runtimeProjects, setRuntimeProjects] = React.useState<Project[]>([]);
+  const [runtimeInstallScope, setRuntimeInstallScope] = React.useState<"SPACE_SHARED" | "PROJECT_SHARED">("SPACE_SHARED");
+  const [runtimeProjectId, setRuntimeProjectId] = React.useState("");
 
   const refresh = React.useCallback(async () => {
     if (!credentials) return;
@@ -67,10 +70,12 @@ export default function FoundryPage() {
       listFoundryTemplates(activeSpaceId, credentials),
       listFoundryRequests(activeSpaceId, credentials),
       listCrossSpaceGrants(activeSpaceId, credentials),
+      listProjects(activeSpaceId, credentials),
     ]);
     if (loaded[0]?.status === "fulfilled") setTemplates(loaded[0].value);
     if (loaded[1]?.status === "fulfilled") { setRequests(loaded[1].value); setRequestsVisible(true); }
     if (loaded[2]?.status === "fulfilled") { setGrants(loaded[2].value); setGrantsVisible(true); }
+    if (loaded[3]?.status === "fulfilled") setRuntimeProjects(loaded[3].value.filter(project => project.status === "active"));
     try {
       const catalogue = await listRuntimeCatalogue(activeSpaceId, credentials);
       setRuntimeCatalogue(catalogue.images); setRuntimeCatalogueLoaded(true); setRuntimeCatalogueError("");
@@ -162,11 +167,33 @@ export default function FoundryPage() {
 
   async function approveRuntimeInstall(runtime: RuntimeCatalogueEntry) {
     if (!credentials || busy) return;
+    if (runtimeInstallScope === "PROJECT_SHARED" && !runtimeProjectId) { show("Choose a project before installing a project-scoped runtime"); return; }
     const contracts = runtime.install_manifest?.containers ?? [];
     const permissions = contracts.map(contract => `${contract.id}: ${contract.resources.memoryMb} MB memory, ${contract.resources.cpuCores} CPU, ${contract.resources.timeoutSeconds}s per run, outbound network ${contract.networkPolicy ?? "none"}`).join("\n");
-    const accepted = window.confirm(`Install ${runtime.name} for this Space?\n\nIt can run exported commands in a dedicated Space extension workspace.\n${permissions}\n\nEach container run uses the existing metered runtime budget; no fixed monthly price is implied.\n\nYou authorize this runtime installation for all projects in this Space.`);
+    const requestedProject = runtimeInstallScope === "PROJECT_SHARED" ? runtimeProjects.find(project => project.id === runtimeProjectId) : undefined;
+    const accepted = window.confirm(`Install ${runtime.name} for ${requestedProject ? `project ${requestedProject.name}` : "this Space"}?\n\nIt can run exported commands in a dedicated extension workspace.\n${permissions}\n\nEach container run uses the existing metered runtime budget; no fixed monthly price is implied.`);
     if (!accepted) return;
-    await run(() => installRuntime(activeSpaceId, credentials!, runtime.id), `${runtime.name} installed for this Space`);
+    if (busy) return;
+    setBusy(true);
+    try {
+      const request = { scope: runtimeInstallScope, ...(requestedProject ? { projectId: requestedProject.id } : {}) };
+      let result = await installRuntime(activeSpaceId, credentials, runtime.id, request);
+      let installedScope: "SPACE_SHARED" | "PROJECT_SHARED" = runtimeInstallScope;
+      if (result.status === "promotion_confirmation_required") {
+        const existingProjects = (result.existing_project_ids ?? []).map(id => runtimeProjects.find(project => project.id === id)?.name ?? id);
+        const detail = `This runtime already has project-scoped installations${existingProjects.length ? ` in ${existingProjects.join(", ")}` : ""}.\n\nPromotion deactivates those installs and uses the runtime's dedicated Space extension workspace. Project files and workspace contents are not moved. Runtime savings are not guaranteed.\n\nPromote to Space-wide?`;
+        if (window.confirm(detail)) {
+          result = await installRuntime(activeSpaceId, credentials, runtime.id, { scope: "SPACE_SHARED", promoteExisting: true, acknowledgePromotion: true });
+          installedScope = "SPACE_SHARED";
+        } else if (runtimeInstallScope === "PROJECT_SHARED" && requestedProject && window.confirm("Keep this installation isolated in the selected project? This may use additional metered runtime capacity.")) {
+          result = await installRuntime(activeSpaceId, credentials, runtime.id, { ...request, acknowledgeIsolation: true });
+        } else return;
+      }
+      if (result.status === "already_available_space_shared") show(`${runtime.name} is already available across this Space`);
+      else show(`${runtime.name} installed${installedScope === "PROJECT_SHARED" ? ` for ${requestedProject?.name ?? "the selected project"}` : " for this Space"}`);
+      await refresh();
+    } catch (error) { show(error instanceof Error ? error.message : "Runtime installation failed"); }
+    finally { setBusy(false); }
   }
 
   async function callSharedWorker(event: React.FormEvent) {
@@ -182,6 +209,8 @@ export default function FoundryPage() {
   return <div className="page-view">
     <div className="page-header"><div className="page-title">Foundry</div><div className="page-subtitle">Reusable domain workers and owner-reviewed product requests for {activeSpaceName || "this Space"}.</div></div>
     <section className="foundry-section"><h2>Specialized runtimes</h2><p className="muted">Only deployment approved runtimes appear here. A Space owner can install a runtime for projects in this Space. Each invocation remains bounded and uses the separate Space extension workspace.</p>
+      <div className="foundry-form"><label className="foundry-meta">Installation scope<select value={runtimeInstallScope} onChange={event => setRuntimeInstallScope(event.target.value as "SPACE_SHARED" | "PROJECT_SHARED")} style={inputStyle}><option value="SPACE_SHARED">Shared across this Space</option><option value="PROJECT_SHARED">One project</option></select></label>
+        {runtimeInstallScope === "PROJECT_SHARED" ? <label className="foundry-meta">Project<select required value={runtimeProjectId} onChange={event => setRuntimeProjectId(event.target.value)} style={inputStyle}><option value="">Choose a project</option>{runtimeProjects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label> : null}</div>
       {runtimeCatalogueError ? <p className="muted">Runtime catalogue unavailable: {runtimeCatalogueError}</p> : null}
       {!runtimeCatalogueLoaded && !runtimeCatalogueError ? <p className="muted">Loading approved runtimes…</p> : null}
       {runtimeCatalogueLoaded && runtimeCatalogue.filter(runtime => runtime.available).length === 0 ? <p className="muted">No approved runtime images are deployed for this environment.</p> : null}

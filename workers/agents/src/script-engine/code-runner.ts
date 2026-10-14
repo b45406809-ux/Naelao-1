@@ -240,7 +240,8 @@ async function runContainer(
       if (installation.installationId !== params.installationId || installation.contract.image !== params.containerImage) return fail("container_image_installation_mismatch");
       const timeoutMs = Math.min(opts.containerTimeoutMs ?? DEFAULT_CONTAINER_TIMEOUT_MS, installation.contract.resources.timeoutSeconds * 1000);
       const scope: ContainerInvocationScope = { tenantId: params.tenantId, spaceId: params.spaceId, ...(params.projectId ? { projectId: params.projectId } : {}), actorId: params.userId,
-        agentId: params.agentId, runId: params.runId, executionId: crypto.randomUUID(), installationId: params.installationId, image: installation.contract.image, timeoutMs, deadline: Date.now() + timeoutMs };
+        agentId: params.agentId, runId: params.runId, executionId: crypto.randomUUID(), installationId: params.installationId,
+        ...(installation.scope ? { installationScope: installation.scope } : {}), image: installation.contract.image, timeoutMs, deadline: Date.now() + timeoutMs };
       const stub = namespace.get(namespace.idFromName(sidecarKey(scope) + branchScope));
       return runContainerRequest(stub, opts, params, started, false, scope);
     } catch (error) { return fail(error instanceof Error ? error.message : "container_registry_unavailable"); }

@@ -7,6 +7,7 @@ import { sha256Bytes } from "../script-engine/r2-cas.js";
 
 const image = "registry.example/media@sha256:" + "a".repeat(64);
 const prefix = "spaces/space/projects/project/workspace/";
+const extensionPrefix = "spaces/space/space-workspace/extensions/media-one/workspace/";
 
 // R2 and the native process transport are doubles. Publication uses the real ConcurrencyDO
 // and its actual SQLite schema/CAS implementation, not a mocked lock success response.
@@ -72,10 +73,10 @@ function runtime(store: ReturnType<typeof workspace>, deployedImage = image) {
     BILLING_WORKER: { fetch: async () => Response.json({ ok: true }) } };
   const make = () => new ToolSandboxDO(ctx as never, env as never);
   let sandbox = make();
-  const exec = async (args = {}, sidecar = false, bodyScope = { spaceId: "space", projectId: "project" }) => {
+  const exec = async (args = {}, sidecar = false, bodyScope = { spaceId: "space", projectId: "project" }, installationScope?: "SPACE_SHARED" | "PROJECT_SHARED") => {
     const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", actorId: "user", agentId: "worker", runId: "run",
       executionId: crypto.randomUUID(), timeoutMs: 55000, deadline: Date.now() + 55000,
-      ...(sidecar ? { image, installationId: "media-one" } : {}) };
+      ...(sidecar ? { image, installationId: "media-one", ...(installationScope ? { installationScope } : {}) } : {}) };
     return sandbox.fetch(new Request("http://sandbox/exec", { method: "POST", headers: { "content-type": "application/json",
       "x-naelao-container-scope": JSON.stringify(scope), "x-naelao-internal-token": await mintInternalToken("test-secret", "tenant") },
       body: JSON.stringify({ ...bodyScope, args }) }));
@@ -101,6 +102,20 @@ describe("specialized project workspaces", () => {
     expect(general.calls).toContain("/workspace/delete");
     expect(store.data.get("spaces/space/projects/other/workspace/private.txt")).toBeDefined();
     expect(store.bucket.get.mock.calls.some(([key]) => key.includes("/other/"))).toBe(false);
+  });
+
+  it("puts a Space-shared extension in its own workspace, separate from both project and assistant files", async () => {
+    const store = workspace(), worker = runtime(store);
+    await store.seed(prefix + "project-private.txt", new TextEncoder().encode("project-only"));
+    await store.seed("spaces/space/workspace/assistant-private.txt", new TextEncoder().encode("assistant-only"));
+    await store.seed(extensionPrefix + "shared-state.json", new TextEncoder().encode("extension-state"));
+
+    const response = await worker.exec({}, true, { spaceId: "space", projectId: "project" }, "SPACE_SHARED");
+    expect(await response.json()).toMatchObject({ result: { files: { "shared-state.json": expect.any(String) } } });
+    expect(worker.files.has("project-private.txt")).toBe(false);
+    expect(worker.files.has("assistant-private.txt")).toBe(false);
+    expect(store.bucket.get.mock.calls.some(([key]) => key === extensionPrefix + "shared-state.json")).toBe(true);
+    expect(store.bucket.get.mock.calls.some(([key]) => key.includes("project-private.txt") || key.includes("assistant-private.txt"))).toBe(false);
   });
 
   it("rejects a deployed digest mismatch before exposing project files", async () => {

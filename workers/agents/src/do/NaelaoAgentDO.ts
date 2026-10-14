@@ -2294,7 +2294,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         headers: await this.internalHeaders(tenantId, { "x-naelao-user-id": userId }),
       }));
       if (!response.ok) throw new Error("container_installation_lookup_unavailable");
-      const result = await response.json<{ installations: Array<{ instance: { instance_id: string; tenant_id: string; space_id: string; project_id?: string; user_id?: string; status: string }; manifest: unknown }> }>();
+      const result = await response.json<{ installations: Array<{ instance: { instance_id: string; tenant_id: string; space_id: string; project_id?: string; user_id?: string; scope: InstalledContainer["scope"]; status: string }; manifest: unknown }> }>();
       const containers: InstalledContainer[] = [];
       const approvedImages = parseApprovedContainerImages(this.env.CONTAINER_IMAGE_REGISTRY);
       for (const record of result.installations) {
@@ -2303,7 +2303,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         for (const contract of manifest.containers ?? []) {
           if (!contract.permissions.some(permission => permission.actions.includes("execute"))) continue;
           const installation = { tenantId, spaceId, ...(record.instance.project_id ? { projectId: record.instance.project_id } : {}), ...(record.instance.user_id ? { userId: record.instance.user_id } : {}),
-            installationId: record.instance.instance_id, extensionId: manifest.id, contract };
+            installationId: record.instance.instance_id, extensionId: manifest.id, contract, scope: record.instance.scope };
           try { approvedContainer(installation, approvedImages); containers.push(installation); }
           catch { /* A removed/replaced deployment pin revokes this installed command. */ }
         }

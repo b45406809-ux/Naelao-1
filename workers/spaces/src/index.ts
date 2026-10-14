@@ -957,7 +957,7 @@ app.post("/spaces/:spaceId/runtime-installations", async c => {
   if (!tenantId || !userId || !await canExportBlueprint(c, spaceId)) return c.json({ error_code: "owner_or_admin_required" }, 403);
   const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id=? AND tenant_id=? AND status!='deleted'").bind(spaceId, tenantId).first();
   if (!owned) throw notFound("Space");
-  const body = await c.req.json<{ image_id?: string; manifest?: unknown; scope?: string; project_id?: string; acknowledge_permissions?: boolean }>().catch(() => null);
+  const body = await c.req.json<{ image_id?: string; manifest?: unknown; scope?: string; project_id?: string; acknowledge_permissions?: boolean; promote_existing?: boolean; acknowledge_promotion?: boolean; acknowledge_isolation?: boolean }>().catch(() => null);
   if (!body || body.acknowledge_permissions !== true) return c.json({ error_code: "runtime_install_approval_required" }, 400);
   if (typeof body.image_id !== "string" || body.manifest !== undefined) return c.json({ error_code: "deployment_generated_runtime_required" }, 422);
   if (!["SPACE_SHARED", "PROJECT_SHARED"].includes(body.scope ?? "") || body.scope === "SPACE_SHARED" && body.project_id
@@ -988,8 +988,25 @@ app.post("/spaces/:spaceId/runtime-installations", async c => {
     }
   } catch (error) { return c.json({ error_code: "runtime_manifest_invalid", message: (error as Error).message }, 422); }
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const installationsResponse = await stub.fetch(new Request("http://space-do/extension-installations?" + new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, extension_id: manifest.id })));
+  if (!installationsResponse.ok) return c.json({ error_code: "runtime_installation_lookup_unavailable" }, 503);
+  const installations = await installationsResponse.json<{ installations: Array<{ instance_id: string; project_id: string | null; scope: string }> }>();
+  const projectInstalls = installations.installations.filter(item => item.scope === "PROJECT_SHARED");
+  const sharedInstall = installations.installations.find(item => item.scope === "SPACE_SHARED");
+  if (body.scope === "PROJECT_SHARED" && sharedInstall)
+    return c.json({ status: "already_available_space_shared", installation_id: sharedInstall.instance_id, scope: "SPACE_SHARED" });
+  const otherProjects = body.project_id ? projectInstalls.filter(item => item.project_id !== body.project_id) : projectInstalls;
+  const promotionApplies = body.scope === "SPACE_SHARED" ? projectInstalls.length > 0 : otherProjects.length > 0;
+  if (promotionApplies && !body.promote_existing && !body.acknowledge_isolation) {
+    return c.json({ status: "promotion_confirmation_required", extension_id: manifest.id,
+      existing_project_ids: [...new Set(projectInstalls.map(item => item.project_id).filter((id): id is string => Boolean(id)))],
+      requested_project_id: body.project_id, recommended_scope: "SPACE_SHARED",
+      warning: "Promotion deactivates project-scoped installations and uses the extension's dedicated Space workspace. Project files and workspace contents are not moved. Runtime savings are not guaranteed." });
+  }
+  if (body.promote_existing && (body.scope !== "SPACE_SHARED" || body.acknowledge_promotion !== true))
+    return c.json({ error_code: "runtime_promotion_confirmation_required" }, 400);
   return forwardToSpaceDO(stub, "/extensions", "POST", JSON.stringify({ manifest, installedBy: userId, tenantId, spaceId,
-    scope: body.scope, ...(body.project_id ? { projectId: body.project_id } : {}), gatekeeperCapabilities: ["native-execution"] }));
+    scope: body.scope, ...(body.project_id ? { projectId: body.project_id } : {}), ...(body.promote_existing ? { promoteExisting: true } : {}), gatekeeperCapabilities: ["native-execution"] }));
 });
 
 // Canonical project-universal cron registration. The SpaceDO performs the authoritative

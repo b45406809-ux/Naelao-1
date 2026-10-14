@@ -42,6 +42,7 @@ import { verifyInternalToken } from "@naelao/http";
 import { infraTimeToCredits } from "@naelao/billing-core";
 import { reserveWorkflowBudget, finalizeWorkflowBudget } from "../workflows/report-infra-usage.js";
 import { validateContainerScope, type ContainerInvocationScope } from "../script-engine/container-policy.js";
+import type { InstallationScope } from "@naelao/agent-sdk";
 import type { Env } from "../env.js";
 
 // The container runtime surface exposed on DurableObjectState (cast to stay
@@ -64,6 +65,7 @@ export interface SandboxWorkspaceScope {
   /** Space-wide extension instance. Its files live under Space Workspace, never the
    *  Space Assistant workspace. Project extensions continue using their project workspace. */
   installationId?: string;
+  installationScope?: InstallationScope;
   branch?: string;
 }
 
@@ -113,13 +115,16 @@ export function sandboxWorkspacePrefix(scope: SandboxWorkspaceScope): string {
   if (scope.installationId && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(scope.installationId)) throw new Error("invalid workspace installation");
   const branch = scope.branch?.replaceAll("\\", "/");
   if (branch && (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(branch) || branch.includes(".."))) throw new Error("invalid workspace branch");
-  // Project-installed extensions retain the existing shared project workspace. Only a
-  // Space-wide extension (no project scope) receives its own Space Workspace prefix.
-  const base = project
-    ? `spaces/${scope.spaceId}/projects/${project}/workspace/`
-    : scope.installationId
-      ? `spaces/${scope.spaceId}/space-workspace/extensions/${scope.installationId}/workspace/`
-      : `spaces/${scope.spaceId}/workspace/`;
+  // Project-scoped extensions use their project workspace. Space-scoped installations
+  // receive a dedicated Space extension workspace even when a project initiated the run.
+  const spaceExtension = scope.installationId && ["SPACE_SHARED", "SPACE_USER"].includes(scope.installationScope ?? "");
+  const base = spaceExtension
+    ? `spaces/${scope.spaceId}/space-workspace/extensions/${scope.installationId}/workspace/`
+    : project
+      ? `spaces/${scope.spaceId}/projects/${project}/workspace/`
+      : scope.installationId
+        ? `spaces/${scope.spaceId}/space-workspace/extensions/${scope.installationId}/workspace/`
+        : `spaces/${scope.spaceId}/workspace/`;
   return branch ? `${base}branches/${branch}/` : base;
 }
 
@@ -505,6 +510,7 @@ export class ToolSandboxDO extends DurableObject {
         spaceId: containerScope.spaceId,
         ...(containerScope.projectId ? { projectId: containerScope.projectId } : {}),
         ...(containerScope?.installationId ? { installationId: containerScope.installationId } : {}),
+        ...(containerScope?.installationScope ? { installationScope: containerScope.installationScope } : {}),
         ...(body.workspaceBranch ? { branch: body.workspaceBranch } : {}),
       };
     }

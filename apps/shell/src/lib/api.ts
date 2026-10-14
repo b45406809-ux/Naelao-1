@@ -1276,10 +1276,14 @@ export interface RuntimeCatalogueEntry {
 export async function listRuntimeCatalogue(spaceId: string, session: SessionCredentials) {
   return apiFetch<{ images: RuntimeCatalogueEntry[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/runtime-catalog`, { session });
 }
-export async function installRuntime(spaceId: string, session: SessionCredentials, imageId: string) {
-  return apiFetch<{ installed: boolean; manifest: unknown; installedAt: string; installationId?: string }>(
+export async function installRuntime(spaceId: string, session: SessionCredentials, imageId: string, options: {
+  scope?: "SPACE_SHARED" | "PROJECT_SHARED"; projectId?: string; promoteExisting?: boolean; acknowledgePromotion?: boolean; acknowledgeIsolation?: boolean;
+} = {}) {
+  return apiFetch<{ installed?: boolean; manifest?: unknown; installedAt?: string; installationId?: string; status?: "promotion_confirmation_required" | "already_available_space_shared"; existing_project_ids?: string[]; warning?: string; scope?: string }>(
     `/v1/spaces/${encodeURIComponent(spaceId)}/runtime-installations`,
-    { method: "POST", body: JSON.stringify({ image_id: imageId, scope: "SPACE_SHARED", acknowledge_permissions: true }), session });
+    { method: "POST", body: JSON.stringify({ image_id: imageId, scope: options.scope ?? "SPACE_SHARED", ...(options.projectId ? { project_id: options.projectId } : {}),
+      ...(options.promoteExisting ? { promote_existing: true, acknowledge_promotion: options.acknowledgePromotion === true } : {}),
+      ...(options.acknowledgeIsolation ? { acknowledge_isolation: true } : {}), acknowledge_permissions: true }), session });
 }
 export async function listFoundryTemplates(spaceId: string, session: SessionCredentials) {
   const result = await apiFetch<{ data: FoundryTemplate[] }>(`/v1/spaces/${spaceId}/foundry/templates`, { session }); return result.data;

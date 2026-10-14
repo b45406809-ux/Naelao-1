@@ -1,13 +1,13 @@
-import { parseExtensionPrimitive, type ContainerContract } from "@naelao/agent-sdk";
+import { parseExtensionPrimitive, type ContainerContract, type InstallationScope } from "@naelao/agent-sdk";
 
 export interface ContainerInvocationScope {
   tenantId: string; spaceId: string; projectId?: string | undefined; actorId: string; agentId: string;
-  runId: string; executionId: string; installationId?: string | undefined; image?: string;
+  runId: string; executionId: string; installationId?: string | undefined; installationScope?: InstallationScope | undefined; image?: string;
   deadline: number; timeoutMs: number;
 }
 export interface InstalledContainer {
   tenantId: string; spaceId: string; projectId?: string | undefined; userId?: string | undefined;
-  installationId: string; extensionId: string; contract: ContainerContract;
+  installationId: string; extensionId: string; contract: ContainerContract; scope?: InstallationScope | undefined;
 }
 export interface ApprovedContainerImage {
   image: string; binding: "DOCUMENT_SANDBOX" | "MEDIA_SANDBOX";
@@ -20,6 +20,8 @@ export function validateContainerScope(scope: ContainerInvocationScope, now = Da
   for (const value of [scope.tenantId, scope.spaceId, scope.actorId, scope.agentId, scope.runId, scope.executionId])
     if (!ID.test(value) || value === "system") throw new Error("container_actor_scope_required");
   if (scope.projectId && !ID.test(scope.projectId) || scope.installationId && !ID.test(scope.installationId)) throw new Error("container_scope_invalid");
+  if (scope.installationScope && !["SPACE_SHARED", "SPACE_USER", "PROJECT_SHARED", "PROJECT_USER"].includes(scope.installationScope)) throw new Error("container_installation_scope_invalid");
+  if (scope.installationScope && !scope.installationId) throw new Error("container_installation_required");
   if (!Number.isFinite(scope.timeoutMs) || scope.timeoutMs < 1 || scope.timeoutMs > 60000 || !Number.isFinite(scope.deadline) || scope.deadline <= now || scope.deadline > now + 65000)
     throw new Error("container_deadline_invalid");
   if (scope.image && !/^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$/.test(scope.image)) throw new Error("container_image_pin_required");
