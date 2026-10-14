@@ -25,7 +25,7 @@ export { CodeRpcBroker } from "./script-engine/code-rpc-broker.js";
 import { LAUNCHPAD_TEMPLATES, LAUNCHPAD_CORE_AGENTS, getLaunchpadTemplate } from "./launchpad/spacetype.js";
 import { resolveBusinessContext, parseSpaceConfigForContext, loadBusinessContext, type BusinessContext } from "./launchpad/business-context.js";
 import { CONNECTOR_CATALOGUE, getConnector, pollableConnectorIds } from "./connectors/catalogue.js";
-import { CONTAINER_IMAGE_CATALOGUE } from "./script-engine/container-catalogue.js";
+import { deployedContainerCatalogue } from "./script-engine/container-catalogue.js";
 import { isCronDue } from "@naelao/events";
 import { SkillLibrary } from "./script-engine/skill-library.js";
 import { workflowRunStub, type DurableWorkflowHostEnv } from "./workflows/workflow-host.js";
@@ -223,6 +223,9 @@ export interface AgentsEnv {
   HITL_APPROVAL_DO: DurableObjectNamespace<HITLApprovalDO>;
   TASK_DO: DurableObjectNamespace<TaskDO>;
   TOOL_SANDBOX: DurableObjectNamespace<ToolSandboxDO>;
+  DOCUMENT_SANDBOX?: DurableObjectNamespace<ToolSandboxDO>;
+  MEDIA_SANDBOX?: DurableObjectNamespace<ToolSandboxDO>;
+  CONTAINER_IMAGE_REGISTRY?: string;
   /** §A1.17 Phase M — local-machine-as-container. One DO per (spaceId, userId); optional, like
    *  every other execution-ladder binding — the local-machine prebuilt fails closed without it. */
   LOCAL_TUNNEL?: DurableObjectNamespace<LocalTunnelDO>;
@@ -6302,7 +6305,12 @@ app.get("/catalog/dev", (c) => {
 // GET /templates: the spaces worker KV-caches this and is the single source of truth for
 // slot-creation validation — never a hand-maintained duplicate.
 app.get("/container-images", async (c) => {
-  return c.json({ images: CONTAINER_IMAGE_CATALOGUE });
+  try {
+    return c.json({ images: deployedContainerCatalogue(c.env.CONTAINER_IMAGE_REGISTRY,
+      [c.env.DOCUMENT_SANDBOX ? "DOCUMENT_SANDBOX" : "", c.env.MEDIA_SANDBOX ? "MEDIA_SANDBOX" : ""]) });
+  } catch {
+    return c.json({ error_code: "container_registry_invalid", message: "Runtime deployment configuration is invalid" }, 503);
+  }
 });
 
 // GET /local-tunnel/connect?space=&user=&token= — the Naelao Local Agent client's WebSocket

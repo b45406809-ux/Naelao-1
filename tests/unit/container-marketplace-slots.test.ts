@@ -6,32 +6,38 @@ import { mintInternalToken } from "@naelao/http";
 import { makeStatefulDoNamespace } from "./helpers/fake-do-namespace.js";
 import { createFakeD1 } from "../stubs/d1-sqlite.js";
 
-// §A1.17 Phase L: Container Marketplace slot registry. Every catalogue image ships
-// `available:false` this pass (see container-catalogue.ts's own header for why) — these tests
-// verify the REAL, tested parts: the catalogue endpoint, the slot CRUD + limit enforcement, and
-// that creating a slot for an unavailable/unknown image is honestly rejected rather than silently
-// "succeeding" into a registry row nothing will ever actually run against.
+// §A1.17 Phase L: catalogue visibility is derived from an exact deployment pin and fixed binding.
+// Slot CRUD remains separately tested below; it must not imply that an image is deployed.
 
 const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
 const PLATFORM_SECRET = "test-platform-secret";
 
-function makeAgentsEnv() {
+function makeAgentsEnv(extra: Record<string, unknown> = {}) {
   return {
     ANTHROPIC_API_KEY: "test-anthropic-key",
     PLATFORM_SECRET,
     WHOP_API_KEY: "test-whop-key",
     NAELAO_WHOP_COMPANY_ID: "test-company",
+    ...extra,
   };
 }
 
 describe("GET /container-images (agents worker catalogue)", () => {
-  it("returns the catalogue with every entry currently unavailable", async () => {
+  it("fails closed without an approved pin and reflects a uniquely pinned binding", async () => {
     const res = await agentsApp.fetch(new Request("https://agents.naelao.com/container-images"), makeAgentsEnv() as never, execCtx);
     expect(res.status).toBe(200);
     const body = await res.json() as { images: Array<{ id: string; available: boolean }> };
     expect(body.images.length).toBeGreaterThan(0);
     expect(body.images.every((i) => i.available === false)).toBe(true);
     expect(body.images.map((i) => i.id)).toContain("postgres-16");
+
+    const pin = "registry.example/media@sha256:" + "a".repeat(64);
+    const configured = await agentsApp.fetch(new Request("https://agents.naelao.com/container-images"), makeAgentsEnv({
+      CONTAINER_IMAGE_REGISTRY: JSON.stringify([{ image: pin, binding: "MEDIA_SANDBOX", memoryMb: 4096, cpuCores: 0.5, schedulingPolicy: "default", networkPolicy: "none" }]),
+      MEDIA_SANDBOX: {},
+    }) as never, execCtx);
+    const configuredBody = await configured.json() as { images: Array<{ id: string; available: boolean; image?: string }> };
+    expect(configuredBody.images.find(image => image.id === "ffmpeg")).toMatchObject({ available: true, image: pin });
   });
 });
 
@@ -45,7 +51,7 @@ const SPACES_TABLE_SQL = `
   );
 `;
 
-function makeConfigKv(catalogueImages: Array<{ id: string; name: string; available: boolean; billing_tier: string }>) {
+function makeConfigKv(catalogueImages: Array<{ id: string; name: string; available: boolean; billing_tier: string; install_manifest?: unknown }>) {
   return {
     async get(key: string) {
       if (key === "container-image-catalogue") return catalogueImages;
@@ -53,6 +59,7 @@ function makeConfigKv(catalogueImages: Array<{ id: string; name: string; availab
       // SPACE_TYPE_REGISTRY_DO binding this test env doesn't provide) with an empty base
       // manifest — loadEffectiveProductConfig still returns the space's own config_json
       // override (containerMarketplace.maxSlotsPerProject) on top of it.
+      if (key === "space-type-manifest:v2:launchpad") return { productConfig: {} };
       if (key === "space-type-manifest:launchpad") return { productConfig: {} };
       return null;
     },
@@ -64,7 +71,7 @@ function namedFetcher(handler: (req: Request) => Promise<Response> | Response): 
   return { fetch: async (req: Request) => handler(req) } as unknown as Fetcher;
 }
 
-function makeEnv(opts: { maxSlots?: number; catalogueImages?: Array<{ id: string; name: string; available: boolean; billing_tier: string }> } = {}) {
+function makeEnv(opts: { maxSlots?: number; catalogueImages?: Array<{ id: string; name: string; available: boolean; billing_tier: string; install_manifest?: unknown }> } = {}) {
   const fakeDb = createFakeD1([SPACES_TABLE_SQL]);
   const configJson = JSON.stringify({ productConfig: { containerMarketplace: { maxSlotsPerProject: opts.maxSlots ?? 2 } } });
   fakeDb.db.exec(`INSERT INTO spaces (id, tenant_id, status, name, config_json) VALUES ('prod-1', 'tenant-1', 'active', 'Product Root', '${configJson.replace(/'/g, "''")}')`);
@@ -100,6 +107,16 @@ async function createProject(env: ReturnType<typeof makeEnv>, headers: Record<st
 }
 
 describe("container-slots CRUD (SpaceDO + spaces-worker validation)", () => {
+  it("does not let a catalogue entry masquerade as an installed executable runtime", async () => {
+    const env = makeEnv({ catalogueImages: [{ id: "ffmpeg", name: "FFmpeg", available: true, billing_tier: "free", install_manifest: { id: "approved-profile" } }] });
+    const headers = await internalHeaders("tenant-1", { "x-naelao-role": "owner", "x-naelao-user-id": "builder-1" });
+    const projectId = await createProject(env, headers);
+    const res = await spacesWorker.fetch(req(`/spaces/prod-1/projects/${projectId}/container-slots`, headers,
+      { method: "POST", body: JSON.stringify({ image_id: "ffmpeg" }) }), env as never, execCtx);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error_code: "runtime_installation_required" });
+  });
+
   it("rejects creating a slot for an image that doesn't exist in the catalogue", async () => {
     const env = makeEnv();
     const headers = await internalHeaders("tenant-1", { "x-naelao-role": "owner", "x-naelao-user-id": "builder-1" });

@@ -39,14 +39,14 @@ Status: **IMPLEMENTED — existing runtimes reused, workspace defects fixed and 
 Primary read: **lines 211–338** (USER 211–213; AI MODEL 214–338).
 Bounded primary windows: 211–338.
 Later amendment/dependency pairs: 339–450 (task 04); 451–574 (task 05); 575–693 (task 06); 694–749 (task 07); 750–841 (task 08); 1755–1970 (task 14); 2174–2355 (task 16); 2356–2591 (task 17); 2592–2772 (task 18); 3068–3284 (task 21); 3943–4139 (task 25); 4442–4647 (task 28); 4648–4794 (task 29); 4795–4982 (task 30)
-Status: **UNASSESSED**. Evidence and exact next action belong in the progress file.
+Status: **IMPLEMENTED for fixed deployment-approved profiles; operator deployment boundary documented**. Evidence and remaining product gap are in the progress file. Task 04 is current.
 
 ## Task 04
 
 Primary read: **lines 339–450** (USER 339–343; AI MODEL 344–450).
 Bounded primary windows: 339–450.
 Later amendment/dependency pairs: 451–574 (task 05); 575–693 (task 06); 694–749 (task 07); 2174–2355 (task 16); 3068–3284 (task 21); 3943–4139 (task 25); 4795–4982 (task 30)
-Status: **UNASSESSED**. Evidence and exact next action belong in the progress file.
+Status: **IN PROGRESS**. Evidence and exact next action belong in the progress file.
 
 ## Task 05
 

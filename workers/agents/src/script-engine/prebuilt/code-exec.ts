@@ -289,7 +289,7 @@ async function runBash(
     }
   }
   if (!stages.length || stages.some(({ argv }) => !isDeclaredNativeCommand(argv[0] ?? "")))
-    throw new Error(`command_not_found: ${first ?? "unknown"}. Use tools.search or install a worker/command that provides this capability.`);
+    throw new Error(`command_not_found: ${first ?? "unknown"}. Run runtime find ${first ?? "<binary>"} to discover an approved runtime, or tools.search for an existing capability. Installation requires explicit human approval.`);
   for (const stage of stages) if (ctx.authorizeShell && !await ctx.authorizeShell({ kind: "command", name: stage.argv[0]! })) throw new Error(`shell_permission_denied:${stage.argv[0]}`);
   if (ctx.env.maxTier !== undefined && ctx.env.maxTier < 6) {
     throw new Error(

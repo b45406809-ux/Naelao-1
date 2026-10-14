@@ -27,7 +27,7 @@ import type { WorkerLoaderBinding } from "../../agents/src/script-engine/code-ru
 import { registerGraduationRoutes } from "./routes/graduation.js";
 import { registerMarketRadarRoutes } from "./routes/market-radar.js";
 import { applyDurableObjectJurisdiction, certifyArtifact, evaluateBlueprintSecurity, sanitizeAndScrubBlueprint, verifyArtifactCertificate, type ConformanceSuite, type ConformanceCertificate } from "@naelao/security";
-import type { SpaceBlueprint } from "@naelao/agent-sdk";
+import { validateExtensionManifest, type SpaceBlueprint } from "@naelao/agent-sdk";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { ConformanceSandboxDO, ConformanceState } from "./conformance-state.js";
@@ -938,6 +938,60 @@ app.get("/spaces/:spaceId/container-installations", async (c) => {
   return stub.fetch(new Request("http://space-do/container-installations?" + new URLSearchParams({ tenant_id: tenantId, space_id: c.req.param("spaceId"), user_id: userId, project_id: c.req.query("project_id") ?? "" })));
 });
 
+app.use("/spaces/:spaceId/runtime-catalog", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use("/spaces/:spaceId/runtime-catalog", requireBusinessMembership({ GET: "member" }));
+app.get("/spaces/:spaceId/runtime-catalog", async c => {
+  const identity = getCallerIdentity(c);
+  const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id=? AND tenant_id=? AND status!='deleted'").bind(c.req.param("spaceId"), identity.tenantId).first();
+  if (!owned) throw notFound("Space");
+  if (!c.env.AGENTS_WORKER) return c.json({ error_code: "runtime_catalog_unavailable" }, 503);
+  return c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/container-images"));
+});
+
+// Explicit human installation. The catalogue is refreshed rather than trusting a cached
+// availability bit or a model-supplied digest. Runtime discovery never invokes this write.
+app.use("/spaces/:spaceId/runtime-installations", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use("/spaces/:spaceId/runtime-installations", requireBusinessMembership({ POST: "admin" }));
+app.post("/spaces/:spaceId/runtime-installations", async c => {
+  const { tenantId, userId } = getCallerIdentity(c), spaceId = c.req.param("spaceId");
+  if (!tenantId || !userId || !await canExportBlueprint(c, spaceId)) return c.json({ error_code: "owner_or_admin_required" }, 403);
+  const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id=? AND tenant_id=? AND status!='deleted'").bind(spaceId, tenantId).first();
+  if (!owned) throw notFound("Space");
+  const body = await c.req.json<{ image_id?: string; manifest?: unknown; scope?: string; project_id?: string; acknowledge_permissions?: boolean }>().catch(() => null);
+  if (!body || body.acknowledge_permissions !== true) return c.json({ error_code: "runtime_install_approval_required" }, 400);
+  if (typeof body.image_id !== "string" || body.manifest !== undefined) return c.json({ error_code: "deployment_generated_runtime_required" }, 422);
+  if (!["SPACE_SHARED", "PROJECT_SHARED"].includes(body.scope ?? "") || body.scope === "SPACE_SHARED" && body.project_id
+    || body.scope === "PROJECT_SHARED" && (!body.project_id || typeof body.project_id !== "string")) return c.json({ error_code: "runtime_scope_invalid" }, 400);
+  if (body.project_id) {
+    const denied = await requireManageableAutomationProject(c, spaceId, body.project_id);
+    if (denied) return denied;
+    const project = await (await spaceDoStub(c.env, spaceId, tenantId)).fetch(new Request(`http://space-do/projects/${encodeURIComponent(body.project_id)}`));
+    if (!project.ok) return c.json({ error_code: "project_not_found" }, 404);
+    const details = await project.json<{ execution_ceiling?: number }>();
+    if ((details.execution_ceiling ?? 6) < 6) return c.json({ error_code: "container_execution_ceiling_exceeded" }, 403);
+  }
+  if (!c.env.AGENTS_WORKER) return c.json({ error_code: "runtime_catalog_unavailable" }, 503);
+  const response = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/container-images"));
+  if (!response.ok) return c.json({ error_code: "runtime_catalog_unavailable" }, 503);
+  const catalogue = await response.json<{ images: Array<{ id: string; available: boolean; image?: string; install_manifest?: unknown }> }>();
+  const candidate = catalogue.images.find(entry => entry.id === body.image_id && entry.available && entry.install_manifest);
+  let manifest: ReturnType<typeof validateExtensionManifest>;
+  try {
+    manifest = validateExtensionManifest(candidate?.install_manifest, { gatekeeperCapabilities: ["native-execution"] });
+    if (!manifest.containers?.length || manifest.gadgets.length || manifest.daemons.length || manifest.commands.length) throw new Error("Only container declarations belong on this runtime installation route");
+    for (const contract of manifest.containers) {
+      if (contract.networkPolicy && contract.networkPolicy !== "none" || contract.mounts?.some(mount => !mount.writable)) throw new Error("Runtime network/mount profile is unavailable");
+      const approved = catalogue.images.find(entry => entry.available && entry.image === contract.image);
+      if (!approved) throw new Error("Runtime digest is not deployed and approved");
+      const profile = validateExtensionManifest(approved.install_manifest).containers?.[0];
+      if (!profile || contract.resources.memoryMb > profile.resources.memoryMb || contract.resources.cpuCores > profile.resources.cpuCores) throw new Error("Runtime exceeds deployed resources");
+    }
+  } catch (error) { return c.json({ error_code: "runtime_manifest_invalid", message: (error as Error).message }, 422); }
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  return forwardToSpaceDO(stub, "/extensions", "POST", JSON.stringify({ manifest, installedBy: userId, tenantId, spaceId,
+    scope: body.scope, ...(body.project_id ? { projectId: body.project_id } : {}), gatekeeperCapabilities: ["native-execution"] }));
+});
+
 // Canonical project-universal cron registration. The SpaceDO performs the authoritative
 // project/space ownership check atomically with persistence.
 app.post("/spaces/:spaceId/project-crons", async (c) => {
@@ -1752,6 +1806,9 @@ app.post("/spaces/:spaceId/projects/:projectId/container-slots", async (c) => {
   if (!image) return c.json({ error_code: "not_found", message: `Unknown container image '${body.image_id}'` }, 404);
   if (!image.available) {
     return c.json({ error_code: "not_available", message: `Container image '${body.image_id}' is not available yet` }, 409);
+  }
+  if (image.install_manifest) {
+    return c.json({ error_code: "runtime_installation_required", message: "Install this deployed runtime through the owner-approved runtime installation flow" }, 409);
   }
 
   const space = await c.env.PLATFORM_DB.prepare(
@@ -4930,14 +4987,14 @@ async function loadManifest(env: Env, spaceTypeId: string): Promise<NaelaoSpaceT
  * GET /container-images, KV-cached 1h like loadTemplateCatalog above — this worker never
  * hand-maintains its own copy of image availability/billing-tier data.
  */
-async function loadContainerCatalogue(env: Env): Promise<Array<{ id: string; name: string; available: boolean; billing_tier: string }>> {
+async function loadContainerCatalogue(env: Env): Promise<Array<{ id: string; name: string; available: boolean; billing_tier: string; install_manifest?: unknown }>> {
   const cacheKey = "container-image-catalogue";
-  const cached = await env.NAELAO_CONFIG_KV.get(cacheKey, "json") as Array<{ id: string; name: string; available: boolean; billing_tier: string }> | null;
+  const cached = await env.NAELAO_CONFIG_KV.get(cacheKey, "json") as Array<{ id: string; name: string; available: boolean; billing_tier: string; install_manifest?: unknown }> | null;
   if (cached) return cached;
   if (!env.AGENTS_WORKER) return [];
   const resp = await env.AGENTS_WORKER.fetch(new Request("http://agents-worker/container-images"));
   if (!resp.ok) return [];
-  const body = await resp.json<{ images: Array<{ id: string; name: string; available: boolean; billing_tier: string }> }>();
+  const body = await resp.json<{ images: Array<{ id: string; name: string; available: boolean; billing_tier: string; install_manifest?: unknown }> }>();
   await env.NAELAO_CONFIG_KV.put(cacheKey, JSON.stringify(body.images), { expirationTtl: 3600 });
   return body.images;
 }

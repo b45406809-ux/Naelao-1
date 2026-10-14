@@ -889,7 +889,7 @@ export class ScriptToolSurface {
             const installed = this.ops.get(resource.name);
             if (installed) return isToolAllowedForRole(this.role, resource.name, installed.prebuilt.requires_tier)
               && (!this.plannerScope || isPlannerOperationAllowed(this.plannerScope, resource.name));
-            if (this.plannerScope) return new Set(["naelao", "echo", "printf", "pwd", "cat", "ls", "grep", "sed", "awk", "find", "jq", "head", "tail", "sort", "uniq", "wc", "diff", "true", "false"]).has(resource.name);
+            if (this.plannerScope) return new Set(["naelao", "runtime", "echo", "printf", "pwd", "cat", "ls", "grep", "sed", "awk", "find", "jq", "head", "tail", "sort", "uniq", "wc", "diff", "true", "false"]).has(resource.name);
             return isToolAllowedForRole(this.role, "Bash");
           },
           // skills calling skills (§7): a prebuilt op may invoke another op/script.

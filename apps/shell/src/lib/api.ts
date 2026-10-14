@@ -1268,6 +1268,19 @@ export interface CrossSpaceGrant {
   id: string; grantee_space_id: string; target_space_id: string; resource_id: string; granted_by: string; created_at: string;
   expires_at: string; revoked_at: string | null;
 }
+export interface RuntimeCatalogueEntry {
+  id: string; name: string; description: string; category: string; available: boolean;
+  image?: string; exported_binaries?: string[];
+  install_manifest?: { containers?: Array<{ id: string; image: string; resources: { memoryMb: number; cpuCores: number; timeoutSeconds: number }; networkPolicy?: string }> };
+}
+export async function listRuntimeCatalogue(spaceId: string, session: SessionCredentials) {
+  return apiFetch<{ images: RuntimeCatalogueEntry[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/runtime-catalog`, { session });
+}
+export async function installRuntime(spaceId: string, session: SessionCredentials, imageId: string) {
+  return apiFetch<{ installed: boolean; manifest: unknown; installedAt: string; installationId?: string }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/runtime-installations`,
+    { method: "POST", body: JSON.stringify({ image_id: imageId, scope: "SPACE_SHARED", acknowledge_permissions: true }), session });
+}
 export async function listFoundryTemplates(spaceId: string, session: SessionCredentials) {
   const result = await apiFetch<{ data: FoundryTemplate[] }>(`/v1/spaces/${spaceId}/foundry/templates`, { session }); return result.data;
 }

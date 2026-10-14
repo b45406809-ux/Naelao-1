@@ -58,6 +58,7 @@ import { resolveAssistantApprovalPlan, type AssistantEffectiveRole } from "../sc
 import { buildCodeRunner, type WorkerLoaderBinding } from "../script-engine/code-runner.js";
 import { bindCodeRpc, type CodeRpcBinding } from "../script-engine/code-rpc-broker.js";
 import { resolveContainerBinary, parseApprovedContainerImages, approvedContainer, type InstalledContainer } from "../script-engine/container-policy.js";
+import { deployedContainerCatalogue } from "../script-engine/container-catalogue.js";
 import { createVaultProxy } from "../script-engine/vault-proxy.js";
 import { initMemorySchema, buildMemoryStore, runMemoryMaintenance } from "../script-engine/memory-os.js";
 import { buildProjectMemoryStore, buildHybridMemoryStore, roleRankFor } from "../script-engine/project-memory-client.js";
@@ -2295,13 +2296,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (!response.ok) throw new Error("container_installation_lookup_unavailable");
       const result = await response.json<{ installations: Array<{ instance: { instance_id: string; tenant_id: string; space_id: string; project_id?: string; user_id?: string; status: string }; manifest: unknown }> }>();
       const containers: InstalledContainer[] = [];
+      const approvedImages = parseApprovedContainerImages(this.env.CONTAINER_IMAGE_REGISTRY);
       for (const record of result.installations) {
         if (record.instance.status !== "active" || record.instance.tenant_id !== tenantId || record.instance.space_id !== spaceId) continue;
         const manifest = validateExtensionManifest(record.manifest);
         for (const contract of manifest.containers ?? []) {
           if (!contract.permissions.some(permission => permission.actions.includes("execute"))) continue;
-          containers.push({ tenantId, spaceId, ...(record.instance.project_id ? { projectId: record.instance.project_id } : {}), ...(record.instance.user_id ? { userId: record.instance.user_id } : {}),
-            installationId: record.instance.instance_id, extensionId: manifest.id, contract });
+          const installation = { tenantId, spaceId, ...(record.instance.project_id ? { projectId: record.instance.project_id } : {}), ...(record.instance.user_id ? { userId: record.instance.user_id } : {}),
+            installationId: record.instance.instance_id, extensionId: manifest.id, contract };
+          try { approvedContainer(installation, approvedImages); containers.push(installation); }
+          catch { /* A removed/replaced deployment pin revokes this installed command. */ }
         }
       }
       return containers;
@@ -2310,6 +2314,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (!userId) return undefined;
       return resolveContainerBinary(command, await installedContainers(), { tenantId, spaceId, projectId, userId });
     };
+    env.containerRuntimeInventory = async () => ({ installed: await installedContainers(),
+      catalogue: deployedContainerCatalogue(this.env.CONTAINER_IMAGE_REGISTRY,
+        [this.env.DOCUMENT_SANDBOX ? "DOCUMENT_SANDBOX" : "", this.env.MEDIA_SANDBOX ? "MEDIA_SANDBOX" : ""]) });
     env.codeRunner = buildCodeRunner({
       airGappedOnly,
       authorizeContainer: nativeGrantActive,

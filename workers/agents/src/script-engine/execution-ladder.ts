@@ -70,6 +70,7 @@ export function classifyExecutionRoute(command: string): { tier: ExecutionTier; 
     else if (name === "browse") route = argv.some((arg) => ["--screenshot", "--pdf", "--visual"].includes(arg)) ? { tier: 5, reason: "visual_browser" } : { tier: 4, reason: "dom_browser" };
     else if (name === "see") route = { tier: 5, reason: "on_demand_vision" };
     else if (isDeclaredNativeCommand(name)) route = { tier: 6, reason: "declared_native_command" };
+    else if (name === "runtime") route = { tier: 1, reason: "runtime_discovery" };
     else if (["stripe", "gh", "r2", "resend", "twilio"].includes(name) || /^(ext|auto):/.test(name)) route = { tier: 2, reason: "registered_capability" };
     else return { tier: 1, engine: EXECUTION_ENGINES[1], reason: "command_not_found" };
     if (route.tier > selected.tier) selected = route;

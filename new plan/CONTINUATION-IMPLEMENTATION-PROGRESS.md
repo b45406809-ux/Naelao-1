@@ -1,14 +1,14 @@
 # Continuation implementation progress
 
 Branch: `Mcbt5s-Backup-2`. Source: the 66-message continuation transcript.
-Current task: **03 — IN PROGRESS**. Tasks 01–02: **IMPLEMENTED, local evidence below**. Tasks 04–33: **UNASSESSED**.
+Current task: **04 — IN PROGRESS**. Tasks 01–03: **IMPLEMENTED against available architecture; task 03 has a documented deployment boundary below**. Tasks 05–33: **UNASSESSED**.
 
 ## Extraction and task-map checkpoint
 
 - Extraction resumes strictly after prior final timestamp `2026-10-12T21:24:57.182Z`. New transcript: 66 visible messages, first USER at `2026-10-13T17:11:46.189Z`, final AI MODEL at `2026-10-14T20:45:34.085Z`. No thought/tool/empty chunks. Original transcript and source unchanged.
 - Extractor tests: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s 'new plan' -p test_extract_ai_studio_messages.py -v`: 2 passed.
 - Task map specifies all 33 pairs with exact line ranges and later amendment/dependency ranges; mappings are look-aheads, not assumptions that all later text contradicts the current pair.
-- Manual reading so far: primary 01 (1–55), pair 02 (56–210), and partial look-ahead 03/04 (211–400). No later task is complete.
+- Manual reading so far: primaries 01 (1–55), 02 (56–210), 03 (211–338), and 04 (339–450); later pairs read as look-ahead are listed under the relevant task records. No later task is complete.
 - First pair is a research question; model internals, latency, physical-air-gap and platform claims in its reply are unverified. Do not copy them as implementation requirements.
 - Existing workspace prefixes and container policies found; still inspect execution code and reconcile later context before deciding any change.
 - Development environment: Node 24.19.0, dependencies present. Plain pnpm is 11.25.0; use repository-pinned `corepack pnpm` (9.12.0). Git origin read succeeds. No live provider check established.
@@ -33,6 +33,22 @@ Current task: **03 — IN PROGRESS**. Tasks 01–02: **IMPLEMENTED, local eviden
 - `docs/specialized-runtime-workspaces.md` records actual boundaries. R2/CAS remains the verified workspace mechanism; no imaginary SQLite-FUSE engine, gVisor deployment, fixed boot times or zero-cost billing was introduced. Slim images are Linux user-space, not OS-free. Installed OCI image reuse does not authorize sharing live extension state.
 - Verification: Agents targeted Python/specialized workspace/sandbox suites — 17 tests passed; Agents typecheck passed. Tests/plan `14-containers` and `09-artifactfs` — 15 tests passed. Two original sandbox-fixture assertions initially failed because the fixture omitted canonical storage; corrected the fixture and reran successfully, without weakening the assertions.
 - Live Docker image/provider execution unrun. Current HTTP workspace file-size/count bounds remain; large-media/provider expansion is owned by tasks 18/28. Template install discovery and credit-sharing promotion are owned by tasks 03/04.
+
+## Task 03 — implemented for currently deployed runtime profiles
+
+- Manually read primary 211–338 and the task-map look-aheads: 339–450, 451–574, 575–693, 694–749, 750–841, 1755–1970, 2174–2355, 2356–2591, 2592–2772, 3068–3284, 3943–4139, 4442–4647, 4648–4794, and 4795–4982. Fresh additional matching context read: 1200–1351 (later model-cost/profile and template-compiler claims), 1507–1523 (sidecar claims), 1697–1701 and 2076–2080 (local runtime/egress examples), 2978–3067 (external customer extensions), 4471–4561 (Artifacts/container claims), 4801–4824 (Cloudflare primitive examples), and 5275–5284 (Workers/container distinction). These reads do not complete those later tasks.
+- Reconciled requirements: discover installed exported commands, search only genuinely deployed candidates, never auto-install or grant native execution from planner text, ask a Space owner to review permissions/limits, and use durable Workflows for sleeping orchestration with bounded container work. Identical image bytes may be deployment-shared; writable workspace and live process state remain isolated by installation. Existing extension IDs cannot have their manifests silently mutated. Unsupported claims of automatic sub-second attachment, free idle compute, dynamic arbitrary-image publishing, and template installation without user authorization are not used.
+- Cloudflare documentation fetched from `https://developers.cloudflare.com/containers/api/durable-object-container/`: `inspect()` returns the running image reference; default-policy images are deployment configured. Thus the exact pin is an operator deployment input and runtime execution checks both the registry approval and inspected image. No live Cloudflare request was made.
+- Changed `workers/agents/src/script-engine/container-catalogue.ts`, agent env/catalogue wiring, `prebuilt/runtime-discovery.ts`, `virtual-cli.ts`, execution classification and planner tool allowlists. Added `runtime list` / `runtime find <binary>` with actor-scoped installations, ambiguity handling, fail-closed deployment candidates, and explicit human next actions. Only FFmpeg/LibreOffice fixed bindings can be installed; custom images are not accepted from caller manifests.
+- Added `runtime-catalog` and owner/admin `runtime-installations` APIs through the Spaces worker and router allowlist. The route refreshes deployment data, enforces owned Space/project and execution ceiling, validates the generated manifest, and records a scoped `SpaceDO` installation. The Foundry page displays only approved profiles and asks the owner to confirm exported commands, memory, CPU, timeout, network, workspace, and metering. Legacy `container-slots` no longer presents an installable runtime profile as if a catalogue row were an executable installation.
+- Hardened `SpaceDO.installExtension`: validate scope/project before mutation, insert registry/instance in one transaction, reject manifest changes behind scoped grants, retain legacy unscoped updates only when no scoped instance exists, and return the stable installation ID. A new image digest has a new extension ID; removed pins cease resolving as installed commands.
+- Added `runtime-discovery.test.ts`, `extension-runtime-install.test.ts`, and deployment-catalogue/container-slot assertions. Local targeted tests passed: runtime discovery (3), SpaceDO restart/install (2), virtual CLI (6), container marketplace (8), and container execution policy/lifecycle (11). `@naelao/agents-worker`, Spaces, Shell, and Router typechecks passed. `wrangler deploy --dry-run --config workers/agents/wrangler.toml` built the three Docker images and resolved configured bindings; this is local packaging, not live deployment.
+- Open deployment boundary: the product does not let an FDE build/publish arbitrary new OCI images or attach them to Wrangler bindings, and Foundry templates do not yet declare runtime dependencies. Operators can deploy a new fixed binding and digest; a separate build/publish and template-dependency workflow is still needed for arbitrary FDE-created marketplace runtimes. Do not mark this limitation as live-tested or credential-resolved.
+
+## Task 04 — in progress
+
+- Primary 339–450 and required look-aheads 451–574, 575–693, 694–749, 2174–2355, 3068–3284, 3943–4139, and 4795–4982 have been read in bounded windows. Later amendment text in task 04 and additional subsystem search still need reconciliation before design.
+- Exact next action: inspect the current extension/workspace promotion and authorization code against the task 04 request. Preserve the prior clarification that a promoted space-wide extension gets its own Space workspace, separate from the Space Assistant. Implement and test only the confirmed behavior, then update this checkpoint before task 05.
 
 ## Exact next action
 

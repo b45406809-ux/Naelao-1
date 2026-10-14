@@ -6,9 +6,9 @@ import { useActiveSpace } from "@/lib/active-space-context";
 import { useProductAuth } from "@/lib/auth-provider";
 import {
   acceptFoundryDocumentGrant, acceptFoundryWorkerGrant, createCrossSpaceGrant, createFoundryRequest, createFoundryTemplate, forwardFoundryRequest, installFoundryTemplate, invokeSharedWorker,
-  listCrossSpaceGrants, listFoundryRequests, listFoundryTemplates, reviewFoundryRequest, testFoundryTemplate, updateFoundryTemplate,
+  installRuntime, listCrossSpaceGrants, listFoundryRequests, listFoundryTemplates, listRuntimeCatalogue, reviewFoundryRequest, testFoundryTemplate, updateFoundryTemplate,
   revokeCrossSpaceGrant, revokeFoundryDocumentGrant, revokeFoundryWorkerGrant, transitionFoundryTemplate,
-  type CrossSpaceGrant, type FoundryFeatureRequest, type FoundryTemplate,
+  type CrossSpaceGrant, type FoundryFeatureRequest, type FoundryTemplate, type RuntimeCatalogueEntry,
 } from "@/lib/api";
 
 const inputStyle: React.CSSProperties = { width: "100%", padding: "8px 10px", fontSize: 13, borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface1, var(--bg))", color: "var(--text1)" };
@@ -57,6 +57,9 @@ export default function FoundryPage() {
   const [workerGrantSourceSpace, setWorkerGrantSourceSpace] = React.useState("");
   const [workerGrantAgentId, setWorkerGrantAgentId] = React.useState("");
   const [workerGrantCapability, setWorkerGrantCapability] = React.useState("");
+  const [runtimeCatalogue, setRuntimeCatalogue] = React.useState<RuntimeCatalogueEntry[]>([]);
+  const [runtimeCatalogueLoaded, setRuntimeCatalogueLoaded] = React.useState(false);
+  const [runtimeCatalogueError, setRuntimeCatalogueError] = React.useState("");
 
   const refresh = React.useCallback(async () => {
     if (!credentials) return;
@@ -68,6 +71,13 @@ export default function FoundryPage() {
     if (loaded[0]?.status === "fulfilled") setTemplates(loaded[0].value);
     if (loaded[1]?.status === "fulfilled") { setRequests(loaded[1].value); setRequestsVisible(true); }
     if (loaded[2]?.status === "fulfilled") { setGrants(loaded[2].value); setGrantsVisible(true); }
+    try {
+      const catalogue = await listRuntimeCatalogue(activeSpaceId, credentials);
+      setRuntimeCatalogue(catalogue.images); setRuntimeCatalogueLoaded(true); setRuntimeCatalogueError("");
+    } catch (error) {
+      setRuntimeCatalogueLoaded(false);
+      setRuntimeCatalogueError(error instanceof Error ? error.message : "Runtime catalogue unavailable");
+    }
   }, [activeSpaceId, session]);
 
   React.useEffect(() => { void refresh(); }, [refresh]);
@@ -150,6 +160,15 @@ export default function FoundryPage() {
     setInstallCapability("");
   }
 
+  async function approveRuntimeInstall(runtime: RuntimeCatalogueEntry) {
+    if (!credentials || busy) return;
+    const contracts = runtime.install_manifest?.containers ?? [];
+    const permissions = contracts.map(contract => `${contract.id}: ${contract.resources.memoryMb} MB memory, ${contract.resources.cpuCores} CPU, ${contract.resources.timeoutSeconds}s per run, outbound network ${contract.networkPolicy ?? "none"}`).join("\n");
+    const accepted = window.confirm(`Install ${runtime.name} for this Space?\n\nIt can run exported commands in a dedicated Space extension workspace.\n${permissions}\n\nEach container run uses the existing metered runtime budget; no fixed monthly price is implied.\n\nYou authorize this runtime installation for all projects in this Space.`);
+    if (!accepted) return;
+    await run(() => installRuntime(activeSpaceId, credentials!, runtime.id), `${runtime.name} installed for this Space`);
+  }
+
   async function callSharedWorker(event: React.FormEvent) {
     event.preventDefault(); if (!credentials || busy) return;
     setBusy(true); setInvokeResult("");
@@ -162,6 +181,16 @@ export default function FoundryPage() {
 
   return <div className="page-view">
     <div className="page-header"><div className="page-title">Foundry</div><div className="page-subtitle">Reusable domain workers and owner-reviewed product requests for {activeSpaceName || "this Space"}.</div></div>
+    <section className="foundry-section"><h2>Specialized runtimes</h2><p className="muted">Only deployment approved runtimes appear here. A Space owner can install a runtime for projects in this Space. Each invocation remains bounded and uses the separate Space extension workspace.</p>
+      {runtimeCatalogueError ? <p className="muted">Runtime catalogue unavailable: {runtimeCatalogueError}</p> : null}
+      {!runtimeCatalogueLoaded && !runtimeCatalogueError ? <p className="muted">Loading approved runtimes…</p> : null}
+      {runtimeCatalogueLoaded && runtimeCatalogue.filter(runtime => runtime.available).length === 0 ? <p className="muted">No approved runtime images are deployed for this environment.</p> : null}
+      <div className="grid-3">{runtimeCatalogue.filter(runtime => runtime.available).map(runtime => <Card key={runtime.id}>
+        <CardTitle>{runtime.name}</CardTitle><CardDesc>{runtime.description}</CardDesc><p className="foundry-meta">Commands: {(runtime.exported_binaries ?? []).join(", ")}</p>
+        {runtime.install_manifest?.containers?.map(contract => <p className="foundry-meta" key={contract.id}>{contract.resources.memoryMb} MB · {contract.resources.cpuCores} CPU · {contract.resources.timeoutSeconds}s maximum · network {contract.networkPolicy ?? "none"}</p>)}
+        <Button disabled={busy || !credentials} onClick={() => void approveRuntimeInstall(runtime)}>Review and install for this Space</Button>
+      </Card>)}</div>
+    </section>
     <div className="grid-2">
       <Card>
         <CardTitle>Send a feature request</CardTitle><CardDesc>Describe a real workflow gap. Requests are proposals only; an owner decides what to accept and build. Leave the destination blank to use this Space&apos;s inbox.</CardDesc>

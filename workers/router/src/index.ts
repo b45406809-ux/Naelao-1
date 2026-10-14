@@ -572,6 +572,8 @@ app.get("/v1/spaces/:spaceId/shell/manifest", async (c) => {
 // "does this end user belong to THIS specific business" — the router's allowlist only proves
 // identity, never authorization, exactly as documented at the top of this list.
 export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
+  /^\/spaces\/([^/]+)\/runtime-catalog$/,
+  /^\/spaces\/([^/]+)\/runtime-installations$/,
   /^\/spaces\/([^/]+)\/sessions(\/|$)/,
   /^\/spaces\/([^/]+)\/shell\/manifest$/,
   /^\/spaces\/([^/]+)\/kb\/(documents|search)(\/|$)/,

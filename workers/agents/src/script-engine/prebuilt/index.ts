@@ -53,6 +53,7 @@ import { customerBot } from "./customer-bot.js";
 import { executiveCabinet } from "./executive-cabinet.js";
 import { modelRaceScript } from "./model-race-script.js";
 import { foundryInbox } from "./foundry-inbox.js";
+import { runtimeDiscovery } from "./runtime-discovery.js";
 
 /** Context handed to every prebuilt operation. */
 export interface PrebuiltOpContext {
@@ -94,6 +95,7 @@ export interface PrebuiltScript {
 
 /** The full catalogue shipped in this build, keyed by prebuilt script name. */
 export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
+  [runtimeDiscovery.name]: runtimeDiscovery,
   [foundryInbox.name]: foundryInbox,
   [r2Workspace.name]: r2Workspace,
   [fileManager.name]: fileManager,

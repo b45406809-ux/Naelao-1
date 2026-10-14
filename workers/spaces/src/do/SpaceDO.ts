@@ -10484,26 +10484,67 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     let manifest: ExtensionManifest;
     try { manifest = validateExtensionManifest(body.manifest, { gatekeeperCapabilities: body.gatekeeperCapabilities ?? [] }); }
     catch (error) { return Response.json({ error: error instanceof Error ? error.message : "invalid_extension_manifest" }, { status: 400 }); }
-    const now = new Date().toISOString();
-    execute(this.ctx.storage.sql as never,
-      `INSERT INTO installed_extensions(extension_id,manifest_json,installed_by,installed_at,updated_at)
-       VALUES (?,?,?,?,?) ON CONFLICT(extension_id) DO UPDATE SET manifest_json=excluded.manifest_json,installed_by=excluded.installed_by,updated_at=excluded.updated_at`,
-      manifest.id, JSON.stringify(manifest), body.installedBy, now, now);
+    if (body.scope && !["SPACE_SHARED", "SPACE_USER", "PROJECT_SHARED", "PROJECT_USER"].includes(body.scope))
+      return Response.json({ error: "installation_scope_invalid" }, { status: 400 });
+    let ownerKey: string | undefined;
+    let instanceId: string | undefined;
     if (body.scope && body.tenantId && body.spaceId) {
-      let ownerKey: string;
-      if (body.scope === "SPACE_SHARED") ownerKey = `space:${body.spaceId}`;
-      else if (body.scope === "SPACE_USER") ownerKey = body.userId ? `space:${body.spaceId}:user:${body.userId}` : "";
-      else if (body.scope === "PROJECT_SHARED") ownerKey = body.projectId ? `space:${body.spaceId}:project:${body.projectId}` : "";
-      else ownerKey = body.projectId && body.userId ? `space:${body.spaceId}:project:${body.projectId}:user:${body.userId}` : "";
-      if (!ownerKey) return Response.json({ error: "projectId or userId is required for the selected installation scope" }, { status: 400 });
-      const instanceId = scopedInstallationId({ tenantId: body.tenantId, spaceId: body.spaceId, extensionId: manifest.id, scope: body.scope, ...(body.projectId ? { projectId: body.projectId } : {}), ...(body.userId ? { userId: body.userId } : {}) });
-      execute(this.ctx.storage.sql as never,
-        `INSERT INTO extension_instances(instance_id,extension_id,tenant_id,space_id,project_id,user_id,scope,owner_key,installed_by,status,installed_at,removed_at)
-         VALUES(?,?,?,?,?,?,?,?,?,'active',?,NULL)
-         ON CONFLICT(instance_id) DO UPDATE SET installed_by=excluded.installed_by,status='active',removed_at=NULL`,
-        instanceId, manifest.id, body.tenantId, body.spaceId, body.projectId ?? null, body.userId ?? null, body.scope, ownerKey, body.installedBy, now);
+      if (body.scope === "SPACE_SHARED") {
+        if (body.projectId || body.userId) return Response.json({ error: "installation_scope_owner_mismatch" }, { status: 400 });
+        ownerKey = `space:${body.spaceId}`;
+      } else if (body.scope === "SPACE_USER") {
+        if (!body.userId || body.projectId) return Response.json({ error: "installation_scope_owner_required" }, { status: 400 });
+        ownerKey = `space:${body.spaceId}:user:${body.userId}`;
+      } else if (body.scope === "PROJECT_SHARED") {
+        if (!body.projectId || body.userId) return Response.json({ error: "installation_scope_owner_required" }, { status: 400 });
+        ownerKey = `space:${body.spaceId}:project:${body.projectId}`;
+      } else {
+        if (!body.projectId || !body.userId) return Response.json({ error: "installation_scope_owner_required" }, { status: 400 });
+        ownerKey = `space:${body.spaceId}:project:${body.projectId}:user:${body.userId}`;
+      }
+      if (body.projectId && !queryOne(this.ctx.storage.sql as never,
+        "SELECT id FROM projects WHERE id=? AND space_id=? AND status='active'", body.projectId, body.spaceId))
+        return Response.json({ error: "installation_project_not_found" }, { status: 404 });
+      instanceId = scopedInstallationId({ tenantId: body.tenantId, spaceId: body.spaceId, extensionId: manifest.id, scope: body.scope,
+        ...(body.projectId ? { projectId: body.projectId } : {}), ...(body.userId ? { userId: body.userId } : {}) });
     }
-    return Response.json({ installed: true, manifest, installedAt: now }, { status: 201 });
+    const now = new Date().toISOString();
+    const manifestJson = JSON.stringify(manifest);
+    try {
+      this.ctx.storage.transactionSync(() => {
+        const existing = queryOne<{ manifest_json: string }>(this.ctx.storage.sql as never,
+          "SELECT manifest_json FROM installed_extensions WHERE extension_id=?", manifest.id);
+        if (existing && existing.manifest_json !== manifestJson) {
+          const scoped = queryOne(this.ctx.storage.sql as never, "SELECT instance_id FROM extension_instances WHERE extension_id=? LIMIT 1", manifest.id);
+          if (body.scope || scoped) throw new Error("extension_manifest_conflict_new_id_or_approved_upgrade_required");
+          execute(this.ctx.storage.sql as never,
+            "UPDATE installed_extensions SET manifest_json=?,installed_by=?,updated_at=? WHERE extension_id=?",
+            manifestJson, body.installedBy, now, manifest.id);
+        } else {
+        execute(this.ctx.storage.sql as never,
+          `INSERT INTO installed_extensions(extension_id,manifest_json,installed_by,installed_at,updated_at)
+           VALUES (?,?,?,?,?) ON CONFLICT(extension_id) DO NOTHING`, manifest.id, manifestJson, body.installedBy, now, now);
+        }
+        if (body.scope && body.tenantId && body.spaceId && ownerKey && instanceId) {
+          const existingInstance = queryOne<{ extension_id: string; tenant_id: string; space_id: string; project_id: string | null; user_id: string | null; scope: string }>(
+            this.ctx.storage.sql as never, "SELECT extension_id,tenant_id,space_id,project_id,user_id,scope FROM extension_instances WHERE instance_id=?", instanceId);
+          if (existingInstance && (existingInstance.extension_id !== manifest.id || existingInstance.tenant_id !== body.tenantId
+            || existingInstance.space_id !== body.spaceId || existingInstance.project_id !== (body.projectId ?? null)
+            || existingInstance.user_id !== (body.userId ?? null) || existingInstance.scope !== body.scope))
+            throw new Error("extension_instance_identity_conflict");
+          execute(this.ctx.storage.sql as never,
+            `INSERT INTO extension_instances(instance_id,extension_id,tenant_id,space_id,project_id,user_id,scope,owner_key,installed_by,status,installed_at,removed_at)
+             VALUES(?,?,?,?,?,?,?,?,?,'active',?,NULL)
+             ON CONFLICT(instance_id) DO UPDATE SET installed_by=excluded.installed_by,status='active',removed_at=NULL`,
+            instanceId, manifest.id, body.tenantId, body.spaceId, body.projectId ?? null, body.userId ?? null, body.scope, ownerKey, body.installedBy, now);
+        }
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "extension_install_failed";
+      const conflict = message.includes("conflict");
+      return Response.json({ error: message }, { status: conflict ? 409 : 400 });
+    }
+    return Response.json({ installed: true, manifest, installedAt: now, ...(instanceId ? { installationId: instanceId } : {}) }, { status: 201 });
   }
 
   private async machineAuthority(request: Request): Promise<Response> {

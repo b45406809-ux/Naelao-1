@@ -1058,6 +1058,7 @@ export interface ScriptEngineEnv {
    *  container exists"). */
   containerWorkspace?: ContainerWorkspaceGateway;
   resolveContainerCommand?: (command: string) => Promise<import("./container-policy.js").InstalledContainer | undefined>;
+  containerRuntimeInventory?: () => Promise<{ installed: import("./container-policy.js").InstalledContainer[]; catalogue: import("./container-catalogue.js").ContainerImageManifest[] }>;
   /** Memory OS (structured facts + episodic + semantic recall) — present when the host DO
    *  has initialized its memory tables. Absent in environments that haven't wired it yet. */
   memoryStore?: MemoryStore;

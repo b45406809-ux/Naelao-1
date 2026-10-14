@@ -28,7 +28,7 @@ export interface VirtualPosixOptions {
   authorize?: (resource: { kind: "command" | "file"; name: string; access?: "read" | "write" }) => Promise<boolean>;
   resolve?: (words: string[], stdin: string, context: { signal: AbortSignal; environment: Record<string, string> }) => Promise<VirtualShellResult | null>;
 }
-const BUILTINS = new Set(["cat", "grep", "sed", "awk", "find", "jq", "diff", "echo", "printf", "pwd", "ls", "head", "tail", "wc", "sort", "uniq", "true", "false", "touch", "rm", "cp", "mv", "stripe", "gh", "r2", "resend", "twilio", "avos", "naelao", "workflow", "schedule", "browse", "see", "fetch-md"]);
+const BUILTINS = new Set(["cat", "grep", "sed", "awk", "find", "jq", "diff", "echo", "printf", "pwd", "ls", "head", "tail", "wc", "sort", "uniq", "true", "false", "touch", "rm", "cp", "mv", "stripe", "gh", "r2", "resend", "twilio", "avos", "naelao", "workflow", "schedule", "browse", "see", "fetch-md", "runtime"]);
 
 async function inputFromFiles(
   fs: VirtualFileSystem,

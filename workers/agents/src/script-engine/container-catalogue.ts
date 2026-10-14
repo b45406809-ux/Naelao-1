@@ -11,16 +11,14 @@
  * immutable image, a scoped lifecycle, durable artifacts and measured usage. Extension tools
  * use task-isolated sidecars; they are not silently installed in the general project image.
  *
- * Honest scope note (§A1.16.24-style transparency): every entry below is `available: false`
- * this pass. The slot lifecycle (this file + `container_slots` CRUD + the `container_image`
- * routing hook in code-runner.ts) is real, tested infrastructure — but shipping an actual image
- * (a real Dockerfile, a persistence strategy for its `/data`, a `[[containers]]` wrangler binding,
- * and its own DO class) is a dedicated, per-image undertaking the plan itself calls out as
- * "infra-heavy; sequence incrementally, one image type end-to-end first." That first image is
- * intentionally NOT rushed into this pass alongside the mechanism — see the phase's own docs for
- * why (postgres/redis need a real cross-restart persistence design, not the base sandbox's
- * per-call R2 text-sync, which is scoped to small text/script files).
+ * Catalogue metadata does not prove that an image is deployed. `deployedContainerCatalogue`
+ * marks only fixed images whose binding is present and whose digest is explicitly approved by
+ * deployment configuration. Stateful database images remain unavailable until they have their
+ * own persistent storage implementation and lifecycle.
  */
+
+import { parseApprovedContainerImages } from "./container-policy.js";
+import type { ExtensionManifest } from "@naelao/agent-sdk";
 
 export interface ContainerImageManifest {
   id: string;
@@ -38,8 +36,11 @@ export interface ContainerImageManifest {
   network_policy: "none" | "outbound";
   /** Minimum plan tier a space needs to add a slot of this image, once live. */
   billing_tier: "free" | "pro" | "enterprise";
-  /** false = catalogue entry only, no Dockerfile/binding/DO exists yet (see file header). */
+  /** True only when a fixed runtime binding and its exact digest are approved at deployment. */
   available: boolean;
+  image?: string;
+  exported_binaries?: string[];
+  install_manifest?: ExtensionManifest;
 }
 
 export const CONTAINER_IMAGE_CATALOGUE: ContainerImageManifest[] = [
@@ -124,6 +125,38 @@ export const CONTAINER_IMAGE_CATALOGUE: ContainerImageManifest[] = [
 
 export function findContainerImage(imageId: string): ContainerImageManifest | undefined {
   return CONTAINER_IMAGE_CATALOGUE.find((i) => i.id === imageId);
+}
+
+/** Deployment authority, not an optimistic catalogue flag, determines runtime availability.
+ * Multiple pins for one fixed binding are ambiguous and must not advertise an install.
+ */
+export function deployedContainerCatalogue(registryJson: string | undefined, bound: readonly string[]): ContainerImageManifest[] {
+  const registry = parseApprovedContainerImages(registryJson);
+  const profiles = [
+    { id: "ffmpeg", binding: "MEDIA_SANDBOX", binaries: ["ffmpeg", "ffprobe"], name: "FFmpeg", category: "media" as const },
+    { id: "libreoffice", binding: "DOCUMENT_SANDBOX", binaries: ["soffice", "libreoffice"], name: "LibreOffice", category: "compute" as const },
+  ];
+  const images = CONTAINER_IMAGE_CATALOGUE.map(entry => ({ ...entry }));
+  for (const profile of profiles) {
+    const pins = registry.filter(entry => entry.binding === profile.binding && bound.includes(entry.binding));
+    const existing = images.find(entry => entry.id === profile.id);
+    const entry: ContainerImageManifest = existing ?? { id: profile.id, name: profile.name, description: "Bounded document conversion in an approved specialized runtime.", category: profile.category,
+      exposed_ops: [], persisted_paths: [], network_policy: "none", billing_tier: "free", available: false };
+    if (!existing) images.push(entry);
+    if (pins.length !== 1) continue;
+    const pin = pins[0]!;
+    entry.available = true;
+    entry.image = pin.image;
+    entry.exported_binaries = [...profile.binaries];
+    entry.install_manifest = {
+      // A changed deployment digest is a new immutable extension revision. Keeping the old
+      // manifest id would either mutate existing grants or silently reuse a revoked image.
+      id: `ext_runtime_${profile.id}_${pin.image.slice(-12)}`, type: "extension", declaredPermissions: ["container:execute"], capabilityRequirements: ["native-execution"], gadgets: [], daemons: [], commands: [],
+      containers: [{ schemaVersion: "1.0", kind: "container", id: profile.id, version: "1.0.0", permissions: [{ scope: "PROJECT_BOUND", actions: ["execute"], resource: "workspace" }],
+        capabilityRequirements: ["native-execution"], lifecycle: {}, image: pin.image, resources: { memoryMb: pin.memoryMb, cpuCores: pin.cpuCores, timeoutSeconds: 60 }, exportedBinaries: profile.binaries, networkPolicy: "none" }],
+    };
+  }
+  return images;
 }
 
 export { resolveContainerBinary, approvedContainer, parseApprovedContainerImages, sidecarKey } from "./container-policy.js";

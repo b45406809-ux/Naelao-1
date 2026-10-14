@@ -7,7 +7,7 @@ export const UNIVERSAL_PLANNER_PREBUILTS = [
 ] as const;
 
 /** The Bash implementation that routes commands across the configured execution ceiling. */
-export const UNIVERSAL_EXECUTION_PREBUILTS = ["code-exec"] as const;
+export const UNIVERSAL_EXECUTION_PREBUILTS = ["code-exec", "runtime-discovery"] as const;
 
 export const UNIVERSAL_AGENT_BASELINE_PREBUILTS = [
   ...UNIVERSAL_EXECUTION_PREBUILTS,
@@ -29,6 +29,8 @@ const PLANNER_OPERATIONS = new Set([
   "thread.list",
   "thread.read",
   "thread.search",
+  "runtime.list",
+  "runtime.find",
 ]);
 
 /**
