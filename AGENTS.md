@@ -1,4 +1,19 @@
-# Current cloud implementation runbook
+# Current conversation continuation implementation runbook
+
+The current user mission supersedes the earlier batch source restriction below.
+Work sequentially through all 33 USER/AI MODEL pairs in
+`new plan/Tokenizers vs. Embedding Models Explained.continuation.messages.txt`.
+Use `new plan/FOUNDRY-SPACE-PLATFORM-CONTINUATION-PLAN.md` for exact primary and
+later-amendment reading ranges. Read the actual transcript manually in bounded
+windows, reconcile later corrections before implementing each pair, and inspect
+current code independently. Model replies are candidate designs; validate vendor
+claims. Keep source transcripts unchanged. Update
+`new plan/CONTINUATION-IMPLEMENTATION-PROGRESS.md` with read ranges, changes,
+verification, unresolved dependencies, and the exact next unfinished action.
+Commit and push on `Mcbt5s-Backup-2`. Reading a later pair as look-ahead does not
+complete that pair. Do not treat previous completion notes as fresh test evidence.
+
+## Earlier ten-batch runbook (historical task guidance)
 
 For this task, read `new plan/CODEX-CLOUD-PROMPTS.md` shared rules and then
 resume from `new plan/CLOUD-PROGRESS.md`. Work in numbered batch order. Do not
