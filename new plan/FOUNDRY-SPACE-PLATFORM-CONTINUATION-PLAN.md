@@ -158,7 +158,7 @@ Status: **PARTIAL — existing in-thread voice dictation reaches the active plan
 Primary read: **lines 2978–3067** (USER 2978–2980; AI MODEL 2981–3067).
 Bounded primary windows: 2978–3067.
 Later amendment/dependency pairs: 3068–3284 (task 21); 3514–3753 (task 23); 3754–3942 (task 24); 4269–4441 (task 27); 4983–5145 (task 31); 5146–5259 (task 32)
-Status: **UNASSESSED**. Evidence and exact next action belong in the progress file.
+Status: **PARTIAL — external customer bots remain modeled as project templates/extensions with a restricted voice-agent shape; no planner-access path was found.** Existing voice sessions are stored as separate channel threads, and the tested voice appointment action requires explicit caller consent. The proposed number separation, rate limits, three-minute cap and per-minute credit rate are AI-model suggestions and are not user-authorized or validated. The voice-agent manifest is currently descriptive, not an end-to-end provisioned channel; inspect later customer-channel tasks before adding ingress or billing behavior. See task 20 evidence in the progress file.
 
 ## Task 21
 
