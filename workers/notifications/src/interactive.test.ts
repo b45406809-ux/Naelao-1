@@ -14,13 +14,14 @@ describe("interactive mobile approval delivery", () => {
     const response = await worker.fetch!(new Request("https://notifications/internal/notify", {
       method: "POST",
       headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant" },
-      body: JSON.stringify({ channel: "email", space_id: "space", to: "customer@example.net", subject: "Hello", body: "World" }),
+      body: JSON.stringify({ channel: "email", space_id: "space", to: "customer@example.net", subject: "Hello", body: "World", reply_to: "reply-a1@example.test" }),
     }), { ...env(), RESEND_FROM_ADDRESS: "team@example.org" }, {} as ExecutionContext);
 
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ delivered: true, channel: "email", from: "team@example.org" });
     const payload = JSON.parse((outbound.mock.calls[0] as unknown as [string, RequestInit])[1].body as string);
     expect(payload.from).toBe("team@example.org");
+    expect(payload.reply_to).toBe("reply-a1@example.test");
   });
 
   for (const channel of ["telegram", "whatsapp"]) it(`sends provider-format review buttons for ${channel}`, async () => {

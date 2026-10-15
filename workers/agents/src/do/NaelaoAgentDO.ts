@@ -1506,6 +1506,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         created_at  INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
       )
     `);
+    try { this.ctx.storage.sql.exec(`ALTER TABLE channel_messages ADD COLUMN task_id TEXT`); } catch { /* exists */ }
     this.ctx.storage.sql.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_msg_dedupe ON channel_messages(session_id, direction, external_id)`);
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_channel_msg_unanswered ON channel_messages(direction, answered, created_at)`);
     this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS foundry_channel_events (
@@ -1983,6 +1984,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ...(templateMode ? { templateMode: resolveOperatingMode({ templateMode }).templateMode } : {}),
       platformSecret: this.env.PLATFORM_SECRET,
       ...(userId ? { userId } : {}),
+      ...(commitContext?.taskId ? { taskId: commitContext.taskId } : {}),
       // Project-scoped workspace (every thread's agent in a project shares one R2 filesystem)
       // vs. the Space Assistant's space-wide workspace — see workspacePrefix() in types.ts.
       ...(projectId ? { projectId } : {}),
@@ -5129,7 +5131,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const adapter = getAdapter(type);
     if (!adapter) return Response.json({ error: "unknown_channel" }, { status: 400 });
 
-    type InboundBody = { raw?: Record<string, unknown>; projectId?: string; spaceId?: string; tenantId?: string; apiKey?: string };
+    type InboundBody = { raw?: Record<string, unknown>; projectId?: string; taskId?: string; spaceId?: string; tenantId?: string; apiKey?: string };
     const body = await request.json<InboundBody>().catch(() => ({}) as InboundBody);
     const norm: NormalizedInbound | null = adapter.normalizeInbound(body.raw ?? {});
     if (!norm) return Response.json({ ignored: true }); // bot echo / not actionable
@@ -5296,10 +5298,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       : null;
     const mentionRoute = await routeMentionsWithSentry(envelope.payload.text, mentionDecisionEnv?.fastDecision);
     const insertResult = this.ctx.storage.sql.exec(
-      `INSERT OR IGNORE INTO channel_messages (id, session_id, direction, text, external_id, answered, created_at, turn_holder, referents)
-       VALUES (?, ?, 'inbound', ?, ?, 0, ?, ?, ?)`,
+      `INSERT OR IGNORE INTO channel_messages (id, session_id, direction, text, external_id, answered, created_at, turn_holder, referents, task_id)
+       VALUES (?, ?, 'inbound', ?, ?, 0, ?, ?, ?, ?)`,
       crypto.randomUUID(), sessionId, envelope.payload.text, norm.external_id, norm.timestamp,
-      mentionRoute.turnHolder, JSON.stringify(mentionRoute.referents)
+      mentionRoute.turnHolder, JSON.stringify(mentionRoute.referents), body.taskId ?? null
     );
     const isNewMessage = insertResult.rowsWritten > 0;
 
@@ -5397,7 +5399,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   private handleChannelUnanswered(): Response {
     const rows = this.ctx.storage.sql
       .exec(
-        `SELECT m.id, m.session_id, s.channel, s.channel_user_id, s.project_id, s.human_takeover, m.text, m.created_at
+        `SELECT m.id, m.session_id, s.channel, s.channel_user_id, s.project_id, s.human_takeover, m.text, m.task_id, m.created_at
          FROM channel_messages m JOIN channel_sessions s ON s.id = m.session_id
          WHERE m.direction = 'inbound' AND m.answered = 0 ORDER BY m.created_at ASC LIMIT 100`
       )
@@ -7009,13 +7011,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // this is not an escalation/failure, so it's tracked separately from `escalated`.
     const pending = this.ctx.storage.sql
       .exec(
-        `SELECT m.id, m.session_id, s.channel, s.channel_user_id, s.project_id, m.text
+        `SELECT m.id, m.session_id, s.channel, s.channel_user_id, s.project_id, m.text, m.task_id
          FROM channel_messages m JOIN channel_sessions s ON s.id = m.session_id
          WHERE m.direction = 'inbound' AND m.answered = 0 AND s.human_takeover = 0
          ORDER BY m.created_at ASC LIMIT ?`,
         limit
       )
-      .toArray() as Array<{ id: string; session_id: string; channel: string; channel_user_id: string; project_id: string | null; text: string }>;
+      .toArray() as Array<{ id: string; session_id: string; channel: string; channel_user_id: string; project_id: string | null; text: string; task_id: string | null }>;
 
     if (pending.length === 0) return Response.json({ drained: 0, answered: 0, escalated: 0, rule_handled: 0, spend_capped: 0 });
 

@@ -1,7 +1,9 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { app } from "../../workers/agents/src/index.js";
 import type { AgentsEnv } from "../../workers/agents/src/index.js";
 import { mintInternalToken } from "@naelao/http";
+import { createReplyAddress, hashEmailAddress } from "../../workers/agents/src/channels/cloudflare-email.js";
+import { handleCloudflareEmail } from "../../workers/agents/src/index.js";
 
 // AgentMail wiring on the agents worker: the /internal/business-email/{provision,send} routes hold
 // AGENTMAIL_API_KEY (the isolate never sees it) and the public /channels/email/agentmail-inbound
@@ -86,6 +88,50 @@ describe("/internal/business-email/provision", () => {
 });
 
 describe("/internal/business-email/send", () => {
+  it("creates a stable run-scoped reply address only when ingress is configured", async () => {
+    const env = makeEnv({
+      EMAIL_INGRESS_DOMAIN: "agents.example.test",
+      PLATFORM_DB: {
+        prepare: (query: string) => ({ bind: () => ({
+          first: async () => {
+            if (query.includes("SELECT id FROM spaces")) return { id: "s1" };
+            if (query.includes("SELECT address_hash")) return null;
+            if (query.includes("COUNT(*)")) return { count: 0 };
+            return null;
+          },
+          run: async () => ({ success: true }),
+        }) }),
+      } as never,
+    });
+    const token = await mintInternalToken(SECRET, TENANT);
+    const response = await post("/internal/business-email/reply-address", {
+      tenantId: TENANT, spaceId: "s1", taskId: "run-1", agentId: "naelao-agent",
+    }, env, { "x-naelao-tenant-id": TENANT, "x-naelao-internal-token": token });
+    const body = await response.json() as { address: string };
+    expect(response.status).toBe(200);
+    expect(body.address).toBe(await createReplyAddress({ domain: "agents.example.test", tenantId: TENANT, spaceId: "s1", taskId: "run-1", secret: SECRET }));
+  });
+
+  it("does not send task-correlated mail unless Reply-To belongs to the current task", async () => {
+    const replyTo = await createReplyAddress({ domain: "agents.example.test", tenantId: TENANT, spaceId: "s1", taskId: "run-1", secret: SECRET });
+    const replyHash = await hashEmailAddress(replyTo);
+    const sent: Request[] = [];
+    const env = makeEnv({
+      EMAIL_INGRESS_DOMAIN: "agents.example.test",
+      PLATFORM_DB: {
+        prepare: (query: string) => ({ bind: () => ({ first: async () => query.includes("email_reply_routes") ? { address_hash: replyHash } : null }) }),
+      } as never,
+      NOTIFICATIONS_WORKER: { fetch: async (request: Request) => { sent.push(request); return Response.json({ delivered: true, from: "team@example.test" }); } } as unknown as Fetcher,
+    });
+    const token = await mintInternalToken(SECRET, TENANT);
+    const response = await post("/internal/business-email/send", {
+      spaceId: "s1", tenantId: TENANT, taskId: "run-1", replyTo, to: "vendor@example.net", subject: "Invoice", text: "Please reply",
+    }, env, { "x-naelao-tenant-id": TENANT, "x-naelao-internal-token": token });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, provider: "resend", reply_to: replyTo });
+    expect(await sent[0]!.json()).toMatchObject({ channel: "email", reply_to: replyTo, to: "vendor@example.net" });
+  });
+
   it("degrades honestly (configured:false) when AGENTMAIL_API_KEY is unset — so the prebuilt falls back to Resend", async () => {
     const token = await mintInternalToken(SECRET, TENANT);
     const res = await post("/internal/business-email/send", { spaceId: "s1", tenantId: TENANT, to: "a@b.com" }, makeEnv(),
@@ -177,5 +223,67 @@ describe("/channels/email/agentmail-inbound/:spaceId", () => {
     const res = await post("/channels/email/agentmail-inbound/s1", { event_type: "message.received" }, env,
       { "svix-id": "x", "svix-timestamp": String(Math.floor(Date.now() / 1000)), "svix-signature": "v1,not-a-real-signature" });
     expect(res.status).toBe(401);
+  });
+});
+
+describe("Cloudflare task reply email handler", () => {
+  it("rejects unknown aliases before parsing or dispatching email", async () => {
+    const setReject = vi.fn();
+    const env = makeEnv({
+      EMAIL_INGRESS_DOMAIN: "agents.example.test",
+      PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => null }) }) } as never,
+    });
+    await handleCloudflareEmail({
+      from: "vendor@example.net", to: "unknown@agents.example.test", rawSize: 20,
+      raw: new ReadableStream<Uint8Array>(), headers: new Headers(), setReject,
+      forward: async () => ({} as never), reply: async () => ({} as never),
+    } as ForwardableEmailMessage, env);
+    expect(setReject).toHaveBeenCalledWith("Unknown or expired Naelao reply address");
+  });
+
+  it("stores bounded attachments and dispatches to the routed agent Space with task context", async () => {
+    const address = "reply-a1@agents.example.test";
+    const routeHash = await hashEmailAddress(address);
+    const dispatched: Request[] = [];
+    const stored: Array<{ key: string; body: unknown }> = [];
+    const mime = [
+      "From: Vendor <vendor@example.net>", "To: reply-a1@agents.example.test", "Subject: Quote",
+      "Message-ID: <reply-1@example.net>", "MIME-Version: 1.0", 'Content-Type: multipart/mixed; boundary="b"', "",
+      "--b", "Content-Type: text/plain", "", "Quote attached", "--b", 'Content-Type: application/pdf; name="quote.pdf"',
+      'Content-Disposition: attachment; filename="quote.pdf"', "Content-Transfer-Encoding: base64", "", "JVBERi0xLjQ=", "--b--", "",
+    ].join("\r\n");
+    const raw = new TextEncoder().encode(mime);
+    const env = makeEnv({
+      EMAIL_INGRESS_DOMAIN: "agents.example.test",
+      PLATFORM_DB: {
+        prepare: (query: string) => ({ bind: () => ({
+          first: async () => query.includes("email_reply_routes")
+            ? { tenant_id: TENANT, space_id: "s1", task_id: "run-1", agent_id: "quotes-agent", project_id: "p1" }
+            : { status: "active" },
+          run: async () => ({ success: true }),
+        }) }),
+      } as never,
+      SCRIPTS_R2: { put: async (key: string, body: unknown) => { stored.push({ key, body }); } } as never,
+      NAELAO_AGENT_DO: {
+        idFromName: () => "do-id",
+        get: () => ({ fetch: async (request: Request) => { dispatched.push(request); return Response.json({ queued: true }); } }),
+      } as never,
+    });
+    const message = {
+      from: "vendor@example.net", to: address, rawSize: raw.byteLength,
+      raw: new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(raw); controller.close(); } }),
+      headers: new Headers(), setReject: vi.fn(), forward: async () => ({} as never), reply: async () => ({} as never),
+    } as ForwardableEmailMessage;
+    expect(await hashEmailAddress(address)).toBe(routeHash);
+
+    await handleCloudflareEmail(message, env);
+
+    expect(message.setReject).not.toHaveBeenCalled();
+    expect(stored).toHaveLength(1);
+    expect(stored[0]!.key).toContain("email-inbound/run-1/");
+    const payload = await dispatched[0]!.json() as { raw: { text: string }; projectId: string; spaceId: string; tenantId: string };
+    expect(payload).toMatchObject({ projectId: "p1", spaceId: "s1", tenantId: TENANT });
+    expect(payload.raw.text).toContain("Email reply for task run-1");
+    expect(payload.raw.text).toContain("r2://spaces/s1/email-inbound/run-1/");
   });
 });

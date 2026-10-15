@@ -97,11 +97,25 @@ async function provision(ctx: PrebuiltOpContext, a: Record<string, unknown>): Pr
   };
 }
 
+async function replyAddress(ctx: PrebuiltOpContext): Promise<unknown> {
+  if (!ctx.env.taskId) throw new Error("email.reply_address requires an active task run");
+  const result = await agentMailCall(ctx, "/internal/business-email/reply-address", {
+    taskId: ctx.env.taskId,
+    agentId: ctx.env.agentId,
+    ...(ctx.env.projectId ? { projectId: ctx.env.projectId } : {}),
+  });
+  if (!result || result["error_code"]) {
+    throw new Error(`email.reply_address unavailable: ${String(result?.["error_code"] ?? "worker binding unavailable")}`);
+  }
+  return { address: result["address"], expires_at: result["expires_at"] ?? null, already: result["already"] === true };
+}
+
 async function send(ctx: PrebuiltOpContext, a: Record<string, unknown>): Promise<unknown> {
   const to = a["to"];
   // Prefer sending from the real AgentMail inbox (a genuine, reply-able from-address).
   const am = await agentMailCall(ctx, "/internal/business-email/send", {
     to,
+    ...(typeof a["reply_to"] === "string" ? { replyTo: a["reply_to"], taskId: ctx.env.taskId } : {}),
     ...(a["subject"] !== undefined ? { subject: a["subject"] } : {}),
     ...(a["body"] !== undefined ? { text: a["body"] } : {}),
     ...(a["html"] !== undefined ? { html: a["html"] } : {}),
@@ -148,11 +162,16 @@ function toSlug(input: string): string {
 
 export const businessEmail: PrebuiltScript = {
   name: "business-email",
-  description: "Send transactional and marketing email from a Naelao-provided business address (inbound-capable via AgentMail when configured).",
+  description: "Provision email, create a task-scoped reply address, send messages, and inspect email status.",
   domain: "comms",
   requires_tier: 2,
+  paramHints: {
+    "email.reply_address": "No arguments. Creates or reuses the active run's expiring Reply-To address; pass its returned address as reply_to to email.send.",
+    "email.send": "Requires to, subject, body; optional reply_to must come from email.reply_address in this same task run.",
+  },
   operations: {
     "email.provision": (a, c) => provision(c, a),
+    "email.reply_address": (_a, c) => replyAddress(c),
     "email.send": (a, c) => send(c, a),
     "email.status": (_a, c) => bizService(c, "GET"),
   },

@@ -25,6 +25,7 @@
     "@naelao/tracing": "workspace:*",
     "@naelao/types": "workspace:*",
     "hono": "^4.6.0",
+    "postal-mime": "^2.4.3",
     "shell-quote": "^1.8.1",
     "typescript": "^5.6.3"
   },

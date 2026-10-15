@@ -103,6 +103,13 @@ function inbound(doInstance: NaelaoAgentDO, raw: Record<string, unknown>, opts: 
   }));
 }
 
+function emailInbound(doInstance: NaelaoAgentDO, taskId: string) {
+  return doInstance.fetch(new Request("http://agent-do/channels/email/inbound", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ raw: { from: "vendor@example.net", text: "Reply for the task", message_id: "email-1" }, taskId }),
+  }));
+}
+
 function heartbeat(doInstance: NaelaoAgentDO, spaceId = "space1") {
   return doInstance.fetch(new Request("http://agent-do/channels/heartbeat", {
     method: "POST",
@@ -116,6 +123,16 @@ const whatsappMsg = (from: string, id: string, text: string) => ({
 });
 
 describe("handleChannelInbound — immediate drain (P0-1)", () => {
+  it("persists task-scoped email routing on the channel inbox record", async () => {
+    const { spaceDO } = await makeDO({});
+    const response = await emailInbound(spaceDO, "run-email-1");
+    expect(response.status).toBe(200);
+    const inbox = await spaceDO.fetch(new Request("http://agent-do/channels/unanswered"));
+    const body = await inbox.json() as { pending: Array<{ task_id?: string; text: string }> };
+    expect(body.pending[0]?.task_id).toBe("run-email-1");
+    expect(body.pending[0]?.text).toContain("Reply for the task");
+  });
+
   it("a message with spaceId+tenantId is answered without any explicit heartbeat call", async () => {
     const { spaceDO, waitUntilPromises } = await makeDO({
       proj1: { execution_ceiling: 2, daily_spend_cap_credits: 0, rules: [{ trigger_pattern: "hours", action: "reply", reply_text: "9-5 Mon-Fri", enabled: 1, priority: 10 }] },

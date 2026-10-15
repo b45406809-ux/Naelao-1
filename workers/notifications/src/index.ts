@@ -211,6 +211,7 @@ interface NotificationMessage {
   userId?: string;
   spaceId?: string;
   email?: string;
+  replyTo?: string;
   subject?: string;
   html?: string;
   templateId?: string;
@@ -406,7 +407,7 @@ function plainTextToHtml(text: string): string {
 
 async function sendEmailNow(
   env: NotificationsEnv,
-  msg: Pick<NotificationMessage, "tenantId" | "userId" | "email" | "subject" | "html" | "templateId">
+  msg: Pick<NotificationMessage, "tenantId" | "userId" | "email" | "subject" | "html" | "templateId" | "replyTo">
 ): Promise<{ ok: boolean; status?: number; from?: string }> {
   let subject = msg.subject ?? "(no subject)";
   let html = msg.html ?? "";
@@ -432,6 +433,7 @@ async function sendEmailNow(
     body: JSON.stringify({
       from,
       to: msg.email,
+      ...(msg.replyTo ? { reply_to: msg.replyTo } : {}),
       subject,
       html,
     }),
@@ -637,6 +639,7 @@ app.post("/internal/notify", async (c) => {
     subject?: string;
     body?: string;
     html?: string;
+    reply_to?: string;
     /** Chat channels carry their text here rather than in `body`. */
     message?: string;
     actions?: Array<{ id: string; label: string }>;
@@ -652,6 +655,7 @@ app.post("/internal/notify", async (c) => {
       email: body.to,
       subject: body.subject ?? "(no subject)",
       html: body.html ?? body.body ?? "",
+      ...(body.reply_to ? { replyTo: body.reply_to } : {}),
     });
     if (!result.ok) {
       return c.json({ delivered: false, channel: "email", status: result.status ?? null }, 502);

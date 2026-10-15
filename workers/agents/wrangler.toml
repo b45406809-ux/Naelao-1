@@ -302,6 +302,9 @@ ENVIRONMENT = "development"
 # Set to a domain onboarded for Cloudflare Email Service sending. Empty disables the native
 # outbound path; arbitrary-recipient sends also require this account to be on Workers Paid.
 EMAIL_SENDING_DOMAIN = ""
+# Set only after Cloudflare Email Routing is enabled for the domain and a Worker route targets
+# this export's email() handler. Empty keeps task-specific Reply-To aliases disabled.
+EMAIL_INGRESS_DOMAIN = ""
 # CF AI Gateway — every LLM call routes through this (spec §15).
 # The real account id + gateway name (dash.cloudflare.com → account id in the URL/sidebar;
 # AI → AI Gateway → the gateway's own id).
@@ -348,7 +351,7 @@ binding = "AI"
 # staging silently falls back to the direct Anthropic API (resolveAnthropicUrl treats a missing
 # accountId the same as "placeholder") — the CF AI Gateway wiring in shared/ai-client.ts would
 # never actually activate.
-vars = { ENVIRONMENT = "staging", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3", NAELAO_GATEWAY_ID = "naelao-gateway", EMAIL_SENDING_DOMAIN = "" }
+vars = { ENVIRONMENT = "staging", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3", NAELAO_GATEWAY_ID = "naelao-gateway", EMAIL_SENDING_DOMAIN = "", EMAIL_INGRESS_DOMAIN = "" }
 # CF_API_TOKEN is a secret (not a var) — set via `wrangler secret put CF_API_TOKEN --env staging`
 
 [[env.staging.send_email]]
@@ -380,7 +383,7 @@ service = "naelao-browser"
 
 [env.production]
 # See [env.staging]'s comment above — same wrangler vars-replacement gotcha.
-vars = { ENVIRONMENT = "production", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3", NAELAO_GATEWAY_ID = "naelao-gateway", EMAIL_SENDING_DOMAIN = "" }
+vars = { ENVIRONMENT = "production", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3", NAELAO_GATEWAY_ID = "naelao-gateway", EMAIL_SENDING_DOMAIN = "", EMAIL_INGRESS_DOMAIN = "" }
 # CF_API_TOKEN is a secret (not a var) — set via `wrangler secret put CF_API_TOKEN --env production`
 
 [[env.production.send_email]]

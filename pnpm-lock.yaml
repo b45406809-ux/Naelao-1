@@ -685,6 +685,9 @@ importers:
       hono:
         specifier: ^4.6.0
         version: 4.12.27
+      postal-mime:
+        specifier: ^2.4.3
+        version: 2.7.6
       shell-quote:
         specifier: ^1.8.1
         version: 1.12.0
@@ -4019,6 +4022,9 @@ packages:
     engines: {node: '>=20'}
     hasBin: true
 
+  postal-mime@2.7.6:
+    resolution: {integrity: sha512-UUlyE2KlxmvwMGq060onF/VWU3zD6dVW31FwokQ5v26jWd35fbs2MoTFzh+jXnPwAyV2MULMKXcBInGOl5TO6Q==}
+
   postcss-import@15.1.0:
     resolution: {integrity: sha512-hpr+J05B2FVYUAXHeK1YyI267J/dDDhMU6B6civm8hSY1jYJnBXxzKDKDswzJmtLHryrjhnDjqqp/49t8FALew==}
     engines: {node: '>=14.0.0'}
@@ -6946,6 +6952,8 @@ snapshots:
   playwright@1.64.0:
     dependencies:
       playwright-core: 1.64.0
+
+  postal-mime@2.7.6: {}
 
   postcss-import@15.1.0(postcss@8.5.15):
     dependencies:

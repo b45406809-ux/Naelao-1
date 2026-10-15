@@ -235,14 +235,14 @@ Status: **ASSESSED; see `CONTINUATION-IMPLEMENTATION-PROGRESS.md` for dispositio
 Primary read: **lines 4983–5145** (USER 4983–4985; AI MODEL 4986–5145).
 Bounded primary windows: 4983–5145.
 Later amendment/dependency pairs: 5146–5259 (task 32); 5260–5334 (task 33)
-Status: **ASSESSED; see `CONTINUATION-IMPLEMENTATION-PROGRESS.md` for disposition and evidence.**
+Status: **PARTIALLY IMPLEMENTED; hosted provider inbox remains the default, with optional operator-domain Cloudflare ingress and per-task reply routing now present. Customer-owned domains and live routing still require configuration.** See `CONTINUATION-IMPLEMENTATION-PROGRESS.md`.
 
 ## Task 32
 
 Primary read: **lines 5146–5259** (USER 5146–5148; AI MODEL 5149–5259).
 Bounded primary windows: 5146–5259.
 Later amendment/dependency pairs: 5260–5334 (task 33)
-Status: **ASSESSED; see `CONTINUATION-IMPLEMENTATION-PROGRESS.md` for disposition and evidence.**
+Status: **PARTIALLY IMPLEMENTED; Cloudflare outbound sending is optional, and task-scoped Reply-To uses the configured Resend route. A verified sender domain, ingress domain and live delivery test remain deployment dependencies.** See `CONTINUATION-IMPLEMENTATION-PROGRESS.md`.
 
 ## Task 33
 

@@ -16,7 +16,10 @@ function makeR2(): R2Bucket {
   const store = new Map<string, string>();
   const bucket = {
     async put(key: string, value: unknown) {
-      store.set(key, typeof value === "string" ? value : String(value));
+      store.set(key, typeof value === "string" ? value
+        : value instanceof Uint8Array ? new TextDecoder().decode(value)
+          : value instanceof ArrayBuffer ? new TextDecoder().decode(value)
+            : String(value));
       return {} as R2Object;
     },
     async get(key: string) {
@@ -52,6 +55,7 @@ function makeSpacesWorker(projects: Record<string, FakeProject>, wallet: WalletS
     async fetch(input: RequestInfo) {
       const req = input as Request;
       const url = new URL(typeof input === "string" ? input : req.url);
+      if (/^\/internal\/spaces\/[^/]+\/customer-conversations$/.test(url.pathname)) return Response.json({ ok: true });
       if (/^\/spaces\/[^/]+\/wallet-project$/.test(url.pathname)) {
         return Response.json({ project_id: wallet.projectId });
       }

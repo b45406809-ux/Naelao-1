@@ -77,6 +77,11 @@ import { writeAgentConfig, createAgentConfigLockGateway } from "./script-engine/
 import { actorAddress, type ThreadTier } from "@naelao/agent-sdk";
 import { applyDurableObjectJurisdiction, isSpaceNetworkEgressDenied } from "@naelao/security";
 import { deleteBytesCas, putBytesCas, readBytesWithHash } from "./script-engine/r2-cas.js";
+import {
+  createReplyAddress, emailReplyBody, hashEmailAddress, MAX_EMAIL_ATTACHMENT_BYTES,
+  MAX_EMAIL_ATTACHMENTS_TOTAL_BYTES, MAX_INBOUND_EMAIL_BYTES, normalizeIngressDomain,
+  parseCloudflareEmail,
+} from "./channels/cloudflare-email.js";
 
 function safeParse(s: string): unknown {
   try { return JSON.parse(s); } catch { return {}; }
@@ -272,6 +277,8 @@ export interface AgentsEnv {
    *  configured; arbitrary-recipient sending requires an onboarded domain and a Workers Paid plan. */
   EMAIL?: SendEmail;
   EMAIL_SENDING_DOMAIN?: string;
+  /** Cloudflare Email Routing domain whose Worker action targets this export's email() handler. */
+  EMAIL_INGRESS_DOMAIN?: string;
   /**
    * Scan-to-connect: Naelao's OWN app on each channel (launchpad/channel-pairing.ts). These are
    * PLATFORM credentials — one registration by us, then every business pairs by scanning a code
@@ -5137,6 +5144,52 @@ app.post("/internal/business-email/provision", async (c) => {
   return c.json({ ok: true, configured: true, email: inbox.email, inbox_id: inbox.inboxId, inbound_wired: Boolean(webhookSecret) });
 });
 
+// POST /internal/business-email/reply-address — mint a stable per-run Reply-To alias.
+// Only the currently executing task can obtain its own alias; this route is HMAC-only and
+// callers cannot select another task's id.
+app.post("/internal/business-email/reply-address", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !(await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))) {
+    return c.json({ error_code: "forbidden" }, 403);
+  }
+  const body = await c.req.json<{ tenantId?: string; spaceId?: string; taskId?: string; agentId?: string; projectId?: string }>().catch(() => null);
+  if (!body?.spaceId || !body.taskId || !body.agentId || body.tenantId !== tenantId) {
+    return c.json({ error_code: "bad_request", message: "spaceId, taskId, agentId and matching tenantId are required" }, 400);
+  }
+  const domain = normalizeIngressDomain(c.env.EMAIL_INGRESS_DOMAIN);
+  if (!domain) return c.json({ error_code: "email_ingress_not_configured" }, 409);
+  const space = await c.env.PLATFORM_DB.prepare(
+    "SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND status = 'active'"
+  ).bind(body.spaceId, tenantId).first<{ id: string }>();
+  if (!space) return c.json({ error_code: "space_not_found" }, 404);
+
+  const address = await createReplyAddress({ domain, tenantId, spaceId: body.spaceId, taskId: body.taskId, secret: c.env.PLATFORM_SECRET });
+  const addressHash = await hashEmailAddress(address);
+  const now = new Date();
+  const expires = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
+  await c.env.PLATFORM_DB.prepare("DELETE FROM email_reply_routes WHERE expires_at <= ? OR status = 'revoked'").bind(now.toISOString()).run();
+  const active = await c.env.PLATFORM_DB.prepare(
+    "SELECT address_hash, agent_id, project_id, expires_at FROM email_reply_routes WHERE tenant_id = ? AND space_id = ? AND task_id = ? AND status = 'active' AND expires_at > ?"
+  ).bind(tenantId, body.spaceId, body.taskId, now.toISOString()).first<{ address_hash: string; agent_id: string; project_id: string | null; expires_at: string }>();
+  if (active && active.address_hash !== addressHash) return c.json({ error_code: "reply_route_conflict" }, 409);
+  if (active && (active.agent_id !== body.agentId || active.project_id !== (body.projectId ?? null))) {
+    return c.json({ error_code: "reply_route_scope_conflict" }, 409);
+  }
+
+  if (!active) {
+    const count = await c.env.PLATFORM_DB.prepare(
+      "SELECT COUNT(*) AS count FROM email_reply_routes WHERE tenant_id = ? AND space_id = ? AND status = 'active' AND expires_at > ?"
+    ).bind(tenantId, body.spaceId, now.toISOString()).first<{ count: number }>();
+    if ((count?.count ?? 0) >= 100) return c.json({ error_code: "reply_route_limit_reached" }, 429);
+    await c.env.PLATFORM_DB.prepare(
+      `INSERT INTO email_reply_routes (address_hash, tenant_id, space_id, task_id, agent_id, project_id, status, created_at, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)
+       ON CONFLICT(address_hash) DO UPDATE SET agent_id = excluded.agent_id, project_id = excluded.project_id, status = 'active', expires_at = excluded.expires_at`
+    ).bind(addressHash, tenantId, body.spaceId, body.taskId, body.agentId, body.projectId ?? null, now.toISOString(), expires).run();
+  }
+  return c.json({ address, expires_at: active?.expires_at ?? expires, already: Boolean(active) });
+});
+
 // POST /internal/business-email/send — use the Space's AgentMail inbox when provisioned, then the
 // optional Cloudflare Email Service binding, else return configured:false so the business-email
 // prebuilt can use the existing Resend/notifications fallback.
@@ -5144,9 +5197,30 @@ app.post("/internal/business-email/send", async (c) => {
   const headerTenantId = c.req.header("x-naelao-tenant-id") ?? "";
   const valid = await verifyInternalToken(c.req.header("x-naelao-internal-token"), headerTenantId, c.env.PLATFORM_SECRET);
   if (!headerTenantId || !valid) return c.json({ error_code: "forbidden", message: "internal only" }, 403);
-  const body = await c.req.json<{ spaceId?: string; tenantId?: string; to?: string | string[]; subject?: string; text?: string; html?: string }>().catch(() => null);
+  const body = await c.req.json<{ spaceId?: string; tenantId?: string; taskId?: string; to?: string | string[]; subject?: string; text?: string; html?: string; replyTo?: string }>().catch(() => null);
   if (!body?.spaceId || !body.tenantId || !body.to) return c.json({ error_code: "bad_request", message: "spaceId, tenantId, to are required" }, 400);
   if (body.tenantId !== headerTenantId) return c.json({ error_code: "forbidden", message: "tenantId does not match token" }, 403);
+
+  if (body.replyTo) {
+    if (!body.taskId || !c.env.EMAIL_INGRESS_DOMAIN || !normalizeIngressDomain(c.env.EMAIL_INGRESS_DOMAIN)) {
+      return c.json({ error_code: "invalid_reply_route" }, 400);
+    }
+    const routeHash = await hashEmailAddress(body.replyTo);
+    const route = await c.env.PLATFORM_DB.prepare(
+      "SELECT address_hash FROM email_reply_routes WHERE address_hash = ? AND tenant_id = ? AND space_id = ? AND task_id = ? AND status = 'active' AND expires_at > ?"
+    ).bind(routeHash, body.tenantId, body.spaceId, body.taskId, new Date().toISOString()).first<{ address_hash: string }>();
+    if (!route) return c.json({ error_code: "reply_route_not_owned_by_task" }, 403);
+    // The AgentMail send contract does not document reply-to support. Use the existing Resend
+    // path, which has an explicit reply_to field, rather than silently dropping task correlation.
+    if (!c.env.NOTIFICATIONS_WORKER) return c.json({ error_code: "reply_route_sender_unavailable" }, 503);
+    const response = await c.env.NOTIFICATIONS_WORKER.fetch(new Request("http://notifications-worker/internal/notify", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": body.tenantId },
+      body: JSON.stringify({ channel: "email", space_id: body.spaceId, to: body.to, subject: body.subject, body: body.text, html: body.html, reply_to: body.replyTo }),
+    }));
+    const result = await response.json<{ delivered?: boolean; from?: string }>().catch(() => ({} as { delivered?: boolean; from?: string }));
+    return c.json({ ok: response.ok && result.delivered === true, configured: true, provider: "resend", from: result.from, reply_to: body.replyTo }, response.ok && result.delivered === true ? 200 : 502);
+  }
 
   // Email is network egress just like the notification-worker fallback. Check the Space policy
   // before either provider is reached; a missing or unreadable policy fails closed.
@@ -7107,9 +7181,13 @@ export type { AgentTickMessage };
 
 export default {
   fetch: app.fetch,
+  async email(message: ForwardableEmailMessage, env: AgentsEnv): Promise<void> {
+    await handleCloudflareEmail(message, env);
+  },
   async scheduled(controller: ScheduledController, env: AgentsEnv, _ctx: ExecutionContext): Promise<void> {
     if (controller.cron === "*/5 * * * *") {
       if (env.SCRIPTS_R2) await expireToolOutputs(env.AGENT_CACHE, env.SCRIPTS_R2);
+      await expireEmailIngressData(env);
       return;
     }
     // Hourly cron → enumerate-and-enqueue the agent-tick fan-out (connector polls, channel
@@ -7121,3 +7199,95 @@ export default {
   },
   queue: handleAgentTicksQueue as unknown as ExportedHandlerQueueHandler<AgentsEnv>,
 } satisfies ExportedHandler<AgentsEnv>;
+
+/** Cloudflare Email Routing entry point for task-scoped reply aliases. Configure an Email Routing
+ * Worker action for EMAIL_INGRESS_DOMAIN to deliver messages to this Worker. */
+export async function handleCloudflareEmail(message: ForwardableEmailMessage, env: AgentsEnv): Promise<void> {
+  if (message.rawSize > MAX_INBOUND_EMAIL_BYTES) {
+    message.setReject("Message exceeds Naelao's inbound email size limit");
+    return;
+  }
+  const domain = normalizeIngressDomain(env.EMAIL_INGRESS_DOMAIN);
+  const recipient = message.to.trim().toLowerCase();
+  if (!domain || recipient.split("@").at(-1) !== domain) {
+    message.setReject("Email address is not configured for this service");
+    return;
+  }
+  const addressHash = await hashEmailAddress(recipient);
+  const now = new Date().toISOString();
+  const route = await env.PLATFORM_DB.prepare(
+    `SELECT tenant_id, space_id, task_id, agent_id FROM email_reply_routes
+     WHERE address_hash = ? AND status = 'active' AND expires_at > ? LIMIT 1`
+  ).bind(addressHash, now).first<{ tenant_id: string; space_id: string; task_id: string; agent_id: string; project_id: string | null }>();
+  if (!route) {
+    message.setReject("Unknown or expired Naelao reply address");
+    return;
+  }
+  const space = await env.PLATFORM_DB.prepare(
+    "SELECT status FROM spaces WHERE id = ? AND tenant_id = ?"
+  ).bind(route.space_id, route.tenant_id).first<{ status: string }>();
+  if (!space || space.status !== "active") {
+    message.setReject("Naelao workspace is unavailable");
+    return;
+  }
+
+  let parsed: Awaited<ReturnType<typeof parseCloudflareEmail>>;
+  try {
+    parsed = await parseCloudflareEmail(message.raw);
+  } catch {
+    message.setReject("Email could not be safely parsed or exceeds attachment limits");
+    return;
+  }
+  if (parsed.attachments.length && !env.SCRIPTS_R2) {
+    message.setReject("Attachment storage is unavailable");
+    return;
+  }
+  const messageKey = await hashEmailAddress(parsed.messageId);
+  const stored: Array<{ filename: string; mimeType: string; key: string }> = [];
+  let total = 0;
+  for (let index = 0; index < parsed.attachments.length; index++) {
+    const attachment = parsed.attachments[index]!;
+    total += attachment.bytes.byteLength;
+    if (attachment.bytes.byteLength > MAX_EMAIL_ATTACHMENT_BYTES || total > MAX_EMAIL_ATTACHMENTS_TOTAL_BYTES) {
+      message.setReject("Email attachments exceed Naelao's size limit");
+      return;
+    }
+    const taskSegment = route.task_id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 120) || "task";
+    const key = `spaces/${route.space_id}/email-inbound/${taskSegment}/${messageKey}/${index}-${attachment.filename}`;
+    await env.SCRIPTS_R2!.put(key, attachment.bytes, { httpMetadata: { contentType: attachment.mimeType } });
+    const createdAt = new Date().toISOString();
+    await env.PLATFORM_DB.prepare(
+      "INSERT OR IGNORE INTO email_inbound_attachments (object_key, tenant_id, space_id, task_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)"
+    ).bind(key, route.tenant_id, route.space_id, route.task_id, createdAt, new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()).run();
+    stored.push({ filename: attachment.filename, mimeType: attachment.mimeType, key });
+  }
+  const stub = await getAgentDOForSpace(env, route.tenant_id, route.space_id, route.agent_id);
+  const response = await stub.fetch(new Request("http://agent-do/channels/email/inbound", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      raw: { from: parsed.from, text: emailReplyBody({ taskId: route.task_id, subject: parsed.subject, text: parsed.text, attachments: stored }), message_id: parsed.messageId, subject: parsed.subject },
+      ...(route.project_id ? { projectId: route.project_id } : {}),
+      spaceId: route.space_id, tenantId: route.tenant_id,
+      taskId: route.task_id, apiKey: "",
+    }),
+  }));
+  if (!response.ok) throw new Error(`email_reply_dispatch_failed:${response.status}`);
+}
+
+async function expireEmailIngressData(env: AgentsEnv): Promise<void> {
+  const now = new Date().toISOString();
+  try {
+    const expired = await env.PLATFORM_DB.prepare(
+      "SELECT object_key FROM email_inbound_attachments WHERE expires_at <= ? ORDER BY expires_at LIMIT 100"
+    ).bind(now).all<{ object_key: string }>();
+    for (const row of expired.results ?? []) {
+      if (!env.SCRIPTS_R2) break;
+      await env.SCRIPTS_R2.delete(row.object_key);
+      await env.PLATFORM_DB.prepare("DELETE FROM email_inbound_attachments WHERE object_key = ?").bind(row.object_key).run();
+    }
+    await env.PLATFORM_DB.prepare("DELETE FROM email_reply_routes WHERE expires_at <= ? OR status = 'revoked'").bind(now).run();
+  } catch (error) {
+    console.error("email ingress retention sweep failed", error instanceof Error ? error.message : String(error));
+  }
+}
