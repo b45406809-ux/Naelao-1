@@ -59,6 +59,9 @@ import {
   type AssistantPolicy,
   type ConnectorInfo,
   type ByokProviderStatus,
+  getCustomModelLifecycle,
+  updateCustomModelLifecycle,
+  type CustomModelLifecycle,
 } from "@/lib/api";
 
 const MODEL_LABELS: Record<string, string> = {
@@ -227,6 +230,7 @@ export default function SettingsPage() {
             creds={creds}
             policy={policy}
             canManage={canManage}
+          isBusinessSpace={isBusinessSpace}
             onChanged={(p) => setPolicy(p)}
           />
           {creds && <div style={{ marginTop: 24 }}><DomainGlossaryPanel spaceId={activeSpaceId} creds={creds} canEdit={canManage} /></div>}
@@ -604,12 +608,14 @@ function AiTab({
   creds,
   policy,
   canManage,
+  isBusinessSpace,
   onChanged,
 }: {
   spaceId: string;
   creds: { sessionToken: string; endUserId: string } | null;
   policy: AssistantPolicy | null;
   canManage: boolean;
+  isBusinessSpace: boolean;
   onChanged: (p: AssistantPolicy) => void;
 }) {
   const [model, setModel] = React.useState<string>("");
@@ -624,6 +630,21 @@ function AiTab({
   const [byokBusy, setByokBusy] = React.useState(false);
   const [byokError, setByokError] = React.useState<string | null>(null);
   const [byokNotice, setByokNotice] = React.useState<string | null>(null);
+  const [adapterModelId, setAdapterModelId] = React.useState("");
+  const [adapter, setAdapter] = React.useState<CustomModelLifecycle | null>(null);
+  const [adapterBusy, setAdapterBusy] = React.useState(false);
+  const [adapterMessage, setAdapterMessage] = React.useState<string | null>(null);
+  const [adapterError, setAdapterError] = React.useState<string | null>(null);
+  const [adapterProvenance, setAdapterProvenance] = React.useState("");
+  const [adapterPurpose, setAdapterPurpose] = React.useState("");
+  const [lawfulBasis, setLawfulBasis] = React.useState("consent");
+  const [adapterBaseModel, setAdapterBaseModel] = React.useState("");
+  const [adapterId, setAdapterId] = React.useState("");
+  const [providerEvidence, setProviderEvidence] = React.useState("");
+  const [testSetVersion, setTestSetVersion] = React.useState("");
+  const [sampleCount, setSampleCount] = React.useState("20");
+  const [evaluationScore, setEvaluationScore] = React.useState("0.8");
+  const [evaluationThreshold, setEvaluationThreshold] = React.useState("0.8");
 
   const refreshByok = React.useCallback(async () => {
     if (!creds) return;
@@ -635,6 +656,24 @@ function AiTab({
   }, [creds, spaceId]);
 
   React.useEffect(() => { void refreshByok(); }, [refreshByok]);
+
+  async function loadAdapter() {
+    if (!creds || !/^custom\/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/.test(adapterModelId.trim())) return;
+    setAdapterBusy(true); setAdapterError(null); setAdapterMessage(null);
+    try { setAdapter(await getCustomModelLifecycle(spaceId, adapterModelId.trim(), creds)); }
+    catch (err) { setAdapterError(err instanceof Error ? err.message : "Unable to load adapter lifecycle"); }
+    finally { setAdapterBusy(false); }
+  }
+  async function adapterAction(action: string, extra: Record<string, unknown> = {}) {
+    if (!creds || !adapterModelId.trim()) return;
+    setAdapterBusy(true); setAdapterError(null); setAdapterMessage(null);
+    try {
+      await updateCustomModelLifecycle(spaceId, adapterModelId.trim(), creds, { action, ...extra });
+      await loadAdapter();
+      setAdapterMessage("Lifecycle record updated.");
+    } catch (err) { setAdapterError(err instanceof Error ? err.message : "Unable to update adapter lifecycle"); }
+    finally { setAdapterBusy(false); }
+  }
 
   const providerLabel = (provider: string) => provider === "google-ai-studio" ? "Google AI Studio / Gemini" : provider === "groq" ? "Groq" : provider === "openrouter" ? "OpenRouter" : provider;
 
@@ -825,6 +864,44 @@ function AiTab({
       </div>
       {byokError && <div style={{ color: "#dc2626", fontSize: 12.5, marginTop: 8 }}>{byokError}</div>}
       {byokNotice && <div style={{ color: "var(--text2)", fontSize: 12.5, marginTop: 8 }}>{byokNotice}</div>}
+      {isBusinessSpace && <>
+        <div className="settings-section-title" style={{ marginTop: 28 }}>Private adapter lifecycle</div>
+        <div className="settings-section-sub">Import an existing Space-owned adapter after documenting data rights. Training submission is unavailable. Evaluation records owner-provided results; this screen does not run or verify a benchmark.</div>
+        <div className="settings-block" style={{ padding: 16, display: "grid", gap: 12 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "end", flexWrap: "wrap" }}>
+            <label style={{ flex: "1 1 260px", fontSize: 12 }}>Model ID
+              <FormInput value={adapterModelId} onChange={e => setAdapterModelId(e.target.value)} placeholder="custom/my-adapter" autoComplete="off" />
+            </label>
+            <Button onClick={() => void loadAdapter()} disabled={adapterBusy || !canManage}>{adapterBusy ? "Loading…" : "Load lifecycle"}</Button>
+          </div>
+          {adapter && <div className="settings-row-sub" role="status">Status: <strong>{adapter.status}</strong>{adapter.base_model ? ` · base ${adapter.base_model}` : ""}{adapter.evaluation_passed !== undefined ? ` · recorded evaluation ${adapter.evaluation_passed ? "passed" : "failed"}` : ""}</div>}
+          {canManage && adapter?.status === "draft" && <>
+            <label style={{ fontSize: 12 }}>Data provenance<FormInput value={adapterProvenance} onChange={e => setAdapterProvenance(e.target.value)} placeholder="Where the training data came from" /></label>
+            <label style={{ fontSize: 12 }}>Intended purpose<FormInput value={adapterPurpose} onChange={e => setAdapterPurpose(e.target.value)} placeholder="What this adapter will be used for" /></label>
+            <label style={{ fontSize: 12 }}>Lawful basis<FormSelect value={lawfulBasis} onChange={e => setLawfulBasis(e.target.value)}><option value="consent">Consent</option><option value="contract">Contract</option><option value="legitimate_interest">Legitimate interest</option><option value="public_data">Public data</option><option value="other">Other</option></FormSelect></label>
+            <div style={{ fontSize: 12, color: "var(--text3)" }}>By selecting this action, you attest that the data is limited to this Space, affirmative consent or the selected lawful basis applies, secrets and protected content were excluded, and a deletion plan is in place.</div>
+            <Button disabled={adapterBusy || adapterProvenance.trim().length < 8 || adapterPurpose.trim().length < 8} onClick={() => void adapterAction("attest_consent", { consent: { provenance: adapterProvenance, purpose: adapterPurpose, lawfulBasis, affirmativeConsent: true, crossSpaceData: false, secretsExcluded: true, protectedContentExcluded: true, deletionPlanConfirmed: true } })}>Attest data consent and exclusions</Button>
+          </>}
+          {canManage && adapter?.status === "consented" && <>
+            <label style={{ fontSize: 12 }}>Workers AI base model<FormSelect value={adapterBaseModel} onChange={e => setAdapterBaseModel(e.target.value)}><option value="">Choose a supported base model…</option>{ALLOWED_MODELS.filter(m => m.startsWith("@cf/")).map(m => <option key={m} value={m}>{MODEL_LABELS[m] ?? m}</option>)}</FormSelect></label>
+            <label style={{ fontSize: 12 }}>Provider adapter ID<FormInput value={adapterId} onChange={e => setAdapterId(e.target.value)} autoComplete="off" /></label>
+            <label style={{ fontSize: 12 }}>Provider evidence reference<FormInput value={providerEvidence} onChange={e => setProviderEvidence(e.target.value)} placeholder="Reference or note; not independently verified" /></label>
+            <Button disabled={adapterBusy || !adapterBaseModel || adapterId.length < 2 || providerEvidence.trim().length < 8} onClick={() => void adapterAction("import_adapter", { baseModel: adapterBaseModel, loraAdapterId: adapterId, providerEvidence })}>Record existing adapter import</Button>
+          </>}
+          {canManage && ["imported", "evaluation_failed"].includes(adapter?.status ?? "") && <>
+            <div style={{ fontSize: 12, color: "var(--text3)" }}>Enter results from an evaluation you ran externally. These owner-attested values will gate activation but are not verified by Naelao.</div>
+            <label style={{ fontSize: 12 }}>Versioned test-set ID<FormInput value={testSetVersion} onChange={e => setTestSetVersion(e.target.value)} /></label>
+            <label style={{ fontSize: 12 }}>Sample count<FormInput type="number" min="1" max="10000" value={sampleCount} onChange={e => setSampleCount(e.target.value)} /></label>
+            <label style={{ fontSize: 12 }}>Score and required threshold<FormInput type="number" min="0" max="1" step="0.01" value={evaluationScore} onChange={e => setEvaluationScore(e.target.value)} /><FormInput type="number" min="0" max="1" step="0.01" value={evaluationThreshold} onChange={e => setEvaluationThreshold(e.target.value)} /></label>
+            <Button disabled={adapterBusy || !testSetVersion || !adapter?.base_model} onClick={() => void adapterAction("record_evaluation", { evaluation: { baseModel: adapter?.base_model, testSetVersion, sampleCount: Number(sampleCount), score: Number(evaluationScore), threshold: Number(evaluationThreshold) } })}>Record owner-run evaluation</Button>
+          </>}
+          {canManage && adapter?.status === "evaluated" && <Button disabled={adapterBusy} onClick={() => void adapterAction("approve_activation")}>Approve activation</Button>}
+          {canManage && ["active", "evaluated", "evaluation_failed", "imported", "consented"].includes(adapter?.status ?? "") && <Button disabled={adapterBusy} onClick={() => void adapterAction("revoke")}>Revoke adapter</Button>}
+          {adapterError && <div role="alert" style={{ color: "#dc2626", fontSize: 12.5 }}>{adapterError}</div>}
+          {adapterMessage && <div role="status" style={{ color: "var(--text2)", fontSize: 12.5 }}>{adapterMessage}</div>}
+          {!canManage && <div className="settings-row-sub">Only Space owners and admins can manage private adapters.</div>}
+        </div>
+      </>}
       {!canManage && (
         <div style={{ fontSize: 12, color: "var(--text3)", marginTop: 12 }}>Only business admins and owners can change these.</div>
       )}

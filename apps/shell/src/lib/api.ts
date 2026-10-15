@@ -64,6 +64,19 @@ export async function apiFetch<T>(path: string, options: RequestInit & {
   }
   return requestJson<T>(`${session?.sessionToken === "cookie" ? "/api/naelao" : API_URL}${path}`, { ...fetchOptions, headers, ...(session?.sessionToken === "cookie" ? { credentials: "include" as const } : {}) }, { onRetry, retries });
 }
+
+export interface CustomModelLifecycle {
+  modelId: string; space_id: string; model_id: string; status: string; training_enabled: boolean;
+  training_reason?: string; base_model?: string; provider_evidence?: string; evaluation_test_set?: string;
+  evaluation_sample_count?: number; evaluation_score?: number; evaluation_threshold?: number;
+  evaluation_passed?: number; approved_by?: string; updated_at?: string;
+}
+export function getCustomModelLifecycle(spaceId: string, modelId: string, session: SessionCredentials) {
+  return apiFetch<CustomModelLifecycle>(`/v1/spaces/${encodeURIComponent(spaceId)}/custom-models/${encodeURIComponent(modelId)}/lifecycle`, { session, cache: "no-store" });
+}
+export function updateCustomModelLifecycle(spaceId: string, modelId: string, session: SessionCredentials, body: Record<string, unknown>) {
+  return apiFetch<Record<string, unknown>>(`/v1/spaces/${encodeURIComponent(spaceId)}/custom-models/${encodeURIComponent(modelId)}/lifecycle`, { method: "POST", session, body: JSON.stringify(body) });
+}
 // ── Public, pre-login lookups ────────────────────────────────────────────────
 
 export interface ProductBySlug {

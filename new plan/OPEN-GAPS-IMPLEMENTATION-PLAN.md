@@ -63,7 +63,7 @@ Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, recon
 
 ### 5. LoRA consent, evaluation, and lifecycle
 
-**Status:** locally implemented and verified for imported adapters, consent/provenance, owner-recorded evaluation, approval, rollback, revocation, and deletion. Provider training remains disabled and live adapter compatibility is unverified.
+**Status:** locally implemented and verified for imported adapters, consent/provenance, owner-recorded evaluation, approval, rollback, revocation, and deletion; an owner/admin Settings interface now exposes those lifecycle actions. The interface accurately describes evaluation as owner-attested. An in-product test-set vault and platform-run evaluation harness are still missing. Provider training remains disabled and live adapter compatibility is unverified.
 
 1. Verify current official Workers AI fine-tuning/adapter support and the exact compatible base-model/adapter contract. Do not assume that accepting an adapter identifier proves compatibility or availability.
 2. Model an explicit lifecycle: draft, consent/data eligibility check, training or external import, evaluation, owner approval, active, revoked, and deleted. Record Space, base model, provider evidence, data provenance, purpose, evaluator, and timestamps.
