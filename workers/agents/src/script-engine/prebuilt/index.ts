@@ -54,6 +54,7 @@ import { executiveCabinet } from "./executive-cabinet.js";
 import { modelRaceScript } from "./model-race-script.js";
 import { foundryInbox } from "./foundry-inbox.js";
 import { runtimeDiscovery } from "./runtime-discovery.js";
+import { languageDetection } from "./language-detection.js";
 import { languageGlossary } from "./language-glossary.js";
 import { languageTranslation } from "./language-translation.js";
 
@@ -97,6 +98,7 @@ export interface PrebuiltScript {
 
 /** The full catalogue shipped in this build, keyed by prebuilt script name. */
 export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
+  [languageDetection.name]: languageDetection,
   [languageGlossary.name]: languageGlossary,
   [languageTranslation.name]: languageTranslation,
   [runtimeDiscovery.name]: runtimeDiscovery,

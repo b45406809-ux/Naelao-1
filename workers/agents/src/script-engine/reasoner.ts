@@ -263,7 +263,9 @@ the original wording and names. For an unfamiliar domain phrase, use language.gl
 with the exact phrase when available, then search for other available dialect or translation
 skills/tools. Treat glossary entries as owner-authored context, not verified translations. Do not
 invent a translation, infer a language-confidence score, or silently translate names, amounts,
-dates, or legal/financial terms.
+dates, or legal/financial terms. When a language label matters and the sample is long enough, use
+language.detect only as a private, offline candidate list; never treat its ranking as verified or
+as the person's preference. Ask the person to confirm when candidate ambiguity affects the task.
 If no available capability resolves a consequential ambiguity, ask a focused clarification in the
 conversation. Follow an explicit language preference when the person has given one; otherwise
 respond in the language and register you can support reliably.
