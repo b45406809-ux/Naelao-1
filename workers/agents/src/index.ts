@@ -15,6 +15,7 @@ import { getDOName } from "@naelao/crypto";
 import { detectPromptInjection, detectPolicyViolations } from "@naelao/moderation";
 import { expireToolOutputs } from "./script-engine/tool-output-expiry.js";
 import { fetchOpenRouterCatalog } from "./shared/openrouter-model-catalog.js";
+import { recommendOpenRouterModels } from "./shared/openrouter-model-recommendations.js";
 import { parseMentions, creatableFeatureKindsForRole, detectImplicitSignals, classifyFailure, type MentionableAgent } from "@naelao/events";
 import { NaelaoAgentDO, ASSISTANT_MEMORY_SCOPE } from "./do/NaelaoAgentDO.js";
 import { HITLApprovalDO } from "./do/HITLApprovalDO.js";
@@ -3064,6 +3065,7 @@ app.get("/spaces/:spaceId/llm-byok/models", async (c) => {
       catalog_source: "openrouter_public_catalog",
       availability_note: "Catalog presence does not guarantee this key can use a model. OpenRouter confirms access only when a request is made.",
       models,
+      recommendations: recommendOpenRouterModels(models),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "openrouter_catalog_unavailable";

@@ -13,6 +13,7 @@ import {
   getOpenRouterModels,
   type ByokProviderStatus,
   type OpenRouterModelCandidate,
+  type OpenRouterModelRecommendation,
   type SessionCredentials,
 } from "@/lib/api";
 
@@ -36,6 +37,7 @@ export function ByokKeysPanel({
   const { toast, show } = useToast();
   const [status, setStatus] = React.useState<ByokProviderStatus[]>([]);
   const [models, setModels] = React.useState<OpenRouterModelCandidate[]>([]);
+  const [recommendations, setRecommendations] = React.useState<OpenRouterModelRecommendation[]>([]);
   const [provider, setProvider] = React.useState<string>(PROVIDERS[0].id);
   const [label, setLabel] = React.useState("");
   const [keyInput, setKeyInput] = React.useState("");
@@ -49,9 +51,11 @@ export function ByokKeysPanel({
     try {
       const result = await getOpenRouterModels(spaceId, creds);
       setModels(result.models ?? []);
+      setRecommendations(result.recommendations ?? []);
       if (result.configured && result.availability_note) setModelsError(result.availability_note);
     } catch {
       setModels([]);
+      setRecommendations([]);
       setModelsError("OpenRouter model inventory is unavailable. The saved key remains in the vault; try refreshing later.");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -64,7 +68,7 @@ export function ByokKeysPanel({
       const nextStatus = await getByokStatus(spaceId, creds);
       setStatus(nextStatus);
       if (nextStatus.some(item => item.provider === "openrouter" && item.keys.length > 0)) await refreshModels();
-      else setModels([]);
+      else { setModels([]); setRecommendations([]); }
     } catch {
       setLoadError("Couldn't load the saved provider keys. Try refreshing this section.");
     } finally {
@@ -154,6 +158,11 @@ export function ByokKeysPanel({
       {!canEdit && <p style={{ fontSize: 11.5, color: "var(--text3)" }}>Only the owner or an admin can change these keys.</p>}
       {models.length > 0 && <details className="settings-block">
         <summary className="settings-row-label">OpenRouter catalog ({models.length} models)</summary>
+        <div className="settings-block" style={{ display: "grid", gap: 8 }}>
+          <div className="settings-row-label">Catalog-based recommendations</div>
+          <p className="settings-row-sub">Advisory shortlists use only published modality, context and price metadata. They do not verify key access, quality or runtime support, and do not activate a model.</p>
+          {recommendations.map((item) => <div key={item.category} className="settings-row-sub"><strong>{item.label}</strong> — {item.candidates.map(model => model.name).join(", ")}<br />{item.evidence}</div>)}
+        </div>
         <p className="settings-row-sub">These are public catalog entries, not a guarantee that this key can use them. The provider confirms access when a request is sent.</p>
         <div style={{ display: "grid", gap: 5, maxHeight: 280, overflow: "auto" }}>
           {models.slice(0, 100).map((item) => <div key={item.id} className="settings-row-sub">{item.name} <span style={{ opacity: 0.7 }}>({item.id})</span>{item.contextLength ? ` · ${item.contextLength.toLocaleString()} context` : ""}</div>)}

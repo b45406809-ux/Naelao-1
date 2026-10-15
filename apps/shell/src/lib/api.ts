@@ -1023,6 +1023,13 @@ export interface OpenRouterModelCandidate {
   outputModalities?: string[];
 }
 
+export interface OpenRouterModelRecommendation {
+  category: "general_text" | "vision_input" | "long_context" | "lower_published_cost";
+  label: string;
+  candidates: OpenRouterModelCandidate[];
+  evidence: string;
+}
+
 /** GET /v1/spaces/:spaceId/llm-byok — which providers are wired (member+). */
 export async function getByokStatus(spaceId: string, session: SessionCredentials): Promise<ByokProviderStatus[]> {
   const res = await apiFetch<{ providers: ByokProviderStatus[] }>(`/v1/spaces/${spaceId}/llm-byok`, { session });
@@ -1032,7 +1039,7 @@ export async function getByokStatus(spaceId: string, session: SessionCredentials
 /** Fetch the public OpenRouter model catalog after the selected Space key is validated. Catalog
  * membership is not a promise that the key can invoke a particular model. */
 export async function getOpenRouterModels(spaceId: string, session: SessionCredentials): Promise<{
-  configured: boolean; key_validated?: boolean; availability_note?: string; models: OpenRouterModelCandidate[];
+  configured: boolean; key_validated?: boolean; availability_note?: string; models: OpenRouterModelCandidate[]; recommendations?: OpenRouterModelRecommendation[];
 }> {
   return apiFetch(`/v1/spaces/${spaceId}/llm-byok/models`, { session });
 }
