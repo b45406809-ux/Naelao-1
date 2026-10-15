@@ -631,3 +631,11 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Verification: Agents and Shell typechecks passed; focused parser/route/settings/tool tests passed (4 files / 23 tests); daily quota query ran against SQLite (20 allowed per Space/rolling day, 21st denied, other Space isolated); D1 migration replay through 0100 passed; full Agents suite passed (91 files / 372 tests); fresh Wrangler 4.149 dry-run exited successfully; `git diff --check` passed. No live Workers AI call was made. Deployment acceptance log now records migration 0100; production D1 remains unrun.
 - Status: local implementation is partial for raster image OCR; scanned PDF OCR still needs a verified bounded PDF-to-image renderer. Do not report OCR quality or live provider operation as verified.
 - Next: stage, commit/push this verified W2 slice. Then continue the remaining local gaps and final audit.
+
+
+## Open-gap implementation final local audit (2026-10-15)
+
+- Re-ran on `Mcbt5s-Backup-2`: Agents full suite 91 files / 372 tests passed; Spaces full suite 40 files / 116 tests passed; Shell typecheck passed; Spaces migration replay suite passed.
+- No additional provider-independent gap was found. The remaining work is precisely listed in `OPEN-GAPS-IMPLEMENTATION-PLAN.md`: bounded Worker-compatible PDF page rendering for scanned-PDF OCR; verified number-specific Twilio purchase quote/confirmation; provider-neutral audio/video request formats and key entitlement beyond explicit preflight; provider-executed adapter scoring/training; and live Cloudflare/provider account acceptance.
+- The runtime incompatibility for PDF page rendering was checked against the installed `unpdf` API: its `renderPageAsImage` is documented for Node/browser and requires a canvas import. Its separate embedded-image extraction can allocate unbounded aggregate pixel data across images, so it is not substituted as a safe renderer.
+- Status: local implementation pass complete with the listed feature limits still fail-closed. No live provider claim is made. Next action is owner/account setup only for the live checks, or a future verified runtime/API contract for the code-level blockers.
