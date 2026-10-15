@@ -12,7 +12,7 @@
 
 ## Latest continuation checkpoint (read first)
 
-- Current branch: `Mcbt5s-Backup-2`. Latest pushed commit: `66ea7ad` (W3 confirmed Twilio number purchase). This workstream is locally implemented and verified.
+- Current branch: `Mcbt5s-Backup-2`. Latest pushed commit: `0aa09b7` (optional per-Space Meta Direct WhatsApp setup; Twilio remains the default). W3 confirmed Twilio number purchase is also locally implemented and verified.
 - W2 PNG/JPEG OCR and W3 telephony quote/purchase are implemented and locally tested. The current W3 slice adds official country/type rate-card lookup, explicit 3-minute quotes, owner confirmation, cap holds, replay protection, post-purchase rate verification, and ambiguity resolution. Latest full-suite/typecheck/dry-run evidence is below.
 - Remaining external/product dependencies: live Twilio/PSTN acceptance and Cloudflare/R2/domain/provider deployment acceptance; account-billed AI dollar reservation; provider-specific model entitlement and audio/video routing; platform-executed LoRA evaluation/training; scanned-PDF page rendering. Local/mock tests do not close external account checks.
 - Continue with any independent locally actionable gaps from `OPEN-GAPS-IMPLEMENTATION-PLAN.md`; record unresolvable external checks precisely and do not treat them as locally complete.
