@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import Link from "next/link";
-import { getBillingSubscription, createBillingCheckout } from "@/lib/api";
+import { createBillingCheckout, getBillingSubscription, getMyPreferences, updateMyPreferences } from "@/lib/api";
 import { useAuth } from "@/lib/auth-provider";
+import Link from "next/link";
+import { useEffect, useState } from "react";
 
 // G-BE40: Settings — subscription info, org info. API key management lives on its own page
 // (/dashboard/api-keys) — this page used to embed a second, simpler API-key UI pointed at a
@@ -67,6 +67,10 @@ export default function SettingsPage() {
   const [billingLoading, setBillingLoading] = useState(true);
   const [billingError, setBillingError] = useState<string | null>(null);
   const [checkoutLoading, setCheckoutLoading] = useState<string | null>(null);
+  const [language, setLanguage] = useState("");
+  const [languageLoading, setLanguageLoading] = useState(true);
+  const [languageSaving, setLanguageSaving] = useState(false);
+  const [languageMessage, setLanguageMessage] = useState<string | null>(null);
 
   useEffect(() => {
     async function loadBilling() {
@@ -81,6 +85,27 @@ export default function SettingsPage() {
     }
     void loadBilling();
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    void getMyPreferences().then((preferences) => {
+      if (active) setLanguage(preferences.preferred_language ?? "");
+    }).catch((err: unknown) => {
+      if (active) setLanguageMessage(err instanceof Error ? err.message : "Could not load language preference.");
+    }).finally(() => { if (active) setLanguageLoading(false); });
+    return () => { active = false; };
+  }, []);
+
+  async function saveLanguagePreference() {
+    setLanguageSaving(true);
+    setLanguageMessage(null);
+    try {
+      await updateMyPreferences({ preferred_language: language.trim() || null });
+      setLanguageMessage("Language preference saved.");
+    } catch (err) {
+      setLanguageMessage(err instanceof Error ? err.message : "Could not save language preference.");
+    } finally { setLanguageSaving(false); }
+  }
 
   async function handleUpgrade(planId: string) {
     setCheckoutLoading(planId);
@@ -130,6 +155,31 @@ export default function SettingsPage() {
             </p>
           </div>
         </div>
+      </SectionCard>
+
+      <SectionCard title="Language preference">
+        <p className="text-sm text-gray-500 mb-3">
+          Choose a BCP-47 language tag such as en, fr-CA, or sw-KE. Leave blank to follow each message.
+        </p>
+        <div className="flex items-center gap-3">
+          <input
+            aria-label="Preferred response language"
+            className="border border-gray-300 rounded-md px-3 py-2 text-sm"
+            value={language}
+            onChange={(event) => setLanguage(event.target.value)}
+            placeholder="en"
+            disabled={languageLoading || languageSaving}
+          />
+          <button
+            type="button"
+            onClick={() => void saveLanguagePreference()}
+            disabled={languageLoading || languageSaving}
+            className="px-4 py-2 bg-brand-600 hover:bg-brand-700 disabled:bg-brand-300 text-white text-sm font-semibold rounded-lg"
+          >
+            {languageSaving ? "Saving..." : "Save"}
+          </button>
+        </div>
+        {languageMessage && <output className="text-sm text-gray-500 mt-2">{languageMessage}</output>}
       </SectionCard>
 
       {/* Subscription */}

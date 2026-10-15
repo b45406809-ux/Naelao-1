@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { errorResponse, requestId, notFound, requireInternalHmac, mintInternalToken, verifyInternalToken, forbidden, mintLocalTunnelToken } from "@naelao/http";
 import { getDOName, signHmac, verifyHmac } from "@naelao/crypto";
+import { normalizePreferredLanguage } from "@naelao/types";
 import type { SpaceDO } from "./do/SpaceDO.js";
 import type { SpaceTypeRegistryDO, SpaceTypeProductConfig, NaelaoSpaceTypeManifestV2 } from "./do/SpaceTypeRegistryDO.js";
 import { LAUNCHPAD_MANIFEST } from "./launchpad-manifest.js";
@@ -5295,8 +5296,8 @@ app.get("/spaces/:spaceId/product-users/me", async (c) => {
     return c.json({ error_code: "not_an_end_user", message: "This route is for product end users only" }, 404);
   }
   const row = await c.env.PLATFORM_DB.prepare(
-    "SELECT email, display_name, first_seen_at, last_seen_at, suspended_at, email_verified_at FROM product_end_users WHERE product_space_id = ? AND end_user_id = ?"
-  ).bind(spaceId, userId).first<{ email: string | null; display_name: string | null; first_seen_at: string; last_seen_at: string | null; suspended_at: string | null; email_verified_at: string | null }>();
+    "SELECT email, display_name, first_seen_at, last_seen_at, suspended_at, email_verified_at, preferred_language FROM product_end_users WHERE product_space_id = ? AND end_user_id = ?"
+  ).bind(spaceId, userId).first<{ email: string | null; display_name: string | null; first_seen_at: string; last_seen_at: string | null; suspended_at: string | null; email_verified_at: string | null; preferred_language: string | null }>();
   if (!row) return c.json({ error_code: "not_found", message: "End user not found" }, 404);
 
   const stub = await productUserDoStub(c.env, spaceId, userId, tenantId);
@@ -5315,6 +5316,7 @@ app.get("/spaces/:spaceId/product-users/me", async (c) => {
     // all that a free-credit grant was waiting on email verification — this is what the shell's
     // persistent banner (and the verify-email page) key off.
     email_verified: row.email_verified_at !== null,
+    preferred_language: row.preferred_language,
   });
 });
 
@@ -5324,15 +5326,23 @@ app.patch("/spaces/:spaceId/product-users/me", async (c) => {
   if (role !== "product_end_user" || !userId) {
     return c.json({ error_code: "not_an_end_user", message: "This route is for product end users only" }, 404);
   }
-  const body = await c.req.json<{ display_name?: string }>().catch(() => ({}) as { display_name?: string });
-  if (body.display_name === undefined) {
+  const body = await c.req.json<{ display_name?: string; preferred_language?: string | null }>().catch(() => ({}) as { display_name?: string; preferred_language?: string | null });
+  if (body.display_name === undefined && body.preferred_language === undefined) {
     return c.json({ error_code: "bad_request", message: "Nothing to update" }, 400);
   }
+  if (body.preferred_language !== undefined && body.preferred_language !== null && !normalizePreferredLanguage(body.preferred_language)) {
+    return c.json({ error_code: "bad_request", message: "preferred_language must be a valid BCP-47 language tag or null" }, 400);
+  }
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  if (body.display_name !== undefined) { sets.push("display_name = ?"); values.push(body.display_name); }
+  if (body.preferred_language !== undefined) { sets.push("preferred_language = ?"); values.push(body.preferred_language === null ? null : normalizePreferredLanguage(body.preferred_language)); }
+  values.push(spaceId, userId);
   const res = await c.env.PLATFORM_DB.prepare(
-    "UPDATE product_end_users SET display_name = ? WHERE product_space_id = ? AND end_user_id = ?"
-  ).bind(body.display_name, spaceId, userId).run();
+    `UPDATE product_end_users SET ${sets.join(", ")} WHERE product_space_id = ? AND end_user_id = ?`
+  ).bind(...values).run();
   if (res.meta.changes === 0) return c.json({ error_code: "not_found", message: "End user not found" }, 404);
-  return c.json({ ok: true, display_name: body.display_name });
+  return c.json({ ok: true, ...(body.display_name !== undefined ? { display_name: body.display_name } : {}), ...(body.preferred_language !== undefined ? { preferred_language: body.preferred_language === null ? null : normalizePreferredLanguage(body.preferred_language) } : {}) });
 });
 
 // DELETE /spaces/:spaceId/product-users/me — GDPR Art. 17, the direct inverse of GET (export)
@@ -5362,11 +5372,40 @@ app.delete("/spaces/:spaceId/product-users/me", async (c) => {
 
   if (!row.deleted_at) {
     await c.env.PLATFORM_DB.prepare(
-      "UPDATE product_end_users SET email = NULL, display_name = NULL, password_hash = NULL, deleted_at = datetime('now') WHERE product_space_id = ? AND end_user_id = ?"
+      "UPDATE product_end_users SET email = NULL, display_name = NULL, preferred_language = NULL, password_hash = NULL, deleted_at = datetime('now') WHERE product_space_id = ? AND end_user_id = ?"
     ).bind(spaceId, userId).run();
   }
 
   return c.json({ erased: true, erased_at: erased.erased_at, sessions_deleted: erased.sessions_deleted, conversations_deleted: erased.conversations_deleted });
+});
+
+// Platform member language preference. Stored on the authenticated platform user record,
+// separate from product_end_users so a member's settings cannot bleed into product users.
+app.get("/me/preferences", async (c) => {
+  const { role, userId } = getCallerIdentity(c);
+  if (!userId || !["owner", "admin", "editor", "viewer"].includes(role ?? "")) {
+    return c.json({ error_code: "unauthorized", message: "Platform member authentication required" }, 401);
+  }
+  const row = await c.env.PLATFORM_DB.prepare("SELECT preferred_language FROM users WHERE id = ?")
+    .bind(userId).first<{ preferred_language: string | null }>();
+  if (!row) return c.json({ error_code: "not_found", message: "User not found" }, 404);
+  return c.json({ preferred_language: row.preferred_language });
+});
+
+app.patch("/me/preferences", async (c) => {
+  const { role, userId } = getCallerIdentity(c);
+  if (!userId || !["owner", "admin", "editor", "viewer"].includes(role ?? "")) {
+    return c.json({ error_code: "unauthorized", message: "Platform member authentication required" }, 401);
+  }
+  const body = await c.req.json<{ preferred_language?: string | null }>().catch(() => ({} as { preferred_language?: string | null }));
+  if (body.preferred_language === undefined || (body.preferred_language !== null && !normalizePreferredLanguage(body.preferred_language))) {
+    return c.json({ error_code: "bad_request", message: "preferred_language must be a valid BCP-47 language tag or null" }, 400);
+  }
+  const preferredLanguage = body.preferred_language === null ? null : normalizePreferredLanguage(body.preferred_language);
+  const result = await c.env.PLATFORM_DB.prepare("UPDATE users SET preferred_language = ? WHERE id = ?")
+    .bind(preferredLanguage, userId).run();
+  if (result.meta.changes === 0) return c.json({ error_code: "not_found", message: "User not found" }, 404);
+  return c.json({ preferred_language: preferredLanguage });
 });
 
 // GET /spaces/:spaceId/sessions (list) is handled by the generic SpaceDO session proxy above

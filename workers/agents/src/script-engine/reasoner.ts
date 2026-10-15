@@ -79,6 +79,8 @@ export interface ReasonerDeps {
    *  means "don't send anything reasoning-related" (the model doesn't support it, or the caller
    *  didn't choose a level). */
   reasoning?: ReasoningRequest;
+  /** Authenticated product end user's saved language preference; explicit turn language wins. */
+  preferredLanguage?: string;
   /**
    * The agent's OWN system prompt — who it is, what business it runs, how it is supposed to work
    * (script-engine/profiles.ts, persisted as `system-prompt.md` in R2 and loaded by
@@ -113,6 +115,17 @@ export interface ReasonerDeps {
   localCompletion?: (payload: Record<string, unknown>) => Promise<unknown>;
   /** Resolve a space-owned LoRA manifest from SpaceDO/R2. */
   resolveCustomModel?: (modelId: string) => Promise<{ baseModel: string; loraAdapterId: string } | null>;
+}
+
+export function preferredLanguageContext(preferredLanguage?: string): {
+  preferred_language: string;
+  preferred_language_rule: string;
+} | undefined {
+  if (!preferredLanguage) return undefined;
+  return {
+    preferred_language: preferredLanguage,
+    preferred_language_rule: "Use this preference when choosing the response language if the current message does not clearly use another language. An explicit language request in the current message wins. Preserve mixed-language and code-switched input; do not reject or silently translate names, amounts, dates, or legal/financial terms.",
+  };
 }
 
 /** A key-specific provider failure is safe to fail over. Payload/schema errors stay on the same
@@ -908,6 +921,7 @@ export class GatewayReasoner implements Reasoner {
       // is exactly where it should learn the specific business that role applies to. Cheap enough
       // to send every turn: name, kind, one line of offering, setup status.
       ...(this.deps.businessContext ? { business_context: projectBusinessForModel(this.deps.businessContext) } : {}),
+      ...(preferredLanguageContext(this.deps.preferredLanguage) ?? {}),
       goal: input.goal,
       // The thread's own history. Absent for a first message or a non-conversational wake
       // (a cron, a channel drain) — omitted entirely rather than sent empty, so the model

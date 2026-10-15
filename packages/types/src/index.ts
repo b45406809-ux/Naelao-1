@@ -16,6 +16,14 @@ export function asUserId(s: string): UserId { return s as UserId; }
 export function asOrgId(s: string): OrgId { return s as OrgId; }
 export function asDocId(s: string): DocId { return s as DocId; }
 
+/** Normalize a saved BCP-47 language preference. */
+export function normalizePreferredLanguage(value: unknown): string | null {
+  if (typeof value !== "string" || value.length > 35) return null;
+  const input = value.trim();
+  if (!/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(input)) return null;
+  try { return Intl.getCanonicalLocales(input)[0] ?? null; } catch { return null; }
+}
+
 // ── JWT Claims ───────────────────────────────────────────────────────────────
 export interface NaelaoJwtClaims {
   sub: string;        // userId

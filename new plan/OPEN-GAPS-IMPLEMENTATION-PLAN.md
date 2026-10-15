@@ -16,7 +16,7 @@ Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, recon
 
 ### 1. Language preference and end-to-end language handling
 
-**Status:** candidate detector implemented in `e285fbd`; preference persistence and planner use remain open.
+**Status:** partially implemented locally. Platform-member and product-end-user persistence/API paths and authenticated planner context are wired; focused runtime/typecheck coverage is still blocked by dependency setup, and air-gap regression coverage plus human-reviewed translation evaluation remain open.
 
 1. Trace signed-in platform-member and product-end-user identities independently. Decide where each preference belongs based on the existing authenticated data model; do not trust an end-user ID supplied in a request body.
 2. Add a validated, explicit preferred-language field and authenticated read/update API. `auto`/unset must remain distinct from a chosen locale. Reject malformed or unsupported tags; make clearing a preference possible. Keep per-product end-user settings isolated by product.

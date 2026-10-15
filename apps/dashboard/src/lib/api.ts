@@ -111,6 +111,16 @@ export function getAuthHeader(): string | null {
   return token ? `Bearer ${token}` : null;
 }
 
+export async function getMyPreferences(): Promise<{ preferred_language: string | null }> {
+  return apiFetch("/me/preferences");
+}
+
+export async function updateMyPreferences(
+  patch: { preferred_language: string | null }
+): Promise<{ preferred_language: string | null }> {
+  return apiFetch("/me/preferences", { method: "PATCH", body: JSON.stringify(patch) });
+}
+
 // ── Core fetch wrapper ───────────────────────────────────────────────────────
 
 export async function apiFetch<T>(

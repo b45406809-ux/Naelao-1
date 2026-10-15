@@ -16,6 +16,7 @@ import { DurableObject } from "cloudflare:workers";
 import { createWorkflowHooks } from "../workflows/workflow-orchestration.js";
 import { startDurableWorkflow, workflowHash, workflowRunStub, readWorkflowGrant, workflowWorkspaceExtensionId, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
 import type { DurableWorkflowIdentity } from "@naelao/agent-sdk";
+import { normalizePreferredLanguage } from "@naelao/types";
 import { mintInternalToken, broadcastSpaceEvent } from "@naelao/http";
 import { getDOName } from "@naelao/crypto";
 import { createNamedTunnelGateway } from "../tunnels/host.js";
@@ -4612,6 +4613,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // WHICH business this run is for. Resolved by index.ts from the space row it already
       // fetches; omitted entirely when the caller never resolved one.
       ...(body.businessContext ? { businessContext: body.businessContext } : {}),
+      ...(normalizePreferredLanguage(request.headers.get("x-naelao-preferred-language"))
+        ? { preferredLanguage: normalizePreferredLanguage(request.headers.get("x-naelao-preferred-language"))! }
+        : {}),
       manifest: assembled.manifest,
       airGappedOnly: body.airGappedOnly === true,
       ...(this.env.LOCAL_TUNNEL && userId ? {

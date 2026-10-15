@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { requestId, jwtAuth, errorResponse, unauthorized, mintInternalToken, readDeskSession } from "@naelao/http";
 import { signHmac } from "@naelao/crypto";
 import type { NaelaoJwtClaims } from "@naelao/types";
+import { loadSavedLanguagePreference } from "./preferred-language";
 import { transcribeAudio } from "./routes/transcribe";
 export { RateLimitDO } from "./RateLimitDO";
 
@@ -1083,6 +1084,7 @@ async function proxyTo(
   req: Request,
   platformSecret: string,
   preserveV1 = false,
+  preferredLanguage?: string | null,
 ): Promise<Response> {
   const headers = new Headers(req.headers);
   const desk = readDeskSession(req.headers.get("cookie") ?? undefined);
@@ -1104,6 +1106,9 @@ async function proxyTo(
   // (`?end_user_id=`), same precedent as the SSE stream endpoint's ?session_token=&end_user_id=
   // — so stripping the header here doesn't break their intended, documented usage.
   headers.delete("x-naelao-end-user-id");
+  // Never accept this private planner context from a caller. It is populated only after
+  // authentication, from the product end user's own roster row, for the agent-run request.
+  headers.delete("x-naelao-preferred-language");
   const ts = Date.now().toString();
   if (claims) {
     headers.set("x-naelao-tenant-id", claims.tid);
@@ -1113,6 +1118,7 @@ async function proxyTo(
     if (claims.role === "product_end_user") {
       headers.set("x-naelao-end-user-id", claims.sub);
     }
+    if (preferredLanguage) headers.set("x-naelao-preferred-language", preferredLanguage);
     const sig = await signHmac(`internal:${claims.tid}:${ts}`, platformSecret);
     headers.set("x-naelao-internal-token", `t=${ts},v1=${sig}`);
   }
@@ -1196,6 +1202,14 @@ api.all("/spaces/:spaceId/credentials/:credId", async (c) =>
 api.post("/spaces/:spaceId/sessions/:sessionId/voice-ticket", async (c) =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );
+api.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
+  const claims = c.get("claims");
+  let preferredLanguage: string | null = null;
+  if (claims) {
+    preferredLanguage = await loadSavedLanguagePreference(c.env.PLATFORM_DB, claims, c.req.param("spaceId"));
+  }
+  return proxyTo(c.env.AGENTS_WORKER, claims, c.req.raw, c.env.PLATFORM_SECRET, false, preferredLanguage);
+});
 api.all("/spaces/:spaceId/sessions/:sessionId/agent/*", async (c) =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );
@@ -1277,6 +1291,7 @@ api.all("/spaces/:spaceId/assistant/*", async (c) =>
 // the proxy handlers call next() — so if this were registered first (as it originally was),
 // it would swallow every /spaces/:spaceId/kb, /credentials, /sessions, /bootstrap,
 // /projects/from-template, and /channels request before the specific routes ever got a look.
+api.all("/me/preferences", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 api.all("/spaces/*", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 api.all("/spaces", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 

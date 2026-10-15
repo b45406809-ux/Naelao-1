@@ -158,7 +158,8 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
       await this.env.PLATFORM_DB.prepare(
         `UPDATE users
          SET email = 'erased-' || id || '@deleted.invalid',
-             status = 'erased'
+             status = 'erased',
+             preferred_language = NULL
          WHERE org_id = ?`
       )
         .bind(params.orgId)

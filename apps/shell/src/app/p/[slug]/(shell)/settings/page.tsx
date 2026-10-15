@@ -30,6 +30,7 @@ import { canManageSpaceSettings } from "@/lib/roles";
 import { DomainGlossaryPanel } from "@/components/DomainGlossaryPanel";
 import {
   getMe,
+  updateMe,
   deleteMe,
   listMyBusinesses,
   getShellManifest,
@@ -852,7 +853,24 @@ function PersonalTab({
   const [confirmText, setConfirmText] = React.useState("");
   const [deleting, setDeleting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [language, setLanguage] = React.useState(me?.preferred_language ?? "");
+  const [savingLanguage, setSavingLanguage] = React.useState(false);
+  const [languageMessage, setLanguageMessage] = React.useState<string | null>(null);
   const creds = useSessionCredentials();
+
+  React.useEffect(() => setLanguage(me?.preferred_language ?? ""), [me?.preferred_language]);
+
+  async function saveLanguage() {
+    if (!creds) return;
+    setSavingLanguage(true);
+    setLanguageMessage(null);
+    try {
+      await updateMe(productSpaceId, creds, { preferred_language: language.trim() || null });
+      setLanguageMessage("Language preference saved.");
+    } catch (err) {
+      setLanguageMessage(err instanceof Error ? err.message : "Could not save language preference.");
+    } finally { setSavingLanguage(false); }
+  }
 
   async function handleDelete() {
     if (!creds) return;
@@ -874,6 +892,17 @@ function PersonalTab({
       <div className="settings-section-sub">Your own account on this product.</div>
 
       <div className="settings-block">
+        <div className="settings-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
+          <div>
+            <div className="settings-row-label">Preferred response language</div>
+            <div className="settings-row-sub">Use a language tag such as en, fr, or sw-KE. Leave blank to follow each message.</div>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <FormInput aria-label="Preferred response language" value={language} onChange={(e) => setLanguage(e.target.value)} placeholder="en" />
+            <button className="btn btn-secondary btn-sm" type="button" disabled={savingLanguage} onClick={() => void saveLanguage()}>{savingLanguage ? "Saving…" : "Save"}</button>
+          </div>
+          {languageMessage && <div className="settings-row-sub" role="status">{languageMessage}</div>}
+        </div>
         <div className="settings-row">
           <div>
             <div className="settings-row-label">Signed in as</div>

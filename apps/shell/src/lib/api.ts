@@ -174,6 +174,7 @@ export interface ProductUserMe {
   /** Security audit follow-up: a signup credit grant is now deferred until this is true —
    *  the "Verify your email" banner keys off it, alongside a 0 balance. */
   email_verified: boolean;
+  preferred_language: string | null;
 }
 
 export async function getMe(spaceId: string, session: SessionCredentials): Promise<ProductUserMe> {
@@ -183,8 +184,8 @@ export async function getMe(spaceId: string, session: SessionCredentials): Promi
 export async function updateMe(
   spaceId: string,
   session: SessionCredentials,
-  patch: { display_name?: string }
-): Promise<{ ok: boolean; display_name: string }> {
+  patch: { display_name?: string; preferred_language?: string | null }
+): Promise<{ ok: boolean; display_name?: string; preferred_language?: string | null }> {
   return apiFetch(`/v1/spaces/${spaceId}/product-users/me`, {
     method: "PATCH",
     body: JSON.stringify(patch),
