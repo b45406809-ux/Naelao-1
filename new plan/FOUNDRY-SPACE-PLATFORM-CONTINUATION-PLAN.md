@@ -130,7 +130,7 @@ Status: **PARTIALLY IMPLEMENTED — new customer BYOK setup and key selection no
 Primary read: **lines 2174–2355** (USER 2174–2179; AI MODEL 2180–2355).
 Bounded primary windows: 2174–2348, 2349–2355.
 Later amendment/dependency pairs: 2356–2591 (task 17); 2592–2772 (task 18); 2773–2977 (task 19); 2978–3067 (task 20); 3068–3284 (task 21); 3514–3753 (task 23); 3754–3942 (task 24); 4140–4268 (task 26); 4269–4441 (task 27)
-Status: **UNASSESSED**. Evidence and exact next action belong in the progress file.
+Status: **PARTIALLY IMPLEMENTED — arbitrary model calls from guest code are not exposed; direct network egress is disabled and explicit credential-proxy calls require scoped capabilities and Space host grants.** The proposed literal “TLS interception” model firewall and `ctx.ai` multi-modal SDK are not present or validated. The current controls keep guest code from receiving platform credentials; explicit owner-authorized egress uses a separate audited Vault path. A bounded SDK model capability depends on task 17's verified model inventory and task 18's capability routing. No vendor pricing, cache or global no-bypass claim is accepted. See progress file. Task 17 is current.
 
 ## Task 17
 
