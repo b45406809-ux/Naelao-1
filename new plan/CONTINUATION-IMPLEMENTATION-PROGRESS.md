@@ -694,6 +694,7 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Pushed commits to `origin/Mcbt5s-Backup-2`: `68b7f79` (PDF renderer) after `d1dd5f1` (storage copy), `1f2d86c` (bounded transcription), and `1ffadaa` (task-scoped attachment CLI).
 - Still open: general channel adapters do not yet ingest media into the shared attachment index; System 1 has no distinct structured advisory output; generic translation/image-understanding/video/speech-to-speech tasks remain unsupported; platform-run adapter evaluation remains blocked pending a verified provider contract for the imported adapter format; live Cloudflare/provider acceptance is unrun.
 - Next: continue with provider-independent safe attachment ingestion/tool-path work and contract testing. Do not mark the full plan complete while the above gaps remain.
+- Documentation check: Cloudflare's public Workers AI model pages for M2M100 and Whisper returned HTTP 403 from this environment. Existing repository tests/mock the M2M100 contract and current Whisper call shape, but these results do not establish new provider capabilities or live behavior. No new provider task was enabled from that evidence.
 
 
 ## Open-gap implementation final local audit (2026-10-15)
