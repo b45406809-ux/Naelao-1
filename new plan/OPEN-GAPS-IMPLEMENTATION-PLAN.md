@@ -93,7 +93,7 @@ Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, recon
 
 Run only after code and local integration checks are complete. No secret belongs in this file or Git.
 
-- Apply deployed D1 migrations 0093 through 0100 in order and verify replay-safe schema state; verify SpaceDO migrations v72–v77 and ProductUserDO migration v4 after deployment.
+- Apply deployed D1 migrations 0093 through 0101 in order and verify replay-safe schema state; verify the current SpaceDO and ProductUserDO migration versions after deployment.
 - Configure an owned Cloudflare Email Routing ingress domain and verified sending domain, then test inbound task replies and outbound delivery.
 - Configure Web Push VAPID public/private/subject values on Notifications Worker environments; test subscription, delivery, unsubscribe, and expired endpoint cleanup.
 - Configure any selected voice/model/LoRA provider bindings only after the corresponding implementation gates pass; validate Twilio credentials, verify/import a controlled number, test signed call/consent/status callbacks, verify spend caps and release cleanup, and deliberately omit a completion callback to verify scheduled provider reconciliation.
