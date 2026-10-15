@@ -17,7 +17,7 @@ function context(taskId: string | undefined = "message-task") {
 
 describe("customer attachment operations", () => {
   it("exposes read-only operations and never offers project-wide copy", () => {
-    expect(Object.keys(customerAttachments.operations)).toEqual(["attachment.list", "attachment.inspect", "attachment.read", "attachment.ocr", "attachment.transcribe"]);
+    expect(Object.keys(customerAttachments.operations)).toEqual(["attachment.list", "attachment.inspect", "attachment.read", "attachment.ocr", "attachment.describe", "attachment.transcribe"]);
     expect(customerAttachments.operations).not.toHaveProperty("attachment.copy");
   });
 
@@ -42,5 +42,15 @@ describe("customer attachment operations", () => {
     await customerAttachments.operations["attachment.transcribe"]!({ id: "opaque-id", languageHint: "en" }, state.ctx);
     expect(new URL(state.requests[0]!.url).pathname).toBe("/internal/attachments/transcribe");
     expect(await state.requests[0]!.json()).toEqual({ tenantId: "tenant-a", spaceId: "space-a", taskId: "message-task", id: "opaque-id", languageHint: "en" });
+  });
+
+  it("offers image description without exposing project-wide copy", async () => {
+    const state = context();
+    await customerAttachments.operations["attachment.describe"]!({ id: "opaque-id", question: "What is shown?" }, state.ctx);
+    expect(new URL(state.requests[0]!.url).pathname).toBe("/internal/attachments/describe-image");
+    expect(await state.requests[0]!.json()).toMatchObject({ taskId: "message-task", id: "opaque-id", question: "What is shown?" });
+    await expect(Promise.resolve().then(() => customerAttachments.operations["attachment.describe"]!({ id: "opaque-id", question: "" }, state.ctx)))
+      .rejects.toThrow("attachment_question_invalid");
+    expect(state.requests).toHaveLength(1);
   });
 });

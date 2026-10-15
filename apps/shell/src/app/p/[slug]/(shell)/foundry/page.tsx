@@ -40,6 +40,7 @@ export default function FoundryPage() {
   const [safetyLimits, setSafetyLimits] = React.useState("");
   const [instructions, setInstructions] = React.useState("");
   const [sourceReferences, setSourceReferences] = React.useState("");
+  const [templateRuntimeIds, setTemplateRuntimeIds] = React.useState<string[]>([]);
   const [grantSpace, setGrantSpace] = React.useState("");
   const [grantResource, setGrantResource] = React.useState("");
   const [grantToken, setGrantToken] = React.useState("");
@@ -63,6 +64,11 @@ export default function FoundryPage() {
   const [runtimeProjects, setRuntimeProjects] = React.useState<Project[]>([]);
   const [runtimeInstallScope, setRuntimeInstallScope] = React.useState<"SPACE_SHARED" | "SPACE_ASSISTANT" | "PROJECT_SHARED">("SPACE_SHARED");
   const [runtimeProjectId, setRuntimeProjectId] = React.useState("");
+  const [runtimeProposalName, setRuntimeProposalName] = React.useState("");
+  const [runtimeProposalDescription, setRuntimeProposalDescription] = React.useState("");
+  const [runtimeProposalImage, setRuntimeProposalImage] = React.useState("");
+  const [runtimeProposalCategory, setRuntimeProposalCategory] = React.useState<"media" | "compute" | "browser">("compute");
+  const [runtimeProposalBinaries, setRuntimeProposalBinaries] = React.useState("");
 
   const refresh = React.useCallback(async () => {
     if (!credentials) return;
@@ -101,6 +107,22 @@ export default function FoundryPage() {
     setRequestTitle(""); setRequestProblem(""); setRequestWorkflow("");
   }
 
+  async function submitRuntimeProposal(event: React.FormEvent) {
+    event.preventDefault(); if (!credentials) return;
+    const image = runtimeProposalImage.trim();
+    const binaries = [...new Set(runtimeProposalBinaries.split(/[,\n]/).map(value => value.trim()).filter(Boolean))];
+    if (!/^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$/.test(image)) { show("Use a lowercase registry image pinned to a full SHA-256 digest"); return; }
+    if (!binaries.length || binaries.length > 16 || binaries.some(binary => !/^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/.test(binary))) { show("List 1–16 exported binary names using letters, digits, dot, underscore, plus, or hyphen"); return; }
+    const uniqueBinaries = [...new Set(binaries)];
+    await run(() => createFoundryRequest(activeSpaceId, credentials, {
+      title: `Container runtime card: ${runtimeProposalName.trim()}`,
+      problem: `FDE-submitted runtime card proposal. This request is metadata for review only and cannot start a container.\nName: ${runtimeProposalName.trim()}\nCategory: ${runtimeProposalCategory}\nDescription: ${runtimeProposalDescription.trim()}\nImmutable image: ${image}\nExported binaries: ${uniqueBinaries.join(", ")}`,
+      workflow: "Review the image provenance, sandbox harness compatibility, permissions, resource needs, and failure behavior. If accepted, a platform operator must independently build or approve the immutable image and add its digest to deployment configuration before it appears in the executable marketplace.",
+      evidence: [`container-image:${image}`, `container-category:${runtimeProposalCategory}`, ...uniqueBinaries.map(binary => `container-binary:${binary}`)],
+    }), "Runtime card submitted to the Space owner review inbox. Acceptance does not deploy or execute the image.");
+    setRuntimeProposalName(""); setRuntimeProposalDescription(""); setRuntimeProposalImage(""); setRuntimeProposalBinaries("");
+  }
+
   async function submitForwardedRequest(event: React.FormEvent) {
     event.preventDefault(); if (!credentials) return;
     await run(() => forwardFoundryRequest(requestTargetSpace, credentials, { from_space_id: activeSpaceId, capability_token: requestCapability, title: requestTitle, problem: requestProblem, workflow: requestWorkflow }), "Request sent to the authorized Foundry inbox");
@@ -113,9 +135,10 @@ export default function FoundryPage() {
       expertise, audience, outcome, workflow, safetyLimits, instructions,
       sourceReferences: sourceReferences.split("\n").map((item) => item.trim()).filter(Boolean),
       toolAllowlist: ["knowledge-base"],
+      runtimeDependencies: templateRuntimeIds,
     } };
     await run(() => editingTemplateId ? updateFoundryTemplate(activeSpaceId, editingTemplateId, credentials, input) : createFoundryTemplate(activeSpaceId, credentials, input), editingTemplateId ? "Template revision saved" : "Template saved as a private draft for review");
-    setTemplateName(""); setTemplateDescription(""); setEditingTemplateId(null);
+    setTemplateName(""); setTemplateDescription(""); setTemplateRuntimeIds([]); setEditingTemplateId(null);
   }
 
   function editTemplate(template: FoundryTemplate) {
@@ -123,6 +146,7 @@ export default function FoundryPage() {
     setExpertise(template.definition.expertise); setAudience(template.definition.audience); setOutcome(template.definition.outcome);
     setWorkflow(template.definition.workflow); setSafetyLimits(template.definition.safetyLimits); setInstructions(template.definition.instructions);
     setSourceReferences(template.definition.sourceReferences.join("\n"));
+    setTemplateRuntimeIds(template.definition.runtimeDependencies ?? []);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
@@ -233,6 +257,16 @@ export default function FoundryPage() {
   return <div className="page-view">
     <div className="page-header"><div className="page-title">Foundry</div><div className="page-subtitle">Reusable domain workers and owner-reviewed product requests for {activeSpaceName || "this Space"}.</div></div>
     <section className="foundry-section"><h2>Container marketplace</h2><p className="muted">Browse preconfigured runtimes and reviewed FDE runtime cards deployed for this environment. Install one for a project, the Space Assistant workspace, or its own Space extension workspace. Containers are metered and bounded; adding a card to a template does not install it or authorize execution.</p>
+      <details className="foundry-details"><summary>Submit a runtime card for review</summary><p className="foundry-meta">FDEs can propose a pinned image. Owner review records a decision; only a platform-approved deployment digest can become executable.</p>
+        <form onSubmit={(event) => void submitRuntimeProposal(event)} className="foundry-form">
+          <input required maxLength={100} value={runtimeProposalName} onChange={event => setRuntimeProposalName(event.target.value)} placeholder="Runtime name" style={inputStyle} />
+          <select value={runtimeProposalCategory} onChange={event => setRuntimeProposalCategory(event.target.value as "media" | "compute" | "browser")} style={inputStyle}><option value="media">Media</option><option value="compute">Compute</option><option value="browser">Browser</option></select>
+          <input required maxLength={500} value={runtimeProposalDescription} onChange={event => setRuntimeProposalDescription(event.target.value)} placeholder="What this runtime does" style={inputStyle} />
+          <input required maxLength={300} value={runtimeProposalImage} onChange={event => setRuntimeProposalImage(event.target.value)} placeholder="registry/image@sha256:64-hex-digest" style={inputStyle} />
+          <textarea required maxLength={1200} rows={2} value={runtimeProposalBinaries} onChange={event => setRuntimeProposalBinaries(event.target.value)} placeholder="Exported binary names, comma-separated" style={areaStyle} />
+          <Button disabled={busy || !runtimeProposalName.trim() || !runtimeProposalDescription.trim() || !runtimeProposalImage.trim() || !runtimeProposalBinaries.trim()}>Submit for owner review</Button>
+        </form>
+      </details>
       <div className="foundry-form"><label className="foundry-meta">Installation scope<select value={runtimeInstallScope} onChange={event => setRuntimeInstallScope(event.target.value as "SPACE_SHARED" | "SPACE_ASSISTANT" | "PROJECT_SHARED")} style={inputStyle}><option value="PROJECT_SHARED">One project</option><option value="SPACE_ASSISTANT">Space Assistant workspace</option><option value="SPACE_SHARED">Dedicated Space extension workspace</option></select></label>
         {runtimeInstallScope === "PROJECT_SHARED" ? <label className="foundry-meta">Project<select required value={runtimeProjectId} onChange={event => setRuntimeProjectId(event.target.value)} style={inputStyle}><option value="">Choose a project</option>{runtimeProjects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label> : null}</div>
       {runtimeCatalogueError ? <p className="muted">Runtime catalogue unavailable: {runtimeCatalogueError}</p> : null}
@@ -271,6 +305,17 @@ export default function FoundryPage() {
           <textarea required maxLength={2000} rows={2} value={safetyLimits} onChange={(event) => setSafetyLimits(event.target.value)} placeholder="Safety limits and escalation rules" style={areaStyle} />
           <textarea required maxLength={6000} rows={3} value={instructions} onChange={(event) => setInstructions(event.target.value)} placeholder="Worker instructions" style={areaStyle} />
           <textarea maxLength={3000} rows={2} value={sourceReferences} onChange={(event) => setSourceReferences(event.target.value)} placeholder="Approved source IDs or references, one per line. Source contents stay in this Space." style={areaStyle} />
+          <fieldset className="foundry-form" style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12 }}>
+            <legend className="foundry-meta">Optional native runtime dependencies</legend>
+            <p className="foundry-meta">Choose deployed runtimes this template needs. Publishing checks availability; installing a template never installs a runtime or grants execution.</p>
+            {runtimeCatalogue.filter(runtime => runtime.available && runtime.install_manifest).length
+              ? runtimeCatalogue.filter(runtime => runtime.available && runtime.install_manifest).map(runtime => <label key={runtime.id} className="foundry-meta" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <input type="checkbox" checked={templateRuntimeIds.includes(runtime.id)} onChange={event => setTemplateRuntimeIds(current => event.target.checked ? [...new Set([...current, runtime.id])] : current.filter(id => id !== runtime.id))} />
+                {runtime.name} <span>({runtime.id})</span>
+              </label>)
+              : <span className="foundry-meta">No reviewed runtime images are deployed for this environment.</span>}
+            {templateRuntimeIds.filter(id => !runtimeCatalogue.some(runtime => runtime.id === id && runtime.available && runtime.install_manifest)).map(id => <p className="foundry-meta" key={id}>Previously selected runtime {id} is currently unavailable. Remove it or wait for deployment before publishing.</p>)}
+          </fieldset>
           <div className="foundry-actions">{editingTemplateId ? <Button variant="secondary" disabled={busy} onClick={() => { setEditingTemplateId(null); setTemplateName(""); setTemplateDescription(""); }}>Cancel revision</Button> : null}<Button disabled={busy || !templateName.trim() || !instructions.trim()}>{editingTemplateId ? "Save revision" : "Save private draft"}</Button></div>
         </form>
       </Card>
@@ -278,6 +323,7 @@ export default function FoundryPage() {
 
     <section className="foundry-section"><h2>Templates</h2>{templates.length === 0 ? <p className="muted">No templates yet, or you do not have owner access to list them.</p> : <div className="grid-3">{templates.map((template) => <Card key={template.id}>
       <CardTitle>{template.name}</CardTitle><CardDesc>{template.description}</CardDesc><p className="foundry-meta">{template.status} · version {template.version}</p>
+      {template.definition.runtimeDependencies?.length ? <p className="foundry-meta">Requires runtime IDs: {template.definition.runtimeDependencies.join(", ")}</p> : null}
       {template.status === "draft" || template.status === "rejected" ? <Button variant="secondary" disabled={busy} onClick={() => editTemplate(template)}>Revise template</Button> : null}
       {template.status === "draft" || template.status === "rejected" ? <Button variant="secondary" disabled={busy} onClick={() => void run(() => testFoundryTemplate(activeSpaceId, template.id, credentials!), "Configuration checks finished")}>Run configuration checks</Button> : null}
       {template.validated_version === template.version ? <p className="foundry-meta">Deterministic package checks passed for this version. This does not simulate model behavior.</p> : null}

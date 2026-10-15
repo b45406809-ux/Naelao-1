@@ -53,6 +53,7 @@ describe("CustomerBotContext quarantine", () => {
     expect(() => assertCustomerBotToolAllowed("attachment.list", 1)).not.toThrow();
     expect(() => assertCustomerBotToolAllowed("attachment.read", 2)).not.toThrow();
     expect(() => assertCustomerBotToolAllowed("attachment.ocr", 2)).not.toThrow();
+    expect(() => assertCustomerBotToolAllowed("attachment.describe", 2)).not.toThrow();
     expect(() => assertCustomerBotToolAllowed("attachment.copy", 1)).toThrow("customer_bot_capability_denied");
   });
 });

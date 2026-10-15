@@ -36,6 +36,7 @@ export function assertCustomerBotToolAllowed(
     "attachment.inspect",
     "attachment.read",
     "attachment.ocr",
+    "attachment.describe",
     "attachment.transcribe",
   ]);
   if (!Number.isInteger(requestedTier) || requestedTier < 1 || requestedTier > 2 || !allowed.has(toolName)) {

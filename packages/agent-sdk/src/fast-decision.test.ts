@@ -117,6 +117,23 @@ describe("typed fast decisions", () => {
     })).resolves.toMatchObject({ action: "ocr", candidateAttachmentId: "opaque-image", candidateTool: "attachment.ocr" });
   });
 
+  it("distinguishes visual image understanding from OCR", async () => {
+    const client = new SystemOneDecisionClient({ fetch: vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { questions: { decision: { criteria: Record<string, unknown> } } };
+      const criteria = body.questions.decision.criteria;
+      expect(criteria).toHaveProperty("describe_0");
+      expect(criteria).toHaveProperty("ocr_0");
+      return Response.json({ model: "jev-1.13.0", answers: { decision: {
+        type: "choice", choice: "describe_0", probabilities: Object.fromEntries(Object.keys(criteria).map(key => [key, key === "describe_0" ? 1 : 0])), confidence: 0.9,
+      } }, usage: { input_tokens: 18, output_tokens: 3 } });
+    }) as typeof fetch, maxRetries: 0 });
+    await expect(client.classifyAttachments!({ message: "What vehicle is shown?", attachments: [
+      { id: "image-opaque", filename: "photo.png", mimeType: "image/png", sizeBytes: 1200 },
+    ], availableTools: ["attachment.describe", "attachment.ocr"] })).resolves.toMatchObject({
+      action: "describe", candidateTool: "attachment.describe", candidateAttachmentId: "image-opaque", candidateSkill: "attachment-readers",
+    });
+  });
+
   it("rejects an out-of-domain answer", async () => {
     const client = new SystemOneDecisionClient({ fetch: vi.fn(async () => Response.json({ model: "jev-1", answers: { decision: { type: "choice", choice: "host", probabilities: { isolate: 0.5, container: 0.5 }, confidence: 0.1 } }, usage: { input_tokens: 1, output_tokens: 1 } })) as typeof fetch, maxRetries: 0 });
     await expect(client.choice({ state: "echo ok", instructions: "Choose", criteria: { isolate: null, container: null }, policyCode: "test" })).rejects.toThrow("system_one_invalid_choice_answer");

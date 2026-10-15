@@ -92,6 +92,21 @@ describe("reviewed Foundry workflows", () => {
     expect((await h.instance.fetch(new Request(`https://space/foundry/templates/${id}?space_id=s1&published_only=true`))).status).toBe(200);
   });
 
+  it("requires deployment approval for declared runtime dependencies before publication", async () => {
+    const h = harness();
+    const definition = { expertise: "video editing", audience: "FDE", outcome: "extract a clip", workflow: "inspect, then extract", safetyLimits: "no network", instructions: "Use only the staged media.", sourceReferences: [], toolAllowlist: ["knowledge-base"], runtimeDependencies: ["ffmpeg"] };
+    const created = await h.instance.fetch(new Request("https://space/foundry/templates", { method: "POST", body: JSON.stringify({ space_id: "s1", created_by: "u1", name: "Media helper", description: "Uses the approved FFmpeg runtime", definition }) }));
+    expect(created.status).toBe(201);
+    const { id } = await created.json() as { id: string };
+    expect(JSON.parse(String(h.templates.get(id)?.definition_json))).toMatchObject({ runtimeDependencies: ["ffmpeg"] });
+    const undeployed = await h.instance.fetch(new Request(`https://space/foundry/templates/${id}/test`, { method: "POST", body: JSON.stringify({}) }));
+    expect(await undeployed.json()).toMatchObject({ passed: false, checks: expect.arrayContaining([{ id: "container-runtime-dependencies", passed: false, runtime_ids: ["ffmpeg"] }]) });
+    const deployed = await h.instance.fetch(new Request(`https://space/foundry/templates/${id}/test`, { method: "POST", body: JSON.stringify({ approved_runtime_ids: ["ffmpeg"] }) }));
+    expect(await deployed.json()).toMatchObject({ passed: true, checks: expect.arrayContaining([{ id: "container-runtime-dependencies", passed: true, runtime_ids: ["ffmpeg"] }]) });
+    const invalid = await h.instance.fetch(new Request("https://space/foundry/templates", { method: "POST", body: JSON.stringify({ space_id: "s1", created_by: "u1", name: "Unsafe runtime", description: "bad id", definition: { ...definition, runtimeDependencies: ["../escape"] } }) }));
+    expect(invalid.status).toBe(400);
+  });
+
   it("stores assistant-generated feature requests for owner review without applying changes", async () => {
     const h = harness();
     const created = await h.instance.fetch(new Request("https://space/foundry/requests", { method: "POST", body: JSON.stringify({ space_id: "s1", requested_by: "assistant-run-1", title: "Add a customs document checklist", problem: "The current workflow misses origin evidence.", workflow: "Gather required source fields before producing a draft.", evidence: ["project:shipment-7"] }) }));
@@ -330,6 +345,47 @@ describe("Foundry template installation", () => {
     expect(installedBody?.instructions).toContain('document_id:"<identifier>"');
     expect(installedBody?.instructions).toContain('source_space_id:"source"');
   });
+
+  it("does not install a worker until every declared container runtime is deployed and already installed in the target scope", async () => {
+    const requests: string[] = [];
+    let runtimeInstalled = false;
+    let installedBody: Record<string, unknown> | undefined;
+    const sourceSpace = {
+      fetch: vi.fn(async (request: Request) => {
+        const path = new URL(request.url).pathname; requests.push(path);
+        if (path === "/hierarchy-authorize") return Response.json({ authorized: true });
+        if (path === "/cross-space-check") return Response.json({ permitted: true });
+        if (path === "/foundry/templates/template-runtime") return Response.json({ name: "Media helper", description: "A helper", definition: {
+          expertise: "media", audience: "operators", outcome: "extract audio", workflow: "inspect first", safetyLimits: "bounded", instructions: "Use the runtime only after approval.", sourceReferences: [], toolAllowlist: ["knowledge-base"], runtimeDependencies: ["ffmpeg"],
+        } });
+        if (path === "/container-installations") return Response.json({ installations: runtimeInstalled ? [{ manifest: { containers: [{ id: "ffmpeg" }] } }] : [] });
+        return Response.json({ error: "unexpected route" }, { status: 404 });
+      }),
+    };
+    const agents = { fetch: vi.fn(async (request: Request) => {
+      if (new URL(request.url).pathname === "/container-images") return Response.json({ images: [{ id: "ffmpeg", available: true, install_manifest: { id: "ffmpeg" } }] });
+      installedBody = await request.json() as Record<string, unknown>;
+      return Response.json({ id: "installed-worker" }, { status: 201 });
+    }) };
+    const env = { PLATFORM_SECRET: "test-secret", SPACE_DO: { idFromName: (name: string) => name, get: () => sourceSpace }, AGENTS_WORKER: agents } as never;
+    const response = await spacesWorker.fetch(new Request("https://spaces.test/spaces/target/foundry/install-template", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": "owner-a", "x-naelao-role": "owner" },
+      body: JSON.stringify({ source_space_id: "source", template_id: "template-runtime", capability_token: "scoped-token" }),
+    }), env);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error_code: "template_runtime_dependencies_required", runtime_ids: ["ffmpeg"] });
+    expect(agents.fetch).toHaveBeenCalledTimes(1);
+    expect(requests).toContain("/container-installations");
+
+    runtimeInstalled = true;
+    const installed = await spacesWorker.fetch(new Request("https://spaces.test/spaces/target/foundry/install-template", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": "owner-a", "x-naelao-role": "owner" },
+      body: JSON.stringify({ source_space_id: "source", template_id: "template-runtime", capability_token: "scoped-token" }),
+    }), env);
+    expect(installed.status).toBe(201);
+    expect(installedBody?.instructions).toContain('"ffmpeg"');
+    expect(agents.fetch).toHaveBeenCalledTimes(3);
+  });
 });
 
 describe("accepted Foundry document sharing", () => {
@@ -422,7 +478,7 @@ describe("Foundry template knowledge-reference checks", () => {
       method: "POST", headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-user-id": "owner-1" },
     }), env);
     expect(response.status).toBe(200);
-    expect(validationBody).toEqual({ source_reference_checks: [{ id: "doc-1", title: "Published policy", resolved: true }], manual_reference_count: 1 });
+    expect(validationBody).toEqual({ source_reference_checks: [{ id: "doc-1", title: "Published policy", resolved: true }], manual_reference_count: 1, approved_runtime_ids: [] });
   });
 
   it("fails closed if a source reference cannot be resolved", async () => {

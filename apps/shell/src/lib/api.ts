@@ -1423,7 +1423,7 @@ export async function createCustomAgent(
 
 export interface FoundryTemplateDefinition {
   expertise: string; audience: string; outcome: string; workflow: string; safetyLimits: string; instructions: string;
-  sourceReferences: string[]; toolAllowlist: string[]; approvalMode?: "always_ask";
+  sourceReferences: string[]; toolAllowlist: string[]; runtimeDependencies?: string[]; approvalMode?: "always_ask";
 }
 export interface FoundryTemplate {
   id: string; space_id: string; created_by: string; name: string; description: string; status: "draft" | "in_review" | "published" | "rejected";

@@ -36,6 +36,16 @@ describe("task-scoped attachment CLI operations", () => {
     expect(rejectedIdBody).not.toHaveProperty("key");
   });
 
+  it("routes bounded visual questions through a separate image-description operation", async () => {
+    const state = context({ response: { task: "describe_image", text: "A red truck." } });
+    await expect(attachments.operations["attachment.describe"]!({ id: "opaque-image", question: "What vehicle is shown?" }, state.ctx))
+      .resolves.toMatchObject({ task: "describe_image", text: "A red truck." });
+    expect(state.calls[0]?.url).toBe("http://agents-worker/internal/attachments/describe-image");
+    expect(await state.calls[0]!.json()).toMatchObject({ taskId: "task-a", id: "opaque-image", question: "What vehicle is shown?" });
+    await expect(attachments.operations["attachment.describe"]!({ id: "opaque-image", question: "x".repeat(501) }, state.ctx)).rejects.toThrow("attachment_question_too_long");
+    expect(state.calls).toHaveLength(1);
+  });
+
   it("inspects an attachment using a metadata-only scoped endpoint", async () => {
     const state = context({ response: { attachment: { id: "opaque-1", mime_type: "image/png", size_bytes: 100 } } });
     await expect(attachments.operations["attachment.inspect"]!({ id: "opaque-1" }, state.ctx)).resolves.toMatchObject({

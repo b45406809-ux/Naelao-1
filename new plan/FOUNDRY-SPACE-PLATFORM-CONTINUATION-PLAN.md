@@ -39,7 +39,7 @@ Status: **IMPLEMENTED — existing runtimes reused, workspace defects fixed and 
 Primary read: **lines 211–338** (USER 211–213; AI MODEL 214–338).
 Bounded primary windows: 211–338.
 Later amendment/dependency pairs: 339–450 (task 04); 451–574 (task 05); 575–693 (task 06); 694–749 (task 07); 750–841 (task 08); 1755–1970 (task 14); 2174–2355 (task 16); 2356–2591 (task 17); 2592–2772 (task 18); 3068–3284 (task 21); 3943–4139 (task 25); 4442–4647 (task 28); 4648–4794 (task 29); 4795–4982 (task 30)
-Status: **PARTIALLY IMPLEMENTED — deployment-approved custom runtime cards and three workspace targets are supported locally; Foundry now warns before duplicate cross-scope placement.** FDE self-service publication/review, template runtime references, and live dynamic-image acceptance remain open. Fresh evidence is in `CONTINUATION-IMPLEMENTATION-PROGRESS.md` and `TOKENIZERS-CONTINUATION-IMPLEMENTATION-LEDGER.md`.
+Status: **PARTIALLY IMPLEMENTED — deployment-approved runtime cards, three workspace targets, reviewed runtime proposals, and template dependencies are supported locally.** Foundry submissions enter an owner review inbox as metadata only; they cannot execute or deploy. Templates can declare approved runtime dependencies, test against the deployment-approved catalog, and install only when each dependency is already installed in that target scope. A platform operator must independently approve/build/deploy immutable image digests. Live Cloudflare image acceptance and self-service publishing/deployment remain open. Fresh evidence is in `CONTINUATION-IMPLEMENTATION-PROGRESS.md` and `TOKENIZERS-CONTINUATION-IMPLEMENTATION-LEDGER.md`.
 
 ## Task 04
 

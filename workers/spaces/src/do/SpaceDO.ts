@@ -4895,11 +4895,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const definition = body.definition;
     const shortText = (value: unknown, max: number) => typeof value === "string" && value.trim().length > 0 && value.trim().length <= max;
     const boundedList = (value: unknown, maxItems: number, maxLength: number) => Array.isArray(value) && value.length <= maxItems && value.every((item) => typeof item === "string" && item.trim().length > 0 && item.length <= maxLength);
+    const runtimeDependencies = Array.isArray(definition?.runtimeDependencies) ? definition.runtimeDependencies : [];
     if (!body.space_id || !body.created_by || !shortText(body.name, 120) || !shortText(body.description, 500) || !definition ||
       !shortText(definition.expertise, 2000) || !shortText(definition.audience, 500) || !shortText(definition.outcome, 1000) ||
       !shortText(definition.workflow, 3000) || !shortText(definition.safetyLimits, 2000) || !shortText(definition.instructions, 6000) ||
       !boundedList(definition.sourceReferences, 30, 300) || !boundedList(definition.toolAllowlist, 8, 64) ||
-      (definition.toolAllowlist as string[]).some((tool) => !["knowledge-base", "web-search", "file-manager", "foundry-inbox"].includes(tool))) {
+      (definition.toolAllowlist as string[]).some((tool) => !["knowledge-base", "web-search", "file-manager", "foundry-inbox"].includes(tool)) ||
+      definition.runtimeDependencies !== undefined && !Array.isArray(definition.runtimeDependencies) ||
+      !boundedList(runtimeDependencies, 8, 64) || runtimeDependencies.some((id) => !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(String(id))) || new Set(runtimeDependencies).size !== runtimeDependencies.length) {
       return Response.json({ error_code: "bad_request", message: "A template needs bounded domain, audience, outcome, workflow, safety limits, reviewed tool choices, and source references" }, { status: 400 });
     }
     const now = new Date().toISOString();
@@ -4911,7 +4914,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         expertise: (definition.expertise as string).trim(), audience: (definition.audience as string).trim(), outcome: (definition.outcome as string).trim(),
         workflow: (definition.workflow as string).trim(), safetyLimits: (definition.safetyLimits as string).trim(), instructions: (definition.instructions as string).trim(),
         sourceReferences: (definition.sourceReferences as string[]).map((item) => item.trim()),
-        toolAllowlist: [...new Set(definition.toolAllowlist as string[])], approvalMode: "always_ask",
+        toolAllowlist: [...new Set(definition.toolAllowlist as string[])], runtimeDependencies: [...new Set(runtimeDependencies as string[])], approvalMode: "always_ask",
       }), now, now);
     return Response.json({ id, space_id: body.space_id, status: "draft", version: 1, created_at: now }, { status: 201 });
   }
@@ -4921,11 +4924,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const definition = body.definition;
     const shortText = (value: unknown, max: number) => typeof value === "string" && value.trim().length > 0 && value.trim().length <= max;
     const boundedList = (value: unknown, maxItems: number, maxLength: number) => Array.isArray(value) && value.length <= maxItems && value.every((item) => typeof item === "string" && item.trim().length > 0 && item.length <= maxLength);
+    const runtimeDependencies = Array.isArray(definition?.runtimeDependencies) ? definition.runtimeDependencies : [];
     if (!body.updated_by || !shortText(body.name, 120) || !shortText(body.description, 500) || !definition ||
       !shortText(definition.expertise, 2000) || !shortText(definition.audience, 500) || !shortText(definition.outcome, 1000) ||
       !shortText(definition.workflow, 3000) || !shortText(definition.safetyLimits, 2000) || !shortText(definition.instructions, 6000) ||
       !boundedList(definition.sourceReferences, 30, 300) || !boundedList(definition.toolAllowlist, 8, 64) ||
-      (definition.toolAllowlist as string[]).some((tool) => !["knowledge-base", "web-search", "file-manager", "foundry-inbox"].includes(tool))) {
+      (definition.toolAllowlist as string[]).some((tool) => !["knowledge-base", "web-search", "file-manager", "foundry-inbox"].includes(tool)) ||
+      definition.runtimeDependencies !== undefined && !Array.isArray(definition.runtimeDependencies) ||
+      !boundedList(runtimeDependencies, 8, 64) || runtimeDependencies.some((id) => !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(String(id))) || new Set(runtimeDependencies).size !== runtimeDependencies.length) {
       return Response.json({ error_code: "bad_request", message: "A bounded and reviewed template definition is required" }, { status: 400 });
     }
     const now = new Date().toISOString();
@@ -4935,7 +4941,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       body.name!.trim(), body.description!.trim(), JSON.stringify({
         expertise: (definition.expertise as string).trim(), audience: (definition.audience as string).trim(), outcome: (definition.outcome as string).trim(),
         workflow: (definition.workflow as string).trim(), safetyLimits: (definition.safetyLimits as string).trim(), instructions: (definition.instructions as string).trim(),
-        sourceReferences: (definition.sourceReferences as string[]).map((item) => item.trim()), toolAllowlist: [...new Set(definition.toolAllowlist as string[])], approvalMode: "always_ask",
+        sourceReferences: (definition.sourceReferences as string[]).map((item) => item.trim()), toolAllowlist: [...new Set(definition.toolAllowlist as string[])],
+        runtimeDependencies: [...new Set(runtimeDependencies as string[])], approvalMode: "always_ask",
       }), now, id);
     if (!updated) return Response.json({ error_code: "not_found_or_not_editable" }, { status: 409 });
     return Response.json({ id, status: updated.status, version: updated.version, updated_by: body.updated_by });
@@ -4951,7 +4958,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   private async testFoundryTemplate(id: string, request: Request): Promise<Response> {
-    const body = await request.json<{ source_reference_checks?: Array<{ id: string; title?: string; resolved: boolean; reason?: string }>; manual_reference_count?: number }>().catch(() => ({} as { source_reference_checks?: Array<{ id: string; title?: string; resolved: boolean; reason?: string }>; manual_reference_count?: number }));
+    const body = await request.json<{ source_reference_checks?: Array<{ id: string; title?: string; resolved: boolean; reason?: string }>; manual_reference_count?: number; approved_runtime_ids?: string[] }>().catch(() => ({} as { source_reference_checks?: Array<{ id: string; title?: string; resolved: boolean; reason?: string }>; manual_reference_count?: number; approved_runtime_ids?: string[] }));
     const row = queryOne<{ definition_json: string; version: number; status: string }>(this.ctx.storage.sql as never,
       "SELECT definition_json,version,status FROM foundry_templates WHERE id=?", id);
     if (!row || !["draft", "rejected"].includes(row.status)) return Response.json({ error_code: "not_found_or_not_testable" }, { status: 409 });
@@ -4964,12 +4971,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const sourceChecks = Array.isArray(body.source_reference_checks) ? body.source_reference_checks : [];
     const checksById = new Map(sourceChecks.map((check) => [check.id, check]));
     const knowledgeSourcesResolved = expectedKnowledgeIds.every((id) => checksById.get(id)?.resolved === true);
+    const runtimeDependencies = Array.isArray(definition.runtimeDependencies) ? definition.runtimeDependencies as string[] : [];
+    const approvedRuntimeIds = new Set(Array.isArray(body.approved_runtime_ids) ? body.approved_runtime_ids.filter((value): value is string => typeof value === "string") : []);
+    const runtimeDependenciesValid = runtimeDependencies.length <= 8 && runtimeDependencies.every((runtimeId) => /^[a-z0-9][a-z0-9._-]{0,63}$/.test(runtimeId) && approvedRuntimeIds.has(runtimeId));
     const checks = [
       { id: "domain-context", passed: typeof definition.expertise === "string" && Boolean(definition.expertise.trim()) && typeof definition.audience === "string" && Boolean(definition.audience.trim()) && typeof definition.outcome === "string" && Boolean(definition.outcome.trim()) },
       { id: "workflow-and-safety", passed: typeof definition.workflow === "string" && Boolean(definition.workflow.trim()) && typeof definition.safetyLimits === "string" && Boolean(definition.safetyLimits.trim()) },
       { id: "bounded-tools", passed: Array.isArray(definition.toolAllowlist) && definition.toolAllowlist.length <= 8 && definition.toolAllowlist.every((tool) => ["knowledge-base", "web-search", "file-manager", "foundry-inbox"].includes(String(tool))) },
       { id: "approval-and-data-boundary", passed: definition.approvalMode === "always_ask" && typeof definition.instructions === "string" && definition.instructions.length <= 6000 },
       { id: "source-references", passed: Array.isArray(definition.sourceReferences) && definition.sourceReferences.length <= 30 && definition.sourceReferences.every((source) => typeof source === "string" && source.length <= 300) },
+      { id: "container-runtime-dependencies", passed: runtimeDependenciesValid, runtime_ids: runtimeDependencies },
       { id: "knowledge-source-resolution", passed: knowledgeSourcesResolved, sources: sourceChecks.map((source) => ({ id: source.id, title: source.title, resolved: source.resolved, reason: source.reason })), manual_reference_count: Math.max(0, Math.min(30, Number(body.manual_reference_count ?? 0))) },
     ];
     const passed = checks.every((check) => check.passed);
