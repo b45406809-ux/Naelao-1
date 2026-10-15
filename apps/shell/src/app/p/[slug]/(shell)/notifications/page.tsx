@@ -11,7 +11,7 @@ import Link from "next/link";
 import { Badge, Card, CardTitle, CardDesc, Button } from "@naelao/ui";
 import { useProductAuth } from "@/lib/auth-provider";
 import { useActiveSpace } from "@/lib/active-space-context";
-import { listNotifications, markNotificationRead, type AppNotification } from "@/lib/api";
+import { getBrowserPushConfig, listNotifications, markNotificationRead, removeBrowserPushSubscription, saveBrowserPushSubscription, type AppNotification } from "@/lib/api";
 
 function severityColor(severity: AppNotification["severity"]): "green" | "amber" | "red" {
   if (severity === "critical") return "red";
@@ -38,6 +38,9 @@ export default function NotificationsPage() {
   const [failed, setFailed] = React.useState(false);
   const [showRead, setShowRead] = React.useState(false);
   const [busyId, setBusyId] = React.useState<string | null>(null);
+  const [pushState, setPushState] = React.useState<"loading" | "unsupported" | "disabled" | "off" | "on">("loading");
+  const [pushBusy, setPushBusy] = React.useState(false);
+  const [pushError, setPushError] = React.useState("");
 
   const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
 
@@ -59,6 +62,60 @@ export default function NotificationsPage() {
   React.useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    if (!creds || !activeSpaceId) return;
+    if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
+      setPushState("unsupported");
+      return;
+    }
+    void (async () => {
+      try {
+        const config = await getBrowserPushConfig(activeSpaceId, creds);
+        if (cancelled) return;
+        if (!config.enabled || !config.publicKey) { setPushState("disabled"); return; }
+        const registration = await navigator.serviceWorker.register("/sw.js");
+        const subscription = await registration.pushManager.getSubscription();
+        if (!cancelled) setPushState(subscription ? "on" : "off");
+      } catch {
+        if (!cancelled) { setPushState("disabled"); setPushError("Push notifications are unavailable for this account."); }
+      }
+    })();
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSpaceId, session]);
+
+  async function togglePush() {
+    if (!creds || !activeSpaceId) return;
+    setPushBusy(true); setPushError("");
+    try {
+      const config = await getBrowserPushConfig(activeSpaceId, creds);
+      if (!config.enabled || !config.publicKey) throw new Error("Push notifications are not configured yet.");
+      const registration = await navigator.serviceWorker.register("/sw.js");
+      const existing = await registration.pushManager.getSubscription();
+      if (existing) {
+        await removeBrowserPushSubscription(activeSpaceId, existing.endpoint, creds);
+        await existing.unsubscribe();
+        setPushState("off");
+      } else {
+        const permission = await Notification.requestPermission();
+        if (permission !== "granted") throw new Error("Allow notifications in your browser to enable push.");
+        const encoded = config.publicKey.replace(/-/g, "+").replace(/_/g, "/");
+        const rawKey = Uint8Array.from(atob(encoded + "=".repeat((4 - encoded.length % 4) % 4)), (char) => char.charCodeAt(0));
+        const created = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: rawKey as BufferSource });
+        try {
+          await saveBrowserPushSubscription(activeSpaceId, created.toJSON(), creds);
+        } catch (error) {
+          await created.unsubscribe();
+          throw error;
+        }
+        setPushState("on");
+      }
+    } catch (err) {
+      setPushError(err instanceof Error ? err.message : "Could not update push notifications.");
+    } finally { setPushBusy(false); }
+  }
 
   async function markRead(n: AppNotification) {
     if (!creds || !activeSpaceId) return;
@@ -87,6 +144,13 @@ export default function NotificationsPage() {
         <Button variant="secondary" onClick={() => setShowRead((v) => !v)}>
           {showRead ? "Show unread only" : "Show read too"}
         </Button>
+        {pushState === "on" || pushState === "off" ? (
+          <Button variant="secondary" onClick={() => void togglePush()} disabled={pushBusy} style={{ marginLeft: 8 }}>
+            {pushBusy ? "Updating…" : pushState === "on" ? "Turn off browser push" : "Enable browser push"}
+          </Button>
+        ) : null}
+        {pushError ? <span role="alert" style={{ marginLeft: 8, color: "#dc2626", fontSize: 12 }}>{pushError}</span> : null}
+        {pushState === "unsupported" ? <span style={{ marginLeft: 8, color: "var(--text3)", fontSize: 12 }}>This browser does not support push notifications.</span> : null}
       </div>
 
       {loading ? (

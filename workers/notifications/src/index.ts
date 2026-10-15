@@ -1,7 +1,8 @@
 // G-N01: Notifications worker — email + in-app notification consumer
-import { badRequest, errorResponse, notFound, requestId, mintInternalToken } from "@naelao/http";
+import { badRequest, errorResponse, notFound, requestId, mintInternalToken, requireInternalHmac } from "@naelao/http";
 import { Hono } from "hono";
 import { isSpaceNetworkEgressDenied } from "@naelao/security";
+import { decryptSubscription, deliverWebPush, encryptSubscription, hashEndpoint, validatePushSubscription, type BrowserPushSubscription } from "./web-push.js";
 
 // ── Env ───────────────────────────────────────────────────────────────────────
 
@@ -25,6 +26,9 @@ export interface NotificationsEnv {
   APNS_PRIVATE_KEY_BASE64?: string;
   APNS_BUNDLE_ID?: string;
   APNS_HOST?: string; // "api.push.apple.com" prod, "api.sandbox.push.apple.com" sandbox
+  WEB_PUSH_VAPID_PUBLIC_KEY?: string;
+  WEB_PUSH_VAPID_PRIVATE_KEY?: string;
+  WEB_PUSH_VAPID_SUBJECT?: string;
   /** Needed to resolve a space's own bot token / webhook URL for chat-channel replies. Optional:
    *  without it those channels degrade to delivered:false rather than crashing. */
   CREDENTIALS_WORKER?: Fetcher;
@@ -206,7 +210,7 @@ function validateEnv(env: NotificationsEnv): void {
 // ── Queue message type ────────────────────────────────────────────────────────
 
 interface NotificationMessage {
-  type: "email" | "in_app" | "webhook" | "push";
+  type: "email" | "in_app" | "webhook" | "push" | "web_push";
   tenantId: string;
   userId?: string;
   spaceId?: string;
@@ -317,6 +321,41 @@ async function sendApnsPush(
     const errBody = await res.text().catch(() => "");
     throw new Error(`APNs push failed: ${res.status} ${errBody}`);
   }
+}
+
+async function sendBrowserPush(env: NotificationsEnv, msg: NotificationMessage): Promise<number> {
+  if (!msg.userId) throw new Error("browser push requires a userId");
+  if (!env.WEB_PUSH_VAPID_PUBLIC_KEY || !env.WEB_PUSH_VAPID_PRIVATE_KEY) throw new Error("Web Push is not configured");
+  const rows = await env.PLATFORM_DB.prepare(
+    "SELECT endpoint_hash, encrypted_subscription FROM web_push_subscriptions WHERE tenant_id = ? AND user_id = ?"
+  ).bind(msg.tenantId, msg.userId).all<{ endpoint_hash: string; encrypted_subscription: string }>();
+  if (!rows.results.length) return 0;
+  const payload = {
+    title: (msg.title ?? "Naelao notification").slice(0, 120),
+    body: (msg.body ?? "You have an update.").slice(0, 500),
+    url: "/notifications",
+  };
+  const stale: string[] = [];
+  for (const row of rows.results) {
+    try {
+      const subscription = await decryptSubscription(row.encrypted_subscription, env.PLATFORM_SECRET ?? "");
+      const status = await deliverWebPush(subscription, payload, {
+        publicKey: env.WEB_PUSH_VAPID_PUBLIC_KEY,
+        privateKey: env.WEB_PUSH_VAPID_PRIVATE_KEY,
+        subject: env.WEB_PUSH_VAPID_SUBJECT ?? "mailto: support@naelao.com",
+      });
+      if (status === 404 || status === 410) stale.push(row.endpoint_hash);
+      else if (status >= 400) throw new Error(`Web Push service returned HTTP ${status}`);
+    } catch (error) {
+      console.error("[notifications/queue] Web Push delivery failed", error);
+      throw error;
+    }
+  }
+  for (const hash of stale) {
+    await env.PLATFORM_DB.prepare("DELETE FROM web_push_subscriptions WHERE endpoint_hash = ? AND tenant_id = ? AND user_id = ?")
+      .bind(hash, msg.tenantId, msg.userId).run();
+  }
+  return rows.results.length - stale.length;
 }
 
 // ── SSRF guard (G-AS03) ───────────────────────────────────────────────────────
@@ -483,6 +522,11 @@ export async function queue(
         message.ack();
         continue;
       }
+      if (msg.type === "web_push" && !msg.spaceId) {
+        console.warn("[notifications/queue] browser push missing spaceId; denying egress");
+        message.ack();
+        continue;
+      }
       switch (msg.type) {
         case "email": {
           if (!msg.email) {
@@ -596,6 +640,17 @@ export async function queue(
           break;
         }
 
+        case "web_push": {
+          try {
+            await sendBrowserPush(env, msg);
+            message.ack();
+          } catch (pushErr) {
+            console.error("[notifications/queue] browser push failed:", pushErr);
+            message.retry();
+          }
+          break;
+        }
+
         default: {
           // Exhaust the union — TypeScript will warn if a case is unhandled
           const _exhaustive: never = msg.type;
@@ -626,10 +681,8 @@ app.use("*", async (c, next) => {
 // see wrangler.toml). Every caller (NaelaoAgentDO's approval-request email, the `notifications`
 // and `business-email` prebuilt scripts) already posts here; this route never existed, so those
 // calls have always 404'd and been silently swallowed by the caller's own best-effort try/catch.
-// Only "email" is wired synchronously for now (it's the one every caller actually needs today —
-// approval notices and password reset both need this); slack/discord/whatsapp/apns/fcm still
-// report `delivered: false` rather than pretending to work, matching the "unwired binding
-// degrades honestly" precedent used everywhere else in this codebase.
+// Email, web_push, and paired chat channels have synchronous paths; APNs/FCM remain queue-only
+// here and report `delivered: false` rather than pretending to work.
 app.post("/internal/notify", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   const body = await c.req.json<{
@@ -643,6 +696,7 @@ app.post("/internal/notify", async (c) => {
     /** Chat channels carry their text here rather than in `body`. */
     message?: string;
     actions?: Array<{ id: string; label: string }>;
+    user_id?: string;
   }>();
 
   if (body.channel === "email") {
@@ -661,6 +715,20 @@ app.post("/internal/notify", async (c) => {
       return c.json({ delivered: false, channel: "email", status: result.status ?? null }, 502);
     }
     return c.json({ delivered: true, channel: "email", from: result.from });
+  }
+
+  if (body.channel === "web_push") {
+    if (!body.user_id || !tenantId || !body.space_id) throw badRequest("web_push requires an authenticated user, tenant and Space");
+    if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, body.space_id)) {
+      return c.json({ delivered: false, channel: "web_push", reason: "air_gapped_space_blocks_network_egress" }, 403);
+    }
+    const delivered = await sendBrowserPush(c.env, {
+      type: "web_push", tenantId, userId: body.user_id,
+      ...(body.space_id ? { spaceId: body.space_id } : {}),
+      ...(body.subject ? { title: body.subject } : {}),
+      ...((body.message ?? body.body) ? { body: body.message ?? body.body } : {}),
+    });
+    return c.json({ delivered: delivered > 0, channel: "web_push", devices: delivered }, delivered > 0 ? 200 : 404);
   }
 
   // Chat channels. Until now every one of these returned delivered:false unconditionally, which
@@ -686,6 +754,47 @@ app.post("/internal/notify", async (c) => {
   // Push (apns/fcm) still isn't wired synchronously. Honest failure, not a silent no-op — callers
   // already treat delivered:false as a real signal.
   return c.json({ delivered: false, channel: body.channel ?? "unknown", reason: "channel not wired for synchronous delivery" });
+});
+
+// Browser subscriptions are reached through a Space membership-gated route which mints an
+// internal tenant HMAC before calling this worker. Subscription secrets are encrypted at rest.
+app.use("/internal/push/*", requireInternalHmac((c) => c.env.PLATFORM_SECRET ?? ""));
+app.get("/internal/push/config", (c) => {
+  if (!c.env.WEB_PUSH_VAPID_PUBLIC_KEY) return c.json({ enabled: false }, 503);
+  return c.json({ enabled: true, publicKey: c.env.WEB_PUSH_VAPID_PUBLIC_KEY });
+});
+app.put("/internal/push/subscription", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const userId = c.req.header("x-naelao-user-id") ?? "";
+  if (!tenantId || !userId || !c.env.PLATFORM_SECRET) throw badRequest("authenticated tenant/user and platform encryption key required");
+  const input = await c.req.json<{ subscription?: unknown }>();
+  const subscription = validatePushSubscription(input.subscription);
+  if (!subscription) throw badRequest("invalid or unsupported browser push subscription");
+  const endpointHash = await hashEndpoint(subscription.endpoint);
+  const count = await c.env.PLATFORM_DB.prepare(
+    "SELECT COUNT(*) AS count FROM web_push_subscriptions WHERE tenant_id = ? AND user_id = ? AND endpoint_hash != ?"
+  ).bind(tenantId, userId, endpointHash).first<{ count: number }>();
+  if ((count?.count ?? 0) >= 20) return c.json({ error_code: "too_many_subscriptions", message: "Remove an old browser before adding another" }, 429);
+  const encrypted = await encryptSubscription(subscription, c.env.PLATFORM_SECRET);
+  await c.env.PLATFORM_DB.prepare(
+    `INSERT INTO web_push_subscriptions (endpoint_hash, tenant_id, user_id, encrypted_subscription)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT (tenant_id, user_id, endpoint_hash) DO UPDATE SET
+       encrypted_subscription = excluded.encrypted_subscription, updated_at = datetime('now')`
+  ).bind(endpointHash, tenantId, userId, encrypted).run();
+  return c.json({ saved: true });
+});
+app.delete("/internal/push/subscription", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const userId = c.req.header("x-naelao-user-id") ?? "";
+  if (!tenantId || !userId) throw badRequest("authenticated tenant and user required");
+  const input = await c.req.json<{ endpoint?: string }>();
+  if (typeof input.endpoint !== "string") throw badRequest("subscription endpoint required");
+  const endpointHash = await hashEndpoint(input.endpoint);
+  await c.env.PLATFORM_DB.prepare(
+    "DELETE FROM web_push_subscriptions WHERE endpoint_hash = ? AND tenant_id = ? AND user_id = ?"
+  ).bind(endpointHash, tenantId, userId).run();
+  return c.json({ removed: true });
 });
 
 // GET /notifications — in-app notifications for user

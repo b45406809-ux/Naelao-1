@@ -3043,6 +3043,33 @@ app.post("/spaces/:spaceId/notifications", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
+// Browser Web Push: membership is checked here, then the tenant-scoped internal HMAC protects
+// the Notifications Worker storage operation. A user can only enroll/remove their own endpoint.
+app.use("/spaces/:spaceId/push-notifications", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/push-notifications", requireBusinessMembership({ GET: "member", PUT: "member", DELETE: "member" }));
+app.all("/spaces/:spaceId/push-notifications", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  const userId = c.req.header("x-naelao-user-id") ?? "";
+  if (!tenantId || !userId || !c.env.NOTIFICATIONS_WORKER) {
+    return c.json({ error_code: "unavailable", message: "Push service or authenticated user unavailable" }, 503);
+  }
+  const path = c.req.method === "GET" ? "/internal/push/config" : "/internal/push/subscription";
+  const token = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
+  const headers = new Headers({
+    "content-type": "application/json",
+    "x-naelao-tenant-id": tenantId,
+    "x-naelao-user-id": userId,
+    "x-naelao-internal-token": token,
+  });
+  let body: string | undefined;
+  if (c.req.method === "PUT") body = JSON.stringify(await c.req.json());
+  if (c.req.method === "DELETE") body = JSON.stringify(await c.req.json());
+  const response = await c.env.NOTIFICATIONS_WORKER.fetch(new Request(`http://notifications-worker${path}`, {
+    method: c.req.method, headers, ...(body ? { body } : {}),
+  }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json" } });
+});
+
 // ── §A1 Harness Excellence Phase HX2: signals + session token-budget guard ──────
 // Explicit signals (agent-signals) and implicit signals (signal-events) are both builder-only
 // reads, same rationale/precedent as agent-activity just above (a cross-user audit/observability

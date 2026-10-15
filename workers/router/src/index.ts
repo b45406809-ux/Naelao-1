@@ -726,6 +726,7 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // notifications), additionally gated by requireBusinessMembership on the spaces worker exactly
   // like the routes above (identity here, authorization there).
   /^\/spaces\/([^/]+)\/notifications$/,
+  /^\/spaces\/([^/]+)\/push-notifications$/,
   // A single project agent's own approval-policy override — same identity-here-authorization-
   // there split as assistant-policy above (requireBusinessMembership: member GET / admin PATCH
   // on the spaces worker). Previously builder-JWT-only; a business admin had no reachable way to

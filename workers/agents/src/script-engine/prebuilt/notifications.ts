@@ -1,7 +1,7 @@
 /**
  * notifications (spec §12.4) — multi-channel notification dispatch. Tier 2.
  * Operations: notify.email, notify.slack, notify.discord, notify.whatsapp, notify.telegram,
- * notify.apns, notify.fcm.
+ * notify.apns, notify.fcm, notify.web_push.
  *
  * This is the script the Space Assistant uses to reach the owner (e.g. "Order #1234
  * fulfilled") and that HITL uses for approval requests — and the one the channel heartbeat
@@ -59,13 +59,14 @@ async function dispatch(
       body: JSON.stringify({ channel, space_id: ctx.env.spaceId, ...payload }),
     })
   );
-  if (!resp.ok) throw new Error(`notify.${channel} failed: ${resp.status}`);
-  return { delivered: true, channel };
+  const result: Record<string, unknown> = await resp.json<Record<string, unknown>>().catch((): Record<string, unknown> => ({}));
+  if (!resp.ok) return { ...result, delivered: false, channel, status: resp.status };
+  return { ...result, delivered: result.delivered !== false, channel };
 }
 
 export const notifications: PrebuiltScript = {
   name: "notifications",
-  description: "Send notifications to the owner/customer over email, Slack, Discord, WhatsApp, Telegram, APNs, FCM.",
+  description: "Send notifications to the owner/customer over email, Slack, Discord, WhatsApp, Telegram, APNs, FCM, and enrolled browser push devices.",
   domain: "comms",
   requires_tier: 2,
   operations: {
@@ -90,5 +91,10 @@ export const notifications: PrebuiltScript = {
     "notify.telegram": (a, c) => dispatch(c, "telegram", { to: a["to"], message: a["message"] }),
     "notify.apns": (a, c) => dispatch(c, "apns", { device_token: a["device_token"], payload: a["payload"] }),
     "notify.fcm": (a, c) => dispatch(c, "fcm", { token: a["token"], payload: a["payload"] }),
+    "notify.web_push": (a, c) => dispatch(c, "web_push", {
+      user_id: a["user_id"] ?? c.env.humanInvokerId,
+      subject: a["title"] ?? a["subject"],
+      message: a["message"] ?? a["body"],
+    }),
   },
 };

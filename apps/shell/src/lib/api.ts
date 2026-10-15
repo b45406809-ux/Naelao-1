@@ -859,6 +859,21 @@ export async function markNotificationRead(spaceId: string, notificationId: stri
   });
 }
 
+export interface BrowserPushConfig { enabled: boolean; publicKey?: string }
+export async function getBrowserPushConfig(spaceId: string, session: SessionCredentials): Promise<BrowserPushConfig> {
+  return apiFetch<BrowserPushConfig>(`/v1/spaces/${spaceId}/push-notifications`, { session });
+}
+export async function saveBrowserPushSubscription(spaceId: string, subscription: PushSubscriptionJSON, session: SessionCredentials): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/push-notifications`, {
+    method: "PUT", body: JSON.stringify({ subscription }), session,
+  });
+}
+export async function removeBrowserPushSubscription(spaceId: string, endpoint: string, session: SessionCredentials): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/push-notifications`, {
+    method: "DELETE", body: JSON.stringify({ endpoint }), session,
+  });
+}
+
 // ── Context-window usage (§A1.27) ────────────────────────────────────────────
 
 export interface ContextUsageBreakdown {
