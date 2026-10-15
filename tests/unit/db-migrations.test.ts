@@ -63,4 +63,30 @@ describe("atomic versioned DO migrations", () => {
     expect(storage.sql.exec<{ preferred_language: string }>("SELECT preferred_language FROM users WHERE id = 'member-1'").toArray()).toEqual([{ preferred_language: "fr-CA" }]);
     expect(storage.sql.exec<{ preferred_language: string }>("SELECT preferred_language FROM product_end_users WHERE product_space_id = 'product-a' AND end_user_id = 'user-1'").toArray()).toEqual([{ preferred_language: "sw-KE" }]);
   });
+
+  it("creates tenant-scoped voice number bindings and idempotent call admission records", () => {
+    const storage = createDOStorage();
+    storage.sql.exec(readFileSync(join(__dirname, "../../infra/migrations/0097_customer_voice_telephony.sql"), "utf8"));
+    storage.sql.exec(readFileSync(join(__dirname, "../../infra/migrations/0097_customer_voice_telephony.sql"), "utf8"));
+    const admissionColumns = storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('customer_voice_call_admissions')").toArray().map((column) => column.name);
+    const numberColumns = storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('customer_voice_number_bindings')").toArray().map((column) => column.name);
+    expect(admissionColumns).toContain("reserved_cost_minor");
+    expect(admissionColumns).toContain("reserved_duration_seconds");
+    expect(numberColumns).toContain("provider_voice_url");
+    expect(numberColumns).toContain("provider_status_callback");
+    expect(numberColumns).toContain("provider_voice_method");
+    expect(numberColumns).toContain("provider_status_callback_method");
+    expect(numberColumns).toContain("provider_status_callback_events_json");
+    storage.sql.exec("INSERT INTO customer_voice_space_policies (tenant_id,space_id,updated_by,updated_at) VALUES ('t1','s1','u1','2026-10-15T00:00:00Z')");
+    storage.sql.exec(`INSERT INTO customer_voice_number_bindings
+      (id,provider,provider_account_sid,provider_number_sid,tenant_id,space_id,agent_id,phone_number,country_code,monthly_cost_minor,currency,monthly_quote_at,inbound_price_per_minute_minor,created_by,created_at,updated_at)
+      VALUES ('n1','twilio','AC${"a".repeat(32)}','PN${"b".repeat(32)}','t1','s1','a1','+14155550100','US',1000,'USD','2026-10-15T00:00:00Z',1,'u1','2026-10-15T00:00:00Z','2026-10-15T00:00:00Z')`);
+    storage.sql.exec(`INSERT INTO customer_voice_call_admissions
+      (call_sid,number_binding_id,tenant_id,space_id,agent_id,caller_number,called_number,status,ticket_nonce,ticket_token,issued_at,ticket_expires_at,updated_at)
+      VALUES ('CA1','n1','t1','s1','a1','+14155550101','+14155550100','issued','nonce1','ticket','2026-10-15T00:00:00Z','2026-10-15T00:01:00Z','2026-10-15T00:00:00Z')`);
+    expect(() => storage.sql.exec(`INSERT INTO customer_voice_call_admissions
+      (call_sid,number_binding_id,tenant_id,space_id,agent_id,caller_number,called_number,status,ticket_nonce,ticket_token,issued_at,ticket_expires_at,updated_at)
+      VALUES ('CA1','n1','t1','s1','a1','+14155550101','+14155550100','issued','nonce2','ticket','2026-10-15T00:00:00Z','2026-10-15T00:01:00Z','2026-10-15T00:00:00Z')`)).toThrow();
+    expect(storage.sql.exec<{ status: string }>("SELECT status FROM customer_voice_call_admissions WHERE call_sid='CA1'").toArray()).toEqual([{ status: "issued" }]);
+  });
 });

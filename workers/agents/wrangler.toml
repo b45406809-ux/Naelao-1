@@ -19,6 +19,10 @@ name = "OWNER_VOICE_AGENT"
 class_name = "OwnerVoiceAgent"
 
 [[durable_objects.bindings]]
+name = "CUSTOMER_VOICE_AGENT"
+class_name = "CustomerVoiceAgent"
+
+[[durable_objects.bindings]]
 name = "HITL_APPROVAL_DO"
 class_name = "HITLApprovalDO"
 
@@ -110,6 +114,10 @@ new_sqlite_classes = ["DocumentSandboxDO", "MediaSandboxDO"]
 [[migrations]]
 tag = "v12-owner-voice-agent"
 new_sqlite_classes = ["OwnerVoiceAgent"]
+
+[[migrations]]
+tag = "v13-customer-voice-agent"
+new_sqlite_classes = ["CustomerVoiceAgent"]
 
 # Tier-5 micro-tool build/test compute (WG-01). A Cloudflare Container attached to
 # ToolSandboxDO — the agent spins it up on demand to build + test the micro-tool's

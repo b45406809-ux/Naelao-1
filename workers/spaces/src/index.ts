@@ -924,6 +924,27 @@ async function spaceDoStub(env: Env, spaceId: string, tenantId: string) {
   return env.SPACE_DO.get(doId);
 }
 
+// Internal customer-voice session bridge. The Agents worker is the only caller; tenant
+// identity comes from its signed service token and the persisted Space row, never the body.
+app.post("/spaces/:spaceId/internal/voice/calls/:action", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const action = c.req.param("action");
+  if (!tenantId || !["start", "finish"].includes(action) || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  const spaceId = c.req.param("spaceId");
+  const space = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id=? AND tenant_id=? AND status='active'").bind(spaceId, tenantId).first();
+  if (!space) return c.json({ error_code: "space_not_found" }, 404);
+  const body: Record<string, unknown> = await c.req.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+  const callSid = typeof body.call_sid === "string" && /^CA[a-fA-F0-9]{32}$/.test(body.call_sid) ? body.call_sid : "";
+  if (!callSid) return c.json({ error_code: "invalid_voice_call" }, 400);
+  const forwarded = action === "start"
+    ? { ...body, space_id: spaceId }
+    : { ...body, space_id: spaceId };
+  const result = await (await spaceDoStub(c.env, spaceId, tenantId)).fetch(new Request(`http://space-do/internal/voice/calls/${action}`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(forwarded),
+  }));
+  return new Response(result.body, { status: result.status, headers: { "content-type": result.headers.get("content-type") ?? "application/json" } });
+});
+
 app.get("/spaces/:spaceId/workflow-installations/:instanceId", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);

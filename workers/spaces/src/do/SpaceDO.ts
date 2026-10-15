@@ -1808,6 +1808,14 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_space_glossary_locale ON space_glossary_terms(space_id, locale, term_norm);
     `,
   },
+  {
+    version: 71,
+    description: "customer voice call agent and phone binding provenance",
+    up: `
+      ALTER TABLE voice_call_sessions ADD COLUMN customer_agent_id TEXT;
+      ALTER TABLE voice_call_sessions ADD COLUMN number_binding_id TEXT;
+    `,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -10462,20 +10470,24 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const spaceId = String(body["space_id"] ?? "");
     const callSid = String(body["call_sid"] ?? "");
     const callerId = String(body["caller_id"] ?? "");
+    const agentId = String(body["agent_id"] ?? "");
+    const numberBindingId = String(body["number_binding_id"] ?? "");
+    const systemInternal = agentId && numberBindingId ? 0 : 1;
     const projectId = body["project_id"] ? String(body["project_id"]) : null;
     if (!spaceId || !callSid || !callerId) return Response.json({ error_code: "invalid_voice_call" }, { status: 400 });
+    const storedCallerId = agentId && numberBindingId ? callerId.replace(/.(?=.{2})/g, "*") : callerId;
     const existing = queryOne<{ thread_id: string }>(this.ctx.storage.sql as never, "SELECT thread_id FROM voice_call_sessions WHERE call_sid=?", callSid);
     if (existing) return Response.json({ thread_id: existing.thread_id, call_sid: callSid });
     const threadId = crypto.randomUUID();
     const startedAt = new Date().toISOString();
     execute(this.ctx.storage.sql as never,
       `INSERT INTO threads(id,space_id,project_id,title,status,thread_kind,channel,channel_session_id,thread_tier,system_internal,created_at,updated_at)
-       VALUES(?,?,?,?,'active','channel','voice',?,'tier_3_consult',1,?,?)`,
-      threadId, spaceId, projectId, `Call from ${callerId}`, callSid, startedAt, startedAt);
+       VALUES(?,?,?,?,'active','channel','voice',?,'tier_3_consult',?,?,?)`,
+      threadId, spaceId, projectId, `Call from ${storedCallerId}`, callSid, systemInternal, startedAt, startedAt);
     execute(this.ctx.storage.sql as never,
-      "INSERT INTO voice_call_sessions(call_sid,thread_id,space_id,caller_id,started_at) VALUES(?,?,?,?,?)",
-      callSid, threadId, spaceId, callerId, startedAt);
-    return Response.json({ thread_id: threadId, call_sid: callSid, channel: "voice", caller_id: callerId, thread_tier: "tier_3_consult" }, { status: 201 });
+      "INSERT INTO voice_call_sessions(call_sid,thread_id,space_id,caller_id,started_at,customer_agent_id,number_binding_id) VALUES(?,?,?,?,?,?,?)",
+      callSid, threadId, spaceId, storedCallerId, startedAt, agentId || null, numberBindingId || null);
+    return Response.json({ thread_id: threadId, call_sid: callSid, channel: "voice", caller_id: storedCallerId, thread_tier: "tier_3_consult", agent_id: agentId || null }, { status: 201 });
   }
 
   private finishVoiceCall(input: unknown): Response {

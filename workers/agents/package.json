@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@cloudflare/dynamic-workflows": "0.1.1",
+    "@cloudflare/voice-twilio": "0.1.1",
     "@naelao/agent-sdk": "workspace:*",
     "@naelao/billing-core": "workspace:*",
     "@naelao/crypto": "workspace:*",
@@ -29,6 +30,7 @@
     "hono": "^4.6.0",
     "postal-mime": "^2.4.3",
     "shell-quote": "^1.8.1",
+    "twilio": "6.2.0",
     "typescript": "^5.6.3",
     "unpdf": "1.8.1"
   },

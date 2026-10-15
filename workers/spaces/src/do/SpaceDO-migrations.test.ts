@@ -37,6 +37,8 @@ describe("SpaceDO migration replay", () => {
       .toArray();
     const acceptedWorkerMigration = storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM _migrations WHERE version = 69").toArray();
     const glossaryMigration = storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM _migrations WHERE version = 70").toArray();
+    const customerVoiceColumns = storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('voice_call_sessions')").toArray().map((column) => column.name);
+    const customerVoiceMigration = storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM _migrations WHERE version = 71").toArray();
     expect(table).toHaveLength(1);
     expect(foundryTemplateTable).toHaveLength(1);
     expect(foundryRequestTable).toHaveLength(1);
@@ -46,6 +48,9 @@ describe("SpaceDO migration replay", () => {
     expect(applied[0]?.count).toBe(1);
     expect(acceptedWorkerMigration[0]?.count).toBe(1);
     expect(glossaryMigration[0]?.count).toBe(1);
+    expect(customerVoiceMigration[0]?.count).toBe(1);
+    expect(customerVoiceColumns).toContain("customer_agent_id");
+    expect(customerVoiceColumns).toContain("number_binding_id");
     storage.sql.exec(
       "INSERT INTO project_demo_fixtures (project_id, fixture_id, fixture_kind, data_json) VALUES (?, ?, ?, ?)",
       "project-1",

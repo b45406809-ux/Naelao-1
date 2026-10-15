@@ -39,12 +39,12 @@ Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, recon
 
 ### 3. Customer telephony provisioning and ingress
 
-**Status:** owner browser voice is implemented locally. External customer telephony still lacks an executable number/ingress lifecycle.
+**Status:** implemented and locally verified for importing, binding, signed Twilio ingress, consented customer calls, bounded cost/duration/concurrency admission, disabling, and release. Direct purchase/search UI and live Twilio account/PSTN checks remain open deployment/product work; provider-specific and Cloudflare AI charges are not live verified.
 
 1. Keep customer phone agents separate from owner voice calls and the Lead Planner session. Inspect the existing voice turn adapter, channel gateway, customer-bot authorization, and `twilio` catalogue entry.
 2. Verify current official Cloudflare Agents voice documentation and the selected telephony provider's official APIs. Determine whether Cloudflare voice can be extended directly for PSTN or whether a provider adapter is required. Do not infer that WebSocket voice means PSTN number provisioning.
-3. Define a provider-neutral lifecycle: owner/admin creates or imports a number, confirms region/capabilities/cost, explicitly binds it to one customer agent/Space, verifies webhook signatures and timestamps, handles replay/idempotency, rotates/unbinds, and deletes the number. Provisioning must be explicit and auditable.
-4. Add ingress controls before enabling public traffic: per-number and per-Space concurrency/duration/spend caps, abuse throttles, tenant isolation, call termination, retention/recording consent policy, and truthful unconfigured/error states. A phone caller must never gain planner owner authority.
+3. Define a provider-neutral lifecycle: owner/admin creates or imports a number, confirms region/capabilities/cost, explicitly binds it to one customer agent/Space, verifies webhook signatures and timestamps, handles replay/idempotency, rotates/unbinds, and deletes the number. Provisioning must be explicit and auditable. Current local implementation supports importing an existing Twilio number and explicitly releasing it; it does not purchase/search numbers in Naelao.
+4. Add ingress controls before enabling public traffic: per-number and per-Space concurrency/duration/spend caps, abuse throttles, tenant isolation, call termination, retention/recording consent policy, and truthful unconfigured/error states. A phone caller must never gain planner owner authority. The current monthly spend cap accounts for quoted Twilio number and inbound-minute costs; Workers AI billing remains account-billed and is bounded here by call duration, turns, and response size, not by a verified dollar reservation.
 5. Implement a provider adapter only after the lifecycle contract and verified provider API are settled. Keep number purchase and live calls disabled when credentials or verified numbers are absent.
 
 **Acceptance:** signed webhook/replay/tenant-isolation tests; authorization and binding-denial tests; call-start/end/failure and cost-limit tests; mocked adapter contract tests explicitly labeled as mocked. Live number provisioning and calls require provider credentials, a verified number, and account configuration after local checks pass.
@@ -89,10 +89,10 @@ Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, recon
 
 Run only after code and local integration checks are complete. No secret belongs in this file or Git.
 
-- Apply deployed D1 migrations 0093, 0094, and 0095 in order and verify replay-safe schema state.
+- Apply deployed D1 migrations 0093 through 0097 in order and verify replay-safe schema state; verify SpaceDO migration v71 and Agents DO migration v13 after deployment.
 - Configure an owned Cloudflare Email Routing ingress domain and verified sending domain, then test inbound task replies and outbound delivery.
 - Configure Web Push VAPID public/private/subject values on Notifications Worker environments; test subscription, delivery, unsubscribe, and expired endpoint cleanup.
-- Configure any selected voice/model/LoRA provider bindings only after the corresponding implementation gates pass; test with a controlled tenant/number and enforce spend caps.
+- Configure any selected voice/model/LoRA provider bindings only after the corresponding implementation gates pass; validate Twilio credentials, verify/import a controlled number, test signed call/consent/status callbacks, and verify spend caps and release cleanup.
 - Confirm live provider behavior, residency/egress policy, rollback, and monitoring. Record each result as live, mocked, dry-run, blocked, or unrun.
 
 **Acceptance:** every external check has a timestamp, target environment, test identity, result, and cleanup status; no item is marked passed from a dry run or mock.
@@ -103,4 +103,4 @@ After all workstreams above are complete, compare each remaining task in `CONTIN
 
 ## Current next action
 
-Workstreams 1 and 2 are implemented and locally verified; continue with workstream 3: customer telephony provisioning and ingress. Preserve all existing tenant/Space authorization and placement policy boundaries.
+Workstreams 1 and 2 are implemented and locally verified. Workstream 3 now has an import-based Twilio lifecycle and signed customer ingress locally verified. Continue the sequence with workstream 4 while carrying forward workstream 3's exact open items: no Naelao number search/purchase UI, no live account/PSTN validation, and no verified dollar reservation for account-billed Workers AI usage. Never mark these as passed from local tests.

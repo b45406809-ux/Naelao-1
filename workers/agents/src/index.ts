@@ -87,6 +87,12 @@ import {
   parseCloudflareEmail,
 } from "./channels/cloudflare-email.js";
 import { EMAIL_PDF_MAX_BYTES, EMAIL_PDF_MAX_PAGES, EMAIL_PDF_MAX_TEXT_BYTES, EmailPdfError, extractEmailPdfText } from "./channels/email-pdf.js";
+import { TwilioAdapter } from "@cloudflare/voice-twilio";
+import { CustomerVoiceAgent } from "./voice/customer-voice-agent.js";
+import {
+  CUSTOMER_VOICE_ADMISSION_SQL, customerVoiceAdmissionBindings, decodeCustomerVoiceTicketPayload, isE164, mintCustomerVoiceTicket, parseTwilioVoiceCredentials, twimlConsentResponse, twimlRejectResponse,
+  twimlStreamResponse, validateTwilioFormWebhook, validateTwilioMediaStream, verifyCustomerVoiceTicket,
+} from "./voice/customer-telephony.js";
 
 function safeParse(s: string): unknown {
   try { return JSON.parse(s); } catch { return {}; }
@@ -203,6 +209,7 @@ export { WorkflowRunDO } from "./do/WorkflowRunDO.js";
 export { WorkflowControl } from "./workflows/workflow-control.js";
 export { DynamicWorkflowBinding } from "@cloudflare/dynamic-workflows";
 export { OwnerVoiceAgent } from "./voice/owner-voice-agent.js";
+export { CustomerVoiceAgent } from "./voice/customer-voice-agent.js";
 export { ScheduledReminderWorkflow } from "./workflows/outbound-reminder-workflow.js";
 export { GenericSubagentWorkflow } from "./workflows/generic-subagent-workflow.js";
 export { CompanyAutomationWorkflow } from "./workflows/company-automation-workflow.js";
@@ -234,6 +241,7 @@ export interface AgentsEnv extends Cloudflare.Env {
   PLATFORM_DB: D1Database;
   NAELAO_AGENT_DO: DurableObjectNamespace<NaelaoAgentDO>;
   OWNER_VOICE_AGENT: DurableObjectNamespace<OwnerVoiceAgent>;
+  CUSTOMER_VOICE_AGENT: DurableObjectNamespace<CustomerVoiceAgent>;
   HITL_APPROVAL_DO: DurableObjectNamespace<HITLApprovalDO>;
   TASK_DO: DurableObjectNamespace<TaskDO>;
   TOOL_SANDBOX: DurableObjectNamespace<ToolSandboxDO>;
@@ -367,13 +375,286 @@ interface SpaceRow {
 function validateEnv(env: AgentsEnv): void {
   if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
   applyDurableObjectJurisdiction(env as unknown as Record<string, unknown>, env.DATA_JURISDICTION, [
-    "NAELAO_AGENT_DO", "OWNER_VOICE_AGENT", "HITL_APPROVAL_DO", "TASK_DO", "TOOL_SANDBOX", "LOCAL_TUNNEL", "RISK_GUARD", "WORKFLOW_RUN_DO",
+    "NAELAO_AGENT_DO", "OWNER_VOICE_AGENT", "CUSTOMER_VOICE_AGENT", "HITL_APPROVAL_DO", "TASK_DO", "TOOL_SANDBOX", "LOCAL_TUNNEL", "RISK_GUARD", "WORKFLOW_RUN_DO",
   ]);
 }
 
 const app = new Hono<{ Bindings: AgentsEnv }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
+
+type CustomerVoiceBindingRow = {
+  id: string; tenant_id: string; space_id: string; agent_id: string; provider_account_sid: string;
+  provider_number_sid: string; phone_number: string; assistant_prompt: string;
+  max_call_duration_seconds: number; max_concurrent_calls: number; inbound_price_per_minute_minor: number; status: string;
+};
+
+async function customerVoiceCredentials(env: AgentsEnv, tenantId: string, spaceId: string): Promise<ReturnType<typeof parseTwilioVoiceCredentials>> {
+  const value = await resolveConnectorCredential(env, tenantId, spaceId, "TWILIO_VOICE_CREDENTIALS");
+  return parseTwilioVoiceCredentials(value);
+}
+
+async function customerVoiceBinding(env: AgentsEnv, bindingId: string): Promise<CustomerVoiceBindingRow | null> {
+  return env.PLATFORM_DB.prepare(
+    `SELECT id,tenant_id,space_id,agent_id,provider_account_sid,provider_number_sid,phone_number,assistant_prompt,
+            max_call_duration_seconds,max_concurrent_calls,inbound_price_per_minute_minor,status
+       FROM customer_voice_number_bindings WHERE id=? AND status='active' LIMIT 1`
+  ).bind(bindingId).first<CustomerVoiceBindingRow>();
+}
+
+function twiml(c: { body: string; status?: number }) {
+  return new Response(c.body, { status: c.status ?? 200, headers: { "content-type": "application/xml; charset=utf-8", "cache-control": "no-store" } });
+}
+
+function moneyMinor(value: unknown): number | null {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount < 0 || amount > 1_000_000) return null;
+  return Math.ceil(amount * 100);
+}
+
+function twilioAuth(credentials: { accountSid: string; authToken: string }): string {
+  return `Basic ${btoa(`${credentials.accountSid}:${credentials.authToken}`)}`;
+}
+
+// Space-owner provisioning controls. Credentials stay in the credential vault; these routes
+// return identifiers and provider metadata only. Importing a number is explicit and verifies
+// its account ownership and voice capability with Twilio before assigning our callbacks.
+app.put("/spaces/:spaceId/customer-voice/twilio-credentials", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = await requireApprovalAuthority(c, spaceId);
+  if (!c.env.CREDENTIALS_WORKER) return c.json({ error_code: "credential_vault_unavailable" }, 503);
+  const body = await c.req.json<{ account_sid?: string; auth_token?: string }>();
+  const credentials = parseTwilioVoiceCredentials(JSON.stringify({ accountSid: body.account_sid, authToken: body.auth_token }));
+  if (!credentials) throw badRequest("A valid Twilio account SID and auth token are required");
+  const verified = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${credentials.accountSid}.json`, { headers: { authorization: twilioAuth(credentials) } });
+  if (!verified.ok) throw badRequest("Twilio could not verify these credentials");
+  const stored = await storeConnectorCredential(c.env, { tenantId, spaceId, userId: getCallerIdentity(c).userId, name: "TWILIO_VOICE_CREDENTIALS", value: JSON.stringify(credentials), description: "Customer telephony provider credentials" });
+  if (!stored.ok) return c.json({ error_code: "credential_store_failed" }, 502);
+  return c.json({ configured: true, account_sid: credentials.accountSid });
+});
+
+app.put("/spaces/:spaceId/customer-voice/policy", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = await requireApprovalAuthority(c, spaceId);
+  const userId = getCallerIdentity(c).userId;
+  const body = await c.req.json<{ max_concurrent_calls?: number; max_calls_per_hour?: number; max_daily_minutes?: number; monthly_spend_limit_minor?: number }>();
+  const values = [body.max_concurrent_calls, body.max_calls_per_hour, body.max_daily_minutes, body.monthly_spend_limit_minor];
+  const bounds = [[1, 50], [1, 1000], [1, 10000], [1, 100000000]];
+  if (values.some((value, i) => !Number.isSafeInteger(value) || value! < bounds[i]![0]! || value! > bounds[i]![1]!)) throw badRequest("Voice limits are outside supported bounds");
+  await c.env.PLATFORM_DB.prepare(`INSERT INTO customer_voice_space_policies(tenant_id,space_id,max_concurrent_calls,max_calls_per_hour,max_daily_minutes,monthly_spend_limit_minor,currency,updated_by,updated_at)
+    VALUES(?,?,?,?,?,?,'USD',?,?) ON CONFLICT(space_id) DO UPDATE SET tenant_id=excluded.tenant_id,max_concurrent_calls=excluded.max_concurrent_calls,max_calls_per_hour=excluded.max_calls_per_hour,max_daily_minutes=excluded.max_daily_minutes,monthly_spend_limit_minor=excluded.monthly_spend_limit_minor,updated_by=excluded.updated_by,updated_at=excluded.updated_at`)
+    .bind(tenantId, spaceId, ...values, userId, new Date().toISOString()).run();
+  return c.json({ updated: true, currency: "USD" });
+});
+
+app.post("/spaces/:spaceId/customer-voice/numbers/import", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = await requireApprovalAuthority(c, spaceId);
+  const userId = getCallerIdentity(c).userId;
+  const body = await c.req.json<{ phone_number_sid?: string; agent_id?: string; owner_prompt?: string }>();
+  const numberSid = body.phone_number_sid ?? "";
+  const agentId = body.agent_id?.trim() ?? "";
+  const prompt = body.owner_prompt?.trim() ?? "";
+  if (!/^PN[a-fA-F0-9]{32}$/.test(numberSid) || !/^[A-Za-z0-9_-]{1,128}$/.test(agentId) || prompt.length > 8_000) throw badRequest("A Twilio number SID, customer agent ID and prompt under 8,000 characters are required");
+  const credentials = await customerVoiceCredentials(c.env, tenantId, spaceId);
+  if (!credentials) return c.json({ error_code: "twilio_voice_credentials_missing" }, 409);
+  const auth = twilioAuth(credentials);
+  const providerResponse = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${credentials.accountSid}/IncomingPhoneNumbers/${numberSid}.json`, { headers: { authorization: auth } });
+  if (!providerResponse.ok) return c.json({ error_code: "twilio_number_not_found_in_account" }, 404);
+  const provider = await providerResponse.json<{ sid?: string; phone_number?: string; iso_country?: string; region?: string; capabilities?: { voice?: boolean }; price?: string | number; price_unit?: string; voice_url?: string; voice_method?: string; status_callback?: string; status_callback_method?: string; status_callback_event?: string[] }>();
+  if (provider.sid !== numberSid || !provider.phone_number || !isE164(provider.phone_number) || !provider.capabilities?.voice || (provider.price_unit && provider.price_unit !== "USD")) throw badRequest("The selected number is not a verified voice-capable number with a USD price");
+  const monthlyCost = moneyMinor(provider.price);
+  if (monthlyCost === null) return c.json({ error_code: "twilio_monthly_number_price_unavailable" }, 409);
+  const pricingResponse = await fetch(`https://pricing.twilio.com/v2/Voice/Numbers/${encodeURIComponent(provider.phone_number)}`, { headers: { authorization: auth } });
+  if (!pricingResponse.ok) return c.json({ error_code: "twilio_inbound_voice_price_unavailable" }, 409);
+  const pricing = await pricingResponse.json<{ inboundCallPrice?: { currentPrice?: string | number; priceUnit?: string }; numberType?: string }>();
+  const minutePrice = moneyMinor(pricing.inboundCallPrice?.currentPrice);
+  if (minutePrice === null || (pricing.inboundCallPrice?.priceUnit && pricing.inboundCallPrice.priceUnit !== "USD")) return c.json({ error_code: "twilio_inbound_voice_price_unavailable" }, 409);
+  if (!c.env.PUBLIC_AGENTS_URL) return c.json({ error_code: "public_agents_url_unconfigured" }, 503);
+  const bindingId = crypto.randomUUID();
+  const base = c.env.PUBLIC_AGENTS_URL.replace(/\/$/, "");
+  const voiceUrl = `${base}/customer-voice/twilio/answer/${bindingId}`;
+  const statusUrl = `${base}/customer-voice/twilio/status/${bindingId}`;
+  const callbackSettings = new URLSearchParams({ VoiceUrl: voiceUrl, VoiceMethod: "POST", StatusCallback: statusUrl, StatusCallbackMethod: "POST" });
+  for (const event of ["initiated", "ringing", "answered", "completed"]) callbackSettings.append("StatusCallbackEvent", event);
+  const updateResponse = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${credentials.accountSid}/IncomingPhoneNumbers/${numberSid}.json`, {
+    method: "POST", headers: { authorization: auth, "content-type": "application/x-www-form-urlencoded" },
+    body: callbackSettings,
+  });
+  if (!updateResponse.ok) return c.json({ error_code: "twilio_number_callback_configuration_failed" }, 502);
+  try {
+    await c.env.PLATFORM_DB.prepare(`INSERT INTO customer_voice_number_bindings(id,provider,provider_account_sid,provider_number_sid,tenant_id,space_id,agent_id,phone_number,country_code,region,capabilities_json,provider_voice_url,provider_voice_method,provider_status_callback,provider_status_callback_method,provider_status_callback_events_json,monthly_cost_minor,currency,monthly_quote_at,inbound_price_per_minute_minor,assistant_prompt,created_by,created_at,updated_at)
+      VALUES(?,'twilio',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'USD',?,?,?,?,?,?)`)
+      .bind(bindingId, credentials.accountSid, numberSid, tenantId, spaceId, agentId, provider.phone_number, provider.iso_country ?? "", provider.region ?? "", JSON.stringify(provider.capabilities), provider.voice_url ?? "", provider.voice_method ?? "POST", provider.status_callback ?? "", provider.status_callback_method ?? "POST", JSON.stringify(provider.status_callback_event ?? []), monthlyCost, new Date().toISOString(), minutePrice, prompt, userId, new Date().toISOString(), new Date().toISOString()).run();
+    await c.env.PLATFORM_DB.prepare(`INSERT INTO customer_voice_space_policies(tenant_id,space_id,updated_by,updated_at) VALUES(?,?,?,?) ON CONFLICT(space_id) DO NOTHING`).bind(tenantId, spaceId, userId, new Date().toISOString()).run();
+  } catch (error) {
+    // Restore the provider's previous callbacks if local persistence fails.
+    const restoreSettings = new URLSearchParams({ VoiceUrl: provider.voice_url ?? "", VoiceMethod: provider.voice_method ?? "POST", StatusCallback: provider.status_callback ?? "", StatusCallbackMethod: provider.status_callback_method ?? "POST" });
+    for (const event of provider.status_callback_event ?? []) restoreSettings.append("StatusCallbackEvent", event);
+    await fetch(`https://api.twilio.com/2010-04-01/Accounts/${credentials.accountSid}/IncomingPhoneNumbers/${numberSid}.json`, {
+      method: "POST", headers: { authorization: auth, "content-type": "application/x-www-form-urlencoded" }, body: restoreSettings,
+    }).catch(() => undefined);
+    throw error;
+  }
+  return c.json({ id: bindingId, phone_number: provider.phone_number, country_code: provider.iso_country ?? "", region: provider.region ?? "", capabilities: provider.capabilities, monthly_cost_minor: monthlyCost, inbound_price_per_minute_minor: minutePrice, currency: "USD", status: "active" }, 201);
+});
+
+app.get("/spaces/:spaceId/customer-voice/numbers", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = await requireApprovalAuthority(c, spaceId);
+  const result = await c.env.PLATFORM_DB.prepare("SELECT id,provider_number_sid,phone_number,country_code,region,capabilities_json,monthly_cost_minor,inbound_price_per_minute_minor,max_concurrent_calls,max_call_duration_seconds,status,created_at FROM customer_voice_number_bindings WHERE tenant_id=? AND space_id=? ORDER BY created_at DESC").bind(tenantId, spaceId).all();
+  return c.json({ numbers: result.results ?? [] });
+});
+
+app.post("/spaces/:spaceId/customer-voice/numbers/:bindingId/disable", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = await requireApprovalAuthority(c, spaceId);
+  const binding = await c.env.PLATFORM_DB.prepare("SELECT id,provider_account_sid,provider_number_sid,provider_voice_url,provider_voice_method,provider_status_callback,provider_status_callback_method,provider_status_callback_events_json,status FROM customer_voice_number_bindings WHERE id=? AND tenant_id=? AND space_id=? AND status='active'").bind(c.req.param("bindingId"), tenantId, spaceId).first<{ id: string; provider_account_sid: string; provider_number_sid: string; provider_voice_url: string; provider_voice_method: string; provider_status_callback: string; provider_status_callback_method: string; provider_status_callback_events_json: string; status: string }>();
+  if (!binding) return c.json({ error_code: "voice_number_not_found" }, 404);
+  const disabled = await c.env.PLATFORM_DB.prepare("UPDATE customer_voice_number_bindings SET status='disabled',updated_at=? WHERE id=? AND tenant_id=? AND space_id=? AND status='active'").bind(new Date().toISOString(), binding.id, tenantId, spaceId).run();
+  if ((disabled.meta?.changes ?? 0) !== 1) return c.json({ error_code: "voice_number_state_changed" }, 409);
+  const credentials = await customerVoiceCredentials(c.env, tenantId, spaceId);
+  if (!credentials) return c.json({ error_code: "voice_number_disabled_provider_restore_pending" }, 503);
+  const restoreSettings = new URLSearchParams({ VoiceUrl: binding.provider_voice_url, VoiceMethod: binding.provider_voice_method, StatusCallback: binding.provider_status_callback, StatusCallbackMethod: binding.provider_status_callback_method });
+  for (const event of JSON.parse(binding.provider_status_callback_events_json) as string[]) restoreSettings.append("StatusCallbackEvent", event);
+  const restored = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${credentials.accountSid}/IncomingPhoneNumbers/${binding.provider_number_sid}.json`, { method: "POST", headers: { authorization: twilioAuth(credentials), "content-type": "application/x-www-form-urlencoded" }, body: restoreSettings });
+  if (!restored.ok) return c.json({ error_code: "voice_number_disabled_provider_restore_pending" }, 502);
+  return c.json({ disabled: true, id: binding.id });
+});
+
+app.delete("/spaces/:spaceId/customer-voice/numbers/:bindingId", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = await requireApprovalAuthority(c, spaceId);
+  const body = await c.req.json<{ confirm_release?: boolean }>().catch(() => ({} as { confirm_release?: boolean }));
+  if (body.confirm_release !== true) throw badRequest("Set confirm_release=true to release this paid Twilio number");
+  const binding = await c.env.PLATFORM_DB.prepare("SELECT id,provider_account_sid,provider_number_sid,status FROM customer_voice_number_bindings WHERE id=? AND tenant_id=? AND space_id=? AND status IN ('active','disabled')").bind(c.req.param("bindingId"), tenantId, spaceId).first<{ id: string; provider_account_sid: string; provider_number_sid: string; status: string }>();
+  if (!binding) return c.json({ error_code: "voice_number_not_found" }, 404);
+  if (binding.status === "active") await c.env.PLATFORM_DB.prepare("UPDATE customer_voice_number_bindings SET status='disabled',updated_at=? WHERE id=? AND tenant_id=? AND space_id=? AND status='active'").bind(new Date().toISOString(), binding.id, tenantId, spaceId).run();
+  const credentials = await customerVoiceCredentials(c.env, tenantId, spaceId);
+  if (!credentials || credentials.accountSid !== binding.provider_account_sid) return c.json({ error_code: "voice_number_disabled_release_pending" }, 503);
+  const released = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${credentials.accountSid}/IncomingPhoneNumbers/${binding.provider_number_sid}.json`, { method: "DELETE", headers: { authorization: twilioAuth(credentials) } });
+  if (!released.ok) return c.json({ error_code: "voice_number_disabled_release_pending" }, 502);
+  await c.env.PLATFORM_DB.prepare("UPDATE customer_voice_number_bindings SET status='released',updated_at=? WHERE id=? AND tenant_id=? AND space_id=? AND status='disabled'").bind(new Date().toISOString(), binding.id, tenantId, spaceId).run();
+  return c.json({ released: true, id: binding.id });
+});
+
+// Twilio public PSTN ingress is deliberately separate from owner browser voice. Every form is
+// validated against Twilio's official SDK; no forwarded Host header is trusted for signatures.
+app.post("/customer-voice/twilio/answer/:bindingId", async (c) => {
+  const binding = await customerVoiceBinding(c.env, c.req.param("bindingId"));
+  if (!binding || !c.env.PUBLIC_AGENTS_URL) return twiml({ body: "<?xml version=\"1.0\"?><Response><Reject/></Response>", status: 404 });
+  const credentials = await customerVoiceCredentials(c.env, binding.tenant_id, binding.space_id);
+  if (!credentials || credentials.accountSid !== binding.provider_account_sid) return twiml({ body: "<?xml version=\"1.0\"?><Response><Reject/></Response>", status: 503 });
+  const raw = await c.req.raw.clone().text();
+  if (raw.length > 16_384) return twiml({ body: "<?xml version=\"1.0\"?><Response><Reject/></Response>", status: 413 });
+  const origin = new URL(c.env.PUBLIC_AGENTS_URL).origin;
+  const canonicalUrl = `${origin}${new URL(c.req.url).pathname}`;
+  if (!validateTwilioFormWebhook({ authToken: credentials.authToken, signature: c.req.header("x-twilio-signature") ?? null, canonicalUrl, rawBody: raw })) {
+    return twiml({ body: "<?xml version=\"1.0\"?><Response><Reject/></Response>", status: 403 });
+  }
+  const form = new URLSearchParams(raw);
+  const callSid = form.get("CallSid") ?? "";
+  const caller = form.get("From") ?? "";
+  const called = form.get("To") ?? "";
+  if (!/^CA[a-fA-F0-9]{32}$/.test(callSid) || !isE164(caller) || called !== binding.phone_number || await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, binding.space_id)) {
+    return twiml({ body: "<?xml version=\"1.0\"?><Response><Reject/></Response>", status: 403 });
+  }
+  const space = await c.env.PLATFORM_DB.prepare("SELECT status FROM spaces WHERE id=? AND tenant_id=?").bind(binding.space_id, binding.tenant_id).first<{ status: string }>();
+  if (!space || space.status !== "active") return twiml({ body: "<?xml version=\"1.0\"?><Response><Reject/></Response>", status: 403 });
+  const existing = await c.env.PLATFORM_DB.prepare("SELECT ticket_token,status FROM customer_voice_call_admissions WHERE call_sid=? AND number_binding_id=?").bind(callSid, binding.id).first<{ ticket_token: string; status: string }>();
+  if (existing) {
+    const existingTicket = await verifyCustomerVoiceTicket(existing.ticket_token, c.env.PLATFORM_SECRET, callSid);
+    if (existing.status !== "issued" || !existingTicket) return twiml({ body: twimlRejectResponse("rejected"), status: 403 });
+    const consentUrl = `${origin}/customer-voice/twilio/consent/${encodeURIComponent(existing.ticket_token)}`;
+    return twiml({ body: twimlConsentResponse(consentUrl) });
+  }
+  const policy = await c.env.PLATFORM_DB.prepare("SELECT max_concurrent_calls,max_calls_per_hour,max_daily_minutes,monthly_spend_limit_minor FROM customer_voice_space_policies WHERE tenant_id=? AND space_id=?").bind(binding.tenant_id, binding.space_id).first<{ max_concurrent_calls: number; max_calls_per_hour: number; max_daily_minutes: number; monthly_spend_limit_minor: number }>();
+  if (!policy) return twiml({ body: twimlRejectResponse("busy"), status: 429 });
+  const now = new Date();
+  const issuedAt = now.toISOString();
+  const expiresAt = new Date(now.getTime() + 60_000).toISOString();
+  await c.env.PLATFORM_DB.prepare("UPDATE customer_voice_call_admissions SET status='failed',reserved_cost_minor=0,reserved_duration_seconds=0,ended_at=?,updated_at=? WHERE tenant_id=? AND space_id=? AND status='issued' AND ticket_expires_at<=?")
+    .bind(issuedAt, issuedAt, binding.tenant_id, binding.space_id, issuedAt).run();
+  const reservation = Math.ceil(binding.max_call_duration_seconds / 60) * binding.inbound_price_per_minute_minor;
+  const minted = await mintCustomerVoiceTicket({ tenantId: binding.tenant_id, spaceId: binding.space_id, bindingId: binding.id, agentId: binding.agent_id, callSid, caller, called }, c.env.PLATFORM_SECRET, now.getTime());
+  const inserted = await c.env.PLATFORM_DB.prepare(CUSTOMER_VOICE_ADMISSION_SQL).bind(...customerVoiceAdmissionBindings({
+    callSid, bindingId: binding.id, tenantId: binding.tenant_id, spaceId: binding.space_id, agentId: binding.agent_id,
+    caller, called, nonce: minted.ticket.nonce, token: minted.token, now: issuedAt, expiresAt,
+    reserveCostMinor: reservation, reserveDurationSeconds: binding.max_call_duration_seconds,
+    spaceMaxConcurrent: policy.max_concurrent_calls, numberMaxConcurrent: binding.max_concurrent_calls,
+    hourStart: new Date(now.getTime() - 3_600_000).toISOString(), maxCallsPerHour: policy.max_calls_per_hour,
+    dayStart: new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString(), maxDailyMinutes: policy.max_daily_minutes,
+    monthStart: new Date(now.getFullYear(), now.getMonth(), 1).toISOString(), monthlySpendLimitMinor: policy.monthly_spend_limit_minor,
+  })).run();
+  if ((inserted.meta?.changes ?? 0) !== 1) return twiml({ body: twimlRejectResponse("busy"), status: 429 });
+  const consentUrl = `${origin}/customer-voice/twilio/consent/${encodeURIComponent(minted.token)}`;
+  return twiml({ body: twimlConsentResponse(consentUrl) });
+});
+
+app.post("/customer-voice/twilio/status/:bindingId", async (c) => {
+  const bindingId = c.req.param("bindingId");
+  const binding = await c.env.PLATFORM_DB.prepare("SELECT id,tenant_id,space_id,provider_account_sid,provider_number_sid,inbound_price_per_minute_minor FROM customer_voice_number_bindings WHERE id=? LIMIT 1").bind(bindingId).first<{ id: string; tenant_id: string; space_id: string; provider_account_sid: string; provider_number_sid: string; inbound_price_per_minute_minor: number }>();
+  if (!binding || !c.env.PUBLIC_AGENTS_URL) return c.json({ error_code: "voice_binding_not_found" }, 404);
+  const credentials = await customerVoiceCredentials(c.env, binding.tenant_id, binding.space_id);
+  if (!credentials || credentials.accountSid !== binding.provider_account_sid) return c.json({ error_code: "voice_credentials_unavailable" }, 503);
+  const raw = await c.req.raw.clone().text();
+  if (raw.length > 16_384 || !validateTwilioFormWebhook({ authToken: credentials.authToken, signature: c.req.header("x-twilio-signature") ?? null, canonicalUrl: `${new URL(c.env.PUBLIC_AGENTS_URL).origin}${new URL(c.req.url).pathname}`, rawBody: raw })) return c.json({ error_code: "invalid_twilio_signature" }, 403);
+  const form = new URLSearchParams(raw);
+  const callSid = form.get("CallSid") ?? "";
+  const callStatus = form.get("CallStatus") ?? "";
+  if (!/^CA[a-fA-F0-9]{32}$/.test(callSid)) return c.json({ error_code: "invalid_call_sid" }, 400);
+  if (callStatus !== "completed" && !["busy", "failed", "no-answer", "canceled"].includes(callStatus)) return c.json({ accepted: true, ignored: true });
+  const row = await c.env.PLATFORM_DB.prepare("SELECT status FROM customer_voice_call_admissions WHERE call_sid=? AND number_binding_id=? AND tenant_id=? AND space_id=?").bind(callSid, binding.id, binding.tenant_id, binding.space_id).first<{ status: string }>();
+  if (!row) return c.json({ accepted: true, ignored: true });
+  if (["completed", "failed"].includes(row.status)) return c.json({ accepted: true, duplicate: true });
+  const secondsText = form.get("CallDuration");
+  if (callStatus === "completed" && (!secondsText || !/^\d{1,6}$/.test(secondsText))) return c.json({ error_code: "twilio_call_duration_missing" }, 400);
+  const duration = secondsText && /^\d{1,6}$/.test(secondsText) ? Number(secondsText) : 0;
+  const actualCost = callStatus === "completed" ? Math.ceil(duration / 60) * binding.inbound_price_per_minute_minor : 0;
+  const finalStatus = callStatus === "completed" ? "completed" : "failed";
+  await c.env.PLATFORM_DB.prepare("UPDATE customer_voice_call_admissions SET status=?,ended_at=?,duration_seconds=?,actual_cost_minor=?,updated_at=? WHERE call_sid=? AND number_binding_id=? AND status IN ('issued','connected')")
+    .bind(finalStatus, new Date().toISOString(), duration, actualCost, new Date().toISOString(), callSid, binding.id).run();
+  return c.json({ accepted: true, status: finalStatus });
+});
+
+app.post("/customer-voice/twilio/consent/:token", async (c) => {
+  const token = c.req.param("token");
+  const claims = decodeCustomerVoiceTicketPayload(token);
+  if (!claims) return twiml({ body: twimlRejectResponse("rejected"), status: 403 });
+  const binding = claims.bindingId ? await customerVoiceBinding(c.env, claims.bindingId) : null;
+  const credentials = binding ? await customerVoiceCredentials(c.env, binding.tenant_id, binding.space_id) : null;
+  const origin = c.env.PUBLIC_AGENTS_URL ? new URL(c.env.PUBLIC_AGENTS_URL).origin : "";
+  const raw = await c.req.raw.clone().text();
+  const expected = claims.callSid ?? "";
+  const valid = Boolean(binding && credentials && origin && validateTwilioFormWebhook({ authToken: credentials.authToken, signature: c.req.header("x-twilio-signature") ?? null, canonicalUrl: `${origin}${new URL(c.req.url).pathname}`, rawBody: raw }));
+  const form = new URLSearchParams(raw);
+  const ticket = await verifyCustomerVoiceTicket(token, c.env.PLATFORM_SECRET, expected);
+  if (!valid || !ticket || form.get("CallSid") !== ticket.callSid || form.get("From") !== ticket.caller || form.get("To") !== ticket.called) return twiml({ body: twimlRejectResponse("rejected"), status: 403 });
+  if (form.get("Digits") !== "1") {
+    await c.env.PLATFORM_DB.prepare("UPDATE customer_voice_call_admissions SET status='failed',reserved_cost_minor=0,reserved_duration_seconds=0,ended_at=?,updated_at=? WHERE call_sid=? AND ticket_nonce=? AND status='issued'").bind(new Date().toISOString(), new Date().toISOString(), ticket.callSid, ticket.nonce).run();
+    return twiml({ body: twimlRejectResponse("rejected") });
+  }
+  const consented = await c.env.PLATFORM_DB.prepare("UPDATE customer_voice_call_admissions SET consented_at=?,updated_at=? WHERE call_sid=? AND number_binding_id=? AND tenant_id=? AND space_id=? AND ticket_nonce=? AND status='issued' AND ticket_expires_at>? AND consented_at IS NULL").bind(new Date().toISOString(), new Date().toISOString(), ticket.callSid, ticket.bindingId, ticket.tenantId, ticket.spaceId, ticket.nonce, new Date().toISOString()).run();
+  if ((consented.meta?.changes ?? 0) !== 1) return twiml({ body: twimlRejectResponse("rejected"), status: 409 });
+  if (!c.env.PUBLIC_AGENTS_URL) return twiml({ body: twimlRejectResponse("rejected"), status: 503 });
+  return twiml({ body: twimlStreamResponse(`wss://${new URL(c.env.PUBLIC_AGENTS_URL).host}/customer-voice/twilio/stream/${encodeURIComponent(token)}`) });
+});
+
+app.get("/customer-voice/twilio/stream/:token", async (c) => {
+  const token = c.req.param("token");
+  const claims = decodeCustomerVoiceTicketPayload(token);
+  if (!claims) return new Response("Forbidden", { status: 403 });
+  const binding = claims.bindingId ? await customerVoiceBinding(c.env, claims.bindingId) : null;
+  const credentials = binding ? await customerVoiceCredentials(c.env, binding.tenant_id, binding.space_id) : null;
+  const ticket = await verifyCustomerVoiceTicket(token, c.env.PLATFORM_SECRET, claims.callSid ?? "");
+  const canonicalUrl = c.env.PUBLIC_AGENTS_URL ? `wss://${new URL(c.env.PUBLIC_AGENTS_URL).host}${new URL(c.req.url).pathname}` : "";
+  const admission = ticket ? await c.env.PLATFORM_DB.prepare("SELECT consented_at,status FROM customer_voice_call_admissions WHERE call_sid=? AND number_binding_id=? AND tenant_id=? AND space_id=? AND ticket_nonce=? AND ticket_expires_at>?").bind(ticket.callSid, ticket.bindingId, ticket.tenantId, ticket.spaceId, ticket.nonce, new Date().toISOString()).first<{ consented_at: string | null; status: string }>() : null;
+  if (!binding || !credentials || !ticket || !admission?.consented_at || admission.status !== "issued" || await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, ticket.spaceId) || !validateTwilioMediaStream({ authToken: credentials.authToken, signature: c.req.header("x-twilio-signature") ?? null, canonicalUrl })) return new Response("Forbidden", { status: 403 });
+  const internalUrl = new URL(c.req.url);
+  internalUrl.searchParams.set("naelao_ticket", token);
+  return TwilioAdapter.handleRequest(new Request(internalUrl, c.req.raw), c.env as unknown as Record<string, unknown>, "CUSTOMER_VOICE_AGENT", { instanceName: ticket.callSid });
+});
 
 // Cloudflare Agents' voice SDK owns the browser WebSocket/SFU-compatible transport. Every
 // connection must carry an owner-minted ticket that is bound to this exact Agent instance.
