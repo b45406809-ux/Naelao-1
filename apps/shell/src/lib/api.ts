@@ -1700,6 +1700,7 @@ export interface ChannelLink {
   enabled: number;
   created_at: string;
   project_id?: string | null;
+  model_override?: string | null;
 }
 
 /** Same scoping convention as listScheduledJobs. */
@@ -1749,7 +1750,7 @@ export async function pairAssistantChannel(
 export async function updateAssistantChannel(
   spaceId: string,
   session: SessionCredentials,
-  body: { action: "connect" | "disconnect" | "enable"; channel: string; secret?: string; project_id?: string; media_access_token?: string }
+  body: { action: "connect" | "disconnect" | "enable" | "set_model"; channel: string; secret?: string; project_id?: string; media_access_token?: string; model_override?: string | null }
 ): Promise<ChannelConnectResult> {
   return apiFetch<ChannelConnectResult>(`/v1/spaces/${spaceId}/assistant/channels`, {
     method: "POST",

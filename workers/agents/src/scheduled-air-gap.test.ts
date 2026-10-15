@@ -43,4 +43,28 @@ describe("scheduled wake compliance policy", () => {
     expect(result).toMatchObject({ model: "openrouter/vendor/model", airGappedOnly: true });
     expect(result.openRouterCapabilityEvidence).toBeUndefined();
   });
+
+  it("uses a connected channel's built-in model override", async () => {
+    const db = {
+      prepare: vi.fn((sql: string) => ({
+        bind: vi.fn(() => ({ first: vi.fn(async () => sql.includes("channel_links")
+          ? { model_override: "claude-haiku-4-5-20251001" }
+          : { name: "Acme", config_json: '{"compliance":{"airGappedOnly":false}}' }) })),
+      })),
+    };
+    await expect(resolveWakeContext({ PLATFORM_DB: db } as never, "space-1", "tenant-1", "slack"))
+      .resolves.toMatchObject({ model: "claude-haiku-4-5-20251001", airGappedOnly: false });
+  });
+
+  it("fails closed on a stale or corrupted channel model override", async () => {
+    const db = {
+      prepare: vi.fn((sql: string) => ({
+        bind: vi.fn(() => ({ first: vi.fn(async () => sql.includes("channel_links")
+          ? { model_override: "retired/provider-model" }
+          : { name: "Acme", config_json: '{"compliance":{"airGappedOnly":false}}' }) })),
+      })),
+    };
+    await expect(resolveWakeContext({ PLATFORM_DB: db } as never, "space-1", "tenant-1", "slack"))
+      .resolves.toMatchObject({ model: "retired/provider-model", airGappedOnly: true });
+  });
 });

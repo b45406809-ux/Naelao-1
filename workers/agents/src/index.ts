@@ -1846,7 +1846,8 @@ async function recordWakeFailure(
 async function resolveWakeContext(
   env: AgentsEnv,
   spaceId: string,
-  tenantId: string
+  tenantId: string,
+  channel?: string,
 ): Promise<{ model: string; businessContext?: BusinessContext; airGappedOnly: boolean; openRouterCapabilityEvidence?: OpenRouterModelCandidate }> {
   try {
     const row = await env.PLATFORM_DB.prepare(
@@ -1867,20 +1868,30 @@ async function resolveWakeContext(
       // otherwise reintroduce exactly the 404 this function exists to prevent.
       if (m && (isAllowedModel(m) || m.startsWith("local/") || m.startsWith("openrouter/"))) configured = m;
       const airGappedOnly = airGappedOnlyFromConfig(row.config_json);
+      let selectedModel = configured ?? DEFAULT_WORKING_MODEL;
+      if (channel) {
+        const link = await env.PLATFORM_DB.prepare("SELECT model_override FROM channel_links WHERE space_id=? AND tenant_id=? AND channel=?").bind(spaceId, tenantId, channel).first<{ model_override: string | null }>();
+        if (link?.model_override !== null && link?.model_override !== undefined) {
+          // Per-channel overrides accept only the same finite, built-in model allowlist as the
+          // Space model setting. A stale or manually-corrupted value fails closed.
+          if (!isAllowedModel(link.model_override)) return { model: link.model_override, airGappedOnly: true };
+          selectedModel = link.model_override;
+        }
+      }
       let openRouterCapabilityEvidence: OpenRouterModelCandidate | undefined;
       // Preserve a configured dynamic model instead of silently substituting the platform
       // default. Missing/stale key-scoped capability evidence is carried as absent; the reasoner
       // then fails closed before reservation/provider I/O. Never fetch provider metadata for an
       // air-gapped Space.
-      if (configured?.startsWith("openrouter/") && !airGappedOnly) {
+      if (selectedModel.startsWith("openrouter/") && !airGappedOnly) {
         try {
-          openRouterCapabilityEvidence = await validateDynamicOpenRouterPlannerModel(env, tenantId, spaceId, configured) ?? undefined;
+          openRouterCapabilityEvidence = await validateDynamicOpenRouterPlannerModel(env, tenantId, spaceId, selectedModel) ?? undefined;
         } catch {
           openRouterCapabilityEvidence = undefined;
         }
       }
       return {
-        model: configured ?? DEFAULT_WORKING_MODEL,
+        model: selectedModel,
         businessContext: resolveBusinessContext({ spaceName: row.name, config: cfg }),
         airGappedOnly,
         ...(openRouterCapabilityEvidence ? { openRouterCapabilityEvidence } : {}),
@@ -1888,9 +1899,8 @@ async function resolveWakeContext(
     } catch {
       // fall through to the default
     }
-    // Malformed policy is also an unknown compliance state. The eventual local-model check may
-    // reject the wake, but it cannot silently turn this into external AI usage.
-    return { model: configured ?? DEFAULT_WORKING_MODEL, businessContext: resolveBusinessContext({ spaceName: row.name, config: cfg }), airGappedOnly: true };
+    // Malformed policy is also an unknown compliance state. Do not use partially parsed settings.
+    return { model: DEFAULT_WORKING_MODEL, airGappedOnly: true };
   } catch {
     return { model: DEFAULT_WORKING_MODEL, airGappedOnly: true };
   }
@@ -5496,7 +5506,7 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
     "SELECT tenant_id, status FROM spaces WHERE id = ?"
   ).bind(spaceId).first<{ tenant_id: string; status: string }>();
   if (!space || space.status !== "active") return c.json({ ok: true, skipped: "space_inactive" });
-  const wakeContext = await resolveWakeContext(c.env, spaceId, space.tenant_id);
+  const wakeContext = await resolveWakeContext(c.env, spaceId, space.tenant_id, channel);
   if (wakeContext.airGappedOnly) {
     return c.json({ ok: true, skipped: "air_gapped" });
   }
@@ -5576,6 +5586,7 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
         projectId: link?.project_id ?? undefined,
         spaceId,
         tenantId: space.tenant_id,
+        channel,
         model: wakeContext.model,
         ...(wakeContext.openRouterCapabilityEvidence ? { openRouterCapabilityEvidence: wakeContext.openRouterCapabilityEvidence } : {}),
         // Lets the DO kick an immediate heartbeat drain (see handleChannelInbound) instead of
@@ -6185,14 +6196,14 @@ app.get("/spaces/:spaceId/assistant/channels", async (c) => {
   const scope = c.req.query("scope");
   const { results } = projectId
     ? await c.env.PLATFORM_DB.prepare(
-        "SELECT channel, enabled, created_at, project_id FROM channel_links WHERE space_id = ? AND project_id = ? ORDER BY channel"
+        "SELECT channel, enabled, created_at, project_id, model_override FROM channel_links WHERE space_id = ? AND project_id = ? ORDER BY channel"
       ).bind(spaceId, projectId).all()
     : scope === "assistant"
     ? await c.env.PLATFORM_DB.prepare(
-        "SELECT channel, enabled, created_at, project_id FROM channel_links WHERE space_id = ? AND project_id IS NULL ORDER BY channel"
+        "SELECT channel, enabled, created_at, project_id, model_override FROM channel_links WHERE space_id = ? AND project_id IS NULL ORDER BY channel"
       ).bind(spaceId).all()
     : await c.env.PLATFORM_DB.prepare(
-        "SELECT channel, enabled, created_at, project_id FROM channel_links WHERE space_id = ? ORDER BY channel"
+        "SELECT channel, enabled, created_at, project_id, model_override FROM channel_links WHERE space_id = ? ORDER BY channel"
       ).bind(spaceId).all();
   return c.json({ data: results });
 });
@@ -6220,8 +6231,9 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
   const { userId } = getCallerIdentity(c);
 
   type ChannelActionBody = {
-    action?: "pair" | "connect" | "disconnect" | "enable";
+    action?: "pair" | "connect" | "disconnect" | "enable" | "set_model";
     channel?: string;
+    model_override?: string | null;
     secret?: string;
     project_id?: string;
     media_access_token?: string;
@@ -6231,6 +6243,28 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
   const channel = String(body.channel ?? "");
   if (!isChannelType(channel)) throw badRequest("channel must be one of: email, slack, discord, whatsapp, telegram");
   const action = body.action ?? "connect";
+
+  if (action === "set_model") {
+    if (body.model_override !== null && (typeof body.model_override !== "string" || !isAllowedModel(body.model_override))) {
+      throw badRequest(`model_override must be null or one of the supported built-in models: ${ALLOWED_MODELS.join(", ")}`);
+    }
+    const space = await c.env.PLATFORM_DB.prepare("SELECT config_json,status FROM spaces WHERE id=? AND tenant_id=?").bind(spaceId, tenantId).first<{ config_json: string | null; status: string }>();
+    if (!space || space.status !== "active") throw notFound("Space");
+    if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, spaceId)) return c.json({ error_code: "air_gap_egress_denied", message: "Channel model overrides cannot enable cloud egress for this Space" }, 403);
+    let config: Record<string, unknown> = {};
+    try { config = JSON.parse(space.config_json ?? "{}") as Record<string, unknown>; }
+    catch { return c.json({ error_code: "space_configuration_invalid" }, 409); }
+    const product = config.productConfig && typeof config.productConfig === "object" ? config.productConfig as Record<string, unknown> : {};
+    const policy = (config.model_policy ?? product.modelPolicy) as SpaceModelPolicy | undefined;
+    if (body.model_override) {
+      const result = validateModelForSpacePolicy(body.model_override, policy);
+      if (!result.ok) return c.json({ error_code: result.error_code, message: result.message }, 400);
+    }
+    const updated = await c.env.PLATFORM_DB.prepare("UPDATE channel_links SET model_override=? WHERE space_id=? AND channel=?")
+      .bind(body.model_override ?? null, spaceId, channel).run();
+    if ((updated.meta?.changes ?? 0) !== 1) return c.json({ error_code: "channel_not_connected" }, 404);
+    return c.json({ channel, model_override: body.model_override ?? null, updated: true });
+  }
 
   // The default path: hand back a link (and something to scan) for Naelao's OWN app on that
   // channel, instead of asking the owner to go and create a bot. "connect" below is still there
@@ -7625,26 +7659,30 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
       if (wakePolicy.airGappedOnly) return; // channel drains and notification delivery are egress
       void sweepUndeliveredNotifications(env, msg.spaceId, msg.tenantId);
       const stub = await getAgentDOForSpace(env, msg.tenantId, msg.spaceId, "naelao-agent");
-      const beat = await stub.fetch(new Request("http://agent-do/channels/heartbeat", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        // The business this heartbeat is for. One indexed read per space per tick, best-effort:
-        // an inbound customer message is answered by an agent that knows what the business sells.
-        body: JSON.stringify({ spaceId: msg.spaceId, agentId: "naelao-agent", tenantId: msg.tenantId, apiKey: env.ANTHROPIC_API_KEY ?? "",
-          model: wakePolicy.model, ...(wakePolicy.openRouterCapabilityEvidence ? { openRouterCapabilityEvidence: wakePolicy.openRouterCapabilityEvidence } : {}),
-          businessContext: await loadBusinessContext(env.PLATFORM_DB, msg.spaceId, msg.tenantId) }),
-      }));
-      // A heartbeat that dies used to leave no trace anywhere: the response was discarded, and the
-      // drain runs entirely inside the DO so none of its own per-run logging fires for a failure
-      // of the whole tick. That made "the background loop has been silently dead for two days"
-      // completely invisible — to the owner AND to the assistant, which is exactly what the
-      // diagnostics rollup's wake_failures count exists to surface.
-      if (!beat.ok) {
-        const detail = await beat.text().catch(() => `HTTP ${beat.status}`);
-        // Awaited, not fire-and-forget: a Worker gives no guarantee that a promise left dangling
-        // after the handler returns ever completes, and dropping the only record of a dead
-        // background loop is exactly the failure this is here to prevent. It never throws.
-        await recordWakeFailure(env, msg.spaceId, msg.tenantId, "heartbeat", detail, beat.status);
+      const links = await env.PLATFORM_DB.prepare(
+        "SELECT channel, model_override FROM channel_links WHERE space_id=? AND tenant_id=? AND enabled=1 ORDER BY channel"
+      ).bind(msg.spaceId, msg.tenantId).all<{ channel: string; model_override: string | null }>();
+      const businessContext = await loadBusinessContext(env.PLATFORM_DB, msg.spaceId, msg.tenantId);
+      // Drain each connected channel independently so its model override cannot leak across
+      // conversations. Messages without an override continue to use the Space model.
+      for (const link of links.results ?? []) {
+        if (link.model_override !== null && !isAllowedModel(link.model_override)) {
+          await recordWakeFailure(env, msg.spaceId, msg.tenantId, "heartbeat", `Invalid model override for ${link.channel}`);
+          continue;
+        }
+        const model = link.model_override ?? wakePolicy.model;
+        const beat = await stub.fetch(new Request("http://agent-do/channels/heartbeat", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ spaceId: msg.spaceId, agentId: "naelao-agent", tenantId: msg.tenantId, apiKey: env.ANTHROPIC_API_KEY ?? "",
+            model, channel: link.channel,
+            ...(model === wakePolicy.model && wakePolicy.openRouterCapabilityEvidence ? { openRouterCapabilityEvidence: wakePolicy.openRouterCapabilityEvidence } : {}),
+            businessContext }),
+        }));
+        if (!beat.ok) {
+          const detail = await beat.text().catch(() => `HTTP ${beat.status}`);
+          await recordWakeFailure(env, msg.spaceId, msg.tenantId, "heartbeat", `${link.channel}: ${detail}`, beat.status);
+        }
       }
       await stub.fetch(new Request("http://agent-do/memory/maintenance", {
         method: "POST",

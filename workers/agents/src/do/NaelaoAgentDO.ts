@@ -5203,7 +5203,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const adapter = getAdapter(type);
     if (!adapter) return Response.json({ error: "unknown_channel" }, { status: 400 });
 
-    type InboundBody = { raw?: Record<string, unknown>; projectId?: string; taskId?: string; spaceId?: string; tenantId?: string; apiKey?: string; model?: string; openRouterCapabilityEvidence?: OpenRouterModelCandidate };
+    type InboundBody = { raw?: Record<string, unknown>; projectId?: string; taskId?: string; spaceId?: string; tenantId?: string; channel?: string; apiKey?: string; model?: string; openRouterCapabilityEvidence?: OpenRouterModelCandidate };
     const body = await request.json<InboundBody>().catch(() => ({}) as InboundBody);
     const norm: NormalizedInbound | null = adapter.normalizeInbound(body.raw ?? {});
     if (!norm) return Response.json({ ignored: true }); // bot echo / not actionable
@@ -5393,7 +5393,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           headers: { "content-type": "application/json" },
           // Only the first mention receives execution dispatch. Referents remain persisted
           // metadata and are never iterated/woken here.
-          body: JSON.stringify({ spaceId, agentId: mentionRoute.turnHolder ?? "naelao-agent", tenantId, apiKey,
+          body: JSON.stringify({ spaceId, agentId: mentionRoute.turnHolder ?? "naelao-agent", tenantId, channel: body.channel, apiKey,
             model: body.model, openRouterCapabilityEvidence: body.openRouterCapabilityEvidence }),
         })).catch((err) => {
           console.error(`[channels] immediate drain failed space=${spaceId}:`, (err as Error).message);
@@ -7189,7 +7189,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // PLATFORM_DB binding. Without it the agent answering a real customer on WhatsApp/Slack knows
     // its role but not what the business actually sells, which is the one thing that conversation
     // is about.
-    type HeartbeatBody = { spaceId?: string; agentId?: string; tenantId?: string; apiKey?: string; model?: string; max?: number; businessContext?: BusinessContext; openRouterCapabilityEvidence?: OpenRouterModelCandidate };
+    type HeartbeatBody = { spaceId?: string; agentId?: string; tenantId?: string; apiKey?: string; model?: string; channel?: string; max?: number; businessContext?: BusinessContext; openRouterCapabilityEvidence?: OpenRouterModelCandidate };
     const body = await request.json<HeartbeatBody>().catch(() => ({}) as HeartbeatBody);
     const spaceId = body.spaceId ?? request.headers.get("x-naelao-space-id") ?? "";
     if (!spaceId) return Response.json({ error: "spaceId is required" }, { status: 400 });
@@ -7199,13 +7199,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     // human_takeover sessions are correctly left alone — a human is already handling them,
     // this is not an escalation/failure, so it's tracked separately from `escalated`.
+    const channelFilter = body.channel ? " AND s.channel = ?" : "";
     const pending = this.ctx.storage.sql
       .exec(
         `SELECT m.id, m.session_id, s.channel, s.channel_user_id, s.project_id, m.text, m.task_id
          FROM channel_messages m JOIN channel_sessions s ON s.id = m.session_id
-         WHERE m.direction = 'inbound' AND m.answered = 0 AND s.human_takeover = 0
+         WHERE m.direction = 'inbound' AND m.answered = 0 AND s.human_takeover = 0${channelFilter}
          ORDER BY m.created_at ASC LIMIT ?`,
-        limit
+        ...(body.channel ? [body.channel, limit] : [limit])
       )
       .toArray() as Array<{ id: string; session_id: string; channel: string; channel_user_id: string; project_id: string | null; text: string; task_id: string | null }>;
 

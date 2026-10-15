@@ -16,8 +16,10 @@
 
 import * as React from "react";
 import { QrCode } from "@naelao/ui";
+import { ALLOWED_MODELS } from "@naelao/billing-core";
 import type { ChannelLink, ChannelPairing, SessionCredentials } from "@/lib/api";
 import { updateAssistantChannel, pairAssistantChannel } from "@/lib/api";
+import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
 
@@ -147,6 +149,16 @@ export function ChannelConnect({
     }
   }
 
+  async function setChannelModel(channel: ChannelId, model: string) {
+    setBusy(true); setError(null);
+    try {
+      await updateAssistantChannel(spaceId, session, { action: "set_model", channel, model_override: model || null });
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't change this channel's model.");
+    } finally { setBusy(false); }
+  }
+
   return (
     <div>
       {CHANNELS.map((ch) => {
@@ -200,6 +212,13 @@ export function ChannelConnect({
                 <span style={{ fontSize: 12, color: "var(--text3)" }}>{on ? "On" : connected ? "Off" : "—"}</span>
               )}
             </div>
+            {connected && canManage && <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 9 }}>
+              <label htmlFor={`channel-model-${ch.id}`} style={{ fontSize: 11.5, color: "var(--text3)" }}>Reply model</label>
+              <select id={`channel-model-${ch.id}`} aria-label={`${ch.name} reply model`} disabled={busy} value={link?.model_override ?? ""} onChange={(event) => void setChannelModel(ch.id, event.target.value)} style={{ maxWidth: 360, background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 7, padding: "6px 8px", fontSize: 12 }}>
+                <option value="">Use Space default</option>
+                {ALLOWED_MODELS.map((model) => <option key={model} value={model}>{modelLabel(model)}</option>)}
+              </select>
+            </div>}
 
             {showing && canManage && (
               <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
