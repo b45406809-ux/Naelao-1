@@ -292,9 +292,10 @@ export class ToolSandboxDO extends DurableObject {
     const controller = new AbortController();
     this.activeExecution = { id: scope.executionId, controller };
     const abort = () => controller.abort();
+    let executionLimitExceeded = false;
     request.signal.addEventListener("abort", abort, { once: true });
     const remaining = Math.min(scope.timeoutMs, scope.deadline - Date.now());
-    const timer = setTimeout(abort, Math.max(1, remaining));
+    const timer = setTimeout(() => { executionLimitExceeded = true; abort(); }, Math.max(1, remaining));
     const headers = new Headers(request.headers);
     headers.set("x-naelao-execution-id", scope.executionId); headers.set("x-naelao-timeout-ms", String(Math.max(1, remaining - 1000)));
     try {
@@ -316,7 +317,10 @@ export class ToolSandboxDO extends DurableObject {
       controller.abort();
       await this.ctx.storage.put(key, { scope, payloadHash, status: "indeterminate" } satisfies ExecutionRecord);
       await this.stopContainer().catch(() => this.ctx.storage.setAlarm(Date.now() + 1000));
-      return Response.json({ ok: false, error: String(error), workspace_may_require_reconciliation: true }, { status: 409 });
+      const message = executionLimitExceeded
+        ? `container_execution_time_limit_exceeded: maximum ${scope.timeoutMs}ms; move waits and schedules to a Durable Workflow and keep each container step bounded`
+        : String(error);
+      return Response.json({ ok: false, error: message, workspace_may_require_reconciliation: true }, { status: 409 });
     } finally {
       clearTimeout(timer); request.signal.removeEventListener("abort", abort); this.activeExecution = undefined;
       if (scope.installationId) await this.stopContainer().catch(() => this.ctx.storage.setAlarm(Date.now() + 1000));

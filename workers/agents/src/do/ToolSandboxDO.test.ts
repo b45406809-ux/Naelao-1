@@ -17,7 +17,7 @@ describe("sandbox workspace ownership", () => {
 });
 
 describe("ToolSandboxDO Runtime and State Coordination", () => {
-  async function createTestSandbox() {
+  async function createTestSandbox(options: { timeoutMs?: number; hangExecution?: boolean } = {}) {
     const storage = new Map();
     let alarmTime = null;
     let containerRunning = false;
@@ -34,6 +34,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       getTcpPort: () => ({
         fetch: async (req) => {
           const url = new URL(req.url);
+          if (url.pathname === "/exec" && options.hangExecution) return new Promise<Response>(() => undefined);
           if (url.pathname === "/workspace/list") return Response.json({ files: [] });
           if (url.pathname.endsWith("/display/capture")) {
             return new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
@@ -79,7 +80,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       const headers = new Headers(request.headers);
       headers.set("x-naelao-internal-token", await mintInternalToken("test-secret", "tenant"));
       headers.set("x-naelao-container-scope", JSON.stringify({ tenantId: "tenant", spaceId: "space", actorId: "owner", agentId: "worker", runId: "run",
-        executionId: crypto.randomUUID(), timeoutMs: 55000, deadline: Date.now() + 55000 }));
+        executionId: crypto.randomUUID(), timeoutMs: options.timeoutMs ?? 55000, deadline: Date.now() + (options.timeoutMs ?? 55000) }));
       return realSandbox.fetch(new Request(request, { headers }));
     } };
     await sandbox.fetch(new Request("https://sandbox/prewarm", { method: "POST", body: "{}" }));
@@ -188,6 +189,18 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       new Request("https://sandbox/workspace/list", { method: "POST" })
     );
     expect(getAlarmTime()).toBeGreaterThanOrEqual(start + 59_000);
+  });
+
+  it("hard-stops a hung container execution and returns the Durable Workflow guidance", async () => {
+    const { sandbox, mockContainer } = await createTestSandbox({ timeoutMs: 1000, hangExecution: true });
+    const execution = sandbox.fetch(new Request("https://sandbox/exec", { method: "POST", body: "{}" }));
+    await new Promise(resolve => setTimeout(resolve, 1050));
+    const response = await execution;
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ ok: false,
+      error: "container_execution_time_limit_exceeded: maximum 1000ms; move waits and schedules to a Durable Workflow and keep each container step bounded",
+      workspace_may_require_reconciliation: true });
+    expect(mockContainer.destroy).toHaveBeenCalledOnce();
   });
 
   it("keeps an active Task DAG container warm for 300s", async () => {
