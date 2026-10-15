@@ -117,6 +117,20 @@ describe("typed fast decisions", () => {
     })).resolves.toMatchObject({ action: "ocr", candidateAttachmentId: "opaque-image", candidateTool: "attachment.ocr" });
   });
 
+  it("allows transcription of a supported video's audio track without offering video frames", async () => {
+    const client = new SystemOneDecisionClient({ fetch: async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { questions: { decision: { criteria: Record<string, string> } } };
+      const criteria = Object.keys(body.questions.decision.criteria);
+      expect(criteria).toContain("transcribe_0");
+      return Response.json({ model: "jev-test", answers: { decision: { type: "choice", choice: "transcribe_0", probabilities: Object.fromEntries(criteria.map((key) => [key, key === "transcribe_0" ? 1 : 0])), confidence: 1 } }, usage: { input_tokens: 2, output_tokens: 1 } });
+    } });
+    await expect(client.classifyAttachments!({ message: "What does the speaker say?", attachments: [
+      { id: "video-1", filename: "clip.mp4", mimeType: "video/mp4", sizeBytes: 400 },
+    ], availableTools: ["attachment.transcribe"] })).resolves.toMatchObject({
+      action: "transcribe", candidateTool: "attachment.transcribe", candidateAttachmentId: "video-1",
+    });
+  });
+
   it("distinguishes visual image understanding from OCR", async () => {
     const client = new SystemOneDecisionClient({ fetch: vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { questions: { decision: { criteria: Record<string, unknown> } } };

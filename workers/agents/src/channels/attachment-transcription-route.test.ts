@@ -5,6 +5,7 @@ import { app } from "../index.js";
 const secret = "transcription-route-secret";
 function env(options: { owned?: boolean; airGapped?: boolean; mime?: string } = {}) {
   let reads = 0;
+  let mediaCalls = 0;
   const ai = { run: vi.fn(async (_model: string, input?: Record<string, unknown>) => input?.task === "query" ? ({ answer: "A red truck at a loading dock." }) : ({ text: "recognized words" })) };
   const value = {
     PLATFORM_SECRET: secret,
@@ -22,9 +23,17 @@ function env(options: { owned?: boolean; airGapped?: boolean; mime?: string } = 
       if (options.mime?.startsWith("image/")) { const png = new Uint8Array(24); png.set([137,80,78,71,13,10,26,10], 0); png.set([73,72,68,82], 12); png[19] = 5; png[23] = 5; return png.buffer; }
       return new Uint8Array([1, 2, 3]).buffer;
     } }; } },
+    MEDIA_SANDBOX: { idFromName: (name: string) => name, get: (id: string) => ({ async fetch(request: Request) {
+      mediaCalls++;
+      expect(id).toBe("attachment-media:space-a:_assistant");
+      expect(new URL(request.url).pathname).toBe("/media/extract-audio");
+      const input = await request.json() as { tenantId: string; spaceId: string; taskId: string; videoBase64: string };
+      expect(input).toMatchObject({ tenantId: "tenant-a", spaceId: "space-a", taskId: "task-a", videoBase64: "AQID" });
+      return Response.json({ audioBase64: btoa("OggS"), mimeType: "audio/ogg", durationLimitSeconds: 60 });
+    } }) },
     AI: ai,
   };
-  return { value: value as never, reads: () => reads, ai };
+  return { value: value as never, reads: () => reads, mediaCalls: () => mediaCalls, ai };
 }
 
 async function post(value: never) {
@@ -59,8 +68,12 @@ describe("task-scoped audio transcription route", () => {
     expect(foreign.reads()).toBe(0);
 
     const video = env({ mime: "video/mp4" });
-    expect((await post(video.value)).status).toBe(415);
-    expect(video.reads()).toBe(0);
+    const videoResponse = await post(video.value);
+    expect(videoResponse.status).toBe(200);
+    expect(await videoResponse.json()).toMatchObject({ source_media: "video_audio_track", extracted_duration_limit_seconds: 60, task: "transcribe", text: expect.stringContaining("recognized words") });
+    expect(video.reads()).toBe(1);
+    expect(video.mediaCalls()).toBe(1);
+    expect(video.ai.run).toHaveBeenCalledTimes(1);
 
     const airGapped = env({ airGapped: true });
     expect((await post(airGapped.value)).status).toBe(403);

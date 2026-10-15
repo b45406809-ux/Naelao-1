@@ -247,7 +247,7 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
       if (action === "read") return normalized.startsWith("text/") || ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/json", "application/xml"].includes(normalized);
       if (action === "ocr") return normalized.startsWith("image/") || normalized === "application/pdf";
       if (action === "describe") return ["image/png", "image/jpeg"].includes(normalized);
-      return normalized.startsWith("audio/");
+      return normalized.startsWith("audio/") || ["video/mp4", "video/webm", "video/quicktime", "video/x-matroska"].includes(normalized);
     };
     const actionDescriptions = {
       inspect: "Only this attachment's metadata is needed; do not open its contents.",
@@ -255,7 +255,7 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
       read: "The answer depends on text in this attachment's supported text, DOCX, or text-bearing PDF content.",
       ocr: "The answer depends on visible text in this image or scanned PDF. OCR does not interpret non-text visuals.",
       describe: "The answer depends on non-text visual content in this image (such as objects, layout, or a chart). Use image description, not OCR alone.",
-      transcribe: "The answer depends on spoken words in this audio attachment.",
+      transcribe: "The answer depends on spoken words in this audio attachment, or the audio track of a supported video. Video frames are not interpreted.",
     } as const;
     for (let index = 0; index < attachments.length; index++) {
       const attachment = attachments[index]!;

@@ -272,6 +272,7 @@ const DISPLAY_ROUTES = new Set([
 const SESSION_ROUTES = new Set(["/shell"]);
 const ARTIFACT_ROUTES = new Set(["/artifact/mount", "/artifact/read", "/artifact/write", "/artifact/flush"]);
 const PDF_ROUTES = new Set(["/pdf/render"]);
+const MEDIA_ROUTES = new Set(["/media/extract-audio"]);
 let artifactFs;
 let shuttingDown = false;
 let controlToken;
@@ -324,6 +325,7 @@ createServer((req, res) => {
   const isSessionRoute = [...SESSION_ROUTES].some((r) => path.endsWith(r));
   const isArtifactRoute = [...ARTIFACT_ROUTES].some((r) => path.endsWith(r));
   const isPdfRoute = [...PDF_ROUTES].some((r) => path.endsWith(r));
+  const isMediaRoute = [...MEDIA_ROUTES].some((r) => path.endsWith(r));
   if (
     req.method !== "POST" ||
     (!path.endsWith("/build") &&
@@ -332,7 +334,8 @@ createServer((req, res) => {
       !isDisplayRoute &&
       !isSessionRoute &&
       !isArtifactRoute &&
-      !isPdfRoute)
+      !isPdfRoute &&
+      !isMediaRoute)
   ) {
     res.writeHead(404).end(JSON.stringify({ error: "not_found" }));
     return;
@@ -369,6 +372,36 @@ createServer((req, res) => {
           ? await artifactFs.flushAndCommit({ message: parsed.message ?? "container changes", metadata: parsed.metadata, expected_head: parsed.expected_head })
           : { ok: true };
         res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(result)); return;
+      }
+      if (isMediaRoute) {
+        const MAX_VIDEO_BYTES = 6 * 1024 * 1024;
+        const MAX_AUDIO_BYTES = 1024 * 1024;
+        let directory;
+        try {
+          if (typeof parsed.videoBase64 !== "string" || parsed.videoBase64.length > Math.ceil(MAX_VIDEO_BYTES * 4 / 3) + 8
+            || !/^[A-Za-z0-9+/]+={0,2}$/.test(parsed.videoBase64)) throw new Error("video_input_invalid");
+          const video = Buffer.from(parsed.videoBase64, "base64");
+          if (!video.length || video.length > MAX_VIDEO_BYTES) throw new Error("video_input_limit");
+          directory = await mkdtemp(join(tmpdir(), "naelao-media-"));
+          await chown(directory, 10001, 10001); await chmod(directory, 0o700);
+          const inputPath = join(directory, "input-video");
+          const outputPath = join(directory, "audio.ogg");
+          await writeFile(inputPath, video);
+          await chown(inputPath, 10001, 10001); await chmod(inputPath, 0o600);
+          const result = await runGuest("/usr/bin/ffmpeg", [
+            "-nostdin", "-v", "error", "-i", inputPath, "-t", "60", "-vn", "-ac", "1", "-ar", "16000",
+            "-c:a", "libopus", "-b:a", "32k", "-f", "ogg", outputPath,
+          ], { ...execution, id: `${execution.id}-audio`, cwd: directory, timeoutMs: Math.min(execution.timeoutMs, 30_000) });
+          if (result.status !== 0) throw new Error("video_audio_extract_failed");
+          const audio = await readFile(outputPath);
+          if (audio.length < 4 || audio.length > MAX_AUDIO_BYTES || audio.toString("ascii", 0, 4) !== "OggS") throw new Error("video_audio_output_limit");
+          res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ audioBase64: audio.toString("base64"), mimeType: "audio/ogg", durationLimitSeconds: 60 })); return;
+        } catch (error) {
+          const code = String(error?.message ?? error).replace(/[^a-z0-9_:-]/gi, "_").slice(0, 120);
+          res.writeHead(422, { "content-type": "application/json" }).end(JSON.stringify({ error: code || "video_audio_extract_failed" })); return;
+        } finally {
+          if (directory) await rm(directory, { recursive: true, force: true }).catch(() => {});
+        }
       }
       if (isPdfRoute) {
         if (!parsed || typeof parsed.pdfBase64 !== "string" || !Number.isSafeInteger(parsed.firstPage) ||

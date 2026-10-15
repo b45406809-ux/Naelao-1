@@ -169,7 +169,7 @@ export class ToolSandboxDO extends DurableObject {
     const path = new URL(request.url).pathname;
     if (path === "/output") return this.output(request);
     if (path === "/cancel") return this.cancel(request);
-    const execution = this.executionQueue.then(() => ["/exec", "/shell", "/build", "/prewarm", "/computer/action", "/computer/screenshot", "/pdf/render"].includes(path)
+    const execution = this.executionQueue.then(() => ["/exec", "/shell", "/build", "/prewarm", "/computer/action", "/computer/screenshot", "/pdf/render", "/media/extract-audio"].includes(path)
       ? this.executeScoped(request) : (async () => {
         try { await this.authenticatedScope(request); }
         catch { return Response.json({ ok: false, error: "container_scope_denied" }, { status: 403 }); }
@@ -530,6 +530,15 @@ export class ToolSandboxDO extends DurableObject {
       const containerScope = JSON.parse(request.headers.get("x-naelao-container-scope") ?? "null") as ContainerInvocationScope | null;
       if (!containerScope || body.spaceId !== containerScope.spaceId || (body.projectId ?? undefined) !== containerScope.projectId) {
         return Response.json({ ok: false, error: "sandbox_workspace_identity_mismatch" }, { status: 403 });
+      }
+    } else if (url.pathname === "/media/extract-audio" && request.method === "POST") {
+      const body = await request.clone().json<{ tenantId?: string; spaceId?: string; projectId?: string | null; taskId?: string }>()
+        .catch((): { tenantId?: string; spaceId?: string; projectId?: string | null; taskId?: string } => ({}));
+      const containerScope = JSON.parse(request.headers.get("x-naelao-container-scope") ?? "null") as ContainerInvocationScope | null;
+      if (!containerScope || body.tenantId !== containerScope.tenantId || body.spaceId !== containerScope.spaceId
+        || (body.projectId ?? undefined) !== containerScope.projectId || body.taskId !== containerScope.runId
+        || containerScope.actorId !== "attachment-reader") {
+        return Response.json({ ok: false, error: "sandbox_media_identity_mismatch" }, { status: 403 });
       }
     }
     const storedScope = await this.ctx.storage.get<SandboxWorkspaceScope>("workspace_scope");

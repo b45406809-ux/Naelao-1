@@ -17,7 +17,7 @@ describe("sandbox workspace ownership", () => {
 });
 
 describe("ToolSandboxDO Runtime and State Coordination", () => {
-  async function createTestSandbox(options: { timeoutMs?: number; hangExecution?: boolean } = {}) {
+  async function createTestSandbox(options: { timeoutMs?: number; hangExecution?: boolean; actorId?: string; runId?: string } = {}) {
     const storage = new Map();
     let alarmTime = null;
     let containerRunning = false;
@@ -31,7 +31,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       }),
       interceptOutboundHttps: vi.fn(async () => undefined),
       destroy: vi.fn(async () => { containerRunning = false; }),
-      getTcpPort: () => ({
+      getTcpPort: vi.fn(() => ({
         fetch: async (req) => {
           const url = new URL(req.url);
           if (url.pathname === "/exec" && options.hangExecution) return new Promise<Response>(() => undefined);
@@ -47,7 +47,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
           }
           return Response.json({ ok: true });
         },
-      }),
+      })),
     };
 
     const mockCtx = {
@@ -79,7 +79,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     const sandbox = { alarm: () => realSandbox.alarm(), fetch: async (request: Request) => {
       const headers = new Headers(request.headers);
       headers.set("x-naelao-internal-token", await mintInternalToken("test-secret", "tenant"));
-      headers.set("x-naelao-container-scope", JSON.stringify({ tenantId: "tenant", spaceId: "space", actorId: "owner", agentId: "worker", runId: "run",
+      headers.set("x-naelao-container-scope", JSON.stringify({ tenantId: "tenant", spaceId: "space", actorId: options.actorId ?? "owner", agentId: "worker", runId: options.runId ?? "run",
         executionId: crypto.randomUUID(), timeoutMs: options.timeoutMs ?? 55000, deadline: Date.now() + (options.timeoutMs ?? 55000) }));
       return realSandbox.fetch(new Request(request, { headers }));
     } };
@@ -119,6 +119,24 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       error: "workspace_state_conflict",
       revision: 2,
     });
+  });
+
+  it("requires the authenticated attachment reader scope for video media extraction", async () => {
+    const { sandbox, mockContainer } = await createTestSandbox({ actorId: "attachment-reader", runId: "task-a" });
+    const forwardsBefore = mockContainer.getTcpPort.mock.calls.length;
+    const invalid = await sandbox.fetch(new Request("https://sandbox/media/extract-audio", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", taskId: "other-task", videoBase64: "AQID" }),
+    }));
+    expect(invalid.status).toBe(403);
+    expect(mockContainer.getTcpPort).toHaveBeenCalledTimes(forwardsBefore);
+
+    const valid = await sandbox.fetch(new Request("https://sandbox/media/extract-audio", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", taskId: "task-a", videoBase64: "AQID" }),
+    }));
+    expect(valid.status).toBe(200);
+    expect(mockContainer.getTcpPort).toHaveBeenCalled();
   });
 
   it("CAS-syncs workspace hashes, tracks lockfiles, and excludes node_modules", async () => {

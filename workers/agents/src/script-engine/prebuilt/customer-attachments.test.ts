@@ -41,7 +41,7 @@ describe("customer attachment operations", () => {
     const state = context();
     await customerAttachments.operations["attachment.transcribe"]!({ id: "opaque-id", languageHint: "en" }, state.ctx);
     expect(new URL(state.requests[0]!.url).pathname).toBe("/internal/attachments/transcribe");
-    expect(await state.requests[0]!.json()).toEqual({ tenantId: "tenant-a", spaceId: "space-a", taskId: "message-task", id: "opaque-id", languageHint: "en" });
+    expect(await state.requests[0]!.json()).toEqual({ tenantId: "tenant-a", spaceId: "space-a", taskId: "message-task", id: "opaque-id", agentId: "customer-agent", languageHint: "en" });
   });
 
   it("offers image description without exposing project-wide copy", async () => {
