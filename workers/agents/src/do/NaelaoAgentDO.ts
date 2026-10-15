@@ -1065,6 +1065,8 @@ export interface AgentDOEnv {
   GOOGLE_AI_STUDIO_API_KEY?: string;
   /** Groq BYOK key — free tier is 14,400 requests/day, which is what makes real testing possible. */
   GROQ_API_KEY?: string;
+  /** Optional OpenRouter developer fallback; customer keys are stored in the Space Vault. */
+  OPENROUTER_API_KEY?: string;
   /** CF API token — enables the Universal Endpoint's Workers AI fallback provider (spec §15
    *  cross-provider failover). Required for Workers AI via the universal endpoint (distinct from
    *  the AI binding, which is for direct binding calls). Set via `wrangler secret put
@@ -4580,7 +4582,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway",
         ...(this.env.CF_API_TOKEN ? { cfApiToken: this.env.CF_API_TOKEN } : {}),
         ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}),
-        ...(this.env.GOOGLE_AI_STUDIO_API_KEY ? { googleAiStudioApiKey: this.env.GOOGLE_AI_STUDIO_API_KEY } : {}), ...(this.env.GROQ_API_KEY ? { groqApiKey: this.env.GROQ_API_KEY } : {}),
+        ...(this.env.GOOGLE_AI_STUDIO_API_KEY ? { googleAiStudioApiKey: this.env.GOOGLE_AI_STUDIO_API_KEY } : {}), ...(this.env.GROQ_API_KEY ? { groqApiKey: this.env.GROQ_API_KEY } : {}), ...(this.env.OPENROUTER_API_KEY ? { openRouterApiKey: this.env.OPENROUTER_API_KEY } : {}),
         ...byokOverride,
       },
       ctx: { spaceId, agentId, model: body.model ?? DEFAULT_WORKING_MODEL },
@@ -7047,7 +7049,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const byokOverride = await this.resolveBusinessLlmOverride(spaceId, tenantId, model);
     const reasoner = new GatewayReasoner({
       apiKey: body.apiKey ?? "",
-      gateway: { accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway", ...(this.env.CF_API_TOKEN ? { cfApiToken: this.env.CF_API_TOKEN } : {}), ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}), ...(this.env.GOOGLE_AI_STUDIO_API_KEY ? { googleAiStudioApiKey: this.env.GOOGLE_AI_STUDIO_API_KEY } : {}), ...(this.env.GROQ_API_KEY ? { groqApiKey: this.env.GROQ_API_KEY } : {}), ...byokOverride },
+      gateway: { accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway", ...(this.env.CF_API_TOKEN ? { cfApiToken: this.env.CF_API_TOKEN } : {}), ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}), ...(this.env.GOOGLE_AI_STUDIO_API_KEY ? { googleAiStudioApiKey: this.env.GOOGLE_AI_STUDIO_API_KEY } : {}), ...(this.env.GROQ_API_KEY ? { groqApiKey: this.env.GROQ_API_KEY } : {}), ...(this.env.OPENROUTER_API_KEY ? { openRouterApiKey: this.env.OPENROUTER_API_KEY } : {}), ...byokOverride },
       ctx: { spaceId, agentId, model },
       model,
       contextWindowTokens: contextWindowForModel(model),
@@ -8132,7 +8134,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     spaceId: string,
     tenantId: string,
     model: string,
-  ): Promise<Partial<Pick<GatewayOpts, "googleAiStudioApiKey" | "groqApiKey" | "googleAiStudioApiKeys" | "groqApiKeys">>> {
+  ): Promise<Partial<Pick<GatewayOpts, "googleAiStudioApiKey" | "groqApiKey" | "openRouterApiKey" | "googleAiStudioApiKeys" | "groqApiKeys" | "openRouterApiKeys">>> {
     const provider = byokProviderForModel(model);
     if (!provider || !this.env.CREDENTIALS_WORKER) return {};
     const field = BYOK_PROVIDER_KEY_FIELD[provider];
@@ -8198,11 +8200,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
       console.log(`[agent] BYOK credentials resolved provider=${provider} keys=${keys.length} selected=${Boolean(selectedName)}`);
       if (!keys.length) return {};
-      const keysField = provider === "google-ai-studio" ? "googleAiStudioApiKeys" : "groqApiKeys";
+      const keysField = provider === "google-ai-studio" ? "googleAiStudioApiKeys" : provider === "groq" ? "groqApiKeys" : "openRouterApiKeys";
       const result = {
         [field]: keys[0],
         [keysField]: keys,
-      } as Partial<Pick<GatewayOpts, "googleAiStudioApiKey" | "groqApiKey" | "googleAiStudioApiKeys" | "groqApiKeys">>;
+      } as Partial<Pick<GatewayOpts, "googleAiStudioApiKey" | "groqApiKey" | "openRouterApiKey" | "googleAiStudioApiKeys" | "groqApiKeys" | "openRouterApiKeys">>;
       return result;
     } catch (err) {
       console.warn(`[agent] BYOK credential resolution failed provider=${provider}: ${err instanceof Error ? err.message : String(err)}`);

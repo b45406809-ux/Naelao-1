@@ -81,14 +81,14 @@ Status: **PARTIALLY IMPLEMENTED — safe custom API fallback added; exact Compos
 Primary read: **lines 842–1088** (USER 842–918; AI MODEL 919–1088).
 Bounded primary windows: 842–1016, 1017–1088.
 Later amendment/dependency pairs: 1089–1225 (task 10); 1226–1416 (task 11); 1417–1575 (task 12); 1576–1754 (task 13); 1755–1970 (task 14); 1971–2173 (task 15); 2174–2355 (task 16); 2356–2591 (task 17); 2592–2772 (task 18); 2773–2977 (task 19); 3068–3284 (task 21); 3514–3753 (task 23); 3754–3942 (task 24); 4140–4268 (task 26); 4269–4441 (task 27); 4648–4794 (task 29)
-Status: **IN PROGRESS**. Primary lines 842–1088 are next. Search matching later transcript contexts before selecting architecture and inspect current code; task 09 has not yet been assessed.
+Status: **PARTIALLY IMPLEMENTED — OpenRouter Space-BYOK routing is wired; verified model inventory and provider-specific reasoning remain dependencies for task 17.** Added OpenRouter to the existing credential, model-prefix and compat routing path. Do not enable invented GPT-6/Luna or pricing claims, and do not mark dynamic selection complete until task 17 discovers and validates the user's available catalog. Official OpenRouter/Cloudflare provider routing could not be verified from this network; tests prove local request construction only. See progress record. Task 10 is current; revisit task 09 after task 17.
 
 ## Task 10
 
 Primary read: **lines 1089–1225** (USER 1089–1091; AI MODEL 1092–1225).
 Bounded primary windows: 1089–1225.
 Later amendment/dependency pairs: 1226–1416 (task 11); 1417–1575 (task 12); 1576–1754 (task 13); 1971–2173 (task 15); 2174–2355 (task 16); 2356–2591 (task 17); 2592–2772 (task 18); 3068–3284 (task 21); 3514–3753 (task 23); 3754–3942 (task 24); 4269–4441 (task 27); 4648–4794 (task 29)
-Status: **UNASSESSED**. Evidence and exact next action belong in the progress file.
+Status: **IN PROGRESS**. Task 09 is locally wired but remains partial until task 17 validates OpenRouter model discovery and route semantics. Assess task 10's primary and later contexts next; task 09's look-aheads did not complete task 10.
 
 ## Task 11
 

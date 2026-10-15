@@ -1011,7 +1011,9 @@ export class GatewayReasoner implements Reasoner {
       ? (this.deps.gateway.googleAiStudioApiKeys ?? []).filter(Boolean)
       : byokField === "groqApiKey"
         ? (this.deps.gateway.groqApiKeys ?? []).filter(Boolean)
-        : [];
+        : byokField === "openRouterApiKey"
+          ? (this.deps.gateway.openRouterApiKeys ?? []).filter(Boolean)
+          : [];
     let byokCandidateIndex = 0;
     // Space BYOK keys use the provider directly in local development. This keeps local chat
     // independent of the optional Cloudflare Gateway auth token: a configured NAELAO_AIG_TOKEN
@@ -1031,7 +1033,8 @@ export class GatewayReasoner implements Reasoner {
     // A BYOK provider (Gemini, Groq) routes through the gateway's compat endpoint with its OWN
     // key; everything else goes to the AI REST API on a Cloudflare token.
     if (!isLocalModel && !isCustomModel && !canAuthenticateLlm(this.deps.gateway, this.deps.apiKey, query.model)) {
-      const secret = isGoogleAiStudioModel(query.model) ? "GOOGLE_AI_STUDIO_API_KEY" : "GROQ_API_KEY";
+      const secret = isGoogleAiStudioModel(query.model) ? "GOOGLE_AI_STUDIO_API_KEY"
+        : byokField === "openRouterApiKey" ? "OPENROUTER_API_KEY" : "GROQ_API_KEY";
       return {
         action: "give_up",
         reason: isByok
@@ -1091,10 +1094,12 @@ export class GatewayReasoner implements Reasoner {
       } else if (useDirectByok) {
         const field = byokKeyFieldForModel(query.model);
         const providerKey = field ? requestGateway[field] : undefined;
-        const directModel = compatProviderModelId(query.model).replace(/^(?:google-ai-studio|groq)\//, "");
+        const directModel = compatProviderModelId(query.model).replace(/^(?:google-ai-studio|groq|openrouter)\//, "");
         const directUrl = isGoogleAiStudioModel(query.model)
           ? "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-          : "https://api.groq.com/openai/v1/chat/completions";
+          : query.model.startsWith("groq/")
+            ? "https://api.groq.com/openai/v1/chat/completions"
+            : "https://openrouter.ai/api/v1/chat/completions";
         resp = await fetch(directUrl, {
           method: "POST",
           headers: {

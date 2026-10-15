@@ -54,6 +54,10 @@ export interface GatewayOpts {
   groqApiKey?: string;
   /** Additional space-owned keys for the same provider. */
   groqApiKeys?: string[];
+  /** OpenRouter account key, stored per Space. */
+  openRouterApiKey?: string;
+  /** Additional space-owned OpenRouter keys for controlled failover. */
+  openRouterApiKeys?: string[];
 }
 
 // ── CF AI Gateway Universal Endpoint ─────────────────────────────────────────
@@ -106,9 +110,10 @@ export function isGoogleAiStudioModel(model: string): boolean {
  * these prefixes goes here instead of the AI REST API, because a BYOK provider cannot be reached
  * with a Cloudflare token alone.
  */
-const BYOK_COMPAT_PROVIDERS: Record<string, keyof Pick<GatewayOpts, "googleAiStudioApiKey" | "groqApiKey">> = {
+const BYOK_COMPAT_PROVIDERS: Record<string, keyof Pick<GatewayOpts, "googleAiStudioApiKey" | "groqApiKey" | "openRouterApiKey">> = {
   "google-ai-studio/": "googleAiStudioApiKey",
   "groq/": "groqApiKey",
+  "openrouter/": "openRouterApiKey",
 };
 
 /** Which BYOK key this model needs, or null when it is an ordinary AI-REST-API model. */
@@ -126,9 +131,10 @@ export function byokKeyFieldForModel(model: string): keyof GatewayOpts | null {
  * AI-REST-API/Cloudflare model — those aren't a simple single-key override; see NaelaoAgentDO's
  * resolveBusinessLlmOverride for why CF Workers AI BYOK is a separate, larger piece).
  */
-export const BYOK_PROVIDER_KEY_FIELD: Record<string, keyof Pick<GatewayOpts, "googleAiStudioApiKey" | "groqApiKey">> = {
+export const BYOK_PROVIDER_KEY_FIELD: Record<string, keyof Pick<GatewayOpts, "googleAiStudioApiKey" | "groqApiKey" | "openRouterApiKey">> = {
   "google-ai-studio": "googleAiStudioApiKey",
   "groq": "groqApiKey",
+  "openrouter": "openRouterApiKey",
 };
 
 export function byokProviderForModel(model: string): string | null {
@@ -143,6 +149,10 @@ export function isCompatProviderModel(model: string): boolean {
   return byokKeyFieldForModel(model) !== null;
 }
 
+export function isOpenRouterModel(model: string): boolean {
+  return model.startsWith("openrouter/");
+}
+
 /**
  * Translate the UI's friendly Gemini aliases to model ids accepted by Google's OpenAI
  * compatibility endpoint. The aliases are useful in persisted space configuration, but the
@@ -150,7 +160,9 @@ export function isCompatProviderModel(model: string): boolean {
  * otherwise return Google's generic 400 INVALID_ARGUMENT response.
  */
 export function compatProviderModelId(model: string): string {
-  const prefix = model.startsWith("google-ai-studio/") ? "google-ai-studio/" : model.startsWith("groq/") ? "groq/" : "";
+  const prefix = model.startsWith("google-ai-studio/") ? "google-ai-studio/"
+    : model.startsWith("groq/") ? "groq/"
+      : model.startsWith("openrouter/") ? "openrouter/" : "";
   const bare = prefix ? model.slice(prefix.length) : model;
   const geminiAliases: Record<string, string> = {
     "gemini-flash-lite-latest": "gemini-3.1-flash-lite",

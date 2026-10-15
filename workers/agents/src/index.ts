@@ -2894,8 +2894,8 @@ async function resolveConnectorCredential(
   return typeof body.value === "string" ? body.value : null;
 }
 
-// ── Step 28: business-wide BYOK LLM keys (AI Studio / Groq) ──────────────────
-// A business supplies its OWN Gemini/Groq key so its runs draw on ITS provider quota, not the
+// ── Step 28: business-wide BYOK LLM keys (AI Studio / Groq / OpenRouter) ──────
+// A business supplies its OWN provider key so its runs draw on ITS provider quota, not the
 // platform's shared allowance. Stored space-scoped in the vault under `llm-byok:{provider}` (a
 // secret — never config_json); the agent isolate never sees it. NaelaoAgentDO resolves it at
 // run time when the resolved model is that provider's (resolveBusinessLlmOverride). The spaces
@@ -2903,7 +2903,7 @@ async function resolveConnectorCredential(
 // requireVerifiedTenant gate only proves SOME verified tenant, so a product_end_user must reach
 // them via that wrapper, never directly. CF Workers AI BYOK is deliberately absent: it needs a
 // business's own account-id + a scoped token + different gateway routing, a separate larger piece.
-const BYOK_PROVIDERS = ["google-ai-studio", "groq"] as const;
+const BYOK_PROVIDERS = ["google-ai-studio", "groq", "openrouter"] as const;
 type ByokProvider = (typeof BYOK_PROVIDERS)[number];
 function isByokProvider(p: string): p is ByokProvider {
   return (BYOK_PROVIDERS as readonly string[]).includes(p);
@@ -2941,8 +2941,9 @@ function isByokKeyName(name: string, provider: ByokProvider): boolean {
 }
 
 function labelFromByokDescription(description: string | null | undefined, provider: ByokProvider): string {
-  if (!description || description.startsWith("active-key:")) return `${provider === "groq" ? "Groq" : "Gemini"} key`;
-  return description.replace(/^BYOK LLM key \([^)]*\)$/, `${provider === "groq" ? "Groq" : "Gemini"} key`);
+  const label = provider === "groq" ? "Groq" : provider === "openrouter" ? "OpenRouter" : "Gemini";
+  if (!description || description.startsWith("active-key:")) return `${label} key`;
+  return description.replace(/^BYOK LLM key \([^)]*\)$/, `${label} key`);
 }
 
 /** List BYOK key metadata only, never the key value. Pointer rows are excluded by consumers. */
