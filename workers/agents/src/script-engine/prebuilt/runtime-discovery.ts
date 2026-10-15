@@ -32,7 +32,7 @@ export const runtimeDiscovery: PrebuiltScript = {
       }
       return { status: candidates.length ? "installation_required" : "runtime_not_found", binary, candidates, recommended,
         requires_human_approval: true,
-        ...(c.env.projectId ? { project_id: c.env.projectId, scope: "PROJECT_SHARED" } : { scope: "SPACE_SHARED", workspace: "dedicated_space_extension" }),
+        ...(c.env.projectId ? { project_id: c.env.projectId, scope: "PROJECT_SHARED" } : { scope: "SPACE_ASSISTANT", workspace: "space_assistant" }),
         next_action: candidates.length
           ? "Ask a Space owner to open Foundry → Specialized runtimes, review the permissions and limits, install the selected runtime, then retry this command."
           : "Ask an FDE/operator to prepare a trusted digest-pinned runtime and deploy its approved binding, or choose an already authorized local-machine alternative. No image is provisioned from model text." };

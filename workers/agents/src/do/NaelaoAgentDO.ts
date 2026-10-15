@@ -2337,7 +2337,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     };
     env.containerRuntimeInventory = async () => ({ installed: await installedContainers(),
       catalogue: deployedContainerCatalogue(this.env.CONTAINER_IMAGE_REGISTRY,
-        [this.env.DOCUMENT_SANDBOX ? "DOCUMENT_SANDBOX" : "", this.env.MEDIA_SANDBOX ? "MEDIA_SANDBOX" : ""]) });
+        [this.env.DOCUMENT_SANDBOX ? "DOCUMENT_SANDBOX" : "", this.env.MEDIA_SANDBOX ? "MEDIA_SANDBOX" : "", this.env.TOOL_SANDBOX ? "TOOL_SANDBOX" : ""]) });
     env.codeRunner = buildCodeRunner({
       airGappedOnly,
       authorizeContainer: nativeGrantActive,
@@ -2346,9 +2346,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const installation = (await installedContainers()).find(item => item.installationId === params.installationId && item.contract.image === params.containerImage && (!item.projectId || item.projectId === projectId) && (!item.userId || item.userId === userId));
         if (!installation) throw new Error("container_active_installation_required");
         const approved = approvedContainer(installation, parseApprovedContainerImages(this.env.CONTAINER_IMAGE_REGISTRY));
-        const namespace = this.env[approved.binding];
+        const namespace = approved.binding === "TOOL_SANDBOX" ? this.env.TOOL_SANDBOX : this.env[approved.binding];
         if (!namespace) throw new Error("container_binding_unavailable");
-        return { installation, namespace };
+        return { installation, namespace, dynamicImage: approved.binding === "TOOL_SANDBOX" };
       },
       pythonEnabled: this.env.DYNAMIC_PYTHON_ENABLED === "true",
       ...(loopbacks?.CodeRpcBroker ? { createRpcBinding: async (options, deadline) => bindCodeRpc(loopbacks.CodeRpcBroker!, options, deadline) } : {}),

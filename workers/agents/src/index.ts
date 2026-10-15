@@ -7626,7 +7626,7 @@ app.get("/catalog/dev", (c) => {
 app.get("/container-images", async (c) => {
   try {
     return c.json({ images: deployedContainerCatalogue(c.env.CONTAINER_IMAGE_REGISTRY,
-      [c.env.DOCUMENT_SANDBOX ? "DOCUMENT_SANDBOX" : "", c.env.MEDIA_SANDBOX ? "MEDIA_SANDBOX" : ""]) });
+      [c.env.DOCUMENT_SANDBOX ? "DOCUMENT_SANDBOX" : "", c.env.MEDIA_SANDBOX ? "MEDIA_SANDBOX" : "", c.env.TOOL_SANDBOX ? "TOOL_SANDBOX" : ""]) });
   } catch {
     return c.json({ error_code: "container_registry_invalid", message: "Runtime deployment configuration is invalid" }, 503);
   }

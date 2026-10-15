@@ -19,6 +19,18 @@ describe("runtime discovery and deployment approval", () => {
     expect(deployedContainerCatalogue(JSON.stringify([pin("a")]), []).find(item => item.id === "ffmpeg")?.available).toBe(false);
   });
 
+  it("exposes custom FDE marketplace cards only as deployment-pinned TOOL_SANDBOX images", () => {
+    const custom = { image: `registry.example/fde/pdf@sha256:${"c".repeat(64)}`, binding: "TOOL_SANDBOX",
+      memoryMb: 4096, cpuCores: 0.5, schedulingPolicy: "default", networkPolicy: "none",
+      marketplace: { id: "pdf-processor", name: "PDF Processor", description: "Bounded PDF utility tools.", category: "compute", exportedBinaries: ["pdf-inspect"] } };
+    const catalogue = deployedContainerCatalogue(JSON.stringify([custom]), ["TOOL_SANDBOX"]);
+    expect(catalogue.find(item => item.id === "pdf-processor")).toMatchObject({ available: true,
+      image: custom.image, exported_binaries: ["pdf-inspect"], install_manifest: { containers: [{ resources: { timeoutSeconds: 60 }, networkPolicy: "none" }] } });
+    expect(deployedContainerCatalogue(JSON.stringify([custom]), []).find(item => item.id === "pdf-processor")).toBeUndefined();
+    expect(() => deployedContainerCatalogue(JSON.stringify([{ ...custom, marketplace: { ...custom.marketplace, id: "../unsafe" } }]), ["TOOL_SANDBOX"]))
+      .toThrow("container_marketplace_entry_invalid");
+  });
+
   it("proposes an approved runtime without installing or allocating it", async () => {
     const fetch = vi.fn();
     const ctx = { env: { tenantId: "tenant", spaceId: "space", projectId: "project",
@@ -28,6 +40,15 @@ describe("runtime discovery and deployment approval", () => {
     expect(result).toMatchObject({ status: "installation_required", binary: "ffmpeg", recommended: "ffmpeg",
       requires_human_approval: true, scope: "PROJECT_SHARED", project_id: "project" });
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("recommends the assistant workspace only when discovery has no project scope", async () => {
+    const ctx = { env: { tenantId: "tenant", spaceId: "space", containerRuntimeInventory: async () => ({ installed: [], catalogue: [
+      { id: "ffmpeg", name: "FFmpeg", description: "media", category: "media", available: true, exported_binaries: ["ffmpeg"] },
+    ] }) }, run: async () => undefined } as never;
+    expect(await runtimeDiscovery.operations["runtime.find"]({ binary: "ffmpeg" }, ctx)).toMatchObject({
+      status: "installation_required", scope: "SPACE_ASSISTANT", workspace: "space_assistant",
+    });
   });
 
   it("returns only actor-scoped installed commands and rejects invalid binary names", async () => {

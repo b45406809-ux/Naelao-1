@@ -53,7 +53,7 @@ interface ContainerPort {
 }
 interface ContainerRuntime {
   readonly running: boolean;
-  start(opts?: { enableInternet?: boolean }): void;
+  start(opts?: { enableInternet?: boolean; image?: string }): void;
   interceptOutboundHttps?(host: string, binding: ContainerPort): Promise<void>;
   getTcpPort(port: number): ContainerPort;
   inspect?(): Promise<{ image: string } | null>;
@@ -114,14 +114,18 @@ export function sandboxWorkspacePrefix(scope: SandboxWorkspaceScope): string {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(scope.spaceId)) throw new Error("invalid workspace space");
   const project = scope.projectId;
   if (project && !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(project)) throw new Error("invalid workspace project");
+  if (scope.installationScope === "SPACE_ASSISTANT" && project) throw new Error("assistant_runtime_project_scope_mismatch");
   if (scope.installationId && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(scope.installationId)) throw new Error("invalid workspace installation");
   const branch = scope.branch?.replaceAll("\\", "/");
   if (branch && (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(branch) || branch.includes(".."))) throw new Error("invalid workspace branch");
-  // Project-scoped extensions use their project workspace. Space-scoped installations
-  // receive a dedicated Space extension workspace even when a project initiated the run.
+  // Project-scoped extensions use their project workspace. Space-shared installations
+  // receive a dedicated extension workspace; SPACE_ASSISTANT targets the normal assistant
+  // workspace and is only valid without a project scope.
   const spaceExtension = scope.installationId && ["SPACE_SHARED", "SPACE_USER"].includes(scope.installationScope ?? "");
   const base = spaceExtension
     ? `spaces/${scope.spaceId}/space-workspace/extensions/${scope.installationId}/workspace/`
+    : scope.installationScope === "SPACE_ASSISTANT"
+      ? `spaces/${scope.spaceId}/workspace/`
     : project
       ? `spaces/${scope.spaceId}/projects/${project}/workspace/`
       : scope.installationId
@@ -681,7 +685,11 @@ export class ToolSandboxDO extends DurableObject {
       const packageEgress = exports?.PackageEgress?.({ props: {} });
       if (!packageEgress) return Response.json({ ok: false, error: "package_egress_binding_unavailable" }, { status: 503 });
       for (const host of TRUSTED_PACKAGE_HOSTS) await container.interceptOutboundHttps(host, packageEgress);
-      container.start({ enableInternet: false });
+      const startScope = JSON.parse(request.headers.get("x-naelao-container-scope") ?? "null") as ContainerInvocationScope | null;
+      // Marketplace sidecars are immutable deployment-approved digests implementing the same
+      // harness protocol. Select only the authenticated installation's pin; never accept an
+      // image from the execution body or model-generated command.
+      container.start({ enableInternet: false, ...(startScope?.dynamicImage && startScope.image ? { image: startScope.image } : {}) });
       const token = await this.ctx.storage.get<string>("container_control_token") ?? Array.from(crypto.getRandomValues(new Uint8Array(32)), n => n.toString(16).padStart(2, "0")).join("");
       await this.ctx.storage.put("container_control_token", token);
       const readyDeadline = Math.min(Date.now() + 20000, Number(JSON.parse(request.headers.get("x-naelao-container-scope") ?? "{}").deadline) || Date.now() + 20000);

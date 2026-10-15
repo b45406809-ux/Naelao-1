@@ -982,7 +982,8 @@ app.post("/spaces/:spaceId/runtime-installations", async c => {
   const body = await c.req.json<{ image_id?: string; manifest?: unknown; scope?: string; project_id?: string; acknowledge_permissions?: boolean; promote_existing?: boolean; acknowledge_promotion?: boolean; acknowledge_isolation?: boolean }>().catch(() => null);
   if (!body || body.acknowledge_permissions !== true) return c.json({ error_code: "runtime_install_approval_required" }, 400);
   if (typeof body.image_id !== "string" || body.manifest !== undefined) return c.json({ error_code: "deployment_generated_runtime_required" }, 422);
-  if (!["SPACE_SHARED", "PROJECT_SHARED"].includes(body.scope ?? "") || body.scope === "SPACE_SHARED" && body.project_id
+  if (!["SPACE_SHARED", "SPACE_ASSISTANT", "PROJECT_SHARED"].includes(body.scope ?? "")
+    || ["SPACE_SHARED", "SPACE_ASSISTANT"].includes(body.scope ?? "") && body.project_id
     || body.scope === "PROJECT_SHARED" && (!body.project_id || typeof body.project_id !== "string")) return c.json({ error_code: "runtime_scope_invalid" }, 400);
   if (body.project_id) {
     const denied = await requireManageableAutomationProject(c, spaceId, body.project_id);
@@ -1015,10 +1016,13 @@ app.post("/spaces/:spaceId/runtime-installations", async c => {
   const installations = await installationsResponse.json<{ installations: Array<{ instance_id: string; project_id: string | null; scope: string }> }>();
   const projectInstalls = installations.installations.filter(item => item.scope === "PROJECT_SHARED");
   const sharedInstall = installations.installations.find(item => item.scope === "SPACE_SHARED");
+  const assistantInstall = installations.installations.find(item => item.scope === "SPACE_ASSISTANT");
   if (body.scope === "PROJECT_SHARED" && sharedInstall)
     return c.json({ status: "already_available_space_shared", installation_id: sharedInstall.instance_id, scope: "SPACE_SHARED" });
+  if (body.scope === "SPACE_ASSISTANT" && assistantInstall)
+    return c.json({ status: "already_available_assistant", installation_id: assistantInstall.instance_id, scope: "SPACE_ASSISTANT" });
   const otherProjects = body.project_id ? projectInstalls.filter(item => item.project_id !== body.project_id) : projectInstalls;
-  const promotionApplies = body.scope === "SPACE_SHARED" ? projectInstalls.length > 0 : otherProjects.length > 0;
+  const promotionApplies = body.scope === "SPACE_SHARED" ? projectInstalls.length > 0 : body.scope === "PROJECT_SHARED" ? otherProjects.length > 0 : false;
   if (promotionApplies && !body.promote_existing && !body.acknowledge_isolation) {
     return c.json({ status: "promotion_confirmation_required", extension_id: manifest.id,
       existing_project_ids: [...new Set(projectInstalls.map(item => item.project_id).filter((id): id is string => Boolean(id)))],
@@ -1028,7 +1032,7 @@ app.post("/spaces/:spaceId/runtime-installations", async c => {
   if (body.promote_existing && (body.scope !== "SPACE_SHARED" || body.acknowledge_promotion !== true))
     return c.json({ error_code: "runtime_promotion_confirmation_required" }, 400);
   return forwardToSpaceDO(stub, "/extensions", "POST", JSON.stringify({ manifest, installedBy: userId, tenantId, spaceId,
-    scope: body.scope, ...(body.project_id ? { projectId: body.project_id } : {}), ...(body.promote_existing ? { promoteExisting: true } : {}), gatekeeperCapabilities: ["native-execution"] }));
+      scope: body.scope, ...(body.project_id ? { projectId: body.project_id } : {}), ...(body.promote_existing ? { promoteExisting: true } : {}), gatekeeperCapabilities: ["native-execution"] }));
 });
 
 // Canonical project-universal cron registration. The SpaceDO performs the authoritative

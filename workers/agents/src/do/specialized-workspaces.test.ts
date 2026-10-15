@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { mintInternalToken } from "@naelao/http";
 import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim.js";
 import { ConcurrencyDO } from "./ConcurrencyDO.js";
-import { ToolSandboxDO } from "./ToolSandboxDO.js";
+import { sandboxWorkspacePrefix, ToolSandboxDO } from "./ToolSandboxDO.js";
 import { sha256Bytes } from "../script-engine/r2-cas.js";
 
 const image = "registry.example/media@sha256:" + "a".repeat(64);
@@ -77,7 +77,7 @@ function runtime(store: ReturnType<typeof workspace>, deployedImage = image) {
   const exec = async (args = {}, sidecar = false, bodyScope = { spaceId: "space", projectId: "project" }, installationScope?: "SPACE_SHARED" | "PROJECT_SHARED") => {
     const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", actorId: "user", agentId: "worker", runId: "run",
       executionId: crypto.randomUUID(), timeoutMs: 55000, deadline: Date.now() + 55000,
-      ...(sidecar ? { image, installationId: "media-one", ...(installationScope ? { installationScope } : {}) } : {}) };
+      ...(sidecar ? { image, dynamicImage: true, installationId: "media-one", ...(installationScope ? { installationScope } : {}) } : {}) };
     return sandbox.fetch(new Request("http://sandbox/exec", { method: "POST", headers: { "content-type": "application/json",
       "x-naelao-container-scope": JSON.stringify(scope), "x-naelao-internal-token": await mintInternalToken("test-secret", "tenant") },
       body: JSON.stringify({ ...bodyScope, args }) }));
@@ -86,12 +86,24 @@ function runtime(store: ReturnType<typeof workspace>, deployedImage = image) {
 }
 
 describe("specialized project workspaces", () => {
+  it("routes assistant, project, and Space-shared runtimes to distinct workspace roots", () => {
+    expect(sandboxWorkspacePrefix({ spaceId: "space", installationId: "assistant-one", installationScope: "SPACE_ASSISTANT" }))
+      .toBe("spaces/space/workspace/");
+    expect(sandboxWorkspacePrefix({ spaceId: "space", projectId: "project", installationId: "project-one", installationScope: "PROJECT_SHARED" }))
+      .toBe(prefix);
+    expect(sandboxWorkspacePrefix({ spaceId: "space", projectId: "project", installationId: "media-one", installationScope: "SPACE_SHARED" }))
+      .toBe(extensionPrefix);
+    expect(() => sandboxWorkspacePrefix({ spaceId: "space", projectId: "project", installationId: "bad", installationScope: "SPACE_ASSISTANT" }))
+      .toThrow("assistant_runtime_project_scope_mismatch");
+  });
+
   it("refreshes warm readers across specialized executions, including binary updates and deletions", async () => {
     const store = workspace(), general = runtime(store), specialized = runtime(store);
     await store.seed("spaces/space/projects/other/workspace/private.txt", new TextEncoder().encode("private"));
     expect((await general.exec()).ok).toBe(true);
     const binary = Buffer.from([0, 255, 1, 128]).toString("base64");
     expect((await specialized.exec({ write: { "clip.bin": binary } }, true)).ok).toBe(true);
+    expect(specialized.transport.start).toHaveBeenCalledWith({ enableInternet: false, image });
     expect(specialized.transport.destroy).toHaveBeenCalledOnce();
     const read = await general.exec();
     expect(await read.json()).toMatchObject({ result: { files: { "clip.bin": binary } } });

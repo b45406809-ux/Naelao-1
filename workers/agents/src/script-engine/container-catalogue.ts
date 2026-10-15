@@ -156,6 +156,24 @@ export function deployedContainerCatalogue(registryJson: string | undefined, bou
         capabilityRequirements: ["native-execution"], lifecycle: {}, image: pin.image, resources: { memoryMb: pin.memoryMb, cpuCores: pin.cpuCores, timeoutSeconds: 60 }, exportedBinaries: profile.binaries, networkPolicy: "none" }],
     };
   }
+  // FDE-built images enter the customer marketplace only after an operator pins the reviewed
+  // immutable digest in CONTAINER_IMAGE_REGISTRY. Images implement the sandbox harness protocol;
+  // execution still uses the same bounded, no-network ToolSandbox boundary. An FDE manifest or
+  // planner text never acts as deployment authority.
+  for (const pin of registry.filter(entry => entry.binding === "TOOL_SANDBOX" && entry.marketplace)) {
+    const card = pin.marketplace!;
+    if (!bound.includes("TOOL_SANDBOX") || images.some(entry => entry.id === card.id)) continue;
+    images.push({
+      id: card.id, name: card.name, description: card.description, category: card.category,
+      exposed_ops: [], persisted_paths: [], network_policy: "none", billing_tier: "pro", available: true,
+      image: pin.image, exported_binaries: [...card.exportedBinaries],
+      install_manifest: {
+        id: `ext_runtime_${card.id}_${pin.image.slice(-12)}`, type: "extension", declaredPermissions: ["container:execute"], capabilityRequirements: ["native-execution"], gadgets: [], daemons: [], commands: [],
+        containers: [{ schemaVersion: "1.0", kind: "container", id: card.id, version: "1.0.0", permissions: [{ scope: "PROJECT_BOUND", actions: ["execute"], resource: "workspace" }],
+          capabilityRequirements: ["native-execution"], lifecycle: {}, image: pin.image, resources: { memoryMb: pin.memoryMb, cpuCores: pin.cpuCores, timeoutSeconds: 60 }, exportedBinaries: [...card.exportedBinaries], networkPolicy: "none" }],
+      },
+    });
+  }
   return images;
 }
 

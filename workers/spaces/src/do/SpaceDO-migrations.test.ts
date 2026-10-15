@@ -4,6 +4,19 @@ import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim";
 import { SPACE_DO_MIGRATIONS } from "./SpaceDO";
 
 describe("SpaceDO migration replay", () => {
+  it("adds the assistant container scope without dropping older extension grants", () => {
+    const storage = createDOStorage();
+    const migrationStorage = storage as unknown as { sql: SqlStorage; transactionSync<T>(closure: () => T): T };
+    applyMigrations(migrationStorage, SPACE_DO_MIGRATIONS.filter(migration => migration.version < 79));
+    storage.sql.exec("INSERT INTO extension_instances(instance_id,extension_id,tenant_id,space_id,project_id,user_id,scope,owner_key,installed_by,status,installed_at,removed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+      "old-install", "ext-old", "tenant", "space", null, null, "SPACE_SHARED", "space:space", "owner", "active", "2026-01-01", null);
+    applyMigrations(migrationStorage, SPACE_DO_MIGRATIONS);
+    expect(storage.sql.exec<{ scope: string }>("SELECT scope FROM extension_instances WHERE instance_id='old-install'").toArray()).toEqual([{ scope: "SPACE_SHARED" }]);
+    storage.sql.exec("INSERT INTO extension_instances(instance_id,extension_id,tenant_id,space_id,project_id,user_id,scope,owner_key,installed_by,status,installed_at,removed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+      "assistant-install", "ext-assistant", "tenant", "space", null, null, "SPACE_ASSISTANT", "space:space:assistant", "owner", "active", "2026-01-01", null);
+    expect(storage.sql.exec<{ scope: string }>("SELECT scope FROM extension_instances WHERE instance_id='assistant-install'").toArray()).toEqual([{ scope: "SPACE_ASSISTANT" }]);
+  });
+
   it("creates project, Foundry and Space glossary tables and replays every migration exactly once", () => {
     const storage = createDOStorage();
     applyMigrations(

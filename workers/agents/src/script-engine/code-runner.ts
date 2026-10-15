@@ -90,7 +90,7 @@ export interface CodeRunnerOptions {
   containerImages?: Record<string, DurableObjectNamespace>;
   /** Host resolves the active installation and an approved fixed binding, not model text. */
   authorizeContainer?: (params: Parameters<TieredCodeRunner["run"]>[0]) => Promise<boolean>;
-  resolveSidecar?: (params: Parameters<TieredCodeRunner["run"]>[0]) => Promise<{ installation: InstalledContainer; namespace: DurableObjectNamespace }>;
+  resolveSidecar?: (params: Parameters<TieredCodeRunner["run"]>[0]) => Promise<{ installation: InstalledContainer; namespace: DurableObjectNamespace; dynamicImage?: boolean }>;
   browserContainerLease?: () => Promise<BrowserContainerLease | undefined>;
   browserCompatible?: (params: Parameters<TieredCodeRunner["run"]>[0]) => Promise<boolean>;
   /** Per-call wall-clock timeout for isolate tiers (2-4). Default 15s. */
@@ -236,12 +236,13 @@ async function runContainer(
   if (params.containerImage) {
     if (!opts.resolveSidecar || !params.installationId) return fail("container_active_installation_required");
     try {
-      const { namespace, installation } = await opts.resolveSidecar(params);
+      const { namespace, installation, dynamicImage } = await opts.resolveSidecar(params);
       if (installation.installationId !== params.installationId || installation.contract.image !== params.containerImage) return fail("container_image_installation_mismatch");
       const timeoutMs = Math.min(opts.containerTimeoutMs ?? DEFAULT_CONTAINER_TIMEOUT_MS, installation.contract.resources.timeoutSeconds * 1000);
       const scope: ContainerInvocationScope = { tenantId: params.tenantId, spaceId: params.spaceId, ...(params.projectId ? { projectId: params.projectId } : {}), actorId: params.userId,
         agentId: params.agentId, runId: params.runId, executionId: crypto.randomUUID(), installationId: params.installationId,
-        ...(installation.scope ? { installationScope: installation.scope } : {}), image: installation.contract.image, timeoutMs, deadline: Date.now() + timeoutMs };
+        ...(installation.scope ? { installationScope: installation.scope } : {}), image: installation.contract.image,
+        ...(dynamicImage ? { dynamicImage: true } : {}), timeoutMs, deadline: Date.now() + timeoutMs };
       const stub = namespace.get(namespace.idFromName(sidecarKey(scope) + branchScope));
       return runContainerRequest(stub, opts, params, started, false, scope);
     } catch (error) { return fail(error instanceof Error ? error.message : "container_registry_unavailable"); }

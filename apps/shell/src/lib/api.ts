@@ -1443,9 +1443,9 @@ export async function listRuntimeCatalogue(spaceId: string, session: SessionCred
   return apiFetch<{ images: RuntimeCatalogueEntry[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/runtime-catalog`, { session });
 }
 export async function installRuntime(spaceId: string, session: SessionCredentials, imageId: string, options: {
-  scope?: "SPACE_SHARED" | "PROJECT_SHARED"; projectId?: string; promoteExisting?: boolean; acknowledgePromotion?: boolean; acknowledgeIsolation?: boolean;
+  scope?: "SPACE_SHARED" | "SPACE_ASSISTANT" | "PROJECT_SHARED"; projectId?: string; promoteExisting?: boolean; acknowledgePromotion?: boolean; acknowledgeIsolation?: boolean;
 } = {}) {
-  return apiFetch<{ installed?: boolean; manifest?: unknown; installedAt?: string; installationId?: string; status?: "promotion_confirmation_required" | "already_available_space_shared"; existing_project_ids?: string[]; warning?: string; scope?: string }>(
+  return apiFetch<{ installed?: boolean; manifest?: unknown; installedAt?: string; installationId?: string; status?: "promotion_confirmation_required" | "already_available_space_shared" | "already_available_assistant"; existing_project_ids?: string[]; warning?: string; scope?: string }>(
     `/v1/spaces/${encodeURIComponent(spaceId)}/runtime-installations`,
     { method: "POST", body: JSON.stringify({ image_id: imageId, scope: options.scope ?? "SPACE_SHARED", ...(options.projectId ? { project_id: options.projectId } : {}),
       ...(options.promoteExisting ? { promote_existing: true, acknowledge_promotion: options.acknowledgePromotion === true } : {}),

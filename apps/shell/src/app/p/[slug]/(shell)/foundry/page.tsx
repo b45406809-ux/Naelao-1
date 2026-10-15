@@ -61,7 +61,7 @@ export default function FoundryPage() {
   const [runtimeCatalogueLoaded, setRuntimeCatalogueLoaded] = React.useState(false);
   const [runtimeCatalogueError, setRuntimeCatalogueError] = React.useState("");
   const [runtimeProjects, setRuntimeProjects] = React.useState<Project[]>([]);
-  const [runtimeInstallScope, setRuntimeInstallScope] = React.useState<"SPACE_SHARED" | "PROJECT_SHARED">("SPACE_SHARED");
+  const [runtimeInstallScope, setRuntimeInstallScope] = React.useState<"SPACE_SHARED" | "SPACE_ASSISTANT" | "PROJECT_SHARED">("SPACE_SHARED");
   const [runtimeProjectId, setRuntimeProjectId] = React.useState("");
 
   const refresh = React.useCallback(async () => {
@@ -171,14 +171,15 @@ export default function FoundryPage() {
     const contracts = runtime.install_manifest?.containers ?? [];
     const permissions = contracts.map(contract => `${contract.id}: ${contract.resources.memoryMb} MB memory, ${contract.resources.cpuCores} CPU, ${contract.resources.timeoutSeconds}s per run, outbound network ${contract.networkPolicy ?? "none"}`).join("\n");
     const requestedProject = runtimeInstallScope === "PROJECT_SHARED" ? runtimeProjects.find(project => project.id === runtimeProjectId) : undefined;
-    const accepted = window.confirm(`Install ${runtime.name} for ${requestedProject ? `project ${requestedProject.name}` : "this Space"}?\n\nIt can run exported commands in a dedicated extension workspace.\n${permissions}\n\nEach container run uses the existing metered runtime budget; no fixed monthly price is implied.`);
+    const target = requestedProject ? `project ${requestedProject.name}` : runtimeInstallScope === "SPACE_ASSISTANT" ? "the Space Assistant workspace" : "a dedicated Space extension workspace";
+    const accepted = window.confirm(`Install ${runtime.name} in ${target}?\n\nIt can run exported commands in the selected workspace. Assistant workspace installs can read and write the Space Assistant's shared workspace files.\n${permissions}\n\nEach container run uses the existing metered runtime budget; no fixed monthly price is implied.`);
     if (!accepted) return;
     if (busy) return;
     setBusy(true);
     try {
       const request = { scope: runtimeInstallScope, ...(requestedProject ? { projectId: requestedProject.id } : {}) };
       let result = await installRuntime(activeSpaceId, credentials, runtime.id, request);
-      let installedScope: "SPACE_SHARED" | "PROJECT_SHARED" = runtimeInstallScope;
+      let installedScope: "SPACE_SHARED" | "SPACE_ASSISTANT" | "PROJECT_SHARED" = runtimeInstallScope;
       if (result.status === "promotion_confirmation_required") {
         const existingProjects = (result.existing_project_ids ?? []).map(id => runtimeProjects.find(project => project.id === id)?.name ?? id);
         const detail = `This runtime already has project-scoped installations${existingProjects.length ? ` in ${existingProjects.join(", ")}` : ""}.\n\nPromotion deactivates those installs and uses the runtime's dedicated Space extension workspace. Project files and workspace contents are not moved. Runtime savings are not guaranteed.\n\nPromote to Space-wide?`;
@@ -190,7 +191,8 @@ export default function FoundryPage() {
         } else return;
       }
       if (result.status === "already_available_space_shared") show(`${runtime.name} is already available across this Space`);
-      else show(`${runtime.name} installed${installedScope === "PROJECT_SHARED" ? ` for ${requestedProject?.name ?? "the selected project"}` : " for this Space"}`);
+      else if (result.status === "already_available_assistant") show(`${runtime.name} is already installed in the Space Assistant workspace`);
+      else show(`${runtime.name} installed${installedScope === "PROJECT_SHARED" ? ` for ${requestedProject?.name ?? "the selected project"}` : installedScope === "SPACE_ASSISTANT" ? " in the Space Assistant workspace" : " in its dedicated Space extension workspace"}`);
       await refresh();
     } catch (error) { show(error instanceof Error ? error.message : "Runtime installation failed"); }
     finally { setBusy(false); }
@@ -208,8 +210,8 @@ export default function FoundryPage() {
 
   return <div className="page-view">
     <div className="page-header"><div className="page-title">Foundry</div><div className="page-subtitle">Reusable domain workers and owner-reviewed product requests for {activeSpaceName || "this Space"}.</div></div>
-    <section className="foundry-section"><h2>Specialized runtimes</h2><p className="muted">Only deployment approved runtimes appear here. A Space owner can install a runtime for projects in this Space. Each invocation remains bounded and uses the separate Space extension workspace.</p>
-      <div className="foundry-form"><label className="foundry-meta">Installation scope<select value={runtimeInstallScope} onChange={event => setRuntimeInstallScope(event.target.value as "SPACE_SHARED" | "PROJECT_SHARED")} style={inputStyle}><option value="SPACE_SHARED">Shared across this Space</option><option value="PROJECT_SHARED">One project</option></select></label>
+    <section className="foundry-section"><h2>Container marketplace</h2><p className="muted">Browse preconfigured runtimes and reviewed FDE runtime cards deployed for this environment. Install one for a project, the Space Assistant workspace, or its own Space extension workspace. Containers are metered and bounded; adding a card to a template does not install it or authorize execution.</p>
+      <div className="foundry-form"><label className="foundry-meta">Installation scope<select value={runtimeInstallScope} onChange={event => setRuntimeInstallScope(event.target.value as "SPACE_SHARED" | "SPACE_ASSISTANT" | "PROJECT_SHARED")} style={inputStyle}><option value="PROJECT_SHARED">One project</option><option value="SPACE_ASSISTANT">Space Assistant workspace</option><option value="SPACE_SHARED">Dedicated Space extension workspace</option></select></label>
         {runtimeInstallScope === "PROJECT_SHARED" ? <label className="foundry-meta">Project<select required value={runtimeProjectId} onChange={event => setRuntimeProjectId(event.target.value)} style={inputStyle}><option value="">Choose a project</option>{runtimeProjects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label> : null}</div>
       {runtimeCatalogueError ? <p className="muted">Runtime catalogue unavailable: {runtimeCatalogueError}</p> : null}
       {!runtimeCatalogueLoaded && !runtimeCatalogueError ? <p className="muted">Loading approved runtimes…</p> : null}
@@ -217,7 +219,7 @@ export default function FoundryPage() {
       <div className="grid-3">{runtimeCatalogue.filter(runtime => runtime.available).map(runtime => <Card key={runtime.id}>
         <CardTitle>{runtime.name}</CardTitle><CardDesc>{runtime.description}</CardDesc><p className="foundry-meta">Commands: {(runtime.exported_binaries ?? []).join(", ")}</p>
         {runtime.install_manifest?.containers?.map(contract => <p className="foundry-meta" key={contract.id}>{contract.resources.memoryMb} MB · {contract.resources.cpuCores} CPU · {contract.resources.timeoutSeconds}s maximum · network {contract.networkPolicy ?? "none"}</p>)}
-        <Button disabled={busy || !credentials} onClick={() => void approveRuntimeInstall(runtime)}>Review and install for this Space</Button>
+        <Button disabled={busy || !credentials} onClick={() => void approveRuntimeInstall(runtime)}>Review and install</Button>
       </Card>)}</div>
     </section>
     <div className="grid-2">

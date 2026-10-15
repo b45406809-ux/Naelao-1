@@ -27,7 +27,7 @@ export function actorAddress(input: ActorAddressInput): string {
 }
 
 /** Installation scopes are ownership boundaries, not visual or business categories. */
-export type InstallationScope = "SPACE_SHARED" | "SPACE_USER" | "PROJECT_SHARED" | "PROJECT_USER";
+export type InstallationScope = "SPACE_SHARED" | "SPACE_ASSISTANT" | "SPACE_USER" | "PROJECT_SHARED" | "PROJECT_USER";
 export type InstallationStatus = "active" | "removed" | "expired";
 export interface ScopedInstallationIdentity {
   tenantId: string;
@@ -54,6 +54,7 @@ function requireInstallId(label: string, value: string): void {
 function installationOwnerKey(input: ScopedInstallationIdentity): string {
   requireInstallId("tenant_id", input.tenantId); requireInstallId("space_id", input.spaceId); requireInstallId("extension_id", input.extensionId);
   if (input.scope === "SPACE_SHARED") return `space:${input.spaceId}`;
+  if (input.scope === "SPACE_ASSISTANT") return `space:${input.spaceId}:assistant`;
   if (input.scope === "SPACE_USER") { if (!input.userId) throw new Error("user_id_required_for_space_user"); requireInstallId("user_id", input.userId); return `space:${input.spaceId}:user:${input.userId}`; }
   if (!input.projectId) throw new Error("project_id_required_for_project_scope");
   requireInstallId("project_id", input.projectId);

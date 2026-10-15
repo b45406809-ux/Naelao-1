@@ -65,4 +65,24 @@ describe("runtime extension installation", () => {
     const lookup = await space.fetch(new Request("http://space/extension-installations?tenant_id=tenant&space_id=space&extension_id=ext_runtime_ffmpeg"));
     expect(await lookup.json()).toMatchObject({ installations: [{ scope: "SPACE_SHARED", project_id: null }] });
   });
+
+  it("keeps Space Assistant runtime installs distinct from Space-shared extensions and project runs", async () => {
+    const storage = createDOStorage(), state = { storage };
+    const space = new SpaceDO(state as never, {} as never);
+    await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id="));
+    const install = (scope: string, projectId?: string) => space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest: manifest(), installedBy: "owner", tenantId: "tenant", spaceId: "space", scope, projectId, gatekeeperCapabilities: ["native-execution"] }) }));
+    expect((await install("SPACE_SHARED")).status).toBe(201);
+    expect((await install("SPACE_ASSISTANT")).status).toBe(201);
+    expect(storage.sql.exec("SELECT scope,owner_key FROM extension_instances ORDER BY scope").toArray()).toEqual([
+      { scope: "SPACE_ASSISTANT", owner_key: "space:space:assistant" }, { scope: "SPACE_SHARED", owner_key: "space:space" },
+    ]);
+    const assistant = await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id="));
+    expect((await assistant.json() as { installations: Array<{ instance: { scope: string } }> }).installations.map(item => item.instance.scope).sort())
+      .toEqual(["SPACE_ASSISTANT", "SPACE_SHARED"]);
+    const projectRun = await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project"));
+    expect((await projectRun.json() as { installations: Array<{ instance: { scope: string } }> }).installations.map(item => item.instance.scope))
+      .toEqual(["SPACE_SHARED"]);
+    expect((await install("SPACE_ASSISTANT", "project")).status).toBe(400);
+  });
 });
