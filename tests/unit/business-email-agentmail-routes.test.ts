@@ -223,18 +223,21 @@ describe("/internal/business-email/send", () => {
 });
 
 describe("/internal/business-email/attachment/read-text", () => {
-  it("reads only a small text object owned by this tenant, Space and task", async () => {
+  it("reads a small text attachment by opaque id only after tenant, Space and task authorization", async () => {
+    const id = "attachment-1";
     const key = "spaces/s1/email-inbound/run-1/hash/0-note.txt";
     const get = vi.fn(async () => ({ size: 11, httpMetadata: { contentType: "text/plain" }, arrayBuffer: async () => new TextEncoder().encode("hello world").buffer }));
     const env = makeEnv({
-      PLATFORM_DB: { prepare: (query: string) => ({ bind: (...values: unknown[]) => ({ first: async () => query.includes("email_inbound_attachments") && values[0] === key && values[1] === TENANT && values[2] === "s1" && values[3] === "run-1" ? { object_key: key } : null }) }) } as never,
+      PLATFORM_DB: { prepare: (query: string) => ({ bind: (...values: unknown[]) => ({ first: async () => query.includes("channel_attachments") && values[0] === id && values[1] === TENANT && values[2] === "s1" && values[3] === "run-1" ? { id, object_key: key, filename: "note.txt", mime_type: "text/plain" } : null }) }) } as never,
       SCRIPTS_R2: { get } as never,
     });
     const token = await mintInternalToken(SECRET, TENANT);
-    const res = await post("/internal/business-email/attachment/read-text", { tenantId: TENANT, spaceId: "s1", taskId: "run-1", key }, env,
+    const res = await post("/internal/business-email/attachment/read-text", { tenantId: TENANT, spaceId: "s1", taskId: "run-1", id }, env,
       { "x-naelao-tenant-id": TENANT, "x-naelao-internal-token": token });
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ key, mime_type: "text/plain", text: expect.stringContaining("UNTRUSTED EMAIL ATTACHMENT") });
+    const result = await res.json();
+    expect(result).toMatchObject({ attachment_id: id, mime_type: "text/plain", text: expect.stringContaining("UNTRUSTED EMAIL ATTACHMENT") });
+    expect(JSON.stringify(result)).not.toContain(key);
     expect(get).toHaveBeenCalledWith(key);
   });
 
@@ -251,14 +254,15 @@ describe("/internal/business-email/attachment/read-text", () => {
     expect(get).not.toHaveBeenCalled();
   });
 
-  it("rejects binary attachments without returning their bytes", async () => {
-    const key = "spaces/s1/email-inbound/run-1/hash/0-file.pdf";
+  it("rejects unsupported binary attachments without returning their bytes", async () => {
+    const id = "attachment-image";
+    const key = "spaces/s1/email-inbound/run-1/hash/0-file.png";
     const env = makeEnv({
-      PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ object_key: key }) }) }) } as never,
-      SCRIPTS_R2: { get: async () => ({ size: 5, httpMetadata: { contentType: "application/pdf" }, arrayBuffer: async () => new Uint8Array([1, 2, 3, 4, 5]).buffer }) } as never,
+      PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ id, object_key: key, filename: "image.png", mime_type: "image/png" }) }) }) } as never,
+      SCRIPTS_R2: { get: async () => ({ size: 5, httpMetadata: { contentType: "image/png" }, arrayBuffer: async () => new Uint8Array([1, 2, 3, 4, 5]).buffer }) } as never,
     });
     const token = await mintInternalToken(SECRET, TENANT);
-    const res = await post("/internal/business-email/attachment/read-text", { tenantId: TENANT, spaceId: "s1", taskId: "run-1", key }, env,
+    const res = await post("/internal/business-email/attachment/read-text", { tenantId: TENANT, spaceId: "s1", taskId: "run-1", id }, env,
       { "x-naelao-tenant-id": TENANT, "x-naelao-internal-token": token });
     expect(res.status).toBe(415);
     expect(await res.json()).toMatchObject({ error_code: "attachment_not_text" });
@@ -346,7 +350,9 @@ describe("Cloudflare task reply email handler", () => {
     const payload = await dispatched[0]!.json() as { raw: { text: string }; projectId: string; spaceId: string; tenantId: string };
     expect(payload).toMatchObject({ projectId: "p1", spaceId: "s1", tenantId: TENANT });
     expect(payload.raw.text).toContain("Email reply for task run-1");
-    expect(payload.raw.text).toContain("r2://spaces/s1/email-inbound/run-1/");
+    expect(payload.raw.text).toContain("quote.pdf (application/pdf, 8 bytes) attachment:");
+    expect(payload.raw.text).not.toContain(stored[0]!.key);
+    expect(payload.raw.text).not.toContain("r2://");
   });
 
   it("routes text-only Cloudflare mailbox messages to the provisioned agent without task scope", async () => {
