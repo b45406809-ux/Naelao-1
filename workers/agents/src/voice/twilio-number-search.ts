@@ -12,14 +12,16 @@ export async function searchTwilioLocalNumbers(input: {
   credentials: TwilioVoiceCredentials;
   country: string;
   areaCode?: string;
+  phoneNumber?: string;
   fetcher?: typeof fetch;
 }): Promise<{ ok: true; numbers: AvailableTwilioLocalNumber[] } | { ok: false; status: 409 | 502 | 503; error: string }> {
   const country = input.country.toUpperCase();
-  if (!/^[A-Z]{2}$/.test(country) || (input.areaCode && !/^\d{2,6}$/.test(input.areaCode))) {
+  if (!/^[A-Z]{2}$/.test(country) || (input.areaCode && !/^\d{2,6}$/.test(input.areaCode)) || (input.phoneNumber && !/^\+[1-9]\d{7,14}$/.test(input.phoneNumber))) {
     return { ok: false, status: 502, error: "invalid_search_parameters" };
   }
   const query = new URLSearchParams({ VoiceEnabled: "true", PageSize: "20" });
   if (input.areaCode) query.set("AreaCode", input.areaCode);
+  if (input.phoneNumber) query.set("PhoneNumber", input.phoneNumber);
   let response: Response;
   try {
     response = await (input.fetcher ?? fetch)(`https://api.twilio.com/2010-04-01/Accounts/${input.credentials.accountSid}/AvailablePhoneNumbers/${country}/Local.json?${query}`, {

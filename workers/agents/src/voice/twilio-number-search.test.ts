@@ -28,7 +28,18 @@ describe("read-only Twilio number search", () => {
     const fetcher = vi.fn();
     await expect(searchTwilioLocalNumbers({ credentials, country: "../US", areaCode: "415", fetcher })).resolves.toMatchObject({ ok: false, error: "invalid_search_parameters" });
     await expect(searchTwilioLocalNumbers({ credentials, country: "US", areaCode: "415&VoiceEnabled=false", fetcher })).resolves.toMatchObject({ ok: false, error: "invalid_search_parameters" });
+    await expect(searchTwilioLocalNumbers({ credentials, country: "US", phoneNumber: "+1&VoiceEnabled=false", fetcher })).resolves.toMatchObject({ ok: false, error: "invalid_search_parameters" });
     expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("can recheck one exact E.164 candidate before a confirmed purchase", async () => {
+    const fetcher = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(String(input));
+      expect(url.searchParams.get("PhoneNumber")).toBe("+14155550100");
+      expect(url.searchParams.get("VoiceEnabled")).toBe("true");
+      return Response.json({ available_phone_numbers: [{ phone_number: "+14155550100", capabilities: { voice: true } }] });
+    });
+    await expect(searchTwilioLocalNumbers({ credentials, country: "US", phoneNumber: "+14155550100", fetcher })).resolves.toMatchObject({ ok: true, numbers: [{ phone_number: "+14155550100" }] });
   });
 
   it("keeps auth, availability, and malformed provider failures distinct without leaking response text", async () => {

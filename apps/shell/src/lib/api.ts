@@ -77,7 +77,20 @@ export function listCustomerVoiceNumbers(spaceId: string, session: SessionCreden
 export function searchCustomerVoiceNumbers(spaceId: string, session: SessionCredentials, country: string, areaCode?: string) {
   const query = new URLSearchParams({ country });
   if (areaCode) query.set("area_code", areaCode);
-  return apiFetch<{ numbers: Array<{ phone_number: string; country_code: string; region: string; locality: string; capabilities: { voice: boolean; sms: boolean; mms: boolean } }>; pricing: "not_quoted"; purchase: "not_performed" }>(`${customerVoicePath(spaceId)}/available-numbers?${query}`, { session, cache: "no-store" });
+  return apiFetch<{ numbers: Array<{ phone_number: string; country_code: string; region: string; locality: string; capabilities: { voice: boolean; sms: boolean; mms: boolean } }>; pricing: { status: "current_rate_card"; number_type: "local"; monthly_cost_minor: number; currency: "USD"; quoted_at: string; taxes_included: false } | { status: "unavailable" }; purchase: "not_performed" }>(`${customerVoicePath(spaceId)}/available-numbers?${query}`, { session, cache: "no-store" });
+}
+export interface TwilioCustomerVoicePurchaseQuote {
+  quote_id: string; phone_number: string; number_type: string; monthly_cost_minor: number;
+  inbound_price_per_minute_minor: number; currency: "USD"; taxes_included: false; quoted_at: string; expires_at: string;
+}
+export function quoteCustomerVoiceNumber(spaceId: string, session: SessionCredentials, phoneNumber: string, countryCode: string) {
+  return apiFetch<TwilioCustomerVoicePurchaseQuote>(`${customerVoicePath(spaceId)}/numbers/purchase/quote`, { method: "POST", session, body: JSON.stringify({ phone_number: phoneNumber, country_code: countryCode }) });
+}
+export function purchaseCustomerVoiceNumber(spaceId: string, session: SessionCredentials, quoteId: string, monthlyCostMinor: number, agentId: string, ownerPrompt: string) {
+  return apiFetch<CustomerVoiceNumber>(`${customerVoicePath(spaceId)}/numbers/purchase`, { method: "POST", session, body: JSON.stringify({ quote_id: quoteId, confirm_monthly_cost_minor: monthlyCostMinor, confirm_purchase: true, agent_id: agentId, owner_prompt: ownerPrompt }) });
+}
+export function resolveCustomerVoicePurchaseQuote(spaceId: string, session: SessionCredentials, quoteId: string, resolution: "imported" | "not_purchased") {
+  return apiFetch<{ resolved: boolean; status: string }>(`${customerVoicePath(spaceId)}/numbers/purchase/quotes/${encodeURIComponent(quoteId)}/resolve`, { method: "POST", session, body: JSON.stringify({ resolution, ...(resolution === "not_purchased" ? { confirm_account_checked: true } : {}) }) });
 }
 export function saveCustomerVoiceCredentials(spaceId: string, session: SessionCredentials, accountSid: string, authToken: string) {
   return apiFetch<{ configured: boolean; account_sid: string }>(`${customerVoicePath(spaceId)}/twilio-credentials`, { method: "PUT", session, body: JSON.stringify({ account_sid: accountSid, auth_token: authToken }) });

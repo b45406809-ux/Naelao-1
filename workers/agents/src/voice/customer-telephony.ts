@@ -27,7 +27,8 @@ export const CUSTOMER_VOICE_ADMISSION_SQL = `INSERT INTO customer_voice_call_adm
     AND (SELECT COUNT(*) FROM customer_voice_call_admissions WHERE tenant_id=? AND space_id=? AND caller_number=? AND issued_at>=?) < 5
     AND (SELECT COALESCE(SUM(CASE WHEN status IN ('issued','connected') THEN reserved_duration_seconds ELSE COALESCE(duration_seconds,0) END),0) FROM customer_voice_call_admissions WHERE tenant_id=? AND space_id=? AND issued_at>=?) + ? <= ? * 60
     AND (SELECT COALESCE(SUM(CASE WHEN status IN ('issued','connected') THEN reserved_cost_minor ELSE COALESCE(actual_cost_minor,0) END),0) FROM customer_voice_call_admissions WHERE tenant_id=? AND space_id=? AND issued_at>=?) + ? +
-        (SELECT COALESCE(SUM(monthly_cost_minor),0) FROM customer_voice_number_bindings WHERE tenant_id=? AND space_id=? AND status='active') <= ?
+        (SELECT COALESCE(SUM(monthly_cost_minor),0) FROM customer_voice_number_bindings WHERE tenant_id=? AND space_id=? AND status='active') +
+        (SELECT COALESCE(SUM(monthly_cost_minor),0) FROM customer_voice_purchase_quotes WHERE tenant_id=? AND space_id=? AND (status='processing' OR (status='quoted' AND expires_at>?))) <= ?
   ON CONFLICT(call_sid) DO NOTHING`;
 
 export interface CustomerVoiceAdmissionValues {
@@ -48,7 +49,7 @@ export function customerVoiceAdmissionBindings(input: CustomerVoiceAdmissionValu
     input.tenantId, input.spaceId, input.caller, input.hourStart,
     input.tenantId, input.spaceId, input.dayStart, input.reserveDurationSeconds, input.maxDailyMinutes,
     input.tenantId, input.spaceId, input.monthStart, input.reserveCostMinor,
-    input.tenantId, input.spaceId, input.monthlySpendLimitMinor,
+    input.tenantId, input.spaceId, input.tenantId, input.spaceId, input.now, input.monthlySpendLimitMinor,
   ];
 }
 

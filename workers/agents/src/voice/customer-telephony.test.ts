@@ -78,6 +78,7 @@ describe("customer telephony authorization primitives", () => {
   it("atomically reserves per-Space spend, duration, and concurrency before admitting calls", () => {
     const storage = createDOStorage();
     storage.sql.exec(readFileSync(join(__dirname, "../../../../infra/migrations/0097_customer_voice_telephony.sql"), "utf8"));
+    storage.sql.exec(readFileSync(join(__dirname, "../../../../infra/migrations/0101_customer_voice_purchase_quotes.sql"), "utf8"));
     storage.sql.exec("INSERT INTO customer_voice_space_policies(tenant_id,space_id,max_concurrent_calls,max_calls_per_hour,max_daily_minutes,monthly_spend_limit_minor,updated_by,updated_at) VALUES('tenant-1','space-1',1,10,1,2,'owner','now')");
     storage.sql.exec(`INSERT INTO customer_voice_number_bindings(id,provider,provider_account_sid,provider_number_sid,tenant_id,space_id,agent_id,phone_number,country_code,monthly_cost_minor,currency,monthly_quote_at,inbound_price_per_minute_minor,created_by,created_at,updated_at)
       VALUES('binding-1','twilio','AC${"a".repeat(32)}','PN${"b".repeat(32)}','tenant-1','space-1','agent-1','+14155550199','US',0,'USD','now',2,'owner','now','now')`);
@@ -92,13 +93,19 @@ describe("customer telephony authorization primitives", () => {
     expect(storage.sql.exec(CUSTOMER_VOICE_ADMISSION_SQL, ...values("CA" + "1".repeat(32))).rowsWritten).toBe(1);
     expect(storage.sql.exec(CUSTOMER_VOICE_ADMISSION_SQL, ...values("CA" + "2".repeat(32))).rowsWritten).toBe(0);
     expect(storage.sql.exec<{ call_sid: string; reserved_cost_minor: number }>("SELECT call_sid,reserved_cost_minor FROM customer_voice_call_admissions").toArray()).toEqual([{ call_sid: "CA" + "1".repeat(32), reserved_cost_minor: 2 }]);
-    storage.sql.exec("UPDATE customer_voice_call_admissions SET status='completed',duration_seconds=60,actual_cost_minor=2 WHERE call_sid=?", "CA" + "1".repeat(32));
+    storage.sql.exec(`INSERT INTO customer_voice_purchase_quotes(id,tenant_id,space_id,provider_account_sid,phone_number,country_code,monthly_cost_minor,inbound_price_per_minute_minor,currency,quoted_by,created_at,expires_at)
+      VALUES('quote-1','tenant-1','space-1','AC${"a".repeat(32)}','+14155550200','US',1,1,'USD','owner','now','2026-10-15T14:00:00.000Z')`);
+    storage.sql.exec("UPDATE customer_voice_call_admissions SET status='completed',duration_seconds=60,actual_cost_minor=0 WHERE call_sid=?", "CA" + "1".repeat(32));
+    expect(storage.sql.exec(CUSTOMER_VOICE_ADMISSION_SQL, ...values("CA" + "3".repeat(32))).rowsWritten).toBe(0);
+    storage.sql.exec("DELETE FROM customer_voice_purchase_quotes WHERE id='quote-1'");
+    storage.sql.exec("UPDATE customer_voice_call_admissions SET actual_cost_minor=2 WHERE call_sid=?", "CA" + "1".repeat(32));
     expect(storage.sql.exec(CUSTOMER_VOICE_ADMISSION_SQL, ...values("CA" + "3".repeat(32))).rowsWritten).toBe(0);
   });
 
   it("keeps a connected call inside the concurrency cap after its consent ticket expires", () => {
     const storage = createDOStorage();
     storage.sql.exec(readFileSync(join(__dirname, "../../../../infra/migrations/0097_customer_voice_telephony.sql"), "utf8"));
+    storage.sql.exec(readFileSync(join(__dirname, "../../../../infra/migrations/0101_customer_voice_purchase_quotes.sql"), "utf8"));
     storage.sql.exec("INSERT INTO customer_voice_space_policies(tenant_id,space_id,max_concurrent_calls,max_calls_per_hour,max_daily_minutes,monthly_spend_limit_minor,updated_by,updated_at) VALUES('tenant-1','space-1',1,10,120,1000,'owner','now')");
     storage.sql.exec(`INSERT INTO customer_voice_number_bindings(id,provider,provider_account_sid,provider_number_sid,tenant_id,space_id,agent_id,phone_number,country_code,monthly_cost_minor,currency,monthly_quote_at,inbound_price_per_minute_minor,created_by,created_at,updated_at)
       VALUES('binding-1','twilio','AC${"a".repeat(32)}','PN${"b".repeat(32)}','tenant-1','space-1','agent-1','+14155550199','US',0,'USD','now',2,'owner','now','now')`);
@@ -121,6 +128,7 @@ describe("customer telephony authorization primitives", () => {
     storage.sql.exec("CREATE TABLE spaces(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,status TEXT NOT NULL)");
     storage.sql.exec(readFileSync(join(__dirname, "../../../../infra/migrations/0038_channel_links.sql"), "utf8"));
     storage.sql.exec(readFileSync(join(__dirname, "../../../../infra/migrations/0097_customer_voice_telephony.sql"), "utf8"));
+    storage.sql.exec(readFileSync(join(__dirname, "../../../../infra/migrations/0101_customer_voice_purchase_quotes.sql"), "utf8"));
     storage.sql.exec("INSERT INTO spaces(id,tenant_id,status) VALUES('chat-space','tenant-1','active'),('voice-only','tenant-1','active'),('inactive','tenant-1','suspended')");
     storage.sql.exec("INSERT INTO channel_links(space_id,tenant_id,channel,enabled) VALUES('chat-space','tenant-1','slack',1),('inactive','tenant-1','slack',1)");
     storage.sql.exec(`INSERT INTO customer_voice_number_bindings(id,provider,provider_account_sid,provider_number_sid,tenant_id,space_id,agent_id,phone_number,country_code,monthly_cost_minor,currency,monthly_quote_at,inbound_price_per_minute_minor,created_by,created_at,updated_at)

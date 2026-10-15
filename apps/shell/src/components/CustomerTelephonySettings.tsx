@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import type { SessionCredentials, CustomerVoiceNumber } from "@/lib/api";
-import { disableCustomerVoiceNumber, importCustomerVoiceNumber, listCustomerVoiceNumbers, releaseCustomerVoiceNumber, saveCustomerVoiceCredentials, searchCustomerVoiceNumbers } from "@/lib/api";
+import { ApiError, disableCustomerVoiceNumber, importCustomerVoiceNumber, listCustomerVoiceNumbers, purchaseCustomerVoiceNumber, quoteCustomerVoiceNumber, releaseCustomerVoiceNumber, resolveCustomerVoicePurchaseQuote, saveCustomerVoiceCredentials, searchCustomerVoiceNumbers } from "@/lib/api";
 import { SettingsSection } from "@/components/SettingsSection";
 
 function usd(minor: number) { return new Intl.NumberFormat(undefined, { style: "currency", currency: "USD" }).format(minor / 100); }
@@ -17,6 +17,9 @@ export function CustomerTelephonySettings({ spaceId, session, canEdit }: { space
   const [country, setCountry] = React.useState("US");
   const [areaCode, setAreaCode] = React.useState("");
   const [availableNumbers, setAvailableNumbers] = React.useState<Array<{ phone_number: string; country_code: string; region: string; locality: string; capabilities: { voice: boolean; sms: boolean; mms: boolean } }>>([]);
+  const [localMonthlyCost, setLocalMonthlyCost] = React.useState<number | null>(null);
+  const [localRateObservedAt, setLocalRateObservedAt] = React.useState<string | null>(null);
+  const [pendingQuoteId, setPendingQuoteId] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [notice, setNotice] = React.useState("");
   const [error, setError] = React.useState("");
@@ -34,7 +37,28 @@ export function CustomerTelephonySettings({ spaceId, session, canEdit }: { space
     finally { setBusy(false); }
   }
 
-  return <SettingsSection title="Customer phone numbers" desc="Connect an existing Twilio voice number to a customer agent. Twilio credentials stay in the encrypted credential vault. Number rental and call charges are billed by Twilio; the quotes shown are provider quotes, not Naelao charges.">
+  async function buyAvailableNumber(phoneNumber: string) {
+    setBusy(true); setError(""); setNotice("");
+    let quoteId: string | null = null;
+    try {
+      const quote = await quoteCustomerVoiceNumber(spaceId, session, phoneNumber, country);
+      quoteId = quote.quote_id;
+      const expires = new Date(quote.expires_at).toLocaleTimeString();
+      const accepted = window.confirm(`Purchase ${quote.phone_number} on your Twilio account? Current rental rate: ${usd(quote.monthly_cost_minor)}/month before taxes and fees. Inbound calls: ${usd(quote.inbound_price_per_minute_minor)}/minute. This is a recurring provider charge; Naelao will bind the number to customer agent ${agentId}. Quote expires at ${expires}.`);
+      if (!accepted) { setNotice("No number was purchased. This quote expires shortly and holds budget only; it does not reserve the number."); return; }
+      setPendingQuoteId(quote.quote_id);
+      await purchaseCustomerVoiceNumber(spaceId, session, quote.quote_id, quote.monthly_cost_minor, agentId, ownerPrompt);
+      setPendingQuoteId(null); await refresh(); setNotice(`${phoneNumber} was purchased and connected to customer agent ${agentId}.`);
+    } catch (e) {
+      const apiError = e instanceof ApiError ? e : null;
+      if (quoteId && apiError && ["twilio_purchase_status_unknown", "twilio_purchase_cleanup_required", "customer_voice_purchase_cleanup_required", "network_error"].includes(apiError.errorCode ?? "")) {
+        setPendingQuoteId(quoteId);
+        setError(`${apiError.message} Pending purchase ${quoteId} is holding the Space voice budget until you resolve it below.`);
+      } else setError(e instanceof Error ? e.message : "Phone number purchase failed");
+    } finally { setBusy(false); }
+  }
+
+  return <SettingsSection title="Customer phone numbers" desc="Connect an existing Twilio voice number to a customer agent. Twilio credentials stay in the encrypted credential vault. Number rental and call charges are billed by Twilio; displayed prices are current provider rates, not Naelao charges or guaranteed locked quotes.">
     {!canEdit && <p style={{ fontSize: 12.5, color: "var(--text3)" }}>Only this Space’s owner or an admin can manage customer phone numbers.</p>}
     {canEdit && <>
       <div style={{ display: "grid", gap: 8, marginBottom: 14 }}>
@@ -46,21 +70,28 @@ export function CustomerTelephonySettings({ spaceId, session, canEdit }: { space
       <div style={{ display: "grid", gap: 8, marginBottom: 18 }}>
         <strong style={{ fontSize: 12.5 }}>Search available local numbers</strong>
         <div style={{ display: "flex", gap: 8 }}>
-          <input aria-label="Country code" placeholder="Country (ISO 2 letters)" maxLength={2} value={country} onChange={(e) => setCountry(e.target.value.toUpperCase())} />
-          <input aria-label="Area code" placeholder="Area code (optional)" maxLength={6} value={areaCode} onChange={(e) => setAreaCode(e.target.value)} />
-          <button type="button" disabled={busy || country.length !== 2} onClick={() => void act(async () => { const result = await searchCustomerVoiceNumbers(spaceId, session, country, areaCode); setAvailableNumbers(result.numbers); }, "Search complete. Results are not reserved.")}>Search</button>
+          <input aria-label="Country code" placeholder="Country (ISO 2 letters)" maxLength={2} value={country} onChange={(e) => { setCountry(e.target.value.toUpperCase()); setAvailableNumbers([]); setLocalMonthlyCost(null); setLocalRateObservedAt(null); }} />
+          <input aria-label="Area code" placeholder="Area code (optional)" maxLength={6} value={areaCode} onChange={(e) => { setAreaCode(e.target.value); setAvailableNumbers([]); setLocalMonthlyCost(null); setLocalRateObservedAt(null); }} />
+          <button type="button" disabled={busy || country.length !== 2} onClick={() => { setAvailableNumbers([]); setLocalMonthlyCost(null); setLocalRateObservedAt(null); void act(async () => { const result = await searchCustomerVoiceNumbers(spaceId, session, country, areaCode); setAvailableNumbers(result.numbers); setLocalMonthlyCost(result.pricing.status === "current_rate_card" ? result.pricing.monthly_cost_minor : null); setLocalRateObservedAt(result.pricing.status === "current_rate_card" ? result.pricing.quoted_at : null); }, "Search complete. Results are not reserved."); }}>Search</button>
         </div>
-        <small style={{ color: "var(--text3)" }}>Search only checks current availability and does not reserve or buy numbers. Twilio rental pricing is not quoted here. If you buy one in Twilio, import its Phone Number SID below.</small>
-        {availableNumbers.map((number) => <div key={number.phone_number} style={{ fontSize: 12, color: "var(--text2)" }}>{number.phone_number}{number.locality ? ` · ${number.locality}` : ""}{number.region ? `, ${number.region}` : ""} · voice enabled{number.capabilities.sms ? " · SMS" : ""}{number.capabilities.mms ? " · MMS" : ""}</div>)}
+        <small style={{ color: "var(--text3)" }}>Search does not reserve or buy numbers. If Twilio returns a current local-number rate, it is the account's monthly rate-card price before taxes or regulatory fees; inbound calls are billed separately{localRateObservedAt ? ` · checked ${new Date(localRateObservedAt).toLocaleString()}` : ""}. If you purchase in Twilio, import its Phone Number SID below.</small>
+        {availableNumbers.map((number) => <div key={number.phone_number} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, fontSize: 12, color: "var(--text2)" }}><span>{number.phone_number}{number.locality ? ` · ${number.locality}` : ""}{number.region ? `, ${number.region}` : ""} · voice enabled{number.capabilities.sms ? " · SMS" : ""}{number.capabilities.mms ? " · MMS" : ""}{localMonthlyCost === null ? " · rental rate unavailable" : ` · ${usd(localMonthlyCost)}/month before taxes`}</span><button type="button" disabled={busy || localMonthlyCost === null || !agentId.trim()} title={!agentId.trim() ? "Set the customer agent ID below first" : undefined} onClick={() => void buyAvailableNumber(number.phone_number)}>Quote and buy</button></div>)}
+        {availableNumbers.length > 0 && !agentId.trim() && <small style={{ color: "var(--text3)" }}>Set the customer agent ID in the import section below before using a purchase quote.</small>}
       </div>
       <div style={{ display: "grid", gap: 8, marginBottom: 18 }}>
         <strong style={{ fontSize: 12.5 }}>Import a number already in your Twilio account</strong>
         <input aria-label="Twilio phone number SID" placeholder="Phone Number SID (PN…)" value={numberSid} onChange={(e) => setNumberSid(e.target.value)} autoComplete="off" />
         <input aria-label="Customer agent ID" placeholder="Customer agent ID" value={agentId} onChange={(e) => setAgentId(e.target.value)} />
         <textarea aria-label="Customer voice instructions" placeholder="Instructions for this customer voice agent (optional)" maxLength={8000} value={ownerPrompt} onChange={(e) => setOwnerPrompt(e.target.value)} rows={3} />
-        <button type="button" disabled={busy || !numberSid || !agentId} onClick={() => void act(async () => { await importCustomerVoiceNumber(spaceId, session, { phone_number_sid: numberSid, agent_id: agentId, owner_prompt: ownerPrompt }); setNumberSid(""); }, "Number imported and callbacks configured")}>Import and configure callbacks</button>
+        <button type="button" disabled={busy || !numberSid || !agentId} onClick={() => void act(async () => { await importCustomerVoiceNumber(spaceId, session, { phone_number_sid: numberSid, agent_id: agentId, owner_prompt: ownerPrompt }); if (pendingQuoteId) { await resolveCustomerVoicePurchaseQuote(spaceId, session, pendingQuoteId, "imported"); setPendingQuoteId(null); } setNumberSid(""); }, "Number imported and callbacks configured")}>Import and configure callbacks</button>
         <small style={{ color: "var(--text3)" }}>Import verifies ownership, voice capability, and USD recurring/minute quotes before updating Twilio callbacks. It does not buy a number.</small>
       </div>
+      {pendingQuoteId && <div style={{ display: "grid", gap: 6, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+        <strong style={{ fontSize: 12.5 }}>Resolve pending Twilio purchase</strong>
+        <small style={{ color: "var(--text3)" }}>Twilio did not confirm the result. Check the Twilio account. If the number was created, import its SID above and this quote will reconcile automatically. If no number was created, confirm that after checking the account to release the held budget.</small>
+        <button type="button" disabled={busy} onClick={() => void act(async () => { await resolveCustomerVoicePurchaseQuote(spaceId, session, pendingQuoteId, "imported"); setPendingQuoteId(null); }, "Imported number matched; pending purchase reconciled")}>I imported this number already</button>
+        <button type="button" disabled={busy} onClick={() => { if (window.confirm("Confirm that you checked the Twilio account and this phone number was not purchased?")) void act(async () => { await resolveCustomerVoicePurchaseQuote(spaceId, session, pendingQuoteId, "not_purchased"); setPendingQuoteId(null); }, "Pending purchase resolved; reserved budget released"); }}>I checked: no number was purchased</button>
+      </div>}
       <div style={{ display: "grid", gap: 8 }}>
         <strong style={{ fontSize: 12.5 }}>Configured numbers</strong>
         {numbers.length === 0 ? <p style={{ fontSize: 12, color: "var(--text3)" }}>No customer numbers are configured.</p> : numbers.map((number) => <div key={number.id} style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 8, borderTop: "1px solid var(--border)", paddingTop: 8 }}>

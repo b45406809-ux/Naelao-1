@@ -18,6 +18,7 @@ import { expireToolOutputs } from "./script-engine/tool-output-expiry.js";
 import { fetchOpenRouterCatalog, isOpenRouterPlannerCandidate, type OpenRouterModelCandidate } from "./shared/openrouter-model-catalog.js";
 import { runOpenRouterEntitlementPreflight } from "./shared/openrouter-entitlement.js";
 import { searchTwilioLocalNumbers } from "./voice/twilio-number-search.js";
+import { fetchTwilioLocalMonthlyPrice, fetchTwilioNumberPrice } from "./voice/twilio-number-pricing.js";
 import { reconcileStaleCustomerVoiceCalls } from "./voice/call-reconciliation.js";
 import { recommendOpenRouterModels } from "./shared/openrouter-model-recommendations.js";
 import { parseMentions, creatableFeatureKindsForRole, detectImplicitSignals, classifyFailure, type MentionableAgent } from "@naelao/events";
@@ -440,15 +441,12 @@ function twiml(c: { body: string; status?: number }) {
   return new Response(c.body, { status: c.status ?? 200, headers: { "content-type": "application/xml; charset=utf-8", "cache-control": "no-store" } });
 }
 
-function moneyMinor(value: unknown): number | null {
-  if (typeof value !== "string" && typeof value !== "number") return null;
-  const amount = Number(value);
-  if (!Number.isFinite(amount) || amount < 0 || amount > 1_000_000) return null;
-  return Math.ceil(amount * 100);
-}
-
 function twilioAuth(credentials: { accountSid: string; authToken: string }): string {
   return `Basic ${btoa(`${credentials.accountSid}:${credentials.authToken}`)}`;
+}
+
+async function customerVoiceProviderDenied(env: AgentsEnv, spaceId: string): Promise<boolean> {
+  return isSpaceNetworkEgressDenied(env.PLATFORM_DB, spaceId);
 }
 
 // Space-owner provisioning controls. Credentials stay in the credential vault; these routes
@@ -457,6 +455,7 @@ function twilioAuth(credentials: { accountSid: string; authToken: string }): str
 app.put("/spaces/:spaceId/customer-voice/twilio-credentials", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = await requireApprovalAuthority(c, spaceId);
+  if (await customerVoiceProviderDenied(c.env, spaceId)) return c.json({ error_code: "space_egress_denied" }, 403);
   if (!c.env.CREDENTIALS_WORKER) return c.json({ error_code: "credential_vault_unavailable" }, 503);
   const body = await c.req.json<{ account_sid?: string; auth_token?: string }>();
   const credentials = parseTwilioVoiceCredentials(JSON.stringify({ accountSid: body.account_sid, authToken: body.auth_token }));
@@ -485,6 +484,7 @@ app.put("/spaces/:spaceId/customer-voice/policy", async (c) => {
 app.get("/spaces/:spaceId/customer-voice/available-numbers", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = await requireApprovalAuthority(c, spaceId);
+  if (await customerVoiceProviderDenied(c.env, spaceId)) return c.json({ error_code: "space_egress_denied" }, 403);
   const country = (c.req.query("country") ?? "").toUpperCase();
   const areaCode = c.req.query("area_code") ?? "";
   if (!/^[A-Z]{2}$/.test(country) || (areaCode && !/^\d{2,6}$/.test(areaCode))) throw badRequest("A two-letter country code and optional 2–6 digit area code are required");
@@ -492,12 +492,182 @@ app.get("/spaces/:spaceId/customer-voice/available-numbers", async (c) => {
   if (!credentials) return c.json({ error_code: "twilio_voice_credentials_missing" }, 409);
   const search = await searchTwilioLocalNumbers({ credentials, country, ...(areaCode ? { areaCode } : {}) });
   if (!search.ok) return c.json({ error_code: search.error }, search.status);
-  return c.json({ numbers: search.numbers, count: search.numbers.length, pricing: "not_quoted", purchase: "not_performed" });
+  let price: Awaited<ReturnType<typeof fetchTwilioLocalMonthlyPrice>> | null = null;
+  try { price = await fetchTwilioLocalMonthlyPrice({ credentials, country }); } catch { /* Availability remains useful if the pricing endpoint is down. */ }
+  return c.json({ numbers: search.numbers, count: search.numbers.length,
+    pricing: price ? { status: "current_rate_card", number_type: price.numberType, monthly_cost_minor: price.monthlyCostMinor, currency: price.currency, quoted_at: price.quotedAt, taxes_included: false } : { status: "unavailable" },
+    purchase: "not_performed" });
+});
+
+app.post("/spaces/:spaceId/customer-voice/numbers/purchase/quote", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = await requireApprovalAuthority(c, spaceId);
+  if (await customerVoiceProviderDenied(c.env, spaceId)) return c.json({ error_code: "space_egress_denied" }, 403);
+  const body = await c.req.json<{ phone_number?: string; country_code?: string }>().catch((): { phone_number?: string; country_code?: string } => ({}));
+  const phoneNumber = body.phone_number ?? "";
+  const country = (body.country_code ?? "").toUpperCase();
+  if (!isE164(phoneNumber) || !/^[A-Z]{2}$/.test(country)) throw badRequest("A valid available E.164 number and two-letter country code are required");
+  const credentials = await customerVoiceCredentials(c.env, tenantId, spaceId);
+  if (!credentials) return c.json({ error_code: "twilio_voice_credentials_missing" }, 409);
+  const availability = await searchTwilioLocalNumbers({ credentials, country, phoneNumber });
+  if (!availability.ok) return c.json({ error_code: availability.error }, availability.status);
+  const available = availability.numbers.find((number) => number.phone_number === phoneNumber && number.capabilities.voice);
+  if (!available) return c.json({ error_code: "twilio_number_no_longer_available" }, 409);
+  let price: Awaited<ReturnType<typeof fetchTwilioNumberPrice>>;
+  try { price = await fetchTwilioNumberPrice({ credentials, phoneNumber, country }); }
+  catch { return c.json({ error_code: "twilio_number_price_unavailable" }, 409); }
+  if (price.numberType !== "local") return c.json({ error_code: "twilio_number_type_changed" }, 409);
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+  const createdAt = now.toISOString();
+  const expiresAt = new Date(now.getTime() + 3 * 60_000).toISOString();
+  const quoteId = crypto.randomUUID();
+  await c.env.PLATFORM_DB.prepare(`DELETE FROM customer_voice_purchase_quotes WHERE status IN ('completed','failed') OR (status='quoted' AND expires_at<=?)`).bind(createdAt).run();
+  const quoteInsert = await c.env.PLATFORM_DB.prepare(`INSERT INTO customer_voice_purchase_quotes(id,tenant_id,space_id,provider_account_sid,phone_number,country_code,monthly_cost_minor,inbound_price_per_minute_minor,currency,quoted_by,created_at,expires_at)
+    SELECT ?,?,?,?,?,?,?,?,'USD',?,?,?
+    WHERE COALESCE((SELECT SUM(monthly_cost_minor) FROM customer_voice_number_bindings WHERE tenant_id=? AND space_id=? AND status='active'),0) +
+      COALESCE((SELECT SUM(CASE WHEN status IN ('issued','connected') THEN reserved_cost_minor ELSE COALESCE(actual_cost_minor,0) END) FROM customer_voice_call_admissions WHERE tenant_id=? AND space_id=? AND issued_at>=?),0) +
+      COALESCE((SELECT SUM(monthly_cost_minor) FROM customer_voice_purchase_quotes WHERE tenant_id=? AND space_id=? AND (status='processing' OR (status='quoted' AND expires_at>?))),0) + ? <=
+      COALESCE((SELECT monthly_spend_limit_minor FROM customer_voice_space_policies WHERE tenant_id=? AND space_id=?),5000)`)
+    .bind(quoteId, tenantId, spaceId, credentials.accountSid, phoneNumber, country, price.monthlyCostMinor, price.inboundPricePerMinuteMinor, getCallerIdentity(c).userId, createdAt, expiresAt,
+      tenantId, spaceId, tenantId, spaceId, monthStart, tenantId, spaceId, createdAt, price.monthlyCostMinor, tenantId, spaceId).run();
+  if ((quoteInsert.meta?.changes ?? 0) !== 1) return c.json({ error_code: "customer_voice_monthly_spend_cap_exceeded", monthly_cost_minor: price.monthlyCostMinor }, 409);
+  return c.json({ quote_id: quoteId, phone_number: phoneNumber, number_type: price.numberType, monthly_cost_minor: price.monthlyCostMinor,
+    inbound_price_per_minute_minor: price.inboundPricePerMinuteMinor, currency: "USD", taxes_included: false, quoted_at: price.quotedAt, expires_at: expiresAt });
+});
+
+app.post("/spaces/:spaceId/customer-voice/numbers/purchase", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = await requireApprovalAuthority(c, spaceId);
+  if (await customerVoiceProviderDenied(c.env, spaceId)) return c.json({ error_code: "space_egress_denied" }, 403);
+  const userId = getCallerIdentity(c).userId;
+  const body = await c.req.json<{ quote_id?: string; confirm_monthly_cost_minor?: number; confirm_purchase?: boolean; agent_id?: string; owner_prompt?: string }>().catch((): { quote_id?: string; confirm_monthly_cost_minor?: number; confirm_purchase?: boolean; agent_id?: string; owner_prompt?: string } => ({}));
+  const agentId = body.agent_id?.trim() ?? "";
+  const prompt = body.owner_prompt?.trim() ?? "";
+  if (!body.quote_id || body.confirm_purchase !== true || !Number.isSafeInteger(body.confirm_monthly_cost_minor) || !/^[A-Za-z0-9_-]{1,128}$/.test(agentId) || prompt.length > 8_000) {
+    throw badRequest("Confirm the quoted monthly rental, select a customer agent, and provide valid bounded voice instructions");
+  }
+  const now = new Date().toISOString();
+  const quote = await c.env.PLATFORM_DB.prepare(`SELECT id,provider_account_sid,phone_number,country_code,monthly_cost_minor,inbound_price_per_minute_minor,expires_at,status
+    FROM customer_voice_purchase_quotes WHERE id=? AND tenant_id=? AND space_id=? AND quoted_by=?`)
+    .bind(body.quote_id, tenantId, spaceId, userId).first<{ id: string; provider_account_sid: string; phone_number: string; country_code: string; monthly_cost_minor: number; inbound_price_per_minute_minor: number; expires_at: string; status: string }>();
+  if (!quote || quote.status !== "quoted" || quote.expires_at <= now) return c.json({ error_code: "twilio_purchase_quote_expired_or_used" }, 409);
+  if (body.confirm_monthly_cost_minor !== quote.monthly_cost_minor) return c.json({ error_code: "twilio_purchase_price_confirmation_mismatch" }, 409);
+  if (!c.env.PUBLIC_AGENTS_URL) return c.json({ error_code: "public_agents_url_unconfigured" }, 503);
+  const credentials = await customerVoiceCredentials(c.env, tenantId, spaceId);
+  if (!credentials || credentials.accountSid !== quote.provider_account_sid) return c.json({ error_code: "twilio_voice_credentials_changed" }, 409);
+  const availability = await searchTwilioLocalNumbers({ credentials, country: quote.country_code, phoneNumber: quote.phone_number });
+  if (!availability.ok) return c.json({ error_code: availability.error }, availability.status);
+  if (!availability.numbers.some((number) => number.phone_number === quote.phone_number && number.capabilities.voice)) return c.json({ error_code: "twilio_number_no_longer_available" }, 409);
+  let currentPrice: Awaited<ReturnType<typeof fetchTwilioNumberPrice>>;
+  try { currentPrice = await fetchTwilioNumberPrice({ credentials, phoneNumber: quote.phone_number, country: quote.country_code }); }
+  catch { return c.json({ error_code: "twilio_number_price_unavailable" }, 409); }
+  if (currentPrice.numberType !== "local" || currentPrice.monthlyCostMinor !== quote.monthly_cost_minor || currentPrice.inboundPricePerMinuteMinor !== quote.inbound_price_per_minute_minor) {
+    await c.env.PLATFORM_DB.prepare("UPDATE customer_voice_purchase_quotes SET status='failed' WHERE id=? AND status='quoted'").bind(quote.id).run();
+    return c.json({ error_code: "twilio_purchase_price_changed", message: "Twilio's current price changed. Request a new quote and confirm it again." }, 409);
+  }
+  const nowDate = new Date(now);
+  const monthStart = new Date(nowDate.getFullYear(), nowDate.getMonth(), 1).toISOString();
+  const spend = await c.env.PLATFORM_DB.prepare(`SELECT
+    COALESCE((SELECT SUM(monthly_cost_minor) FROM customer_voice_number_bindings WHERE tenant_id=? AND space_id=? AND status='active'),0) +
+    COALESCE((SELECT SUM(CASE WHEN status IN ('issued','connected') THEN reserved_cost_minor ELSE COALESCE(actual_cost_minor,0) END) FROM customer_voice_call_admissions WHERE tenant_id=? AND space_id=? AND issued_at>=?),0) +
+    COALESCE((SELECT SUM(monthly_cost_minor) FROM customer_voice_purchase_quotes WHERE tenant_id=? AND space_id=? AND (status='processing' OR (status='quoted' AND expires_at>?))),0) AS total,
+    COALESCE((SELECT monthly_spend_limit_minor FROM customer_voice_space_policies WHERE tenant_id=? AND space_id=?),5000) AS spend_limit`)
+    .bind(tenantId, spaceId, tenantId, spaceId, monthStart, tenantId, spaceId, now, tenantId, spaceId)
+    .first<{ total: number; spend_limit: number }>();
+  if ((spend?.total ?? 0) > (spend?.spend_limit ?? 5_000)) return c.json({ error_code: "customer_voice_monthly_spend_cap_exceeded", limit_minor: spend?.spend_limit ?? 5_000 }, 409);
+  const claimed = await c.env.PLATFORM_DB.prepare("UPDATE customer_voice_purchase_quotes SET status='processing' WHERE id=? AND tenant_id=? AND space_id=? AND quoted_by=? AND status='quoted' AND expires_at>?")
+    .bind(quote.id, tenantId, spaceId, userId, now).run();
+  if ((claimed.meta?.changes ?? 0) !== 1) return c.json({ error_code: "twilio_purchase_quote_expired_or_used" }, 409);
+
+  const bindingId = crypto.randomUUID();
+  const base = c.env.PUBLIC_AGENTS_URL.replace(/\/$/, "");
+  const voiceUrl = `${base}/customer-voice/twilio/answer/${bindingId}`;
+  const statusUrl = `${base}/customer-voice/twilio/status/${bindingId}`;
+  const purchaseForm = new URLSearchParams({ PhoneNumber: quote.phone_number, VoiceUrl: voiceUrl, VoiceMethod: "POST", StatusCallback: statusUrl, StatusCallbackMethod: "POST" });
+  let response: Response;
+  try {
+    response = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${credentials.accountSid}/IncomingPhoneNumbers.json`, {
+      method: "POST", headers: { authorization: twilioAuth(credentials), "content-type": "application/x-www-form-urlencoded" }, body: purchaseForm,
+      redirect: "error", signal: AbortSignal.timeout(12_000),
+    });
+  } catch {
+    return c.json({ error_code: "twilio_purchase_status_unknown", quote_id: quote.id, message: "Check the Twilio account before trying again. If Twilio created the number, import its Phone Number SID to attach it, then reconcile this pending purchase." }, 502);
+  }
+  if (!response.ok) {
+    if (response.status >= 500) return c.json({ error_code: "twilio_purchase_status_unknown", quote_id: quote.id, message: "Twilio did not confirm whether the purchase completed. Check the account before trying again." }, 502);
+    await c.env.PLATFORM_DB.prepare("UPDATE customer_voice_purchase_quotes SET status='failed' WHERE id=? AND status='processing'").bind(quote.id).run();
+    return c.json({ error_code: "twilio_purchase_failed", message: "Twilio rejected the purchase. No number was attached." }, 502);
+  }
+  let raw: string;
+  try { raw = await response.text(); } catch {
+    return c.json({ error_code: "twilio_purchase_status_unknown", quote_id: quote.id, message: "Check the Twilio account before trying again. If Twilio created the number, import its Phone Number SID to attach it, then reconcile this pending purchase." }, 502);
+  }
+  if (new TextEncoder().encode(raw).byteLength > 32 * 1024) return c.json({ error_code: "twilio_purchase_status_unknown", quote_id: quote.id, message: "Twilio returned an oversized purchase response. Check the account before trying again." }, 502);
+  let purchased: { sid?: string; account_sid?: string; phone_number?: string; iso_country?: string; region?: string; capabilities?: { voice?: boolean; sms?: boolean; mms?: boolean } };
+  try { purchased = JSON.parse(raw) as typeof purchased; } catch {
+    return c.json({ error_code: "twilio_purchase_status_unknown", quote_id: quote.id, message: "Twilio returned an unreadable purchase response. Check the account before trying again." }, 502);
+  }
+  if (!/^PN[a-fA-F0-9]{32}$/.test(purchased.sid ?? "") || purchased.account_sid !== credentials.accountSid || purchased.phone_number !== quote.phone_number || purchased.capabilities?.voice !== true) {
+    const knownSid = /^PN[a-fA-F0-9]{32}$/.test(purchased.sid ?? "") ? purchased.sid! : null;
+    const released = knownSid ? await fetch(`https://api.twilio.com/2010-04-01/Accounts/${credentials.accountSid}/IncomingPhoneNumbers/${knownSid}.json`, { method: "DELETE", headers: { authorization: twilioAuth(credentials) }, redirect: "error", signal: AbortSignal.timeout(8_000) }).then((r) => r.ok).catch(() => false) : false;
+    if (released) await c.env.PLATFORM_DB.prepare("UPDATE customer_voice_purchase_quotes SET status='failed' WHERE id=? AND status='processing'").bind(quote.id).run();
+    return c.json({ error_code: released ? "twilio_purchase_response_invalid_number_released" : "twilio_purchase_status_unknown", quote_id: quote.id, ...(knownSid && !released ? { phone_number_sid: knownSid } : {}), message: "Twilio returned an unexpected purchase record. Check the provider account before retrying." }, 502);
+  }
+  let finalPrice: Awaited<ReturnType<typeof fetchTwilioNumberPrice>> | null = null;
+  try { finalPrice = await fetchTwilioNumberPrice({ credentials, phoneNumber: purchased.phone_number!, country: purchased.iso_country ?? quote.country_code }); } catch { /* Release below if the final account price cannot be verified. */ }
+  if (!finalPrice || finalPrice.numberType !== "local" || finalPrice.monthlyCostMinor !== quote.monthly_cost_minor || finalPrice.inboundPricePerMinuteMinor !== quote.inbound_price_per_minute_minor) {
+    const released = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${credentials.accountSid}/IncomingPhoneNumbers/${purchased.sid}.json`, { method: "DELETE", headers: { authorization: twilioAuth(credentials) }, redirect: "error", signal: AbortSignal.timeout(8_000) }).then((response) => response.ok).catch(() => false);
+    if (released) await c.env.PLATFORM_DB.prepare("UPDATE customer_voice_purchase_quotes SET status='failed' WHERE id=? AND status='processing'").bind(quote.id).run();
+    return c.json({ error_code: released ? "twilio_purchase_rate_changed_number_released" : "twilio_purchase_cleanup_required", quote_id: quote.id, phone_number_sid: released ? undefined : purchased.sid }, 409);
+  }
+  const createdAt = new Date().toISOString();
+  try {
+    await c.env.PLATFORM_DB.batch([
+      c.env.PLATFORM_DB.prepare(`INSERT INTO customer_voice_number_bindings(id,provider,provider_account_sid,provider_number_sid,tenant_id,space_id,agent_id,phone_number,country_code,region,capabilities_json,provider_voice_url,provider_voice_method,provider_status_callback,provider_status_callback_method,provider_status_callback_events_json,monthly_cost_minor,currency,monthly_quote_at,inbound_price_per_minute_minor,assistant_prompt,created_by,created_at,updated_at)
+        VALUES(?,'twilio',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'USD',?,?,?,?,?,?)`)
+        .bind(bindingId, credentials.accountSid, purchased.sid, tenantId, spaceId, agentId, purchased.phone_number, purchased.iso_country ?? quote.country_code, purchased.region ?? "", JSON.stringify(purchased.capabilities), "", "POST", "", "POST", "[]", finalPrice.monthlyCostMinor, finalPrice.quotedAt, finalPrice.inboundPricePerMinuteMinor, prompt, userId, createdAt, createdAt),
+      c.env.PLATFORM_DB.prepare(`INSERT INTO customer_voice_space_policies(tenant_id,space_id,updated_by,updated_at) VALUES(?,?,?,?) ON CONFLICT(space_id) DO NOTHING`).bind(tenantId, spaceId, userId, createdAt),
+      c.env.PLATFORM_DB.prepare("UPDATE customer_voice_purchase_quotes SET status='completed',number_binding_id=? WHERE id=? AND status='processing'").bind(bindingId, quote.id),
+    ]);
+  } catch {
+    const released = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${credentials.accountSid}/IncomingPhoneNumbers/${purchased.sid}.json`, { method: "DELETE", headers: { authorization: twilioAuth(credentials) }, redirect: "error", signal: AbortSignal.timeout(8_000) }).then((response) => response.ok).catch(() => false);
+    if (released) await c.env.PLATFORM_DB.prepare("UPDATE customer_voice_purchase_quotes SET status='failed' WHERE id=? AND status='processing'").bind(quote.id).run();
+    return c.json({ error_code: released ? "customer_voice_purchase_persist_failed_number_released" : "customer_voice_purchase_cleanup_required", quote_id: quote.id, phone_number_sid: released ? undefined : purchased.sid }, 502);
+  }
+  return c.json({ id: bindingId, phone_number: purchased.phone_number, country_code: purchased.iso_country ?? quote.country_code, region: purchased.region ?? "", capabilities: purchased.capabilities, monthly_cost_minor: finalPrice.monthlyCostMinor, inbound_price_per_minute_minor: finalPrice.inboundPricePerMinuteMinor, currency: "USD", status: "active" }, 201);
+});
+
+app.post("/spaces/:spaceId/customer-voice/numbers/purchase/quotes/:quoteId/resolve", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = await requireApprovalAuthority(c, spaceId);
+  const userId = getCallerIdentity(c).userId;
+  const body = await c.req.json<{ resolution?: "imported" | "not_purchased"; confirm_account_checked?: boolean }>().catch((): { resolution?: "imported" | "not_purchased"; confirm_account_checked?: boolean } => ({}));
+  const quote = await c.env.PLATFORM_DB.prepare(`SELECT id,provider_account_sid,phone_number,status,created_at FROM customer_voice_purchase_quotes
+    WHERE id=? AND tenant_id=? AND space_id=? AND quoted_by=?`)
+    .bind(c.req.param("quoteId"), tenantId, spaceId, userId).first<{ id: string; provider_account_sid: string; phone_number: string; status: string; created_at: string }>();
+  if (!quote || quote.status !== "processing") return c.json({ error_code: "customer_voice_purchase_not_pending" }, 409);
+  if (Date.now() - Date.parse(quote.created_at) < 60_000) return c.json({ error_code: "customer_voice_purchase_still_settling" }, 409);
+  if (body.resolution === "imported") {
+    const binding = await c.env.PLATFORM_DB.prepare(`SELECT id FROM customer_voice_number_bindings WHERE tenant_id=? AND space_id=? AND provider_account_sid=? AND phone_number=? AND status IN ('active','disabled')`)
+      .bind(tenantId, spaceId, quote.provider_account_sid, quote.phone_number).first<{ id: string }>();
+    if (!binding) return c.json({ error_code: "customer_voice_purchase_number_not_imported" }, 409);
+    const result = await c.env.PLATFORM_DB.prepare("UPDATE customer_voice_purchase_quotes SET status='completed',number_binding_id=? WHERE id=? AND tenant_id=? AND space_id=? AND quoted_by=? AND status='processing'")
+      .bind(binding.id, quote.id, tenantId, spaceId, userId).run();
+    return c.json({ resolved: (result.meta?.changes ?? 0) === 1, status: "completed", number_binding_id: binding.id });
+  }
+  if (body.resolution === "not_purchased" && body.confirm_account_checked === true) {
+    const result = await c.env.PLATFORM_DB.prepare("UPDATE customer_voice_purchase_quotes SET status='failed' WHERE id=? AND tenant_id=? AND space_id=? AND quoted_by=? AND status='processing'")
+      .bind(quote.id, tenantId, spaceId, userId).run();
+    return c.json({ resolved: (result.meta?.changes ?? 0) === 1, status: "failed" });
+  }
+  throw badRequest("After checking the Twilio account, resolve as imported or confirm that no number was purchased");
 });
 
 app.post("/spaces/:spaceId/customer-voice/numbers/import", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = await requireApprovalAuthority(c, spaceId);
+  if (await customerVoiceProviderDenied(c.env, spaceId)) return c.json({ error_code: "space_egress_denied" }, 403);
   const userId = getCallerIdentity(c).userId;
   const body = await c.req.json<{ phone_number_sid?: string; agent_id?: string; owner_prompt?: string }>();
   const numberSid = body.phone_number_sid ?? "";
@@ -509,22 +679,22 @@ app.post("/spaces/:spaceId/customer-voice/numbers/import", async (c) => {
   const auth = twilioAuth(credentials);
   const providerResponse = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${credentials.accountSid}/IncomingPhoneNumbers/${numberSid}.json`, { headers: { authorization: auth } });
   if (!providerResponse.ok) return c.json({ error_code: "twilio_number_not_found_in_account" }, 404);
-  const provider = await providerResponse.json<{ sid?: string; phone_number?: string; iso_country?: string; region?: string; capabilities?: { voice?: boolean }; price?: string | number; price_unit?: string; voice_url?: string; voice_method?: string; status_callback?: string; status_callback_method?: string; status_callback_event?: string[] }>();
-  if (provider.sid !== numberSid || !provider.phone_number || !isE164(provider.phone_number) || !provider.capabilities?.voice || (provider.price_unit && provider.price_unit !== "USD")) throw badRequest("The selected number is not a verified voice-capable number with a USD price");
-  const monthlyCost = moneyMinor(provider.price);
-  if (monthlyCost === null) return c.json({ error_code: "twilio_monthly_number_price_unavailable" }, 409);
-  const pricingResponse = await fetch(`https://pricing.twilio.com/v2/Voice/Numbers/${encodeURIComponent(provider.phone_number)}`, { headers: { authorization: auth } });
-  if (!pricingResponse.ok) return c.json({ error_code: "twilio_inbound_voice_price_unavailable" }, 409);
-  const pricing = await pricingResponse.json<{ inboundCallPrice?: { currentPrice?: string | number; priceUnit?: string }; numberType?: string }>();
-  const minutePrice = moneyMinor(pricing.inboundCallPrice?.currentPrice);
-  if (minutePrice === null || (pricing.inboundCallPrice?.priceUnit && pricing.inboundCallPrice.priceUnit !== "USD")) return c.json({ error_code: "twilio_inbound_voice_price_unavailable" }, 409);
+  const provider = await providerResponse.json<{ sid?: string; phone_number?: string; iso_country?: string; region?: string; capabilities?: { voice?: boolean }; voice_url?: string; voice_method?: string; status_callback?: string; status_callback_method?: string }>();
+  if (provider.sid !== numberSid || !provider.phone_number || !isE164(provider.phone_number) || !provider.capabilities?.voice) throw badRequest("The selected number is not a verified voice-capable number");
+  let numberPricing: Awaited<ReturnType<typeof fetchTwilioNumberPrice>>;
+  try {
+    numberPricing = await fetchTwilioNumberPrice({ credentials, phoneNumber: provider.phone_number, country: provider.iso_country ?? "" });
+  } catch {
+    return c.json({ error_code: "twilio_number_price_unavailable", message: "Twilio did not return a supported USD rental rate and inbound voice rate for this number" }, 409);
+  }
+  const monthlyCost = numberPricing.monthlyCostMinor;
+  const minutePrice = numberPricing.inboundPricePerMinuteMinor;
   if (!c.env.PUBLIC_AGENTS_URL) return c.json({ error_code: "public_agents_url_unconfigured" }, 503);
   const bindingId = crypto.randomUUID();
   const base = c.env.PUBLIC_AGENTS_URL.replace(/\/$/, "");
   const voiceUrl = `${base}/customer-voice/twilio/answer/${bindingId}`;
   const statusUrl = `${base}/customer-voice/twilio/status/${bindingId}`;
   const callbackSettings = new URLSearchParams({ VoiceUrl: voiceUrl, VoiceMethod: "POST", StatusCallback: statusUrl, StatusCallbackMethod: "POST" });
-  for (const event of ["initiated", "ringing", "answered", "completed"]) callbackSettings.append("StatusCallbackEvent", event);
   const updateResponse = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${credentials.accountSid}/IncomingPhoneNumbers/${numberSid}.json`, {
     method: "POST", headers: { authorization: auth, "content-type": "application/x-www-form-urlencoded" },
     body: callbackSettings,
@@ -533,12 +703,11 @@ app.post("/spaces/:spaceId/customer-voice/numbers/import", async (c) => {
   try {
     await c.env.PLATFORM_DB.prepare(`INSERT INTO customer_voice_number_bindings(id,provider,provider_account_sid,provider_number_sid,tenant_id,space_id,agent_id,phone_number,country_code,region,capabilities_json,provider_voice_url,provider_voice_method,provider_status_callback,provider_status_callback_method,provider_status_callback_events_json,monthly_cost_minor,currency,monthly_quote_at,inbound_price_per_minute_minor,assistant_prompt,created_by,created_at,updated_at)
       VALUES(?,'twilio',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'USD',?,?,?,?,?,?)`)
-      .bind(bindingId, credentials.accountSid, numberSid, tenantId, spaceId, agentId, provider.phone_number, provider.iso_country ?? "", provider.region ?? "", JSON.stringify(provider.capabilities), provider.voice_url ?? "", provider.voice_method ?? "POST", provider.status_callback ?? "", provider.status_callback_method ?? "POST", JSON.stringify(provider.status_callback_event ?? []), monthlyCost, new Date().toISOString(), minutePrice, prompt, userId, new Date().toISOString(), new Date().toISOString()).run();
+      .bind(bindingId, credentials.accountSid, numberSid, tenantId, spaceId, agentId, provider.phone_number, provider.iso_country ?? "", provider.region ?? "", JSON.stringify(provider.capabilities), provider.voice_url ?? "", provider.voice_method ?? "POST", provider.status_callback ?? "", provider.status_callback_method ?? "POST", "[]", monthlyCost, numberPricing.quotedAt, minutePrice, prompt, userId, new Date().toISOString(), new Date().toISOString()).run();
     await c.env.PLATFORM_DB.prepare(`INSERT INTO customer_voice_space_policies(tenant_id,space_id,updated_by,updated_at) VALUES(?,?,?,?) ON CONFLICT(space_id) DO NOTHING`).bind(tenantId, spaceId, userId, new Date().toISOString()).run();
   } catch (error) {
     // Restore the provider's previous callbacks if local persistence fails.
     const restoreSettings = new URLSearchParams({ VoiceUrl: provider.voice_url ?? "", VoiceMethod: provider.voice_method ?? "POST", StatusCallback: provider.status_callback ?? "", StatusCallbackMethod: provider.status_callback_method ?? "POST" });
-    for (const event of provider.status_callback_event ?? []) restoreSettings.append("StatusCallbackEvent", event);
     await fetch(`https://api.twilio.com/2010-04-01/Accounts/${credentials.accountSid}/IncomingPhoneNumbers/${numberSid}.json`, {
       method: "POST", headers: { authorization: auth, "content-type": "application/x-www-form-urlencoded" }, body: restoreSettings,
     }).catch(() => undefined);
@@ -8098,6 +8267,9 @@ async function expireEmailIngressData(env: AgentsEnv): Promise<void> {
     await env.PLATFORM_DB.prepare("DELETE FROM email_reply_routes WHERE expires_at <= ? OR status = 'revoked'").bind(now).run();
     const ocrUsageExpiredAt = new Date(Date.now() - 30 * 86_400_000).toISOString();
     await env.PLATFORM_DB.prepare("DELETE FROM email_attachment_ocr_usage WHERE created_at <= ?").bind(ocrUsageExpiredAt).run();
+    await env.PLATFORM_DB.prepare(`DELETE FROM customer_voice_purchase_quotes WHERE id IN (
+      SELECT id FROM customer_voice_purchase_quotes WHERE status IN ('completed','failed') OR (status='quoted' AND expires_at<=?) LIMIT 100
+    )`).bind(now).run();
   } catch (error) {
     console.error("email ingress retention sweep failed", error instanceof Error ? error.message : String(error));
   }

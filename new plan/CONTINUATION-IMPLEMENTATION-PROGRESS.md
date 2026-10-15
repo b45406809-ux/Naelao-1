@@ -2,10 +2,10 @@
 
 ## Latest continuation checkpoint (read first)
 
-- Current branch: `Mcbt5s-Backup-2`. Latest pushed commit: `e6d7726` (W4 built-in per-channel model selection).
-- W4 channel model selection and W3 stale-call recovery are implemented, tested, and pushed (`e6d7726`, `8ae505f`). The current uncommitted W2 slice adds explicit, owner-enabled PNG/JPEG OCR through Workers AI. Full verification now passes: Agents 91 files / 372 tests, Agents and Shell typechecks, focused OCR suites, SQLite quota/replay, D1 migration replay through 0100, and Wrangler dry-run. Stage and commit/push before moving on.
-- Latest open product/deployment dependencies: exact quote-confirmed Twilio number purchase; live Twilio/PSTN and Cloudflare/R2/domain/provider acceptance; account-billed AI dollar reservation; provider-specific model entitlement and audio/video routing; platform-executed LoRA evaluation/training contract. Local/mock tests do not close these.
-- After the current W3 slice, continue only independent, supportable local gaps in the implementation plan; then make the final completeness pass and record any account-only steps as blocked/unrun.
+- Current branch: `Mcbt5s-Backup-2`. Current W3 Twilio quote-and-purchase slice is locally implemented and verified; commit/push status is recorded in the entry below.
+- W2 PNG/JPEG OCR and W3 telephony quote/purchase are implemented and locally tested. The current W3 slice adds official country/type rate-card lookup, explicit 3-minute quotes, owner confirmation, cap holds, replay protection, post-purchase rate verification, and ambiguity resolution. Latest full-suite/typecheck/dry-run evidence is below.
+- Remaining external/product dependencies: live Twilio/PSTN acceptance and Cloudflare/R2/domain/provider deployment acceptance; account-billed AI dollar reservation; provider-specific model entitlement and audio/video routing; platform-executed LoRA evaluation/training; scanned-PDF page rendering. Local/mock tests do not close external account checks.
+- Continue with any independent locally actionable gaps from `OPEN-GAPS-IMPLEMENTATION-PLAN.md`; record unresolvable external checks precisely and do not treat them as locally complete.
 
 ## Open-gap implementation workstream 3 addendum — owner telephony settings and router (2026-10-15)
 
@@ -631,6 +631,16 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Verification: Agents and Shell typechecks passed; focused parser/route/settings/tool tests passed (4 files / 23 tests); daily quota query ran against SQLite (20 allowed per Space/rolling day, 21st denied, other Space isolated); D1 migration replay through 0100 passed; full Agents suite passed (91 files / 372 tests); fresh Wrangler 4.149 dry-run exited successfully; `git diff --check` passed. No live Workers AI call was made. Deployment acceptance log now records migration 0100; production D1 remains unrun.
 - Status: local implementation is partial for raster image OCR; scanned PDF OCR still needs a verified bounded PDF-to-image renderer. Do not report OCR quality or live provider operation as verified.
 - Next: stage, commit/push this verified W2 slice. Then continue the remaining local gaps and final audit.
+
+## Open-gap implementation workstream 3 addendum — quote-confirmed Twilio number purchase (2026-10-15)
+
+- Checked current official Twilio [Phone Numbers Pricing](https://www.twilio.com/docs/phone-numbers/pricing), [Voice Pricing](https://www.twilio.com/docs/voice/pricing), and [IncomingPhoneNumber resource](https://www.twilio.com/docs/phone-numbers/api/incomingphonenumber-resource). Monthly price is country/number-type rate-card data, Voice pricing is returned in snake_case, and the IncomingPhoneNumber schema does not document a `price` field. Import now uses the supported pricing endpoints rather than assuming an undocumented property.
+- Added bounded Twilio rate lookup, an exact available-number/country check and a three-minute owner/admin quote. The quote shows current recurring monthly and inbound-per-minute prices, excludes taxes/fees, and does not reserve inventory or guarantee a locked price. A conditional D1 quote insertion reserves monthly budget against concurrent quotes and calls. Air-gapped/egress-denied Spaces are rejected before credentials/provider access.
+- Added explicit purchase confirmation requiring the quoted monthly amount, correct Space/account/actor, and customer agent binding. Immediately before purchase, the service rechecks number availability and both published rates; it validates the acquired E.164, account, country, and price afterward. Price/persistence failures attempt provider release. Ambiguous provider responses retain a `processing` quote and budget hold; the owner can reconcile by importing the purchased number or explicitly attesting after checking the account that none was created. Quote replay is denied. UI clearly communicates recurring amount, rate observation, expiry, inventory caveat, and recovery path.
+- Added migration `0101_customer_voice_purchase_quotes.sql`; admission SQL includes active quote holds so number rental reserves cap capacity. Changed Agents routing/pricing/search/purchase, call admission, Shell API/settings, migration replay and tests, this log, acceptance log, and W3 implementation plan.
+- Verification: focused voice tests passed (5 files / 24 tests); Agents full suite passed (93 files / 381 tests); Agents and Shell typechecks passed; Spaces migration replay including 0101 passed; Agents Wrangler dry-run passed (17,992.29 KiB / 3,331.58 KiB gzip); `git diff --check` passed. All Twilio behavior was mocked. No live credentials, number purchase, PSTN call, deployment or billing check was performed.
+- Status: purchase flow IMPLEMENTED AND LOCALLY VERIFIED; live account acceptance remains open. A quote uses provider's current rate-card pricing and is not a provider-guaranteed price lock. Latest commit/push status: pending final review and commit in this turn.
+- Next: complete local diff review, commit and push this W3 slice on `Mcbt5s-Backup-2`, then address any remaining locally actionable gaps; leave live account checks precisely marked unrun.
 
 
 ## Open-gap implementation final local audit (2026-10-15)
