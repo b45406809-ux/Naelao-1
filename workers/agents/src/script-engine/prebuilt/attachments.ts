@@ -1,6 +1,7 @@
 /** Task-scoped attachment CLI operations. IDs are opaque handles, never storage locations. */
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 import { mintInternalToken } from "@naelao/http";
+import { workspacePrefix } from "../types.js";
 
 async function call(ctx: PrebuiltOpContext, path: string, args: Record<string, unknown> = {}): Promise<unknown> {
   if (!ctx.env.taskId) throw new Error(`attachment ${path.endsWith("/list") ? "list" : "read"} requires an active task run`);
@@ -36,17 +37,36 @@ const ocr = async (args: Record<string, unknown>, ctx: PrebuiltOpContext) => {
   if (!id) throw new Error("usage: attachment ocr <id>");
   return call(ctx, "/internal/business-email/attachment/ocr", { id });
 };
+const copy = async (args: Record<string, unknown>, ctx: PrebuiltOpContext) => {
+  const id = typeof args.id === "string" ? args.id.trim() : "";
+  const path = typeof args.path === "string" ? args.path.trim() : "";
+  if (!id || !path) throw new Error("usage: attachment copy <id> <workspace-path>");
+  const clean = path.replaceAll("\\", "/").replace(/^\/+/, "");
+  const parts = clean.split("/");
+  if (clean.length > 512 || parts.some(part => !part || part === "." || part === "..") ||
+      parts.some(part => [".avos", ".naelao", ".git", "node_modules", ".env"].includes(part) || part.startsWith(".env."))) {
+    throw new Error("attachment_workspace_path_rejected");
+  }
+  const prefix = workspacePrefix(ctx.env);
+  return call(ctx, "copy", {
+    id, path: clean, projectId: ctx.env.projectId ?? null,
+    extensionId: ctx.env.spaceWorkspaceExtensionId ?? null,
+    workspaceBranch: ctx.env.workspaceBranch ?? null,
+    destinationKey: `${prefix}${clean}`,
+  });
+};
 
 export const attachments: PrebuiltScript = {
   name: "attachments",
   description: "List task-owned inbound files and read them only when needed. Reading is explicit; storage-only handling never decodes content.",
   domain: "files",
   requires_tier: 1,
-  operations: { "attachment.list": list, "attachment.inspect": inspect, "attachment.read": read, "attachment.ocr": ocr },
+  operations: { "attachment.list": list, "attachment.inspect": inspect, "attachment.read": read, "attachment.ocr": ocr, "attachment.copy": copy },
   paramHints: {
     "attachment.list": "No parameters. Lists metadata for files received by this task only.",
     "attachment.inspect": "{id:string}. Gets metadata only for one file received by this task; does not open or decode its bytes.",
     "attachment.read": "{id:string}. Reads supported text, DOCX or PDF text from one task-owned file; binary image OCR is a separate explicit operation.",
     "attachment.ocr": "{id:string}. Requests hosted OCR for a task-owned image only when the Space owner enabled it and egress is allowed.",
+    "attachment.copy": "{id:string,path:string}. Copies original bytes to the current authorized workspace without decoding or sending them to a model; refuses an existing destination.",
   },
 };

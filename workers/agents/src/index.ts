@@ -84,7 +84,8 @@ import { ARCHETYPE_PRESETS, isKnownArchetype, clampScriptsToArchetype } from "./
 import { writeAgentConfig, createAgentConfigLockGateway } from "./script-engine/agent-config.js";
 import { actorAddress, type ThreadTier } from "@naelao/agent-sdk";
 import { applyDurableObjectJurisdiction, isSpaceNetworkEgressDenied } from "@naelao/security";
-import { deleteBytesCas, putBytesCas, readBytesWithHash } from "./script-engine/r2-cas.js";
+import { deleteBytesCas, putBytesCas, readBytesWithHash, R2CasConflictError } from "./script-engine/r2-cas.js";
+import { workspacePrefix } from "./script-engine/types.js";
 import {
   createAgentEmailAddress, createReplyAddress, emailReplyBody, hashEmailAddress, MAX_EMAIL_ATTACHMENT_BYTES,
   MAX_EMAIL_ATTACHMENTS_TOTAL_BYTES, MAX_INBOUND_EMAIL_BYTES, normalizeIngressDomain,
@@ -5992,6 +5993,66 @@ app.post("/internal/attachments/inspect", async (c) => {
   return c.json({ attachment });
 });
 
+app.post("/internal/attachments/copy", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !(await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))) {
+    return c.json({ error_code: "forbidden" }, 403);
+  }
+  const body = await c.req.json<{
+    tenantId?: string; spaceId?: string; taskId?: string; id?: string; path?: string;
+    projectId?: string | null; extensionId?: string | null; workspaceBranch?: string | null; destinationKey?: string;
+  }>().catch(() => null);
+  if (!body?.spaceId || !body.taskId || !body.id || !body.path || body.tenantId !== tenantId) return c.json({ error_code: "bad_request" }, 400);
+  const clean = body.path.replaceAll("\\", "/").replace(/^\/+/, "");
+  const segments = clean.split("/");
+  if (clean.length > 512 || segments.some(segment => !segment || segment === "." || segment === "..") ||
+      segments.some(segment => [".avos", ".naelao", ".git", "node_modules", ".env"].includes(segment) || segment.startsWith(".env."))) {
+    return c.json({ error_code: "attachment_workspace_path_rejected" }, 400);
+  }
+  let prefix: string;
+  try {
+    prefix = workspacePrefix({ spaceId: body.spaceId,
+      ...(body.projectId ? { projectId: body.projectId } : {}),
+      ...(body.extensionId ? { spaceWorkspaceExtensionId: body.extensionId } : {}),
+      ...(body.workspaceBranch ? { workspaceBranch: body.workspaceBranch } : {}) });
+  } catch { return c.json({ error_code: "attachment_workspace_scope_invalid" }, 400); }
+  const destinationKey = `${prefix}${clean}`;
+  if (body.destinationKey !== destinationKey) return c.json({ error_code: "attachment_destination_scope_mismatch" }, 403);
+  const now = new Date().toISOString();
+  const attachment = await c.env.PLATFORM_DB.prepare(
+    `SELECT object_key, filename, mime_type, size_bytes FROM channel_attachments
+     WHERE id=? AND tenant_id=? AND space_id=? AND task_id=? AND expires_at>? LIMIT 1`,
+  ).bind(body.id, tenantId, body.spaceId, body.taskId, now).first<{ object_key: string; filename: string; mime_type: string; size_bytes: number }>();
+  if (!attachment) return c.json({ error_code: "attachment_not_found" }, 404);
+  if (!c.env.SCRIPTS_R2) return c.json({ error_code: "attachment_storage_unavailable" }, 503);
+  if (attachment.size_bytes > MAX_EMAIL_ATTACHMENT_BYTES) return c.json({ error_code: "attachment_copy_too_large", max_bytes: MAX_EMAIL_ATTACHMENT_BYTES }, 413);
+  const space = await c.env.PLATFORM_DB.prepare("SELECT status FROM spaces WHERE id=? AND tenant_id=?").bind(body.spaceId, tenantId).first<{ status: string }>();
+  if (!space || space.status !== "active") return c.json({ error_code: "space_inactive" }, 409);
+  const claimId = crypto.randomUUID();
+  const expiresAt = new Date(Date.now() + 30 * 86_400_000).toISOString();
+  const claim = await c.env.PLATFORM_DB.prepare(
+    `INSERT OR IGNORE INTO attachment_copy_claims (destination_key, claim_id, tenant_id, space_id, task_id, attachment_id, created_at, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(destinationKey, claimId, tenantId, body.spaceId, body.taskId, body.id, now, expiresAt).run();
+  if (claim.meta?.changes !== 1) return c.json({ error_code: "attachment_destination_exists" }, 409);
+  try {
+    if (await c.env.SCRIPTS_R2.head(destinationKey)) throw new R2CasConflictError(destinationKey);
+    const object = await c.env.SCRIPTS_R2.get(attachment.object_key);
+    if (!object) throw new Error("attachment_not_found");
+    const bytes = await object.arrayBuffer();
+    if (bytes.byteLength !== attachment.size_bytes || bytes.byteLength > MAX_EMAIL_ATTACHMENT_BYTES) throw new Error("attachment_copy_size_mismatch");
+    await putBytesCas(c.env.SCRIPTS_R2, destinationKey, new Uint8Array(bytes), null,
+      { naelaoAttachmentId: body.id }, { contentType: attachment.mime_type });
+    return c.json({ copied: true, path: clean, filename: attachment.filename, mime_type: attachment.mime_type, size_bytes: bytes.byteLength });
+  } catch (error) {
+    await c.env.PLATFORM_DB.prepare("DELETE FROM attachment_copy_claims WHERE destination_key=? AND claim_id=?").bind(destinationKey, claimId).run();
+    if (error instanceof Error && error.message === "attachment_not_found") return c.json({ error_code: "attachment_not_found" }, 404);
+    if (error instanceof Error && error.message === "attachment_copy_size_mismatch") return c.json({ error_code: error.message }, 409);
+    if (error instanceof R2CasConflictError) return c.json({ error_code: "attachment_destination_exists" }, 409);
+    return c.json({ error_code: "attachment_copy_failed" }, 502);
+  }
+});
+
 // POST /internal/business-email/attachment/read-text — expose bounded text/PDF extraction only to
 // the same task that received the attachment. D1 ownership is checked before touching R2.
 app.post("/internal/business-email/attachment/read-text", async (c) => {
@@ -8345,6 +8406,7 @@ async function expireEmailIngressData(env: AgentsEnv): Promise<void> {
       await env.PLATFORM_DB.prepare("DELETE FROM channel_attachments WHERE object_key = ?").bind(row.object_key).run();
     }
     await env.PLATFORM_DB.prepare("DELETE FROM email_reply_routes WHERE expires_at <= ? OR status = 'revoked'").bind(now).run();
+    await env.PLATFORM_DB.prepare("DELETE FROM attachment_copy_claims WHERE expires_at <= ?").bind(now).run();
     const ocrUsageExpiredAt = new Date(Date.now() - 30 * 86_400_000).toISOString();
     await env.PLATFORM_DB.prepare("DELETE FROM email_attachment_ocr_usage WHERE created_at <= ?").bind(ocrUsageExpiredAt).run();
     await env.PLATFORM_DB.prepare(`DELETE FROM customer_voice_purchase_quotes WHERE id IN (

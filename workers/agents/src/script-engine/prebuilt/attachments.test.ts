@@ -44,6 +44,25 @@ describe("task-scoped attachment CLI operations", () => {
     expect(state.calls[0]?.url).toBe("http://agents-worker/internal/attachments/inspect");
   });
 
+  it("copies opaque attachment bytes into the execution's own workspace prefix", async () => {
+    const state = context({ response: { copied: true } });
+    await expect(attachments.operations["attachment.copy"]!({ id: "opaque-1", path: "inbox/scan.pdf" }, state.ctx)).resolves.toEqual({ copied: true });
+    expect(state.calls[0]?.url).toBe("http://agents-worker/internal/attachments/copy");
+    expect(await state.calls[0]!.json()).toMatchObject({ id: "opaque-1", path: "inbox/scan.pdf", destinationKey: "spaces/space-a/workspace/inbox/scan.pdf" });
+    await expect(attachments.operations["attachment.copy"]!({ id: "opaque-1", path: "../outside.pdf" }, state.ctx)).rejects.toThrow("attachment_workspace_path_rejected");
+    expect(state.calls).toHaveLength(1);
+  });
+
+  it("preserves a Space-wide extension's isolated workspace destination", async () => {
+    const state = context({ response: { copied: true } });
+    (state.ctx.env as unknown as { spaceWorkspaceExtensionId: string }).spaceWorkspaceExtensionId = "ext-123";
+    await attachments.operations["attachment.copy"]!({ id: "opaque-1", path: "docs/scan.pdf" }, state.ctx);
+    expect(await state.calls[0]!.json()).toMatchObject({
+      extensionId: "ext-123",
+      destinationKey: "spaces/space-a/space-workspace/extensions/ext-123/workspace/docs/scan.pdf",
+    });
+  });
+
   it("refuses to list outside a task run", async () => {
     const state = context({ taskId: undefined });
     (state.ctx.env as unknown as { taskId?: string }).taskId = undefined;

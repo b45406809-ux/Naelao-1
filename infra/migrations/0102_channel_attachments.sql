@@ -17,3 +17,19 @@ CREATE INDEX IF NOT EXISTS idx_channel_attachments_scope
   ON channel_attachments(tenant_id, space_id, task_id, expires_at);
 CREATE INDEX IF NOT EXISTS idx_channel_attachments_expiry
   ON channel_attachments(expires_at);
+
+-- A copy never overwrites a pre-existing workspace file. The reservation also serializes
+-- concurrent copies of the same destination across independent task Durable Objects.
+CREATE TABLE IF NOT EXISTS attachment_copy_claims (
+  destination_key TEXT PRIMARY KEY,
+  claim_id TEXT NOT NULL UNIQUE,
+  tenant_id TEXT NOT NULL,
+  space_id TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  attachment_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_attachment_copy_claims_expiry
+  ON attachment_copy_claims(expires_at);

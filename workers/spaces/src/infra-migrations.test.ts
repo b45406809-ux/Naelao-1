@@ -17,6 +17,7 @@ describe("latest D1 deployment migration batch", () => {
       "customer_voice_space_policies", "customer_voice_number_bindings", "customer_voice_call_admissions", "email_attachment_ocr_usage",
       "customer_voice_purchase_quotes",
       "channel_attachments",
+      "attachment_copy_claims",
       "llm_token_reservations", "llm_token_run_settlements",
     ]));
     expect(storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('users')").toArray().map(row => row.name)).toContain("preferred_language");

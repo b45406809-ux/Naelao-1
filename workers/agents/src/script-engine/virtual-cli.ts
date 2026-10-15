@@ -122,7 +122,10 @@ export function interceptPlatformWords(words: string[], command?: string): CliDi
     if (["inspect", "read", "ocr"].includes(action) && words[2] && words.length === 3) {
       return { operation: `attachment.${action}`, params: { id: words[2] } };
     }
-    throw new Error("usage: attachment list | attachment inspect <id> | attachment read <id> | attachment ocr <id>");
+    if (action === "copy" && words[2] && words[3] && words.length === 4) {
+      return { operation: "attachment.copy", params: { id: words[2], path: words[3] } };
+    }
+    throw new Error("usage: attachment list | attachment inspect <id> | attachment read <id> | attachment ocr <id> | attachment copy <id> <workspace-path>");
   }
   if (words[0] === "skill") {
     const action = words[1] ?? "list";

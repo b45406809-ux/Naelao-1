@@ -5,6 +5,7 @@ describe("VirtualCliDispatcher", () => {
   it("routes task-scoped attachment commands to typed operations", () => {
     expect(interceptPlatformCli("attachment list")).toEqual({ operation: "attachment.list", params: {} });
     expect(interceptPlatformCli("attachment inspect a1b2")).toEqual({ operation: "attachment.inspect", params: { id: "a1b2" } });
+    expect(interceptPlatformCli("attachment copy a1b2 uploads/scan.png")).toEqual({ operation: "attachment.copy", params: { id: "a1b2", path: "uploads/scan.png" } });
     expect(interceptPlatformCli("attachment read a1b2")).toEqual({ operation: "attachment.read", params: { id: "a1b2" } });
     expect(interceptPlatformCli("attachment ocr a1b2")).toEqual({ operation: "attachment.ocr", params: { id: "a1b2" } });
     expect(() => interceptPlatformCli("attachment read")).toThrow("usage: attachment");
