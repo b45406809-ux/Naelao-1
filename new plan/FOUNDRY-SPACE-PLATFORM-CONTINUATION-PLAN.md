@@ -151,7 +151,7 @@ Status: **PARTIAL — existing generic installation requirements and runtime tie
 Primary read: **lines 2773–2977** (USER 2773–2775; AI MODEL 2776–2977).
 Bounded primary windows: 2773–2947, 2948–2977.
 Later amendment/dependency pairs: 2978–3067 (task 20); 3514–3753 (task 23); 3754–3942 (task 24); 4269–4441 (task 27)
-Status: **UNASSESSED**. Evidence and exact next action belong in the progress file.
+Status: **PARTIAL — existing in-thread voice dictation reaches the active planner, but live duplex planner calls are not implemented.** The Shell records audio, transcribes through the existing API and inserts text into the same thread composer. Existing voice-call session persistence and `VoiceSession` target customer-service extensions, not the internal Lead Planner. The requested realtime call requires authenticated signaling, S2S model streaming, planner tool execution and live transcript/thread persistence. The transcript's Cloudflare Calls SDK, realtime model, latency and pricing claims are not verified; no call credentials or implementation binding exists in the repository. Do not route owner calls through customer-bot sessions. See task 19 evidence in the progress file.
 
 ## Task 20
 
