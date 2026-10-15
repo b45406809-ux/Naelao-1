@@ -179,7 +179,7 @@ Status: **ASSESSED; see `CONTINUATION-IMPLEMENTATION-PROGRESS.md` for dispositio
 Primary read: **lines 3514–3753** (USER 3514–3516; AI MODEL 3517–3753).
 Bounded primary windows: 3514–3688, 3689–3753.
 Later amendment/dependency pairs: 3754–3942 (task 24); 3943–4139 (task 25); 4140–4268 (task 26); 4269–4441 (task 27)
-Status: **ASSESSED; see `CONTINUATION-IMPLEMENTATION-PROGRESS.md` for disposition and evidence.**
+Status: **PARTIAL — no language/provider capability selector is verified.** Current planner guidance preserves mixed language, can consult exact owner glossary entries or request offline candidate ranking, and can choose the bounded translation tool when needed. Translation is an unverified draft limited to 12 language tags and cloud-enabled Spaces. There is no calibrated model-language support catalog or automatic Jev recommender; official Cloudflare M2M100/OpenRouter documentation returned 403. Task24 overrides the model's whitelist/halt proposal by requiring mixed-language messages reach the planner. Do not introduce a language gate or provider route until a trustworthy capability contract is available; ask for clarification when meaning affects consequential action. See Task23 evidence in the progress file.
 
 ## Task 24
 
