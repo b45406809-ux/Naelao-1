@@ -7118,11 +7118,26 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     } catch (error) {
       return Response.json({ error_code: "model_price_unavailable", error: error instanceof Error ? error.message : "Fresh model price evidence unavailable" }, { status: 503 });
     }
+    const channelReservation = { enabled: false, projectId: "", runId: "", sequence: 0, reserved: false };
     const reasoner = new GatewayReasoner({
       apiKey: body.apiKey ?? "",
       gateway: { accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway", ...(this.env.CF_API_TOKEN ? { cfApiToken: this.env.CF_API_TOKEN } : {}), ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}), ...(this.env.GOOGLE_AI_STUDIO_API_KEY ? { googleAiStudioApiKey: this.env.GOOGLE_AI_STUDIO_API_KEY } : {}), ...(this.env.GROQ_API_KEY ? { groqApiKey: this.env.GROQ_API_KEY } : {}), ...(this.env.OPENROUTER_API_KEY && !model.startsWith("openrouter/") ? { openRouterApiKey: this.env.OPENROUTER_API_KEY } : {}), ...byokOverride },
       ctx: { spaceId, agentId, model },
       model,
+      reserveInferenceCost: async (inference) => {
+        if (!channelReservation.enabled) return true;
+        const estimate = estimateRequestCostCredits(inference.serializedRequestBytes, inference.maxOutputTokens, inference.model,
+          inference.model.startsWith("openrouter/") ? channelModelPricing : undefined);
+        const response = await this.env.SPACES_WORKER.fetch(new Request(
+          `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(channelReservation.projectId)}/spend`,
+          { method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
+            body: JSON.stringify({ action: "reserve", reservation_id: `${channelReservation.runId}:${++channelReservation.sequence}`, run_id: channelReservation.runId, credits: estimate.estimatedCredits }) }
+        ));
+        if (response.status === 402) return false;
+        if (!response.ok) throw new Error("project_spend_reservation_unavailable");
+        channelReservation.reserved = true;
+        return true;
+      },
       contextWindowTokens: contextWindowForModel(model),
       fallbacks: authorizedFailoversForModel(model, this.resolveFailoverChain(model, body.apiKey ?? "")),
       // Same gap as the interactive path: a customer messaging a business on Slack/WhatsApp was
@@ -7164,6 +7179,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     for (const msg of pending) {
       try {
+      const msgProjectConfig = msg.project_id ? projectConfigs.get(msg.project_id) : undefined;
+      channelReservation.enabled = Boolean(msg.project_id && msgProjectConfig?.status === "found" && msgProjectConfig.daily_spend_cap_credits > 0);
+      channelReservation.projectId = msg.project_id ?? "";
+      channelReservation.runId = `channel:${msg.id}`;
+      channelReservation.sequence = 0;
+      channelReservation.reserved = false;
       // Untrusted inbound text — moderate before it ever reaches the reasoning prompt or a rule
       // match. This used to just count "escalated" and continue — the message was silently
       // dropped with nobody ever told a customer-bot channel (including a business's own inbound
@@ -7367,8 +7388,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         // own telemetry/cache.
         this.addProjectSpend(msg.project_id, credits);
         if (projectCfg && projectCfg.daily_spend_cap_credits > 0) {
-          await this.checkAndDebitProjectSpend(spaceId, tenantId, msg.project_id, credits);
+          if (channelReservation.reserved) await this.settleProjectSpendReservation(spaceId, tenantId, msg.project_id, channelReservation.runId, credits);
+          else await this.checkAndDebitProjectSpend(spaceId, tenantId, msg.project_id, credits);
         }
+      } else if (msg.project_id && projectCfg && projectCfg.daily_spend_cap_credits > 0 && channelReservation.reserved) {
+        await this.settleProjectSpendReservation(spaceId, tenantId, msg.project_id, channelReservation.runId, 0);
       }
 
       const deliveredDirectly = result.script_name?.startsWith("notify.") && result.result?.ok;
