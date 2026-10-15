@@ -92,8 +92,8 @@ export interface PairingEnv {
   /**
    * Twilio as an alternative WhatsApp transport. Same channel, same pairing, same inbox — the
    * difference is what the operator has to obtain. Meta's Cloud API needs a verified Business
-   * account; Twilio's sandbox is free and instant, which is the difference between a platform
-   * offering WhatsApp at all and not.
+   * account; Twilio's sandbox can simplify testing, while production availability and charges
+   * depend on account, sender, market, and current pricing requirements.
    *
    * The sandbox is SHARED, so joining it requires its own code alongside our pairing token —
    * hence TWILIO_WHATSAPP_JOIN_CODE. A production Twilio sender needs no join code and that

@@ -42,6 +42,9 @@ export interface NotificationsEnv {
   SLACK_BOT_TOKEN?: string;
   DISCORD_BOT_TOKEN?: string;
   WHATSAPP_ACCESS_TOKEN?: string;
+  WHATSAPP_PHONE_NUMBER_ID?: string;
+  /** Meta Graph API version in vN.N form. Set per deployment if Meta's current version advances. */
+  WHATSAPP_GRAPH_API_VERSION?: string;
   /** Twilio as an alternative WhatsApp transport — platform-level, like the bot tokens above. */
   TWILIO_ACCOUNT_SID?: string;
   TWILIO_AUTH_TOKEN?: string;
@@ -116,8 +119,13 @@ async function sendChatMessage(
   // Twilio-backed WhatsApp authenticates with an account SID + auth token rather than a single
   // credential, so it is resolved separately — and BEFORE the gate below, which would otherwise
   // reject a perfectly working channel for lacking a Meta token it does not use.
-  const viaTwilio =
-    channel === "whatsapp" && Boolean(env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.TWILIO_WHATSAPP_NUMBER);
+  const whatsappTransport = channel === "whatsapp"
+    ? await resolveChannelCredential(env, opts.tenantId, opts.spaceId, "WHATSAPP_TRANSPORT")
+    : null;
+  // Platform Twilio is the easy default. An owner who explicitly configures Meta direct in the
+  // channel settings opts that Space out of the platform Twilio sender.
+  const viaTwilio = channel === "whatsapp" && whatsappTransport !== "meta" &&
+    Boolean(env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.TWILIO_WHATSAPP_NUMBER);
 
   const credential =
     (await resolveChannelCredential(env, opts.tenantId, opts.spaceId, credName)) ??
@@ -173,16 +181,19 @@ async function sendChatMessage(
         }),
       });
     } else if (channel === "whatsapp") {
-      // `to` is the customer's phone number; the credential is the Meta Cloud API access token,
-      // and the phone-number id it posts through rides in the same vault entry as "<id>:<token>"
-      // when the owner configured one — otherwise there is no route to send on.
-      const [phoneNumberId, accessToken] = cred.includes(":")
-        ? [cred.slice(0, cred.indexOf(":")), cred.slice(cred.indexOf(":") + 1)]
-        : [null, cred];
-      if (!phoneNumberId) {
-        return { delivered: false, reason: "whatsapp needs WHATSAPP_ACCESS_TOKEN as '<phone_number_id>:<token>'" };
+      // The Space vault stores Meta's access token and phone-number ID separately. Accept the old
+      // `<id>:<token>` format during credential migration so existing Spaces continue sending.
+      const colon = cred.indexOf(":");
+      const legacyPair = colon > 0 && /^\d{5,32}$/.test(cred.slice(0, colon));
+      const accessToken = legacyPair ? cred.slice(colon + 1) : cred;
+      const phoneNumberId = legacyPair
+        ? cred.slice(0, colon)
+        : (await resolveChannelCredential(env, opts.tenantId, opts.spaceId, "WHATSAPP_PHONE_NUMBER_ID")) ?? env.WHATSAPP_PHONE_NUMBER_ID ?? null;
+      const graphVersion = env.WHATSAPP_GRAPH_API_VERSION ?? "v26.0";
+      if (!phoneNumberId || !/^\d{5,32}$/.test(phoneNumberId) || !/^v\d+\.\d+$/.test(graphVersion)) {
+        return { delivered: false, reason: "whatsapp needs a Meta access token and phone-number ID in the Space channel settings" };
       }
-      resp = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
+      resp = await fetch(`https://graph.facebook.com/${graphVersion}/${phoneNumberId}/messages`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${accessToken}` },
         body: JSON.stringify(actions.length ? { messaging_product: "whatsapp", to, type: "interactive", interactive: {

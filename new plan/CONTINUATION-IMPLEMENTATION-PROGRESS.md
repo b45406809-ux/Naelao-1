@@ -1,5 +1,15 @@
 # Continuation implementation progress
 
+## Latest communications/OCR checkpoint (2026-10-15)
+
+- OCR answer: the existing `email.attachment.ocr_image` operation is task-scoped and planner/tool-executor accessible for PNG/JPEG files attached to the active inbound email. It is not a generic arbitrary-file OCR tool shared with every worker. A delegated worker can use it only when that operation is exposed in its allowed prebuilt tool surface. Hosted OCR remains owner-enabled and is guarded by task/tenant/Space/key/expiry/egress checks; air-gapped workspaces fail closed. Scanned PDF OCR remains unsupported.
+- Added optional per-Space Meta Direct credentials in WhatsApp channel setup (phone-number ID plus access token) and credential-vault storage; the setting explicitly opts that Space out of the platform Twilio sender. Twilio remains the easy paired/default route when configured. Meta Graph send and voice-note metadata now use configurable Graph API version, defaulting to `v26.0`; old `<id>:<token>` send credentials remain accepted.
+- The currently purchased PSTN numbers still use the owner-confirmed Twilio path. The UI explains Meta direct message fees can apply. Copy no longer claims the Twilio sandbox is free/instant or implies production is free.
+- Official vendor validation used current Meta WhatsApp send/pricing docs and Cloudflare Realtime SFU docs. Meta prices business-to-user messages by market/category (effective July 1, 2025), so there is no blanket free 1,000-service-conversation promise. Cloudflare Realtime SFU needs app signaling, identity/authz, and backend credentials; published egress is $0.05/GB with a 1,000-GB monthly allowance, so it is not universally zero-cost. No Realtime SFU-to-Naelao voice worker integration currently exists. Telnyx/Africa's Talking docs were blocked by the environment proxy, so no pricing/capability claim or adapter was added.
+- Changed: `workers/agents/src/index.ts`, `workers/agents/src/launchpad/{whatsapp-media.ts,whatsapp-media.test.ts,channel-pairing.ts,channels.ts}`, `workers/notifications/src/{index.ts,interactive.test.ts}`, Shell channel setup/API, and this progress log.
+- Verification: Agents tests 93 files/381 tests passed; Notifications tests 3 files/11 tests passed; Agents, Notifications, and Shell typechecks passed; Agents and Notifications Wrangler dry-runs passed; `git diff --check` passed. Vendor requests are mocked; no live Meta/Twilio/Cloudflare check was performed.
+- Status: Meta Direct per-Space outbound setup is locally implemented; Twilio remains default. Cloudflare Calls WebRTC integration, alternate wholesale carrier adapters, and live provider/account acceptance remain open. Continue only with a verified SFU integration design and explicit local test coverage; do not claim free PSTN or free Cloudflare voice.
+
 ## Latest continuation checkpoint (read first)
 
 - Current branch: `Mcbt5s-Backup-2`. Latest pushed commit: `66ea7ad` (W3 confirmed Twilio number purchase). This workstream is locally implemented and verified.

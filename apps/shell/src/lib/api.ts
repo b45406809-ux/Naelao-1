@@ -1771,7 +1771,7 @@ export async function pairAssistantChannel(
 export async function updateAssistantChannel(
   spaceId: string,
   session: SessionCredentials,
-  body: { action: "connect" | "disconnect" | "enable" | "set_model"; channel: string; secret?: string; project_id?: string; media_access_token?: string; model_override?: string | null }
+  body: { action: "connect" | "disconnect" | "enable" | "set_model"; channel: string; secret?: string; project_id?: string; media_access_token?: string; whatsapp_phone_number_id?: string; whatsapp_access_token?: string; model_override?: string | null }
 ): Promise<ChannelConnectResult> {
   return apiFetch<ChannelConnectResult>(`/v1/spaces/${spaceId}/assistant/channels`, {
     method: "POST",

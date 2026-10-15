@@ -96,6 +96,8 @@ export function ChannelConnect({
   const [pairing, setPairing] = React.useState<ChannelPairing | null>(null);
   const [secret, setSecret] = React.useState("");
   const [mediaAccessToken, setMediaAccessToken] = React.useState("");
+  const [whatsappPhoneNumberId, setWhatsappPhoneNumberId] = React.useState("");
+  const [whatsappAccessToken, setWhatsappAccessToken] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [webhookUrl, setWebhookUrl] = React.useState<{ channel: string; url: string } | null>(null);
@@ -133,10 +135,13 @@ export function ChannelConnect({
         channel,
         ...(action === "connect" ? { secret } : {}),
         ...(action === "connect" && channel === "whatsapp" && mediaAccessToken.trim() ? { media_access_token: mediaAccessToken.trim() } : {}),
+        ...(action === "connect" && channel === "whatsapp" && whatsappPhoneNumberId.trim() && whatsappAccessToken.trim()
+          ? { whatsapp_phone_number_id: whatsappPhoneNumberId.trim(), whatsapp_access_token: whatsappAccessToken.trim() } : {}),
       });
       if (action === "connect") {
         setSecret("");
         setMediaAccessToken("");
+        setWhatsappAccessToken("");
         setAdvanced(null);
         setOpen(null);
         if (res.webhook_url) setWebhookUrl({ channel, url: res.webhook_url });
@@ -290,6 +295,16 @@ export function ChannelConnect({
                       </p>
                       {ch.id === "whatsapp" && (
                         <>
+                          <div style={{ padding: "10px 0", marginBottom: 8, borderTop: "1px solid var(--border)", borderBottom: "1px solid var(--border)" }}>
+                            <strong style={{ fontSize: 12 }}>Optional: send directly through Meta</strong>
+                            <p style={{ fontSize: 11, color: "var(--text3)", margin: "5px 0 8px", lineHeight: 1.5 }}>
+                              The simple paired setup uses Naelao’s configured Twilio sender when available. To send from your own WhatsApp Business number without Twilio, add the Meta phone-number ID and a token with WhatsApp messaging access. Meta may charge message fees; this is an advanced setup.
+                            </p>
+                            <label style={{ fontSize: 11.5, color: "var(--text2)", display: "block", marginBottom: 4 }}>Meta WhatsApp Business phone-number ID</label>
+                            <input className="search-bar" style={{ width: "100%" }} value={whatsappPhoneNumberId} placeholder="Numeric phone-number ID" onChange={(e) => setWhatsappPhoneNumberId(e.target.value)} autoComplete="off" />
+                            <label style={{ fontSize: 11.5, color: "var(--text2)", display: "block", margin: "8px 0 4px" }}>Meta WhatsApp Cloud API access token</label>
+                            <input type="password" className="search-bar" style={{ width: "100%" }} value={whatsappAccessToken} placeholder="System-user or other supported access token" onChange={(e) => setWhatsappAccessToken(e.target.value)} autoComplete="new-password" />
+                          </div>
                           <label style={{ fontSize: 11.5, color: "var(--text2)", display: "block", marginBottom: 4 }}>
                             WhatsApp Cloud API Access Token (for voice notes)
                           </label>

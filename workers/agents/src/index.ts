@@ -346,9 +346,10 @@ export interface AgentsEnv extends Cloudflare.Env {
   /** Meta's own id for that number, which the send API addresses (not the same as the number). */
   WHATSAPP_PHONE_NUMBER_ID?: string;
   WHATSAPP_ACCESS_TOKEN?: string;
-  /** Twilio as an alternative WhatsApp transport — see launchpad/channel-pairing.ts. Free and
-   *  instant where Meta's Cloud API needs a verified Business account, so this is usually the one
-   *  a platform can actually have. TWILIO_WHATSAPP_JOIN_CODE applies only to the shared sandbox. */
+  /** Meta Graph API version in vN.N form; defaults to the current version used by our docs. */
+  WHATSAPP_GRAPH_API_VERSION?: string;
+  /** Twilio is the default paired WhatsApp transport when configured. A shared sandbox is for
+   *  testing; production use needs an approved sender and is billed under Twilio's current rates. */
   TWILIO_ACCOUNT_SID?: string;
   TWILIO_AUTH_TOKEN?: string;
   TWILIO_WHATSAPP_NUMBER?: string;
@@ -5472,6 +5473,7 @@ app.post("/channels/platform-inbound/:channel", async (c) => {
       } else {
         raw = await transcribeWhatsAppVoiceNote(raw, {
           ...(c.env.WHATSAPP_ACCESS_TOKEN ? { accessToken: c.env.WHATSAPP_ACCESS_TOKEN } : {}),
+          ...(c.env.WHATSAPP_GRAPH_API_VERSION ? { graphApiVersion: c.env.WHATSAPP_GRAPH_API_VERSION } : {}),
           ai: c.env.AI,
         });
       }
@@ -5642,7 +5644,9 @@ async function replyOnPlatformChannel(
         signal: AbortSignal.timeout(10_000),
       });
     } else if (channel === "whatsapp" && env.WHATSAPP_ACCESS_TOKEN && env.WHATSAPP_PHONE_NUMBER_ID) {
-      await fetch(`https://graph.facebook.com/v21.0/${env.WHATSAPP_PHONE_NUMBER_ID}/messages`, {
+      const graphVersion = env.WHATSAPP_GRAPH_API_VERSION ?? "v26.0";
+      if (!/^v\d+\.\d+$/.test(graphVersion)) return;
+      await fetch(`https://graph.facebook.com/${graphVersion}/${env.WHATSAPP_PHONE_NUMBER_ID}/messages`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}` },
         body: JSON.stringify({ messaging_product: "whatsapp", to: conversationId, text: { body: text } }),
@@ -5731,7 +5735,11 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
     if (!mediaTokenResponse.ok) return c.json({ error_code: "whatsapp_media_access_token_missing" }, 503);
     const { value: mediaToken } = await mediaTokenResponse.json<{ value: string }>();
     try {
-      normalizedRaw = await transcribeWhatsAppVoiceNote(raw, { accessToken: mediaToken, ai: c.env.AI });
+      normalizedRaw = await transcribeWhatsAppVoiceNote(raw, {
+        accessToken: mediaToken,
+        ...(c.env.WHATSAPP_GRAPH_API_VERSION ? { graphApiVersion: c.env.WHATSAPP_GRAPH_API_VERSION } : {}),
+        ai: c.env.AI,
+      });
     } catch (error) {
       const reason = error instanceof Error ? error.message : "whatsapp_voice_transcription_failed";
       const rejected = reason === "whatsapp_media_rejected" || reason === "whatsapp_media_url_rejected" ||
@@ -6492,6 +6500,8 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
     secret?: string;
     project_id?: string;
     media_access_token?: string;
+    whatsapp_phone_number_id?: string;
+    whatsapp_access_token?: string;
   };
   const body = await c.req.json<ChannelActionBody>().catch(() => ({}) as ChannelActionBody);
 
@@ -6548,8 +6558,13 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
 
   if (!c.env.CREDENTIALS_WORKER) return c.json({ error_code: "unavailable", message: "credentials not bound" }, 503);
   if (!body.secret) throw badRequest("secret is required (the signing secret or public key from the provider)");
-  if (channel !== "whatsapp" && body.media_access_token) return c.json({ error_code: "media_access_token_only_supported_for_whatsapp" }, 400);
+  if (channel !== "whatsapp" && (body.media_access_token || body.whatsapp_access_token || body.whatsapp_phone_number_id)) return c.json({ error_code: "whatsapp_credentials_only_supported_for_whatsapp" }, 400);
   if (body.media_access_token && body.media_access_token.length > 8192) return c.json({ error_code: "media_access_token_too_large" }, 400);
+  if (body.whatsapp_access_token !== undefined || body.whatsapp_phone_number_id !== undefined) {
+    if (!body.whatsapp_access_token || body.whatsapp_access_token.length > 8192 || !/^\d{5,32}$/.test(body.whatsapp_phone_number_id ?? "")) {
+      return c.json({ error_code: "whatsapp_direct_credentials_invalid", message: "Meta direct setup requires a numeric phone-number ID and access token" }, 400);
+    }
+  }
 
   const credResp = await storeConnectorCredential(c.env, {
     tenantId,
@@ -6572,6 +6587,18 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
       description: "WhatsApp Cloud API media download access token",
     });
     if (!mediaResp.ok && mediaResp.status !== 409) return c.json({ error_code: "credential_store_failed", message: await mediaResp.text() }, 502);
+  }
+  if (body.whatsapp_access_token && body.whatsapp_phone_number_id) {
+    const directCredentials = [
+      { name: "WHATSAPP_ACCESS_TOKEN", value: body.whatsapp_access_token, description: "WhatsApp Cloud API access token for direct sending" },
+      { name: "WHATSAPP_PHONE_NUMBER_ID", value: body.whatsapp_phone_number_id, description: "WhatsApp Cloud API phone-number ID" },
+      { name: "WHATSAPP_MEDIA_ACCESS_TOKEN", value: body.media_access_token || body.whatsapp_access_token, description: "WhatsApp Cloud API media download access token" },
+      { name: "WHATSAPP_TRANSPORT", value: "meta", description: "Selected WhatsApp outbound transport" },
+    ];
+    for (const credential of directCredentials) {
+      const stored = await storeConnectorCredential(c.env, { tenantId, spaceId, userId, ...credential });
+      if (!stored.ok && stored.status !== 409) return c.json({ error_code: "credential_store_failed", message: await stored.text() }, 502);
+    }
   }
 
   await c.env.PLATFORM_DB.prepare(

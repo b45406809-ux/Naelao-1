@@ -11,11 +11,12 @@ describe("WhatsApp voice-note ingress", () => {
       .mockResolvedValueOnce(Response.json({ url: "https://lookaside.fbsbx.com/media/1", mime_type: "audio/ogg", file_size: 3 }))
       .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3])));
     const ai = { run: vi.fn().mockResolvedValue({ text: "Please review the attached order." }) };
-    const result = await transcribeWhatsAppVoiceNote(payload(), { accessToken: "private-token", ai, fetcher });
+    const result = await transcribeWhatsAppVoiceNote(payload(), { accessToken: "private-token", graphApiVersion: "v26.0", ai, fetcher });
     const message = ((result.entry as Array<{ changes: Array<{ value: { messages: Array<Record<string, unknown>> } }> }>)[0]!.changes[0]!.value.messages[0]!);
     expect(message.text).toEqual({ body: "Please review the attached order." });
     expect(message.audio).toEqual({ id: "media-1", mime_type: "audio/ogg", voice: true });
     expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[0]![0]).toBe("https://graph.facebook.com/v26.0/media-1");
     expect((fetcher.mock.calls[0]![1] as RequestInit).headers).toEqual({ authorization: "Bearer private-token", accept: "application/json" });
     expect(ai.run).toHaveBeenCalledOnce();
   });
@@ -31,6 +32,8 @@ describe("WhatsApp voice-note ingress", () => {
     const oversized = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ url: "https://lookaside.fbsbx.com/media/1", mime_type: "audio/ogg", file_size: 9 * 1024 * 1024 }));
     await expect(transcribeWhatsAppVoiceNote(payload(), { accessToken: "token", ai: { run: vi.fn() }, fetcher: oversized })).rejects.toThrow("whatsapp_media_rejected");
     await expect(transcribeWhatsAppVoiceNote(payload(), {})).rejects.toThrow("whatsapp_voice_transcription_unavailable");
+    await expect(transcribeWhatsAppVoiceNote(payload(), { accessToken: "token", ai: { run: vi.fn() }, graphApiVersion: "latest" }))
+      .rejects.toThrow("whatsapp_graph_api_version_invalid");
   });
 
   it("transcribes Twilio voice media only from the signed account message resource", async () => {

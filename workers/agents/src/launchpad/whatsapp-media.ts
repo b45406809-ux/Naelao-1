@@ -13,6 +13,7 @@ type JsonObject = Record<string, unknown>;
 
 export interface WhatsAppMediaEnv {
   accessToken?: string;
+  graphApiVersion?: string;
   ai?: VoiceAi;
   fetcher?: typeof fetch;
 }
@@ -86,7 +87,9 @@ export async function transcribeWhatsAppVoiceNote(raw: JsonObject, env: WhatsApp
   if (!detected) return raw;
   if (!env.accessToken || !env.ai) throw new Error("whatsapp_voice_transcription_unavailable");
   const fetcher = env.fetcher ?? fetch;
-  const metadataResponse = await fetcher(`https://graph.facebook.com/v21.0/${encodeURIComponent(detected.id)}`, {
+  const graphApiVersion = env.graphApiVersion ?? "v26.0";
+  if (!/^v\d+\.\d+$/.test(graphApiVersion)) throw new Error("whatsapp_graph_api_version_invalid");
+  const metadataResponse = await fetcher(`https://graph.facebook.com/${graphApiVersion}/${encodeURIComponent(detected.id)}`, {
     headers: { authorization: `Bearer ${env.accessToken}`, accept: "application/json" },
     signal: AbortSignal.timeout(10_000),
   });

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import worker, { type NotificationsEnv } from "./index.js";
 function env(): NotificationsEnv {
   return { ENVIRONMENT: "test", RESEND_API_KEY: "resend", RESEND_API_URL: "https://api.resend.test", WEBHOOK_SIGNING_SECRET: "secret",
-    TELEGRAM_BOT_TOKEN: "telegram-test", WHATSAPP_ACCESS_TOKEN: "phone-id:meta-test",
+    TELEGRAM_BOT_TOKEN: "telegram-test", WHATSAPP_ACCESS_TOKEN: "123456789012345:meta-test",
     PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ config_json: "{}" }) }) }) } as unknown as D1Database,
   };
 }
@@ -36,5 +36,32 @@ describe("interactive mobile approval delivery", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("Rejected", { status: 400 })));
     const res = await worker.fetch!(new Request("https://notifications/internal/notify", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ channel: "whatsapp", space_id: "space", to: "1", message: "Escalation" }) }), env(), {} as ExecutionContext);
     expect(res.status).toBe(502); expect(await res.json()).toMatchObject({ delivered: false });
+  });
+
+  it("uses an explicitly selected per-Space Meta direct transport even when platform Twilio is configured", async () => {
+    const outbound = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json({ messages: [{ id: "wamid.1" }] }));
+    vi.stubGlobal("fetch", outbound);
+    const credentials = {
+      async fetch(request: Request) {
+        const name = new URL(request.url).pathname.split("/").at(-2);
+        const value = name === "WHATSAPP_TRANSPORT" ? "meta"
+          : name === "WHATSAPP_PHONE_NUMBER_ID" ? "123456789012345"
+          : name === "WHATSAPP_ACCESS_TOKEN" ? "space-meta-token" : null;
+        return value ? Response.json({ value }) : new Response("missing", { status: 404 });
+      },
+    };
+    const response = await worker.fetch!(new Request("https://notifications/internal/notify", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant" },
+      body: JSON.stringify({ channel: "whatsapp", space_id: "space", to: "+15551234567", message: "Hello" }),
+    }), {
+      ...env(), PLATFORM_SECRET: "platform-secret", CREDENTIALS_WORKER: credentials as unknown as Fetcher,
+      TWILIO_ACCOUNT_SID: "AC123", TWILIO_AUTH_TOKEN: "twilio-token", TWILIO_WHATSAPP_NUMBER: "+15550000000",
+    }, {} as ExecutionContext);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ delivered: true });
+    expect(outbound).toHaveBeenCalledOnce();
+    expect(outbound.mock.calls[0]?.[0]).toBe("https://graph.facebook.com/v26.0/123456789012345/messages");
+    expect(new Headers(outbound.mock.calls[0]?.[1]?.headers).get("authorization")).toBe("Bearer space-meta-token");
   });
 });

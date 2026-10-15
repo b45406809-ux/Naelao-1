@@ -331,9 +331,9 @@ const telegramAdapter: ChannelAdapter = {
  *
  * Both are "WhatsApp" as far as the rest of the platform is concerned — same channel, same
  * pairing, same inbox. They differ only in what the operator has to obtain. Meta's Cloud API
- * needs a verified Business account and a registered number; Twilio's sandbox is free, instant,
- * and joined by scanning a QR with a prefilled message, which is the same shape our pairing
- * already uses. That difference is the whole reason this exists: a platform with no WhatsApp
+ * needs a verified Business account and a registered number; Twilio's sandbox can simplify
+ * testing, while production availability and charges depend on account, sender, and market.
+ * That difference is the whole reason this exists: a platform with no WhatsApp
  * number can offer none of this, and "apply for a Business account" is not a 60-second answer.
  *
  * Two things differ mechanically from Meta and both matter:
