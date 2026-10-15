@@ -17,7 +17,7 @@ export const TRUSTED_PACKAGE_HOSTS = [
 export function isTrustedPackageUrl(input: string | URL): boolean {
   try {
     const url = input instanceof URL ? input : new URL(input);
-    return url.protocol === "https:" && TRUSTED_PACKAGE_HOSTS.includes(url.hostname as typeof TRUSTED_PACKAGE_HOSTS[number]);
+    return url.protocol === "https:" && (url.port === "" || url.port === "443") && !url.username && !url.password && TRUSTED_PACKAGE_HOSTS.includes(url.hostname as typeof TRUSTED_PACKAGE_HOSTS[number]);
   } catch {
     return false;
   }
