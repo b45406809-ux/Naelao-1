@@ -1021,6 +1021,61 @@ app.post("/spaces/:spaceId/project-crons", async (c) => {
 
 // Space-owned private LoRA manifests. The adapter identifier never leaves the trusted workers;
 // the agents worker resolves it immediately before Workers AI inference.
+async function resolveGlossarySpace(c: { env: Env; req: { header(name: string): string | undefined } }, spaceId: string) {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !spaceId) return null;
+  const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'").bind(spaceId, tenantId).first();
+  if (!owned) return null;
+  if (c.req.header("x-naelao-role") === "product_end_user") {
+    const userId = c.req.header("x-naelao-user-id") ?? "";
+    if (!userId || !await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, userId)) return null;
+  }
+  return owned;
+}
+async function canEditGlossary(c: { env: Env; req: { header(name: string): string | undefined } }, spaceId: string): Promise<boolean> {
+  const role = c.req.header("x-naelao-role") ?? "";
+  if (role === "owner" || role === "admin") return true;
+  if (role !== "product_end_user") return false;
+  const userId = c.req.header("x-naelao-user-id") ?? "";
+  if (!userId) return false;
+  const membership = await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, userId);
+  return membership === "owner" || membership === "admin";
+}
+app.get("/spaces/:spaceId/domain-glossary", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const owned = await resolveGlossarySpace(c, spaceId);
+  if (!owned) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  return (await spaceDoStub(c.env, spaceId, c.req.header("x-naelao-tenant-id") ?? "")).fetch(new Request(`http://space/internal/domain-glossary?space_id=${encodeURIComponent(spaceId)}`));
+});
+app.post("/spaces/:spaceId/domain-glossary", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const owned = await resolveGlossarySpace(c, spaceId);
+  if (!owned) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  if (!await canEditGlossary(c, spaceId)) return c.json({ error_code: "forbidden", message: "Owner or admin role required" }, 403);
+  const actorId = c.req.header("x-naelao-user-id") ?? "system";
+  return (await spaceDoStub(c.env, spaceId, c.req.header("x-naelao-tenant-id") ?? "")).fetch(new Request("http://space/internal/domain-glossary", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ space_id: spaceId, actor_id: actorId, entry: await c.req.json().catch(() => null) }),
+  }));
+});
+app.delete("/spaces/:spaceId/domain-glossary", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const owned = await resolveGlossarySpace(c, spaceId);
+  if (!owned) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  if (!await canEditGlossary(c, spaceId)) return c.json({ error_code: "forbidden", message: "Owner or admin role required" }, 403);
+  const source = new URL(c.req.url);
+  return (await spaceDoStub(c.env, spaceId, c.req.header("x-naelao-tenant-id") ?? "")).fetch(new Request(`http://space/internal/domain-glossary?space_id=${encodeURIComponent(spaceId)}&term=${encodeURIComponent(source.searchParams.get("term") ?? "")}&locale=${encodeURIComponent(source.searchParams.get("locale") ?? "und")}`, { method: "DELETE" }));
+});
+app.use("/internal/spaces/:spaceId/domain-glossary/lookup", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.post("/internal/spaces/:spaceId/domain-glossary/lookup", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const spaceId = c.req.param("spaceId");
+  const owned = tenantId && await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'").bind(spaceId, tenantId).first();
+  if (!owned) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  return (await spaceDoStub(c.env, spaceId, tenantId)).fetch(new Request("http://space/internal/domain-glossary/lookup", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...(await c.req.json().catch(() => ({}))), space_id: spaceId }),
+  }));
+});
+
 app.get("/custom-models/:modelId", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   const spaceId = c.req.query("space_id") ?? "";

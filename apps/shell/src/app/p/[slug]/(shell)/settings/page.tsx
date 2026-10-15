@@ -27,6 +27,7 @@ import { useProductAuth } from "@/lib/auth-provider";
 import { useActiveSpace } from "@/lib/active-space-context";
 import { useRouter } from "next/navigation";
 import { canManageSpaceSettings } from "@/lib/roles";
+import { DomainGlossaryPanel } from "@/components/DomainGlossaryPanel";
 import {
   getMe,
   deleteMe,
@@ -219,6 +220,7 @@ export default function SettingsPage() {
         )}
 
         {tab === "ai" && (
+          <>
           <AiTab
             spaceId={activeSpaceId}
             creds={creds}
@@ -226,6 +228,8 @@ export default function SettingsPage() {
             canManage={canManage}
             onChanged={(p) => setPolicy(p)}
           />
+          {creds && <div style={{ marginTop: 24 }}><DomainGlossaryPanel spaceId={activeSpaceId} creds={creds} canEdit={canManage} /></div>}
+          </>
         )}
 
         {tab === "personal" && (

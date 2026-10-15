@@ -1030,6 +1030,18 @@ export interface OpenRouterModelRecommendation {
   evidence: string;
 }
 
+export interface DomainGlossaryEntry { term: string; meaning: string; locale: string; notes?: string }
+export async function getDomainGlossary(spaceId: string, session: SessionCredentials): Promise<DomainGlossaryEntry[]> {
+  const result = await apiFetch<{ entries: DomainGlossaryEntry[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/domain-glossary`, { session });
+  return result.entries;
+}
+export async function putDomainGlossary(spaceId: string, session: SessionCredentials, entry: DomainGlossaryEntry): Promise<void> {
+  await apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/domain-glossary`, { method: "POST", session, body: JSON.stringify(entry) });
+}
+export async function deleteDomainGlossary(spaceId: string, session: SessionCredentials, term: string, locale: string): Promise<void> {
+  await apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/domain-glossary?term=${encodeURIComponent(term)}&locale=${encodeURIComponent(locale)}`, { method: "DELETE", session });
+}
+
 /** GET /v1/spaces/:spaceId/llm-byok — which providers are wired (member+). */
 export async function getByokStatus(spaceId: string, session: SessionCredentials): Promise<ByokProviderStatus[]> {
   const res = await apiFetch<{ providers: ByokProviderStatus[] }>(`/v1/spaces/${spaceId}/llm-byok`, { session });

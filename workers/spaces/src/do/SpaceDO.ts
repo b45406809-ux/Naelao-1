@@ -32,6 +32,7 @@ import { projectFactRelevance } from "@naelao/agent-sdk";
 import { consumeEphemeralActionGrant, issueCapabilityToken, mintEphemeralActionGrant, type EphemeralActionGrant, verifyCapabilityToken } from "@naelao/security";
 import { signActionReceipt, verifyActionReceiptChain, type ActionReceipt, type ActionReceiptDraft } from "@naelao/tracing";
 import { MACHINE_NAME, assertMachineIdentity, validateMachinePublicKey, validateMachineHardware, validateMachineGrants, verifyMachineProof, tunnelHash, type NamedMachine, type MachineHardware, type MachineGrant, type MachineProof } from "@naelao/agent-sdk";
+import { matchGlossaryTerms, normalizeGlossaryTerm, validateGlossaryEntry, type DomainGlossaryEntry } from "../domain-glossary.js";
 
 function todaySpendKey(): string {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
@@ -1788,6 +1789,25 @@ const MIGRATIONS: Migration[] = [
         ON accepted_cross_space_workers(grantee_space_id,accepted_by,revoked_at,expires_at);
     `,
   },
+  {
+    version: 70,
+    description: "Space-owned exact-match domain glossary",
+    up: `
+      CREATE TABLE space_glossary_terms (
+        space_id TEXT NOT NULL,
+        term_norm TEXT NOT NULL,
+        term TEXT NOT NULL,
+        locale TEXT NOT NULL DEFAULT 'und',
+        meaning TEXT NOT NULL,
+        notes TEXT NOT NULL DEFAULT '',
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(space_id, term_norm, locale)
+      );
+      CREATE INDEX idx_space_glossary_locale ON space_glossary_terms(space_id, locale, term_norm);
+    `,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -1954,6 +1974,50 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     ) as { connector_id: string; scope: "space_shared" | "project_bound" | "user_personal" } | null;
   }
 
+  private listDomainGlossary(params: URLSearchParams): Response {
+    const spaceId = params.get("space_id") ?? "";
+    if (!spaceId) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const entries = queryAll<DomainGlossaryEntry>(this.ctx.storage.sql as never,
+      "SELECT term, meaning, locale, notes FROM space_glossary_terms WHERE space_id = ? ORDER BY locale, term_norm LIMIT 500", spaceId);
+    return Response.json({ entries });
+  }
+
+  private async putDomainGlossary(request: Request): Promise<Response> {
+    const body = await request.json<{ space_id?: string; actor_id?: string; entry?: unknown }>().catch(() => null);
+    if (!body?.space_id || !body.actor_id) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const parsed = validateGlossaryEntry(body.entry);
+    if (!parsed.entry) return Response.json({ error_code: parsed.error }, { status: 400 });
+    const { term, meaning, locale, notes = "" } = parsed.entry;
+    const sql = this.ctx.storage.sql as never;
+    const existing = queryOne<{ count: number }>(sql, "SELECT COUNT(*) AS count FROM space_glossary_terms WHERE space_id = ?", body.space_id);
+    const duplicate = queryOne<{ n: number }>(sql, "SELECT COUNT(*) AS n FROM space_glossary_terms WHERE space_id = ? AND term_norm = ? AND locale = ?", body.space_id, normalizeGlossaryTerm(term), locale);
+    if (!duplicate && (existing?.count ?? 0) >= 500) return Response.json({ error_code: "glossary_space_limit" }, { status: 409 });
+    const now = new Date().toISOString();
+    execute(sql, `INSERT INTO space_glossary_terms (space_id, term_norm, term, locale, meaning, notes, created_by, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(space_id, term_norm, locale) DO UPDATE SET term = excluded.term, meaning = excluded.meaning, notes = excluded.notes, updated_at = excluded.updated_at`,
+      body.space_id, normalizeGlossaryTerm(term), term, locale, meaning, notes, body.actor_id, now, now);
+    return Response.json({ entry: { term, meaning, locale, ...(notes ? { notes } : {}) } }, { status: (duplicate?.n ?? 0) > 0 ? 200 : 201 });
+  }
+
+  private deleteDomainGlossary(params: URLSearchParams): Response {
+    const spaceId = params.get("space_id") ?? "";
+    const term = params.get("term") ?? "";
+    const locale = params.get("locale") ?? "und";
+    if (!spaceId || !term || term.length > 160 || !/^(und|[a-z]{2,3}(?:-[a-z0-9]{2,8}){0,3})$/i.test(locale)) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const result = this.ctx.storage.sql.exec("DELETE FROM space_glossary_terms WHERE space_id = ? AND term_norm = ? AND locale = ?", spaceId, normalizeGlossaryTerm(term), locale.toLowerCase());
+    return Response.json({ deleted: result.rowsWritten > 0 });
+  }
+
+  private async lookupDomainGlossary(request: Request): Promise<Response> {
+    const body = await request.json<{ space_id?: string; terms?: unknown; locale?: string }>().catch(() => null);
+    if (!body?.space_id || !Array.isArray(body.terms) || body.terms.length > 20 || body.terms.some(term => typeof term !== "string" || !term.trim() || term.length > 160)) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    if (body.locale !== undefined && (typeof body.locale !== "string" || !/^(und|[a-z]{2,3}(?:-[a-z0-9]{2,8}){0,3})$/i.test(body.locale))) return Response.json({ error_code: "locale_invalid" }, { status: 400 });
+    const entries = queryAll<DomainGlossaryEntry>(this.ctx.storage.sql as never,
+      "SELECT term, meaning, locale, notes FROM space_glossary_terms WHERE space_id = ? ORDER BY locale, term_norm LIMIT 500", body.space_id);
+    return Response.json({ matches: matchGlossaryTerms(entries, body.terms as string[], body.locale) });
+  }
+
   override async fetch(request: Request): Promise<Response> {
     this.ensureInit();
     const url = new URL(request.url);
@@ -1961,6 +2025,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
     try {
       if (method === "POST" && url.pathname === "/internal/user-budget/debit") return this.debitUserDailyBudget(request);
+      if (url.pathname === "/internal/domain-glossary" && method === "GET") return this.listDomainGlossary(url.searchParams);
+      if (url.pathname === "/internal/domain-glossary" && method === "POST") return this.putDomainGlossary(request);
+      if (url.pathname === "/internal/domain-glossary" && method === "DELETE") return this.deleteDomainGlossary(url.searchParams);
+      if (url.pathname === "/internal/domain-glossary/lookup" && method === "POST") return this.lookupDomainGlossary(request);
       if (method === "POST" && url.pathname === "/internal/business-wallet/settle") return this.settleBusinessWallet(request);
       if (method === "POST" && url.pathname === "/internal/business-wallet/withdraw") return this.withdrawBusinessWallet(request);
       if (url.pathname === "/extensions" && method === "GET") return this.listExtensions();

@@ -4,7 +4,7 @@ import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim";
 import { SPACE_DO_MIGRATIONS } from "./SpaceDO";
 
 describe("SpaceDO migration replay", () => {
-  it("creates project and Foundry tables and replays every migration exactly once", () => {
+  it("creates project, Foundry and Space glossary tables and replays every migration exactly once", () => {
     const storage = createDOStorage();
     applyMigrations(
       storage as unknown as {
@@ -28,6 +28,7 @@ describe("SpaceDO migration replay", () => {
     const foundryTemplateTable = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name='foundry_templates'").toArray();
     const foundryRequestTable = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name='foundry_feature_requests'").toArray();
     const acceptedWorkerTable = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name='accepted_cross_space_workers'").toArray();
+    const glossaryTable = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name='space_glossary_terms'").toArray();
     const foundrySchema = storage.sql.exec<{ sql: string }>("SELECT sql FROM sqlite_master WHERE type='table' AND name='foundry_templates'").toArray()[0]?.sql;
     const applied = storage.sql
       .exec<{ count: number }>(
@@ -35,13 +36,16 @@ describe("SpaceDO migration replay", () => {
       )
       .toArray();
     const acceptedWorkerMigration = storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM _migrations WHERE version = 69").toArray();
+    const glossaryMigration = storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM _migrations WHERE version = 70").toArray();
     expect(table).toHaveLength(1);
     expect(foundryTemplateTable).toHaveLength(1);
     expect(foundryRequestTable).toHaveLength(1);
     expect(acceptedWorkerTable).toHaveLength(1);
+    expect(glossaryTable).toHaveLength(1);
     expect(foundrySchema).toContain("validated_version");
     expect(applied[0]?.count).toBe(1);
     expect(acceptedWorkerMigration[0]?.count).toBe(1);
+    expect(glossaryMigration[0]?.count).toBe(1);
     storage.sql.exec(
       "INSERT INTO project_demo_fixtures (project_id, fixture_id, fixture_kind, data_json) VALUES (?, ?, ?, ?)",
       "project-1",
@@ -61,5 +65,12 @@ describe("SpaceDO migration replay", () => {
       fixture_kind: "nda_clause",
       data_json: '{"synthetic":true}',
     });
+    storage.sql.exec("INSERT INTO space_glossary_terms (space_id, term_norm, term, locale, meaning, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      "space-a", "moyo", "Moyo", "sn", "community health worker", "owner-a", "now", "now");
+    expect(() => storage.sql.exec("INSERT INTO space_glossary_terms (space_id, term_norm, term, locale, meaning, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      "space-a", "moyo", "Moyo", "sn", "duplicate", "owner-a", "now", "now")).toThrow();
+    storage.sql.exec("INSERT INTO space_glossary_terms (space_id, term_norm, term, locale, meaning, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      "space-b", "moyo", "Moyo", "sn", "isolated term", "owner-b", "now", "now");
+    expect(storage.sql.exec<{ meaning: string }>("SELECT meaning FROM space_glossary_terms WHERE space_id = ? AND term_norm = ?", "space-b", "moyo").toArray()[0]?.meaning).toBe("isolated term");
   });
 });
