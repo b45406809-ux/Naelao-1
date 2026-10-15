@@ -8,7 +8,7 @@
 // control, rather than a dead/disabled one.
 
 import * as React from "react";
-import { ALLOWED_MODELS, capabilityForModel } from "@naelao/billing-core";
+import { ALLOWED_MODELS, benchmarkForModel, capabilityForModel } from "@naelao/billing-core";
 
 const MODEL_LABELS: Record<string, string> = {
   "claude-haiku-4-5-20251001": "Claude Haiku 4.5",
@@ -104,27 +104,42 @@ export function ModelSelector({
           }}
         >
           <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text3)", textTransform: "uppercase", letterSpacing: 0.4, padding: "4px 8px" }}>
-            Model
+            Model · relative cost
           </div>
           {ALLOWED_MODELS.map((m) => (
-            <button
-              key={m}
-              type="button"
-              onClick={() => {
-                const cap = capabilityForModel(m);
-                onChange(m, cap.reasoningLevels.length > 0 ? (cap.reasoningLevels[0] ?? null) : null);
-              }}
-              style={{
-                display: "flex", width: "100%", alignItems: "center", justifyContent: "space-between",
-                gap: 8, padding: "7px 8px", borderRadius: 8, border: "none",
-                background: m === model ? "var(--accent-dim)" : "transparent",
-                color: "var(--text)", fontSize: 13, cursor: "pointer", textAlign: "left",
-              }}
-            >
-              <span>{modelLabel(m)}</span>
-              {m === model && <span style={{ color: "var(--accent)" }}>✓</span>}
-            </button>
+            (() => {
+              const benchmark = benchmarkForModel(m);
+              const tier = benchmark?.costTier ?? "standard";
+              const basis = benchmark?.costBasis ?? "estimated";
+              return (
+                <button
+                  key={m}
+                  type="button"
+                  title={benchmark ? `${tier} relative cost (${basis}): ${benchmark.costNote}` : "Cost tier unavailable; treated as standard for display."}
+                  onClick={() => {
+                    const cap = capabilityForModel(m);
+                    onChange(m, cap.reasoningLevels.length > 0 ? (cap.reasoningLevels[0] ?? null) : null);
+                  }}
+                  style={{
+                    display: "flex", width: "100%", alignItems: "center", justifyContent: "space-between",
+                    gap: 8, padding: "7px 8px", borderRadius: 8, border: "none",
+                    background: m === model ? "var(--accent-dim)" : "transparent",
+                    color: "var(--text)", fontSize: 13, cursor: "pointer", textAlign: "left",
+                  }}
+                >
+                  <span>{modelLabel(m)}</span>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 7, color: "var(--text3)", fontSize: 10.5, whiteSpace: "nowrap" }}>
+                    <span>{tier}</span>
+                    <span>{basis}</span>
+                    {m === model && <span style={{ color: "var(--accent)", fontSize: 13 }}>✓</span>}
+                  </span>
+                </button>
+              );
+            })()
           ))}
+          <div style={{ fontSize: 11, lineHeight: 1.4, color: "var(--text3)", padding: "6px 8px 4px" }}>
+            Relative tiers are estimates, not a per-run quote. Actual usage is billed from the model's recorded token usage; cost varies with input, output, and reasoning.
+          </div>
 
           {capability.reasoningLevels.length > 0 ? (
             <>
