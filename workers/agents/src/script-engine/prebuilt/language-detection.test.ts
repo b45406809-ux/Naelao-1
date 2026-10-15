@@ -32,4 +32,16 @@ describe("offline language candidate detection", () => {
       );
     }
   });
+
+  it("adds preferred-locale hypotheses without filtering unrestricted or mixed input", () => {
+    const text = "Bonjour, je voudrais comprendre comment fonctionne cette application et obtenir de l'aide.";
+    const unrestricted = detectLanguageCandidates({ text });
+    const result = detectLanguageCandidates({ text, preferred_languages: ["es-MX", "fr-FR", "fr-FR", "sn-ZW"] });
+    expect(result.candidates).toEqual(unrestricted.candidates);
+    expect(result.preferred_languages_applied).toEqual(["es-mx", "fr-fr", "sn-zw"]);
+    expect(result.preferred_candidates?.length).toBeLessThanOrEqual(3);
+    expect(result.notice).toContain("unrestricted candidates are always retained");
+    expect(() => detectLanguageCandidates({ text, preferred_languages: ["not a locale"] })).toThrow("preferred_languages");
+    expect(() => detectLanguageCandidates({ text, preferred_languages: Array(33).fill("en") })).toThrow("preferred_languages");
+  });
 });
