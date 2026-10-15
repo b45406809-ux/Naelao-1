@@ -41,6 +41,10 @@ describe("SpaceDO migration replay", () => {
     const customerVoiceMigration = storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM _migrations WHERE version = 71").toArray();
     const customModelLifecycle = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name='custom_model_lifecycle'").toArray();
     const customModelLifecycleMigration = storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM _migrations WHERE version = 72").toArray();
+    const retentionMigration = storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM _migrations WHERE version = 73").toArray();
+    const retentionHoldMigration = storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM _migrations WHERE version = 74").toArray();
+    const sessionColumns = storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('sessions')").toArray().map(column => column.name);
+    const retentionTables = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('space_retention_policies','space_retention_previews','space_archive_records','space_archive_restore_previews')").toArray();
     expect(table).toHaveLength(1);
     expect(foundryTemplateTable).toHaveLength(1);
     expect(foundryRequestTable).toHaveLength(1);
@@ -53,6 +57,10 @@ describe("SpaceDO migration replay", () => {
     expect(customerVoiceMigration[0]?.count).toBe(1);
     expect(customModelLifecycle).toHaveLength(1);
     expect(customModelLifecycleMigration[0]?.count).toBe(1);
+    expect(retentionMigration[0]?.count).toBe(1);
+    expect(retentionHoldMigration[0]?.count).toBe(1);
+    expect(sessionColumns).toContain("retention_hold");
+    expect(retentionTables).toHaveLength(4);
     expect(customerVoiceColumns).toContain("customer_agent_id");
     expect(customerVoiceColumns).toContain("number_binding_id");
     storage.sql.exec(
@@ -86,7 +94,7 @@ describe("SpaceDO migration replay", () => {
   it("preserves an existing private adapter as explicitly unverified legacy state", () => {
     const storage = createDOStorage();
     const migrationStorage = storage as unknown as { sql: SqlStorage; transactionSync<T>(closure: () => T): T };
-    applyMigrations(migrationStorage, SPACE_DO_MIGRATIONS.slice(0, -1));
+    applyMigrations(migrationStorage, SPACE_DO_MIGRATIONS.slice(0, -3));
     storage.sql.exec("INSERT INTO custom_model_manifests (model_id,space_id,base_model,lora_adapter_id) VALUES (?,?,?,?)",
       "custom/legacy", "space-legacy", "@cf/meta/llama-3.3-70b-instruct-fp8-fast", "adapter/legacy");
     applyMigrations(migrationStorage, SPACE_DO_MIGRATIONS);

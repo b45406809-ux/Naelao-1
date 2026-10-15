@@ -1149,6 +1149,28 @@ app.get("/spaces/:spaceId/custom-models/:modelId/lifecycle", async (c) => {
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   return stub.fetch(new Request(`http://space/custom-models/${encodeURIComponent(c.req.param("modelId"))}/lifecycle?space_id=${encodeURIComponent(spaceId)}`));
 });
+
+// Space data lifecycle controls are owner/admin-only. The identity used for audit is derived
+// from verified request claims; the browser cannot select an actor or tenant.
+app.use("/spaces/:spaceId/data-ops", requireBusinessMembership({ GET: "admin", POST: "admin" }));
+app.get("/spaces/:spaceId/data-ops", async c => {
+  const { tenantId, userId } = getCallerIdentity(c), spaceId = c.req.param("spaceId");
+  if (!tenantId || !await canExportBlueprint(c, spaceId)) return c.json({ error_code: "owner_or_admin_required" }, 403);
+  const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id=? AND tenant_id=? AND status!='deleted'").bind(spaceId, tenantId).first();
+  if (!owned) throw notFound("Space");
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  return stub.fetch(new Request(`http://space/data-ops?${new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, actor_id: userId })}`, { headers: await spaceModelInternalHeaders(c.env.PLATFORM_SECRET, tenantId) }));
+});
+app.post("/spaces/:spaceId/data-ops", async c => {
+  const { tenantId, userId } = getCallerIdentity(c), spaceId = c.req.param("spaceId");
+  if (!tenantId || !await canExportBlueprint(c, spaceId)) return c.json({ error_code: "owner_or_admin_required" }, 403);
+  const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id=? AND tenant_id=? AND status!='deleted'").bind(spaceId, tenantId).first();
+  if (!owned) throw notFound("Space");
+  const body = await c.req.json<Record<string, unknown>>().catch(() => null);
+  if (!body || typeof body.action !== "string") return c.json({ error_code: "bad_request" }, 400);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  return stub.fetch(new Request("http://space/data-ops", { method: "POST", headers: await spaceModelInternalHeaders(c.env.PLATFORM_SECRET, tenantId, { "content-type": "application/json" }), body: JSON.stringify({ ...body, tenant_id: tenantId, space_id: spaceId, actor_id: userId }) }));
+});
 app.post("/spaces/:spaceId/custom-models/:modelId/lifecycle", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   const spaceId = c.req.param("spaceId");

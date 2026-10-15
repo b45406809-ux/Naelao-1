@@ -35,6 +35,8 @@ import { MACHINE_NAME, assertMachineIdentity, validateMachinePublicKey, validate
 import { matchGlossaryTerms, normalizeGlossaryTerm, validateGlossaryEntry, type DomainGlossaryEntry } from "../domain-glossary.js";
 import { isAllowedModel } from "@naelao/billing-core";
 import { evaluationPasses, transitionCustomModelLifecycle, validateAdapterEvaluation, validateConsentAttestation, type CustomModelLifecycleAction } from "./custom-model-lifecycle.js";
+import { decodeSpaceArchive, encodeSpaceArchive, spaceArchiveChecksum, topologicalRestoreOrder, type SpaceArchivePayload } from "./space-backup.js";
+import { fingerprintRetainedMessages, forecastSpaceStorage, retainedMessageBytes, type RetainedMessageRow } from "./space-retention.js";
 
 function todaySpendKey(): string {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
@@ -1848,6 +1850,57 @@ const MIGRATIONS: Migration[] = [
         FROM custom_model_manifests;
     `,
   },
+  {
+    version: 73,
+    description: "Space-owned retention policy and encrypted backup catalog",
+    up: `
+      CREATE TABLE space_retention_policies (
+        space_id TEXT PRIMARY KEY, message_retention_days INTEGER NOT NULL DEFAULT 0
+          CHECK (message_retention_days IN (0,30,90,180,365,730)),
+        archive_before_delete INTEGER NOT NULL DEFAULT 0 CHECK (archive_before_delete IN (0,1)),
+        target_storage_bytes INTEGER CHECK (target_storage_bytes IS NULL OR target_storage_bytes BETWEEN 1048576 AND 10737418240),
+        warning_threshold_pct INTEGER NOT NULL DEFAULT 80 CHECK (warning_threshold_pct BETWEEN 1 AND 100),
+        updated_by TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE TABLE space_storage_measurements (
+        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, space_id TEXT NOT NULL,
+        allocated_bytes INTEGER NOT NULL CHECK (allocated_bytes >= 0), measured_at TEXT NOT NULL
+      );
+      CREATE INDEX idx_space_storage_measurements_scope ON space_storage_measurements(tenant_id,space_id,measured_at DESC);
+      CREATE TABLE space_archive_records (
+        archive_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, space_id TEXT NOT NULL,
+        request_id TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('full','retention_messages')),
+        status TEXT NOT NULL CHECK (status IN ('pending','verified','failed')),
+        object_key TEXT NOT NULL UNIQUE, schema_version INTEGER NOT NULL, checksum TEXT NOT NULL,
+        plaintext_bytes INTEGER NOT NULL, row_counts_json TEXT NOT NULL, object_refs_json TEXT NOT NULL,
+        selection_fingerprint TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL,
+        restored_at TEXT, UNIQUE(tenant_id,space_id,request_id)
+      );
+      CREATE INDEX idx_space_archive_records_scope ON space_archive_records(tenant_id,space_id,created_at DESC);
+      CREATE TABLE space_retention_previews (
+        preview_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, space_id TEXT NOT NULL,
+        cutoff TEXT NOT NULL, message_count INTEGER NOT NULL, content_bytes INTEGER NOT NULL,
+        fingerprint TEXT NOT NULL, expires_at TEXT NOT NULL, created_by TEXT NOT NULL, consumed_at TEXT
+      );
+      CREATE TABLE space_archive_restore_previews (
+        preview_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, space_id TEXT NOT NULL,
+        archive_id TEXT NOT NULL, checksum TEXT NOT NULL, expires_at TEXT NOT NULL, created_by TEXT NOT NULL, consumed_at TEXT
+      );
+      CREATE TABLE space_archive_restores (
+        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, space_id TEXT NOT NULL, archive_id TEXT NOT NULL,
+        restored_by TEXT NOT NULL, restored_at TEXT NOT NULL, row_counts_json TEXT NOT NULL
+      );
+      CREATE TABLE space_retention_events (
+        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, space_id TEXT NOT NULL,
+        action TEXT NOT NULL, actor_id TEXT NOT NULL, details_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL
+      );
+    `,
+  },
+  {
+    version: 74,
+    description: "explicit per-session retention hold",
+    up: `ALTER TABLE sessions ADD COLUMN retention_hold INTEGER NOT NULL DEFAULT 0 CHECK (retention_hold IN (0,1));`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -1863,6 +1916,8 @@ export async function provenanceHmac(secret: string, fields: readonly string[]):
 
 export interface SpaceDOEnv {
   PLATFORM_SECRET: string;
+  /** Optional stable, separately managed key for archive encryption. Keep stable across deploys. */
+  SPACE_ARCHIVE_KEY?: string;
   /** Project starter artifacts are mirrored into the workspace bucket at install time. */
   SCRIPTS_R2?: R2Bucket;
   ACTION_RECEIPT_HMAC_KEY?: string;
@@ -2049,6 +2104,242 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ deleted: result.rowsWritten > 0 });
   }
 
+  private async spaceDataOps(request: Request): Promise<Response> {
+    const body: Record<string, unknown> = request.method === "POST" ? await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>)) : {};
+    const tenantId = String(body.tenant_id ?? new URL(request.url).searchParams.get("tenant_id") ?? "");
+    const spaceId = String(body.space_id ?? new URL(request.url).searchParams.get("space_id") ?? "");
+    const actorId = String(body.actor_id ?? "");
+    if (!tenantId || !spaceId || (request.method === "POST" && !actorId)) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const sql = this.ctx.storage.sql as never;
+    const now = new Date().toISOString();
+    const insertEvent = (action: string, details: Record<string, unknown>) => execute(sql,
+      "INSERT INTO space_retention_events (id,tenant_id,space_id,action,actor_id,details_json,created_at) VALUES (?,?,?,?,?,?,?)",
+      crypto.randomUUID(), tenantId, spaceId, action, actorId || "system", JSON.stringify(details), now);
+    if (request.method === "GET") {
+      const policy = queryOne<Record<string, unknown>>(sql, "SELECT * FROM space_retention_policies WHERE space_id=?", spaceId);
+      const pageCount = this.ctx.storage.sql.exec<Record<string, number>>("PRAGMA page_count").toArray()[0];
+      const pageSize = this.ctx.storage.sql.exec<Record<string, number>>("PRAGMA page_size").toArray()[0];
+      const allocatedBytes = Number(pageCount?.page_count ?? Object.values(pageCount ?? {})[0] ?? 0) * Number(pageSize?.page_size ?? Object.values(pageSize ?? {})[0] ?? 0);
+      execute(sql, "INSERT INTO space_storage_measurements (id,tenant_id,space_id,allocated_bytes,measured_at) VALUES (?,?,?,?,?)", crypto.randomUUID(), tenantId, spaceId, allocatedBytes, now);
+      execute(sql, "DELETE FROM space_storage_measurements WHERE tenant_id=? AND space_id=? AND datetime(measured_at)<datetime('now','-365 days')", tenantId, spaceId);
+      const measurements = queryAll<{ allocated_bytes: number; measured_at: string }>(sql, "SELECT allocated_bytes,measured_at FROM space_storage_measurements WHERE tenant_id=? AND space_id=? ORDER BY measured_at DESC LIMIT 30", tenantId, spaceId);
+      const forecast = forecastSpaceStorage(measurements.map(row => ({ allocatedBytes: row.allocated_bytes, measuredAt: row.measured_at })), policy?.target_storage_bytes as number | null ?? null, Number(policy?.warning_threshold_pct ?? 80));
+      const archives = queryAll<Record<string, unknown>>(sql, "SELECT archive_id,kind,status,checksum,plaintext_bytes,row_counts_json,created_by,created_at,restored_at FROM space_archive_records WHERE tenant_id=? AND space_id=? ORDER BY created_at DESC LIMIT 50", tenantId, spaceId);
+      return Response.json({ policy: policy ?? { message_retention_days: 0, archive_before_delete: 0, target_storage_bytes: null, warning_threshold_pct: 80 }, storage: forecast, archives });
+    }
+    const action = String(body.action ?? "");
+    if (action === "configure") {
+      const days = Number(body.message_retention_days), archive = body.archive_before_delete === true;
+      const target = body.target_storage_bytes == null ? null : Number(body.target_storage_bytes);
+      const threshold = Number(body.warning_threshold_pct ?? 80);
+      if (![0,30,90,180,365,730].includes(days) || (target !== null && (!Number.isSafeInteger(target) || target < 1048576 || target > 10737418240)) || !Number.isInteger(threshold) || threshold < 1 || threshold > 100) return Response.json({ error_code: "invalid_policy" }, { status: 400 });
+      execute(sql, `INSERT INTO space_retention_policies (space_id,message_retention_days,archive_before_delete,target_storage_bytes,warning_threshold_pct,updated_by,updated_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(space_id) DO UPDATE SET message_retention_days=excluded.message_retention_days,archive_before_delete=excluded.archive_before_delete,target_storage_bytes=excluded.target_storage_bytes,warning_threshold_pct=excluded.warning_threshold_pct,updated_by=excluded.updated_by,updated_at=excluded.updated_at`, spaceId, days, archive ? 1 : 0, target, threshold, actorId, now);
+      insertEvent("policy_updated", { message_retention_days: days, archive_before_delete: archive, target_storage_bytes: target, warning_threshold_pct: threshold });
+      return Response.json({ saved: true });
+    }
+    if (action === "set_retention_hold") {
+      const sessionId = String(body.session_id ?? ""), held = body.held;
+      if (!sessionId || typeof held !== "boolean") return Response.json({ error_code: "bad_request" }, { status: 400 });
+      const result = this.ctx.storage.sql.exec("UPDATE sessions SET retention_hold=? WHERE id=? AND space_id=? AND tenant_id=?", held ? 1 : 0, sessionId, spaceId, tenantId);
+      if (result.rowsWritten === 0) return Response.json({ error_code: "session_not_found" }, { status: 404 });
+      insertEvent(held ? "retention_hold_set" : "retention_hold_released", { session_id: sessionId });
+      return Response.json({ session_id: sessionId, retention_hold: held });
+    }
+    if (action === "preview_retention") {
+      const policy = queryOne<{ message_retention_days: number }>(sql, "SELECT message_retention_days FROM space_retention_policies WHERE space_id=?", spaceId);
+      const days = Number(policy?.message_retention_days ?? 0);
+      if (!days) return Response.json({ error_code: "retention_disabled" }, { status: 409 });
+      const cutoff = new Date(Date.now() - days * 86400000).toISOString();
+      const rows = queryAll<RetainedMessageRow>(sql, `SELECT m.id,m.session_id,m.role,m.content,m.created_at,m.tool_call_id,m.tool_name,m.token_count FROM messages m JOIN sessions s ON s.id=m.session_id WHERE s.space_id=? AND s.tenant_id=? AND s.retention_hold=0 AND datetime(m.created_at)<datetime(?) ORDER BY m.id LIMIT 50001`, spaceId, tenantId, cutoff);
+      if (rows.length > 50000) return Response.json({ error_code: "preview_too_large", message: "Retention selection exceeds 50,000 messages; no deletion occurred" }, { status: 413 });
+      const heldCount = queryOne<{ count: number }>(sql, "SELECT COUNT(*) AS count FROM messages m JOIN sessions s ON s.id=m.session_id WHERE s.space_id=? AND s.tenant_id=? AND s.retention_hold=1 AND datetime(m.created_at)<datetime(?)", spaceId, tenantId, cutoff)?.count ?? 0;
+      const fingerprint = await fingerprintRetainedMessages(rows);
+      execute(sql, "DELETE FROM space_retention_previews WHERE tenant_id=? AND space_id=? AND (expires_at<? OR consumed_at IS NOT NULL)", tenantId, spaceId, now);
+      const previewId = crypto.randomUUID(), expiresAt = new Date(Date.now() + 15 * 60000).toISOString();
+      execute(sql, "INSERT INTO space_retention_previews (preview_id,tenant_id,space_id,cutoff,message_count,content_bytes,fingerprint,expires_at,created_by) VALUES (?,?,?,?,?,?,?,?,?)", previewId, tenantId, spaceId, cutoff, rows.length, retainedMessageBytes(rows), fingerprint, expiresAt, actorId);
+      return Response.json({ preview_id: previewId, cutoff, message_count: rows.length, content_bytes: retainedMessageBytes(rows), held_message_count_excluded: heldCount, fingerprint, expires_at: expiresAt, requires_explicit_apply: true });
+    }
+    if (action === "apply_retention") {
+      const previewId = String(body.preview_id ?? "");
+      const preview = queryOne<{ tenant_id: string; space_id: string; cutoff: string; fingerprint: string; expires_at: string; consumed_at: string | null }>(sql, "SELECT * FROM space_retention_previews WHERE preview_id=?", previewId);
+      if (!preview || preview.tenant_id !== tenantId || preview.space_id !== spaceId || preview.consumed_at || preview.expires_at < now) return Response.json({ error_code: "preview_invalid_or_expired" }, { status: 409 });
+      const rows = queryAll<RetainedMessageRow>(sql, `SELECT m.id,m.session_id,m.role,m.content,m.created_at,m.tool_call_id,m.tool_name,m.token_count FROM messages m JOIN sessions s ON s.id=m.session_id WHERE s.space_id=? AND s.tenant_id=? AND s.retention_hold=0 AND datetime(m.created_at)<datetime(?) ORDER BY m.id LIMIT 50001`, spaceId, tenantId, preview.cutoff);
+      if (rows.length > 50000 || await fingerprintRetainedMessages(rows) !== preview.fingerprint) return Response.json({ error_code: "selection_changed_repreview_required" }, { status: 409 });
+      const policy = queryOne<{ archive_before_delete: number }>(sql, "SELECT archive_before_delete FROM space_retention_policies WHERE space_id=?", spaceId);
+      if (policy?.archive_before_delete) {
+        const archived = queryOne<{ archive_id: string; object_key: string; checksum: string }>(sql, "SELECT archive_id,object_key,checksum FROM space_archive_records WHERE tenant_id=? AND space_id=? AND kind='retention_messages' AND status='verified' AND selection_fingerprint=?", tenantId, spaceId, preview.fingerprint);
+        if (!archived) return Response.json({ error_code: "matching_archive_required" }, { status: 409 });
+        if (!this.env.SCRIPTS_R2) return Response.json({ error_code: "archive_storage_unavailable" }, { status: 503 });
+        const archiveObject = await this.env.SCRIPTS_R2.get(archived.object_key);
+        if (!archiveObject) return Response.json({ error_code: "matching_archive_object_missing" }, { status: 409 });
+        try {
+          const archivedPayload = await decodeSpaceArchive(new Uint8Array(await archiveObject.arrayBuffer()), this.env.SPACE_ARCHIVE_KEY ?? this.env.PLATFORM_SECRET, { tenantId, spaceId, archiveId: archived.archive_id });
+          const archivedMessages = (archivedPayload.tableRows.messages ?? []) as unknown as RetainedMessageRow[];
+          if (archivedPayload.selectionFingerprint !== preview.fingerprint || await spaceArchiveChecksum(archivedPayload) !== archived.checksum || await fingerprintRetainedMessages(archivedMessages) !== preview.fingerprint) return Response.json({ error_code: "matching_archive_integrity_check_failed" }, { status: 409 });
+        } catch { return Response.json({ error_code: "matching_archive_integrity_check_failed" }, { status: 409 }); }
+      }
+      this.ctx.storage.transactionSync(() => {
+        for (const row of rows) execute(sql, "DELETE FROM messages WHERE id=? AND session_id=?", row.id, row.session_id);
+        execute(sql, "UPDATE space_retention_previews SET consumed_at=? WHERE preview_id=? AND consumed_at IS NULL", now, previewId);
+        insertEvent("retention_applied", { preview_id: previewId, deleted_messages: rows.length, fingerprint: preview.fingerprint });
+      });
+      return Response.json({ deleted_messages: rows.length, sessions_preserved: true, audit_and_billing_preserved: true });
+    }
+    if (action === "export") {
+      if (!this.env.SCRIPTS_R2) return Response.json({ error_code: "archive_storage_unavailable" }, { status: 503 });
+      const requestId = String(body.request_id ?? ""), kind = body.kind === "retention_messages" ? "retention_messages" : "full";
+      if (!requestId || requestId.length > 128) return Response.json({ error_code: "request_id_required" }, { status: 400 });
+      const prior = queryOne<{ archive_id: string; checksum: string; object_key: string; status: string; kind: string }>(sql, "SELECT archive_id,checksum,object_key,status,kind FROM space_archive_records WHERE tenant_id=? AND space_id=? AND request_id=?", tenantId, spaceId, requestId);
+      if (prior?.status === "verified") {
+        const object = await this.env.SCRIPTS_R2.get(prior.object_key);
+        if (!object) return Response.json({ error_code: "verified_archive_object_missing_use_new_request_id", archive_id: prior.archive_id }, { status: 409 });
+        try {
+          const priorPayload = await decodeSpaceArchive(new Uint8Array(await object.arrayBuffer()), this.env.SPACE_ARCHIVE_KEY ?? this.env.PLATFORM_SECRET, { tenantId, spaceId, archiveId: prior.archive_id });
+          if (await spaceArchiveChecksum(priorPayload) !== prior.checksum) throw new Error("archive_checksum_mismatch");
+        } catch { return Response.json({ error_code: "verified_archive_integrity_failed_use_new_request_id", archive_id: prior.archive_id }, { status: 409 }); }
+        return Response.json({ archive_id: prior.archive_id, checksum: prior.checksum, replayed: true });
+      }
+      if (prior && prior.kind !== kind) return Response.json({ error_code: "request_id_reused_for_different_archive" }, { status: 409 });
+      const archiveId = prior?.archive_id ?? crypto.randomUUID();
+      const objectKey = `space-archives/${tenantId}/${spaceId}/${archiveId}.enc`;
+      if (!prior) execute(sql, "INSERT INTO space_archive_records (archive_id,tenant_id,space_id,request_id,kind,status,object_key,schema_version,checksum,plaintext_bytes,row_counts_json,object_refs_json,selection_fingerprint,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", archiveId, tenantId, spaceId, requestId, kind, "pending", objectKey, 1, "", 0, "{}", "[]", null, actorId, now);
+      let selectionFingerprint: string | null = null;
+      const tableRows: Record<string, Array<Record<string, unknown>>> = {}, rowCounts: Record<string, number> = {};
+      if (kind === "retention_messages") {
+        const preview = queryOne<{ tenant_id: string; space_id: string; cutoff: string; fingerprint: string; expires_at: string; consumed_at: string | null }>(sql, "SELECT * FROM space_retention_previews WHERE preview_id=?", String(body.preview_id ?? ""));
+        if (!preview || preview.tenant_id !== tenantId || preview.space_id !== spaceId || preview.consumed_at || preview.expires_at < now) return Response.json({ error_code: "preview_invalid_or_expired" }, { status: 409 });
+        const messages = queryAll<RetainedMessageRow>(sql, "SELECT m.id,m.session_id,m.role,m.content,m.created_at,m.tool_call_id,m.tool_name,m.token_count FROM messages m JOIN sessions s ON s.id=m.session_id WHERE s.space_id=? AND s.tenant_id=? AND s.retention_hold=0 AND datetime(m.created_at)<datetime(?) ORDER BY m.id LIMIT 50001", spaceId, tenantId, preview.cutoff);
+        if (messages.length > 50000 || await fingerprintRetainedMessages(messages) !== preview.fingerprint) return Response.json({ error_code: "selection_changed_repreview_required" }, { status: 409 });
+        selectionFingerprint = preview.fingerprint;
+        tableRows.messages = messages.map(row => ({ ...row }));
+        rowCounts.messages = messages.length;
+      } else {
+        const virtualTables = queryAll<{ name: string }>(sql, "SELECT name FROM sqlite_master WHERE type='table' AND sql LIKE 'CREATE VIRTUAL TABLE%'").map(row => row.name);
+        const list = queryAll<{ name: string }>(sql, "SELECT name FROM sqlite_master WHERE type='table' AND sql NOT LIKE 'CREATE VIRTUAL TABLE%' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_migrations%' AND name NOT IN ('space_retention_policies','space_storage_measurements','space_archive_records','space_retention_previews','space_archive_restore_previews','space_archive_restores','space_retention_events') ORDER BY name").filter(row => !virtualTables.some(name => row.name.startsWith(`${name}_`)));
+        for (const { name } of list) {
+          if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) continue;
+          const columns = new Set(queryAll<{ name: string }>(sql, "SELECT name FROM pragma_table_info(?)", name).map(row => row.name));
+          let query = `SELECT t.* FROM "${name}" t`, params: unknown[] = [];
+          if (columns.has("space_id")) { query += columns.has("tenant_id") ? " WHERE t.space_id=? AND t.tenant_id=?" : " WHERE t.space_id=?"; params = columns.has("tenant_id") ? [spaceId, tenantId] : [spaceId]; }
+          else if (columns.has("target_space_id") || columns.has("grantee_space_id")) {
+            const clauses: string[] = [];
+            if (columns.has("target_space_id")) { clauses.push("t.target_space_id=?"); params.push(spaceId); }
+            if (columns.has("grantee_space_id")) { clauses.push("t.grantee_space_id=?"); params.push(spaceId); }
+            query += ` WHERE (${clauses.join(" OR ")})`;
+          }
+          else if (columns.has("session_id")) { query += " JOIN sessions s ON s.id=t.session_id WHERE s.space_id=? AND s.tenant_id=?"; params = [spaceId, tenantId]; }
+          else if (columns.has("project_id")) { query += " JOIN projects p ON p.id=t.project_id WHERE p.space_id=?"; params = [spaceId]; }
+          else if (columns.has("tenant_id")) { query += " WHERE t.tenant_id=?"; params = [tenantId]; }
+          query += " LIMIT 10001";
+          const rows = queryAll<Record<string, unknown>>(sql, query, ...params);
+          if (rows.length > 10000) return Response.json({ error_code: "archive_table_limit_exceeded", table: name }, { status: 413 });
+          tableRows[name] = rows; rowCounts[name] = rows.length;
+        }
+      }
+      const objectReferences: Array<{ key: string; etag: string; size: number }> = [];
+      for (const prefix of [`spaces/${spaceId}/projects/`, `spaces/${spaceId}/space-workspace/`]) {
+        let cursor: string | undefined;
+        do {
+          const page = await this.env.SCRIPTS_R2.list({ prefix, ...(cursor ? { cursor } : {}), limit: 1000 });
+          objectReferences.push(...page.objects.map(obj => ({ key: obj.key, etag: obj.etag, size: obj.size })));
+          cursor = page.truncated ? page.cursor : undefined;
+          if (objectReferences.length > 5000) return Response.json({ error_code: "archive_object_reference_limit_exceeded" }, { status: 413 });
+        } while (cursor);
+      }
+      const maxMigration = queryOne<{ version: number }>(sql, "SELECT COALESCE(MAX(version),0) AS version FROM _migrations")?.version ?? 0;
+      const payload: SpaceArchivePayload = { format: "naelao-space-archive", formatVersion: 1, tenantId, spaceId, archiveId, createdAt: now, migrationVersion: maxMigration, tableRows, rowCounts, objectReferences, ...(selectionFingerprint ? { selectionFingerprint } : {}) };
+      let encoded: Awaited<ReturnType<typeof encodeSpaceArchive>>;
+      try { encoded = await encodeSpaceArchive(payload, this.env.SPACE_ARCHIVE_KEY ?? this.env.PLATFORM_SECRET); }
+      catch (error) { return Response.json({ error_code: (error as Error).message }, { status: 413 }); }
+      try {
+        await this.env.SCRIPTS_R2.put(objectKey, encoded.bytes, { httpMetadata: { contentType: "application/vnd.naelao.space-archive+json" } });
+      } catch (error) {
+        execute(sql, "UPDATE space_archive_records SET status='failed' WHERE archive_id=? AND tenant_id=? AND space_id=?", archiveId, tenantId, spaceId);
+        return Response.json({ error_code: "archive_write_failed_retry_same_request_id", archive_id: archiveId, message: (error as Error).message.slice(0, 160) }, { status: 503 });
+      }
+      execute(sql, "UPDATE space_archive_records SET status='verified',schema_version=?,checksum=?,plaintext_bytes=?,row_counts_json=?,object_refs_json=?,selection_fingerprint=? WHERE archive_id=? AND tenant_id=? AND space_id=? AND status IN ('pending','failed')", 1, encoded.checksum, encoded.plaintextBytes, JSON.stringify(rowCounts), JSON.stringify(objectReferences), selectionFingerprint, archiveId, tenantId, spaceId);
+      insertEvent("archive_created", { archive_id: archiveId, kind, checksum: encoded.checksum, plaintext_bytes: encoded.plaintextBytes, row_counts: rowCounts, object_reference_count: objectReferences.length });
+      return Response.json({ archive_id: archiveId, checksum: encoded.checksum, plaintext_bytes: encoded.plaintextBytes, row_counts: rowCounts, object_reference_count: objectReferences.length, encrypted: true, replayed: false }, { status: 201 });
+    }
+    if (action === "preview_restore" || action === "apply_restore") {
+      if (!this.env.SCRIPTS_R2) return Response.json({ error_code: "archive_storage_unavailable" }, { status: 503 });
+      const archiveId = String(body.archive_id ?? "");
+      const record = queryOne<{ object_key: string; checksum: string; schema_version: number; status: string }>(sql, "SELECT object_key,checksum,schema_version,status FROM space_archive_records WHERE archive_id=? AND tenant_id=? AND space_id=?", archiveId, tenantId, spaceId);
+      if (!record || record.status !== "verified") return Response.json({ error_code: "archive_not_found" }, { status: 404 });
+      const object = await this.env.SCRIPTS_R2.get(record.object_key);
+      if (!object) return Response.json({ error_code: "archive_object_missing" }, { status: 409 });
+      let payload: SpaceArchivePayload;
+      try {
+        payload = await decodeSpaceArchive(new Uint8Array(await object.arrayBuffer()), this.env.SPACE_ARCHIVE_KEY ?? this.env.PLATFORM_SECRET, { tenantId, spaceId, archiveId });
+        if (await spaceArchiveChecksum(payload) !== record.checksum) throw new Error("archive_checksum_mismatch");
+      } catch (error) { return Response.json({ error_code: (error as Error).message }, { status: 422 }); }
+      if (Object.entries(payload.tableRows).some(([table, rows]) => !Array.isArray(rows) || payload.rowCounts[table] !== rows.length)
+        || Object.entries(payload.rowCounts).some(([table, count]) => !Number.isSafeInteger(count) || count < 0 || payload.tableRows[table]?.length !== count)) return Response.json({ error_code: "archive_row_count_mismatch" }, { status: 422 });
+      const currentMigration = queryOne<{ version: number }>(sql, "SELECT COALESCE(MAX(version),0) AS version FROM _migrations")?.version ?? 0;
+      if (payload.migrationVersion > currentMigration) return Response.json({ error_code: "archive_schema_from_future", archive_schema: payload.migrationVersion, current_schema: currentMigration }, { status: 409 });
+      for (const ref of payload.objectReferences) {
+        if (!ref || typeof ref.key !== "string" || !ref.key.startsWith(`spaces/${spaceId}/`) || !Number.isSafeInteger(ref.size) || typeof ref.etag !== "string") return Response.json({ error_code: "archive_object_reference_invalid" }, { status: 422 });
+        const head = await this.env.SCRIPTS_R2.head(ref.key);
+        if (!head || head.etag !== ref.etag || head.size !== ref.size) return Response.json({ error_code: "referenced_workspace_object_changed_or_missing", key: ref.key }, { status: 409 });
+      }
+      const dependencies: Record<string, string[]> = {};
+      const virtualTables = queryAll<{ name: string }>(sql, "SELECT name FROM sqlite_master WHERE type='table' AND sql LIKE 'CREATE VIRTUAL TABLE%'").map(row => row.name);
+      for (const table of Object.keys(payload.tableRows)) {
+        if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(table) || virtualTables.some(name => table === name || table.startsWith(`${name}_`)) || ["space_retention_policies","space_storage_measurements","space_archive_records","space_retention_previews","space_archive_restore_previews","space_archive_restores","space_retention_events"].includes(table)) return Response.json({ error_code: "archive_table_forbidden" }, { status: 422 });
+        const exists = queryOne<{ name: string; sql: string | null }>(sql, "SELECT name,sql FROM sqlite_master WHERE type='table' AND name=?", table);
+        if (!exists || exists.sql?.startsWith("CREATE VIRTUAL TABLE")) return Response.json({ error_code: "archive_table_schema_incompatible", table }, { status: 409 });
+        const columns = new Set(queryAll<{ name: string }>(sql, "SELECT name FROM pragma_table_info(?)", table).map(row => row.name));
+        const rows = payload.tableRows[table] ?? [];
+        for (const row of rows) {
+          const unknownColumns = Object.keys(row).filter(column => !columns.has(column));
+          if (unknownColumns.length) return Response.json({ error_code: "archive_column_schema_incompatible", table, columns: unknownColumns }, { status: 409 });
+          if (row.space_id !== undefined && row.space_id !== spaceId) return Response.json({ error_code: "archive_contains_foreign_space_row", table }, { status: 422 });
+          if (row.tenant_id !== undefined && row.tenant_id !== tenantId) return Response.json({ error_code: "archive_contains_foreign_tenant_row", table }, { status: 422 });
+        }
+        dependencies[table] = queryAll<{ table: string }>(sql, "SELECT \"table\" FROM pragma_foreign_key_list(?)", table).map(row => row.table);
+      }
+      const resolvedOrder = topologicalRestoreOrder(Object.keys(payload.tableRows), dependencies);
+      // Some existing SpaceDO schemas intentionally contain mutually-referencing rows. SQLite
+      // can restore those atomically with deferred FK checks; reject no archive solely for that
+      // graph shape, but retain deterministic order and let the transaction fail closed if it is
+      // not a complete consistent snapshot.
+      const restoreOrder = resolvedOrder ?? Object.keys(payload.tableRows).sort();
+      if (action === "preview_restore") {
+        execute(sql, "DELETE FROM space_archive_restore_previews WHERE tenant_id=? AND space_id=? AND (expires_at<? OR consumed_at IS NOT NULL)", tenantId, spaceId, now);
+        const previewId = crypto.randomUUID(), expiresAt = new Date(Date.now() + 15 * 60000).toISOString();
+        execute(sql, "INSERT INTO space_archive_restore_previews (preview_id,tenant_id,space_id,archive_id,checksum,expires_at,created_by) VALUES (?,?,?,?,?,?,?)", previewId, tenantId, spaceId, archiveId, record.checksum, expiresAt, actorId);
+        return Response.json({ preview_id: previewId, archive_id: archiveId, checksum: record.checksum, schema_version: payload.migrationVersion, current_schema: currentMigration, row_counts: payload.rowCounts, object_references_verified: payload.objectReferences.length, restore_mode: "idempotent_merge_missing_rows", expires_at: expiresAt, requires_explicit_apply: true });
+      }
+      const previewId = String(body.preview_id ?? "");
+      const preview = queryOne<{ tenant_id: string; space_id: string; archive_id: string; checksum: string; expires_at: string; consumed_at: string | null }>(sql, "SELECT * FROM space_archive_restore_previews WHERE preview_id=?", previewId);
+      if (!preview || preview.tenant_id !== tenantId || preview.space_id !== spaceId || preview.archive_id !== archiveId || preview.checksum !== record.checksum || preview.consumed_at || preview.expires_at < now) return Response.json({ error_code: "restore_preview_invalid_or_expired" }, { status: 409 });
+      const restoredCounts: Record<string, number> = {};
+      try {
+        this.ctx.storage.transactionSync(() => {
+          this.ctx.storage.sql.exec("PRAGMA defer_foreign_keys = ON");
+          for (const table of restoreOrder) {
+            const rows = payload.tableRows[table] ?? [];
+            const columns = [...new Set(rows.flatMap(row => Object.keys(row)))].sort();
+            if (!columns.length) { restoredCounts[table] = 0; continue; }
+            if (columns.some(column => !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(column))) throw new Error("archive_column_invalid");
+            const placeholders = columns.map(() => "?").join(",");
+            let restored = 0;
+            for (const row of rows) {
+              const result = this.ctx.storage.sql.exec(`INSERT OR IGNORE INTO "${table}" (${columns.map(column => `"${column}"`).join(",")}) VALUES (${placeholders})`, ...columns.map(column => row[column] ?? null));
+              restored += result.rowsWritten;
+            }
+            restoredCounts[table] = restored;
+          }
+          execute(sql, "UPDATE space_archive_restore_previews SET consumed_at=? WHERE preview_id=? AND consumed_at IS NULL", now, previewId);
+          execute(sql, "INSERT INTO space_archive_restores (id,tenant_id,space_id,archive_id,restored_by,restored_at,row_counts_json) VALUES (?,?,?,?,?,?,?)", crypto.randomUUID(), tenantId, spaceId, archiveId, actorId, now, JSON.stringify(restoredCounts));
+          insertEvent("archive_restored", { archive_id: archiveId, preview_id: previewId, restored_counts: restoredCounts, mode: "idempotent_merge_missing_rows" });
+        });
+      } catch (error) { return Response.json({ error_code: "restore_transaction_rolled_back", message: (error as Error).message.slice(0, 200) }, { status: 409 }); }
+      return Response.json({ archive_id: archiveId, restored_counts: restoredCounts, mode: "idempotent_merge_missing_rows", active_sqlite_remains_canonical: true });
+    }
+    return Response.json({ error_code: "unknown_action" }, { status: 400 });
+  }
+
   private async lookupDomainGlossary(request: Request): Promise<Response> {
     const body = await request.json<{ space_id?: string; terms?: unknown; locale?: string }>().catch(() => null);
     if (!body?.space_id || !Array.isArray(body.terms) || body.terms.length > 20 || body.terms.some(term => typeof term !== "string" || !term.trim() || term.length > 160)) return Response.json({ error_code: "bad_request" }, { status: 400 });
@@ -2065,6 +2356,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
     try {
       if (method === "POST" && url.pathname === "/internal/user-budget/debit") return this.debitUserDailyBudget(request);
+      if (url.pathname === "/data-ops" && (method === "GET" || method === "POST")) {
+        const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+        if (!tenantId || !(await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))) return Response.json({ error_code: "forbidden" }, { status: 403 });
+        return this.spaceDataOps(request);
+      }
       if (url.pathname === "/internal/domain-glossary" && method === "GET") return this.listDomainGlossary(url.searchParams);
       if (url.pathname === "/internal/domain-glossary" && method === "POST") return this.putDomainGlossary(request);
       if (url.pathname === "/internal/domain-glossary" && method === "DELETE") return this.deleteDomainGlossary(url.searchParams);

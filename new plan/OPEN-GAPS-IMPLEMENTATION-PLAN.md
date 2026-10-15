@@ -1,7 +1,7 @@
 # Remaining gaps implementation plan
 
 Branch: `Mcbt5s-Backup-2`  
-Status: implementation in progress; workstreams 1–3 are locally verified, workstream 4 is partial, and workstream 5 is in progress.
+Status: implementation in progress; workstreams 1–3 are locally verified, workstreams 4–6 are partial, and workstream 5's local lifecycle work is verified with external/provider gaps remaining.
 Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, reconciled against the current repository. Existing Foundry channel invocation, glossary, translation draft, model recommendations, owner voice, task-scoped email replies, and browser Web Push are present locally. Do not reopen them as missing features; their live/deployment checks remain open.
 
 ## Working rules
@@ -75,7 +75,7 @@ Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, recon
 
 ### 6. SQLite retention, archive, export, and restore
 
-**Status:** SQLite byte reporting and tier caps exist. Automated retention, R2 archive, and a migration-safe export/restore path remain open.
+**Status:** owner/admin message-retention previews and holds, encrypted bounded R2 snapshots, scoped archive checks, retryable request identities, and merge-restore are locally implemented. Workstream remains partial because archive retries rebuild whole bounded files rather than resume chunks, the encryption key has no previous-key ring, and live R2 durability/account behavior is unverified.
 
 1. Inventory each SpaceDO table, ownership, deletion behavior, backups, and schema version. Separate audit/legal retention requirements from product conversation retention; do not apply a generic TTL to all rows.
 2. Define owner-visible per-Space retention settings and a dry-run preview that reports affected records/bytes. Require explicit policy selection for destructive deletion. Preserve necessary billing/security audit records under their own published retention rules.
@@ -87,13 +87,16 @@ Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, recon
 
 ### 7. Deployment and external acceptance checklist
 
+**Status:** local migration/integration checks and Worker dry-runs are recorded in [`DEPLOYMENT-ACCEPTANCE-LOG.md`](./DEPLOYMENT-ACCEPTANCE-LOG.md). Live D1/Worker deployment, domains, VAPID, Twilio, model providers, and deployed R2 archive continuity remain unrun because this task has no production account configuration.
+
 Run only after code and local integration checks are complete. No secret belongs in this file or Git.
 
-- Apply deployed D1 migrations 0093 through 0097 in order and verify replay-safe schema state; verify SpaceDO migration v72 and Agents DO migration v13 after deployment.
+- Apply deployed D1 migrations 0093 through 0097 in order and verify replay-safe schema state; verify SpaceDO migrations v72–v74 and Agents DO migration v13 after deployment.
 - Configure an owned Cloudflare Email Routing ingress domain and verified sending domain, then test inbound task replies and outbound delivery.
 - Configure Web Push VAPID public/private/subject values on Notifications Worker environments; test subscription, delivery, unsubscribe, and expired endpoint cleanup.
 - Configure any selected voice/model/LoRA provider bindings only after the corresponding implementation gates pass; validate Twilio credentials, verify/import a controlled number, test signed call/consent/status callbacks, and verify spend caps and release cleanup.
 - Confirm live provider behavior, residency/egress policy, rollback, and monitoring. Record each result as live, mocked, dry-run, blocked, or unrun.
+- Configure and preserve a stable `SPACE_ARCHIVE_KEY` before production archives; verify a restore across a deploy using the same key and verify the R2 object references remain available.
 
 **Acceptance:** every external check has a timestamp, target environment, test identity, result, and cleanup status; no item is marked passed from a dry run or mock.
 

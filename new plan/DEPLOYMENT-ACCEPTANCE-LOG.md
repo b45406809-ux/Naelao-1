@@ -1,0 +1,17 @@
+# Deployment and external acceptance log
+
+Recorded: 2026-10-15 14:16 UTC. Branch: `Mcbt5s-Backup-2`. No live deployment or provider request was sent during this check.
+
+| Check | Target / test identity | Result | Cleanup / next action |
+| --- | --- | --- | --- |
+| Spaces Worker package and binding build | Local Wrangler dry-run, top-level development config | **DRY-RUN PASSED**. 12,010.25 KiB / 1,968.55 KiB gzip; expected SpaceDO and SCRIPTS_R2 bindings appear. | Dry-run generated no deployment. Apply SpaceDO migrations 73–74 by normal DO migration replay after a reviewed deploy. |
+| Agents Worker package and binding build | Local Wrangler dry-run, top-level development config | **DRY-RUN PASSED**. Build completed, including configured container images and bindings. | No image or Worker deployment. |
+| Notifications Worker package and binding build | Local Wrangler dry-run, top-level development config | **DRY-RUN PASSED**. 425.76 KiB / 82.44 KiB gzip. | No deployment. |
+| D1 migration batch 0093–0097 | Local in-memory SQLite, synthetic base `users` and `product_end_users` tables | **LOCAL TEST PASSED**. Email reply, agent-address, web-push, language, and voice schemas were created in order. This does not prove production D1 state. | Apply migrations once in order through deployment process; verify production migration ledger and columns. |
+| SpaceDO migrations v72–v74 | Local SQLite shim with full migration replay and restart/replay tests | **LOCAL TEST PASSED**. Migration v73 metadata and v74 session hold are present once. | Verify replay against deployed SpaceDO after deployment. |
+| Cloudflare D1 / Workers deployment | Production account | **UNRUN**. No live account access/deployment was exercised. | Account operator deploys only after review, then records environment, timestamp, migration state, and rollback result. |
+| Email Routing ingress and sending | Development/production domains | **BLOCKED / UNRUN**. Wrangler dry-run reports empty `EMAIL_INGRESS_DOMAIN` and `EMAIL_SENDING_DOMAIN`; no inbound or outbound live message was sent. | Human operator must own/verify a domain, configure routing and sending, and test with a controlled mailbox. |
+| Web Push delivery | Notifications Worker environment | **UNRUN**. Local code tests do not establish configured VAPID secrets or browser delivery. | Human operator configures VAPID public/private/subject secrets, then verifies subscribe, delivery, unsubscribe, and expired-endpoint cleanup. |
+| Customer telephony | Twilio account, imported controlled number, test caller | **UNRUN**. No credentials, number provisioning, PSTN call, or spend reconciliation test was performed. | Human operator supplies/configures account credentials and controlled number; verify signed callbacks, consent, limits, release, and cleanup. |
+| Model/LoRA and external providers | Selected Workers AI/OpenRouter/provider accounts | **UNRUN**. Local gates are tested; live entitlement, adapter compatibility, and account billing are not proven. | Configure only after corresponding evidence and policy gates are reviewed; no training route is enabled. |
+| Encrypted archive key continuity and R2 durability | Deployed SpaceDO + SCRIPTS_R2 | **MOCKED LOCALLY / LIVE UNRUN**. Local R2 mock covers restart, failure/retry, corruption, same-Space verification, and rollback. | Configure stable `SPACE_ARCHIVE_KEY` (or deliberately use stable `PLATFORM_SECRET`), then do a controlled live archive/restore and verify key retention and object cleanup. |
