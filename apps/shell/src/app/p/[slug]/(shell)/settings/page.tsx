@@ -875,6 +875,13 @@ function AiTab({
             <Button onClick={() => void loadAdapter()} disabled={adapterBusy || !canManage}>{adapterBusy ? "Loading…" : "Load lifecycle"}</Button>
           </div>
           {adapter && <div className="settings-row-sub" role="status">Status: <strong>{adapter.status}</strong>{adapter.base_model ? ` · base ${adapter.base_model}` : ""}{adapter.evaluation_passed !== undefined ? ` · recorded evaluation ${adapter.evaluation_passed ? "passed" : "failed"}` : ""}</div>}
+          {canManage && adapter?.status === "active" && <Button disabled={adapterBusy} onClick={async () => {
+            if (!creds) return;
+            setAdapterBusy(true); setAdapterError(null); setAdapterMessage(null);
+            try { await updateModelConfig(spaceId, creds, adapterModelId.trim()); setAdapterMessage("Private adapter selected as this Space's default model."); }
+            catch (err) { setAdapterError(err instanceof Error ? err.message : "Unable to select this adapter"); }
+            finally { setAdapterBusy(false); }
+          }}>Use as Space default model</Button>}
           {canManage && adapter?.status === "draft" && <>
             <label style={{ fontSize: 12 }}>Data provenance<FormInput value={adapterProvenance} onChange={e => setAdapterProvenance(e.target.value)} placeholder="Where the training data came from" /></label>
             <label style={{ fontSize: 12 }}>Intended purpose<FormInput value={adapterPurpose} onChange={e => setAdapterPurpose(e.target.value)} placeholder="What this adapter will be used for" /></label>
