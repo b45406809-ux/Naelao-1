@@ -24,6 +24,30 @@ function memoryBucket() {
 }
 
 describe("role-targeted skill discovery", () => {
+  it("provides progressive attachment manuals to their matching roles only", async () => {
+    const env: ScriptEngineEnv = { scriptsBucket: memoryBucket(), spaceId: "space", agentId: "agent", tenantId: "tenant" };
+    const planner = new ScriptToolSurface(env, [], { plannerScope: "space" });
+    const worker = new ScriptToolSurface(env, []);
+    await expect(planner.run("Bash", { commands: "skill list" })).resolves.toMatchObject({
+      ok: true, output: { skills: expect.arrayContaining([expect.objectContaining({ name: "attachment-routing", role_target: "PLANNER_ORCHESTRATION" })]) },
+    });
+    await expect(planner.run("Bash", { commands: "skill list" })).resolves.toMatchObject({
+      output: { skills: expect.not.arrayContaining([expect.objectContaining({ name: "attachment-readers" })]) },
+    });
+    await expect(worker.run("Bash", { commands: "skill list" })).resolves.toMatchObject({
+      ok: true, output: { skills: expect.arrayContaining([expect.objectContaining({ name: "attachment-readers", role_target: "WORKER_EXECUTION" })]) },
+    });
+    await expect(planner.run("Bash", { commands: "skill read attachment-routing --toc" })).resolves.toMatchObject({
+      ok: true, output: { source: "builtin_manual", headings: expect.stringContaining("Decide from the request first") },
+    });
+    await expect(planner.run("Bash", { commands: "skill read attachment-readers" })).resolves.toMatchObject({
+      ok: false, error: expect.stringContaining("skill_not_available_for_role"),
+    });
+    await expect(worker.run("Bash", { commands: "skill read attachment-readers --lines 1-4" })).resolves.toMatchObject({
+      ok: true, output: { source: "builtin_manual", content: expect.stringContaining("Scoped operations") },
+    });
+  });
+
   it("keeps planner orchestration summaries separate from worker-domain summaries and execution", async () => {
     const bucket = memoryBucket();
     const env: ScriptEngineEnv = { scriptsBucket: bucket, spaceId: "space", agentId: "agent", tenantId: "tenant" };

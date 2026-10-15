@@ -27,7 +27,7 @@ Acceptance: channel-adapter contract tests; webhook-signature-before-download te
 
 ### B. Intent-aware skill and tool selection
 
-Implementation status: The planner has metadata-only attachment prompts and explicit CLI operations, but System 1 has not been extended with advisory attachment classifications, and there are no role-targeted modality skill manuals yet. Planner choice is currently direct.
+Implementation status: The reasoning instructions now include metadata-first, storage-only-vs-content-reading guidance, and the role-filtered skill CLI provides bounded built-in planner/worker attachment manuals. This is advisory prompt guidance, not a separate structured System 1 classification result; available provider capabilities remain fail-closed.
 
 1. Extend the System 1 routing result with advisory attachment relevance and tool/skill candidates based on the message text, declared/detected MIME, and verified selected-model capability evidence. It may return `not_needed`, `candidate_tool`, or `uncertain`; it must not read the file, make an irreversible choice, or authorize a tool.
 2. Keep the planner's own choice authoritative within its already authorized tool surface. For an unambiguous file-storage request, route directly to storage/copy without OCR. For content-dependent requests, make the relevant reader/transcriber available and let the planner select it. Ask a concise question when the task cannot be safely inferred.
