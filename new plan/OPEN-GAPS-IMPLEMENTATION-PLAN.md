@@ -16,7 +16,7 @@ Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, recon
 
 ### 1. Language preference and end-to-end language handling
 
-**Status:** partially implemented locally. Platform-member and product-end-user persistence/API paths and authenticated planner context are wired; focused runtime/typecheck coverage is still blocked by dependency setup, and air-gap regression coverage plus human-reviewed translation evaluation remain open.
+**Status:** implemented and locally verified. Platform-member and product-end-user preferences are isolated, authenticated, editable/clearable, and carried to the planner; translation quality remains unverified and is not claimed.
 
 1. Trace signed-in platform-member and product-end-user identities independently. Decide where each preference belongs based on the existing authenticated data model; do not trust an end-user ID supplied in a request body.
 2. Add a validated, explicit preferred-language field and authenticated read/update API. `auto`/unset must remain distinct from a chosen locale. Reject malformed or unsupported tags; make clearing a preference possible. Keep per-product end-user settings isolated by product.
@@ -103,4 +103,4 @@ After all workstreams above are complete, compare each remaining task in `CONTIN
 
 ## Current next action
 
-Start workstream 1. First map the authenticated member and ProductUserDO preference paths and planner context construction. Then define the storage/API boundary and add the feature with cross-user, cross-product, explicit-turn-override, and no-auto-persistence tests. Do not begin with a UI-only locale toggle.
+Workstream 1 is implemented and locally verified; continue with workstream 2: bounded binary email attachment reading. Preserve the existing task-scoped authorization boundary and verify parsers against Cloudflare Workers compatibility before choosing one.
