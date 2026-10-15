@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { zipSync } from "fflate";
 import { mintInternalToken } from "@naelao/http";
 import { app } from "../index.js";
 
@@ -108,6 +109,28 @@ describe("task-scoped email PDF attachment endpoint", () => {
       const response = await readAttachment(state.env);
       expect(response.status).toBe(415);
       expect(await response.json()).toMatchObject({ error_code: "attachment_not_text", mime_type: mime });
+    }
+  });
+
+  it("extracts bounded DOCX text only after the same task-scoped authorization", async () => {
+    const bytes = zipSync({
+      "[Content_Types].xml": new TextEncoder().encode("<Types/>"),
+      "word/document.xml": new TextEncoder().encode("<w:document><w:body><w:p><w:r><w:t>Task-scoped Word text</w:t></w:r></w:p></w:body></w:document>"),
+      "word/media/image.png": new TextEncoder().encode("ignored"),
+    });
+    const state = makeEnv({ bytes, mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    try {
+      const response = await readAttachment(state.env);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        key: owned.key,
+        mime_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        text: expect.stringContaining("Task-scoped Word text"),
+      });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
     }
   });
 });

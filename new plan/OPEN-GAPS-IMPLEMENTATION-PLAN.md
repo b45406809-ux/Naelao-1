@@ -28,14 +28,14 @@ Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, recon
 
 ### 2. Bounded binary email attachment reading
 
-**Status:** bounded PDF and existing UTF-8 text extraction are locally verified. Office-document extraction and OCR remain open.
+**Status:** bounded PDF, DOCX, and existing UTF-8 text extraction are locally verified. OCR remains open and is not attempted by the attachment reader.
 
 1. Inspect current task alias, R2 object, and HMAC authorization checks and retain the exact `(tenant, Space, task, key, expiry)` boundary.
-2. Compare maintained parsers against current Cloudflare Workers compatibility, bundle limits, active maintenance, and licensing. Start with a single static format only after this check. Do not execute macros, scripts, embedded links, or HTML.
-3. Define strict compressed and extracted-byte, page, archive-entry, CPU/time, and recursion limits. Reject encrypted, malformed, zip-bomb, unsupported, or over-limit files with a useful status. Treat extracted text as untrusted input and preserve provenance to the original attachment.
+2. Compare maintained parsers against current Cloudflare Workers compatibility, bundle limits, active maintenance, and licensing. Current support covers bounded unencrypted PDFs and DOCX only. Do not execute macros, scripts, embedded links, or HTML.
+3. Define strict compressed and extracted-byte, page, archive-entry, CPU/time, and recursion limits. Reject malformed, encrypted/unsupported, zip-bomb, or over-limit files with a useful status. Treat extracted text as untrusted input and preserve provenance to the original attachment.
 4. Add OCR only behind a separate placement-aware provider contract and explicit egress checks. Keep it unavailable for air-gapped Spaces; never silently upload private attachments.
 
-**Acceptance:** real parser fixtures plus malformed/oversize/zip-bomb fixtures; extraction never escapes task ownership; no external fetches from document contents; private-space egress denial; production Worker dry run confirms bundle size. Live OCR/provider checks are separate.
+**Acceptance:** real parser fixtures plus malformed/oversize/zip-bomb fixtures; extraction never escapes task ownership; no external fetches from document contents; private-space egress denial; production Worker dry run confirms bundle size. PDF and DOCX local parser fixtures pass. Live OCR/provider checks are separate; encrypted DOCX archives are rejected as malformed because the streaming parser exposes no portable encryption flag.
 
 ### 3. Customer telephony provisioning and ingress
 
