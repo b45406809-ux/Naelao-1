@@ -144,7 +144,7 @@ Status: **PARTIALLY IMPLEMENTED — bounded OpenRouter candidate inventory and c
 Primary read: **lines 2592–2772** (USER 2592–2594; AI MODEL 2595–2772).
 Bounded primary windows: 2592–2766, 2767–2772.
 Later amendment/dependency pairs: 2773–2977 (task 19); 2978–3067 (task 20); 3068–3284 (task 21); 3514–3753 (task 23); 3754–3942 (task 24); 4140–4268 (task 26); 4269–4441 (task 27)
-Status: **UNASSESSED**. Evidence and exact next action belong in the progress file.
+Status: **PARTIAL — existing generic installation requirements and runtime tiers provide a foundation; modality-specific capability routing remains unimplemented.** The source's direct user question asks how workers declare specialized needs. Existing manifests have gatekeeper-approved capability requirements and code runners already distinguish runtime tiers, but there is no trusted workload/model capability catalogue or `ctx.ai` media dispatcher. The model reply's `@cloudflare/calls`, realtime OpenAI/Gemini, Runway/Luma/OpenRouter diffusion, exact latency/pricing and Tier 6 FFmpeg claims are not verified in this deployment. A candidate model's public modalities are not sufficient proof of transcription, duplex voice, diffusion or editing support. Task 17's inventory remains candidate-only; implementing a permissive dispatcher would be misleading. Evidence and next action are in the progress file; revisit after tasks 19, 23 and 24 establish which internal voice/locale paths actually need native capabilities.
 
 ## Task 19
 
