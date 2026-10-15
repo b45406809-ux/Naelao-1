@@ -118,6 +118,12 @@ export function interceptPlatformWords(words: string[], command?: string): CliDi
     if (words[1] === "find" && words[2] && words.length === 3) return { operation: "runtime.find", params: { binary: words[2] } };
     throw new Error("usage: runtime list | runtime find <binary>");
   }
+  if (words[0] === "lsp") {
+    const action = words[1];
+    if (!["index", "find-refs", "find-symbol", "get-signatures", "status"].includes(action ?? ""))
+      throw new Error("usage: lsp index [path ...] | find-refs <name> | find-symbol <name> | get-signatures <path> | status");
+    return { operation: "lsp.command", params: { argv: words.slice(1) } };
+  }
   if (words[0] === "workflow" && words[1] === "run" && words[2]) {
     return { operation: "workflow.run", params: { name: words[2], params: {}, detach: words.includes("--detach") } };
   }

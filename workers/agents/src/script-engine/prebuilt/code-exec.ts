@@ -67,6 +67,56 @@ export async function run(args, ctx) {
 }
 `;
 
+const LSP_SOURCE = /\.(?:[cm]?[jt]sx?|py)$/i;
+async function runLspCommand(argv: string[], ctx: PrebuiltOpContext): Promise<{ exit_code: number; stdout: string; stderr?: string }> {
+  if (!ctx.env.projectId) throw new Error("lsp_requires_project_workspace");
+  if (!ctx.env.agentsWorker || !ctx.env.platformSecret) throw new Error("lsp_project_daemon_unavailable");
+  const [action, ...args] = argv;
+  let tool: string, toolArgs: Record<string, unknown>;
+  if (action === "index") {
+    const listed = await virtualFsList(ctx.env);
+    const selected = args.length ? args.map(path => {
+      const normalized = assertWorkspaceFileAllowed(ctx.env.workspaceFileScope, path);
+      const entry = listed.find(item => item.path === normalized);
+      if (!entry) throw new Error(`lsp_file_not_found:${normalized}`);
+      return entry;
+    }) : listed.filter(item => LSP_SOURCE.test(item.path) && !/(?:^|\/)(?:node_modules|\.git|dist|build)(?:\/|$)/.test(item.path));
+    const sourceFiles = selected.filter(item => LSP_SOURCE.test(item.path));
+    if (args.length && sourceFiles.length !== selected.length) throw new Error("lsp_unsupported_source_path: index only TypeScript, JavaScript, or Python files");
+    if (sourceFiles.length > 200) throw new Error("lsp_index_limit: choose explicit source paths (200 files maximum)");
+    const sources: Array<{ path: string; content: string }> = [];
+    let totalBytes = 0;
+    for (const entry of sourceFiles) {
+      const path = assertWorkspaceFileAllowed(ctx.env.workspaceFileScope, entry.path);
+      if (entry.size > 512_000) {
+        if (args.length) throw new Error(`lsp_file_too_large:${entry.path}:maximum 512KB`);
+        continue;
+      }
+      const file = await readBytesWithHash(ctx.env.workspaceBucket ?? ctx.env.scriptsBucket, `${workspacePrefix(ctx.env)}${path}`);
+      if (!file) continue;
+      totalBytes += file.bytes.byteLength;
+      if (totalBytes > 2_000_000) throw new Error("lsp_index_limit: select fewer files (2MB total per index request)");
+      sources.push({ path, content: new TextDecoder().decode(file.bytes) });
+    }
+    tool = "index"; toolArgs = { files: sources, replace: args.length === 0 };
+  } else if (action === "find-refs" && args.length === 1) { tool = "references"; toolArgs = { term: args[0] }; }
+  else if (action === "find-symbol" && args.length === 1) { tool = "query"; toolArgs = { term: args[0] }; }
+  else if (action === "get-signatures" && args.length === 1) { tool = "symbols"; toolArgs = { path: assertWorkspaceFileAllowed(ctx.env.workspaceFileScope, args[0]!) }; }
+  else if (action === "status" && args.length === 0) { tool = "status"; toolArgs = {}; }
+  else throw new Error("usage: lsp index [path ...] | find-refs <name> | find-symbol <name> | get-signatures <path> | status");
+
+  const token = await mintInternalToken(ctx.env.platformSecret, ctx.env.tenantId);
+  const path = `/spaces/${encodeURIComponent(ctx.env.spaceId)}/projects/${encodeURIComponent(ctx.env.projectId)}/daemons/tree-sitter/mcp`;
+  const response = await ctx.env.agentsWorker.fetch(new Request(`http://agents-worker${path}`, {
+    method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": ctx.env.tenantId, "x-naelao-internal-token": token },
+    body: JSON.stringify({ jsonrpc: "2.0", id: "lsp", method: tool === "index" ? "tools/call" : "tools/call", params: { name: `daemon_tree-sitter_${tool}`, arguments: toolArgs } }),
+  }));
+  const payload = await response.json() as { error?: { message?: string }; result?: { structuredContent?: unknown; content?: Array<{ text?: string }> } };
+  if (!response.ok || payload.error) throw new Error(`lsp_${tool}_failed:${payload.error?.message ?? response.status}`);
+  const data = payload.result?.structuredContent ?? payload.result?.content?.[0]?.text ?? null;
+  return { exit_code: 0, stdout: typeof data === "string" ? data : JSON.stringify(data, null, 2) };
+}
+
 export const BASH_HARNESS = `
 import { exec } from "node:child_process";
 
@@ -231,6 +281,7 @@ async function runBash(
       resolve: async (words, stdin, execution) => {
         if (execution.signal.aborted) throw new Error("shell_cancelled");
         const dispatch = interceptPlatformWords(words);
+        if (dispatch?.operation === "lsp.command") return await runLspCommand(dispatch.params.argv as string[], ctx);
         const registered = ctx.commands?.get(words[0] ?? "");
         if (!dispatch && !registered) return null;
         if (registered && words.includes("--help")) return { exit_code: 0, stdout: registered.usage };

@@ -39,35 +39,35 @@ Status: **IMPLEMENTED — existing runtimes reused, workspace defects fixed and 
 Primary read: **lines 211–338** (USER 211–213; AI MODEL 214–338).
 Bounded primary windows: 211–338.
 Later amendment/dependency pairs: 339–450 (task 04); 451–574 (task 05); 575–693 (task 06); 694–749 (task 07); 750–841 (task 08); 1755–1970 (task 14); 2174–2355 (task 16); 2356–2591 (task 17); 2592–2772 (task 18); 3068–3284 (task 21); 3943–4139 (task 25); 4442–4647 (task 28); 4648–4794 (task 29); 4795–4982 (task 30)
-Status: **IMPLEMENTED for fixed deployment-approved profiles; operator deployment boundary documented**. Evidence and remaining product gap are in the progress file. Task 05 is current.
+Status: **IMPLEMENTED for fixed deployment-approved profiles; operator deployment boundary documented**. Evidence and remaining product gap are in the progress file. Task 07 is current.
 
 ## Task 04
 
 Primary read: **lines 339–450** (USER 339–343; AI MODEL 344–450).
 Bounded primary windows: 339–450.
 Later amendment/dependency pairs: 451–574 (task 05); 575–693 (task 06); 694–749 (task 07); 2174–2355 (task 16); 3068–3284 (task 21); 3943–4139 (task 25); 4795–4982 (task 30)
-Status: **IMPLEMENTED for currently deployed runtime profiles**. Cross-project installations now prompt the Space owner to promote to Space scope, keep a separate project install, or cancel. Promotion deactivates prior project grants but does not migrate workspace files; Space-scoped state uses its own Space extension workspace. Container execution remains bounded to 60 seconds maximum, with Durable Workflows for waits and scheduling. Tests/typechecks and limitations are in the progress file. Task 05 is current.
+Status: **IMPLEMENTED for currently deployed runtime profiles**. Cross-project installations now prompt the Space owner to promote to Space scope, keep a separate project install, or cancel. Promotion deactivates prior project grants but does not migrate workspace files; Space-scoped state uses its own Space extension workspace. Container execution remains bounded to 60 seconds maximum, with Durable Workflows for waits and scheduling. Tests/typechecks and limitations are in the progress file. Task 07 is current.
 
 ## Task 05
 
 Primary read: **lines 451–574** (USER 451–453; AI MODEL 454–574).
 Bounded primary windows: 451–574.
 Later amendment/dependency pairs: 575–693 (task 06); 694–749 (task 07); 750–841 (task 08); 842–1088 (task 09); 1089–1225 (task 10); 1226–1416 (task 11); 1417–1575 (task 12); 1576–1754 (task 13); 1755–1970 (task 14); 1971–2173 (task 15); 2174–2355 (task 16); 2356–2591 (task 17); 2592–2772 (task 18); 2773–2977 (task 19); 2978–3067 (task 20); 3068–3284 (task 21); 3285–3513 (task 22); 3514–3753 (task 23); 3754–3942 (task 24); 3943–4139 (task 25); 4140–4268 (task 26); 4269–4441 (task 27); 4442–4647 (task 28); 4648–4794 (task 29); 4795–4982 (task 30); 4983–5145 (task 31); 5146–5259 (task 32)
-Status: **REVIEWED AND RECONCILED**. Audited all five model-proposed landmines against current code and later user corrections. No independent code change was safe: the LSP design is refined in task 06, the registry proxy is explicitly rejected and refined in task 07, 50k-row batching is not exposed by the bounded single-record MicroApp API, webhook causality requires domain-specific prerequisite semantics, and model profiles are owned by later pairs. Unsupported prices, latency, provider claims and zero-cost guarantees were discarded. Task 06 is current.
+Status: **REVIEWED AND RECONCILED**. Audited all five model-proposed landmines against current code and later user corrections. No independent code change was safe: the LSP design is refined in task 06, the registry proxy is explicitly rejected and refined in task 07, 50k-row batching is not exposed by the bounded single-record MicroApp API, webhook causality requires domain-specific prerequisite semantics, and model profiles are owned by later pairs. Unsupported prices, latency, provider claims and zero-cost guarantees were discarded. Task 07 is current.
 
 ## Task 06
 
 Primary read: **lines 575–693** (USER 575–577; AI MODEL 578–693).
 Bounded primary windows: 575–693.
 Later amendment/dependency pairs: 694–749 (task 07); 750–841 (task 08); 2174–2355 (task 16); 3068–3284 (task 21); 3285–3513 (task 22); 3943–4139 (task 25); 4140–4268 (task 26); 4795–4982 (task 30)
-Status: **IN PROGRESS**. Reread the user's optional LSP extension design as the current mission, search later amendments, and inspect the existing lexical AST daemon, virtual CLI, project templates and extension storage before implementation. Keep this out of the mandatory core path. Evidence and exact next action belong in the progress file.
+Status: **IMPLEMENTED for current project runtime; grammar/marketplace boundary documented**. Added optional project-scoped virtual Bash indexing, symbol, identifier-occurrence and signature commands backed by private project SQLite, with delegated-file scope and bounded input checks. FDEs can add the provided guidance to software-engineering templates. The index is lexical, not semantic; a current ABI-compatible Tree-sitter grammar and installable extension/template binding remain open. Evidence and verification are in the progress file. Task 07 is current.
 
 ## Task 07
 
 Primary read: **lines 694–749** (USER 694–696; AI MODEL 697–749).
 Bounded primary windows: 694–749.
 Later amendment/dependency pairs: 750–841 (task 08); 2174–2355 (task 16); 4269–4441 (task 27); 4795–4982 (task 30)
-Status: **UNASSESSED**. Evidence and exact next action belong in the progress file.
+Status: **IN PROGRESS**. The user explicitly rejects a custom immutable registry proxy and says to use trusted sources. Inspect the current actual container egress and dependency/lockfile controls; do not assume DNS allowlisting exists. Search later corrections before choosing implementation. Evidence and exact next action belong in the progress file.
 
 ## Task 08
 

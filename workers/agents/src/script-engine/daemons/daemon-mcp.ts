@@ -2,6 +2,7 @@ import type { SourceFile, TreeSitterIndexer } from "./tree-sitter-indexer.js";
 
 const MAX_FILES = 200;
 const MAX_FILE_BYTES = 512_000;
+const MAX_TOTAL_BYTES = 2_000_000;
 const MAX_QUERY_LENGTH = 256;
 
 function isSafeWorkspacePath(path: string): boolean {
@@ -18,10 +19,11 @@ function isSafeWorkspacePath(path: string): boolean {
 
 export interface DaemonMcpTarget {
   name: string;
-  index?(files: SourceFile[]): { files: number; symbols: number };
+  index?(files: SourceFile[], replace?: boolean): { files: number; symbols: number };
   start?(params?: Record<string, unknown>): Promise<unknown>;
   stop?(): Promise<unknown>;
   query?(term: string): Promise<unknown>;
+  references?(term: string): Promise<unknown>;
   symbols?(path: string): Promise<unknown>;
   status?(): Promise<unknown>;
 }
@@ -42,8 +44,9 @@ export async function handleDaemonMcp(request: Request, target: DaemonMcpTarget)
   const tools = [
     ...(target.start ? [{ name: `daemon_${daemon}_start`, description: "Start the durable daemon", inputSchema: { type: "object", properties: {} } }] : []),
     ...(target.stop ? [{ name: `daemon_${daemon}_stop`, description: "Stop the durable daemon", inputSchema: { type: "object", properties: {} } }] : []),
-    ...(target.index ? [{ name: `daemon_${daemon}_index`, description: "Index bounded workspace source files", inputSchema: { type: "object", properties: { files: { type: "array", maxItems: MAX_FILES } }, required: ["files"] } }] : []),
+    ...(target.index ? [{ name: `daemon_${daemon}_index`, description: "Index bounded workspace source files", inputSchema: { type: "object", properties: { files: { type: "array", maxItems: MAX_FILES }, replace: { type: "boolean" } }, required: ["files"] } }] : []),
     ...(target.query ? [{ name: `daemon_${daemon}_query`, description: "Find indexed symbols by exact name", inputSchema: { type: "object", properties: { term: { type: "string", maxLength: MAX_QUERY_LENGTH } }, required: ["term"] } }] : []),
+    ...(target.references ? [{ name: `daemon_${daemon}_references`, description: "Find bounded lexical identifier occurrences by exact name", inputSchema: { type: "object", properties: { term: { type: "string", maxLength: MAX_QUERY_LENGTH } }, required: ["term"] } }] : []),
     ...(target.symbols ? [{ name: `daemon_${daemon}_symbols`, description: "List indexed symbols for a workspace path", inputSchema: { type: "object", properties: { path: { type: "string", maxLength: MAX_QUERY_LENGTH } }, required: ["path"] } }] : []),
     ...(target.status ? [{ name: `daemon_${daemon}_status`, description: "Read daemon status", inputSchema: { type: "object", properties: {} } }] : []),
   ];
@@ -65,19 +68,26 @@ export async function handleDaemonMcp(request: Request, target: DaemonMcpTarget)
     data = await target.stop();
   } else if (action === "index" && target.index) {
     if (!Array.isArray(args.files) || args.files.length > MAX_FILES) return failure(-32602, "files must contain at most 200 entries");
-    const files: SourceFile[] = [];
+    const files: SourceFile[] = []; let totalBytes = 0;
     for (const value of args.files) {
       if (!value || typeof value !== "object" || Array.isArray(value)) return failure(-32602, "each file must be an object");
       const file = value as Record<string, unknown>;
       if (typeof file.path !== "string" || typeof file.content !== "string" || !isSafeWorkspacePath(file.path)) return failure(-32602, "each file requires a safe workspace path and string content");
-      if (new TextEncoder().encode(file.content).byteLength > MAX_FILE_BYTES) return failure(-32602, "file content exceeds 512KB");
+      const bytes = new TextEncoder().encode(file.content).byteLength;
+      if (bytes > MAX_FILE_BYTES) return failure(-32602, "file content exceeds 512KB");
+      totalBytes += bytes;
+      if (totalBytes > MAX_TOTAL_BYTES) return failure(-32602, "index request exceeds 2MB total");
       files.push({ path: file.path, content: file.content });
     }
-    data = target.index(files);
+    data = target.index(files, args.replace === true);
   } else if (action === "query" && target.query) {
     const term = args.term;
     if (typeof term !== "string" || !term || term.length > MAX_QUERY_LENGTH) return failure(-32602, "term must be a non-empty string under 256 characters");
     data = await target.query(term);
+  } else if (action === "references" && target.references) {
+    const term = args.term;
+    if (typeof term !== "string" || !/^[A-Za-z_$][\w$]{0,127}$/.test(term)) return failure(-32602, "term must be an identifier under 128 characters");
+    data = await target.references(term);
   } else if (action === "symbols" && target.symbols) {
     const path = args.path;
     if (typeof path !== "string" || path.length > MAX_QUERY_LENGTH || !isSafeWorkspacePath(path)) return failure(-32602, "path must be a safe workspace path under 256 characters");
@@ -93,7 +103,8 @@ export function treeSitterDaemonTarget(indexer: TreeSitterIndexer): DaemonMcpTar
     name: "tree-sitter",
     index: files => indexer.index(files),
     query: term => indexer.query(term),
+    references: term => indexer.references(term),
     symbols: path => indexer.symbols(path),
-    status: async () => ({ state: "RUNNING", bounded: true, parser: "tree-sitter-compatible" }),
+    status: async () => indexer.status(),
   };
 }

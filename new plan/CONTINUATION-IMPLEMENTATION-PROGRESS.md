@@ -1,14 +1,14 @@
 # Continuation implementation progress
 
 Branch: `Mcbt5s-Backup-2`. Source: the 66-message continuation transcript.
-Current task: **06 — IN PROGRESS**. Tasks 01–05: **IMPLEMENTED against available architecture; task 03 has a documented deployment boundary below**. Tasks 07–33: **UNASSESSED**.
+Current task: **07 — IN PROGRESS**. Tasks 01–06: **IMPLEMENTED against available architecture; tasks 03 and 06 have documented deployment boundaries below**. Tasks 08–33: **UNASSESSED**.
 
 ## Extraction and task-map checkpoint
 
 - Extraction resumes strictly after prior final timestamp `2026-10-12T21:24:57.182Z`. New transcript: 66 visible messages, first USER at `2026-10-13T17:11:46.189Z`, final AI MODEL at `2026-10-14T20:45:34.085Z`. No thought/tool/empty chunks. Original transcript and source unchanged.
 - Extractor tests: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s 'new plan' -p test_extract_ai_studio_messages.py -v`: 2 passed.
 - Task map specifies all 33 pairs with exact line ranges and later amendment/dependency ranges; mappings are look-aheads, not assumptions that all later text contradicts the current pair.
-- Manual reading so far: primaries 01 (1–55), 02 (56–210), 03 (211–338), and 04 (339–450); later pairs read as look-ahead are listed under the relevant task records. No later task is complete.
+- Manual reading so far: primaries 01 (1–55), 02 (56–210), 03 (211–338), 04 (339–450), 05 (451–574), and 06 (575–693); later pairs read as look-ahead are listed under the relevant task records. Tasks 07–33 are not complete.
 - First pair is a research question; model internals, latency, physical-air-gap and platform claims in its reply are unverified. Do not copy them as implementation requirements.
 - Existing workspace prefixes and container policies found; still inspect execution code and reconcile later context before deciding any change.
 - Development environment: Node 24.19.0, dependencies present. Plain pnpm is 11.25.0; use repository-pinned `corepack pnpm` (9.12.0). Git origin read succeeds. No live provider check established.
@@ -61,12 +61,21 @@ Current task: **06 — IN PROGRESS**. Tasks 01–05: **IMPLEMENTED against avail
 - Rejected the proposed vendor latency/price/credit values, generic causal ordering, imaginary Cloudflare `executeBatch` interception and silently mutating untrusted installs. No independent code change was safe for this audit pair; the concrete AST, dependency and model-profile work is deliberately handled in the later user-owned pairs identified above, rather than duplicated or implemented from model speculation.
 - Task 05 is complete as an evidence-backed architecture review; task 06 is now current. No tests were needed for this read-only audit. Earlier task 04 tests/typechecks and push remain recorded above.
 
-## Task 06 — in progress
+## Task 06 — implemented for current project runtime
 
-- Primary: 575–693 (USER 575–577; AI MODEL 578–693), previously read as task 05 look-ahead only. Reread in bounded windows as the current mission.
-- Search later text for LSP/indexer/virtual Bash/template/project workspace/parser/storage terms; inspect the current lexical AST daemon, project workspace, scoped extension tools and parser dependencies. Preserve the user's amended design: an optional project-template micro-app/extension with private SQLite facet, exposed through the existing virtual command path; do not make it a core mandatory kernel feature or claim Tree-sitter WASM exists unless the repo actually supplies it.
-- Exact next action: reread 575–693, review matching later corrections and the current daemon/CLI/extension architecture, then implement the viable extension behavior and record any precise parser/deployment boundary.
+- Primary 575–693 was reread in one bounded 119-line window. Full transcript search covered `lsp`, AST, Tree-sitter, import/reference graphs and extension template terms. Relevant later model-only matches were read at 1158–1182, 1321–1355, 2340–2362, 4492–4512, 4636–4652 and 4770–4795; these later claims about semantic merge arbitration and prices/timings remain unverified and are not added to this task. The user amendments at 575–576 own the optional project command/template guidance design.
+- Inspected the existing `TreeSitterIndexer`, project-owned `NaelaoAgentDO` SQLite `/daemon/mcp` route, Agents worker project-scope HMAC route, virtual Bash dispatcher, project workspace scope, FDE project instructions and installed package set. Existing parser is lexical and already project-owned, but it was not reachable as an `lsp` Bash command and did not index identifier occurrences.
+- Added virtual `lsp index [path ...]`, `lsp find-refs <name>`, `lsp find-symbol <name>`, `lsp get-signatures <path>` and `lsp status`. Calls require a project-bound run, pass the current tenant/project through the authenticated Agents worker route, read only the current R2 project workspace and respect delegated file scopes. Full refresh replaces stale entries; partial path indexing preserves other paths. Input is bounded to 200 files, 512KB per file and 2MB total. Files over 512KB are skipped only in full refresh and rejected when explicitly selected.
+- Added a private project-SQLite identifier occurrence index that ignores ordinary line/block comments, quoted strings and Python triple-quoted strings. Occurrence search is lexical, not semantic: it does not resolve imports, scopes, properties or template-string expressions. Added FDE template guidance that prefers these commands but falls back to normal reads when the bounded index is unavailable/incomplete. No default-read capability was removed.
+- Investigated the missing grammar artifact. `web-tree-sitter@0.27.1` with `tree-sitter-wasms@0.1.13` failed to load the published TypeScript grammar (`need dylink section`); the grammar loads under old `web-tree-sitter@0.20.8` in Node, but that older runtime and its filesystem-based init have not been verified in Cloudflare Workers. The all-language package is 51.8MB unpacked and third-party prebuilt grammar artifacts are not a safe production dependency without ABI, licensing and Worker-bundle validation. No package or binary was added. Exact remaining work: vet a current ABI-compatible TypeScript/JavaScript/Python grammar and compiled-WASM import with Wrangler/provider limits before replacing the lexical indexer; add installable manifest/template binding if the generic extension installer is introduced. No credential or human action is required.
+- Verification: four targeted Agents test files passed (18 tests total), including a real SQLite index/query refresh, scope-aware virtual Bash request with a doubled worker transport, MCP size/dispatch behavior and CLI parsing. Agents typecheck passed. This does not prove live Worker or Cloudflare WASM behavior.
+- Task 06 is complete for the existing project-owned index and Bash interface, with the parser/marketplace boundaries explicitly open. Task 07 is current.
+
+## Task 07 — in progress
+
+- Primary: 694–749 (USER 694–696; AI MODEL 697–749). Previously read only as task 05 look-ahead; read it as the current mission before considering work complete.
+- The user explicitly rejects a custom immutable package proxy and asks for trusted sources. Full transcript search for registry proxy, trusted-source, npm/pip/cargo lockfiles, egress and package-install terms found no later amendments outside the already read primary/user correction. Read the primary and relevant match contexts in bounded windows, inspect actual container egress and dependency-install interfaces, and implement only supported trust/approval constraints. Do not claim DNS allowlisting or lockfile enforcement unless the deployed path enforces it.
 
 ## Exact next action
 
-Task 04 is pushed as `fd46de8`. Task 05's reconciliation is recorded and task 06 is current. Read its primary 575–693 as the active range, search/read later corrections, implement the optional project-scoped LSP extension path using available code, verify its boundary, update plan/progress, and push the task checkpoint before task 07.
+Task 04 is pushed as `fd46de8`; task 05 audit is pushed as `0135402`. Task 06 is implemented and task 07 is current after its primary/read-ahead correction search. Inspect actual package installation, container network and project lockfile controls before implementing trusted-source constraints, and preserve the user's explicit no-proxy correction.
