@@ -43,6 +43,8 @@ describe("SpaceDO migration replay", () => {
     const customModelLifecycleMigration = storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM _migrations WHERE version = 72").toArray();
     const retentionMigration = storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM _migrations WHERE version = 73").toArray();
     const retentionHoldMigration = storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM _migrations WHERE version = 74").toArray();
+    const spendReservationMigration = storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM _migrations WHERE version = 75").toArray();
+    const spendReservationTables = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('project_spend_reservations','project_spend_run_settlements')").toArray();
     const sessionColumns = storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('sessions')").toArray().map(column => column.name);
     const retentionTables = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('space_retention_policies','space_retention_previews','space_archive_records','space_archive_restore_previews')").toArray();
     expect(table).toHaveLength(1);
@@ -59,6 +61,8 @@ describe("SpaceDO migration replay", () => {
     expect(customModelLifecycleMigration[0]?.count).toBe(1);
     expect(retentionMigration[0]?.count).toBe(1);
     expect(retentionHoldMigration[0]?.count).toBe(1);
+    expect(spendReservationMigration[0]?.count).toBe(1);
+    expect(spendReservationTables).toHaveLength(2);
     expect(sessionColumns).toContain("retention_hold");
     expect(retentionTables).toHaveLength(4);
     expect(customerVoiceColumns).toContain("customer_agent_id");
@@ -94,7 +98,7 @@ describe("SpaceDO migration replay", () => {
   it("preserves an existing private adapter as explicitly unverified legacy state", () => {
     const storage = createDOStorage();
     const migrationStorage = storage as unknown as { sql: SqlStorage; transactionSync<T>(closure: () => T): T };
-    applyMigrations(migrationStorage, SPACE_DO_MIGRATIONS.slice(0, -3));
+    applyMigrations(migrationStorage, SPACE_DO_MIGRATIONS.filter((migration) => migration.version < 72));
     storage.sql.exec("INSERT INTO custom_model_manifests (model_id,space_id,base_model,lora_adapter_id) VALUES (?,?,?,?)",
       "custom/legacy", "space-legacy", "@cf/meta/llama-3.3-70b-instruct-fp8-fast", "adapter/legacy");
     applyMigrations(migrationStorage, SPACE_DO_MIGRATIONS);

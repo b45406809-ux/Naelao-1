@@ -51,7 +51,7 @@ Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, recon
 
 ### 4. Model capability, entitlement, modality, and cost routing
 
-**Status:** partially implemented and locally verified on 2026-10-15. Fresh catalog evidence, Space-key isolation, and exact OpenRouter usage pricing are enforced. Model-specific entitlement is only recorded after a successful user-requested inference; pre-execution request-cost reservation and modality-specific worker dispatch remain open.
+**Status:** partially implemented and locally verified on 2026-10-15. Fresh catalog evidence, Space-key isolation, exact OpenRouter usage pricing, and pre-execution project-cap reservation on the script-engine path are enforced. Model-specific entitlement is only recorded after a successful user-requested inference; key-specific entitlement preflight, channel-path reservation, user/org preauthorization and modality-specific worker dispatch remain open.
 
 1. Audit exact model selection, BYOK resolution, Gateway/AI REST routes, model allowlists, billing settlement, local discovery, and air-gap policy. Keep planner and worker selection authorization separate.
 2. Define a normalized capability record with source and freshness for text/image/audio/video input/output, tool calling, context size, and token pricing. Missing or stale fields mean unsupported/unknown, not inferred support.

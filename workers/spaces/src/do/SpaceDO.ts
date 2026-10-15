@@ -1901,6 +1901,24 @@ const MIGRATIONS: Migration[] = [
     description: "explicit per-session retention hold",
     up: `ALTER TABLE sessions ADD COLUMN retention_hold INTEGER NOT NULL DEFAULT 0 CHECK (retention_hold IN (0,1));`,
   },
+  {
+    version: 75,
+    description: "per-run project model-cost reservations",
+    up: `
+      CREATE TABLE project_spend_reservations (
+        reservation_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, run_id TEXT NOT NULL,
+        day TEXT NOT NULL, credits INTEGER NOT NULL CHECK (credits > 0),
+        status TEXT NOT NULL CHECK (status IN ('held','settled','released','expired')),
+        expires_at TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE INDEX idx_project_spend_reservations_live ON project_spend_reservations(project_id,day,status,expires_at);
+      CREATE TABLE project_spend_run_settlements (
+        project_id TEXT NOT NULL, run_id TEXT NOT NULL, day TEXT NOT NULL,
+        actual_credits INTEGER NOT NULL CHECK (actual_credits >= 0), settled_at TEXT NOT NULL,
+        PRIMARY KEY(project_id,run_id)
+      );
+    `,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -6695,13 +6713,18 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       day
     );
     const spentToday = row?.credits ?? 0;
+    const reservedToday = queryOne<{ credits: number }>(this.ctx.storage.sql as never,
+      "SELECT COALESCE(SUM(credits),0) AS credits FROM project_spend_reservations WHERE project_id=? AND day=? AND status='held' AND expires_at>?",
+      projectId, day, new Date().toISOString())?.credits ?? 0;
     const cap = project.daily_spend_cap_credits;
     return Response.json({
       project_id: projectId,
       day,
       spent_today: spentToday,
+      reserved_today: reservedToday,
+      spent_plus_reserved: spentToday + reservedToday,
       cap,
-      capped: cap > 0 && spentToday >= cap,
+      capped: cap > 0 && spentToday + reservedToday >= cap,
     });
   }
 
@@ -6723,12 +6746,52 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         { error_code: "not_found", message: "Project not found" },
         { status: 404 }
       );
-    const body = await request
-      .json<{ credits?: number }>()
-      .catch(() => ({}) as Record<string, never>);
+    const body = await request.json<{ credits?: number; action?: string; reservation_id?: string; run_id?: string }>()
+      .catch(() => ({} as { credits?: number; action?: string; reservation_id?: string; run_id?: string }));
     const credits =
       typeof body.credits === "number" && body.credits > 0 ? body.credits : 0;
     const day = todaySpendKey();
+    const sql = this.ctx.storage.sql as never;
+    if (body.action === "reserve") {
+      const reservationId = body.reservation_id ?? "", runId = body.run_id ?? "";
+      if (!reservationId || reservationId.length > 200 || !runId || runId.length > 128 || !Number.isSafeInteger(credits) || credits <= 0) return Response.json({ error_code: "reservation_invalid" }, { status: 400 });
+      const now = new Date().toISOString(), expiresAt = new Date(Date.now() + 15 * 60_000).toISOString();
+      const result = this.ctx.storage.transactionSync(() => {
+        execute(sql, "UPDATE project_spend_reservations SET status='expired',updated_at=? WHERE project_id=? AND status='held' AND expires_at<=?", now, projectId, now);
+        const existing = queryOne<{ run_id: string; day: string; credits: number; status: string }>(sql, "SELECT run_id,day,credits,status FROM project_spend_reservations WHERE reservation_id=?", reservationId);
+        if (existing) return existing.run_id === runId && existing.day === day && existing.credits === credits && existing.status === "held"
+          ? { reserved: true, deduplicated: true, spentToday: 0, reservedToday: 0 }
+          : { reserved: false, conflict: true, spentToday: 0, reservedToday: 0 };
+        const spent = queryOne<{ credits: number }>(sql, "SELECT COALESCE(credits,0) AS credits FROM project_spend WHERE project_id=? AND day=?", projectId, day)?.credits ?? 0;
+        const reserved = queryOne<{ credits: number }>(sql, "SELECT COALESCE(SUM(credits),0) AS credits FROM project_spend_reservations WHERE project_id=? AND day=? AND status='held' AND expires_at>?", projectId, day, now)?.credits ?? 0;
+        if (project.daily_spend_cap_credits > 0 && spent + reserved + credits > project.daily_spend_cap_credits) return { reserved: false, capped: true, spentToday: spent, reservedToday: reserved };
+        execute(sql, "INSERT INTO project_spend_reservations (reservation_id,project_id,run_id,day,credits,status,expires_at,created_at,updated_at) VALUES (?,?,?,?,?,'held',?,?,?)", reservationId, projectId, runId, day, credits, expiresAt, now, now);
+        return { reserved: true, deduplicated: false, spentToday: spent, reservedToday: reserved + credits };
+      });
+      if (result.conflict) return Response.json({ error_code: "reservation_id_conflict" }, { status: 409 });
+      if (!result.reserved) return Response.json({ error_code: "spend_capped", project_id: projectId, spent_today: result.spentToday, reserved_today: result.reservedToday, requested_credits: credits, cap: project.daily_spend_cap_credits }, { status: 402 });
+      return Response.json({ ...result, project_id: projectId, day, cap: project.daily_spend_cap_credits, expires_at: expiresAt });
+    }
+    if (body.action === "settle_run" || body.action === "release_run") {
+      const runId = body.run_id ?? "";
+      if (!runId || runId.length > 128 || (body.action === "settle_run" && (!Number.isSafeInteger(body.credits) || (body.credits ?? -1) < 0))) return Response.json({ error_code: "run_settlement_invalid" }, { status: 400 });
+      const now = new Date().toISOString();
+      if (body.action === "release_run") {
+        const released = this.ctx.storage.transactionSync(() => this.ctx.storage.sql.exec("UPDATE project_spend_reservations SET status='released',updated_at=? WHERE project_id=? AND run_id=? AND status='held'", now, projectId, runId).rowsWritten);
+        return Response.json({ released, project_id: projectId, run_id: runId });
+      }
+      const settled = this.ctx.storage.transactionSync(() => {
+        const existing = queryOne<{ actual_credits: number; day: string }>(sql, "SELECT actual_credits,day FROM project_spend_run_settlements WHERE project_id=? AND run_id=?", projectId, runId);
+        if (existing) return { deduplicated: true, actualCredits: existing.actual_credits, day: existing.day };
+        execute(sql, "UPDATE project_spend_reservations SET status='settled',updated_at=? WHERE project_id=? AND run_id=? AND status='held'", now, projectId, runId);
+        execute(sql, "INSERT INTO project_spend_run_settlements (project_id,run_id,day,actual_credits,settled_at) VALUES (?,?,?,?,?)", projectId, runId, day, body.credits, now);
+        if ((body.credits ?? 0) > 0) execute(sql, "INSERT INTO project_spend (project_id,day,credits) VALUES (?,?,?) ON CONFLICT(project_id,day) DO UPDATE SET credits=credits+excluded.credits", projectId, day, body.credits);
+        return { deduplicated: false, actualCredits: body.credits ?? 0, day };
+      });
+      const spent = queryOne<{ credits: number }>(sql, "SELECT credits FROM project_spend WHERE project_id=? AND day=?", projectId, settled.day)?.credits ?? 0;
+      return Response.json({ ...settled, project_id: projectId, run_id: runId, spent_today: spent, cap: project.daily_spend_cap_credits, capped: project.daily_spend_cap_credits > 0 && spent >= project.daily_spend_cap_credits });
+    }
+    if (body.action !== undefined) return Response.json({ error_code: "spend_action_invalid" }, { status: 400 });
     if (credits > 0) {
       execute(
         this.ctx.storage.sql as never,

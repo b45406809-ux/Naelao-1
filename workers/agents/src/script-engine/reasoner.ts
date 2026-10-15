@@ -115,6 +115,8 @@ export interface ReasonerDeps {
   localCompletion?: (payload: Record<string, unknown>) => Promise<unknown>;
   /** Resolve a space-owned LoRA manifest from SpaceDO/R2. */
   resolveCustomModel?: (modelId: string) => Promise<{ baseModel: string; loraAdapterId: string } | null>;
+  /** Reserve the bounded, assembled inference request before any provider/local inference. */
+  reserveInferenceCost?: (request: { model: string; serializedRequestBytes: number; maxOutputTokens: number }) => Promise<boolean>;
 }
 
 export function preferredLanguageContext(preferredLanguage?: string): {
@@ -1028,6 +1030,20 @@ export class GatewayReasoner implements Reasoner {
       system: boundedContext.system,
       messages: [{ role: "user", content: perception.imageUrl ? [{ type: "text" as const, text: JSON.stringify(boundedPayload) }, { type: "image_url" as const, image_url: { url: perception.imageUrl } }] : boundedContext.user }],
     };
+
+    if (this.deps.reserveInferenceCost) {
+      let admitted = false;
+      try {
+        admitted = await this.deps.reserveInferenceCost({
+          model: query.model,
+          serializedRequestBytes: new TextEncoder().encode(JSON.stringify({ system: query.system, messages: query.messages, tools })).byteLength,
+          maxOutputTokens: query.max_tokens,
+        });
+      } catch {
+        return { action: "give_up", reason: "project_spend_reservation_unavailable: no inference was sent" };
+      }
+      if (!admitted) return { action: "give_up", reason: "project_spend_capped: no inference was sent" };
+    }
 
     const isLocalModel = query.model.startsWith("local/");
     const isCustomModel = query.model.startsWith("custom/");

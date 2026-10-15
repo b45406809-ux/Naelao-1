@@ -24,7 +24,7 @@ import type { LlmTool, LlmFunctionTool, LlmMessage, ContentBlock } from "@naelao
 import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
 import type { SystemBlock } from "@naelao/llm-gateway";
 import { moderateText } from "@naelao/moderation";
-import { tokensToCredits, tokensToCreditsAtPrice, infraTimeToCredits, capabilityForModel, contextWindowForModel, DEFAULT_WORKING_MODEL, UTILITY_MODEL, isValidEffortLevel, resolveEscalationModel, type EffortLevel } from "@naelao/billing-core";
+import { tokensToCredits, tokensToCreditsAtPrice, estimateRequestCostCredits, infraTimeToCredits, capabilityForModel, contextWindowForModel, DEFAULT_WORKING_MODEL, UTILITY_MODEL, isValidEffortLevel, resolveEscalationModel, type EffortLevel } from "@naelao/billing-core";
 import { classifyFailure } from "@naelao/events";
 import type { ReasoningRequest, GatewayOpts } from "../shared/ai-client.js";
 import { authorizedFailoversForModel, byokProviderForModel, BYOK_PROVIDER_KEY_FIELD } from "../shared/ai-client.js";
@@ -4597,6 +4597,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     } catch (error) {
       return this.finishScriptFailure(runId, error instanceof Error ? error.message : "model price evidence unavailable", 503, "model_price_unavailable");
     }
+    let reservationSequence = 0;
+    let projectSpendReserved = false;
     const reasoner = new GatewayReasoner({
       apiKey: body.apiKey ?? "",
       localDevelopment: this.env.ENVIRONMENT === "development",
@@ -4625,6 +4627,19 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         : {}),
       manifest: assembled.manifest,
       airGappedOnly: body.airGappedOnly === true,
+      ...(hasSpendCap && projectId ? { reserveInferenceCost: async (inference: { model: string; serializedRequestBytes: number; maxOutputTokens: number }) => {
+        const estimate = estimateRequestCostCredits(inference.serializedRequestBytes, inference.maxOutputTokens, inference.model,
+          inference.model.startsWith("openrouter/") ? modelPricing : undefined);
+        const response = await this.env.SPACES_WORKER.fetch(new Request(
+          `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/spend`,
+          { method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
+            body: JSON.stringify({ action: "reserve", reservation_id: `${runId}:${++reservationSequence}`, run_id: runId, credits: estimate.estimatedCredits }) }
+        ));
+        if (response.status === 402) return false;
+        if (!response.ok) throw new Error("project_spend_reservation_unavailable");
+        projectSpendReserved = true;
+        return true;
+      } } : {}),
       ...(this.env.LOCAL_TUNNEL && userId ? {
         localCompletion: async (payload: Record<string, unknown>) => {
           if (typeof body.localMachineId !== "string" || !body.localMachineId || !engineEnv.localTunnel) throw new Error("named_local_model_machine_required");
@@ -4808,6 +4823,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         model: body.model,
         modelPricing,
         notes: result.notes,
+        projectSpendReserved,
         tier: result.result?.tier,
         durationMs: result.result?.duration_ms,
         sessionId, sessionCreditCeiling: body.sessionCreditCeiling,
@@ -6570,6 +6586,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     tokensUsed: number; inputTokens: number; outputTokens: number;
     model?: string | undefined; notes: string[]; runId: string;
     modelPricing?: { inputUsdPerToken: number; outputUsdPerToken: number } | undefined;
+    projectSpendReserved?: boolean | undefined;
     /** §A1.26: the executed script's tier + wall-clock duration, when known (script-native runs
      *  only — the legacy ReAct path has no equivalent concept and omits these). */
     tier?: number | string | undefined; durationMs?: number | undefined;
@@ -6578,7 +6595,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
      *  configured — a space that never opted in pays zero extra round-trip cost per run. */
     sessionId?: string | undefined; sessionCreditCeiling?: number | undefined;
   }): Promise<void> {
-    const { spaceId, tenantId, projectId, userId, callerRole, hasSpendCap, walletProjectId, tokensUsed, inputTokens, outputTokens, model, modelPricing, notes, runId, tier, durationMs, sessionId, sessionCreditCeiling } = params;
+    const { spaceId, tenantId, projectId, userId, callerRole, hasSpendCap, walletProjectId, tokensUsed, inputTokens, outputTokens, model, modelPricing, notes, runId, tier, durationMs, sessionId, sessionCreditCeiling, projectSpendReserved } = params;
 
     // §A1.26: infra-credit usage is recorded independent of whether this run used any LLM
     // tokens at all (a pure script execution — e.g. a scheduled workflow.run with no reasoning
@@ -6618,7 +6635,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
     }
 
-    if (!tokensUsed) return;
+    if (!tokensUsed) {
+      if (projectSpendReserved && projectId && this.env.SPACES_WORKER) await this.settleProjectSpendReservation(spaceId, tenantId, projectId, runId, 0);
+      return;
+    }
     const credits = inputTokens || outputTokens
       ? (model?.startsWith("openrouter/")
         ? modelPricing
@@ -6655,7 +6675,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // F9: SpaceDO is now the authoritative tally (single writer across every thread on
       // this project); the local table is kept only as this DO's own telemetry/cache.
       this.addProjectSpend(projectId, credits);
-      if (hasSpendCap) await this.checkAndDebitProjectSpend(spaceId, tenantId, projectId, credits);
+      if (projectSpendReserved && hasSpendCap) await this.settleProjectSpendReservation(spaceId, tenantId, projectId, runId, credits);
+      else if (hasSpendCap) await this.checkAndDebitProjectSpend(spaceId, tenantId, projectId, credits);
       // Metering enforcement follow-up: debit the space's own wallet for this run's real cost.
       // credits and wallet cents are the SAME unit by construction (packages/billing-core's
       // CREDITS_PER_USD = 100, i.e. 1 credit == 1 cent) — no conversion needed. Best-effort,
@@ -6709,6 +6730,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     } catch {
       return { capped: true, spent_today: Number.POSITIVE_INFINITY };
     }
+  }
+
+  private async settleProjectSpendReservation(spaceId: string, tenantId: string, projectId: string, runId: string, credits: number): Promise<void> {
+    try {
+      await this.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/spend`,
+        { method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
+          body: JSON.stringify({ action: "settle_run", run_id: runId, credits }) }
+      ));
+    } catch { /* holds expire after 15 minutes; settlement accounting remains best effort */ }
   }
 
   private async debitUserDailyBudget(

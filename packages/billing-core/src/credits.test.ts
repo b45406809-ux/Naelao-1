@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculateResourceCredits, CREDITS_PER_USD, tokensToCredits, tokensToCreditsAtPrice } from "./credits.js";
+import { calculateResourceCredits, CREDITS_PER_USD, estimateRequestCostCredits, tokensToCredits, tokensToCreditsAtPrice } from "./credits.js";
 
 describe("standard credit table", () => {
   it("uses one cent credits and exact resource rates", () => {
@@ -20,5 +20,12 @@ describe("standard credit table", () => {
     expect(tokensToCreditsAtPrice(10, 10, 0, 0)).toBe(1);
     expect(() => tokensToCreditsAtPrice(1, 1, Number.NaN, 0)).toThrow("token prices");
     expect(() => tokensToCreditsAtPrice(1, 1, 0, 1.01)).toThrow("token prices");
+  });
+  it("reserves from serialized UTF-8 request bytes and the exact output-token cap", () => {
+    expect(estimateRequestCostCredits(1_000, 1_500, "openrouter/test", { inputUsdPerToken: 0.000001, outputUsdPerToken: 0.000002 })).toEqual({
+      estimatedInputTokens: 1_000, reservedOutputTokens: 1_500, estimatedCredits: 1, method: "utf8_bytes_plus_output_cap",
+    });
+    expect(() => estimateRequestCostCredits(-1, 10, "test")).toThrow("serializedRequestBytes");
+    expect(() => estimateRequestCostCredits(100, 200_001, "test")).toThrow("maxOutputTokens");
   });
 });

@@ -210,7 +210,7 @@ export { CREDITS_PER_USD } from "./credits.js";
  * (NaelaoAgentDO's project spend cap, sub-agent budgets). Always rounds UP: a run that cost
  * anything above $0 must never be recorded as free.
  */
-export { tokensToCredits, tokensToCreditsAtPrice, calculateResourceCredits, ACTIVE_PHONE_LINE_MONTHLY_CREDITS } from "./credits.js";
+export { tokensToCredits, tokensToCreditsAtPrice, estimateRequestCostCredits, calculateResourceCredits, ACTIVE_PHONE_LINE_MONTHLY_CREDITS } from "./credits.js";
 export type { ResourceType, ResourceMetadata } from "./credits.js";
 
 /**
