@@ -812,9 +812,13 @@ export class ScriptToolSurface {
     if (!isToolAllowedForRole(this.role, name)) {
       return { ok: false, error: `role_firewall_denied: ${this.role} cannot execute '${name}'`, tier: 1, duration_ms: Date.now() - started, tokens_used: 0 };
     }
-    const mutationIntent = name === "Bash"
-      ? String(params["commands"] ?? params["command"] ?? params["cmd"] ?? "")
-      : `${name} ${JSON.stringify(params)}`;
+    const manifestPath = typeof params.path === "string" ? params.path.replaceAll("\\", "/").split("/").pop()!.toLowerCase() : "";
+    const dependencyManifestEdit = ["Edit", "Write"].includes(name) && /^(?:package\.json|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|requirements(?:-[a-z0-9_.-]+)?\.txt|pyproject\.toml|poetry\.lock|pipfile(?:\.lock)?|cargo\.(?:toml|lock))$/.test(manifestPath);
+    const mutationIntent = dependencyManifestEdit
+      ? `dependency_manifest_edit ${JSON.stringify(params)}`
+      : name === "Bash"
+        ? String(params["commands"] ?? params["command"] ?? params["cmd"] ?? "")
+        : `${name} ${JSON.stringify(params)}`;
     try {
       const mutationGrantRequired = await enforceWriteGuardWithSentry(mutationIntent, this.env.mutationGrant, this.env.platformSecret ?? "", {
         subject: this.env.humanInvokerId ?? "system",

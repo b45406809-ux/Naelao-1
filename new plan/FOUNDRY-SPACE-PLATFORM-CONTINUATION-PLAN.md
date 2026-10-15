@@ -67,14 +67,14 @@ Status: **IMPLEMENTED for current project runtime; grammar/marketplace boundary 
 Primary read: **lines 694–749** (USER 694–696; AI MODEL 697–749).
 Bounded primary windows: 694–749.
 Later amendment/dependency pairs: 750–841 (task 08); 2174–2355 (task 16); 4269–4441 (task 27); 4795–4982 (task 30)
-Status: **IN PROGRESS**. The user explicitly rejects a custom immutable registry proxy and says to use trusted sources. Inspect the current actual container egress and dependency/lockfile controls; do not assume DNS allowlisting exists. Search later corrections before choosing implementation. Evidence and exact next action belong in the progress file.
+Status: **IMPLEMENTED — local policy/tests verified; live Container egress unrun**. Used Cloudflare's native exact-host HTTPS interceptions while keeping general container internet disabled; no caching/scanning registry. Added scoped approval for package additions and dependency manifest edits. Evidence, docs/types checked, verification limits, and shell-indirection coverage are in the progress file. Task 08 is current.
 
 ## Task 08
 
 Primary read: **lines 750–841** (USER 750–752; AI MODEL 753–841).
 Bounded primary windows: 750–841.
 Later amendment/dependency pairs: 1971–2173 (task 15); 2174–2355 (task 16); 4269–4441 (task 27)
-Status: **UNASSESSED**. Evidence and exact next action belong in the progress file.
+Status: **IN PROGRESS — primary range was read as task 07 look-ahead; task 08 implementation not yet assessed**. Resume with fresh architecture audit and search later corrections before changing code.
 
 ## Task 09
 

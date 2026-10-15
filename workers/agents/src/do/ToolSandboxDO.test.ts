@@ -29,6 +29,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       start: vi.fn(() => {
         containerRunning = true;
       }),
+      interceptOutboundHttps: vi.fn(async () => undefined),
       destroy: vi.fn(async () => { containerRunning = false; }),
       getTcpPort: () => ({
         fetch: async (req) => {
@@ -50,6 +51,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
 
     const mockCtx = {
       container: mockContainer,
+      exports: { PackageEgress: () => ({ fetch: async (request) => new Response(request.url) }) },
       storage: {
         get: async (k) => storage.get(k),
         put: async (k, v) => {
@@ -197,6 +199,9 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       headers: { "content-type": "application/json", "x-avos-task-active": "1" },
       body: "{}",
     }));
+    expect(mockContainer.start).toHaveBeenCalledWith({ enableInternet: false });
+    expect(mockContainer.interceptOutboundHttps).toHaveBeenCalledTimes(9);
+    expect(mockContainer.interceptOutboundHttps).toHaveBeenCalledWith("registry.npmjs.org", expect.any(Object));
     expect(getAlarmTime()).toBe(1_300_000);
     vi.setSystemTime(1_060_000);
     await sandbox.alarm();

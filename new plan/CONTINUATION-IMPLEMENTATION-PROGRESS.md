@@ -1,7 +1,7 @@
 # Continuation implementation progress
 
 Branch: `Mcbt5s-Backup-2`. Source: the 66-message continuation transcript.
-Current task: **07 — IN PROGRESS**. Tasks 01–06: **IMPLEMENTED against available architecture; tasks 03 and 06 have documented deployment boundaries below**. Tasks 08–33: **UNASSESSED**.
+Current task: **08 — IN PROGRESS**. Tasks 01–07: **IMPLEMENTED against available architecture; tasks 03 and 06 have documented deployment boundaries below**. Tasks 09–33: **UNASSESSED**.
 
 ## Extraction and task-map checkpoint
 
@@ -71,11 +71,16 @@ Current task: **07 — IN PROGRESS**. Tasks 01–06: **IMPLEMENTED against avail
 - Verification: four targeted Agents test files passed (18 tests total), including a real SQLite index/query refresh, scope-aware virtual Bash request with a doubled worker transport, MCP size/dispatch behavior and CLI parsing. Agents typecheck passed. This does not prove live Worker or Cloudflare WASM behavior.
 - Task 06 is complete for the existing project-owned index and Bash interface, with the parser/marketplace boundaries explicitly open. Task 07 is current.
 
-## Task 07 — in progress
+## Task 07 — implemented for explicitly trusted package hosts
 
-- Primary: 694–749 (USER 694–696; AI MODEL 697–749). Previously read only as task 05 look-ahead; read it as the current mission before considering work complete.
-- The user explicitly rejects a custom immutable package proxy and asks for trusted sources. Full transcript search for registry proxy, trusted-source, npm/pip/cargo lockfiles, egress and package-install terms found no later amendments outside the already read primary/user correction. Read the primary and relevant match contexts in bounded windows, inspect actual container egress and dependency-install interfaces, and implement only supported trust/approval constraints. Do not claim DNS allowlisting or lockfile enforcement unless the deployed path enforces it.
+- Primary 694–749 reread. Task 05's related prior proposal 451–574 reread. Task 08 look-ahead 750–841 read in one bounded window; it discusses a separate OAuth/API-call path and does not override package-install egress. Full transcript search for trusted-source, registry, dependency-manifest, npm/pip/cargo-install and outbound-host terms found no later user correction; matching contexts include 758–841 (task 08) and 5283 (task 30's later npm-install friction). These reads do not complete tasks 08/30. Other plan look-aheads 2174–2355, 4269–4441, 4795–4982 did not appear in the keyword-search results as task-07 amendments; reread applicable contexts when they become primary.
+- The user rejects a custom immutable caching/scanning registry and asks for trusted package sources. The prior model's claim that this Cloudflare binding offers kernel DNS allowlisting is unsupported. Current official Cloudflare Durable Object Container docs and installed Workers types expose `interceptOutboundHttps(host, Fetcher)`; an intercepted host can be forwarded directly while general container internet stays disabled. The Cloudflare docs say the runtime-managed interception CA must be trusted at `/etc/cloudflare/certs/cloudflare-containers-ca.crt`.
+- Added `package-egress.ts` with exact HTTPS allowlist for npm, PyPI artifact downloads, crates.io and common GitHub source/release hosts. Cold starts register those hosts with native HTTPS interception before starting the container with `enableInternet:false`; redirects return to the container, where only separately intercepted targets can be reached. There is no app cache or malware scanner. The container startup script trusts the provider CA only when its documented runtime mount exists.
+- The existing scoped mutation-grant sentry now requires approval for direct npm/pip/cargo dependency additions and `Edit`/`Write` changes to dependency manifests/lockfiles. Clean locked restores such as `npm ci` and `pnpm install --frozen-lockfile` remain available. This is a deterministic command/file-tool guard, not a shell AST or complete defense against indirect package writes; host egress remains the independent boundary.
+- Added `docs/trusted-package-egress.md` and tests. Verification: `packages/agent-sdk` write-guard suite 3 passed; Agents `package-egress`, `ToolSandboxDO`, `specialized-workspaces`, `execution-ladder` suites: 4 files / 32 tests passed; Agents and Agent SDK typechecks passed. Wrangler 4.151.0 dry-run built all three configured images after the final code edits. No live Cloudflare egress/container test was run. Tests mock Container interception; provider TLS interception and real package-manager redirect chains remain unverified.
+- Changed: `packages/agent-sdk/src/avos-features.ts`, `packages/agent-sdk/src/write-guard-sentry.test.ts`, `workers/agents/src/script-engine/tool-surface.ts`, `workers/agents/src/script-engine/package-egress.ts` and test, `workers/agents/src/do/ToolSandboxDO.ts` and tests, `workers/agents/src/index.ts`, `workers/agents/container/start.sh`, `docs/trusted-package-egress.md`.
+- Task 07 is complete for the trusted-host route and approval gates. No human credentials/action are required for local validation. Task 08 is now primary; its look-ahead was read but is not implementation evidence.
 
 ## Exact next action
 
-Task 04 is pushed as `fd46de8`; task 05 audit is pushed as `0135402`. Task 06 is implemented and task 07 is current after its primary/read-ahead correction search. Inspect actual package installation, container network and project lockfile controls before implementing trusted-source constraints, and preserve the user's explicit no-proxy correction.
+Tasks 04–06 are pushed as `fd46de8`, `0135402`, and `8a4389b`. Task 07 implementation and local verification are complete; rerun Wrangler 4 dry-run after its final edits, commit/push task 07, then assess task 08 from primary lines 750–841 and its listed later amendments.

@@ -47,6 +47,7 @@ function runtime(store: ReturnType<typeof workspace>, deployedImage = image) {
   const transport = {
     get running() { return running; },
     start: vi.fn(() => { running = true; files.clear(); }),
+    interceptOutboundHttps: vi.fn(async () => undefined),
     destroy: vi.fn(async () => { running = false; }),
     inspect: vi.fn(async () => ({ image: deployedImage })),
     getTcpPort: () => ({ fetch: async (request: Request) => {
@@ -65,7 +66,7 @@ function runtime(store: ReturnType<typeof workspace>, deployedImage = image) {
       return Response.json({ ok: true });
     } }),
   };
-  const ctx = { container: transport, storage: {
+  const ctx = { container: transport, exports: { PackageEgress: () => ({ fetch: async (request: Request) => new Response(request.url) }) }, storage: {
     get: async (key: string) => records.get(key), put: async (key: string, value: unknown) => { records.set(key, structuredClone(value)); },
     delete: async (key: string) => records.delete(key), setAlarm: async () => undefined,
   } };

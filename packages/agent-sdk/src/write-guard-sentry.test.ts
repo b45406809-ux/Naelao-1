@@ -5,6 +5,17 @@ const requirement = { subject: "human", resource: "project" };
 const secret = "test-secret";
 
 describe("WriteGuard System One boundary", () => {
+  it("requires a scoped human grant to add dependencies while permitting clean locked installs", async () => {
+    await expect(enforceWriteGuardWithSentry("npm install express", undefined, secret, requirement)).rejects.toThrow("destructive_mutation_denied");
+    await expect(enforceWriteGuardWithSentry("pip install requests", undefined, secret, requirement)).rejects.toThrow("destructive_mutation_denied");
+    await expect(enforceWriteGuardWithSentry("cargo add serde", undefined, secret, requirement)).rejects.toThrow("destructive_mutation_denied");
+    await expect(enforceWriteGuardWithSentry("npm ci && npm install injected", undefined, secret, requirement)).rejects.toThrow("destructive_mutation_denied");
+    await expect(enforceWriteGuardWithSentry("python -m pip install requests", undefined, secret, requirement)).rejects.toThrow("destructive_mutation_denied");
+    await expect(enforceWriteGuardWithSentry('dependency_manifest_edit {"path":"package.json"}', undefined, secret, requirement)).rejects.toThrow("destructive_mutation_denied");
+    await expect(enforceWriteGuardWithSentry("npm ci", undefined, secret, requirement)).resolves.toBe(false);
+    await expect(enforceWriteGuardWithSentry("pnpm install --frozen-lockfile", undefined, secret, requirement)).resolves.toBe(false);
+  });
+
   it("never lets a sentry waive a deterministic destructive match", async () => {
     await expect(enforceWriteGuardWithSentry("git reset --hard", undefined, secret, requirement, {
       noul: async () => ({ kind: "noul", value: false, probability: 0.01, confidence: 0.99, provider: "jev", policyCode: "write_guard_ambiguous_mutation" }),

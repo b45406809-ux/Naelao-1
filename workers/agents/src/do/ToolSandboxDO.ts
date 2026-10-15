@@ -44,6 +44,7 @@ import { reserveWorkflowBudget, finalizeWorkflowBudget } from "../workflows/repo
 import { validateContainerScope, type ContainerInvocationScope } from "../script-engine/container-policy.js";
 import type { InstallationScope } from "@naelao/agent-sdk";
 import type { Env } from "../env.js";
+import { TRUSTED_PACKAGE_HOSTS } from "../script-engine/package-egress.js";
 
 // The container runtime surface exposed on DurableObjectState (cast to stay
 // version-agnostic across @cloudflare/workers-types).
@@ -53,6 +54,7 @@ interface ContainerPort {
 interface ContainerRuntime {
   readonly running: boolean;
   start(opts?: { enableInternet?: boolean }): void;
+  interceptOutboundHttps?(host: string, binding: ContainerPort): Promise<void>;
   getTcpPort(port: number): ContainerPort;
   inspect?(): Promise<{ image: string } | null>;
   destroy?(): Promise<void>;
@@ -177,6 +179,7 @@ export class ToolSandboxDO extends DurableObject {
     const raw = (this.ctx as unknown as { container?: ContainerRuntime }).container;
     if (!raw) return undefined;
     return { get running() { return raw.running; }, start: options => raw.start(options),
+      ...(raw.interceptOutboundHttps ? { interceptOutboundHttps: (host: string, binding: ContainerPort) => raw.interceptOutboundHttps!(host, binding) } : {}),
       ...(raw.inspect ? { inspect: () => raw.inspect!() } : {}), ...(raw.destroy ? { destroy: () => raw.destroy!() } : {}),
       ...(raw.stop ? { stop: (signal?: string) => raw.stop!(signal) } : {}),
       getTcpPort: port => ({ fetch: async request => {
@@ -664,6 +667,13 @@ export class ToolSandboxDO extends DurableObject {
       if (!container.destroy) return Response.json({ ok: false, error: "container_hard_stop_unsupported" }, { status: 503 });
       const meter = (await this.ctx.storage.get<ContainerMeter>("container_meter"))!;
       await this.ctx.storage.put("container_meter", { ...meter, allocatedAt: Date.now() });
+      // Container internet stays disabled. Native HTTPS interceptions forward only the
+      // exact package hosts; redirects to any other host cannot escape the boundary.
+      if (!container.interceptOutboundHttps) return Response.json({ ok: false, error: "package_egress_interception_unavailable" }, { status: 503 });
+      const exports = (this.ctx as unknown as { exports?: { PackageEgress?: (options: { props: Record<string, never> }) => ContainerPort } }).exports;
+      const packageEgress = exports?.PackageEgress?.({ props: {} });
+      if (!packageEgress) return Response.json({ ok: false, error: "package_egress_binding_unavailable" }, { status: 503 });
+      for (const host of TRUSTED_PACKAGE_HOSTS) await container.interceptOutboundHttps(host, packageEgress);
       container.start({ enableInternet: false });
       const token = await this.ctx.storage.get<string>("container_control_token") ?? Array.from(crypto.getRandomValues(new Uint8Array(32)), n => n.toString(16).padStart(2, "0")).join("");
       await this.ctx.storage.put("container_control_token", token);

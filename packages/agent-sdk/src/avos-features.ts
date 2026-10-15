@@ -207,7 +207,12 @@ export function requiresMutationGrant(command: string): boolean {
     }
   }
   return candidates.some((candidate) =>
-    DESTRUCTIVE_PATTERNS.some((pattern) => pattern.test(candidate))
+    DESTRUCTIVE_PATTERNS.some((pattern) => pattern.test(candidate)) ||
+    /\bdependency_manifest_edit\b/i.test(candidate) ||
+    // New third-party dependencies alter the project's supply-chain contract. Require the
+    // same scoped human grant used by other high-impact mutations. Frozen/clean installs
+    // remain available for dependencies already represented by the checked-in lockfile.
+    /\b(?:npm\s+(?:install|i)\b|pnpm\s+(?:add|dlx)\b|yarn\s+(?:add|dlx)\b|npx\s+(?!--no-install\b)|pip3?\s+install\s+(?![^;&|]*(?:^|\s)(?:-r|--requirement)(?:\s|=))[^;&|]+|python(?:3(?:\.\d+)?)?\s+-m\s+pip\s+install\s+(?![^;&|]*(?:^|\s)(?:-r|--requirement)(?:\s|=))[^;&|]+|cargo\s+(?:add|install)\b|bunx\b)/i.test(candidate)
   );
 }
 
