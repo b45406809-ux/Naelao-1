@@ -2,7 +2,7 @@
 
 Authority: `Tokenizers vs. Embedding Models Explained.continuation.messages.txt`. Follow `FOUNDRY-SPACE-PLATFORM-CONTINUATION-PLAN.md` in pair order and its bounded windows. Historical statuses do not count as fresh review. A look-ahead does not complete a pair. Record implementation and verification per message; do not mark the AI model reply as product authority without validation.
 
-Fresh audit began: 2026-10-15. Current next pair: Task 31 (Messages 61–62). Task 03 remains partially implemented; its remaining product actions are stated in its row and message notes. Tasks 05, 20, 25, and 26 have open dependencies recorded in their rows. Task 05 webhook causality remains pending concrete provider/domain event semantics.
+Fresh audit began: 2026-10-15. Current next pair: Task 32 (Messages 63–64). Task 03 remains partially implemented; its remaining product actions are stated in its row and message notes. Tasks 05, 20, 25, and 26 have open dependencies recorded in their rows. Task 05 webhook causality remains pending concrete provider/domain event semantics.
 
 | Pair | User message | AI message | Audit status | Current finding / evidence |
 |---:|---:|---:|---|---|
@@ -36,7 +36,7 @@ Fresh audit began: 2026-10-15. Current next pair: Task 31 (Messages 61–62). Ta
 | 28 | 4442 | 4445 | ASSESSED — retain local backend; provider docs unavailable | Local R2/RepositoryDO implementation and tests verified. Cloudflare Artifacts API, FUSE, pricing, jurisdiction, and limits are unverified because fresh official-doc requests returned HTTP 403. No provider migration justified. Source 4442–4647; lookahead 4648–4982. |
 | 29 | 4648 | 4651 | ASSESSED — CAS/branch isolation verified; no AST merge queue | Repository source/tests confirm serialized handling where available, expected-head/hash writes, branch refs, and 409 conflicts. Three per-Space active spawn trees is not a global worker cap; fanout differs by depth. No AST merge queue. Pricing/provider claims unverified (docs 403). Source 4648–4794; relevant Task21 context 3198–3284 checked. |
 | 30 | 4795 | 4798 | ASSESSED — existing Vectorize, browser, and email routing reused | Verified repo/config bindings and request paths. Vector filters remain application-level authorization adjuncts; Browser provider and domain routing need deployment setup. No Hyperdrive binding/use case. Exact current provider docs/cost claims unavailable (HTTP 403). Tasks31–32 own the specific email requirements. Source 4795–4982; lookahead 4983–5334. |
-| 31 | 4983 | 4986 | UNASSESSED | Bounded primary and amendments pending fresh audit. Source range: 4983–5145. |
+| 31 | 4983 | 4986 | PARTIAL — routed aliases exist; domain/mailbox self-service remains | Per-agent pseudonymous aliases and task reply addresses route through configured Cloudflare Email Routing; bounded task attachments stored in R2. Requires operator domain/routing setup, 100 active task-route cap per Space; aliases do not create a hosted mail service. Agent inbox attachments are text-only. Focused 20 tests pass; live routing unrun. Source 4983–5145; outbound amendment Task32 consulted. |
 | 32 | 5146 | 5149 | UNASSESSED | Bounded primary and amendments pending fresh audit. Source range: 5146–5259. |
 | 33 | 5260 | 5263 | UNASSESSED | Bounded primary and amendments pending fresh audit. Source range: 5260–5333. |
 
