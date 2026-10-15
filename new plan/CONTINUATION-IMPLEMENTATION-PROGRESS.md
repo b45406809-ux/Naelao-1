@@ -1,5 +1,11 @@
 # Continuation implementation progress
 
+## Current message-by-message continuation checkpoint (2026-10-15)
+
+- Branch `Mcbt5s-Backup-2`; Task19 (messages 37–38, source 2773–2977) freshly reviewed and committed/pushed as `PENDING_COMMIT` after checks. No code change was needed: `OwnerVoiceCall` is available inside the active Chat session; a short-lived owner/admin ticket starts Cloudflare Agents `withVoice`; each recognized utterance is routed to that same session's existing planner. Customer voice remains a separate agent. Direct SFU/realtime model wiring, archival recordings, phone ingress, latency and prices in the AI response are unverified proposals, not missing requirements for the user's direct in-thread planner question.
+- Task19 verification: Agents `voice.test.ts`, `planner-turn.test.ts`, and `voice-ticket.test.ts`: 3 files / 9 tests passed. This proves mocked/local paths, not deployed microphone/provider behavior.
+- Next primary: Task20, messages 39–40, source lines 2978–3067. Re-read in bounded windows; search later customer-bot/identity/rate-limit/cost amendments before deciding. Continue pair-by-pair and update this checkpoint and ledger, committing and pushing each pair.
+
 ## Unified attachment implementation checkpoint (2026-10-15)
 
 - Started the follow-up plan in `ATTACHMENT-MULTIMODAL-IMPLEMENTATION-PLAN.md`; this is an ongoing implementation, not a completed plan-only task.
