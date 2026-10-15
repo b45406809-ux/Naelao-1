@@ -3,6 +3,11 @@ main = "src/index.ts"
 compatibility_date = "2026-09-10"
 compatibility_flags = ["nodejs_compat"]
 
+# Optional Cloudflare Email Service outbound path. The code uses it only when
+# EMAIL_SENDING_DOMAIN names a domain onboarded for Email Sending in this account.
+[[send_email]]
+name = "EMAIL"
+
 [[durable_objects.bindings]]
 name = "NAELAO_AGENT_DO"
 class_name = "NaelaoAgentDO"
@@ -294,6 +299,9 @@ migrations_dir = "../../infra/migrations"
 [vars]
 DYNAMIC_PYTHON_ENABLED = "true"
 ENVIRONMENT = "development"
+# Set to a domain onboarded for Cloudflare Email Service sending. Empty disables the native
+# outbound path; arbitrary-recipient sends also require this account to be on Workers Paid.
+EMAIL_SENDING_DOMAIN = ""
 # CF AI Gateway — every LLM call routes through this (spec §15).
 # The real account id + gateway name (dash.cloudflare.com → account id in the URL/sidebar;
 # AI → AI Gateway → the gateway's own id).
@@ -340,8 +348,11 @@ binding = "AI"
 # staging silently falls back to the direct Anthropic API (resolveAnthropicUrl treats a missing
 # accountId the same as "placeholder") — the CF AI Gateway wiring in shared/ai-client.ts would
 # never actually activate.
-vars = { ENVIRONMENT = "staging", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3", NAELAO_GATEWAY_ID = "naelao-gateway" }
+vars = { ENVIRONMENT = "staging", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3", NAELAO_GATEWAY_ID = "naelao-gateway", EMAIL_SENDING_DOMAIN = "" }
 # CF_API_TOKEN is a secret (not a var) — set via `wrangler secret put CF_API_TOKEN --env staging`
+
+[[env.staging.send_email]]
+name = "EMAIL"
 
 [[env.staging.services]]
 binding = "KNOWLEDGE_WORKER"
@@ -369,8 +380,11 @@ service = "naelao-browser"
 
 [env.production]
 # See [env.staging]'s comment above — same wrangler vars-replacement gotcha.
-vars = { ENVIRONMENT = "production", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3", NAELAO_GATEWAY_ID = "naelao-gateway" }
+vars = { ENVIRONMENT = "production", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3", NAELAO_GATEWAY_ID = "naelao-gateway", EMAIL_SENDING_DOMAIN = "" }
 # CF_API_TOKEN is a secret (not a var) — set via `wrangler secret put CF_API_TOKEN --env production`
+
+[[env.production.send_email]]
+name = "EMAIL"
 
 [[env.production.services]]
 binding = "KNOWLEDGE_WORKER"

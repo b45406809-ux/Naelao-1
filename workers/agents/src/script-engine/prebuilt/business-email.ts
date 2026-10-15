@@ -2,15 +2,16 @@
  * business-email (spec §11) — a Naelao-provided business mailbox so the agent never has to
  * shop for a third-party email tool. Tier 2.
  *
- * TWO backends, chosen automatically:
- *   1. AgentMail (preferred when AGENTMAIL_API_KEY is configured on the agents worker): a REAL,
- *      inbound-capable mailbox on a domain AgentMail hosts — no Naelao DNS zone needed. Provision
- *      creates an inbox + inbound webhook; send goes out from that address; replies flow back into
- *      the business's channel inbox. Routed through the agents worker's own /internal/business-email/*
- *      routes, which hold the API key — the agent (this isolate) never sees it.
- *   2. Fallback (AgentMail not configured): the legacy behavior — a placeholder handle recorded in
- *      business_services + outbound-only send through the notifications worker (Resend). Honest:
- *      this address cannot RECEIVE, and provision says so.
+ * Outbound routes, chosen automatically:
+ *   1. AgentMail (preferred when a Space has a provisioned inbox): a real hosted address that can
+ *      send and receive. Replies return through the signed inbound webhook into the Space channel.
+ *   2. Cloudflare Email Service (when its binding and a verified sending domain are configured):
+ *      sends from a platform-owned address. It does not provision an inbox or imply inbound support.
+ *   3. Resend through the notifications worker as the existing last-resort route.
+ *
+ * The AgentMail API key and Cloudflare Email binding stay on the Agents Worker; agent scripts only
+ * reach the internal HMAC-checked route. Cloudflare arbitrary-recipient sending requires a verified
+ * domain and a Workers Paid plan.
  *
  * This is NOT a reserved capability — a builder may instead author their own email script — but the
  * Naelao service is the zero-config default.
@@ -79,7 +80,10 @@ async function provision(ctx: PrebuiltOpContext, a: Record<string, unknown>): Pr
       address: am["email"],
       inbound: Boolean(am["inbound_wired"]) || Boolean(am["already"]),
       status: "active",
-      provider: "agentmail",
+      provider: am["provider"] === "cloudflare_email" ? "cloudflare_email" : "agentmail",
+      ...(am["provider"] === "cloudflare_email"
+        ? { note: "This is an outbound sender alias; inbound email is not enabled for it." }
+        : {}),
     };
   }
   // Fallback: legacy placeholder (send-only). Say plainly it can't receive.
@@ -103,18 +107,22 @@ async function send(ctx: PrebuiltOpContext, a: Record<string, unknown>): Promise
     ...(a["html"] !== undefined ? { html: a["html"] } : {}),
   });
   if (am && am["ok"] === true) {
-    return { delivered: true, provider: "agentmail", message_id: am["messageId"] ?? null };
+    return {
+      delivered: true,
+      provider: am["provider"] === "cloudflare_email" ? "cloudflare_email" : "agentmail",
+      message_id: am["messageId"] ?? am["message_id"] ?? null,
+      ...(typeof am["from"] === "string" ? { from: am["from"] } : {}),
+    };
+  }
+  if (am?.["provider"] === "cloudflare_email" && am["configured"] === true) {
+    // A native send failure can have an ambiguous delivery result. Do not retry through Resend,
+    // which could send the same customer email twice and silently incur a second provider cost.
+    throw new Error(`Cloudflare Email Service send failed: ${String(am["error"] ?? "unknown error")}`);
   }
   // Fallback: outbound-only via the notifications worker (Resend).
   if (!ctx.env.notificationsWorker) {
     return { delivered: false, reason: "notifications worker binding not configured" };
   }
-  let from: string | undefined;
-  try {
-    const svc = (await bizService(ctx, "GET")) as { naelao_handle?: string } | null;
-    from = svc?.naelao_handle ?? undefined;
-  } catch { /* best-effort */ }
-
   const resp = await ctx.env.notificationsWorker.fetch(
     new Request("http://notifications-worker/internal/notify", {
       method: "POST",
@@ -125,12 +133,13 @@ async function send(ctx: PrebuiltOpContext, a: Record<string, unknown>): Promise
         to,
         subject: a["subject"],
         body: a["body"],
-        ...(from ? { from } : {}),
       }),
     })
   );
   if (!resp.ok) throw new Error(`email.send failed: ${resp.status}`);
-  return { delivered: true, provider: "resend", from: from ?? "platform" };
+  const result = await resp.json<{ delivered?: boolean; from?: string }>().catch(() => ({} as { delivered?: boolean; from?: string }));
+  if (result.delivered !== true) return { delivered: false, provider: "resend" };
+  return { delivered: true, provider: "resend", ...(result.from ? { from: result.from } : {}) };
 }
 
 function toSlug(input: string): string {

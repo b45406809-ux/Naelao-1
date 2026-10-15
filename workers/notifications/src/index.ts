@@ -407,7 +407,7 @@ function plainTextToHtml(text: string): string {
 async function sendEmailNow(
   env: NotificationsEnv,
   msg: Pick<NotificationMessage, "tenantId" | "userId" | "email" | "subject" | "html" | "templateId">
-): Promise<{ ok: boolean; status?: number }> {
+): Promise<{ ok: boolean; status?: number; from?: string }> {
   let subject = msg.subject ?? "(no subject)";
   let html = msg.html ?? "";
 
@@ -421,6 +421,7 @@ async function sendEmailNow(
 
   if (!msg.email) return { ok: false };
   html = plainTextToHtml(html);
+  const from = env.RESEND_FROM_ADDRESS || "onboarding@resend.dev";
 
   const res = await fetch(`${env.RESEND_API_URL}/emails`, {
     method: "POST",
@@ -429,7 +430,7 @@ async function sendEmailNow(
       Authorization: `Bearer ${env.RESEND_API_KEY}`,
     },
     body: JSON.stringify({
-      from: env.RESEND_FROM_ADDRESS || "onboarding@resend.dev",
+      from,
       to: msg.email,
       subject,
       html,
@@ -458,7 +459,7 @@ async function sendEmailNow(
       .run();
   }
 
-  return { ok: true };
+  return { ok: true, from };
 }
 
 // ── Queue consumer ────────────────────────────────────────────────────────────
@@ -655,7 +656,7 @@ app.post("/internal/notify", async (c) => {
     if (!result.ok) {
       return c.json({ delivered: false, channel: "email", status: result.status ?? null }, 502);
     }
-    return c.json({ delivered: true, channel: "email" });
+    return c.json({ delivered: true, channel: "email", from: result.from });
   }
 
   // Chat channels. Until now every one of these returned delivered:false unconditionally, which

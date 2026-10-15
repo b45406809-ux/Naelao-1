@@ -265,9 +265,13 @@ export interface AgentsEnv {
   /** Explicit app slug allowlist. An unset/empty list means no Pipedream app is advertised or selectable. */
   PIPEDREAM_SUPPORTED_APPS?: string;
   /** AgentMail — auto-provisioned, INBOUND-capable business mailbox (AgentMail hosts the domain,
-   *  so no Naelao DNS zone is needed — see channels/agentmail.ts). A Workers Secret; unset = the
-   *  whole email feature degrades honestly (send falls back to Resend, no inbound). */
+   *  so no Naelao DNS zone is needed — see channels/agentmail.ts). A Workers Secret; unset leaves
+   *  the optional Cloudflare Email Service and Resend outbound paths available, but no AgentMail inbox. */
   AGENTMAIL_API_KEY?: string;
+  /** Optional Cloudflare Email Service binding. It is used only when the sender domain below is
+   *  configured; arbitrary-recipient sending requires an onboarded domain and a Workers Paid plan. */
+  EMAIL?: SendEmail;
+  EMAIL_SENDING_DOMAIN?: string;
   /**
    * Scan-to-connect: Naelao's OWN app on each channel (launchpad/channel-pairing.ts). These are
    * PLATFORM credentials — one registration by us, then every business pairs by scanning a code
@@ -5025,12 +5029,12 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
   return c.json({ ok: true });
 });
 
-// ── AgentMail: auto-provisioned, inbound-capable business mailbox ─────────────
+// ── Hosted AgentMail mailbox integration ────────────────────────────────────
 // AgentMail hosts the receiving domain itself, so a business gets a REAL send+receive address
 // with no Naelao-owned DNS zone (the exact blocker the prior pass deferred on). The API key lives
-// ONLY on this worker (AGENTMAIL_API_KEY secret); the agent never sees it. Everything degrades
-// honestly when the key is unset — provision returns configured:false, send falls back to Resend
-// (handled by the business-email prebuilt), and no inbound webhook is ever registered.
+// ONLY on this worker (AGENTMAIL_API_KEY secret); the agent never sees the key. When unset, hosted
+// inbox provisioning is unavailable; outbound may still use the Cloudflare Email Service binding
+// or the notifications worker's Resend fallback.
 //
 // The Svix webhook secret is vaulted under its OWN credential name (distinct from the generic
 // channel gateway's Mailgun-style EMAIL_SIGNING_SECRET) so a business could in principle run both
@@ -5061,9 +5065,9 @@ async function resolveBusinessEmailService(
   }
 }
 
-// POST /internal/business-email/provision — create (or reuse) a real AgentMail inbox for a space,
-// register the inbound webhook, and persist the address + inbox id. Idempotent: if a record
-// already exists it's returned without creating a second inbox. HMAC-gated, tenant-matched.
+// POST /internal/business-email/provision — create or reuse the Space's AgentMail inbox, or return
+// its stable Cloudflare Email Service sender alias when only outbound sending is configured.
+// HMAC-gated and tenant-matched; the two provider modes remain explicitly distinguishable.
 app.post("/internal/business-email/provision", async (c) => {
   const headerTenantId = c.req.header("x-naelao-tenant-id") ?? "";
   const valid = await verifyInternalToken(c.req.header("x-naelao-internal-token"), headerTenantId, c.env.PLATFORM_SECRET);
@@ -5073,7 +5077,21 @@ app.post("/internal/business-email/provision", async (c) => {
   if (body.tenantId !== headerTenantId) return c.json({ error_code: "forbidden", message: "tenantId does not match token" }, 403);
 
   if (!agentMailConfigured(c.env)) {
-    return c.json({ ok: false, configured: false, message: "AgentMail is not configured on this deployment" });
+    const domain = normalizeEmailSendingDomain(c.env.EMAIL_SENDING_DOMAIN);
+    if (!c.env.EMAIL || !domain) {
+      return c.json({ ok: false, configured: false, message: "No hosted inbox provider is configured" });
+    }
+    const email = await cloudflareSpaceSenderAddress(body.tenantId, body.spaceId, domain);
+    // This is a stable outbound sender alias, not a hosted inbox. Persist it in the existing
+    // business_services row so email.status reports the same address that email.send uses.
+    if (c.env.SPACES_WORKER) {
+      await c.env.SPACES_WORKER.fetch(new Request("http://spaces-worker/internal/business-services", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": body.tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, body.tenantId) },
+        body: JSON.stringify({ space_id: body.spaceId, kind: "business_email", handle: email }),
+      })).catch(() => undefined);
+    }
+    return c.json({ ok: true, configured: true, provider: "cloudflare_email", email, inbound_wired: false });
   }
   // Idempotent: already provisioned → return the existing record, never mint a second inbox.
   const existing = await resolveBusinessEmailService(c.env, body.spaceId, body.tenantId);
@@ -5119,9 +5137,9 @@ app.post("/internal/business-email/provision", async (c) => {
   return c.json({ ok: true, configured: true, email: inbox.email, inbox_id: inbox.inboxId, inbound_wired: Boolean(webhookSecret) });
 });
 
-// POST /internal/business-email/send — send from a space's provisioned AgentMail inbox. Returns
-// configured:false when AgentMail is unset OR the space has no inbox, so the caller (the
-// business-email prebuilt) can fall back to the Resend/notifications path.
+// POST /internal/business-email/send — use the Space's AgentMail inbox when provisioned, then the
+// optional Cloudflare Email Service binding, else return configured:false so the business-email
+// prebuilt can use the existing Resend/notifications fallback.
 app.post("/internal/business-email/send", async (c) => {
   const headerTenantId = c.req.header("x-naelao-tenant-id") ?? "";
   const valid = await verifyInternalToken(c.req.header("x-naelao-internal-token"), headerTenantId, c.env.PLATFORM_SECRET);
@@ -5130,18 +5148,65 @@ app.post("/internal/business-email/send", async (c) => {
   if (!body?.spaceId || !body.tenantId || !body.to) return c.json({ error_code: "bad_request", message: "spaceId, tenantId, to are required" }, 400);
   if (body.tenantId !== headerTenantId) return c.json({ error_code: "forbidden", message: "tenantId does not match token" }, 403);
 
-  if (!agentMailConfigured(c.env)) return c.json({ ok: false, configured: false });
-  const svc = await resolveBusinessEmailService(c.env, body.spaceId, body.tenantId);
-  if (!svc) return c.json({ ok: false, configured: false, reason: "no_agentmail_inbox" });
+  // Email is network egress just like the notification-worker fallback. Check the Space policy
+  // before either provider is reached; a missing or unreadable policy fails closed.
+  if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, body.spaceId)) {
+    return c.json({ ok: false, configured: true, error_code: "air_gap_egress_denied" }, 403);
+  }
 
-  const result = await sendFromInbox(c.env, svc.inboxId, {
-    to: body.to,
-    ...(body.subject ? { subject: body.subject } : {}),
-    ...(body.text ? { text: body.text } : {}),
-    ...(body.html ? { html: body.html } : {}),
-  });
-  return c.json(result, result.ok ? 200 : 502);
+  if (agentMailConfigured(c.env)) {
+    const svc = await resolveBusinessEmailService(c.env, body.spaceId, body.tenantId);
+    if (svc) {
+      const result = await sendFromInbox(c.env, svc.inboxId, {
+        to: body.to,
+        ...(body.subject ? { subject: body.subject } : {}),
+        ...(body.text ? { text: body.text } : {}),
+        ...(body.html ? { html: body.html } : {}),
+      });
+      return c.json({ ...result, provider: "agentmail" }, result.ok ? 200 : 502);
+    }
+  }
+
+  const domain = normalizeEmailSendingDomain(c.env.EMAIL_SENDING_DOMAIN);
+  if (c.env.EMAIL && domain) {
+    try {
+      const from = await cloudflareSpaceSenderAddress(body.tenantId, body.spaceId, domain);
+      const result = await c.env.EMAIL.send({
+        from,
+        to: body.to,
+        subject: body.subject || "(no subject)",
+        ...(body.text ? { text: body.text } : {}),
+        ...(body.html ? { html: body.html } : {}),
+      });
+      return c.json({ ok: true, configured: true, provider: "cloudflare_email", messageId: result.messageId, from });
+    } catch (error) {
+      // Do not silently switch providers after a native send error: the delivery result may be
+      // ambiguous, and an automatic Resend fallback could duplicate a customer email.
+      return c.json({
+        ok: false,
+        configured: true,
+        provider: "cloudflare_email",
+        error: error instanceof Error ? error.message.slice(0, 300) : "Cloudflare Email Service send failed",
+      }, 502);
+    }
+  }
+
+  return c.json({ ok: false, configured: false, reason: "no_outbound_email_provider" });
 });
+
+function normalizeEmailSendingDomain(value: string | undefined): string | null {
+  const domain = value?.trim().toLowerCase().replace(/\.$/, "");
+  if (!domain || domain.length > 253 || !domain.includes(".")) return null;
+  const labels = domain.split(".");
+  if (labels.some((label) => !label || label.length > 63 || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label))) return null;
+  return domain;
+}
+
+async function cloudflareSpaceSenderAddress(tenantId: string, spaceId: string, domain: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${tenantId}\0${spaceId}`));
+  const localPart = [...new Uint8Array(digest).slice(0, 8)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `space-${localPart}@${domain}`;
+}
 
 // POST /channels/email/agentmail-inbound/:spaceId — public inbound webhook for AgentMail
 // deliveries. UNAUTHENTICATED at the HTTP layer (like the generic channel gateway) — the Svix

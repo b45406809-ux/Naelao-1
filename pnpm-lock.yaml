@@ -693,8 +693,8 @@ importers:
         version: 5.9.3
     devDependencies:
       '@cloudflare/workers-types':
-        specifier: ^4.20241205.0
-        version: 4.20260623.1
+        specifier: ^5.20261006.1
+        version: 5.20261006.1
       esbuild:
         specifier: 0.24.2
         version: 0.24.2
@@ -702,8 +702,8 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@26.0.0)
       wrangler:
-        specifier: ^3.91.0
-        version: 3.114.17(@cloudflare/workers-types@4.20260623.1)
+        specifier: ^4.149.0
+        version: 4.149.0(@cloudflare/workers-types@5.20261006.1)(@types/node@26.0.0)
 
   workers/analytics:
     dependencies:
@@ -1675,6 +1675,9 @@ packages:
 
   '@cloudflare/workers-types@4.20260623.1':
     resolution: {integrity: sha512-J/0POl0HeLepbwDE5Yx5c7jQrHFkvCEFu3TS+TQsDDlg/vTs5og7wdGP6eNGXOAntgWUrjcvvKTmVLTP7OrnAg==}
+
+  '@cloudflare/workers-types@5.20261006.1':
+    resolution: {integrity: sha512-5OclwQK1d8f5LCPvOlyldC3ryKLUa4nLXegcgPZeUxAPudczQ9xujJDdpS2Tenp7JqbBLW3OgGciHJmuc7QShg==}
 
   '@cspotcode/source-map-support@0.8.1':
     resolution: {integrity: sha512-IchNf6dN4tHoMFIn/7OE8LWZ19Y6q/67Bmf6vnGREv8RSbBVb9LPJxEcnwrcwX6ixSvaiGoomAUvu4YSxXrVgw==}
@@ -4814,6 +4817,8 @@ snapshots:
 
   '@cloudflare/workers-types@4.20260623.1': {}
 
+  '@cloudflare/workers-types@5.20261006.1': {}
+
   '@cspotcode/source-map-support@0.8.1':
     dependencies:
       '@jridgewell/trace-mapping': 0.3.9
@@ -7704,6 +7709,24 @@ snapshots:
       workerd: 1.20261006.1
     optionalDependencies:
       '@cloudflare/workers-types': 4.20260623.1
+      fsevents: 2.3.3
+    transitivePeerDependencies:
+      - '@types/node'
+      - bufferutil
+      - utf-8-validate
+
+  wrangler@4.149.0(@cloudflare/workers-types@5.20261006.1)(@types/node@26.0.0):
+    dependencies:
+      '@cloudflare/kv-asset-handler': 0.5.0
+      '@cloudflare/unenv-preset': 2.16.2(unenv@2.0.0-rc.24)(workerd@1.20261006.1)
+      blake3-wasm: 2.1.5
+      esbuild: 0.28.2
+      miniflare: 5.20261006.1-alpha(@types/node@26.0.0)
+      path-to-regexp: 6.3.0
+      unenv: 2.0.0-rc.24
+      workerd: 1.20261006.1
+    optionalDependencies:
+      '@cloudflare/workers-types': 5.20261006.1
       fsevents: 2.3.3
     transitivePeerDependencies:
       - '@types/node'
