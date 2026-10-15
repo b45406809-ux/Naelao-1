@@ -37,6 +37,7 @@ import { isAllowedModel } from "@naelao/billing-core";
 import { evaluationPasses, transitionCustomModelLifecycle, validateAdapterEvaluation, validateConsentAttestation, type CustomModelLifecycleAction } from "./custom-model-lifecycle.js";
 import { decodeSpaceArchive, encodeSpaceArchive, spaceArchiveChecksum, topologicalRestoreOrder, type SpaceArchivePayload } from "./space-backup.js";
 import { fingerprintRetainedMessages, forecastSpaceStorage, retainedMessageBytes, type RetainedMessageRow } from "./space-retention.js";
+import { decryptTestSet, encryptTestSet, validateCustomModelTestSet } from "./custom-model-test-vault.js";
 
 function todaySpendKey(): string {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
@@ -1919,6 +1920,19 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 76,
+    description: "encrypted Space-scoped custom-model evaluation test-set vault",
+    up: `
+      CREATE TABLE custom_model_test_sets (
+        space_id TEXT NOT NULL, model_id TEXT NOT NULL, test_set_id TEXT NOT NULL,
+        version TEXT NOT NULL, case_count INTEGER NOT NULL CHECK (case_count BETWEEN 1 AND 20),
+        ciphertext TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        PRIMARY KEY(space_id,model_id,test_set_id),
+        FOREIGN KEY(space_id,model_id) REFERENCES custom_model_lifecycle(space_id,model_id) ON DELETE CASCADE
+      );
+    `,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -3192,6 +3206,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && url.pathname === "/intent-deduplicate") {
         return this.checkActiveIntentDeduplication(request);
       }
+      const testSetMatch = url.pathname.match(/^\/custom-models\/(custom%2F|custom\/)([^/]+)\/test-sets$/i);
+      if (testSetMatch) {
+        const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+        if (!tenantId || !(await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))) return Response.json({ error_code: "forbidden" }, { status: 403 });
+        const modelId = `custom/${decodeURIComponent(testSetMatch[2] ?? "")}`;
+        return this.handleCustomModelTestSets(url.searchParams.get("space_id") ?? "", tenantId, modelId, request);
+      }
       const lifecycleMatch = url.pathname.match(/^\/custom-models\/(custom%2F|custom\/)([^/]+)\/lifecycle$/i);
       if (lifecycleMatch) {
         const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
@@ -3282,6 +3303,50 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
   }
 
+  private async handleCustomModelTestSets(spaceId: string, tenantId: string, modelId: string, request: Request): Promise<Response> {
+    if (!spaceId || !/^custom\/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/.test(modelId)) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const lifecycle = queryOne<{ status: string }>(this.ctx.storage.sql as never,
+      "SELECT status FROM custom_model_lifecycle WHERE space_id=? AND model_id=?", spaceId, modelId);
+    if (!lifecycle || !["imported", "evaluation_failed", "evaluated", "active"].includes(lifecycle.status)) return Response.json({ error_code: "adapter_import_required" }, { status: 409 });
+    if (request.method === "GET") {
+      const id = new URL(request.url).searchParams.get("test_set_id");
+      if (!id) return Response.json({ testSets: queryAll<{ id: string; version: string; case_count: number; created_by: string; updated_at: string }>(this.ctx.storage.sql as never,
+        "SELECT test_set_id AS id,version,case_count,created_by,updated_at FROM custom_model_test_sets WHERE space_id=? AND model_id=? ORDER BY updated_at DESC", spaceId, modelId) });
+      const row = queryOne<{ version: string; ciphertext: string }>(this.ctx.storage.sql as never,
+        "SELECT version,ciphertext FROM custom_model_test_sets WHERE space_id=? AND model_id=? AND test_set_id=?", spaceId, modelId, id);
+      if (!row) return Response.json({ error_code: "test_set_not_found" }, { status: 404 });
+      try { return Response.json({ testSet: await decryptTestSet(row.ciphertext, this.env.PLATFORM_SECRET, tenantId, spaceId, id, row.version) }); }
+      catch (error) { return Response.json({ error_code: error instanceof Error ? error.message : "test_set_unavailable" }, { status: 500 }); }
+    }
+    if (request.method !== "POST") return Response.json({ error_code: "method_not_allowed" }, { status: 405 });
+    const body = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+    const actorId = typeof body.actorId === "string" ? body.actorId : "";
+    if (!actorId || actorId.length > 128) return Response.json({ error_code: "verified_actor_required" }, { status: 400 });
+    if (body.action === "delete") {
+      const id = typeof body.testSetId === "string" ? body.testSetId : "";
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id)) return Response.json({ error_code: "test_set_id_invalid" }, { status: 400 });
+      const deleted = this.ctx.storage.sql.exec("DELETE FROM custom_model_test_sets WHERE space_id=? AND model_id=? AND test_set_id=?", spaceId, modelId, id).rowsWritten;
+      if (!deleted) return Response.json({ error_code: "test_set_not_found" }, { status: 404 });
+      execute(this.ctx.storage.sql as never, "INSERT INTO custom_model_lifecycle_events (id,space_id,model_id,action,actor_id,details_json,created_at) VALUES (?,?,?,?,?,?,?)",
+        crypto.randomUUID(), spaceId, modelId, "delete_test_set", actorId, JSON.stringify({ testSetId: id }), new Date().toISOString());
+      return Response.json({ deleted: true, testSetId: id });
+    }
+    if (!["imported", "evaluation_failed"].includes(lifecycle.status)) return Response.json({ error_code: "test_set_write_closed", message: "Test sets are immutable after evaluation begins; revoke or roll back before creating a new evaluation version." }, { status: 409 });
+    const set = body.testSet;
+    if (body.action !== "save" || !validateCustomModelTestSet(set)) return Response.json({ error_code: "test_set_invalid_or_over_limit" }, { status: 400 });
+    const typedSet = set as import("./custom-model-test-vault.js").CustomModelTestSet;
+    let ciphertext: string;
+    try { ciphertext = await encryptTestSet(typedSet, this.env.PLATFORM_SECRET, tenantId, spaceId); }
+    catch (error) { return Response.json({ error_code: error instanceof Error ? error.message : "test_set_encryption_failed" }, { status: 400 }); }
+    const now = new Date().toISOString();
+    execute(this.ctx.storage.sql as never, `INSERT INTO custom_model_test_sets (space_id,model_id,test_set_id,version,case_count,ciphertext,created_by,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(space_id,model_id,test_set_id) DO UPDATE SET version=excluded.version,case_count=excluded.case_count,ciphertext=excluded.ciphertext,created_by=excluded.created_by,updated_at=excluded.updated_at`,
+      spaceId, modelId, typedSet.id, typedSet.version, typedSet.cases.length, ciphertext, actorId, now, now);
+    execute(this.ctx.storage.sql as never, "INSERT INTO custom_model_lifecycle_events (id,space_id,model_id,action,actor_id,details_json,created_at) VALUES (?,?,?,?,?,?,?)",
+      crypto.randomUUID(), spaceId, modelId, "save_test_set", actorId, JSON.stringify({ testSetId: typedSet.id, version: typedSet.version, caseCount: typedSet.cases.length }), now);
+    return Response.json({ saved: true, testSetId: typedSet.id, version: typedSet.version, caseCount: typedSet.cases.length });
+  }
+
   private async handleCustomModelLifecycle(spaceId: string, modelId: string, request: Request): Promise<Response> {
     if (!spaceId || !/^custom\/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/.test(modelId)) return Response.json({ error_code: "bad_request" }, { status: 400 });
     if (request.method === "GET") {
@@ -3348,6 +3413,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const evaluation = body["evaluation"] && typeof body["evaluation"] === "object" ? body["evaluation"] as Parameters<typeof validateAdapterEvaluation>[0] : {};
       const invalid = validateAdapterEvaluation(evaluation, manifest.base_model);
       if (invalid) return Response.json({ error_code: invalid }, { status: 400 });
+      const testSet = queryOne<{ case_count: number }>(this.ctx.storage.sql as never,
+        "SELECT case_count FROM custom_model_test_sets WHERE space_id=? AND model_id=? AND version=?", spaceId, modelId, evaluation.testSetVersion);
+      if (!testSet || testSet.case_count !== evaluation.sampleCount) return Response.json({ error_code: "evaluation_test_set_mismatch", message: "Save an encrypted test set with this exact version and evaluate every case before recording results." }, { status: 409 });
       const passed = evaluationPasses(evaluation as import("./custom-model-lifecycle.js").AdapterEvaluation);
       next = transitionCustomModelLifecycle(current.status, action, passed);
       if (!next) return Response.json({ error_code: "invalid_transition", status: current.status }, { status: 409 });
@@ -3389,6 +3457,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           execute(this.ctx.storage.sql as never, "DELETE FROM custom_model_manifests WHERE space_id=? AND model_id=?", spaceId, modelId);
         }
         if (action === "delete") {
+          execute(this.ctx.storage.sql as never, "DELETE FROM custom_model_test_sets WHERE space_id=? AND model_id=?", spaceId, modelId);
           execute(this.ctx.storage.sql as never, `UPDATE custom_model_lifecycle SET status='deleted',provenance='',purpose='',consent_actor=NULL,consented_at=NULL,consent_facts_json='{}',evaluation_test_set=NULL,evaluation_sample_count=NULL,evaluation_score=NULL,evaluation_threshold=NULL,evaluation_baseline=NULL,evaluation_passed=0,evaluator_id=NULL,evaluated_at=NULL,deleted_at=?,updated_at=? WHERE space_id=? AND model_id=?`, now, now, spaceId, modelId);
         } else {
           execute(this.ctx.storage.sql as never, "UPDATE custom_model_lifecycle SET status=?,revoked_at=?,updated_at=? WHERE space_id=? AND model_id=?", next, now, now, spaceId, modelId);

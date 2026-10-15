@@ -35,13 +35,24 @@ describe("SpaceDO custom model lifecycle", () => {
     const importModel = async (model: string, adapterId: string) => {
       expect((await send(model, { action: "attest_consent", consent })).status).toBe(200);
       expect((await send(model, { action: "import_adapter", baseModel, loraAdapterId: adapterId, providerEvidence: "Owner attests provider-issued adapter reference" })).status).toBe(200);
+      const testSet = { id: "support", version: "support-v4", cases: Array.from({ length: 20 }, (_, i) => ({ input: `Question ${i}`, expected: `Answer ${i}` })) };
+      const save = await testSets(model, "POST", { action: "save", testSet });
+      expect(save.status, JSON.stringify(await save.clone().json())).toBe(200);
     };
     const evaluate = (model: string, score = 0.92) => send(model, {
       action: "record_evaluation",
-      evaluation: { baseModel, testSetVersion: "support-v4", sampleCount: 40, score, threshold: 0.85, baselineScore: 0.88 },
+      evaluation: { baseModel, testSetVersion: "support-v4", sampleCount: 20, score, threshold: 0.85, baselineScore: 0.88 },
     });
+    const testSets = async (model: string, method: "GET" | "POST", body?: Record<string, unknown>, query = "") => space.fetch(new Request(
+      `http://space/custom-models/${encodeURIComponent(model)}/test-sets?space_id=space-1${query}`,
+      { method, headers: await headers(method === "POST"), ...(body ? { body: JSON.stringify({ actorId: "owner-1", ...body }) } : {}) },
+    ));
 
     await importModel("custom/one", "adapter/one");
+    const stored = storage.sql.exec<{ ciphertext: string }>("SELECT ciphertext FROM custom_model_test_sets WHERE space_id='space-1' AND model_id='custom/one'").toArray()[0];
+    expect(stored?.ciphertext).not.toContain("Question 0");
+    await expect((await testSets("custom/one", "GET", undefined, "&test_set_id=support")).json()).resolves.toMatchObject({ testSet: { id: "support", version: "support-v4", cases: expect.arrayContaining([{ input: "Question 0", expected: "Answer 0" }]) } });
+    await expect((await testSets("custom/one", "GET")).json()).resolves.toMatchObject({ testSets: [{ id: "support", version: "support-v4", case_count: 20 }] });
     await expect((await evaluate("custom/one", 0.80)).json()).resolves.toMatchObject({ status: "evaluation_failed", evaluation_passed: false });
     expect((await send("custom/one", { action: "approve_activation" })).status).toBe(409);
     expect((await adapter("custom/one")).status).toBe(404);
@@ -63,5 +74,6 @@ describe("SpaceDO custom model lifecycle", () => {
     await expect((await space.fetch(new Request("http://space/custom-models/custom%2Ftwo/lifecycle?space_id=space-1", { headers: await headers() }))).json()).resolves.toMatchObject({ status: "deleted", provenance: "", evaluation_passed: 0 });
     expect((await send("custom/three", { action: "submit_training" })).status).toBe(501);
     expect((await adapter("custom/one")).status).toBe(404);
+    expect(storage.sql.exec("SELECT test_set_id FROM custom_model_test_sets WHERE model_id='custom/two'").toArray()).toHaveLength(0);
   });
 });

@@ -1,7 +1,7 @@
 # Remaining gaps implementation plan
 
 Branch: `Mcbt5s-Backup-2`  
-Status: implementation in progress; workstreams 1–3 are locally verified, workstreams 4–6 are partial, and workstream 5's local lifecycle work is verified with external/provider gaps remaining.
+Status: implementation in progress; workstreams 1–3 are locally verified, workstreams 4–6 are partial, workstream 5's encrypted test-set vault and lifecycle are locally verified, and workstream 7's live acceptance is blocked on account configuration.
 Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, reconciled against the current repository. Existing Foundry channel invocation, glossary, translation draft, model recommendations, owner voice, task-scoped email replies, and browser Web Push are present locally. Do not reopen them as missing features; their live/deployment checks remain open.
 
 ## Working rules
@@ -63,7 +63,7 @@ Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, recon
 
 ### 5. LoRA consent, evaluation, and lifecycle
 
-**Status:** locally implemented and verified for imported adapters, consent/provenance, owner-recorded evaluation, approval, rollback, revocation, and deletion; an owner/admin Settings interface now exposes those lifecycle actions. The interface accurately describes evaluation as owner-attested. An in-product test-set vault and platform-run evaluation harness are still missing. Provider training remains disabled and live adapter compatibility is unverified.
+**Status:** locally implemented and verified for imported adapters, consent/provenance, encrypted versioned test-set storage, version/sample-count-matched owner-attested evaluation, approval, rollback, revocation, and deletion; owner/admin Settings controls expose lifecycle and vault operations. The interface accurately describes evaluation as owner-attested. A platform-run evaluation harness remains unavailable because no verified provider adapter execution contract is configured. Provider training remains disabled and live adapter compatibility is unverified.
 
 1. Verify current official Workers AI fine-tuning/adapter support and the exact compatible base-model/adapter contract. Do not assume that accepting an adapter identifier proves compatibility or availability.
 2. Model an explicit lifecycle: draft, consent/data eligibility check, training or external import, evaluation, owner approval, active, revoked, and deleted. Record Space, base model, provider evidence, data provenance, purpose, evaluator, and timestamps.
@@ -91,7 +91,7 @@ Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, recon
 
 Run only after code and local integration checks are complete. No secret belongs in this file or Git.
 
-- Apply deployed D1 migrations 0093 through 0098 in order and verify replay-safe schema state; verify SpaceDO migrations v72–v75 and ProductUserDO migration v4 after deployment.
+- Apply deployed D1 migrations 0093 through 0098 in order and verify replay-safe schema state; verify SpaceDO migrations v72–v76 and ProductUserDO migration v4 after deployment.
 - Configure an owned Cloudflare Email Routing ingress domain and verified sending domain, then test inbound task replies and outbound delivery.
 - Configure Web Push VAPID public/private/subject values on Notifications Worker environments; test subscription, delivery, unsubscribe, and expired endpoint cleanup.
 - Configure any selected voice/model/LoRA provider bindings only after the corresponding implementation gates pass; validate Twilio credentials, verify/import a controlled number, test signed call/consent/status callbacks, and verify spend caps and release cleanup.
@@ -106,4 +106,4 @@ After all workstreams above are complete, compare each remaining task in `CONTIN
 
 ## Current next action
 
-Workstreams 1 and 2 are implemented and locally verified. Workstream 3 now has an import-based Twilio lifecycle and signed customer ingress locally verified. Continue the sequence with workstream 4 while carrying forward workstream 3's exact open items: no Naelao number search/purchase UI, no live account/PSTN validation, and no verified dollar reservation for account-billed Workers AI usage. Never mark these as passed from local tests.
+Workstreams 1–3 are locally verified. Workstream 4 remains partial: exact model entitlement preflight, channel preferences, and verified modality routing still need implementation. Workstream 5 now has an encrypted Space-scoped test-set vault and only accepts evaluation records that match a stored set version and full case count; actual model scoring remains blocked on a verified provider execution contract. Continue with workstream 6's locally actionable archive resumption/key rotation gaps, then return to workstream 4 and the provider-independent portions of workstreams 2 and 3. Live acceptance remains unrun. Never mark external checks passed from local tests.

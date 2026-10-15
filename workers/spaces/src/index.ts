@@ -1149,6 +1149,27 @@ app.get("/spaces/:spaceId/custom-models/:modelId/lifecycle", async (c) => {
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   return stub.fetch(new Request(`http://space/custom-models/${encodeURIComponent(c.req.param("modelId"))}/lifecycle?space_id=${encodeURIComponent(spaceId)}`));
 });
+app.get("/spaces/:spaceId/custom-models/:modelId/test-sets", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "", spaceId = c.req.param("spaceId");
+  if (!await canManageCustomModel(c, spaceId)) return c.json({ error_code: "forbidden", message: "Owner or admin role required" }, 403);
+  const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id=? AND tenant_id=? AND status!='deleted'").bind(spaceId, tenantId).first();
+  if (!owned) return c.json({ error_code: "not_found" }, 404);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const target = new URL(`http://space/custom-models/${encodeURIComponent(c.req.param("modelId"))}/test-sets?space_id=${encodeURIComponent(spaceId)}`);
+  const id = c.req.query("test_set_id"); if (id) target.searchParams.set("test_set_id", id);
+  return stub.fetch(new Request(target, { headers: await spaceModelInternalHeaders(c.env.PLATFORM_SECRET, tenantId) }));
+});
+app.post("/spaces/:spaceId/custom-models/:modelId/test-sets", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "", spaceId = c.req.param("spaceId"), actorId = c.req.header("x-naelao-user-id") ?? "";
+  if (!await canManageCustomModel(c, spaceId)) return c.json({ error_code: "forbidden", message: "Owner or admin role required" }, 403);
+  const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id=? AND tenant_id=? AND status!='deleted'").bind(spaceId, tenantId).first();
+  if (!owned) return c.json({ error_code: "not_found" }, 404);
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  return stub.fetch(new Request(`http://space/custom-models/${encodeURIComponent(c.req.param("modelId"))}/test-sets?space_id=${encodeURIComponent(spaceId)}`, {
+    method: "POST", headers: await spaceModelInternalHeaders(c.env.PLATFORM_SECRET, tenantId, { "content-type": "application/json" }), body: JSON.stringify({ ...body, actorId }),
+  }));
+});
 
 // Space data lifecycle controls are owner/admin-only. The identity used for audit is derived
 // from verified request claims; the browser cannot select an actor or tenant.

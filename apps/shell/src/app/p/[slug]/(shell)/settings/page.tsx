@@ -60,6 +60,9 @@ import {
   type ConnectorInfo,
   type ByokProviderStatus,
   getCustomModelLifecycle,
+  listCustomModelTestSets,
+  saveCustomModelTestSet,
+  deleteCustomModelTestSet,
   updateCustomModelLifecycle,
   type CustomModelLifecycle,
 } from "@/lib/api";
@@ -645,6 +648,8 @@ function AiTab({
   const [sampleCount, setSampleCount] = React.useState("20");
   const [evaluationScore, setEvaluationScore] = React.useState("0.8");
   const [evaluationThreshold, setEvaluationThreshold] = React.useState("0.8");
+  const [testSetDraft, setTestSetDraft] = React.useState('{\n  "id": "support-v1",\n  "version": "v1",\n  "cases": [{ "input": "Example question", "expected": "Expected safe answer" }]\n}');
+  const [savedTestSets, setSavedTestSets] = React.useState<Array<{ id: string; version: string; case_count: number }>>([]);
 
   const refreshByok = React.useCallback(async () => {
     if (!creds) return;
@@ -660,7 +665,11 @@ function AiTab({
   async function loadAdapter() {
     if (!creds || !/^custom\/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/.test(adapterModelId.trim())) return;
     setAdapterBusy(true); setAdapterError(null); setAdapterMessage(null);
-    try { setAdapter(await getCustomModelLifecycle(spaceId, adapterModelId.trim(), creds)); }
+    try {
+      setAdapter(await getCustomModelLifecycle(spaceId, adapterModelId.trim(), creds));
+      const result = await listCustomModelTestSets(spaceId, adapterModelId.trim(), creds).catch(() => ({ testSets: [] }));
+      setSavedTestSets(result.testSets);
+    }
     catch (err) { setAdapterError(err instanceof Error ? err.message : "Unable to load adapter lifecycle"); }
     finally { setAdapterBusy(false); }
   }
@@ -896,6 +905,27 @@ function AiTab({
             <Button disabled={adapterBusy || !adapterBaseModel || adapterId.length < 2 || providerEvidence.trim().length < 8} onClick={() => void adapterAction("import_adapter", { baseModel: adapterBaseModel, loraAdapterId: adapterId, providerEvidence })}>Record existing adapter import</Button>
           </>}
           {canManage && ["imported", "evaluation_failed"].includes(adapter?.status ?? "") && <>
+            <div style={{ fontSize: 12, color: "var(--text3)" }}>Evaluation examples are encrypted at rest in this Space. Saving a set does not run the adapter; evaluation scores below remain owner-attested until a verified provider runner is available.</div>
+            <label style={{ fontSize: 12 }}>Versioned evaluation set (JSON)<textarea value={testSetDraft} onChange={e => setTestSetDraft(e.target.value)} rows={7} spellCheck={false} style={{ display: "block", width: "100%", marginTop: 5, fontFamily: "monospace", fontSize: 12 }} /></label>
+            <Button disabled={adapterBusy || !creds} onClick={async () => {
+              if (!creds) return;
+              setAdapterBusy(true); setAdapterError(null); setAdapterMessage(null);
+              try {
+                const parsed = JSON.parse(testSetDraft) as { id: string; version: string; cases: Array<{ input: string; expected: string }> };
+                await saveCustomModelTestSet(spaceId, adapterModelId.trim(), creds, parsed);
+                setSavedTestSets((await listCustomModelTestSets(spaceId, adapterModelId.trim(), creds)).testSets);
+                setTestSetVersion(parsed.version); setSampleCount(String(parsed.cases.length));
+                setAdapterMessage("Encrypted test set saved. Evaluation still runs externally until a verified provider runner is available.");
+              } catch (err) { setAdapterError(err instanceof Error ? err.message : "Invalid test set JSON"); }
+              finally { setAdapterBusy(false); }
+            }}>Save encrypted test set</Button>
+            {savedTestSets.map(set => <div key={set.id} className="settings-row"><span>{set.id} · {set.version} · {set.case_count} cases</span><Button disabled={adapterBusy || !creds} onClick={async () => {
+              if (!creds) return;
+              setAdapterBusy(true);
+              try { await deleteCustomModelTestSet(spaceId, adapterModelId.trim(), creds, set.id); setSavedTestSets((await listCustomModelTestSets(spaceId, adapterModelId.trim(), creds)).testSets); }
+              catch (err) { setAdapterError(err instanceof Error ? err.message : "Unable to delete test set"); }
+              finally { setAdapterBusy(false); }
+            }}>Delete</Button></div>)}
             <div style={{ fontSize: 12, color: "var(--text3)" }}>Enter results from an evaluation you ran externally. These owner-attested values will gate activation but are not verified by Naelao.</div>
             <label style={{ fontSize: 12 }}>Versioned test-set ID<FormInput value={testSetVersion} onChange={e => setTestSetVersion(e.target.value)} /></label>
             <label style={{ fontSize: 12 }}>Sample count<FormInput type="number" min="1" max="10000" value={sampleCount} onChange={e => setSampleCount(e.target.value)} /></label>

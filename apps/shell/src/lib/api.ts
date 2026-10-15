@@ -78,6 +78,19 @@ export function getCustomModelLifecycle(spaceId: string, modelId: string, sessio
 export function updateCustomModelLifecycle(spaceId: string, modelId: string, session: SessionCredentials, body: Record<string, unknown>) {
   return apiFetch<Record<string, unknown>>(`/v1/spaces/${encodeURIComponent(spaceId)}/custom-models/${encodeURIComponent(modelId)}/lifecycle`, { method: "POST", session, body: JSON.stringify(body) });
 }
+export interface CustomModelTestSet { id: string; version: string; cases: Array<{ input: string; expected: string }>; }
+export function listCustomModelTestSets(spaceId: string, modelId: string, session: SessionCredentials) {
+  return apiFetch<{ testSets: Array<{ id: string; version: string; case_count: number; created_by: string; updated_at: string }> }>(`/v1/spaces/${encodeURIComponent(spaceId)}/custom-models/${encodeURIComponent(modelId)}/test-sets`, { session, cache: "no-store" });
+}
+export function getCustomModelTestSet(spaceId: string, modelId: string, testSetId: string, session: SessionCredentials) {
+  return apiFetch<{ testSet: CustomModelTestSet }>(`/v1/spaces/${encodeURIComponent(spaceId)}/custom-models/${encodeURIComponent(modelId)}/test-sets?test_set_id=${encodeURIComponent(testSetId)}`, { session, cache: "no-store" });
+}
+export function saveCustomModelTestSet(spaceId: string, modelId: string, session: SessionCredentials, testSet: CustomModelTestSet) {
+  return apiFetch<Record<string, unknown>>(`/v1/spaces/${encodeURIComponent(spaceId)}/custom-models/${encodeURIComponent(modelId)}/test-sets`, { method: "POST", session, body: JSON.stringify({ action: "save", testSet }) });
+}
+export function deleteCustomModelTestSet(spaceId: string, modelId: string, session: SessionCredentials, testSetId: string) {
+  return apiFetch<Record<string, unknown>>(`/v1/spaces/${encodeURIComponent(spaceId)}/custom-models/${encodeURIComponent(modelId)}/test-sets`, { method: "POST", session, body: JSON.stringify({ action: "delete", testSetId }) });
+}
 // ── Public, pre-login lookups ────────────────────────────────────────────────
 
 export interface ProductBySlug {
