@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fetchOpenRouterCatalog, isOpenRouterPlannerCandidate, openRouterCatalogForTest } from "./openrouter-model-catalog.js";
+import { fetchOpenRouterCatalog, isOpenRouterPlannerCandidate, normalizeOpenRouterCapabilities, openRouterCatalogForTest } from "./openrouter-model-catalog.js";
 
 describe("OpenRouter model catalog", () => {
   beforeEach(() => { vi.restoreAllMocks(); openRouterCatalogForTest.reset(); });
@@ -25,6 +25,7 @@ describe("OpenRouter model catalog", () => {
       promptPriceUsdPerToken: 0.000001, completionPriceUsdPerToken: 0.000002,
       inputModalities: ["text", "image"], outputModalities: ["text"],
       supportedParameters: ["tools", "temperature"],
+      catalogObservedAt: new Date(1).toISOString(),
     }]);
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
@@ -46,10 +47,27 @@ describe("OpenRouter model catalog", () => {
     expect(fetcher).toHaveBeenCalledTimes(3);
   });
 
-  it("only dynamically enables candidates whose live catalog metadata declares text and tools", () => {
-    expect(isOpenRouterPlannerCandidate({ id: "a", model: "openrouter/a", name: "A", contextLength: 262_144, inputModalities: ["text"], outputModalities: ["text"], supportedParameters: ["tools"] })).toBe(true);
-    expect(isOpenRouterPlannerCandidate({ id: "b", model: "openrouter/b", name: "B", contextLength: 262_144, inputModalities: ["text"], outputModalities: ["text"] })).toBe(false);
-    expect(isOpenRouterPlannerCandidate({ id: "c", model: "openrouter/c", name: "C", contextLength: 262_144, inputModalities: ["image"], outputModalities: ["text"], supportedParameters: ["tools"] })).toBe(false);
-    expect(isOpenRouterPlannerCandidate({ id: "d", model: "openrouter/d", name: "D", contextLength: 128_000, inputModalities: ["text"], outputModalities: ["text"], supportedParameters: ["tools"] })).toBe(false);
+  it("only enables fresh priced candidates whose live catalog metadata declares text and tools", () => {
+    const evidence = { catalogObservedAt: new Date(1_000).toISOString(), promptPriceUsdPerToken: 0, completionPriceUsdPerToken: 0 };
+    expect(isOpenRouterPlannerCandidate({ id: "a", model: "openrouter/a", name: "A", contextLength: 262_144, inputModalities: ["text"], outputModalities: ["text"], supportedParameters: ["tools"], ...evidence }, 1_001)).toBe(true);
+    expect(isOpenRouterPlannerCandidate({ id: "b", model: "openrouter/b", name: "B", contextLength: 262_144, inputModalities: ["text"], outputModalities: ["text"], ...evidence }, 1_001)).toBe(false);
+    expect(isOpenRouterPlannerCandidate({ id: "c", model: "openrouter/c", name: "C", contextLength: 262_144, inputModalities: ["image"], outputModalities: ["text"], supportedParameters: ["tools"], ...evidence }, 1_001)).toBe(false);
+    expect(isOpenRouterPlannerCandidate({ id: "d", model: "openrouter/d", name: "D", contextLength: 128_000, inputModalities: ["text"], outputModalities: ["text"], supportedParameters: ["tools"], ...evidence }, 1_001)).toBe(false);
+    expect(isOpenRouterPlannerCandidate({ id: "e", model: "openrouter/e", name: "E", contextLength: 262_144, inputModalities: ["text"], outputModalities: ["text"], supportedParameters: ["tools"], ...evidence }, 15 * 60_000 + 1_001)).toBe(false);
+  });
+
+  it("normalizes known media capabilities and leaves absent or stale evidence unknown", () => {
+    const capabilities = normalizeOpenRouterCapabilities({
+      id: "media", model: "openrouter/media", name: "Media", catalogObservedAt: new Date(10_000).toISOString(),
+      inputModalities: ["text", "image", "audio", "video", "vendor_magic"],
+      outputModalities: ["text", "audio"], supportedParameters: ["tools"], contextLength: 256_000,
+      promptPriceUsdPerToken: 0.000001, completionPriceUsdPerToken: 0.000002,
+    }, 11_000);
+    expect(capabilities).toMatchObject({ source: "openrouter_public_catalog", fresh: true, tools: true, contextTokens: 256_000 });
+    expect([...capabilities.input]).toEqual(["text", "image", "audio", "video"]);
+    expect([...capabilities.output]).toEqual(["text", "audio"]);
+    const unknown = normalizeOpenRouterCapabilities({ id: "unknown", model: "openrouter/unknown", name: "Unknown" }, 11_000);
+    expect(unknown).toMatchObject({ fresh: false, tools: null, contextTokens: null, inputUsdPerToken: null, outputUsdPerToken: null });
+    expect(unknown.input.size).toBe(0);
   });
 });

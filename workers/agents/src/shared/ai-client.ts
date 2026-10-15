@@ -153,6 +153,12 @@ export function isOpenRouterModel(model: string): boolean {
   return model.startsWith("openrouter/");
 }
 
+/** BYOK credentials are an explicit payer boundary. A BYOK primary model never inherits a
+ * platform-paid cross-provider fallback chain; provider failures must stay visible. */
+export function authorizedFailoversForModel<T>(model: string, fallbacks: readonly T[] | undefined): T[] {
+  return byokKeyFieldForModel(model) ? [] : Array.from(fallbacks ?? []);
+}
+
 /**
  * Translate the UI's friendly Gemini aliases to model ids accepted by Google's OpenAI
  * compatibility endpoint. The aliases are useful in persisted space configuration, but the

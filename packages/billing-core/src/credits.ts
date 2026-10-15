@@ -33,6 +33,20 @@ export function tokensToCredits(input: number, output: number, model: string, by
   return Math.max(1, Math.ceil(providerCostMicros * 1.15 * CREDITS_PER_USD / 1_000_000));
 }
 
+/** Settle a dynamic catalog model from its verified per-token USD prices. Callers must only pass
+ * fresh provider evidence; values are bounded here as a second guard against malformed metadata. */
+export function tokensToCreditsAtPrice(input: number, output: number, inputUsdPerToken: number, outputUsdPerToken: number): number {
+  quantity(input);
+  quantity(output);
+  if (!Number.isFinite(inputUsdPerToken) || inputUsdPerToken < 0 || inputUsdPerToken > 1
+    || !Number.isFinite(outputUsdPerToken) || outputUsdPerToken < 0 || outputUsdPerToken > 1) {
+    throw new RangeError("token prices must be finite non-negative USD/token values at most 1");
+  }
+  if (input === 0 && output === 0) return 0;
+  const providerCostMicros = Math.ceil((input * inputUsdPerToken + output * outputUsdPerToken) * 1_000_000);
+  return Math.max(1, Math.ceil(providerCostMicros * 1.15 * CREDITS_PER_USD / 1_000_000));
+}
+
 /** Single authoritative conversion table for every metered runtime resource. */
 export function calculateResourceCredits(
   resourceType: ResourceType,

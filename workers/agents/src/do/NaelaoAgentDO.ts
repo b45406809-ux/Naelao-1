@@ -24,10 +24,11 @@ import type { LlmTool, LlmFunctionTool, LlmMessage, ContentBlock } from "@naelao
 import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
 import type { SystemBlock } from "@naelao/llm-gateway";
 import { moderateText } from "@naelao/moderation";
-import { tokensToCredits, infraTimeToCredits, capabilityForModel, contextWindowForModel, DEFAULT_WORKING_MODEL, UTILITY_MODEL, isValidEffortLevel, resolveEscalationModel, type EffortLevel } from "@naelao/billing-core";
+import { tokensToCredits, tokensToCreditsAtPrice, infraTimeToCredits, capabilityForModel, contextWindowForModel, DEFAULT_WORKING_MODEL, UTILITY_MODEL, isValidEffortLevel, resolveEscalationModel, type EffortLevel } from "@naelao/billing-core";
 import { classifyFailure } from "@naelao/events";
 import type { ReasoningRequest, GatewayOpts } from "../shared/ai-client.js";
-import { byokProviderForModel, BYOK_PROVIDER_KEY_FIELD } from "../shared/ai-client.js";
+import { authorizedFailoversForModel, byokProviderForModel, BYOK_PROVIDER_KEY_FIELD } from "../shared/ai-client.js";
+import { fetchOpenRouterCatalog, isOpenRouterPlannerCandidate } from "../shared/openrouter-model-catalog.js";
 import {
   ScriptToolSurface,
   privacyBridgeCard,
@@ -4590,6 +4591,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // AFTER the env keys so it overrides; a business with none (or a default @cf/ model) gets the
     // platform key exactly as before — see resolveBusinessLlmOverride's own doc.
     const byokOverride = await this.resolveBusinessLlmOverride(spaceId, tenantId, body.model ?? DEFAULT_WORKING_MODEL);
+    let modelPricing: { inputUsdPerToken: number; outputUsdPerToken: number } | undefined;
+    try {
+      modelPricing = await this.resolveDynamicModelPricing(body.model ?? DEFAULT_WORKING_MODEL, byokOverride.openRouterApiKey);
+    } catch (error) {
+      return this.finishScriptFailure(runId, error instanceof Error ? error.message : "model price evidence unavailable", 503, "model_price_unavailable");
+    }
     const reasoner = new GatewayReasoner({
       apiKey: body.apiKey ?? "",
       localDevelopment: this.env.ENVIRONMENT === "development",
@@ -4598,13 +4605,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway",
         ...(this.env.CF_API_TOKEN ? { cfApiToken: this.env.CF_API_TOKEN } : {}),
         ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}),
-        ...(this.env.GOOGLE_AI_STUDIO_API_KEY ? { googleAiStudioApiKey: this.env.GOOGLE_AI_STUDIO_API_KEY } : {}), ...(this.env.GROQ_API_KEY ? { groqApiKey: this.env.GROQ_API_KEY } : {}), ...(this.env.OPENROUTER_API_KEY ? { openRouterApiKey: this.env.OPENROUTER_API_KEY } : {}),
+        ...(this.env.GOOGLE_AI_STUDIO_API_KEY ? { googleAiStudioApiKey: this.env.GOOGLE_AI_STUDIO_API_KEY } : {}), ...(this.env.GROQ_API_KEY ? { groqApiKey: this.env.GROQ_API_KEY } : {}), ...(this.env.OPENROUTER_API_KEY && !body.model?.startsWith("openrouter/") ? { openRouterApiKey: this.env.OPENROUTER_API_KEY } : {}),
         ...byokOverride,
       },
       ctx: { spaceId, agentId, model: body.model ?? DEFAULT_WORKING_MODEL },
       ...(body.model ? { model: body.model } : {}),
       contextWindowTokens: contextWindowForModel(body.model ?? DEFAULT_WORKING_MODEL),
-      fallbacks: this.resolveFailoverChain(body.model ?? DEFAULT_WORKING_MODEL, body.apiKey ?? ""),
+      fallbacks: authorizedFailoversForModel(body.model ?? DEFAULT_WORKING_MODEL, this.resolveFailoverChain(body.model ?? DEFAULT_WORKING_MODEL, body.apiKey ?? "")),
       ...(reasoningRequest ? { reasoning: reasoningRequest } : {}),
       // The agent's OWN identity and instructions. Loaded from R2 on every run since the script
       // engine was built, and never once handed to the model — see ReasonerDeps.agentPrompt.
@@ -4799,6 +4806,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         inputTokens: result.result?.input_tokens ?? 0,
         outputTokens: result.result?.output_tokens ?? 0,
         model: body.model,
+        modelPricing,
         notes: result.notes,
         tier: result.result?.tier,
         durationMs: result.result?.duration_ms,
@@ -4939,7 +4947,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           : (failureText ? failureText.slice(0, 500) : "Run did not complete successfully"),
         tokensUsed: result.result?.tokens_used ?? null,
         costCredits: result.result?.input_tokens || result.result?.output_tokens
-          ? tokensToCredits(result.result.input_tokens ?? 0, result.result.output_tokens ?? 0, body.model ?? DEFAULT_WORKING_MODEL)
+          ? (body.model?.startsWith("openrouter/") && modelPricing
+            ? tokensToCreditsAtPrice(result.result.input_tokens ?? 0, result.result.output_tokens ?? 0, modelPricing.inputUsdPerToken, modelPricing.outputUsdPerToken)
+            : tokensToCredits(result.result.input_tokens ?? 0, result.result.output_tokens ?? 0, body.model ?? DEFAULT_WORKING_MODEL))
           : (result.result?.tokens_used ?? null),
       });
       if (failed) {
@@ -6559,6 +6569,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     hasSpendCap: boolean; walletProjectId: string | null;
     tokensUsed: number; inputTokens: number; outputTokens: number;
     model?: string | undefined; notes: string[]; runId: string;
+    modelPricing?: { inputUsdPerToken: number; outputUsdPerToken: number } | undefined;
     /** §A1.26: the executed script's tier + wall-clock duration, when known (script-native runs
      *  only — the legacy ReAct path has no equivalent concept and omits these). */
     tier?: number | string | undefined; durationMs?: number | undefined;
@@ -6567,7 +6578,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
      *  configured — a space that never opted in pays zero extra round-trip cost per run. */
     sessionId?: string | undefined; sessionCreditCeiling?: number | undefined;
   }): Promise<void> {
-    const { spaceId, tenantId, projectId, userId, callerRole, hasSpendCap, walletProjectId, tokensUsed, inputTokens, outputTokens, model, notes, runId, tier, durationMs, sessionId, sessionCreditCeiling } = params;
+    const { spaceId, tenantId, projectId, userId, callerRole, hasSpendCap, walletProjectId, tokensUsed, inputTokens, outputTokens, model, modelPricing, notes, runId, tier, durationMs, sessionId, sessionCreditCeiling } = params;
 
     // §A1.26: infra-credit usage is recorded independent of whether this run used any LLM
     // tokens at all (a pure script execution — e.g. a scheduled workflow.run with no reasoning
@@ -6609,7 +6620,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     if (!tokensUsed) return;
     const credits = inputTokens || outputTokens
-      ? tokensToCredits(inputTokens, outputTokens, model ?? DEFAULT_WORKING_MODEL)
+      ? (model?.startsWith("openrouter/")
+        ? modelPricing
+          ? tokensToCreditsAtPrice(inputTokens, outputTokens, modelPricing.inputUsdPerToken, modelPricing.outputUsdPerToken)
+          : (notes.push("Billing: current OpenRouter price evidence unavailable; dynamic model usage was not assigned an invented default price."), 0)
+        : tokensToCredits(inputTokens, outputTokens, model ?? DEFAULT_WORKING_MODEL))
       : tokensUsed;
 
     if (userId && BUILDER_CALLER_ROLES.has(callerRole ?? "") && this.env.SPACES_WORKER) {
@@ -7066,13 +7081,19 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // Step 28: same BYOK override as the interactive path — a customer messaging a business on a
     // channel is answered on the business's own Gemini/Groq key when it has one.
     const byokOverride = await this.resolveBusinessLlmOverride(spaceId, tenantId, model);
+    let channelModelPricing: { inputUsdPerToken: number; outputUsdPerToken: number } | undefined;
+    try {
+      channelModelPricing = await this.resolveDynamicModelPricing(model, byokOverride.openRouterApiKey);
+    } catch (error) {
+      return Response.json({ error_code: "model_price_unavailable", error: error instanceof Error ? error.message : "Fresh model price evidence unavailable" }, { status: 503 });
+    }
     const reasoner = new GatewayReasoner({
       apiKey: body.apiKey ?? "",
-      gateway: { accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway", ...(this.env.CF_API_TOKEN ? { cfApiToken: this.env.CF_API_TOKEN } : {}), ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}), ...(this.env.GOOGLE_AI_STUDIO_API_KEY ? { googleAiStudioApiKey: this.env.GOOGLE_AI_STUDIO_API_KEY } : {}), ...(this.env.GROQ_API_KEY ? { groqApiKey: this.env.GROQ_API_KEY } : {}), ...(this.env.OPENROUTER_API_KEY ? { openRouterApiKey: this.env.OPENROUTER_API_KEY } : {}), ...byokOverride },
+      gateway: { accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway", ...(this.env.CF_API_TOKEN ? { cfApiToken: this.env.CF_API_TOKEN } : {}), ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}), ...(this.env.GOOGLE_AI_STUDIO_API_KEY ? { googleAiStudioApiKey: this.env.GOOGLE_AI_STUDIO_API_KEY } : {}), ...(this.env.GROQ_API_KEY ? { groqApiKey: this.env.GROQ_API_KEY } : {}), ...(this.env.OPENROUTER_API_KEY && !model.startsWith("openrouter/") ? { openRouterApiKey: this.env.OPENROUTER_API_KEY } : {}), ...byokOverride },
       ctx: { spaceId, agentId, model },
       model,
       contextWindowTokens: contextWindowForModel(model),
-      fallbacks: this.resolveFailoverChain(model, body.apiKey ?? ""),
+      fallbacks: authorizedFailoversForModel(model, this.resolveFailoverChain(model, body.apiKey ?? "")),
       // Same gap as the interactive path: a customer messaging a business on Slack/WhatsApp was
       // being answered by a model that had never been told what business it was answering for.
       ...(config.systemPrompt ? { agentPrompt: config.systemPrompt } : {}),
@@ -7307,7 +7328,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         // credit" proxy — falls back to the raw token count only if a future producer of
         // tokens_used ever omits the input/output breakdown (never happens today).
         const credits = result.result.input_tokens || result.result.output_tokens
-          ? tokensToCredits(result.result.input_tokens ?? 0, result.result.output_tokens ?? 0, model)
+          ? (model.startsWith("openrouter/") && channelModelPricing
+            ? tokensToCreditsAtPrice(result.result.input_tokens ?? 0, result.result.output_tokens ?? 0, channelModelPricing.inputUsdPerToken, channelModelPricing.outputUsdPerToken)
+            : tokensToCredits(result.result.input_tokens ?? 0, result.result.output_tokens ?? 0, model))
           : result.result.tokens_used;
         // F9: SpaceDO is the authoritative tally; the local table is kept only as this DO's
         // own telemetry/cache.
@@ -8133,6 +8156,25 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder",
       gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway",
       ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}),
+    };
+  }
+
+  /** Prices dynamic BYOK runs from a fresh, key-validated public catalog snapshot. This checks
+   * the selected Space key but does not claim model entitlement or make a billable inference. */
+  private async resolveDynamicModelPricing(
+    model: string,
+    apiKey: string | undefined,
+  ): Promise<{ inputUsdPerToken: number; outputUsdPerToken: number } | undefined> {
+    if (!model.startsWith("openrouter/")) return undefined;
+    if (!apiKey) throw new Error("The selected Space OpenRouter key is unavailable; no platform key fallback is allowed");
+    const catalog = await fetchOpenRouterCatalog(apiKey);
+    const candidate = catalog.find((entry) => entry.model === model);
+    if (!candidate || !isOpenRouterPlannerCandidate(candidate)) {
+      throw new Error("Fresh context, text/tool support, and both token prices could not be verified for this model");
+    }
+    return {
+      inputUsdPerToken: candidate.promptPriceUsdPerToken!,
+      outputUsdPerToken: candidate.completionPriceUsdPerToken!,
     };
   }
 

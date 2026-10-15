@@ -11,13 +11,47 @@ export interface OpenRouterModelCandidate {
   outputModalities?: string[];
   /** Provider-declared request features. This is catalog evidence, not proof of key entitlement. */
   supportedParameters?: string[];
+  /** Timestamp when the public catalog snapshot was retrieved; emitted only by the live adapter. */
+  catalogObservedAt?: string;
+}
+
+export type ModelModality = "text" | "image" | "audio" | "video";
+export interface NormalizedModelCapabilities {
+  source: "openrouter_public_catalog";
+  observedAt: string | null;
+  fresh: boolean;
+  input: ReadonlySet<ModelModality>;
+  output: ReadonlySet<ModelModality>;
+  tools: boolean | null;
+  contextTokens: number | null;
+  inputUsdPerToken: number | null;
+  outputUsdPerToken: number | null;
+}
+
+/** Convert sparse provider metadata into one explicit capability view. Missing fields stay
+ * unknown; this adapter never infers media/tool support from the model name. */
+export function normalizeOpenRouterCapabilities(candidate: OpenRouterModelCandidate, now = Date.now()): NormalizedModelCapabilities {
+  const observed = candidate.catalogObservedAt ? Date.parse(candidate.catalogObservedAt) : Number.NaN;
+  const allowed = new Set<ModelModality>(["text", "image", "audio", "video"]);
+  const normalized = (items: string[] | undefined) => new Set((items ?? []).filter((item): item is ModelModality => allowed.has(item as ModelModality)));
+  return {
+    source: "openrouter_public_catalog",
+    observedAt: Number.isFinite(observed) ? new Date(observed).toISOString() : null,
+    fresh: Number.isFinite(observed) && observed <= now && now - observed <= 15 * 60_000,
+    input: normalized(candidate.inputModalities),
+    output: normalized(candidate.outputModalities),
+    tools: candidate.supportedParameters ? candidate.supportedParameters.includes("tools") : null,
+    contextTokens: candidate.contextLength ?? null,
+    inputUsdPerToken: candidate.promptPriceUsdPerToken ?? null,
+    outputUsdPerToken: candidate.completionPriceUsdPerToken ?? null,
+  };
 }
 
 const API = "https://openrouter.ai/api/v1";
 const MAX_CATALOG_BYTES = 8 * 1024 * 1024;
 const MAX_CATALOG_MODELS = 2_000;
 const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
-let catalogCache: { expiresAt: number; models: OpenRouterModelCandidate[] } | undefined;
+let catalogCache: { expiresAt: number; observedAt: number; models: OpenRouterModelCandidate[] } | undefined;
 let catalogPending: Promise<OpenRouterModelCandidate[]> | undefined;
 
 async function boundedJson(response: Response, limit: number): Promise<unknown> {
@@ -93,6 +127,7 @@ export async function fetchOpenRouterCatalog(
   if (!keyInfo || typeof keyInfo !== "object" || !keyInfo.data || typeof keyInfo.data !== "object") throw new Error("openrouter_key_response_invalid");
 
   if (catalogCache && catalogCache.expiresAt > now) return catalogCache.models.map(model => ({ ...model,
+    catalogObservedAt: new Date(catalogCache!.observedAt).toISOString(),
     ...(model.inputModalities ? { inputModalities: [...model.inputModalities] } : {}),
     ...(model.outputModalities ? { outputModalities: [...model.outputModalities] } : {}),
   }));
@@ -105,8 +140,9 @@ export async function fetchOpenRouterCatalog(
   }
   try {
     const models = await catalogPending;
-    catalogCache = { expiresAt: now + (options.cacheMs ?? 15 * 60_000), models };
+    catalogCache = { expiresAt: now + (options.cacheMs ?? 15 * 60_000), observedAt: now, models };
     return models.map(model => ({ ...model,
+      catalogObservedAt: new Date(catalogCache!.observedAt).toISOString(),
       ...(model.inputModalities ? { inputModalities: [...model.inputModalities] } : {}),
       ...(model.outputModalities ? { outputModalities: [...model.outputModalities] } : {}),
     }));
@@ -124,14 +160,19 @@ export const openRouterCatalogForTest = {
 /** A dynamic BYOK model is eligible for Naelao's tool-using planner only when the public
  * provider catalog explicitly declares text input/output and tool support. Key entitlement is
  * still tested by the real inference call, which never falls back to platform billing. */
-export function isOpenRouterPlannerCandidate(candidate: OpenRouterModelCandidate | undefined): boolean {
+export function isOpenRouterPlannerCandidate(candidate: OpenRouterModelCandidate | undefined, now = Date.now()): boolean {
+  if (!candidate) return false;
+  const capability = normalizeOpenRouterCapabilities(candidate, now);
   return Boolean(candidate
+    && capability.fresh
     && candidate.model.startsWith("openrouter/")
     // The generic planner defaults unknown catalog models to a 200k context. Refuse a dynamic
     // model with a smaller or undisclosed window until the runtime carries an explicit limit.
-    && candidate.contextLength !== undefined
-    && candidate.contextLength >= 200_000
-    && candidate.inputModalities?.includes("text")
-    && candidate.outputModalities?.includes("text")
-    && candidate.supportedParameters?.includes("tools"));
+    && capability.contextTokens !== null
+    && capability.contextTokens >= 200_000
+    && capability.input.has("text")
+    && capability.output.has("text")
+    && capability.tools === true
+    && capability.inputUsdPerToken !== null
+    && capability.outputUsdPerToken !== null);
 }

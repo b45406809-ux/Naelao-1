@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   byokKeyFieldForModel,
   byokProviderForModel,
+  authorizedFailoversForModel,
   canAuthenticateLlm,
   compatGatewayHeaders,
   compatGatewayUrl,
@@ -32,5 +33,11 @@ describe("OpenRouter BYOK routing", () => {
       "cf-aig-authorization": "Bearer gateway-secret",
       "cf-aig-no-wholesale": "true",
     });
+  });
+
+  it("never applies a platform-paid cross-provider failover to an owner BYOK model", () => {
+    const chain = [{ model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", apiKey: "platform-key" }];
+    expect(authorizedFailoversForModel("openrouter/vendor/model", chain)).toEqual([]);
+    expect(authorizedFailoversForModel("@cf/meta/llama-3.3-70b-instruct-fp8-fast", chain)).toEqual(chain);
   });
 });

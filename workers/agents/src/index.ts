@@ -15,7 +15,7 @@ import { contextWindowForModel, isAllowedModel, ALLOWED_MODELS, DEFAULT_WORKING_
 import { getDOName } from "@naelao/crypto";
 import { detectPromptInjection, detectPolicyViolations } from "@naelao/moderation";
 import { expireToolOutputs } from "./script-engine/tool-output-expiry.js";
-import { fetchOpenRouterCatalog, isOpenRouterPlannerCandidate } from "./shared/openrouter-model-catalog.js";
+import { fetchOpenRouterCatalog, isOpenRouterPlannerCandidate, type OpenRouterModelCandidate } from "./shared/openrouter-model-catalog.js";
 import { recommendOpenRouterModels } from "./shared/openrouter-model-recommendations.js";
 import { parseMentions, creatableFeatureKindsForRole, detectImplicitSignals, classifyFailure, type MentionableAgent } from "@naelao/events";
 import { NaelaoAgentDO, ASSISTANT_MEMORY_SCOPE } from "./do/NaelaoAgentDO.js";
@@ -193,6 +193,35 @@ export function normalizeScriptRunResult(raw: unknown, runId: string): {
         }
       : {}),
   };
+}
+
+/** A successful user-requested completion is the only key-specific OpenRouter entitlement
+ * evidence available without a provider preflight. Store its model/actor/usage metadata only;
+ * never persist prompts, outputs, or key material. */
+async function recordOpenRouterInferenceEvidence(
+  env: AgentsEnv,
+  params: { tenantId: string; spaceId: string; model?: string; userId?: string; runId: string; rawResult: unknown },
+): Promise<void> {
+  if (!params.model?.startsWith("openrouter/")) return;
+  const usage = (params.rawResult as { result?: { ok?: boolean; tokens_used?: number; input_tokens?: number; output_tokens?: number } } | null)?.result;
+  if (usage?.ok !== true || !Number.isFinite(usage.tokens_used) || (usage.tokens_used ?? 0) <= 0) return;
+  const observedAt = new Date().toISOString();
+  const evidence = JSON.stringify({
+    model: params.model,
+    runId: params.runId,
+    observedAt,
+    observedBy: params.userId ?? null,
+    inputTokens: usage.input_tokens ?? null,
+    outputTokens: usage.output_tokens ?? null,
+    entitlement: "inference_succeeded",
+  });
+  await env.PLATFORM_DB.prepare(`UPDATE spaces
+    SET config_json = json_set(COALESCE(config_json, '{}'),
+      '$.productConfig.modelConfig.openRouterSelectionEvidence.lastSuccessfulInference', json(?)),
+      updated_at = ?
+    WHERE id = ? AND tenant_id = ?
+      AND json_extract(config_json, '$.productConfig.modelConfig.model') = ?`)
+    .bind(evidence, observedAt, params.spaceId, params.tenantId, params.model).run();
 }
 
 export { NaelaoAgentDO } from "./do/NaelaoAgentDO.js";
@@ -973,6 +1002,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
     return c.json({ error_code: "model_override_forbidden", message: "This Space's model is selected by its owner" }, 403);
   }
   const policyModel = rawBody.model ?? configuredModel ?? DEFAULT_WORKING_MODEL;
+  let dynamicModelCandidate: OpenRouterModelCandidate | null = null;
   const policyResult = validateModelForSpacePolicy(policyModel, spacePolicy);
   if (!policyResult.ok) return c.json({ error_code: policyResult.error_code, message: policyResult.message }, 400);
   if (airGappedOnly && !policyModel.startsWith("local/")) {
@@ -1006,15 +1036,14 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   // model than the caller named would make every number the eval produces a lie.
   if (!policyModel.startsWith("custom/") && !policyModel.startsWith("local/") && !isAllowedModel(policyModel)) {
     if (!policyModel.startsWith("openrouter/")) throw badRequest(`model must be one of ${ALLOWED_MODELS.join(", ")}`);
-    let eligible = false;
     try {
-      eligible = await validateDynamicOpenRouterPlannerModel(c.env, tenantId, spaceId, policyModel);
+      dynamicModelCandidate = await validateDynamicOpenRouterPlannerModel(c.env, tenantId, spaceId, policyModel);
     } catch (error) {
       const code = error instanceof Error ? error.message : "openrouter_catalog_unavailable";
       const status = code === "openrouter_key_rejected" ? 409 : 503;
       return c.json({ error_code: code, message: status === 409 ? "The selected OpenRouter key was rejected; replace it in Space settings" : "Dynamic model metadata could not be verified" }, status);
     }
-    if (!eligible) return c.json({ error_code: "model_not_eligible", message: "The OpenRouter catalog does not declare text input, text output, and tool support for this model" }, 400);
+    if (!dynamicModelCandidate) return c.json({ error_code: "model_not_eligible", message: "The OpenRouter catalog does not declare fresh text input/output, tool support, context, and pricing for this model" }, 400);
   }
 
   let modelConfig: { model?: string; effort?: string; progressiveToolDisclosure?: boolean } = {};
@@ -1307,6 +1336,10 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
 
   const rawDoBody = await doResponse.json<unknown>();
   const doBody = doResponse.ok ? normalizeScriptRunResult(rawDoBody, scriptRunId) : rawDoBody;
+
+  if (doResponse.ok) c.executionCtx.waitUntil(recordOpenRouterInferenceEvidence(c.env, {
+    tenantId, spaceId, model: policyModel, userId, runId: scriptRunId, rawResult: rawDoBody,
+  }).catch(() => {}));
 
   // G-AZ19: Store successful agent response in semantic cache for future hits
   if (doResponse.ok) {
@@ -2806,6 +2839,9 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
     );
     const rawResult = await doResponse.json<unknown>();
     const result = doResponse.ok ? normalizeScriptRunResult(rawResult, body.taskId) : rawResult;
+    if (doResponse.ok) c.executionCtx.waitUntil(recordOpenRouterInferenceEvidence(c.env, {
+      tenantId: body.tenantId, spaceId: body.spaceId, model: body.model, ...(body.userId ? { userId: body.userId } : {}), runId: body.taskId, rawResult,
+    }).catch(() => {}));
     return c.json(result, doResponse.status as 200 | 201 | 400 | 402 | 403 | 404 | 422 | 500 | 503);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -3355,8 +3391,8 @@ async function validateDynamicOpenRouterPlannerModel(
   tenantId: string,
   spaceId: string,
   model: string,
-): Promise<boolean> {
-  if (!/^openrouter\/[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(model)) return false;
+): Promise<OpenRouterModelCandidate | null> {
+  if (!/^openrouter\/[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(model)) return null;
   const rows = await listByokCredentials(env, tenantId, spaceId);
   const keys = rows.filter(row => isByokKeyName(row.name, NEW_BYOK_PROVIDER) && row.name !== byokActiveCredentialName(NEW_BYOK_PROVIDER));
   const pointer = rows.find(row => row.name === byokActiveCredentialName(NEW_BYOK_PROVIDER));
@@ -3364,11 +3400,12 @@ async function validateDynamicOpenRouterPlannerModel(
   const selected = keys.find(row => row.name === selectedName)
     ?? keys.find(row => row.name === legacyByokCredentialName(NEW_BYOK_PROVIDER))
     ?? keys[0];
-  if (!selected) return false;
+  if (!selected) return null;
   const key = await resolveConnectorCredential(env, tenantId, spaceId, selected.name);
   if (!key) throw new Error("credential_unavailable");
   const catalog = await fetchOpenRouterCatalog(key);
-  return isOpenRouterPlannerCandidate(catalog.find(candidate => candidate.model === model));
+  const candidate = catalog.find((item) => item.model === model);
+  return isOpenRouterPlannerCandidate(candidate) ? candidate! : null;
 }
 
 function providerMetadata(provider: ByokProvider, rows: ByokCredentialRow[]) {
@@ -3453,6 +3490,7 @@ app.get("/spaces/:spaceId/llm-byok/models", async (c) => {
       active_model: activeModel,
       key_validated: true,
       catalog_source: "openrouter_public_catalog",
+      catalog_observed_at: models[0]?.catalogObservedAt ?? null,
       availability_note: "Catalog presence does not guarantee this key can use a model. OpenRouter confirms access only when a request is made.",
       models,
       recommendations: recommendOpenRouterModels(models),
@@ -3484,22 +3522,37 @@ app.post("/spaces/:spaceId/llm-byok/models/activate", async (c) => {
   if (!policyResult.ok) return c.json({ error_code: policyResult.error_code, message: policyResult.message }, 400);
   if (airGappedOnlyFromConfig(JSON.stringify(config))) return c.json({ error_code: "compliance_violation", message: "Air-gapped spaces cannot activate cloud models" }, 400);
 
-  let eligible: boolean;
-  try { eligible = await validateDynamicOpenRouterPlannerModel(c.env, tenantId, spaceId, body.model); }
+  let candidate: OpenRouterModelCandidate | null;
+  try { candidate = await validateDynamicOpenRouterPlannerModel(c.env, tenantId, spaceId, body.model); }
   catch (error) {
     const code = error instanceof Error ? error.message : "openrouter_catalog_unavailable";
     const status = code === "openrouter_key_rejected" ? 409 : 503;
     return c.json({ error_code: code, message: status === 409 ? "The selected OpenRouter key was rejected; replace it in Space settings" : "Dynamic model metadata could not be verified" }, status);
   }
-  if (!eligible) return c.json({ error_code: "model_not_eligible", message: "Requires catalog-declared text input/output, tool support, and at least 200,000 context tokens" }, 400);
+  if (!candidate) return c.json({ error_code: "model_not_eligible", message: "Requires fresh catalog-declared text input/output, tool support, known pricing, and at least 200,000 context tokens" }, 400);
 
   const existingModelConfig = current.modelConfig && typeof current.modelConfig === "object"
     ? current.modelConfig as Record<string, unknown>
     : {};
-  config.productConfig = { ...current, modelConfig: { ...existingModelConfig, model: body.model } };
+  const selectedAt = new Date().toISOString();
+  config.productConfig = { ...current, modelConfig: {
+    ...existingModelConfig,
+    model: body.model,
+    openRouterSelectionEvidence: {
+      selectedAt,
+      selectedBy: userId,
+      catalogSource: "openrouter_public_catalog",
+      catalogObservedAt: candidate.catalogObservedAt,
+      declaredContextTokens: candidate.contextLength,
+      inputUsdPerToken: candidate.promptPriceUsdPerToken,
+      outputUsdPerToken: candidate.completionPriceUsdPerToken,
+      declaredTools: true,
+      providerEntitlement: "unverified_until_user_requested_inference",
+    },
+  } };
   await c.env.PLATFORM_DB.prepare("UPDATE spaces SET config_json = ?, updated_at = ? WHERE id = ? AND tenant_id = ?")
-    .bind(JSON.stringify(config), new Date().toISOString(), spaceId, tenantId).run();
-  return c.json({ model: body.model, activated: true, context_limit: 200_000, provider: "openrouter_byok" });
+    .bind(JSON.stringify(config), selectedAt, spaceId, tenantId).run();
+  return c.json({ model: body.model, activated: true, context_limit: candidate.contextLength, provider: "openrouter_byok", provider_entitlement: "unverified_until_user_requested_inference", selected_by: userId, catalog_observed_at: candidate.catalogObservedAt });
 });
 
 // ── POST /internal/projects/hibernate — finite project completion fanout ────

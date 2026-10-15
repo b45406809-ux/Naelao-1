@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculateResourceCredits, CREDITS_PER_USD, tokensToCredits } from "./credits.js";
+import { calculateResourceCredits, CREDITS_PER_USD, tokensToCredits, tokensToCreditsAtPrice } from "./credits.js";
 
 describe("standard credit table", () => {
   it("uses one cent credits and exact resource rates", () => {
@@ -14,5 +14,11 @@ describe("standard credit table", () => {
   it("charges provider cost plus margin and makes BYOK free", () => {
     expect(tokensToCredits(1_000_000, 0, "claude-sonnet-4-6")).toBe(345);
     expect(tokensToCredits(1_000_000, 0, "claude-sonnet-4-6", true)).toBe(0);
+  });
+  it("settles dynamic models from explicit USD-per-token catalog prices", () => {
+    expect(tokensToCreditsAtPrice(1_000_000, 500_000, 0.000001, 0.000002)).toBe(230);
+    expect(tokensToCreditsAtPrice(10, 10, 0, 0)).toBe(1);
+    expect(() => tokensToCreditsAtPrice(1, 1, Number.NaN, 0)).toThrow("token prices");
+    expect(() => tokensToCreditsAtPrice(1, 1, 0, 1.01)).toThrow("token prices");
   });
 });
