@@ -12,6 +12,7 @@ export const UNIVERSAL_EXECUTION_PREBUILTS = ["code-exec", "runtime-discovery"] 
 export const UNIVERSAL_AGENT_BASELINE_PREBUILTS = [
   ...UNIVERSAL_EXECUTION_PREBUILTS,
   ...UNIVERSAL_PLANNER_PREBUILTS,
+  "attachments",
 ] as const;
 
 const UNIVERSAL_REPL_OPERATIONS = new Set([

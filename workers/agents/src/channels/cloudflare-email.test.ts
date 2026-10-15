@@ -62,7 +62,9 @@ describe("Cloudflare email ingress helpers", () => {
     expect(normalizeIngressDomain(" Agents.Example.Test. ")).toBe("agents.example.test");
     expect(normalizeIngressDomain("bad..example")).toBeNull();
     expect(safeFilename("../../invoice.pdf")).toBe("_.._invoice.pdf");
-    expect(emailReplyBody({ taskId: "run1", subject: "Invoice", text: "See attached", attachments: [{ filename: "invoice.pdf", mimeType: "application/pdf", key: "spaces/s/email/a.pdf" }] }))
-      .toContain("r2://spaces/s/email/a.pdf");
+    expect(emailReplyBody({ taskId: "run1", subject: "Invoice", text: "See attached", attachments: [{ id: "opaque-1", filename: "invoice.pdf", mimeType: "application/pdf", sizeBytes: 128 }] }))
+      .toContain("attachment:opaque-1");
+    expect(emailReplyBody({ taskId: "run1", subject: "Invoice", text: "See attached", attachments: [{ id: "opaque-1", filename: "invoice.pdf", mimeType: "application/pdf", sizeBytes: 128 }] }))
+      .not.toContain("r2://");
   });
 });

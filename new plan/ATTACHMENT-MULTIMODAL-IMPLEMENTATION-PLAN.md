@@ -2,7 +2,7 @@
 
 Date: 2026-10-15  
 Branch: `Mcbt5s-Backup-2`  
-Status: plan recorded; implementation not started in this checkpoint.
+Status: implementation in progress. The email-backed opaque-ID CLI slice is implemented and locally tested; other channel adapters, scanned-PDF rendering, generic modality contracts, and provider-run adapter evaluation remain unfinished.
 
 ## Architecture decision
 

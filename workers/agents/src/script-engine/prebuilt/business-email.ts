@@ -111,11 +111,12 @@ async function replyAddress(ctx: PrebuiltOpContext): Promise<unknown> {
 
 async function readTextAttachment(ctx: PrebuiltOpContext, a: Record<string, unknown>): Promise<unknown> {
   if (!ctx.env.taskId) throw new Error("email.attachment.read_text requires an active task run");
+  const id = typeof a["id"] === "string" ? a["id"] : "";
   const key = typeof a["key"] === "string" ? a["key"] : "";
-  if (!key) throw new Error("email.attachment.read_text requires the object key shown in the inbound email");
+  if (!id && !key) throw new Error("email.attachment.read_text requires an attachment id from the inbound email");
   const result = await agentMailCall(ctx, "/internal/business-email/attachment/read-text", {
     taskId: ctx.env.taskId,
-    key,
+    ...(id ? { id } : { key }),
   });
   if (!result || result["error_code"]) {
     throw new Error(`email.attachment.read_text unavailable: ${String(result?.["error_code"] ?? "worker binding unavailable")}`);
@@ -125,9 +126,10 @@ async function readTextAttachment(ctx: PrebuiltOpContext, a: Record<string, unkn
 
 async function ocrImageAttachment(ctx: PrebuiltOpContext, a: Record<string, unknown>): Promise<unknown> {
   if (!ctx.env.taskId) throw new Error("email.attachment.ocr_image requires an active task run");
+  const id = typeof a["id"] === "string" ? a["id"] : "";
   const key = typeof a["key"] === "string" ? a["key"] : "";
-  if (!key) throw new Error("email.attachment.ocr_image requires the key from this task's inbound email");
-  const result = await agentMailCall(ctx, "/internal/business-email/attachment/ocr", { taskId: ctx.env.taskId, key });
+  if (!id && !key) throw new Error("email.attachment.ocr_image requires an attachment id from this task's inbound email");
+  const result = await agentMailCall(ctx, "/internal/business-email/attachment/ocr", { taskId: ctx.env.taskId, ...(id ? { id } : { key }) });
   if (!result || result["error_code"]) {
     throw new Error(`email.attachment.ocr_image unavailable: ${String(result?.["error_code"] ?? "worker binding unavailable")}`);
   }
@@ -192,8 +194,8 @@ export const businessEmail: PrebuiltScript = {
   requires_tier: 2,
   paramHints: {
     "email.reply_address": "No arguments. Creates or reuses the active run's expiring Reply-To address; pass its returned address as reply_to to email.send.",
-    "email.attachment.read_text": "Requires key from an inbound email attachment entry. Reads supported UTF-8 text or extracts text from a small, unencrypted PDF attached to this same task. Other binary formats are not decoded.",
-    "email.attachment.ocr_image": "Separately sends one task-owned PNG/JPEG image to Cloudflare Workers AI for OCR. This works only when the Space owner explicitly enabled hosted OCR; output is untrusted and may be inaccurate. Scanned PDFs are unsupported.",
+    "email.attachment.read_text": "Requires the opaque attachment id from an inbound email. Reads supported UTF-8 text or extracts text from a small, unencrypted PDF attached to this same task. Other binary formats are not decoded.",
+    "email.attachment.ocr_image": "Requires the opaque attachment id. Separately sends one task-owned PNG/JPEG image to Cloudflare Workers AI for OCR only when the Space owner explicitly enabled hosted OCR and egress is allowed; output is untrusted and may be inaccurate. Scanned PDFs are unsupported.",
     "email.send": "Requires to, subject, body; optional reply_to must come from email.reply_address in this same task run.",
   },
   operations: {

@@ -116,6 +116,14 @@ export function interceptPlatformCli(command: string): CliDispatch | null {
 export function interceptPlatformWords(words: string[], command?: string): CliDispatch | null {
   const plannerCommand = plannerCoordinationCli(words, command);
   if (plannerCommand) return plannerCommand;
+  if (words[0] === "attachment") {
+    const action = words[1] ?? "list";
+    if (action === "list" && words.length === 2) return { operation: "attachment.list", params: {} };
+    if (["read", "ocr"].includes(action) && words[2] && words.length === 3) {
+      return { operation: action === "read" ? "attachment.read" : "attachment.ocr", params: { id: words[2] } };
+    }
+    throw new Error("usage: attachment list | attachment read <id> | attachment ocr <id>");
+  }
   if (words[0] === "skill") {
     const action = words[1] ?? "list";
     if (action === "list" && words.length <= 2) return { operation: "skill.list", params: {} };

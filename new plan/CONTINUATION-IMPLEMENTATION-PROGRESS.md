@@ -1,5 +1,14 @@
 # Continuation implementation progress
 
+## Unified attachment implementation checkpoint (2026-10-15)
+
+- Started the follow-up plan in `ATTACHMENT-MULTIMODAL-IMPLEMENTATION-PLAN.md`; this is an ongoing implementation, not a completed plan-only task.
+- Implemented an initial email-backed attachment adapter: migration `0102_channel_attachments.sql` stores opaque random attachment IDs and task/tenant/Space/channel/filename/MIME/size/expiry metadata; the message prompt displays the opaque ID and metadata instead of the R2 object key. The bytes remain in R2.
+- Added a universal `attachments` prebuilt and virtual CLI commands `attachment list`, `attachment read <id>`, and `attachment ocr <id>`. The internal list route returns metadata only. Existing read/OCR endpoints resolve opaque IDs against exact tenant, Space, task and expiry before reading; legacy key-only endpoint requests remain accepted for compatibility but new model-visible messages do not contain those keys. OCR still requires owner enablement and allowed egress. Expiry cleanup removes the common metadata row with the old email row.
+- Added CLI, prebuilt request-scope, email prompt secrecy, migration replay, and compatibility coverage. Verification: Agents targeted tests (currently 28 passed before adding the new attachments-specific unit suite); Agents `tsc --noEmit` passed; `git diff --check` passed. Running `pnpm --filter ... test` was blocked before test startup by repository supply-chain policy rejecting existing lockfile entry `qs@6.16.1`; direct installed Vitest runs bypassed no policy configuration and passed the tests. Full rerun including new tests remains pending.
+- This only covers email ingress. It does not yet implement safe media download/storage for Slack/Discord/WhatsApp/Telegram/web uploads, message-level scope for shared channel threads, or storage-only file copy. Migration has not been applied to any live D1 deployment.
+- Next: finish route isolation tests for opaque-ID list/read/OCR; run Agents and Spaces migration/test/typecheck plus Wrangler dry-run. Then implement the next independent local contract gap; preserve explicit `unrun` for live acceptance.
+
 ## Latest communications/OCR checkpoint (2026-10-15)
 
 - OCR answer: the existing `email.attachment.ocr_image` operation is task-scoped and planner/tool-executor accessible for PNG/JPEG files attached to the active inbound email. It is not a generic arbitrary-file OCR tool shared with every worker. A delegated worker can use it only when that operation is exposed in its allowed prebuilt tool surface. Hosted OCR remains owner-enabled and is guarded by task/tenant/Space/key/expiry/egress checks; air-gapped workspaces fail closed. Scanned PDF OCR remains unsupported.

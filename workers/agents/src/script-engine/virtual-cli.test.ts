@@ -2,6 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { interceptPlatformCli, VirtualCliDispatcher } from "./virtual-cli.js";
 
 describe("VirtualCliDispatcher", () => {
+  it("routes task-scoped attachment commands to typed operations", () => {
+    expect(interceptPlatformCli("attachment list")).toEqual({ operation: "attachment.list", params: {} });
+    expect(interceptPlatformCli("attachment read a1b2")).toEqual({ operation: "attachment.read", params: { id: "a1b2" } });
+    expect(interceptPlatformCli("attachment ocr a1b2")).toEqual({ operation: "attachment.ocr", params: { id: "a1b2" } });
+    expect(() => interceptPlatformCli("attachment read")).toThrow("usage: attachment");
+  });
   it("parses read-only skill discovery and tool help commands without shell execution", () => {
     expect(interceptPlatformCli("skill list")).toEqual({ operation: "skill.list", params: {} });
     expect(interceptPlatformCli('skill search "invoice reconciliation"')).toEqual({ operation: "skill.search", params: { query: "invoice reconciliation" } });

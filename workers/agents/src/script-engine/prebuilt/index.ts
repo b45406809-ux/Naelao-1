@@ -57,6 +57,7 @@ import { runtimeDiscovery } from "./runtime-discovery.js";
 import { languageDetection } from "./language-detection.js";
 import { languageGlossary } from "./language-glossary.js";
 import { languageTranslation } from "./language-translation.js";
+import { attachments } from "./attachments.js";
 
 /** Context handed to every prebuilt operation. */
 export interface PrebuiltOpContext {
@@ -101,6 +102,7 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   [languageDetection.name]: languageDetection,
   [languageGlossary.name]: languageGlossary,
   [languageTranslation.name]: languageTranslation,
+  [attachments.name]: attachments,
   [runtimeDiscovery.name]: runtimeDiscovery,
   [foundryInbox.name]: foundryInbox,
   [r2Workspace.name]: r2Workspace,

@@ -147,7 +147,7 @@ describe("task-scoped email PDF attachment endpoint", () => {
       const response = await readAttachment(state.env);
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({
-        key: owned.key,
+        attachment_id: null,
         mime_type: "application/pdf",
         pages: 1,
         text: expect.stringContaining("Scoped attachment text"),
@@ -187,7 +187,7 @@ describe("task-scoped email PDF attachment endpoint", () => {
       const response = await readAttachment(state.env);
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({
-        key: owned.key,
+        attachment_id: null,
         mime_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         text: expect.stringContaining("Task-scoped Word text"),
       });
