@@ -87,6 +87,17 @@ export function releaseCustomerVoiceNumber(spaceId: string, session: SessionCred
   return apiFetch<{ released: boolean }>(`${customerVoicePath(spaceId)}/numbers/${encodeURIComponent(bindingId)}`, { method: "DELETE", session, body: JSON.stringify({ confirm_release: true }) });
 }
 
+export interface ArchiveRewrapJob { job_id: string; status: "active" | "blocked" | "completed"; scanned_count: number; rewrapped_count: number; last_error?: string | null; updated_at?: string }
+export function getSpaceDataOps(spaceId: string, session: SessionCredentials) {
+  return apiFetch<{ archives: Array<{ archive_id: string; status: string }>; rewrap_jobs: ArchiveRewrapJob[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/data-ops`, { session, cache: "no-store" });
+}
+export function startArchiveRewrap(spaceId: string, session: SessionCredentials) {
+  return apiFetch<ArchiveRewrapJob>(`/v1/spaces/${encodeURIComponent(spaceId)}/data-ops`, { method: "POST", session, body: JSON.stringify({ action: "start_rewrap_archives" }) });
+}
+export function resumeArchiveRewrap(spaceId: string, session: SessionCredentials, jobId: string) {
+  return apiFetch<ArchiveRewrapJob>(`/v1/spaces/${encodeURIComponent(spaceId)}/data-ops`, { method: "POST", session, body: JSON.stringify({ action: "resume_rewrap_archives", job_id: jobId }) });
+}
+
 export interface CustomModelLifecycle {
   modelId: string; space_id: string; model_id: string; status: string; training_enabled: boolean;
   training_reason?: string; base_model?: string; provider_evidence?: string; evaluation_test_set?: string;

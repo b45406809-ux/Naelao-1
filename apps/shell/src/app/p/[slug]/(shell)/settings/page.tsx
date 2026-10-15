@@ -28,6 +28,7 @@ import { useActiveSpace } from "@/lib/active-space-context";
 import { useRouter } from "next/navigation";
 import { canManageSpaceSettings } from "@/lib/roles";
 import { DomainGlossaryPanel } from "@/components/DomainGlossaryPanel";
+import { ArchiveKeyRotationPanel } from "@/components/ArchiveKeyRotationPanel";
 import {
   getMe,
   updateMe,
@@ -65,6 +66,7 @@ import {
   deleteCustomModelTestSet,
   updateCustomModelLifecycle,
   type CustomModelLifecycle,
+  type SessionCredentials,
 } from "@/lib/api";
 
 const MODEL_LABELS: Record<string, string> = {
@@ -197,6 +199,8 @@ export default function SettingsPage() {
             activeSpaceId={activeSpaceId}
             productName={product.product_name}
             manifest={manifest}
+            session={creds}
+            canManage={canManage}
           />
         )}
 
@@ -267,6 +271,8 @@ function GeneralTab({
   activeSpaceId,
   productName,
   manifest,
+  session,
+  canManage,
 }: {
   isBusinessSpace: boolean;
   business: Business | null;
@@ -274,6 +280,8 @@ function GeneralTab({
   activeSpaceId: string;
   productName: string;
   manifest: ShellManifest | null;
+  session: SessionCredentials | null;
+  canManage: boolean;
 }) {
   return (
     <div>
@@ -328,6 +336,7 @@ function GeneralTab({
           this business needs to be removed.
         </div>
       )}
+      <ArchiveKeyRotationPanel spaceId={activeSpaceId} session={session} canManage={canManage} />
     </div>
   );
 }

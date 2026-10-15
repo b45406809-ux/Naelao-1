@@ -1938,6 +1938,11 @@ const MIGRATIONS: Migration[] = [
     description: "resumable encrypted R2 archive uploads",
     up: `CREATE TABLE space_archive_uploads (archive_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, space_id TEXT NOT NULL, upload_id TEXT, encrypted_bytes BLOB NOT NULL, completed_parts_json TEXT NOT NULL DEFAULT '[]', checksum TEXT NOT NULL, plaintext_bytes INTEGER NOT NULL, row_counts_json TEXT NOT NULL, object_refs_json TEXT NOT NULL, selection_fingerprint TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(archive_id) REFERENCES space_archive_records(archive_id) ON DELETE CASCADE);`,
   },
+  {
+    version: 78,
+    description: "resumable owner-started archive key rewrap jobs",
+    up: `CREATE TABLE space_archive_rewrap_jobs (job_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, space_id TEXT NOT NULL, cursor_archive_id TEXT NOT NULL DEFAULT '', end_archive_id TEXT NOT NULL DEFAULT '', status TEXT NOT NULL CHECK(status IN ('active','blocked','completed')), lease_token TEXT, lease_until TEXT, scanned_count INTEGER NOT NULL DEFAULT 0, rewrapped_count INTEGER NOT NULL DEFAULT 0, last_error TEXT, started_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL); CREATE INDEX idx_space_archive_rewrap_jobs_scope ON space_archive_rewrap_jobs(tenant_id,space_id,status);`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -2175,7 +2180,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const measurements = queryAll<{ allocated_bytes: number; measured_at: string }>(sql, "SELECT allocated_bytes,measured_at FROM space_storage_measurements WHERE tenant_id=? AND space_id=? ORDER BY measured_at DESC LIMIT 30", tenantId, spaceId);
       const forecast = forecastSpaceStorage(measurements.map(row => ({ allocatedBytes: row.allocated_bytes, measuredAt: row.measured_at })), policy?.target_storage_bytes as number | null ?? null, Number(policy?.warning_threshold_pct ?? 80));
       const archives = queryAll<Record<string, unknown>>(sql, "SELECT archive_id,kind,status,checksum,plaintext_bytes,row_counts_json,created_by,created_at,restored_at FROM space_archive_records WHERE tenant_id=? AND space_id=? ORDER BY created_at DESC LIMIT 50", tenantId, spaceId);
-      return Response.json({ policy: policy ?? { message_retention_days: 0, archive_before_delete: 0, target_storage_bytes: null, warning_threshold_pct: 80 }, storage: forecast, archives });
+      const rewrapJobs = queryAll<Record<string, unknown>>(sql, "SELECT job_id,status,scanned_count,rewrapped_count,last_error,updated_at FROM space_archive_rewrap_jobs WHERE tenant_id=? AND space_id=? AND status IN ('active','blocked') ORDER BY created_at DESC LIMIT 10", tenantId, spaceId);
+      return Response.json({ policy: policy ?? { message_retention_days: 0, archive_before_delete: 0, target_storage_bytes: null, warning_threshold_pct: 80 }, storage: forecast, archives, rewrap_jobs: rewrapJobs });
     }
     const action = String(body.action ?? "");
     if (action === "configure") {
@@ -2358,6 +2364,62 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       execute(sql, "DELETE FROM space_archive_uploads WHERE archive_id=?", archiveId);
       insertEvent("archive_created", { archive_id: archiveId, kind, checksum: encoded.checksum, plaintext_bytes: encoded.plaintextBytes, row_counts: rowCounts, object_reference_count: objectReferences.length });
       return Response.json({ archive_id: archiveId, checksum: encoded.checksum, plaintext_bytes: encoded.plaintextBytes, row_counts: rowCounts, object_reference_count: objectReferences.length, encrypted: true, replayed: false }, { status: 201 });
+    }
+    if (action === "start_rewrap_archives") {
+      if (!this.env.SCRIPTS_R2) return Response.json({ error_code: "archive_storage_unavailable" }, { status: 503 });
+      try { this.archiveKeys(); } catch (error) { return Response.json({ error_code: (error as Error).message || "archive_key_unavailable" }, { status: 503 }); }
+      const existing = queryOne<{ job_id: string; status: string }>(sql, "SELECT job_id,status FROM space_archive_rewrap_jobs WHERE tenant_id=? AND space_id=? AND status IN ('active','blocked') ORDER BY created_at DESC LIMIT 1", tenantId, spaceId);
+      if (existing) return Response.json({ job_id: existing.job_id, status: existing.status, resumed_existing: true });
+      const end = queryOne<{ archive_id: string | null }>(sql, "SELECT MAX(archive_id) AS archive_id FROM space_archive_records WHERE tenant_id=? AND space_id=? AND status='verified'", tenantId, spaceId)?.archive_id ?? "";
+      const jobId = crypto.randomUUID();
+      const initialStatus = end ? "active" : "completed";
+      execute(sql, "INSERT INTO space_archive_rewrap_jobs(job_id,tenant_id,space_id,end_archive_id,status,started_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)", jobId, tenantId, spaceId, end, initialStatus, actorId, now, now);
+      insertEvent("archive_rewrap_job_started", { job_id: jobId, end_archive_id: end });
+      return Response.json({ job_id: jobId, status: initialStatus, scanned_count: 0, rewrapped_count: 0 });
+    }
+    if (action === "get_rewrap_archives") {
+      const jobId = String(body.job_id ?? "");
+      const job = queryOne<Record<string, unknown>>(sql, "SELECT job_id,status,scanned_count,rewrapped_count,last_error,updated_at FROM space_archive_rewrap_jobs WHERE job_id=? AND tenant_id=? AND space_id=?", jobId, tenantId, spaceId);
+      return job ? Response.json(job) : Response.json({ error_code: "rewrap_job_not_found" }, { status: 404 });
+    }
+    if (action === "resume_rewrap_archives") {
+      if (!this.env.SCRIPTS_R2) return Response.json({ error_code: "archive_storage_unavailable" }, { status: 503 });
+      const jobId = String(body.job_id ?? "");
+      const job = queryOne<{ job_id: string; cursor_archive_id: string; end_archive_id: string; status: string; lease_until: string | null; scanned_count: number; rewrapped_count: number }>(sql,
+        "SELECT job_id,cursor_archive_id,end_archive_id,status,lease_until,scanned_count,rewrapped_count FROM space_archive_rewrap_jobs WHERE job_id=? AND tenant_id=? AND space_id=?", jobId, tenantId, spaceId);
+      if (!job) return Response.json({ error_code: "rewrap_job_not_found" }, { status: 404 });
+      if (job.status === "completed") return Response.json({ job_id: jobId, status: "completed", scanned_count: job.scanned_count, rewrapped_count: job.rewrapped_count });
+      if (job.lease_until && job.lease_until > now) return Response.json({ error_code: "rewrap_job_in_progress", job_id: jobId }, { status: 409 });
+      const leaseToken = crypto.randomUUID(), leaseUntil = new Date(Date.now() + 5 * 60_000).toISOString();
+      const claimed = this.ctx.storage.transactionSync(() => this.ctx.storage.sql.exec(
+        "UPDATE space_archive_rewrap_jobs SET status='active',lease_token=?,lease_until=?,last_error=NULL,updated_at=? WHERE job_id=? AND tenant_id=? AND space_id=? AND status!='completed' AND (lease_until IS NULL OR lease_until<=?)",
+        leaseToken, leaseUntil, now, jobId, tenantId, spaceId, now,
+      ));
+      if (!claimed.rowsWritten) return Response.json({ error_code: "rewrap_job_in_progress", job_id: jobId }, { status: 409 });
+      const batch = queryAll<{ archive_id: string }>(sql,
+        "SELECT archive_id FROM space_archive_records WHERE tenant_id=? AND space_id=? AND status='verified' AND archive_id>? AND archive_id<=? ORDER BY archive_id LIMIT 3",
+        tenantId, spaceId, job.cursor_archive_id, job.end_archive_id);
+      let cursor = job.cursor_archive_id, scanned = job.scanned_count, changed = job.rewrapped_count;
+      for (const item of batch) {
+        const response = await this.spaceDataOps(new Request("http://space/data-ops", {
+          method: "POST", headers: request.headers,
+          body: JSON.stringify({ ...body, action: "rewrap_archive", archive_id: item.archive_id, tenant_id: tenantId, space_id: spaceId, actor_id: actorId }),
+        }));
+        if (!response.ok) {
+          const failure = await response.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+          const message = String(failure.error_code ?? `archive_rewrap_failed_${response.status}`).slice(0, 160);
+          execute(sql, "UPDATE space_archive_rewrap_jobs SET status='blocked',lease_token=NULL,lease_until=NULL,last_error=?,updated_at=? WHERE job_id=? AND lease_token=?", message, now, jobId, leaseToken);
+          insertEvent("archive_rewrap_job_blocked", { job_id: jobId, archive_id: item.archive_id, error: message });
+          return Response.json({ error_code: "archive_rewrap_batch_blocked", job_id: jobId, blocked_archive_id: item.archive_id, message, scanned_count: scanned, rewrapped_count: changed }, { status: 503 });
+        }
+        const outcome = await response.json<{ rewrapped?: boolean }>();
+        cursor = item.archive_id; scanned++; if (outcome.rewrapped) changed++;
+        execute(sql, "UPDATE space_archive_rewrap_jobs SET cursor_archive_id=?,scanned_count=?,rewrapped_count=?,updated_at=? WHERE job_id=? AND lease_token=?", cursor, scanned, changed, now, jobId, leaseToken);
+      }
+      const completed = batch.length < 3;
+      execute(sql, "UPDATE space_archive_rewrap_jobs SET status=?,lease_token=NULL,lease_until=NULL,updated_at=? WHERE job_id=? AND lease_token=?", completed ? "completed" : "active", now, jobId, leaseToken);
+      if (completed) insertEvent("archive_rewrap_job_completed", { job_id: jobId, scanned_count: scanned, rewrapped_count: changed });
+      return Response.json({ job_id: jobId, status: completed ? "completed" : "active", scanned_count: scanned, rewrapped_count: changed, next_action: completed ? null : "resume_rewrap_archives" });
     }
     if (action === "rewrap_archive") {
       if (!this.env.SCRIPTS_R2) return Response.json({ error_code: "archive_storage_unavailable" }, { status: 503 });

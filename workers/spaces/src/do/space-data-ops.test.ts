@@ -170,6 +170,39 @@ describe("SpaceDO owner data operations", () => {
     await expect(decodeSpaceArchive(stored.bytes, activeOnly, { tenantId: "tenant-a", spaceId: "space-a", archiveId: archive.archive_id })).resolves.toMatchObject({ archiveId: archive.archive_id });
   });
 
+  it("resumes a bounded bulk rewrap job after a Durable Object restart", async () => {
+    const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", nextKey = "rotated-archive-key-material-with-more-than-32-chars";
+    const r2 = mockR2();
+    let space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
+    const token = await mintInternalToken(secret, "tenant-a");
+    const post = (body: Record<string, unknown>) => space.fetch(new Request("https://space/data-ops", { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token }, body: JSON.stringify({ tenant_id: "tenant-a", space_id: "space-a", actor_id: "owner-a", ...body }) }));
+    await space.fetch(new Request("https://space/data-ops?tenant_id=tenant-a&space_id=space-a", { headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token } }));
+    const originalKeys: string[] = [];
+    for (let index = 0; index < 5; index++) {
+      const response = await post({ action: "export", request_id: `bulk-rewrap-${index}` });
+      expect(response.status).toBe(201);
+      const archive = await response.json() as { archive_id: string };
+      originalKeys.push(storage.sql.exec<{ object_key: string }>("SELECT object_key FROM space_archive_records WHERE archive_id=?", archive.archive_id).toArray()[0]!.object_key);
+    }
+    space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SPACE_ARCHIVE_KEY: nextKey, SPACE_ARCHIVE_KEY_ID: "archive-2026-10", SPACE_ARCHIVE_KEY_PREVIOUS: secret, SPACE_ARCHIVE_KEY_PREVIOUS_ID: "archive-2026-04", SCRIPTS_R2: r2 as never } as never);
+    let result = await post({ action: "start_rewrap_archives" });
+    const started = await result.json() as { job_id: string; status: string };
+    expect(started.status).toBe("active");
+    r2.failNextWrite();
+    result = await post({ action: "resume_rewrap_archives", job_id: started.job_id });
+    expect(result.status).toBe(503);
+    expect(await post({ action: "get_rewrap_archives", job_id: started.job_id }).then(response => response.json())).toMatchObject({ status: "blocked", scanned_count: 0 });
+    result = await post({ action: "resume_rewrap_archives", job_id: started.job_id });
+    expect(await result.json()).toMatchObject({ status: "active", scanned_count: 3, rewrapped_count: 3 });
+    space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SPACE_ARCHIVE_KEY: nextKey, SPACE_ARCHIVE_KEY_ID: "archive-2026-10", SPACE_ARCHIVE_KEY_PREVIOUS: secret, SPACE_ARCHIVE_KEY_PREVIOUS_ID: "archive-2026-04", SCRIPTS_R2: r2 as never } as never);
+    result = await post({ action: "resume_rewrap_archives", job_id: started.job_id });
+    expect(await result.json()).toMatchObject({ status: "completed", scanned_count: 5, rewrapped_count: 5 });
+    expect(storage.sql.exec<{ status: string }>("SELECT status FROM space_archive_rewrap_jobs WHERE job_id=?", started.job_id).toArray()[0]?.status).toBe("completed");
+    for (const key of originalKeys) expect(r2.objects.has(key)).toBe(false);
+    const currentKeys = storage.sql.exec<{ object_key: string }>("SELECT object_key FROM space_archive_records WHERE tenant_id='tenant-a' AND space_id='space-a'").toArray();
+    for (const item of currentKeys) expect(spaceArchiveKeyVersion(r2.objects.get(item.object_key)!.bytes)).toBe("archive-2026-10");
+  });
+
   it("rolls back all restore writes when deferred foreign keys fail at commit", async () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", r2 = mockR2();
     const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret, SCRIPTS_R2: r2 as never } as never);
