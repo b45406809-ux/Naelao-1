@@ -9,7 +9,7 @@
   "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
   "bin": { "naelao-bridge": "./dist/cli.js" },
   "files": ["dist", "services"],
-  "scripts": { "build": "tsc", "typecheck": "tsc --noEmit" },
+  "scripts": { "build": "tsc", "typecheck": "tsc --noEmit", "test": "node --test test/*.test.mjs" },
   "dependencies": { "@naelao/agent-sdk": "workspace:*" },
   "devDependencies": { "@types/node": "^22.10.0", "typescript": "^5.6.3" }
 }

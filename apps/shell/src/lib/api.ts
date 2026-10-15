@@ -1012,10 +1012,29 @@ export interface ByokKeyMetadata {
   active: boolean;
 }
 
+export interface OpenRouterModelCandidate {
+  id: string;
+  model: string;
+  name: string;
+  contextLength?: number;
+  promptPriceUsdPerToken?: number;
+  completionPriceUsdPerToken?: number;
+  inputModalities?: string[];
+  outputModalities?: string[];
+}
+
 /** GET /v1/spaces/:spaceId/llm-byok — which providers are wired (member+). */
 export async function getByokStatus(spaceId: string, session: SessionCredentials): Promise<ByokProviderStatus[]> {
   const res = await apiFetch<{ providers: ByokProviderStatus[] }>(`/v1/spaces/${spaceId}/llm-byok`, { session });
   return res.providers;
+}
+
+/** Fetch the public OpenRouter model catalog after the selected Space key is validated. Catalog
+ * membership is not a promise that the key can invoke a particular model. */
+export async function getOpenRouterModels(spaceId: string, session: SessionCredentials): Promise<{
+  configured: boolean; key_validated?: boolean; availability_note?: string; models: OpenRouterModelCandidate[];
+}> {
+  return apiFetch(`/v1/spaces/${spaceId}/llm-byok/models`, { session });
 }
 
 /** PUT — store a business's own provider key (admin). The key is vaulted, never returned again. */

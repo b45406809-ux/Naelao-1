@@ -10,7 +10,9 @@ import {
   setByokKey,
   selectByokKey,
   deleteByokKey,
+  getOpenRouterModels,
   type ByokProviderStatus,
+  type OpenRouterModelCandidate,
   type SessionCredentials,
 } from "@/lib/api";
 
@@ -33,18 +35,36 @@ export function ByokKeysPanel({
 }) {
   const { toast, show } = useToast();
   const [status, setStatus] = React.useState<ByokProviderStatus[]>([]);
+  const [models, setModels] = React.useState<OpenRouterModelCandidate[]>([]);
   const [provider, setProvider] = React.useState<string>(PROVIDERS[0].id);
   const [label, setLabel] = React.useState("");
   const [keyInput, setKeyInput] = React.useState("");
   const [loading, setLoading] = React.useState(true);
   const [busy, setBusy] = React.useState(false);
   const [loadError, setLoadError] = React.useState<string | null>(null);
+  const [modelsError, setModelsError] = React.useState<string | null>(null);
+
+  const refreshModels = React.useCallback(async () => {
+    setModelsError(null);
+    try {
+      const result = await getOpenRouterModels(spaceId, creds);
+      setModels(result.models ?? []);
+      if (result.configured && result.availability_note) setModelsError(result.availability_note);
+    } catch {
+      setModels([]);
+      setModelsError("OpenRouter model inventory is unavailable. The saved key remains in the vault; try refreshing later.");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spaceId]);
 
   const refresh = React.useCallback(async () => {
     setLoading(true);
     setLoadError(null);
     try {
-      setStatus(await getByokStatus(spaceId, creds));
+      const nextStatus = await getByokStatus(spaceId, creds);
+      setStatus(nextStatus);
+      if (nextStatus.some(item => item.provider === "openrouter" && item.keys.length > 0)) await refreshModels();
+      else setModels([]);
     } catch {
       setLoadError("Couldn't load the saved provider keys. Try refreshing this section.");
     } finally {
@@ -52,7 +72,7 @@ export function ByokKeysPanel({
     }
     // Session credentials are stable for this mounted settings surface.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spaceId]);
+  }, [spaceId, refreshModels]);
 
   React.useEffect(() => { void refresh(); }, [refresh]);
 
@@ -132,6 +152,14 @@ export function ByokKeysPanel({
         </div>
       ))}
       {!canEdit && <p style={{ fontSize: 11.5, color: "var(--text3)" }}>Only the owner or an admin can change these keys.</p>}
+      {models.length > 0 && <details className="settings-block">
+        <summary className="settings-row-label">OpenRouter catalog ({models.length} models)</summary>
+        <p className="settings-row-sub">These are public catalog entries, not a guarantee that this key can use them. The provider confirms access when a request is sent.</p>
+        <div style={{ display: "grid", gap: 5, maxHeight: 280, overflow: "auto" }}>
+          {models.slice(0, 100).map((item) => <div key={item.id} className="settings-row-sub">{item.name} <span style={{ opacity: 0.7 }}>({item.id})</span>{item.contextLength ? ` · ${item.contextLength.toLocaleString()} context` : ""}</div>)}
+        </div>
+      </details>}
+      {modelsError && <p role="status" className="settings-row-sub">{modelsError}</p>}
       <p style={{ fontSize: 11.5, color: "var(--text3)" }}>Keys are encrypted in the Space vault and never shown again. Previously saved Gemini or Groq keys can be removed below; new BYOK keys use OpenRouter.</p>
       <Toast toast={toast} />
     </div>

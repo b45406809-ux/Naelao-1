@@ -32,8 +32,40 @@ async function passphrase(options) {
   if (!secret || secret.length < 12) throw new Error("Set NAELAO_BRIDGE_KEY_PASSPHRASE or --passphrase-file to protect the persistent machine key (minimum 12 characters).");
   return secret;
 }
-function hardware(options) {
-  return { platform: platform(), arch: arch(), cpuCount: cpus().length, memoryBytes: totalmem(), capabilities: options.capabilities ?? ["storage:folder"], models: options.models ?? [] };
+function hardware(options, models = options.models ?? []) {
+  return { platform: platform(), arch: arch(), cpuCount: cpus().length, memoryBytes: totalmem(), capabilities: options.capabilities ?? ["storage:folder"], models };
+}
+function modelIds(payload) {
+  const rows = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.models) ? payload.models : [];
+  const ids = [];
+  for (const row of rows) {
+    const id = typeof row === "string" ? row : row?.id ?? row?.name ?? row?.model;
+    if (typeof id === "string" && id.trim() && id.length <= 128 && !/[\u0000-\u001f\u007f]/.test(id) && !ids.includes(id.trim())) ids.push(id.trim());
+    if (ids.length >= 64) break;
+  }
+  return ids;
+}
+/** Query only a user-consented loopback inference service. Model IDs are metadata; capabilities
+ * such as reasoning or tool use are not inferred from names. */
+export async function discoverLocalModelIds(options, fetchImpl = fetch) {
+  if (options.allowInference !== true || !options.inferenceUrl) return [];
+  const endpoint = loopbackUrl(options.inferenceUrl);
+  for (const url of [new URL("/v1/models", endpoint.origin), new URL("/api/tags", endpoint.origin)]) {
+    try {
+      const response = await fetchImpl(url, { method: "GET", redirect: "error", signal: AbortSignal.timeout(5_000) });
+      if (!response.ok) continue;
+      const text = await response.text();
+      if (Buffer.byteLength(text) > 65_536) continue;
+      const ids = modelIds(JSON.parse(text));
+      if (ids.length) return ids;
+    } catch { /* Offline or unsupported API: retain manually declared model IDs. */ }
+  }
+  return [];
+}
+async function discoveredHardware(options) {
+  const discovered = await discoverLocalModelIds(options);
+  const models = [...new Set([...(options.models ?? []), ...discovered])].slice(0, 64);
+  return hardware(options, models);
 }
 async function jsonFetch(url, body, fetchImpl = fetch) {
   const response = await fetchImpl(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15000), redirect: "error" });
@@ -46,7 +78,9 @@ async function jsonFetch(url, body, fetchImpl = fetch) {
 async function consent(options) {
   const roots = [];
   for (const path of options.allowDirs ?? []) roots.push(await realpath(resolve(path)));
-  return { roots, commands: options.allowCommands ?? [], inference: options.allowInference === true };
+  const inference = options.allowInference === true;
+  return { roots, commands: options.allowCommands ?? [], inference,
+    ...(inference ? { inferenceUrl: loopbackUrl(options.inferenceUrl).toString() } : {}) };
 }
 export async function enrollBridge(options) {
   if (await lstat(options.identityFile).then(() => true).catch(error => { if (error.code === "ENOENT") return false; throw error; })) throw new Error("bridge_identity_already_exists");
@@ -55,7 +89,7 @@ export async function enrollBridge(options) {
   const endpoint = baseUrl(options.url), password = await passphrase(options), localConsent = await consent(options);
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   const enrolled = await jsonFetch(endpoint + "/tunnel/enroll", { tenantId: ticket.tenantId, spaceId: ticket.spaceId, name: ticket.name,
-    token: ticket.enrollmentToken, publicKey: publicKey.export({ format: "jwk" }), hardware: hardware(options) });
+    token: ticket.enrollmentToken, publicKey: publicKey.export({ format: "jwk" }), hardware: await discoveredHardware(options) });
   const state = { schema: 1, endpoint, machine: enrolled.machine, sequence: enrolled.machine.sequence,
     encryptedPrivateKey: privateKey.export({ format: "pem", type: "pkcs8", cipher: "aes-256-cbc", passphrase: password }), consent: localConsent };
   await atomicJson(options.identityFile, state);
@@ -110,7 +144,9 @@ export async function recoverBridgeRotation(options) {
       machine: { ...original.machine, publicKey: pending.publicKey, keyVersion: original.machine.keyVersion + 1 } };
     await atomicJson(options.identityFile, candidate);
     try {
-      const { state } = await authenticate(options, "connect", hardware(options));
+      const consented = await readIdentity(options.identityFile);
+      const { state } = await authenticate(options, "connect", await discoveredHardware({ ...options,
+        allowInference: consented.consent.inference === true, inferenceUrl: consented.consent.inferenceUrl }));
       await rm(options.identityFile + ".rotation-pending");
       return { recovered: true, machineId: state.machine.machineId, keyVersion: state.machine.keyVersion };
     } catch (error) {
@@ -148,7 +184,9 @@ export async function connectBridge(options, dependencies = {}) {
     if (await lstat(identityFile + ".rotation-pending").then(() => true).catch(error => { if (error.code === "ENOENT") return false; throw error; })) throw new Error("bridge_rotation_pending: run recover-rotation first");
     while (!shutdown.signal.aborted) {
       try {
-        const { state, response } = await authenticate({ ...options, identityFile }, "connect", hardware(options));
+        const consented = await readIdentity(identityFile);
+        const { state, response } = await authenticate({ ...options, identityFile }, "connect", await discoveredHardware({ ...options,
+          allowInference: consented.consent.inference === true, inferenceUrl: consented.consent.inferenceUrl }));
         const url = new URL(state.endpoint); url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
         url.pathname = "/tunnel/" + [state.machine.tenantId, state.machine.spaceId, state.machine.machineId].map(encodeURIComponent).join("/") + "/connect";
         url.searchParams.set("ticket", response.ticket);
@@ -279,7 +317,7 @@ export async function runBridge(argv) {
     else throw new Error("bridge_unknown_option:" + flag);
     index++;
   }
-  if (operation === "help") { process.stdout.write("naelao-bridge login --url https://agents.example --name machine-name --enrollment-file ticket.json [--allow-dir path] [--allow-command exact-command] [--allow-inference]\nnaelao-bridge connect|rotate|remove --identity path [--passphrase-file path]\n"); return; }
+  if (operation === "help") { process.stdout.write("naelao-bridge login --url https://agents.example --name machine-name --enrollment-file ticket.json [--allow-dir path] [--allow-command exact-command] [--allow-inference --inference-url http://127.0.0.1:11434/v1/chat/completions]\nnaelao-bridge connect|rotate|remove --identity path [--passphrase-file path]\n"); return; }
   if (!options.identityFile) {
     if (!options.name || !/^[a-z][a-z0-9-]{1,62}$/.test(options.name)) throw new Error("bridge_named_identity_required");
     options.identityFile = join(homedir(), ".naelao", "bridge", options.name + ".json");

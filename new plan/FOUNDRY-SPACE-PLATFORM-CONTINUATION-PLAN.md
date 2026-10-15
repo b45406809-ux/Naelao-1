@@ -137,7 +137,7 @@ Status: **PARTIALLY IMPLEMENTED — arbitrary model calls from guest code are no
 Primary read: **lines 2356–2591** (USER 2356–2358; AI MODEL 2359–2591).
 Bounded primary windows: 2356–2530, 2531–2591.
 Later amendment/dependency pairs: 2592–2772 (task 18); 3068–3284 (task 21); 3514–3753 (task 23); 3754–3942 (task 24); 4140–4268 (task 26); 4269–4441 (task 27)
-Status: **UNASSESSED**. Evidence and exact next action belong in the progress file.
+Status: **PARTIALLY IMPLEMENTED — bounded OpenRouter candidate inventory and consented local model discovery are available; model activation/recommendation remains open.** OpenRouter keys are validated before a public catalog is returned, but catalog presence does not prove key entitlement and arbitrary models remain excluded from runtime `ALLOWED_MODELS` because pricing, effort, context and route support are not fully verified. Local model IDs refresh only from an explicitly consented loopback endpoint and are authorized through the existing machine grant. FDE recommendation profiles, Jev auto-selection and dynamic billing-safe activation remain unimplemented. See task 17 evidence in the progress file.
 
 ## Task 18
 

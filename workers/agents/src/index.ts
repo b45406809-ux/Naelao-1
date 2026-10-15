@@ -14,6 +14,7 @@ import { contextWindowForModel, isAllowedModel, ALLOWED_MODELS, DEFAULT_WORKING_
 import { getDOName } from "@naelao/crypto";
 import { detectPromptInjection, detectPolicyViolations } from "@naelao/moderation";
 import { expireToolOutputs } from "./script-engine/tool-output-expiry.js";
+import { fetchOpenRouterCatalog } from "./shared/openrouter-model-catalog.js";
 import { parseMentions, creatableFeatureKindsForRole, detectImplicitSignals, classifyFailure, type MentionableAgent } from "@naelao/events";
 import { NaelaoAgentDO, ASSISTANT_MEMORY_SCOPE } from "./do/NaelaoAgentDO.js";
 import { HITLApprovalDO } from "./do/HITLApprovalDO.js";
@@ -3030,6 +3031,34 @@ app.get("/spaces/:spaceId/llm-byok", async (c) => {
   return c.json({
     providers: BYOK_PROVIDERS.map((provider) => providerMetadata(provider, rows)),
   });
+});
+
+app.get("/spaces/:spaceId/llm-byok/models", async (c) => {
+  const tenantId = await requireVerifiedTenant(c);
+  const spaceId = c.req.param("spaceId");
+  if (!c.env.CREDENTIALS_WORKER) return c.json({ error_code: "unavailable", message: "Credential vault not bound" }, 503);
+  const rows = await listByokCredentials(c.env, tenantId, spaceId);
+  const keys = rows.filter(row => isByokKeyName(row.name, NEW_BYOK_PROVIDER) && row.name !== byokActiveCredentialName(NEW_BYOK_PROVIDER));
+  if (!keys.length) return c.json({ configured: false, models: [] });
+  const pointer = rows.find(row => row.name === byokActiveCredentialName(NEW_BYOK_PROVIDER));
+  const selectedName = pointer?.description?.startsWith("active-key:") ? pointer.description.slice("active-key:".length) : null;
+  const selected = keys.find(row => row.name === selectedName) ?? keys.find(row => row.name === legacyByokCredentialName(NEW_BYOK_PROVIDER)) ?? keys[0]!;
+  const key = await resolveConnectorCredential(c.env, tenantId, spaceId, selected.name);
+  if (!key) return c.json({ error_code: "credential_unavailable", message: "The selected OpenRouter key could not be read from the Space vault" }, 503);
+  try {
+    const models = await fetchOpenRouterCatalog(key);
+    return c.json({
+      configured: true,
+      key_validated: true,
+      catalog_source: "openrouter_public_catalog",
+      availability_note: "Catalog presence does not guarantee this key can use a model. OpenRouter confirms access only when a request is made.",
+      models,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "openrouter_catalog_unavailable";
+    const status = message === "openrouter_key_rejected" ? 409 : 503;
+    return c.json({ error_code: message, message: status === 409 ? "The selected OpenRouter key was rejected; replace it in Space settings" : "OpenRouter model inventory is temporarily unavailable" }, status);
+  }
 });
 
 // ── POST /internal/projects/hibernate — finite project completion fanout ────

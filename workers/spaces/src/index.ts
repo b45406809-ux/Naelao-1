@@ -2182,6 +2182,8 @@ app.get("/spaces/:spaceId/connectors/directory", async (c) => {
 // configured:boolean only.
 app.use("/spaces/:spaceId/llm-byok", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/llm-byok", requireBusinessMembership({ GET: "member", PUT: "admin" }));
+app.use("/spaces/:spaceId/llm-byok/models", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/llm-byok/models", requireBusinessMembership({ GET: "member" }));
 app.use("/spaces/:spaceId/llm-byok/select", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/llm-byok/select", requireBusinessMembership({ POST: "admin" }));
 app.use("/spaces/:spaceId/llm-byok/remove", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
@@ -2191,6 +2193,9 @@ app.use("/spaces/:spaceId/llm-byok/:provider", requireBusinessMembership({ DELET
 
 app.get("/spaces/:spaceId/llm-byok", async (c) =>
   proxyToAgentsWorker(c, `/spaces/${encodeURIComponent(c.req.param("spaceId"))}/llm-byok`, "GET")
+);
+app.get("/spaces/:spaceId/llm-byok/models", async (c) =>
+  proxyToAgentsWorker(c, `/spaces/${encodeURIComponent(c.req.param("spaceId"))}/llm-byok/models`, "GET")
 );
 app.put("/spaces/:spaceId/llm-byok", async (c) => {
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({}));
