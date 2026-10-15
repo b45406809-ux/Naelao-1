@@ -15,6 +15,7 @@ import { mintInternalToken } from "@naelao/http";
 import type { Env } from "../env.js";
 import { reportWorkflowStepInfraUsage } from "./report-infra-usage.js";
 import type { BusinessContext } from "../launchpad/business-context.js";
+import type { OpenRouterModelCandidate } from "../shared/openrouter-model-catalog.js";
 import { checkpointAgentTask } from "./agent-task-checkpoints.js";
 import { workflowRunStub } from "./workflow-host.js";
 
@@ -29,6 +30,8 @@ export interface AgentTaskParams {
   // kbContext (the SpaceType/D1-driven ReAct config) are gone.
   agentId?: string;
   model: string;
+  /** Fresh, non-secret public catalog evidence resolved for the Space's active BYOK key. */
+  openRouterCapabilityEvidence?: OpenRouterModelCandidate;
   taskDoName: string;  // DO name for TaskDO stub
   // Go-live audit A-1/A-2: carried through to /internal/tasks/:taskId/run so enforceRunGates can
   // resolve the F-36 clamp / project wallet gate / product_end_user credit gate — previously
@@ -198,6 +201,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
               goal: p.goal,
               agentId: p.agentId,
               model: p.model,
+              openRouterCapabilityEvidence: p.openRouterCapabilityEvidence,
               userId: p.userId,
               projectId: p.projectId,
               callerRole: p.callerRole,

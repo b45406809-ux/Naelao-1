@@ -20,6 +20,7 @@ import type { PlannerQuestion, Reasoner, ReasonDecision, ReasonerUsage } from ".
 import type { Embedder } from "./types.js";
 import { contextWindowForModel } from "@naelao/billing-core";
 import { boundReasonerRequestContext } from "./request-context-budget.js";
+import { isOpenRouterPlannerCandidate, type OpenRouterModelCandidate } from "../shared/openrouter-model-catalog.js";
 
 export const DEPTH_MODELS = Object.freeze({
   1: "anthropic/claude-3-7-sonnet",
@@ -68,6 +69,8 @@ export interface ReasonerDeps {
   /** Local development may use the bound Workers AI runtime when Gateway secrets are absent. */
   localDevelopment?: boolean;
   model?: string;
+  /** Fresh catalog capability evidence resolved for this Space's active BYOK key at the router. */
+  openRouterCapabilityEvidence?: OpenRouterModelCandidate;
   /** Resolved from the selected provider model by the host; bounds the complete request, not
    * only the run-history block. */
   contextWindowTokens?: number;
@@ -1030,6 +1033,20 @@ export class GatewayReasoner implements Reasoner {
       system: boundedContext.system,
       messages: [{ role: "user", content: perception.imageUrl ? [{ type: "text" as const, text: JSON.stringify(boundedPayload) }, { type: "image_url" as const, image_url: { url: perception.imageUrl } }] : boundedContext.user }],
     };
+
+    // Dynamic models are admitted at /agent/run using the active Space key's fresh public
+    // catalog snapshot. Carry that non-secret evidence all the way to dispatch and re-check it
+    // immediately before billing/provider I/O. Catalog membership is not key entitlement; only
+    // a user-requested inference can establish that, and provider errors remain visible.
+    if (query.model.startsWith("openrouter/")) {
+      const evidence = this.deps.openRouterCapabilityEvidence;
+      if (!evidence || evidence.model !== query.model || !isOpenRouterPlannerCandidate(evidence)) {
+        return { action: "give_up", reason: "model_capability_unverified: fresh text, tools, context, or price evidence is unavailable; no inference was sent" };
+      }
+      if (perception.imageUrl && !evidence.inputModalities?.includes("image")) {
+        return { action: "give_up", reason: "model_capability_unverified: selected model does not declare image input; no inference was sent" };
+      }
+    }
 
     if (this.deps.reserveInferenceCost) {
       let admitted = false;

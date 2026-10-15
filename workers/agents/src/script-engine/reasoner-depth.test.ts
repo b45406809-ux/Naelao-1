@@ -41,3 +41,38 @@ describe("pre-inference spend admission", () => {
     expect(decision).toMatchObject({ action: "give_up", reason: "project_spend_reservation_unavailable: no inference was sent" });
   });
 });
+
+describe("dynamic OpenRouter modality admission", () => {
+  const imageTurn = {
+    goal: "Describe this screenshot", level: "L2", snapshot: {}, candidates: [], availableOperations: [],
+    priorSteps: [{ name: "browser.see", ok: true, params: {}, output: { image_base64: "aGVsbG8=", mime_type: "image/png" } }],
+  } as never;
+  const evidence = (inputModalities: string[], observedAt = new Date().toISOString()) => ({
+    id: "vendor/model", model: "openrouter/vendor/model", name: "Model", contextLength: 262_144,
+    promptPriceUsdPerToken: 0.000001, completionPriceUsdPerToken: 0.000002,
+    inputModalities, outputModalities: ["text"], supportedParameters: ["tools"], catalogObservedAt: observedAt,
+  });
+  const deps = (openRouterCapabilityEvidence: ReturnType<typeof evidence>, reserveInferenceCost: () => Promise<boolean>, model = "openrouter/vendor/model") => ({
+    apiKey: "", gateway: { accountId: "test", gatewayId: "test", openRouterApiKey: "key" },
+    ctx: { spaceId: "space", agentId: "agent", model },
+    model, openRouterCapabilityEvidence, reserveInferenceCost,
+  });
+
+  it("denies image requests when the catalog does not declare image input before reserving cost", async () => {
+    const reserve = vi.fn(async () => true);
+    const decision = await new GatewayReasoner(deps(evidence(["text"]), reserve)).decide(imageTurn);
+    expect(decision).toMatchObject({ action: "give_up", reason: expect.stringContaining("does not declare image input") });
+    expect(reserve).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when capability evidence is stale or belongs to another model", async () => {
+    const reserve = vi.fn(async () => true);
+    const stale = evidence(["text", "image"], new Date(Date.now() - 16 * 60_000).toISOString());
+    const staleDecision = await new GatewayReasoner(deps(stale, reserve)).decide({ ...imageTurn, priorSteps: [] } as never);
+    expect(staleDecision).toMatchObject({ action: "give_up", reason: expect.stringContaining("no inference was sent") });
+    const wrongModel = { ...evidence(["text", "image"]), model: "openrouter/other/model" };
+    const mismatchDecision = await new GatewayReasoner(deps(wrongModel, reserve, "openrouter/vendor/model")).decide({ ...imageTurn, priorSteps: [] } as never);
+    expect(mismatchDecision).toMatchObject({ action: "give_up", reason: expect.stringContaining("no inference was sent") });
+    expect(reserve).not.toHaveBeenCalled();
+  });
+});

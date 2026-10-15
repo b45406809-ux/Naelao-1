@@ -1241,6 +1241,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         // agent's R2 config by agentId — systemPrompt/tools/kbContext are no longer meaningful.
         agentId,
         model: rawBody.model ?? modelConfig.model ?? DEFAULT_WORKING_MODEL,
+        ...(dynamicModelCandidate ? { openRouterCapabilityEvidence: dynamicModelCandidate } : {}),
         taskDoName,
         // Go-live audit A-1/A-2: threaded through to /internal/tasks/:taskId/run's own
         // http://agent-do/script/run call — see that route's own comment.
@@ -1313,6 +1314,9 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         projectId: rawBody.project_id,
         apiKey: c.env.ANTHROPIC_API_KEY ?? "",
         model: rawBody.model ?? modelConfig.model ?? DEFAULT_WORKING_MODEL,
+        // The public, non-secret capability snapshot validated above. Rechecked at the actual
+        // provider dispatch so media/tool requirements fail closed if evidence is missing/stale.
+        ...(dynamicModelCandidate ? { openRouterCapabilityEvidence: dynamicModelCandidate } : {}),
         // §A1 Harness Excellence Phase HX2: threaded through the same path as model above.
         sessionCreditCeiling,
         // WHICH business this is — resolved above from the space row. Sent on BOTH dispatch paths
@@ -2778,6 +2782,7 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
     // its own config from R2 by agentId (see AgentTaskWorkflow.ts's matching param change).
     agentId?: string;
     model: string;
+    openRouterCapabilityEvidence?: OpenRouterModelCandidate;
     userId?: string;
     projectId?: string;
     callerRole?: string;
@@ -2815,6 +2820,7 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
           tenantId: body.tenantId,
           apiKey: c.env.ANTHROPIC_API_KEY ?? "",
           model: body.model,
+          openRouterCapabilityEvidence: body.openRouterCapabilityEvidence,
           // Go-live audit A-1/A-2: previously dropped here — see AgentTaskWorkflow.ts's own
           // comment for the full chain this closes.
           userId: body.userId,

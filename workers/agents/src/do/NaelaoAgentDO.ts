@@ -28,7 +28,7 @@ import { tokensToCredits, tokensToCreditsAtPrice, estimateRequestCostCredits, in
 import { classifyFailure } from "@naelao/events";
 import type { ReasoningRequest, GatewayOpts } from "../shared/ai-client.js";
 import { authorizedFailoversForModel, byokProviderForModel, BYOK_PROVIDER_KEY_FIELD } from "../shared/ai-client.js";
-import { fetchOpenRouterCatalog, isOpenRouterPlannerCandidate } from "../shared/openrouter-model-catalog.js";
+import { fetchOpenRouterCatalog, isOpenRouterPlannerCandidate, type OpenRouterModelCandidate } from "../shared/openrouter-model-catalog.js";
 import {
   ScriptToolSurface,
   privacyBridgeCard,
@@ -4253,6 +4253,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       context?: Record<string, unknown>;
       apiKey?: string;
       model?: string;
+      openRouterCapabilityEvidence?: OpenRouterModelCandidate;
       /** A chosen reasoning-effort/thinking level for `model`, already validated by the caller
        *  (index.ts's /agent/run route) against billing-core's isValidReasoningLevel — an invalid
        *  or unsupported level for the chosen model is dropped rather than trusted again here,
@@ -4618,6 +4619,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       },
       ctx: { spaceId, agentId, model: body.model ?? DEFAULT_WORKING_MODEL },
       ...(body.model ? { model: body.model } : {}),
+      ...(body.openRouterCapabilityEvidence ? { openRouterCapabilityEvidence: body.openRouterCapabilityEvidence } : {}),
       contextWindowTokens: contextWindowForModel(body.model ?? DEFAULT_WORKING_MODEL),
       fallbacks: authorizedFailoversForModel(body.model ?? DEFAULT_WORKING_MODEL, this.resolveFailoverChain(body.model ?? DEFAULT_WORKING_MODEL, body.apiKey ?? "")),
       ...(reasoningRequest ? { reasoning: reasoningRequest } : {}),
