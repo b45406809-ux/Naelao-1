@@ -193,7 +193,7 @@ Status: **ASSESSED; see `CONTINUATION-IMPLEMENTATION-PROGRESS.md` for dispositio
 Primary read: **lines 3943–4139** (USER 3943–3945; AI MODEL 3946–4139).
 Bounded primary windows: 3943–4117, 4118–4139.
 Later amendment/dependency pairs: 4140–4268 (task 26); 4442–4647 (task 28); 4648–4794 (task 29); 4795–4982 (task 30)
-Status: **ASSESSED; see `CONTINUATION-IMPLEMENTATION-PROGRESS.md` for disposition and evidence.**
+Status: **PARTIAL — local storage size is measured and bounded for Tier-1 Gadgets, but per-Gadget price attribution is unavailable.** `MicroAppDO` enforces a 25 MiB Tier-1 limit and exposes SQLite page-count/page-size allocation; higher tiers are uncapped. SpaceDO measures/forecasts total DB allocation and has explicit owner-controlled retention/archive-before-delete for messages. There is no automated per-Gadget compaction or cost breakdown. The monthly USD estimate is deliberately null because allocated bytes do not establish provider billing units; Cloudflare's current official DO/Workers pricing pages returned 403, so the response's tariff and Parquet/DuckDB/credits formula are not validated. See Task25 evidence in the progress log.
 
 ## Task 26
 
