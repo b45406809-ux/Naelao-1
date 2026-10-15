@@ -65,6 +65,28 @@ export async function apiFetch<T>(path: string, options: RequestInit & {
   return requestJson<T>(`${session?.sessionToken === "cookie" ? "/api/naelao" : API_URL}${path}`, { ...fetchOptions, headers, ...(session?.sessionToken === "cookie" ? { credentials: "include" as const } : {}) }, { onRetry, retries });
 }
 
+export interface CustomerVoiceNumber {
+  id: string; provider_number_sid: string; phone_number: string; country_code: string; region: string;
+  capabilities_json: string; monthly_cost_minor: number; inbound_price_per_minute_minor: number;
+  max_concurrent_calls: number; max_call_duration_seconds: number; status: string; created_at: string;
+}
+const customerVoicePath = (spaceId: string) => `/v1/spaces/${encodeURIComponent(spaceId)}/customer-voice`;
+export function listCustomerVoiceNumbers(spaceId: string, session: SessionCredentials) {
+  return apiFetch<{ numbers: CustomerVoiceNumber[] }>(`${customerVoicePath(spaceId)}/numbers`, { session, cache: "no-store" });
+}
+export function saveCustomerVoiceCredentials(spaceId: string, session: SessionCredentials, accountSid: string, authToken: string) {
+  return apiFetch<{ configured: boolean; account_sid: string }>(`${customerVoicePath(spaceId)}/twilio-credentials`, { method: "PUT", session, body: JSON.stringify({ account_sid: accountSid, auth_token: authToken }) });
+}
+export function importCustomerVoiceNumber(spaceId: string, session: SessionCredentials, body: { phone_number_sid: string; agent_id: string; owner_prompt: string }) {
+  return apiFetch<CustomerVoiceNumber>(`${customerVoicePath(spaceId)}/numbers/import`, { method: "POST", session, body: JSON.stringify(body) });
+}
+export function disableCustomerVoiceNumber(spaceId: string, session: SessionCredentials, bindingId: string) {
+  return apiFetch<{ disabled: boolean }>(`${customerVoicePath(spaceId)}/numbers/${encodeURIComponent(bindingId)}/disable`, { method: "POST", session, body: "{}" });
+}
+export function releaseCustomerVoiceNumber(spaceId: string, session: SessionCredentials, bindingId: string) {
+  return apiFetch<{ released: boolean }>(`${customerVoicePath(spaceId)}/numbers/${encodeURIComponent(bindingId)}`, { method: "DELETE", session, body: JSON.stringify({ confirm_release: true }) });
+}
+
 export interface CustomModelLifecycle {
   modelId: string; space_id: string; model_id: string; status: string; training_enabled: boolean;
   training_reason?: string; base_model?: string; provider_evidence?: string; evaluation_test_set?: string;

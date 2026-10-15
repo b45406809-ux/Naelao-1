@@ -1279,6 +1279,12 @@ api.all("/spaces/:spaceId/channels/*", async (c) =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );
 
+// Customer PSTN number credentials, policy, and lifecycle are owned by the Agents worker.
+// Keep this specific route before the general /spaces/* proxy below.
+api.all("/spaces/:spaceId/customer-voice/*", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+
 // WS-2: Space Assistant surface read-only panels (Memory/Channels/Sub-agents/Files) → agents
 // worker, which owns the NaelaoAgentDO forwarding + R2 workspace listing for these.
 api.all("/spaces/:spaceId/assistant/*", async (c) =>
@@ -1372,6 +1378,8 @@ api.all("/channels/:channel/connect", async (c) => proxyTo(c.env.AGENTS_WORKER, 
 api.all("/project-templates", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 
 app.route("/v1", api);
+
+export { app };
 
 // ── Error handler ────────────────────────────────────────────────────────────
 app.onError((err, c) => {
