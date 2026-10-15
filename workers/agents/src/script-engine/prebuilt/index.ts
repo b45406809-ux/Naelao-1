@@ -58,6 +58,7 @@ import { languageDetection } from "./language-detection.js";
 import { languageGlossary } from "./language-glossary.js";
 import { languageTranslation } from "./language-translation.js";
 import { attachments } from "./attachments.js";
+import { customerAttachments } from "./customer-attachments.js";
 
 /** Context handed to every prebuilt operation. */
 export interface PrebuiltOpContext {
@@ -103,6 +104,7 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   [languageGlossary.name]: languageGlossary,
   [languageTranslation.name]: languageTranslation,
   [attachments.name]: attachments,
+  [customerAttachments.name]: customerAttachments,
   [runtimeDiscovery.name]: runtimeDiscovery,
   [foundryInbox.name]: foundryInbox,
   [r2Workspace.name]: r2Workspace,
@@ -229,4 +231,5 @@ export {
   tasks,
   plan,
   customerBot,
+  customerAttachments,
 };

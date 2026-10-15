@@ -64,6 +64,59 @@ describe("typed fast decisions", () => {
     await expect(new SystemOneDecisionClient().preflightRuntime("test")).resolves.toBeUndefined();
   });
 
+  it("classifies attachment intent in one metadata-only decision and recommends a bounded skill", async () => {
+    const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { state: { message: string; attachments: Array<{ id: string }> } };
+      expect(body.state.message).toBe("Read the attached invoice total");
+      expect(body.state.attachments).toEqual([{ id: "opaque-1", filename: "invoice.pdf", mimeType: "application/pdf", sizeBytes: 1200 }]);
+      expect(JSON.stringify(body)).not.toContain("PRIVATE_FILE_BYTES");
+      const criteria = (JSON.parse(String(init?.body)) as { questions: { decision: { criteria: Record<string, unknown> } } }).questions.decision.criteria;
+      expect(criteria).toHaveProperty("read_0");
+      return Response.json({ model: "jev-1.13.0", answers: { decision: { type: "choice", choice: "read_0", probabilities: Object.fromEntries(Object.keys(criteria).map((key) => [key, key === "read_0" ? 1 : 0])), confidence: 0.96 } }, usage: { input_tokens: 30, output_tokens: 3 } });
+    });
+    const client = new SystemOneDecisionClient({ apiKey: "secret", fetch: fetcher as typeof fetch, maxRetries: 0 });
+    await expect(client.classifyAttachments!({
+      message: "Read the attached invoice total",
+      attachments: [{ id: "opaque-1", filename: "invoice.pdf", mimeType: "application/pdf", sizeBytes: 1_200 }],
+    })).resolves.toMatchObject({ status: "candidate_tool", action: "read", candidateTool: "attachment.read", candidateAttachmentId: "opaque-1", candidateSkill: "attachment-readers", confidence: 0.96 });
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("does not recommend an unavailable operation", async () => {
+    const client = new SystemOneDecisionClient({ fetch: vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { questions: { decision: { criteria: Record<string, unknown> } } };
+      expect(body.questions.decision.criteria).not.toHaveProperty("copy_0");
+      const keys = Object.keys(body.questions.decision.criteria);
+      return Response.json({ model: "jev-1.13.0", answers: { decision: { type: "choice", choice: "not_needed", probabilities: Object.fromEntries(keys.map((key) => [key, key === "not_needed" ? 1 : 0])), confidence: 0.99 } }, usage: { input_tokens: 12, output_tokens: 2 } });
+    }) as typeof fetch, maxRetries: 0 });
+    await expect(client.classifyAttachments!({
+      message: "Save this image without reading it",
+      attachments: [{ id: "image-1", filename: "photo.png", mimeType: "image/png", sizeBytes: 200 }],
+      availableTools: ["attachment.inspect", "attachment.read", "attachment.ocr"],
+    })).resolves.toMatchObject({ status: "not_needed", action: "not_needed", candidateSkill: "attachment-routing" });
+  });
+
+  it("binds an OCR recommendation to the image attachment that matched the request", async () => {
+    const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { questions: { decision: { criteria: Record<string, unknown> } } };
+      const criteria = body.questions.decision.criteria;
+      expect(criteria).toHaveProperty("ocr_1");
+      expect(criteria).not.toHaveProperty("ocr_0");
+      return Response.json({ model: "jev-1.13.0", answers: { decision: {
+        type: "choice", choice: "ocr_1", probabilities: Object.fromEntries(Object.keys(criteria).map((key) => [key, key === "ocr_1" ? 1 : 0])), confidence: 0.9,
+      } }, usage: { input_tokens: 20, output_tokens: 3 } });
+    });
+    const client = new SystemOneDecisionClient({ fetch: fetcher as typeof fetch, maxRetries: 0 });
+    await expect(client.classifyAttachments!({
+      message: "Read the text in the attached photograph",
+      attachments: [
+        { id: "opaque-doc", filename: "notes.txt", mimeType: "text/plain", sizeBytes: 700 },
+        { id: "opaque-image", filename: "photo.jpg", mimeType: "image/jpeg", sizeBytes: 900 },
+      ],
+      availableTools: ["attachment.ocr", "attachment.read"],
+    })).resolves.toMatchObject({ action: "ocr", candidateAttachmentId: "opaque-image", candidateTool: "attachment.ocr" });
+  });
+
   it("rejects an out-of-domain answer", async () => {
     const client = new SystemOneDecisionClient({ fetch: vi.fn(async () => Response.json({ model: "jev-1", answers: { decision: { type: "choice", choice: "host", probabilities: { isolate: 0.5, container: 0.5 }, confidence: 0.1 } }, usage: { input_tokens: 1, output_tokens: 1 } })) as typeof fetch, maxRetries: 0 });
     await expect(client.choice({ state: "echo ok", instructions: "Choose", criteria: { isolate: null, container: null }, policyCode: "test" })).rejects.toThrow("system_one_invalid_choice_answer");

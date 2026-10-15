@@ -131,8 +131,9 @@ const slackAdapter: ChannelAdapter = {
     const user = str(raw, "user");
     const text = str(raw, "text");
     const ts = str(raw, "ts");
-    if (!user || !text || !ts) return null;
-    return { channel: "slack", channel_user_id: user, text, external_id: ts, timestamp: Math.floor(Number(ts) * 1000) || Date.now() };
+    const hasFiles = Array.isArray(raw["files"]) && raw["files"].length > 0;
+    if (!user || (text === undefined && !hasFiles) || !ts) return null;
+    return { channel: "slack", channel_user_id: user, text: text ?? "", external_id: ts, timestamp: Math.floor(Number(ts) * 1000) || Date.now() };
   },
   formatOutbound(msg) {
     return { text: msg.text, blocks: [{ type: "section", text: { type: "mrkdwn", text: msg.text } }] };
@@ -161,8 +162,9 @@ const discordAdapter: ChannelAdapter = {
     const userId = author ? str(author, "id") : undefined;
     const text = str(raw, "content");
     const id = str(raw, "id");
-    if (!userId || !text || !id) return null;
-    return { channel: "discord", channel_user_id: userId, text, external_id: id, timestamp: Date.now() };
+    const hasAttachments = Array.isArray(raw["attachments"]) && raw["attachments"].length > 0;
+    if (!userId || (text === undefined && !hasAttachments) || !id) return null;
+    return { channel: "discord", channel_user_id: userId, text: text ?? "", external_id: id, timestamp: Date.now() };
   },
   formatOutbound(msg) {
     return { content: msg.text };
@@ -294,7 +296,9 @@ const telegramAdapter: ChannelAdapter = {
     const message = raw["message"] as Record<string, unknown> | undefined;
     if (!message) return null;
     const text = typeof message["text"] === "string" ? message["text"] : "";
-    if (!text.trim()) return null;
+    const hasMedia = (Array.isArray(message["photo"]) && message["photo"].length > 0) || ["document", "audio", "voice", "video", "animation", "video_note", "sticker"]
+      .some((kind) => message[kind] && typeof message[kind] === "object");
+    if (!text.trim() && !hasMedia) return null;
 
     const from = message["from"] as Record<string, unknown> | undefined;
     const chat = message["chat"] as Record<string, unknown> | undefined;
@@ -349,8 +353,8 @@ export const twilioWhatsappAdapter: ChannelAdapter = {
     const from = (str(raw, "From") ?? "").replace(/^whatsapp:/, "");
     const text = str(raw, "Body") ?? "";
     const id = str(raw, "MessageSid") ?? str(raw, "SmsMessageSid") ?? "";
-    const isVoiceNote = Number(str(raw, "NumMedia") ?? 0) > 0 && (str(raw, "MediaContentType0") ?? "").startsWith("audio/");
-    if (!from || (!text.trim() && !isVoiceNote) || !id) return null;
+    const hasMedia = Number(str(raw, "NumMedia") ?? 0) > 0;
+    if (!from || (!text.trim() && !hasMedia) || !id) return null;
     return { channel: "whatsapp", channel_user_id: from, text, external_id: id, timestamp: Date.now() };
   },
   formatOutbound(msg) {

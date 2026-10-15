@@ -67,7 +67,11 @@ import {
 import { listDirectory, resolveConnectTarget, curatedLogos, type DirectoryApp } from "./connectors/directory.js";
 import { startPipedreamConnect, pipedreamConnectionActive } from "./connectors/pipedream.js";
 import { isChannelType, getAdapter, twilioWhatsappAdapter, type ChannelType } from "./launchpad/channels.js";
-import { hasWhatsAppVoiceNote, transcribeTwilioWhatsAppVoice, transcribeWhatsAppVoiceNote } from "./launchpad/whatsapp-media.js";
+import { downloadTwilioWhatsAppAttachments, downloadWhatsAppAttachments, hasWhatsAppVoiceNote, transcribeTwilioWhatsAppVoice, transcribeWhatsAppVoiceNote } from "./launchpad/whatsapp-media.js";
+import { downloadTelegramAttachments, hasTelegramMedia } from "./launchpad/telegram-media.js";
+import { downloadSlackAttachments, hasSlackFiles } from "./launchpad/slack-media.js";
+import { downloadDiscordAttachments, hasDiscordAttachments } from "./launchpad/discord-media.js";
+import { storeChannelAttachments } from "./channels/channel-attachment-store.js";
 import {
   isPairableChannel, issuePairingToken, consumePairingToken, buildPairing,
   extractPairingToken, PAIRING_TTL_SECONDS, type PairableChannel,
@@ -5468,7 +5472,10 @@ app.post("/channels/platform-inbound/:channel", async (c) => {
   // Voice media is fetched and transcribed only after the sender is paired to an active space.
   // Never send unpaired users' audio to an external AI service. Spaces selecting a local model
   // fail closed until a local audio transcriber can be bound; no Cloudflare fallback is allowed.
-  if (channel === "whatsapp" && !inbound.text) {
+  const isWhatsAppVoiceMedia = channel === "whatsapp" && (viaTwilio
+    ? (parsed["MediaContentType0"] as string | undefined)?.startsWith("audio/") === true
+    : hasWhatsAppVoiceNote(raw));
+  if (isWhatsAppVoiceMedia) {
     if (wakeContext.model.startsWith("local/")) return c.json({ error_code: "voice_transcription_not_available_for_selected_model" }, 422);
     try {
       if (viaTwilio) {
@@ -5494,6 +5501,50 @@ app.post("/channels/platform-inbound/:channel", async (c) => {
         reason === "whatsapp_voice_transcription_empty_or_too_large";
       console.warn(`[channels] WhatsApp voice note ${rejected ? "rejected" : "unavailable"}: ${reason}`);
       return c.json({ error_code: rejected ? "unsupported_voice_note" : "voice_transcription_unavailable" }, { status: rejected ? 422 : 503 });
+    }
+  }
+
+  // Retain the original customer media in the same attachment index used by email and
+  // per-Space webhooks. This executes only after the provider signature, pairing, active-Space,
+  // and air-gap checks. Provider bytes never enter the Durable Object message JSON.
+  const mediaInbound = activeAdapter.normalizeInbound(raw);
+  const hasPlatformWhatsAppMedia = channel === "whatsapp" && (viaTwilio
+    ? Number(parsed["NumMedia"] ?? 0) > 0
+    : ((raw.entry as Array<{ changes?: Array<{ value?: { messages?: Array<Record<string, unknown>> } }> }> | undefined)?.[0]?.changes?.[0]?.value?.messages ?? [])
+      .some((message) => ["image", "document", "audio", "video", "sticker"].includes(String(message.type))));
+  const hasPlatformTelegramMedia = channel === "telegram" && hasTelegramMedia(raw);
+  const hasPlatformSlackFiles = channel === "slack" && hasSlackFiles(raw);
+  const hasPlatformDiscordFiles = channel === "discord" && hasDiscordAttachments(raw);
+  if (mediaInbound && (hasPlatformWhatsAppMedia || hasPlatformTelegramMedia || hasPlatformSlackFiles || hasPlatformDiscordFiles)) {
+    if (!c.env.SCRIPTS_R2) return c.json({ error_code: "channel_attachment_storage_unavailable" }, 503);
+    let files: Awaited<ReturnType<typeof downloadWhatsAppAttachments>>;
+    try {
+      if (viaTwilio) {
+        files = await downloadTwilioWhatsAppAttachments(parsed as Record<string, string>, {
+          ...(c.env.TWILIO_ACCOUNT_SID ? { accountSid: c.env.TWILIO_ACCOUNT_SID } : {}),
+          ...(c.env.TWILIO_AUTH_TOKEN ? { authToken: c.env.TWILIO_AUTH_TOKEN } : {}),
+        });
+      } else if (channel === "whatsapp") {
+        files = await downloadWhatsAppAttachments(raw, {
+          ...(c.env.WHATSAPP_ACCESS_TOKEN ? { accessToken: c.env.WHATSAPP_ACCESS_TOKEN } : {}),
+          ...(c.env.WHATSAPP_GRAPH_API_VERSION ? { graphApiVersion: c.env.WHATSAPP_GRAPH_API_VERSION } : {}),
+        });
+      } else if (channel === "telegram") {
+        files = await downloadTelegramAttachments(raw, { ...(c.env.TELEGRAM_BOT_TOKEN ? { botToken: c.env.TELEGRAM_BOT_TOKEN } : {}) });
+      } else if (channel === "slack") {
+        const botToken = await resolveConnectorCredential(c.env, paired.tenantId, paired.spaceId, "SLACK_BOT_OAUTH_TOKEN");
+        files = await downloadSlackAttachments(raw, { ...(botToken ? { botToken } : {}) });
+      } else {
+        files = await downloadDiscordAttachments(raw);
+      }
+      if (!files.length) return c.json({ error_code: "channel_media_missing" }, 422);
+      await storeChannelAttachments({ db: c.env.PLATFORM_DB, bucket: c.env.SCRIPTS_R2, platformSecret: c.env.PLATFORM_SECRET,
+        tenantId: paired.tenantId, spaceId: paired.spaceId, taskId: mediaInbound.external_id, channel, files });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "channel_media_unavailable";
+      const rejected = /(?:media|slack)_?(?:rejected|url_rejected|size_mismatch|too_large)/.test(reason) || reason.includes("size_limit") || reason.includes("count_limit");
+      console.warn(`[channels] platform media ${rejected ? "rejected" : "unavailable"} channel=${channel}: ${reason}`);
+      return c.json({ error_code: rejected ? "unsupported_channel_media" : "channel_media_unavailable" }, rejected ? 422 : 503);
     }
   }
 
@@ -5525,6 +5576,7 @@ app.post("/channels/platform-inbound/:channel", async (c) => {
         projectId: paired.projectId ?? undefined,
         spaceId: paired.spaceId,
         tenantId: paired.tenantId,
+        ...(inbound.external_id ? { taskId: inbound.external_id } : {}),
         apiKey: "",
       }),
     }));
@@ -5558,11 +5610,21 @@ app.get("/channels/pair-callback/:channel", async (c) => {
   }
 
   try {
-    const externalId = await exchangeInstall(c.env, channel, code);
-    if (!externalId) {
+    const install = await exchangeInstall(c.env, channel, code);
+    if (!install?.externalId) {
       return c.html(pairingPage("That didn't complete.", "The provider didn't confirm the install. Try again from Channels."));
     }
-    await bindPairedChannel(c.env, ticket, externalId);
+    if (channel === "slack") {
+      if (!install.botToken) throw new Error("Slack did not return a bot token for the requested file-read scope.");
+      if (!c.env.CREDENTIALS_WORKER) throw new Error("The credential vault is unavailable, so Slack file access was not saved.");
+      const saved = await storeConnectorCredential(c.env, {
+        tenantId: ticket.tenantId, spaceId: ticket.spaceId, userId: ticket.userId,
+        name: "SLACK_BOT_OAUTH_TOKEN", value: install.botToken,
+        description: "Slack bot token used only for files shared with this connected workspace", scope: "space",
+      });
+      if (!saved.ok && saved.status !== 409) throw new Error("Slack connected, but its file access credential could not be saved safely. Try pairing again.");
+    }
+    await bindPairedChannel(c.env, ticket, install.externalId);
     return c.html(pairingPage("Connected.",
       `Your assistant is now reachable on ${channel === "slack" ? "Slack" : "Discord"}. You can close this tab.`));
   } catch (err) {
@@ -5572,7 +5634,7 @@ app.get("/channels/pair-callback/:channel", async (c) => {
 
 /** Exchange an OAuth code for the workspace/guild the app was installed into. Returns the id to
  *  bind, or null when the provider didn't actually confirm an install. */
-async function exchangeInstall(env: AgentsEnv, channel: PairableChannel, code: string): Promise<string | null> {
+async function exchangeInstall(env: AgentsEnv, channel: PairableChannel, code: string): Promise<{ externalId: string; botToken?: string } | null> {
   const redirectUri = `${(env.PUBLIC_AGENTS_URL ?? "").replace(/\/$/, "")}/channels/pair-callback/${channel}`;
   if (channel === "slack") {
     if (!env.SLACK_CLIENT_ID || !env.SLACK_CLIENT_SECRET) throw new Error("Slack isn't configured on this platform.");
@@ -5586,10 +5648,12 @@ async function exchangeInstall(env: AgentsEnv, channel: PairableChannel, code: s
     });
     // Slack answers 200 with ok:false on failure — treating the status alone as success would
     // record a binding for an install that never happened.
-    type SlackInstall = { ok?: boolean; error?: string; team?: { id?: string } };
+    type SlackInstall = { ok?: boolean; error?: string; team?: { id?: string }; access_token?: string; token_type?: string };
     const json = await resp.json<SlackInstall>().catch(() => ({}) as SlackInstall);
     if (!json.ok) throw new Error(json.error ?? "Slack rejected the install.");
-    return json.team?.id ?? null;
+    const externalId = json.team?.id;
+    if (!externalId) return null;
+    return { externalId, ...(json.access_token ? { botToken: json.access_token } : {}) };
   }
 
   if (!env.DISCORD_CLIENT_ID || !env.DISCORD_CLIENT_SECRET) throw new Error("Discord isn't configured on this platform.");
@@ -5605,7 +5669,7 @@ async function exchangeInstall(env: AgentsEnv, channel: PairableChannel, code: s
   type DiscordInstall = { guild?: { id?: string }; error_description?: string };
   const json = await resp.json<DiscordInstall>().catch(() => ({}) as DiscordInstall);
   if (!resp.ok) throw new Error(json.error_description ?? "Discord rejected the install.");
-  return json.guild?.id ?? null;
+  return json.guild?.id ? { externalId: json.guild.id } : null;
 }
 
 /** A plain confirmation page. The owner lands here from their own browser, so it has to say what
@@ -5758,6 +5822,81 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
     }
   }
 
+  // Persist supported provider media as opaque task-scoped attachments. The incoming webhook
+  // signature is verified above; provider media IDs are resolved only through their authenticated
+  // APIs and bounded before the bytes enter R2. Never fetch an arbitrary URL from webhook JSON.
+  const normalizedInbound = adapter.normalizeInbound(normalizedRaw);
+  const whatsappMessages = (raw.entry as Array<{ changes?: Array<{ value?: { messages?: Array<Record<string, unknown>> } }> }> | undefined)?.[0]?.changes?.[0]?.value?.messages ?? [];
+  const hasWhatsAppMedia = channel === "whatsapp" && whatsappMessages.some((message) =>
+    ["image", "document", "audio", "video", "sticker"].includes(String(message.type)));
+  const hasTelegramFiles = channel === "telegram" && hasTelegramMedia(raw);
+  const hasSlackFilesPresent = channel === "slack" && hasSlackFiles(raw);
+  const hasDiscordFiles = channel === "discord" && hasDiscordAttachments(raw);
+  const hasChannelMedia = hasWhatsAppMedia || hasTelegramFiles || hasSlackFilesPresent || hasDiscordFiles;
+  if (hasChannelMedia && normalizedInbound && c.env.SCRIPTS_R2) {
+    const taskId = normalizedInbound.external_id;
+    let files: Awaited<ReturnType<typeof downloadWhatsAppAttachments>>;
+    if (channel === "whatsapp") {
+      const mediaTokenResponse = await c.env.CREDENTIALS_WORKER.fetch(new Request(
+        `http://credentials/v1/internal/spaces/${spaceId}/credentials/WHATSAPP_MEDIA_ACCESS_TOKEN/plaintext`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-naelao-tenant-id": space.tenant_id, "x-naelao-credential-token": credToken },
+        }
+      ));
+      if (!mediaTokenResponse.ok) return c.json({ error_code: "whatsapp_media_access_token_missing" }, 503);
+      const { value: mediaToken } = await mediaTokenResponse.json<{ value: string }>();
+      try {
+        files = await downloadWhatsAppAttachments(raw, {
+          accessToken: mediaToken,
+          ...(c.env.WHATSAPP_GRAPH_API_VERSION ? { graphApiVersion: c.env.WHATSAPP_GRAPH_API_VERSION } : {}),
+        });
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : "whatsapp_media_download_failed";
+        const rejected = reason === "whatsapp_media_rejected" || reason === "whatsapp_media_url_rejected" ||
+          reason === "whatsapp_media_size_mismatch" || reason === "whatsapp_media_too_large";
+        return c.json({ error_code: rejected ? "unsupported_whatsapp_media" : "whatsapp_media_unavailable" }, rejected ? 422 : 503);
+      }
+    } else if (channel === "telegram") {
+      try {
+        files = await downloadTelegramAttachments(raw, { ...(c.env.TELEGRAM_BOT_TOKEN ? { botToken: c.env.TELEGRAM_BOT_TOKEN } : {}) });
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : "telegram_media_download_failed";
+        const rejected = reason === "telegram_media_rejected" || reason === "telegram_media_url_rejected" ||
+          reason === "telegram_media_size_mismatch" || reason === "telegram_media_too_large";
+        return c.json({ error_code: rejected ? "unsupported_telegram_media" : "telegram_media_unavailable" }, rejected ? 422 : 503);
+      }
+    } else if (channel === "slack") {
+      const botToken = await resolveConnectorCredential(c.env, space.tenant_id, spaceId, "SLACK_BOT_OAUTH_TOKEN");
+      if (!botToken) return c.json({ error_code: "slack_media_credential_missing" }, 503);
+      try {
+        files = await downloadSlackAttachments(raw, { botToken });
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : "slack_media_download_failed";
+        const rejected = reason === "slack_media_rejected" || reason === "slack_media_url_rejected" ||
+          reason === "slack_media_size_mismatch" || reason === "slack_media_too_large";
+        return c.json({ error_code: rejected ? "unsupported_slack_media" : "slack_media_unavailable" }, rejected ? 422 : 503);
+      }
+    } else {
+      try { files = await downloadDiscordAttachments(raw); }
+      catch (error) {
+        const reason = error instanceof Error ? error.message : "discord_media_download_failed";
+        const rejected = reason === "discord_media_rejected" || reason === "discord_media_url_rejected" ||
+          reason === "discord_media_size_mismatch" || reason === "discord_media_too_large" || reason.includes("non_ephemeral");
+        return c.json({ error_code: rejected ? "unsupported_discord_media" : "discord_media_unavailable" }, rejected ? 422 : 503);
+      }
+    }
+    if (!files.length) return c.json({ error_code: "channel_media_missing" }, 422);
+    try {
+      await storeChannelAttachments({ db: c.env.PLATFORM_DB, bucket: c.env.SCRIPTS_R2, platformSecret: c.env.PLATFORM_SECRET,
+        tenantId: space.tenant_id, spaceId, taskId, channel, files });
+    } catch (error) {
+      console.error(`[channels] attachment storage failed channel=${channel} space=${spaceId}:`, error instanceof Error ? error.message : String(error));
+      return c.json({ error_code: "channel_attachment_storage_unavailable" }, 503);
+    }
+  } else if (hasChannelMedia && !c.env.SCRIPTS_R2) {
+    return c.json({ error_code: "channel_attachment_storage_unavailable" }, 503);
+  }
+
   // Resolve which project (if any) this channel is bound to — a customer-bot project runs
   // under a restricted execution ceiling + its own rules instead of the default agent.
   const link = await c.env.PLATFORM_DB.prepare(
@@ -5775,6 +5914,7 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
         spaceId,
         tenantId: space.tenant_id,
         channel,
+        ...(normalizedInbound?.external_id ? { taskId: normalizedInbound.external_id } : {}),
         model: wakeContext.model,
         ...(wakeContext.openRouterCapabilityEvidence ? { openRouterCapabilityEvidence: wakeContext.openRouterCapabilityEvidence } : {}),
         // Lets the DO kick an immediate heartbeat drain (see handleChannelInbound) instead of
@@ -6667,6 +6807,7 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
     model_override?: string | null;
     secret?: string;
     project_id?: string;
+    slack_bot_token?: string;
     media_access_token?: string;
     whatsapp_phone_number_id?: string;
     whatsapp_access_token?: string;
@@ -6727,6 +6868,8 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
   if (!c.env.CREDENTIALS_WORKER) return c.json({ error_code: "unavailable", message: "credentials not bound" }, 503);
   if (!body.secret) throw badRequest("secret is required (the signing secret or public key from the provider)");
   if (channel !== "whatsapp" && (body.media_access_token || body.whatsapp_access_token || body.whatsapp_phone_number_id)) return c.json({ error_code: "whatsapp_credentials_only_supported_for_whatsapp" }, 400);
+  if (channel !== "slack" && body.slack_bot_token) return c.json({ error_code: "slack_credentials_only_supported_for_slack" }, 400);
+  if (body.slack_bot_token !== undefined && (!body.slack_bot_token || body.slack_bot_token.length > 8192)) return c.json({ error_code: "slack_bot_token_invalid" }, 400);
   if (body.media_access_token && body.media_access_token.length > 8192) return c.json({ error_code: "media_access_token_too_large" }, 400);
   if (body.whatsapp_access_token !== undefined || body.whatsapp_phone_number_id !== undefined) {
     if (!body.whatsapp_access_token || body.whatsapp_access_token.length > 8192 || !/^\d{5,32}$/.test(body.whatsapp_phone_number_id ?? "")) {
@@ -6755,6 +6898,13 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
       description: "WhatsApp Cloud API media download access token",
     });
     if (!mediaResp.ok && mediaResp.status !== 409) return c.json({ error_code: "credential_store_failed", message: await mediaResp.text() }, 502);
+  }
+  if (body.slack_bot_token) {
+    const slackResp = await storeConnectorCredential(c.env, {
+      tenantId, spaceId, userId, name: "SLACK_BOT_OAUTH_TOKEN", value: body.slack_bot_token,
+      description: "Slack bot token used only for private file downloads", scope: "space",
+    });
+    if (!slackResp.ok && slackResp.status !== 409) return c.json({ error_code: "credential_store_failed", message: await slackResp.text() }, 502);
   }
   if (body.whatsapp_access_token && body.whatsapp_phone_number_id) {
     const directCredentials = [
@@ -8465,6 +8615,14 @@ async function expireEmailIngressData(env: AgentsEnv): Promise<void> {
       await env.SCRIPTS_R2.delete(row.object_key);
       await env.PLATFORM_DB.prepare("DELETE FROM email_inbound_attachments WHERE object_key = ?").bind(row.object_key).run();
       await env.PLATFORM_DB.prepare("DELETE FROM channel_attachments WHERE object_key = ?").bind(row.object_key).run();
+    }
+    const expiredChannelAttachments = await env.PLATFORM_DB.prepare(
+      "SELECT id, object_key FROM channel_attachments WHERE expires_at <= ? ORDER BY expires_at LIMIT 100",
+    ).bind(now).all<{ id: string; object_key: string }>();
+    for (const row of expiredChannelAttachments.results ?? []) {
+      if (!env.SCRIPTS_R2) break;
+      await env.SCRIPTS_R2.delete(row.object_key);
+      await env.PLATFORM_DB.prepare("DELETE FROM channel_attachments WHERE id = ?").bind(row.id).run();
     }
     await env.PLATFORM_DB.prepare("DELETE FROM email_reply_routes WHERE expires_at <= ? OR status = 'revoked'").bind(now).run();
     await env.PLATFORM_DB.prepare("DELETE FROM attachment_copy_claims WHERE expires_at <= ?").bind(now).run();

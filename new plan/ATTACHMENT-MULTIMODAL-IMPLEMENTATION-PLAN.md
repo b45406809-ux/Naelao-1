@@ -2,7 +2,7 @@
 
 Date: 2026-10-15  
 Branch: `Mcbt5s-Backup-2`  
-Status: implementation in progress. Email-backed opaque-ID discovery/read/OCR/copy, a bounded offline scanned-PDF raster path, and bounded Workers AI Whisper transcription are implemented and locally tested. Other channel adapters, generic image/video tasks, and provider-run adapter evaluation remain unfinished.
+Status: implementation in progress. Email plus Meta/Twilio WhatsApp, Telegram, and Slack now store bounded channel attachments under replay-stable opaque task IDs. Discord ingestion is limited to ephemeral CDN attachments; the official Discord Worker guide documents that non-ephemeral attachment fetches fail from Workers. Web chat uploads still use their separate session workspace path. System One now returns a structured per-attachment advisory action/tool/skill recommendation without reading bytes or authorizing execution. Generic image/video provider operations and provider-run adapter evaluation remain unfinished or blocked; see the current verification checkpoint in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`.
 
 ## Architecture decision
 
@@ -27,7 +27,7 @@ Acceptance: channel-adapter contract tests; webhook-signature-before-download te
 
 ### B. Intent-aware skill and tool selection
 
-Implementation status: The reasoning instructions now include metadata-first, storage-only-vs-content-reading guidance, and the role-filtered skill CLI provides bounded built-in planner/worker attachment manuals. This is advisory prompt guidance, not a separate structured System 1 classification result; available provider capabilities remain fail-closed.
+Implementation status: Reasoning instructions include metadata-first and storage-only-vs-content-reading guidance; role-filtered CLI manuals are available. `SystemOneDecisionClient.classifyAttachments` now performs one structured metadata-only choice, binds the selected action to a specific opaque attachment ID, and returns an advisory tool/skill candidate. The host does not execute that recommendation or widen the planner's tools. Unsupported MIME/action pairs are omitted or downgraded to `uncertain`.
 
 1. Extend the System 1 routing result with advisory attachment relevance and tool/skill candidates based on the message text, declared/detected MIME, and verified selected-model capability evidence. It may return `not_needed`, `candidate_tool`, or `uncertain`; it must not read the file, make an irreversible choice, or authorize a tool.
 2. Keep the planner's own choice authoritative within its already authorized tool surface. For an unambiguous file-storage request, route directly to storage/copy without OCR. For content-dependent requests, make the relevant reader/transcriber available and let the planner select it. Ask a concise question when the task cannot be safely inferred.
@@ -49,7 +49,7 @@ Acceptance: synthetic scanned/text PDFs; page-limit and pixel-bomb cases; invali
 
 ### D. Generic modality contract and dispatch
 
-Implementation status: A normalized task boundary currently implements only audio transcription through Workers AI Whisper and rejects other task names. No generic video, translation, speech-to-speech, or image-understanding provider contract has been established.
+Implementation status: Bounded transcription through Workers AI Whisper remains the only normalized provider task. Channel intake now stores original WhatsApp and Telegram media files; it does not claim image understanding, arbitrary audio dispatch, generic video processing, translation, or speech-to-speech support.
 
 1. Replace the notion of one universal provider request with a normalized Naelao task contract: modality and task (`transcribe`, `translate`, `describe_image`, `extract_document`, `summarize_video`, `speech_to_speech`), bounded input references, expected output type, language hints/constraints, and cancellation/timeout limits.
 2. Implement explicit provider adapters that map only verified capabilities to each provider's request format. Keep model inventory candidate data separate from key-specific entitlement and deployment status. Validate exact selected key, model, capability, and price before paid requests. Unknown or stale evidence means unsupported.
@@ -87,4 +87,5 @@ No vendor names, prices, latency, free-tier assertions, or region coverage are h
 
 - `Tokenizers vs. Embedding Models Explained.continuation.messages.txt`: lines 3068–3284 (skill role filtering), 3285–3513 (progressive skill CLI), 3514–3753 (multilingual routing concerns), 3754–3942 (dialect resolver as a planner tool), 4140–4268 (LoRA language claims, not provider proof), 4269–4441 (Gateway/provider claims rejected unless verified), and 4983–5145 (email attachment ingress proposal).
 - Additional subsystem search across the remaining transcript found OCR/PDF/tool mentions at lines 239–269, 411–440, 1060–1080, 1310–1460, 1860–1900, 2592–2772, 4480–4550, and 5010–5250. Pasted PDF/OCR/LoRA/Gateway implementation snippets are proposals, not proof of runtime or vendor support.
+- Re-read attachment/email continuation context 5146–5260 before resolving channel-media work. It discusses agent email addresses and outbound/inbound claims, not a later amendment granting Slack/Discord download credentials or turning email parsing into general media support. Cloudflare email address counts, prices, catch-all behavior, and Clef latency remain unverified proposals.
 - Repository evidence: existing `email.attachment.read_text` and `email.attachment.ocr_image` operations are limited to task-owned email attachments; channel adapters currently normalize text; the Agents Worker has a dedicated DocumentSandboxDO and a fixed Documents Container image with LibreOffice, but no verified PDF raster binary or attachment-media CLI. `unpdf` currently extracts PDF text only. These findings inform the sequence above.

@@ -125,6 +125,7 @@ const SLACK_SCOPES = [
   "app_mentions:read",
   "channels:history",
   "chat:write",
+  "files:read",
   "im:history",
   "im:read",
   "im:write",

@@ -7235,7 +7235,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // This queue is exclusively external-channel traffic. Construct a separate allow-listed
     // surface rather than redacting the internal agent's tools: filesystem, git, vault,
     // browser and container handlers do not exist in this object at all.
-    const tools = new ScriptToolSurface(engineEnv, ["customer-bot"]);
+    // Customer attachments are message-scoped read operations. Copy-to-workspace is intentionally
+    // absent here because the project workspace is shared across customers.
+    const tools = new ScriptToolSurface(engineEnv, ["customer-bot", "customer-attachments"]);
     // Kept out of the model-facing surface; only platform code below can dispatch the resulting
     // reply to the same conversation address.
     const deliveryTools = new ScriptToolSurface(engineEnv, ["notifications"]);
@@ -7374,7 +7376,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         tenantId,
         engineEnv.userId,
         msg.project_id ?? undefined,
-        { goal: msg.text, taskId: msg.id, threadId: msg.session_id },
+        { goal: msg.text, taskId: msg.task_id ?? msg.id, threadId: msg.session_id },
       );
       if (messageEnv) Object.assign(engineEnv, messageEnv);
       engineEnv.userId = `channel:${msg.channel}:${msg.channel_user_id}`;
@@ -7452,6 +7454,37 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // deterministic moderation/rules above remain authoritative and a sentry outage falls back
       // to bounded keyword decisions rather than blocking the customer queue.
       const triage = await triageCustomerMessage(msg.text, engineEnv.fastDecision);
+      const attachmentTaskId = msg.task_id ?? msg.id;
+      let attachmentDescriptors: Array<{ id: string; filename: string; mimeType: string; sizeBytes: number }> = [];
+      if (this.env.AGENTS_WORKER && attachmentTaskId) {
+        try {
+          const response = await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/attachments/list", {
+            method: "POST",
+            headers: { "content-type": "application/json", ...(await this.internalHeaders(tenantId)) },
+            body: JSON.stringify({ tenantId, spaceId, taskId: attachmentTaskId }),
+          }));
+          if (response.ok) {
+            const result = await response.json<{ attachments?: Array<{ id: string; filename: string; mime_type: string; size_bytes: number }> }>();
+            attachmentDescriptors = (result.attachments ?? []).slice(0, 10).map((row) => ({ id: row.id, filename: row.filename, mimeType: row.mime_type, sizeBytes: row.size_bytes }));
+          }
+        } catch {
+          // A metadata lookup outage must not broaden access or suppress the ordinary reply.
+          attachmentDescriptors = [];
+        }
+      }
+      let attachmentClassification: import("@naelao/agent-sdk").AttachmentClassification | undefined;
+      if (attachmentDescriptors.length && !model.startsWith("local/") && engineEnv.fastDecision?.classifyAttachments) {
+        try {
+          attachmentClassification = await engineEnv.fastDecision.classifyAttachments({
+            message: msg.text,
+            attachments: attachmentDescriptors,
+            availableTools: ["attachment.inspect", "attachment.read", "attachment.ocr"],
+          });
+        } catch {
+          // Classification is advisory; it never grants access or runs a reader.
+          attachmentClassification = undefined;
+        }
+      }
 
       // 4. Full reasoning loop, under the project's execution ceiling if it has one.
       if (projectCfg) {
@@ -7484,6 +7517,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         result = await runScriptLoop(engineEnv, tools, reasoner, ["customer-bot"], {
           goal:
             `A message arrived on ${msg.channel} from user ${msg.channel_user_id}: "${msg.text.slice(0, 2000)}". ` +
+            (attachmentDescriptors.length ? `Untrusted attachment metadata for this message: ${JSON.stringify(attachmentDescriptors)}. ` : "") +
+            (attachmentClassification ? `System One attachment classification (advisory only; you choose and host authorization remains authoritative): ${JSON.stringify(attachmentClassification)}. ` : "") +
             `System One triage: category=${triage.category}, urgent=${triage.urgent ? "yes" : "no"}. ` +
             "Draft a helpful, grounded reply using only the quarantined customer tools. " +
             "If you cannot answer confidently, reply with exactly \"ESCALATE\" instead of guessing; the platform, not you, dispatches the reply.",

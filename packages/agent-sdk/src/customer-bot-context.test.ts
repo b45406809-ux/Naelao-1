@@ -48,4 +48,11 @@ describe("CustomerBotContext quarantine", () => {
       "customer_bot_capability_denied"
     );
   });
+
+  it("allows task-scoped attachment reading but never project-shared attachment copying", () => {
+    expect(() => assertCustomerBotToolAllowed("attachment.list", 1)).not.toThrow();
+    expect(() => assertCustomerBotToolAllowed("attachment.read", 2)).not.toThrow();
+    expect(() => assertCustomerBotToolAllowed("attachment.ocr", 2)).not.toThrow();
+    expect(() => assertCustomerBotToolAllowed("attachment.copy", 1)).toThrow("customer_bot_capability_denied");
+  });
 });

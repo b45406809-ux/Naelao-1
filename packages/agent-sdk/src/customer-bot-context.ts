@@ -32,6 +32,10 @@ export function assertCustomerBotToolAllowed(
     "canned_response.get",
     "primary_calendar.availability",
     "human.escalate",
+    "attachment.list",
+    "attachment.inspect",
+    "attachment.read",
+    "attachment.ocr",
   ]);
   if (!Number.isInteger(requestedTier) || requestedTier < 1 || requestedTier > 2 || !allowed.has(toolName)) {
     throw new Error(`customer_bot_capability_denied:${toolName}`);

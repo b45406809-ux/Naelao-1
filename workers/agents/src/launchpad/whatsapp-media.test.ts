@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { transcribeTwilioWhatsAppVoice, transcribeWhatsAppVoiceNote } from "./whatsapp-media.js";
+import { downloadTwilioWhatsAppAttachments, downloadWhatsAppAttachments, transcribeTwilioWhatsAppVoice, transcribeWhatsAppVoiceNote } from "./whatsapp-media.js";
 import { WHISPER_MODEL } from "../voice/voice-pipeline.js";
 
 function payload() {
@@ -58,5 +58,44 @@ describe("WhatsApp voice-note ingress", () => {
     await expect(transcribeTwilioWhatsAppVoice(invalid, { accountSid: sid, authToken: "private", ai, fetcher }))
       .rejects.toThrow("whatsapp_media_url_rejected");
     expect(fetcher).toHaveBeenCalledOnce();
+  });
+});
+
+describe("WhatsApp attachment ingress", () => {
+  it("resolves signed provider media IDs and returns bounded bytes with safe filenames", async () => {
+    const raw = { entry: [{ changes: [{ value: { messages: [{ type: "document", document: { id: "media-2", filename: "../invoice.pdf" } }] } }] }] };
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ url: "https://lookaside.fbsbx.com/media/2", mime_type: "application/pdf", file_size: 4 }))
+      .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3, 4])));
+    const files = await downloadWhatsAppAttachments(raw, { accessToken: "private-token", fetcher });
+    expect(files).toEqual([{ filename: "_invoice.pdf", mimeType: "application/pdf", bytes: new Uint8Array([1, 2, 3, 4]) }]);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect((fetcher.mock.calls[1]![1] as RequestInit).redirect).toBe("manual");
+  });
+
+  it("rejects untrusted download hosts and oversized provider declarations", async () => {
+    const raw = { entry: [{ changes: [{ value: { messages: [{ type: "image", image: { id: "media-3" } }] } }] }] };
+    const untrusted = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ url: "https://attacker.example/image", mime_type: "image/png", file_size: 3 }));
+    await expect(downloadWhatsAppAttachments(raw, { accessToken: "token", fetcher: untrusted })).rejects.toThrow("whatsapp_media_url_rejected");
+    const oversized = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ url: "https://lookaside.fbsbx.com/media/3", mime_type: "image/png", file_size: 6 * 1024 * 1024 }));
+    await expect(downloadWhatsAppAttachments(raw, { accessToken: "token", fetcher: oversized })).rejects.toThrow("whatsapp_media_rejected");
+  });
+
+  it("downloads Twilio attachments only from the signed account/message media resource", async () => {
+    const sid = "AC" + "a".repeat(32);
+    const messageSid = "SM" + "b".repeat(32);
+    const mediaSid = "ME" + "c".repeat(32);
+    const fields = {
+      MessageSid: messageSid, NumMedia: "1", MediaUrl0: `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages/${messageSid}/Media/${mediaSid}`,
+      MediaContentType0: "application/pdf",
+    };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(new Uint8Array([1, 2, 3, 4])));
+    await expect(downloadTwilioWhatsAppAttachments(fields, { accountSid: sid, authToken: "private", fetcher }))
+      .resolves.toMatchObject([{ filename: `whatsapp-${messageSid}-1`, mimeType: "application/pdf", bytes: new Uint8Array([1, 2, 3, 4]) }]);
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect((fetcher.mock.calls[0]![1] as RequestInit).redirect).toBe("manual");
+    expect((fetcher.mock.calls[0]![1] as RequestInit).headers).toEqual({ authorization: `Basic ${btoa(`${sid}:private`)}` });
+    await expect(downloadTwilioWhatsAppAttachments({ ...fields, MediaUrl0: "https://attacker.example/file" }, { accountSid: sid, authToken: "private", fetcher }))
+      .rejects.toThrow("twilio_whatsapp_media_url_rejected");
   });
 });
