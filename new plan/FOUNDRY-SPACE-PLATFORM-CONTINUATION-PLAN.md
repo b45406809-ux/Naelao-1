@@ -116,7 +116,7 @@ Status: **PARTIALLY IMPLEMENTED — existing effort controls remain truthful, bu
 Primary read: **lines 1755–1970** (USER 1755–1757; AI MODEL 1758–1970).
 Bounded primary windows: 1755–1929, 1930–1970.
 Later amendment/dependency pairs: 2174–2355 (task 16); 2356–2591 (task 17); 2592–2772 (task 18); 3068–3284 (task 21); 3285–3513 (task 22); 3514–3753 (task 23); 3754–3942 (task 24); 4269–4441 (task 27)
-Status: **IN PROGRESS**. Task 13's local/BYOK model-choice UI depends on verified inventory in task 17. Assess task 14's request to consolidate independent preflight classifications; do not adopt its model-generated Clef latency or API claims without evidence.
+Status: **ASSESSED — existing code already batches the two safe runtime preflight questions in one Clef request.** No further independent classifiers currently share the same input and authority boundary: planner topology/model routing is handled by the planner and deterministic effort policy, tool exposure follows authorization, and destructive actions remain behind explicit write/approval controls. Do not combine them into model authority decisions or adopt the unsupported latency/API claims. See progress file. Task 15 is current.
 
 ## Task 15
 
