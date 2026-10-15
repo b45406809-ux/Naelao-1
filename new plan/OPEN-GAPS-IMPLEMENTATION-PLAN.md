@@ -1,7 +1,7 @@
 # Remaining gaps implementation plan
 
 Branch: `Mcbt5s-Backup-2`  
-Status: plan only; no feature code changed for this plan.  
+Status: implementation in progress; workstreams 1 and 2 are locally verified.
 Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, reconciled against the current repository. Existing Foundry channel invocation, glossary, translation draft, model recommendations, owner voice, task-scoped email replies, and browser Web Push are present locally. Do not reopen them as missing features; their live/deployment checks remain open.
 
 ## Working rules
@@ -28,7 +28,7 @@ Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, recon
 
 ### 2. Bounded binary email attachment reading
 
-**Status:** task-scoped UTF-8 text reading exists. PDF, office-document extraction, and OCR are open.
+**Status:** bounded PDF and existing UTF-8 text extraction are locally verified. Office-document extraction and OCR remain open.
 
 1. Inspect current task alias, R2 object, and HMAC authorization checks and retain the exact `(tenant, Space, task, key, expiry)` boundary.
 2. Compare maintained parsers against current Cloudflare Workers compatibility, bundle limits, active maintenance, and licensing. Start with a single static format only after this check. Do not execute macros, scripts, embedded links, or HTML.
@@ -103,4 +103,4 @@ After all workstreams above are complete, compare each remaining task in `CONTIN
 
 ## Current next action
 
-Workstream 1 is implemented and locally verified; continue with workstream 2: bounded binary email attachment reading. Preserve the existing task-scoped authorization boundary and verify parsers against Cloudflare Workers compatibility before choosing one.
+Workstreams 1 and 2 are implemented and locally verified; continue with workstream 3: customer telephony provisioning and ingress. Preserve all existing tenant/Space authorization and placement policy boundaries.

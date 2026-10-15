@@ -181,7 +181,7 @@ export const businessEmail: PrebuiltScript = {
   requires_tier: 2,
   paramHints: {
     "email.reply_address": "No arguments. Creates or reuses the active run's expiring Reply-To address; pass its returned address as reply_to to email.send.",
-    "email.attachment.read_text": "Requires key from an inbound email attachment entry. Reads a small, supported text attachment attached to this same task; binary attachments are not decoded.",
+    "email.attachment.read_text": "Requires key from an inbound email attachment entry. Reads supported UTF-8 text or extracts text from a small, unencrypted PDF attached to this same task. Other binary formats are not decoded.",
     "email.send": "Requires to, subject, body; optional reply_to must come from email.reply_address in this same task run.",
   },
   operations: {
