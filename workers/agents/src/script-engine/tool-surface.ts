@@ -450,13 +450,15 @@ export class ScriptToolSurface {
     rows.push("## distilled skills");
     for (const name of await this.library.list()) {
       const metadata = await this.library.readMetadata(name);
-      if (metadata) rows.push(`- \`${name}\` - ${metadata.description.replace(/\s+/g, " ").trim()} - ${JSON.stringify(metadata.parameters)}`);
+      if (metadata && this.isSkillVisible(metadata)) rows.push(`- \`${name}\` - ${metadata.description.replace(/\s+/g, " ").trim()} - ${JSON.stringify(metadata.parameters)}`);
     }
     rows.push("## planner coordination Bash commands");
     rows.push("- `naelao project agents list` - list every agent addressable in the current project - no parameters");
     rows.push("- `naelao project agents consult --agent-id <id> --message <text>` - privately ask a named project worker for information or a bounded handoff");
     rows.push("- `naelao project agents delegate --agent-id <id> --task <text>` - delegate bounded work to a named project worker");
     rows.push("- `naelao worker project_manager_worker <operation> --params <json>` - route an allowlisted project administration operation through the capability-isolated worker");
+    rows.push("- `skill list|search <query>|read <name>` - discover role-matched skills and read one on demand");
+    rows.push("- `tool help <operation>` - inspect an operation's exact parameters");
     rows.push("## planner interaction");
     rows.push("- `AskUser` - open a questionnaire with one to five related questions when required information is missing; the run resumes after all answers are submitted");
     const bucket = this.env.workspaceBucket ?? this.env.scriptsBucket;
@@ -671,7 +673,15 @@ export class ScriptToolSurface {
     query: string,
     opts?: { snapshot?: ObserveSnapshot; domain?: ScriptDomain; limit?: number }
   ): Promise<FindCandidate[]> {
-    return scriptFind(this.env, query, opts);
+    return scriptFind(this.env, query, { ...opts, roleTarget: this.plannerScope ? "PLANNER_ORCHESTRATION" : "WORKER_EXECUTION" });
+  }
+
+  /** Role targeting controls which skill summaries and bodies enter this agent's context. It is
+   *  deliberately not an authorization grant: tool execution still uses the independent role,
+   *  tier, installation and capability checks. Legacy/missing labels are worker skills. */
+  private isSkillVisible(metadata: ScriptMetadata): boolean {
+    const target = metadata.role_target === "PLANNER_ORCHESTRATION" ? "PLANNER_ORCHESTRATION" : "WORKER_EXECUTION";
+    return this.plannerScope ? target === "PLANNER_ORCHESTRATION" : target === "WORKER_EXECUTION";
   }
 
   // ── script.run ─────────────────────────────────────────────────────────────
@@ -833,7 +843,10 @@ export class ScriptToolSurface {
     if (name === "Bash") {
       try {
         const intercepted = interceptPlatformCli(mutationIntent);
-        if (intercepted) return this.run(intercepted.operation, intercepted.params);
+        if (intercepted) {
+          if (["skill.list", "skill.search", "skill.read"].includes(intercepted.operation)) return this.runSkillCommand(intercepted.operation, intercepted.params);
+          return this.run(intercepted.operation, intercepted.params);
+        }
       } catch (error) {
         return { ok: false, error: error instanceof Error ? error.message : "invalid_cli_command", tier: 2, duration_ms: Date.now() - started, tokens_used: 0 };
       }
@@ -992,6 +1005,17 @@ export class ScriptToolSurface {
         tokens_used: 0,
       };
     }
+    if (!this.isSkillVisible(stored.metadata)) {
+      return {
+        ok: false,
+        error: this.plannerScope
+          ? `Skill '${name}' is classified for worker execution and is not loaded into planner context.`
+          : `Skill '${name}' is classified for planner orchestration and is not available to worker execution.`,
+        tier: 1,
+        duration_ms: Date.now() - started,
+        tokens_used: 0,
+      };
+    }
     this.missStreak = 0;
     if (this.env.maxTier !== undefined && stored.metadata.requires_tier > this.env.maxTier) {
       return {
@@ -1008,5 +1032,40 @@ export class ScriptToolSurface {
     await this.library.recordOutcome(name, result.ok, result.error);
     if (result.ok && result.output !== undefined) result.output = await offloadToolOutput(this.env, result.output);
     return this.recordExecution(name, result);
+  }
+
+  /** Read-only, role-filtered skill commands. They are dispatched from the parsed Bash command
+   *  path and do not become extra native-model tools or authorization capabilities. */
+  private async runSkillCommand(operation: string, params: Record<string, unknown>): Promise<ScriptRunResult> {
+    const started = Date.now();
+    try {
+      let output: unknown;
+      if (operation === "skill.list") {
+        const skills = [];
+        for (const name of await this.library.list()) {
+          const metadata = await this.library.readMetadata(name);
+          if (metadata && this.isSkillVisible(metadata)) skills.push({ name, description: metadata.description, domain: metadata.domain, role_target: metadata.role_target ?? "WORKER_EXECUTION" });
+        }
+        output = { skills };
+      } else if (operation === "skill.search") {
+        const query = typeof params.query === "string" ? params.query.trim() : "";
+        if (!query) throw new Error("usage: skill search <query>");
+        output = { query, results: (await this.find(query, { limit: 10 })).map(({ name, metadata, confidence }) => ({
+          name, description: metadata.description, domain: metadata.domain, confidence,
+        })) };
+      } else if (operation === "skill.read") {
+        const name = typeof params.name === "string" ? params.name : "";
+        if (!name) throw new Error("usage: skill read <name>");
+        const stored = await this.library.read(name);
+        if (!stored || !this.isSkillVisible(stored.metadata)) throw new Error(`skill_not_available_for_role:${name}`);
+        output = { name, metadata: stored.metadata, code: stored.code ?? "" };
+      } else {
+        throw new Error("skill_command_unknown");
+      }
+      const limited = await offloadToolOutput(this.env, output);
+      return this.recordExecution(operation, { ok: true, output: limited, tier: 1, actual_tier: 1, engine: "sqlite_fs", duration_ms: Date.now() - started, tokens_used: 0 });
+    } catch (error) {
+      return this.recordExecution(operation, { ok: false, error: error instanceof Error ? error.message : "skill_command_failed", tier: 1, actual_tier: 1, engine: "sqlite_fs", duration_ms: Date.now() - started, tokens_used: 0 });
+    }
   }
 }

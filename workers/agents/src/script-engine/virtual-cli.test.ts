@@ -1,7 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
-import { VirtualCliDispatcher } from "./virtual-cli.js";
+import { interceptPlatformCli, VirtualCliDispatcher } from "./virtual-cli.js";
 
 describe("VirtualCliDispatcher", () => {
+  it("parses read-only skill discovery and tool help commands without shell execution", () => {
+    expect(interceptPlatformCli("skill list")).toEqual({ operation: "skill.list", params: {} });
+    expect(interceptPlatformCli('skill search "invoice reconciliation"')).toEqual({ operation: "skill.search", params: { query: "invoice reconciliation" } });
+    expect(interceptPlatformCli("skill read invoice-playbook")).toEqual({ operation: "skill.read", params: { name: "invoice-playbook", args: [] } });
+    expect(interceptPlatformCli("tool help invoice.create")).toEqual({ operation: "tools.describe", params: { name: "invoice.create" } });
+    expect(interceptPlatformCli('naelao project agents list --query "invoice reconciliation"')).toEqual({
+      operation: "thread.list_project_agents", params: { query: "invoice reconciliation" },
+    });
+  });
   it("requests Markdown-for-agents through the scoped fetch callback and reports honest fallbacks", async () => {
     const fetchMarkdown = vi.fn(async () => ({
       url: "https://example.com/guide.md",

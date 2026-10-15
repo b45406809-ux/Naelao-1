@@ -50,6 +50,8 @@ interface ProjectAgentEntry {
   name: string;
   description?: string;
   is_default?: boolean;
+  /** Names of prebuilt capabilities configured for this agent; informational only. */
+  available_capabilities?: string[];
 }
 
 /** List the agents addressable from a project: every agent_definition in the space PLUS the
@@ -72,6 +74,9 @@ async function listProjectAgents(ctx: PrebuiltOpContext): Promise<ProjectAgentEn
     id: String(r["id"] ?? ""),
     name: String(r["name"] ?? r["id"] ?? "agent"),
     ...(typeof r["description"] === "string" ? { description: r["description"] as string } : {}),
+    ...(Array.isArray((r["config"] as { scripts?: { prebuilt?: unknown } } | undefined)?.scripts?.prebuilt)
+      ? { available_capabilities: ((r["config"] as { scripts: { prebuilt: unknown[] } }).scripts.prebuilt).filter((value): value is string => typeof value === "string" && /^[a-z][a-z0-9-]{0,63}$/.test(value)).slice(0, 64) }
+      : {}),
   }));
   if (!entries.some((e) => e.id === GENERAL_AGENT_ID)) {
     entries.unshift({
@@ -103,6 +108,20 @@ function suggestAgents(guess: string, agents: ProjectAgentEntry[], max = 3): str
     .sort((a, b) => b.score - a.score)
     .slice(0, max)
     .map((s) => s.id);
+}
+
+/** Deterministically rank the configured worker roster for an explicit goal. A capability name
+ *  is only a hint: the worker's own role, grant, tier and installed tools remain authoritative. */
+function rankAgentsForQuery(query: string, agents: ProjectAgentEntry[]): Array<ProjectAgentEntry & { match_score: number }> {
+  const wanted = [...new Set(query.toLowerCase().split(/[^a-z0-9]+/).filter(token => token.length > 1))];
+  return agents.map(agent => {
+    const tokens = `${agent.id} ${agent.name} ${agent.description ?? ""} ${(agent.available_capabilities ?? []).join(" ")}`.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    const match_score = wanted.reduce((score, queryToken) => score + (tokens.some(token =>
+      token === queryToken || Math.min(token.length, queryToken.length) >= 4 &&
+      (token.startsWith(queryToken) || queryToken.startsWith(token) || Math.min(token.length, queryToken.length) >= 6 && token.slice(0, 6) === queryToken.slice(0, 6))
+    ) ? 1 : 0), 0);
+    return { ...agent, match_score };
+  }).sort((a, b) => b.match_score - a.match_score || a.name.localeCompare(b.name));
 }
 
 /** Returns a structured error result when `agentId` names no addressable agent, else null. */
@@ -422,9 +441,10 @@ export const projectCoordination: PrebuiltScript = {
         }),
       };
     },
-    "thread.list_project_agents": async (_a, c) => {
+    "thread.list_project_agents": async (a, c) => {
       const agents = await listProjectAgents(c);
-      return { agents, default_agent: GENERAL_AGENT_ID };
+      const query = typeof a.query === "string" ? a.query.trim().slice(0, 500) : "";
+      return { agents: query ? rankAgentsForQuery(query, agents) : agents, ...(query ? { query, ranking: "literal capability/name overlap; verify worker availability before delegation" } : {}), default_agent: GENERAL_AGENT_ID };
     },
   },
   // Live-reported bug this closes: a model asked to "create a thread in project p1 and say hello"
@@ -457,7 +477,8 @@ export const projectCoordination: PrebuiltScript = {
     "thread.list_project_models": "no parameters. Returns every model you may name in a spawn, " +
       "consult, or send_message (with context window, thinking support, cost tier) — call this " +
       "before guessing a model id.",
-    "thread.list_project_agents": "no parameters. Returns every agent you may address in this " +
-      "project (id + name); the general Space Assistant is always included and addressable.",
+    "thread.list_project_agents": "optional query (string). Returns every agent you may address in this " +
+      "project (id + name + configured capability names); with a query, ranks by literal name/description/capability overlap. " +
+      "Capability names are descriptive, not grants. The general Space Assistant is always included and addressable.",
   },
 };

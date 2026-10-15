@@ -24,7 +24,10 @@ function plannerCoordinationCli(words: string[], rawCommand?: string): CliDispat
 
   if (words[1] === "project" && words[2] === "agents") {
     const action = words[3] ?? "list";
-    if (action === "list") return { operation: "thread.list_project_agents", params: {} };
+    if (action === "list") {
+      const { body } = bodyAndFlags(words.slice(4));
+      return { operation: "thread.list_project_agents", params: typeof body.query === "string" ? { query: body.query } : {} };
+    }
     const { body } = bodyAndFlags(words.slice(4));
     if (action === "consult") {
       if (typeof body.agent_id !== "string" || typeof body.message !== "string") {
@@ -113,6 +116,16 @@ export function interceptPlatformCli(command: string): CliDispatch | null {
 export function interceptPlatformWords(words: string[], command?: string): CliDispatch | null {
   const plannerCommand = plannerCoordinationCli(words, command);
   if (plannerCommand) return plannerCommand;
+  if (words[0] === "skill") {
+    const action = words[1] ?? "list";
+    if (action === "list" && words.length <= 2) return { operation: "skill.list", params: {} };
+    if (action === "search" && words.slice(2).join(" ").trim()) return { operation: "skill.search", params: { query: words.slice(2).join(" ").trim() } };
+    if (action === "read" && words[2]) return { operation: "skill.read", params: { name: words[2], args: words.slice(3) } };
+    throw new Error("usage: skill list | skill search <query> | skill read <name>");
+  }
+  if (words[0] === "tool" && words[1] === "help" && words[2]) {
+    return { operation: "tools.describe", params: { name: words[2] } };
+  }
   if (words[0] === "runtime") {
     if (words[1] === "list" && words.length === 2) return { operation: "runtime.list", params: {} };
     if (words[1] === "find" && words[2] && words.length === 3) return { operation: "runtime.find", params: { binary: words[2] } };

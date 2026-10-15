@@ -165,7 +165,7 @@ Status: **PARTIAL — external customer bots remain modeled as project templates
 Primary read: **lines 3068–3284** (USER 3068–3070; AI MODEL 3071–3284).
 Bounded primary windows: 3068–3242, 3243–3284.
 Later amendment/dependency pairs: 3285–3513 (task 22); 3514–3753 (task 23); 3754–3942 (task 24); 4269–4441 (task 27)
-Status: **UNASSESSED**. Evidence and exact next action belong in the progress file.
+Status: **PARTIALLY IMPLEMENTED — skills are role-targeted, discoverable and read on demand; worker rosters expose query-ranked configured capabilities.** Unlabeled legacy skills default to worker execution. Planner lookup only returns `PLANNER_ORCHESTRATION` entries; workers receive `WORKER_EXECUTION` entries. `skill list/search/read` and `tool help` are handled through the safe virtual CLI, and the planner can rank addressable workers by literal capability/name overlap. Existing delegation enforcement already caps planner depth at 3. Role labels are author-supplied metadata, not a semantic classifier; configured prebuilt names are hints, not proof of a domain skill. Task 22 owns TOC/section/line-window reading. See task 21 evidence in the progress file.
 
 ## Task 22
 

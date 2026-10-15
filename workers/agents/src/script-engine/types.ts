@@ -110,6 +110,9 @@ export interface ScriptMetadata {
 
   // Retrieval
   description: string;
+  /** Context-disclosure class for role-scoped skill discovery. This is metadata only: it never
+   * grants tools or runtime authority. Missing legacy values default to WORKER_EXECUTION. */
+  role_target?: "PLANNER_ORCHESTRATION" | "WORKER_EXECUTION";
   /** Embedding of description + code summary (for script.find ANN search). */
   embedding_vector?: number[];
   tags: string[];

@@ -112,6 +112,9 @@ export class SkillLibrary {
     metadata: Partial<ScriptMetadata> & Pick<ScriptMetadata, "description" | "domain" | "requires_tier">;
   }): Promise<ScriptMetadata> {
     this.assertName(input.name);
+    if (input.metadata.role_target !== undefined && !["PLANNER_ORCHESTRATION", "WORKER_EXECUTION"].includes(input.metadata.role_target)) {
+      throw new Error("invalid_skill_role_target");
+    }
     if (await this.exists(input.name)) {
       throw new Error(`Script already exists: ${input.name}`);
     }
@@ -121,6 +124,7 @@ export class SkillLibrary {
       version: 1,
       domain: input.metadata.domain,
       description: input.metadata.description,
+      role_target: input.metadata.role_target ?? "WORKER_EXECUTION",
       ...(input.metadata.embedding_vector !== undefined
         ? { embedding_vector: input.metadata.embedding_vector }
         : {}),
@@ -172,6 +176,9 @@ export class SkillLibrary {
     if (!current) throw new Error(`Script not found: ${name}`);
 
     const prev = current.metadata;
+    if (patch.metadata?.role_target !== undefined && !["PLANNER_ORCHESTRATION", "WORKER_EXECUTION"].includes(patch.metadata.role_target)) {
+      throw new Error("invalid_skill_role_target");
+    }
     const now = Date.now();
     const nextVersion = prev.version + 1;
 

@@ -28,6 +28,11 @@ import { fingerprintSimilarity } from "./fingerprint.js";
 import { assessSkillHealth, healthConfidenceMultiplier } from "./skill-health.js";
 
 export const FIND_CONFIDENCE_FLOOR = 0.5;
+export type SkillRoleTarget = "PLANNER_ORCHESTRATION" | "WORKER_EXECUTION";
+
+function roleTargetOf(metadata: ScriptMetadata): SkillRoleTarget {
+  return metadata.role_target === "PLANNER_ORCHESTRATION" ? "PLANNER_ORCHESTRATION" : "WORKER_EXECUTION";
+}
 
 function vectorId(spaceId: string, name: string): string {
   return `${spaceId}::${name}`;
@@ -52,7 +57,7 @@ export async function indexScriptEmbedding(
         id: vectorId(env.spaceId, metadata.name),
         values: vector,
         // Vectorize filter syntax is flat — {field: {$eq: value}} (see CLAUDE.md invariants).
-        metadata: { spaceId: env.spaceId, name: metadata.name, domain: metadata.domain },
+        metadata: { spaceId: env.spaceId, name: metadata.name, domain: metadata.domain, role_target: roleTargetOf(metadata) },
       },
     ]);
   } catch {
@@ -83,7 +88,7 @@ export async function removeScriptEmbedding(env: ScriptEngineEnv, name: string):
 function degradedScan(
   library: SkillLibrary,
   query: string,
-  opts: { domain?: ScriptDomain }
+  opts: { domain?: ScriptDomain; roleTarget?: SkillRoleTarget }
 ): Promise<FindCandidate[]> {
   return (async () => {
     const names = await library.list();
@@ -94,6 +99,7 @@ function degradedScan(
       const metadata = await library.readMetadata(name);
       if (!metadata) continue;
       if (opts.domain && metadata.domain !== opts.domain) continue;
+      if (opts.roleTarget && roleTargetOf(metadata) !== opts.roleTarget) continue;
       const hay = `${name} ${metadata.description} ${metadata.tags.join(" ")}`.toLowerCase();
       const hayTokens = new Set(hay.split(/\s+/).filter(Boolean));
       const overlap = [...qTokens].filter((t) => hayTokens.has(t)).length;
@@ -115,7 +121,7 @@ function degradedScan(
 export async function scriptFind(
   env: ScriptEngineEnv,
   query: string,
-  opts: { snapshot?: ObserveSnapshot; domain?: ScriptDomain; limit?: number } = {}
+  opts: { snapshot?: ObserveSnapshot; domain?: ScriptDomain; roleTarget?: SkillRoleTarget; limit?: number } = {}
 ): Promise<FindCandidate[]> {
   const library = new SkillLibrary(env.scriptsBucket, env.spaceId);
   const limit = opts.limit ?? 3;
@@ -128,6 +134,7 @@ export async function scriptFind(
       const queryVec = await env.embedder.embed(query);
       const filter: Record<string, unknown> = { spaceId: { $eq: env.spaceId } };
       if (opts.domain) filter["domain"] = { $eq: opts.domain };
+      if (opts.roleTarget) filter["role_target"] = { $eq: opts.roleTarget };
       const res = await env.vectorIndex.query(queryVec, { topK: 10, filter, returnMetadata: true });
 
       const candidates = await Promise.all(
@@ -136,6 +143,7 @@ export async function scriptFind(
           if (!name) return null;
           const metadata = await library.readMetadata(name);
           if (!metadata) return null;
+          if (opts.roleTarget && roleTargetOf(metadata) !== opts.roleTarget) return null;
           return { name, metadata, semantic_similarity: match.score } as const;
         })
       );
