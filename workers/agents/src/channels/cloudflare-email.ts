@@ -71,6 +71,21 @@ export async function createReplyAddress(input: {
   return `reply-${token}@${input.domain}`;
 }
 
+/** Stable private mailbox alias per deployed agent. Store only the SHA-256 address digest in D1;
+ * the local part is pseudorandom and cannot disclose tenant/Space/agent identifiers. */
+export async function createAgentEmailAddress(input: {
+  domain: string;
+  tenantId: string;
+  spaceId: string;
+  agentId: string;
+  secret: string;
+}): Promise<string> {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(input.secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const digest = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`agent-email\0${input.tenantId}\0${input.spaceId}\0${input.agentId}`));
+  const token = [...new Uint8Array(digest).slice(0, 16)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `agent-${token}@${input.domain}`;
+}
+
 export function safeFilename(value: string): string {
   const base = value.replace(/[\\/\0-\x1f\x7f]/g, "_").replace(/^\.+/, "").trim().slice(0, 120);
   return base || "attachment";

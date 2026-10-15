@@ -11,6 +11,7 @@ import {
   selectByokKey,
   deleteByokKey,
   getOpenRouterModels,
+  activateOpenRouterModel,
   type ByokProviderStatus,
   type OpenRouterModelCandidate,
   type OpenRouterModelRecommendation,
@@ -37,6 +38,7 @@ export function ByokKeysPanel({
   const { toast, show } = useToast();
   const [status, setStatus] = React.useState<ByokProviderStatus[]>([]);
   const [models, setModels] = React.useState<OpenRouterModelCandidate[]>([]);
+  const [activeModel, setActiveModel] = React.useState<string | null>(null);
   const [recommendations, setRecommendations] = React.useState<OpenRouterModelRecommendation[]>([]);
   const [provider, setProvider] = React.useState<string>(PROVIDERS[0].id);
   const [label, setLabel] = React.useState("");
@@ -51,6 +53,7 @@ export function ByokKeysPanel({
     try {
       const result = await getOpenRouterModels(spaceId, creds);
       setModels(result.models ?? []);
+      setActiveModel(result.active_model ?? null);
       setRecommendations(result.recommendations ?? []);
       if (result.configured && result.availability_note) setModelsError(result.availability_note);
     } catch {
@@ -123,6 +126,25 @@ export function ByokKeysPanel({
     }
   }
 
+  async function activate(model: string) {
+    setBusy(true);
+    try {
+      await activateOpenRouterModel(spaceId, creds, model);
+      setActiveModel(model);
+      show("Model activated for this Space. Provider entitlement is checked when it runs.");
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Couldn't activate that model.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const plannerEligible = (item: OpenRouterModelCandidate) => item.contextLength !== undefined
+    && item.contextLength >= 200_000
+    && item.inputModalities?.includes("text") === true
+    && item.outputModalities?.includes("text") === true
+    && item.supportedParameters?.includes("tools") === true;
+
   return (
     <div style={{ display: "grid", gap: 12 }}>
       <p className="settings-row-sub">Add one or more OpenRouter keys. The selected key is tried first; eligible failures can rotate to another saved key.</p>
@@ -160,12 +182,12 @@ export function ByokKeysPanel({
         <summary className="settings-row-label">OpenRouter catalog ({models.length} models)</summary>
         <div className="settings-block" style={{ display: "grid", gap: 8 }}>
           <div className="settings-row-label">Catalog-based recommendations</div>
-          <p className="settings-row-sub">Advisory shortlists use only published modality, context and price metadata. They do not verify key access, quality or runtime support, and do not activate a model.</p>
+          <p className="settings-row-sub">Shortlists use published provider metadata. Dynamic planner activation requires declared text input/output, tool support, and at least 200,000 context tokens. It does not prove your key can use the model.</p>
           {recommendations.map((item) => <div key={item.category} className="settings-row-sub"><strong>{item.label}</strong> — {item.candidates.map(model => model.name).join(", ")}<br />{item.evidence}</div>)}
         </div>
         <p className="settings-row-sub">These are public catalog entries, not a guarantee that this key can use them. The provider confirms access when a request is sent.</p>
         <div style={{ display: "grid", gap: 5, maxHeight: 280, overflow: "auto" }}>
-          {models.slice(0, 100).map((item) => <div key={item.id} className="settings-row-sub">{item.name} <span style={{ opacity: 0.7 }}>({item.id})</span>{item.contextLength ? ` · ${item.contextLength.toLocaleString()} context` : ""}</div>)}
+          {models.slice(0, 100).map((item) => <div key={item.id} className="settings-row-sub" style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ flex: 1 }}>{item.name} <span style={{ opacity: 0.7 }}>({item.id})</span>{item.contextLength ? ` · ${item.contextLength.toLocaleString()} context` : ""}</span>{canEdit && plannerEligible(item) ? <Button size="sm" variant="secondary" disabled={busy || activeModel === item.model} onClick={() => void activate(item.model)}>{activeModel === item.model ? "Active" : "Activate"}</Button> : null}</div>)}
         </div>
       </details>}
       {modelsError && <p role="status" className="settings-row-sub">{modelsError}</p>}

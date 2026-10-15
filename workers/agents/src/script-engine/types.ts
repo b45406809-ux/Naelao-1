@@ -974,6 +974,8 @@ export interface ScriptEngineEnv {
   videoSkillAnalyzer?: {
     analyze(input: { data: ArrayBuffer; contentType: string; description?: string }): Promise<VideoSkillAction[]>;
   };
+  /** Explicitly scoped Workers AI translation primitive. Omitted for air-gapped runs. */
+  translateText?: (input: { text: string; sourceLanguage: string; targetLanguage: string }) => Promise<unknown>;
   /** Vectorize index for script.find (optional — engine degrades to tag/text search). */
   vectorIndex?: VectorIndex;
   embedder?: Embedder;

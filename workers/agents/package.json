@@ -24,6 +24,7 @@
     "@naelao/security": "workspace:*",
     "@naelao/tracing": "workspace:*",
     "@naelao/types": "workspace:*",
+    "agents": "0.28.1",
     "hono": "^4.6.0",
     "postal-mime": "^2.4.3",
     "shell-quote": "^1.8.1",

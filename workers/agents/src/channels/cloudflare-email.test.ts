@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  createReplyAddress, emailReplyBody, hashEmailAddress, normalizeIngressDomain,
+  createAgentEmailAddress, createReplyAddress, emailReplyBody, hashEmailAddress, normalizeIngressDomain,
   parseCloudflareEmail, safeFilename,
 } from "./cloudflare-email.js";
 
@@ -39,6 +39,15 @@ describe("Cloudflare email ingress helpers", () => {
     expect(address).toMatch(/^reply-[a-f0-9]{32}@agents\.example\.test$/);
     expect(await createReplyAddress({ ...input, taskId: "run2" })).not.toBe(address);
     expect(await hashEmailAddress(address.toUpperCase())).toBe(await hashEmailAddress(address));
+  });
+
+  it("derives a distinct stable address for each agent without exposing its identifiers", async () => {
+    const input = { domain: "agents.example.test", tenantId: "tenant-secret", spaceId: "space-secret", agentId: "agent-secret", secret: "platform-secret" };
+    const address = await createAgentEmailAddress(input);
+    expect(address).toBe(await createAgentEmailAddress(input));
+    expect(address).toMatch(/^agent-[a-f0-9]{32}@agents\.example\.test$/);
+    expect(address).not.toContain("tenant-secret");
+    expect(await createAgentEmailAddress({ ...input, agentId: "another-agent" })).not.toBe(address);
   });
 
   it("parses bounded text and MIME attachments from Cloudflare's raw stream", async () => {

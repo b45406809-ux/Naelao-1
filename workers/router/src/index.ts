@@ -678,11 +678,9 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // gate as connect/oauth-start above (requireBusinessMembership on the spaces worker).
   /^\/spaces\/([^/]+)\/connectors\/provider-connect-start$/,
   /^\/spaces\/([^/]+)\/connector-aliases(\/[^/]+)?$/,
-  // Step 28: business-wide BYOK LLM keys — GET (member) shows which providers are wired, PUT
-  // (admin) stores the business's own key, DELETE (admin) removes it. requireBusinessMembership on
-  // the spaces worker is the real authorization; the KEY value never leaves the vault. A static
-  // collection + a single dynamic leaf, the /members(/:userId) shape — not the corrupting one.
-  /^\/spaces\/([^/]+)\/llm-byok(\/[^/]+)?$/,
+  // Step 28: business-wide BYOK LLM keys and catalog activation. Credential mutations and model
+  // activation are re-authorized by their destination worker; key material stays in the vault.
+  /^\/spaces\/([^/]+)\/llm-byok(?:\/.*)?$/,
   // Naelao Agent Templates: browsing is member-level, instantiating a real agent from one is
   // admin-level — both enforced by requireBusinessMembership on the spaces worker.
   /^\/spaces\/([^/]+)\/agent-templates$/,
@@ -1194,6 +1192,9 @@ api.all("/spaces/:spaceId/credentials/:credId", async (c) =>
 // meant startSession()/getMessages()/sendMessage()'s first step 404'd even once auth was fixed.
 // The more specific agent/approvals sub-paths are registered FIRST so they win over the general
 // catch-all below.
+api.post("/spaces/:spaceId/sessions/:sessionId/voice-ticket", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
 api.all("/spaces/:spaceId/sessions/:sessionId/agent/*", async (c) =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );

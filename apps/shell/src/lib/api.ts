@@ -7,6 +7,10 @@ import { ApiError, requestJson } from "./request";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8787";
 
+export function getAgentVoiceHost(): string {
+  return new URL(API_URL).host;
+}
+
 export interface SessionCredentials {
   sessionToken: string;
   endUserId: string;
@@ -21,6 +25,27 @@ export async function transcribeVoice(audio: Blob): Promise<string> {
   const result = await response.json() as { ok?: boolean; text?: string; error?: string };
   if (!response.ok || !result.ok) throw new Error(result.error ?? "Voice transcription failed");
   return result.text ?? "";
+}
+
+export interface OwnerVoiceTicket {
+  agent: "OWNER_VOICE_AGENT";
+  name: string;
+  ticket: string;
+  expires_at: number;
+  session_id: string;
+}
+
+export async function requestOwnerVoiceTicket(
+  spaceId: string,
+  sessionId: string,
+  session: SessionCredentials,
+  projectId?: string,
+): Promise<OwnerVoiceTicket> {
+  return apiFetch<OwnerVoiceTicket>(`/v1/spaces/${encodeURIComponent(spaceId)}/sessions/${encodeURIComponent(sessionId)}/voice-ticket`, {
+    method: "POST",
+    session,
+    body: JSON.stringify(projectId ? { project_id: projectId } : {}),
+  });
 }
 
 export { ApiError } from "./request";
@@ -1021,6 +1046,7 @@ export interface OpenRouterModelCandidate {
   completionPriceUsdPerToken?: number;
   inputModalities?: string[];
   outputModalities?: string[];
+  supportedParameters?: string[];
 }
 
 export interface OpenRouterModelRecommendation {
@@ -1051,9 +1077,17 @@ export async function getByokStatus(spaceId: string, session: SessionCredentials
 /** Fetch the public OpenRouter model catalog after the selected Space key is validated. Catalog
  * membership is not a promise that the key can invoke a particular model. */
 export async function getOpenRouterModels(spaceId: string, session: SessionCredentials): Promise<{
-  configured: boolean; key_validated?: boolean; availability_note?: string; models: OpenRouterModelCandidate[]; recommendations?: OpenRouterModelRecommendation[];
+  configured: boolean; key_validated?: boolean; availability_note?: string; active_model?: string | null; models: OpenRouterModelCandidate[]; recommendations?: OpenRouterModelRecommendation[];
 }> {
   return apiFetch(`/v1/spaces/${spaceId}/llm-byok/models`, { session });
+}
+
+/** Activate a provider-catalog model for this Space after the server checks the selected BYOK
+ * key, declared tool support, text modalities, context minimum, and current Space policy. */
+export async function activateOpenRouterModel(spaceId: string, session: SessionCredentials, model: string): Promise<{ model: string; activated: boolean }> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/llm-byok/models/activate`, {
+    method: "POST", session, body: JSON.stringify({ model }),
+  });
 }
 
 /** PUT — store a business's own provider key (admin). The key is vaulted, never returned again. */

@@ -4,7 +4,7 @@ import type { HITLApprovalDO } from "./do/HITLApprovalDO.js";
 import type { TaskDO } from "./do/TaskDO.js";
 import type { DurableWorkflowHostEnv } from "./workflows/workflow-host.js";
 
-export interface Env extends DurableWorkflowHostEnv {
+export interface Env extends DurableWorkflowHostEnv, Cloudflare.Env {
   ENVIRONMENT: string;
   /** Deployment must supply the actual immutable bundle SHA-256, not a mutable version name. */
   WORKFLOW_BUILD_ID?: string;

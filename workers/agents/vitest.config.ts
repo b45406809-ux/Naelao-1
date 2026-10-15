@@ -28,6 +28,12 @@ export default defineConfig({
       "cloudflare:workers": fileURLToPath(
         new URL("../../tests/stubs/cloudflare-workers.ts", import.meta.url)
       ),
+      "agents/voice": fileURLToPath(
+        new URL("../../tests/stubs/agents-voice.ts", import.meta.url)
+      ),
+      agents: fileURLToPath(
+        new URL("../../tests/stubs/agents.ts", import.meta.url)
+      ),
     },
   },
   test: {

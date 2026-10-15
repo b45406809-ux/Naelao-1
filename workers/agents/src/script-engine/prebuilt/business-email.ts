@@ -3,11 +3,10 @@
  * shop for a third-party email tool. Tier 2.
  *
  * Outbound routes, chosen automatically:
- *   1. AgentMail (preferred when a Space has a provisioned inbox): a real hosted address that can
- *      send and receive. Replies return through the signed inbound webhook into the Space channel.
- *   2. Cloudflare Email Service (when its binding and a verified sending domain are configured):
- *      sends from a platform-owned address. It does not provision an inbox or imply inbound support.
- *   3. Resend through the notifications worker as the existing last-resort route.
+ *   1. Cloudflare Email Service sends from the verified platform domain; its matching inbound
+ *      Email Routing alias is provisioned per agent when EMAIL_INGRESS_DOMAIN is configured.
+ *   2. AgentMail remains an optional hosted-inbox compatibility provider.
+ *   3. Resend through the notifications worker remains the last-resort outbound path.
  *
  * The AgentMail API key and Cloudflare Email binding stay on the Agents Worker; agent scripts only
  * reach the internal HMAC-checked route. Cloudflare arbitrary-recipient sending requires a verified
@@ -70,9 +69,10 @@ async function agentMailCall(
 
 async function provision(ctx: PrebuiltOpContext, a: Record<string, unknown>): Promise<unknown> {
   const slug = String(a["slug"] ?? a["name"] ?? "team");
-  // Prefer a REAL, inbound-capable AgentMail inbox.
+  // Cloudflare native Email Routing first provisions the agent's own alias when configured.
   const am = await agentMailCall(ctx, "/internal/business-email/provision", {
     slug: toSlug(slug),
+    agentId: ctx.env.agentId,
     ...(a["display_name"] ? { displayName: String(a["display_name"]) } : {}),
   });
   if (am && am["configured"] === true && am["ok"] === true) {
@@ -80,10 +80,9 @@ async function provision(ctx: PrebuiltOpContext, a: Record<string, unknown>): Pr
       address: am["email"],
       inbound: Boolean(am["inbound_wired"]) || Boolean(am["already"]),
       status: "active",
-      provider: am["provider"] === "cloudflare_email" ? "cloudflare_email" : "agentmail",
-      ...(am["provider"] === "cloudflare_email"
-        ? { note: "This is an outbound sender alias; inbound email is not enabled for it." }
-        : {}),
+      provider: am["provider"] === "cloudflare_email_routing" ? "cloudflare_email_routing" : am["provider"] === "cloudflare_email" ? "cloudflare_email" : "agentmail",
+      ...(am["provider"] === "cloudflare_email" ? { note: "This is an outbound sender alias; inbound email is not enabled for it." } : {}),
+      ...(am["provider"] === "cloudflare_email_routing" ? { note: "The configured Cloudflare Email Routing domain must have its Worker action pointed at Naelao Agents for messages to arrive." } : {}),
     };
   }
   // Fallback: legacy placeholder (send-only). Say plainly it can't receive.
@@ -129,6 +128,7 @@ async function send(ctx: PrebuiltOpContext, a: Record<string, unknown>): Promise
   // Prefer sending from the real AgentMail inbox (a genuine, reply-able from-address).
   const am = await agentMailCall(ctx, "/internal/business-email/send", {
     to,
+    agentId: ctx.env.agentId,
     ...(typeof a["reply_to"] === "string" ? { replyTo: a["reply_to"], taskId: ctx.env.taskId } : {}),
     ...(a["subject"] !== undefined ? { subject: a["subject"] } : {}),
     ...(a["body"] !== undefined ? { text: a["body"] } : {}),

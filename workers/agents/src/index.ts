@@ -7,6 +7,7 @@
 //   POST   /spaces/:spaceId/sessions/:sessionId/agent/runs/:runId/cancel
 
 import { Hono, type Context } from "hono";
+import { routeAgentRequest } from "agents";
 import { resolveEndUserBusinessRole } from "../../spaces/src/business-auth.js";
 import { errorResponse, requestId, notFound, badRequest, unauthorized, forbidden, mintInternalToken, verifyInternalToken } from "@naelao/http";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
@@ -14,7 +15,7 @@ import { contextWindowForModel, isAllowedModel, ALLOWED_MODELS, DEFAULT_WORKING_
 import { getDOName } from "@naelao/crypto";
 import { detectPromptInjection, detectPolicyViolations } from "@naelao/moderation";
 import { expireToolOutputs } from "./script-engine/tool-output-expiry.js";
-import { fetchOpenRouterCatalog } from "./shared/openrouter-model-catalog.js";
+import { fetchOpenRouterCatalog, isOpenRouterPlannerCandidate } from "./shared/openrouter-model-catalog.js";
 import { recommendOpenRouterModels } from "./shared/openrouter-model-recommendations.js";
 import { parseMentions, creatableFeatureKindsForRole, detectImplicitSignals, classifyFailure, type MentionableAgent } from "@naelao/events";
 import { NaelaoAgentDO, ASSISTANT_MEMORY_SCOPE } from "./do/NaelaoAgentDO.js";
@@ -49,6 +50,8 @@ import {
 import type { SpaceModelPolicy } from "@naelao/agent-sdk";
 import { airGappedOnlyFromConfig, validateModelForSpacePolicy } from "./model-policy.js";
 import { authorizeEgressUrl, readSpaceEgressPolicy } from "@naelao/security";
+import { OwnerVoiceAgent } from "./voice/owner-voice-agent.js";
+import { mintOwnerVoiceTicket, verifyOwnerVoiceTicket } from "./voice/voice-ticket.js";
 export { validateModelForSpacePolicy } from "./model-policy.js";
 import {
   startComposioLink,
@@ -79,7 +82,7 @@ import { actorAddress, type ThreadTier } from "@naelao/agent-sdk";
 import { applyDurableObjectJurisdiction, isSpaceNetworkEgressDenied } from "@naelao/security";
 import { deleteBytesCas, putBytesCas, readBytesWithHash } from "./script-engine/r2-cas.js";
 import {
-  createReplyAddress, emailReplyBody, hashEmailAddress, MAX_EMAIL_ATTACHMENT_BYTES,
+  createAgentEmailAddress, createReplyAddress, emailReplyBody, hashEmailAddress, MAX_EMAIL_ATTACHMENT_BYTES,
   MAX_EMAIL_ATTACHMENTS_TOTAL_BYTES, MAX_INBOUND_EMAIL_BYTES, normalizeIngressDomain,
   parseCloudflareEmail,
 } from "./channels/cloudflare-email.js";
@@ -198,13 +201,14 @@ export { ScriptRunWorkflow } from "./workflows/ScriptRunWorkflow.js";
 export { WorkflowRunDO } from "./do/WorkflowRunDO.js";
 export { WorkflowControl } from "./workflows/workflow-control.js";
 export { DynamicWorkflowBinding } from "@cloudflare/dynamic-workflows";
+export { OwnerVoiceAgent } from "./voice/owner-voice-agent.js";
 export { ScheduledReminderWorkflow } from "./workflows/outbound-reminder-workflow.js";
 export { GenericSubagentWorkflow } from "./workflows/generic-subagent-workflow.js";
 export { CompanyAutomationWorkflow } from "./workflows/company-automation-workflow.js";
 
 // ── Env interface ─────────────────────────────────────────────────────────────
 
-export interface AgentsEnv {
+export interface AgentsEnv extends Cloudflare.Env {
   ENVIRONMENT: string;
   DATA_JURISDICTION?: "eu";
   TYPESAFE_API_KEY?: string;
@@ -228,6 +232,7 @@ export interface AgentsEnv {
   AI: Ai;
   PLATFORM_DB: D1Database;
   NAELAO_AGENT_DO: DurableObjectNamespace<NaelaoAgentDO>;
+  OWNER_VOICE_AGENT: DurableObjectNamespace<OwnerVoiceAgent>;
   HITL_APPROVAL_DO: DurableObjectNamespace<HITLApprovalDO>;
   TASK_DO: DurableObjectNamespace<TaskDO>;
   TOOL_SANDBOX: DurableObjectNamespace<ToolSandboxDO>;
@@ -361,13 +366,27 @@ interface SpaceRow {
 function validateEnv(env: AgentsEnv): void {
   if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
   applyDurableObjectJurisdiction(env as unknown as Record<string, unknown>, env.DATA_JURISDICTION, [
-    "NAELAO_AGENT_DO", "HITL_APPROVAL_DO", "TASK_DO", "TOOL_SANDBOX", "LOCAL_TUNNEL", "RISK_GUARD", "WORKFLOW_RUN_DO",
+    "NAELAO_AGENT_DO", "OWNER_VOICE_AGENT", "HITL_APPROVAL_DO", "TASK_DO", "TOOL_SANDBOX", "LOCAL_TUNNEL", "RISK_GUARD", "WORKFLOW_RUN_DO",
   ]);
 }
 
 const app = new Hono<{ Bindings: AgentsEnv }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
+
+// Cloudflare Agents' voice SDK owns the browser WebSocket/SFU-compatible transport. Every
+// connection must carry an owner-minted ticket that is bound to this exact Agent instance.
+app.all("/agents/*", async (c) => {
+  const authorize = async (request: Request, route: { className: string; name: string }) => {
+    if (route.className !== "OWNER_VOICE_AGENT") return new Response("Not found", { status: 404 });
+    const ticket = new URL(request.url).searchParams.get("ticket") ?? "";
+    const scope = await verifyOwnerVoiceTicket(ticket, c.env.PLATFORM_SECRET, route.name);
+    if (!scope) return new Response("Voice authorization expired or invalid", { status: 401 });
+    return undefined;
+  };
+  const response = await routeAgentRequest(c.req.raw, c.env, { onBeforeConnect: authorize, onBeforeRequest: authorize });
+  return response ?? c.notFound();
+});
 
 // Extract caller identity from request headers (set by router after JWT validation)
 function getCallerIdentity(c: {
@@ -379,6 +398,48 @@ function getCallerIdentity(c: {
     role: c.req.header("x-naelao-role") ?? "viewer",
   };
 }
+
+app.post("/spaces/:spaceId/sessions/:sessionId/voice-ticket", async (c) => {
+  const tenantId = await requireVerifiedTenant(c);
+  const { userId, role: callerRole } = getCallerIdentity(c);
+  const spaceId = c.req.param("spaceId");
+  const role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  if (!userId || (role !== "owner" && role !== "admin")) throw forbidden("Owner voice calls require Space owner or admin access");
+  const sessionId = c.req.param("sessionId");
+  if (!/^[A-Za-z0-9._:-]{1,160}$/.test(sessionId)) throw badRequest("Invalid session id");
+  const space = await c.env.PLATFORM_DB.prepare("SELECT status, config_json FROM spaces WHERE id = ? AND tenant_id = ?")
+    .bind(spaceId, tenantId).first<{ status: string; config_json: string | null }>();
+  if (!space || space.status !== "active") throw notFound("Space");
+  if (airGappedOnlyFromConfig(space.config_json)) {
+    return c.json({ error_code: "private_voice_unavailable", message: "Cloudflare-hosted voice is disabled for this air-gapped Space" }, 403);
+  }
+  const body = await c.req.json<{ project_id?: string }>().catch((): { project_id?: string } => ({}));
+  const sessionResponse = await c.env.SPACES_WORKER.fetch(new Request(
+    `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/sessions/${encodeURIComponent(sessionId)}`,
+    { headers: {
+      "x-naelao-tenant-id": tenantId, "x-naelao-user-id": userId, "x-naelao-role": callerRole,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
+    } },
+  ));
+  if (!sessionResponse.ok) return c.json({ error_code: "session_unavailable", message: "This session is not accessible" }, 404);
+  if (body.project_id) {
+    const projectResponse = await c.env.SPACES_WORKER.fetch(new Request(
+      `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(body.project_id)}`,
+      { headers: {
+        "x-naelao-tenant-id": tenantId, "x-naelao-user-id": userId, "x-naelao-role": callerRole,
+        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
+      } },
+    ));
+    if (!projectResponse.ok) return c.json({ error_code: "project_unavailable", message: "This project is not accessible" }, 404);
+  }
+  const agentName = crypto.randomUUID();
+  const expiresAt = Math.floor(Date.now() / 1000) + 180;
+  const ticket = await mintOwnerVoiceTicket({
+    tenantId, spaceId, sessionId, userId, role, callerRole, agentName, expiresAt, nonce: crypto.randomUUID(),
+    ...(body.project_id ? { projectId: body.project_id } : {}),
+  }, c.env.PLATFORM_SECRET);
+  return c.json({ agent: "OWNER_VOICE_AGENT", name: agentName, ticket, expires_at: expiresAt, session_id: sessionId });
+});
 
 // Go-live audit F1: this worker has NO workers_dev=false backstop (the channel gateway needs
 // public ingress), so x-naelao-tenant-id is only trustworthy AFTER naelao-router verified a
@@ -619,10 +680,17 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
     airGappedOnly = airGappedOnlyFromConfig(spaceRow.config_json);
   } catch { /* malformed configuration is handled conservatively by the ordinary allowlist */ }
 
-  const policyModel = rawBody.model ?? (() => {
+  const configuredModel = (() => {
     try { return (JSON.parse(spaceRow.config_json || "{}") as { productConfig?: { modelConfig?: { model?: string } } }).productConfig?.modelConfig?.model; }
     catch { return undefined; }
-  })() ?? DEFAULT_WORKING_MODEL;
+  })();
+  // Product customers inherit their Space's activated model. Only Space operators may submit a
+  // one-run override, preventing end-user payloads from turning the dynamic BYOK catalog into a
+  // model-selection capability.
+  if (callerRole === "product_end_user" && rawBody.model && rawBody.model !== configuredModel) {
+    return c.json({ error_code: "model_override_forbidden", message: "This Space's model is selected by its owner" }, 403);
+  }
+  const policyModel = rawBody.model ?? configuredModel ?? DEFAULT_WORKING_MODEL;
   const policyResult = validateModelForSpacePolicy(policyModel, spacePolicy);
   if (!policyResult.ok) return c.json({ error_code: policyResult.error_code, message: policyResult.message }, 400);
   if (airGappedOnly && !policyModel.startsWith("local/")) {
@@ -654,8 +722,17 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   // space's stored configuration between runs — which would be both racy and a real change to a
   // live product. Rejected rather than ignored on an unknown string: silently running a different
   // model than the caller named would make every number the eval produces a lie.
-  if (rawBody.model && !rawBody.model.startsWith("custom/") && !rawBody.model.startsWith("local/") && !isAllowedModel(rawBody.model)) {
-    throw badRequest(`model must be one of ${ALLOWED_MODELS.join(", ")}`);
+  if (!policyModel.startsWith("custom/") && !policyModel.startsWith("local/") && !isAllowedModel(policyModel)) {
+    if (!policyModel.startsWith("openrouter/")) throw badRequest(`model must be one of ${ALLOWED_MODELS.join(", ")}`);
+    let eligible = false;
+    try {
+      eligible = await validateDynamicOpenRouterPlannerModel(c.env, tenantId, spaceId, policyModel);
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "openrouter_catalog_unavailable";
+      const status = code === "openrouter_key_rejected" ? 409 : 503;
+      return c.json({ error_code: code, message: status === 409 ? "The selected OpenRouter key was rejected; replace it in Space settings" : "Dynamic model metadata could not be verified" }, status);
+    }
+    if (!eligible) return c.json({ error_code: "model_not_eligible", message: "The OpenRouter catalog does not declare text input, text output, and tool support for this model" }, 400);
   }
 
   let modelConfig: { model?: string; effort?: string; progressiveToolDisclosure?: boolean } = {};
@@ -2987,6 +3064,31 @@ async function listByokCredentials(
   return (credentials ?? []).filter((cr) => BYOK_PROVIDERS.some((provider) => isByokKeyName(cr.name, provider) || cr.name === byokActiveCredentialName(provider)));
 }
 
+/** Dynamic OpenRouter model selection is resolved from the current public provider catalog and
+ * the Space's own active secret. No user-supplied model slug can route through platform billing,
+ * and unknown tool support is a fail-closed result. The actual completion still decides whether
+ * this exact key has entitlement to that model. */
+async function validateDynamicOpenRouterPlannerModel(
+  env: AgentsEnv,
+  tenantId: string,
+  spaceId: string,
+  model: string,
+): Promise<boolean> {
+  if (!/^openrouter\/[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(model)) return false;
+  const rows = await listByokCredentials(env, tenantId, spaceId);
+  const keys = rows.filter(row => isByokKeyName(row.name, NEW_BYOK_PROVIDER) && row.name !== byokActiveCredentialName(NEW_BYOK_PROVIDER));
+  const pointer = rows.find(row => row.name === byokActiveCredentialName(NEW_BYOK_PROVIDER));
+  const selectedName = pointer?.description?.startsWith("active-key:") ? pointer.description.slice("active-key:".length) : null;
+  const selected = keys.find(row => row.name === selectedName)
+    ?? keys.find(row => row.name === legacyByokCredentialName(NEW_BYOK_PROVIDER))
+    ?? keys[0];
+  if (!selected) return false;
+  const key = await resolveConnectorCredential(env, tenantId, spaceId, selected.name);
+  if (!key) throw new Error("credential_unavailable");
+  const catalog = await fetchOpenRouterCatalog(key);
+  return isOpenRouterPlannerCandidate(catalog.find(candidate => candidate.model === model));
+}
+
 function providerMetadata(provider: ByokProvider, rows: ByokCredentialRow[]) {
   const providerRows = rows.filter((row) => isByokKeyName(row.name, provider) && row.name !== byokActiveCredentialName(provider));
   const pointer = rows.find((row) => row.name === byokActiveCredentialName(provider));
@@ -3048,10 +3150,15 @@ app.get("/spaces/:spaceId/llm-byok", async (c) => {
 app.get("/spaces/:spaceId/llm-byok/models", async (c) => {
   const tenantId = await requireVerifiedTenant(c);
   const spaceId = c.req.param("spaceId");
+  const savedSpace = await c.env.PLATFORM_DB.prepare("SELECT config_json FROM spaces WHERE id = ? AND tenant_id = ?")
+    .bind(spaceId, tenantId).first<{ config_json: string | null }>();
+  let activeModel: string | null = null;
+  try { activeModel = (JSON.parse(savedSpace?.config_json ?? "{}") as { productConfig?: { modelConfig?: { model?: string } } }).productConfig?.modelConfig?.model ?? null; }
+  catch { /* malformed config leaves the catalog view without an activation label */ }
   if (!c.env.CREDENTIALS_WORKER) return c.json({ error_code: "unavailable", message: "Credential vault not bound" }, 503);
   const rows = await listByokCredentials(c.env, tenantId, spaceId);
   const keys = rows.filter(row => isByokKeyName(row.name, NEW_BYOK_PROVIDER) && row.name !== byokActiveCredentialName(NEW_BYOK_PROVIDER));
-  if (!keys.length) return c.json({ configured: false, models: [] });
+  if (!keys.length) return c.json({ configured: false, models: [], active_model: activeModel });
   const pointer = rows.find(row => row.name === byokActiveCredentialName(NEW_BYOK_PROVIDER));
   const selectedName = pointer?.description?.startsWith("active-key:") ? pointer.description.slice("active-key:".length) : null;
   const selected = keys.find(row => row.name === selectedName) ?? keys.find(row => row.name === legacyByokCredentialName(NEW_BYOK_PROVIDER)) ?? keys[0]!;
@@ -3061,6 +3168,7 @@ app.get("/spaces/:spaceId/llm-byok/models", async (c) => {
     const models = await fetchOpenRouterCatalog(key);
     return c.json({
       configured: true,
+      active_model: activeModel,
       key_validated: true,
       catalog_source: "openrouter_public_catalog",
       availability_note: "Catalog presence does not guarantee this key can use a model. OpenRouter confirms access only when a request is made.",
@@ -3072,6 +3180,44 @@ app.get("/spaces/:spaceId/llm-byok/models", async (c) => {
     const status = message === "openrouter_key_rejected" ? 409 : 503;
     return c.json({ error_code: message, message: status === 409 ? "The selected OpenRouter key was rejected; replace it in Space settings" : "OpenRouter model inventory is temporarily unavailable" }, status);
   }
+});
+
+app.post("/spaces/:spaceId/llm-byok/models/activate", async (c) => {
+  const tenantId = await requireVerifiedTenant(c);
+  const { userId, role: callerRole } = getCallerIdentity(c);
+  const spaceId = c.req.param("spaceId");
+  const role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  if (!userId || (role !== "owner" && role !== "admin")) throw forbidden("Only a Space owner or admin may activate a model");
+  const body = await c.req.json<{ model?: string }>().catch((): { model?: string } => ({}));
+  if (!body.model || !body.model.startsWith("openrouter/")) return c.json({ error_code: "bad_request", message: "model must be an OpenRouter catalog model" }, 400);
+  const space = await c.env.PLATFORM_DB.prepare("SELECT config_json, status FROM spaces WHERE id = ? AND tenant_id = ?")
+    .bind(spaceId, tenantId).first<{ config_json: string | null; status: string }>();
+  if (!space || space.status !== "active") throw notFound("Space");
+  let config: Record<string, unknown> = {};
+  try { config = JSON.parse(space.config_json ?? "{}") as Record<string, unknown>; }
+  catch { return c.json({ error_code: "space_configuration_invalid", message: "Repair this Space's model settings before activating a provider model" }, 409); }
+  const current = config.productConfig && typeof config.productConfig === "object" ? config.productConfig as Record<string, unknown> : {};
+  const policy = (config.model_policy ?? current.modelPolicy) as SpaceModelPolicy | undefined;
+  const policyResult = validateModelForSpacePolicy(body.model, policy);
+  if (!policyResult.ok) return c.json({ error_code: policyResult.error_code, message: policyResult.message }, 400);
+  if (airGappedOnlyFromConfig(JSON.stringify(config))) return c.json({ error_code: "compliance_violation", message: "Air-gapped spaces cannot activate cloud models" }, 400);
+
+  let eligible: boolean;
+  try { eligible = await validateDynamicOpenRouterPlannerModel(c.env, tenantId, spaceId, body.model); }
+  catch (error) {
+    const code = error instanceof Error ? error.message : "openrouter_catalog_unavailable";
+    const status = code === "openrouter_key_rejected" ? 409 : 503;
+    return c.json({ error_code: code, message: status === 409 ? "The selected OpenRouter key was rejected; replace it in Space settings" : "Dynamic model metadata could not be verified" }, status);
+  }
+  if (!eligible) return c.json({ error_code: "model_not_eligible", message: "Requires catalog-declared text input/output, tool support, and at least 200,000 context tokens" }, 400);
+
+  const existingModelConfig = current.modelConfig && typeof current.modelConfig === "object"
+    ? current.modelConfig as Record<string, unknown>
+    : {};
+  config.productConfig = { ...current, modelConfig: { ...existingModelConfig, model: body.model } };
+  await c.env.PLATFORM_DB.prepare("UPDATE spaces SET config_json = ?, updated_at = ? WHERE id = ? AND tenant_id = ?")
+    .bind(JSON.stringify(config), new Date().toISOString(), spaceId, tenantId).run();
+  return c.json({ model: body.model, activated: true, context_limit: 200_000, provider: "openrouter_byok" });
 });
 
 // ── POST /internal/projects/hibernate — finite project completion fanout ────
@@ -5081,9 +5227,30 @@ app.post("/internal/business-email/provision", async (c) => {
   const headerTenantId = c.req.header("x-naelao-tenant-id") ?? "";
   const valid = await verifyInternalToken(c.req.header("x-naelao-internal-token"), headerTenantId, c.env.PLATFORM_SECRET);
   if (!headerTenantId || !valid) return c.json({ error_code: "forbidden", message: "internal only" }, 403);
-  const body = await c.req.json<{ spaceId?: string; tenantId?: string; slug?: string; displayName?: string }>().catch(() => null);
+  const body = await c.req.json<{ spaceId?: string; tenantId?: string; agentId?: string; slug?: string; displayName?: string }>().catch(() => null);
   if (!body?.spaceId || !body.tenantId) return c.json({ error_code: "bad_request", message: "spaceId and tenantId are required" }, 400);
   if (body.tenantId !== headerTenantId) return c.json({ error_code: "forbidden", message: "tenantId does not match token" }, 403);
+  const activeSpace = await c.env.PLATFORM_DB.prepare("SELECT status, config_json FROM spaces WHERE id = ? AND tenant_id = ?")
+    .bind(body.spaceId, body.tenantId).first<{ status: string; config_json: string | null }>();
+  if (!activeSpace || activeSpace.status !== "active") return c.json({ error_code: "space_not_found" }, 404);
+  if (airGappedOnlyFromConfig(activeSpace.config_json)) {
+    return c.json({ error_code: "air_gap_email_denied", message: "Cloud email provisioning is disabled for this air-gapped Space" }, 403);
+  }
+
+  // Native Cloudflare Email Routing provides an address per agent without a hosted inbox vendor.
+  // The operator still has to configure the domain's Email Routing Worker action and apply D1
+  // migration 0094. AgentMail remains an optional compatibility provider below.
+  const ingressDomain = normalizeIngressDomain(c.env.EMAIL_INGRESS_DOMAIN);
+  if (body.agentId && ingressDomain) {
+    const email = await createAgentEmailAddress({ domain: ingressDomain, tenantId: body.tenantId, spaceId: body.spaceId, agentId: body.agentId, secret: c.env.PLATFORM_SECRET });
+    const addressHash = await hashEmailAddress(email);
+    await c.env.PLATFORM_DB.prepare(
+      `INSERT INTO agent_email_addresses (address_hash, tenant_id, space_id, agent_id, status, created_at)
+       VALUES (?, ?, ?, ?, 'active', ?)
+       ON CONFLICT(tenant_id, space_id, agent_id) DO UPDATE SET address_hash = excluded.address_hash, status = 'active'`
+    ).bind(addressHash, body.tenantId, body.spaceId, body.agentId, new Date().toISOString()).run();
+    return c.json({ ok: true, configured: true, provider: "cloudflare_email_routing", email, inbound_wired: true });
+  }
 
   if (!agentMailConfigured(c.env)) {
     const domain = normalizeEmailSendingDomain(c.env.EMAIL_SENDING_DOMAIN);
@@ -5235,7 +5402,7 @@ app.post("/internal/business-email/send", async (c) => {
   const headerTenantId = c.req.header("x-naelao-tenant-id") ?? "";
   const valid = await verifyInternalToken(c.req.header("x-naelao-internal-token"), headerTenantId, c.env.PLATFORM_SECRET);
   if (!headerTenantId || !valid) return c.json({ error_code: "forbidden", message: "internal only" }, 403);
-  const body = await c.req.json<{ spaceId?: string; tenantId?: string; taskId?: string; to?: string | string[]; subject?: string; text?: string; html?: string; replyTo?: string }>().catch(() => null);
+  const body = await c.req.json<{ spaceId?: string; tenantId?: string; agentId?: string; taskId?: string; to?: string | string[]; subject?: string; text?: string; html?: string; replyTo?: string }>().catch(() => null);
   if (!body?.spaceId || !body.tenantId || !body.to) return c.json({ error_code: "bad_request", message: "spaceId, tenantId, to are required" }, 400);
   if (body.tenantId !== headerTenantId) return c.json({ error_code: "forbidden", message: "tenantId does not match token" }, 403);
 
@@ -5266,6 +5433,29 @@ app.post("/internal/business-email/send", async (c) => {
     return c.json({ ok: false, configured: true, error_code: "air_gap_egress_denied" }, 403);
   }
 
+  // Prefer native Cloudflare Email Service whenever configured. AgentMail remains an opt-in
+  // provider for Spaces without the Cloudflare binding/domain, rather than a product requirement.
+  const domain = normalizeEmailSendingDomain(c.env.EMAIL_SENDING_DOMAIN);
+  if (c.env.EMAIL && domain) {
+    try {
+      const from = await cloudflareSpaceSenderAddress(body.tenantId, body.spaceId, domain);
+      const agentReplyTo = body.agentId && normalizeIngressDomain(c.env.EMAIL_INGRESS_DOMAIN)
+        ? await resolveAgentEmailAddress(c.env, body.tenantId, body.spaceId, body.agentId)
+        : null;
+      const result = await c.env.EMAIL.send({
+        from,
+        to: body.to,
+        subject: body.subject || "(no subject)",
+        ...(body.text ? { text: body.text } : {}),
+        ...(body.html ? { html: body.html } : {}),
+        ...(body.replyTo ? { replyTo: body.replyTo } : agentReplyTo ? { replyTo: agentReplyTo } : {}),
+      });
+      return c.json({ ok: true, configured: true, provider: "cloudflare_email", messageId: result.messageId, from, ...(agentReplyTo && !body.replyTo ? { replyTo: agentReplyTo } : {}) });
+    } catch (error) {
+      return c.json({ ok: false, configured: true, provider: "cloudflare_email", error: error instanceof Error ? error.message.slice(0, 300) : "Cloudflare Email Service send failed" }, 502);
+    }
+  }
+
   if (agentMailConfigured(c.env)) {
     const svc = await resolveBusinessEmailService(c.env, body.spaceId, body.tenantId);
     if (svc) {
@@ -5279,32 +5469,19 @@ app.post("/internal/business-email/send", async (c) => {
     }
   }
 
-  const domain = normalizeEmailSendingDomain(c.env.EMAIL_SENDING_DOMAIN);
-  if (c.env.EMAIL && domain) {
-    try {
-      const from = await cloudflareSpaceSenderAddress(body.tenantId, body.spaceId, domain);
-      const result = await c.env.EMAIL.send({
-        from,
-        to: body.to,
-        subject: body.subject || "(no subject)",
-        ...(body.text ? { text: body.text } : {}),
-        ...(body.html ? { html: body.html } : {}),
-      });
-      return c.json({ ok: true, configured: true, provider: "cloudflare_email", messageId: result.messageId, from });
-    } catch (error) {
-      // Do not silently switch providers after a native send error: the delivery result may be
-      // ambiguous, and an automatic Resend fallback could duplicate a customer email.
-      return c.json({
-        ok: false,
-        configured: true,
-        provider: "cloudflare_email",
-        error: error instanceof Error ? error.message.slice(0, 300) : "Cloudflare Email Service send failed",
-      }, 502);
-    }
-  }
-
   return c.json({ ok: false, configured: false, reason: "no_outbound_email_provider" });
 });
+
+async function resolveAgentEmailAddress(env: AgentsEnv, tenantId: string, spaceId: string, agentId: string): Promise<string | null> {
+  const domain = normalizeIngressDomain(env.EMAIL_INGRESS_DOMAIN);
+  if (!domain) return null;
+  const email = await createAgentEmailAddress({ domain, tenantId, spaceId, agentId, secret: env.PLATFORM_SECRET });
+  const hash = await hashEmailAddress(email);
+  const row = await env.PLATFORM_DB.prepare(
+    "SELECT address_hash FROM agent_email_addresses WHERE address_hash = ? AND tenant_id = ? AND space_id = ? AND agent_id = ? AND status = 'active'"
+  ).bind(hash, tenantId, spaceId, agentId).first<{ address_hash: string }>();
+  return row ? email : null;
+}
 
 function normalizeEmailSendingDomain(value: string | undefined): string | null {
   const domain = value?.trim().toLowerCase().replace(/\.$/, "");
@@ -7253,10 +7430,15 @@ export async function handleCloudflareEmail(message: ForwardableEmailMessage, en
   }
   const addressHash = await hashEmailAddress(recipient);
   const now = new Date().toISOString();
-  const route = await env.PLATFORM_DB.prepare(
+  const replyRoute = await env.PLATFORM_DB.prepare(
     `SELECT tenant_id, space_id, task_id, agent_id FROM email_reply_routes
      WHERE address_hash = ? AND status = 'active' AND expires_at > ? LIMIT 1`
   ).bind(addressHash, now).first<{ tenant_id: string; space_id: string; task_id: string; agent_id: string; project_id: string | null }>();
+  const mailboxRoute = replyRoute ? null : await env.PLATFORM_DB.prepare(
+    `SELECT tenant_id, space_id, agent_id FROM agent_email_addresses
+     WHERE address_hash = ? AND status = 'active' LIMIT 1`
+  ).bind(addressHash).first<{ tenant_id: string; space_id: string; agent_id: string }>();
+  const route = replyRoute ?? (mailboxRoute ? { ...mailboxRoute, task_id: null, project_id: null } : null);
   if (!route) {
     message.setReject("Unknown or expired Naelao reply address");
     return;
@@ -7276,6 +7458,15 @@ export async function handleCloudflareEmail(message: ForwardableEmailMessage, en
     message.setReject("Email could not be safely parsed or exceeds attachment limits");
     return;
   }
+  if (mailboxRoute && parsed.attachments.length) {
+    message.setReject("Agent mailboxes currently accept text-only messages; send attachments to a task-scoped reply address");
+    return;
+  }
+  const taskId = route.task_id;
+  if (!taskId && parsed.attachments.length) {
+    message.setReject("Attachments require a task-scoped reply address");
+    return;
+  }
   if (parsed.attachments.length && !env.SCRIPTS_R2) {
     message.setReject("Attachment storage is unavailable");
     return;
@@ -7290,24 +7481,27 @@ export async function handleCloudflareEmail(message: ForwardableEmailMessage, en
       message.setReject("Email attachments exceed Naelao's size limit");
       return;
     }
-    const taskSegment = route.task_id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 120) || "task";
+    const taskSegment = taskId!.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 120) || "task";
     const key = `spaces/${route.space_id}/email-inbound/${taskSegment}/${messageKey}/${index}-${attachment.filename}`;
     await env.SCRIPTS_R2!.put(key, attachment.bytes, { httpMetadata: { contentType: attachment.mimeType } });
     const createdAt = new Date().toISOString();
     await env.PLATFORM_DB.prepare(
       "INSERT OR IGNORE INTO email_inbound_attachments (object_key, tenant_id, space_id, task_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)"
-    ).bind(key, route.tenant_id, route.space_id, route.task_id, createdAt, new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()).run();
+    ).bind(key, route.tenant_id, route.space_id, taskId!, createdAt, new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()).run();
     stored.push({ filename: attachment.filename, mimeType: attachment.mimeType, key });
   }
   const stub = await getAgentDOForSpace(env, route.tenant_id, route.space_id, route.agent_id);
+  const inboundText = mailboxRoute
+    ? `[Untrusted inbound email]\nSubject: ${parsed.subject}\n\n${parsed.text}`
+    : emailReplyBody({ taskId: route.task_id!, subject: parsed.subject, text: parsed.text, attachments: stored });
   const response = await stub.fetch(new Request("http://agent-do/channels/email/inbound", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      raw: { from: parsed.from, text: emailReplyBody({ taskId: route.task_id, subject: parsed.subject, text: parsed.text, attachments: stored }), message_id: parsed.messageId, subject: parsed.subject },
+      raw: { from: parsed.from, text: inboundText, message_id: parsed.messageId, subject: parsed.subject },
       ...(route.project_id ? { projectId: route.project_id } : {}),
       spaceId: route.space_id, tenantId: route.tenant_id,
-      taskId: route.task_id, apiKey: "",
+      ...(route.task_id ? { taskId: route.task_id } : {}), apiKey: "",
     }),
   }));
   if (!response.ok) throw new Error(`email_reply_dispatch_failed:${response.status}`);

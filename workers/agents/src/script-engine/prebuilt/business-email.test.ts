@@ -11,6 +11,7 @@ function context(options: {
     env: {
       tenantId: "tenant-1",
       spaceId: "space-1",
+      agentId: "agent-1",
       platformSecret: "platform-secret",
       agentsWorker: {
         fetch: async () => Response.json(options.agentResponse),
@@ -76,6 +77,14 @@ describe("business-email Cloudflare Email Service routing", () => {
       provider: "cloudflare_email",
       note: "This is an outbound sender alias; inbound email is not enabled for it.",
     });
+  });
+
+  it("reports an agent-owned Cloudflare Email Routing address as inbound-capable", async () => {
+    const state = context({
+      agentResponse: { ok: true, configured: true, provider: "cloudflare_email_routing", email: "agent-opaque@agents.example.test", inbound_wired: true },
+    });
+    const result = await businessEmail.operations["email.provision"]!({ slug: "support" }, state.ctx) as Record<string, unknown>;
+    expect(result).toMatchObject({ address: "agent-opaque@agents.example.test", inbound: true, provider: "cloudflare_email_routing", status: "active", note: expect.stringContaining("Worker action") });
   });
 
   it("does not silently fall through to Resend after an ambiguous native send failure", async () => {

@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { app } from "../../workers/agents/src/index.js";
 import type { AgentsEnv } from "../../workers/agents/src/index.js";
 import { mintInternalToken } from "@naelao/http";
-import { createReplyAddress, hashEmailAddress } from "../../workers/agents/src/channels/cloudflare-email.js";
+import { createAgentEmailAddress, createReplyAddress, hashEmailAddress } from "../../workers/agents/src/channels/cloudflare-email.js";
 import { handleCloudflareEmail } from "../../workers/agents/src/index.js";
 
 // AgentMail wiring on the agents worker: the /internal/business-email/{provision,send} routes hold
@@ -84,6 +84,25 @@ describe("/internal/business-email/provision", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ ok: true, configured: true, provider: "cloudflare_email", email: address, inbound_wired: false });
     expect(persisted).toEqual([{ space_id: "s1", kind: "business_email", handle: address }]);
+  });
+
+  it("provisions a per-agent Cloudflare Email Routing address without AgentMail", async () => {
+    const writes: Array<{ query: string; values: unknown[] }> = [];
+    const env = makeEnv({
+      EMAIL_INGRESS_DOMAIN: "agents.example.test",
+      PLATFORM_DB: { prepare: (query: string) => ({ bind: (...values: unknown[]) => ({
+        first: async () => query.includes("FROM spaces") ? { id: "s1", status: "active", config_json: "{}" } : null,
+        run: async () => { writes.push({ query, values }); return { success: true }; },
+      }) }) } as never,
+    });
+    const token = await mintInternalToken(SECRET, TENANT);
+    const response = await post("/internal/business-email/provision", { spaceId: "s1", tenantId: TENANT, agentId: "agent-a" }, env,
+      { "x-naelao-tenant-id": TENANT, "x-naelao-internal-token": token });
+    const address = await createAgentEmailAddress({ domain: "agents.example.test", tenantId: TENANT, spaceId: "s1", agentId: "agent-a", secret: SECRET });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, configured: true, provider: "cloudflare_email_routing", email: address, inbound_wired: true });
+    expect(writes[0]?.query).toContain("INSERT INTO agent_email_addresses");
+    expect(writes[0]?.values).toEqual([await hashEmailAddress(address), TENANT, "s1", "agent-a", expect.any(String)]);
   });
 });
 
@@ -328,5 +347,37 @@ describe("Cloudflare task reply email handler", () => {
     expect(payload).toMatchObject({ projectId: "p1", spaceId: "s1", tenantId: TENANT });
     expect(payload.raw.text).toContain("Email reply for task run-1");
     expect(payload.raw.text).toContain("r2://spaces/s1/email-inbound/run-1/");
+  });
+
+  it("routes text-only Cloudflare mailbox messages to the provisioned agent without task scope", async () => {
+    const address = await createAgentEmailAddress({ domain: "agents.example.test", tenantId: TENANT, spaceId: "s1", agentId: "mail-agent", secret: SECRET });
+    const hash = await hashEmailAddress(address);
+    const dispatched: Request[] = [];
+    const raw = new TextEncoder().encode([
+      "From: Customer <customer@example.net>", `To: ${address}`, "Subject: Need help", "Message-ID: <mail-1@example.net>", "MIME-Version: 1.0",
+      "Content-Type: text/plain; charset=utf-8", "", "Please help with my order.",
+    ].join("\r\n"));
+    const env = makeEnv({
+      EMAIL_INGRESS_DOMAIN: "agents.example.test",
+      PLATFORM_DB: { prepare: (query: string) => ({ bind: () => ({ first: async () => {
+        if (query.includes("email_reply_routes")) return null;
+        if (query.includes("agent_email_addresses")) return { tenant_id: TENANT, space_id: "s1", agent_id: "mail-agent" };
+        return { status: "active" };
+      } }) }) } as never,
+      NAELAO_AGENT_DO: { idFromName: () => "do-id", get: () => ({ fetch: async (request: Request) => { dispatched.push(request); return Response.json({ queued: true }); } }) } as never,
+    });
+    const message = {
+      from: "customer@example.net", to: address, rawSize: raw.byteLength,
+      raw: new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(raw); controller.close(); } }),
+      headers: new Headers(), setReject: vi.fn(), forward: async () => ({} as never), reply: async () => ({} as never),
+    } as ForwardableEmailMessage;
+    expect(hash).toBe(await hashEmailAddress(address));
+    await handleCloudflareEmail(message, env);
+    expect(message.setReject).not.toHaveBeenCalled();
+    const payload = await dispatched[0]!.json() as { raw: { text: string }; spaceId: string; taskId?: string };
+    expect(payload).toMatchObject({ spaceId: "s1" });
+    expect(payload.taskId).toBeUndefined();
+    expect(payload.raw.text).toContain("Untrusted inbound email");
+    expect(payload.raw.text).toContain("Please help with my order.");
   });
 });

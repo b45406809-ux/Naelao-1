@@ -9,6 +9,8 @@ export interface OpenRouterModelCandidate {
   completionPriceUsdPerToken?: number;
   inputModalities?: string[];
   outputModalities?: string[];
+  /** Provider-declared request features. This is catalog evidence, not proof of key entitlement. */
+  supportedParameters?: string[];
 }
 
 const API = "https://openrouter.ai/api/v1";
@@ -32,6 +34,12 @@ function optionalPrice(value: unknown): number | undefined {
 function modalities(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const result = value.filter((item): item is string => typeof item === "string" && /^[a-z0-9_-]{1,32}$/i.test(item)).slice(0, 16);
+  return result.length ? result : undefined;
+}
+
+function supportedParameters(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const result = value.filter((item): item is string => typeof item === "string" && /^[a-z0-9_-]{1,48}$/i.test(item)).slice(0, 64);
   return result.length ? result : undefined;
 }
 
@@ -60,6 +68,8 @@ function parseCatalog(payload: unknown): OpenRouterModelCandidate[] {
     const input = modalities(architecture.input_modalities), output = modalities(architecture.output_modalities);
     if (input) model.inputModalities = input;
     if (output) model.outputModalities = output;
+    const params = supportedParameters(item.supported_parameters);
+    if (params) model.supportedParameters = params;
     models.push(model);
   }
   return models.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
@@ -110,3 +120,18 @@ export const openRouterCatalogForTest = {
   parse: parseCatalog,
   reset: () => { catalogCache = undefined; catalogPending = undefined; },
 };
+
+/** A dynamic BYOK model is eligible for Naelao's tool-using planner only when the public
+ * provider catalog explicitly declares text input/output and tool support. Key entitlement is
+ * still tested by the real inference call, which never falls back to platform billing. */
+export function isOpenRouterPlannerCandidate(candidate: OpenRouterModelCandidate | undefined): boolean {
+  return Boolean(candidate
+    && candidate.model.startsWith("openrouter/")
+    // The generic planner defaults unknown catalog models to a 200k context. Refuse a dynamic
+    // model with a smaller or undisclosed window until the runtime carries an explicit limit.
+    && candidate.contextLength !== undefined
+    && candidate.contextLength >= 200_000
+    && candidate.inputModalities?.includes("text")
+    && candidate.outputModalities?.includes("text")
+    && candidate.supportedParameters?.includes("tools"));
+}

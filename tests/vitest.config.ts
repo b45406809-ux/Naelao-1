@@ -6,6 +6,8 @@ export default defineConfig({
     alias: {
       // Allow worker code that imports the CF runtime module to load under Node.
       "cloudflare:workers": fileURLToPath(new URL("./stubs/cloudflare-workers.ts", import.meta.url)),
+      "agents/voice": fileURLToPath(new URL("./stubs/agents-voice.ts", import.meta.url)),
+      agents: fileURLToPath(new URL("./stubs/agents.ts", import.meta.url)),
     },
   },
   test: {

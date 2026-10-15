@@ -1990,6 +1990,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ...(projectId ? { projectId } : {}),
       ...(workspaceBranch ? { workspaceBranch } : {}),
     };
+    // Workers AI's documented M2M100 model is a useful translation provider, but it remains a
+    // cloud model. Never expose this closure to an air-gapped Space; that path fails closed and
+    // cannot silently route translation outside the local machine.
+    if (!airGappedOnly && this.env.AI) {
+      env.translateText = ({ text, sourceLanguage, targetLanguage }) => this.env.AI!.run("@cf/meta/m2m100-1.2b", {
+        text,
+        source_lang: sourceLanguage,
+        target_lang: targetLanguage,
+      });
+    }
     const memoryRoleRank = { value: roleRankFor(callerRole) };
     env.artifactValidationState = {};
     if(projectId && this.env.SPACES_WORKER) env.validateWorkspaceMutation = async input => {

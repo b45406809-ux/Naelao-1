@@ -12,6 +12,12 @@ name = "EMAIL"
 name = "NAELAO_AGENT_DO"
 class_name = "NaelaoAgentDO"
 
+# Cloudflare Agents voice SDK for owner browser calls; external customer telephony remains on
+# its existing VOICE_CALLS service. Voice Agent turns dispatch into the canonical session planner.
+[[durable_objects.bindings]]
+name = "OWNER_VOICE_AGENT"
+class_name = "OwnerVoiceAgent"
+
 [[durable_objects.bindings]]
 name = "HITL_APPROVAL_DO"
 class_name = "HITLApprovalDO"
@@ -100,6 +106,10 @@ new_sqlite_classes = ["WorkflowRunDO"]
 [[migrations]]
 tag = "v11-containers"
 new_sqlite_classes = ["DocumentSandboxDO", "MediaSandboxDO"]
+
+[[migrations]]
+tag = "v12-owner-voice-agent"
+new_sqlite_classes = ["OwnerVoiceAgent"]
 
 # Tier-5 micro-tool build/test compute (WG-01). A Cloudflare Container attached to
 # ToolSandboxDO — the agent spins it up on demand to build + test the micro-tool's

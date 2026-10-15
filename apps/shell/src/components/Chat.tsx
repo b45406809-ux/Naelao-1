@@ -85,6 +85,7 @@ import { useActiveSpace } from "@/lib/active-space-context";
 import type { ThreadSummary, ConsultedThread } from "@/lib/api";
 import { modelLabel } from "./ModelSelector";
 import { userFacingErrorMessage } from "@/lib/user-facing-errors";
+import { OwnerVoiceCall } from "./OwnerVoiceCall";
 
 const POLL_INTERVAL_MS = 1500;
 // A STALL deadline, not a total cap. It used to be a flat 60s ceiling on the whole run, which
@@ -2054,6 +2055,12 @@ export function Chat({
         </div>
 
         <div className="chat-input-area">
+          {chatSessionId && <OwnerVoiceCall
+            spaceId={spaceId}
+            sessionId={chatSessionId}
+            session={session}
+            {...(projectId ? { projectId } : {})}
+          />}
           {chatSessionId && (
             <ContextUsageMeter
               spaceId={spaceId}

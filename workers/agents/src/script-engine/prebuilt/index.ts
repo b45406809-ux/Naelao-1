@@ -55,6 +55,7 @@ import { modelRaceScript } from "./model-race-script.js";
 import { foundryInbox } from "./foundry-inbox.js";
 import { runtimeDiscovery } from "./runtime-discovery.js";
 import { languageGlossary } from "./language-glossary.js";
+import { languageTranslation } from "./language-translation.js";
 
 /** Context handed to every prebuilt operation. */
 export interface PrebuiltOpContext {
@@ -97,6 +98,7 @@ export interface PrebuiltScript {
 /** The full catalogue shipped in this build, keyed by prebuilt script name. */
 export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   [languageGlossary.name]: languageGlossary,
+  [languageTranslation.name]: languageTranslation,
   [runtimeDiscovery.name]: runtimeDiscovery,
   [foundryInbox.name]: foundryInbox,
   [r2Workspace.name]: r2Workspace,
