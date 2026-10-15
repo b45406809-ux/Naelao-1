@@ -16,6 +16,7 @@ import { getDOName } from "@naelao/crypto";
 import { detectPromptInjection, detectPolicyViolations } from "@naelao/moderation";
 import { expireToolOutputs } from "./script-engine/tool-output-expiry.js";
 import { fetchOpenRouterCatalog, isOpenRouterPlannerCandidate, type OpenRouterModelCandidate } from "./shared/openrouter-model-catalog.js";
+import { runOpenRouterEntitlementPreflight } from "./shared/openrouter-entitlement.js";
 import { recommendOpenRouterModels } from "./shared/openrouter-model-recommendations.js";
 import { parseMentions, creatableFeatureKindsForRole, detectImplicitSignals, classifyFailure, type MentionableAgent } from "@naelao/events";
 import { NaelaoAgentDO, ASSISTANT_MEMORY_SCOPE } from "./do/NaelaoAgentDO.js";
@@ -3559,6 +3560,27 @@ app.post("/spaces/:spaceId/llm-byok/models/activate", async (c) => {
   }
   if (!candidate) return c.json({ error_code: "model_not_eligible", message: "Requires fresh catalog-declared text input/output, tool support, known pricing, and at least 200,000 context tokens" }, 400);
 
+  // Public catalog membership and /auth/key do not establish model entitlement. The explicit
+  // owner activation action runs one fixed, one-token request using the selected Space key; no
+  // user content, platform key, fallback provider, or other model is sent. This is not a
+  // background/hidden paid probe.
+  const rows = await listByokCredentials(c.env, tenantId, spaceId);
+  const openRouterKeys = rows.filter(row => isByokKeyName(row.name, NEW_BYOK_PROVIDER) && row.name !== byokActiveCredentialName(NEW_BYOK_PROVIDER));
+  const pointer = rows.find(row => row.name === byokActiveCredentialName(NEW_BYOK_PROVIDER));
+  const selectedName = pointer?.description?.startsWith("active-key:") ? pointer.description.slice("active-key:".length) : null;
+  const selectedKey = openRouterKeys.find(row => row.name === selectedName)
+    ?? openRouterKeys.find(row => row.name === legacyByokCredentialName(NEW_BYOK_PROVIDER))
+    ?? openRouterKeys[0];
+  const apiKey = selectedKey ? await resolveConnectorCredential(c.env, tenantId, spaceId, selectedKey.name) : null;
+  if (!apiKey) return c.json({ error_code: "credential_unavailable", message: "The selected Space OpenRouter key is unavailable; no fallback key was used" }, 503);
+  const entitlement = await runOpenRouterEntitlementPreflight({ apiKey, modelId: candidate.id });
+  if (!entitlement.ok) {
+    const status = entitlement.reason === "provider_rejected" ? 409 : 503;
+    return c.json({ error_code: `openrouter_${entitlement.reason}`, message: entitlement.reason === "provider_rejected"
+      ? "This Space key could not invoke the selected model. Choose another model or key."
+      : "The selected model could not be tested. It was not activated." }, status);
+  }
+
   const existingModelConfig = current.modelConfig && typeof current.modelConfig === "object"
     ? current.modelConfig as Record<string, unknown>
     : {};
@@ -3575,12 +3597,13 @@ app.post("/spaces/:spaceId/llm-byok/models/activate", async (c) => {
       inputUsdPerToken: candidate.promptPriceUsdPerToken,
       outputUsdPerToken: candidate.completionPriceUsdPerToken,
       declaredTools: true,
-      providerEntitlement: "unverified_until_user_requested_inference",
+      providerEntitlement: "verified_by_owner_requested_preflight",
+      entitlementVerifiedAt: selectedAt,
     },
   } };
   await c.env.PLATFORM_DB.prepare("UPDATE spaces SET config_json = ?, updated_at = ? WHERE id = ? AND tenant_id = ?")
     .bind(JSON.stringify(config), selectedAt, spaceId, tenantId).run();
-  return c.json({ model: body.model, activated: true, context_limit: candidate.contextLength, provider: "openrouter_byok", provider_entitlement: "unverified_until_user_requested_inference", selected_by: userId, catalog_observed_at: candidate.catalogObservedAt });
+  return c.json({ model: body.model, activated: true, context_limit: candidate.contextLength, provider: "openrouter_byok", provider_entitlement: "verified_by_owner_requested_preflight", selected_by: userId, catalog_observed_at: candidate.catalogObservedAt, entitlement_verified_at: selectedAt });
 });
 
 // ── POST /internal/projects/hibernate — finite project completion fanout ────

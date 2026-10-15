@@ -127,11 +127,12 @@ export function ByokKeysPanel({
   }
 
   async function activate(model: string) {
+    if (!window.confirm("Test this model with your selected OpenRouter key and activate it? Naelao will send only a fixed 'Reply with OK.' check limited to one generated token. OpenRouter may charge this provider key for the request.")) return;
     setBusy(true);
     try {
       await activateOpenRouterModel(spaceId, creds, model);
       setActiveModel(model);
-      show("Model activated for this Space. Provider entitlement is checked when it runs.");
+      show("The selected key accepted the bounded test request and the model was activated.");
     } catch (err) {
       show(err instanceof Error ? err.message : "Couldn't activate that model.");
     } finally {
@@ -182,12 +183,12 @@ export function ByokKeysPanel({
         <summary className="settings-row-label">OpenRouter catalog ({models.length} models)</summary>
         <div className="settings-block" style={{ display: "grid", gap: 8 }}>
           <div className="settings-row-label">Catalog-based recommendations</div>
-          <p className="settings-row-sub">Shortlists use published provider metadata. Dynamic planner activation requires declared text input/output, tool support, and at least 200,000 context tokens. It does not prove your key can use the model.</p>
+          <p className="settings-row-sub">Shortlists use published provider metadata. Activation also sends an owner-confirmed, fixed one-token test request using the selected Space key. No conversation content or fallback key is sent.</p>
           {recommendations.map((item) => <div key={item.category} className="settings-row-sub"><strong>{item.label}</strong> — {item.candidates.map(model => model.name).join(", ")}<br />{item.evidence}</div>)}
         </div>
-        <p className="settings-row-sub">These are public catalog entries, not a guarantee that this key can use them. The provider confirms access when a request is sent.</p>
+        <p className="settings-row-sub">The public catalog does not prove key access. Activation tests the exact key/model pair with your confirmation; the provider may charge your key.</p>
         <div style={{ display: "grid", gap: 5, maxHeight: 280, overflow: "auto" }}>
-          {models.slice(0, 100).map((item) => <div key={item.id} className="settings-row-sub" style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ flex: 1 }}>{item.name} <span style={{ opacity: 0.7 }}>({item.id})</span>{item.contextLength ? ` · ${item.contextLength.toLocaleString()} context` : ""}</span>{canEdit && plannerEligible(item) ? <Button size="sm" variant="secondary" disabled={busy || activeModel === item.model} onClick={() => void activate(item.model)}>{activeModel === item.model ? "Active" : "Activate"}</Button> : null}</div>)}
+          {models.slice(0, 100).map((item) => <div key={item.id} className="settings-row-sub" style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ flex: 1 }}>{item.name} <span style={{ opacity: 0.7 }}>({item.id})</span>{item.contextLength ? ` · ${item.contextLength.toLocaleString()} context` : ""}</span>{canEdit && plannerEligible(item) ? <Button size="sm" variant="secondary" disabled={busy || activeModel === item.model} onClick={() => void activate(item.model)}>{activeModel === item.model ? "Active" : "Test & activate"}</Button> : null}</div>)}
         </div>
       </details>}
       {modelsError && <p role="status" className="settings-row-sub">{modelsError}</p>}

@@ -1147,8 +1147,8 @@ export async function getOpenRouterModels(spaceId: string, session: SessionCrede
   return apiFetch(`/v1/spaces/${spaceId}/llm-byok/models`, { session });
 }
 
-/** Activate a provider-catalog model for this Space after the server checks the selected BYOK
- * key, declared tool support, text modalities, context minimum, and current Space policy. */
+/** Owner-confirmed activation runs a fixed one-token preflight with the selected Space BYOK key
+ * before changing the active model. */
 export async function activateOpenRouterModel(spaceId: string, session: SessionCredentials, model: string): Promise<{ model: string; activated: boolean }> {
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/llm-byok/models/activate`, {
     method: "POST", session, body: JSON.stringify({ model }),
