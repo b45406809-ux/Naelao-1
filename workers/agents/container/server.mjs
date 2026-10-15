@@ -57,6 +57,10 @@ const WORKSPACE_DIR = "/workspace";
 // runaway script can't OOM/hang the container even if the DO's caps were somehow bypassed.
 const MAX_WORKSPACE_FILES = 300;
 const MAX_WORKSPACE_FILE_BYTES = 2 * 1024 * 1024;
+const MAX_PDF_BYTES = 1024 * 1024;
+const MAX_PDF_RENDER_PAGES = 5;
+const MAX_PDF_PAGE_PIXELS = 2048 * 2048;
+const MAX_PDF_RENDER_OUTPUT_BYTES = 5 * 1024 * 1024;
 
 async function assertWorkspaceAncestors(path) {
   let current = WORKSPACE_DIR;
@@ -267,9 +271,21 @@ const DISPLAY_ROUTES = new Set([
 ]);
 const SESSION_ROUTES = new Set(["/shell"]);
 const ARTIFACT_ROUTES = new Set(["/artifact/mount", "/artifact/read", "/artifact/write", "/artifact/flush"]);
+const PDF_ROUTES = new Set(["/pdf/render"]);
 let artifactFs;
 let shuttingDown = false;
 let controlToken;
+
+async function cleanAbandonedPdfRenders() {
+  try {
+    for (const entry of await readdir("/tmp/guest", { withFileTypes: true })) {
+      if (entry.isDirectory() && entry.name.startsWith("pdf-render-")) {
+        await rm(join("/tmp/guest", entry.name), { recursive: true, force: true });
+      }
+    }
+  } catch { /* first cold start may not have any scratch state */ }
+}
+await cleanAbandonedPdfRenders();
 
 createServer((req, res) => {
   const path = req.url ?? "";
@@ -307,6 +323,7 @@ createServer((req, res) => {
   const isDisplayRoute = [...DISPLAY_ROUTES].some((r) => path.endsWith(r));
   const isSessionRoute = [...SESSION_ROUTES].some((r) => path.endsWith(r));
   const isArtifactRoute = [...ARTIFACT_ROUTES].some((r) => path.endsWith(r));
+  const isPdfRoute = [...PDF_ROUTES].some((r) => path.endsWith(r));
   if (
     req.method !== "POST" ||
     (!path.endsWith("/build") &&
@@ -314,7 +331,8 @@ createServer((req, res) => {
       !isWorkspaceRoute &&
       !isDisplayRoute &&
       !isSessionRoute &&
-      !isArtifactRoute)
+      !isArtifactRoute &&
+      !isPdfRoute)
   ) {
     res.writeHead(404).end(JSON.stringify({ error: "not_found" }));
     return;
@@ -351,6 +369,61 @@ createServer((req, res) => {
           ? await artifactFs.flushAndCommit({ message: parsed.message ?? "container changes", metadata: parsed.metadata, expected_head: parsed.expected_head })
           : { ok: true };
         res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(result)); return;
+      }
+      if (isPdfRoute) {
+        if (!parsed || typeof parsed.pdfBase64 !== "string" || !Number.isSafeInteger(parsed.firstPage) ||
+            !Number.isSafeInteger(parsed.lastPage) || parsed.firstPage < 1 || parsed.lastPage < parsed.firstPage ||
+            parsed.lastPage - parsed.firstPage + 1 > MAX_PDF_RENDER_PAGES) {
+          res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: "pdf_render_request_invalid" })); return;
+        }
+        const encoded = parsed.pdfBase64;
+        if (encoded.length > Math.ceil(MAX_PDF_BYTES * 4 / 3) + 8 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
+          res.writeHead(413, { "content-type": "application/json" }).end(JSON.stringify({ error: "pdf_input_too_large_or_invalid" })); return;
+        }
+        const pdf = Buffer.from(encoded, "base64");
+        if (!pdf.length || pdf.length > MAX_PDF_BYTES || pdf.subarray(0, 5).toString("ascii") !== "%PDF-") {
+          res.writeHead(415, { "content-type": "application/json" }).end(JSON.stringify({ error: "pdf_input_invalid" })); return;
+        }
+        const dir = await mkdtemp(join("/tmp/guest", "pdf-render-"));
+        try {
+          await chown(dir, 10001, 10001); await chmod(dir, 0o700);
+          const inputPath = join(dir, "input.pdf");
+          const outputPrefix = join(dir, "page");
+          await writeFile(inputPath, pdf);
+          await chown(inputPath, 10001, 10001); await chmod(inputPath, 0o600);
+          const info = await runGuest("/usr/bin/pdfinfo", ["-f", String(parsed.firstPage), "-l", String(parsed.lastPage), inputPath], {
+            ...execution, id: `${execution.id}-info`, cwd: dir, timeoutMs: Math.min(execution.timeoutMs, 10_000),
+          });
+          if (info.status !== 0) throw new Error("pdf_metadata_invalid_or_encrypted");
+          const infoText = `${info.stdout}\n${info.stderr}`;
+          const pageCount = Number(infoText.match(/^Pages:\s+(\d+)\s*$/m)?.[1]);
+          if (!Number.isSafeInteger(pageCount) || pageCount < 1 || parsed.firstPage > pageCount) throw new Error("pdf_page_range_invalid");
+          if (/^Encrypted:\s+yes\b/im.test(infoText)) throw new Error("pdf_encrypted_unsupported");
+          const lastPage = Math.min(parsed.lastPage, pageCount);
+          const expectedPages = lastPage - parsed.firstPage + 1;
+          const rendered = await runGuest("/usr/bin/pdftoppm", ["-f", String(parsed.firstPage), "-l", String(lastPage), "-scale-to", "2048", "-png", inputPath, outputPrefix], {
+            ...execution, id: `${execution.id}-render`, cwd: dir, timeoutMs: Math.min(execution.timeoutMs, 30_000),
+          });
+          if (rendered.status !== 0) throw new Error("pdf_render_failed");
+          const files = (await readdir(dir)).filter(name => /^page-\d+\.png$/.test(name)).sort((a, b) => Number(a.match(/\d+/)?.[0]) - Number(b.match(/\d+/)?.[0]));
+          if (files.length !== expectedPages) throw new Error("pdf_render_page_count_mismatch");
+          let outputBytes = 0;
+          const pages = [];
+          for (const name of files) {
+            const bytes = await readFile(join(dir, name));
+            outputBytes += bytes.byteLength;
+            if (outputBytes > MAX_PDF_RENDER_OUTPUT_BYTES || bytes.length < 24 || bytes.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") throw new Error("pdf_render_output_limit");
+            const width = bytes.readUInt32BE(16); const height = bytes.readUInt32BE(20);
+            if (!width || !height || width * height > MAX_PDF_PAGE_PIXELS) throw new Error("pdf_render_pixel_limit");
+            pages.push({ page: parsed.firstPage + pages.length, width, height, pngBase64: bytes.toString("base64") });
+          }
+          res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ pages, output_bytes: outputBytes })); return;
+        } catch (error) {
+          const code = String(error?.message ?? error).replace(/[^a-z0-9_:-]/gi, "_").slice(0, 120);
+          res.writeHead(422, { "content-type": "application/json" }).end(JSON.stringify({ error: code || "pdf_render_failed" })); return;
+        } finally {
+          await rm(dir, { recursive: true, force: true }).catch(() => {});
+        }
       }
       if (isSessionRoute) {
         const cwd = resolve(String(parsed.session?.cwd || WORKSPACE_DIR));

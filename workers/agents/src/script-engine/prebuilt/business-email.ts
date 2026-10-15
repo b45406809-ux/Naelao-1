@@ -195,7 +195,7 @@ export const businessEmail: PrebuiltScript = {
   paramHints: {
     "email.reply_address": "No arguments. Creates or reuses the active run's expiring Reply-To address; pass its returned address as reply_to to email.send.",
     "email.attachment.read_text": "Requires the opaque attachment id from an inbound email. Reads supported UTF-8 text or extracts text from a small, unencrypted PDF attached to this same task. Other binary formats are not decoded.",
-    "email.attachment.ocr_image": "Requires the opaque attachment id. Separately sends one task-owned PNG/JPEG image to Cloudflare Workers AI for OCR only when the Space owner explicitly enabled hosted OCR and egress is allowed; output is untrusted and may be inaccurate. Scanned PDFs are unsupported.",
+    "email.attachment.ocr_image": "Requires the opaque attachment id. Sends a task-owned PNG/JPEG image, or renders at most five pages from a small scanned PDF in the isolated Document Sandbox, then uses hosted OCR only when the Space owner explicitly enabled it and egress is allowed. Output is untrusted and may be inaccurate.",
     "email.send": "Requires to, subject, body; optional reply_to must come from email.reply_address in this same task run.",
   },
   operations: {

@@ -2,7 +2,7 @@
 
 Date: 2026-10-15  
 Branch: `Mcbt5s-Backup-2`  
-Status: implementation in progress. The email-backed opaque-ID CLI slice and bounded Workers AI Whisper transcription task are implemented and locally tested; other channel adapters, scanned-PDF rendering, image/video tasks, and provider-run adapter evaluation remain unfinished.
+Status: implementation in progress. Email-backed opaque-ID discovery/read/OCR/copy, a bounded offline scanned-PDF raster path, and bounded Workers AI Whisper transcription are implemented and locally tested. Other channel adapters, generic image/video tasks, and provider-run adapter evaluation remain unfinished.
 
 ## Architecture decision
 
@@ -27,6 +27,8 @@ Acceptance: channel-adapter contract tests; webhook-signature-before-download te
 
 ### B. Intent-aware skill and tool selection
 
+Implementation status: The planner has metadata-only attachment prompts and explicit CLI operations, but System 1 has not been extended with advisory attachment classifications, and there are no role-targeted modality skill manuals yet. Planner choice is currently direct.
+
 1. Extend the System 1 routing result with advisory attachment relevance and tool/skill candidates based on the message text, declared/detected MIME, and verified selected-model capability evidence. It may return `not_needed`, `candidate_tool`, or `uncertain`; it must not read the file, make an irreversible choice, or authorize a tool.
 2. Keep the planner's own choice authoritative within its already authorized tool surface. For an unambiguous file-storage request, route directly to storage/copy without OCR. For content-dependent requests, make the relevant reader/transcriber available and let the planner select it. Ask a concise question when the task cannot be safely inferred.
 3. Use existing role-scoped skills and CLI `skill read` operations. Add supported PDF, image/OCR, audio, and video skill manuals only when the corresponding host tool is actually deployed. Avoid always injecting full manuals or extracted document contents.
@@ -36,14 +38,18 @@ Acceptance: paired intent tests (`save file` vs `read file`), ambiguous intent, 
 
 ### C. Bounded PDF text and scanned-page OCR
 
+Implementation status: Text extraction remains bounded; the first fixed no-network DocumentSandbox renderer is locally verified and integrated with existing owner/egress/quota-gated OCR. Cloudflare live deployment acceptance remains unrun.
+
 1. Preserve the existing bounded text extraction for small text PDFs. Add tests distinguishing text-bearing, image-only/scanned, encrypted, malformed, and oversized documents.
-2. Verify a renderer suitable for the actual Cloudflare Worker/Container target, not just Node. Candidate route: use the dedicated Document Sandbox (not the Agents request isolate) with a fixed no-network renderer image. Pin the renderer binary/image digest and deployment binding. Add a narrow host operation that stages one authorized PDF, renders a bounded page range at a fixed maximum resolution, returns bounded PNG bytes, and deletes scratch files on success/failure.
+2. A first bounded renderer is implemented in the dedicated Document Sandbox: pinned `node:22-slim` base digest plus pinned Debian `poppler-utils`, no-network Container execution, fixed `pdftoppm` arguments, at most five pages, 2048-pixel longest edge, five MiB aggregate PNG output, strict input/output checks, and temporary-file cleanup on success/failure/container restart. The host operation stages only the exact task-owned PDF after owner OCR opt-in and egress checks. Verify deployment image digest/binding during live acceptance.
 3. Enforce file/page/pixel/aggregate-byte limits before OCR; cap CPU/runtime, memory through the fixed sandbox profile, output size, and OCR token/usage admission. Disable external links, scripting, embedded actions, and network. Cleanly reject encrypted PDFs and unsupported features. Test restart/failure cleanup and malicious decompression/input cases.
 4. Only then connect rendered pages to the existing OCR provider operation, with Space owner enablement, model/evidence/entitlement checks, spend limits, untrusted output labeling, retention policy, and no forbidden cloud fallback. If no renderer meets the bounds or is deployable, retain a truthful `scanned_pdf_ocr_unavailable` result.
 
 Acceptance: synthetic scanned/text PDFs; page-limit and pixel-bomb cases; invalid/encrypted files; CPU/timeout and output-limit failures; container restart/cleanup; Workers runtime test plus container image build/dry-run. A local container test is not live deployment acceptance.
 
 ### D. Generic modality contract and dispatch
+
+Implementation status: A normalized task boundary currently implements only audio transcription through Workers AI Whisper and rejects other task names. No generic video, translation, speech-to-speech, or image-understanding provider contract has been established.
 
 1. Replace the notion of one universal provider request with a normalized Naelao task contract: modality and task (`transcribe`, `translate`, `describe_image`, `extract_document`, `summarize_video`, `speech_to_speech`), bounded input references, expected output type, language hints/constraints, and cancellation/timeout limits.
 2. Implement explicit provider adapters that map only verified capabilities to each provider's request format. Keep model inventory candidate data separate from key-specific entitlement and deployment status. Validate exact selected key, model, capability, and price before paid requests. Unknown or stale evidence means unsupported.
@@ -54,6 +60,8 @@ Acceptance: synthetic scanned/text PDFs; page-limit and pixel-bomb cases; invali
 Acceptance: provider-adapter contract tests per capability; stale/unsupported/model-entitlement denial; exact key/Space isolation; cost-cap failures; language/uncertainty and code-switch cases; local/private success; forbidden-cloud fallback denial; cancellation and transcript/session replay tests.
 
 ### E. Adapter evaluation and provider execution
+
+Implementation status: No verified official provider operation for this imported adapter/base-model format was identified. Platform-run evaluation has not been implemented; preserve owner-attested scoring and disabled training until the specific contract is verified.
 
 1. Keep current adapter manifests, consent/provenance, encrypted test sets, owner-attested scores, approval/rollback/revocation, and disabled training behavior intact.
 2. Before platform-run evaluation, identify a provider/runtime with an official documented inference operation that accepts the exact imported adapter and base-model format. Verify the request, response, resource limits, data handling, and account entitlement. A manifest string or successful base-model request is not proof that an adapter loads.

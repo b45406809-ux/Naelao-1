@@ -35,7 +35,10 @@ const read = async (args: Record<string, unknown>, ctx: PrebuiltOpContext) => {
 const ocr = async (args: Record<string, unknown>, ctx: PrebuiltOpContext) => {
   const id = typeof args.id === "string" ? args.id.trim() : "";
   if (!id) throw new Error("usage: attachment ocr <id>");
-  return call(ctx, "/internal/business-email/attachment/ocr", { id });
+  return call(ctx, "/internal/business-email/attachment/ocr", {
+    id, agentId: ctx.env.agentId,
+    ...(ctx.env.projectId ? { projectId: ctx.env.projectId } : {}),
+  });
 };
 const copy = async (args: Record<string, unknown>, ctx: PrebuiltOpContext) => {
   const id = typeof args.id === "string" ? args.id.trim() : "";
@@ -66,7 +69,7 @@ export const attachments: PrebuiltScript = {
     "attachment.list": "No parameters. Lists metadata for files received by this task only.",
     "attachment.inspect": "{id:string}. Gets metadata only for one file received by this task; does not open or decode its bytes.",
     "attachment.read": "{id:string}. Reads supported text, DOCX or PDF text from one task-owned file; binary image OCR is a separate explicit operation.",
-    "attachment.ocr": "{id:string}. Requests hosted OCR for a task-owned image only when the Space owner enabled it and egress is allowed.",
+    "attachment.ocr": "{id:string}. Requests hosted OCR for a task-owned image or at most five pages of a small scanned PDF. Requires Space-owner enablement and allowed egress.",
     "attachment.copy": "{id:string,path:string}. Copies original bytes to the current authorized workspace without decoding or sending them to a model; refuses an existing destination.",
   },
 };

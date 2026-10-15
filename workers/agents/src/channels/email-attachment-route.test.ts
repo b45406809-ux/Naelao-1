@@ -67,7 +67,7 @@ function smallPng(): Uint8Array {
   return bytes;
 }
 
-function makeOcrEnv(options: { matchingTask?: boolean; enabled?: boolean; airGapped?: boolean; mime?: string; attemptAllowed?: boolean } = {}) {
+function makeOcrEnv(options: { matchingTask?: boolean; enabled?: boolean; airGapped?: boolean; mime?: string; attemptAllowed?: boolean; bytes?: Uint8Array } = {}) {
   let r2Reads = 0;
   const ai = { run: vi.fn(async () => ({ answer: "Invoice 42\nTotal $10.00" })) };
   const env = {
@@ -99,9 +99,26 @@ function makeOcrEnv(options: { matchingTask?: boolean; enabled?: boolean; airGap
       async get(key: string) {
         r2Reads++;
         expect(key).toBe(owned.key);
-        const bytes = smallPng();
+        const bytes = options.bytes ?? smallPng();
         return { size: bytes.byteLength, httpMetadata: { contentType: options.mime ?? "image/png" }, arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) };
       },
+    },
+    DOCUMENT_SANDBOX: {
+      idFromName: (name: string) => name,
+      get: (id: string) => ({
+        async fetch(request: Request) {
+          expect(id).toBe("sandbox:space-1:_assistant");
+          expect(request.url).toBe("http://document-sandbox/pdf/render");
+          expect(request.headers.get("x-naelao-internal-token")).toBeTruthy();
+          expect(JSON.parse(request.headers.get("x-naelao-container-scope") ?? "{}")).toMatchObject({
+            tenantId: "tenant-1", spaceId: "space-1", actorId: "attachment-reader", runId: "task-1", timeoutMs: 45_000,
+          });
+          const input = await request.json() as { firstPage: number; lastPage: number; pdfBase64: string };
+          expect(input).toMatchObject({ firstPage: 1, lastPage: 5 });
+          expect(input.pdfBase64).toBeTruthy();
+          return Response.json({ pages: [{ page: 1, width: 5, height: 5, pngBase64: btoa(String.fromCharCode(...smallPng())) }], output_bytes: 24 });
+        },
+      }),
     },
     AI: ai,
   };
@@ -226,9 +243,21 @@ describe("explicit task-scoped email image OCR endpoint", () => {
     const wrongTask = makeOcrEnv({ matchingTask: false });
     expect((await ocrAttachment(wrongTask.env)).status).toBe(404);
     expect(wrongTask.r2Reads()).toBe(0);
-    const unsupported = makeOcrEnv({ mime: "application/pdf" });
+    const unsupported = makeOcrEnv({ mime: "application/zip" });
     expect((await ocrAttachment(unsupported.env)).status).toBe(415);
     expect(unsupported.ai.run).not.toHaveBeenCalled();
+  });
+
+  it("renders scanned PDF pages in the isolated document sandbox before bounded OCR", async () => {
+    const pdf = new TextEncoder().encode("%PDF-1.4\nfixture");
+    const state = makeOcrEnv({ mime: "application/pdf", bytes: pdf });
+    const response = await ocrAttachment(state.env);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      mime_type: "application/pdf", pages: [{ page: 1, text: "Invoice 42\nTotal $10.00" }],
+      text: expect.stringContaining("[UNTRUSTED OCR FROM SCANNED PDF"),
+    });
+    expect(state.ai.run).toHaveBeenCalledTimes(1);
   });
 
   it("does not invoke OCR after the per-Space daily attempt limit is reached", async () => {
