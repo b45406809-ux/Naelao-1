@@ -2,9 +2,10 @@
 
 ## Current message-by-message continuation checkpoint (2026-10-15)
 
-- Branch `Mcbt5s-Backup-2`; Task19 (messages 37–38, source 2773–2977) freshly reviewed and committed/pushed as `PENDING_COMMIT` after checks. No code change was needed: `OwnerVoiceCall` is available inside the active Chat session; a short-lived owner/admin ticket starts Cloudflare Agents `withVoice`; each recognized utterance is routed to that same session's existing planner. Customer voice remains a separate agent. Direct SFU/realtime model wiring, archival recordings, phone ingress, latency and prices in the AI response are unverified proposals, not missing requirements for the user's direct in-thread planner question.
+- Branch `Mcbt5s-Backup-2`; Task19 (messages 37–38, source 2773–2977) was pushed as `60a24f5`. No code change was needed: `OwnerVoiceCall` is available inside the active Chat session; a short-lived owner/admin ticket starts Cloudflare Agents `withVoice`; each recognized utterance is routed to that same session's existing planner. Customer voice remains a separate agent. Direct SFU/realtime model wiring, archival recordings, phone ingress, latency and prices in the AI response are unverified proposals, not missing requirements for the user's direct in-thread planner question.
 - Task19 verification: Agents `voice.test.ts`, `planner-turn.test.ts`, and `voice-ticket.test.ts`: 3 files / 9 tests passed. This proves mocked/local paths, not deployed microphone/provider behavior.
-- Next primary: Task20, messages 39–40, source lines 2978–3067. Re-read in bounded windows; search later customer-bot/identity/rate-limit/cost amendments before deciding. Continue pair-by-pair and update this checkpoint and ledger, committing and pushing each pair.
+- Task20 (messages 39–40, source 2978–3067) was freshly reviewed. Text channel routing already uses customer-bot projects with lower execution ceilings/rules; voice calls have independent consent, replay protection and configurable abuse/cost limits, but do not execute the selected project's domain extensions/tools. Kept this as an explicit partial dependency until a safe synchronous customer-project response contract is defined. Existing customer telephony tests passed: 1 file / 8 tests.
+- Next primary: Task21, messages 41–42, source lines 3068–3284. Read bounded windows and search later role/skill amendments; continue pair-by-pair and commit/push each pair.
 
 ## Unified attachment implementation checkpoint (2026-10-15)
 
