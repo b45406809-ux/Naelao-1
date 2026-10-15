@@ -5,10 +5,24 @@ export const CUSTOMER_VOICE_DEFAULT_MAX_CALL_SECONDS = 300;
 export const CUSTOMER_VOICE_DEFAULT_MAX_CONCURRENT = 2;
 export const CUSTOMER_VOICE_MAX_PROMPT_CHARS = 8_000;
 
+export const CUSTOMER_VOICE_HEARTBEAT_ROSTER_SQL = `SELECT roster.space_id, roster.tenant_id FROM (
+  SELECT cl.space_id AS space_id, cl.tenant_id AS tenant_id
+    FROM channel_links cl JOIN spaces s ON s.id=cl.space_id AND s.tenant_id=cl.tenant_id AND s.status='active'
+   WHERE cl.enabled=1
+  UNION
+  SELECT vb.space_id AS space_id, vb.tenant_id AS tenant_id
+    FROM customer_voice_number_bindings vb JOIN spaces s ON s.id=vb.space_id AND s.tenant_id=vb.tenant_id AND s.status='active'
+   WHERE vb.status='active'
+  UNION
+  SELECT a.space_id AS space_id, a.tenant_id AS tenant_id
+    FROM customer_voice_call_admissions a JOIN spaces s ON s.id=a.space_id AND s.tenant_id=a.tenant_id AND s.status='active'
+   WHERE a.status IN ('issued','connected')
+) AS roster WHERE roster.space_id > ? ORDER BY roster.space_id LIMIT ?`;
+
 export const CUSTOMER_VOICE_ADMISSION_SQL = `INSERT INTO customer_voice_call_admissions(call_sid,number_binding_id,tenant_id,space_id,agent_id,caller_number,called_number,status,ticket_nonce,ticket_token,issued_at,ticket_expires_at,reserved_cost_minor,reserved_duration_seconds,updated_at)
   SELECT ?,?,?,?,?,?,?,'issued',?,?,?,?,?,?,?
-  WHERE (SELECT COUNT(*) FROM customer_voice_call_admissions WHERE tenant_id=? AND space_id=? AND status IN ('issued','connected') AND ticket_expires_at>?) < ?
-    AND (SELECT COUNT(*) FROM customer_voice_call_admissions WHERE number_binding_id=? AND status IN ('issued','connected') AND ticket_expires_at>?) < ?
+  WHERE (SELECT COUNT(*) FROM customer_voice_call_admissions WHERE tenant_id=? AND space_id=? AND (status='connected' OR (status='issued' AND ticket_expires_at>?))) < ?
+    AND (SELECT COUNT(*) FROM customer_voice_call_admissions WHERE number_binding_id=? AND (status='connected' OR (status='issued' AND ticket_expires_at>?))) < ?
     AND (SELECT COUNT(*) FROM customer_voice_call_admissions WHERE tenant_id=? AND space_id=? AND issued_at>=?) < ?
     AND (SELECT COUNT(*) FROM customer_voice_call_admissions WHERE tenant_id=? AND space_id=? AND caller_number=? AND issued_at>=?) < 5
     AND (SELECT COALESCE(SUM(CASE WHEN status IN ('issued','connected') THEN reserved_duration_seconds ELSE COALESCE(duration_seconds,0) END),0) FROM customer_voice_call_admissions WHERE tenant_id=? AND space_id=? AND issued_at>=?) + ? <= ? * 60

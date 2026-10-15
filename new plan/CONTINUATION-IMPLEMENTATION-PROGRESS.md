@@ -1,5 +1,12 @@
 # Continuation implementation progress
 
+## Latest continuation checkpoint (read first)
+
+- Current branch: `Mcbt5s-Backup-2`. Latest pushed commit: `e6d7726` (W4 built-in per-channel model selection).
+- The W4 channel-override slice is implemented, tested, and pushed. The current uncommitted W3 slice for customer-call recovery after a lost Twilio status callback now passes full verification: Agents suite 89 files / 359 tests, Agents typecheck, Wrangler dry-run, focused SQLite recovery/admission tests, and diff check. Commit and push it before moving on.
+- Latest open product/deployment dependencies: exact quote-confirmed Twilio number purchase; live Twilio/PSTN and Cloudflare/R2/domain/provider acceptance; account-billed AI dollar reservation; provider-specific model entitlement and audio/video routing; platform-executed LoRA evaluation/training contract. Local/mock tests do not close these.
+- After the current W3 slice, continue only independent, supportable local gaps in the implementation plan; then make the final completeness pass and record any account-only steps as blocked/unrun.
+
 ## Open-gap implementation workstream 3 addendum — owner telephony settings and router (2026-10-15)
 
 - Fresh code review confirmed the Agents Worker already had owner/admin-only Twilio credential verification, existing-number import with callback rollback, customer-call signed ingress, budget/duration/concurrency admission, disable/restore, and explicit release. The public router lacked a specific customer-voice route, so `/spaces/*` sent these settings requests to Spaces and returned no telephony handler.
@@ -603,3 +610,14 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Verification: Agents and Shell typechecks passed; Spaces typecheck passed; scheduled model-policy tests passed (7/7), including channel override selection and stale-value fail-closed behavior; D1 migration replay passed including migration 0099 and `channel_links.model_override`; full Agents suite passed (88 files / 353 tests); Agents Wrangler 4.149 dry-run passed at 17,952.16 KiB / 3,323.99 KiB gzip; `git diff --check` passed. No live Cloudflare deployment or provider call was made.
 - Status: IMPLEMENTED AND LOCALLY VERIFIED; provider-specific key entitlement and audio/video dispatch remain open under W4.
 - Next: finish the full Agents test run, commit and push this slice, then continue the remaining provider-independent gaps in sequence and preserve live-only dependencies for the final audit.
+
+## Open-gap implementation workstream 3 addendum — stale customer-call recovery (2026-10-15)
+
+- Fixed call admission accounting so a `connected` call continues to occupy Space/number concurrency after the 60-second consent-ticket expiry; only an unconsented `issued` ticket can age out of the active count. Signed Twilio completion handling now clears reserved amounts and conditionally settles only an active row, making simultaneous callback/reconciliation updates idempotent.
+- Added a bounded per-Space reconciliation helper. It releases expired unconsented admissions, then checks at most ten connected calls older than their maximum duration plus 90 seconds against the same account's Twilio Call resource. It validates CallSid/account scope, uses an eight-second timeout, disables redirects, caps response bodies at 16 KiB, and changes accounting only after a signed-in-account response names the exact call and reports a terminal status. A missing credential, provider failure, active call, malformed response, or missing duration leaves reservation intact for retry.
+- Added active voice-number Spaces and outstanding issued/connected admissions to the hourly heartbeat roster so recovery runs even when a Space has no chat channel or the number was disabled/released mid-call. Air-gap/egress-denied Spaces still make no provider request.
+- Verified the recovery contract against Twilio's current official [Call resource documentation](https://www.twilio.com/docs/voice/api/call-resource): the resource supports retrieving completed calls and the documented response includes call SID, status, and duration. Documentation was fetched read-only; no live Twilio API call was made.
+- Changed: Agents `src/voice/customer-telephony.ts`, new `src/voice/call-reconciliation.ts` and tests, `src/voice/customer-telephony.test.ts`, `src/index.ts`, `new plan/OPEN-GAPS-IMPLEMENTATION-PLAN.md`, this file.
+- Verification: Agents typecheck passed; admission SQL replayed against SQLite and confirmed a connected call blocks a second call after ticket expiry; reconciliation tests cover terminal success, active-call retention, account mismatch, real SQLite schema/query/settlement, and voice-only heartbeat roster (4 reconciliation tests); customer telephony admission/signature/concurrency/roster tests passed (8 tests). Full Agents suite passed (89 files / 359 tests); fresh Wrangler 4.149 dry-run exited successfully; `git diff --check` passed. Twilio requests were mocked; no live provider test was made.
+- Status: LOCALLY VERIFIED. Paid number purchase and live Twilio/PSTN acceptance remain open; account-specific AI dollar reservations remain unverified.
+- Next: commit/push this verified slice. Continue other provider-independent gaps afterward.

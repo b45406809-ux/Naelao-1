@@ -18,6 +18,7 @@ import { expireToolOutputs } from "./script-engine/tool-output-expiry.js";
 import { fetchOpenRouterCatalog, isOpenRouterPlannerCandidate, type OpenRouterModelCandidate } from "./shared/openrouter-model-catalog.js";
 import { runOpenRouterEntitlementPreflight } from "./shared/openrouter-entitlement.js";
 import { searchTwilioLocalNumbers } from "./voice/twilio-number-search.js";
+import { reconcileStaleCustomerVoiceCalls } from "./voice/call-reconciliation.js";
 import { recommendOpenRouterModels } from "./shared/openrouter-model-recommendations.js";
 import { parseMentions, creatableFeatureKindsForRole, detectImplicitSignals, classifyFailure, type MentionableAgent } from "@naelao/events";
 import { NaelaoAgentDO, ASSISTANT_MEMORY_SCOPE } from "./do/NaelaoAgentDO.js";
@@ -93,7 +94,7 @@ import { EMAIL_DOCX_MAX_BYTES, EMAIL_DOCX_MAX_ENTRIES, EMAIL_DOCX_MAX_XML_BYTES,
 import { TwilioAdapter } from "@cloudflare/voice-twilio";
 import { CustomerVoiceAgent } from "./voice/customer-voice-agent.js";
 import {
-  CUSTOMER_VOICE_ADMISSION_SQL, customerVoiceAdmissionBindings, decodeCustomerVoiceTicketPayload, isE164, mintCustomerVoiceTicket, parseTwilioVoiceCredentials, twimlConsentResponse, twimlRejectResponse,
+  CUSTOMER_VOICE_ADMISSION_SQL, CUSTOMER_VOICE_HEARTBEAT_ROSTER_SQL, customerVoiceAdmissionBindings, decodeCustomerVoiceTicketPayload, isE164, mintCustomerVoiceTicket, parseTwilioVoiceCredentials, twimlConsentResponse, twimlRejectResponse,
   twimlStreamResponse, validateTwilioFormWebhook, validateTwilioMediaStream, verifyCustomerVoiceTicket,
 } from "./voice/customer-telephony.js";
 
@@ -658,8 +659,9 @@ app.post("/customer-voice/twilio/status/:bindingId", async (c) => {
   const duration = secondsText && /^\d{1,6}$/.test(secondsText) ? Number(secondsText) : 0;
   const actualCost = callStatus === "completed" ? Math.ceil(duration / 60) * binding.inbound_price_per_minute_minor : 0;
   const finalStatus = callStatus === "completed" ? "completed" : "failed";
-  await c.env.PLATFORM_DB.prepare("UPDATE customer_voice_call_admissions SET status=?,ended_at=?,duration_seconds=?,actual_cost_minor=?,updated_at=? WHERE call_sid=? AND number_binding_id=? AND status IN ('issued','connected')")
-    .bind(finalStatus, new Date().toISOString(), duration, actualCost, new Date().toISOString(), callSid, binding.id).run();
+  const settled = await c.env.PLATFORM_DB.prepare("UPDATE customer_voice_call_admissions SET status=?,ended_at=?,duration_seconds=?,actual_cost_minor=?,reserved_cost_minor=0,reserved_duration_seconds=0,updated_at=? WHERE call_sid=? AND number_binding_id=? AND tenant_id=? AND space_id=? AND status IN ('issued','connected')")
+    .bind(finalStatus, new Date().toISOString(), duration, actualCost, new Date().toISOString(), callSid, binding.id, binding.tenant_id, binding.space_id).run();
+  if ((settled.meta?.changes ?? 0) !== 1) return c.json({ accepted: true, duplicate: true });
   return c.json({ accepted: true, status: finalStatus });
 });
 
@@ -7457,30 +7459,17 @@ async function enqueueAgentTicks(env: AgentsEnv): Promise<void> {
     }
   }
 
-  // Channel heartbeats — every space with at least one enabled channel link. channel_links has
-  // no single `id` column (its PK is the (space_id, channel) pair), so the roster is paginated
-  // raw (one row per enabled channel, not deduplicated in SQL) and deduplicated to one heartbeat
-  // message per space in-memory — a space with multiple enabled channels only ever gets one
-  // heartbeat message either way, so a duplicate row landing on the far side of a page boundary
-  // changes nothing about the messages produced.
+  // Channel heartbeats plus customer-voice reconciliation. A voice-only Space must still get a
+  // heartbeat even when it has no chat channel, otherwise a missed Twilio callback could leave
+  // its call reservation indefinitely. UNION deduplicates the two Space rosters before paging.
   {
     let cursor = "";
-    const seenSpaces = new Set<string>();
     for (;;) {
-      const { results } = await env.PLATFORM_DB.prepare(
-        `SELECT cl.space_id AS space_id, cl.tenant_id AS tenant_id
-           FROM channel_links cl
-           JOIN spaces s ON s.id = cl.space_id AND s.status = 'active'
-          WHERE cl.enabled = 1 AND cl.space_id > ?
-          ORDER BY cl.space_id, cl.channel
-          LIMIT ?`
-      ).bind(cursor, AGENT_TICKS_PAGE_SIZE).all<{ space_id: string; tenant_id: string }>();
+      const { results } = await env.PLATFORM_DB.prepare(CUSTOMER_VOICE_HEARTBEAT_ROSTER_SQL)
+        .bind(cursor, AGENT_TICKS_PAGE_SIZE).all<{ space_id: string; tenant_id: string }>();
       if (results.length === 0) break;
       for (const row of results) {
-        if (!seenSpaces.has(row.space_id)) {
-          seenSpaces.add(row.space_id);
-          messages.push({ body: { kind: "heartbeat", spaceId: row.space_id, tenantId: row.tenant_id } });
-        }
+        messages.push({ body: { kind: "heartbeat", spaceId: row.space_id, tenantId: row.tenant_id } });
       }
       totalEnumerated += results.length;
       if (results.length < AGENT_TICKS_PAGE_SIZE) break;
@@ -7657,6 +7646,19 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
   switch (msg.kind) {
     case "heartbeat": {
       if (wakePolicy.airGappedOnly) return; // channel drains and notification delivery are egress
+      try {
+        const recovery = await reconcileStaleCustomerVoiceCalls({
+          db: env.PLATFORM_DB,
+          tenantId: msg.tenantId,
+          spaceId: msg.spaceId,
+          credentialsForSpace: (tenantId, spaceId) => customerVoiceCredentials(env, tenantId, spaceId),
+        });
+        if (recovery.pending > 0) {
+          await recordWakeFailure(env, msg.spaceId, msg.tenantId, "customer_voice_reconcile", `${recovery.pending} stale call(s) await provider confirmation`);
+        }
+      } catch (error) {
+        await recordWakeFailure(env, msg.spaceId, msg.tenantId, "customer_voice_reconcile", error instanceof Error ? error.message : "reconciliation failed");
+      }
       void sweepUndeliveredNotifications(env, msg.spaceId, msg.tenantId);
       const stub = await getAgentDOForSpace(env, msg.tenantId, msg.spaceId, "naelao-agent");
       const links = await env.PLATFORM_DB.prepare(

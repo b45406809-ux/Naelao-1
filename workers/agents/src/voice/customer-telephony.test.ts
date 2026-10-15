@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   CUSTOMER_VOICE_ADMISSION_SQL,
+  CUSTOMER_VOICE_HEARTBEAT_ROSTER_SQL,
   CUSTOMER_VOICE_TICKET_TTL_MS,
   customerVoiceAdmissionBindings,
   decodeCustomerVoiceTicketPayload,
@@ -93,5 +94,43 @@ describe("customer telephony authorization primitives", () => {
     expect(storage.sql.exec<{ call_sid: string; reserved_cost_minor: number }>("SELECT call_sid,reserved_cost_minor FROM customer_voice_call_admissions").toArray()).toEqual([{ call_sid: "CA" + "1".repeat(32), reserved_cost_minor: 2 }]);
     storage.sql.exec("UPDATE customer_voice_call_admissions SET status='completed',duration_seconds=60,actual_cost_minor=2 WHERE call_sid=?", "CA" + "1".repeat(32));
     expect(storage.sql.exec(CUSTOMER_VOICE_ADMISSION_SQL, ...values("CA" + "3".repeat(32))).rowsWritten).toBe(0);
+  });
+
+  it("keeps a connected call inside the concurrency cap after its consent ticket expires", () => {
+    const storage = createDOStorage();
+    storage.sql.exec(readFileSync(join(__dirname, "../../../../infra/migrations/0097_customer_voice_telephony.sql"), "utf8"));
+    storage.sql.exec("INSERT INTO customer_voice_space_policies(tenant_id,space_id,max_concurrent_calls,max_calls_per_hour,max_daily_minutes,monthly_spend_limit_minor,updated_by,updated_at) VALUES('tenant-1','space-1',1,10,120,1000,'owner','now')");
+    storage.sql.exec(`INSERT INTO customer_voice_number_bindings(id,provider,provider_account_sid,provider_number_sid,tenant_id,space_id,agent_id,phone_number,country_code,monthly_cost_minor,currency,monthly_quote_at,inbound_price_per_minute_minor,created_by,created_at,updated_at)
+      VALUES('binding-1','twilio','AC${"a".repeat(32)}','PN${"b".repeat(32)}','tenant-1','space-1','agent-1','+14155550199','US',0,'USD','now',2,'owner','now','now')`);
+    const makeValues = (callSid: string, now: string, expiresAt: string) => customerVoiceAdmissionBindings({
+      callSid, bindingId: "binding-1", tenantId: "tenant-1", spaceId: "space-1", agentId: "agent-1",
+      caller: "+14155550100", called: "+14155550199", nonce: `nonce-${callSid}`, token: `ticket-${callSid}`,
+      now, expiresAt, reserveCostMinor: 2, reserveDurationSeconds: 60, spaceMaxConcurrent: 1, numberMaxConcurrent: 1,
+      hourStart: "2026-10-15T12:00:00.000Z", maxCallsPerHour: 10, dayStart: "2026-10-15T00:00:00.000Z",
+      maxDailyMinutes: 120, monthStart: "2026-10-15T00:00:00.000Z", monthlySpendLimitMinor: 1000,
+    });
+    const firstSid = `CA${"1".repeat(32)}`;
+    expect(storage.sql.exec(CUSTOMER_VOICE_ADMISSION_SQL, ...makeValues(firstSid, "2026-10-15T13:00:00.000Z", "2026-10-15T13:01:00.000Z")).rowsWritten).toBe(1);
+    storage.sql.exec("UPDATE customer_voice_call_admissions SET status='connected',connected_at=?,ticket_expires_at=? WHERE call_sid=?", "2026-10-15T13:00:10.000Z", "2026-10-15T13:01:00.000Z", firstSid);
+    const secondValues = makeValues(`CA${"2".repeat(32)}`, "2026-10-15T14:00:00.000Z", "2026-10-15T14:01:00.000Z");
+    expect(storage.sql.exec(CUSTOMER_VOICE_ADMISSION_SQL, ...secondValues).rowsWritten).toBe(0);
+  });
+
+  it("includes voice-only active Spaces and outstanding calls in the heartbeat roster", () => {
+    const storage = createDOStorage();
+    storage.sql.exec("CREATE TABLE spaces(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,status TEXT NOT NULL)");
+    storage.sql.exec(readFileSync(join(__dirname, "../../../../infra/migrations/0038_channel_links.sql"), "utf8"));
+    storage.sql.exec(readFileSync(join(__dirname, "../../../../infra/migrations/0097_customer_voice_telephony.sql"), "utf8"));
+    storage.sql.exec("INSERT INTO spaces(id,tenant_id,status) VALUES('chat-space','tenant-1','active'),('voice-only','tenant-1','active'),('inactive','tenant-1','suspended')");
+    storage.sql.exec("INSERT INTO channel_links(space_id,tenant_id,channel,enabled) VALUES('chat-space','tenant-1','slack',1),('inactive','tenant-1','slack',1)");
+    storage.sql.exec(`INSERT INTO customer_voice_number_bindings(id,provider,provider_account_sid,provider_number_sid,tenant_id,space_id,agent_id,phone_number,country_code,monthly_cost_minor,currency,monthly_quote_at,inbound_price_per_minute_minor,created_by,created_at,updated_at)
+      VALUES('voice-binding','twilio','AC${"a".repeat(32)}','PN${"b".repeat(32)}','tenant-1','voice-only','agent-1','+14155550199','US',0,'USD','now',2,'owner','now','now')`);
+    const activeRows = storage.sql.exec<{ space_id: string; tenant_id: string }>(CUSTOMER_VOICE_HEARTBEAT_ROSTER_SQL, "", 10).toArray();
+    expect(activeRows).toEqual([{ space_id: "chat-space", tenant_id: "tenant-1" }, { space_id: "voice-only", tenant_id: "tenant-1" }]);
+    storage.sql.exec(`INSERT INTO customer_voice_call_admissions(call_sid,number_binding_id,tenant_id,space_id,agent_id,caller_number,called_number,status,ticket_nonce,ticket_token,issued_at,ticket_expires_at,connected_at,reserved_cost_minor,reserved_duration_seconds,updated_at)
+      VALUES('CA${"d".repeat(32)}','voice-binding','tenant-1','voice-only','agent-1','+14155550100','+14155550199','connected','nonce','opaque','now','now','now',10,300,'now')`);
+    storage.sql.exec("UPDATE customer_voice_number_bindings SET status='disabled' WHERE id='voice-binding'");
+    const inFlightRows = storage.sql.exec<{ space_id: string; tenant_id: string }>(CUSTOMER_VOICE_HEARTBEAT_ROSTER_SQL, "", 10).toArray();
+    expect(inFlightRows).toEqual(activeRows);
   });
 });
