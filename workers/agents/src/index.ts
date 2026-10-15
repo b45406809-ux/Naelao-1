@@ -17,6 +17,7 @@ import { detectPromptInjection, detectPolicyViolations } from "@naelao/moderatio
 import { expireToolOutputs } from "./script-engine/tool-output-expiry.js";
 import { fetchOpenRouterCatalog, isOpenRouterPlannerCandidate, type OpenRouterModelCandidate } from "./shared/openrouter-model-catalog.js";
 import { runOpenRouterEntitlementPreflight } from "./shared/openrouter-entitlement.js";
+import { searchTwilioLocalNumbers } from "./voice/twilio-number-search.js";
 import { recommendOpenRouterModels } from "./shared/openrouter-model-recommendations.js";
 import { parseMentions, creatableFeatureKindsForRole, detectImplicitSignals, classifyFailure, type MentionableAgent } from "@naelao/events";
 import { NaelaoAgentDO, ASSISTANT_MEMORY_SCOPE } from "./do/NaelaoAgentDO.js";
@@ -477,6 +478,19 @@ app.put("/spaces/:spaceId/customer-voice/policy", async (c) => {
     VALUES(?,?,?,?,?,?,'USD',?,?) ON CONFLICT(space_id) DO UPDATE SET tenant_id=excluded.tenant_id,max_concurrent_calls=excluded.max_concurrent_calls,max_calls_per_hour=excluded.max_calls_per_hour,max_daily_minutes=excluded.max_daily_minutes,monthly_spend_limit_minor=excluded.monthly_spend_limit_minor,updated_by=excluded.updated_by,updated_at=excluded.updated_at`)
     .bind(tenantId, spaceId, ...values, userId, new Date().toISOString()).run();
   return c.json({ updated: true, currency: "USD" });
+});
+
+app.get("/spaces/:spaceId/customer-voice/available-numbers", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = await requireApprovalAuthority(c, spaceId);
+  const country = (c.req.query("country") ?? "").toUpperCase();
+  const areaCode = c.req.query("area_code") ?? "";
+  if (!/^[A-Z]{2}$/.test(country) || (areaCode && !/^\d{2,6}$/.test(areaCode))) throw badRequest("A two-letter country code and optional 2–6 digit area code are required");
+  const credentials = await customerVoiceCredentials(c.env, tenantId, spaceId);
+  if (!credentials) return c.json({ error_code: "twilio_voice_credentials_missing" }, 409);
+  const search = await searchTwilioLocalNumbers({ credentials, country, ...(areaCode ? { areaCode } : {}) });
+  if (!search.ok) return c.json({ error_code: search.error }, search.status);
+  return c.json({ numbers: search.numbers, count: search.numbers.length, pricing: "not_quoted", purchase: "not_performed" });
 });
 
 app.post("/spaces/:spaceId/customer-voice/numbers/import", async (c) => {

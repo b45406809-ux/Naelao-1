@@ -74,6 +74,11 @@ const customerVoicePath = (spaceId: string) => `/v1/spaces/${encodeURIComponent(
 export function listCustomerVoiceNumbers(spaceId: string, session: SessionCredentials) {
   return apiFetch<{ numbers: CustomerVoiceNumber[] }>(`${customerVoicePath(spaceId)}/numbers`, { session, cache: "no-store" });
 }
+export function searchCustomerVoiceNumbers(spaceId: string, session: SessionCredentials, country: string, areaCode?: string) {
+  const query = new URLSearchParams({ country });
+  if (areaCode) query.set("area_code", areaCode);
+  return apiFetch<{ numbers: Array<{ phone_number: string; country_code: string; region: string; locality: string; capabilities: { voice: boolean; sms: boolean; mms: boolean } }>; pricing: "not_quoted"; purchase: "not_performed" }>(`${customerVoicePath(spaceId)}/available-numbers?${query}`, { session, cache: "no-store" });
+}
 export function saveCustomerVoiceCredentials(spaceId: string, session: SessionCredentials, accountSid: string, authToken: string) {
   return apiFetch<{ configured: boolean; account_sid: string }>(`${customerVoicePath(spaceId)}/twilio-credentials`, { method: "PUT", session, body: JSON.stringify({ account_sid: accountSid, auth_token: authToken }) });
 }

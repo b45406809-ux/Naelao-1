@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import type { SessionCredentials, CustomerVoiceNumber } from "@/lib/api";
-import { disableCustomerVoiceNumber, importCustomerVoiceNumber, listCustomerVoiceNumbers, releaseCustomerVoiceNumber, saveCustomerVoiceCredentials } from "@/lib/api";
+import { disableCustomerVoiceNumber, importCustomerVoiceNumber, listCustomerVoiceNumbers, releaseCustomerVoiceNumber, saveCustomerVoiceCredentials, searchCustomerVoiceNumbers } from "@/lib/api";
 import { SettingsSection } from "@/components/SettingsSection";
 
 function usd(minor: number) { return new Intl.NumberFormat(undefined, { style: "currency", currency: "USD" }).format(minor / 100); }
@@ -14,6 +14,9 @@ export function CustomerTelephonySettings({ spaceId, session, canEdit }: { space
   const [numberSid, setNumberSid] = React.useState("");
   const [agentId, setAgentId] = React.useState("");
   const [ownerPrompt, setOwnerPrompt] = React.useState("");
+  const [country, setCountry] = React.useState("US");
+  const [areaCode, setAreaCode] = React.useState("");
+  const [availableNumbers, setAvailableNumbers] = React.useState<Array<{ phone_number: string; country_code: string; region: string; locality: string; capabilities: { voice: boolean; sms: boolean; mms: boolean } }>>([]);
   const [busy, setBusy] = React.useState(false);
   const [notice, setNotice] = React.useState("");
   const [error, setError] = React.useState("");
@@ -39,6 +42,16 @@ export function CustomerTelephonySettings({ spaceId, session, canEdit }: { space
         <input aria-label="Twilio Account SID" placeholder="Account SID (AC…)" value={accountSid} onChange={(e) => setAccountSid(e.target.value)} autoComplete="off" />
         <input aria-label="Twilio Auth Token" placeholder="Auth Token" type="password" value={authToken} onChange={(e) => setAuthToken(e.target.value)} autoComplete="new-password" />
         <button type="button" disabled={busy || !accountSid || !authToken} onClick={() => void act(async () => { await saveCustomerVoiceCredentials(spaceId, session, accountSid, authToken); setAuthToken(""); }, "Twilio credentials verified and saved")}>Verify and save credentials</button>
+      </div>
+      <div style={{ display: "grid", gap: 8, marginBottom: 18 }}>
+        <strong style={{ fontSize: 12.5 }}>Search available local numbers</strong>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input aria-label="Country code" placeholder="Country (ISO 2 letters)" maxLength={2} value={country} onChange={(e) => setCountry(e.target.value.toUpperCase())} />
+          <input aria-label="Area code" placeholder="Area code (optional)" maxLength={6} value={areaCode} onChange={(e) => setAreaCode(e.target.value)} />
+          <button type="button" disabled={busy || country.length !== 2} onClick={() => void act(async () => { const result = await searchCustomerVoiceNumbers(spaceId, session, country, areaCode); setAvailableNumbers(result.numbers); }, "Search complete. Results are not reserved.")}>Search</button>
+        </div>
+        <small style={{ color: "var(--text3)" }}>Search only checks current availability and does not reserve or buy numbers. Twilio rental pricing is not quoted here. If you buy one in Twilio, import its Phone Number SID below.</small>
+        {availableNumbers.map((number) => <div key={number.phone_number} style={{ fontSize: 12, color: "var(--text2)" }}>{number.phone_number}{number.locality ? ` · ${number.locality}` : ""}{number.region ? `, ${number.region}` : ""} · voice enabled{number.capabilities.sms ? " · SMS" : ""}{number.capabilities.mms ? " · MMS" : ""}</div>)}
       </div>
       <div style={{ display: "grid", gap: 8, marginBottom: 18 }}>
         <strong style={{ fontSize: 12.5 }}>Import a number already in your Twilio account</strong>
