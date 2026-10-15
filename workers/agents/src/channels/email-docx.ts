@@ -7,7 +7,7 @@ export const EMAIL_DOCX_MAX_TEXT_BYTES = 64 * 1024;
 const EMAIL_DOCX_MAX_DECLARED_TOTAL_BYTES = 4 * 1024 * 1024;
 const DOCUMENT_XML = "word/document.xml";
 
-export type EmailDocxErrorCode = "attachment_docx_too_large" | "attachment_docx_archive_limit" | "attachment_docx_xml_limit" | "attachment_docx_text_limit" | "attachment_docx_encrypted" | "attachment_docx_malformed";
+export type EmailDocxErrorCode = "attachment_docx_too_large" | "attachment_docx_archive_limit" | "attachment_docx_xml_limit" | "attachment_docx_text_limit" | "attachment_docx_malformed";
 
 export class EmailDocxError extends Error {
   constructor(readonly code: EmailDocxErrorCode) {
@@ -98,7 +98,7 @@ export async function extractEmailDocxText(bytes: Uint8Array): Promise<{ text: s
     const target = file as UnzipFile;
     target.ondata = (error, chunk, final) => {
       if (error) {
-        failure = new EmailDocxError(/password|encrypt/i.test(error.message) ? "attachment_docx_encrypted" : "attachment_docx_malformed");
+        failure = new EmailDocxError("attachment_docx_malformed");
         return;
       }
       targetBytes += chunk.byteLength;

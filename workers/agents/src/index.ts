@@ -5780,8 +5780,7 @@ app.post("/internal/business-email/attachment/read-text", async (c) => {
       });
     } catch (error) {
       if (!(error instanceof EmailDocxError)) throw error;
-      const status = error.code.endsWith("_limit") || error.code === "attachment_docx_too_large" || error.code === "attachment_docx_archive_limit" ? 413
-        : error.code === "attachment_docx_encrypted" ? 415 : 422;
+      const status = error.code.endsWith("_limit") || error.code === "attachment_docx_too_large" || error.code === "attachment_docx_archive_limit" ? 413 : 422;
       const limit = error.code === "attachment_docx_xml_limit" ? { max_xml_bytes: EMAIL_DOCX_MAX_XML_BYTES }
         : error.code === "attachment_docx_text_limit" ? { max_text_bytes: EMAIL_DOCX_MAX_TEXT_BYTES }
           : error.code === "attachment_docx_archive_limit" ? { max_entries: EMAIL_DOCX_MAX_ENTRIES }
