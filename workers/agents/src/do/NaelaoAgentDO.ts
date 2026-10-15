@@ -3,6 +3,7 @@ import { BASH_HARNESS } from "../script-engine/prebuilt/code-exec.js";
 import { executeGoalDag, type GoalDagJournal } from "../script-engine/goal-dag.js";
 import { publishCompletedTask, type TaskPublication } from "../script-engine/task-publication.js";
 import { scheduleToolOutputExpiry } from "../script-engine/tool-output-expiry.js";
+import { attachmentToolsForRun } from "../media/attachment-capabilities.js";
 // ── NaelaoAgentDO — ReAct Agent Durable Object ───────────────────────────────
 // Fulfills G-D01 through G-D20: Agent runtime with ReAct loop, tool dispatch,
 // timeout watchdog, and SQLite-persisted run state.
@@ -4715,9 +4716,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             if (descriptors.length) {
               let classification: import("@naelao/agent-sdk").AttachmentClassification | undefined;
               const classifyAttachments = engineEnv.fastDecision.classifyAttachments;
-              const availableAttachmentTools = config.scripts.prebuilt.includes("attachments")
-                ? ["attachment.inspect", "attachment.read", "attachment.ocr", "attachment.transcribe"] as const
-                : [];
+              const availableAttachmentTools = attachmentToolsForRun(config.scripts.prebuilt, body.airGappedOnly === true);
               if (!String(body.model ?? "").startsWith("local/") && classifyAttachments && availableAttachmentTools.length) {
                 try { classification = await classifyAttachments({
                   message: body.goal, attachments: descriptors,
@@ -7502,12 +7501,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         }
       }
       let attachmentClassification: import("@naelao/agent-sdk").AttachmentClassification | undefined;
-      if (attachmentDescriptors.length && !model.startsWith("local/") && engineEnv.fastDecision?.classifyAttachments) {
+      const availableAttachmentTools = attachmentToolsForRun(config.scripts.prebuilt, engineEnv.airGappedOnly === true);
+      if (attachmentDescriptors.length && availableAttachmentTools.length && !model.startsWith("local/") && engineEnv.fastDecision?.classifyAttachments) {
         try {
           attachmentClassification = await engineEnv.fastDecision.classifyAttachments({
             message: msg.text,
             attachments: attachmentDescriptors,
-            availableTools: ["attachment.inspect", "attachment.read", "attachment.ocr", "attachment.transcribe"],
+            availableTools: availableAttachmentTools,
           });
         } catch {
           // Classification is advisory; it never grants access or runs a reader.
