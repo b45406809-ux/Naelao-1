@@ -70,6 +70,7 @@ export interface CustomModelLifecycle {
   training_reason?: string; base_model?: string; provider_evidence?: string; evaluation_test_set?: string;
   evaluation_sample_count?: number; evaluation_score?: number; evaluation_threshold?: number;
   evaluation_passed?: number; approved_by?: string; updated_at?: string;
+  previous_active_model_id?: string | null;
 }
 export function getCustomModelLifecycle(spaceId: string, modelId: string, session: SessionCredentials) {
   return apiFetch<CustomModelLifecycle>(`/v1/spaces/${encodeURIComponent(spaceId)}/custom-models/${encodeURIComponent(modelId)}/lifecycle`, { session, cache: "no-store" });

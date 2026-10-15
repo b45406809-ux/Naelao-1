@@ -903,7 +903,11 @@ function AiTab({
             <Button disabled={adapterBusy || !testSetVersion || !adapter?.base_model} onClick={() => void adapterAction("record_evaluation", { evaluation: { baseModel: adapter?.base_model, testSetVersion, sampleCount: Number(sampleCount), score: Number(evaluationScore), threshold: Number(evaluationThreshold) } })}>Record owner-run evaluation</Button>
           </>}
           {canManage && adapter?.status === "evaluated" && <Button disabled={adapterBusy} onClick={() => void adapterAction("approve_activation")}>Approve activation</Button>}
+          {canManage && adapter?.status === "active" && adapter.previous_active_model_id && <Button disabled={adapterBusy} onClick={() => void adapterAction("rollback")}>Roll back to previous adapter</Button>}
           {canManage && ["active", "evaluated", "evaluation_failed", "imported", "consented"].includes(adapter?.status ?? "") && <Button disabled={adapterBusy} onClick={() => void adapterAction("revoke")}>Revoke adapter</Button>}
+          {canManage && adapter && adapter.status !== "deleted" && <Button disabled={adapterBusy} onClick={() => {
+            if (window.confirm("Delete this adapter lifecycle record and remove its inference manifest? This cannot be undone.")) void adapterAction("delete");
+          }}>Delete adapter record</Button>}
           {adapterError && <div role="alert" style={{ color: "#dc2626", fontSize: 12.5 }}>{adapterError}</div>}
           {adapterMessage && <div role="status" style={{ color: "var(--text2)", fontSize: 12.5 }}>{adapterMessage}</div>}
           {!canManage && <div className="settings-row-sub">Only Space owners and admins can manage private adapters.</div>}
