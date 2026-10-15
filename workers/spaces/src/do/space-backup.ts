@@ -18,13 +18,85 @@ interface ArchiveEnvelope {
   tenantId: string;
   spaceId: string;
   archiveId: string;
-  keyVersion: "platform-secret-hkdf-v1";
+  keyVersion: string;
   iv: string;
   checksum: string;
   ciphertext: string;
 }
 
+export interface SpaceArchiveKeyring {
+  active: { version: string; secret: string };
+  keys: Record<string, string | string[]>;
+}
+
+export function spaceArchiveKeyringFromBindings(bindings: {
+  platformSecret: string; activeKey?: string; activeVersion?: string;
+  previousKey?: string; previousVersion?: string;
+}): SpaceArchiveKeyring {
+  const activeSecret = bindings.activeKey || bindings.platformSecret;
+  const activeVersion = bindings.activeVersion || (bindings.activeKey ? "space-archive-current-v1" : "platform-secret-hkdf-v1");
+  const keys: Record<string, string | string[]> = { [activeVersion]: activeSecret };
+  if (bindings.previousKey) {
+    const previousVersion = bindings.previousVersion || "platform-secret-hkdf-v1";
+    keys[previousVersion] = bindings.previousKey;
+  }
+  // Legacy envelopes used one fixed label regardless of which deployment secret encrypted them.
+  keys["platform-secret-hkdf-v1"] = [...new Set([bindings.previousKey, activeSecret, bindings.platformSecret].filter((value): value is string => Boolean(value)))];
+  if (Object.keys(keys).some(version => !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(version))) throw new Error("archive_key_version_invalid");
+  if (Object.values(keys).some(value => (Array.isArray(value) ? value : [value]).some(secret => secret.length < 32))) throw new Error("archive_encryption_key_unavailable");
+  return { active: { version: activeVersion, secret: activeSecret }, keys };
+}
+
+type ArchiveKeys = string | SpaceArchiveKeyring;
+export function spaceArchiveKeyVersion(bytes: Uint8Array): string | null {
+  try {
+    const envelope = JSON.parse(new TextDecoder().decode(bytes)) as { format?: string; formatVersion?: number; keyVersion?: unknown };
+    return envelope.format === "naelao-space-archive-envelope" && envelope.formatVersion === 1 && typeof envelope.keyVersion === "string" ? envelope.keyVersion : null;
+  } catch { return null; }
+}
+function activeArchiveKey(keys: ArchiveKeys): { version: string; secret: string } {
+  return typeof keys === "string" ? { version: "platform-secret-hkdf-v1", secret: keys } : keys.active;
+}
+function archiveKeysForVersion(keys: ArchiveKeys, version: string): string[] {
+  if (typeof keys === "string") {
+    if (version !== "platform-secret-hkdf-v1") throw new Error("archive_key_version_unavailable");
+    return [keys];
+  }
+  const secrets = keys.keys[version];
+  if (!secrets) throw new Error("archive_key_version_unavailable");
+  return Array.isArray(secrets) ? secrets : [secrets];
+}
+
 const MAX_ARCHIVE_BYTES = 8 * 1024 * 1024;
+const MULTIPART_PART_BYTES = 5 * 1024 * 1024;
+
+export interface ResumableArchiveUploadState { uploadId: string | null; completedParts: R2UploadedPart[]; }
+
+/** Upload an immutable encrypted byte sequence and checkpoint each completed multipart part. */
+export async function uploadArchiveResumable(bucket: R2Bucket, key: string, bytes: Uint8Array, state: ResumableArchiveUploadState, persist: (state: ResumableArchiveUploadState) => void): Promise<void> {
+  if (bytes.byteLength <= MULTIPART_PART_BYTES) {
+    await bucket.put(key, bytes, { httpMetadata: { contentType: "application/vnd.naelao.space-archive+json" } });
+    return;
+  }
+  let upload: R2MultipartUpload;
+  if (state.uploadId) upload = bucket.resumeMultipartUpload(key, state.uploadId);
+  else {
+    upload = await bucket.createMultipartUpload(key, { httpMetadata: { contentType: "application/vnd.naelao.space-archive+json" } });
+    state.uploadId = upload.uploadId;
+    persist(state);
+  }
+  const completed = new Map(state.completedParts.map(part => [part.partNumber, part]));
+  const partCount = Math.ceil(bytes.byteLength / MULTIPART_PART_BYTES);
+  for (let partNumber = 1; partNumber <= partCount; partNumber++) {
+    if (completed.has(partNumber)) continue;
+    const start = (partNumber - 1) * MULTIPART_PART_BYTES;
+    const part = await upload.uploadPart(partNumber, bytes.subarray(start, Math.min(start + MULTIPART_PART_BYTES, bytes.byteLength)));
+    completed.set(partNumber, part);
+    state.completedParts = [...completed.values()].sort((a, b) => a.partNumber - b.partNumber);
+    persist(state);
+  }
+  await upload.complete([...completed.values()].sort((a, b) => a.partNumber - b.partNumber));
+}
 
 function stable(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -79,44 +151,54 @@ async function archiveKey(secret: string, tenantId: string, spaceId: string): Pr
   }, material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
 }
 
-export async function encodeSpaceArchive(payload: SpaceArchivePayload, secret: string): Promise<{ bytes: Uint8Array; checksum: string; plaintextBytes: number }> {
+export async function encodeSpaceArchive(payload: SpaceArchivePayload, keys: ArchiveKeys): Promise<{ bytes: Uint8Array; checksum: string; plaintextBytes: number }> {
   if (payload.format !== "naelao-space-archive" || payload.formatVersion !== 1 || !payload.spaceId || !payload.tenantId || !payload.archiveId) throw new Error("archive_manifest_invalid");
   const plain = new TextEncoder().encode(stable(payload));
   if (plain.byteLength > MAX_ARCHIVE_BYTES) throw new Error("archive_size_limit_exceeded");
   const checksum = await sha256(plain);
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const key = await archiveKey(secret, payload.tenantId, payload.spaceId);
-  const additionalData = new TextEncoder().encode(`${payload.tenantId}:${payload.spaceId}:${payload.archiveId}:1`);
+  const active = activeArchiveKey(keys);
+  const key = await archiveKey(active.secret, payload.tenantId, payload.spaceId);
+  const additionalData = new TextEncoder().encode(active.version === "platform-secret-hkdf-v1"
+    ? `${payload.tenantId}:${payload.spaceId}:${payload.archiveId}:1`
+    : `${payload.tenantId}:${payload.spaceId}:${payload.archiveId}:1:${active.version}`);
   const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData, tagLength: 128 }, key, plain));
   const envelope: ArchiveEnvelope = {
     format: "naelao-space-archive-envelope", formatVersion: 1,
     tenantId: payload.tenantId, spaceId: payload.spaceId, archiveId: payload.archiveId,
-    keyVersion: "platform-secret-hkdf-v1", iv: base64(iv), checksum, ciphertext: base64(ciphertext),
+    keyVersion: active.version, iv: base64(iv), checksum, ciphertext: base64(ciphertext),
   };
   return { bytes: new TextEncoder().encode(JSON.stringify(envelope)), checksum, plaintextBytes: plain.byteLength };
 }
 
 export async function decodeSpaceArchive(
   bytes: Uint8Array,
-  secret: string,
+  keys: ArchiveKeys,
   expected: { tenantId: string; spaceId: string; archiveId: string },
 ): Promise<SpaceArchivePayload> {
   if (bytes.byteLength > MAX_ARCHIVE_BYTES * 2) throw new Error("archive_size_limit_exceeded");
   let envelope: ArchiveEnvelope;
   try { envelope = JSON.parse(new TextDecoder().decode(bytes)) as ArchiveEnvelope; }
   catch { throw new Error("archive_envelope_invalid"); }
-  if (envelope.format !== "naelao-space-archive-envelope" || envelope.formatVersion !== 1 || envelope.keyVersion !== "platform-secret-hkdf-v1"
+  if (envelope.format !== "naelao-space-archive-envelope" || envelope.formatVersion !== 1 || typeof envelope.keyVersion !== "string"
     || envelope.tenantId !== expected.tenantId || envelope.spaceId !== expected.spaceId || envelope.archiveId !== expected.archiveId) {
     throw new Error("archive_scope_or_version_mismatch");
   }
-  const key = await archiveKey(secret, expected.tenantId, expected.spaceId);
   const iv = fromBase64(envelope.iv);
   if (iv.length !== 12) throw new Error("archive_envelope_invalid");
-  const additionalData = new TextEncoder().encode(`${expected.tenantId}:${expected.spaceId}:${expected.archiveId}:1`);
-  let plain: Uint8Array;
-  try {
-    plain = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv, additionalData, tagLength: 128 }, key, fromBase64(envelope.ciphertext)));
-  } catch { throw new Error("archive_authentication_failed"); }
+  const additionalData = new TextEncoder().encode(envelope.keyVersion === "platform-secret-hkdf-v1"
+    ? `${expected.tenantId}:${expected.spaceId}:${expected.archiveId}:1`
+    : `${expected.tenantId}:${expected.spaceId}:${expected.archiveId}:1:${envelope.keyVersion}`);
+  const ciphertext = fromBase64(envelope.ciphertext);
+  let plain: Uint8Array | undefined;
+  for (const secret of archiveKeysForVersion(keys, envelope.keyVersion)) {
+    try {
+      const key = await archiveKey(secret, expected.tenantId, expected.spaceId);
+      plain = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv, additionalData, tagLength: 128 }, key, ciphertext));
+      break;
+    } catch { /* Try the next configured key for legacy key IDs. */ }
+  }
+  if (!plain) throw new Error("archive_authentication_failed");
   if (plain.byteLength > MAX_ARCHIVE_BYTES || await sha256(plain) !== envelope.checksum) throw new Error("archive_checksum_mismatch");
   let payload: SpaceArchivePayload;
   try { payload = JSON.parse(new TextDecoder().decode(plain)) as SpaceArchivePayload; }

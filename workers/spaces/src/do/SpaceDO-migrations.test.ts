@@ -45,6 +45,7 @@ describe("SpaceDO migration replay", () => {
     const retentionHoldMigration = storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM _migrations WHERE version = 74").toArray();
     const spendReservationMigration = storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM _migrations WHERE version = 75").toArray();
     const testSetMigration = storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM _migrations WHERE version = 76").toArray();
+    const archiveResumeMigration = storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM _migrations WHERE version = 77").toArray();
     const spendReservationTables = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('project_spend_reservations','project_spend_run_settlements')").toArray();
     const sessionColumns = storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('sessions')").toArray().map(column => column.name);
     const retentionTables = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('space_retention_policies','space_retention_previews','space_archive_records','space_archive_restore_previews')").toArray();
@@ -63,6 +64,7 @@ describe("SpaceDO migration replay", () => {
     expect(retentionMigration[0]?.count).toBe(1);
     expect(retentionHoldMigration[0]?.count).toBe(1);
     expect(spendReservationMigration[0]?.count).toBe(1);
+    expect(archiveResumeMigration[0]?.count).toBe(1);
     expect(testSetMigration[0]?.count).toBe(1);
     expect(spendReservationTables).toHaveLength(2);
     expect(sessionColumns).toContain("retention_hold");

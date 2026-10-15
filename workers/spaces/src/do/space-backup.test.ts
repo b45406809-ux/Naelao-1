@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decodeSpaceArchive, encodeSpaceArchive, topologicalRestoreOrder, type SpaceArchivePayload } from "./space-backup.js";
+import { decodeSpaceArchive, encodeSpaceArchive, spaceArchiveKeyringFromBindings, topologicalRestoreOrder, type SpaceArchivePayload } from "./space-backup.js";
 
 const payload: SpaceArchivePayload = {
   format: "naelao-space-archive", formatVersion: 1,
@@ -25,6 +25,19 @@ describe("encrypted Space archive envelope", () => {
     const tampered = encoded.bytes.slice(); tampered[tampered.length - 3] ^= 1;
     await expect(decodeSpaceArchive(tampered, secret, { tenantId: "tenant-a", spaceId: "space-a", archiveId: "archive-a" })).rejects.toThrow();
     await expect(decodeSpaceArchive(encoded.bytes, `${secret}-rotated`, { tenantId: "tenant-a", spaceId: "space-a", archiveId: "archive-a" })).rejects.toThrow();
+  });
+
+  it("decrypts both legacy key sources and versioned archives during a rotation window", async () => {
+    const oldKey = secret, platformKey = "different-legacy-platform-secret-material-123456", newKey = `${secret}-new`;
+    const legacyDedicated = await encodeSpaceArchive(payload, oldKey);
+    const legacyPlatform = await encodeSpaceArchive(payload, platformKey);
+    const rotation = spaceArchiveKeyringFromBindings({ platformSecret: platformKey, activeKey: newKey, activeVersion: "archive-2026-10", previousKey: oldKey, previousVersion: "archive-2026-04" });
+    const current = await encodeSpaceArchive(payload, rotation);
+    for (const archive of [legacyDedicated, legacyPlatform, current]) {
+      await expect(decodeSpaceArchive(archive.bytes, rotation, { tenantId: "tenant-a", spaceId: "space-a", archiveId: "archive-a" })).resolves.toEqual(payload);
+    }
+    const retired = spaceArchiveKeyringFromBindings({ platformSecret: platformKey, activeKey: newKey, activeVersion: "archive-2026-10" });
+    await expect(decodeSpaceArchive(legacyDedicated.bytes, retired, { tenantId: "tenant-a", spaceId: "space-a", archiveId: "archive-a" })).rejects.toThrow("archive_authentication_failed");
   });
 
   it("orders foreign-key parents first and identifies cycles for deferred transaction handling", () => {

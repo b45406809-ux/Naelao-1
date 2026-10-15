@@ -75,7 +75,7 @@ Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, recon
 
 ### 6. SQLite retention, archive, export, and restore
 
-**Status:** owner/admin message-retention previews and holds, encrypted bounded R2 snapshots, scoped archive checks, retryable request identities, and merge-restore are locally implemented. Workstream remains partial because archive retries rebuild whole bounded files rather than resume chunks, the encryption key has no previous-key ring, and live R2 durability/account behavior is unverified.
+**Status:** owner/admin message-retention previews and holds, encrypted bounded R2 snapshots, scoped archive checks, persisted multipart chunk resumption, a previous-key rotation ring, per-archive owner/admin rewrap, retryable request identities, and merge-restore are locally implemented. Workstream remains partial because live R2 durability/account behavior is unverified and no bulk key-rewrap job is available.
 
 1. Inventory each SpaceDO table, ownership, deletion behavior, backups, and schema version. Separate audit/legal retention requirements from product conversation retention; do not apply a generic TTL to all rows.
 2. Define owner-visible per-Space retention settings and a dry-run preview that reports affected records/bytes. Require explicit policy selection for destructive deletion. Preserve necessary billing/security audit records under their own published retention rules.
@@ -91,7 +91,7 @@ Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, recon
 
 Run only after code and local integration checks are complete. No secret belongs in this file or Git.
 
-- Apply deployed D1 migrations 0093 through 0098 in order and verify replay-safe schema state; verify SpaceDO migrations v72–v76 and ProductUserDO migration v4 after deployment.
+- Apply deployed D1 migrations 0093 through 0098 in order and verify replay-safe schema state; verify SpaceDO migrations v72–v77 and ProductUserDO migration v4 after deployment.
 - Configure an owned Cloudflare Email Routing ingress domain and verified sending domain, then test inbound task replies and outbound delivery.
 - Configure Web Push VAPID public/private/subject values on Notifications Worker environments; test subscription, delivery, unsubscribe, and expired endpoint cleanup.
 - Configure any selected voice/model/LoRA provider bindings only after the corresponding implementation gates pass; validate Twilio credentials, verify/import a controlled number, test signed call/consent/status callbacks, and verify spend caps and release cleanup.
@@ -106,4 +106,4 @@ After all workstreams above are complete, compare each remaining task in `CONTIN
 
 ## Current next action
 
-Workstreams 1–3 are locally verified. Workstream 4 remains partial: exact model entitlement preflight, channel preferences, and verified modality routing still need implementation. Workstream 5 now has an encrypted Space-scoped test-set vault and only accepts evaluation records that match a stored set version and full case count; actual model scoring remains blocked on a verified provider execution contract. Continue with workstream 6's locally actionable archive resumption/key rotation gaps, then return to workstream 4 and the provider-independent portions of workstreams 2 and 3. Live acceptance remains unrun. Never mark external checks passed from local tests.
+Workstreams 1–3 are locally verified. Workstream 4 remains partial: exact model entitlement preflight, channel preferences, and verified modality routing still need implementation. Workstream 5 now has an encrypted Space-scoped test-set vault and only accepts evaluation records that match a stored set version and full case count; actual model scoring remains blocked on a verified provider execution contract. Workstream 6 now persists multipart state, supports a two-key rotation window, and can rewrap individual archives; bulk rewrap and live R2 checks remain open. Continue with workstream 4 and the provider-independent portions of workstreams 2 and 3. Live acceptance remains unrun. Never mark external checks passed from local tests.

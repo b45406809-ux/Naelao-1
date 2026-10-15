@@ -35,7 +35,7 @@ import { MACHINE_NAME, assertMachineIdentity, validateMachinePublicKey, validate
 import { matchGlossaryTerms, normalizeGlossaryTerm, validateGlossaryEntry, type DomainGlossaryEntry } from "../domain-glossary.js";
 import { isAllowedModel } from "@naelao/billing-core";
 import { evaluationPasses, transitionCustomModelLifecycle, validateAdapterEvaluation, validateConsentAttestation, type CustomModelLifecycleAction } from "./custom-model-lifecycle.js";
-import { decodeSpaceArchive, encodeSpaceArchive, spaceArchiveChecksum, topologicalRestoreOrder, type SpaceArchivePayload } from "./space-backup.js";
+import { decodeSpaceArchive, encodeSpaceArchive, spaceArchiveChecksum, spaceArchiveKeyVersion, spaceArchiveKeyringFromBindings, topologicalRestoreOrder, uploadArchiveResumable, type ResumableArchiveUploadState, type SpaceArchivePayload } from "./space-backup.js";
 import { fingerprintRetainedMessages, forecastSpaceStorage, retainedMessageBytes, type RetainedMessageRow } from "./space-retention.js";
 import { decryptTestSet, encryptTestSet, validateCustomModelTestSet } from "./custom-model-test-vault.js";
 
@@ -1933,6 +1933,11 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 77,
+    description: "resumable encrypted R2 archive uploads",
+    up: `CREATE TABLE space_archive_uploads (archive_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, space_id TEXT NOT NULL, upload_id TEXT, encrypted_bytes BLOB NOT NULL, completed_parts_json TEXT NOT NULL DEFAULT '[]', checksum TEXT NOT NULL, plaintext_bytes INTEGER NOT NULL, row_counts_json TEXT NOT NULL, object_refs_json TEXT NOT NULL, selection_fingerprint TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(archive_id) REFERENCES space_archive_records(archive_id) ON DELETE CASCADE);`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -1950,6 +1955,9 @@ export interface SpaceDOEnv {
   PLATFORM_SECRET: string;
   /** Optional stable, separately managed key for archive encryption. Keep stable across deploys. */
   SPACE_ARCHIVE_KEY?: string;
+  SPACE_ARCHIVE_KEY_ID?: string;
+  SPACE_ARCHIVE_KEY_PREVIOUS?: string;
+  SPACE_ARCHIVE_KEY_PREVIOUS_ID?: string;
   /** Project starter artifacts are mirrored into the workspace bucket at install time. */
   SCRIPTS_R2?: R2Bucket;
   ACTION_RECEIPT_HMAC_KEY?: string;
@@ -2045,6 +2053,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private initialized = false;
   // G-F03: Negative auth cache — maps deny:{userId}:{spaceId} to expiry timestamp
   private readonly denyCache = new Map<string, number>();
+
+  private archiveKeys() {
+    return spaceArchiveKeyringFromBindings({
+      platformSecret: this.env.PLATFORM_SECRET,
+      ...(this.env.SPACE_ARCHIVE_KEY ? { activeKey: this.env.SPACE_ARCHIVE_KEY } : {}),
+      ...(this.env.SPACE_ARCHIVE_KEY_ID ? { activeVersion: this.env.SPACE_ARCHIVE_KEY_ID } : {}),
+      ...(this.env.SPACE_ARCHIVE_KEY_PREVIOUS ? { previousKey: this.env.SPACE_ARCHIVE_KEY_PREVIOUS } : {}),
+      ...(this.env.SPACE_ARCHIVE_KEY_PREVIOUS_ID ? { previousVersion: this.env.SPACE_ARCHIVE_KEY_PREVIOUS_ID } : {}),
+    });
+  }
 
   private isDenied(userId: string, spaceId: string): boolean {
     const key = `deny:${userId}:${spaceId}`;
@@ -2205,7 +2223,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const archiveObject = await this.env.SCRIPTS_R2.get(archived.object_key);
         if (!archiveObject) return Response.json({ error_code: "matching_archive_object_missing" }, { status: 409 });
         try {
-          const archivedPayload = await decodeSpaceArchive(new Uint8Array(await archiveObject.arrayBuffer()), this.env.SPACE_ARCHIVE_KEY ?? this.env.PLATFORM_SECRET, { tenantId, spaceId, archiveId: archived.archive_id });
+          const archivedPayload = await decodeSpaceArchive(new Uint8Array(await archiveObject.arrayBuffer()), this.archiveKeys(), { tenantId, spaceId, archiveId: archived.archive_id });
           const archivedMessages = (archivedPayload.tableRows.messages ?? []) as unknown as RetainedMessageRow[];
           if (archivedPayload.selectionFingerprint !== preview.fingerprint || await spaceArchiveChecksum(archivedPayload) !== archived.checksum || await fingerprintRetainedMessages(archivedMessages) !== preview.fingerprint) return Response.json({ error_code: "matching_archive_integrity_check_failed" }, { status: 409 });
         } catch { return Response.json({ error_code: "matching_archive_integrity_check_failed" }, { status: 409 }); }
@@ -2226,15 +2244,54 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const object = await this.env.SCRIPTS_R2.get(prior.object_key);
         if (!object) return Response.json({ error_code: "verified_archive_object_missing_use_new_request_id", archive_id: prior.archive_id }, { status: 409 });
         try {
-          const priorPayload = await decodeSpaceArchive(new Uint8Array(await object.arrayBuffer()), this.env.SPACE_ARCHIVE_KEY ?? this.env.PLATFORM_SECRET, { tenantId, spaceId, archiveId: prior.archive_id });
+          const priorPayload = await decodeSpaceArchive(new Uint8Array(await object.arrayBuffer()), this.archiveKeys(), { tenantId, spaceId, archiveId: prior.archive_id });
           if (await spaceArchiveChecksum(priorPayload) !== prior.checksum) throw new Error("archive_checksum_mismatch");
         } catch { return Response.json({ error_code: "verified_archive_integrity_failed_use_new_request_id", archive_id: prior.archive_id }, { status: 409 }); }
+        execute(sql, "DELETE FROM space_archive_uploads WHERE archive_id=?", prior.archive_id);
         return Response.json({ archive_id: prior.archive_id, checksum: prior.checksum, replayed: true });
       }
       if (prior && prior.kind !== kind) return Response.json({ error_code: "request_id_reused_for_different_archive" }, { status: 409 });
       const archiveId = prior?.archive_id ?? crypto.randomUUID();
       const objectKey = `space-archives/${tenantId}/${spaceId}/${archiveId}.enc`;
       if (!prior) execute(sql, "INSERT INTO space_archive_records (archive_id,tenant_id,space_id,request_id,kind,status,object_key,schema_version,checksum,plaintext_bytes,row_counts_json,object_refs_json,selection_fingerprint,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", archiveId, tenantId, spaceId, requestId, kind, "pending", objectKey, 1, "", 0, "{}", "[]", null, actorId, now);
+      const savedUpload = queryOne<{ upload_id: string | null; encrypted_bytes: Uint8Array | ArrayBuffer; completed_parts_json: string; checksum: string; plaintext_bytes: number; row_counts_json: string; object_refs_json: string; selection_fingerprint: string | null }>(sql,
+        "SELECT upload_id,encrypted_bytes,completed_parts_json,checksum,plaintext_bytes,row_counts_json,object_refs_json,selection_fingerprint FROM space_archive_uploads WHERE archive_id=? AND tenant_id=? AND space_id=?", archiveId, tenantId, spaceId);
+      if (savedUpload) {
+        const existingObject = await this.env.SCRIPTS_R2.get(objectKey);
+        let uploadState: ResumableArchiveUploadState = { uploadId: savedUpload.upload_id, completedParts: JSON.parse(savedUpload.completed_parts_json) as R2UploadedPart[] };
+        if (existingObject) {
+          try {
+            const recovered = await decodeSpaceArchive(new Uint8Array(await existingObject.arrayBuffer()), this.archiveKeys(), { tenantId, spaceId, archiveId });
+            if (await spaceArchiveChecksum(recovered) !== savedUpload.checksum) throw new Error("archive_checksum_mismatch");
+            execute(sql, "UPDATE space_archive_records SET status='verified',schema_version=?,checksum=?,plaintext_bytes=?,row_counts_json=?,object_refs_json=?,selection_fingerprint=? WHERE archive_id=? AND tenant_id=? AND space_id=?", recovered.migrationVersion, savedUpload.checksum, savedUpload.plaintext_bytes, savedUpload.row_counts_json, savedUpload.object_refs_json, savedUpload.selection_fingerprint, archiveId, tenantId, spaceId);
+            execute(sql, "DELETE FROM space_archive_uploads WHERE archive_id=?", archiveId);
+            return Response.json({ archive_id: archiveId, checksum: savedUpload.checksum, replayed: true, recovered_completed_upload: true });
+          } catch {
+            await this.env.SCRIPTS_R2.delete(objectKey);
+            if (uploadState.uploadId) {
+              try { await this.env.SCRIPTS_R2.resumeMultipartUpload(objectKey, uploadState.uploadId).abort(); } catch { /* The multipart upload may already be completed or expired. */ }
+            }
+            uploadState = { uploadId: null, completedParts: [] };
+            execute(sql, "UPDATE space_archive_uploads SET upload_id=NULL,completed_parts_json='[]',updated_at=? WHERE archive_id=?", now, archiveId);
+          }
+        }
+        const savedBytes = savedUpload.encrypted_bytes instanceof ArrayBuffer ? new Uint8Array(savedUpload.encrypted_bytes) : new Uint8Array(savedUpload.encrypted_bytes);
+        try {
+          await uploadArchiveResumable(this.env.SCRIPTS_R2, objectKey, savedBytes, uploadState, state => execute(sql,
+            "UPDATE space_archive_uploads SET upload_id=?,completed_parts_json=?,updated_at=? WHERE archive_id=?", state.uploadId, JSON.stringify(state.completedParts), now, archiveId));
+          const completedObject = await this.env.SCRIPTS_R2.get(objectKey);
+          if (!completedObject) throw new Error("archive_object_missing_after_upload");
+          const completedPayload = await decodeSpaceArchive(new Uint8Array(await completedObject.arrayBuffer()), this.archiveKeys(), { tenantId, spaceId, archiveId });
+          if (await spaceArchiveChecksum(completedPayload) !== savedUpload.checksum) throw new Error("archive_checksum_mismatch");
+        } catch (error) {
+          execute(sql, "UPDATE space_archive_records SET status='failed' WHERE archive_id=? AND tenant_id=? AND space_id=?", archiveId, tenantId, spaceId);
+          return Response.json({ error_code: "archive_write_failed_retry_same_request_id", archive_id: archiveId, message: (error as Error).message.slice(0, 160) }, { status: 503 });
+        }
+        execute(sql, "UPDATE space_archive_records SET status='verified',schema_version=?,checksum=?,plaintext_bytes=?,row_counts_json=?,object_refs_json=?,selection_fingerprint=? WHERE archive_id=? AND tenant_id=? AND space_id=? AND status IN ('pending','failed')", 1, savedUpload.checksum, savedUpload.plaintext_bytes, savedUpload.row_counts_json, savedUpload.object_refs_json, savedUpload.selection_fingerprint, archiveId, tenantId, spaceId);
+        execute(sql, "DELETE FROM space_archive_uploads WHERE archive_id=?", archiveId);
+        insertEvent("archive_created", { archive_id: archiveId, checksum: savedUpload.checksum, resumed: true });
+        return Response.json({ archive_id: archiveId, checksum: savedUpload.checksum, plaintext_bytes: savedUpload.plaintext_bytes, row_counts: JSON.parse(savedUpload.row_counts_json), object_reference_count: (JSON.parse(savedUpload.object_refs_json) as unknown[]).length, encrypted: true, replayed: true, resumed: true }, { status: 201 });
+      }
       let selectionFingerprint: string | null = null;
       const tableRows: Record<string, Array<Record<string, unknown>>> = {}, rowCounts: Record<string, number> = {};
       if (kind === "retention_messages") {
@@ -2247,7 +2304,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         rowCounts.messages = messages.length;
       } else {
         const virtualTables = queryAll<{ name: string }>(sql, "SELECT name FROM sqlite_master WHERE type='table' AND sql LIKE 'CREATE VIRTUAL TABLE%'").map(row => row.name);
-        const list = queryAll<{ name: string }>(sql, "SELECT name FROM sqlite_master WHERE type='table' AND sql NOT LIKE 'CREATE VIRTUAL TABLE%' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_migrations%' AND name NOT IN ('space_retention_policies','space_storage_measurements','space_archive_records','space_retention_previews','space_archive_restore_previews','space_archive_restores','space_retention_events') ORDER BY name").filter(row => !virtualTables.some(name => row.name.startsWith(`${name}_`)));
+        const list = queryAll<{ name: string }>(sql, "SELECT name FROM sqlite_master WHERE type='table' AND sql NOT LIKE 'CREATE VIRTUAL TABLE%' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_migrations%' AND name NOT IN ('space_retention_policies','space_storage_measurements','space_archive_records','space_archive_uploads','space_retention_previews','space_archive_restore_previews','space_archive_restores','space_retention_events') ORDER BY name").filter(row => !virtualTables.some(name => row.name.startsWith(`${name}_`)));
         for (const { name } of list) {
           if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) continue;
           const columns = new Set(queryAll<{ name: string }>(sql, "SELECT name FROM pragma_table_info(?)", name).map(row => row.name));
@@ -2281,17 +2338,62 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const maxMigration = queryOne<{ version: number }>(sql, "SELECT COALESCE(MAX(version),0) AS version FROM _migrations")?.version ?? 0;
       const payload: SpaceArchivePayload = { format: "naelao-space-archive", formatVersion: 1, tenantId, spaceId, archiveId, createdAt: now, migrationVersion: maxMigration, tableRows, rowCounts, objectReferences, ...(selectionFingerprint ? { selectionFingerprint } : {}) };
       let encoded: Awaited<ReturnType<typeof encodeSpaceArchive>>;
-      try { encoded = await encodeSpaceArchive(payload, this.env.SPACE_ARCHIVE_KEY ?? this.env.PLATFORM_SECRET); }
+      try { encoded = await encodeSpaceArchive(payload, this.archiveKeys()); }
       catch (error) { return Response.json({ error_code: (error as Error).message }, { status: 413 }); }
+      execute(sql, `INSERT INTO space_archive_uploads (archive_id,tenant_id,space_id,upload_id,encrypted_bytes,completed_parts_json,checksum,plaintext_bytes,row_counts_json,object_refs_json,selection_fingerprint,created_at,updated_at)
+        VALUES (?,?,?,NULL,?,'[]',?,?,?,?,?,?,?)`, archiveId, tenantId, spaceId, encoded.bytes, encoded.checksum, encoded.plaintextBytes, JSON.stringify(rowCounts), JSON.stringify(objectReferences), selectionFingerprint, now, now);
+      const uploadState: ResumableArchiveUploadState = { uploadId: null, completedParts: [] };
       try {
-        await this.env.SCRIPTS_R2.put(objectKey, encoded.bytes, { httpMetadata: { contentType: "application/vnd.naelao.space-archive+json" } });
+        await uploadArchiveResumable(this.env.SCRIPTS_R2, objectKey, encoded.bytes, uploadState, state => execute(sql,
+          "UPDATE space_archive_uploads SET upload_id=?,completed_parts_json=?,updated_at=? WHERE archive_id=?", state.uploadId, JSON.stringify(state.completedParts), now, archiveId));
+        const completedObject = await this.env.SCRIPTS_R2.get(objectKey);
+        if (!completedObject) throw new Error("archive_object_missing_after_upload");
+        const completedPayload = await decodeSpaceArchive(new Uint8Array(await completedObject.arrayBuffer()), this.archiveKeys(), { tenantId, spaceId, archiveId });
+        if (await spaceArchiveChecksum(completedPayload) !== encoded.checksum) throw new Error("archive_checksum_mismatch");
       } catch (error) {
         execute(sql, "UPDATE space_archive_records SET status='failed' WHERE archive_id=? AND tenant_id=? AND space_id=?", archiveId, tenantId, spaceId);
         return Response.json({ error_code: "archive_write_failed_retry_same_request_id", archive_id: archiveId, message: (error as Error).message.slice(0, 160) }, { status: 503 });
       }
       execute(sql, "UPDATE space_archive_records SET status='verified',schema_version=?,checksum=?,plaintext_bytes=?,row_counts_json=?,object_refs_json=?,selection_fingerprint=? WHERE archive_id=? AND tenant_id=? AND space_id=? AND status IN ('pending','failed')", 1, encoded.checksum, encoded.plaintextBytes, JSON.stringify(rowCounts), JSON.stringify(objectReferences), selectionFingerprint, archiveId, tenantId, spaceId);
+      execute(sql, "DELETE FROM space_archive_uploads WHERE archive_id=?", archiveId);
       insertEvent("archive_created", { archive_id: archiveId, kind, checksum: encoded.checksum, plaintext_bytes: encoded.plaintextBytes, row_counts: rowCounts, object_reference_count: objectReferences.length });
       return Response.json({ archive_id: archiveId, checksum: encoded.checksum, plaintext_bytes: encoded.plaintextBytes, row_counts: rowCounts, object_reference_count: objectReferences.length, encrypted: true, replayed: false }, { status: 201 });
+    }
+    if (action === "rewrap_archive") {
+      if (!this.env.SCRIPTS_R2) return Response.json({ error_code: "archive_storage_unavailable" }, { status: 503 });
+      const archiveId = String(body.archive_id ?? "");
+      const record = queryOne<{ object_key: string; checksum: string; status: string }>(sql, "SELECT object_key,checksum,status FROM space_archive_records WHERE archive_id=? AND tenant_id=? AND space_id=?", archiveId, tenantId, spaceId);
+      if (!record || record.status !== "verified") return Response.json({ error_code: "archive_not_found" }, { status: 404 });
+      const source = await this.env.SCRIPTS_R2.get(record.object_key);
+      if (!source) return Response.json({ error_code: "archive_object_missing" }, { status: 409 });
+      const sourceBytes = new Uint8Array(await source.arrayBuffer());
+      if (spaceArchiveKeyVersion(sourceBytes) === this.archiveKeys().active.version) return Response.json({ archive_id: archiveId, rewrapped: false, reason: "already_uses_active_key" });
+      let payload: SpaceArchivePayload;
+      try {
+        payload = await decodeSpaceArchive(sourceBytes, this.archiveKeys(), { tenantId, spaceId, archiveId });
+        if (await spaceArchiveChecksum(payload) !== record.checksum) throw new Error("archive_checksum_mismatch");
+      } catch (error) { return Response.json({ error_code: (error as Error).message }, { status: 422 }); }
+      const targetKey = `space-archives/${tenantId}/${spaceId}/${archiveId}.rewrap-${crypto.randomUUID()}.enc`;
+      let pointerUpdated = false;
+      try {
+        const encoded = await encodeSpaceArchive(payload, this.archiveKeys());
+        await this.env.SCRIPTS_R2.put(targetKey, encoded.bytes, { httpMetadata: { contentType: "application/vnd.naelao.space-archive+json" } });
+        const stored = await this.env.SCRIPTS_R2.get(targetKey);
+        if (!stored) throw new Error("rewrapped_archive_missing_after_write");
+        const verified = await decodeSpaceArchive(new Uint8Array(await stored.arrayBuffer()), this.archiveKeys(), { tenantId, spaceId, archiveId });
+        if (await spaceArchiveChecksum(verified) !== record.checksum || spaceArchiveKeyVersion(new Uint8Array(await stored.arrayBuffer())) !== this.archiveKeys().active.version) throw new Error("rewrapped_archive_verification_failed");
+        this.ctx.storage.transactionSync(() => {
+          const result = this.ctx.storage.sql.exec("UPDATE space_archive_records SET object_key=?,checksum=? WHERE archive_id=? AND tenant_id=? AND space_id=? AND status='verified'", targetKey, record.checksum, archiveId, tenantId, spaceId);
+          if (!result.rowsWritten) throw new Error("archive_record_changed_during_rewrap");
+        });
+        pointerUpdated = true;
+      } catch (error) {
+        if (!pointerUpdated) await this.env.SCRIPTS_R2.delete(targetKey).catch(() => undefined);
+        return Response.json({ error_code: (error as Error).message || "archive_rewrap_failed" }, { status: 503 });
+      }
+      await this.env.SCRIPTS_R2.delete(record.object_key).catch(() => undefined);
+      insertEvent("archive_key_rewrapped", { archive_id: archiveId, from_key_version: spaceArchiveKeyVersion(sourceBytes), to_key_version: this.archiveKeys().active.version });
+      return Response.json({ archive_id: archiveId, rewrapped: true, key_version: this.archiveKeys().active.version });
     }
     if (action === "preview_restore" || action === "apply_restore") {
       if (!this.env.SCRIPTS_R2) return Response.json({ error_code: "archive_storage_unavailable" }, { status: 503 });
@@ -2302,7 +2404,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (!object) return Response.json({ error_code: "archive_object_missing" }, { status: 409 });
       let payload: SpaceArchivePayload;
       try {
-        payload = await decodeSpaceArchive(new Uint8Array(await object.arrayBuffer()), this.env.SPACE_ARCHIVE_KEY ?? this.env.PLATFORM_SECRET, { tenantId, spaceId, archiveId });
+        payload = await decodeSpaceArchive(new Uint8Array(await object.arrayBuffer()), this.archiveKeys(), { tenantId, spaceId, archiveId });
         if (await spaceArchiveChecksum(payload) !== record.checksum) throw new Error("archive_checksum_mismatch");
       } catch (error) { return Response.json({ error_code: (error as Error).message }, { status: 422 }); }
       if (Object.entries(payload.tableRows).some(([table, rows]) => !Array.isArray(rows) || payload.rowCounts[table] !== rows.length)
@@ -2317,7 +2419,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const dependencies: Record<string, string[]> = {};
       const virtualTables = queryAll<{ name: string }>(sql, "SELECT name FROM sqlite_master WHERE type='table' AND sql LIKE 'CREATE VIRTUAL TABLE%'").map(row => row.name);
       for (const table of Object.keys(payload.tableRows)) {
-        if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(table) || virtualTables.some(name => table === name || table.startsWith(`${name}_`)) || ["space_retention_policies","space_storage_measurements","space_archive_records","space_retention_previews","space_archive_restore_previews","space_archive_restores","space_retention_events"].includes(table)) return Response.json({ error_code: "archive_table_forbidden" }, { status: 422 });
+        if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(table) || virtualTables.some(name => table === name || table.startsWith(`${name}_`)) || ["space_retention_policies","space_storage_measurements","space_archive_records","space_archive_uploads","space_retention_previews","space_archive_restore_previews","space_archive_restores","space_retention_events"].includes(table)) return Response.json({ error_code: "archive_table_forbidden" }, { status: 422 });
         const exists = queryOne<{ name: string; sql: string | null }>(sql, "SELECT name,sql FROM sqlite_master WHERE type='table' AND name=?", table);
         if (!exists || exists.sql?.startsWith("CREATE VIRTUAL TABLE")) return Response.json({ error_code: "archive_table_schema_incompatible", table }, { status: 409 });
         const columns = new Set(queryAll<{ name: string }>(sql, "SELECT name FROM pragma_table_info(?)", table).map(row => row.name));
