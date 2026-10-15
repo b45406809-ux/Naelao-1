@@ -203,6 +203,49 @@ describe("/internal/business-email/send", () => {
   });
 });
 
+describe("/internal/business-email/attachment/read-text", () => {
+  it("reads only a small text object owned by this tenant, Space and task", async () => {
+    const key = "spaces/s1/email-inbound/run-1/hash/0-note.txt";
+    const get = vi.fn(async () => ({ size: 11, httpMetadata: { contentType: "text/plain" }, arrayBuffer: async () => new TextEncoder().encode("hello world").buffer }));
+    const env = makeEnv({
+      PLATFORM_DB: { prepare: (query: string) => ({ bind: (...values: unknown[]) => ({ first: async () => query.includes("email_inbound_attachments") && values[0] === key && values[1] === TENANT && values[2] === "s1" && values[3] === "run-1" ? { object_key: key } : null }) }) } as never,
+      SCRIPTS_R2: { get } as never,
+    });
+    const token = await mintInternalToken(SECRET, TENANT);
+    const res = await post("/internal/business-email/attachment/read-text", { tenantId: TENANT, spaceId: "s1", taskId: "run-1", key }, env,
+      { "x-naelao-tenant-id": TENANT, "x-naelao-internal-token": token });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ key, mime_type: "text/plain", text: expect.stringContaining("UNTRUSTED EMAIL ATTACHMENT") });
+    expect(get).toHaveBeenCalledWith(key);
+  });
+
+  it("does not read an attachment registered to another task", async () => {
+    const get = vi.fn();
+    const env = makeEnv({
+      PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => null }) }) } as never,
+      SCRIPTS_R2: { get } as never,
+    });
+    const token = await mintInternalToken(SECRET, TENANT);
+    const res = await post("/internal/business-email/attachment/read-text", { tenantId: TENANT, spaceId: "s1", taskId: "run-other", key: "spaces/s1/email-inbound/run-1/hash/0-note.txt" }, env,
+      { "x-naelao-tenant-id": TENANT, "x-naelao-internal-token": token });
+    expect(res.status).toBe(404);
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it("rejects binary attachments without returning their bytes", async () => {
+    const key = "spaces/s1/email-inbound/run-1/hash/0-file.pdf";
+    const env = makeEnv({
+      PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ object_key: key }) }) }) } as never,
+      SCRIPTS_R2: { get: async () => ({ size: 5, httpMetadata: { contentType: "application/pdf" }, arrayBuffer: async () => new Uint8Array([1, 2, 3, 4, 5]).buffer }) } as never,
+    });
+    const token = await mintInternalToken(SECRET, TENANT);
+    const res = await post("/internal/business-email/attachment/read-text", { tenantId: TENANT, spaceId: "s1", taskId: "run-1", key }, env,
+      { "x-naelao-tenant-id": TENANT, "x-naelao-internal-token": token });
+    expect(res.status).toBe(415);
+    expect(await res.json()).toMatchObject({ error_code: "attachment_not_text" });
+  });
+});
+
 describe("/channels/email/agentmail-inbound/:spaceId", () => {
   it("400s when no vaulted webhook secret exists (inbound not configured for this space)", async () => {
     // CREDENTIALS_WORKER returns non-OK for the secret lookup → no_webhook_secret.

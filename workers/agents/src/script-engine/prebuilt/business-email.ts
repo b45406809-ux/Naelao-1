@@ -110,6 +110,20 @@ async function replyAddress(ctx: PrebuiltOpContext): Promise<unknown> {
   return { address: result["address"], expires_at: result["expires_at"] ?? null, already: result["already"] === true };
 }
 
+async function readTextAttachment(ctx: PrebuiltOpContext, a: Record<string, unknown>): Promise<unknown> {
+  if (!ctx.env.taskId) throw new Error("email.attachment.read_text requires an active task run");
+  const key = typeof a["key"] === "string" ? a["key"] : "";
+  if (!key) throw new Error("email.attachment.read_text requires the object key shown in the inbound email");
+  const result = await agentMailCall(ctx, "/internal/business-email/attachment/read-text", {
+    taskId: ctx.env.taskId,
+    key,
+  });
+  if (!result || result["error_code"]) {
+    throw new Error(`email.attachment.read_text unavailable: ${String(result?.["error_code"] ?? "worker binding unavailable")}`);
+  }
+  return result;
+}
+
 async function send(ctx: PrebuiltOpContext, a: Record<string, unknown>): Promise<unknown> {
   const to = a["to"];
   // Prefer sending from the real AgentMail inbox (a genuine, reply-able from-address).
@@ -167,11 +181,13 @@ export const businessEmail: PrebuiltScript = {
   requires_tier: 2,
   paramHints: {
     "email.reply_address": "No arguments. Creates or reuses the active run's expiring Reply-To address; pass its returned address as reply_to to email.send.",
+    "email.attachment.read_text": "Requires key from an inbound email attachment entry. Reads a small, supported text attachment attached to this same task; binary attachments are not decoded.",
     "email.send": "Requires to, subject, body; optional reply_to must come from email.reply_address in this same task run.",
   },
   operations: {
     "email.provision": (a, c) => provision(c, a),
     "email.reply_address": (_a, c) => replyAddress(c),
+    "email.attachment.read_text": (a, c) => readTextAttachment(c, a),
     "email.send": (a, c) => send(c, a),
     "email.status": (_a, c) => bizService(c, "GET"),
   },

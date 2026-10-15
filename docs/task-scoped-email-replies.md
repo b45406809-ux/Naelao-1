@@ -17,7 +17,7 @@ Provisioning also requires the Agents Worker to have its existing D1 (`PLATFORM_
 
 - `email.reply_address` derives a stable opaque local part from the platform secret and the tenant, Space and run IDs. The database stores only its SHA-256 address digest and the scoped route. Addresses expire after 30 days; a Space can have at most 100 active routes.
 - The route lookup supplies the destination tenant, Space, worker and task; incoming mail cannot select those identities. Unknown, expired or malformed email is rejected.
-- MIME parsing is bounded to 20 MiB per message, 10 attachments, 5 MiB per attachment and 15 MiB total attachment content. Attachments are written under a task-specific R2 prefix and referenced from the inbound email text.
+- MIME parsing is bounded to 20 MiB per message, 10 attachments, 5 MiB per attachment and 15 MiB total attachment content. Attachments are written under a task-specific R2 prefix and referenced from the inbound email text. During that same task, `email.attachment.read_text` can read a D1-verified attachment only if it is UTF-8 plain text, CSV, Markdown, JSON or XML and no larger than 64 KiB. Returned content is labeled untrusted. Binary formats and HTML are not exposed to the model by this operation.
 - Attachment objects and route rows are removed by the existing five-minute Agents retention sweep after 30 days. Email content is untrusted input and receives the normal inbound-channel handling; no automated payment or other privileged action is authorized by receiving it.
 - Customer-owned domains need their own Cloudflare Email Routing configuration and are not provisioned automatically. The current release accepts one operator-configured platform ingress domain.
 
