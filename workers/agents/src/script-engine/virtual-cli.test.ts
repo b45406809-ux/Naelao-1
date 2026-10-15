@@ -44,6 +44,27 @@ describe("VirtualCliDispatcher", () => {
     expect(fetchWithAuth.mock.calls[0]![0]).toContain(host);
     expect(fetchWithAuth.mock.calls[0]![1].credentialName).toBe(credential);
   });
+  it("routes unsupported first-party API endpoints through the scoped Vault proxy without exposing credentials", async () => {
+    const fetchWithAuth = vi.fn(async () => Response.json({ id: "cus_1" }));
+    const cli = new VirtualCliDispatcher({ vault: { fetchWithAuth }, tenantId: "tenant", spaceId: "space", projectId: "project" });
+    await expect(cli.execute(["api", "request", "GET", "https://api.stripe.com/v1/new_endpoint", "--credential", "STRIPE_KEY", "--headers", '{"Stripe-Version":"2026-10-01"}']))
+      .resolves.toMatchObject({ exit_code: 0, stdout: '{\n  "id": "cus_1"\n}' });
+    expect(fetchWithAuth).toHaveBeenCalledWith("https://api.stripe.com/v1/new_endpoint", expect.objectContaining({
+      credentialName: "STRIPE_KEY", method: "GET", headers: { "Stripe-Version": "2026-10-01" },
+    }));
+    await expect(cli.execute(["api", "request", "POST", "https://api.stripe.com/v1/new_endpoint", "--credential", "STRIPE_KEY", "--body", '{"amount":100}', "--idempotency-key", "request-1"]))
+      .resolves.toMatchObject({ exit_code: 0 });
+    expect(fetchWithAuth).toHaveBeenLastCalledWith("https://api.stripe.com/v1/new_endpoint", expect.objectContaining({
+      credentialName: "STRIPE_KEY", method: "POST", body: { amount: 100 }, idempotencyKey: "request-1",
+    }));
+    await expect(cli.execute(["api", "request", "GET", "http://127.0.0.1/", "--credential", "STRIPE_KEY"]))
+      .rejects.toThrow("api_https_url_required");
+    await expect(cli.execute(["api", "request", "GET", "https://api.stripe.com/v1/new_endpoint", "--credential", "STRIPE_KEY", "--body", "{}"]))
+      .rejects.toThrow("api_body_not_allowed_for_read");
+    await expect(cli.execute(["api", "request", "POST", "https://api.stripe.com/v1/new_endpoint", "--credential", "STRIPE_KEY", "--body", "{}"]))
+      .rejects.toThrow("api_idempotency_key_required");
+    expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+  });
   it("synthesizes a durable command at the hot-mounted path", async () => {
     const files = new Map<string, string>();
     const cli = new VirtualCliDispatcher({ vault: { fetchWithAuth: vi.fn() }, tenantId: "t", spaceId: "s" }, {

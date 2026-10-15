@@ -44,6 +44,15 @@ describe("virtual POSIX shell", () => {
     expect(fetchMarkdown).toHaveBeenCalledOnce();
   });
 
+  it("routes generic API requests through the virtual shell and Vault proxy", async () => {
+    const fetchWithAuth = vi.fn(async () => Response.json({ ok: true }));
+    const cli = new VirtualCliDispatcher({ tenantId: "tenant", spaceId: "space", vault: { fetchWithAuth } });
+    await expect(executeVirtualPosix('api request GET https://api.stripe.com/v1/new_endpoint --credential STRIPE_KEY', fs, { cli }))
+      .resolves.toMatchObject({ exit_code: 0, stdout: '{\n  "ok": true\n}' });
+    expect(fetchWithAuth).toHaveBeenCalledOnce();
+    expect(fetchWithAuth.mock.calls[0]![0]).toBe("https://api.stripe.com/v1/new_endpoint");
+  });
+
   it("rejects traversal and the machine namespace", () => {
     expect(() => normalizeWorkspacePath("/workspace/../.avos/key")).toThrow(
       "workspace_path_traversal"

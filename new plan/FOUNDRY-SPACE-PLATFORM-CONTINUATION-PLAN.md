@@ -67,21 +67,21 @@ Status: **IMPLEMENTED for current project runtime; grammar/marketplace boundary 
 Primary read: **lines 694–749** (USER 694–696; AI MODEL 697–749).
 Bounded primary windows: 694–749.
 Later amendment/dependency pairs: 750–841 (task 08); 2174–2355 (task 16); 4269–4441 (task 27); 4795–4982 (task 30)
-Status: **IMPLEMENTED — local policy/tests verified; live Container egress unrun**. Used Cloudflare's native exact-host HTTPS interceptions while keeping general container internet disabled; no caching/scanning registry. Added scoped approval for package additions and dependency manifest edits. Evidence, docs/types checked, verification limits, and shell-indirection coverage are in the progress file. Task 08 is current.
+Status: **IMPLEMENTED — local policy/tests verified; live Container egress unrun**. Used Cloudflare's native exact-host HTTPS interceptions while keeping general container internet disabled; no caching/scanning registry. Added scoped approval for package additions and dependency manifest edits. Evidence, docs/types checked, verification limits, and shell-indirection coverage are in the progress file. Task 09 is current.
 
 ## Task 08
 
 Primary read: **lines 750–841** (USER 750–752; AI MODEL 753–841).
 Bounded primary windows: 750–841.
 Later amendment/dependency pairs: 1971–2173 (task 15); 2174–2355 (task 16); 4269–4441 (task 27)
-Status: **IN PROGRESS — primary range was read as task 07 look-ahead; task 08 implementation not yet assessed**. Resume with fresh architecture audit and search later corrections before changing code.
+Status: **PARTIALLY IMPLEMENTED — safe custom API fallback added; exact Composio OAuth-token reuse remains unverified**. Composio actions continue through the connected-account MCP route. Added `api request` for direct Vault credentials through the existing policy/SSRF/redaction/idempotency boundary. Provider docs/spec returned 403, and current integration has no token-extraction path; do not claim Composio token reuse. See progress record. Task 09 is current.
 
 ## Task 09
 
 Primary read: **lines 842–1088** (USER 842–918; AI MODEL 919–1088).
 Bounded primary windows: 842–1016, 1017–1088.
 Later amendment/dependency pairs: 1089–1225 (task 10); 1226–1416 (task 11); 1417–1575 (task 12); 1576–1754 (task 13); 1755–1970 (task 14); 1971–2173 (task 15); 2174–2355 (task 16); 2356–2591 (task 17); 2592–2772 (task 18); 2773–2977 (task 19); 3068–3284 (task 21); 3514–3753 (task 23); 3754–3942 (task 24); 4140–4268 (task 26); 4269–4441 (task 27); 4648–4794 (task 29)
-Status: **UNASSESSED**. Evidence and exact next action belong in the progress file.
+Status: **IN PROGRESS**. Primary lines 842–1088 are next. Search matching later transcript contexts before selecting architecture and inspect current code; task 09 has not yet been assessed.
 
 ## Task 10
 

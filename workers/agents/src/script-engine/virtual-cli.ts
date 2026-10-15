@@ -158,7 +158,7 @@ export interface MarkdownFetchResult { url: string; status: number; content: str
 export interface VirtualCliContext { vault?: VirtualCliVault; tenantId: string; spaceId: string; projectId?: string; fetchMarkdown?: (url: string) => Promise<MarkdownFetchResult>; daemons?: VirtualCliDaemonRegistry; automations?: VirtualCliNamespaceRegistry; chores?: VirtualCliNamespaceRegistry }
 export interface VirtualCliResult { exit_code: number; stdout: string; stderr?: string }
 
-const API_COMMANDS = new Set(["stripe", "gh", "r2", "resend", "twilio"]);
+const API_COMMANDS = new Set(["api", "stripe", "gh", "r2", "resend", "twilio"]);
 export function isRegisteredVirtualCli(name: string): boolean { return API_COMMANDS.has(name) || name === "jq" || name === "fetch-md"; }
 
 function bodyAndFlags(args: string[]): { positional: string[]; body: Record<string, unknown> } {
@@ -229,7 +229,42 @@ export class VirtualCliDispatcher {
     if (!API_COMMANDS.has(command)) return null;
     const { positional, body } = bodyAndFlags(args);
     let url: string; let credentialName: string; let method = "GET";
-    if (command === "stripe") {
+    if (command === "api") {
+      if (positional[0] !== "request" || positional.length !== 3) throw new Error("usage: api request <method> <https-url> --credential <vault-name> [--body <json>] [--headers <json>] [--idempotency-key <key>]");
+      method = positional[1]!.toUpperCase();
+      if (!/^(GET|HEAD|POST|PUT|PATCH|DELETE)$/.test(method)) throw new Error("api_method_denied");
+      url = positional[2]!;
+      let parsed: URL;
+      try { parsed = new URL(url); } catch { throw new Error("api_https_url_required"); }
+      if (parsed.protocol !== "https:" || parsed.username || parsed.password || url.length > 2048) throw new Error("api_https_url_required");
+      credentialName = String(body["credential"] ?? "");
+      if (!/^[A-Za-z0-9_]{1,64}(?:::[A-Za-z0-9_]{1,32})?$/.test(credentialName)) throw new Error("usage: api request <method> <https-url> --credential <vault-name>");
+      let requestBody: unknown;
+      if (body["body"] !== undefined) {
+        if (typeof body["body"] !== "string" || body["body"].length > 65_536) throw new Error("api_body_limit");
+        if (method === "GET" || method === "HEAD") throw new Error("api_body_not_allowed_for_read");
+        try { requestBody = JSON.parse(body["body"]); } catch { throw new Error("api_body_must_be_json"); }
+      }
+      let headers: Record<string, string> = {};
+      if (body["headers"] !== undefined) {
+        if (typeof body["headers"] !== "string" || body["headers"].length > 4096) throw new Error("api_headers_invalid");
+        let parsedHeaders: unknown;
+        try { parsedHeaders = JSON.parse(body["headers"]); } catch { throw new Error("api_headers_invalid"); }
+        if (!parsedHeaders || typeof parsedHeaders !== "object" || Array.isArray(parsedHeaders) || Object.values(parsedHeaders).some(value => typeof value !== "string")) throw new Error("api_headers_invalid");
+        headers = parsedHeaders as Record<string, string>;
+        try { new Headers(headers); } catch { throw new Error("api_headers_invalid"); }
+      }
+      const idempotencyKey = typeof body["idempotency_key"] === "string" ? body["idempotency_key"] : undefined;
+      if (["POST", "PUT", "PATCH", "DELETE"].includes(method) && (!idempotencyKey || !/^[A-Za-z0-9._:-]{1,120}$/.test(idempotencyKey))) throw new Error("api_idempotency_key_required");
+      if (!this.ctx.vault) throw new Error("virtual_cli_credentials_unavailable");
+      const response = await this.ctx.vault.fetchWithAuth(url, {
+        credentialName, method,
+        ...(requestBody === undefined ? {} : { body: requestBody }),
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+        headers,
+      });
+      return { exit_code: response.ok ? 0 : 1, stdout: await responseText(response) };
+    } else if (command === "stripe") {
       const [resource, action = "list"] = positional;
       if (!resource) throw new Error("usage: stripe <resource> <action>");
       url = `https://api.stripe.com/v1/${encodeURIComponent(resource)}${action === "list" ? "" : `/${encodeURIComponent(action!)}`}`;

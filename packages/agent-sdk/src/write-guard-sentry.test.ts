@@ -12,6 +12,8 @@ describe("WriteGuard System One boundary", () => {
     await expect(enforceWriteGuardWithSentry("npm ci && npm install injected", undefined, secret, requirement)).rejects.toThrow("destructive_mutation_denied");
     await expect(enforceWriteGuardWithSentry("python -m pip install requests", undefined, secret, requirement)).rejects.toThrow("destructive_mutation_denied");
     await expect(enforceWriteGuardWithSentry('dependency_manifest_edit {"path":"package.json"}', undefined, secret, requirement)).rejects.toThrow("destructive_mutation_denied");
+    await expect(enforceWriteGuardWithSentry("api request POST https://api.stripe.com/v1/charges", undefined, secret, requirement)).rejects.toThrow("destructive_mutation_denied");
+    await expect(enforceWriteGuardWithSentry("api request GET https://api.stripe.com/v1/customers", undefined, secret, requirement)).resolves.toBe(false);
     await expect(enforceWriteGuardWithSentry("npm ci", undefined, secret, requirement)).resolves.toBe(false);
     await expect(enforceWriteGuardWithSentry("pnpm install --frozen-lockfile", undefined, secret, requirement)).resolves.toBe(false);
   });

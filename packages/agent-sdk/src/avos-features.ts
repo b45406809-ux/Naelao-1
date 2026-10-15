@@ -209,6 +209,7 @@ export function requiresMutationGrant(command: string): boolean {
   return candidates.some((candidate) =>
     DESTRUCTIVE_PATTERNS.some((pattern) => pattern.test(candidate)) ||
     /\bdependency_manifest_edit\b/i.test(candidate) ||
+    /\bapi\s+request\s+(?:POST|PUT|PATCH|DELETE)\b/i.test(candidate) ||
     // New third-party dependencies alter the project's supply-chain contract. Require the
     // same scoped human grant used by other high-impact mutations. Frozen/clean installs
     // remain available for dependencies already represented by the checked-in lockfile.
