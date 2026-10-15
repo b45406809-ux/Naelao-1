@@ -613,7 +613,7 @@ function AiTab({
   const [savingEffort, setSavingEffort] = React.useState(false);
   const [savingPolicy, setSavingPolicy] = React.useState(false);
   const [byok, setByok] = React.useState<ByokProviderStatus[]>([]);
-  const [byokProvider, setByokProvider] = React.useState("google-ai-studio");
+  const [byokProvider] = React.useState("openrouter");
   const [byokLabel, setByokLabel] = React.useState("");
   const [byokKey, setByokKeyInput] = React.useState("");
   const [byokBusy, setByokBusy] = React.useState(false);
@@ -631,7 +631,7 @@ function AiTab({
 
   React.useEffect(() => { void refreshByok(); }, [refreshByok]);
 
-  const providerLabel = (provider: string) => provider === "google-ai-studio" ? "Google AI Studio / Gemini" : "Groq";
+  const providerLabel = (provider: string) => provider === "google-ai-studio" ? "Google AI Studio / Gemini" : provider === "groq" ? "Groq" : provider === "openrouter" ? "OpenRouter" : provider;
 
   async function addByokKey() {
     if (!creds || !byokKey.trim()) return;
@@ -770,7 +770,7 @@ function AiTab({
 
       <div className="settings-section-title" style={{ marginTop: 28 }}>Space-wide provider keys</div>
       <div className="settings-section-sub">
-        Add multiple keys for Gemini or Groq. The selected key is tried first; an authentication, rate-limit, or provider outage automatically tries the next key for that run. Keys are encrypted in the vault and never shown again.
+        Add OpenRouter keys for customer BYOK. The selected key is tried first; eligible failures can rotate to another saved key. Keys are encrypted in the Space vault and never shown again.
       </div>
 
       <div className="settings-block">
@@ -778,9 +778,8 @@ function AiTab({
           <div className="settings-row" style={{ alignItems: "flex-end", flexWrap: "wrap", gap: 10 }}>
             <div style={{ minWidth: 190 }}>
               <label className="settings-row-sub" htmlFor="byok-provider">Provider</label>
-              <FormSelect id="byok-provider" value={byokProvider} onChange={(e) => setByokProvider(e.target.value)}>
-                <option value="google-ai-studio">Google AI Studio / Gemini</option>
-                <option value="groq">Groq</option>
+              <FormSelect id="byok-provider" value={byokProvider} disabled>
+                <option value="openrouter">OpenRouter</option>
               </FormSelect>
             </div>
             <div style={{ minWidth: 150, flex: "1 1 150px" }}>
@@ -788,8 +787,8 @@ function AiTab({
               <FormInput id="byok-label" value={byokLabel} onChange={(e) => setByokLabel(e.target.value)} placeholder="e.g. Production" autoComplete="off" />
             </div>
             <div style={{ minWidth: 220, flex: "2 1 220px" }}>
-              <label className="settings-row-sub" htmlFor="byok-key">Provider API key</label>
-              <FormInput id="byok-key" type="password" value={byokKey} onChange={(e) => setByokKeyInput(e.target.value)} placeholder="Paste a new key" autoComplete="off" />
+              <label className="settings-row-sub" htmlFor="byok-key">OpenRouter API key</label>
+              <FormInput id="byok-key" type="password" value={byokKey} onChange={(e) => setByokKeyInput(e.target.value)} placeholder="Paste an OpenRouter key" autoComplete="off" />
             </div>
             <Button onClick={() => void addByokKey()} disabled={byokBusy || !byokKey.trim()}>{byokBusy ? "Saving…" : "Add key"}</Button>
           </div>
@@ -812,7 +811,7 @@ function AiTab({
                   <div style={{ fontSize: 12.5, color: "var(--text1)" }}>{key.label || "Unnamed key"}</div>
                   <div style={{ fontSize: 11, color: "var(--text3)" }}>Secret stored in vault{key.created_at ? ` · added ${new Date(key.created_at).toLocaleDateString()}` : ""}</div>
                 </div>
-                {key.active ? <Badge color="green">Using</Badge> : canManage ? <Button onClick={() => void chooseByokKey(entry.provider, key.id)} disabled={byokBusy}>Use</Button> : null}
+                {key.active ? <Badge color="green">Using</Badge> : canManage && entry.provider === "openrouter" ? <Button onClick={() => void chooseByokKey(entry.provider, key.id)} disabled={byokBusy}>Use</Button> : null}
                 {canManage && <Button onClick={() => void removeByokKey(entry.provider, key.id)} disabled={byokBusy}>Remove</Button>}
               </div>
             ))}

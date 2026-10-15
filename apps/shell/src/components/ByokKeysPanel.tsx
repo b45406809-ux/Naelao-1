@@ -15,8 +15,7 @@ import {
 } from "@/lib/api";
 
 const PROVIDERS = [
-  { id: "google-ai-studio", label: "Google AI Studio (Gemini)", hint: "Get a key at aistudio.google.com → API keys." },
-  { id: "groq", label: "Groq", hint: "Get a key at console.groq.com → API Keys." },
+  { id: "openrouter", label: "OpenRouter", hint: "Use an OpenRouter API key. Model availability will be checked against the connected account." },
 ] as const;
 
 function providerLabel(provider: string): string {
@@ -102,7 +101,7 @@ export function ByokKeysPanel({
 
   return (
     <div style={{ display: "grid", gap: 12 }}>
-      <p className="settings-row-sub">Add multiple keys for a provider. The selected key is tried first; eligible provider failures can rotate to another saved key.</p>
+      <p className="settings-row-sub">Add one or more OpenRouter keys. The selected key is tried first; eligible failures can rotate to another saved key.</p>
       {canEdit && (
         <div className="settings-block" style={{ display: "grid", gap: 8 }}>
           <label className="settings-row-sub" htmlFor="byok-provider">Provider</label>
@@ -126,14 +125,14 @@ export function ByokKeysPanel({
           {item.keys.map((entry) => (
             <div key={entry.id} className="settings-row" style={{ alignItems: "center", gap: 8 }}>
               <span style={{ minWidth: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>{entry.label || "Unnamed key"}</span>
-              {entry.active ? <Badge color="green">Preferred</Badge> : canEdit ? <Button size="sm" variant="secondary" disabled={busy} onClick={() => void select(item.provider, entry.id)}>Use first</Button> : null}
+              {entry.active ? <Badge color="green">Preferred</Badge> : canEdit && item.provider === "openrouter" ? <Button size="sm" variant="secondary" disabled={busy} onClick={() => void select(item.provider, entry.id)}>Use first</Button> : null}
               {canEdit ? <Button size="sm" variant="secondary" disabled={busy} onClick={() => void remove(item.provider, entry.id)}>Remove</Button> : null}
             </div>
           ))}
         </div>
       ))}
       {!canEdit && <p style={{ fontSize: 11.5, color: "var(--text3)" }}>Only the owner or an admin can change these keys.</p>}
-      <p style={{ fontSize: 11.5, color: "var(--text3)" }}>Keys are encrypted in the space vault and never shown again.</p>
+      <p style={{ fontSize: 11.5, color: "var(--text3)" }}>Keys are encrypted in the Space vault and never shown again. Previously saved Gemini or Groq keys can be removed below; new BYOK keys use OpenRouter.</p>
       <Toast toast={toast} />
     </div>
   );

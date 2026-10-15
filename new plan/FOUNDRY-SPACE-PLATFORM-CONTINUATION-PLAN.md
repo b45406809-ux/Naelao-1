@@ -123,7 +123,7 @@ Status: **ASSESSED — existing code already batches the two safe runtime prefli
 Primary read: **lines 1971–2173** (USER 1971–1973; AI MODEL 1974–2173).
 Bounded primary windows: 1971–2145, 2146–2173.
 Later amendment/dependency pairs: 2174–2355 (task 16); 2356–2591 (task 17); 2592–2772 (task 18); 3514–3753 (task 23); 3754–3942 (task 24); 4269–4441 (task 27)
-Status: **UNASSESSED**. Evidence and exact next action belong in the progress file.
+Status: **PARTIALLY IMPLEMENTED — new customer BYOK setup and key selection now use OpenRouter only; model inventory and runtime routing validation remain task 17 dependencies.** Both key-management surfaces offer OpenRouter and the API rejects new or selected non-OpenRouter provider keys. Previously stored Gemini/Groq keys remain visible for cleanup and are not deleted. Model listing/availability is not implemented by this task. The proposed enterprise provider pass-through, zero-markup billing and OpenRouter fallback claims remain unverified. See progress file. Task 16 is current.
 
 ## Task 16
 

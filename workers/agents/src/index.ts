@@ -2905,8 +2905,14 @@ async function resolveConnectorCredential(
 // business's own account-id + a scoped token + different gateway routing, a separate larger piece.
 const BYOK_PROVIDERS = ["google-ai-studio", "groq", "openrouter"] as const;
 type ByokProvider = (typeof BYOK_PROVIDERS)[number];
+// Customer-managed provider keys now enter through OpenRouter. Keep legacy provider names in
+// the metadata/removal paths so existing Space secrets can be retired without exposing values.
+const NEW_BYOK_PROVIDER = "openrouter" as const;
 function isByokProvider(p: string): p is ByokProvider {
   return (BYOK_PROVIDERS as readonly string[]).includes(p);
+}
+function isNewByokProvider(p: string): p is typeof NEW_BYOK_PROVIDER {
+  return p === NEW_BYOK_PROVIDER;
 }
 function byokProviderToken(provider: ByokProvider): string {
   return provider.replace(/-/g, "_");
@@ -3182,8 +3188,8 @@ app.put("/spaces/:spaceId/llm-byok", async (c) => {
     return c.json({ error_code: "unavailable", message: "Credential vault not bound" }, 503);
   }
   const body = await c.req.json<{ provider?: string; key?: string; label?: string }>().catch(() => ({}) as { provider?: string; key?: string; label?: string });
-  if (!body.provider || !isByokProvider(body.provider)) {
-    return c.json({ error_code: "bad_request", message: `provider must be one of: ${BYOK_PROVIDERS.join(", ")}` }, 400);
+  if (!body.provider || !isNewByokProvider(body.provider)) {
+    return c.json({ error_code: "bad_request", message: `provider must be ${NEW_BYOK_PROVIDER}` }, 400);
   }
   if (!body.key || !body.key.trim()) {
     return c.json({ error_code: "bad_request", message: "key is required" }, 400);
@@ -3216,7 +3222,7 @@ app.post("/spaces/:spaceId/llm-byok/select", async (c) => {
   const tenantId = await requireVerifiedTenant(c);
   const spaceId = c.req.param("spaceId");
   const body = await c.req.json<{ provider?: string; key_id?: string }>().catch(() => ({}) as { provider?: string; key_id?: string });
-  if (!body.provider || !isByokProvider(body.provider) || !body.key_id) return c.json({ error_code: "bad_request", message: "provider and key_id are required" }, 400);
+  if (!body.provider || !isNewByokProvider(body.provider) || !body.key_id) return c.json({ error_code: "bad_request", message: "provider must be openrouter and key_id is required" }, 400);
   const provider = body.provider;
   const rows = await listByokCredentials(c.env, tenantId, spaceId);
   const match = rows.find((row) => row.id === body.key_id && isByokKeyName(row.name, provider) && row.name !== byokActiveCredentialName(provider));
