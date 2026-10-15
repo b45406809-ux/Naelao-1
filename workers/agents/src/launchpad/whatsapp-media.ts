@@ -1,4 +1,5 @@
-import { WHISPER_MODEL, type VoiceAi } from "../voice/voice-pipeline.js";
+import type { VoiceAi } from "../voice/voice-pipeline.js";
+import { runModalityTask } from "../media/modality-task.js";
 
 const MAX_VOICE_NOTE_BYTES = 8 * 1024 * 1024;
 const ALLOWED_MIME_TYPES = new Set([
@@ -43,12 +44,6 @@ export function hasWhatsAppVoiceNote(raw: JsonObject): boolean {
   return voiceNote(raw) !== undefined;
 }
 
-function transcriptText(result: unknown): string {
-  if (!result || typeof result !== "object") return "";
-  const text = (result as { text?: unknown }).text;
-  return typeof text === "string" ? text.trim() : "";
-}
-
 async function readBounded(response: Response, maximum: number): Promise<ArrayBuffer> {
   const reader = response.body?.getReader();
   if (!reader) throw new Error("whatsapp_media_body_missing");
@@ -74,11 +69,11 @@ async function readBounded(response: Response, maximum: number): Promise<ArrayBu
   return bytes.buffer;
 }
 
-async function transcribeBytes(bytes: ArrayBuffer, ai: VoiceAi): Promise<string> {
-  const result = await ai.run(WHISPER_MODEL, { audio: [...new Uint8Array(bytes)] });
-  const text = transcriptText(result);
-  if (!text || text.length > 10_000) throw new Error("whatsapp_voice_transcription_empty_or_too_large");
-  return text;
+async function transcribeBytes(bytes: ArrayBuffer, ai: VoiceAi, mimeType: string): Promise<string> {
+  const result = await runModalityTask(ai, {
+    task: "transcribe", mimeType, bytes, maxOutputChars: 10_000, timeoutMs: 25_000,
+  });
+  return result.text;
 }
 
 /** Fetch and transcribe one signed Meta WhatsApp audio message without forwarding provider credentials. */
@@ -115,7 +110,7 @@ export async function transcribeWhatsAppVoiceNote(raw: JsonObject, env: WhatsApp
   if (!mediaResponse.ok) throw new Error(`whatsapp_media_download_failed:${mediaResponse.status}`);
   const bytes = await readBounded(mediaResponse, MAX_VOICE_NOTE_BYTES);
   if (bytes.byteLength !== declaredBytes || bytes.byteLength > MAX_VOICE_NOTE_BYTES) throw new Error("whatsapp_media_size_mismatch");
-  const text = await transcribeBytes(bytes, env.ai);
+  const text = await transcribeBytes(bytes, env.ai, mimeType);
   const message = { ...detected.message, text: { body: text } };
   const entry = (raw.entry as JsonObject[])[0]!;
   const change = (entry.changes as JsonObject[])[0]!;
@@ -161,7 +156,7 @@ export async function transcribeTwilioWhatsAppVoice(fields: Record<string, strin
   const contentLength = Number(response.headers.get("content-length"));
   if (Number.isFinite(contentLength) && contentLength > MAX_VOICE_NOTE_BYTES) throw new Error("whatsapp_media_too_large");
   const bytes = await readBounded(response, MAX_VOICE_NOTE_BYTES);
-  const text = await transcribeBytes(bytes, env.ai);
+  const text = await transcribeBytes(bytes, env.ai, mediaType);
   return { ...fields, Body: text };
 }
 

@@ -36,6 +36,14 @@ describe("task-scoped attachment CLI operations", () => {
     expect(rejectedIdBody).not.toHaveProperty("key");
   });
 
+  it("inspects an attachment using a metadata-only scoped endpoint", async () => {
+    const state = context({ response: { attachment: { id: "opaque-1", mime_type: "image/png", size_bytes: 100 } } });
+    await expect(attachments.operations["attachment.inspect"]!({ id: "opaque-1" }, state.ctx)).resolves.toMatchObject({
+      attachment: { id: "opaque-1", mime_type: "image/png", size_bytes: 100 },
+    });
+    expect(state.calls[0]?.url).toBe("http://agents-worker/internal/attachments/inspect");
+  });
+
   it("refuses to list outside a task run", async () => {
     const state = context({ taskId: undefined });
     (state.ctx.env as unknown as { taskId?: string }).taskId = undefined;

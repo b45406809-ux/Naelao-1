@@ -21,6 +21,11 @@ async function call(ctx: PrebuiltOpContext, path: string, args: Record<string, u
 }
 
 const list = async (_args: Record<string, unknown>, ctx: PrebuiltOpContext) => call(ctx, "list");
+const inspect = async (args: Record<string, unknown>, ctx: PrebuiltOpContext) => {
+  const id = typeof args.id === "string" ? args.id.trim() : "";
+  if (!id) throw new Error("usage: attachment inspect <id>");
+  return call(ctx, "inspect", { id });
+};
 const read = async (args: Record<string, unknown>, ctx: PrebuiltOpContext) => {
   const id = typeof args.id === "string" ? args.id.trim() : "";
   if (!id) throw new Error("usage: attachment read <id>");
@@ -37,9 +42,10 @@ export const attachments: PrebuiltScript = {
   description: "List task-owned inbound files and read them only when needed. Reading is explicit; storage-only handling never decodes content.",
   domain: "files",
   requires_tier: 1,
-  operations: { "attachment.list": list, "attachment.read": read, "attachment.ocr": ocr },
+  operations: { "attachment.list": list, "attachment.inspect": inspect, "attachment.read": read, "attachment.ocr": ocr },
   paramHints: {
     "attachment.list": "No parameters. Lists metadata for files received by this task only.",
+    "attachment.inspect": "{id:string}. Gets metadata only for one file received by this task; does not open or decode its bytes.",
     "attachment.read": "{id:string}. Reads supported text, DOCX or PDF text from one task-owned file; binary image OCR is a separate explicit operation.",
     "attachment.ocr": "{id:string}. Requests hosted OCR for a task-owned image only when the Space owner enabled it and egress is allowed.",
   },

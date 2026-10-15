@@ -5975,6 +5975,23 @@ app.post("/internal/attachments/list", async (c) => {
   return c.json({ attachments: rows.results ?? [] });
 });
 
+app.post("/internal/attachments/inspect", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !(await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))) {
+    return c.json({ error_code: "forbidden" }, 403);
+  }
+  const body = await c.req.json<{ tenantId?: string; spaceId?: string; taskId?: string; id?: string }>().catch(() => null);
+  if (!body?.spaceId || !body.taskId || !body.id || body.tenantId !== tenantId) return c.json({ error_code: "bad_request" }, 400);
+  const attachment = await c.env.PLATFORM_DB.prepare(
+    `SELECT id, channel, filename, mime_type, size_bytes, created_at, expires_at
+     FROM channel_attachments WHERE id=? AND tenant_id=? AND space_id=? AND task_id=? AND expires_at>? LIMIT 1`,
+  ).bind(body.id, tenantId, body.spaceId, body.taskId, new Date().toISOString()).first<{
+    id: string; channel: string; filename: string; mime_type: string; size_bytes: number; created_at: string; expires_at: string;
+  }>();
+  if (!attachment) return c.json({ error_code: "attachment_not_found" }, 404);
+  return c.json({ attachment });
+});
+
 // POST /internal/business-email/attachment/read-text — expose bounded text/PDF extraction only to
 // the same task that received the attachment. D1 ownership is checked before touching R2.
 app.post("/internal/business-email/attachment/read-text", async (c) => {

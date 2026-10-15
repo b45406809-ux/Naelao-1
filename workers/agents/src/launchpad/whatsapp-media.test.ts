@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { transcribeTwilioWhatsAppVoice, transcribeWhatsAppVoiceNote } from "./whatsapp-media.js";
+import { WHISPER_MODEL } from "../voice/voice-pipeline.js";
 
 function payload() {
   return { entry: [{ changes: [{ value: { messages: [{ id: "wamid-1", from: "15551234567", type: "audio", timestamp: "1", audio: { id: "media-1", mime_type: "audio/ogg", voice: true } }] } }] }] };
@@ -19,6 +20,7 @@ describe("WhatsApp voice-note ingress", () => {
     expect(fetcher.mock.calls[0]![0]).toBe("https://graph.facebook.com/v26.0/media-1");
     expect((fetcher.mock.calls[0]![1] as RequestInit).headers).toEqual({ authorization: "Bearer private-token", accept: "application/json" });
     expect(ai.run).toHaveBeenCalledOnce();
+    expect(ai.run).toHaveBeenCalledWith(WHISPER_MODEL, { audio: [1, 2, 3] }, { signal: expect.any(AbortSignal) });
   });
 
   it("rejects untrusted media URLs before downloading them", async () => {

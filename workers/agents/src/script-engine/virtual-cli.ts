@@ -119,10 +119,10 @@ export function interceptPlatformWords(words: string[], command?: string): CliDi
   if (words[0] === "attachment") {
     const action = words[1] ?? "list";
     if (action === "list" && words.length === 2) return { operation: "attachment.list", params: {} };
-    if (["read", "ocr"].includes(action) && words[2] && words.length === 3) {
-      return { operation: action === "read" ? "attachment.read" : "attachment.ocr", params: { id: words[2] } };
+    if (["inspect", "read", "ocr"].includes(action) && words[2] && words.length === 3) {
+      return { operation: `attachment.${action}`, params: { id: words[2] } };
     }
-    throw new Error("usage: attachment list | attachment read <id> | attachment ocr <id>");
+    throw new Error("usage: attachment list | attachment inspect <id> | attachment read <id> | attachment ocr <id>");
   }
   if (words[0] === "skill") {
     const action = words[1] ?? "list";
