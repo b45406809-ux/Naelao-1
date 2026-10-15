@@ -88,7 +88,7 @@ Status: **PARTIALLY IMPLEMENTED — OpenRouter Space-BYOK routing is wired; veri
 Primary read: **lines 1089–1225** (USER 1089–1091; AI MODEL 1092–1225).
 Bounded primary windows: 1089–1225.
 Later amendment/dependency pairs: 1226–1416 (task 11); 1417–1575 (task 12); 1576–1754 (task 13); 1971–2173 (task 15); 2174–2355 (task 16); 2356–2591 (task 17); 2592–2772 (task 18); 3068–3284 (task 21); 3514–3753 (task 23); 3754–3942 (task 24); 4269–4441 (task 27); 4648–4794 (task 29)
-Status: **IN PROGRESS**. Task 09 is locally wired but remains partial until task 17 validates OpenRouter model discovery and route semantics. Assess task 10's primary and later contexts next; task 09's look-aheads did not complete task 10.
+Status: **ASSESSED — no standalone implementation request in this pair; existing planner/leaf boundaries retained.** The user's primary message is a Cursor blog link; the reply's benchmark numbers, “field guide”/AST Git mesh and Cursor-specific claims are not implementation authority. Verified that this repository already frames persistent agents as planners, denies planner-owned domain operations, and gives leaves no recursive delegation. Later actionable requests about model choice, context affinity, skills and Git branches remain owned by their respective tasks. See progress file. Task 11 is current.
 
 ## Task 11
 
