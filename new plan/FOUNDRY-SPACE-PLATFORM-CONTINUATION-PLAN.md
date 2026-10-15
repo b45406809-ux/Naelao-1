@@ -200,7 +200,7 @@ Status: **PARTIAL — local storage size is measured and bounded for Tier-1 Gadg
 Primary read: **lines 4140–4268** (USER 4140–4142; AI MODEL 4143–4268).
 Bounded primary windows: 4140–4268.
 Later amendment/dependency pairs: 4269–4441 (task 27)
-Status: **ASSESSED; see `CONTINUATION-IMPLEMENTATION-PROGRESS.md` for disposition and evidence.**
+Status: **PARTIAL — imported adapters have a Space-scoped lifecycle, but provider LoRA execution and dialect quality are unverified.** Consent/provenance, a matched base-model manifest, encrypted versioned evaluation set, owner-recorded evaluation, explicit activation and rollback already exist. The reasoner sends a `lora` field through AI Gateway, but Cloudflare's official fine-tuned-model/LoRA docs and model index return 403, so provider support is not independently verified. No training, platform-run evaluation, or FDE template adapter packaging exists. Do not claim a dialect-quality moat without verified execution and held-out, human-reviewed language evaluation; exact size, cost, speed and effectiveness claims in the response are unverified. See Task26 evidence in the progress log.
 
 ## Task 27
 
