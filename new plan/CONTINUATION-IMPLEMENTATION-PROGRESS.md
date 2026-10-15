@@ -6,7 +6,8 @@
 - Task19 verification: Agents `voice.test.ts`, `planner-turn.test.ts`, and `voice-ticket.test.ts`: 3 files / 9 tests passed. This proves mocked/local paths, not deployed microphone/provider behavior.
 - Task20 (messages 39–40, source 2978–3067) was freshly reviewed. Text channel routing already uses customer-bot projects with lower execution ceilings/rules; voice calls have independent consent, replay protection and configurable abuse/cost limits, but do not execute the selected project's domain extensions/tools. Kept this as an explicit partial dependency until a safe synchronous customer-project response contract is defined. Existing customer telephony tests passed: 1 file / 8 tests.
 - Task20 was pushed as `5b0b22e`. Task21 (messages 41–42, source 3068–3284) is freshly reviewed: role-targeted skill catalog/read/execution gates and the virtual CLI are implemented, and delegation depth is capped at 3. Missing is Jev matching task needs against worker skill inventory; current worker ranking uses only literal names/capability overlap. Verification: three focused Agents suites, 11 tests passed.
-- Next primary: Task22, messages 43–44, source lines 3285–3513. Re-read in bounded windows and evaluate progressive TOC/section/line reads against the later language requirements; continue pair-by-pair and commit/push each pair.
+- Task21 was pushed as `4f21eff`. Task22 (messages 43–44, source 3285–3513) is freshly reviewed: bounded `--toc`/`--headers`, unambiguous section reads and max-400-line windows already exist and are role-filtered. Verification: three focused Agents suites, 14 tests passed.
+- Next primary: Task23, messages 45–46, source lines 3514–3753. Read bounded windows and search the subsequent language correction before choosing a routing/translation design; commit/push each pair.
 
 ## Unified attachment implementation checkpoint (2026-10-15)
 
