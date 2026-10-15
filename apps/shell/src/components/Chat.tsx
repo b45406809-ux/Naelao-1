@@ -1458,6 +1458,7 @@ export function Chat({
           // thread). Without it the backend can't scope R2/KB/Memory-OS/journal to this thread's
           // project, so every one of them silently fell back to space-wide.
           ...(projectId ? { projectId } : {}),
+          ...(pendingUploads.length ? { uploadNames: pendingUploads.map((upload) => upload.name) } : {}),
         },
         (attempt, max) => setRetryStatus({ attempt, max })
       );

@@ -34,11 +34,18 @@ export async function storeChannelAttachments(input: {
   taskId: string;
   channel: string;
   files: readonly DownloadedChannelAttachment[];
+  /** Per-ingress override for separately bounded first-party workspace uploads. */
+  limits?: { maxFiles: number; maxFileBytes: number; maxTotalBytes: number };
+  /** Stable index for per-file ingestion so retries produce the same opaque id/key. */
+  indexOffset?: number;
   now?: number;
 }): Promise<StoredChannelAttachment[]> {
-  if (input.files.length > MAX_FILES) throw new Error("channel_attachment_count_limit");
+  const maxFiles = input.limits?.maxFiles ?? MAX_FILES;
+  const maxFileBytes = input.limits?.maxFileBytes ?? MAX_FILE_BYTES;
+  const maxTotalBytes = input.limits?.maxTotalBytes ?? MAX_TOTAL_BYTES;
+  if (input.files.length > maxFiles) throw new Error("channel_attachment_count_limit");
   const total = input.files.reduce((sum, file) => sum + file.bytes.byteLength, 0);
-  if (input.files.some((file) => file.bytes.byteLength <= 0 || file.bytes.byteLength > MAX_FILE_BYTES) || total > MAX_TOTAL_BYTES) {
+  if (input.files.some((file) => file.bytes.byteLength <= 0 || file.bytes.byteLength > maxFileBytes) || total > maxTotalBytes) {
     throw new Error("channel_attachment_size_limit");
   }
   const scope = `${input.tenantId}\0${input.spaceId}\0${input.taskId}`;
@@ -53,15 +60,16 @@ export async function storeChannelAttachments(input: {
 
   for (let index = 0; index < input.files.length; index++) {
     const file = input.files[index]!;
+    const recordIndex = (input.indexOffset ?? 0) + index;
     const safeFilename = file.filename.replace(/[\\/\0-\x1f\x7f]/g, "_").replace(/^\.+/, "").slice(0, 120) || "attachment";
     const idDigest = new Uint8Array(await crypto.subtle.sign("HMAC", signingKey,
-      new TextEncoder().encode(`${input.channel}\0${scope}\0${index}`)));
+      new TextEncoder().encode(`${input.channel}\0${scope}\0${recordIndex}`)));
     const id = `ca_${[...idDigest.slice(0, 20)].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
     const existing = await input.db.prepare(
       "SELECT id FROM channel_attachments WHERE id=? AND tenant_id=? AND space_id=? AND task_id=? AND expires_at>? LIMIT 1",
     ).bind(id, input.tenantId, input.spaceId, input.taskId, createdAt).first<{ id: string }>();
     if (!existing) {
-      const key = `spaces/${input.spaceId}/channel-inbound/${taskSegment}/${scopeHash}/${index}-${safeFilename}`;
+      const key = `spaces/${input.spaceId}/channel-inbound/${taskSegment}/${scopeHash}/${recordIndex}-${safeFilename}`;
       await input.bucket.put(key, file.bytes, { httpMetadata: { contentType: file.mimeType } });
       await input.db.prepare(
         `INSERT OR IGNORE INTO channel_attachments

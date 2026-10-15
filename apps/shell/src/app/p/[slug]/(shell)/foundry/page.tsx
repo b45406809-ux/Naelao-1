@@ -6,7 +6,7 @@ import { useActiveSpace } from "@/lib/active-space-context";
 import { useProductAuth } from "@/lib/auth-provider";
 import {
   acceptFoundryDocumentGrant, acceptFoundryWorkerGrant, createCrossSpaceGrant, createFoundryRequest, createFoundryTemplate, forwardFoundryRequest, installFoundryTemplate, invokeSharedWorker,
-  installRuntime, listCrossSpaceGrants, listFoundryRequests, listFoundryTemplates, listProjects, listRuntimeCatalogue, reviewFoundryRequest, testFoundryTemplate, updateFoundryTemplate,
+  installRuntime, listContainerInstallations, listCrossSpaceGrants, listFoundryRequests, listFoundryTemplates, listProjects, listRuntimeCatalogue, reviewFoundryRequest, testFoundryTemplate, updateFoundryTemplate,
   revokeCrossSpaceGrant, revokeFoundryDocumentGrant, revokeFoundryWorkerGrant, transitionFoundryTemplate,
   type CrossSpaceGrant, type FoundryFeatureRequest, type FoundryTemplate, type Project, type RuntimeCatalogueEntry,
 } from "@/lib/api";
@@ -168,11 +168,33 @@ export default function FoundryPage() {
   async function approveRuntimeInstall(runtime: RuntimeCatalogueEntry) {
     if (!credentials || busy) return;
     if (runtimeInstallScope === "PROJECT_SHARED" && !runtimeProjectId) { show("Choose a project before installing a project-scoped runtime"); return; }
+    const manifestId = runtime.install_manifest?.id;
+    if (!manifestId) { show("This marketplace entry has no approved runtime manifest"); return; }
+    let existing: Awaited<ReturnType<typeof listContainerInstallations>>["installations"] = [];
+    try {
+      const space = await listContainerInstallations(activeSpaceId, credentials);
+      existing.push(...space.installations);
+      const projects = await Promise.all(runtimeProjects.map(project => listContainerInstallations(activeSpaceId, credentials, project.id)));
+      existing.push(...projects.flatMap(result => result.installations));
+    } catch {
+      show("Could not check existing runtime placements. Try again before installing to avoid an accidental duplicate.");
+      return;
+    }
+    const matching = existing.filter(item => item.instance.extension_id === manifestId);
+    const sameTarget = (item: typeof matching[number]) => item.instance.scope === runtimeInstallScope &&
+      (runtimeInstallScope !== "PROJECT_SHARED" || item.instance.project_id === runtimeProjectId);
+    const elsewhere = matching.filter(item => !sameTarget(item));
     const contracts = runtime.install_manifest?.containers ?? [];
     const permissions = contracts.map(contract => `${contract.id}: ${contract.resources.memoryMb} MB memory, ${contract.resources.cpuCores} CPU, ${contract.resources.timeoutSeconds}s per run, outbound network ${contract.networkPolicy ?? "none"}`).join("\n");
     const requestedProject = runtimeInstallScope === "PROJECT_SHARED" ? runtimeProjects.find(project => project.id === runtimeProjectId) : undefined;
     const target = requestedProject ? `project ${requestedProject.name}` : runtimeInstallScope === "SPACE_ASSISTANT" ? "the Space Assistant workspace" : "a dedicated Space extension workspace";
-    const accepted = window.confirm(`Install ${runtime.name} in ${target}?\n\nIt can run exported commands in the selected workspace. Assistant workspace installs can read and write the Space Assistant's shared workspace files.\n${permissions}\n\nEach container run uses the existing metered runtime budget; no fixed monthly price is implied.`);
+    const placementNames = (item: typeof matching[number]) => item.instance.scope === "PROJECT_SHARED"
+      ? `project ${runtimeProjects.find(project => project.id === item.instance.project_id)?.name ?? item.instance.project_id ?? "unknown"}`
+      : item.instance.scope === "SPACE_ASSISTANT" ? "Space Assistant workspace" : "dedicated Space extension workspace";
+    const duplicateWarning = elsewhere.length
+      ? `\n\nThis same runtime is already installed in ${elsewhere.map(placementNames).join(", ")}. A second placement uses a separate workspace and may incur additional metered execution usage.`
+      : "";
+    const accepted = window.confirm(`Install ${runtime.name} in ${target}?${duplicateWarning}\n\nIt can run exported commands in the selected workspace. Assistant workspace installs can read and write the Space Assistant's shared workspace files.\n${permissions}\n\nEach container run uses the existing metered runtime budget; no fixed monthly price is implied.`);
     if (!accepted) return;
     if (busy) return;
     setBusy(true);

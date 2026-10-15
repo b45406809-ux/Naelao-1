@@ -2,7 +2,7 @@
 
 Date: 2026-10-15  
 Branch: `Mcbt5s-Backup-2`  
-Status: implementation in progress. Email plus Meta/Twilio WhatsApp, Telegram, and Slack now store bounded channel attachments under replay-stable opaque task IDs. Discord ingestion is limited to ephemeral CDN attachments; the official Discord Worker guide documents that non-ephemeral attachment fetches fail from Workers. Web chat uploads still use their separate session workspace path. System One now returns a structured per-attachment advisory action/tool/skill recommendation without reading bytes or authorizing execution. Generic image/video provider operations and provider-run adapter evaluation remain unfinished or blocked; see the current verification checkpoint in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`.
+Status: implementation in progress. Email plus Meta/Twilio WhatsApp, Telegram, Slack, Discord-ephemeral, and browser/chat uploads are indexed as bounded task-scoped attachments. Browser/chat retains its original session workspace file and creates a private task attachment copy. System One returns a structured per-attachment advisory action/tool/skill recommendation from text and metadata only; it neither reads bytes nor authorizes execution. Audio transcription is an explicit task-scoped tool using the existing bounded Whisper adapter. Non-ephemeral Discord retrieval has no safe Cloudflare Worker path. Generic video processing, visual image understanding, FDE self-service runtime publishing, template runtime dependencies, and provider-run adapter evaluation remain unfinished or blocked; see `CONTINUATION-IMPLEMENTATION-PROGRESS.md`.
 
 ## Architecture decision
 
@@ -27,7 +27,7 @@ Acceptance: channel-adapter contract tests; webhook-signature-before-download te
 
 ### B. Intent-aware skill and tool selection
 
-Implementation status: Reasoning instructions include metadata-first and storage-only-vs-content-reading guidance; role-filtered CLI manuals are available. `SystemOneDecisionClient.classifyAttachments` now performs one structured metadata-only choice, binds the selected action to a specific opaque attachment ID, and returns an advisory tool/skill candidate. The host does not execute that recommendation or widen the planner's tools. Unsupported MIME/action pairs are omitted or downgraded to `uncertain`.
+Implementation status: Reasoning instructions include metadata-first and storage-only-vs-content-reading guidance; role-filtered CLI manuals are available. `SystemOneDecisionClient.classifyAttachments` performs one structured metadata-only choice, binds the selected action to a specific opaque attachment ID, and returns an advisory tool/skill candidate. Both channel and browser/chat runs call it only when the matching attachment CLI is available. The host does not execute that recommendation or widen the planner's tools. Unsupported MIME/action pairs are omitted or downgraded to `uncertain`.
 
 1. Extend the System 1 routing result with advisory attachment relevance and tool/skill candidates based on the message text, declared/detected MIME, and verified selected-model capability evidence. It may return `not_needed`, `candidate_tool`, or `uncertain`; it must not read the file, make an irreversible choice, or authorize a tool.
 2. Keep the planner's own choice authoritative within its already authorized tool surface. For an unambiguous file-storage request, route directly to storage/copy without OCR. For content-dependent requests, make the relevant reader/transcriber available and let the planner select it. Ask a concise question when the task cannot be safely inferred.
@@ -49,7 +49,7 @@ Acceptance: synthetic scanned/text PDFs; page-limit and pixel-bomb cases; invali
 
 ### D. Generic modality contract and dispatch
 
-Implementation status: Bounded transcription through Workers AI Whisper remains the only normalized provider task. Channel intake now stores original WhatsApp and Telegram media files; it does not claim image understanding, arbitrary audio dispatch, generic video processing, translation, or speech-to-speech support.
+Implementation status: A shared task-scoped worker operation now dispatches audio transcription through the existing bounded Workers AI Whisper adapter; provider, model, MIME, input bytes, output length, cancellation and timeout are explicit. Channel and web/chat agents select it through `attachment.transcribe`. This does not implement video audio extraction, video summarization, visual image understanding, translation, or speech-to-speech. Provider requests are mocked in tests; live account acceptance is unrun.
 
 1. Replace the notion of one universal provider request with a normalized Naelao task contract: modality and task (`transcribe`, `translate`, `describe_image`, `extract_document`, `summarize_video`, `speech_to_speech`), bounded input references, expected output type, language hints/constraints, and cancellation/timeout limits.
 2. Implement explicit provider adapters that map only verified capabilities to each provider's request format. Keep model inventory candidate data separate from key-specific entitlement and deployment status. Validate exact selected key, model, capability, and price before paid requests. Unknown or stale evidence means unsupported.

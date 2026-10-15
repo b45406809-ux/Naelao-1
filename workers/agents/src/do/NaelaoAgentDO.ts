@@ -4701,6 +4701,35 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // replying in. Best-effort: undefined simply means "no history", the prior behaviour.
       const isDecoupledScheduledRun = body.context?.["trigger"] === "scheduled_job"
         && body.context?.["decoupled_context"] === true;
+      let attachmentContext = "";
+      if (!isDecoupledScheduledRun && this.env.AGENTS_WORKER && engineEnv.taskId && engineEnv.fastDecision) {
+        try {
+          const response = await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/attachments/list", {
+            method: "POST",
+            headers: { "content-type": "application/json", ...(await this.internalHeaders(tenantId)) },
+            body: JSON.stringify({ tenantId, spaceId, taskId: engineEnv.taskId }),
+          }));
+          if (response.ok) {
+            const result = await response.json<{ attachments?: Array<{ id: string; filename: string; mime_type: string; size_bytes: number }> }>();
+            const descriptors = (result.attachments ?? []).slice(0, 10).map(row => ({ id: row.id, filename: row.filename, mimeType: row.mime_type, sizeBytes: row.size_bytes }));
+            if (descriptors.length) {
+              let classification: import("@naelao/agent-sdk").AttachmentClassification | undefined;
+              const classifyAttachments = engineEnv.fastDecision.classifyAttachments;
+              const availableAttachmentTools = config.scripts.prebuilt.includes("attachments")
+                ? ["attachment.inspect", "attachment.read", "attachment.ocr", "attachment.transcribe"] as const
+                : [];
+              if (!String(body.model ?? "").startsWith("local/") && classifyAttachments && availableAttachmentTools.length) {
+                try { classification = await classifyAttachments({
+                  message: body.goal, attachments: descriptors,
+                  availableTools: availableAttachmentTools,
+                }); } catch { /* advisory System One outages never block the planner */ }
+              }
+              attachmentContext = `\n\nUntrusted attachment metadata for this exact run: ${JSON.stringify(descriptors)}.` +
+                (classification ? ` System One attachment classification (advisory only; choose the next step and rely on host authorization): ${JSON.stringify(classification)}.` : "");
+            }
+          }
+        } catch { /* attachment index lookup failure must not widen access or block ordinary chat */ }
+      }
       // A cron receives only its payload plus the workspace/SOUL material already loaded by the
       // engine. Never query a thread transcript for an autonomous scheduled run.
       const conversation = isDecoupledScheduledRun || isSubAgent
@@ -4722,7 +4751,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         }
       }
       const result = await runScriptLoop(engineEnv, tools, reasoner, config.scripts.prebuilt, {
-        goal: body.goal,
+        goal: body.goal + attachmentContext,
         startupObserve: config.scripts.startup_observe,
         ...(conversation ? { conversation } : {}),
         ...(memoryContext ? { memoryContext } : {}),
@@ -7478,7 +7507,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           attachmentClassification = await engineEnv.fastDecision.classifyAttachments({
             message: msg.text,
             attachments: attachmentDescriptors,
-            availableTools: ["attachment.inspect", "attachment.read", "attachment.ocr"],
+            availableTools: ["attachment.inspect", "attachment.read", "attachment.ocr", "attachment.transcribe"],
           });
         } catch {
           // Classification is advisory; it never grants access or runs a reader.

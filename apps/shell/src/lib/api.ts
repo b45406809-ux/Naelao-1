@@ -649,6 +649,9 @@ export interface RunModelOptions {
    *  unreadable to the AI, which is looking in the wrong place. Omitted for an assistant session,
    *  which is deliberately space-wide. */
   projectId?: string;
+  /** Names of the exact session uploads attached to this turn. The server reconstructs and
+   *  authorizes their workspace keys; browser-supplied storage keys are never trusted. */
+  uploadNames?: string[];
 }
 
 /** Persists the user's message, then kicks off an agent run.
@@ -691,6 +694,7 @@ export async function sendMessage(
         ...(modelOptions?.effort ? { effort: modelOptions.effort } : {}),
         ...(modelOptions?.agentDefinitionId ? { agent_definition_id: modelOptions.agentDefinitionId } : {}),
         ...(modelOptions?.projectId ? { project_id: modelOptions.projectId } : {}),
+        ...(modelOptions?.uploadNames?.length ? { upload_names: modelOptions.uploadNames } : {}),
       }),
       session,
       ...(onRetry ? { onRetry } : {}),
@@ -1437,10 +1441,18 @@ export interface CrossSpaceGrant {
 export interface RuntimeCatalogueEntry {
   id: string; name: string; description: string; category: string; available: boolean;
   image?: string; exported_binaries?: string[];
-  install_manifest?: { containers?: Array<{ id: string; image: string; resources: { memoryMb: number; cpuCores: number; timeoutSeconds: number }; networkPolicy?: string }> };
+  install_manifest?: { id?: string; containers?: Array<{ id: string; image: string; resources: { memoryMb: number; cpuCores: number; timeoutSeconds: number }; networkPolicy?: string }> };
 }
 export async function listRuntimeCatalogue(spaceId: string, session: SessionCredentials) {
   return apiFetch<{ images: RuntimeCatalogueEntry[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/runtime-catalog`, { session });
+}
+export interface ContainerInstallation {
+  instance: { extension_id: string; project_id: string | null; scope: string; status: string; installed_at: string };
+  manifest: { id?: string; name?: string; containers?: Array<{ id?: string }> };
+}
+export async function listContainerInstallations(spaceId: string, session: SessionCredentials, projectId?: string) {
+  const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+  return apiFetch<{ installations: ContainerInstallation[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/container-installations${query}`, { session });
 }
 export async function installRuntime(spaceId: string, session: SessionCredentials, imageId: string, options: {
   scope?: "SPACE_SHARED" | "SPACE_ASSISTANT" | "PROJECT_SHARED"; projectId?: string; promoteExisting?: boolean; acknowledgePromotion?: boolean; acknowledgeIsolation?: boolean;

@@ -17,7 +17,7 @@ function context(taskId: string | undefined = "message-task") {
 
 describe("customer attachment operations", () => {
   it("exposes read-only operations and never offers project-wide copy", () => {
-    expect(Object.keys(customerAttachments.operations)).toEqual(["attachment.list", "attachment.inspect", "attachment.read", "attachment.ocr"]);
+    expect(Object.keys(customerAttachments.operations)).toEqual(["attachment.list", "attachment.inspect", "attachment.read", "attachment.ocr", "attachment.transcribe"]);
     expect(customerAttachments.operations).not.toHaveProperty("attachment.copy");
   });
 
@@ -35,5 +35,12 @@ describe("customer attachment operations", () => {
     const active = context();
     await expect(Promise.resolve().then(() => customerAttachments.operations["attachment.inspect"]!({ id: "x".repeat(129) }, active.ctx))).rejects.toThrow("attachment id is required");
     expect(active.requests).toHaveLength(0);
+  });
+
+  it("routes transcription through the task-scoped media operation", async () => {
+    const state = context();
+    await customerAttachments.operations["attachment.transcribe"]!({ id: "opaque-id", languageHint: "en" }, state.ctx);
+    expect(new URL(state.requests[0]!.url).pathname).toBe("/internal/attachments/transcribe");
+    expect(await state.requests[0]!.json()).toEqual({ tenantId: "tenant-a", spaceId: "space-a", taskId: "message-task", id: "opaque-id", languageHint: "en" });
   });
 });
