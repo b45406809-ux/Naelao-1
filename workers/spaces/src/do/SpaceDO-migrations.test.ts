@@ -4,7 +4,7 @@ import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim";
 import { SPACE_DO_MIGRATIONS } from "./SpaceDO";
 
 describe("SpaceDO migration replay", () => {
-  it("adds the assistant container scope without dropping older extension grants", () => {
+  it("adds assistant and project-bound scopes without dropping older extension grants", () => {
     const storage = createDOStorage();
     const migrationStorage = storage as unknown as { sql: SqlStorage; transactionSync<T>(closure: () => T): T };
     applyMigrations(migrationStorage, SPACE_DO_MIGRATIONS.filter(migration => migration.version < 79));
@@ -15,6 +15,9 @@ describe("SpaceDO migration replay", () => {
     storage.sql.exec("INSERT INTO extension_instances(instance_id,extension_id,tenant_id,space_id,project_id,user_id,scope,owner_key,installed_by,status,installed_at,removed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
       "assistant-install", "ext-assistant", "tenant", "space", null, null, "SPACE_ASSISTANT", "space:space:assistant", "owner", "active", "2026-01-01", null);
     expect(storage.sql.exec<{ scope: string }>("SELECT scope FROM extension_instances WHERE instance_id='assistant-install'").toArray()).toEqual([{ scope: "SPACE_ASSISTANT" }]);
+    storage.sql.exec("INSERT INTO extension_instances(instance_id,extension_id,tenant_id,space_id,project_id,user_id,scope,owner_key,installed_by,status,installed_at,removed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+      "project-bound-install", "ext-project-bound", "tenant", "space", "project-a", null, "PROJECT_BOUND", "space:space:project:project-a:bound", "owner", "active", "2026-01-01", null);
+    expect(storage.sql.exec<{ scope: string }>("SELECT scope FROM extension_instances WHERE instance_id='project-bound-install'").toArray()).toEqual([{ scope: "PROJECT_BOUND" }]);
   });
 
   it("creates project, Foundry and Space glossary tables and replays every migration exactly once", () => {

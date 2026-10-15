@@ -11,6 +11,27 @@ function manifest(binary = "ffmpeg") {
 }
 
 describe("runtime extension installation", () => {
+  it("installs a project-bound code indexer only for the selected project and preserves scope through restart", async () => {
+    const storage = createDOStorage(), state = { storage };
+    let space = new SpaceDO(state as never, {} as never);
+    await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project-a"));
+    storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active'),('project-b','space','B','active')");
+    const lsp = { id: "ext_lsp_indexer", type: "extension", declaredPermissions: ["repo.read", "facet.sqlite.read", "facet.sqlite.write"],
+      capabilityRequirements: ["repo.read", "facet.sqlite.read", "facet.sqlite.write"], gadgets: [], daemons: [],
+      commands: [{ name: "lsp", scriptPath: "./ext_lsp_indexer/command.ts" }] };
+    const install = () => space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest: lsp, installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project-a", scope: "PROJECT_BOUND", gatekeeperCapabilities: lsp.capabilityRequirements }) }));
+    expect((await install()).status).toBe(201);
+    const list = async (projectId: string) => space.fetch(new Request("http://space/container-installations?" + new URLSearchParams({
+      tenant_id: "tenant", space_id: "space", user_id: "owner", project_id: projectId,
+    })));
+    const installed = await (await list("project-a")).json() as { installations: Array<{ instance: { scope: string; project_id: string | null } }> };
+    expect(installed.installations).toEqual([expect.objectContaining({ instance: expect.objectContaining({ scope: "PROJECT_BOUND", project_id: "project-a" }) })]);
+    expect((await install()).status).toBe(201);
+    space = new SpaceDO(state as never, {} as never);
+    expect(await (await list("project-b")).json()).toMatchObject({ installations: [] });
+  });
+
   it("validates scope before mutation, keeps manifests immutable, and replays installs after restart", async () => {
     const storage = createDOStorage();
     const state = { storage };

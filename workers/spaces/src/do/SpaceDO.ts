@@ -1965,6 +1965,28 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_extension_instances_project ON extension_instances(space_id, project_id, status);
     `,
   },
+  {
+    version: 80,
+    description: "project-bound extension installation scope",
+    up: `
+      DROP INDEX IF EXISTS idx_extension_instances_owner;
+      DROP INDEX IF EXISTS idx_extension_instances_project;
+      ALTER TABLE extension_instances RENAME TO extension_instances_v79;
+      CREATE TABLE extension_instances (
+        instance_id TEXT PRIMARY KEY, extension_id TEXT NOT NULL, tenant_id TEXT NOT NULL, space_id TEXT NOT NULL,
+        project_id TEXT, user_id TEXT,
+        scope TEXT NOT NULL CHECK (scope IN ('SPACE_SHARED','SPACE_ASSISTANT','SPACE_USER','PROJECT_BOUND','PROJECT_SHARED','PROJECT_USER')),
+        owner_key TEXT NOT NULL, installed_by TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','removed','expired')),
+        installed_at TEXT NOT NULL, removed_at TEXT,
+        UNIQUE(extension_id, tenant_id, space_id, project_id, user_id, scope)
+      );
+      INSERT INTO extension_instances SELECT * FROM extension_instances_v79;
+      DROP TABLE extension_instances_v79;
+      CREATE INDEX idx_extension_instances_owner ON extension_instances(tenant_id, space_id, status, scope);
+      CREATE INDEX idx_extension_instances_project ON extension_instances(space_id, project_id, status);
+    `,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -2589,7 +2611,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (url.pathname === "/machine-authority" && method === "POST") return this.machineAuthority(request);
       if (url.pathname === "/container-installations" && method === "GET") {
         const rows = queryAll<{ manifest_json: string }>(this.ctx.storage.sql as never,
-          "SELECT i.*, e.manifest_json FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.tenant_id=? AND i.space_id=? AND i.status='active' AND (i.scope='SPACE_SHARED' OR (i.scope='SPACE_ASSISTANT' AND ?='') OR (i.scope='SPACE_USER' AND i.user_id=?) OR (i.scope='PROJECT_SHARED' AND i.project_id=?) OR (i.scope='PROJECT_USER' AND i.project_id=? AND i.user_id=?))",
+          "SELECT i.*, e.manifest_json FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.tenant_id=? AND i.space_id=? AND i.status='active' AND (i.scope='SPACE_SHARED' OR (i.scope='SPACE_ASSISTANT' AND ?='') OR (i.scope='SPACE_USER' AND i.user_id=?) OR (i.scope='PROJECT_BOUND' AND i.project_id=?) OR (i.scope='PROJECT_SHARED' AND i.project_id=?) OR (i.scope='PROJECT_USER' AND i.project_id=? AND i.user_id=?))",
           url.searchParams.get("tenant_id"), url.searchParams.get("space_id"), url.searchParams.get("project_id") ?? "", url.searchParams.get("user_id"), url.searchParams.get("project_id"), url.searchParams.get("project_id"), url.searchParams.get("user_id"));
         return Response.json({ installations: rows.map(row => { const { manifest_json, ...instance } = row; return { instance, manifest: JSON.parse(manifest_json) }; }) });
       }
@@ -11339,7 +11361,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     let manifest: ExtensionManifest;
     try { manifest = validateExtensionManifest(body.manifest, { gatekeeperCapabilities: body.gatekeeperCapabilities ?? [] }); }
     catch (error) { return Response.json({ error: error instanceof Error ? error.message : "invalid_extension_manifest" }, { status: 400 }); }
-    if (body.scope && !["SPACE_SHARED", "SPACE_ASSISTANT", "SPACE_USER", "PROJECT_SHARED", "PROJECT_USER"].includes(body.scope))
+    if (body.scope && !["SPACE_SHARED", "SPACE_ASSISTANT", "SPACE_USER", "PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER"].includes(body.scope))
       return Response.json({ error: "installation_scope_invalid" }, { status: 400 });
     if (body.promoteExisting && body.scope !== "SPACE_SHARED") return Response.json({ error: "promotion_requires_space_shared_scope" }, { status: 400 });
     let ownerKey: string | undefined;
@@ -11357,6 +11379,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       } else if (body.scope === "PROJECT_SHARED") {
         if (!body.projectId || body.userId) return Response.json({ error: "installation_scope_owner_required" }, { status: 400 });
         ownerKey = `space:${body.spaceId}:project:${body.projectId}`;
+      } else if (body.scope === "PROJECT_BOUND") {
+        if (!body.projectId || body.userId) return Response.json({ error: "installation_scope_owner_required" }, { status: 400 });
+        ownerKey = `space:${body.spaceId}:project:${body.projectId}:bound`;
       } else {
         if (!body.projectId || !body.userId) return Response.json({ error: "installation_scope_owner_required" }, { status: 400 });
         ownerKey = `space:${body.spaceId}:project:${body.projectId}:user:${body.userId}`;

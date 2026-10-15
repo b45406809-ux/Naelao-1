@@ -3,13 +3,14 @@ import { validateExtensionManifest } from "../extensions.js";
 import { ANCHOR_DOGFOOD_EXTENSIONS, DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, isSaasReplacementEligible } from "./index.js";
 describe("dogfooded enterprise extensions", () => {
   it("validates all six through the public Gatekeeper boundary", () => {
-    expect(DOGFOOD_EXTENSIONS).toHaveLength(6);
+    expect(DOGFOOD_EXTENSIONS).toHaveLength(7);
     for (const manifest of DOGFOOD_EXTENSIONS) expect(validateExtensionManifest(manifest, { gatekeeperCapabilities: manifest.capabilityRequirements })).toEqual(manifest);
   });
 
   it("limits commercial first-party claims to CRM and e-sign", () => {
     expect(ANCHOR_DOGFOOD_EXTENSIONS.map((manifest) => manifest.id)).toEqual(["ext_crm_core", "ext_esign_core"]);
     expect(DOGFOOD_EXTENSION_CATALOG.filter((entry) => entry.maturity === "reference").map((entry) => entry.manifest.id)).toEqual([
+      "ext_lsp_indexer",
       "ext_ledger_core",
       "ext_omnichannel_inbox",
       "ext_commerce_hub",

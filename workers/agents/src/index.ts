@@ -3842,7 +3842,7 @@ app.post("/internal/projects/hibernate", async (c) => {
 
 // Project daemon MCP is routed through the authenticated agents worker so the public shell does
 // not receive a Durable Object id or a storage handle. The project actor validates the installed
-// daemon name and performs the bounded operation inside its own SQLite namespace.
+// daemon name and performs bounded operations in its private SQLite namespace.
 app.post("/spaces/:spaceId/projects/:projectId/daemons/:daemonId/mcp", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId || !(await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))) {
@@ -3857,7 +3857,13 @@ app.post("/spaces/:spaceId/projects/:projectId/daemons/:daemonId/mcp", async (c)
   ));
   if (!projectCheck.ok) return c.json({ error_code: "not_found", message: "Project not found" }, 404);
   let workflowScript = "";
-  if (daemonId !== "tree-sitter") {
+  if (daemonId === "tree-sitter") {
+    const installation = await c.env.SPACES_WORKER.fetch(new Request(
+      `http://spaces-worker/internal/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extensions/ext_lsp_indexer/active`,
+      { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) } },
+    ));
+    if (!installation.ok) return c.json({ error_code: "project_lsp_extension_not_installed", message: "Install the LSP indexer extension in this project before using lsp commands." }, 404);
+  } else {
     const extensionResponse = await c.env.SPACES_WORKER.fetch(new Request(
       `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/extensions`,
       { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) } },

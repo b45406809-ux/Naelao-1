@@ -28,7 +28,7 @@ import type { WorkerLoaderBinding } from "../../agents/src/script-engine/code-ru
 import { registerGraduationRoutes } from "./routes/graduation.js";
 import { registerMarketRadarRoutes } from "./routes/market-radar.js";
 import { airGappedOnlyFromConfig, applyDurableObjectJurisdiction, certifyArtifact, evaluateBlueprintSecurity, sanitizeAndScrubBlueprint, verifyArtifactCertificate, type ConformanceSuite, type ConformanceCertificate } from "@naelao/security";
-import { validateExtensionManifest, type SpaceBlueprint } from "@naelao/agent-sdk";
+import { DOGFOOD_EXTENSION_BY_ID, validateExtensionManifest, type SpaceBlueprint } from "@naelao/agent-sdk";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { ConformanceSandboxDO, ConformanceState } from "./conformance-state.js";
@@ -1359,6 +1359,42 @@ app.use("/spaces/:spaceId/projects", requireBusinessMembership({ GET: "member", 
 app.use("/spaces/:spaceId/projects/:projectId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/projects/:projectId", requireBusinessMembership({ GET: "member" }));
 registerProjectMcpRoutes(app, requireManageableAutomationProject);
+
+// The LSP indexer is an optional, owner-installed project extension. Templates can name
+// `ext_lsp_indexer`; installation and runtime checks remain project-scoped and fail closed.
+app.post("/spaces/:spaceId/projects/:projectId/extensions/lsp-indexer", async (c) => {
+  const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId");
+  const denied = await requireManageableAutomationProject(c, spaceId, projectId);
+  if (denied) return denied;
+  const identity = getCallerIdentity(c);
+  const businessRole = identity.role === "product_end_user" && identity.userId
+    ? await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, identity.userId)
+    : identity.role;
+  if (businessRole !== "owner" && businessRole !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
+  const manifest = DOGFOOD_EXTENSION_BY_ID["ext_lsp_indexer"];
+  if (!manifest) return c.json({ error_code: "lsp_extension_unavailable" }, 503);
+  const response = await (await spaceDoStub(c.env, spaceId, identity.tenantId)).fetch(new Request("http://space-do/extensions", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ manifest, installedBy: identity.userId, tenantId: identity.tenantId, spaceId,
+      projectId, scope: "PROJECT_BOUND", gatekeeperCapabilities: manifest.capabilityRequirements }),
+  }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
+});
+
+app.use("/internal/spaces/:spaceId/projects/:projectId/extensions/:extensionId/active", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.get("/internal/spaces/:spaceId/projects/:projectId/extensions/:extensionId/active", async (c) => {
+  const extensionId = c.req.param("extensionId");
+  if (extensionId !== "ext_lsp_indexer") return c.json({ error_code: "extension_not_supported" }, 404);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const { spaceId, projectId } = c.req.param();
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const response = await stub.fetch(new Request("http://space-do/extension-installations?" + new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, extension_id: extensionId })));
+  if (!response.ok) return c.json({ error_code: "extension_installation_lookup_unavailable" }, 503);
+  const result = await response.json<{ installations?: Array<{ scope: string; project_id: string | null; status: string }> }>();
+  const active = result.installations?.some(item => item.status === "active" && item.scope === "PROJECT_BOUND" && item.project_id === projectId) ?? false;
+  return active ? c.json({ active: true }) : c.json({ error_code: "project_extension_not_installed" }, 404);
+});
+
 // Step 21: a customer-bot's no-code automation rules ("after the customer says X, this happens")
 // are now editable from the business's own Automation dashboard — opened to a business ADMIN (the
 // person who owns the business), same admin-floor precedent as model-config/assistant-policy/
