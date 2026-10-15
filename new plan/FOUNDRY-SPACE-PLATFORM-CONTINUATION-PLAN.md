@@ -172,84 +172,84 @@ Status: **PARTIALLY IMPLEMENTED — skills are role-targeted, discoverable and r
 Primary read: **lines 3285–3513** (USER 3285–3287; AI MODEL 3288–3513).
 Bounded primary windows: 3285–3459, 3460–3513.
 Later amendment/dependency pairs: 3514–3753 (task 23); 3754–3942 (task 24)
-Status: **UNASSESSED**. Evidence and exact next action belong in the progress file.
+Status: **ASSESSED; see `CONTINUATION-IMPLEMENTATION-PROGRESS.md` for disposition and evidence.**
 
 ## Task 23
 
 Primary read: **lines 3514–3753** (USER 3514–3516; AI MODEL 3517–3753).
 Bounded primary windows: 3514–3688, 3689–3753.
 Later amendment/dependency pairs: 3754–3942 (task 24); 3943–4139 (task 25); 4140–4268 (task 26); 4269–4441 (task 27)
-Status: **UNASSESSED**. Evidence and exact next action belong in the progress file.
+Status: **ASSESSED; see `CONTINUATION-IMPLEMENTATION-PROGRESS.md` for disposition and evidence.**
 
 ## Task 24
 
 Primary read: **lines 3754–3942** (USER 3754–3756; AI MODEL 3757–3942).
 Bounded primary windows: 3754–3928, 3929–3942.
 Later amendment/dependency pairs: 3943–4139 (task 25); 4140–4268 (task 26); 4269–4441 (task 27)
-Status: **UNASSESSED**. Evidence and exact next action belong in the progress file.
+Status: **ASSESSED; see `CONTINUATION-IMPLEMENTATION-PROGRESS.md` for disposition and evidence.**
 
 ## Task 25
 
 Primary read: **lines 3943–4139** (USER 3943–3945; AI MODEL 3946–4139).
 Bounded primary windows: 3943–4117, 4118–4139.
 Later amendment/dependency pairs: 4140–4268 (task 26); 4442–4647 (task 28); 4648–4794 (task 29); 4795–4982 (task 30)
-Status: **UNASSESSED**. Evidence and exact next action belong in the progress file.
+Status: **ASSESSED; see `CONTINUATION-IMPLEMENTATION-PROGRESS.md` for disposition and evidence.**
 
 ## Task 26
 
 Primary read: **lines 4140–4268** (USER 4140–4142; AI MODEL 4143–4268).
 Bounded primary windows: 4140–4268.
 Later amendment/dependency pairs: 4269–4441 (task 27)
-Status: **UNASSESSED**. Evidence and exact next action belong in the progress file.
+Status: **ASSESSED; see `CONTINUATION-IMPLEMENTATION-PROGRESS.md` for disposition and evidence.**
 
 ## Task 27
 
 Primary read: **lines 4269–4441** (USER 4269–4271; AI MODEL 4272–4441).
 Bounded primary windows: 4269–4441.
 Later amendment/dependency pairs: 4442–4647 (task 28); 4648–4794 (task 29); 4795–4982 (task 30)
-Status: **UNASSESSED**. Evidence and exact next action belong in the progress file.
+Status: **ASSESSED; see `CONTINUATION-IMPLEMENTATION-PROGRESS.md` for disposition and evidence.**
 
 ## Task 28
 
 Primary read: **lines 4442–4647** (USER 4442–4444; AI MODEL 4445–4647).
 Bounded primary windows: 4442–4616, 4617–4647.
 Later amendment/dependency pairs: 4648–4794 (task 29); 4795–4982 (task 30)
-Status: **UNASSESSED**. Evidence and exact next action belong in the progress file.
+Status: **ASSESSED; see `CONTINUATION-IMPLEMENTATION-PROGRESS.md` for disposition and evidence.**
 
 ## Task 29
 
 Primary read: **lines 4648–4794** (USER 4648–4654; AI MODEL 4655–4794).
 Bounded primary windows: 4648–4794.
 Later amendment/dependency pairs: 4795–4982 (task 30)
-Status: **UNASSESSED**. Evidence and exact next action belong in the progress file.
+Status: **ASSESSED; see `CONTINUATION-IMPLEMENTATION-PROGRESS.md` for disposition and evidence.**
 
 ## Task 30
 
 Primary read: **lines 4795–4982** (USER 4795–4797; AI MODEL 4798–4982).
 Bounded primary windows: 4795–4969, 4970–4982.
 Later amendment/dependency pairs: 4983–5145 (task 31); 5146–5259 (task 32); 5260–5334 (task 33)
-Status: **UNASSESSED**. Evidence and exact next action belong in the progress file.
+Status: **ASSESSED; see `CONTINUATION-IMPLEMENTATION-PROGRESS.md` for disposition and evidence.**
 
 ## Task 31
 
 Primary read: **lines 4983–5145** (USER 4983–4985; AI MODEL 4986–5145).
 Bounded primary windows: 4983–5145.
 Later amendment/dependency pairs: 5146–5259 (task 32); 5260–5334 (task 33)
-Status: **UNASSESSED**. Evidence and exact next action belong in the progress file.
+Status: **ASSESSED; see `CONTINUATION-IMPLEMENTATION-PROGRESS.md` for disposition and evidence.**
 
 ## Task 32
 
 Primary read: **lines 5146–5259** (USER 5146–5148; AI MODEL 5149–5259).
 Bounded primary windows: 5146–5259.
 Later amendment/dependency pairs: 5260–5334 (task 33)
-Status: **UNASSESSED**. Evidence and exact next action belong in the progress file.
+Status: **ASSESSED; see `CONTINUATION-IMPLEMENTATION-PROGRESS.md` for disposition and evidence.**
 
 ## Task 33
 
 Primary read: **lines 5260–5334** (USER 5260–5262; AI MODEL 5263–5334).
 Bounded primary windows: 5260–5334.
 Later amendment/dependency pairs: None.
-Status: **UNASSESSED**. Evidence and exact next action belong in the progress file.
+Status: **ASSESSED; see `CONTINUATION-IMPLEMENTATION-PROGRESS.md` for disposition and evidence.**
 
 ## Final audit
 
