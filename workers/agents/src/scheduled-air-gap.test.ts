@@ -25,4 +25,22 @@ describe("scheduled wake compliance policy", () => {
     await expect(resolveWakeContext(envFor({ name: "Acme", config_json: '{"compliance":{"airGappedOnly":false}}' }), "space-1", "tenant-1"))
       .resolves.toMatchObject({ airGappedOnly: false });
   });
+
+  it("preserves an explicitly selected OpenRouter model instead of silently falling back to platform cloud", async () => {
+    const result = await resolveWakeContext(envFor({ name: "Acme", config_json: JSON.stringify({
+      productConfig: { modelConfig: { model: "openrouter/vendor/model" } }, compliance: { airGappedOnly: false },
+    }) }), "space-1", "tenant-1");
+    expect(result).toMatchObject({ model: "openrouter/vendor/model", airGappedOnly: false });
+    // No credential binding means no candidate evidence; the downstream reasoner must refuse
+    // inference rather than using the platform default.
+    expect(result.openRouterCapabilityEvidence).toBeUndefined();
+  });
+
+  it("does not resolve cloud model metadata for an air-gapped Space", async () => {
+    const result = await resolveWakeContext(envFor({ name: "Private", config_json: JSON.stringify({
+      productConfig: { modelConfig: { model: "openrouter/vendor/model" } }, compliance: { airGappedOnly: true },
+    }) }), "space-1", "tenant-1");
+    expect(result).toMatchObject({ model: "openrouter/vendor/model", airGappedOnly: true });
+    expect(result.openRouterCapabilityEvidence).toBeUndefined();
+  });
 });

@@ -1546,6 +1546,12 @@ app.post("/agents/:agentId/script/run", async (c) => {
   // entering here.
   const actingRole = c.req.header("x-naelao-role") ?? "";
   const wakePolicy = await resolveWakeContext(c.env, spaceId, tenantId);
+  const runModel = body.model ?? wakePolicy.model;
+  let runModelEvidence = runModel === wakePolicy.model ? wakePolicy.openRouterCapabilityEvidence : undefined;
+  if (runModel.startsWith("openrouter/") && !runModelEvidence) {
+    try { runModelEvidence = await validateDynamicOpenRouterPlannerModel(c.env, tenantId, spaceId, runModel) ?? undefined; }
+    catch { runModelEvidence = undefined; }
+  }
   const doResp = await stub.fetch(
     new Request("http://agent-do/script/run", {
       method: "POST",
@@ -1564,7 +1570,8 @@ app.post("/agents/:agentId/script/run", async (c) => {
         ...(body.context ? { context: body.context } : {}),
         // Inject the platform LLM key so webhook/cron wakes (which carry none) can reason.
         apiKey: c.env.ANTHROPIC_API_KEY ?? "",
-        ...(body.model ? { model: body.model } : {}),
+        model: runModel,
+        ...(runModelEvidence ? { openRouterCapabilityEvidence: runModelEvidence } : {}),
         ...(wakePolicy.airGappedOnly ? { airGappedOnly: true } : {}),
       }),
     })
@@ -1824,7 +1831,7 @@ async function resolveWakeContext(
   env: AgentsEnv,
   spaceId: string,
   tenantId: string
-): Promise<{ model: string; businessContext?: BusinessContext; airGappedOnly: boolean }> {
+): Promise<{ model: string; businessContext?: BusinessContext; airGappedOnly: boolean; openRouterCapabilityEvidence?: OpenRouterModelCandidate }> {
   try {
     const row = await env.PLATFORM_DB.prepare(
       "SELECT name, config_json FROM spaces WHERE id = ? AND tenant_id = ?"
@@ -1842,12 +1849,25 @@ async function resolveWakeContext(
       const m = pc.productConfig?.modelConfig?.model;
       // Re-validated rather than trusted: a stored model that is no longer in the allowlist would
       // otherwise reintroduce exactly the 404 this function exists to prevent.
-      if (m && (isAllowedModel(m) || m.startsWith("local/"))) configured = m;
+      if (m && (isAllowedModel(m) || m.startsWith("local/") || m.startsWith("openrouter/"))) configured = m;
       const airGappedOnly = airGappedOnlyFromConfig(row.config_json);
+      let openRouterCapabilityEvidence: OpenRouterModelCandidate | undefined;
+      // Preserve a configured dynamic model instead of silently substituting the platform
+      // default. Missing/stale key-scoped capability evidence is carried as absent; the reasoner
+      // then fails closed before reservation/provider I/O. Never fetch provider metadata for an
+      // air-gapped Space.
+      if (configured?.startsWith("openrouter/") && !airGappedOnly) {
+        try {
+          openRouterCapabilityEvidence = await validateDynamicOpenRouterPlannerModel(env, tenantId, spaceId, configured) ?? undefined;
+        } catch {
+          openRouterCapabilityEvidence = undefined;
+        }
+      }
       return {
         model: configured ?? DEFAULT_WORKING_MODEL,
         businessContext: resolveBusinessContext({ spaceName: row.name, config: cfg }),
         airGappedOnly,
+        ...(openRouterCapabilityEvidence ? { openRouterCapabilityEvidence } : {}),
       };
     } catch {
       // fall through to the default
@@ -1952,6 +1972,7 @@ async function wakeAgentGoal(
         context: { trigger: "scheduled_job", decoupled_context: true, max_context_tokens: 2_000 },
         apiKey: env.ANTHROPIC_API_KEY ?? "",
         model: wake.model,
+        ...(wake.openRouterCapabilityEvidence ? { openRouterCapabilityEvidence: wake.openRouterCapabilityEvidence } : {}),
         ...(params.airGappedOnly || wake.airGappedOnly ? { airGappedOnly: true } : {}),
         ...(wake.businessContext ? { businessContext: wake.businessContext } : {}),
       }),
@@ -4525,6 +4546,8 @@ app.post("/connectors/:platform/webhook/:spaceId", async (c) => {
         sessionId: `webhook-${platform}-${Date.now()}`,
         context: { trigger: "connector_webhook", platform, event_type: normalized.event_type, payload: normalized.payload },
         apiKey: c.env.ANTHROPIC_API_KEY ?? "",
+        model: wake.model,
+        ...(wake.openRouterCapabilityEvidence ? { openRouterCapabilityEvidence: wake.openRouterCapabilityEvidence } : {}),
       }),
     }));
   } catch (err) {
@@ -5513,6 +5536,8 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
         projectId: link?.project_id ?? undefined,
         spaceId,
         tenantId: space.tenant_id,
+        model: wakeContext.model,
+        ...(wakeContext.openRouterCapabilityEvidence ? { openRouterCapabilityEvidence: wakeContext.openRouterCapabilityEvidence } : {}),
         // Lets the DO kick an immediate heartbeat drain (see handleChannelInbound) instead of
         // waiting for the hourly cron. LLM credentials come from the DO's own NAELAO_AIG_TOKEN
         // (CF AI Gateway stored key) — no provider apiKey is threaded through this body.
@@ -5869,6 +5894,8 @@ app.post("/channels/email/agentmail-inbound/:spaceId", async (c) => {
     "SELECT tenant_id, status FROM spaces WHERE id = ?"
   ).bind(spaceId).first<{ tenant_id: string; status: string }>();
   if (!space || space.status !== "active") return c.json({ ok: true, skipped: "space_inactive" });
+  const wakeContext = await resolveWakeContext(c.env, spaceId, space.tenant_id);
+  if (wakeContext.airGappedOnly) return c.json({ ok: true, skipped: "air_gapped" });
 
   const rawBody = await c.req.text();
   if (!c.env.CREDENTIALS_WORKER) return c.json({ error_code: "unavailable" }, 503);
@@ -5911,6 +5938,8 @@ app.post("/channels/email/agentmail-inbound/:spaceId", async (c) => {
         projectId: link?.project_id ?? undefined,
         spaceId,
         tenantId: space.tenant_id,
+        model: wakeContext.model,
+        ...(wakeContext.openRouterCapabilityEvidence ? { openRouterCapabilityEvidence: wakeContext.openRouterCapabilityEvidence } : {}),
         apiKey: "",
       }),
     }));
@@ -7542,6 +7571,7 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
         // The business this heartbeat is for. One indexed read per space per tick, best-effort:
         // an inbound customer message is answered by an agent that knows what the business sells.
         body: JSON.stringify({ spaceId: msg.spaceId, agentId: "naelao-agent", tenantId: msg.tenantId, apiKey: env.ANTHROPIC_API_KEY ?? "",
+          model: wakePolicy.model, ...(wakePolicy.openRouterCapabilityEvidence ? { openRouterCapabilityEvidence: wakePolicy.openRouterCapabilityEvidence } : {}),
           businessContext: await loadBusinessContext(env.PLATFORM_DB, msg.spaceId, msg.tenantId) }),
       }));
       // A heartbeat that dies used to leave no trace anywhere: the response was discarded, and the
@@ -7582,6 +7612,8 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
           sessionId: `poll-${msg.connectorName}-${Date.now()}`,
           context: { trigger: "connector_poll", platform: msg.connectorName, since },
           apiKey: env.ANTHROPIC_API_KEY ?? "",
+          model: wakePolicy.model,
+          ...(wakePolicy.openRouterCapabilityEvidence ? { openRouterCapabilityEvidence: wakePolicy.openRouterCapabilityEvidence } : {}),
         }),
       }));
       await env.AGENT_CACHE.put(kvKey, new Date().toISOString(), { expirationTtl: 60 * 60 * 24 * 30 });

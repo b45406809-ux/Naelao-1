@@ -5203,7 +5203,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const adapter = getAdapter(type);
     if (!adapter) return Response.json({ error: "unknown_channel" }, { status: 400 });
 
-    type InboundBody = { raw?: Record<string, unknown>; projectId?: string; taskId?: string; spaceId?: string; tenantId?: string; apiKey?: string };
+    type InboundBody = { raw?: Record<string, unknown>; projectId?: string; taskId?: string; spaceId?: string; tenantId?: string; apiKey?: string; model?: string; openRouterCapabilityEvidence?: OpenRouterModelCandidate };
     const body = await request.json<InboundBody>().catch(() => ({}) as InboundBody);
     const norm: NormalizedInbound | null = adapter.normalizeInbound(body.raw ?? {});
     if (!norm) return Response.json({ ignored: true }); // bot echo / not actionable
@@ -5393,7 +5393,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           headers: { "content-type": "application/json" },
           // Only the first mention receives execution dispatch. Referents remain persisted
           // metadata and are never iterated/woken here.
-          body: JSON.stringify({ spaceId, agentId: mentionRoute.turnHolder ?? "naelao-agent", tenantId, apiKey }),
+          body: JSON.stringify({ spaceId, agentId: mentionRoute.turnHolder ?? "naelao-agent", tenantId, apiKey,
+            model: body.model, openRouterCapabilityEvidence: body.openRouterCapabilityEvidence }),
         })).catch((err) => {
           console.error(`[channels] immediate drain failed space=${spaceId}:`, (err as Error).message);
         })
@@ -7188,7 +7189,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // PLATFORM_DB binding. Without it the agent answering a real customer on WhatsApp/Slack knows
     // its role but not what the business actually sells, which is the one thing that conversation
     // is about.
-    type HeartbeatBody = { spaceId?: string; agentId?: string; tenantId?: string; apiKey?: string; model?: string; max?: number; businessContext?: BusinessContext };
+    type HeartbeatBody = { spaceId?: string; agentId?: string; tenantId?: string; apiKey?: string; model?: string; max?: number; businessContext?: BusinessContext; openRouterCapabilityEvidence?: OpenRouterModelCandidate };
     const body = await request.json<HeartbeatBody>().catch(() => ({}) as HeartbeatBody);
     const spaceId = body.spaceId ?? request.headers.get("x-naelao-space-id") ?? "";
     if (!spaceId) return Response.json({ error: "spaceId is required" }, { status: 400 });
@@ -7253,6 +7254,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       gateway: { accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway", ...(this.env.CF_API_TOKEN ? { cfApiToken: this.env.CF_API_TOKEN } : {}), ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}), ...(this.env.GOOGLE_AI_STUDIO_API_KEY ? { googleAiStudioApiKey: this.env.GOOGLE_AI_STUDIO_API_KEY } : {}), ...(this.env.GROQ_API_KEY ? { groqApiKey: this.env.GROQ_API_KEY } : {}), ...(this.env.OPENROUTER_API_KEY && !model.startsWith("openrouter/") ? { openRouterApiKey: this.env.OPENROUTER_API_KEY } : {}), ...byokOverride },
       ctx: { spaceId, agentId, model },
       model,
+      ...(body.openRouterCapabilityEvidence ? { openRouterCapabilityEvidence: body.openRouterCapabilityEvidence } : {}),
       reserveInferenceCost: async (inference) => {
         if (!channelReservation.enabled) return true;
         const estimate = estimateRequestCostCredits(inference.serializedRequestBytes, inference.maxOutputTokens, inference.model,
