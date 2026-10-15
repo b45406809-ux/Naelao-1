@@ -88,35 +88,35 @@ Status: **PARTIALLY IMPLEMENTED — OpenRouter Space-BYOK routing is wired; veri
 Primary read: **lines 1089–1225** (USER 1089–1091; AI MODEL 1092–1225).
 Bounded primary windows: 1089–1225.
 Later amendment/dependency pairs: 1226–1416 (task 11); 1417–1575 (task 12); 1576–1754 (task 13); 1971–2173 (task 15); 2174–2355 (task 16); 2356–2591 (task 17); 2592–2772 (task 18); 3068–3284 (task 21); 3514–3753 (task 23); 3754–3942 (task 24); 4269–4441 (task 27); 4648–4794 (task 29)
-Status: **ASSESSED — no standalone implementation request in this pair; existing planner/leaf boundaries retained.** The user's primary message is a Cursor blog link; the reply's benchmark numbers, “field guide”/AST Git mesh and Cursor-specific claims are not implementation authority. Verified that this repository already frames persistent agents as planners, denies planner-owned domain operations, and gives leaves no recursive delegation. Later actionable requests about model choice, context affinity, skills and Git branches remain owned by their respective tasks. See progress file. Task 11 is current.
+Status: **ASSESSED — no standalone implementation request in this pair; existing planner/leaf boundaries retained.** The user's primary message is a Cursor blog link; the reply's benchmark numbers, “field guide”/AST Git mesh and Cursor-specific claims are not implementation authority. Verified that this repository already frames persistent agents as planners, denies planner-owned domain operations, and gives leaves no recursive delegation. Later actionable requests about model choice, context affinity, skills and Git branches remain owned by their respective tasks. See progress file. Task 14 is current.
 
 ## Task 11
 
 Primary read: **lines 1226–1416** (USER 1226–1232; AI MODEL 1233–1416).
 Bounded primary windows: 1226–1400, 1401–1416.
 Later amendment/dependency pairs: 1417–1575 (task 12); 1576–1754 (task 13); 1755–1970 (task 14); 1971–2173 (task 15); 2174–2355 (task 16); 2356–2591 (task 17); 2592–2772 (task 18); 3068–3284 (task 21); 3514–3753 (task 23); 3754–3942 (task 24); 4269–4441 (task 27)
-Status: **PARTIALLY IMPLEMENTED — cost tiers are now visible in the model picker; exact cost comparisons and worker routing await validated dynamic model inventory.** The pricing/model examples in this exchange are unverified and absent from the current allowed catalog. The picker now labels relative cost tier and evidence basis and warns that actual charge depends on usage. Existing settlement and delegated-effort ceilings remain. Task 12 explicitly changes worker model choice and UI scope; task 17 owns verified model inventory/pricing. See progress file. Task 12 is current; revisit model-specific cost comparisons after task 17.
+Status: **PARTIALLY IMPLEMENTED — cost tiers are now visible in the model picker; exact cost comparisons and worker routing await validated dynamic model inventory.** The pricing/model examples in this exchange are unverified and absent from the current allowed catalog. The picker now labels relative cost tier and evidence basis and warns that actual charge depends on usage. Existing settlement and delegated-effort ceilings remain. Task 12 explicitly changes worker model choice and UI scope; task 17 owns verified model inventory/pricing. See progress file. Task 14 is current; revisit model-specific cost comparisons after task 17.
 
 ## Task 12
 
 Primary read: **lines 1417–1575** (USER 1417–1426; AI MODEL 1427–1575).
 Bounded primary windows: 1417–1575.
 Later amendment/dependency pairs: 1576–1754 (task 13); 1755–1970 (task 14); 1971–2173 (task 15); 2174–2355 (task 16); 2356–2591 (task 17); 2592–2772 (task 18); 3068–3284 (task 21); 3514–3753 (task 23); 3754–3942 (task 24); 4269–4441 (task 27)
-Status: **PARTIALLY IMPLEMENTED — planner-only selection and context-aware leaf selection are wired; model failover candidates await task 17's verified inventory.** The planner UI is now labeled accordingly; task model IDs are ignored; shared tasks use the planner model within the effort ceiling, isolated cloud tasks use the known working model, and local/private/BYOK routes cannot fall back to cloud. Added unit/integration coverage. The suggested external fallback model IDs and 38ms routing claims are unverified. Task 17 owns live inventory and candidate availability. See progress file. Task 13 is current; revisit task 12 after task 17.
+Status: **PARTIALLY IMPLEMENTED — planner-only selection and context-aware leaf selection are wired; model failover candidates await task 17's verified inventory.** The planner UI is now labeled accordingly; task model IDs are ignored; shared tasks use the planner model within the effort ceiling, isolated cloud tasks use the known working model, and local/private/BYOK routes cannot fall back to cloud. Added unit/integration coverage. The suggested external fallback model IDs and 38ms routing claims are unverified. Task 17 owns live inventory and candidate availability. See progress file. Task 14 is current; revisit task 12 after task 17.
 
 ## Task 13
 
 Primary read: **lines 1576–1754** (USER 1576–1578; AI MODEL 1579–1754).
-Bounded primary windows: 1576–1750, 1751–1754.
+Bounded primary windows: 1576–1725, 1726–1754.
 Later amendment/dependency pairs: 1755–1970 (task 14); 1971–2173 (task 15); 2174–2355 (task 16); 2356–2591 (task 17); 2592–2772 (task 18); 3514–3753 (task 23); 3754–3942 (task 24); 4140–4268 (task 26); 4269–4441 (task 27)
-Status: **IN PROGRESS**. Task 12 established automated worker selection while preserving local/private routes. Assess task 13's on-prem/BYOK-specific reasoning-effort and dual-model controls next; its earlier look-ahead is not task-13 completion evidence.
+Status: **PARTIALLY IMPLEMENTED — existing effort controls remain truthful, but distinct local/BYOK planner/worker selection awaits verified per-machine/provider model inventory.** Local model requests pass through the named-machine tunnel; only catalogued reasoning capabilities receive native parameters. The user-requested dual selectors cannot safely list available models until task 17 inventory is built. Docs for Ollama/vLLM/OpenRouter were proxy-blocked (403); model-specific `skip_thinking`, temperature and reasoning fields remain unclaimed. See progress file. Task 14 is current; revisit task 13 after task 17.
 
 ## Task 14
 
 Primary read: **lines 1755–1970** (USER 1755–1757; AI MODEL 1758–1970).
 Bounded primary windows: 1755–1929, 1930–1970.
 Later amendment/dependency pairs: 2174–2355 (task 16); 2356–2591 (task 17); 2592–2772 (task 18); 3068–3284 (task 21); 3285–3513 (task 22); 3514–3753 (task 23); 3754–3942 (task 24); 4269–4441 (task 27)
-Status: **UNASSESSED**. Evidence and exact next action belong in the progress file.
+Status: **IN PROGRESS**. Task 13's local/BYOK model-choice UI depends on verified inventory in task 17. Assess task 14's request to consolidate independent preflight classifications; do not adopt its model-generated Clef latency or API claims without evidence.
 
 ## Task 15
 
