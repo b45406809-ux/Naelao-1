@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { modelForDelegationDepth, preferredLanguageContext } from "./reasoner.js";
+import { describe, expect, it, vi } from "vitest";
+import { GatewayReasoner, modelForDelegationDepth, preferredLanguageContext } from "./reasoner.js";
 
 describe("delegation-depth model tiering", () => {
   it("physically clamps depth 3 to the free edge model", () => {
@@ -18,5 +18,26 @@ describe("saved language preference context", () => {
 
   it("omits a preference when unset", () => {
     expect(preferredLanguageContext()).toBeUndefined();
+  });
+});
+
+describe("pre-inference spend admission", () => {
+  const input = { goal: "answer", level: "L2", snapshot: {}, candidates: [], availableOperations: [] } as never;
+  const deps = (reserveInferenceCost: () => Promise<boolean>) => ({
+    apiKey: "", gateway: { accountId: "test", gatewayId: "test" },
+    ctx: { spaceId: "space", agentId: "agent", model: "test-model" }, model: "test-model",
+    reserveInferenceCost,
+  });
+
+  it("does not continue when the project cap rejects the reservation", async () => {
+    const reserveInferenceCost = vi.fn(async () => false);
+    const decision = await new GatewayReasoner(deps(reserveInferenceCost)).decide(input);
+    expect(reserveInferenceCost).toHaveBeenCalledWith(expect.objectContaining({ model: "test-model", maxOutputTokens: 1500 }));
+    expect(decision).toMatchObject({ action: "give_up", reason: "project_spend_capped: no inference was sent" });
+  });
+
+  it("fails closed when reservation status cannot be verified", async () => {
+    const decision = await new GatewayReasoner(deps(async () => { throw new Error("offline"); })).decide(input);
+    expect(decision).toMatchObject({ action: "give_up", reason: "project_spend_reservation_unavailable: no inference was sent" });
   });
 });
