@@ -27,6 +27,7 @@ import type {
 } from "./types.js";
 import { SkillLibrary } from "./skill-library.js";
 import { scriptFind, indexScriptEmbedding, removeScriptEmbedding } from "./script-find.js";
+import { markdownSection, markdownTableOfContents, parseSkillReadOptions, skillLineWindow } from "./skill-markdown.js";
 import { classifyExecutionRouteWithSentry, EXECUTION_ENGINES, runStoredScript } from "./execution-ladder.js";
 import { buildOperationMap, type PrebuiltOp, type PrebuiltScript } from "./prebuilt/index.js";
 import { assertNoReservedViolation } from "./reserved-capabilities.js";
@@ -1058,7 +1059,31 @@ export class ScriptToolSurface {
         if (!name) throw new Error("usage: skill read <name>");
         const stored = await this.library.read(name);
         if (!stored || !this.isSkillVisible(stored.metadata)) throw new Error(`skill_not_available_for_role:${name}`);
-        output = { name, metadata: stored.metadata, code: stored.code ?? "" };
+        const options = parseSkillReadOptions(Array.isArray(params.args) ? params.args.filter((arg): arg is string => typeof arg === "string") : []);
+        const manual = stored.metadata.manual_markdown;
+        const source = manual !== undefined ? "manual_markdown" : stored.code !== undefined ? "typescript_source" : "metadata";
+        const content = manual ?? stored.code ?? `${stored.metadata.name}: ${stored.metadata.description}`;
+        const metadata = { name: stored.metadata.name, description: stored.metadata.description, domain: stored.metadata.domain,
+          role_target: stored.metadata.role_target ?? "WORKER_EXECUTION", parameters: stored.metadata.parameters };
+        if ((options.mode === "toc" || options.mode === "section") && manual === undefined) {
+          throw new Error(`skill_manual_unavailable:${name}: this skill has metadata/source but no manual_markdown; add a manual before using --toc or --section`);
+        }
+        if (options.mode === "toc") {
+          const toc = markdownTableOfContents(manual!);
+          output = { name, source, metadata, headings: toc.text, total_headings: toc.totalHeadings };
+        } else if (options.mode === "section") {
+          const section = markdownSection(manual!, options.section);
+          if (!section.text) throw new Error(section.matches.length
+            ? `skill_section_ambiguous:${section.matches.join(" | ")}`
+            : `skill_section_not_found:${options.section}: use --toc to inspect available headings`);
+          output = { name, source, metadata, requested_section: options.section, content: section.text };
+        } else if (options.mode === "lines") {
+          const window = skillLineWindow(content, options.start, options.end);
+          output = { name, source, metadata, start_line: options.start, end_line: options.end,
+            total_lines: window.totalLines, content: window.text };
+        } else {
+          output = { name, source, metadata, content };
+        }
       } else {
         throw new Error("skill_command_unknown");
       }

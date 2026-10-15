@@ -34,7 +34,8 @@ describe("role-targeted skill discovery", () => {
     } });
     await author.create({ name: "invoice-reconcile", metadata: {
       description: "Reconcile invoice rows and validate payment data", domain: "finance", requires_tier: 1,
-    } });
+      manual_markdown: "# Invoice Reconciliation\n\n## Payment terms\nCheck dates and totals.\n\n## Carveouts\nKeep approved exceptions.\n\n```md\n## Not a real section\n```\n\n## Escalation\nAsk an owner.",
+    }, code: "export async function run() { return 'reconciled'; }" });
 
     const planner = new ScriptToolSurface(env, ["code-exec"], { plannerScope: "project" });
     const worker = new ScriptToolSurface(env, []);
@@ -57,6 +58,18 @@ describe("role-targeted skill discovery", () => {
     await expect(planner.run("Bash", { commands: "skill read invoice-reconcile" })).resolves.toMatchObject({
       ok: false,
       error: expect.stringContaining("skill_not_available_for_role"),
+    });
+    await expect(worker.run("Bash", { commands: "skill read invoice-reconcile --toc" })).resolves.toMatchObject({
+      ok: true,
+      output: { headings: expect.stringContaining("## Payment terms") },
+    });
+    await expect(worker.run("Bash", { commands: 'skill read invoice-reconcile --section "carveouts"' })).resolves.toMatchObject({
+      ok: true,
+      output: { content: expect.stringContaining("Keep approved exceptions.") },
+    });
+    await expect(worker.run("Bash", { commands: "skill read invoice-reconcile --lines 3-4" })).resolves.toMatchObject({
+      ok: true,
+      output: { content: "## Payment terms\nCheck dates and totals." },
     });
     await expect(worker.run("planner-handoff", {})).resolves.toMatchObject({
       ok: false,

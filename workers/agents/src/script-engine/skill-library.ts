@@ -17,6 +17,7 @@
 
 import type { ScriptMetadata, StoredScript, PatchRecord } from "./types.js";
 import { recordRecentOutcome } from "./skill-health.js";
+import { MAX_SKILL_MANUAL_CHARS } from "./skill-markdown.js";
 
 /** Derive stability_score in [0,1] from health counters (spec §4 "Health"). */
 export function computeStabilityScore(m: Pick<ScriptMetadata, "success_count" | "failure_count" | "patch_history">): number {
@@ -115,6 +116,9 @@ export class SkillLibrary {
     if (input.metadata.role_target !== undefined && !["PLANNER_ORCHESTRATION", "WORKER_EXECUTION"].includes(input.metadata.role_target)) {
       throw new Error("invalid_skill_role_target");
     }
+    if (input.metadata.manual_markdown !== undefined && (typeof input.metadata.manual_markdown !== "string" || input.metadata.manual_markdown.length > MAX_SKILL_MANUAL_CHARS || input.metadata.manual_markdown.includes("\u0000"))) {
+      throw new Error("invalid_skill_manual_markdown");
+    }
     if (await this.exists(input.name)) {
       throw new Error(`Script already exists: ${input.name}`);
     }
@@ -125,6 +129,7 @@ export class SkillLibrary {
       domain: input.metadata.domain,
       description: input.metadata.description,
       role_target: input.metadata.role_target ?? "WORKER_EXECUTION",
+      ...(input.metadata.manual_markdown !== undefined ? { manual_markdown: input.metadata.manual_markdown } : {}),
       ...(input.metadata.embedding_vector !== undefined
         ? { embedding_vector: input.metadata.embedding_vector }
         : {}),
@@ -178,6 +183,9 @@ export class SkillLibrary {
     const prev = current.metadata;
     if (patch.metadata?.role_target !== undefined && !["PLANNER_ORCHESTRATION", "WORKER_EXECUTION"].includes(patch.metadata.role_target)) {
       throw new Error("invalid_skill_role_target");
+    }
+    if (patch.metadata?.manual_markdown !== undefined && (typeof patch.metadata.manual_markdown !== "string" || patch.metadata.manual_markdown.length > MAX_SKILL_MANUAL_CHARS || patch.metadata.manual_markdown.includes("\u0000"))) {
+      throw new Error("invalid_skill_manual_markdown");
     }
     const now = Date.now();
     const nextVersion = prev.version + 1;

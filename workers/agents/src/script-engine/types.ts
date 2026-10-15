@@ -113,6 +113,9 @@ export interface ScriptMetadata {
   /** Context-disclosure class for role-scoped skill discovery. This is metadata only: it never
    * grants tools or runtime authority. Missing legacy values default to WORKER_EXECUTION. */
   role_target?: "PLANNER_ORCHESTRATION" | "WORKER_EXECUTION";
+  /** Optional human/FDE-authored Markdown manual. Kept separate from executable code so
+   * progressive TOC/section reads never pretend TypeScript comments are an SOP. */
+  manual_markdown?: string;
   /** Embedding of description + code summary (for script.find ANN search). */
   embedding_vector?: number[];
   tags: string[];
