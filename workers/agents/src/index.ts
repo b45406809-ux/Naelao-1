@@ -3537,8 +3537,9 @@ app.post("/spaces/:spaceId/llm-byok/models/activate", async (c) => {
   const spaceId = c.req.param("spaceId");
   const role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
   if (!userId || (role !== "owner" && role !== "admin")) throw forbidden("Only a Space owner or admin may activate a model");
-  const body = await c.req.json<{ model?: string }>().catch((): { model?: string } => ({}));
+  const body = await c.req.json<{ model?: string; preflight_confirmed?: boolean }>().catch((): { model?: string; preflight_confirmed?: boolean } => ({}));
   if (!body.model || !body.model.startsWith("openrouter/")) return c.json({ error_code: "bad_request", message: "model must be an OpenRouter catalog model" }, 400);
+  if (body.preflight_confirmed !== true) return c.json({ error_code: "explicit_confirmation_required", message: "Confirm the provider may charge the selected Space key for a fixed one-token model access check" }, 400);
   const space = await c.env.PLATFORM_DB.prepare("SELECT config_json, status FROM spaces WHERE id = ? AND tenant_id = ?")
     .bind(spaceId, tenantId).first<{ config_json: string | null; status: string }>();
   if (!space || space.status !== "active") throw notFound("Space");
@@ -3572,7 +3573,7 @@ app.post("/spaces/:spaceId/llm-byok/models/activate", async (c) => {
     ?? openRouterKeys.find(row => row.name === legacyByokCredentialName(NEW_BYOK_PROVIDER))
     ?? openRouterKeys[0];
   const apiKey = selectedKey ? await resolveConnectorCredential(c.env, tenantId, spaceId, selectedKey.name) : null;
-  if (!apiKey) return c.json({ error_code: "credential_unavailable", message: "The selected Space OpenRouter key is unavailable; no fallback key was used" }, 503);
+  if (!selectedKey || !apiKey) return c.json({ error_code: "credential_unavailable", message: "The selected Space OpenRouter key is unavailable; no fallback key was used" }, 503);
   const entitlement = await runOpenRouterEntitlementPreflight({ apiKey, modelId: candidate.id });
   if (!entitlement.ok) {
     const status = entitlement.reason === "provider_rejected" ? 409 : 503;
@@ -3599,6 +3600,7 @@ app.post("/spaces/:spaceId/llm-byok/models/activate", async (c) => {
       declaredTools: true,
       providerEntitlement: "verified_by_owner_requested_preflight",
       entitlementVerifiedAt: selectedAt,
+      entitlementKeyId: selectedKey.id,
     },
   } };
   await c.env.PLATFORM_DB.prepare("UPDATE spaces SET config_json = ?, updated_at = ? WHERE id = ? AND tenant_id = ?")

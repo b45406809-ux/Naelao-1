@@ -1151,7 +1151,7 @@ export async function getOpenRouterModels(spaceId: string, session: SessionCrede
  * before changing the active model. */
 export async function activateOpenRouterModel(spaceId: string, session: SessionCredentials, model: string): Promise<{ model: string; activated: boolean }> {
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/llm-byok/models/activate`, {
-    method: "POST", session, body: JSON.stringify({ model }),
+    method: "POST", session, body: JSON.stringify({ model, preflight_confirmed: true }),
   });
 }
 
