@@ -1,7 +1,7 @@
 # Remaining gaps implementation plan
 
 Branch: `Mcbt5s-Backup-2`  
-Status: implementation in progress; workstreams 1 and 2 are locally verified.
+Status: implementation in progress; workstreams 1–3 are locally verified, workstream 4 is partial, and workstream 5 is in progress.
 Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, reconciled against the current repository. Existing Foundry channel invocation, glossary, translation draft, model recommendations, owner voice, task-scoped email replies, and browser Web Push are present locally. Do not reopen them as missing features; their live/deployment checks remain open.
 
 ## Working rules
@@ -63,7 +63,7 @@ Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, recon
 
 ### 5. LoRA consent, evaluation, and lifecycle
 
-**Status:** private Space-owned adapter manifests and Workers AI payload routing exist. No complete consented training/evaluation/deletion workflow is implemented.
+**Status:** locally implemented and verified for imported adapters, consent/provenance, owner-recorded evaluation, approval, rollback, revocation, and deletion. Provider training remains disabled and live adapter compatibility is unverified.
 
 1. Verify current official Workers AI fine-tuning/adapter support and the exact compatible base-model/adapter contract. Do not assume that accepting an adapter identifier proves compatibility or availability.
 2. Model an explicit lifecycle: draft, consent/data eligibility check, training or external import, evaluation, owner approval, active, revoked, and deleted. Record Space, base model, provider evidence, data provenance, purpose, evaluator, and timestamps.
@@ -89,7 +89,7 @@ Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, recon
 
 Run only after code and local integration checks are complete. No secret belongs in this file or Git.
 
-- Apply deployed D1 migrations 0093 through 0097 in order and verify replay-safe schema state; verify SpaceDO migration v71 and Agents DO migration v13 after deployment.
+- Apply deployed D1 migrations 0093 through 0097 in order and verify replay-safe schema state; verify SpaceDO migration v72 and Agents DO migration v13 after deployment.
 - Configure an owned Cloudflare Email Routing ingress domain and verified sending domain, then test inbound task replies and outbound delivery.
 - Configure Web Push VAPID public/private/subject values on Notifications Worker environments; test subscription, delivery, unsubscribe, and expired endpoint cleanup.
 - Configure any selected voice/model/LoRA provider bindings only after the corresponding implementation gates pass; validate Twilio credentials, verify/import a controlled number, test signed call/consent/status callbacks, and verify spend caps and release cleanup.

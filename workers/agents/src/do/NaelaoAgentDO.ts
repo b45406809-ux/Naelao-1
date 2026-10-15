@@ -4635,8 +4635,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       } : {}),
       resolveCustomModel: async (modelId: string) => {
         const response = await this.env.SPACES_WORKER.fetch(new Request(
-          `http://spaces-worker/custom-models/${encodeURIComponent(modelId)}?space_id=${encodeURIComponent(spaceId)}`,
-          { headers: { "x-naelao-tenant-id": tenantId } }
+          `http://spaces-worker/internal/spaces/${encodeURIComponent(spaceId)}/custom-models/${encodeURIComponent(modelId)}`,
+          { headers: await this.internalHeaders(tenantId) }
         ));
         return response.ok ? response.json<{ baseModel: string; loraAdapterId: string }>() : null;
       },

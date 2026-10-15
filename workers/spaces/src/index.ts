@@ -27,7 +27,7 @@ import { runStateDeltaFixture, validateStateDeltaSuite, type StateDeltaSuite, ty
 import type { WorkerLoaderBinding } from "../../agents/src/script-engine/code-runner.js";
 import { registerGraduationRoutes } from "./routes/graduation.js";
 import { registerMarketRadarRoutes } from "./routes/market-radar.js";
-import { applyDurableObjectJurisdiction, certifyArtifact, evaluateBlueprintSecurity, sanitizeAndScrubBlueprint, verifyArtifactCertificate, type ConformanceSuite, type ConformanceCertificate } from "@naelao/security";
+import { airGappedOnlyFromConfig, applyDurableObjectJurisdiction, certifyArtifact, evaluateBlueprintSecurity, sanitizeAndScrubBlueprint, verifyArtifactCertificate, type ConformanceSuite, type ConformanceCertificate } from "@naelao/security";
 import { validateExtensionManifest, type SpaceBlueprint } from "@naelao/agent-sdk";
 
 export { SpaceDO } from "./do/SpaceDO.js";
@@ -1098,25 +1098,70 @@ app.post("/internal/spaces/:spaceId/domain-glossary/lookup", async (c) => {
   }));
 });
 
+async function canManageCustomModel(c: { req: { header(name: string): string | undefined }; env: Env }, spaceId: string): Promise<boolean> {
+  const role = c.req.header("x-naelao-role") ?? "";
+  if (role === "owner" || role === "admin") return true;
+  if (role !== "product_end_user") return false;
+  const userId = c.req.header("x-naelao-user-id") ?? "";
+  if (!userId) return false;
+  const membership = await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, userId);
+  return membership === "owner" || membership === "admin";
+}
+async function spaceModelInternalHeaders(secret: string, tenantId: string, extra?: HeadersInit): Promise<Headers> {
+  const headers = new Headers(extra);
+  headers.set("x-naelao-tenant-id", tenantId);
+  headers.set("x-naelao-internal-token", await mintInternalToken(secret, tenantId));
+  return headers;
+}
+
 app.get("/custom-models/:modelId", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   const spaceId = c.req.query("space_id") ?? "";
   if (!tenantId || !spaceId) return c.json({ error_code: "bad_request", message: "tenant and space_id are required" }, 400);
+  if (!await canManageCustomModel(c, spaceId)) return c.json({ error_code: "forbidden", message: "Owner or admin role required" }, 403);
   const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ?").bind(spaceId, tenantId).first();
   if (!owned) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
-  return stub.fetch(new Request(`http://space/custom-models/${encodeURIComponent(c.req.param("modelId"))}?space_id=${encodeURIComponent(spaceId)}`));
+  return stub.fetch(new Request(`http://space/custom-models/${encodeURIComponent(c.req.param("modelId"))}/lifecycle?space_id=${encodeURIComponent(spaceId)}`, {
+    headers: await spaceModelInternalHeaders(c.env.PLATFORM_SECRET, tenantId),
+  }));
 });
 app.put("/custom-models/:modelId", async (c) => {
+  return c.json({ error_code: "lifecycle_required", message: "Import adapters through /spaces/:spaceId/custom-models/:modelId/lifecycle after recording data consent and provenance" }, 410);
+});
+app.use("/internal/spaces/:spaceId/custom-models/:modelId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.get("/internal/spaces/:spaceId/custom-models/:modelId", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
-  const spaceId = c.req.query("space_id") ?? "";
-  const role = c.req.header("x-naelao-role") ?? "";
-  if (role !== "owner" && role !== "admin") return c.json({ error_code: "forbidden", message: "Owner or admin role required" }, 403);
+  const spaceId = c.req.param("spaceId");
   const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ?").bind(spaceId, tenantId).first();
   if (!owned) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   return stub.fetch(new Request(`http://space/custom-models/${encodeURIComponent(c.req.param("modelId"))}?space_id=${encodeURIComponent(spaceId)}`, {
-    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(await c.req.json()),
+    headers: await spaceModelInternalHeaders(c.env.PLATFORM_SECRET, tenantId),
+  }));
+});
+app.get("/spaces/:spaceId/custom-models/:modelId/lifecycle", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const spaceId = c.req.param("spaceId");
+  if (!await canManageCustomModel(c, spaceId)) return c.json({ error_code: "forbidden", message: "Owner or admin role required" }, 403);
+  const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'").bind(spaceId, tenantId).first();
+  if (!owned) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  return stub.fetch(new Request(`http://space/custom-models/${encodeURIComponent(c.req.param("modelId"))}/lifecycle?space_id=${encodeURIComponent(spaceId)}`));
+});
+app.post("/spaces/:spaceId/custom-models/:modelId/lifecycle", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const spaceId = c.req.param("spaceId");
+  const actorId = c.req.header("x-naelao-user-id") ?? "";
+  if (!await canManageCustomModel(c, spaceId)) return c.json({ error_code: "forbidden", message: "Owner or admin role required" }, 403);
+  const space = await c.env.PLATFORM_DB.prepare("SELECT config_json FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'").bind(spaceId, tenantId).first<{ config_json: string | null }>();
+  if (!space) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  const body: Record<string, unknown> = await c.req.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+  const cloudAdapterAction = ["import_adapter", "approve_activation", "submit_training"].includes(String(body["action"]));
+  if (cloudAdapterAction && airGappedOnlyFromConfig(space.config_json)) return c.json({ error_code: "compliance_violation", message: "Cloud Workers AI adapters are blocked by this Space's air-gap policy" }, 403);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  return stub.fetch(new Request(`http://space/custom-models/${encodeURIComponent(c.req.param("modelId"))}/lifecycle?space_id=${encodeURIComponent(spaceId)}`, {
+    method: "POST", headers: await spaceModelInternalHeaders(c.env.PLATFORM_SECRET, tenantId, { "content-type": "application/json" }), body: JSON.stringify({ ...body, actorId }),
   }));
 });
 
@@ -2910,8 +2955,20 @@ app.patch("/spaces/:spaceId/model-config", async (c) => {
   if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
 
   const body = await c.req.json<{ model?: string; effort?: string }>().catch(() => ({}) as { model?: string; effort?: string });
-  if (!body.model || !isAllowedModel(body.model)) {
+  const isCustomModel = Boolean(body.model?.startsWith("custom/"));
+  if (!body.model || (!isCustomModel && !isAllowedModel(body.model))) {
     return c.json({ error_code: "bad_request", message: `model must be one of ${ALLOWED_MODELS.join(", ")}` }, 400);
+  }
+  if (isCustomModel) {
+    if (airGappedOnlyFromConfig(owned.configJson)) return c.json({ error_code: "compliance_violation", message: "Air-gapped spaces cannot select Workers AI adapters" }, 403);
+    const stub = await spaceDoStub(c.env, spaceId, owned.tenantId);
+    const lifecycleResponse = await stub.fetch(new Request(`http://space/custom-models/${encodeURIComponent(body.model!)}/lifecycle?space_id=${encodeURIComponent(spaceId)}`, {
+      headers: await spaceModelInternalHeaders(c.env.PLATFORM_SECRET, owned.tenantId),
+    }));
+    if (!lifecycleResponse.ok) return c.json({ error_code: "adapter_lifecycle_unavailable" }, 503);
+    const lifecycle = await lifecycleResponse.json<{ status?: string }>();
+    if (lifecycle.status !== "active") return c.json({ error_code: "adapter_not_active", message: "Complete consent, import, evaluation, and owner approval before selecting this adapter" }, 409);
+    if (body.effort) return c.json({ error_code: "unsupported_effort", message: "Private adapters do not declare a verified reasoning-effort contract" }, 400);
   }
   if (body.effort && !isValidEffortLevel(body.model, body.effort)) {
     return c.json({ error_code: "bad_request", message: `effort '${body.effort}' is not offered by model '${body.model}'` }, 400);

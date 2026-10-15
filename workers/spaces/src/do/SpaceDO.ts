@@ -22,7 +22,7 @@ import type {
   TriggerCondition,
   TriggerRule,
 } from "@naelao/events";
-import { broadcastSpaceEvent, mintInternalToken } from "@naelao/http";
+import { broadcastSpaceEvent, mintInternalToken, verifyInternalToken } from "@naelao/http";
 import type { MessageRole } from "@naelao/types";
 import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
 import { instantiateBlueprint as compileBlueprint } from "@naelao/agent-sdk";
@@ -33,6 +33,8 @@ import { consumeEphemeralActionGrant, issueCapabilityToken, mintEphemeralActionG
 import { signActionReceipt, verifyActionReceiptChain, type ActionReceipt, type ActionReceiptDraft } from "@naelao/tracing";
 import { MACHINE_NAME, assertMachineIdentity, validateMachinePublicKey, validateMachineHardware, validateMachineGrants, verifyMachineProof, tunnelHash, type NamedMachine, type MachineHardware, type MachineGrant, type MachineProof } from "@naelao/agent-sdk";
 import { matchGlossaryTerms, normalizeGlossaryTerm, validateGlossaryEntry, type DomainGlossaryEntry } from "../domain-glossary.js";
+import { isAllowedModel } from "@naelao/billing-core";
+import { evaluationPasses, transitionCustomModelLifecycle, validateAdapterEvaluation, validateConsentAttestation, type CustomModelLifecycleAction } from "./custom-model-lifecycle.js";
 
 function todaySpendKey(): string {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
@@ -1816,6 +1818,36 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE voice_call_sessions ADD COLUMN number_binding_id TEXT;
     `,
   },
+  {
+    version: 72,
+    description: "Space-scoped consented private adapter lifecycle and evaluation evidence",
+    up: `
+      CREATE TABLE custom_model_lifecycle (
+        space_id TEXT NOT NULL, model_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('draft','consented','imported','evaluated','evaluation_failed','active','revoked','deleted')),
+        provenance TEXT NOT NULL DEFAULT '', purpose TEXT NOT NULL DEFAULT '', lawful_basis TEXT NOT NULL DEFAULT 'other',
+        consent_actor TEXT, consented_at TEXT, consent_facts_json TEXT NOT NULL DEFAULT '{}',
+        provider_evidence TEXT NOT NULL DEFAULT 'unverified', imported_at TEXT,
+        evaluation_test_set TEXT, evaluation_sample_count INTEGER, evaluation_score REAL,
+        evaluation_threshold REAL, evaluation_baseline REAL, evaluation_passed INTEGER NOT NULL DEFAULT 0,
+        evaluator_id TEXT, evaluated_at TEXT, previous_active_model_id TEXT,
+        approved_by TEXT, approved_at TEXT, revoked_at TEXT, deleted_at TEXT,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        PRIMARY KEY(space_id, model_id)
+      );
+      CREATE INDEX idx_custom_model_lifecycle_status ON custom_model_lifecycle(space_id, status, updated_at);
+      CREATE TABLE custom_model_lifecycle_events (
+        id TEXT PRIMARY KEY, space_id TEXT NOT NULL, model_id TEXT NOT NULL,
+        action TEXT NOT NULL, actor_id TEXT NOT NULL, details_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL
+      );
+      INSERT INTO custom_model_lifecycle (
+        space_id, model_id, status, provenance, purpose, lawful_basis, consent_facts_json,
+        provider_evidence, evaluation_passed, created_at, updated_at
+      ) SELECT space_id, model_id, 'active', 'Legacy owner-configured adapter; provenance was not captured before lifecycle tracking.',
+        'Existing Space model configuration', 'other', '{"legacy_unverified":true}', 'legacy_unverified', 0, created_at, datetime('now')
+        FROM custom_model_manifests;
+    `,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -2846,26 +2878,30 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && url.pathname === "/intent-deduplicate") {
         return this.checkActiveIntentDeduplication(request);
       }
+      const lifecycleMatch = url.pathname.match(/^\/custom-models\/(custom%2F|custom\/)([^/]+)\/lifecycle$/i);
+      if (lifecycleMatch) {
+        const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+        if (!tenantId || !(await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))) return Response.json({ error_code: "forbidden" }, { status: 403 });
+        const modelId = `custom/${decodeURIComponent(lifecycleMatch[2] ?? "")}`;
+        const spaceId = url.searchParams.get("space_id") ?? "";
+        return this.handleCustomModelLifecycle(spaceId, modelId, request);
+      }
       const customModelMatch = url.pathname.match(/^\/custom-models\/(custom%2F|custom\/)([^/]+)$/i);
       if (customModelMatch) {
+        const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+        if (!tenantId || !(await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))) return Response.json({ error_code: "forbidden" }, { status: 403 });
         const modelId = `custom/${decodeURIComponent(customModelMatch[2] ?? "")}`;
         const spaceId = url.searchParams.get("space_id") ?? "";
         if (method === "GET") {
           const manifest = queryOne<{ base_model: string; lora_adapter_id: string }>(this.ctx.storage.sql as never,
-            "SELECT base_model, lora_adapter_id FROM custom_model_manifests WHERE space_id = ? AND model_id = ?", spaceId, modelId);
+            `SELECT m.base_model, m.lora_adapter_id FROM custom_model_manifests m
+             JOIN custom_model_lifecycle l ON l.space_id=m.space_id AND l.model_id=m.model_id
+             WHERE m.space_id = ? AND m.model_id = ? AND l.status='active'`, spaceId, modelId);
           return manifest
             ? Response.json({ modelId, baseModel: manifest.base_model, loraAdapterId: manifest.lora_adapter_id })
             : Response.json({ error_code: "not_found", message: "Custom model manifest not found" }, { status: 404 });
         }
-        if (method === "PUT") {
-          const body = await request.json<{ baseModel?: string; loraAdapterId?: string }>().catch((): { baseModel?: string; loraAdapterId?: string } => ({}));
-          if (!spaceId || !body.baseModel || !body.loraAdapterId) return Response.json({ error_code: "bad_request", message: "space_id, baseModel and loraAdapterId are required" }, { status: 400 });
-          execute(this.ctx.storage.sql as never,
-            `INSERT INTO custom_model_manifests (model_id, space_id, base_model, lora_adapter_id) VALUES (?, ?, ?, ?)
-             ON CONFLICT(space_id, model_id) DO UPDATE SET base_model=excluded.base_model, lora_adapter_id=excluded.lora_adapter_id`,
-            modelId, spaceId, body.baseModel, body.loraAdapterId);
-          return Response.json({ modelId, baseModel: body.baseModel, loraAdapterId: body.loraAdapterId });
-        }
+        if (method === "PUT") return Response.json({ error_code: "lifecycle_required", message: "Use consent, import, evaluate, and owner approval lifecycle actions" }, { status: 409 });
       }
       if (method === "POST" && url.pathname === "/rfcs") {
         return this.triggerSponsorRfc(request);
@@ -2930,6 +2966,125 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         { status: 500 }
       );
     }
+  }
+
+  private async handleCustomModelLifecycle(spaceId: string, modelId: string, request: Request): Promise<Response> {
+    if (!spaceId || !/^custom\/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/.test(modelId)) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    if (request.method === "GET") {
+      const row = queryOne<Record<string, unknown>>(this.ctx.storage.sql as never,
+        "SELECT * FROM custom_model_lifecycle WHERE space_id = ? AND model_id = ?", spaceId, modelId);
+      return Response.json(row ?? { space_id: spaceId, model_id: modelId, status: "draft", training_enabled: false, training_reason: "No verified provider training API is configured." });
+    }
+    if (request.method !== "POST") return Response.json({ error_code: "method_not_allowed" }, { status: 405 });
+    const body: Record<string, unknown> = await request.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+    const action = body.action as CustomModelLifecycleAction | undefined;
+    const actorId = typeof body.actorId === "string" ? body.actorId : "";
+    if (!action || !actorId || actorId.length > 128) return Response.json({ error_code: "bad_request", message: "action and verified actor are required" }, { status: 400 });
+    if (action === "submit_training") return Response.json({ error_code: "training_unavailable", message: "Training submission is disabled because no official provider training API/account contract has been verified. Import an existing adapter instead." }, { status: 501 });
+    const current = queryOne<{ status: import("./custom-model-lifecycle.js").CustomModelLifecycleStatus; evaluation_passed: number; previous_active_model_id: string | null }>(
+      this.ctx.storage.sql as never, "SELECT status, evaluation_passed, previous_active_model_id FROM custom_model_lifecycle WHERE space_id = ? AND model_id = ?", spaceId, modelId,
+    ) ?? { status: "draft", evaluation_passed: 0, previous_active_model_id: null };
+    const now = new Date().toISOString();
+    let next = transitionCustomModelLifecycle(current.status, action, current.evaluation_passed === 1);
+    if (action === "attest_consent") {
+      const consent = body.consent && typeof body.consent === "object" ? body.consent as Parameters<typeof validateConsentAttestation>[0] : {};
+      const invalid = validateConsentAttestation(consent);
+      if (invalid) return Response.json({ error_code: invalid }, { status: 400 });
+      next = transitionCustomModelLifecycle(current.status, action);
+      if (!next) return Response.json({ error_code: "invalid_transition", status: current.status }, { status: 409 });
+      const consentJson = JSON.stringify({ affirmativeConsent: true, crossSpaceData: false, secretsExcluded: true, protectedContentExcluded: true, deletionPlanConfirmed: true });
+      this.ctx.storage.transactionSync(() => {
+        execute(this.ctx.storage.sql as never, `INSERT INTO custom_model_lifecycle
+          (space_id,model_id,status,provenance,purpose,lawful_basis,consent_actor,consented_at,consent_facts_json,created_at,updated_at)
+          VALUES (?,?,?, ?,?,?,?,?,?,?,?) ON CONFLICT(space_id,model_id) DO UPDATE SET
+          status=excluded.status,provenance=excluded.provenance,purpose=excluded.purpose,lawful_basis=excluded.lawful_basis,
+          consent_actor=excluded.consent_actor,consented_at=excluded.consented_at,consent_facts_json=excluded.consent_facts_json,updated_at=excluded.updated_at`,
+          spaceId, modelId, next, consent.provenance!.trim(), consent.purpose!.trim(), consent.lawfulBasis!, actorId, now, consentJson, now, now);
+        execute(this.ctx.storage.sql as never, "INSERT INTO custom_model_lifecycle_events (id,space_id,model_id,action,actor_id,details_json,created_at) VALUES (?,?,?,?,?,?,?)",
+          crypto.randomUUID(), spaceId, modelId, action, actorId, JSON.stringify({ lawfulBasis: consent.lawfulBasis }), now);
+      });
+      return Response.json({ modelId, status: next, training_enabled: false });
+    }
+
+    if (action === "import_adapter") {
+      if (current.status !== "consented") return Response.json({ error_code: "consent_required", status: current.status }, { status: 409 });
+      const baseModel = typeof body["baseModel"] === "string" ? body["baseModel"] : "";
+      const adapterId = typeof body["loraAdapterId"] === "string" ? body["loraAdapterId"] : "";
+      const providerEvidence = typeof body["providerEvidence"] === "string" ? body["providerEvidence"].trim() : "";
+      if (!isAllowedModel(baseModel) || !baseModel.startsWith("@cf/")) return Response.json({ error_code: "unsupported_base_model" }, { status: 400 });
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{1,199}$/.test(adapterId)) return Response.json({ error_code: "invalid_adapter_id" }, { status: 400 });
+      if (providerEvidence.length < 8 || providerEvidence.length > 500) return Response.json({ error_code: "provider_evidence_required" }, { status: 400 });
+      next = transitionCustomModelLifecycle(current.status, action);
+      if (!next) return Response.json({ error_code: "invalid_transition", status: current.status }, { status: 409 });
+      this.ctx.storage.transactionSync(() => {
+        execute(this.ctx.storage.sql as never, `INSERT INTO custom_model_manifests (model_id,space_id,base_model,lora_adapter_id,created_at)
+          VALUES (?,?,?,?,?) ON CONFLICT(space_id,model_id) DO UPDATE SET base_model=excluded.base_model,lora_adapter_id=excluded.lora_adapter_id`, modelId, spaceId, baseModel, adapterId, now);
+        execute(this.ctx.storage.sql as never, `UPDATE custom_model_lifecycle SET status=?,provider_evidence=?,imported_at=?,updated_at=? WHERE space_id=? AND model_id=?`, next, `owner_supplied_unverified: ${providerEvidence}`, now, now, spaceId, modelId);
+        execute(this.ctx.storage.sql as never, "INSERT INTO custom_model_lifecycle_events (id,space_id,model_id,action,actor_id,details_json,created_at) VALUES (?,?,?,?,?,?,?)",
+          crypto.randomUUID(), spaceId, modelId, action, actorId, JSON.stringify({ baseModel, adapterIdPresent: true }), now);
+      });
+      return Response.json({ modelId, baseModel, status: next, provider_evidence: "owner_supplied_unverified" });
+    }
+
+    if (action === "record_evaluation") {
+      if (!["imported", "evaluation_failed"].includes(current.status)) return Response.json({ error_code: "adapter_import_required", status: current.status }, { status: 409 });
+      const manifest = queryOne<{ base_model: string }>(this.ctx.storage.sql as never,
+        "SELECT base_model FROM custom_model_manifests WHERE space_id = ? AND model_id = ?", spaceId, modelId);
+      if (!manifest) return Response.json({ error_code: "adapter_import_required" }, { status: 409 });
+      const evaluation = body["evaluation"] && typeof body["evaluation"] === "object" ? body["evaluation"] as Parameters<typeof validateAdapterEvaluation>[0] : {};
+      const invalid = validateAdapterEvaluation(evaluation, manifest.base_model);
+      if (invalid) return Response.json({ error_code: invalid }, { status: 400 });
+      const passed = evaluationPasses(evaluation as import("./custom-model-lifecycle.js").AdapterEvaluation);
+      next = transitionCustomModelLifecycle(current.status, action, passed);
+      if (!next) return Response.json({ error_code: "invalid_transition", status: current.status }, { status: 409 });
+      this.ctx.storage.transactionSync(() => {
+        execute(this.ctx.storage.sql as never, `UPDATE custom_model_lifecycle SET status=?,evaluation_test_set=?,evaluation_sample_count=?,evaluation_score=?,evaluation_threshold=?,evaluation_baseline=?,evaluation_passed=?,evaluator_id=?,evaluated_at=?,updated_at=? WHERE space_id=? AND model_id=?`,
+          next, evaluation.testSetVersion, evaluation.sampleCount, evaluation.score, evaluation.threshold, evaluation.baselineScore ?? null, passed ? 1 : 0, actorId, now, now, spaceId, modelId);
+        execute(this.ctx.storage.sql as never, "INSERT INTO custom_model_lifecycle_events (id,space_id,model_id,action,actor_id,details_json,created_at) VALUES (?,?,?,?,?,?,?)",
+          crypto.randomUUID(), spaceId, modelId, action, actorId, JSON.stringify({ testSetVersion: evaluation.testSetVersion, sampleCount: evaluation.sampleCount, score: evaluation.score, threshold: evaluation.threshold, passed }), now);
+      });
+      return Response.json({ modelId, status: next, evaluation_passed: passed, evaluated_by: actorId });
+    }
+
+    if (action === "approve_activation") {
+      if (current.status !== "evaluated" || current.evaluation_passed !== 1) return Response.json({ error_code: "passing_evaluation_required", status: current.status }, { status: 409 });
+      const previousModels = queryAll<{ model_id: string }>(this.ctx.storage.sql as never,
+        "SELECT model_id FROM custom_model_lifecycle WHERE space_id = ? AND status = 'active' AND model_id != ? ORDER BY updated_at DESC,model_id", spaceId, modelId);
+      const previous = previousModels[0]?.model_id ?? null;
+      next = transitionCustomModelLifecycle(current.status, action, true);
+      this.ctx.storage.transactionSync(() => {
+        for (const oldModel of previousModels) {
+          execute(this.ctx.storage.sql as never, "UPDATE custom_model_lifecycle SET status=CASE WHEN evaluation_passed=1 THEN 'evaluated' ELSE 'revoked' END,updated_at=? WHERE space_id=? AND model_id=?", now, spaceId, oldModel.model_id);
+        }
+        execute(this.ctx.storage.sql as never, "UPDATE custom_model_lifecycle SET status=?,previous_active_model_id=?,approved_by=?,approved_at=?,updated_at=? WHERE space_id=? AND model_id=?", next, previous, actorId, now, now, spaceId, modelId);
+        execute(this.ctx.storage.sql as never, "INSERT INTO custom_model_lifecycle_events (id,space_id,model_id,action,actor_id,details_json,created_at) VALUES (?,?,?,?,?,?,?)",
+          crypto.randomUUID(), spaceId, modelId, action, actorId, JSON.stringify({ previousActiveModelId: previous }), now);
+      });
+      return Response.json({ modelId, status: next, approved_by: actorId, previous_active_model_id: previous });
+    }
+
+    if (action === "rollback" || action === "revoke" || action === "delete") {
+      next = transitionCustomModelLifecycle(current.status, action);
+      if (!next) return Response.json({ error_code: "invalid_transition", status: current.status }, { status: 409 });
+      const previousId = current.previous_active_model_id;
+      this.ctx.storage.transactionSync(() => {
+        if (current.status === "active" && previousId) {
+          execute(this.ctx.storage.sql as never, "UPDATE custom_model_lifecycle SET status='active',updated_at=? WHERE space_id=? AND model_id=? AND status IN ('evaluated','revoked')", now, spaceId, previousId);
+        }
+        if (action === "delete" || action === "revoke") {
+          execute(this.ctx.storage.sql as never, "DELETE FROM custom_model_manifests WHERE space_id=? AND model_id=?", spaceId, modelId);
+        }
+        if (action === "delete") {
+          execute(this.ctx.storage.sql as never, `UPDATE custom_model_lifecycle SET status='deleted',provenance='',purpose='',consent_actor=NULL,consented_at=NULL,consent_facts_json='{}',evaluation_test_set=NULL,evaluation_sample_count=NULL,evaluation_score=NULL,evaluation_threshold=NULL,evaluation_baseline=NULL,evaluation_passed=0,evaluator_id=NULL,evaluated_at=NULL,deleted_at=?,updated_at=? WHERE space_id=? AND model_id=?`, now, now, spaceId, modelId);
+        } else {
+          execute(this.ctx.storage.sql as never, "UPDATE custom_model_lifecycle SET status=?,revoked_at=?,updated_at=? WHERE space_id=? AND model_id=?", next, now, now, spaceId, modelId);
+        }
+        execute(this.ctx.storage.sql as never, "INSERT INTO custom_model_lifecycle_events (id,space_id,model_id,action,actor_id,details_json,created_at) VALUES (?,?,?,?,?,?,?)",
+          crypto.randomUUID(), spaceId, modelId, action, actorId, JSON.stringify({ previousActiveModelId: current.status === "active" ? previousId : null }), now);
+      });
+      return Response.json({ modelId, status: next, rolled_back_to: current.status === "active" ? previousId : null });
+    }
+    return Response.json({ error_code: "unsupported_action" }, { status: 400 });
   }
 
   private async checkArtifactValidation(request: Request): Promise<Response> {
