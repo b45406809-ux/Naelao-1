@@ -61,7 +61,7 @@ import {
   getPreferredEffort,
   storePreferredEffort,
 } from "@/lib/modelPreference";
-import { ALLOWED_MODELS, DEFAULT_WORKING_MODEL, nativeReasoningForEffort, isValidEffortLevel, effortOptionsForModel, type EffortLevel } from "@naelao/billing-core";
+import { ALLOWED_MODELS, DEFAULT_WORKING_MODEL, benchmarkForModel, nativeReasoningForEffort, isValidEffortLevel, effortOptionsForModel, type EffortLevel } from "@naelao/billing-core";
 import { ContextUsageMeter } from "./ContextUsageMeter";
 import { AssistantSidePanelBody, sidePanelTabs, type SidePanelTab } from "./AssistantSidePanels";
 import { SubthreadPanel, SubthreadEntry } from "./SubthreadPanel";
@@ -2303,18 +2303,19 @@ export function Chat({
             )}
             {panelTab === "model" && conversationMode && (
               <div className="workspace-model-settings">
-                <div className="tp-section">Active model</div>
+                <div className="tp-section">Planner model</div>
                 <div className="workspace-active-model">{modelLabel(selectedModel)} <span>· {effortOptionsForModel(selectedModel).find((option) => option.level === selectedEffort)?.label ?? selectedEffort}</span></div>
+                <p className="workspace-tab-empty">This choice sets the lead planner. Leaf workers are selected automatically from task context and the Effort cost ceiling. Cost tiers are relative; actual cost varies with usage.</p>
                 <div className="workspace-model-filters">
                   <input type="search" placeholder="Search models…" value={modelSearch} onChange={(event) => setModelSearch(event.target.value)} />
                   <select aria-label="Filter models by provider" value={modelProvider} onChange={(event) => setModelProvider(event.target.value)}><option value="all">All providers</option>{modelProviders.map((provider) => <option key={provider} value={provider}>{provider}</option>)}</select>
                 </div>
                 <div className="workspace-model-grid">
                   {filteredModels.map((model) => (
-                    <button key={model} type="button" className={["workspace-model-card", model === selectedModel ? "active" : ""].filter(Boolean).join(" ")} onClick={() => handleModelChange(model)}><span>{modelLabel(model)}</span><small>{providerForModel(model)}</small>{model === selectedModel && <b>Selected</b>}</button>
+                    <button key={model} type="button" className={["workspace-model-card", model === selectedModel ? "active" : ""].filter(Boolean).join(" ")} title={benchmarkForModel(model) ? `${benchmarkForModel(model)!.costTier} relative cost (${benchmarkForModel(model)!.costBasis}): ${benchmarkForModel(model)!.costNote}` : undefined} onClick={() => handleModelChange(model)}><span>{modelLabel(model)}</span><small>{providerForModel(model)} · {benchmarkForModel(model)?.costTier ?? "standard"} ({benchmarkForModel(model)?.costBasis ?? "estimated"})</small>{model === selectedModel && <b>Selected</b>}</button>
                   ))}
                 </div>
-                <div className="tp-section">Effort</div>
+                <div className="tp-section">Planner effort and worker cost ceiling</div>
                 {effortOptionsForModel(selectedModel).map((option) => (
                   <button key={option.level} type="button" className={['tp-thread-link', option.level === selectedEffort ? 'active' : ''].filter(Boolean).join(' ')} onClick={() => handleEffortChange(option.level)}>{option.level.toUpperCase()}{option.level === selectedEffort ? " ✓" : ""}</button>
                 ))}

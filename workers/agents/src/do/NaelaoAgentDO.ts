@@ -92,6 +92,7 @@ import { claimFoundryChannelEvent, parseFoundryChannelCommand, releaseFoundryCha
 import { persistCustomerConversation } from "../telemetry/customer-telemetry.js";
 import { handleDaemonMcp, treeSitterDaemonTarget } from "../script-engine/daemons/daemon-mcp.js";
 import { TreeSitterIndexer } from "../script-engine/daemons/tree-sitter-indexer.js";
+import { resolveWorkerModel } from "../script-engine/worker-model-routing.js";
 import { DurableDaemon } from "../script-engine/daemons/durable-daemon.js";
 import { validateModelForSpacePolicy } from "../model-policy.js";
 import type { SpaceModelPolicy } from "@naelao/agent-sdk";
@@ -3021,7 +3022,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             launch: async (task, workerId) => {
               const receipt = await hooks.spawnSubAgent!({ tasks: [{
                 sub_agent_id: workerId, file_paths: task.file_paths, goal: `<isolated_subtask>\n${task.subtask_spec}\n</isolated_subtask>\n<file_boundary>${task.file_paths.join(", ")}</file_boundary>`,
-                role: task.assigned_role, ...(task.agent_id ? { agent_id: task.agent_id } : {}), ...(task.planner ? { planner: true } : {}), ...(task.model ? { model: task.model } : {}), budget_tokens: task.budget_tokens,
+                role: task.assigned_role, ...(task.agent_id ? { agent_id: task.agent_id } : {}), ...(task.planner ? { planner: true } : {}), context_affinity: task.context_affinity, budget_tokens: task.budget_tokens,
               }] }) as unknown as { results?: Array<{ id: string; ok: boolean; output?: unknown; error?: string }> };
               const result = receipt.results?.[0];
               if (!result) throw new Error("goal worker acknowledgement unavailable");
@@ -3313,13 +3314,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           this.ctx.storage.sql.exec(`UPDATE sub_agents SET status='failed', error=?, updated_at=? WHERE id=?`, "missing goal", Date.now(), subId);
           return { id: subId, ok: false, error: "missing goal" };
         }
-        // Effort ceiling enforcement: a task can name a specific model (t["model"]) — resolve it
-        // against the parent's own Effort setting before ever dispatching. A request that exceeds
-        // the ceiling is NOT run as asked; it's clamped to the best model still within budget and
-        // the clamp is reported back on the task's own result (never silently run over-budget,
-        // never silently swallowed either).
-        const requestedModel = typeof t["model"] === "string" ? t["model"] : undefined;
-        const modelResolution = resolveEscalationModel(currentModel ?? DEFAULT_WORKING_MODEL, effortLevel, { preferModel: requestedModel });
+        // The planner chooses its own model. Leaf models come from runtime context/cost policy;
+        // a model id in planner-authored task data is intentionally ignored. Local/private and
+        // Space-BYOK routes remain in place so the worker cannot escape their placement policy.
+        const contextAffinity = t["context_affinity"] === "isolated" ? "isolated" : "shared";
+        const plannerModel = currentModel ?? DEFAULT_WORKING_MODEL;
+        const privateRoute = runtimeEnv?.airGappedOnly === true || Boolean(runtimeEnv?.localModelMachine) || byokProviderForModel(plannerModel) !== null;
+        const modelResolution = t["planner"] === true
+          ? resolveWorkerModel({ plannerModel, contextAffinity: "shared", effort: effortLevel, privateRoute })
+          : resolveWorkerModel({ plannerModel, contextAffinity, effort: effortLevel, privateRoute });
         let leafSlotKey: string | undefined;
         try {
           if (!userId || !runtimeEnv) throw new Error("delegation_authorized_parent_required");

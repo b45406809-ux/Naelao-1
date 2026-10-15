@@ -70,7 +70,7 @@ export function ModelSelector({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        title="Model and reasoning effort"
+        title="Planner model and reasoning effort"
         style={{
           display: "inline-flex", alignItems: "center", gap: 6, height: 28, padding: "0 10px",
           borderRadius: 999, border: "1px solid var(--border)", background: "transparent",

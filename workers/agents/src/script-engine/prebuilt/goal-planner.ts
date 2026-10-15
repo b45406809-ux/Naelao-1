@@ -6,7 +6,7 @@ export interface GoalTask {
   title: string;
   subtask_spec: string;
   assigned_role: UniversalAgentRole;
-  model?: string;
+  context_affinity?: "shared" | "isolated";
   agent_id?: string;
   planner?: boolean;
   file_paths: string[];
@@ -41,14 +41,18 @@ function parseTasks(value: unknown): GoalTask[] {
   const tasks = value.map((raw, index) => {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("invalid goal task");
     const task = raw as Record<string, unknown>;
+    const filePaths = Array.isArray(task.file_paths) ? task.file_paths.map(String) : [];
+    const contextAffinity: GoalTask["context_affinity"] = task.context_affinity === "shared" || task.context_affinity === "isolated"
+      ? task.context_affinity
+      : filePaths.length > 0 ? "shared" : "isolated";
     return {
       id: String(task.id ?? `task-${index + 1}`), title: String(task.title ?? ""),
       subtask_spec: String(task.subtask_spec ?? ""),
       assigned_role: String(task.assigned_role ?? "worker") as UniversalAgentRole,
-      ...(typeof task.model === "string" ? { model: task.model } : {}),
+      context_affinity: contextAffinity,
       ...(typeof task.agent_id === "string" ? { agent_id: task.agent_id } : {}),
       ...(task.planner === true ? { planner: true } : {}),
-      file_paths: Array.isArray(task.file_paths) ? task.file_paths.map(String) : [],
+      file_paths: filePaths,
       dependencies: Array.isArray(task.dependencies) ? task.dependencies.map(String) : [],
       budget_tokens: task.budget_tokens === undefined ? 1_800 : task.budget_tokens as number,
     };
@@ -59,7 +63,7 @@ function parseTasks(value: unknown): GoalTask[] {
 export const goalPlanner: PrebuiltScript = {
   name: "goal-planner", domain: "orchestration", requires_tier: 2,
   description: "Persist a frontier-planned task DAG and concurrently dispatch isolated edge workers.",
-  paramHints: { "engine.plan_and_delegate_goal": "objective and tasks required. Each task: id, title, subtask_spec, assigned_role, model?, agent_id? (own configured worker), planner? (depth-2 subplanner), file_paths, dependencies?, budget_tokens<=2000." },
+  paramHints: { "engine.plan_and_delegate_goal": "objective and tasks required. Each task: id, title, subtask_spec, assigned_role, context_affinity? (shared|isolated; inferred from file_paths when omitted), agent_id? (own configured worker), planner? (depth-2 subplanner), file_paths, dependencies?, budget_tokens<=2000. Worker model is selected by runtime policy, never by a task-supplied model id." },
   operations: {
     async "engine.plan_and_delegate_goal"(args, ctx) {
       const objective = String(args.objective ?? "").trim();

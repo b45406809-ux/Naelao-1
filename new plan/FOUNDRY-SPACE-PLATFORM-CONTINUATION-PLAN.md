@@ -102,14 +102,14 @@ Status: **PARTIALLY IMPLEMENTED — cost tiers are now visible in the model pick
 Primary read: **lines 1417–1575** (USER 1417–1426; AI MODEL 1427–1575).
 Bounded primary windows: 1417–1575.
 Later amendment/dependency pairs: 1576–1754 (task 13); 1755–1970 (task 14); 1971–2173 (task 15); 2174–2355 (task 16); 2356–2591 (task 17); 2592–2772 (task 18); 3068–3284 (task 21); 3514–3753 (task 23); 3754–3942 (task 24); 4269–4441 (task 27)
-Status: **IN PROGRESS**. Task 11 added a truthful relative-cost disclosure to the existing picker and remains partial for unverified model pricing. Assess task 12's explicit worker-routing and planner-only UI corrections next; the look-ahead read does not complete task 12.
+Status: **PARTIALLY IMPLEMENTED — planner-only selection and context-aware leaf selection are wired; model failover candidates await task 17's verified inventory.** The planner UI is now labeled accordingly; task model IDs are ignored; shared tasks use the planner model within the effort ceiling, isolated cloud tasks use the known working model, and local/private/BYOK routes cannot fall back to cloud. Added unit/integration coverage. The suggested external fallback model IDs and 38ms routing claims are unverified. Task 17 owns live inventory and candidate availability. See progress file. Task 13 is current; revisit task 12 after task 17.
 
 ## Task 13
 
 Primary read: **lines 1576–1754** (USER 1576–1578; AI MODEL 1579–1754).
 Bounded primary windows: 1576–1750, 1751–1754.
 Later amendment/dependency pairs: 1755–1970 (task 14); 1971–2173 (task 15); 2174–2355 (task 16); 2356–2591 (task 17); 2592–2772 (task 18); 3514–3753 (task 23); 3754–3942 (task 24); 4140–4268 (task 26); 4269–4441 (task 27)
-Status: **UNASSESSED**. Evidence and exact next action belong in the progress file.
+Status: **IN PROGRESS**. Task 12 established automated worker selection while preserving local/private routes. Assess task 13's on-prem/BYOK-specific reasoning-effort and dual-model controls next; its earlier look-ahead is not task-13 completion evidence.
 
 ## Task 14
 

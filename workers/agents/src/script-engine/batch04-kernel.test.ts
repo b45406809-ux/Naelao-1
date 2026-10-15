@@ -117,11 +117,24 @@ describe("Batch 04 universal kernel", () => {
     const tasks = [{ id: "a", title: "Inspect", subtask_spec: "Inspect auth", assigned_role: "DEV_OPERATOR", file_paths: ["src/auth.ts"], dependencies: [], budget_tokens: 1800 }];
     validateGoalDag(tasks as never);
     const result = await goalPlanner.operations["engine.plan_and_delegate_goal"]!({ objective: "secure auth", tasks }, { env: { orchestration: { persistGoalTasks, spawnSubAgent, executeGoalDag } } as never, run: vi.fn() });
-    expect(executeGoalDag).toHaveBeenCalledWith("secure auth", tasks);
+    expect(executeGoalDag).toHaveBeenCalledWith("secure auth", [{ ...tasks[0], context_affinity: "shared" }]);
     expect(spawnSubAgent).not.toHaveBeenCalled();
     expect(result).toMatchObject({ max_output_tokens_per_worker: 2000, context_isolation: "no_parent_conversation" });
     executeGoalDag.mockResolvedValueOnce({ tasks: { a: { status: "failed", workerId: "a" } } });
     await expect(goalPlanner.operations["engine.plan_and_delegate_goal"]!({ objective: "secure auth", tasks }, { env: { orchestration: { persistGoalTasks, spawnSubAgent, executeGoalDag } } as never, run: vi.fn() }))
       .rejects.toThrow("goal_dag_incomplete");
+  });
+
+  it("derives task context affinity and discards planner-supplied worker model ids", async () => {
+    const executeGoalDag = vi.fn(async () => ({ tasks: { bulk: { status: "completed", workerId: "bulk" } } }));
+    const task = { id: "bulk", title: "Parse records", subtask_spec: "Parse independent receipts", assigned_role: "DEV_OPERATOR", model: "openai/gpt-6-luna", file_paths: [], budget_tokens: 500 };
+    await goalPlanner.operations["engine.plan_and_delegate_goal"]!({ objective: "parse receipts", tasks: [task] }, {
+      env: { orchestration: { persistGoalTasks: vi.fn(), spawnSubAgent: vi.fn(), executeGoalDag } } as never,
+      run: vi.fn(),
+    });
+    expect(executeGoalDag).toHaveBeenCalledWith("parse receipts", [{
+      id: "bulk", title: "Parse records", subtask_spec: "Parse independent receipts", assigned_role: "DEV_OPERATOR",
+      context_affinity: "isolated", file_paths: [], dependencies: [], budget_tokens: 500,
+    }]);
   });
 });
