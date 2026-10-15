@@ -117,6 +117,23 @@ describe("three-tier gadget lifecycle", () => {
     expect(await response.json()).toMatchObject({ error: "storage_limit_exceeded", limitBytes: TIER_ONE_STORAGE_LIMIT_BYTES });
   });
 
+  it("reports measured SQLite allocation and avoids fabricating a dollar estimate", async () => {
+    const harness = tierOneHarness(1024);
+    harness.metadata.set("app_id", "notes");
+    harness.metadata.set("gadget_tier", "1");
+    const response = await harness.instance.fetch(new Request("https://app/api/storage"));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      appId: "notes",
+      tier: 1,
+      allocatedBytes: 1024 * 4096,
+      limitBytes: TIER_ONE_STORAGE_LIMIT_BYTES,
+      utilizationPercent: 16,
+      measurement: "sqlite_page_count_times_page_size",
+      monthlyCostEstimateUsd: null,
+    });
+  });
+
   it("keeps gadget canvases script-isolated and preserves immutable actor scope", async () => {
     const harness = tierOneHarness();
     const initialize = (scope: "USER_PRIVATE" | "SPACE_WIDE", gadgetTier: 1 | 3) => harness.instance.fetch(new Request("https://app/initialize", {

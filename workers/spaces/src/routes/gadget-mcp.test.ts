@@ -26,9 +26,11 @@ describe("gadget MCP host adapter", () => {
     expect(await page.json()).toEqual({ path: "/app", method: "GET" });
     const data = await app.request("/spaces/s/apps/app/api/data?key=x", { headers: { "x-naelao-tenant-id": "t", "x-naelao-role": "admin" } }, env);
     expect(await data.json()).toEqual({ path: "/api/data", method: "GET" });
+    const storage = await app.request("/spaces/s/apps/app/api/storage", { headers: { "x-naelao-tenant-id": "t", "x-naelao-role": "admin" } }, env);
+    expect(await storage.json()).toEqual({ path: "/api/storage", method: "GET" });
     const deniedPage = await app.request("/spaces/s/apps/app/app", { headers: { "x-naelao-tenant-id": "wrong", "x-naelao-role": "admin" } }, env);
     expect(deniedPage.status).toBe(404);
-    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(fetch).toHaveBeenCalledTimes(4);
   });
 
   it("requires an administrator to initialize a gadget", async () => {

@@ -30,6 +30,7 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
   app.post("/spaces/:spaceId/apps/:appId/mcp", c => forward(c, "/mcp"));
   app.get("/spaces/:spaceId/apps/:appId/app", c => forward(c, "/app", "GET"));
   app.get("/spaces/:spaceId/apps/:appId/api/data", c => forward(c, `/api/data${new URL(c.req.url).search}`, "GET"));
+  app.get("/spaces/:spaceId/apps/:appId/api/storage", c => forward(c, "/api/storage", "GET"));
   app.post("/spaces/:spaceId/apps/:appId/api/data", c => forward(c, "/api/data"));
   app.delete("/spaces/:spaceId/apps/:appId/api/data", c => forward(c, `/api/data${new URL(c.req.url).search}`, "DELETE"));
   app.post("/spaces/:spaceId/apps/:appId/initialize", async c => {

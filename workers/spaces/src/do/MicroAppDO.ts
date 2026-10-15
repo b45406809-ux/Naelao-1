@@ -77,6 +77,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       if (request.method === "POST" && url.pathname === "/page/publish") return await this.publishPage(request);
       if (request.method === "GET" && url.pathname === "/page/render") return await this.renderPublicPage(url);
       if (request.method === "POST" && url.pathname === "/page/action") return await this.submitPublicAction(request, url);
+      if (request.method === "GET" && url.pathname === "/api/storage") return this.readStorageUsage();
       if (request.method === "GET" && url.pathname === "/api/data") return this.readData(url);
       if (request.method === "POST" && url.pathname === "/api/data") return await this.writeData(request);
       if (request.method === "DELETE" && url.pathname === "/api/data") return this.deleteData(url);
@@ -123,6 +124,31 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
   private columns(table: string): Array<{ name: string; type: string; pk: number; notnull: number }> {
     if (!this.userTables().includes(table)) throw new Error("unknown_table");
     return [...this.ctx.storage.sql.exec<{ name: string; type: string; pk: number; notnull: number }>(`PRAGMA table_info("${table.replaceAll('"', '""')}")`)];
+  }
+
+  private readStorageUsage(): Response {
+    const pageCount = [...this.ctx.storage.sql.exec<Record<string, number>>("PRAGMA page_count")][0];
+    const pageSize = [...this.ctx.storage.sql.exec<Record<string, number>>("PRAGMA page_size")][0];
+    const count = Number(pageCount?.page_count ?? Object.values(pageCount ?? {})[0] ?? 0);
+    const size = Number(pageSize?.page_size ?? Object.values(pageSize ?? {})[0] ?? 0);
+    if (!Number.isSafeInteger(count) || count < 0 || !Number.isSafeInteger(size) || size < 0) {
+      return Response.json({ error: "storage_measurement_unavailable" }, { status: 503 });
+    }
+    const allocatedBytes = count * size;
+    const tier = this.gadgetTier();
+    const limitBytes = tier === 1 ? TIER_ONE_STORAGE_LIMIT_BYTES : null;
+    return Response.json({
+      appId: this.appId(),
+      tier: tier ?? null,
+      allocatedBytes,
+      allocatedMiB: Math.round((allocatedBytes / (1024 * 1024)) * 100) / 100,
+      limitBytes,
+      utilizationPercent: limitBytes ? Math.round((allocatedBytes / limitBytes) * 10_000) / 100 : null,
+      measurement: "sqlite_page_count_times_page_size",
+      measuredAt: new Date().toISOString(),
+      monthlyCostEstimateUsd: null,
+      costEstimateReason: "Durable Object billing is not attributable to this gadget from SQLite page usage alone.",
+    });
   }
 
   /** Stateless MCP 2025 Streamable HTTP transport. Each request is a complete JSON-RPC turn. */
