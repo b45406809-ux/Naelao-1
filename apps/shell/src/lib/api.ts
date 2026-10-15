@@ -1544,6 +1544,14 @@ export async function getAssistantPolicy(spaceId: string, session: SessionCreden
   return apiFetch(`/v1/spaces/${spaceId}/assistant-policy`, { session });
 }
 
+export async function getAttachmentOcrSettings(spaceId: string, session: SessionCredentials): Promise<{ enabled: boolean }> {
+  return apiFetch(`/v1/spaces/${spaceId}/assistant/attachment-ocr`, { session });
+}
+
+export async function updateAttachmentOcrSettings(spaceId: string, session: SessionCredentials, enabled: boolean): Promise<{ enabled: boolean }> {
+  return apiFetch(`/v1/spaces/${spaceId}/assistant/attachment-ocr`, { method: "PATCH", body: JSON.stringify({ enabled }), session });
+}
+
 // item 79: a business admin can now change their OWN business's guided/autonomous policy — this
 // was previously a builder-dashboard-only write (the route 403'd every product_end_user caller
 // outright). Not exposed for a plain member — the caller composing the request enforces that in

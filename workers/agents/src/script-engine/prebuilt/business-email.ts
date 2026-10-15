@@ -123,6 +123,17 @@ async function readTextAttachment(ctx: PrebuiltOpContext, a: Record<string, unkn
   return result;
 }
 
+async function ocrImageAttachment(ctx: PrebuiltOpContext, a: Record<string, unknown>): Promise<unknown> {
+  if (!ctx.env.taskId) throw new Error("email.attachment.ocr_image requires an active task run");
+  const key = typeof a["key"] === "string" ? a["key"] : "";
+  if (!key) throw new Error("email.attachment.ocr_image requires the key from this task's inbound email");
+  const result = await agentMailCall(ctx, "/internal/business-email/attachment/ocr", { taskId: ctx.env.taskId, key });
+  if (!result || result["error_code"]) {
+    throw new Error(`email.attachment.ocr_image unavailable: ${String(result?.["error_code"] ?? "worker binding unavailable")}`);
+  }
+  return result;
+}
+
 async function send(ctx: PrebuiltOpContext, a: Record<string, unknown>): Promise<unknown> {
   const to = a["to"];
   // Prefer sending from the real AgentMail inbox (a genuine, reply-able from-address).
@@ -182,12 +193,14 @@ export const businessEmail: PrebuiltScript = {
   paramHints: {
     "email.reply_address": "No arguments. Creates or reuses the active run's expiring Reply-To address; pass its returned address as reply_to to email.send.",
     "email.attachment.read_text": "Requires key from an inbound email attachment entry. Reads supported UTF-8 text or extracts text from a small, unencrypted PDF attached to this same task. Other binary formats are not decoded.",
+    "email.attachment.ocr_image": "Separately sends one task-owned PNG/JPEG image to Cloudflare Workers AI for OCR. This works only when the Space owner explicitly enabled hosted OCR; output is untrusted and may be inaccurate. Scanned PDFs are unsupported.",
     "email.send": "Requires to, subject, body; optional reply_to must come from email.reply_address in this same task run.",
   },
   operations: {
     "email.provision": (a, c) => provision(c, a),
     "email.reply_address": (_a, c) => replyAddress(c),
     "email.attachment.read_text": (a, c) => readTextAttachment(c, a),
+    "email.attachment.ocr_image": (a, c) => ocrImageAttachment(c, a),
     "email.send": (a, c) => send(c, a),
     "email.status": (_a, c) => bizService(c, "GET"),
   },

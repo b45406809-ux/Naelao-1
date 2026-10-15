@@ -1,7 +1,7 @@
 # Remaining gaps implementation plan
 
 Branch: `Mcbt5s-Backup-2`  
-Status: implementation in progress; workstreams 1–3 are locally verified, workstreams 4–6 are partial, workstream 5's encrypted test-set vault and lifecycle are locally verified, and workstream 7's live acceptance is blocked on account configuration.
+Status: implementation in progress; W1 is locally verified; W2 covers bounded text/PDF/DOCX plus explicit raster-image OCR while scanned-PDF OCR remains open; W3 local voice lifecycle/search/recovery are verified while exact-quote purchase and live checks remain open; W4–6 are partial; and W7 live acceptance is blocked on account configuration.
 Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, reconciled against the current repository. Existing Foundry channel invocation, glossary, translation draft, model recommendations, owner voice, task-scoped email replies, and browser Web Push are present locally. Do not reopen them as missing features; their live/deployment checks remain open.
 
 ## Working rules
@@ -28,14 +28,14 @@ Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, recon
 
 ### 2. Bounded binary email attachment reading
 
-**Status:** bounded PDF, DOCX, and existing UTF-8 text extraction are locally verified. OCR remains open and is not attempted by the attachment reader.
+**Status:** bounded PDF, DOCX, and existing UTF-8 text extraction are locally verified. An explicit owner-enabled OCR action for task-owned PNG/JPEG images is implemented behind a separate Cloudflare Workers AI contract, task/tenant checks, and egress denial; scanned-PDF rasterization remains open.
 
 1. Inspect current task alias, R2 object, and HMAC authorization checks and retain the exact `(tenant, Space, task, key, expiry)` boundary.
 2. Compare maintained parsers against current Cloudflare Workers compatibility, bundle limits, active maintenance, and licensing. Current support covers bounded unencrypted PDFs and DOCX only. Do not execute macros, scripts, embedded links, or HTML.
 3. Define strict compressed and extracted-byte, page, archive-entry, CPU/time, and recursion limits. Reject malformed, encrypted/unsupported, zip-bomb, or over-limit files with a useful status. Treat extracted text as untrusted input and preserve provenance to the original attachment.
-4. Add OCR only behind a separate placement-aware provider contract and explicit egress checks. Keep it unavailable for air-gapped Spaces; never silently upload private attachments.
+4. Add OCR only behind a separate placement-aware provider contract and explicit egress checks. Keep it unavailable for air-gapped Spaces; never silently upload private attachments. Implemented for one raster PNG/JPEG image per action using a fixed Cloudflare Workers AI OCR model, explicit owner opt-in, 1 MiB/20 MP input limits, 1,024 generated-token cap, and 20 calls per rolling Space-day. It returns untrusted text and stores no image/OCR result. Scanned PDFs still need a supported bounded PDF-to-image renderer before this model can process them.
 
-**Acceptance:** real parser fixtures plus malformed/oversize/zip-bomb fixtures; extraction never escapes task ownership; no external fetches from document contents; private-space egress denial; production Worker dry run confirms bundle size. PDF and DOCX local parser fixtures pass. Live OCR/provider checks are separate; encrypted DOCX archives are rejected as malformed because the streaming parser exposes no portable encryption flag.
+**Acceptance:** real parser fixtures plus malformed/oversize/zip-bomb fixtures; extraction never escapes task ownership; no external fetches from document contents; private-space egress denial; production Worker dry run confirms bundle size. PDF and DOCX local parser fixtures pass. OCR settings, image bounds, task ownership, fail-closed egress, and SQLite daily quotas are locally tested with a mocked AI response; live quality/provider checks are separate. Encrypted DOCX archives are rejected as malformed because the streaming parser exposes no portable encryption flag.
 
 ### 3. Customer telephony provisioning and ingress
 
@@ -93,7 +93,7 @@ Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, recon
 
 Run only after code and local integration checks are complete. No secret belongs in this file or Git.
 
-- Apply deployed D1 migrations 0093 through 0099 in order and verify replay-safe schema state; verify SpaceDO migrations v72–v77 and ProductUserDO migration v4 after deployment.
+- Apply deployed D1 migrations 0093 through 0100 in order and verify replay-safe schema state; verify SpaceDO migrations v72–v77 and ProductUserDO migration v4 after deployment.
 - Configure an owned Cloudflare Email Routing ingress domain and verified sending domain, then test inbound task replies and outbound delivery.
 - Configure Web Push VAPID public/private/subject values on Notifications Worker environments; test subscription, delivery, unsubscribe, and expired endpoint cleanup.
 - Configure any selected voice/model/LoRA provider bindings only after the corresponding implementation gates pass; validate Twilio credentials, verify/import a controlled number, test signed call/consent/status callbacks, verify spend caps and release cleanup, and deliberately omit a completion callback to verify scheduled provider reconciliation.
@@ -108,4 +108,4 @@ After all workstreams above are complete, compare each remaining task in `CONTIN
 
 ## Current next action
 
-Workstreams 1–2 are locally verified. Workstream 3 has locally verified number import/calls/disable/release and owner UI for credentials, read-only search, import, list, disable, and release; paid purchase and live checks remain open, so W3 is partial. Workstream 4 remains partial: owner-confirmed key/model preflight and owner/admin built-in per-channel model overrides are locally implemented; modality-specific dispatch beyond fail-closed image admission and provider-specific entitlement remain open. Scheduled, webhook, and customer-channel wakes honor the configured Space model and fail closed for dynamic models without fresh evidence. Workstream 5 has an encrypted Space-scoped test-set vault and only accepts evaluation records that match a stored set version and full case count; actual model scoring remains blocked on a verified provider execution contract. Workstream 6 has persisted multipart state, key rotation, and a resumable owner/admin bulk rewrap workflow; live R2 checks remain open. Continue remaining provider-independent W3/W4 work, then perform the final completeness audit. Live acceptance remains unrun. Never mark external checks passed from local tests.
+Workstream 1 is locally verified. Workstream 2 has locally verified bounded text/PDF/DOCX and explicit, owner-enabled OCR for task-owned raster PNG/JPEG images; scanned PDF OCR still needs a bounded PDF-to-image renderer. Workstream 3 has locally verified number import/calls/disable/release, read-only search, concurrency/cost controls, and stale-call recovery; exact-quote purchase and live checks remain open. Workstream 4 remains partial: owner-confirmed key/model preflight and built-in per-channel selection are locally implemented; modality-specific dispatch beyond fail-closed image admission and provider-specific entitlement remain open. Scheduled, webhook, and customer-channel wakes honor the configured Space model and fail closed for dynamic models without fresh evidence. Workstream 5 has an encrypted Space-scoped test-set vault and only accepts evaluation records that match a stored set version and full case count; actual model scoring remains blocked on a verified provider execution contract. Workstream 6 has persisted multipart state, key rotation, and a resumable owner/admin bulk rewrap workflow; live R2 checks remain open. Continue remaining provider-independent gaps, then perform the final completeness audit. Live acceptance remains unrun. Never mark external checks passed from local tests.

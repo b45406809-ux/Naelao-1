@@ -42,6 +42,20 @@ describe("business-email Cloudflare Email Service routing", () => {
     expect(await called!.json()).toMatchObject({ tenantId: "tenant-1", spaceId: "space-1", taskId: "run-1", key: "spaces/space-1/email-inbound/run-1/abc/0-invoice.csv" });
   });
 
+  it("calls a separate image OCR endpoint and preserves the task scope", async () => {
+    let called: Request | undefined;
+    const ctx = {
+      env: {
+        tenantId: "tenant-1", spaceId: "space-1", agentId: "agent-1", taskId: "run-2", platformSecret: "platform-secret",
+        agentsWorker: { fetch: async (request: Request) => { called = request; return Response.json({ mime_type: "image/png", text: "[UNTRUSTED OCR] Invoice 42" }); } },
+      },
+    } as unknown as PrebuiltOpContext;
+    const result = await businessEmail.operations["email.attachment.ocr_image"]!({ key: "spaces/space-1/email-inbound/run-2/a/image.png" }, ctx);
+    expect(result).toMatchObject({ mime_type: "image/png", text: expect.stringContaining("Invoice 42") });
+    expect(called?.url).toBe("http://agents-worker/internal/business-email/attachment/ocr");
+    expect(await called!.json()).toMatchObject({ tenantId: "tenant-1", spaceId: "space-1", taskId: "run-2", key: "spaces/space-1/email-inbound/run-2/a/image.png" });
+  });
+
   it("returns the native provider receipt without calling Resend", async () => {
     const state = context({
       agentResponse: { ok: true, configured: true, provider: "cloudflare_email", messageId: "cf-1", from: "space-0123456789abcdef@mail.example.com" },

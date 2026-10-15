@@ -29,6 +29,7 @@ import { useRouter } from "next/navigation";
 import { canManageSpaceSettings } from "@/lib/roles";
 import { DomainGlossaryPanel } from "@/components/DomainGlossaryPanel";
 import { ArchiveKeyRotationPanel } from "@/components/ArchiveKeyRotationPanel";
+import { AttachmentOcrSettings } from "@/components/AttachmentOcrSettings";
 import {
   getMe,
   updateMe,
@@ -240,6 +241,7 @@ export default function SettingsPage() {
           isBusinessSpace={isBusinessSpace}
             onChanged={(p) => setPolicy(p)}
           />
+          {isBusinessSpace && <AttachmentOcrSettings spaceId={activeSpaceId} session={creds} canManage={canManage} />}
           {creds && <div style={{ marginTop: 24 }}><DomainGlossaryPanel spaceId={activeSpaceId} creds={creds} canEdit={canManage} /></div>}
           </>
         )}
