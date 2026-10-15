@@ -12,7 +12,7 @@ import {
 // checkout/portal (previously the last Stripe-backed path) now runs through the same LS store as
 // every other money path. stripe.ts is deleted; /webhooks/stripe removed.
 import { Hono } from "hono";
-import { checkQuota, checkWindowedQuota, recordUsageEvent, getUsageSummary } from "./quota.js";
+import { checkQuota, checkWindowedQuota, recordUsageEvent, getUsageSummary, PLAN_LIMITS, llmReservationAdmission } from "./quota.js";
 import { handleLemonSqueezyWebhook, recordPlatformPlanSubscription, grantPersonalPlanPurchase } from "./lemon-squeezy.js";
 import { createLsProductVariant, lsProductsConfig } from "./ls-products.js";
 import { registerWhopWalletRoutes, handleWhopWebhook, renderPayoutApprovalPage, confirmPayoutApproval, routeWhopWalletCheckout, getSubMerchant } from "./whop-wallet.js";
@@ -450,6 +450,62 @@ app.post("/billing/usage", async (c) => {
 // INSERT accounts for both recorded monthly infra usage and unexpired holds in one D1 statement,
 // so two concurrent dispatches cannot both consume the same remaining allowance.
 app.use("/internal/workflows/budget/*", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
+
+// Holds estimated builder LLM tokens before provider dispatch so concurrent Space Assistant
+// runs share the same day/week/month quota envelope. Holds are separate from usage_events and
+// only actual post-run token counts become billable usage.
+app.use("/internal/usage/llm-tokens/reservations/*", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
+app.post("/internal/usage/llm-tokens/reservations/reserve", async (c) => {
+  const orgId = c.req.header("x-naelao-tenant-id") ?? "";
+  const body = await c.req.json<{ reservation_id?: string; run_id?: string; space_id?: string; estimated_tokens?: number }>().catch(() => null);
+  const id = body?.reservation_id ?? "", runId = body?.run_id ?? "", spaceId = body?.space_id ?? "", tokens = body?.estimated_tokens ?? 0;
+  if (!orgId || !id || id.length > 200 || !runId || runId.length > 128 || !spaceId || !Number.isSafeInteger(tokens) || tokens <= 0 || tokens > 10_000_000) return c.json({ error_code: "bad_request" }, 400);
+  const existing = await c.env.PLATFORM_DB.prepare("SELECT run_id,estimated_tokens,status FROM llm_token_reservations WHERE id=? AND org_id=?").bind(id, orgId).first<{ run_id: string; estimated_tokens: number; status: string }>();
+  if (existing) return existing.run_id === runId && existing.estimated_tokens === tokens && existing.status === "held"
+    ? c.json({ reserved: true, deduplicated: true, reservation_id: id })
+    : c.json({ error_code: "reservation_id_conflict" }, 409);
+  const planTier = await resolvePlanTier(c.env.PLATFORM_DB, orgId);
+  const allowOverage = await resolveAllowOverage(c.env.PLATFORM_DB, orgId);
+  const limits = PLAN_LIMITS[planTier] ?? PLAN_LIMITS.free!;
+  const admission = llmReservationAdmission(orgId, tokens, limits, allowOverage);
+  const binds: unknown[] = [id, orgId, spaceId, runId, tokens, new Date(Date.now() + 15 * 60_000).toISOString()];
+  binds.push(...admission.bindings);
+  const result = await c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO llm_token_reservations(id,org_id,space_id,run_id,estimated_tokens,status,expires_at,created_at,updated_at)
+    SELECT ?,?,?,?,?, 'held', ?,datetime('now'),datetime('now') WHERE ${admission.predicate}`).bind(...binds).run();
+  if (!result.meta.changes) return c.json({ error_code: "quota_exceeded", message: "Estimated LLM request would exceed the daily, weekly, or monthly token quota" }, 402);
+  return c.json({ reserved: true, reservation_id: id, estimated_tokens: tokens }, 201);
+});
+app.post("/internal/usage/llm-tokens/reservations/release", async (c) => {
+  const orgId = c.req.header("x-naelao-tenant-id") ?? "";
+  const body = await c.req.json<{ run_id?: string }>().catch(() => null);
+  if (!orgId || !body?.run_id) return c.json({ error_code: "bad_request" }, 400);
+  const result = await c.env.PLATFORM_DB.prepare("UPDATE llm_token_reservations SET status='released',updated_at=datetime('now') WHERE org_id=? AND run_id=? AND status='held'").bind(orgId, body.run_id).run();
+  return c.json({ released: result.meta.changes > 0 });
+});
+app.post("/internal/usage/llm-tokens/reservations/settle", async (c) => {
+  const orgId = c.req.header("x-naelao-tenant-id") ?? "";
+  const body = await c.req.json<{ run_id?: string; actual_tokens?: number }>().catch(() => null);
+  if (!orgId || !body?.run_id || !Number.isSafeInteger(body.actual_tokens) || (body.actual_tokens ?? -1) < 0) return c.json({ error_code: "bad_request" }, 400);
+  const prior = await c.env.PLATFORM_DB.prepare("SELECT actual_tokens FROM llm_token_run_settlements WHERE org_id=? AND run_id=?").bind(orgId, body.run_id).first<{ actual_tokens: number }>();
+  if (prior) return c.json({ settled: true, deduplicated: true, actual_tokens: prior.actual_tokens });
+  const held = await c.env.PLATFORM_DB.prepare("SELECT space_id FROM llm_token_reservations WHERE org_id=? AND run_id=? AND status='held' LIMIT 1").bind(orgId, body.run_id).first<{ space_id: string }>();
+  if (!held) return c.json({ settled: false, error_code: "reservation_not_found" }, 409);
+  const now = new Date().toISOString();
+  const hashBytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`llm-token-reservation:${orgId}:${body.run_id}`));
+  const eventHash = Array.from(new Uint8Array(hashBytes)).map(byte => byte.toString(16).padStart(2, "0")).join("");
+  const eventId = `llm-run:${body.run_id}`;
+  const batch = await c.env.PLATFORM_DB.batch([
+    c.env.PLATFORM_DB.prepare("UPDATE llm_token_reservations SET status='settled',updated_at=? WHERE org_id=? AND run_id=? AND status='held'").bind(now, orgId, body.run_id),
+    c.env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO llm_token_run_settlements(org_id,run_id,actual_tokens,settled_at) VALUES(?,?,?,?)").bind(orgId, body.run_id, body.actual_tokens, now),
+    c.env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO usage_events(id,org_id,space_id,event_type,quantity,recorded_at,event_hash) VALUES(?,?,?,'llm_tokens',?,?,?)").bind(eventId, orgId, held.space_id, body.actual_tokens, now, eventHash),
+  ]);
+  if ((batch[2]?.meta.changes ?? 0) > 0 && (body.actual_tokens ?? 0) > 0) {
+    await recordUsageEvent(c.env.QUOTA_CACHE, orgId, "llm_tokens");
+    await c.env.BILLING_EVENTS.send({ type: "meter", org_id: orgId, space_id: held.space_id, event_type: "llm_tokens", quantity: body.actual_tokens!, event_id: eventId, event_hash: eventHash, recorded_at: now });
+  }
+  return c.json({ settled: true, actual_tokens: body.actual_tokens, deduplicated: (batch[2]?.meta.changes ?? 0) === 0 });
+});
+
 app.post("/internal/workflows/budget/reserve", async (c) => {
   const orgId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!orgId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);

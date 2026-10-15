@@ -51,7 +51,7 @@ Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, recon
 
 ### 4. Model capability, entitlement, modality, and cost routing
 
-**Status:** partially implemented and locally verified on 2026-10-15. Fresh catalog evidence, Space-key isolation, exact OpenRouter usage pricing, and pre-execution project-cap reservation on the script-engine and channel-heartbeat paths are enforced. Model-specific entitlement is only recorded after a successful user-requested inference; key-specific entitlement preflight, user/org preauthorization and modality-specific worker dispatch remain open.
+**Status:** partially implemented and locally verified on 2026-10-15. Fresh catalog evidence, Space-key isolation, exact OpenRouter usage pricing, project-cap reservation on script/legacy/channel paths, personal-credit reservation on script and legacy interactive paths, and builder day/week/month quota holds on script and legacy interactive paths are enforced. Model-specific entitlement is only recorded after a successful user-requested inference; key-specific entitlement preflight, channel model routing preferences, and modality-specific worker dispatch remain open.
 
 1. Audit exact model selection, BYOK resolution, Gateway/AI REST routes, model allowlists, billing settlement, local discovery, and air-gap policy. Keep planner and worker selection authorization separate.
 2. Define a normalized capability record with source and freshness for text/image/audio/video input/output, tool calling, context size, and token pricing. Missing or stale fields mean unsupported/unknown, not inferred support.
@@ -91,7 +91,7 @@ Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, recon
 
 Run only after code and local integration checks are complete. No secret belongs in this file or Git.
 
-- Apply deployed D1 migrations 0093 through 0097 in order and verify replay-safe schema state; verify SpaceDO migrations v72–v74 and Agents DO migration v13 after deployment.
+- Apply deployed D1 migrations 0093 through 0098 in order and verify replay-safe schema state; verify SpaceDO migrations v72–v75 and ProductUserDO migration v4 after deployment.
 - Configure an owned Cloudflare Email Routing ingress domain and verified sending domain, then test inbound task replies and outbound delivery.
 - Configure Web Push VAPID public/private/subject values on Notifications Worker environments; test subscription, delivery, unsubscribe, and expired endpoint cleanup.
 - Configure any selected voice/model/LoRA provider bindings only after the corresponding implementation gates pass; validate Twilio credentials, verify/import a controlled number, test signed call/consent/status callbacks, and verify spend caps and release cleanup.

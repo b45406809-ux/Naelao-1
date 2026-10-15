@@ -286,6 +286,10 @@ const CHANNEL_REPLY_WALL_CLOCK_MS = 2 * 60 * 1000;
 const MAX_TOOL_OUTPUT_BYTES = 64 * 1024;
 const TIMEOUT_MS = 30_000; // 30 seconds
 const TIMEOUT_QUERY_THRESHOLD_S = 25; // flag runs older than 25s
+
+class PreInferenceSpendError extends Error {
+  constructor(readonly status: 402 | 503, message: string) { super(message); this.name = "PreInferenceSpendError"; }
+}
 // G-X01: Per-tool call limit within a single run — prevents recursive tool loops
 const MAX_CALLS_PER_TOOL = 5;
 // G-BB41: Hard cap on total tool calls per turn (loop iteration) and per run
@@ -4599,6 +4603,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
     let reservationSequence = 0;
     let projectSpendReserved = false;
+    let endUserCreditReserved = false;
+    let llmQuotaReserved = false;
     const reasoner = new GatewayReasoner({
       apiKey: body.apiKey ?? "",
       localDevelopment: this.env.ENVIRONMENT === "development",
@@ -4627,11 +4633,33 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         : {}),
       manifest: assembled.manifest,
       airGappedOnly: body.airGappedOnly === true,
-      ...(hasSpendCap && projectId ? { reserveInferenceCost: async (inference: { model: string; serializedRequestBytes: number; maxOutputTokens: number }) => {
+      ...(hasSpendCap && projectId || callerRole === "product_end_user" && userId && !projectId || BUILDER_CALLER_ROLES.has(callerRole ?? "") && !projectId ? { reserveInferenceCost: async (inference: { model: string; serializedRequestBytes: number; maxOutputTokens: number }) => {
         const estimate = estimateRequestCostCredits(inference.serializedRequestBytes, inference.maxOutputTokens, inference.model,
           inference.model.startsWith("openrouter/") ? modelPricing : undefined);
+        if (BUILDER_CALLER_ROLES.has(callerRole ?? "") && !projectId) {
+          if (!this.env.BILLING_WORKER) throw new Error("monthly_llm_quota_reservation_unavailable");
+          const response = await this.env.BILLING_WORKER.fetch(new Request("http://billing-worker/internal/usage/llm-tokens/reservations/reserve", {
+            method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
+            body: JSON.stringify({ reservation_id: `${runId}:${++reservationSequence}`, run_id: runId, space_id: spaceId, estimated_tokens: estimate.estimatedInputTokens + estimate.reservedOutputTokens }),
+          }));
+          if (response.status === 402) return false;
+          if (!response.ok) throw new Error("monthly_llm_quota_reservation_unavailable");
+          llmQuotaReserved = true;
+          return true;
+        }
+        if (callerRole === "product_end_user" && userId && !projectId) {
+          const response = await this.env.SPACES_WORKER.fetch(new Request(
+            `http://spaces-worker/internal/product-users/${encodeURIComponent(spaceId)}/${encodeURIComponent(userId)}/credits/reservations`,
+            { method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
+              body: JSON.stringify({ action: "reserve", reservation_id: `${runId}:${++reservationSequence}`, run_id: runId, credits: estimate.estimatedCredits }) }
+          ));
+          if (response.status === 402) return false;
+          if (!response.ok) throw new Error("user_credit_reservation_unavailable");
+          endUserCreditReserved = true;
+          return true;
+        }
         const response = await this.env.SPACES_WORKER.fetch(new Request(
-          `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/spend`,
+          `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId!)}/spend`,
           { method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
             body: JSON.stringify({ action: "reserve", reservation_id: `${runId}:${++reservationSequence}`, run_id: runId, credits: estimate.estimatedCredits }) }
         ));
@@ -4824,6 +4852,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         modelPricing,
         notes: result.notes,
         projectSpendReserved,
+        endUserCreditReserved,
+        llmQuotaReserved,
         tier: result.result?.tier,
         durationMs: result.result?.duration_ms,
         sessionId, sessionCreditCeiling: body.sessionCreditCeiling,
@@ -6587,6 +6617,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     model?: string | undefined; notes: string[]; runId: string;
     modelPricing?: { inputUsdPerToken: number; outputUsdPerToken: number } | undefined;
     projectSpendReserved?: boolean | undefined;
+    endUserCreditReserved?: boolean | undefined;
+    llmQuotaReserved?: boolean | undefined;
     /** §A1.26: the executed script's tier + wall-clock duration, when known (script-native runs
      *  only — the legacy ReAct path has no equivalent concept and omits these). */
     tier?: number | string | undefined; durationMs?: number | undefined;
@@ -6595,7 +6627,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
      *  configured — a space that never opted in pays zero extra round-trip cost per run. */
     sessionId?: string | undefined; sessionCreditCeiling?: number | undefined;
   }): Promise<void> {
-    const { spaceId, tenantId, projectId, userId, callerRole, hasSpendCap, walletProjectId, tokensUsed, inputTokens, outputTokens, model, modelPricing, notes, runId, tier, durationMs, sessionId, sessionCreditCeiling, projectSpendReserved } = params;
+    const { spaceId, tenantId, projectId, userId, callerRole, hasSpendCap, walletProjectId, tokensUsed, inputTokens, outputTokens, model, modelPricing, notes, runId, tier, durationMs, sessionId, sessionCreditCeiling, projectSpendReserved, endUserCreditReserved, llmQuotaReserved } = params;
 
     // §A1.26: infra-credit usage is recorded independent of whether this run used any LLM
     // tokens at all (a pure script execution — e.g. a scheduled workflow.run with no reasoning
@@ -6637,6 +6669,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     if (!tokensUsed) {
       if (projectSpendReserved && projectId && this.env.SPACES_WORKER) await this.settleProjectSpendReservation(spaceId, tenantId, projectId, runId, 0);
+      if (endUserCreditReserved && userId) await this.settleEndUserCreditReservation(spaceId, tenantId, userId, runId, 0, notes);
+      if (llmQuotaReserved) await this.settleLlmTokenReservation(tenantId, runId, 0, notes);
       return;
     }
     const credits = inputTokens || outputTokens
@@ -6690,7 +6724,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // same posture as the project-spend accounting above: never fails an already-completed
       // run's response over a billing-side hiccup, but insufficient balance is still surfaced
       // in the result notes so it's visible, not silently swallowed.
-      await this.debitEndUserCredits(spaceId, tenantId, userId, credits, model, notes, runId);
+      if (endUserCreditReserved) await this.settleEndUserCreditReservation(spaceId, tenantId, userId, runId, credits, notes);
+      else await this.debitEndUserCredits(spaceId, tenantId, userId, credits, model, notes, runId);
     } else if (BUILDER_CALLER_ROLES.has(callerRole ?? "")) {
       // P0-3: record this builder's own real token usage against their org's monthly quota —
       // mutually exclusive with both branches above (a project-scoped run and a product-end-user
@@ -6698,7 +6733,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // (@naelao/entitlements' monthly_tokens limits), a different unit/purpose from the
       // wallet/credit ledgers above. Best-effort: never fails an already-completed run's
       // response over a billing-side hiccup.
-      if (this.env.BILLING_WORKER) {
+      if (llmQuotaReserved) {
+        await this.settleLlmTokenReservation(tenantId, runId, tokensUsed, notes);
+      } else if (this.env.BILLING_WORKER) {
         try {
           await this.env.BILLING_WORKER.fetch(new Request("http://billing-worker/billing/usage", {
             method: "POST",
@@ -6740,6 +6777,66 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           body: JSON.stringify({ action: "settle_run", run_id: runId, credits }) }
       ));
     } catch { /* holds expire after 15 minutes; settlement accounting remains best effort */ }
+  }
+
+  private async reserveRunInferenceCost(args: {
+    spaceId: string; tenantId: string; projectId: string | undefined; userId: string | undefined; callerRole: string | undefined; hasSpendCap: boolean;
+    runId: string; model: string; serializedRequestBytes: number; maxOutputTokens: number; sequence: number;
+    modelPricing: { inputUsdPerToken: number; outputUsdPerToken: number } | undefined;
+    onReserved: () => void;
+  }): Promise<boolean> {
+    if (args.projectId && args.hasSpendCap) {
+      if (!this.env.SPACES_WORKER) throw new Error("spaces_worker_unavailable");
+      const estimate = estimateRequestCostCredits(args.serializedRequestBytes, args.maxOutputTokens, args.model, args.model.startsWith("openrouter/") ? args.modelPricing : undefined);
+      const response = await this.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/spaces/${encodeURIComponent(args.spaceId)}/projects/${encodeURIComponent(args.projectId)}/spend`,
+        { method: "POST", headers: await this.internalHeaders(args.tenantId, { "content-type": "application/json" }),
+          body: JSON.stringify({ action: "reserve", reservation_id: `${args.runId}:${args.sequence}`, run_id: args.runId, credits: estimate.estimatedCredits }) }
+      ));
+      if (response.status === 402) return false;
+      if (!response.ok) throw new Error("project_spend_reservation_unavailable");
+      args.onReserved();
+      return true;
+    }
+    if (!args.projectId && args.userId && args.callerRole === "product_end_user") {
+      if (!this.env.SPACES_WORKER) throw new Error("spaces_worker_unavailable");
+      const estimate = estimateRequestCostCredits(args.serializedRequestBytes, args.maxOutputTokens, args.model, args.model.startsWith("openrouter/") ? args.modelPricing : undefined);
+      const response = await this.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/internal/product-users/${encodeURIComponent(args.spaceId)}/${encodeURIComponent(args.userId)}/credits/reservations`,
+        { method: "POST", headers: await this.internalHeaders(args.tenantId, { "content-type": "application/json" }),
+          body: JSON.stringify({ action: "reserve", reservation_id: `${args.runId}:${args.sequence}`, run_id: args.runId, credits: estimate.estimatedCredits }) }
+      ));
+      if (response.status === 402) return false;
+      if (!response.ok) throw new Error("user_credit_reservation_unavailable");
+      args.onReserved();
+      return true;
+    }
+    if (!args.projectId && BUILDER_CALLER_ROLES.has(args.callerRole ?? "")) {
+      if (!this.env.BILLING_WORKER) throw new Error("monthly_llm_quota_reservation_unavailable");
+      const estimate = estimateRequestCostCredits(args.serializedRequestBytes, args.maxOutputTokens, args.model, args.model.startsWith("openrouter/") ? args.modelPricing : undefined);
+      const response = await this.env.BILLING_WORKER.fetch(new Request("http://billing-worker/internal/usage/llm-tokens/reservations/reserve", {
+        method: "POST", headers: await this.internalHeaders(args.tenantId, { "content-type": "application/json" }),
+        body: JSON.stringify({ reservation_id: `${args.runId}:${args.sequence}`, run_id: args.runId, space_id: args.spaceId, estimated_tokens: estimate.estimatedInputTokens + estimate.reservedOutputTokens }),
+      }));
+      if (response.status === 402) return false;
+      if (!response.ok) throw new Error("monthly_llm_quota_reservation_unavailable");
+      args.onReserved();
+    }
+    return true;
+  }
+
+  private async releaseRunSpendReservations(spaceId: string, tenantId: string, projectId: string | undefined, userId: string | undefined, callerRole: string | undefined, runId: string, projectReserved: boolean, userReserved: boolean): Promise<void> {
+    if (!this.env.SPACES_WORKER) return;
+    const requests: Promise<unknown>[] = [];
+    if (projectReserved && projectId) requests.push(this.env.SPACES_WORKER.fetch(new Request(
+      `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/spend`,
+      { method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }), body: JSON.stringify({ action: "release_run", run_id: runId }) }
+    )));
+    if (userReserved && userId && callerRole === "product_end_user") requests.push(this.env.SPACES_WORKER.fetch(new Request(
+      `http://spaces-worker/internal/product-users/${encodeURIComponent(spaceId)}/${encodeURIComponent(userId)}/credits/reservations`,
+      { method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }), body: JSON.stringify({ action: "release_run", run_id: runId }) }
+    )));
+    await Promise.allSettled(requests);
   }
 
   private async debitUserDailyBudget(
@@ -6906,6 +7003,36 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     } catch (err) {
       notes.push(`Billing: failed to debit ${credits} credit(s) for this run (${(err as Error).message}).`);
     }
+  }
+
+  private async settleEndUserCreditReservation(spaceId: string, tenantId: string, endUserId: string, runId: string, credits: number, notes: string[]): Promise<void> {
+    try {
+      const response = await this.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/internal/product-users/${encodeURIComponent(spaceId)}/${encodeURIComponent(endUserId)}/credits/reservations`,
+        { method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
+          body: JSON.stringify({ action: "settle_run", run_id: runId, credits }) }
+      ));
+      if (response.status === 402) notes.push(`Billing: actual usage exceeded the available personal credits after the inference reservation.`);
+      else if (!response.ok) notes.push(`Billing: unable to settle personal credit reservation (${response.status}).`);
+    } catch (error) { notes.push(`Billing: unable to settle personal credit reservation (${(error as Error).message}).`); }
+  }
+
+  private async settleLlmTokenReservation(tenantId: string, runId: string, actualTokens: number, notes: string[]): Promise<void> {
+    if (!this.env.BILLING_WORKER) { notes.push("Billing: monthly LLM quota reservation service is unavailable."); return; }
+    try {
+      const response = await this.env.BILLING_WORKER.fetch(new Request("http://billing-worker/internal/usage/llm-tokens/reservations/settle", {
+        method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
+        body: JSON.stringify({ run_id: runId, actual_tokens: actualTokens }),
+      }));
+      if (!response.ok) notes.push(`Billing: monthly LLM quota settlement failed (${response.status}).`);
+    } catch (error) { notes.push(`Billing: monthly LLM quota settlement failed (${(error as Error).message}).`); }
+  }
+
+  private async releaseLlmTokenReservation(tenantId: string, runId: string): Promise<void> {
+    if (!this.env.BILLING_WORKER) return;
+    await this.env.BILLING_WORKER.fetch(new Request("http://billing-worker/internal/usage/llm-tokens/reservations/release", {
+      method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }), body: JSON.stringify({ run_id: runId }),
+    })).catch(() => undefined);
   }
 
   /** Metering enforcement follow-up: debit a project-scoped run's real LLM usage from the space's
@@ -7517,6 +7644,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // Run the ReAct loop
     const model = body.model ?? "claude-sonnet-4-6";
     const allowedDomains = body.allowedDomains ?? [];
+    let legacyReservationSequence = 0;
+    let legacyProjectReserved = false;
+    let legacyUserReserved = false;
+    let legacyLlmQuotaReserved = false;
+    const runByok = await this.resolveBusinessLlmOverride(body.spaceId, body.tenantId, model);
+    let legacyModelPricing: { inputUsdPerToken: number; outputUsdPerToken: number } | undefined;
+    try { legacyModelPricing = await this.resolveDynamicModelPricing(model, runByok.openRouterApiKey); }
+    catch (error) {
+      return Response.json({ error_code: "model_price_unavailable", message: error instanceof Error ? error.message : "Fresh model price evidence unavailable" }, { status: 503 });
+    }
 
     const services: ToolServices = {
       knowledgeWorker: this.env.KNOWLEDGE_WORKER,
@@ -7535,7 +7672,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         body.apiKey,
         model,
         allowedDomains,
-        services
+        services,
+        (serializedRequestBytes, maxOutputTokens) => this.reserveRunInferenceCost({
+          spaceId: body.spaceId, tenantId: body.tenantId, projectId: body.projectId, userId: body.userId,
+          callerRole: body.callerRole, hasSpendCap: gate.hasSpendCap, runId, model, serializedRequestBytes, maxOutputTokens, modelPricing: legacyModelPricing,
+          sequence: ++legacyReservationSequence,
+          onReserved: () => { if (body.projectId && gate.hasSpendCap) legacyProjectReserved = true; else if (!body.projectId && body.callerRole === "product_end_user") legacyUserReserved = true; else if (!body.projectId && BUILDER_CALLER_ROLES.has(body.callerRole ?? "")) legacyLlmQuotaReserved = true; },
+        })
       );
       const { finalAnswer } = loopResult;
 
@@ -7580,6 +7723,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         hasSpendCap: gate.hasSpendCap, walletProjectId: gate.walletProjectId,
         tokensUsed: loopResult.tokensUsed, inputTokens: loopResult.inputTokens, outputTokens: loopResult.outputTokens,
         model: body.model, notes: billingNotes, runId,
+        modelPricing: legacyModelPricing, projectSpendReserved: legacyProjectReserved, endUserCreditReserved: legacyUserReserved,
+        llmQuotaReserved: legacyLlmQuotaReserved,
       });
 
       return Response.json(
@@ -7599,6 +7744,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const errMsg = err instanceof Error ? err.message : String(err);
       const errNow = new Date().toISOString();
 
+      if (legacyProjectReserved || legacyUserReserved) await this.releaseRunSpendReservations(body.spaceId, body.tenantId, body.projectId, body.userId, body.callerRole, runId, legacyProjectReserved, legacyUserReserved);
+      if (legacyLlmQuotaReserved) await this.releaseLlmTokenReservation(body.tenantId, runId);
+
       // G-AZ01: Transition to ERROR state on failure
       this.ctx.storage.sql.exec(
         `UPDATE agent_runs SET status = 'failed', fsm_state = 'ERROR', error = ?, updated_at = ? WHERE id = ?`,
@@ -7609,8 +7757,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
       console.error("Agent run failed:", err);
       return Response.json(
-        { error_code: "agent_error", message: errMsg, runId },
-        { status: 500 }
+        { error_code: err instanceof PreInferenceSpendError ? err.status === 402 ? "spend_capped" : "spend_reservation_unavailable" : "agent_error", message: errMsg, runId },
+        { status: err instanceof PreInferenceSpendError ? err.status : 500 }
       );
     }
   }
@@ -7626,7 +7774,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     apiKey: string,
     model: string,
     allowedDomains: string[],
-    services: ToolServices
+    services: ToolServices,
+    reserveInferenceCost?: (serializedRequestBytes: number, maxOutputTokens: number) => Promise<boolean>
   ): Promise<ReActLoopResult> {
     // System prompt + KB context forms the system; goal is first user message
     const messages: LlmMessage[] = [
@@ -7690,6 +7839,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           cache_control: { type: "ephemeral" },
         },
       ];
+
+      if (reserveInferenceCost) {
+        let admitted = false;
+        try {
+          const requestBytes = new TextEncoder().encode(JSON.stringify({ model, system: systemBlocks, messages: contextMessages, tools, max_tokens: 4096, temperature: 0 })).byteLength;
+          admitted = await reserveInferenceCost(requestBytes, 4096);
+        } catch {
+          throw new PreInferenceSpendError(503, "project or personal credit reservation could not be verified; no inference was sent");
+        }
+        if (!admitted) throw new PreInferenceSpendError(402, "spend cap or personal credit balance cannot cover the estimated request; no inference was sent");
+      }
 
       // Call LLM
       const llmResponse = await callLlm(apiKey, {

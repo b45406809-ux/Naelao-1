@@ -134,6 +134,21 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 4,
+    description: "add personal inference credit reservations",
+    up: `
+      CREATE TABLE credit_reservations (
+        reservation_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, credits INTEGER NOT NULL CHECK (credits > 0),
+        status TEXT NOT NULL CHECK (status IN ('held','settled','released','expired')),
+        expires_at TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE INDEX idx_credit_reservations_live ON credit_reservations(status,expires_at);
+      CREATE TABLE credit_run_settlements (
+        run_id TEXT PRIMARY KEY, actual_credits INTEGER NOT NULL CHECK (actual_credits >= 0), settled_at TEXT NOT NULL
+      );
+    `,
+  },
 ];
 
 export class ProductUserDO extends DurableObject {
@@ -226,6 +241,56 @@ export class ProductUserDO extends DurableObject {
       return Response.json({ balance_credits: this.currentBalance() });
     }
 
+    if (method === "POST" && url.pathname === "/credits/reservations") {
+      const body = await request.json<{ action?: string; reservation_id?: string; run_id?: string; credits?: number }>().catch(() => ({} as any));
+      const action = body.action, runId = body.run_id ?? "", now = new Date().toISOString();
+      if (!runId || runId.length > 128) return Response.json({ error_code: "reservation_invalid" }, { status: 400 });
+      const sql = this.ctx.storage.sql;
+      if (action === "reserve") {
+        const reservationId = body.reservation_id ?? "", credits = body.credits;
+        if (!reservationId || reservationId.length > 200 || !Number.isSafeInteger(credits) || (credits ?? 0) <= 0) return Response.json({ error_code: "reservation_invalid" }, { status: 400 });
+        const expiresAt = new Date(Date.now() + 15 * 60_000).toISOString();
+        const result = this.ctx.storage.transactionSync(() => {
+          sql.exec("UPDATE credit_reservations SET status='expired',updated_at=? WHERE status='held' AND expires_at<=?", now, now);
+          const prior = sql.exec("SELECT run_id,credits,status FROM credit_reservations WHERE reservation_id=?", reservationId).toArray() as Array<{ run_id: string; credits: number; status: string }>;
+          if (prior[0]) return prior[0].run_id === runId && prior[0].credits === credits && prior[0].status === "held" ? { ok: true, deduplicated: true } : { ok: false, conflict: true };
+          const held = sql.exec("SELECT COALESCE(SUM(credits),0) AS credits FROM credit_reservations WHERE status='held' AND expires_at>?", now).toArray() as Array<{ credits: number }>;
+          const available = this.currentBalance() - (held[0]?.credits ?? 0);
+          if (available < (credits as number)) return { ok: false, insufficient: true, available };
+          sql.exec("INSERT INTO credit_reservations (reservation_id,run_id,credits,status,expires_at,created_at,updated_at) VALUES (?,?,?,'held',?,?,?)", reservationId, runId, credits, expiresAt, now, now);
+          return { ok: true, deduplicated: false, expires_at: expiresAt };
+        });
+        if ("conflict" in result) return Response.json({ error_code: "reservation_id_conflict" }, { status: 409 });
+        if (!result.ok) return Response.json({ error_code: "insufficient_credits", available_credits: result.available }, { status: 402 });
+        return Response.json(result);
+      }
+      if (action === "release_run") {
+        const released = this.ctx.storage.transactionSync(() => sql.exec("UPDATE credit_reservations SET status='released',updated_at=? WHERE run_id=? AND status='held'", now, runId).rowsWritten);
+        return Response.json({ run_id: runId, released });
+      }
+      if (action === "settle_run") {
+        const actual = body.credits;
+        if (!Number.isSafeInteger(actual) || (actual ?? -1) < 0) return Response.json({ error_code: "settlement_invalid" }, { status: 400 });
+        const result = this.ctx.storage.transactionSync(() => {
+          const settled = sql.exec("SELECT actual_credits FROM credit_run_settlements WHERE run_id=?", runId).toArray() as Array<{ actual_credits: number }>;
+          if (settled[0]) return { ok: true, deduplicated: true, actual_credits: settled[0].actual_credits };
+          sql.exec("UPDATE credit_reservations SET status='expired',updated_at=? WHERE status='held' AND expires_at<=?", now, now);
+          const other = sql.exec("SELECT COALESCE(SUM(credits),0) AS credits FROM credit_reservations WHERE status='held' AND run_id!=? AND expires_at>?", runId, now).toArray() as Array<{ credits: number }>;
+          if ((actual as number) > this.currentBalance() - (other[0]?.credits ?? 0)) return { ok: false, insufficient: true };
+          sql.exec("UPDATE credit_reservations SET status='settled',updated_at=? WHERE run_id=? AND status='held'", now, runId);
+          if ((actual as number) > 0) {
+            const balanceAfter = this.currentBalance() - (actual as number);
+            sql.exec("INSERT INTO credit_ledger (id,delta_credits,reason,model,balance_after,idempotency_key) VALUES (?,?,?,NULL,?,?)", crypto.randomUUID(), -(actual as number), "agent_run", balanceAfter, `run:${runId}`);
+          }
+          sql.exec("INSERT INTO credit_run_settlements (run_id,actual_credits,settled_at) VALUES (?,?,?)", runId, actual, now);
+          return { ok: true, deduplicated: false, actual_credits: actual, balance_credits: this.currentBalance() };
+        });
+        if (!result.ok) return Response.json({ error_code: "insufficient_credits" }, { status: 402 });
+        return Response.json(result);
+      }
+      return Response.json({ error_code: "reservation_action_invalid" }, { status: 400 });
+    }
+
     // GET /plan-tier — Phase 4 (money): the end user's own personal-plan tier. No auth inside the
     // DO itself (matches this class's own established convention — every route here trusts its
     // caller, and it's the wrapping workers/spaces/src/index.ts route that gates who can reach
@@ -305,8 +370,9 @@ export class ProductUserDO extends DurableObject {
       }
       const debit = Math.ceil(body.credits);
       const balance = this.currentBalance();
-      if (debit > balance) {
-        return Response.json({ error: "insufficient_credits", balance_credits: balance }, { status: 402 });
+      const held = this.ctx.storage.sql.exec("SELECT COALESCE(SUM(credits),0) AS credits FROM credit_reservations WHERE status='held' AND expires_at>?", new Date().toISOString()).toArray() as Array<{ credits: number }>;
+      if (debit > balance - (held[0]?.credits ?? 0)) {
+        return Response.json({ error: "insufficient_credits", balance_credits: balance, reserved_credits: held[0]?.credits ?? 0 }, { status: 402 });
       }
       const balanceAfter = balance - debit;
       // F-47/F-50: the SELECT-then-INSERT above is already atomic within a single DO instance

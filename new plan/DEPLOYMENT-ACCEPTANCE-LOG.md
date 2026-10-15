@@ -1,14 +1,15 @@
 # Deployment and external acceptance log
 
-Recorded: 2026-10-15 14:16 UTC. Branch: `Mcbt5s-Backup-2`. No live deployment or provider request was sent during this check.
+Recorded: 2026-10-15 14:50 UTC. Branch: `Mcbt5s-Backup-2`. No live deployment or provider request was sent during this check.
 
 | Check | Target / test identity | Result | Cleanup / next action |
 | --- | --- | --- | --- |
 | Spaces Worker package and binding build | Local Wrangler dry-run, top-level development config | **DRY-RUN PASSED**. 12,010.25 KiB / 1,968.55 KiB gzip; expected SpaceDO and SCRIPTS_R2 bindings appear. | Dry-run generated no deployment. Apply SpaceDO migrations 73–74 by normal DO migration replay after a reviewed deploy. |
 | Agents Worker package and binding build | Local Wrangler dry-run, top-level development config | **DRY-RUN PASSED**. Build completed, including configured container images and bindings. | No image or Worker deployment. |
 | Notifications Worker package and binding build | Local Wrangler dry-run, top-level development config | **DRY-RUN PASSED**. 425.76 KiB / 82.44 KiB gzip. | No deployment. |
-| D1 migration batch 0093–0097 | Local in-memory SQLite, synthetic base `users` and `product_end_users` tables | **LOCAL TEST PASSED**. Email reply, agent-address, web-push, language, and voice schemas were created in order. This does not prove production D1 state. | Apply migrations once in order through deployment process; verify production migration ledger and columns. |
-| SpaceDO migrations v72–v74 | Local SQLite shim with full migration replay and restart/replay tests | **LOCAL TEST PASSED**. Migration v73 metadata and v74 session hold are present once. | Verify replay against deployed SpaceDO after deployment. |
+| Billing Worker package and binding build | Local Wrangler dry-run, top-level development config | **DRY-RUN PASSED**. 362.77 KiB / 75.99 KiB gzip; D1, queue, and service bindings resolve. | Dry-run generated no deployment. |
+| D1 migration batch 0093–0098 | Local in-memory SQLite, synthetic base `users` and `product_end_users` tables | **LOCAL TEST PASSED**. Email reply, agent-address, web-push, language, voice, and LLM-token reservation schemas were created in order. This does not prove production D1 state. | Apply migrations once in order through deployment process; verify production migration ledger and columns. |
+| SpaceDO migrations v72–v75 and ProductUserDO migration v4 | Local SQLite shim with migration replay and restart/replay tests | **LOCAL TEST PASSED**. Retention, session holds, project reservations, and personal credit reservations replay locally. | Verify replay against deployed Durable Objects after deployment. |
 | Cloudflare D1 / Workers deployment | Production account | **UNRUN**. No live account access/deployment was exercised. | Account operator deploys only after review, then records environment, timestamp, migration state, and rollback result. |
 | Email Routing ingress and sending | Development/production domains | **BLOCKED / UNRUN**. Wrangler dry-run reports empty `EMAIL_INGRESS_DOMAIN` and `EMAIL_SENDING_DOMAIN`; no inbound or outbound live message was sent. | Human operator must own/verify a domain, configure routing and sending, and test with a controlled mailbox. |
 | Web Push delivery | Notifications Worker environment | **UNRUN**. Local code tests do not establish configured VAPID secrets or browser delivery. | Human operator configures VAPID public/private/subject secrets, then verifies subscribe, delivery, unsubscribe, and expired-endpoint cleanup. |

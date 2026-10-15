@@ -4908,6 +4908,20 @@ app.post("/internal/product-users/:spaceId/:endUserId/credits/deduct", async (c)
   return c.json(result, deductRes.status as 201 | 402 | 400);
 });
 
+app.use("/internal/product-users/:spaceId/:endUserId/credits/reservations", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.post("/internal/product-users/:spaceId/:endUserId/credits/reservations", async (c) => {
+  const spaceId = c.req.param("spaceId"), endUserId = c.req.param("endUserId");
+  const body = await c.req.json<{ action?: string; reservation_id?: string; run_id?: string; credits?: number }>();
+  if (!body.action || !body.run_id) return c.json({ error_code: "bad_request" }, 400);
+  const root = await resolveProductRootSpace(c.env, spaceId);
+  if (!root) return c.json({ error_code: "not_found" }, 404);
+  const stub = await productUserDoStub(c.env, root.id, endUserId, root.tenant_id);
+  const response = await stub.fetch(new Request("http://do/credits/reservations", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+  }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json" } });
+});
+
 // POST /internal/product-users/:spaceId/:endUserId/credits/refresh-monthly — Tier 2 metering
 // follow-up: creditsIncludedPerMonth was builder-configurable but only ever granted ONCE, at
 // signup, despite the field name implying a recurring monthly allowance. Deliberately NOT a new

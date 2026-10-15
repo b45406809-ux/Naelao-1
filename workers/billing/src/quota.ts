@@ -62,6 +62,23 @@ export const PLAN_LIMITS: Record<string, QuotaLimits> = {
   },
 };
 
+/** SQL gate fragments for atomically admitting an estimated LLM request beside real usage and
+ * unexpired holds. Values are returned separately so the caller can append them to the D1 INSERT. */
+export function llmReservationAdmission(orgId: string, estimatedTokens: number, limits: QuotaLimits, allowOverage: boolean): { predicate: string; bindings: Array<string | number> } {
+  if (allowOverage) return { predicate: "1=1", bindings: [] };
+  const windows = [
+    { start: "datetime('now','start of day')", limit: limits.maxDailyTokens },
+    { start: "datetime('now','-7 days')", limit: limits.maxWeeklyTokens },
+    { start: "datetime('now','start of month')", limit: limits.maxMonthlyTokens },
+  ].filter((window): window is { start: string; limit: number } => typeof window.limit === "number" && window.limit > 0);
+  const bindings: Array<string | number> = [];
+  const predicates = windows.map(window => {
+    bindings.push(estimatedTokens, orgId, orgId, window.limit);
+    return `? + COALESCE((SELECT SUM(quantity) FROM usage_events WHERE org_id=? AND event_type='llm_tokens' AND recorded_at>=${window.start}),0) + COALESCE((SELECT SUM(estimated_tokens) FROM llm_token_reservations WHERE org_id=? AND status='held' AND expires_at>datetime('now') AND created_at>=${window.start}),0) <= ?`;
+  });
+  return { predicate: predicates.length ? predicates.join(" AND ") : "1=1", bindings };
+}
+
 type QuotaMetric = "spaces" | "kb_docs" | "api_calls" | "llm_tokens" | "infra_credits";
 
 /** KV key format: quota:{orgId}:{metric} */
