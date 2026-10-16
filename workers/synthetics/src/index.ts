@@ -42,6 +42,14 @@ async function runCheck(url: string, name: string): Promise<SyntheticResult> {
   }
 }
 
+export function buildSyntheticChecks(apiBase: string): Array<{ name: string; url: string }> {
+  const base = apiBase.replace(/\/+$/, "");
+  return [
+    { name: "router_health", url: `${base}/health` },
+    { name: "platform_dependencies", url: `${base}/health/dependencies` },
+  ];
+}
+
 export default {
   async fetch(_request: Request, env: Env): Promise<Response> {
     if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
@@ -54,10 +62,7 @@ export default {
     if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
 
     const apiBase = env.PLATFORM_API_URL;
-    const checks = [
-      { name: "auth_health", url: `${apiBase}/health` },
-      { name: "spaces_health", url: `${apiBase}/health` },
-    ];
+    const checks = buildSyntheticChecks(apiBase);
 
     const results = await Promise.all(checks.map(c => runCheck(c.url, c.name)));
 

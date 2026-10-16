@@ -108,6 +108,7 @@ function validateEnv(env: Env): void {
 const app = new Hono<{ Bindings: Env }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
+app.get("/health", (c) => c.json({ ok: true, service: "spaces", env: c.env.ENVIRONMENT }));
 registerGadgetMcpRoutes(app);
 registerDynamicPageRoutes(app);
 registerRecipeRoutes(app);

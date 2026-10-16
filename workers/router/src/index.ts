@@ -235,6 +235,29 @@ app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
 app.get("/health", (c) =>
   c.json({ status: "ok", env: c.env.ENVIRONMENT, ts: Date.now() })
 );
+
+// A service-level canary complements the router's own health check. Keep this bounded to
+// fixed internal health paths and return only service names/status codes, never response bodies.
+app.get("/health/dependencies", async (c) => {
+  const checks = [
+    ["auth", c.env.AUTH_WORKER],
+    ["spaces", c.env.SPACES_WORKER],
+  ] as const;
+  const results = await Promise.all(checks.map(async ([service, worker]) => {
+    const startedAt = Date.now();
+    try {
+      const response = await worker.fetch(new Request("http://internal/health", {
+        method: "GET",
+        signal: AbortSignal.timeout(2_500),
+      }));
+      return { service, status: response.status, latency_ms: Date.now() - startedAt, ok: response.ok };
+    } catch {
+      return { service, status: 0, latency_ms: Date.now() - startedAt, ok: false };
+    }
+  }));
+  const ok = results.every((result) => result.ok);
+  return c.json({ ok, services: results }, ok ? 200 : 503);
+});
 for (const path of ["/v1/marketplace", "/v1/marketplace/:id", "/v1/marketplace/:id/reviews"]) app.get(path, async c => {
   if (!c.env.MARKETPLACE_WORKER) return c.json({ error_code: "marketplace_unavailable" }, 503);
   return c.env.MARKETPLACE_WORKER.fetch(new Request(c.req.url, { method: "GET" }));
