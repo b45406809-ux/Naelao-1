@@ -7,7 +7,7 @@ import { mintInternalToken } from "@naelao/http";
 
 const image = "registry.example/media@sha256:" + "a".repeat(64);
 function contract(): ContainerContract { return { schemaVersion: "1.0", kind: "container", id: "media", version: "1.0.0", permissions: [{ scope: "PROJECT_BOUND", actions: ["execute"], resource: "workspace" }], capabilityRequirements: ["native-execution"], lifecycle: {}, image, resources: { memoryMb: 1024, cpuCores: 0.25, timeoutSeconds: 55 }, exportedBinaries: ["ffmpeg", "ffprobe"], networkPolicy: "none" }; }
-function installed(): InstalledContainer { return { tenantId: "tenant", spaceId: "space", projectId: "project", installationId: "install-one", extensionId: "ext_media", contract: contract() }; }
+function installed(): InstalledContainer { return { tenantId: "tenant", spaceId: "space", projectId: "project", installationId: "install-one", extensionId: "ext_media", scope: "PROJECT_BOUND", contract: contract() }; }
 function scope(): ContainerInvocationScope { return { tenantId: "tenant", spaceId: "space", projectId: "project", actorId: "user", agentId: "worker", runId: "run", executionId: "execution", timeoutMs: 55000, deadline: Date.now() + 55000 }; }
 const owner = { tenantId: "tenant", spaceId: "space", projectId: "project", userId: "user" };
 const invocation = () => ({ name: "code-exec.execute_bash", code: "export async function run() { return 1 }", args: {}, tier: 6 as const, tenantId: "tenant", spaceId: "space", projectId: "project", userId: "user", agentId: "worker", runId: "run", maxTier: 6 as const });
@@ -80,9 +80,9 @@ describe("production container lifecycle", () => {
   function fixture() {
     const records = new Map<string, unknown>(); let running = false;
     const requests: Request[] = [], billing: Request[] = [];
-    const runtime = { get running() { return running; }, start: vi.fn(() => { running = true; }), destroy: vi.fn(async () => { running = false; }), inspect: vi.fn(async () => ({ image })),
+    const runtime = { get running() { return running; }, start: vi.fn(() => { running = true; }), destroy: vi.fn(async () => { running = false; }), inspect: vi.fn(async () => ({ image })), interceptOutboundHttps: vi.fn(async () => undefined),
       getTcpPort: () => ({ fetch: async (request: Request) => { requests.push(request); return Response.json({ ok: true, result: { stdout: "built" } }); } }) };
-    const ctx = { container: runtime, storage: { get: async (key: string) => records.get(key), put: async (key: string, value: unknown) => { records.set(key, structuredClone(value)); }, delete: async (key: string) => records.delete(key), setAlarm: vi.fn(async () => undefined) } };
+    const ctx = { container: runtime, exports: { PackageEgress: () => ({ fetch: async () => Response.json({ ok: true }) }) }, storage: { get: async (key: string) => records.get(key), put: async (key: string, value: unknown) => { records.set(key, structuredClone(value)); }, delete: async (key: string) => records.delete(key), setAlarm: vi.fn(async () => undefined) } };
     const env = { PLATFORM_SECRET: "secret", BILLING_WORKER: { fetch: async (request: Request) => { billing.push(request); return Response.json({ reservation_id: (await request.clone().json()).reservation_id }); } } };
     return { sandbox: new ToolSandboxDO(ctx as never, env as never), runtime, records, requests, billing, ctx, env };
   }

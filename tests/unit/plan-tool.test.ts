@@ -37,7 +37,9 @@ const LOOP_OPTS = { goal: "do the thing", startupObserve: "observe_filesystem", 
 describe("applyPlanOp — the shared plan-mutation function", () => {
   it("plan.set replaces the whole plan with fresh, not-done steps", () => {
     const state: PlanState = { steps: [] };
+    applyPlanOp(state, "plan.open_edit", {});
     applyPlanOp(state, "plan.set", { steps: ["find sources", "verify claims", "write report"] });
+    applyPlanOp(state, "plan.close_edit", {});
     expect(state.steps).toHaveLength(3);
     expect(state.steps.every((s) => !s.done)).toBe(true);
     expect(state.steps[0]!.text).toBe("find sources");
@@ -45,25 +47,33 @@ describe("applyPlanOp — the shared plan-mutation function", () => {
 
   it("plan.complete_step marks by id AND by exact text", () => {
     const state: PlanState = { steps: [] };
+    applyPlanOp(state, "plan.open_edit", {});
     applyPlanOp(state, "plan.set", { steps: ["alpha", "beta"] });
+    applyPlanOp(state, "plan.close_edit", {});
     const alphaId = state.steps[0]!.id;
+    applyPlanOp(state, "plan.start_step", { step: alphaId });
     applyPlanOp(state, "plan.complete_step", { step: alphaId });
+    applyPlanOp(state, "plan.start_step", { step: "beta" });
     applyPlanOp(state, "plan.complete_step", { step: "beta" }); // by text
     expect(state.steps.every((s) => s.done)).toBe(true);
   });
 
   it("plan.add_step appends; plan.clear empties", () => {
     const state: PlanState = { steps: [] };
+    applyPlanOp(state, "plan.open_edit", {});
     applyPlanOp(state, "plan.set", { steps: ["one"] });
     applyPlanOp(state, "plan.add_step", { step: "two" });
     expect(state.steps).toHaveLength(2);
     applyPlanOp(state, "plan.clear", {});
+    applyPlanOp(state, "plan.close_edit", {});
     expect(state.steps).toHaveLength(0);
   });
 
   it("caps a runaway plan.set at MAX_PLAN_STEPS", () => {
     const state: PlanState = { steps: [] };
+    applyPlanOp(state, "plan.open_edit", {});
     applyPlanOp(state, "plan.set", { steps: Array.from({ length: 200 }, (_, i) => `step ${i}`) });
+    applyPlanOp(state, "plan.close_edit", {});
     expect(state.steps.length).toBeLessThanOrEqual(40);
   });
 });
@@ -74,11 +84,14 @@ describe("the plan prebuilt ops (through ScriptToolSurface)", () => {
     env.plan = { steps: [] }; // the loop normally does this; set it here to drive the op directly
     const tools = new ScriptToolSurface(env, ["plan"]);
 
+    await tools.run("plan.open_edit", {});
     const setRes = await tools.run("plan.set", { steps: ["a", "b"] });
     expect(setRes.ok).toBe(true);
     expect((setRes.output as { total: number; remaining: number }).total).toBe(2);
     expect((setRes.output as { remaining: number }).remaining).toBe(2);
     expect(env.plan.steps).toHaveLength(2);
+    await tools.run("plan.close_edit", {});
+    await tools.run("plan.start_step", { step: "a" });
 
     const doneRes = await tools.run("plan.complete_step", { step: "a" });
     expect(doneRes.ok).toBe(true);
@@ -90,7 +103,10 @@ describe("the plan prebuilt ops (through ScriptToolSurface)", () => {
     const env = makeEnv();
     env.plan = { steps: [] };
     const tools = new ScriptToolSurface(env, ["plan"]);
+    await tools.run("plan.open_edit", {});
     await tools.run("plan.set", { steps: ["real"] });
+    await tools.run("plan.close_edit", {});
+    await tools.run("plan.start_step", { step: "real" });
     const res = await tools.run("plan.complete_step", { step: "does-not-exist" });
     // The op ran (ScriptRunResult.ok true, the codebase convention), but its OWN output.ok is false.
     expect((res.output as { ok: boolean }).ok).toBe(false);
@@ -112,9 +128,13 @@ describe("loop plan gate — don't stop until the plan is done", () => {
     const env = makeEnv();
     const tools = new ScriptToolSurface(env, ["plan"]);
     const { reasoner, seen } = scriptedReasoner([
+      { action: "run", name: "plan.open_edit", params: {} },
       { action: "run", name: "plan.set", params: { steps: ["step one", "step two"] } },
+      { action: "run", name: "plan.close_edit", params: {} },
+      { action: "run", name: "plan.start_step", params: { step: "step one" } },
       { action: "answer", text: "premature — should be refused" },
       { action: "run", name: "plan.complete_step", params: { step: "step one" } },
+      { action: "run", name: "plan.start_step", params: { step: "step two" } },
       { action: "run", name: "plan.complete_step", params: { step: "step two" } },
       { action: "answer", text: "all done" },
     ]);
@@ -124,15 +144,18 @@ describe("loop plan gate — don't stop until the plan is done", () => {
     // The premature answer did NOT end the run; the final answer (after completing the plan) did.
     expect(result.result?.ok).toBe(true);
     expect(result.result?.output).toBe("all done");
-    // 5 decide calls: the refused answer forced an extra turn rather than ending the run.
-    expect(seen).toHaveLength(5);
+    // 9 decisions, including transaction setup and ordered step transitions.
+    expect(seen).toHaveLength(9);
   });
 
   it("shows the model a plan-not-finished correction after a refused stop", async () => {
     const env = makeEnv();
     const tools = new ScriptToolSurface(env, ["plan"]);
     const { reasoner, seen } = scriptedReasoner([
+      { action: "run", name: "plan.open_edit", params: {} },
       { action: "run", name: "plan.set", params: { steps: ["only step"] } },
+      { action: "run", name: "plan.close_edit", params: {} },
+      { action: "run", name: "plan.start_step", params: { step: "only step" } },
       { action: "answer", text: "too early" },
       { action: "run", name: "plan.complete_step", params: { step: "only step" } },
       { action: "answer", text: "done" },
@@ -141,7 +164,7 @@ describe("loop plan gate — don't stop until the plan is done", () => {
     await runScriptLoop(env, tools, reasoner, ["plan"], LOOP_OPTS);
 
     // The turn AFTER the refused answer must carry the correction in its priorSteps.
-    const afterRefusal = seen[2]!.priorSteps ?? [];
+    const afterRefusal = seen.find((turn) => (turn.priorSteps ?? []).some((p) => p.name === "(plan not finished)"))?.priorSteps ?? [];
     const correction = afterRefusal.find((p) => p.name === "(plan not finished)");
     expect(correction).toBeDefined();
     expect(correction!.ok).toBe(false);
@@ -152,8 +175,12 @@ describe("loop plan gate — don't stop until the plan is done", () => {
     const env = makeEnv();
     const tools = new ScriptToolSurface(env, ["plan"]);
     const { reasoner, seen } = scriptedReasoner([
+      { action: "run", name: "plan.open_edit", params: {} },
       { action: "run", name: "plan.set", params: { steps: ["x", "y"] } },
+      { action: "run", name: "plan.close_edit", params: {} },
+      { action: "run", name: "plan.start_step", params: { step: "x" } },
       { action: "run", name: "plan.complete_step", params: { step: "x" } },
+      { action: "run", name: "plan.start_step", params: { step: "y" } },
       { action: "run", name: "plan.complete_step", params: { step: "y" } },
       { action: "answer", text: "done" },
     ]);
@@ -171,7 +198,10 @@ describe("loop plan gate — don't stop until the plan is done", () => {
     const env = makeEnv();
     const tools = new ScriptToolSurface(env, ["plan"]);
     const { reasoner, seen } = scriptedReasoner([
+      { action: "run", name: "plan.open_edit", params: {} },
       { action: "run", name: "plan.set", params: { steps: ["do it"] } },
+      { action: "run", name: "plan.close_edit", params: {} },
+      { action: "run", name: "plan.start_step", params: { step: "do it" } },
       { action: "give_up", reason: "bailing early" },
       { action: "run", name: "plan.complete_step", params: { step: "do it" } },
       { action: "answer", text: "finished after all" },
@@ -181,7 +211,7 @@ describe("loop plan gate — don't stop until the plan is done", () => {
     // The give_up with an open plan was refused; the run continued and answered.
     expect(result.result?.ok).toBe(true);
     expect(result.result?.output).toBe("finished after all");
-    expect(seen).toHaveLength(4);
+    expect(seen).toHaveLength(7);
   });
 
   it("a run with no plan is unaffected — answers immediately", async () => {
@@ -203,6 +233,7 @@ describe("loop plan gate — don't stop until the plan is done", () => {
     // step still open → must be refused.
     const { reasoner, seen } = scriptedReasoner([
       { action: "answer", text: "resuming and stopping early" }, // refused: step two still open
+      { action: "run", name: "plan.start_step", params: { step: "step two" } },
       { action: "run", name: "plan.complete_step", params: { step: "step two" } },
       { action: "answer", text: "now finished" },
     ]);
@@ -210,13 +241,16 @@ describe("loop plan gate — don't stop until the plan is done", () => {
     const result = await runScriptLoop(env, tools, reasoner, ["plan"], {
       ...LOOP_OPTS,
       resumeSteps: [
+        { name: "plan.open_edit", params: {}, ok: true },
         { name: "plan.set", params: { steps: ["step one", "step two"] }, ok: true },
+        { name: "plan.close_edit", params: {}, ok: true },
+        { name: "plan.start_step", params: { step: "step one" }, ok: true },
         { name: "plan.complete_step", params: { step: "step one" }, ok: true },
       ],
     });
 
     expect(result.result?.output).toBe("now finished");
     // The first answer was refused because the reconstructed plan still had step two open.
-    expect(seen).toHaveLength(3);
+    expect(seen).toHaveLength(4);
   });
 });

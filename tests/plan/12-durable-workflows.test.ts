@@ -38,12 +38,12 @@ describe("Step 12 durable workflow contracts", () => {
     expect(() => transitionWorkflow(cancelled, "running", 3000)).toThrow("terminal");
     expect(transitionWorkflow(record, "running", identity.expiresAt + 1).status).toBe("expired");
   });
-  it("compiles typed workflow code without keyword-intent rejection", () => {
-    const compiled = compileWorkflowEntrypoint('export async function execute(step: any, ctx: any) { const text="threads and channels"; return step.do("first", async()=>text); }');
+  it("compiles typed workflow code without keyword-intent rejection", async () => {
+    const compiled = await compileWorkflowEntrypoint('export async function execute(step: any, ctx: any) { const text="threads and channels"; return step.do("first", async()=>text); }');
     expect(compiled.source).toContain("nativeStep.sleep");
     expect(compiled.source).toContain("control.authorize");
     expect(compiled.source).not.toContain('step.do("execute"');
-    expect(() => compileWorkflowEntrypoint('import fs from "node:fs"; export function execute(step,ctx){}')).toThrow("import");
+    await expect(compileWorkflowEntrypoint('import fs from "node:fs"; export function execute(step,ctx){}')).rejects.toThrow("import");
   });
   it("reuses a committed effect after a new host instance reconstructs the journal", async () => {
     const storage = new PersistedStorage();
