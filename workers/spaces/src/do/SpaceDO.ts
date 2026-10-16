@@ -1987,6 +1987,30 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_extension_instances_project ON extension_instances(space_id, project_id, status);
     `,
   },
+  {
+    version: 81,
+    description: "logical project graduation into a subspace with stable runtime identity",
+    up: `
+      ALTER TABLE projects ADD COLUMN subspace_id TEXT REFERENCES spaces(id) ON DELETE SET NULL;
+      ALTER TABLE projects ADD COLUMN graduated_at TEXT;
+      ALTER TABLE projects ADD COLUMN graduated_by TEXT;
+      DROP INDEX IF EXISTS idx_projects_space_name;
+      CREATE UNIQUE INDEX idx_projects_space_root_name ON projects(space_id, name) WHERE subspace_id IS NULL;
+      CREATE UNIQUE INDEX idx_projects_space_subspace_name ON projects(space_id, subspace_id, name) WHERE subspace_id IS NOT NULL;
+      DROP INDEX IF EXISTS idx_projects_singleton_kind;
+      CREATE UNIQUE INDEX idx_projects_root_singleton_kind ON projects(space_id, kind)
+        WHERE subspace_id IS NULL AND is_singleton_kind = 1 AND status = 'active';
+      CREATE UNIQUE INDEX idx_projects_subspace_singleton_kind ON projects(space_id, subspace_id, kind)
+        WHERE subspace_id IS NOT NULL AND is_singleton_kind = 1 AND status = 'active';
+      CREATE TABLE project_subspace_migrations (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL, source_space_id TEXT NOT NULL,
+        target_subspace_id TEXT NOT NULL,
+        direction TEXT NOT NULL CHECK (direction IN ('graduate','return_to_parent')),
+        actor_id TEXT, created_at TEXT NOT NULL
+      );
+      CREATE INDEX idx_project_subspace_migrations_project ON project_subspace_migrations(project_id, created_at);
+    `,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -2924,6 +2948,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const projectMigrationPreflightMatch = url.pathname.match(/^\/projects\/([^/]+)\/subspace-migration-preflight$/);
       if (method === "GET" && projectMigrationPreflightMatch?.[1]) {
         return this.projectSubspaceMigrationPreflight(projectMigrationPreflightMatch[1]);
+      }
+      const projectSubspaceActionMatch = url.pathname.match(/^\/projects\/([^/]+)\/(graduate-to-subspace|return-to-parent)$/);
+      if (method === "POST" && projectSubspaceActionMatch?.[1]) {
+        return this.changeProjectSubspace(projectSubspaceActionMatch[1], projectSubspaceActionMatch[2] as "graduate-to-subspace" | "return-to-parent", request);
       }
       const projectPromotionMatch = url.pathname.match(/^\/projects\/([^/]+)\/promote$/);
       if (method === "POST" && projectPromotionMatch?.[1]) {
@@ -5260,10 +5288,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // that predate visibility) are unaffected.
   private listProjects(params: URLSearchParams): Response {
     const spaceId = params.get("space_id") ?? "";
+    const subspaceId = params.get("subspace_id");
     const viewerId = params.get("viewer_id") ?? "";
     const rows = queryAll<{
       id: string;
       space_id: string;
+      subspace_id: string | null;
       name: string;
       description: string;
       status: string;
@@ -5294,18 +5324,21 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // appendMessage on every thread-linked message write — ordinary project chat AND consult
       // subthreads alike) now takes precedence over created_at, so a project an assistant just
       // consulted an agent about really does come back to the top, not just one a human typed in.
-      "SELECT id, space_id, name, description, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at, last_activity_at, kind, is_singleton_kind, template_mode, viewport_config FROM projects WHERE space_id = ? AND status != 'archived' ORDER BY COALESCE(last_activity_at, created_at) DESC",
-      spaceId
+      "SELECT id, space_id, subspace_id, name, description, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at, last_activity_at, kind, is_singleton_kind, template_mode, viewport_config FROM projects WHERE space_id = ? AND status != 'archived' AND subspace_id IS ? ORDER BY COALESCE(last_activity_at, created_at) DESC",
+      spaceId, subspaceId
     );
     const manager = params.get("space_manager") === "1";
-    const visible = rows.filter(
-      (r) =>
-        r.visibility === "public" ||
-        manager ||
-        (viewerId !== "" &&
-          (this.getProjectMemberRole(r.id, viewerId) !== null ||
-            this.isSpaceOwnerOrAdmin(viewerId, r.space_id)))
-    );
+    const visible = rows.filter((r) => {
+      if (r.visibility === "public" || manager) return true;
+      if (!viewerId) return false;
+      const subspaceRole = r.subspace_id
+        ? queryOne<{ role: string }>(this.ctx.storage.sql as never,
+            "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?", r.subspace_id, viewerId)?.role
+        : undefined;
+      return this.getProjectMemberRole(r.id, viewerId) !== null ||
+        this.isSpaceOwnerOrAdmin(viewerId, r.space_id) ||
+        subspaceRole === "owner" || subspaceRole === "admin";
+    });
     return Response.json({
       data: visible.map((r) => ({
         ...r,
@@ -5319,6 +5352,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private async createProject(request: Request): Promise<Response> {
     const body = await request.json<{
       space_id: string;
+      subspace_id?: string;
       name: string;
       description?: string;
       tenant_id?: string;
@@ -5346,6 +5380,26 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         },
         { status: 400 }
       );
+    }
+    const subspaceId = body.subspace_id ?? null;
+    if (subspaceId) {
+      const subspace = queryOne<{ parent_id: string | null; depth: number; status: string }>(
+        this.ctx.storage.sql as never,
+        "SELECT parent_id, depth, status FROM spaces WHERE id = ?",
+        subspaceId
+      );
+      if (!subspace || subspace.status !== "active" || subspace.depth !== 1 || subspace.parent_id !== body.space_id) {
+        return Response.json({ error_code: "invalid_subspace", message: "The subspace must be an active direct child of this project space" }, { status: 400 });
+      }
+      if (body.created_by) {
+        const member = queryOne<{ role: string }>(this.ctx.storage.sql as never,
+          "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?", subspaceId, body.created_by);
+        const rootMember = member ? null : queryOne<{ role: string }>(this.ctx.storage.sql as never,
+          "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?", body.space_id, body.created_by);
+        if ((!member && rootMember?.role !== "owner" && rootMember?.role !== "admin") || member?.role === "viewer") {
+          return Response.json({ error_code: "forbidden", message: "Membership with project creation access in the subspace is required" }, { status: 403 });
+        }
+      }
     }
     if (body.lifecycle !== undefined && body.lifecycle !== "finite" && body.lifecycle !== "continuous") {
       return Response.json({ error_code: "bad_request", message: "lifecycle must be 'finite' or 'continuous'" }, { status: 400 });
@@ -5431,13 +5485,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           );
         }
       } else {
-        const callerRole =
+        const creatorRole =
           queryOne<{ role: string }>(
             this.ctx.storage.sql as never,
             "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?",
-            body.space_id,
+            subspaceId ?? body.space_id,
             body.created_by
-          )?.role ?? "";
+          )?.role ?? (subspaceId ? queryOne<{ role: string }>(this.ctx.storage.sql as never,
+            "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?", body.space_id, body.created_by)?.role ?? "" : "");
+        const callerRole = creatorRole;
         if (!roleMeetsMinimum(callerRole, featureKind.minCreationRole)) {
           return Response.json(
             {
@@ -5453,8 +5509,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (isSingletonKind) {
         const existing = queryOne<{ id: string }>(
           this.ctx.storage.sql as never,
-          "SELECT id FROM projects WHERE space_id = ? AND kind = ? AND is_singleton_kind = 1 AND status = 'active'",
+          "SELECT id FROM projects WHERE space_id = ? AND subspace_id IS ? AND kind = ? AND is_singleton_kind = 1 AND status = 'active'",
           body.space_id,
+          subspaceId,
           kind
         );
         if (existing) {
@@ -5474,8 +5531,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     // project.created should only fire on a genuinely NEW project, not a re-run of bootstrap.
     const alreadyExisted = !!queryOne<{ id: string }>(
       this.ctx.storage.sql as never,
-      "SELECT id FROM projects WHERE space_id = ? AND name = ?",
+      "SELECT id FROM projects WHERE space_id = ? AND subspace_id IS ? AND name = ?",
       body.space_id,
+      subspaceId,
       body.name
     );
     // Space collaboration (A1.8): before creating a genuinely new project, check for a
@@ -5486,8 +5544,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (!alreadyExisted) {
       const activeProjects = queryAll<{ id: string; name: string }>(
         this.ctx.storage.sql as never,
-        "SELECT id, name FROM projects WHERE space_id = ? AND status != 'archived'",
-        body.space_id
+        "SELECT id, name FROM projects WHERE space_id = ? AND subspace_id IS ? AND status != 'archived'",
+        body.space_id,
+        subspaceId
       );
       possibleDuplicates = findPossibleDuplicateProjects(
         body.name,
@@ -5503,11 +5562,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     try {
       execute(
         this.ctx.storage.sql as never,
-        `INSERT INTO projects (id, space_id, name, description, status, kind, is_singleton_kind, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at, lifecycle, execution_ceiling, template_mode, viewport_config)
-         VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(space_id, name) DO NOTHING`,
+        `INSERT INTO projects (id, space_id, subspace_id, name, description, status, kind, is_singleton_kind, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at, lifecycle, execution_ceiling, template_mode, viewport_config)
+         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT DO NOTHING`,
         id,
         body.space_id,
+        subspaceId,
         body.name,
         body.description ?? "",
         kind,
@@ -5533,8 +5593,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       ) {
         const existing = queryOne<{ id: string }>(
           this.ctx.storage.sql as never,
-          "SELECT id FROM projects WHERE space_id = ? AND kind = ? AND is_singleton_kind = 1 AND status = 'active'",
+          "SELECT id FROM projects WHERE space_id = ? AND subspace_id IS ? AND kind = ? AND is_singleton_kind = 1 AND status = 'active'",
           body.space_id,
+          subspaceId,
           kind
         );
         return Response.json(
@@ -5564,8 +5625,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       viewport_config: string;
     }>(
       this.ctx.storage.sql as never,
-      "SELECT id, name, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at, kind, execution_ceiling, template_mode, viewport_config FROM projects WHERE space_id = ? AND name = ?",
+      "SELECT id, name, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at, kind, execution_ceiling, template_mode, viewport_config FROM projects WHERE space_id = ? AND subspace_id IS ? AND name = ?",
       body.space_id,
+      subspaceId,
       body.name
     );
     // The creator is always an implicit project_members owner — so a private project the creator
@@ -6533,43 +6595,116 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return this.getProjectModeState(projectId);
   }
 
-  /** Read-only inventory for the proposed copy/verify/cutover project graduation.
-   * This endpoint deliberately never claims the project is migratable: AgentDO history,
-   * ToolSandbox workspaces and worker-owned workflow state need a coordinated copy protocol. */
+  /** Read-only inventory before a logical subspace graduation. */
   private projectSubspaceMigrationPreflight(projectId: string): Response {
     const sql = this.ctx.storage.sql as never;
-    const project = queryOne<{ id: string; space_id: string; name: string; status: string }>(sql,
-      "SELECT id, space_id, name, status FROM projects WHERE id = ?", projectId);
+    const project = queryOne<{ id: string; space_id: string; subspace_id: string | null; name: string; status: string }>(sql,
+      "SELECT id, space_id, subspace_id, name, status FROM projects WHERE id = ?", projectId);
     if (!project) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
-    const count = (table: string, predicate: string) => queryOne<{ count: number }>(sql,
-      `SELECT COUNT(*) AS count FROM ${table} WHERE ${predicate}`, projectId)?.count ?? 0;
-    const inventory = {
-      threads: count("threads", "project_id = ?"),
-      tasks: count("tasks", "project_id = ?"),
-      workspace_files: count("workspace_files", "project_id = ?"),
-      project_rules: count("project_rules", "project_id = ?"),
-      event_triggers: count("event_triggers", "project_id = ?"),
-      scheduled_jobs: count("project_scheduled_jobs", "project_id = ?"),
-      extension_instances: count("extension_instances", "project_id = ?"),
-      artifact_linter_failures: count("artifact_linter_failures", "project_id = ?"),
-    };
+    const projectScopedTables: Record<string, number> = {};
+    const inaccessibleTables: string[] = [];
+    const tables = queryAll<{ name: string }>(sql, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name");
+    for (const { name } of tables) {
+      const quotedName = `"${name.replaceAll('"', '""')}"`;
+      try {
+        const columns = queryAll<{ name: string }>(sql, "SELECT name FROM pragma_table_info(?)", name);
+        if (!columns.some((column) => column.name === "project_id")) continue;
+        const count = queryOne<{ count: number }>(sql, `SELECT COUNT(*) AS count FROM ${quotedName} WHERE project_id = ?`, projectId)?.count;
+        if (count === undefined) inaccessibleTables.push(name);
+        else if (count > 0) projectScopedTables[name] = count;
+      } catch { inaccessibleTables.push(name); }
+    }
+    const root = queryOne<{ space_type: string; depth: number; status: string }>(sql,
+      "SELECT space_type, depth, status FROM spaces WHERE id = ?", project.space_id);
+    const blockers = [
+      ...(project.status !== "active" ? ["Only active projects can graduate."] : []),
+      ...(project.subspace_id ? ["Project already belongs to a subspace."] : []),
+      ...(!root || root.status !== "active" || root.depth !== 0 || root.space_type !== "launchpad" ? ["Graduation requires an active Launchpad root space."] : []),
+      ...(inaccessibleTables.length ? ["One or more local project tables could not be inventoried."] : []),
+    ];
     return Response.json({
       project_id: project.id,
-      source_space_id: project.space_id,
+      runtime_space_id: project.space_id,
+      subspace_id: project.subspace_id,
       project_name: project.name,
       project_status: project.status,
-      strategy: "copy_verify_cutover",
-      phase: "inventory_only",
-      cutover_supported: false,
-      inventory,
-      blockers: [
-        "AgentDO conversation/history identity and project-scoped state have no export/import contract.",
-        "ToolSandbox project workspace artifacts and fenced writes have no migration/rebinding contract.",
-        "Worker-owned workflow and channel references cannot be atomically paused and retargeted with SpaceDO state.",
-        "Child-space public authorization and canonical routing are not provisioned for a promoted project.",
-      ],
-      next_phase: "Implement resumable copy adapters for every listed owner, verify destination hashes and references, then enable an explicit owner-approved cutover while retaining the source for rollback.",
+      strategy: "in_place_logical_reparent",
+      phase: project.subspace_id ? "already_in_subspace" : "ready",
+      can_graduate: blockers.length === 0,
+      runtime_identity_preserved: true,
+      inventory: { project_scoped_rows: projectScopedTables, inaccessible_tables: inaccessibleTables },
+      blockers,
+      preservation: "Project ID, parent SpaceDO ID, agent actor IDs, workflow/channel references, workspace files, extension instances, and container workspace paths remain unchanged. The project is grouped under a child space and gains a department assistant; the child inherits the parent's placement and residency.",
+      rollback: "POST return-to-parent detaches this project from the subspace without deleting the subspace or changing runtime state.",
     });
+  }
+
+  private async changeProjectSubspace(projectId: string, action: "graduate-to-subspace" | "return-to-parent", request: Request): Promise<Response> {
+    const body = await request.json<{ name?: string; settings?: Record<string, unknown>; actor_id?: string; tenant_id?: string }>()
+      .catch(() => ({} as { name?: string; settings?: Record<string, unknown>; actor_id?: string; tenant_id?: string }));
+    const sql = this.ctx.storage.sql as never;
+    const project = queryOne<{ id: string; space_id: string; subspace_id: string | null; name: string; status: string; created_by: string | null; kind: string; is_singleton_kind: number }>(sql,
+      "SELECT id, space_id, subspace_id, name, status, created_by, kind, is_singleton_kind FROM projects WHERE id = ?", projectId);
+    if (!project) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+    if (project.status !== "active") return Response.json({ error_code: "project_not_active" }, { status: 409 });
+    const root = queryOne<SpaceRow>(sql,
+      "SELECT * FROM spaces WHERE id = ? AND status = 'active' AND depth = 0 AND parent_id IS NULL", project.space_id);
+    if (!root || root.space_type !== "launchpad") return Response.json({ error_code: "subspace_graduation_requires_launchpad_root" }, { status: 409 });
+    const now = new Date().toISOString();
+    const actorId = body.actor_id ?? "";
+    if (action === "return-to-parent") {
+      if (!project.subspace_id) return Response.json({ error_code: "project_not_in_subspace" }, { status: 409 });
+      const nameCollision = queryOne<{ id: string }>(sql,
+        "SELECT id FROM projects WHERE space_id=? AND subspace_id IS NULL AND name=? AND id!=?", project.space_id, project.name, project.id);
+      const singletonCollision = project.is_singleton_kind
+        ? queryOne<{ id: string }>(sql,
+            "SELECT id FROM projects WHERE space_id=? AND subspace_id IS NULL AND kind=? AND is_singleton_kind=1 AND status='active' AND id!=?",
+            project.space_id, project.kind, project.id)
+        : null;
+      if (nameCollision || singletonCollision) return Response.json({
+        error_code: nameCollision ? "project_name_conflict" : "duplicate_singleton_project",
+        existing_project_id: nameCollision?.id ?? singletonCollision?.id,
+      }, { status: 409 });
+      this.ctx.storage.transactionSync(() => {
+        execute(sql, "INSERT INTO project_subspace_migrations(id,project_id,source_space_id,target_subspace_id,direction,actor_id,created_at) VALUES(?,?,?,?,?,?,?)",
+          crypto.randomUUID(), project.id, project.space_id, project.subspace_id!, "return_to_parent", actorId || null, now);
+        execute(sql, "UPDATE projects SET subspace_id=NULL,graduated_at=NULL,graduated_by=NULL WHERE id=? AND subspace_id=?",
+          project.id, project.subspace_id);
+      });
+      await broadcastSpaceEvent(this.env, body.tenant_id ?? request.headers.get("x-naelao-tenant-id") ?? "", project.space_id,
+        "project.returned_to_parent_space", { project_id: project.id, subspace_id: project.subspace_id });
+      return Response.json({ project_id: project.id, runtime_space_id: project.space_id, subspace_id: null, returned: true });
+    }
+    if (project.subspace_id) return Response.json({ error_code: "project_already_in_subspace", subspace_id: project.subspace_id }, { status: 409 });
+    const childName = typeof body.name === "string" ? body.name.trim() : project.name;
+    if (!childName || childName.length > 120) return Response.json({ error_code: "invalid_subspace_name" }, { status: 400 });
+    const childId = crypto.randomUUID();
+    const childSettings = { ...(body.settings ?? {}), graduated_project_id: project.id };
+    this.ctx.storage.transactionSync(() => {
+      execute(sql,
+        `INSERT INTO spaces(id,parent_id,name,space_type,tenancy_mode,agency_shell,depth,scenario_type,status,settings,created_at)
+         VALUES(?,?,?, ?, ?, 0, 1, 'organizational', 'active', ?, ?)`,
+        childId, root.id, childName, root.space_type, root.tenancy_mode, JSON.stringify(childSettings), now);
+      execute(sql,
+        "INSERT INTO space_assistants(space_id,assistant_actor_id,parent_assistant_actor_id,hierarchy_role) VALUES(?,?,?,'DEPARTMENT_LEAD')",
+        childId, `assistant:space:${childId}`, `assistant:space:${root.id}`);
+      execute(sql,
+        `INSERT OR IGNORE INTO space_members(space_id,user_id,role,joined_at)
+         SELECT ?, user_id, CASE role WHEN 'owner' THEN 'owner' WHEN 'viewer' THEN 'viewer' ELSE 'member' END, added_at
+         FROM project_members WHERE project_id=?`, childId, project.id);
+      if (project.created_by) execute(sql,
+        "INSERT OR IGNORE INTO space_members(space_id,user_id,role,joined_at) VALUES(?,?,'owner',?)",
+        childId, project.created_by, now);
+      execute(sql, "UPDATE projects SET subspace_id=?,graduated_at=?,graduated_by=? WHERE id=? AND subspace_id IS NULL",
+        childId, now, actorId || null, project.id);
+      execute(sql, "INSERT INTO project_subspace_migrations(id,project_id,source_space_id,target_subspace_id,direction,actor_id,created_at) VALUES(?,?,?,?,?,?,?)",
+        crypto.randomUUID(), project.id, project.space_id, childId, "graduate", actorId || null, now);
+    });
+    await broadcastSpaceEvent(this.env, body.tenant_id ?? request.headers.get("x-naelao-tenant-id") ?? "", project.space_id,
+      "project.graduated_to_subspace", { project_id: project.id, subspace_id: childId });
+    return Response.json({ project_id: project.id, runtime_space_id: project.space_id, subspace_id: childId,
+      name: childName, runtime_identity_preserved: true, created_at: now,
+      children_endpoint: `/spaces/${encodeURIComponent(project.space_id)}/sub-spaces/${encodeURIComponent(childId)}/projects` }, { status: 201 });
   }
 
   /**
@@ -10877,7 +11012,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       direct &&
       (direct.role === "owner" ||
         direct.role === "admin" ||
-        (action === "read" && direct.role === "member"))
+        (action === "read" && (direct.role === "editor" || direct.role === "member" || direct.role === "viewer")))
     ) {
       return Response.json({
         permitted: true,

@@ -1490,6 +1490,18 @@ app.use("/spaces/:spaceId/projects/:projectId/mode", requireInternalHmac((c) => 
 app.use("/spaces/:spaceId/projects/:projectId/mode", requireBusinessMembership({ GET: "member" }));
 app.use("/spaces/:spaceId/projects/:projectId/subspace-migration-preflight", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/projects/:projectId/subspace-migration-preflight", requireBusinessMembership({ GET: "admin" }));
+app.use("/spaces/:spaceId/projects/:projectId/graduate-to-subspace", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/graduate-to-subspace", requireBusinessMembership({ POST: "admin" }));
+app.use("/spaces/:spaceId/projects/:projectId/return-to-parent", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/return-to-parent", requireBusinessMembership({ POST: "admin" }));
+for (const route of ["/spaces/:spaceId/sub-spaces/:subId/projects", "/spaces/:spaceId/sub-spaces/:subId/projects/*"]) {
+  app.use(route, requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+  app.use(route, requireBusinessMembership({ GET: "member", POST: "member" }));
+}
+for (const route of ["/spaces/:spaceId/sub-spaces/:subId/members", "/spaces/:spaceId/sub-spaces/:subId/members/*"]) {
+  app.use(route, requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+  app.use(route, requireBusinessMembership({ GET: "member", POST: "member", DELETE: "member" }));
+}
 app.use("/spaces/:spaceId/projects/:projectId/promote", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/projects/:projectId/promote", requireBusinessMembership({ POST: "admin" }));
 
@@ -2426,6 +2438,87 @@ app.get("/spaces/:spaceId/projects/:projectId/subspace-migration-preflight", asy
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/subspace-migration-preflight`, "GET");
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+async function authorizeDepartmentMember(
+  stub: ReturnType<Env["SPACE_DO"]["get"]>, userId: string, subspaceId: string, action: "read" | "manage"
+): Promise<{ permitted: boolean; role: string }> {
+  const response = await forwardToSpaceDO(stub,
+    `/hierarchy-authorize?user_id=${encodeURIComponent(userId)}&target_space_id=${encodeURIComponent(subspaceId)}&action=${action}`, "GET");
+  const result = await response.json<{ permitted?: boolean; role?: string }>().catch(() => ({} as { permitted?: boolean; role?: string }));
+  return { permitted: response.ok && result.permitted === true, role: result.role ?? "" };
+}
+
+for (const action of ["graduate-to-subspace", "return-to-parent"] as const) {
+  app.post(`/spaces/:spaceId/projects/:projectId/${action}`, async (c) => {
+    const { spaceId, projectId } = c.req.param();
+    const { tenantId, userId } = getCallerIdentity(c);
+    if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+    const stub = await spaceDoStub(c.env, spaceId, tenantId);
+    const authorization = await authorizeDepartmentMember(stub, userId, spaceId, "manage");
+    if (!authorization.permitted) return c.json({ error_code: "forbidden", message: "Root space owner or admin role required" }, 403);
+    const supplied = await c.req.json<{ name?: string; settings?: Record<string, unknown> }>().catch(() => ({} as { name?: string; settings?: Record<string, unknown> }));
+    const response = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/${action}`, "POST",
+      JSON.stringify({ ...supplied, actor_id: userId, tenant_id: tenantId }));
+    return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
+  });
+}
+
+app.get("/spaces/:spaceId/sub-spaces/:subId/projects", async (c) => {
+  const { spaceId, subId } = c.req.param();
+  const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const authorization = await authorizeDepartmentMember(stub, userId, subId, "read");
+  if (!authorization.permitted) return c.json({ error_code: "forbidden" }, 403);
+  const query = new URLSearchParams({ space_id: spaceId, subspace_id: subId, viewer_id: userId });
+  if (authorization.role === "owner" || authorization.role === "admin") query.set("space_manager", "1");
+  return forwardToSpaceDO(stub, `/projects?${query}`, "GET");
+});
+
+app.post("/spaces/:spaceId/sub-spaces/:subId/projects", async (c) => {
+  const { spaceId, subId } = c.req.param();
+  const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const authorization = await authorizeDepartmentMember(stub, userId, subId, "read");
+  if (!authorization.permitted || authorization.role === "viewer") return c.json({ error_code: "forbidden" }, 403);
+  const supplied = await c.req.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+  const response = await forwardToSpaceDO(stub, "/projects", "POST", JSON.stringify({
+    ...supplied, space_id: spaceId, subspace_id: subId, tenant_id: tenantId, created_by: userId, system_caller: false,
+  }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
+});
+
+app.get("/spaces/:spaceId/sub-spaces/:subId/members", async (c) => {
+  const { spaceId, subId } = c.req.param();
+  const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  if (!(await authorizeDepartmentMember(stub, userId, subId, "read")).permitted) return c.json({ error_code: "forbidden" }, 403);
+  return forwardToSpaceDO(stub, `/members?space_id=${encodeURIComponent(subId)}`, "GET");
+});
+
+app.post("/spaces/:spaceId/sub-spaces/:subId/members", async (c) => {
+  const { spaceId, subId } = c.req.param();
+  const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  if (!(await authorizeDepartmentMember(stub, userId, subId, "manage")).permitted) return c.json({ error_code: "forbidden" }, 403);
+  const body = await c.req.json<{ user_id?: string; role?: string }>().catch(() => ({} as { user_id?: string; role?: string }));
+  if (!body.user_id || !["owner", "admin", "editor", "member", "viewer"].includes(body.role ?? "")) return c.json({ error_code: "bad_request", message: "user_id and a valid member role are required" }, 400);
+  const response = await forwardToSpaceDO(stub, "/members", "POST", JSON.stringify({ ...body, space_id: subId }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
+});
+
+app.delete("/spaces/:spaceId/sub-spaces/:subId/members/:userId", async (c) => {
+  const { spaceId, subId, userId: targetUserId } = c.req.param();
+  const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  if (!(await authorizeDepartmentMember(stub, userId, subId, "manage")).permitted) return c.json({ error_code: "forbidden" }, 403);
+  const response = await forwardToSpaceDO(stub, `/members/${encodeURIComponent(targetUserId)}?space_id=${encodeURIComponent(subId)}`, "DELETE");
+  return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
 });
 
 app.post("/spaces/:spaceId/projects/:projectId/promote", async (c) => {

@@ -431,3 +431,7 @@ and live-test gates are itemized above.
 - Provider webhook event IDs are durably claimed before scheduling work, with a 30-day cleanup window, so a replay cannot start a second run.
 - Fresh checks: Spaces full suite 24 files / 82 tests; Agents full suite 62 files / 249 tests; Spaces, Agents, and Shell typechecks; Shell production build; Spaces and Agents Wrangler 4 dry runs; `git diff --check` passed. These are local test and bundle/config results, not live Cloudflare behavior.
 - Exact changes and limitations are recorded in `FOUNDRY-IMPLEMENTATION-PROGRESS.md` and `FOUNDRY-REMAINING.md`. Source TXT requirements were not edited.
+
+## Continuation transcript follow-up (2026-10-16)
+
+Logical project-to-department graduation is implemented in place, preserving root SpaceDO/runtime identity. Spaces full suite: 43 files / 128 tests; typecheck and Wrangler dry-run passed. Details and source ranges are recorded in `CONTINUATION-IMPLEMENTATION-PROGRESS.md` and `TOKENIZERS-FIRST-IMPLEMENTATION-AUDIT.md`. Dashboard navigation and live Cloudflare checks remain open.

@@ -3,17 +3,18 @@ import http from "k6/http";
 
 const target = __ENV.TARGET_URL;
 if (!target) throw new Error("Set TARGET_URL to a non-production router URL");
-const targetUrl = new URL(target);
-if (
-  !/^https?:$/.test(targetUrl.protocol) ||
-  targetUrl.username ||
-  targetUrl.password
-) {
+const targetMatch = target.match(/^(https?):\/\/([^/?#]+)(?:[/?#]|$)/i);
+if (!targetMatch || targetMatch[2].includes("@")) {
   throw new Error(
     "TARGET_URL must be an HTTP(S) URL without embedded credentials"
   );
 }
-const host = targetUrl.hostname.toLowerCase();
+const authority = targetMatch[2];
+const host = (
+  authority.startsWith("[")
+    ? authority.slice(1, authority.indexOf("]"))
+    : authority.split(":")[0]
+).toLowerCase();
 const local =
   host === "localhost" ||
   host === "127.0.0.1" ||
