@@ -1024,6 +1024,48 @@ export async function listProjects(spaceId: string, session: SessionCredentials)
   return res.data;
 }
 
+export interface ProjectDepartment {
+  id: string;
+  name: string;
+  status: string;
+  created_at: string;
+  is_primary: number;
+}
+
+export interface DepartmentOption {
+  id: string;
+  parent_id: string | null;
+  name: string;
+  status: string;
+  depth: number;
+}
+
+export async function listDepartments(spaceId: string, session: SessionCredentials): Promise<DepartmentOption[]> {
+  const result = await apiFetch<{ data: DepartmentOption[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/sub-spaces`, { session, cache: "no-store" });
+  return result.data;
+}
+
+export async function createDepartment(spaceId: string, name: string, session: SessionCredentials): Promise<DepartmentOption> {
+  return apiFetch<DepartmentOption>(`/v1/spaces/${encodeURIComponent(spaceId)}/sub-spaces`, {
+    method: "POST", body: JSON.stringify({ name }), session,
+  });
+}
+
+export async function listProjectDepartments(spaceId: string, projectId: string, session: SessionCredentials): Promise<ProjectDepartment[]> {
+  const result = await apiFetch<{ data: ProjectDepartment[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/sub-spaces`, { session, cache: "no-store" });
+  return result.data;
+}
+
+export async function associateProjectDepartment(spaceId: string, projectId: string, departmentId: string, session: SessionCredentials): Promise<void> {
+  await apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/sub-spaces`, {
+    method: "POST", body: JSON.stringify({ subspace_id: departmentId }), session,
+  });
+}
+
+export async function detachProjectDepartment(spaceId: string, projectId: string, departmentId: string, session: SessionCredentials): Promise<void> {
+  await apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/sub-spaces/${encodeURIComponent(departmentId)}`, { method: "DELETE", session });
+}
+
 /** kind, when given, creates a Business Feature project (Wallet, CRM, Business Email, …) instead
  *  of a plain workspace project — SpaceDO validates it against BUSINESS_FEATURE_KIND_REGISTRY and
  *  role-gates/singleton-gates it server-side; a rejection here is real, not just UI-hidden. */

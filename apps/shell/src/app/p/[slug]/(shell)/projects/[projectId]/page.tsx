@@ -12,35 +12,41 @@
 // fabricated, same precedent as this codebase's `credits_consumed: null` elsewhere) and each
 // thread/agent's fake run counts. Everything else here is real, fetched data.
 
-import * as React from "react";
-import { useParams, useRouter } from "next/navigation";
-import Link from "next/link";
-import { Button, Card, CardLabel, CardValue, CardTitle, CardDesc, Modal, FormInput, FormSelect, FormTextarea, useToast, Toast } from "@naelao/ui";
-import { relativeTime } from "@/lib/relativeTime";
-import { useProduct } from "@/lib/product-context";
-import { useProductAuth } from "@/lib/auth-provider";
-import { useActiveSpace } from "@/lib/active-space-context";
-import {
-  getProject,
-  updateProject,
-  listThreads,
-  listProjects,
-  createThread,
-  listAgentDefinitions,
-  listKbDocuments,
-  createKbDocument,
-  deleteKbDocument,
-  listAgentTemplates,
-  instantiateAgentTemplate,
-  type Project,
-  type ThreadSummary,
-  type AgentDefinitionSummary,
-  type KbDocument,
-  type AgentTemplateSummary,
-} from "@/lib/api";
-import { ProjectKindPanel } from "@/components/ProjectKindPanel";
-import { CustomerBotAutomation } from "@/components/CustomerBotAutomation";
 import { AgentPolicyPanel } from "@/components/AgentPolicyPanel";
+import { CustomerBotAutomation } from "@/components/CustomerBotAutomation";
+import { ProjectKindPanel } from "@/components/ProjectKindPanel";
+import { useActiveSpace } from "@/lib/active-space-context";
+import { useProductAuth } from "@/lib/auth-provider";
+import { useProduct } from "@/lib/product-context";
+import { relativeTime } from "@/lib/relativeTime";
+import {
+  associateProjectDepartment,
+  createDepartment,
+  createKbDocument,
+  createThread,
+  deleteKbDocument,
+  getProject,
+  instantiateAgentTemplate,
+  listAgentDefinitions,
+  listAgentTemplates,
+  listDepartments,
+  listKbDocuments,
+  listProjectDepartments,
+  listProjects,
+  listThreads,
+  updateProject,
+  type AgentDefinitionSummary,
+  type AgentTemplateSummary,
+  type DepartmentOption,
+  type KbDocument,
+  type Project,
+  type ProjectDepartment,
+  type ThreadSummary,
+} from "@/lib/api";
+import { Button, Card, CardDesc, CardLabel, CardTitle, CardValue, FormInput, FormSelect, FormTextarea, Modal, Toast, useToast } from "@naelao/ui";
+import Link from "next/link";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
+import * as React from "react";
 
 const STATUS_BADGE: Record<string, "green" | "amber" | "blue" | undefined> = {
   active: "green",
@@ -57,12 +63,19 @@ function projectKindLabel(kind: string): string {
 export default function ProjectDetailPage() {
   const params = useParams<{ projectId: string }>();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const product = useProduct();
   const { activeSpaceId, activeSpaceName } = useActiveSpace();
   const { session } = useProductAuth();
   const { toast, show } = useToast();
   const [project, setProject] = React.useState<Project | null>(null);
   const [allProjects, setAllProjects] = React.useState<Project[]>([]);
+  const [departments, setDepartments] = React.useState<ProjectDepartment[]>([]);
+  const [departmentOptions, setDepartmentOptions] = React.useState<DepartmentOption[]>([]);
+  const [departmentLoadError, setDepartmentLoadError] = React.useState(false);
+  const [departmentBusy, setDepartmentBusy] = React.useState(false);
+  const [departmentToAdd, setDepartmentToAdd] = React.useState("");
+  const [newDepartmentName, setNewDepartmentName] = React.useState("");
   const [threads, setThreads] = React.useState<ThreadSummary[]>([]);
   const [agents, setAgents] = React.useState<AgentDefinitionSummary[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -98,17 +111,28 @@ export default function ProjectDetailPage() {
   const refresh = React.useCallback(async () => {
     if (!creds) return;
     setLoading(true);
+    setProject(null);
+    setThreads([]);
+    setAgents([]);
+    setAllProjects([]);
+    setDepartments([]);
+    setDepartmentOptions([]);
     try {
-      const [p, t, a, allP] = await Promise.all([
+      const [p, t, a, allP, projectDepartments, options] = await Promise.all([
         getProject(activeSpaceId, params.projectId, creds),
         listThreads(activeSpaceId, creds, { projectId: params.projectId, includeSubThreads: true }),
         listAgentDefinitions(activeSpaceId, creds).catch(() => []),
         listProjects(activeSpaceId, creds).catch(() => []),
+        listProjectDepartments(activeSpaceId, params.projectId, creds).catch(() => null),
+        listDepartments(activeSpaceId, creds).catch(() => null),
       ]);
       setProject(p);
       setThreads(t);
       setAgents(a);
       setAllProjects(allP);
+      setDepartments(projectDepartments ?? []);
+      setDepartmentOptions((options ?? []).filter((option) => option.depth === 1 && option.parent_id === activeSpaceId && option.status === "active"));
+      setDepartmentLoadError(projectDepartments === null || options === null);
       setDraftKind(p.kind ?? "workspace");
       setDraftMaxThreads(String(p.max_threads ?? 0));
       setDraftExecutionCeiling(String(p.execution_ceiling ?? 5));
@@ -116,11 +140,56 @@ export default function ProjectDetailPage() {
       setDraftDefaultAgentId(p.default_agent_id ?? "");
     } catch {
       show("Couldn't load project");
+      setDepartmentLoadError(true);
     } finally {
       setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSpaceId, params.projectId, session]);
+
+  const selectedDepartmentId = searchParams.get("departmentId");
+  React.useEffect(() => {
+    if (!loading && !departmentLoadError && selectedDepartmentId && !departments.some((department) => department.id === selectedDepartmentId)) {
+      setDepartmentLoadError(true);
+      const next = new URLSearchParams(searchParams.toString());
+      next.delete("departmentId");
+      router.replace(`?${next.toString()}`);
+    }
+  }, [departments, departmentLoadError, selectedDepartmentId, searchParams, router, loading]);
+
+  async function attachDepartment(departmentId: string) {
+    if (!creds || !departmentId || departmentBusy) return;
+    setDepartmentBusy(true);
+    try {
+      await associateProjectDepartment(activeSpaceId, params.projectId, departmentId, creds);
+      await refresh();
+      const next = new URLSearchParams(searchParams.toString());
+      next.set("departmentId", departmentId);
+      router.push(`?${next.toString()}`);
+    } catch (error) {
+      show(error instanceof Error ? error.message : "Couldn't add department");
+    } finally {
+      setDepartmentBusy(false);
+    }
+  }
+
+  async function createAndAttachDepartment() {
+    if (!creds || !newDepartmentName.trim() || departmentBusy) return;
+    setDepartmentBusy(true);
+    try {
+      const department = await createDepartment(activeSpaceId, newDepartmentName.trim(), creds);
+      await associateProjectDepartment(activeSpaceId, params.projectId, department.id, creds);
+      setNewDepartmentName("");
+      await refresh();
+      const next = new URLSearchParams(searchParams.toString()); next.set("departmentId", department.id);
+      router.push(`?${next.toString()}`);
+    } catch (error) {
+      show(error instanceof Error ? error.message : "Couldn't create department");
+      await refresh();
+    } finally {
+      setDepartmentBusy(false);
+    }
+  }
 
   const refreshDocs = React.useCallback(async () => {
     if (!creds) return;
@@ -368,6 +437,45 @@ export default function ProjectDetailPage() {
           </button>
         </div>
       </div>
+
+      <section aria-label="Project departments" style={{ margin: "0 0 20px", padding: 14, border: "1px solid var(--border)", borderRadius: 10 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Departments</div>
+        {departmentLoadError ? <output style={{ color: "var(--text3)", fontSize: 12 }}>Department links are unavailable. Refresh to try again.</output> : (
+          <>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <button type="button" className={`btn btn-sm ${selectedDepartmentId ? "btn-ghost" : "btn-secondary"}`} onClick={() => {
+                const next = new URLSearchParams(searchParams.toString()); next.delete("departmentId");
+                router.push(`?${next.toString()}`);
+              }}>All project context</button>
+              {departments.map((department) => {
+                const next = new URLSearchParams(searchParams.toString()); next.set("departmentId", department.id);
+                return <button key={department.id} type="button" className={`btn btn-sm ${selectedDepartmentId === department.id ? "btn-secondary" : "btn-ghost"}`} aria-pressed={selectedDepartmentId === department.id} onClick={() => router.push(`?${next.toString()}`)}>
+                  {department.name}{department.is_primary ? " · Primary" : ""}
+                </button>;
+              })}
+              {departments.length === 0 && <span style={{ fontSize: 12, color: "var(--text3)" }}>No department is linked to this project.</span>}
+            </div>
+            {selectedDepartmentId && <div style={{ marginTop: 8, fontSize: 12, color: "var(--text3)" }}>
+              Department selected: {departments.find((department) => department.id === selectedDepartmentId)?.name}. Project identity and its data remain shared across its linked departments.
+            </div>}
+            {departmentOptions.some((option) => !departments.some((department) => department.id === option.id)) && (
+              <form style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12, flexWrap: "wrap" }} onSubmit={(event) => { event.preventDefault(); void attachDepartment(departmentToAdd); }}>
+                <label htmlFor="project-department-add" style={{ fontSize: 12, color: "var(--text2)" }}>Link another department</label>
+                <select id="project-department-add" value={departmentToAdd} onChange={(event) => setDepartmentToAdd(event.target.value)} style={{ maxWidth: 240 }}>
+                  <option value="">Choose a department</option>
+                  {departmentOptions.filter((option) => !departments.some((department) => department.id === option.id)).map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
+                </select>
+                <button type="submit" className="btn btn-secondary btn-sm" disabled={!departmentToAdd || departmentBusy}>{departmentBusy ? "Linking…" : "Link department"}</button>
+              </form>
+            )}
+            <form style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, flexWrap: "wrap" }} onSubmit={(event) => { event.preventDefault(); void createAndAttachDepartment(); }}>
+              <label htmlFor="project-department-new" style={{ fontSize: 12, color: "var(--text2)" }}>Create a department</label>
+              <input id="project-department-new" value={newDepartmentName} onChange={(event) => setNewDepartmentName(event.target.value)} maxLength={120} placeholder="Department name" style={{ maxWidth: 240 }} />
+              <button type="submit" className="btn btn-secondary btn-sm" disabled={!newDepartmentName.trim() || departmentBusy}>{departmentBusy ? "Creating…" : "Create and link"}</button>
+            </form>
+          </>
+        )}
+      </section>
 
       {/* F-40: the kind-specific panel (wallet ledger, etc.) + F-39 files viewer, above the shared
           shell's generic Settings/Threads/KB scaffolding. */}
