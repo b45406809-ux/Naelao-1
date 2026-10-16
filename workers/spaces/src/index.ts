@@ -3763,7 +3763,7 @@ app.get("/spaces/:spaceId/sub-spaces", async (c) => {
 app.post("/spaces/:spaceId/sub-spaces", async (c) => {
   const spaceId = c.req.param("spaceId");
   const { tenantId, userId } = getCallerIdentity(c);
-  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized", message: "Missing authenticated user or tenant" }, 401);
 
   // Resolve the product (D1) to gate on productConfig + know the parent space_type.
   const product = await c.env.PLATFORM_DB.prepare(
@@ -3793,7 +3793,8 @@ app.post("/spaces/:spaceId/sub-spaces", async (c) => {
   const parentId = body.parent_id ?? spaceId;
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const auth = await forwardToSpaceDO(stub, `/hierarchy-authorize?user_id=${encodeURIComponent(userId)}&target_space_id=${encodeURIComponent(parentId)}`, "GET");
-  if (!auth.ok) return c.json({ error_code: "forbidden", message: "Administrative membership is required" }, 403);
+  const authorization = await auth.json<{ permitted?: boolean }>().catch(() => ({} as { permitted?: boolean }));
+  if (!auth.ok || authorization.permitted !== true) return c.json({ error_code: "forbidden", message: "Administrative membership is required" }, 403);
 
   // Builders (owner/admin) may select a type (subject to agency_shell rules in the DO);
   // end-user roles are forced to the parent's type.

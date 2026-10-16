@@ -10,7 +10,7 @@ describe("project subspace routes", () => {
         forwarded.push(request);
         const url = new URL(request.url);
         if (url.pathname === "/hierarchy-authorize") {
-          const action = url.searchParams.get("action");
+          const action = url.searchParams.get("action") ?? "manage";
           return Response.json({ permitted: role !== "none" && (action !== "manage" || role === "admin" || role === "owner"), role });
         }
         if (url.pathname === "/projects") return Response.json({ created: true }, { status: 201 });
@@ -19,6 +19,8 @@ describe("project subspace routes", () => {
     };
     const env = {
       PLATFORM_SECRET: "project-subspace-test-secret",
+      PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ spacetype_id: "launchpad", config_json: null, tenancy_mode: "team", depth: 0, parent_space_id: null }) }) }) },
+      NAELAO_CONFIG_KV: { get: async () => ({ productConfig: {} }), put: vi.fn() },
       SPACE_DO: { idFromName: (name: string) => name, get: () => stub },
     } as never;
     return { env, forwarded, secret: "project-subspace-test-secret" };
@@ -97,5 +99,16 @@ describe("project subspace routes", () => {
     ), env);
     expect(response.status).toBe(403);
     expect(forwarded.some((request) => new URL(request.url).pathname === "/projects/project-a/sub-spaces" && request.method === "POST")).toBe(false);
+  });
+
+  it("rejects department creation when hierarchy authorization returns permitted false", async () => {
+    const { env, forwarded, secret } = environment("member");
+    const token = await mintInternalToken(secret, "tenant-a");
+    const response = await spacesWorker.fetch(new Request(
+      "https://spaces.test/spaces/root/sub-spaces",
+      { method: "POST", headers: { "content-type": "application/json", "x-naelao-internal-token": token, "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": "member-a", "x-naelao-role": "member" }, body: JSON.stringify({ name: "Research" }) }
+    ), env);
+    expect(response.status).toBe(403);
+    expect(forwarded.some((request) => new URL(request.url).pathname === "/sub-spaces" && request.method === "POST")).toBe(false);
   });
 });
