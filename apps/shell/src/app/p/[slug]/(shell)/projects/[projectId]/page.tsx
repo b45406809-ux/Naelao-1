@@ -457,6 +457,7 @@ export default function ProjectDetailPage() {
             </div>
             {selectedDepartmentId && <div style={{ marginTop: 8, fontSize: 12, color: "var(--text3)" }}>
               Department selected: {departments.find((department) => department.id === selectedDepartmentId)?.name}. Project identity and its data remain shared across its linked departments.
+              {departments.some((department) => department.id === selectedDepartmentId) && <Link href={`/p/${product.slug}/spaces/${activeSpaceId}/departments/${encodeURIComponent(selectedDepartmentId)}`} style={{ marginLeft: 8, color: "var(--accent)" }}>Open department projects →</Link>}
             </div>}
             {departmentOptions.some((option) => !departments.some((department) => department.id === option.id)) && (
               <form style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12, flexWrap: "wrap" }} onSubmit={(event) => { event.preventDefault(); void attachDepartment(departmentToAdd); }}>

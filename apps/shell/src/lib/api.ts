@@ -1056,6 +1056,11 @@ export async function listProjectDepartments(spaceId: string, projectId: string,
   return result.data;
 }
 
+export async function listDepartmentProjects(spaceId: string, departmentId: string, session: SessionCredentials): Promise<Project[]> {
+  const result = await apiFetch<{ data: Project[]; count: number }>(`/v1/spaces/${encodeURIComponent(spaceId)}/sub-spaces/${encodeURIComponent(departmentId)}/projects`, { session, cache: "no-store" });
+  return result.data;
+}
+
 export async function associateProjectDepartment(spaceId: string, projectId: string, departmentId: string, session: SessionCredentials): Promise<void> {
   await apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/sub-spaces`, {
     method: "POST", body: JSON.stringify({ subspace_id: departmentId }), session,
