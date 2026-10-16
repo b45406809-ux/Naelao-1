@@ -2464,6 +2464,43 @@ for (const action of ["graduate-to-subspace", "return-to-parent"] as const) {
   });
 }
 
+app.get("/spaces/:spaceId/projects/:projectId/sub-spaces", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  if (!(await authorizeDepartmentMember(stub, userId, spaceId, "read")).permitted)
+    return c.json({ error_code: "forbidden" }, 403);
+  return forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/sub-spaces`, "GET");
+});
+
+app.post("/spaces/:spaceId/projects/:projectId/sub-spaces", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  if (!(await authorizeDepartmentMember(stub, userId, spaceId, "manage")).permitted)
+    return c.json({ error_code: "forbidden" }, 403);
+  const body = await c.req.json<{ subspace_id?: string }>().catch(() => ({} as { subspace_id?: string }));
+  if (!body.subspace_id) return c.json({ error_code: "subspace_required" }, 400);
+  if (!(await authorizeDepartmentMember(stub, userId, body.subspace_id, "manage")).permitted)
+    return c.json({ error_code: "forbidden", message: "Department management permission required" }, 403);
+  return forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/sub-spaces`, "POST",
+    JSON.stringify({ subspace_id: body.subspace_id, actor_id: userId }));
+});
+
+app.delete("/spaces/:spaceId/projects/:projectId/sub-spaces/:subId", async (c) => {
+  const { spaceId, projectId, subId } = c.req.param();
+  const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  if (!(await authorizeDepartmentMember(stub, userId, spaceId, "manage")).permitted ||
+      !(await authorizeDepartmentMember(stub, userId, subId, "manage")).permitted)
+    return c.json({ error_code: "forbidden" }, 403);
+  return forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/sub-spaces/${encodeURIComponent(subId)}`, "DELETE",
+    JSON.stringify({ actor_id: userId, tenant_id: tenantId }));
+});
+
 app.get("/spaces/:spaceId/sub-spaces/:subId/projects", async (c) => {
   const { spaceId, subId } = c.req.param();
   const { tenantId, userId } = getCallerIdentity(c);

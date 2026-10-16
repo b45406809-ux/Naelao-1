@@ -10,7 +10,8 @@ describe("project subspace routes", () => {
         forwarded.push(request);
         const url = new URL(request.url);
         if (url.pathname === "/hierarchy-authorize") {
-          return Response.json({ permitted: role !== "none", role });
+          const action = url.searchParams.get("action");
+          return Response.json({ permitted: role !== "none" && (action !== "manage" || role === "admin" || role === "owner"), role });
         }
         if (url.pathname === "/projects") return Response.json({ created: true }, { status: 201 });
         return Response.json({ ok: true });
@@ -72,5 +73,29 @@ describe("project subspace routes", () => {
     ), env);
     expect(response.status).toBe(403);
     expect(forwarded.some((request) => new URL(request.url).pathname === "/projects" && request.method === "POST")).toBe(false);
+  });
+
+  it("requires root and department management before linking a project department", async () => {
+    const { env, forwarded, secret } = environment("admin");
+    const token = await mintInternalToken(secret, "tenant-a");
+    const response = await spacesWorker.fetch(new Request(
+      "https://spaces.test/spaces/root/projects/project-a/sub-spaces",
+      { method: "POST", headers: { "content-type": "application/json", "x-naelao-internal-token": token, "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": "owner-a", "x-naelao-role": "admin" }, body: JSON.stringify({ subspace_id: "department-b" }) }
+    ), env);
+    expect(response.status).toBe(200);
+    const forwardedWrite = forwarded.find((request) => new URL(request.url).pathname === "/projects/project-a/sub-spaces");
+    expect(await forwardedWrite!.json()).toEqual({ subspace_id: "department-b", actor_id: "owner-a" });
+    expect(forwarded.filter((request) => new URL(request.url).pathname === "/hierarchy-authorize")).toHaveLength(2);
+  });
+
+  it("rejects linking when the caller cannot manage the target department", async () => {
+    const { env, forwarded, secret } = environment("member");
+    const token = await mintInternalToken(secret, "tenant-a");
+    const response = await spacesWorker.fetch(new Request(
+      "https://spaces.test/spaces/root/projects/project-a/sub-spaces",
+      { method: "POST", headers: { "content-type": "application/json", "x-naelao-internal-token": token, "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": "member-a", "x-naelao-role": "member" }, body: JSON.stringify({ subspace_id: "department-b" }) }
+    ), env);
+    expect(response.status).toBe(403);
+    expect(forwarded.some((request) => new URL(request.url).pathname === "/projects/project-a/sub-spaces" && request.method === "POST")).toBe(false);
   });
 });

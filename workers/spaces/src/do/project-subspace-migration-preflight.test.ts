@@ -3,6 +3,27 @@ import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim";
 import { SpaceDO } from "./SpaceDO.js";
 
 describe("project to subspace migration preflight", () => {
+  it("supports a project linked to multiple departments while rejecting departments from another root", async () => {
+    const storage = createDOStorage();
+    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: "test" } as never);
+    await space.fetch(new Request("https://space/projects/project-a/subspace-migration-preflight"));
+    storage.sql.exec("INSERT INTO spaces(id,parent_id,name,space_type,tenancy_mode,depth,status,settings,created_at) VALUES('root',NULL,'Company','launchpad','team',0,'active','{}',?),('other-root',NULL,'Other Company','launchpad','team',0,'active','{}',?)", new Date().toISOString(), new Date().toISOString());
+    storage.sql.exec("INSERT INTO spaces(id,parent_id,name,space_type,tenancy_mode,depth,status,settings,created_at) VALUES('dept-a','root','Sales','launchpad','team',1,'active','{}',?),( 'dept-b','root','Research','launchpad','team',1,'active','{}',?),( 'other-dept','other-root','Other','launchpad','team',1,'active','{}',?)", new Date().toISOString(), new Date().toISOString(), new Date().toISOString());
+    storage.sql.exec("INSERT INTO projects(id,space_id,name) VALUES('project-a','root','Forecast')");
+
+    const first = await space.fetch(new Request("https://space/projects/project-a/sub-spaces", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ subspace_id: "dept-a", actor_id: "owner" }) }));
+    const second = await space.fetch(new Request("https://space/projects/project-a/sub-spaces", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ subspace_id: "dept-b", actor_id: "owner" }) }));
+    const foreign = await space.fetch(new Request("https://space/projects/project-a/sub-spaces", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ subspace_id: "other-dept" }) }));
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+    expect(foreign.status).toBe(400);
+
+    const listed = await space.fetch(new Request("https://space/projects/project-a/sub-spaces"));
+    expect(await listed.json()).toMatchObject({ count: 2, data: [{ id: "dept-a", is_primary: 1 }, { id: "dept-b", is_primary: 0 }] });
+    const inSecondDepartment = await space.fetch(new Request("https://space/projects?space_id=root&subspace_id=dept-b"));
+    expect(await inSecondDepartment.json()).toMatchObject({ count: 1, data: [{ id: "project-a", subspace_id: "dept-b" }] });
+  });
+
   it("reports a read-only inventory for an in-place logical subspace graduation", async () => {
     const storage = createDOStorage();
     const space = new SpaceDO(
