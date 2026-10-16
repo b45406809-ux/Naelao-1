@@ -18,27 +18,55 @@ interface SyntheticResult {
   timestamp: string;
 }
 
-async function runCheck(url: string, name: string): Promise<SyntheticResult> {
+export async function runCheck(url: string, name: string): Promise<SyntheticResult> {
+  return runCheckWithFetch(url, name, fetch);
+}
+
+/** Execute the check batch and persist each result. Kept injectable so local tests can
+ * exercise timeout/failure handling, persistence, and alerts without live services. */
+export async function runSyntheticCycle(
+  env: Pick<Env, "PLATFORM_DB" | "PLATFORM_API_URL" | "ANALYTICS" | "NOTIFICATIONS_QUEUE">,
+  fetcher: typeof fetch = fetch,
+): Promise<SyntheticResult[]> {
+  const checks = buildSyntheticChecks(env.PLATFORM_API_URL);
+  const results = await Promise.all(checks.map(({ name, url }) => runCheckWithFetch(url, name, fetcher)));
+  await Promise.all(results.map(async (result) => {
+    await env.PLATFORM_DB.prepare(
+      `INSERT INTO synthetic_results (id, check_name, url, status, latency_ms, success, error, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      crypto.randomUUID(), result.check_name, result.url, result.status, result.latency_ms,
+      result.success ? 1 : 0, result.error ?? null, result.timestamp,
+    ).run().catch(() => undefined);
+
+    if (env.ANALYTICS) {
+      try {
+        env.ANALYTICS.writeDataPoint({
+          blobs: [result.check_name, result.url, result.success ? "success" : "failure"],
+          doubles: [result.latency_ms, result.status], indexes: [result.check_name],
+        });
+      } catch { /* Analytics Engine is best effort; D1 is the durable record. */ }
+    }
+    if (!result.success && env.NOTIFICATIONS_QUEUE) {
+      await env.NOTIFICATIONS_QUEUE.send({
+        type: "in_app", tenantId: "platform",
+        subject: `Synthetic check failed: ${result.check_name}`,
+        html: `Check ${result.check_name} failed: ${result.error ?? `HTTP ${result.status}`}`,
+      }).catch(() => undefined);
+    }
+  }));
+  return results;
+}
+
+async function runCheckWithFetch(url: string, name: string, fetcher: typeof fetch): Promise<SyntheticResult> {
   const timestamp = new Date().toISOString();
   const start = Date.now();
   try {
-    const resp = await fetch(url, {
-      signal: AbortSignal.timeout(10_000),
-      headers: { "x-synthetic-check": "true" },
-    });
-    const latency_ms = Date.now() - start;
-    return { check_name: name, url, status: resp.status, latency_ms, success: resp.ok, timestamp };
+    const resp = await fetcher(url, { signal: AbortSignal.timeout(10_000), headers: { "x-synthetic-check": "true" } });
+    return { check_name: name, url, status: resp.status, latency_ms: Date.now() - start, success: resp.ok, timestamp };
   } catch (err) {
-    const latency_ms = Date.now() - start;
-    return {
-      check_name: name,
-      url,
-      status: 0,
-      latency_ms,
-      success: false,
-      error: err instanceof Error ? err.message : String(err),
-      timestamp,
-    };
+    return { check_name: name, url, status: 0, latency_ms: Date.now() - start, success: false,
+      error: err instanceof Error ? err.message : String(err), timestamp };
   }
 }
 
@@ -60,51 +88,6 @@ export default {
 
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
-
-    const apiBase = env.PLATFORM_API_URL;
-    const checks = buildSyntheticChecks(apiBase);
-
-    const results = await Promise.all(checks.map(c => runCheck(c.url, c.name)));
-
-    // Store results in D1 and write to Analytics Engine
-    ctx.waitUntil(Promise.all(results.map(async (result) => {
-      try {
-        await env.PLATFORM_DB.prepare(
-          `INSERT INTO synthetic_results (id, check_name, url, status, latency_ms, success, error, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-        ).bind(
-          crypto.randomUUID(),
-          result.check_name,
-          result.url,
-          result.status,
-          result.latency_ms,
-          result.success ? 1 : 0,
-          result.error ?? null,
-          result.timestamp,
-        ).run();
-      } catch { /* best-effort */ }
-
-      if (env.ANALYTICS) {
-        try {
-          env.ANALYTICS.writeDataPoint({
-            blobs: [result.check_name, result.url, result.success ? "success" : "failure"],
-            doubles: [result.latency_ms, result.status],
-            indexes: [result.check_name],
-          });
-        } catch { /* best-effort */ }
-      }
-
-      // Alert if failure detected
-      if (!result.success && env.NOTIFICATIONS_QUEUE) {
-        try {
-          await env.NOTIFICATIONS_QUEUE.send({
-            type: "in_app",
-            tenantId: "platform",
-            subject: `Synthetic check failed: ${result.check_name}`,
-            html: `Check ${result.check_name} failed: ${result.error ?? `HTTP ${result.status}`}`,
-          });
-        } catch { /* best-effort */ }
-      }
-    })));
+    ctx.waitUntil(runSyntheticCycle(env));
   },
 } satisfies ExportedHandler<Env>;

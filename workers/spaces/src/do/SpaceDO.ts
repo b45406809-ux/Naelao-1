@@ -2921,6 +2921,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "GET" && projectModeMatch?.[1]) {
         return this.getProjectModeState(projectModeMatch[1]);
       }
+      const projectMigrationPreflightMatch = url.pathname.match(/^\/projects\/([^/]+)\/subspace-migration-preflight$/);
+      if (method === "GET" && projectMigrationPreflightMatch?.[1]) {
+        return this.projectSubspaceMigrationPreflight(projectMigrationPreflightMatch[1]);
+      }
       const projectPromotionMatch = url.pathname.match(/^\/projects\/([^/]+)\/promote$/);
       if (method === "POST" && projectPromotionMatch?.[1]) {
         return this.promoteProject(projectPromotionMatch[1], request);
@@ -6527,6 +6531,45 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         "project.promoted_to_multiplayer", { project_id: projectId, mode: next.mode, promotion_version: next.promotionVersion });
     }
     return this.getProjectModeState(projectId);
+  }
+
+  /** Read-only inventory for the proposed copy/verify/cutover project graduation.
+   * This endpoint deliberately never claims the project is migratable: AgentDO history,
+   * ToolSandbox workspaces and worker-owned workflow state need a coordinated copy protocol. */
+  private projectSubspaceMigrationPreflight(projectId: string): Response {
+    const sql = this.ctx.storage.sql as never;
+    const project = queryOne<{ id: string; space_id: string; name: string; status: string }>(sql,
+      "SELECT id, space_id, name, status FROM projects WHERE id = ?", projectId);
+    if (!project) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+    const count = (table: string, predicate: string) => queryOne<{ count: number }>(sql,
+      `SELECT COUNT(*) AS count FROM ${table} WHERE ${predicate}`, projectId)?.count ?? 0;
+    const inventory = {
+      threads: count("threads", "project_id = ?"),
+      tasks: count("tasks", "project_id = ?"),
+      workspace_files: count("workspace_files", "project_id = ?"),
+      project_rules: count("project_rules", "project_id = ?"),
+      event_triggers: count("event_triggers", "project_id = ?"),
+      scheduled_jobs: count("project_scheduled_jobs", "project_id = ?"),
+      extension_instances: count("extension_instances", "project_id = ?"),
+      artifact_linter_failures: count("artifact_linter_failures", "project_id = ?"),
+    };
+    return Response.json({
+      project_id: project.id,
+      source_space_id: project.space_id,
+      project_name: project.name,
+      project_status: project.status,
+      strategy: "copy_verify_cutover",
+      phase: "inventory_only",
+      cutover_supported: false,
+      inventory,
+      blockers: [
+        "AgentDO conversation/history identity and project-scoped state have no export/import contract.",
+        "ToolSandbox project workspace artifacts and fenced writes have no migration/rebinding contract.",
+        "Worker-owned workflow and channel references cannot be atomically paused and retargeted with SpaceDO state.",
+        "Child-space public authorization and canonical routing are not provisioned for a promoted project.",
+      ],
+      next_phase: "Implement resumable copy adapters for every listed owner, verify destination hashes and references, then enable an explicit owner-approved cutover while retaining the source for rollback.",
+    });
   }
 
   /**
