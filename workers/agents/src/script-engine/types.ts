@@ -938,6 +938,9 @@ export interface PlanStep {
   id: string;
   text: string;
   done: boolean;
+  status?: "pending" | "active" | "completed";
+  runtimeCapability?: string;
+  runtimeConfidence?: number;
 }
 
 /**
@@ -949,6 +952,7 @@ export interface PlanStep {
  */
 export interface PlanState {
   steps: PlanStep[];
+  editing?: boolean;
 }
 
 /** Everything the engine needs from the host (NaelaoAgentDO) to operate. */
@@ -1066,6 +1070,18 @@ export interface ScriptEngineEnv {
    *  container exists"). */
   containerWorkspace?: ContainerWorkspaceGateway;
   resolveContainerCommand?: (command: string) => Promise<import("./container-policy.js").InstalledContainer | undefined>;
+  /** Host-side resolver for worker-board runtime labels; never accepts model-selected images. */
+  resolveContainerCapabilities?: (required: readonly string[]) => Promise<import("./container-policy.js").InstalledContainer | undefined>;
+  /** System One classifies all worker board items together after an edit transaction closes. */
+  classifyPlanRuntimes?: (input: { steps: readonly PlanStep[]; availableTools: readonly string[] }) => Promise<Array<{ stepId: string; capability?: string; confidence: number }>>;
+  /** Names/descriptions of this worker's installed domain skills; never sent to its parent planner. */
+  planWorkerCapabilities?: string[];
+  /** Host resolves advisory capability labels to the current authorized installation. */
+  activatePlanRuntime?: (capability?: string) => Promise<void>;
+  /** Best-effort exact prewarm for the next planned worker step; never authorizes execution. */
+  prewarmPlanRuntime?: (capability?: string) => Promise<{ warmed: boolean; error?: string }>;
+  /** Runtime pin selected by the host from a classified worker-board step. */
+  planContainerInstallationId?: string;
   containerRuntimeInventory?: () => Promise<{ installed: import("./container-policy.js").InstalledContainer[]; catalogue: import("./container-catalogue.js").ContainerImageManifest[] }>;
   /** Memory OS (structured facts + episodic + semantic recall) — present when the host DO
    *  has initialized its memory tables. Absent in environments that haven't wired it yet. */

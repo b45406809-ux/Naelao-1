@@ -76,6 +76,7 @@ interface SandboxBindings {
   CONCURRENCY_DO?: DurableObjectNamespace;
   PLATFORM_SECRET?: string;
   BILLING_WORKER?: Fetcher;
+  ANALYTICS?: AnalyticsEngineDataset;
 }
 
 interface WorkspacePublication {
@@ -85,7 +86,12 @@ interface WorkspacePublication {
 
 const HARNESS_PORT = 8080;
 const BASE_IDLE_WINDOW_MS = 60_000;
-const ACTIVE_TASK_IDLE_WINDOW_MS = 300_000;
+// A task-active hint is not proof that the next scheduled step needs this runtime. Keep the base
+// container's idle exposure within its normal bound until an exact runtime lease is held.
+const ACTIVE_TASK_IDLE_WINDOW_MS = BASE_IDLE_WINDOW_MS;
+// Keep marketplace sidecars warm only across immediate calls from the same delegated run.
+// This initial short lease should be tuned from cold-start and billed-idle measurements.
+const SIDECAR_WARM_LEASE_MS = 5_000;
 const WORKSPACE_ROUTES = [
   "/workspace/read",
   "/workspace/write",
@@ -96,6 +102,7 @@ const WORKSPACE_ROUTES = [
 
 interface WorkspaceRecord { content: string; hash: string }
 interface ContainerMeter { tenantId: string; spaceId: string; reservationId: string; startedAt: number; expiresAt: number; allocatedAt?: number; endedAt?: number }
+interface ContainerRuntimeMetrics { sidecar: boolean; coldStarts: number; startupMs: number; warmHits: number; warmIdleMs: number; executions: number; executionMs: number }
 interface ExecutionRecord { scope: ContainerInvocationScope; payloadHash: string; status: "prepared" | "committed" | "indeterminate"; response?: { status: number; body: string } }
 
 interface StoredShellState {
@@ -246,10 +253,31 @@ export class ToolSandboxDO extends DurableObject {
     if (!meter) return;
     meter.endedAt ??= Date.now();
     await this.ctx.storage.put("container_meter", meter);
-    const credits = infraTimeToCredits("container", meter.allocatedAt === undefined ? 0 : Math.max(0, meter.endedAt - meter.allocatedAt));
+    const allocatedMs = meter.allocatedAt === undefined ? 0 : Math.max(0, meter.endedAt - meter.allocatedAt);
+    const credits = infraTimeToCredits("container", allocatedMs);
     await finalizeWorkflowBudget(this.env as Env, meter.tenantId, meter.reservationId, "settle", credits);
     await this.ctx.storage.put("last_container_gas", { ...meter, credits });
+    const metrics = await this.ctx.storage.get<ContainerRuntimeMetrics>("container_runtime_metrics");
+    const analytics = (this.env as unknown as SandboxBindings).ANALYTICS;
+    if (metrics && analytics) {
+      try {
+        analytics.writeDataPoint({
+          blobs: ["container.runtime.lifecycle", metrics.sidecar ? "marketplace-sidecar" : "base", "tool-sandbox", "", "", "", "", "", ""],
+          doubles: [allocatedMs, credits, metrics.coldStarts, metrics.startupMs, metrics.warmHits, metrics.warmIdleMs, metrics.executions, metrics.executionMs],
+        });
+      } catch { /* telemetry must never delay or prevent billing settlement */ }
+    }
+    await this.ctx.storage.delete("container_runtime_metrics");
+    await this.ctx.storage.delete("sidecar_last_active_at");
     await this.ctx.storage.delete("container_meter");
+  }
+
+  private async updateRuntimeMetrics(update: Partial<Record<keyof Omit<ContainerRuntimeMetrics, "sidecar">, number>>, sidecar?: boolean): Promise<void> {
+    const current = await this.ctx.storage.get<ContainerRuntimeMetrics>("container_runtime_metrics")
+      ?? { sidecar: sidecar === true, coldStarts: 0, startupMs: 0, warmHits: 0, warmIdleMs: 0, executions: 0, executionMs: 0 };
+    if (sidecar !== undefined) current.sidecar = sidecar;
+    for (const [key, value] of Object.entries(update) as Array<[keyof typeof update, number]>) current[key] += value;
+    await this.ctx.storage.put("container_runtime_metrics", current);
   }
 
   private async stopContainer(): Promise<void> {
@@ -259,6 +287,7 @@ export class ToolSandboxDO extends DurableObject {
       await container.destroy();
     }
     await this.settleMeter();
+    await this.ctx.storage.delete("sidecar_warm_expires_at");
     await this.ctx.storage.put("container_status", "hibernated");
   }
 
@@ -289,6 +318,10 @@ export class ToolSandboxDO extends DurableObject {
       return Response.json({ ok: false, error: "container_execution_reconciliation_required" }, { status: 409 });
     }
     await this.ctx.storage.put(key, { scope, payloadHash, status: "prepared" } satisfies ExecutionRecord);
+    let retainSidecarWarm = false;
+    let metered = false;
+    const startedAt = Date.now();
+    const sidecarWasWarm = Boolean(scope.installationId && this.container?.running);
     const controller = new AbortController();
     this.activeExecution = { id: scope.executionId, controller };
     const abort = () => controller.abort();
@@ -301,12 +334,19 @@ export class ToolSandboxDO extends DurableObject {
     try {
       if (request.signal.aborted || await this.ctx.storage.get("cancelled:" + scope.executionId)) throw new Error("container_cancelled");
       await this.ensureMeter(scope);
+      metered = true;
+      if (sidecarWasWarm) {
+        const lastActiveAt = await this.ctx.storage.get<number>("sidecar_last_active_at");
+        await this.updateRuntimeMetrics({ warmHits: 1, warmIdleMs: lastActiveAt === undefined ? 0 : Math.max(0, startedAt - lastActiveAt) }, true);
+      }
+      await this.updateRuntimeMetrics({ executions: 1 }, Boolean(scope.installationId));
       if (controller.signal.aborted) throw new Error("container_cancelled_or_deadline");
       const response = await Promise.race([
         this.handleRequest(new Request(request, { headers, signal: controller.signal })),
         new Promise<Response>((_, reject) => controller.signal.addEventListener("abort", () => reject(new Error("container_cancelled_or_deadline")), { once: true })),
       ]);
       if (controller.signal.aborted) throw new Error("container_cancelled_or_deadline");
+      retainSidecarWarm = Boolean(scope.installationId && response.ok);
       const responseBody = await response.clone().text();
       if (new URL(request.url).pathname !== "/computer/screenshot") {
         if (new TextEncoder().encode(responseBody).byteLength > 2 * 1024 * 1024) throw new Error("container_output_limit");
@@ -316,6 +356,10 @@ export class ToolSandboxDO extends DurableObject {
     } catch (error) {
       controller.abort();
       await this.ctx.storage.put(key, { scope, payloadHash, status: "indeterminate" } satisfies ExecutionRecord);
+      if (metered) {
+        await this.updateRuntimeMetrics({ executionMs: Math.max(0, Date.now() - startedAt) }, Boolean(scope.installationId));
+        metered = false;
+      }
       await this.stopContainer().catch(() => this.ctx.storage.setAlarm(Date.now() + 1000));
       const message = executionLimitExceeded
         ? `container_execution_time_limit_exceeded: maximum ${scope.timeoutMs}ms; move waits and schedules to a Durable Workflow and keep each container step bounded`
@@ -323,7 +367,16 @@ export class ToolSandboxDO extends DurableObject {
       return Response.json({ ok: false, error: message, workspace_may_require_reconciliation: true }, { status: 409 });
     } finally {
       clearTimeout(timer); request.signal.removeEventListener("abort", abort); this.activeExecution = undefined;
-      if (scope.installationId) await this.stopContainer().catch(() => this.ctx.storage.setAlarm(Date.now() + 1000));
+      if (scope.installationId) {
+        await this.ctx.storage.delete("task_active");
+        if (retainSidecarWarm) {
+          const expiresAt = Date.now() + SIDECAR_WARM_LEASE_MS;
+          await this.ctx.storage.put("sidecar_warm_expires_at", expiresAt);
+          await this.ctx.storage.put("sidecar_last_active_at", Date.now());
+          await this.ctx.storage.setAlarm(Math.min(expiresAt, (await this.ctx.storage.get<ContainerMeter>("container_meter"))?.expiresAt ?? Infinity));
+        } else await this.stopContainer().catch(() => this.ctx.storage.setAlarm(Date.now() + 1000));
+      }
+      if (metered) await this.updateRuntimeMetrics({ executionMs: Math.max(0, Date.now() - startedAt) }, Boolean(scope.installationId));
     }
   }
 
@@ -481,10 +534,15 @@ export class ToolSandboxDO extends DurableObject {
       await this.stopContainer(); return;
     }
     if (this.activeExecution) { await this.ctx.storage.setAlarm(Date.now() + 1000); return; }
+    const sidecarExpiresAt = await this.ctx.storage.get<number>("sidecar_warm_expires_at");
+    if (sidecarExpiresAt !== undefined && sidecarExpiresAt <= Date.now()) {
+      await this.stopContainer();
+      return;
+    }
     const lastUsed =
       (await this.ctx.storage.get<number>("last_used_at")) ?? this.lastUsedAt;
     const taskActive = (await this.ctx.storage.get<boolean>("task_active")) === true;
-    const idleWindow = taskActive ? ACTIVE_TASK_IDLE_WINDOW_MS : BASE_IDLE_WINDOW_MS;
+    const idleWindow = sidecarExpiresAt !== undefined ? SIDECAR_WARM_LEASE_MS : taskActive ? ACTIVE_TASK_IDLE_WINDOW_MS : BASE_IDLE_WINDOW_MS;
     if (Date.now() - lastUsed >= idleWindow) {
       const container = this.container;
       if (container?.running) {
@@ -686,6 +744,7 @@ export class ToolSandboxDO extends DurableObject {
     // and warm execution: another runtime may have published project files since the last run.
     const coldStart = !container.running;
     if (coldStart) {
+      const startupStartedAt = Date.now();
       if (request.signal.aborted) throw new Error("container_cancelled");
       if (!await this.ctx.storage.get("container_meter")) return Response.json({ ok: false, error: "container_capacity_reservation_required" }, { status: 403 });
       if (!container.destroy) return Response.json({ ok: false, error: "container_hard_stop_unsupported" }, { status: 503 });
@@ -716,6 +775,7 @@ export class ToolSandboxDO extends DurableObject {
       }
       if (!ready || request.signal.aborted) throw new Error("container_startup_interrupted");
       await this.ctx.storage.put("container_status", "running");
+      await this.updateRuntimeMetrics({ coldStarts: 1, startupMs: Date.now() - startupStartedAt }, Boolean(startScope?.installationId));
     }
 
     if (request.signal.aborted) throw new Error("container_cancelled");
@@ -731,8 +791,10 @@ export class ToolSandboxDO extends DurableObject {
     if (url.pathname === "/prewarm") {
       // Capacity/readiness only. No command, script, hydration write or business mutation.
       await this.ctx.storage.delete("task_active");
-      await this.ctx.storage.setAlarm(Math.min(Date.now() + BASE_IDLE_WINDOW_MS, (await this.ctx.storage.get<ContainerMeter>("container_meter"))!.expiresAt));
-      return Response.json({ ok: true, result: { status: "warm", expires_in_ms: BASE_IDLE_WINDOW_MS, mutation_executed: false } });
+      const leaseMs = requestedScope?.installationId ? SIDECAR_WARM_LEASE_MS : BASE_IDLE_WINDOW_MS;
+      if (requestedScope?.installationId) await this.ctx.storage.put("sidecar_warm_expires_at", Date.now() + leaseMs);
+      await this.ctx.storage.setAlarm(Math.min(Date.now() + leaseMs, (await this.ctx.storage.get<ContainerMeter>("container_meter"))!.expiresAt));
+      return Response.json({ ok: true, result: { status: "warm", expires_in_ms: leaseMs, mutation_executed: false } });
     }
 
     if (url.pathname !== "/prewarm" && execScope && (this.env as unknown as SandboxBindings).SCRIPTS_R2) {

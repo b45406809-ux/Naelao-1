@@ -50,6 +50,16 @@ export interface AttachmentClassification {
   model?: string;
 }
 
+export interface WorkPlanItemForClassification { id: string; title: string; description: string }
+export interface WorkRuntimeOption { capability: string; description: string }
+export interface WorkPlanRuntimeClassification {
+  itemId: string;
+  capability?: string;
+  confidence: number;
+  provider: FastDecisionProvider;
+  model?: string;
+}
+
 export type FastDecision<T extends string = string> = ChoiceDecision<T> | ScoreDecision | NoulDecision;
 
 export function deterministicChoice<T extends string>(value: T, policyCode: string): ChoiceDecision<T> {
@@ -74,7 +84,9 @@ export interface FastDecisionGateway {
   noul(input: { state: SystemOneState; instructions: SystemOneInstructions; criteria?: { true?: SystemOneInstructions; false?: SystemOneInstructions }; policyCode: string; threshold?: number }): Promise<NoulDecision>;
   /** Metadata-only intent recommendation; it must never read attachment bytes or authorize a tool. */
   classifyAttachments?(input: { message: string; attachments: readonly AttachmentDescriptor[]; availableTools?: readonly AttachmentClassification["candidateTool"][] }): Promise<AttachmentClassification | undefined>;
-  /** Optional single-pass runtime prediction. Implementations must return false on uncertainty. */
+  /** Classify every worker-board item in one System One request; output is advisory metadata. */
+  classifyWorkPlan?(input: { items: readonly WorkPlanItemForClassification[]; availableTools: readonly string[]; runtimes: readonly WorkRuntimeOption[] }): Promise<WorkPlanRuntimeClassification[]>;
+  /** Coarse advisory prediction only. Never use it to choose an image or authorize/prewarm a runtime. */
   preflightRuntime?(state: SystemOneState): Promise<{ needsContainer: boolean; needsBrowser: boolean; confidence: number } | undefined>;
 }
 
@@ -196,6 +208,39 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
     return { answer, meta: { provider: this.provider, model: payload.model, latencyMs: Date.now() - started, usage: usage(payload.usage) } };
   }
 
+  private async requestMany(questions: Record<string, Record<string, unknown>>, state: SystemOneState): Promise<{ answers: Record<string, SystemOneAnswer>; meta: Omit<FastDecisionMeta, "policyCode"> }> {
+    const started = Date.now();
+    let raw: { answers?: Record<string, unknown>; model?: string; usage?: unknown };
+    if (this.provider === "clef") {
+      raw = await this.runClef!(this.model, { model: this.model.replace(/^@cf\/cloudflare\//, ""), state, questions }) as typeof raw;
+    } else {
+      let response: Response | undefined;
+      for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+        response = await this.fetcher(this.endpoint, {
+          method: "POST",
+          headers: { "content-type": "application/json", ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}) },
+          body: JSON.stringify({ model: this.model, state, questions }),
+        });
+        if (response.ok || ![429, 529, 503].includes(response.status) || attempt === this.maxRetries) break;
+        await new Promise((resolve) => setTimeout(resolve, Math.min(100 * 2 ** attempt, 1_000)));
+      }
+      if (!response?.ok) {
+        const detail = await response?.text().catch(() => "");
+        throw new Error(`system_one_http_${response?.status ?? "network"}${detail ? `:${detail.slice(0, 200)}` : ""}`);
+      }
+      raw = await response.json() as typeof raw;
+    }
+    if (!raw.answers || typeof raw.answers !== "object") throw new Error("system_one_invalid_response");
+    const answers: Record<string, SystemOneAnswer> = {};
+    for (const key of Object.keys(questions)) {
+      const answer = raw.answers[key];
+      if (!answer || typeof answer !== "object") throw new Error("system_one_missing_answer");
+      answers[key] = answer as SystemOneAnswer;
+    }
+    const usageMeta = raw.usage === undefined ? {} : { usage: usage(raw.usage) };
+    return { answers, meta: { provider: this.provider, ...(typeof raw.model === "string" ? { model: raw.model } : { model: this.model }), latencyMs: Date.now() - started, ...usageMeta } };
+  }
+
   async choice<T extends string>(input: { state: SystemOneState; instructions: SystemOneInstructions; criteria: Readonly<Record<T, SystemOneInstructions | null>>; policyCode: string }): Promise<ChoiceDecision<T>> {
     const allowed = new Set(Object.keys(input.criteria));
     if (allowed.size < 2 || allowed.size > 255) throw new Error("system_one_choice_requires_2_to_255_options");
@@ -294,6 +339,50 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
       confidence: action !== "uncertain" ? decision.confidence ?? 0 : 0, policyCode: "attachment_intent_v1", provider: decision.provider,
       ...(decision.model ? { model: decision.model } : {}),
     });
+  }
+
+  async classifyWorkPlan(input: { items: readonly WorkPlanItemForClassification[]; availableTools: readonly string[]; runtimes: readonly WorkRuntimeOption[] }): Promise<WorkPlanRuntimeClassification[]> {
+    if (!Array.isArray(input.items) || input.items.length > 40) throw new Error("system_one_work_plan_items_invalid");
+    const ids = new Set<string>();
+    for (const item of input.items) {
+      if (!item || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(item.id) || ids.has(item.id)
+        || typeof item.title !== "string" || item.title.length > 200 || typeof item.description !== "string" || item.description.length > 2_000)
+        throw new Error("system_one_work_plan_items_invalid");
+      ids.add(item.id);
+    }
+    if (!input.items.length) return [];
+    if (!input.runtimes.length) return input.items.map(item => ({ itemId: item.id, confidence: 1, provider: "deterministic" }));
+    if (input.runtimes.length > 100 || input.availableTools.length > 200) throw new Error("system_one_work_plan_capabilities_invalid");
+    const runtimeById = new Map<string, WorkRuntimeOption>();
+    for (const runtime of input.runtimes) {
+      if (!/^[A-Za-z][A-Za-z0-9._-]{0,63}$/.test(runtime.capability) || runtimeById.has(runtime.capability)
+        || typeof runtime.description !== "string" || runtime.description.length > 500) throw new Error("system_one_work_plan_capabilities_invalid");
+      runtimeById.set(runtime.capability, runtime);
+    }
+    const criteria: Record<string, string> = { none: "No specialized container/runtime is required; use the worker's ordinary tools." };
+    for (const [capability, runtime] of runtimeById) criteria[capability] = runtime.description;
+    const questions = Object.fromEntries(input.items.map((item, index) => [`item_${index}`, {
+      type: "choice",
+      instructions: `For board item '${item.id}', choose the one specialized runtime capability required to complete it. Use none unless the task clearly needs a listed runtime. Classify intent only; do not execute tools or choose an installation/image.`,
+      criteria,
+    }]));
+    const state = {
+      board: input.items.map(item => ({ id: item.id, title: item.title.slice(0, 200), description: item.description.slice(0, 2_000) })),
+      worker_tools: input.availableTools.slice(0, 200).map(tool => tool.slice(0, 300)),
+      available_runtime_capabilities: [...runtimeById.values()].map(runtime => ({ capability: runtime.capability, description: runtime.description })),
+    };
+    const { answers, meta } = await this.requestMany(questions, state);
+    const results: WorkPlanRuntimeClassification[] = [];
+    for (const [index, item] of input.items.entries()) {
+      const key = `item_${index}`;
+      const answer = answers[key] as Extract<SystemOneAnswer, { type: "choice" }>;
+      const allowed = new Set(Object.keys(criteria));
+      if (answer.type !== "choice" || !allowed.has(answer.choice)) throw new Error("system_one_invalid_work_plan_answer");
+      probabilities(answer.probabilities, allowed);
+      results.push({ itemId: item.id, ...(answer.choice !== "none" ? { capability: answer.choice } : {}), confidence: boundedProbability(answer.confidence, "confidence"), provider: meta.provider, ...(meta.model ? { model: meta.model } : {}) });
+    }
+    this.observe("worker_board_runtime_classification_v1", meta);
+    return results;
   }
 
   /** One Clef forward pass predicts whether the current prompt may need expensive runtimes. */

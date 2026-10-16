@@ -43,6 +43,7 @@ import {
   triageCustomerMessage,
   DEFAULT_NAELAO_AGENT,
   LAUNCHPAD_ASSISTANT_PROFILE,
+  PREBUILT_SCRIPTS,
   type ScriptEngineEnv,
   type ExecutionTier,
   type TraceStep,
@@ -60,7 +61,7 @@ import { GatewayReasoner, WorkersAIEmbedder } from "../script-engine/reasoner.js
 import { resolveAssistantApprovalPlan, type AssistantEffectiveRole } from "../script-engine/assistant-access.js";
 import { buildCodeRunner, type WorkerLoaderBinding } from "../script-engine/code-runner.js";
 import { bindCodeRpc, type CodeRpcBinding } from "../script-engine/code-rpc-broker.js";
-import { resolveContainerBinary, parseApprovedContainerImages, approvedContainer, type InstalledContainer } from "../script-engine/container-policy.js";
+import { resolveContainerBinary, resolveContainerCapabilities, parseApprovedContainerImages, approvedContainer, type InstalledContainer } from "../script-engine/container-policy.js";
 import { deployedContainerCatalogue } from "../script-engine/container-catalogue.js";
 import { createVaultProxy } from "../script-engine/vault-proxy.js";
 import { initMemorySchema, buildMemoryStore, runMemoryMaintenance } from "../script-engine/memory-os.js";
@@ -2334,7 +2335,55 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     };
     env.resolveContainerCommand = async command => {
       if (!userId) return undefined;
-      return resolveContainerBinary(command, await installedContainers(), { tenantId, spaceId, projectId, userId });
+      const installations = await installedContainers();
+      const selectedInstallationId = env.planContainerInstallationId;
+      const scoped = selectedInstallationId
+        ? installations.filter(item => item.installationId === selectedInstallationId)
+        : installations;
+      return resolveContainerBinary(command, scoped, { tenantId, spaceId, projectId, userId });
+    };
+    env.resolveContainerCapabilities = async capabilities => {
+      if (!userId) return undefined;
+      return resolveContainerCapabilities(capabilities, await installedContainers(), { tenantId, spaceId, projectId, userId });
+    };
+    env.classifyPlanRuntimes = async ({ steps, availableTools }) => {
+      if (airGappedOnly || !userId || !env.fastDecision?.classifyWorkPlan) return [];
+      const installations = await installedContainers();
+      const owner = { tenantId, spaceId, projectId, userId };
+      const candidates = new Map<string, { capability: string; description: string }>();
+      for (const installation of installations) {
+        for (const capability of installation.contract.exportedBinaries) {
+          try {
+            const unique = resolveContainerCapabilities([capability], installations, owner);
+            if (unique?.installationId === installation.installationId) {
+              candidates.set(capability, { capability, description: `Container '${installation.extensionId}/${installation.contract.id}' provides command '${capability}'. Declared capabilities: ${installation.contract.capabilityRequirements.join(", ") || "none"}.` .slice(0, 500) });
+            }
+          } catch { /* ambiguous installed providers are intentionally omitted */ }
+        }
+      }
+      const result = await env.fastDecision.classifyWorkPlan({
+        items: steps.map(step => ({ id: step.id, title: step.text.slice(0, 200), description: step.text.slice(0, 2_000) })),
+        availableTools: [...new Set([...availableTools, ...(env.planWorkerCapabilities ?? [])])].slice(0, 200),
+        runtimes: [...candidates.values()].slice(0, 40),
+      });
+      return result.filter(item => item.confidence >= 0.8).map(item => ({ stepId: item.itemId, ...(item.capability ? { capability: item.capability } : {}), confidence: item.confidence }));
+    };
+    env.activatePlanRuntime = async capability => {
+      if (!capability) { delete env.planContainerInstallationId; return; }
+      if (!userId) throw new Error("planned_container_runtime_requires_authorized_user");
+      const installation = await resolveContainerCapabilities([capability], await installedContainers(), { tenantId, spaceId, projectId, userId });
+      if (!installation) throw new Error("planned_container_runtime_unavailable");
+      env.planContainerInstallationId = installation.installationId;
+    };
+    env.prewarmPlanRuntime = async capability => {
+      if (!capability || airGappedOnly || env.localModelMachine || !userId || !env.runId || !env.codeRunner || (env.maxTier ?? 0) < 6) return { warmed: false };
+      const installation = await resolveContainerCapabilities([capability], await installedContainers(), { tenantId, spaceId, projectId, userId });
+      if (!installation) return { warmed: false, error: "planned_container_runtime_unavailable" };
+      const result = await env.codeRunner.run({ name: "container.prewarm", code: "", args: {}, tier: 6,
+        tenantId, spaceId, agentId, ...(projectId ? { projectId } : {}), userId, runId: env.runId,
+        installationId: installation.installationId, containerImage: installation.contract.image,
+        ...(env.workspaceBranch ? { workspaceBranch: env.workspaceBranch } : {}), ...(env.executionSignal ? { signal: env.executionSignal } : {}), maxTier: env.maxTier ?? 6 });
+      return result.ok ? { warmed: true } : { warmed: false, error: result.error ?? "planned_container_prewarm_failed" };
     };
     env.containerRuntimeInventory = async () => ({ installed: await installedContainers(),
       catalogue: deployedContainerCatalogue(this.env.CONTAINER_IMAGE_REGISTRY,
@@ -3040,7 +3089,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             },
             launch: async (task, workerId) => {
               const receipt = await hooks.spawnSubAgent!({ tasks: [{
-                sub_agent_id: workerId, file_paths: task.file_paths, goal: `<isolated_subtask>\n${task.subtask_spec}\n</isolated_subtask>\n<file_boundary>${task.file_paths.join(", ")}</file_boundary>`,
+                sub_agent_id: workerId, file_paths: task.file_paths,
+                goal: `<isolated_subtask>\n${task.subtask_spec}\n</isolated_subtask>\n<file_boundary>${task.file_paths.join(", ")}</file_boundary>`,
                 role: task.assigned_role, ...(task.agent_id ? { agent_id: task.agent_id } : {}), ...(task.planner ? { planner: true } : {}), context_affinity: task.context_affinity, budget_tokens: task.budget_tokens,
               }] }) as unknown as { results?: Array<{ id: string; ok: boolean; output?: unknown; error?: string }> };
               const result = receipt.results?.[0];
@@ -4497,6 +4547,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!config) {
       return this.finishScriptFailure(runId, `agent '${agentId}' is not provisioned in space '${spaceId}'`, 404, "agent_not_provisioned");
     }
+    engineEnv.planWorkerCapabilities = config.scripts.prebuilt.slice(0, 200).map(name => {
+      const script = PREBUILT_SCRIPTS[name];
+      return script ? `${name}: ${script.description}` : name;
+    });
     if (delegation) engineEnv.maxTier = Math.min(engineEnv.maxTier ?? 6, delegation.maxTier) as ExecutionTier;
     if (body.localMachineId) engineEnv.localModelMachine = body.localMachineId;
     engineEnv.delegationDepth = delegation?.depth ?? 1;
@@ -4575,21 +4629,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // scripts) — read lazily at call time, so ordering relative to runScriptLoop is safe.
     const consultLog: Array<{ thread_id: string; agent_id: string; title: string }> = [];
     engineEnv.orchestration = this.buildOrchestrationHooks(spaceId, agentId, tenantId, body.apiKey ?? "", runId, sessionId, projectId, tools, userId, consultLog, body.model, body.effort, engineEnv);
-    // Speculatively warm only the already-authorized project container, off the response path.
-    // The typed predictor can only request a warm; it cannot execute a command or change routing.
-    // Local-only runs and viewer/low-tier actors never send the goal to a hosted model or warm a
-    // cloud runtime. A false positive expires under ToolSandboxDO's existing 60-second alarm.
-    if (!body.airGappedOnly && projectId && userId && engineEnv.effectiveRole !== "viewer"
-      && (engineEnv.maxTier ?? 0) >= 6 && engineEnv.codeRunner && engineEnv.fastDecision?.preflightRuntime) {
-      const actorId = userId;
-      this.ctx.waitUntil(engineEnv.fastDecision.preflightRuntime({ goal: body.goal.slice(0, 8_000) }).then(async (prediction) => {
-        if (!prediction?.needsContainer || prediction.confidence < 0.8 || request.signal.aborted) return;
-        const warmed = await engineEnv.codeRunner!.run({ name: "container.prewarm", code: "", args: {}, tier: 6,
-          tenantId, spaceId, agentId, projectId, userId: actorId, runId,
-          ...(engineEnv.executionSignal ? { signal: engineEnv.executionSignal } : {}), maxTier: engineEnv.maxTier ?? 6 });
-        if (!warmed.ok) throw new Error(warmed.error ?? "speculative_container_prewarm_failed");
-      }).catch(() => { /* Prediction and prewarm are best-effort; normal execution stays reactive. */ }));
-    }
+    // Resolve the worker's approved runtime before model execution, but allocate it only when the
+    // worker actually invokes a command. Prewarming here would make the model think first and
+    // often let the short lease expire, charging idle time without reducing command latency.
     // Every template has a proactive assistant/REPL; product taxonomy never clamps the engine.
     await this.ctx.storage.setAlarm(Date.now() + 60_000);
     const reasoningRequest = NaelaoAgentDO.resolveReasoningRequest(body.model, body.reasoningEffort);

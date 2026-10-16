@@ -17,8 +17,9 @@ describe("sandbox workspace ownership", () => {
 });
 
 describe("ToolSandboxDO Runtime and State Coordination", () => {
-  async function createTestSandbox(options: { timeoutMs?: number; hangExecution?: boolean; actorId?: string; runId?: string } = {}) {
+  async function createTestSandbox(options: { timeoutMs?: number; hangExecution?: boolean; actorId?: string; runId?: string; sidecar?: boolean } = {}) {
     const storage = new Map();
+    const analyticsPoints: Array<{ blobs?: string[]; doubles?: number[] }> = [];
     let alarmTime = null;
     let containerRunning = false;
 
@@ -31,6 +32,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       }),
       interceptOutboundHttps: vi.fn(async () => undefined),
       destroy: vi.fn(async () => { containerRunning = false; }),
+      inspect: vi.fn(async () => ({ image: "registry.example/tool@sha256:" + "a".repeat(64) })),
       getTcpPort: vi.fn(() => ({
         fetch: async (req) => {
           const url = new URL(req.url);
@@ -75,16 +77,18 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       SCRIPTS_R2: { list: async () => ({ objects: [], truncated: false }), get: async () => null },
       CONCURRENCY_DO: {},
       BILLING_WORKER: { fetch: async () => Response.json({ ok: true }) },
+      ANALYTICS: { writeDataPoint: (point) => { analyticsPoints.push(point); } },
     } as never);
     const sandbox = { alarm: () => realSandbox.alarm(), fetch: async (request: Request) => {
       const headers = new Headers(request.headers);
       headers.set("x-naelao-internal-token", await mintInternalToken("test-secret", "tenant"));
       headers.set("x-naelao-container-scope", JSON.stringify({ tenantId: "tenant", spaceId: "space", actorId: options.actorId ?? "owner", agentId: "worker", runId: options.runId ?? "run",
+        ...(options.sidecar ? { projectId: "project", installationId: "install-a", installationScope: "PROJECT_SHARED", image: "registry.example/tool@sha256:" + "a".repeat(64), dynamicImage: true } : {}),
         executionId: crypto.randomUUID(), timeoutMs: options.timeoutMs ?? 55000, deadline: Date.now() + (options.timeoutMs ?? 55000) }));
       return realSandbox.fetch(new Request(request, { headers }));
     } };
-    await sandbox.fetch(new Request("https://sandbox/prewarm", { method: "POST", body: "{}" }));
-    return { sandbox, storage, getAlarmTime: () => alarmTime, mockContainer };
+    const initialPrewarm = await sandbox.fetch(new Request("https://sandbox/prewarm", { method: "POST", body: "{}" }));
+    return { sandbox, storage, getAlarmTime: () => alarmTime, mockContainer, initialPrewarm, analyticsPoints };
   }
 
   it("coordinates 4D shell state and rejects conflicting revisions", async () => {
@@ -221,7 +225,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     expect(mockContainer.destroy).toHaveBeenCalledOnce();
   });
 
-  it("keeps an active Task DAG container warm for 300s", async () => {
+  it("does not extend base-container idle time from an active-task hint", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000_000);
     const { sandbox, getAlarmTime, mockContainer } = await createTestSandbox();
@@ -233,11 +237,10 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     expect(mockContainer.start).toHaveBeenCalledWith({ enableInternet: false });
     expect(mockContainer.interceptOutboundHttps).toHaveBeenCalledTimes(9);
     expect(mockContainer.interceptOutboundHttps).toHaveBeenCalledWith("registry.npmjs.org", expect.any(Object));
-    expect(getAlarmTime()).toBe(1_300_000);
+    expect(getAlarmTime()).toBe(1_060_000);
     vi.setSystemTime(1_060_000);
     await sandbox.alarm();
-    expect(mockContainer.destroy).not.toHaveBeenCalled();
-    expect(getAlarmTime()).toBe(1_300_000);
+    expect(mockContainer.destroy).toHaveBeenCalledOnce();
     vi.useRealTimers();
   });
 
@@ -261,6 +264,46 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     expect(storage.has("task_active")).toBe(false);
     expect(getAlarmTime()).toBe(1_070_000);
     vi.useRealTimers();
+  });
+
+  it("keeps an exact marketplace sidecar warm only for the bounded reuse lease", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(2_000_000);
+    const { sandbox, storage, getAlarmTime, mockContainer, initialPrewarm, analyticsPoints } = await createTestSandbox({ sidecar: true, runId: "worker-run" });
+    expect(initialPrewarm.status, await initialPrewarm.clone().text()).toBe(200);
+    expect(mockContainer.start).toHaveBeenCalledOnce();
+    expect(mockContainer.destroy).not.toHaveBeenCalled();
+    expect(storage.get("sidecar_warm_expires_at")).toBe(2_005_000);
+    expect(getAlarmTime()).toBe(2_005_000);
+
+    const reused = await sandbox.fetch(new Request("https://sandbox/exec", { method: "POST", body: "{}" }));
+    expect(reused.ok).toBe(true);
+    expect(mockContainer.start).toHaveBeenCalledOnce();
+    expect(mockContainer.destroy).not.toHaveBeenCalled();
+    expect(getAlarmTime()).toBe(2_005_000);
+
+    vi.setSystemTime(2_005_000);
+    await sandbox.alarm();
+    expect(mockContainer.destroy).toHaveBeenCalledOnce();
+    expect(storage.has("sidecar_warm_expires_at")).toBe(false);
+    expect(analyticsPoints).toHaveLength(1);
+    expect(analyticsPoints[0]?.blobs?.[0]).toBe("container.runtime.lifecycle");
+    expect(analyticsPoints[0]?.blobs?.[1]).toBe("marketplace-sidecar");
+    expect(analyticsPoints[0]?.doubles?.[0]).toBeGreaterThanOrEqual(5_000);
+    expect(analyticsPoints[0]?.doubles?.[4]).toBe(1); // exact warm reuse
+    vi.useRealTimers();
+  });
+
+  it("destroys a marketplace sidecar after failed or indeterminate execution", async () => {
+    const { sandbox, storage, mockContainer, analyticsPoints } = await createTestSandbox({ sidecar: true, timeoutMs: 1000, hangExecution: true, runId: "worker-failure" });
+    const result = await sandbox.fetch(new Request("https://sandbox/exec", { method: "POST", body: "{}" }));
+    expect(result.status).toBe(409);
+    expect(mockContainer.destroy).toHaveBeenCalledOnce();
+    expect(storage.has("sidecar_warm_expires_at")).toBe(false);
+    expect(analyticsPoints).toHaveLength(1);
+    expect(analyticsPoints[0]?.doubles?.[6]).toBe(2); // prewarm and failed command are both measured
+    expect(analyticsPoints[0]?.doubles?.[7]).toBeGreaterThanOrEqual(1000);
+    expect(storage.has("container_runtime_metrics")).toBe(false);
   });
 
   it("stays warm before 60s and snapshots then hibernates at 60s", async () => {

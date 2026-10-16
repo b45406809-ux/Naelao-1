@@ -12,6 +12,7 @@ export const UNIVERSAL_EXECUTION_PREBUILTS = ["code-exec", "runtime-discovery"] 
 export const UNIVERSAL_AGENT_BASELINE_PREBUILTS = [
   ...UNIVERSAL_EXECUTION_PREBUILTS,
   ...UNIVERSAL_PLANNER_PREBUILTS,
+  "plan",
   "attachments",
 ] as const;
 
@@ -30,8 +31,6 @@ const PLANNER_OPERATIONS = new Set([
   "thread.list",
   "thread.read",
   "thread.search",
-  "runtime.list",
-  "runtime.find",
 ]);
 
 /**

@@ -137,4 +137,20 @@ describe("Batch 04 universal kernel", () => {
       context_affinity: "isolated", file_paths: [], dependencies: [], budget_tokens: 500,
     }]);
   });
+
+  it("leaves runtime selection to the worker board and discards planner runtime hints", async () => {
+    const executeGoalDag = vi.fn(async () => ({ tasks: { media: { status: "completed", workerId: "media" } } }));
+    const task = { id: "media", title: "Transcode clip", subtask_spec: "Convert the supplied clip", assigned_role: "DEV_OPERATOR",
+      file_paths: ["media/input.mp4"], container_capabilities: ["video.transcode"], budget_tokens: 500, image: "attacker-selected" };
+    const result = await goalPlanner.operations["engine.plan_and_delegate_goal"]!({ objective: "convert clip", tasks: [task] }, {
+      env: { orchestration: { persistGoalTasks: vi.fn(), spawnSubAgent: vi.fn(), executeGoalDag } } as never,
+      run: vi.fn(),
+    });
+    expect(executeGoalDag).toHaveBeenCalledWith("convert clip", [{
+      id: "media", title: "Transcode clip", subtask_spec: "Convert the supplied clip", assigned_role: "DEV_OPERATOR",
+      context_affinity: "shared", file_paths: ["media/input.mp4"], dependencies: [], budget_tokens: 500,
+    }]);
+    expect(result).not.toHaveProperty("tasks.0.image");
+    expect(() => validateGoalDag([{ ...task, container_capabilities: ["../escape"] } as never])).not.toThrow();
+  });
 });

@@ -53,14 +53,35 @@ import { beginConsultation, restoreDeliberationState } from "./deliberation-stat
  * live ops use, so a reconstructed plan is identical to the one the original run held. A fresh run
  * (empty resumeSteps) yields an empty plan.
  */
-function reconstructPlanFromSteps(
-  steps: Array<{ name: string; params: Record<string, unknown> }>
+export function reconstructPlanFromSteps(
+  steps: Array<{ name: string; params: Record<string, unknown>; output?: unknown }>
 ): PlanState {
   const state: PlanState = { steps: [] };
   for (const s of steps) {
-    if (s.name.startsWith("plan.")) applyPlanOp(state, s.name, s.params);
+    if (!s.name.startsWith("plan.")) continue;
+    // Existing run ledgers may predate explicit edit transactions and start with plan.set.
+    if (["plan.set", "plan.add_step", "plan.edit_step", "plan.remove_step", "plan.clear"].includes(s.name) && !state.editing) {
+      applyPlanOp(state, "plan.open_edit", {});
+    }
+    applyPlanOp(state, s.name, s.params);
+    if (s.name === "plan.close_edit" && s.output && typeof s.output === "object") {
+      const result = s.output as { steps?: Array<{ id?: unknown; runtime_capability?: unknown; runtime_confidence?: unknown }> };
+      const byId = new Map((Array.isArray(result.steps) ? result.steps : []).filter(step => typeof step.id === "string").map(step => [step.id as string, step]));
+      for (const step of state.steps) {
+        const classified = byId.get(step.id);
+        if (typeof classified?.runtime_capability === "string") step.runtimeCapability = classified.runtime_capability;
+        if (typeof classified?.runtime_confidence === "number") step.runtimeConfidence = classified.runtime_confidence;
+      }
+    }
   }
   return state;
+}
+
+/** Re-resolve the active step's advisory capability against current host authorization on resume. */
+export async function restorePlanRuntime(state: PlanState, activate?: (capability?: string) => Promise<void>): Promise<void> {
+  if (!activate) return;
+  const active = state.steps.find(step => step.status === "active");
+  await activate(active?.runtimeCapability);
 }
 
 /** How many consecutive times the loop will refuse a premature terminal decision (a stop with an
@@ -861,6 +882,13 @@ export async function runScriptLoop(
       // approval-suspend survives the resume; the plan ops mutate this SAME object by reference
       // (it's on env), and the terminal-decision gate below reads it. A fresh run starts empty.
       env.plan = reconstructPlanFromSteps(opts.resumeSteps ?? []);
+      if (env.activatePlanRuntime) {
+        try { await restorePlanRuntime(env.plan, env.activatePlanRuntime); }
+        catch (error) {
+          return finish({ level, script_name: "plan.resume_runtime", result: { ok: false,
+            error: error instanceof Error ? error.message : "planned_runtime_resume_failed", tier: 1, duration_ms: 0, tokens_used: 0 }, notes: [] });
+        }
+      }
       /** How many times in a row the plan gate has refused a premature stop — bounded so it can
        *  never itself drive the run to the runaway ceiling (see MAX_PLAN_GATE_REFUSALS). */
       let planGateRefusals = 0;

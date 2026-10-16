@@ -104,11 +104,12 @@ describe("specialized project workspaces", () => {
     const binary = Buffer.from([0, 255, 1, 128]).toString("base64");
     expect((await specialized.exec({ write: { "clip.bin": binary } }, true)).ok).toBe(true);
     expect(specialized.transport.start).toHaveBeenCalledWith({ enableInternet: false, image });
-    expect(specialized.transport.destroy).toHaveBeenCalledOnce();
+    expect(specialized.transport.destroy).not.toHaveBeenCalled();
     const read = await general.exec();
     expect(await read.json()).toMatchObject({ result: { files: { "clip.bin": binary } } });
     expect(general.transport.start).toHaveBeenCalledOnce();
     expect((await specialized.exec({ remove: ["clip.bin"] }, true)).ok).toBe(true);
+    expect(specialized.transport.start).toHaveBeenCalledOnce();
     general.restart();
     expect(await (await general.exec()).json()).toMatchObject({ result: { files: {} } });
     expect(general.files.size).toBe(0);

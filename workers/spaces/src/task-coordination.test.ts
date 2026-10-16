@@ -35,9 +35,14 @@ function makeSpaceDO(rows: Row[] = []) {
         return { toArray: () => project ? [project] : [] };
       }
       if (lower.includes("select lifecycle, status, name from projects")) return { toArray: () => [] };
-      if (lower.includes("select * from tasks where id")) {
+      if (lower.includes("from tasks where id")) {
         const task = taskRows.get(String(args[0]));
         return { toArray: () => task ? [task] : [] };
+      }
+      if (lower.startsWith("insert into tasks")) {
+        const [id, space_id, project_id, thread_id, title, status, dependencies, assigned_agent, subtask_spec, assigned_role, model, file_paths, budget_tokens, prompt_text, intent_embedding, created_at, updated_at] = args;
+        taskRows.set(String(id), { id, space_id, project_id, thread_id, title, status, dependencies, assigned_agent, subtask_spec, assigned_role, model, file_paths, budget_tokens, prompt_text, intent_embedding, created_at, updated_at });
+        return { rowsWritten: 1, toArray: () => [] };
       }
       return { rowsWritten: 1, toArray: () => [] };
     },
@@ -71,6 +76,17 @@ describe("SpaceDO task coordination journey", () => {
     const h = makeSpaceDO([{ id: "task-1", status: "in_progress", thread_id: "thread-1", prompt_text: "prepare the quarterly revenue report", intent_embedding: null }]);
     const response = await h.instance.fetch(new Request("https://space/intent-deduplicate", { method: "POST", body: JSON.stringify({ projectId: "project-1", promptText: "prepare the quarterly revenue report" }) }));
     expect(await response.json()).toMatchObject({ duplicate: true, existingTaskId: "task-1", threadId: "thread-1" });
+  });
+
+  it("keeps the durable orchestration task board separate from worker runtime selection", async () => {
+    const h = makeSpaceDO();
+    const createTask = (body: Record<string, unknown>) => (h.instance as unknown as { createTask(request: Request): Promise<Response> }).createTask(
+      new Request("https://space/tasks", { method: "POST", body: JSON.stringify({ id: "goal:media", space_id: "space-1", title: "Transcode", ...body }) }),
+    );
+    const created = await createTask({ dependencies: [] });
+    expect(created.status).toBe(201);
+    expect(await (await createTask({ dependencies: [] })).json()).toMatchObject({ replayed: true });
+    expect((await createTask({ dependencies: [], container_capabilities: ["video.transcode"] })).status).toBe(200);
   });
 
   it("freezes a project and records an RFC for conflicting sponsors", async () => {

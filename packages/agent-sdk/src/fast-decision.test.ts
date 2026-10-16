@@ -64,6 +64,32 @@ describe("typed fast decisions", () => {
     await expect(new SystemOneDecisionClient().preflightRuntime("test")).resolves.toBeUndefined();
   });
 
+  it("classifies every worker blackboard item in one System One request", async () => {
+    const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { questions: Record<string, { criteria: Record<string, unknown> }> };
+      expect(Object.keys(body.questions)).toEqual(["item_0", "item_1"]);
+      expect(body.questions.item_0?.criteria).toHaveProperty("ffmpeg");
+      const criteria = Object.keys(body.questions.item_0!.criteria);
+      return Response.json({ model: "jev-1.13.0", answers: {
+        item_0: { type: "choice", choice: "ffmpeg", probabilities: Object.fromEntries(criteria.map(key => [key, key === "ffmpeg" ? 1 : 0])), confidence: 0.96 },
+        item_1: { type: "choice", choice: "none", probabilities: Object.fromEntries(criteria.map(key => [key, key === "none" ? 1 : 0])), confidence: 0.91 },
+      }, usage: { input_tokens: 50, output_tokens: 8 } });
+    });
+    const client = new SystemOneDecisionClient({ fetch: fetcher as typeof fetch, maxRetries: 0 });
+    await expect(client.classifyWorkPlan!({
+      items: [
+        { id: "s1-video", title: "Edit video", description: "Trim and transcode an uploaded video." },
+        { id: "s2-report", title: "Write report", description: "Summarize the verified result." },
+      ],
+      availableTools: ["workspace.read", "artifacts.write"],
+      runtimes: [{ capability: "ffmpeg", description: "Video transcoding container." }],
+    })).resolves.toMatchObject([
+      { itemId: "s1-video", capability: "ffmpeg", confidence: 0.96, provider: "jev" },
+      { itemId: "s2-report", confidence: 0.91, provider: "jev" },
+    ]);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
   it("classifies attachment intent in one metadata-only decision and recommends a bounded skill", async () => {
     const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { state: { message: string; attachments: Array<{ id: string }> } };
