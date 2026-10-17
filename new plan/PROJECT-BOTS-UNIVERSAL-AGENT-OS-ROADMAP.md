@@ -12,7 +12,9 @@ This is a plan, not a claim that these features have been implemented. It captur
 
 Naelao is one AI operating system. The kernel provides durable agent execution, identity and authorization, workspaces, projects, collaboration, memory and knowledge, tools, schedules and events, extensions, audit, and metered resource control. People add purpose through project templates and composable extensions. A trading, legal-operations, support, research, or personal-assistant experience is a composition and policy profile, not a different OS or project kind.
 
-A **Project Bot** is the persistent assistant for one project. It has a stable identity, project-scoped knowledge and workspace, conversation history, routines, permissions, budget, and presence. It remains administered under the Space Assistant and Space owner policies, but it is not the Space Assistant and does not share its workspace, thread, or capabilities by default. Several Project Bots can coexist in a Space.
+A **Project Bot is the planner for its project**: the project-scoped counterpart of the Space Assistant, built on the same planner and worker architecture. It has a stable project identity, project-scoped knowledge and workspace, internal conversations/threads, routines, permissions, budget, and presence. A Space Assistant and Project Bot differ by scope and identity, not by planner architecture. Each is governed by Space policy; the Space Assistant can coordinate with a Project Bot through authorized internal project context, but their workspaces, threads, and capabilities are not implicitly shared. A Space with several projects can have several Project Bots.
+
+Project Bots are internal. Members access them through in-app project sessions/threads and any explicitly configured **internal** project channel. A Project Bot is never exposed as a customer-facing or public channel handler. Customer-facing messaging is served by a separate external extension handler with an external principal and narrowly granted data/actions; it cannot invoke the Project Bot planner, join internal threads, or inherit member permissions. A composed extension may provide both internal tools/workflows and an external channel surface, but the host keeps their principals, contexts, and grants separate.
 
 A **Space Project Steward** is a platform-provided Space-wide extension installation. It runs in its own Space extension workspace, not the Space Assistant workspace. It periodically reviews authorized project journals and project metadata, prioritizes projects needing attention, and proposes the next useful action. It can flag apparent completion or inactivity and prepare a retirement review. It cannot autonomously delete project data or shut down a user’s running extensions. The Space Assistant or an authorized human reviews evidence and confirms pause/archive actions.
 
@@ -22,7 +24,7 @@ The public product surface should feel simple to nontechnical users:
 - A **Bots** roster for project specialists, each with a clear project label, state, next routine, last activity, and unread/approval indicator.
 - Projects remain the place for project files, work, and configuration. Opening a project reveals its Bot, activity, routines, knowledge, extensions, and budget.
 - One autonomy setting per assistant/Bot, with understandable choices and a short preview of what can happen. Advanced users can tune action classes, schedules, tools, spending, and approval rules.
-- A Bot may act through project workflows, SDK tools, a Canvas, or an external channel. The planner remains the planner; it plans and delegates using the existing worker topology. A project or channel bot is never silently made the planner.
+- A Project Bot is the project planner: it plans and delegates through the same existing worker topology as the Space Assistant, within project scope. It may use authorized project workflows, SDK tools, Canvas, and Gadgets. An external channel handler is a separate extension principal and never becomes a route into either internal planner.
 
 ## 2. Repository findings and constraints
 
@@ -30,7 +32,7 @@ At the inspected commit the working tree was clean. The current code and plans e
 
 | Area | Current evidence | Planning consequence |
 |---|---|---|
-| Project identity and templates | Project agent templates are curated behavioral/tool configurations in `workers/agents/src/agent-templates.ts`; generic project templates and bootstrap live under `workers/agents/src/launchpad/project-templates.ts`. | Build Project Bot identity/config on the existing project and agent records; do not add a domain-specific project kind merely to create a Bot. |
+| Project identity and templates | Project agent templates are curated behavioral/tool configurations in `workers/agents/src/agent-templates.ts`; generic project templates and bootstrap live under `workers/agents/src/launchpad/project-templates.ts`. | Make the project-scoped planner the Project Bot, reusing the same planner/worker architecture as the Space Assistant. Do not add a second planner architecture or domain-specific project kind. |
 | Project autonomy | Agent templates expose suggested autonomy; existing run gates, approval paths, execution ceilings, and capability controls exist in several layers. | Map these to one user-facing autonomy model and one canonical policy evaluator; do not equate a UI slider with authorization. |
 | Proactive execution | Project journals, automation, durable workflows, and channel heartbeat paths exist, but current heartbeat behavior is distributed and includes legacy customer-bot concepts. | Consolidate new Project Bot routines onto a durable, event-aware scheduler while preserving planner/worker topology and old integrations during migration. |
 | Spend controls | `SpaceDO` contains per-project daily spend caps, reservation/settlement tables, and run settlements. `NaelaoAgentDO` has channel/run gates. | Reuse the authoritative reservation path; add install, external subject, and run-class budgets plus unit-cost metering. Do not depend on a UI-only cap. |
@@ -40,8 +42,8 @@ At the inspected commit the working tree was clean. The current code and plans e
 | Canvas and Gadget | Project Canvas/Gadget runtime isolation and project-member Gadget operations exist; Canvas-to-Gadget actions are still open. | Add mediated actions through declared host capabilities; no arbitrary SQL or cross-install reads. |
 | Inbox | Owner inbox, bounded reply, scoped export/deletion and pause behavior exist; assignment and complete integration remain open. | Add assignment/escalation with install- and project-scoped authorization and durable event history. |
 | Product taxonomy/UI | `spaces/page.tsx` currently renders AVE and Cowork modes and vertical labels; domain-specific template text remains. `docs/ui-feature-inventory.md` includes historical vertical/mode requirements. | Treat the latest user direction as product policy. Migrate labels and templates in place; the generated inventory is not authority to preserve superseded mode distinctions. |
-| Legacy customer-bot implementation | Code remains in project configuration, routes, worker paths, and UI, including `CustomerBotAutomation`; historical notes explain how it evolved. | Do not delete these paths abruptly. Stop adding new structural customer-bot concepts; migrate supported channel behavior into ordinary Project Bot + extension installations, then retire legacy UI/data paths only after compatibility and data migration. |
-| Runtime topology | Existing Planner/worker topology is user-directed to remain as is. | No replacement planner architecture or new universal dispatcher in this plan. New schedules/routines invoke existing authorized agent/workflow entry points. |
+| Legacy customer-bot implementation | Code remains in project configuration, routes, worker paths, and UI, including `CustomerBotAutomation`; historical notes explain how it evolved. | Do not delete these paths abruptly. Stop adding customer-bot project/planner concepts. Migrate supported public-channel behavior into isolated external extension handlers, which remain separate from internal Project Bot planners; retire legacy UI/data only after compatibility and data migration. |
+| Runtime topology | Existing Planner/worker topology is user-directed to remain as is. | A Project Bot is another scope-bound use of this same planner/worker architecture. Do not replace or fork it. New schedules/routines wake the authorized planner through existing internal entry points. |
 
 Evidence sources in the repo include `new plan/TRANSCRIPT-CROSS-SOURCE-RECONCILIATION.md`, `new plan/FDE-EXTENSIONS-AND-MICROAPPS-ARCHITECTURE.md`, `new plan/CONTINUATION-IMPLEMENTATION-PROGRESS.md`, `workers/spaces/src/do/SpaceDO.ts`, `workers/agents/src/do/NaelaoAgentDO.ts`, `workers/agents/src/agent-templates.ts`, `workers/agents/src/launchpad/project-templates.ts`, and `apps/shell/src/app/p/[slug]/(shell)/spaces/page.tsx`. Verify these paths again immediately before implementation; the code may change.
 
@@ -49,38 +51,38 @@ Evidence sources in the repo include `new plan/TRANSCRIPT-CROSS-SOURCE-RECONCILI
 
 Use these concepts consistently in UI, manifest, APIs, logs, and billing:
 
-1. **Space Assistant** — the existing general assistant for one Space. It can coordinate across projects according to Space-level grants. It has its own assistant workspace and conversation.
-2. **Project Bot** — one persistent assistant identity attached to a project. It can have multiple user conversations and routines, but its default data and tools resolve through that one project’s grants.
+1. **Space Assistant** — the existing general-scope planner for one Space. It can coordinate across projects according to Space-level grants. It has its own assistant workspace and internal conversation.
+2. **Project Bot** — the planner for one project, using the same planner/worker architecture as the Space Assistant with a project-bound identity, workspace, grants, internal threads, and routines. It is not a customer-facing channel bot.
 3. **Project** — stable project identity, files/Knowledge, journals, tasks, activity, members, templates, installed extensions, and lifecycle.
 4. **Extension package** — versioned composition of primitives, not a synonym for one primitive. Its manifest needs stable IDs and declarations for workers/roles, workflows, Canvas, Gadgets, channels, scripts, required connections, Knowledge grants, events, data retention, runtime/resource envelope, and upgrade/migration behavior.
 5. **Installation instance** — a particular installation of a package in a Space or project, with its own credentials, bindings, state namespace, limits, enabled/paused state, and version. One package can have multiple instances.
-6. **Invocation principal** — Space Assistant, project member/Bot, internal service, or external customer identity. The principal determines access; the package name and caller-supplied IDs do not.
-7. **Routine** — durable scheduled or event-triggered work owned by an assistant/Bot/extension, with trigger, timezone, delivery target, budget, approval class, version, pause/expiry policy, and run history.
+6. **Invocation principal** — Space Assistant planner, Project Bot planner, project member, trusted internal service, or external extension principal. The principal determines access; the package name and caller-supplied IDs do not. External subjects are never members or planner principals.
+7. **Routine** — durable scheduled or event-triggered work owned by an assistant/Bot/extension, with trigger, timezone, internal delivery target, budget, approval class, version, pause/expiry policy, and run history. Public channel delivery is an external extension action under its own grant.
 8. **External identity** — provider-specific identity verified by the host and mapped to an installation and opaque external subject key. It is distinct from Naelao account identity and must never inherit internal member roles.
 
-Workspace scopes remain separate: project workspace; Space Assistant workspace; and an isolated workspace per Space-wide extension installation. No shared mount is implied by common Space membership. Data crosses a boundary only through a host-validated API/grant or an explicitly published artifact.
+Workspace scopes remain separate: project planner workspace; Space Assistant workspace; and an isolated workspace per Space-wide extension installation. Project Bot and Space Assistant use the same planner/worker architecture but do not share workspace or thread state by default. No shared mount is implied by common Space membership. Data crosses a boundary only through a host-validated API/grant or an explicitly published artifact.
 
 ## 4. Project Bot and Space Steward behavior
 
 ### 4.1 Project Bot lifecycle
 
-Create, configure, pause, resume, archive, and restore a Project Bot through the owning project. Project creation may provision a default Bot identity with no autonomous schedule and no unapproved external connection. The user can start by chatting, selecting a template, or asking the Space Assistant to create/configure the project Bot. The Bot can run a one-off task, saved routine, project event, or approved delegated workflow.
+Create, configure, pause, resume, archive, and restore a Project Bot through the owning project. Project creation may provision the project planner identity with no autonomous schedule and no enabled external-channel route. The user starts by opening an internal project session/thread, selecting a template, or asking the Space Assistant to create/configure the Project Bot. The Project Bot can handle an internal one-off task, saved routine, project event, or approved delegated workflow.
 
 The Bot has:
 
-- stable project and Bot IDs, a name/avatar/role description, and one canonical Bot conversation plus optional task/run conversations;
+- stable project and Bot IDs, a name/avatar/role description, and canonical internal project threads plus optional task/run threads;
 - project-only default files, Knowledge, journal, and memory, with separately reviewed Space-wide grants where needed;
-- a policy profile, tool/capability grants, execution ceiling, model/effort policy, schedule, notification target, and budget;
+- a policy profile, tool/capability grants, execution ceiling, model/effort policy, schedule, internal notification target, and budget;
 - visible status (idle, running, awaiting approval, paused, blocked by budget/connection, failed) and activity timeline;
 - pause/resume controls that immediately fence off new starts and safely handle in-flight work; cancellation behavior depends on the runtime’s side-effect certainty.
 
-Do not create a new planner per Project Bot. The current planner may route work to the Bot’s authorized worker/workflow primitives. Keep planner decisions, Bot execution, and extension activity separately attributable in audit.
+The Project Bot **is** the project planner, not a worker under a separate project planner. Instantiate/configure the same planner architecture used by the Space Assistant with the project’s verified scope and policy. It uses the existing worker topology for delegated work. Attribute planner decisions, worker runs, internal sessions, and extension actions separately in the audit trail. A public extension handler is never routed through this planner.
 
 ### 4.2 Routine scheduler
 
-Build on a durable event/schedule service (use the current Durable Workflow/event infrastructure where it fits). Do not use a constantly polling model heartbeat as the default. Support calendar schedules in the user’s timezone, one-shot times, project events, and bounded “check periodically” requests. Persist schedule definition version, next due time, pause state, and idempotency key. Missed ticks coalesce by policy; do not launch a backlog of stale heartbeats after downtime. A busy Bot does not get overlapping routine runs unless a declared routine explicitly allows safe concurrency.
+Build on a durable event/schedule service (use the current Durable Workflow/event infrastructure where it fits). Do not use a constantly polling model heartbeat as the default. Support calendar schedules in the user’s timezone, one-shot times, project events, and bounded “check periodically” requests. A due routine wakes the Project Bot planner through its normal internal invocation path, with project identity and grants verified by the host. Persist schedule definition version, next due time, pause state, and idempotency key. Missed ticks coalesce by policy; do not launch a backlog of stale heartbeats after downtime. A busy Bot does not get overlapping routine runs unless a declared routine explicitly allows safe concurrency.
 
-Each run has a bounded invocation, deadline, input snapshot/pointers, capability snapshot, spend reservation, execution record, result/exception, and delivery status. Retry only idempotent or host-deduplicated work; never blindly retry an uncertain external send or financial side effect. Provide “Run now” as a preflight/test path and show its budget consumption.
+Each planner run has a bounded invocation, deadline, input snapshot/pointers, capability snapshot, spend reservation, execution record, result/exception, and internal delivery status. Retry only idempotent or host-deduplicated work; never blindly retry an uncertain side effect. If the planner delegates a public reply, that reply is a distinct extension action with its own identity, budget, and delivery record. Provide “Run now” as a preflight/test path and show its budget consumption.
 
 Use cadence windows, jitter, event deduplication, change detection, cooldowns, quiet hours, maximum attempts, and model-free pre-checks when available. A routine should stop or report “nothing changed” without manufactured work. Scheduler health, skipped/capped jobs, last success and next run must be visible to the owner.
 
@@ -99,7 +101,7 @@ Lifecycle state machine proposal: `active → review suggested → owner/Space A
 
 ### 4.4 Bots navigation
 
-Add a stable **Bots** destination near the Space Assistant chat and Projects navigation. It lists project Bots across projects visible to the member, but only displays actions permitted by project membership. Search/filter by project, status, unread activity, approvals, and routine. Show each Bot’s scope in the list and conversation header. Opening a Bot resolves through stable Space/project/Bot IDs and an authorized server lookup.
+Add a stable **Bots** destination near the Space Assistant chat and Projects navigation. It lists project planners across projects visible to the member, but only displays actions permitted by project membership. Search/filter by project, status, unread activity, approvals, and routine. Label each as an internal Project Bot and show its project scope in the list and thread header. Opening a Bot resolves through stable Space/project/Bot IDs and an authorized server lookup. Public customer conversations remain in the separate extension inbox and must not appear as Project Bot threads.
 
 Project pages remain authoritative for project data and settings; the Bots roster is the cross-project doorway. Deep links must survive refresh and history navigation. Space switching must never preserve another Space’s project Bot, cached transcript, or selection. Mobile uses a compact list/detail route; keyboard users can navigate and operate controls without drag-only affordances.
 
@@ -142,7 +144,7 @@ Do not abruptly remove working wallet, marketplace, or vertical code. First iden
 
 Teach six orthogonal questions in Foundry rather than ask developers to choose a single “extension type”:
 
-1. Who invokes this? Space Assistant, project Bot/member, scheduled event, internal service, or external customer.
+1. Who invokes this? Space Assistant planner, Project Bot planner, project member, scheduled event, trusted internal service, or a separate external extension handler.
 2. What does it contain? Worker role, workflow, Canvas, Gadget, channel adapter, scripts, connection declarations, Knowledge source.
 3. Where does it run? Existing execution tier, with a bounded resource envelope.
 4. What can it read/change? Typed capabilities, resource grants, project/installation scope, and approval classes.
@@ -227,7 +229,7 @@ These journeys should be used as design reviews and end-to-end test narratives. 
 | Family/home organizer | Share a home project with named members, create household routine, connect calendar/service as owner, assign which Bot may see it. | Children/guest roles, revoked member, private personal project, shared connection ownership and notifications. |
 | Solo freelancer | Pick a generic project template, upload client materials, ask project Bot to prepare a draft, approve outbound action, see time/cost and handoff. | Client work separation, budget cap, wrong client/project link, owner approval and export. |
 | Small business owner | Install first-party/FDE extension (support, bookings, marketing), review scope/cost, connect WhatsApp or Telegram, publish selected FAQs, test as customer, launch. | OAuth incomplete/expired, wrong phone/account, duplicate webhook, abuse/off-topic traffic, customer asks for human, disconnect and clean uninstall. |
-| Trading mentor | Project Bot can explain approved mentor knowledge; a public messaging extension handles student FAQs with exact published collections and per-student limits. Internal mentor Canvas and member-only workflows manage the program. A separate internal worker can execute explicitly permitted operations after review. | Student never gains member tools or private files; no trading/order action by public handler; broker connection and live trading require independent explicit grants, limits, legal review and confirmation. Canvas, workflows and Bot share bundle identity without sharing trust principal. |
+| Trading mentor | The internal Project Bot planner can explain approved mentor knowledge in project sessions and use member-authorized Canvas/workflows. A separate public messaging extension handles student FAQs with exact published collections and per-student limits; its external handler cannot access the Project Bot or internal threads. The internal planner may delegate an allowed operation to a worker after review. | Student never gains member tools or private files; no trading/order action by public handler; broker connection and live trading require independent explicit grants, limits, legal review and confirmation. Canvas, workflows and Bot share bundle identity without sharing trust principal. |
 | Finance team | Generic project plus finance extension for document intake/reconciliation/reporting; project Bot prepares, flags anomalies, and routes approval. | Tenant/ledger isolation, dual approval for payments, immutable trace, correction/reversal, limits and audit retention. No claim that a template makes the customer compliant. |
 | Legal practice | Project per matter/client, matter-specific Bot, exact document grants, approved draft workflows, review queue. | Ethical wall across matters, confidentiality, source attribution, privilege-aware retention, jurisdictional review, never imply legal advice or auto-send filings. |
 | Agency/consultancy | Reuse templates for multiple client projects; install separate package instances and provider credentials per client; run monthly reports. | No shared tenant data by package, per-client quotas, staff offboarding, upgrade compatibility and export/uninstall. |
@@ -265,7 +267,7 @@ The user’s standing delivery preference is to checkpoint successful work in fo
 - Add Bots roster/detail route, activity/state, stable IDs, project scope display, approval queue and responsive keyboard navigation.
 - Add tests for multiple Bots, member isolation, URL refresh/history, switch Space/project, archived project, and stale cache/data rejection.
 
-**Gate:** user can chat with a project Bot and the Space Assistant as clearly separate identities with distinct workspaces and permissions.
+**Gate:** user can open the internal Project Bot through project sessions/threads and the Space Assistant through Space sessions; both use the same planner/worker architecture but enforce distinct scope, workspace, and permissions. External customer-channel traffic cannot enter either planner directly.
 
 ### Phase 3 — Durable routines and portfolio stewardship
 
