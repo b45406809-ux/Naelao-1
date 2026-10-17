@@ -5,6 +5,14 @@ import { signHmac, verifyHmac } from "@naelao/crypto";
 export interface MicroAppDOEnv { PLATFORM_SECRET: string }
 
 export const TIER_ONE_STORAGE_LIMIT_BYTES = 25 * 1024 * 1024;
+/** Hard logical allocation ceilings for each gadget tier. These are platform safety limits,
+ * not provider billing estimates. They bound user-written SQLite pages without promising an
+ * exact Cloudflare storage charge. */
+export const GADGET_STORAGE_LIMIT_BYTES: Record<GadgetTier, number> = {
+  1: TIER_ONE_STORAGE_LIMIT_BYTES,
+  2: 100 * 1024 * 1024,
+  3: 250 * 1024 * 1024,
+};
 export const TIER_ONE_IDLE_TTL_MS = 14 * 86_400 * 1000;
 const PUBLIC_ACTION_TTL_MS = 15 * 60 * 1000;
 
@@ -136,7 +144,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     }
     const allocatedBytes = count * size;
     const tier = this.gadgetTier();
-    const limitBytes = tier === 1 ? TIER_ONE_STORAGE_LIMIT_BYTES : null;
+    const limitBytes = tier === undefined ? null : GADGET_STORAGE_LIMIT_BYTES[tier];
     return Response.json({
       appId: this.appId(),
       tier: tier ?? null,
@@ -149,6 +157,24 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       monthlyCostEstimateUsd: null,
       costEstimateReason: "Durable Object billing is not attributable to this gadget from SQLite page usage alone.",
     });
+  }
+
+  private allocationBytes(): number {
+    const pageCount = [...this.ctx.storage.sql.exec<Record<string, number>>("PRAGMA page_count")][0];
+    const pageSize = [...this.ctx.storage.sql.exec<Record<string, number>>("PRAGMA page_size")][0];
+    const count = Number(pageCount?.page_count ?? Object.values(pageCount ?? {})[0] ?? 0);
+    const size = Number(pageSize?.page_size ?? Object.values(pageSize ?? {})[0] ?? 0);
+    return Number.isSafeInteger(count) && count >= 0 && Number.isSafeInteger(size) && size >= 0 ? count * size : Number.POSITIVE_INFINITY;
+  }
+
+  private storageLimitExceeded(incomingBytes: number): { tier: GadgetTier; limitBytes: number } | null {
+    const tier = this.gadgetTier();
+    if (tier === undefined) return null;
+    const limitBytes = GADGET_STORAGE_LIMIT_BYTES[tier];
+    if (this.allocationBytes() + incomingBytes > limitBytes) {
+      return { tier, limitBytes };
+    }
+    return null;
   }
 
   /** Stateless MCP 2025 Streamable HTTP transport. Each request is a complete JSON-RPC turn. */
@@ -179,6 +205,8 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       if (!args.record || typeof args.record !== "object" || Array.isArray(args.record)) throw new Error("record_required");
       const record = args.record as Record<string, unknown>, allowed = new Set(columns.map(c => c.name)); const entries = Object.entries(record).filter(([key]) => allowed.has(key));
       if (!entries.length || entries.length !== Object.keys(record).length) throw new Error("record_does_not_match_schema");
+      const storageError = this.storageLimitExceeded(new TextEncoder().encode(JSON.stringify(record)).byteLength + 512);
+      if (storageError) return Response.json({ jsonrpc: "2.0", id, error: { code: -32013, message: "storage_limit_exceeded", data: storageError } }, { status: 413 });
       this.ctx.storage.sql.exec(`INSERT INTO ${quoted} (${entries.map(([key]) => `"${key.replaceAll('"','""')}"`).join(",")}) VALUES (${entries.map(() => "?").join(",")})`, ...entries.map(([,v]) => v as SqlStorageValue));
       data = { inserted: true };
     } else if (name === `app_${appId}_get`) {
@@ -248,6 +276,8 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     if (new TextEncoder().encode(body.html).byteLength > 512_000 || /<\s*script\b|\bon[a-z]+\s*=|javascript\s*:/i.test(body.html)) {
       return Response.json({ error: "active_content_not_allowed" }, { status: 400 });
     }
+    const storageError = this.storageLimitExceeded(new TextEncoder().encode(body.html + JSON.stringify(body.actions)).byteLength + 512);
+    if (storageError) return Response.json({ error: "storage_limit_exceeded", ...storageError }, { status: 413 });
     const actions: Record<string, PublicPageAction> = {};
     for (const [name, action] of Object.entries(body.actions)) {
       if (!pagePathPart(name) || !action || typeof action !== "object" || !pagePathPart(action.key) || !Array.isArray(action.fields) || action.fields.length > 32 ||
@@ -308,6 +338,8 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     if (fields.length === 0 || fields.length > claims.fields.length || fields.some(field => !claims.fields.includes(field)) || new TextEncoder().encode(JSON.stringify(submitted)).byteLength > 16_384) {
       return Response.json({ error: "public_action_payload_rejected" }, { status: 400 });
     }
+    const storageError = this.storageLimitExceeded(new TextEncoder().encode(JSON.stringify(submitted)).byteLength + 512);
+    if (storageError) return Response.json({ error: "storage_limit_exceeded", ...storageError }, { status: 413 });
     try {
       this.ctx.storage.sql.exec("INSERT INTO consumed_public_action_nonces(nonce,expires_at) VALUES (?,?)", claims.nonce, claims.exp);
     } catch { return Response.json({ error: "public_action_token_replayed" }, { status: 409 }); }
@@ -333,16 +365,8 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     if (!body.key || body.key.length > 256) return Response.json({ error: "valid key is required" }, { status: 400 });
     const encoded = JSON.stringify(body.value);
     if (encoded === undefined || encoded.length > 1_000_000) return Response.json({ error: "invalid_or_oversized_value" }, { status: 413 });
-    if (this.gadgetTier() === 1) {
-      const pageCount = [...this.ctx.storage.sql.exec<Record<string, number>>("PRAGMA page_count")][0];
-      const pageSize = [...this.ctx.storage.sql.exec<Record<string, number>>("PRAGMA page_size")][0];
-      const count = Number(pageCount?.page_count ?? Object.values(pageCount ?? {})[0] ?? 0);
-      const size = Number(pageSize?.page_size ?? Object.values(pageSize ?? {})[0] ?? 0);
-      const incomingBytes = new TextEncoder().encode(body.key + encoded).byteLength;
-      if ((count * size) + incomingBytes > TIER_ONE_STORAGE_LIMIT_BYTES) {
-        return Response.json({ error: "storage_limit_exceeded", limitBytes: TIER_ONE_STORAGE_LIMIT_BYTES }, { status: 413 });
-      }
-    }
+    const storageError = this.storageLimitExceeded(new TextEncoder().encode(body.key + encoded).byteLength + 512);
+    if (storageError) return Response.json({ error: "storage_limit_exceeded", ...storageError }, { status: 413 });
     const now = new Date().toISOString();
     this.ctx.storage.sql.exec("INSERT INTO gadget_data(key,value_json,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at", body.key, encoded, now);
     return Response.json({ key: body.key, value: body.value, updatedAt: now }, { status: 201 });

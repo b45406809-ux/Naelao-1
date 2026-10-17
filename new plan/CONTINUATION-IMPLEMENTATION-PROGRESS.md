@@ -384,6 +384,14 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Fresh verification: Spaces targeted suites (`remediation-pass-2.test.ts`, `routes/gadget-mcp.test.ts`, `do/space-retention.test.ts`, `do/space-data-ops.test.ts`) — 4 files / 19 tests passed; Spaces typecheck passed. No live billing measurement.
 - Task25 remains partial: Tier-2/3 per-Gadget write caps, authoritative cost attribution, and a migration-safe archive/query/restore contract remain absent. The matching later read at 4656–4794 is a separate Git/concurrency proposal, not a correction to storage. Task26 and Task27 have now been assessed; current chronological focus is Task29 / 4648–4794.
 
+## Task 25 storage-ceiling follow-up (2026-10-17)
+
+- Closed the local Tier-2/3 unbounded-write gap with explicit per-tier SQLite allocation ceilings: 25 MiB for Tier 1, 100 MiB for Tier 2, and 250 MiB for Tier 3. These are platform resource limits, not a Cloudflare price model. The authorized storage endpoint now reports the matching tier limit and utilization for all three tiers.
+- Enforced the ceilings on gadget key/value writes, MCP record inserts, public-page publication, and public action submissions. Each request accounts for current SQLite page allocation plus a conservative bounded incoming payload estimate; deletions remain available to recover space. Existing schema initialization stays bounded by the 64 KiB-per-DDL and 128-migration limits.
+- Extended `remediation-pass-2.test.ts` to verify Tier-3 reporting and write denial at the ceiling. Focused Spaces tests passed (2 files / 11 tests), Spaces typecheck passed, and `git diff --check` passed.
+- Changed: `workers/spaces/src/do/MicroAppDO.ts`, `workers/spaces/src/remediation-pass-2.test.ts`, and this progress file.
+- Still open for Task25: authoritative Cloudflare billing attribution, so the UI correctly returns no dollar estimate; migration-safe R2 archive/query/restore for gadget records, which lacks a tenant-safe product retention contract and verified per-gadget archive lifecycle. No Parquet/DuckDB or automatic purge/archival is claimed.
+
 
 ## Task 26 — partial; reuse existing private LoRA routing
 

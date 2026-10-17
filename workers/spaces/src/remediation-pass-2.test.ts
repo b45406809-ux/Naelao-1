@@ -1,6 +1,6 @@
 import { PROJECT_TEMPLATES } from "@naelao/agent-sdk";
 import { describe, expect, it, vi } from "vitest";
-import { MicroAppDO, TIER_ONE_IDLE_TTL_MS, TIER_ONE_STORAGE_LIMIT_BYTES, gadgetStorageKey } from "./do/MicroAppDO.js";
+import { GADGET_STORAGE_LIMIT_BYTES, MicroAppDO, TIER_ONE_IDLE_TTL_MS, TIER_ONE_STORAGE_LIMIT_BYTES, gadgetStorageKey } from "./do/MicroAppDO.js";
 import { SpaceDO } from "./do/SpaceDO.js";
 
 const cursor = (rows: unknown[] = []) => ({
@@ -132,6 +132,20 @@ describe("three-tier gadget lifecycle", () => {
       measurement: "sqlite_page_count_times_page_size",
       monthlyCostEstimateUsd: null,
     });
+  });
+
+  it("reports and enforces the larger tier-specific ceilings on shared gadgets", async () => {
+    const capPages = Math.ceil(GADGET_STORAGE_LIMIT_BYTES[3] / 4096);
+    const harness = tierOneHarness(capPages);
+    harness.metadata.set("app_id", "directory");
+    harness.metadata.set("gadget_tier", "3");
+    const usage = await harness.instance.fetch(new Request("https://app/api/storage"));
+    expect(await usage.json()).toMatchObject({ tier: 3, limitBytes: GADGET_STORAGE_LIMIT_BYTES[3] });
+    const response = await harness.instance.fetch(new Request("https://app/api/data", {
+      method: "POST", body: JSON.stringify({ key: "new", value: "record" }),
+    }));
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({ error: "storage_limit_exceeded", tier: 3, limitBytes: GADGET_STORAGE_LIMIT_BYTES[3] });
   });
 
   it("keeps gadget canvases script-isolated and preserves immutable actor scope", async () => {
