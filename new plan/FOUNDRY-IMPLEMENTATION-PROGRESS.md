@@ -70,6 +70,13 @@ Current verification for this follow-up:
 
 ## Remaining work / concrete dependencies
 
+### 2026-10-17 authoring follow-up
+
+- Domain templates now accept up to eight synthetic/redacted behavior examples (input plus desired outcome). The SpaceDO validates field names, per-field character limits, count, and aggregate UTF-8 size before persistence. The install path includes valid examples as JSON reference data and explicitly tells the worker they are untrusted examples that were not run or scored.
+- The Foundry form lets an author add, edit, remove, and revise examples. Failed saves retain the current draft; successful saves clear it.
+- This improves reusable, artifact-led authoring but does not evaluate the model, certify output quality, or add a test runner. No tests or typechecks were run for this checkpoint.
+- Changed files: Shell Foundry page/API types; Spaces `SpaceDO.ts` template validation and install route; continuation progress.
+
 - The current feature scope is implemented. It does not include global marketplace publication, a channel-native cross-Space WhatsApp bridge, implicit platform-wide FDE routing, or model-behavior simulation tests.
 - Production end-to-end, load/stress/soak, and monitored live deployment coverage remain unestablished. Cloudflare credentials/live tests were not needed for this pass and were explicitly waived for the requested work.
 - Exact-token context accounting, expanded orchestration, and token reduction are excluded from this follow-up. Preserve earlier bounded orchestration and approximate context estimates.

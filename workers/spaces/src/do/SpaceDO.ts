@@ -102,6 +102,25 @@ function safeJsonParseArr(text: string): unknown[] {
   }
 }
 
+function normalizeFoundryCalibrationExamples(value: unknown): Array<{ input: string; desiredOutcome: string }> | null {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 8) return null;
+  const examples: Array<{ input: string; desiredOutcome: string }> = [];
+  let totalBytes = 0;
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    const record = item as Record<string, unknown>;
+    if (Object.keys(record).some(key => !["input", "desiredOutcome"].includes(key)) ||
+      typeof record.input !== "string" || typeof record.desiredOutcome !== "string") return null;
+    const input = record.input.trim(), desiredOutcome = record.desiredOutcome.trim();
+    if (!input || input.length > 1200 || !desiredOutcome || desiredOutcome.length > 1200) return null;
+    totalBytes += new TextEncoder().encode(input + desiredOutcome).byteLength;
+    if (totalBytes > 16_384) return null;
+    examples.push({ input, desiredOutcome });
+  }
+  return examples;
+}
+
 function safeJsonParseCondition(text: string): TriggerCondition {
   try {
     const v = JSON.parse(text) as unknown;
@@ -4963,10 +4982,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const shortText = (value: unknown, max: number) => typeof value === "string" && value.trim().length > 0 && value.trim().length <= max;
     const boundedList = (value: unknown, maxItems: number, maxLength: number) => Array.isArray(value) && value.length <= maxItems && value.every((item) => typeof item === "string" && item.trim().length > 0 && item.length <= maxLength);
     const runtimeDependencies = Array.isArray(definition?.runtimeDependencies) ? definition.runtimeDependencies : [];
+    const calibrationExamples = normalizeFoundryCalibrationExamples(definition?.calibrationExamples);
     if (!body.space_id || !body.created_by || !shortText(body.name, 120) || !shortText(body.description, 500) || !definition ||
       !shortText(definition.expertise, 2000) || !shortText(definition.audience, 500) || !shortText(definition.outcome, 1000) ||
       !shortText(definition.workflow, 3000) || !shortText(definition.safetyLimits, 2000) || !shortText(definition.instructions, 6000) ||
       !boundedList(definition.sourceReferences, 30, 300) || !boundedList(definition.toolAllowlist, 8, 64) ||
+      calibrationExamples === null ||
       (definition.toolAllowlist as string[]).some((tool) => !["knowledge-base", "web-search", "file-manager", "foundry-inbox"].includes(tool)) ||
       definition.runtimeDependencies !== undefined && !Array.isArray(definition.runtimeDependencies) ||
       !boundedList(runtimeDependencies, 8, 64) || runtimeDependencies.some((id) => !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(String(id))) || new Set(runtimeDependencies).size !== runtimeDependencies.length) {
@@ -4981,6 +5002,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         expertise: (definition.expertise as string).trim(), audience: (definition.audience as string).trim(), outcome: (definition.outcome as string).trim(),
         workflow: (definition.workflow as string).trim(), safetyLimits: (definition.safetyLimits as string).trim(), instructions: (definition.instructions as string).trim(),
         sourceReferences: (definition.sourceReferences as string[]).map((item) => item.trim()),
+        calibrationExamples,
         toolAllowlist: [...new Set(definition.toolAllowlist as string[])], runtimeDependencies: [...new Set(runtimeDependencies as string[])], approvalMode: "always_ask",
       }), now, now);
     return Response.json({ id, space_id: body.space_id, status: "draft", version: 1, created_at: now }, { status: 201 });
@@ -4992,10 +5014,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const shortText = (value: unknown, max: number) => typeof value === "string" && value.trim().length > 0 && value.trim().length <= max;
     const boundedList = (value: unknown, maxItems: number, maxLength: number) => Array.isArray(value) && value.length <= maxItems && value.every((item) => typeof item === "string" && item.trim().length > 0 && item.length <= maxLength);
     const runtimeDependencies = Array.isArray(definition?.runtimeDependencies) ? definition.runtimeDependencies : [];
+    const calibrationExamples = normalizeFoundryCalibrationExamples(definition?.calibrationExamples);
     if (!body.updated_by || !shortText(body.name, 120) || !shortText(body.description, 500) || !definition ||
       !shortText(definition.expertise, 2000) || !shortText(definition.audience, 500) || !shortText(definition.outcome, 1000) ||
       !shortText(definition.workflow, 3000) || !shortText(definition.safetyLimits, 2000) || !shortText(definition.instructions, 6000) ||
       !boundedList(definition.sourceReferences, 30, 300) || !boundedList(definition.toolAllowlist, 8, 64) ||
+      calibrationExamples === null ||
       (definition.toolAllowlist as string[]).some((tool) => !["knowledge-base", "web-search", "file-manager", "foundry-inbox"].includes(tool)) ||
       definition.runtimeDependencies !== undefined && !Array.isArray(definition.runtimeDependencies) ||
       !boundedList(runtimeDependencies, 8, 64) || runtimeDependencies.some((id) => !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(String(id))) || new Set(runtimeDependencies).size !== runtimeDependencies.length) {
@@ -5008,7 +5032,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       body.name!.trim(), body.description!.trim(), JSON.stringify({
         expertise: (definition.expertise as string).trim(), audience: (definition.audience as string).trim(), outcome: (definition.outcome as string).trim(),
         workflow: (definition.workflow as string).trim(), safetyLimits: (definition.safetyLimits as string).trim(), instructions: (definition.instructions as string).trim(),
-        sourceReferences: (definition.sourceReferences as string[]).map((item) => item.trim()), toolAllowlist: [...new Set(definition.toolAllowlist as string[])],
+        sourceReferences: (definition.sourceReferences as string[]).map((item) => item.trim()), calibrationExamples, toolAllowlist: [...new Set(definition.toolAllowlist as string[])],
         runtimeDependencies: [...new Set(runtimeDependencies as string[])], approvalMode: "always_ask",
       }), now, id);
     if (!updated) return Response.json({ error_code: "not_found_or_not_editable" }, { status: 409 });

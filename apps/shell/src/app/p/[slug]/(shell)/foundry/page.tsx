@@ -40,6 +40,7 @@ export default function FoundryPage() {
   const [safetyLimits, setSafetyLimits] = React.useState("");
   const [instructions, setInstructions] = React.useState("");
   const [sourceReferences, setSourceReferences] = React.useState("");
+  const [calibrationExamples, setCalibrationExamples] = React.useState<Array<{ input: string; desiredOutcome: string }>>([]);
   const [templateRuntimeIds, setTemplateRuntimeIds] = React.useState<string[]>([]);
   const [grantSpace, setGrantSpace] = React.useState("");
   const [grantResource, setGrantResource] = React.useState("");
@@ -93,11 +94,11 @@ export default function FoundryPage() {
 
   React.useEffect(() => { void refresh(); }, [refresh]);
 
-  async function run(action: () => Promise<unknown>, success: string, refreshAfter = true) {
-    if (busy) return;
+  async function run(action: () => Promise<unknown>, success: string, refreshAfter = true): Promise<boolean> {
+    if (busy) return false;
     setBusy(true);
-    try { await action(); show(success); if (refreshAfter) await refresh(); }
-    catch (error) { show(error instanceof Error ? error.message : "The Foundry action failed"); }
+    try { await action(); show(success); if (refreshAfter) await refresh(); return true; }
+    catch (error) { show(error instanceof Error ? error.message : "The Foundry action failed"); return false; }
     finally { setBusy(false); }
   }
 
@@ -131,14 +132,21 @@ export default function FoundryPage() {
 
   async function saveTemplate(event: React.FormEvent) {
     event.preventDefault(); if (!credentials) return;
+    if (calibrationExamples.some(example => Boolean(example.input.trim()) !== Boolean(example.desiredOutcome.trim()))) {
+      show("Complete both fields for each behavior example, or remove the empty example.");
+      return;
+    }
     const input = { name: templateName, description: templateDescription, definition: {
       expertise, audience, outcome, workflow, safetyLimits, instructions,
       sourceReferences: sourceReferences.split("\n").map((item) => item.trim()).filter(Boolean),
+      calibrationExamples: calibrationExamples.filter(example => example.input.trim() && example.desiredOutcome.trim()),
       toolAllowlist: ["knowledge-base"],
       runtimeDependencies: templateRuntimeIds,
     } };
-    await run(() => editingTemplateId ? updateFoundryTemplate(activeSpaceId, editingTemplateId, credentials, input) : createFoundryTemplate(activeSpaceId, credentials, input), editingTemplateId ? "Template revision saved" : "Template saved as a private draft for review");
-    setTemplateName(""); setTemplateDescription(""); setTemplateRuntimeIds([]); setEditingTemplateId(null);
+    const saved = await run(() => editingTemplateId ? updateFoundryTemplate(activeSpaceId, editingTemplateId, credentials, input) : createFoundryTemplate(activeSpaceId, credentials, input), editingTemplateId ? "Template revision saved" : "Template saved as a private draft for review");
+    if (!saved) return;
+    setTemplateName(""); setTemplateDescription(""); setEditingTemplateId(null); setExpertise(""); setAudience(""); setOutcome("");
+    setWorkflow(""); setSafetyLimits(""); setInstructions(""); setSourceReferences(""); setCalibrationExamples([]); setTemplateRuntimeIds([]);
   }
 
   function editTemplate(template: FoundryTemplate) {
@@ -146,6 +154,7 @@ export default function FoundryPage() {
     setExpertise(template.definition.expertise); setAudience(template.definition.audience); setOutcome(template.definition.outcome);
     setWorkflow(template.definition.workflow); setSafetyLimits(template.definition.safetyLimits); setInstructions(template.definition.instructions);
     setSourceReferences(template.definition.sourceReferences.join("\n"));
+    setCalibrationExamples(template.definition.calibrationExamples ?? []);
     setTemplateRuntimeIds(template.definition.runtimeDependencies ?? []);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -305,6 +314,16 @@ export default function FoundryPage() {
           <textarea required maxLength={2000} rows={2} value={safetyLimits} onChange={(event) => setSafetyLimits(event.target.value)} placeholder="Safety limits and escalation rules" style={areaStyle} />
           <textarea required maxLength={6000} rows={3} value={instructions} onChange={(event) => setInstructions(event.target.value)} placeholder="Worker instructions" style={areaStyle} />
           <textarea maxLength={3000} rows={2} value={sourceReferences} onChange={(event) => setSourceReferences(event.target.value)} placeholder="Approved source IDs or references, one per line. Source contents stay in this Space." style={areaStyle} />
+          <fieldset className="foundry-form" style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12 }}>
+            <legend className="foundry-meta">Optional behavior examples</legend>
+            <p className="foundry-meta">Use fictional or redacted inputs and describe the desired behavior. These examples guide the installed worker; they are not executed or scored and do not prove model quality.</p>
+            {calibrationExamples.map((example, index) => <div key={index} className="foundry-form" style={{ borderTop: "1px solid var(--border)", paddingTop: 8 }}>
+              <textarea maxLength={1200} rows={2} value={example.input} onChange={event => setCalibrationExamples(current => current.map((item, i) => i === index ? { ...item, input: event.target.value } : item))} placeholder={`Example ${index + 1}: fictional user request`} style={areaStyle} />
+              <textarea maxLength={1200} rows={2} value={example.desiredOutcome} onChange={event => setCalibrationExamples(current => current.map((item, i) => i === index ? { ...item, desiredOutcome: event.target.value } : item))} placeholder="What a good response should do or include" style={areaStyle} />
+              <Button type="button" variant="secondary" disabled={busy} onClick={() => setCalibrationExamples(current => current.filter((_, i) => i !== index))}>Remove example</Button>
+            </div>)}
+            {calibrationExamples.length < 8 ? <Button type="button" variant="secondary" disabled={busy} onClick={() => setCalibrationExamples(current => [...current, { input: "", desiredOutcome: "" }])}>Add example</Button> : <p className="foundry-meta">Maximum of eight examples.</p>}
+          </fieldset>
           <fieldset className="foundry-form" style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12 }}>
             <legend className="foundry-meta">Optional native runtime dependencies</legend>
             <p className="foundry-meta">Choose deployed runtimes this template needs. Publishing checks availability; installing a template never installs a runtime or grants execution.</p>
