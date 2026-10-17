@@ -30,7 +30,7 @@ describe("composed extension bundle contract", () => {
     schemaVersion: "1.0", kind: "extension_bundle", id: "trading_mentor", version: "1.0.0",
     primitives: [
       { schemaVersion: "1.0", kind: "canvas", id: "mentor_console", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {}, layout: "CanvasMount", component: "./console.tsx", dynamicPage: false },
-      { schemaVersion: "1.0", kind: "channel", id: "student_whatsapp", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {}, provider: "whatsapp", handlerScript: "./handler.ts", context: "channel_only", inboundEvents: ["message.received"], outboundEvents: ["message.reply"] },
+      { schemaVersion: "1.0", kind: "channel", id: "student_whatsapp", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {}, provider: "whatsapp", handlerScript: "./handler.ts", context: "channel_only", inboundEvents: ["message.received"], outboundEvents: ["message.reply"], knowledgeCollections: ["course_material"] },
     ],
     workerRoles: [{ id: "answer_student", invocation: "workflow_step", execution: "worker", entry: "./answer.ts", primitiveIds: ["student_whatsapp"] }],
     connections: [{ id: "student_channel", provider: "whatsapp", purpose: "Receive and reply to student messages", required: true }],
@@ -47,5 +47,8 @@ describe("composed extension bundle contract", () => {
   it("rejects connection secrets and implicit Knowledge exposure from the package", () => {
     expect(() => parseExtensionBundle({ ...bundle, connections: [{ ...bundle.connections[0], accessToken: "secret" }] })).toThrow("unknown_field:accessToken");
     expect(() => parseExtensionBundle({ ...bundle, knowledge: [{ ...bundle.knowledge[0], access: "project_all" }] })).toThrow("invalid_knowledge_access");
+    expect(() => parseExtensionBundle({ ...bundle, primitives: [bundle.primitives[0], { ...bundle.primitives[1], knowledgeCollections: ["all_project_files"] }] })).toThrow("invalid_channel_knowledge_collections");
+    expect(() => parseExtensionBundle({ ...bundle, knowledge: [] })).toThrow("invalid_channel_knowledge_reference");
+    expect(() => parseExtensionBundle({ ...bundle, knowledge: [{ ...bundle.knowledge[0], access: "member_only" }] })).toThrow("channel_knowledge_must_be_explicitly_published");
   });
 });

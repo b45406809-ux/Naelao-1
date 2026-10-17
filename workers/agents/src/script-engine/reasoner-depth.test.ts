@@ -42,6 +42,45 @@ describe("pre-inference spend admission", () => {
   });
 });
 
+describe("restricted external channel answers", () => {
+  it("sends only the host-selected published excerpts to a text-only local completion", async () => {
+    const reserveInferenceCost = vi.fn(async () => true);
+    const localCompletion = vi.fn(async (payload: Record<string, unknown>) => {
+      expect(payload).not.toHaveProperty("tools");
+      expect(JSON.stringify(payload)).toContain("Published mentor notes");
+      expect(JSON.stringify(payload)).toContain("External user's question");
+      return { content: [{ type: "text", text: "Use the position sizing worksheet." }], usage: { input_tokens: 70, output_tokens: 12 } };
+    });
+    const reasoner = new GatewayReasoner({
+      apiKey: "", gateway: { accountId: "test", gatewayId: "test" },
+      ctx: { spaceId: "space", agentId: "agent", model: "local/test-model" }, model: "local/test-model",
+      airGappedOnly: true, reserveInferenceCost, localCompletion,
+    });
+    const response = await reasoner.answerExternal({ question: "Which worksheet should I use?", sources: [
+      { title: "Published mentor notes", content: "Use the position sizing worksheet." },
+    ] });
+    expect(response).toEqual({ text: "Use the position sizing worksheet.", usage: { input_tokens: 70, output_tokens: 12 } });
+    expect(reserveInferenceCost).toHaveBeenCalledOnce();
+  });
+
+  it("fails before inference without an admitted budget or owner-published sources", async () => {
+    const localCompletion = vi.fn(async () => ({ content: [{ type: "text", text: "answer" }] }));
+    const reasoner = new GatewayReasoner({
+      apiKey: "", gateway: { accountId: "test", gatewayId: "test" },
+      ctx: { spaceId: "space", agentId: "agent", model: "local/test-model" }, model: "local/test-model",
+      reserveInferenceCost: async () => false, localCompletion,
+    });
+    await expect(reasoner.answerExternal({ question: "Question", sources: [{ title: "Notes", content: "Ground truth." }] })).rejects.toThrow("external_answer_spend_capped");
+    expect(localCompletion).not.toHaveBeenCalled();
+    const admittedReasoner = new GatewayReasoner({
+      apiKey: "", gateway: { accountId: "test", gatewayId: "test" },
+      ctx: { spaceId: "space", agentId: "agent", model: "local/test-model" }, model: "local/test-model",
+      reserveInferenceCost: async () => true, localCompletion,
+    });
+    await expect(admittedReasoner.answerExternal({ question: "Question", sources: [] })).rejects.toThrow("external_answer_input_invalid");
+  });
+});
+
 describe("dynamic OpenRouter modality admission", () => {
   const imageTurn = {
     goal: "Describe this screenshot", level: "L2", snapshot: {}, candidates: [], availableOperations: [],

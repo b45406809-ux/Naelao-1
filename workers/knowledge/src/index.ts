@@ -150,6 +150,133 @@ async function authorizeProject(db: D1Database, scope: RetrievalScope, userId: s
   }
 }
 
+async function requireProjectAccess(c: any, projectId: string, minimumRoleRank = 0): Promise<{ tenantId: string; spaceId: string; userId: string } | Response> {
+  const tenantId = requireTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const userId = c.req.header("x-naelao-user-id") ?? "";
+  const roleRank = effectiveRoleRank(c);
+  if (roleRank < minimumRoleRank) return c.json({ error_code: "forbidden", message: "Project owner access required" }, 403);
+  const scope: RetrievalScope = { tenantId, spaceId, projectId, roleRank };
+  if (!(await authorizeProject(c.env.PLATFORM_DB, scope, userId))) throw notFound("Project not found");
+  return { tenantId, spaceId, userId };
+}
+
+const EXTERNAL_PUBLICATION_ID = /^[a-z][a-z0-9_-]{2,63}$/;
+
+// Owner-approved publication is an explicit list of canonical, indexed project documents.
+// Merely uploading a project file never adds it to this declassification boundary.
+app.get("/spaces/:spaceId/kb/projects/:projectId/external-publications", async (c) => {
+  const projectId = c.req.param("projectId");
+  const access = await requireProjectAccess(c, projectId);
+  if (access instanceof Response) return access;
+  const { results } = await c.env.PLATFORM_DB.prepare(
+    `SELECT p.id,p.name,p.updated_at,COUNT(d.document_id) AS document_count,GROUP_CONCAT(d.document_id, ',') AS document_ids
+     FROM kb_external_publications p LEFT JOIN kb_external_publication_documents d
+       ON d.publication_id=p.id AND d.tenant_id=p.tenant_id AND d.space_id=p.space_id AND d.project_id=p.project_id
+     WHERE p.tenant_id=? AND p.space_id=? AND p.project_id=? GROUP BY p.id ORDER BY p.name,p.id`
+  ).bind(access.tenantId, access.spaceId, projectId).all<{ id: string; name: string; updated_at: string; document_count: number; document_ids: string | null }>();
+  return c.json({ publications: results.map(({ document_ids, ...publication }) => ({
+    ...publication, document_ids: document_ids ? document_ids.split(",") : [],
+  })) });
+});
+
+app.put("/spaces/:spaceId/kb/projects/:projectId/external-publications/:publicationId", async (c) => {
+  const { spaceId, projectId, publicationId } = c.req.param();
+  if (!EXTERNAL_PUBLICATION_ID.test(publicationId)) throw badRequest("Invalid publication id");
+  const access = await requireProjectAccess(c, projectId, 40);
+  if (access instanceof Response) return access;
+  const body = await c.req.json<{ name?: unknown; document_ids?: unknown }>().catch(() => null);
+  if (!body || typeof body.name !== "string" || !body.name.trim() || body.name.length > 120
+    || !Array.isArray(body.document_ids) || body.document_ids.length > 100
+    || body.document_ids.some((id) => typeof id !== "string" || id.length < 1 || id.length > 160)) {
+    throw badRequest("name and at most 100 document_ids are required");
+  }
+  const documentIds = [...new Set(body.document_ids as string[])];
+  if (documentIds.length !== body.document_ids.length) throw badRequest("document_ids must be unique");
+  if (documentIds.length) {
+    const placeholders = documentIds.map(() => "?").join(",");
+    const { results } = await c.env.PLATFORM_DB.prepare(
+      `SELECT id FROM kb_documents WHERE tenant_id=? AND space_id=? AND project_id=? AND status='indexed' AND id IN (${placeholders})`
+    ).bind(access.tenantId, spaceId, projectId, ...documentIds).all<{ id: string }>();
+    if (results.length !== documentIds.length) throw badRequest("Every document must be indexed and belong to this project");
+  }
+  const existing = await c.env.PLATFORM_DB.prepare(
+    "SELECT id FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=?"
+  ).bind(publicationId, access.tenantId, spaceId, projectId).first();
+  const collision = existing ? null : await c.env.PLATFORM_DB.prepare("SELECT id FROM kb_external_publications WHERE id=?").bind(publicationId).first();
+  if (collision) throw notFound("Knowledge publication");
+  const now = new Date().toISOString();
+  const statements = [c.env.PLATFORM_DB.prepare(
+    `INSERT INTO kb_external_publications(id,tenant_id,space_id,project_id,name,created_by,created_at,updated_at)
+     VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,updated_at=excluded.updated_at
+     WHERE tenant_id=excluded.tenant_id AND space_id=excluded.space_id AND project_id=excluded.project_id`
+  ).bind(publicationId, access.tenantId, spaceId, projectId, body.name.trim(), access.userId, now, now),
+  c.env.PLATFORM_DB.prepare("DELETE FROM kb_external_publication_documents WHERE publication_id=? AND tenant_id=? AND space_id=? AND project_id=?")
+    .bind(publicationId, access.tenantId, spaceId, projectId)];
+  for (const documentId of documentIds) statements.push(c.env.PLATFORM_DB.prepare(
+    "INSERT INTO kb_external_publication_documents(publication_id,tenant_id,space_id,project_id,document_id,added_at) VALUES(?,?,?,?,?,?)"
+  ).bind(publicationId, access.tenantId, spaceId, projectId, documentId, now));
+  await c.env.PLATFORM_DB.batch(statements);
+  return c.json({ publication_id: publicationId, project_id: projectId, name: body.name.trim(), document_ids: documentIds }, 200);
+});
+
+app.delete("/spaces/:spaceId/kb/projects/:projectId/external-publications/:publicationId", async (c) => {
+  const { spaceId, projectId, publicationId } = c.req.param();
+  const access = await requireProjectAccess(c, projectId, 40);
+  if (access instanceof Response) return access;
+  const result = await c.env.PLATFORM_DB.prepare(
+    "DELETE FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=?"
+  ).bind(publicationId, access.tenantId, spaceId, projectId).run();
+  return result.meta.changes ? c.json({ deleted: true, publication_id: publicationId }) : c.json({ error_code: "not_found" }, 404);
+});
+
+// Service-only retrieval contract for the Agents host. It ranks only vectors whose doc_id is in
+// the selected published collection, then rechecks every hit against the relational publication
+// rows before returning source-attributed, untrusted text. No general project-KB search is used.
+app.post("/internal/spaces/:spaceId/kb/projects/:projectId/external-search", async (c) => {
+  const tenantId = requireTenant(c);
+  const { spaceId, projectId } = c.req.param();
+  if (await knowledgeEgressDenied(c.env, spaceId)) return airGapResponse(c);
+  if (!(await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId))) throw notFound("Space not found");
+  const body = await c.req.json<{ publication_id?: unknown; query?: unknown; top_k?: unknown }>().catch(() => null);
+  if (!body || typeof body.publication_id !== "string" || !EXTERNAL_PUBLICATION_ID.test(body.publication_id)
+    || typeof body.query !== "string" || !body.query.trim() || body.query.length > 1_000) throw badRequest("publication_id and query are required");
+  const publication = await c.env.PLATFORM_DB.prepare(
+    `SELECT id FROM kb_external_publications WHERE id=? AND tenant_id=? AND space_id=? AND project_id=?`
+  ).bind(body.publication_id, tenantId, spaceId, projectId).first();
+  if (!publication) throw notFound("Knowledge publication");
+  const docs = await c.env.PLATFORM_DB.prepare(
+    `SELECT d.id,d.title FROM kb_external_publication_documents x JOIN kb_documents d ON d.id=x.document_id
+     WHERE x.publication_id=? AND x.tenant_id=? AND x.space_id=? AND x.project_id=? AND d.tenant_id=x.tenant_id
+       AND d.space_id=x.space_id AND d.project_id=x.project_id AND d.status='indexed' ORDER BY d.id LIMIT 100`
+  ).bind(body.publication_id, tenantId, spaceId, projectId).all<{ id: string; title: string }>();
+  if (!docs.results.length) return c.json({ data: [], context_instruction: UNTRUSTED_CONTEXT_INSTRUCTION });
+  const topK = Math.max(1, Math.min(Number.isInteger(body.top_k) ? Number(body.top_k) : 5, 10));
+  const embedding = await embedText(c.env.AI, body.query.trim());
+  const matches = await c.env.KB_VECTORS.query(embedding.embedding, {
+    topK: Math.min(100, Math.max(topK * 4, topK)), returnMetadata: "indexed",
+    filter: { tenant_id: { $eq: tenantId }, space_id: { $eq: spaceId }, project_id: { $eq: projectId }, doc_id: { $in: docs.results.map(doc => doc.id) } },
+  });
+  const ids = [...new Set((matches.matches ?? []).map(match => match.id))];
+  if (!ids.length) return c.json({ data: [], context_instruction: UNTRUSTED_CONTEXT_INSTRUCTION });
+  const placeholders = ids.map(() => "?").join(",");
+  const rows = await c.env.PLATFORM_DB.prepare(
+    `SELECT k.id,k.document_id,k.content,k.content_hash,d.title FROM kb_chunks k
+     JOIN kb_documents d ON d.id=k.document_id
+     JOIN kb_external_publication_documents x ON x.document_id=k.document_id AND x.tenant_id=k.tenant_id AND x.space_id=k.space_id AND x.project_id=k.project_id
+     WHERE k.id IN (${placeholders}) AND x.publication_id=? AND k.tenant_id=? AND k.space_id=? AND k.project_id=?
+       AND d.status='indexed' AND k.deleted_at IS NULL`
+  ).bind(...ids, body.publication_id, tenantId, spaceId, projectId).all<{ id: string; document_id: string; content: string; content_hash: string; title: string }>();
+  const byId = new Map(rows.results.map(row => [row.id, row]));
+  const scoreById = new Map((matches.matches ?? []).map(match => [match.id, match.score ?? 0]));
+  const data = (await Promise.all(ids.map(async id => {
+    const row = byId.get(id);
+    return row ? { chunk_id: row.id, document_id: row.document_id, title: row.title, score: scoreById.get(id) ?? 0,
+      content: await wrapContextChunk({ content: row.content }), content_hash: row.content_hash } : null;
+  }))).filter((item): item is NonNullable<typeof item> => item !== null).slice(0, topK);
+  return c.json({ data, context_instruction: UNTRUSTED_CONTEXT_INSTRUCTION });
+});
+
 // ── G-BD01: KB content sanitization — strip HTML/XML and scan for injection ───
 
 // Patterns that commonly signal prompt injection attempts in KB content

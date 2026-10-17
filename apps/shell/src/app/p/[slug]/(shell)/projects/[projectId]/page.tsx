@@ -29,15 +29,19 @@ import {
   instantiateAgentTemplate,
   listAgentDefinitions,
   listAgentTemplates,
+  listExternalKnowledgePublications,
   listDepartments,
   listKbDocuments,
   listProjectDepartments,
   listProjects,
   listThreads,
+  publishExternalKnowledge,
+  unpublishExternalKnowledge,
   updateProject,
   type AgentDefinitionSummary,
   type AgentTemplateSummary,
   type DepartmentOption,
+  type ExternalKnowledgePublication,
   type KbDocument,
   type Project,
   type ProjectDepartment,
@@ -91,6 +95,12 @@ export default function ProjectDetailPage() {
   const [newDocTitle, setNewDocTitle] = React.useState("");
   const [newDocContent, setNewDocContent] = React.useState("");
   const [addingDoc, setAddingDoc] = React.useState(false);
+  const [externalPublications, setExternalPublications] = React.useState<ExternalKnowledgePublication[]>([]);
+  const [publicationId, setPublicationId] = React.useState("course_material");
+  const [publicationName, setPublicationName] = React.useState("Course material");
+  const [publishedDocumentIds, setPublishedDocumentIds] = React.useState<string[]>([]);
+  const [savingPublication, setSavingPublication] = React.useState(false);
+  const [publicationLoadError, setPublicationLoadError] = React.useState(false);
 
   // Editable project policy (execution ceiling,
   // spend cap, max threads, agent bindings) — PATCH succeeds for an admin/owner in the target
@@ -199,10 +209,22 @@ export default function ProjectDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSpaceId, params.projectId, session]);
 
+  const refreshExternalKnowledge = React.useCallback(async () => {
+    if (!creds) return;
+    setPublicationLoadError(false);
+    try {
+      const records = await listExternalKnowledgePublications(activeSpaceId, params.projectId, creds);
+      setExternalPublications(records);
+    } catch {
+      setPublicationLoadError(true);
+    }
+  }, [activeSpaceId, params.projectId, session]);
+
   React.useEffect(() => {
     void refresh();
     void refreshDocs();
-  }, [refresh, refreshDocs]);
+    void refreshExternalKnowledge();
+  }, [refresh, refreshDocs, refreshExternalKnowledge]);
 
   // Defensive re-fetch on regaining focus: a thread created from this project's own "New Thread"
   // button navigates straight into it, so coming back here (tab switch, browser back) should
@@ -316,6 +338,7 @@ export default function ProjectDetailPage() {
       setNewDocTitle("");
       setNewDocContent("");
       await refreshDocs();
+      await refreshExternalKnowledge();
     } catch (err) {
       show(err instanceof Error ? err.message : "Failed to add document");
     } finally {
@@ -328,9 +351,45 @@ export default function ProjectDetailPage() {
     try {
       await deleteKbDocument(activeSpaceId, docId, creds);
       await refreshDocs();
+      await refreshExternalKnowledge();
     } catch (err) {
       show(err instanceof Error ? err.message : "Failed to delete document");
     }
+  }
+
+  async function handleSaveExternalPublication(e: React.FormEvent) {
+    e.preventDefault();
+    if (!creds || !publicationId.trim() || !publicationName.trim() || savingPublication) return;
+    setSavingPublication(true);
+    try {
+      await publishExternalKnowledge(activeSpaceId, params.projectId, publicationId.trim(), creds, {
+        name: publicationName.trim(), document_ids: publishedDocumentIds,
+      });
+      show("Published Knowledge collection updated");
+      await refreshExternalKnowledge();
+    } catch (error) {
+      show(error instanceof Error ? error.message : "Couldn't publish this Knowledge collection");
+    } finally {
+      setSavingPublication(false);
+    }
+  }
+
+  async function handleUnpublishExternalCollection(id: string) {
+    if (!creds) return;
+    try {
+      await unpublishExternalKnowledge(activeSpaceId, params.projectId, id, creds);
+      setExternalPublications(items => items.filter(item => item.id !== id));
+      if (publicationId === id) setPublishedDocumentIds([]);
+      show("Knowledge collection unpublished");
+    } catch (error) {
+      show(error instanceof Error ? error.message : "Couldn't unpublish this Knowledge collection");
+    }
+  }
+
+  function editExternalCollection(publication: ExternalKnowledgePublication) {
+    setPublicationId(publication.id);
+    setPublicationName(publication.name);
+    setPublishedDocumentIds(publication.document_ids);
   }
 
   if (loading) return <div className="page-view">Loading…</div>;
@@ -747,6 +806,61 @@ export default function ProjectDetailPage() {
           ))}
         </div>
       )}
+
+      <div className="page-header" style={{ marginTop: 24 }}>
+        <div className="section-label" style={{ marginBottom: 0 }}>External extension Knowledge</div>
+        <div className="page-subtitle">
+          Select indexed project documents to publish as a named collection. Only a channel extension explicitly configured for this collection can retrieve it; publishing does not connect a provider or enable a bot.
+        </div>
+      </div>
+      {publicationLoadError ? (
+        <div role="status" className="settings-block" style={{ padding: 12, color: "var(--text2)" }}>
+          Couldn't load published collections. Check project access and try again.
+        </div>
+      ) : externalPublications.length > 0 ? (
+        <div className="settings-block" aria-label="Published Knowledge collections">
+          {externalPublications.map(publication => (
+            <div className="settings-row" key={publication.id}>
+              <div>
+                <div className="settings-row-label">{publication.name}</div>
+                <div className="settings-row-sub">{publication.id} · {publication.document_count} published document{publication.document_count === 1 ? "" : "s"}</div>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <Button size="sm" variant="ghost" onClick={() => editExternalCollection(publication)}>Edit</Button>
+                <Button size="sm" variant="ghost" onClick={() => void handleUnpublishExternalCollection(publication.id)}>Unpublish</Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p style={{ color: "var(--text3)", fontSize: 13 }}>No documents are published for external extensions.</p>
+      )}
+      <form onSubmit={handleSaveExternalPublication} className="settings-block" style={{ padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+        <div className="settings-row-label">Publish a collection</div>
+        <FormInput aria-label="Stable collection ID" placeholder="course_material" value={publicationId} onChange={event => setPublicationId(event.target.value)} required />
+        <FormInput aria-label="Collection name" placeholder="Course material" value={publicationName} onChange={event => setPublicationName(event.target.value)} required />
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {docs.filter(document => document.status === "indexed").map(document => (
+            <label key={document.id} style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 13 }}>
+              <input
+                type="checkbox"
+                checked={publishedDocumentIds.includes(document.id)}
+                onChange={event => setPublishedDocumentIds(ids => event.target.checked ? [...new Set([...ids, document.id])] : ids.filter(id => id !== document.id))}
+              />
+              <span>{document.title}</span>
+            </label>
+          ))}
+          {!docsLoading && docs.every(document => document.status !== "indexed") && (
+            <span style={{ color: "var(--text3)", fontSize: 13 }}>Indexed documents will appear here. New or processing files cannot be published yet.</span>
+          )}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <Button size="sm" disabled={savingPublication || docsLoading}>
+            {savingPublication ? "Saving…" : "Save published collection"}
+          </Button>
+          <span style={{ color: "var(--text3)", fontSize: 12 }}>Owner or admin permission required. An empty selection revokes all documents in this collection.</span>
+        </div>
+      </form>
 
       <Toast toast={toast} />
       </div>

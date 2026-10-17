@@ -7959,7 +7959,7 @@ app.get("/catalog/shell", (c) => {
       id: t.id,
       name: t.name,
       description: t.description,
-      kind: t.kind,
+      kind: t.external_channel_profile ? "channel" : "workspace",
     })),
     agents: LAUNCHPAD_CORE_AGENTS.map((a) => ({ id: a.id, name: a.name, description: a.description })),
   });

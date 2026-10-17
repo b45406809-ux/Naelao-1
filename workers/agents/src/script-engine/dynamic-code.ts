@@ -91,10 +91,17 @@ export default {
   async fetch(request) {
     const { args, channel } = await request.json();
     const replies = [];
+    const answerRequests = [];
     const ctx = freeze({channel:freeze({
       provider:channel.provider,
       event:freeze(channel.event),
       conversation:freeze({id:channel.conversation.id}),
+      answer:async(input)=>{
+        if (!input || typeof input.question !== 'string' || !input.question.trim() || input.question.length > 2000) throw new Error('channel_answer_invalid');
+        if (answerRequests.length >= 1) throw new Error('channel_answer_limit');
+        answerRequests.push(input.question.trim());
+        return freeze({answerId:'queued'});
+      },
       reply:async(message)=>{
         if (!message || typeof message.text !== 'string' || !message.text.trim() || message.text.length > 2000) throw new Error('channel_reply_invalid');
         if (replies.length >= 1) throw new Error('channel_reply_limit');
@@ -104,7 +111,7 @@ export default {
     })});
     try {
       const result = await run(args, ctx);
-      const body = {ok:true,result:result == null ? null : result,replies};
+      const body = {ok:true,result:result == null ? null : result,replies,answerRequests};
       const encoded = encode(body);
       if (byteLength(encoded) > ${outputBytes}) throw new Error('code_output_limit');
       return jsonResponse(body);

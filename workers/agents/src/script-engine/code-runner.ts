@@ -427,7 +427,7 @@ export function buildCodeRunner(opts: CodeRunnerOptions): TieredCodeRunner {
       return runBoundChannelIsolate(opts, {
         name: params.name, code: params.code, tier: 2, args: params.args,
         tenantId: params.tenantId, spaceId: params.spaceId, agentId: params.agentId,
-        language: "typescript", signal: params.signal,
+        language: "typescript", ...(params.signal ? { signal: params.signal } : {}),
         limits: { cpuMs: params.limits?.cpuMs ?? 1_000, wallMs: params.limits?.wallMs ?? 5_000,
           inputBytes: params.limits?.inputBytes ?? 65_536, outputBytes: params.limits?.outputBytes ?? 8_192 },
       }, params.channel, { installationId: params.installationId, maxConcurrency: params.maxConcurrency });

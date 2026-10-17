@@ -2404,6 +2404,40 @@ export async function deleteKbDocument(spaceId: string, docId: string, session: 
   await apiFetch(`/v1/spaces/${spaceId}/kb/documents/${encodeURIComponent(docId)}`, { method: "DELETE", session });
 }
 
+export interface ExternalKnowledgePublication {
+  id: string;
+  name: string;
+  updated_at: string;
+  document_count: number;
+  document_ids: string[];
+}
+
+export async function listExternalKnowledgePublications(
+  spaceId: string, projectId: string, session: SessionCredentials
+): Promise<ExternalKnowledgePublication[]> {
+  const response = await apiFetch<{ publications: ExternalKnowledgePublication[] }>(
+    `/v1/spaces/${spaceId}/kb/projects/${encodeURIComponent(projectId)}/external-publications`, { session }
+  );
+  return response.publications;
+}
+
+export async function publishExternalKnowledge(
+  spaceId: string, projectId: string, publicationId: string, session: SessionCredentials,
+  input: { name: string; document_ids: string[] }
+): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/kb/projects/${encodeURIComponent(projectId)}/external-publications/${encodeURIComponent(publicationId)}`, {
+    method: "PUT", body: JSON.stringify(input), session,
+  });
+}
+
+export async function unpublishExternalKnowledge(
+  spaceId: string, projectId: string, publicationId: string, session: SessionCredentials
+): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/kb/projects/${encodeURIComponent(projectId)}/external-publications/${encodeURIComponent(publicationId)}`, {
+    method: "DELETE", session,
+  });
+}
+
 export interface KbSearchResult {
   chunk_id: string;
   doc_id: string;

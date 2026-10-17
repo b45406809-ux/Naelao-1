@@ -206,6 +206,8 @@ export interface ChannelContract extends ExtensionContractBase {
   context: "channel_only";
   inboundEvents: readonly string[];
   outboundEvents: readonly string[];
+  /** Named owner-published project collections the channel host may retrieve before dispatch. */
+  knowledgeCollections?: readonly string[];
 }
 /** Runtime object exposed as `ctx.channel` to an installed channel handler. The provider's raw
  * webhook, signing secret, owner identity, Space/project APIs, and agent tools are not part of it. */
@@ -214,6 +216,8 @@ export interface ChannelOnlyExtensionContext {
     provider: string;
     event: { id: string; type: string; occurredAt: string; payload: Readonly<Record<string, unknown>> };
     conversation: { id: string };
+    /** Request one host-bounded, source-grounded response; the handler cannot choose models or tools. */
+    answer(input: { question: string }): Promise<{ answerId: string }>;
     reply(message: { text: string }): Promise<{ messageId: string }>;
   };
 }
@@ -275,7 +279,7 @@ const CONTRACT_BASE_KEYS = new Set(["schemaVersion", "kind", "id", "version", "p
 function contractAssert(condition: unknown, message: string): asserts condition { if (!condition) throw new Error(`invalid_extension_contract:${message}`); }
 function rejectUnknownContractKeys(raw: Record<string, unknown>, allowed: Set<string>): void { for (const key of Object.keys(raw)) contractAssert(allowed.has(key), `unknown_field:${key}`); }
 function validateContractBase(raw: Record<string, unknown>, kind: ExtensionPrimitiveKind): void {
-  const specific = kind === "gadget" ? ["scope", "schemaSql", "migrations"] : kind === "canvas" ? ["layout", "component", "dynamicPage"] : kind === "channel" ? ["provider", "handlerScript", "context", "inboundEvents", "outboundEvents"] : kind === "container" ? ["image", "resources", "exportedBinaries", "mounts", "networkPolicy", "webContainerCompatible"] : kind === "linter" ? ["mode", "entry", "failureMode"] : ["executionMode", "steps", "toolNames"];
+  const specific = kind === "gadget" ? ["scope", "schemaSql", "migrations"] : kind === "canvas" ? ["layout", "component", "dynamicPage"] : kind === "channel" ? ["provider", "handlerScript", "context", "inboundEvents", "outboundEvents", "knowledgeCollections"] : kind === "container" ? ["image", "resources", "exportedBinaries", "mounts", "networkPolicy", "webContainerCompatible"] : kind === "linter" ? ["mode", "entry", "failureMode"] : ["executionMode", "steps", "toolNames"];
   rejectUnknownContractKeys(raw, new Set([...CONTRACT_BASE_KEYS, ...specific]));
   contractAssert(raw.schemaVersion === "1.0", `unsupported_schema_version:${String(raw.schemaVersion)}`);
   contractAssert(raw.kind === kind, `kind_mismatch:${kind}`);
@@ -343,6 +347,12 @@ export function parseExtensionPrimitive(value: unknown): ExtensionPrimitiveManif
     contractAssert((raw.inboundEvents as unknown[]).length > 0, "channel_inbound_events_required");
     contractAssert((raw.inboundEvents as unknown[]).includes("message.received"), "channel_message_event_required");
     contractAssert((raw.outboundEvents as unknown[]).includes("message.reply"), "channel_reply_event_required");
+    if (raw.knowledgeCollections !== undefined) {
+      contractAssert(Array.isArray(raw.knowledgeCollections) && raw.knowledgeCollections.length <= 16
+        && new Set(raw.knowledgeCollections).size === raw.knowledgeCollections.length
+        && (raw.knowledgeCollections as unknown[]).every(id => typeof id === "string" && /^[a-z][a-z0-9_-]{2,63}$/.test(id)
+          && !/^(all|all[_-]|project[_-]?all|space[_-]?all)/i.test(id)), "invalid_channel_knowledge_collections");
+    }
     const budget = raw.budget as Record<string, unknown> | undefined;
     contractAssert(budget?.maxCredits === undefined || budget.maxCredits === 0, "channel_credit_budget_unsupported");
     contractAssert(budget?.maxConcurrency === undefined || (Number.isInteger(budget.maxConcurrency) && Number(budget.maxConcurrency) >= 1 && Number(budget.maxConcurrency) <= 4), "channel_concurrency_budget_exceeded");
@@ -425,6 +435,14 @@ export function parseExtensionBundle(value: unknown): ExtensionBundleManifest {
       if (field === "connections") contractAssert(typeof entry.provider === "string" && CONTRACT_ID.test(entry.provider) && typeof entry.required === "boolean", "invalid_connection_requirement");
       else contractAssert(["member_only", "owner_published_external"].includes(String(entry.access)), "invalid_knowledge_access");
     }
+  }
+  const knowledgeIds = new Set(((raw.knowledge ?? []) as Array<{ id: string }>).map(entry => entry.id));
+  for (const primitive of primitives) {
+    if (primitive.kind !== "channel" || !primitive.knowledgeCollections) continue;
+    contractAssert(primitive.knowledgeCollections.every(id => knowledgeIds.has(id)), "invalid_channel_knowledge_reference");
+    const externalKnowledgeIds = new Set(((raw.knowledge ?? []) as Array<{ id: string; access: string }>)
+      .filter(entry => entry.access === "owner_published_external").map(entry => entry.id));
+    contractAssert(primitive.knowledgeCollections.every(id => externalKnowledgeIds.has(id)), "channel_knowledge_must_be_explicitly_published");
   }
   return Object.freeze({ ...raw, primitives: Object.freeze(primitives) }) as unknown as ExtensionBundleManifest;
 }

@@ -60,6 +60,7 @@ import { routeMentionsWithSentry } from "../script-engine/mention-router.js";
 import { GatewayReasoner, WorkersAIEmbedder } from "../script-engine/reasoner.js";
 import { resolveAssistantApprovalPlan, type AssistantEffectiveRole } from "../script-engine/assistant-access.js";
 import { buildCodeRunner, type WorkerLoaderBinding } from "../script-engine/code-runner.js";
+import { SkillLibrary } from "../script-engine/skill-library.js";
 import { bindCodeRpc, type CodeRpcBinding } from "../script-engine/code-rpc-broker.js";
 import { resolveContainerBinary, resolveContainerCapabilities, parseApprovedContainerImages, approvedContainer, type InstalledContainer } from "../script-engine/container-policy.js";
 import { deployedContainerCatalogue } from "../script-engine/container-catalogue.js";
@@ -5447,7 +5448,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // Verified Space owners/admins are internal channel actors. Keep them on the ordinary
     // authenticated planner path; unverified senders below can only reach a project-bound
     // channel extension with the restricted ctx.channel host context.
-    if (verifiedChannelMemberId && body.spaceId && body.tenantId) {
+    if (verifiedChannelMemberId && body.spaceId && body.tenantId && (norm.channel === "whatsapp" || norm.channel === "telegram")) {
       if (!this.env.AGENTS_WORKER || !this.env.NOTIFICATIONS_WORKER) return Response.json({ error_code: "internal_channel_runtime_unavailable" }, { status: 503 });
       if (!claimFoundryChannelEvent(this.ctx.storage.sql, { spaceId: body.spaceId, channel: norm.channel, senderId: norm.channel_user_id, externalId: norm.external_id })) {
         return Response.json({ session_id: sessionId, queued: false, duplicate: true, internal: true });
@@ -5467,7 +5468,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         ));
         let output = "";
         if (response.ok) {
-          const result = await response.json<{ result?: { output?: unknown }; final_answer?: unknown }>().catch(() => ({}));
+          const result = await response.json<{ result?: { output?: unknown }; final_answer?: unknown }>()
+            .catch(() => ({} as { result?: { output?: unknown }; final_answer?: unknown }));
           output = typeof result.final_answer === "string" ? result.final_answer : typeof result.result?.output === "string" ? result.result.output : "";
         }
         const reply = output.trim() && moderateText(output).allowed
@@ -7306,14 +7308,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
   private async loadActiveChannelHandler(input: {
     spaceId: string; tenantId: string; projectId: string; channel: string; messageId: string; instanceId: string; scriptSha256: string;
-  }): Promise<{ name: string; code: string; maxConcurrency: number; limits: { cpuMs: number; wallMs: number; inputBytes: number; outputBytes: number } } | null> {
+  }): Promise<{ name: string; code: string; maxConcurrency: number; knowledgeCollections: string[]; limits: { cpuMs: number; wallMs: number; inputBytes: number; outputBytes: number } } | null> {
     if (!this.env.SPACES_WORKER || !this.env.AGENTS_WORKER || !this.env.SCRIPTS_R2 || !/^[a-f0-9]{64}$/.test(input.scriptSha256)) return null;
     const verifyBinding = await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/channel-extension-binding/verify", {
       method: "POST", headers: await this.internalHeaders(input.tenantId, { "content-type": "application/json" }),
       body: JSON.stringify({ spaceId: input.spaceId, projectId: input.projectId, channel: input.channel,
         instanceId: input.instanceId, scriptSha256: input.scriptSha256 }),
     }));
-    if (!verifyBinding.ok || !(await verifyBinding.json<{ valid?: boolean }>().catch(() => ({}))).valid) return null;
+    if (!verifyBinding.ok || !(await verifyBinding.json<{ valid?: boolean }>().catch(() => ({} as { valid?: boolean }))).valid) return null;
     const installationResponse = await this.env.SPACES_WORKER.fetch(new Request(
       `http://spaces-worker/spaces/${encodeURIComponent(input.spaceId)}/workflow-installations/${encodeURIComponent(input.instanceId)}`,
       { headers: await this.internalHeaders(input.tenantId) },
@@ -7321,7 +7323,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!installationResponse.ok) return null;
     const installation = await installationResponse.json<{
       instance: { instance_id?: string; tenant_id?: string; space_id?: string; project_id?: string | null; scope?: string; status?: string };
-      manifest: { channels?: Array<{ kind?: string; provider?: string; handlerScript?: string; context?: string; inboundEvents?: string[]; outboundEvents?: string[]; permissions?: unknown[]; capabilityRequirements?: unknown[]; budget?: { maxDurationSeconds?: number; maxConcurrency?: number } }> };
+      manifest: { channels?: Array<{ kind?: string; provider?: string; handlerScript?: string; context?: string; inboundEvents?: string[]; outboundEvents?: string[]; knowledgeCollections?: string[]; permissions?: unknown[]; capabilityRequirements?: unknown[]; budget?: { maxDurationSeconds?: number; maxConcurrency?: number } }> };
     }>().catch(() => null);
     const instance = installation?.instance;
     if (!installation || !instance || instance.status !== "active" || instance.instance_id !== input.instanceId
@@ -7342,6 +7344,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const actual = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
     if (actual !== input.scriptSha256) return null;
     return { name: path[1]!, code: script.code, maxConcurrency: maxConcurrency ?? 1,
+      knowledgeCollections: (declaration.knowledgeCollections ?? []).slice(0, 16),
       limits: { cpuMs: 1_000, wallMs: Math.min(10_000, duration === undefined ? 5_000 : duration * 1000), inputBytes: 16_384, outputBytes: 8_192 } };
   }
 
@@ -7666,14 +7669,63 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code='handler_unavailable' WHERE message_id=?", msg.id);
           takeover("The bound extension is unavailable or no longer valid for this project and channel. Rebind an approved extension or handle the conversation manually."); escalated++; continue;
         }
+        const publishedKnowledge: Array<{ collection_id: string; document_id: string; title: string; content: string }> = [];
+        if (handler.knowledgeCollections.length) {
+          if (!this.env.KNOWLEDGE_WORKER) {
+            this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code='knowledge_search_unavailable' WHERE message_id=?", msg.id);
+            takeover("The handler requires published project Knowledge, but the restricted search service is unavailable. Review the conversation manually."); escalated++; continue;
+          }
+          let knowledgeFailed = false;
+          for (const collectionId of handler.knowledgeCollections) {
+            if (publishedKnowledge.length >= 3) break;
+            try {
+              const search = await this.env.KNOWLEDGE_WORKER.fetch(new Request(
+                `http://knowledge-worker/internal/spaces/${encodeURIComponent(spaceId)}/kb/projects/${encodeURIComponent(msg.project_id)}/external-search`,
+                { method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
+                  body: JSON.stringify({ publication_id: collectionId, query: msg.text.slice(0, 1_000), top_k: 3 }) },
+              ));
+              if (!search.ok) { knowledgeFailed = true; break; }
+              const result = await search.json<{ data?: Array<{ document_id?: string; title?: string; content?: string }> }>();
+              for (const hit of result.data ?? []) {
+                if (publishedKnowledge.length >= 3 || typeof hit.content !== "string" || typeof hit.document_id !== "string") break;
+                publishedKnowledge.push({ collection_id: collectionId, document_id: hit.document_id,
+                  title: String(hit.title ?? "Published source").slice(0, 120), content: hit.content.slice(0, 1_200) });
+              }
+            } catch { knowledgeFailed = true; break; }
+          }
+          const contextBytes = new TextEncoder().encode(JSON.stringify(publishedKnowledge)).byteLength;
+          if (knowledgeFailed || !publishedKnowledge.length || contextBytes > 4_096) {
+            this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code=? WHERE message_id=?",
+              knowledgeFailed ? "knowledge_search_unavailable" : "published_knowledge_no_match", msg.id);
+            takeover(knowledgeFailed
+              ? "The required published Knowledge collection could not be searched. Review the conversation manually."
+              : "No matching content was found in the published Knowledge collections. The handler will not guess; review the conversation manually.");
+            escalated++; continue;
+          }
+        }
         const run = await channelRunner.call(engineEnv.codeRunner, {
           name: handler.name, code: handler.code, args: {}, tenantId, spaceId, agentId,
           installationId: msg.channel_extension_instance_id, maxConcurrency: handler.maxConcurrency,
-          channel: { provider: msg.channel, event: { id: msg.id, type: "message.received", occurredAt: new Date(msg.created_at).toISOString(), payload: { text: msg.text.slice(0, 8_000) } },
+          channel: { provider: msg.channel, event: { id: msg.id, type: "message.received", occurredAt: new Date(msg.created_at).toISOString(), payload: { text: msg.text.slice(0, 8_000), ...(publishedKnowledge.length ? { knowledge: publishedKnowledge } : {}) } },
             conversation: { id: msg.session_id } },
           limits: handler.limits,
         });
-        const replyText = run.ok && run.channel_replies?.length === 1 ? run.channel_replies[0]!.trim() : "";
+        let replyText = run.ok && run.channel_replies?.length === 1 && !(run.channel_answers?.length)
+          ? run.channel_replies[0]!.trim() : "";
+        if (run.ok && run.channel_answers?.length === 1 && !(run.channel_replies?.length)) {
+          if (!publishedKnowledge.length) {
+            this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code='published_knowledge_required' WHERE message_id=?", msg.id);
+            takeover("The handler requested a generated answer but has no owner-published Knowledge sources. Review the conversation manually."); escalated++; continue;
+          }
+          try {
+            const answer = await reasoner.answerExternal({ question: run.channel_answers[0]!,
+              sources: publishedKnowledge.map(source => ({ title: source.title, content: source.content })), maxOutputTokens: 320 });
+            replyText = answer.text;
+          } catch {
+            this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code='external_answer_failed' WHERE message_id=?", msg.id);
+            takeover("A restricted answer could not be generated within the available model, budget, or safety policy. Review the conversation manually."); escalated++; continue;
+          }
+        }
         if (!replyText || !moderateText(replyText).allowed) {
           this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code=? WHERE message_id=?",
             run.ok ? "handler_reply_invalid" : "handler_failed", msg.id);

@@ -142,12 +142,13 @@ async function runIsolateInternal(opts: CodeRunnerOptions, params: CodeRunParams
       method: "POST", headers: { "content-type": "application/json" }, body: requestBody, signal: controller.signal,
     })), controller.signal);
     const body = JSON.parse(await raceAbort(readBoundedResponse(response, outputBytes + 4096), controller.signal)) as {
-      ok?: boolean; result?: unknown; error?: string; capability_error?: ScriptRunResult["capability_error"]; replies?: string[];
+      ok?: boolean; result?: unknown; error?: string; capability_error?: ScriptRunResult["capability_error"]; replies?: string[]; answerRequests?: string[];
     };
     return { ok: response.ok && body.ok === true,
       ...(response.ok && body.ok ? { output: redactCodeValue(body.result, outputBytes, opts.platformSecret ? [opts.platformSecret] : []) } : { error: redactCodeValue(body.error ?? "isolate_http_" + response.status, outputBytes, opts.platformSecret ? [opts.platformSecret] : []) as string }),
       ...(body.capability_error ? { capability_error: body.capability_error } : {}),
       ...(channel && Array.isArray(body.replies) && body.replies.length <= 1 && body.replies.every(reply => typeof reply === "string" && reply.length <= 2000) ? { channel_replies: body.replies } : {}),
+      ...(channel && Array.isArray(body.answerRequests) && body.answerRequests.length <= 1 && body.answerRequests.every(question => typeof question === "string" && question.length <= 2_000) ? { channel_answers: body.answerRequests } : {}),
       tier: params.tier, actual_tier: params.tier, engine: "isolate", duration_ms: Date.now() - started, tokens_used: 0,
       runtime_receipt: { execution_id: executionId, code_digest: digest, backend: python ? "python-wasm" : "dynamic-worker", wall_ms: Date.now() - started, memory_limit_mb: memoryMb,
         output_bytes: body.ok ? new TextEncoder().encode(JSON.stringify(body.result ?? null)).byteLength : 0, cost_source: "unreported" },
