@@ -1129,3 +1129,9 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Extended the planner's existing read-only `workflow.extensions` inventory to return all stable primitive ID/kind pairs in each active project extension, along with each workflow entry, declared operations and the bundle's matching worker role IDs/invocation/execution/entry binding. Results are still membership-checked and installation-scoped.
 - This gives developers and planner workers a direct way to reason about which Canvas, Gadget, channel and workflow parts share one extension/version and which worker role runs each workflow. It adds no access to secrets and does not grant tool operations.
 - Verification: Agents `tsc --noEmit`, focused workflow inventory suite (2 tests), and `git diff --check` passed.
+
+## Extension product lifecycle follow-up — all project bundle releases
+
+- Added a second project extension inventory to the owner/admin Channel panel so Canvas/Gadget/workflow-only installations receive release history, rollback and uninstall controls even when they have no channel primitive. Channel-bearing compositions keep their session/inbox management in the channel-specific panel.
+- Installer success and uninstall refresh both inventories, so newly installed named instances and removed instances do not leave stale controls visible.
+- Verification: Shell `tsc --noEmit` and `git diff --check` passed; no browser flow was run.

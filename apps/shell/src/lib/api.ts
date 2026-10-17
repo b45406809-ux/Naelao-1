@@ -1497,7 +1497,7 @@ export async function listRuntimeCatalogue(spaceId: string, session: SessionCred
 }
 export interface ContainerInstallation {
   instance: { instance_id?: string; extension_id: string; instance_key?: string; project_id: string | null; scope: string; status: string; installed_at: string };
-  manifest: { id?: string; name?: string; containers?: Array<{ id?: string }>; bundle?: { primitives?: Array<{ kind?: string; id?: string }> } };
+  manifest: { id?: string; name?: string; containers?: Array<{ id?: string }>; bundle?: { version?: string; primitives?: Array<{ kind?: string; id?: string }> } };
 }
 export async function listContainerInstallations(spaceId: string, session: SessionCredentials, projectId?: string) {
   const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
