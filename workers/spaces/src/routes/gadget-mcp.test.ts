@@ -60,4 +60,35 @@ describe("gadget MCP host adapter", () => {
     expect(allowed.status).toBe(200);
     expect(fetch).toHaveBeenCalledOnce();
   });
+
+  it("mounts an owner-approved project gadget in its project-bound actor after project ACL checks", async () => {
+    const idFromName = vi.fn((name: string) => name as never);
+    const fetch = vi.fn(async (request: Request) => Response.json({ path: new URL(request.url).pathname }));
+    const app = new Hono();
+    registerGadgetMcpRoutes(app as never);
+    const env = {
+      PLATFORM_SECRET: "test-secret",
+      PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ 1: 1 }) }) }) },
+      SPACE_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch: async () => Response.json({ id: "project-a" }) }) },
+      MICRO_APP_DO: { idFromName, get: () => ({ fetch }) },
+    } as never;
+    const initialized = await app.request("/spaces/s/projects/project-a/apps/course-notes/initialize", { method: "POST",
+      headers: { "x-naelao-tenant-id": "t", "x-naelao-role": "admin", "content-type": "application/json" },
+      body: JSON.stringify({ appId: "course-notes", scope: "PROJECT_BOUND", gadgetTier: 2, defaultSchemaSql: "CREATE TABLE notes(id TEXT PRIMARY KEY)" }) }, env);
+    expect(initialized.status).toBe(200);
+    expect(idFromName).toHaveBeenCalledWith("gadget:course-notes:project:project-a");
+    expect(fetch).toHaveBeenCalledWith(expect.objectContaining({ url: "http://micro-app/initialize" }));
+    const appPage = await app.request("/spaces/s/projects/project-a/apps/course-notes/app", { headers: { "x-naelao-tenant-id": "t", "x-naelao-role": "admin" } }, env);
+    expect(await appPage.json()).toEqual({ path: "/app" });
+  });
+
+  it("rejects project Gadget initialization from a non-admin and rejects space-level Gadget scopes", async () => {
+    const app = new Hono(); registerGadgetMcpRoutes(app as never);
+    const env = { PLATFORM_SECRET: "secret", PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ 1: 1 }) }) }) }, SPACE_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch: async () => Response.json({ id: "p" }) }) }, MICRO_APP_DO: { idFromName: vi.fn(), get: vi.fn() } } as never;
+    const headers = { "x-naelao-tenant-id": "t", "x-naelao-role": "admin", "content-type": "application/json" };
+    const badScope = await app.request("/spaces/s/projects/p/apps/a/initialize", { method: "POST", headers, body: JSON.stringify({ appId: "a", scope: "SPACE_SHARED", gadgetTier: 3 }) }, env);
+    expect(badScope.status).toBe(400);
+    const denied = await app.request("/spaces/s/projects/p/apps/a/initialize", { method: "POST", headers: { ...headers, "x-naelao-role": "member", "x-naelao-user-id": "u" }, body: JSON.stringify({ appId: "a", scope: "PROJECT_BOUND", gadgetTier: 2 }) }, env);
+    expect(denied.status).toBe(403);
+  });
 });

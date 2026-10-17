@@ -3,9 +3,11 @@
 import * as React from "react";
 import { parseCanvasMessage } from "@naelao/agent-sdk";
 
-export function MicroAppCanvas({ spaceId, appId, projectId = appId, onAction }: { spaceId: string; appId: string; projectId?: string; onAction(action: string, payload?: Record<string, unknown>): void }) {
+export function MicroAppCanvas({ spaceId, appId, projectId = appId, projectScoped = false, onAction }: { spaceId: string; appId: string; projectId?: string; projectScoped?: boolean; onAction(action: string, payload?: Record<string, unknown>): void }) {
   const frame = React.useRef<HTMLIFrameElement>(null);
-  const src = `/spaces/${encodeURIComponent(spaceId)}/apps/${encodeURIComponent(appId)}/app`;
+  const src = projectScoped
+    ? `/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/apps/${encodeURIComponent(appId)}/app`
+    : `/spaces/${encodeURIComponent(spaceId)}/apps/${encodeURIComponent(appId)}/app`;
   React.useEffect(() => {
     const receive = (event: MessageEvent) => {
       // A sandbox without allow-same-origin intentionally has a null origin. Source identity is
