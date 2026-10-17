@@ -782,7 +782,9 @@ function AiTab({
           <div>
             <div className="settings-row-label">Autonomy</div>
             <div className="settings-row-sub">
-              {policy?.approval_mode === "yolo" ? "Autonomous — acts without asking." : "Guided — asks before anything sensitive."}
+              {policy?.approval_mode === "yolo"
+                ? "Runs within granted tools and configured limits; separate approval gates still apply."
+                : "Asks before actions unless they are explicitly approved."}
             </div>
           </div>
           {canManage ? (

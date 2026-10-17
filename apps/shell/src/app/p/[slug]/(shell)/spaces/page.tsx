@@ -30,7 +30,6 @@ import {
 } from "@/lib/api";
 import { listModelBenchmarks, DEFAULT_WORKING_MODEL, type CostTier } from "@naelao/billing-core";
 import { modelLabel } from "@/components/ModelSelector";
-import { DiscoverMarketRadar } from "@/components/DiscoverMarketRadar";
 
 const COST_TIER_LABEL: Record<CostTier, string> = { economy: "Economy", standard: "Standard", premium: "Premium" };
 const COST_TIER_BADGE: Record<CostTier, "green" | "blue" | "amber"> = { economy: "green", standard: "blue", premium: "amber" };
@@ -266,8 +265,6 @@ export default function DiscoverPage() {
   // already intersected server-side with the builder's business_templates narrowing) instead of a
   // hardcoded duplicate of LAUNCHPAD_TEMPLATES.
   const availableTemplates = manifest?.template_catalog ?? [];
-  const aveTemplates = availableTemplates.filter((t) => (t.template_mode ?? "ave") === "ave");
-  const coworkTemplates = availableTemplates.filter((t) => t.template_mode === "cowork");
   const projectTemplates = manifest?.project_template_catalog ?? [];
   const agentCatalog = manifest?.agent_catalog ?? [];
   // Set by the shell layout's business-first redirect (layout.tsx) when a hybrid/tenant user has
@@ -301,7 +298,6 @@ export default function DiscoverPage() {
 
   function templateCard(t: (typeof availableTemplates)[number]) {
     const activity = t.coming_soon ? null : templateActivityBadge(activityByTemplate.get(t.id));
-    const mode = t.template_mode === "cowork" ? "cowork" : "ave";
     return (
       <Card
         key={t.id}
@@ -315,9 +311,7 @@ export default function DiscoverPage() {
         </div>
         <CardDesc>{t.description ?? "Preconfigured workspace, agents and setup — ready to run."}</CardDesc>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          <Badge color={mode === "cowork" ? "blue" : "green"}>{mode === "cowork" ? "Cowork" : "AVE"}</Badge>
           {t.vertical && <Badge color="blue">{t.vertical}</Badge>}
-          {t.wallet_mode && <Badge color="amber">{t.wallet_mode === "business_wallet" ? "Business wallet" : "Company budget"}</Badge>}
           {t.coming_soon && <Badge color="amber">Coming soon</Badge>}
           {!t.coming_soon && !t.free_tier_eligible && <Badge color="amber">Requires plan upgrade</Badge>}
           {activity && <Badge color={activity.color}>{activity.label}</Badge>}
@@ -342,9 +336,7 @@ export default function DiscoverPage() {
         </div>
         <div className="app-card-desc card-desc">{t.description ?? "Preconfigured workspace, agents and setup — ready to run."}</div>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          <Badge color={t.template_mode === "cowork" ? "blue" : "green"}>{t.template_mode === "cowork" ? "Cowork" : "AVE"}</Badge>
           {t.vertical && <Badge color="blue">{t.vertical}</Badge>}
-          {t.wallet_mode && <Badge color="amber">{t.wallet_mode === "business_wallet" ? "Business wallet" : "Company budget"}</Badge>}
           {t.coming_soon && <Badge color="amber">Coming soon</Badge>}
           {!t.coming_soon && !t.free_tier_eligible && <Badge color="amber">Requires plan upgrade</Badge>}
         </div>
@@ -592,36 +584,20 @@ export default function DiscoverPage() {
 
       {canCreate && availableTemplates.length > 0 && (
         <>
-          {aveTemplates.length > 0 && (
-            <>
-              <div className="section-label" style={{ marginTop: 26 }}>Autonomous ventures</div>
-              <p style={{ fontSize: 12, color: "var(--text3)", margin: "-6px 0 12px" }}>
-                AVE spaces are vertical ventures your operator runs continuously: revenue, growth,
-                delivery, customer service and an isolated business wallet.
-              </p>
-              {creds && <DiscoverMarketRadar session={creds} productSpaceId={product.space_id} spacetypeId={manifest?.allowed_child_space_types[0] ?? "launchpad"} onLaunched={(spaceId) => router.push(`/p/${product.slug}/spaces/${spaceId}/onboarding`)} />}
-              <div className="grid-3">
-                {aveTemplates.map(templateCard)}
-                <Card interactive onClick={() => openCreate(CUSTOM_BUSINESS)} style={{ cursor: "pointer", borderStyle: "dashed" }}>
-                  <div className="app-card-header">
-                    <div className="app-card-initial" style={{ background: "var(--surface2)", color: "var(--text3)" }}>+</div>
-                    <CardTitle>Custom venture</CardTitle>
-                  </div>
-                  <CardDesc>Start from scratch and let the assistant shape a venture around your idea.</CardDesc>
-                </Card>
+          <div className="section-label" style={{ marginTop: 26 }}>Templates</div>
+          <p style={{ fontSize: 12, color: "var(--text3)", margin: "-6px 0 12px" }}>
+            Start with a ready-made setup or create a blank Space. Templates add optional tools and workflows; you control what the assistant may do.
+          </p>
+          <div className="grid-3">
+            {availableTemplates.map(templateCard)}
+            <Card interactive onClick={() => openCreate(CUSTOM_BUSINESS)} style={{ cursor: "pointer", borderStyle: "dashed" }}>
+              <div className="app-card-header">
+                <div className="app-card-initial" style={{ background: "var(--surface2)", color: "var(--text3)" }}>+</div>
+                <CardTitle>Start from scratch</CardTitle>
               </div>
-            </>
-          )}
-          {coworkTemplates.length > 0 && (
-            <>
-              <div className="section-label" style={{ marginTop: 30 }}>Vertical Cowork studios</div>
-              <p style={{ fontSize: 12, color: "var(--text3)", margin: "-6px 0 12px" }}>
-                Cowork spaces are tailored company and enterprise workspaces: your team directs a
-                private copilot through approved knowledge, connected tools and clear review gates.
-              </p>
-              <div className="grid-3">{coworkTemplates.map(templateCard)}</div>
-            </>
-          )}
+              <CardDesc>Create a Space without a domain template, then add only the tools and extensions you need.</CardDesc>
+            </Card>
+          </div>
         </>
       )}
 
@@ -784,20 +760,11 @@ export default function DiscoverPage() {
             </div>
             <div className="app-card-desc card-desc">Build from scratch with the assistant.</div>
           </button>
-          {aveTemplates.length > 0 && (
-            <>
-              <div className="section-label">Autonomous venture templates</div>
-              <div className="app-grid">{aveTemplates.map(templateChoice)}</div>
-            </>
-          )}
-          {coworkTemplates.length > 0 && (
-            <>
-              <div className="section-label" style={{ marginTop: 14 }}>Vertical Cowork templates</div>
-              <div className="app-grid">{coworkTemplates.map(templateChoice)}</div>
-            </>
+          {availableTemplates.length > 0 && (
+            <div className="app-grid">{availableTemplates.map(templateChoice)}</div>
           )}
           {selectedTemplates.has(CUSTOM_BUSINESS) && (
-            <p style={{ fontSize: 12, color: "var(--text3)" }}>The assistant will help you design and set up this business.</p>
+            <p style={{ fontSize: 12, color: "var(--text3)" }}>The assistant will help you set up this Space.</p>
           )}
           {createError && (
             <p style={{ fontSize: 12, color: "#dc2626" }} role="alert">

@@ -10,6 +10,7 @@ import * as React from "react";
 import { getAgentPolicy, updateAgentPolicy, getAssistantCapabilities, type AgentPolicy, type AssistantCapabilities } from "@/lib/api";
 import type { SessionCredentials } from "@/lib/api";
 import { ApprovedActionsEditor } from "./ApprovedActionsEditor";
+import { presentAutonomyPolicy } from "@naelao/agent-sdk";
 
 export function AgentPolicyPanel({
   spaceId,
@@ -127,9 +128,12 @@ export function AgentPolicyPanel({
                     disabled={saving || !canEdit || policy.approval_mode === "yolo"}
                     onClick={() => void setMode("yolo")}
                   >
-                    Autonomous
+                    Run within limits
                   </button>
                 </div>
+              </div>
+              <div style={{ fontSize: 10.5, color: "var(--text3)", marginBottom: 8 }}>
+                {presentAutonomyPolicy(policy).explanation}
               </div>
               <div style={{ fontSize: 11.5, color: "var(--text2)", marginBottom: 4 }}>Pre-approved actions</div>
               <ApprovedActionsEditor

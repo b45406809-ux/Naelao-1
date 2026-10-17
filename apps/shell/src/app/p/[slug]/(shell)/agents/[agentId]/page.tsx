@@ -140,8 +140,8 @@ export default function AgentDetailPage() {
       >
         <div style={{ display: "grid", gap: 8 }}>
           {[
-            { id: "always_ask" as const, title: "Ask first", desc: "Stops and waits for a person before anything irreversible. Anything on the list below still goes straight through." },
-            { id: "yolo" as const, title: "Fully autonomous", desc: "Never stops to ask. Use once you've seen how this agent behaves on real work." },
+            { id: "always_ask" as const, title: "Ask first", desc: "Prompts before actions unless they are explicitly pre-approved. Granted tools and budget limits still apply." },
+            { id: "yolo" as const, title: "Run within limits", desc: "Runs without an extra prompt within its granted tools and configured limits. Separate approval gates still apply." },
           ].map((mode) => {
             const active = policy?.approval_mode === mode.id;
             return (
@@ -166,8 +166,7 @@ export default function AgentDetailPage() {
         </div>
         {isAutonomous && (
           <p style={{ fontSize: 11.5, color: "var(--text3)", marginTop: 10 }}>
-            Nothing this agent does will come to you for approval. The record of what it did is still in the activity
-            feed on each run.
+            This setting does not add tools or bypass role, scope, budget, or separate approval checks. Its run activity remains visible in the feed.
           </p>
         )}
       </SettingsSection>

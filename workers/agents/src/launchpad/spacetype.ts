@@ -137,11 +137,11 @@ export interface LaunchpadTemplate {
   id: string;
   name: string;
   description: string;
-  /** Declarative operating model. AVE runs a venture; Cowork equips a company team. */
+  /** @deprecated Legacy catalog classification retained for stored-template compatibility; all templates now use the same Space and autonomy model. */
   template_mode?: "ave" | "cowork";
-  /** The domain this vertical is designed around, shown in Discover and onboarding. */
+  /** Domain/focus metadata for filtering and setup copy; not an operating-system mode. */
   vertical?: string;
-  /** How the template frames the automatically provisioned business wallet/budget rail. */
+  /** @deprecated Legacy billing/catalog metadata retained for existing templates; no longer displayed as a Space operating mode. */
   wallet_mode?: "business_wallet" | "company_budget";
   /** Core agent ids this template installs (subset/superset of LAUNCHPAD_CORE_AGENTS). */
   agents: string[];
@@ -223,7 +223,7 @@ export interface LaunchpadSpaceType {
 }
 
 // ── Core agent definitions (pre-installed; §11) ──────────────────────────────
-// Autopilot tier: they act autonomously within boundaries; the owner reviews outputs
+// Autonomy starting point: assistants may act within explicit boundaries; the owner reviews outputs
 // before they reach customers via `requires_approval_for`.
 
 export const LAUNCHPAD_CORE_AGENTS: LaunchpadAgentDefinition[] = [
@@ -531,7 +531,7 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
           options: [
             "Ask me first — approve everything before it happens",
             "Handle routine work, ask about anything that costs money or reaches a customer",
-            "Full autonomy — only ask when genuinely stuck",
+            "Run within configured tools and limits; ask when blocked or uncertain",
           ],
           required: true,
         },
@@ -639,7 +639,7 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
           options: [
             "Ask me first — approve everything before it happens",
             "Handle routine work, ask about anything that costs money or reaches a customer",
-            "Full autonomy — only ask when genuinely stuck",
+            "Run within configured tools and limits; ask when blocked or uncertain",
           ],
           required: true,
         },
@@ -727,7 +727,7 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
         { id: "whop_connection", type: "connection", connector: "whop", question: "Connect your Whop account.", help: "Opens Whop and asks you to approve access. Your assistant sets up your store with the three audit tiers, and Whop handles the money.", required: true },
         { id: "specialty", type: "text", question: "What will you audit, and for whom?", help: "Be specific — 'landing pages for SaaS founders', 'Airbnb lease agreements', 'senior-dev resumes + GitHub'. Your agent builds the intake and report around this.", required: true },
         { id: "owner_channel", type: "channel", question: "Where should your assistant reach you?", help: "It sends you new orders to review and flags anything it can't handle.", options: ["email", "slack", "discord", "whatsapp"], required: true },
-        { id: "autonomy", type: "choice", question: "How much should it do on its own?", options: ["Ask me first — approve every report before it's sent", "Draft reports for one-click approval", "Full autonomy — send reports, only ask when stuck"], required: true },
+        { id: "autonomy", type: "choice", question: "How much should it do on its own?", options: ["Ask me first — approve every report before it's sent", "Draft reports for one-click approval", "Run within configured tools and limits; ask when blocked or uncertain"], required: true },
       ],
       projects: [
         { name: "Intake & Reports", default_agent_id: "launchpad-fulfillment-v1" },
@@ -760,7 +760,7 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
         { id: "whop_connection", type: "connection", connector: "whop", question: "Connect your Whop account.", help: "For the paid plan/subscription. Whop handles the money.", required: true },
         { id: "tool_idea", type: "text", question: "What tool do you want, and who's it for?", help: "e.g. 'a SaaS valuation & burn-rate simulator for founders', 'a marathon + nutrition planner'. Your agent builds it as a real interactive web app.", required: true },
         { id: "owner_channel", type: "channel", question: "Where should your assistant reach you?", options: ["email", "slack", "discord", "whatsapp"], required: true },
-        { id: "autonomy", type: "choice", question: "How much should it do on its own?", options: ["Ask me first", "Handle routine work, ask about money/customers", "Full autonomy"], required: true },
+        { id: "autonomy", type: "choice", question: "How much should it do on its own?", options: ["Ask me first", "Handle routine work, ask about money/customers", "Run within configured tools and limits"], required: true },
       ],
       projects: [
         { name: "Build", default_agent_id: "launchpad-webdev-v1" },
@@ -794,7 +794,7 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
         { id: "whop_connection", type: "connection", connector: "whop", question: "Connect your Whop account.", help: "For the recurring subscription. Whop handles the money.", required: true },
         { id: "service", type: "text", question: "What's the service, and what does one deliverable look like?", help: "e.g. 'unlimited video thumbnails, one at a time', 'a weekly B2B newsletter', 'Shopify bug fixes'. This shapes the intake board and delivery pipeline.", required: true },
         { id: "owner_channel", type: "channel", question: "Where should your assistant reach you?", options: ["email", "slack", "discord", "whatsapp"], required: true },
-        { id: "autonomy", type: "choice", question: "How much should it do on its own?", options: ["Draft every deliverable for me to approve", "Auto-handle routine requests, ask on the rest", "Full autonomy"], required: true },
+        { id: "autonomy", type: "choice", question: "How much should it do on its own?", options: ["Draft every deliverable for me to approve", "Auto-handle routine requests, ask on the rest", "Run within configured tools and limits"], required: true },
       ],
       projects: [
         { name: "Intake & Delivery", default_agent_id: "launchpad-fulfillment-v1" },
@@ -828,7 +828,7 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
         { id: "whop_connection", type: "connection", connector: "whop", question: "Connect your Whop account.", help: "For the membership. Whop handles the money.", required: true },
         { id: "vault_topic", type: "text", question: "What's in the vault, and who wants it?", help: "e.g. 'off-market commercial real-estate deals', 'active angel investors open to AI pitches', 'remote Rust jobs with real salaries'. Your agents source and curate around this.", required: true },
         { id: "owner_channel", type: "channel", question: "Where should your assistant reach you?", options: ["email", "slack", "discord", "whatsapp"], required: true },
-        { id: "autonomy", type: "choice", question: "How much should it do on its own?", options: ["Ask me before adding/removing entries", "Auto-curate, ask before the digest goes out", "Full autonomy"], required: true },
+        { id: "autonomy", type: "choice", question: "How much should it do on its own?", options: ["Ask me before adding/removing entries", "Auto-curate, ask before the digest goes out", "Run within configured tools and limits"], required: true },
       ],
       projects: [
         { name: "Curation", default_agent_id: "launchpad-leadgen-v1" },
@@ -861,7 +861,7 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
         { id: "whop_connection", type: "connection", connector: "whop", question: "Connect your Whop account.", help: "For selling and delivering the downloads. Whop handles the money.", required: true },
         { id: "products", type: "text", question: "What digital products will you sell?", help: "e.g. 'Notion workspaces for law students', 'Tailwind component packs', 'e-commerce Excel financial models'. Your agent builds the store around these.", required: true },
         { id: "owner_channel", type: "channel", question: "Where should your assistant reach you?", options: ["email", "slack", "discord", "whatsapp"], required: true },
-        { id: "autonomy", type: "choice", question: "How much should it do on its own?", options: ["Ask me first", "Handle routine work, ask about pricing/new products", "Full autonomy"], required: true },
+        { id: "autonomy", type: "choice", question: "How much should it do on its own?", options: ["Ask me first", "Handle routine work, ask about pricing/new products", "Run within configured tools and limits"], required: true },
       ],
       projects: [
         { name: "Storefront", default_agent_id: "launchpad-fulfillment-v1" },
@@ -895,7 +895,7 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
         { id: "whop_connection", type: "connection", connector: "whop", question: "Connect your Whop account.", help: "For the recurring membership. Whop handles the money and the gated access.", required: true },
         { id: "community", type: "text", question: "What's the community, and who's it for?", help: "e.g. 'a mastermind for 6-figure Amazon FBA sellers', 'a build-in-public accountability club', 'a biotech researchers' hub'. Your agents run the day-to-day around this.", required: true },
         { id: "owner_channel", type: "channel", question: "Where should your assistant reach you?", options: ["email", "slack", "discord", "whatsapp"], required: true },
-        { id: "autonomy", type: "choice", question: "How much should it do on its own?", options: ["Draft welcomes/replies for me to send", "Auto-welcome + moderate, ask on the rest", "Full autonomy"], required: true },
+        { id: "autonomy", type: "choice", question: "How much should it do on its own?", options: ["Draft welcomes/replies for me to send", "Auto-welcome + moderate, ask on the rest", "Run within configured tools and limits"], required: true },
       ],
       projects: [
         { name: "Community", default_agent_id: "launchpad-support-v1" },
@@ -908,7 +908,7 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
       },
     },
   },
-  // ── Vertical Cowork studios ──────────────────────────────────────────────
+  // ── Additional team-oriented templates ───────────────────────────────────
   // These are deliberately company/team operating models. They keep the owner's mobile
   // channel, but use it as a private professional copilot and route consequential work for
   // approval instead of presenting the space as an autonomous business.
@@ -999,7 +999,7 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
       first_contact: { goal: "Set up the finance workspace around the stated fiscal calendar and reporting cadence. Draft the close checklist, reporting definitions and approval map from the approved finance workspace, call out every missing source or assumption, and send the owner a first reporting-cycle plan. Never invent financial figures." },
     },
   },
-  // ── Autonomous Venture Engine verticals ──────────────────────────────────
+  // ── Business-focused templates ───────────────────────────────────────────
   // These are owner-operated ventures. Their onboarding explicitly establishes the business
   // wallet/payout rail and an owner command channel, then creates revenue, growth and delivery
   // projects for the assistant to run continuously.
@@ -1018,9 +1018,9 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     bootstrap: {
       prompts: [
         { id: "service_offer", type: "text", question: "What service, location and customer should this venture focus on?", required: true },
-        { id: "business_wallet", type: "connection", connector: "whop", question: "Connect the venture's payout and checkout rail.", help: "Every AVE gets an isolated business wallet. Whop is the first live checkout connection for revenue and customer access.", required: true },
+        { id: "business_wallet", type: "connection", connector: "whop", question: "Connect the venture's payout and checkout rail.", help: "This template connects the project budget and checkout flow through the selected provider.", required: true },
         { id: "owner_channel", type: "channel", question: "Where should your venture operator reach you?", options: ["email", "slack", "whatsapp", "telegram"], required: true },
-        { id: "autonomy", type: "choice", question: "How much should the venture do without asking?", options: ["Draft everything for approval", "Run routine growth and support, ask on exceptions", "Full autonomy within the business limits"], required: true },
+        { id: "autonomy", type: "choice", question: "How much may the assistant do without asking?", options: ["Draft everything for approval", "Run routine growth and support, ask on exceptions", "Run within the configured tools and project budget"], required: true },
       ],
       projects: [
         { name: "Pipeline & Bookings", default_agent_id: "launchpad-leadgen-v1" },
@@ -1046,10 +1046,10 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     bootstrap: {
       prompts: [
         { id: "category", type: "text", question: "What product category and customer niche should the brand own?", required: true },
-        { id: "business_wallet", type: "connection", connector: "whop", question: "Connect the brand's payout and checkout rail.", help: "The AVE business wallet is isolated to this venture; the connected checkout is the revenue source the agents monitor.", required: true },
+        { id: "business_wallet", type: "connection", connector: "whop", question: "Connect the brand's payout and checkout rail.", help: "The template keeps its budget separate and uses the connected checkout provider for configured commerce tasks.", required: true },
         { id: "catalogue_source", type: "connection", connector: "gumroad", question: "Connect an existing product catalogue, if you have one.", help: "Optional: import products and sales so the venture can start from what already exists.", required: false },
         { id: "owner_channel", type: "channel", question: "Where should the brand operator reach you?", options: ["email", "slack", "whatsapp", "telegram"], required: true },
-        { id: "autonomy", type: "choice", question: "How should it handle routine commerce work?", options: ["Draft changes for approval", "Run routine catalogue, support and growth work", "Full autonomy within the business limits"], required: true },
+        { id: "autonomy", type: "choice", question: "How should it handle routine commerce work?", options: ["Draft changes for approval", "Run routine catalogue, support and growth work", "Run within the configured tools and project budget"], required: true },
       ],
       projects: [
         { name: "Catalogue & Offers", default_agent_id: "launchpad-fulfillment-v1" },
@@ -1075,10 +1075,10 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     bootstrap: {
       prompts: [
         { id: "specialty", type: "text", question: "What expertise and deliverable should this venture sell?", help: "For example: paid audits, research briefs, design sprints or implementation packages.", required: true },
-        { id: "business_wallet", type: "connection", connector: "whop", question: "Connect the venture's payout and checkout rail.", help: "The AVE gets an isolated business wallet and uses the connected checkout for paid intake.", required: true },
+        { id: "business_wallet", type: "connection", connector: "whop", question: "Connect the venture's payout and checkout rail.", help: "The template keeps its budget separate and uses the connected checkout provider for paid intake.", required: true },
         { id: "offer_constraints", type: "text", question: "What scope, price or turnaround limits should the operator respect?", required: true },
         { id: "owner_channel", type: "channel", question: "Where should your service operator reach you?", options: ["email", "slack", "whatsapp", "telegram"], required: true },
-        { id: "autonomy", type: "choice", question: "How should it handle leads and delivery?", options: ["Draft offers and deliverables for approval", "Run intake and routine delivery, ask on exceptions", "Full autonomy within the service limits"], required: true },
+        { id: "autonomy", type: "choice", question: "How should it handle leads and delivery?", options: ["Draft offers and deliverables for approval", "Run intake and routine delivery, ask on exceptions", "Run within the configured tools and project budget"], required: true },
       ],
       projects: [
         { name: "Offer & Intake", default_agent_id: "launchpad-leadgen-v1" },

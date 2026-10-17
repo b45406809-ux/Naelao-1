@@ -70,6 +70,7 @@ import {
 import { relativeTime } from "@/lib/relativeTime";
 import { ApprovedActionsEditor } from "@/components/ApprovedActionsEditor";
 import { canManageSpaceSettings } from "@/lib/roles";
+import { presentAutonomyPolicy } from "@naelao/agent-sdk";
 
 /** Same curated allowlist + default the dashboard's own Configuration tab picker uses — kept as
  *  a parallel copy rather than a new shared export (this codebase's own precedent for a small
@@ -414,16 +415,8 @@ export default function DashboardPage() {
 
   if (!creds) return null;
 
-  const modeLabel =
-    policy?.approval_mode === "yolo"
-      ? "Autonomous"
-      : policy?.approval_mode === "gate_unless_listed"
-        ? "Guided"
-        : policy?.approval_mode === "gate_listed"
-          ? "Mostly autonomous"
-          : policy?.approval_mode === "always_ask"
-            ? "Asks before acting"
-            : "—";
+  const autonomyPresentation = presentAutonomyPolicy(policy);
+  const modeLabel = autonomyPresentation.label;
   const isAutonomous = policy?.approval_mode === "yolo";
 
   const heading = isBusinessSpace ? (business?.name ?? activeSpaceName ?? "Business") : (activeSpaceName ?? product.product_name);
@@ -783,11 +776,7 @@ export default function DashboardPage() {
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
             <div>
               <Row left="Autonomy" right={canManageAssistant ? undefined : modeLabel} />
-              {!canManageAssistant && (
-                <div style={{ fontSize: 11, color: "var(--text3)" }}>
-                  {isAutonomous ? "Acts without asking first." : "Asks before scaffolding a project or spending anything."}
-                </div>
-              )}
+              <div style={{ fontSize: 11, color: "var(--text3)" }}>{autonomyPresentation.explanation}</div>
             </div>
             {canManageAssistant && (
               <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
@@ -798,7 +787,7 @@ export default function DashboardPage() {
                   onClick={() => void setAutonomy(false)}
                   style={{ padding: "4px 10px", fontSize: 11.5 }}
                 >
-                  Guided
+                  Ask first
                 </button>
                 <button
                   type="button"
@@ -807,7 +796,7 @@ export default function DashboardPage() {
                   onClick={() => void setAutonomy(true)}
                   style={{ padding: "4px 10px", fontSize: 11.5 }}
                 >
-                  Autonomous
+                  Run within limits
                 </button>
               </div>
             )}

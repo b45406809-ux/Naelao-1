@@ -42,31 +42,19 @@ import { SettingsSection, SettingsRow } from "@/components/SettingsSection";
 import { ChannelConnect } from "@/components/ChannelConnect";
 import { CustomerTelephonySettings } from "@/components/CustomerTelephonySettings";
 import { canManageSpaceSettings } from "@/lib/roles";
+import { presentAutonomyPolicy } from "@naelao/agent-sdk";
 
-type ApprovalMode = AssistantPolicy["approval_mode"];
-
-/** The four real modes SpaceDO stores, described in terms of what actually happens — not the
- *  internal names. The dashboard tile only ever offered two of these. */
-const MODES: { id: ApprovalMode; title: string; desc: string }[] = [
+/** Two plain-language defaults; the separate action list handles per-operation exceptions. */
+const MODES: { id: "always_ask" | "yolo"; title: string; desc: string }[] = [
   {
     id: "always_ask",
-    title: "Ask me first",
-    desc: "Checks with you before anything that spends money, sends a message, or changes how the business is set up. Reading and looking things up never needs asking.",
-  },
-  {
-    id: "gate_unless_listed",
-    title: "Ask unless pre-approved",
-    desc: "Like the above, but anything on your pre-approved list below goes through without asking.",
-  },
-  {
-    id: "gate_listed",
-    title: "Only ask for listed actions",
-    desc: "The reverse: it acts freely except for the specific actions you list below, which always come to you.",
+    title: "Ask first",
+    desc: "Ask before actions unless they are explicitly pre-approved below. Granted tools and budget limits still apply.",
   },
   {
     id: "yolo",
-    title: "Fully autonomous",
-    desc: "Never asks. It will spend, send and change things on its own. Best once you've watched it work for a while.",
+    title: "Run within limits",
+    desc: "Run without an extra prompt within granted tools and configured limits. Separate approval gates still apply.",
   },
 ];
 
@@ -209,10 +197,15 @@ export default function AssistantSettingsPage() {
       {activeSpaceId && <CustomerTelephonySettings spaceId={activeSpaceId} session={creds} canEdit={canEdit} />}
 
       <SettingsSection
-        title="What it can do without asking"
-        desc="The assistant always asks before something irreversible unless you tell it otherwise. Pick how much rope it gets."
+        title="Autonomy"
+        desc="Choose the default approval behavior. This setting does not add capabilities or bypass role, scope, budget, or separate approval checks."
       >
         <div style={{ display: "grid", gap: 8 }}>
+          {policy && (
+            <div style={{ fontSize: 12, color: "var(--text3)", marginBottom: 4 }}>
+              {presentAutonomyPolicy(policy).explanation}
+            </div>
+          )}
           {MODES.map((mode) => {
             const active = policy?.approval_mode === mode.id;
             return (

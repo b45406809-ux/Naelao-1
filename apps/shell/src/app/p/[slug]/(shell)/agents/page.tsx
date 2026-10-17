@@ -405,7 +405,7 @@ export default function AgentsPage() {
             <select value={cMode} onChange={(e) => setCMode(e.target.value as typeof cMode)} style={inputStyle}>
               <option value="always_ask">Always ask before acting</option>
               <option value="gate_unless_listed">Ask for anything not pre-approved</option>
-              <option value="yolo">Full autonomy (never ask)</option>
+              <option value="yolo">Run within granted access and limits</option>
             </select>
           </label>}
           <label style={{ fontSize: 12.5 }}>

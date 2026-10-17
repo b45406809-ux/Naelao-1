@@ -21,6 +21,7 @@ import * as React from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { detectRuntimeAnomaly, isJobOverdue } from "@naelao/events";
+import { presentAutonomyPolicy } from "@naelao/agent-sdk";
 import { ChannelConnect, CHANNELS } from "./ChannelConnect";
 import {
   getAssistantPolicy,
@@ -142,13 +143,6 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-const APPROVAL_MODE_LABEL: Record<AssistantPolicy["approval_mode"], string> = {
-  always_ask: "Ask me first",
-  gate_unless_listed: "Ask unless pre-approved",
-  gate_listed: "Only ask for listed actions",
-  yolo: "Fully autonomous",
-};
-
 /** Config tab: a run's OWN agent's policy override when one is selected in a project thread
  *  (falls back to space-wide when the agent has none of its own — same as the backend), else the
  *  space-wide assistant policy. Deliberately compact — the full page (dashboard/assistant, or
@@ -237,6 +231,7 @@ function ConfigPanel({
 
   const actions = scoped ? agentPolicy?.auto_approved_actions ?? [] : spacePolicy?.auto_approved_actions ?? [];
   const currentMode = scoped ? agentPolicy?.approval_mode : spacePolicy?.approval_mode;
+  const currentAutonomy = scoped ? presentAutonomyPolicy(agentPolicy) : presentAutonomyPolicy(spacePolicy);
 
   return (
     <>
@@ -244,17 +239,22 @@ function ConfigPanel({
       <div style={{ padding: "0 14px 8px" }}>
         {!currentMode && !loadError && <div style={{ fontSize: 12, color: "var(--text3)" }}>Loading…</div>}
         {currentMode && (
+          <div style={{ fontSize: 11.5, color: "var(--text3)", marginBottom: 8 }}>
+            {currentAutonomy.explanation}
+          </div>
+        )}
+        {currentMode && (
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {(scoped ? (["always_ask", "yolo"] as const) : (["always_ask", "gate_unless_listed", "gate_listed", "yolo"] as const)).map((mode) => (
+            {(["always_ask", "yolo"] as const).map((mode) => (
               <button
                 key={mode}
                 type="button"
                 className={mode === currentMode ? "btn btn-primary btn-sm" : "btn btn-secondary btn-sm"}
                 style={{ padding: "3px 8px", fontSize: 11 }}
                 disabled={saving || !canEdit || mode === currentMode}
-                onClick={() => void (scoped ? setAgentMode(mode as AgentPolicy["approval_mode"]) : setSpaceMode(mode))}
+                onClick={() => void (scoped ? setAgentMode(mode) : setSpaceMode(mode))}
               >
-                {APPROVAL_MODE_LABEL[mode]}
+                {mode === "always_ask" ? "Ask first" : "Run within limits"}
               </button>
             ))}
           </div>
