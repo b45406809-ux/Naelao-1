@@ -1863,6 +1863,12 @@ export async function takeOverChannelExtensionInboxEvent(spaceId: string, projec
   });
 }
 
+export async function deleteChannelExtensionConversation(spaceId: string, projectId: string, instanceId: string, eventId: string, session: SessionCredentials): Promise<{ deleted: true }> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/channel-extensions/${encodeURIComponent(instanceId)}/inbox/delete-conversation`, {
+    method: "POST", session, body: JSON.stringify({ event_id: eventId }),
+  });
+}
+
 export async function getChannelExtensionSessionSummary(spaceId: string, projectId: string, instanceId: string, session: SessionCredentials): Promise<ChannelExtensionSessionSummary> {
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/channel-extensions/${encodeURIComponent(instanceId)}/session-state`, { session });
 }

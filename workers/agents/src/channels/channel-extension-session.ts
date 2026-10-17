@@ -140,3 +140,9 @@ export function clearChannelExtensionSessions(sql: ChannelExtensionSessionSql, p
   sql.exec("DELETE FROM channel_extension_named_sessions WHERE project_id=? AND installation_id=?", projectId, installationId);
   return Number(row?.count ?? 0);
 }
+
+/** Erases one installation's state for a conversation after the host resolves its internal ID. */
+export function clearChannelExtensionConversationSessions(sql: ChannelExtensionSessionSql, scope: ChannelExtensionSessionScope): void {
+  sql.exec("DELETE FROM channel_extension_sessions WHERE project_id=? AND installation_id=? AND conversation_id=?", scope.projectId, scope.installationId, scope.conversationId);
+  sql.exec("DELETE FROM channel_extension_named_sessions WHERE project_id=? AND installation_id=? AND conversation_id=?", scope.projectId, scope.installationId, scope.conversationId);
+}

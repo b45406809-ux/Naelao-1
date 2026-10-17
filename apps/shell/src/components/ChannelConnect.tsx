@@ -18,7 +18,7 @@ import * as React from "react";
 import { QrCode } from "@naelao/ui";
 import { ALLOWED_MODELS } from "@naelao/billing-core";
 import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelLink, ChannelPairing, ContainerInstallation, ExtensionRelease, SessionCredentials } from "@/lib/api";
-import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, takeOverChannelExtensionInboxEvent, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations } from "@/lib/api";
+import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
@@ -126,6 +126,7 @@ function ExtensionInbox({ spaceId, projectId, session, installation }: { spaceId
   const [cursor, setCursor] = React.useState<{ before: number; beforeId: string } | null>(null);
   const [loadingMore, setLoadingMore] = React.useState(false);
   const [takingOver, setTakingOver] = React.useState<string | null>(null);
+  const [deletingConversation, setDeletingConversation] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   React.useEffect(() => {
     let cancelled = false;
@@ -154,6 +155,17 @@ function ExtensionInbox({ spaceId, projectId, session, installation }: { spaceId
     } catch (err) { setError(err instanceof Error ? err.message : "Couldn't pause this conversation."); }
     finally { setTakingOver(null); }
   }
+  async function deleteConversation(eventId: string) {
+    if (deletingConversation || !window.confirm("Permanently delete this conversation's stored inbox history and extension session data? This does not delete messages held by the external provider.")) return;
+    setDeletingConversation(eventId); setError(null);
+    try {
+      await deleteChannelExtensionConversation(spaceId, projectId, installation.instance_id, eventId, session);
+      const page = await listChannelExtensionInbox(spaceId, projectId, installation.instance_id, session);
+      setEvents(page.events); setCursor(page.next_before !== null && page.next_before_id ? { before: page.next_before, beforeId: page.next_before_id } : null);
+      setPausedEvents(new Set());
+    } catch (err) { setError(err instanceof Error ? err.message : "Couldn't delete this conversation's stored data."); }
+    finally { setDeletingConversation(null); }
+  }
   return <details style={{ marginTop: 8 }}>
     <summary style={{ cursor: "pointer", fontSize: 11.5 }}>Recent customer inbox events ({events.length})</summary>
     {error && <div role="alert" style={{ color: "var(--danger, #b42318)", fontSize: 11, marginTop: 6 }}>{error}</div>}
@@ -166,6 +178,9 @@ function ExtensionInbox({ spaceId, projectId, session, installation }: { spaceId
       {(event.human_takeover || pausedEvents.has(event.event_id)) && <div role="status" style={{ marginTop: 5 }}>Automatic handling paused for this conversation. Reply through your connected provider inbox.</div>}
       <button type="button" className="btn-ghost" style={{ marginTop: 6, fontSize: 10.5 }} disabled={!!takingOver || event.human_takeover || pausedEvents.has(event.event_id) || event.status === "running" || event.status === "delivering"} onClick={() => void takeOver(event.event_id)}>
         {takingOver === event.event_id ? "Pausing…" : event.human_takeover || pausedEvents.has(event.event_id) ? "Bot paused" : "Pause bot for this conversation"}
+      </button>
+      <button type="button" className="btn-ghost" style={{ margin: "6px 0 0 6px", fontSize: 10.5 }} disabled={!!deletingConversation || event.status === "running" || event.status === "processing" || event.status === "delivering"} onClick={() => void deleteConversation(event.event_id)}>
+        {deletingConversation === event.event_id ? "Deleting…" : "Delete stored conversation data"}
       </button>
     </article>)}
     {cursor && <button type="button" className="btn-ghost" style={{ marginTop: 8, fontSize: 11 }} disabled={loadingMore} onClick={() => void loadMore()}>{loadingMore ? "Loading…" : "Load older events"}</button>}

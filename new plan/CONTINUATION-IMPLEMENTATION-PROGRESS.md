@@ -1148,3 +1148,10 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - The preview never renders arbitrary manifest fields or artifacts and explicitly states that server validation is authoritative. This helps FDEs and project owners see which Canvas, Gadget, workflow and external handler share one release boundary before confirming installation.
 - Verification: Shell `tsc --noEmit` and `git diff --check` passed. No browser flow was run.
 - Remaining major implementation gaps are per-installation provider authorization and credential lifecycle, Gadget data operations from Canvas/workflow, publisher identity signatures, other execution placements, end-user inbox reply/assignment actions, and provider acceptance of the Trading Mentor vertical slice.
+
+## Extension inbox follow-up — per-conversation deletion
+
+- Added owner/admin deletion by inbox event ID. The host resolves the internal conversation key only after checking the exact project and installation, then deletes that conversation's full local transcript, dispatch ledger, takeover state, and legacy/named extension session state. The API never returns the provider contact or conversation ID.
+- Deletion returns 409 while processing or provider delivery is active/uncertain, so a concurrent external action cannot be mistaken for erased state. The UI confirms that this removes Naelao's stored data and does not delete copies held by the provider.
+- Verification passed: Agents typecheck; focused inbox/session suites (11 tests); Shell typecheck; and `git diff --check`.
+- Inbox reply composition and assignment remain open; this action implements local data deletion only.

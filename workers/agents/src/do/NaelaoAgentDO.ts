@@ -4,7 +4,7 @@ import { executeGoalDag, type GoalDagJournal } from "../script-engine/goal-dag.j
 import { publishCompletedTask, type TaskPublication } from "../script-engine/task-publication.js";
 import { scheduleToolOutputExpiry } from "../script-engine/tool-output-expiry.js";
 import { attachmentToolsForRun } from "../media/attachment-capabilities.js";
-import { clearChannelExtensionSessions, initChannelExtensionSessionStore, readChannelExtensionSession, readChannelExtensionSessions, summarizeChannelExtensionSessions, writeChannelExtensionNamedSessions, writeChannelExtensionSession } from "../channels/channel-extension-session.js";
+import { clearChannelExtensionConversationSessions, clearChannelExtensionSessions, initChannelExtensionSessionStore, readChannelExtensionSession, readChannelExtensionSessions, summarizeChannelExtensionSessions, writeChannelExtensionNamedSessions, writeChannelExtensionSession } from "../channels/channel-extension-session.js";
 // ── NaelaoAgentDO — ReAct Agent Durable Object ───────────────────────────────
 // Fulfills G-D01 through G-D20: Agent runtime with ReAct loop, tool dispatch,
 // timeout watchdog, and SQLite-persisted run state.
@@ -1782,6 +1782,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
       if (method === "GET" && url.pathname === "/channels/extensions/inbox") return this.handleChannelExtensionInbox(url.searchParams);
       if (method === "POST" && url.pathname === "/channels/extensions/inbox/takeover") return this.handleChannelExtensionInboxTakeover(request);
+      if (method === "POST" && url.pathname === "/channels/extensions/inbox/delete-conversation") return this.handleChannelExtensionInboxDeleteConversation(request);
       if (method === "GET" && url.pathname === "/channels/extensions/session-state") {
         const projectId = url.searchParams.get("project_id") ?? "";
         const installationId = url.searchParams.get("installation_id") ?? "";
@@ -5651,6 +5652,35 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (event.status === "running" || event.status === "delivering") return Response.json({ error_code: "channel_extension_event_in_flight" }, { status: 409 });
     this.ctx.storage.sql.exec("UPDATE channel_sessions SET human_takeover=1 WHERE id=?", event.session_id);
     return Response.json({ human_takeover: true, paused_pending_reply: event.answered !== 1 });
+  }
+
+  private async handleChannelExtensionInboxDeleteConversation(request: Request): Promise<Response> {
+    const body = await request.json<{ project_id?: string; installation_id?: string; event_id?: string }>()
+      .catch(() => ({} as { project_id?: string; installation_id?: string; event_id?: string }));
+    const projectId = typeof body.project_id === "string" ? body.project_id : "";
+    const installationId = typeof body.installation_id === "string" ? body.installation_id : "";
+    const eventId = typeof body.event_id === "string" ? body.event_id : "";
+    if (!projectId || !installationId || !/^[A-Za-z0-9._:-]{1,160}$/.test(eventId)) return Response.json({ error_code: "channel_extension_inbox_scope_required" }, { status: 400 });
+    const event = this.ctx.storage.sql.exec(
+      `SELECT m.session_id,s.channel_user_id,m.answered,COALESCE(d.status,'queued') AS status
+       FROM channel_messages m JOIN channel_sessions s ON s.id=m.session_id
+       LEFT JOIN channel_extension_dispatches d ON d.message_id=m.id
+       WHERE m.id=? AND m.direction='inbound' AND m.project_id=? AND m.channel_extension_instance_id=? LIMIT 1`,
+      eventId, projectId, installationId,
+    ).toArray()[0] as { session_id: string; channel_user_id: string; answered: number; status: string } | undefined;
+    if (!event) return Response.json({ error_code: "channel_extension_event_not_found" }, { status: 404 });
+    const active = this.ctx.storage.sql.exec(
+      `SELECT 1 AS active FROM channel_messages m JOIN channel_extension_dispatches d ON d.message_id=m.id
+       WHERE m.session_id=? AND m.project_id=? AND m.channel_extension_instance_id=? AND d.status IN ('running','delivering') LIMIT 1`,
+      event.session_id, projectId, installationId,
+    ).toArray()[0];
+    if (active || event.status === "running" || event.status === "delivering" || event.answered === 2)
+      return Response.json({ error_code: "channel_extension_event_in_flight" }, { status: 409 });
+    this.ctx.storage.sql.exec("DELETE FROM channel_extension_dispatches WHERE message_id IN (SELECT id FROM channel_messages WHERE session_id=?)", event.session_id);
+    this.ctx.storage.sql.exec("DELETE FROM channel_messages WHERE session_id=?", event.session_id);
+    this.ctx.storage.sql.exec("DELETE FROM channel_sessions WHERE id=?", event.session_id);
+    clearChannelExtensionConversationSessions(this.ctx.storage.sql, { projectId, installationId, conversationId: event.channel_user_id });
+    return Response.json({ deleted: true });
   }
 
   private handleChannelUnanswered(): Response {

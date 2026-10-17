@@ -45,6 +45,25 @@ describe("channel extension inbox projection", () => {
     expect((await takeOver("event-c")).status).toBe(409);
   });
 
+  it("deletes one conversation transcript and extension state, but refuses active effects", async () => {
+    const storage = createDOStorage();
+    const agent = new NaelaoAgentDO({ storage, id: { toString: () => "agent" } } as never, { PLATFORM_SECRET: "test-platform-secret" } as never);
+    await agent.fetch(new Request("http://agent/channels/extensions/inbox?project_id=project-a&installation_id=install-a"));
+    storage.sql.exec("INSERT INTO channel_sessions(id,channel,channel_user_id,project_id) VALUES('session-a','whatsapp','student-a','project-a'),('session-b','whatsapp','student-b','project-a')");
+    storage.sql.exec("INSERT INTO channel_messages(id,session_id,direction,text,project_id,channel_extension_instance_id,created_at) VALUES('event-a','session-a','inbound','private transcript','project-a','install-a',20),('event-a2','session-a','inbound','older transcript','project-a','install-a',10),('event-b','session-b','inbound','other student','project-a','install-a',30)");
+    storage.sql.exec("INSERT INTO channel_extension_sessions(project_id,installation_id,conversation_id,state_json,state_bytes,expires_at,updated_at) VALUES('project-a','install-a','student-a','{}',2,9999999999999,1),('project-a','install-a','student-b','{}',2,9999999999999,1)");
+    storage.sql.exec("INSERT INTO channel_extension_named_sessions(project_id,installation_id,conversation_id,session_key,state_json,state_bytes,expires_at,updated_at) VALUES('project-a','install-a','student-a','lesson','{}',2,9999999999999,1)");
+    const remove = (eventId: string) => agent.fetch(new Request("http://agent/channels/extensions/inbox/delete-conversation", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ project_id: "project-a", installation_id: "install-a", event_id: eventId }) }));
+    storage.sql.exec("INSERT INTO channel_extension_dispatches(message_id,installation_id,script_sha256,status) VALUES('event-b','install-a','digest','running')");
+    expect((await remove("event-b")).status).toBe(409);
+    storage.sql.exec("DELETE FROM channel_extension_dispatches");
+    expect(await (await remove("event-a")).json()).toEqual({ deleted: true });
+    expect(storage.sql.exec("SELECT id FROM channel_sessions ORDER BY id").toArray()).toEqual([{ id: "session-b" }]);
+    expect(storage.sql.exec("SELECT id FROM channel_messages").toArray()).toEqual([{ id: "event-b" }]);
+    expect(storage.sql.exec("SELECT conversation_id FROM channel_extension_sessions").toArray()).toEqual([{ conversation_id: "student-b" }]);
+    expect(storage.sql.exec("SELECT conversation_id FROM channel_extension_named_sessions").toArray()).toEqual([]);
+  });
+
   it("bounds page size and requires project plus installation identity", async () => {
     const storage = createDOStorage();
     const agent = new NaelaoAgentDO({ storage, id: { toString: () => "agent" } } as never, { PLATFORM_SECRET: "test-platform-secret" } as never);

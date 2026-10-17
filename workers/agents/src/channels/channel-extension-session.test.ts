@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim.js";
-import { clearChannelExtensionSessions, initChannelExtensionSessionStore, readChannelExtensionSession, readChannelExtensionSessions, summarizeChannelExtensionSessions, writeChannelExtensionNamedSessions, writeChannelExtensionSession } from "./channel-extension-session.js";
+import { clearChannelExtensionConversationSessions, clearChannelExtensionSessions, initChannelExtensionSessionStore, readChannelExtensionSession, readChannelExtensionSessions, summarizeChannelExtensionSessions, writeChannelExtensionNamedSessions, writeChannelExtensionSession } from "./channel-extension-session.js";
 
 describe("external channel session storage", () => {
   it("isolates state by project, installation and opaque conversation ID", () => {
@@ -44,6 +44,17 @@ describe("external channel session storage", () => {
     expect(() => writeChannelExtensionNamedSessions(sql, { ...scope, updates: [{ sessionId: "../other", value: 1 }], maxBytes: 100, ttlDays: 2 }, now)).toThrow("channel_session_id_invalid");
     writeChannelExtensionNamedSessions(sql, { ...scope, updates: [{ sessionId: "live", value: null }], maxBytes: 100, ttlDays: 2 }, now + 2);
     expect(readChannelExtensionSessions(sql, scope, now + 3)).toEqual({ paper: { order: "sell" } });
+  });
+
+  it("deletes legacy and named state for exactly one conversation", () => {
+    const sql = createDOStorage().sql; initChannelExtensionSessionStore(sql);
+    const scope = { projectId: "project-a", installationId: "install-a", conversationId: "student-a" };
+    writeChannelExtensionSession(sql, { ...scope, value: { progress: 1 }, maxBytes: 100, ttlDays: 1 });
+    writeChannelExtensionNamedSessions(sql, { ...scope, updates: [{ sessionId: "lesson", value: { progress: 2 } }], maxBytes: 100, ttlDays: 1 });
+    writeChannelExtensionSession(sql, { ...scope, conversationId: "student-b", value: { progress: 3 }, maxBytes: 100, ttlDays: 1 });
+    clearChannelExtensionConversationSessions(sql, scope);
+    expect(readChannelExtensionSessions(sql, scope)).toEqual({});
+    expect(readChannelExtensionSession(sql, { ...scope, conversationId: "student-b" })).toEqual({ progress: 3 });
   });
 
   it("summarizes retention metadata and clears only one installation", () => {
