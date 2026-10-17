@@ -9,6 +9,23 @@ const cursor = <T>(rows: T[] = []) => ({
 });
 
 describe("isolated public dynamic pages", () => {
+  it("verifies the stored Canvas artifact before serving it", async () => {
+    const metadata = new Map<string, string>();
+    const sql = { exec(query: string, ...args: unknown[]) {
+      if (query.startsWith("INSERT OR REPLACE INTO gadget_metadata")) {
+        ["app_id", "scope", "gadget_tier", "html", "html_sha256"].forEach((key, index) => metadata.set(key, String(args[index])));
+      }
+      if (query.includes("SELECT value FROM gadget_metadata WHERE key = 'html'")) return cursor(metadata.has("html") ? [{ value: metadata.get("html")! }] : []);
+      if (query.includes("SELECT value FROM gadget_metadata WHERE key = ?")) return cursor(metadata.has(String(args[0])) ? [{ value: metadata.get(String(args[0]))! }] : []);
+      return cursor();
+    } };
+    const instance = new MicroAppDO({ storage: { sql, deleteAlarm: async () => undefined, setAlarm: async () => undefined } } as never, { PLATFORM_SECRET: "test-secret" });
+    await instance.fetch(new Request("https://do/initialize", { method: "POST", body: JSON.stringify({ appId: "canvas", scope: "PROJECT_BOUND", gadgetTier: 3, html: "<main>trusted</main>" }) }));
+    expect((await instance.fetch(new Request("https://do/app"))).status).toBe(200);
+    metadata.set("html", "<main>changed</main>");
+    expect((await instance.fetch(new Request("https://do/app"))).status).toBe(503);
+  });
+
   it("renders single-use signed actions and rejects replay or fields outside the published contract", async () => {
     const metadata = new Map<string, string>();
     const pages = new Map<string, { html: string; actions_json: string }>();
@@ -22,7 +39,7 @@ describe("isolated public dynamic pages", () => {
         const value = metadata.get(String(args[0])); return cursor(value ? [{ value }] : []);
       }
       if (query.startsWith("INSERT OR REPLACE INTO gadget_metadata")) {
-        metadata.set("app_id", String(args[0])); metadata.set("scope", String(args[1])); metadata.set("gadget_tier", String(args[2])); metadata.set("html", String(args[3]));
+        metadata.set("app_id", String(args[0])); metadata.set("scope", String(args[1])); metadata.set("gadget_tier", String(args[2])); metadata.set("html", String(args[3])); metadata.set("html_sha256", String(args[4]));
       }
       if (query.startsWith("INSERT INTO gadget_public_pages")) pages.set(String(args[0]), { html: String(args[1]), actions_json: String(args[2]) });
       if (query.includes("SELECT html,actions_json FROM gadget_public_pages")) {

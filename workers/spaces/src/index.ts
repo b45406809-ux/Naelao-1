@@ -18,6 +18,7 @@ import { registerBusinessRoutes } from "./business-routes.js";
 import { ALLOWED_MODELS, isAllowedModel, isValidEffortLevel, isPersonalPlanTier, PERSONAL_PLAN_LIMITS, type PersonalPlanTier } from "@naelao/billing-core";
 import { registerProjectMcpRoutes } from "./routes/mcp.js";
 import { registerGadgetMcpRoutes } from "./routes/gadget-mcp.js";
+import { gadgetActorId } from "./do/MicroAppDO.js";
 import { registerDynamicPageRoutes } from "./routes/dynamic-pages.js";
 import { registerRecipeRoutes } from "./routes/recipes.js";
 import { registerMarketplaceRoutes } from "./routes/marketplace.js";
@@ -1489,6 +1490,110 @@ app.post("/spaces/:spaceId/projects/:projectId/channel-extensions", async c => {
       gatekeeperCapabilities: ["channel.invoke"], artifactSha256, ...(body.upgrade === true ? { upgrade: true } : {}) }),
   }));
   return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
+});
+
+// Project bundle installation for Canvas + Gadget + external channel compositions. Workflow
+// primitives retain the Durable Workflow host contract and are rejected until artifacts can be
+// pinned and authorized there as part of this same release.
+app.use("/spaces/:spaceId/projects/:projectId/extensions", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use("/spaces/:spaceId/projects/:projectId/extensions", requireBusinessMembership({ POST: "admin" }));
+app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
+  const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId");
+  const denied = await requireManageableAutomationProject(c, spaceId, projectId);
+  if (denied) return denied;
+  const identity = getCallerIdentity(c);
+  const role = identity.role === "product_end_user" && identity.userId
+    ? await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, identity.userId) : identity.role;
+  if (role !== "owner" && role !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
+  const body = await c.req.json<{ manifest?: unknown; artifacts?: unknown; upgrade?: boolean }>().catch(() => ({} as { manifest?: unknown; artifacts?: unknown; upgrade?: boolean }));
+  if (body.upgrade !== undefined && body.upgrade !== true) return c.json({ error_code: "extension_upgrade_confirmation_invalid" }, 400);
+  let manifest: ReturnType<typeof validateExtensionManifest>;
+  try {
+    manifest = validateExtensionManifest(body.manifest, { gatekeeperCapabilities: ["extension.project_canvas"] });
+    const bundle = manifest.bundle;
+    const primitives = bundle?.primitives ?? [];
+    if (!bundle || !primitives.length || primitives.some(item => !["canvas", "gadget", "channel"].includes(item.kind))
+      || manifest.containers?.length || manifest.daemons.length || manifest.commands.length
+      || manifest.declaredPermissions.length || manifest.capabilityRequirements.length !== 1
+      || manifest.capabilityRequirements[0] !== "extension.project_canvas") throw new Error("project_bundle_must_be_canvas_or_gadget_only");
+    const providerAllowlist = new Set(["whatsapp", "telegram", "slack", "discord", "email"]);
+    const channels = bundle.primitives.filter(item => item.kind === "channel");
+    const requirements = bundle.connections ?? [];
+    if (channels.some(item => !providerAllowlist.has(item.provider) || !item.connectionId || !requirements.some(connection => connection.id === item.connectionId && connection.provider === item.provider && connection.required))
+      || requirements.some(connection => !providerAllowlist.has(connection.provider) || !channels.some(channel => channel.kind === "channel" && channel.connectionId === connection.id)))
+      throw new Error("channel_connections_must_be_declared_host_managed_and_used");
+    for (const primitive of primitives) {
+      if (primitive.kind === "canvas" && (primitive.layout !== "CanvasMount" || primitive.dynamicPage || primitive.permissions.length || primitive.capabilityRequirements.length))
+        throw new Error("canvas_requires_project_mount_and_no_unreviewed_capabilities");
+      if (primitive.kind === "gadget" && (primitive.scope !== "PROJECT_BOUND" || primitive.permissions.length || primitive.capabilityRequirements.length))
+        throw new Error("gadget_requires_project_bound_scope_and_no_unreviewed_capabilities");
+    }
+  } catch (error) {
+    return c.json({ error_code: "extension_bundle_invalid", message: error instanceof Error ? error.message : "invalid_manifest" }, 400);
+  }
+  const bundle = manifest.bundle!;
+  const canvases = bundle.primitives.filter((item): item is Extract<typeof item, { kind: "canvas" }> => item.kind === "canvas");
+  const gadgets = bundle.primitives.filter((item): item is Extract<typeof item, { kind: "gadget" }> => item.kind === "gadget");
+  const channels = bundle.primitives.filter((item): item is Extract<typeof item, { kind: "channel" }> => item.kind === "channel");
+  if (canvases.some(item => !/^\.\/[A-Za-z0-9._-]{1,128}\.html$/.test(item.component)) || (!canvases.length && !gadgets.length && !channels.length))
+    return c.json({ error_code: "extension_artifact_declaration_invalid" }, 400);
+  if (!body.artifacts || typeof body.artifacts !== "object" || Array.isArray(body.artifacts)) return c.json({ error_code: "extension_artifacts_required" }, 400);
+  const artifacts = body.artifacts as Record<string, unknown>, required = new Set([
+    ...canvases.map(item => item.component), ...channels.map(item => item.handlerScript),
+  ]);
+  if (channels.some(channel => !/^\.\/[A-Za-z0-9._-]{1,128}\.(?:ts|js)$/.test(channel.handlerScript))) return c.json({ error_code: "extension_channel_artifact_invalid" }, 400);
+  if (Object.keys(artifacts).length !== required.size || Object.keys(artifacts).some(path => !required.has(path))) return c.json({ error_code: "extension_artifacts_must_match_manifest" }, 400);
+  if (!c.env.SCRIPTS_R2) return c.json({ error_code: "extension_artifact_storage_unavailable" }, 503);
+  if (channels.length && !c.env.AGENTS_WORKER) return c.json({ error_code: "extension_channel_validator_unavailable" }, 503);
+  const sourceEntries: Array<[string, string]> = [];
+  let total = 0;
+  for (const path of [...required].sort()) {
+    const source = artifacts[path];
+    if (typeof source !== "string" || source.includes("\u0000")) return c.json({ error_code: "extension_artifact_invalid" }, 400);
+    const size = new TextEncoder().encode(source).byteLength; total += size;
+    const isHandler = /\.(?:ts|js)$/.test(path);
+    if (!size || size > (isHandler ? 262_144 : 512_000) || total > 2_000_000) return c.json({ error_code: "extension_artifact_size_limit" }, 413);
+    if (isHandler) {
+      const validation = await c.env.AGENTS_WORKER!.fetch(new Request("http://agents-worker/internal/channel-extensions/validate-handler", {
+        method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
+          "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) },
+        body: JSON.stringify({ source, language: path.endsWith(".js") ? "javascript" : "typescript" }),
+      }));
+      if (!validation.ok) return c.json({ error_code: "extension_channel_artifact_invalid", message: await validation.text().then(value => value.slice(0, 300)) }, 400);
+    }
+    const key = `spaces/${spaceId}/extensions/${bundle.id}/${bundle.version}/${path.slice(2)}`;
+    const previous = await c.env.SCRIPTS_R2.get(key);
+    if (previous && await previous.text() !== source) return c.json({ error_code: "extension_release_artifact_immutable" }, 409);
+    sourceEntries.push([path, source]);
+  }
+  // Persist immutable files before exposing any mounted app. Repeated installs are idempotent.
+  for (const [path, source] of sourceEntries) {
+    const key = `spaces/${spaceId}/extensions/${bundle.id}/${bundle.version}/${path.slice(2)}`;
+    if (!await c.env.SCRIPTS_R2.head(key)) await c.env.SCRIPTS_R2.put(key, source, { httpMetadata: { contentType: path.endsWith(".html") ? "text/html; charset=utf-8" : path.endsWith(".js") ? "text/javascript; charset=utf-8" : "text/typescript; charset=utf-8" } });
+  }
+  const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(sourceEntries))))].map(x => x.toString(16).padStart(2, "0")).join("");
+  const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
+  const installed = await stub.fetch(new Request("http://space-do/extensions", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ manifest, installedBy: identity.userId, tenantId: identity.tenantId, spaceId, projectId, scope: "PROJECT_BOUND", gatekeeperCapabilities: ["extension.project_canvas"], artifactSha256: digest, ...(body.upgrade ? { upgrade: true } : {}) }) }));
+  if (!installed.ok) return new Response(installed.body, { status: installed.status, headers: { "content-type": installed.headers.get("content-type") ?? "application/json" } });
+  for (const canvas of canvases) {
+    const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "PROJECT_BOUND", spaceId, projectId, appId: canvas.id });
+    const init = await c.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/initialize", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ appId: canvas.id, scope: "PROJECT_BOUND", gadgetTier: 3, html: artifacts[canvas.component] }) }));
+    if (!init.ok) return c.json({ error_code: "extension_canvas_initialize_failed", message: await init.text().then(value => value.slice(0, 300)) }, init.status as 400 | 409 | 500);
+  }
+  for (const gadget of gadgets) {
+    const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "PROJECT_BOUND", spaceId, projectId, appId: gadget.id });
+    const init = await c.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/initialize", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ appId: gadget.id, scope: "PROJECT_BOUND", gadgetTier: 2, defaultSchemaSql: gadget.schemaSql ?? "", migrations: gadget.migrations ?? [] }) }));
+    if (!init.ok) return c.json({ error_code: "extension_gadget_initialize_failed", message: await init.text().then(value => value.slice(0, 300)) }, init.status as 400 | 409 | 500);
+  }
+  if (canvases[0]) {
+    const update = await stub.fetch(new Request(`http://space-do/projects/${encodeURIComponent(projectId)}?tenant_id=${encodeURIComponent(identity.tenantId)}`, { method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ viewport_config: { component: "CanvasMount", resourceId: canvases[0].id } }) }));
+    if (!update.ok) return c.json({ error_code: "extension_canvas_mount_failed", installation: await installed.json(), message: await update.text().then(value => value.slice(0, 300)) }, 500);
+  }
+  return new Response(installed.body, { status: installed.status, headers: { "content-type": installed.headers.get("content-type") ?? "application/json" } });
 });
 
 app.use("/spaces/:spaceId/extension-releases/rollback", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));

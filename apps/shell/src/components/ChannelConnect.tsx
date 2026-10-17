@@ -18,7 +18,7 @@ import * as React from "react";
 import { QrCode } from "@naelao/ui";
 import { ALLOWED_MODELS } from "@naelao/billing-core";
 import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelLink, ChannelPairing, ExtensionRelease, SessionCredentials } from "@/lib/api";
-import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension } from "@/lib/api";
+import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
@@ -203,6 +203,9 @@ export function ChannelConnect({
   const [removingExtension, setRemovingExtension] = React.useState<string | null>(null);
   const [installScope, setInstallScope] = React.useState<"PROJECT_BOUND" | "PROJECT_SHARED">("PROJECT_BOUND");
   const [confirmUpgrade, setConfirmUpgrade] = React.useState(false);
+  const [canvasManifestDraft, setCanvasManifestDraft] = React.useState("");
+  const [canvasArtifactsDraft, setCanvasArtifactsDraft] = React.useState("");
+  const [canvasInstallConfirmed, setCanvasInstallConfirmed] = React.useState(false);
 
   React.useEffect(() => {
     if (!projectId || !canManage) { setExtensionInstallations([]); setExtensionLoadError(null); setExtensionsLoading(false); return; }
@@ -313,6 +316,22 @@ export function ChannelConnect({
     } finally { setInstallingExtension(false); }
   }
 
+  async function installCanvasBundle(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!projectId || installingExtension || !canvasManifestDraft.trim() || !canvasInstallConfirmed) return;
+    setInstallingExtension(true); setError(null);
+    try {
+      const manifest = JSON.parse(canvasManifestDraft) as unknown;
+      const artifacts = JSON.parse(canvasArtifactsDraft) as Record<string, string>;
+      const installed = await installProjectCanvasExtension(spaceId, projectId, session, manifest, artifacts, confirmUpgrade);
+      if (!installed.installed) throw new Error(installed.message ?? installed.error_code ?? "Canvas/Gadget package installation failed");
+      setCanvasManifestDraft(""); setCanvasArtifactsDraft(""); setCanvasInstallConfirmed(false); setConfirmUpgrade(false);
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't install this Canvas/Gadget package.");
+    } finally { setInstallingExtension(false); }
+  }
+
   async function uninstallChannelExtension(instanceId: string) {
     if (!projectId || removingExtension || !window.confirm("Uninstall this handler? It will be unbound from project channels and its saved conversation state will be deleted.")) return;
     setRemovingExtension(instanceId); setError(null);
@@ -366,6 +385,19 @@ export function ChannelConnect({
             <ExtensionInbox spaceId={spaceId} projectId={projectId} session={session} installation={installation} />
           </div>)}
         </div>
+      </details>}
+      {projectId && canManage && <details style={{ marginBottom: 12, padding: 12, border: "1px solid var(--border)", borderRadius: 8 }}>
+        <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Install a project Canvas/Gadget extension</summary>
+        <p style={{ fontSize: 11.5, color: "var(--text3)", margin: "8px 0" }}>This release can combine CanvasMount HTML, project-bound Gadget databases, and external channel handlers under one versioned extension ID. Channel handlers receive only the restricted external channel context. Workflow workers, containers, credential binding, and internal tool invocation are not yet supported by this installer. Review the manifest and every artifact before installing; the first Canvas becomes this project’s visible Canvas.</p>
+        <form onSubmit={installCanvasBundle} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <label style={{ fontSize: 11.5, color: "var(--text2)" }} htmlFor="canvas-extension-manifest">Composed bundle manifest</label>
+          <textarea id="canvas-extension-manifest" value={canvasManifestDraft} onChange={event => setCanvasManifestDraft(event.target.value)} rows={10} spellCheck={false} placeholder={'{"id":"ext_trading_mentor","type":"extension","declaredPermissions":[],"capabilityRequirements":["extension.project_canvas"],"gadgets":[],"daemons":[],"commands":[],"bundle":{"schemaVersion":"1.0","kind":"extension_bundle","id":"ext_trading_mentor","version":"1.0.0","primitives":[{"schemaVersion":"1.0","kind":"canvas","id":"mentor_canvas","version":"1.0.0","permissions":[],"capabilityRequirements":[],"lifecycle":{},"layout":"CanvasMount","component":"./index.html","dynamicPage":false}]}}'} style={{ width: "100%", boxSizing: "border-box", resize: "vertical", fontFamily: "monospace", fontSize: 11, background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 7, padding: 8 }} />
+          <label style={{ fontSize: 11.5, color: "var(--text2)" }} htmlFor="canvas-extension-artifacts">HTML artifacts as JSON path-to-source map</label>
+          <textarea id="canvas-extension-artifacts" value={canvasArtifactsDraft} onChange={event => setCanvasArtifactsDraft(event.target.value)} rows={8} spellCheck={false} placeholder={'{"./index.html":"<main>...</main>"}'} style={{ width: "100%", boxSizing: "border-box", resize: "vertical", fontFamily: "monospace", fontSize: 11, background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 7, padding: 8 }} />
+          <label style={{ display: "flex", gap: 7, alignItems: "center", fontSize: 11.5 }}><input type="checkbox" checked={canvasInstallConfirmed} onChange={event => setCanvasInstallConfirmed(event.target.checked)} />I reviewed the bundle declarations and all HTML/handler artifacts. Gadgets are project-bound; external channel handlers receive no planner, member-tool, or credential access.</label>
+          <label style={{ display: "flex", gap: 7, alignItems: "center", fontSize: 11.5 }}><input type="checkbox" checked={confirmUpgrade} onChange={event => setConfirmUpgrade(event.target.checked)} />Approve a forward version upgrade for this extension ID</label>
+          <div><button type="submit" className="btn-ghost" disabled={installingExtension || !canvasManifestDraft.trim() || !canvasInstallConfirmed}>{installingExtension ? "Installing…" : "Review and install Canvas bundle"}</button></div>
+        </form>
       </details>}
       {CHANNELS.map((ch) => {
         const link = byId.get(ch.id);

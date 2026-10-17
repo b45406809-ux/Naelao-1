@@ -1890,6 +1890,15 @@ export async function installProjectChannelExtension(
   });
 }
 
+export async function installProjectCanvasExtension(
+  spaceId: string, projectId: string, session: SessionCredentials, manifest: unknown,
+  artifacts: Record<string, string>, upgrade = false,
+): Promise<{ installed?: boolean; installationId?: string; error_code?: string; message?: string }> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extensions`, {
+    method: "POST", body: JSON.stringify({ manifest, artifacts, ...(upgrade ? { upgrade: true } : {}) }), session,
+  });
+}
+
 /** Connect a channel, or turn one off/back on. Owner/admin only, enforced server-side. */
 /** What the server hands back for action:"pair" — a link to open (or scan) plus human steps. */
 export interface ChannelPairing {

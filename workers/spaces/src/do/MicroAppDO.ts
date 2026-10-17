@@ -81,7 +81,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     const url = new URL(request.url);
     try {
       if (request.method === "POST" && url.pathname === "/initialize") return await this.initialize(request);
-      if (request.method === "GET" && url.pathname === "/app") return this.renderApp();
+      if (request.method === "GET" && url.pathname === "/app") return await this.renderApp();
       if (request.method === "POST" && url.pathname === "/page/publish") return await this.publishPage(request);
       if (request.method === "GET" && url.pathname === "/page/render") return await this.renderPublicPage(url);
       if (request.method === "POST" && url.pathname === "/page/action") return await this.submitPublicAction(request, url);
@@ -240,6 +240,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     }
     const html = body.html ?? `<main id="app" data-naelao-gadget="${body.appId}"></main>`;
     if (typeof html !== "string" || new TextEncoder().encode(html).byteLength > 512_000) throw new Error("gadget_bundle_too_large");
+    const htmlSha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(html)))].map(byte => byte.toString(16).padStart(2, "0")).join("");
     const apply = () => {
       for (const statement of validDdl(body.defaultSchemaSql ?? "")) this.ctx.storage.sql.exec(statement);
       for (const migration of migrations) {
@@ -248,7 +249,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
         for (const statement of validDdl(migration.up, true)) this.ctx.storage.sql.exec(statement);
         this.ctx.storage.sql.exec("INSERT INTO gadget_schema_migrations(version,description) VALUES(?,?)", migration.version, migration.description);
       }
-      this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES ('app_id',?),('scope',?),('gadget_tier',?),('html',?)", body.appId, body.scope, String(body.gadgetTier), html);
+    this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES ('app_id',?),('scope',?),('gadget_tier',?),('html',?),('html_sha256',?)", body.appId, body.scope, String(body.gadgetTier), html, htmlSha256);
     };
     if ((body.defaultSchemaSql || migrations.length) && typeof this.ctx.storage.transactionSync === "function") this.ctx.storage.transactionSync(apply);
     else if (body.defaultSchemaSql || migrations.length) throw new Error("atomic_gadget_migration_unavailable");
@@ -256,9 +257,13 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     return Response.json({ initialized: true, appId: body.appId, scope: body.scope, gadgetTier: body.gadgetTier }, { status: 201 });
   }
 
-  private renderApp(): Response {
+  private async renderApp(): Promise<Response> {
     const row = [...this.ctx.storage.sql.exec<{ value: string }>("SELECT value FROM gadget_metadata WHERE key = 'html'")][0];
     if (!row) return Response.json({ error: "gadget_not_initialized" }, { status: 404 });
+    const expected = this.metadata("html_sha256");
+    const actual = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(row.value)))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    if (!expected || !/^[a-f0-9]{64}$/.test(expected) || expected !== actual)
+      return Response.json({ error: "gadget_artifact_integrity_failed" }, { status: 503 });
     return new Response(row.value, { headers: {
       "content-type": "text/html; charset=utf-8",
       "content-security-policy": "default-src 'none'; script-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'self'",

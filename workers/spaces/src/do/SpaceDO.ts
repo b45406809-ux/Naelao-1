@@ -6289,6 +6289,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         execution_ceiling?: number;
         daily_spend_cap_credits?: number;
         channel_config?: Record<string, unknown>;
+        /** Host-managed extension viewport binding. Extension installers may set only the
+         * CanvasMount resource; callers cannot use this field to change project ownership. */
+        viewport_config?: Record<string, unknown>;
         name?: string;
         description?: string;
         show_sub_threads?: boolean;
@@ -6385,6 +6388,18 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
     if (body.lead_user_id !== undefined) {
       execute(this.ctx.storage.sql as never, "UPDATE projects SET lead_user_id = ? WHERE id = ?", body.lead_user_id?.trim() || null, projectId);
+    }
+    if (body.viewport_config !== undefined) {
+      if (!body.viewport_config || typeof body.viewport_config !== "object" || Array.isArray(body.viewport_config)
+        || Object.keys(body.viewport_config).some(key => !["component", "resourceId", "canvasPrimary", "copilotPlacement", "mount", "tab"].includes(key))
+        || (body.viewport_config.component !== undefined && body.viewport_config.component !== "CanvasMount")
+        || (body.viewport_config.resourceId !== undefined && (typeof body.viewport_config.resourceId !== "string" || !/^[a-z][a-z0-9_-]{1,63}$/.test(body.viewport_config.resourceId)))
+        || (body.viewport_config.component === "CanvasMount" && typeof body.viewport_config.resourceId !== "string")) {
+        return Response.json({ error_code: "bad_request", message: "Invalid extension viewport binding" }, { status: 400 });
+      }
+      const current = queryOne<{ viewport_config: string }>(this.ctx.storage.sql as never, "SELECT viewport_config FROM projects WHERE id=?", projectId);
+      const next = { ...safeJsonParseObj(current?.viewport_config ?? "{}"), ...body.viewport_config };
+      execute(this.ctx.storage.sql as never, "UPDATE projects SET viewport_config=? WHERE id=?", JSON.stringify(next), projectId);
     }
     if (body.lifecycle !== undefined) {
       if (body.lifecycle !== "finite" && body.lifecycle !== "continuous") {

@@ -1,5 +1,13 @@
 # Continuation implementation progress
 
+## Composed project Canvas/Gadget/channel installer checkpoint (2026-10-17)
+
+- Added an owner/admin project package install route for one versioned bundle containing CanvasMount HTML, project-bound Gadget databases, and external channel handler scripts. The route requires exact artifact-to-manifest path matching, immutable R2 release paths, source validation for channel handlers, supported provider declarations with required host-managed connection references, and explicit upgrade opt-in. It rejects package-declared permissions/capabilities, containers, daemon/workflow and command entries; it does not alter planner topology.
+- Canvas and Gadget actors initialize under the existing project-bound MicroApp DO IDs. The first Canvas is saved into validated project `viewport_config` and mounted through the existing project-scoped Canvas route. MicroApp HTML is hashed when initialized and checked again before each render; tampering returns 503.
+- Added an owner-review Shell form that shows the supported package boundary and requires review confirmation before installation, plus an API helper.
+- Verification: Shell and Spaces TypeScript checks passed; 4 focused Spaces files / 16 tests passed (package/runtime install, project Gadget route, migration replay, Canvas artifact integrity); `git diff --check` passed.
+- Remaining: provider connection requirements are declarations only and are not yet bound to per-installation OAuth/credential records; the current installer does not expose per-user or multiple named extension instances; Durable Workflow artifacts are not yet installed from a bundle; internal worker roles/tools are not invokable under package grants; extension release HMAC remains host acceptance evidence rather than publisher identity, and the Canvas byte hash is a DO integrity check rather than verification against the release record at every load. The Shell upload form is an admin-only package form and does not yet provide a complete review diff or installed mixed-package inventory. Continue with canonical artifact/release verification, then provider connection/instance lifecycle and workflow invocation without changing planner topology.
+
 ## Extension product lifecycle checkpoint (2026-10-17)
 
 - Added SpaceDO migration 84 with immutable `extension_releases` records keyed by package/version. Every installed modular bundle records its manifest, aggregate source artifact SHA-256, installer, timestamp, and HMAC-SHA256 host attestation using `PLATFORM_SECRET`. The attestation establishes that this deployment accepted those exact recorded bytes; it does not assert a developer identity or replace an asymmetric marketplace signature.
