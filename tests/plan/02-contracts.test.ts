@@ -21,7 +21,7 @@ const base = {
 const manifests: ExtensionPrimitiveManifest[] = [
   { ...base, kind: "gadget", id: "gadget.notes", scope: "PROJECT_BOUND", schemaSql: "CREATE TABLE notes (id TEXT PRIMARY KEY)" },
   { ...base, kind: "canvas", id: "canvas.notes", layout: "CanvasMount", component: "src/notes.tsx", dynamicPage: true },
-  { ...base, kind: "channel", id: "channel.email", provider: "email", handlerScript: "src/channel.ts", context: "channel_only", inboundEvents: ["message.received"], outboundEvents: ["message.send"] },
+  { ...base, kind: "channel", id: "channel.email", provider: "email", handlerScript: "./channel.ts", context: "channel_only", inboundEvents: ["message.received"], outboundEvents: ["message.reply"], permissions: [], capabilityRequirements: [] },
   { ...base, kind: "container", id: "container.worker", image: "registry.example/test@sha256:" + "a".repeat(64), resources: { memoryMb: 128, cpuCores: 1, timeoutSeconds: 30 }, exportedBinaries: ["run"] },
   { ...base, kind: "linter", id: "linter.policy", mode: "deterministic", entry: "src/lint.ts", failureMode: "block" },
   { ...base, kind: "workflow", id: "workflow.sync", executionMode: "headless", steps: ["src/steps/sync.ts"], toolNames: ["project.read"] },
@@ -49,8 +49,8 @@ describe("Step 02 versioned extension contracts", () => {
 
   it("exposes a thin SDK context and channel/testing subpaths", () => {
     expect(createSdkContext({ spaceId: "space-1", projectId: "project-1", extensionId: "gadget.notes", scope: "PROJECT_BOUND" }).spaceId).toBe("space-1");
-    const adapter: ChannelAdapter = { manifest: manifests[2] as Extract<ExtensionPrimitiveManifest, { kind: "channel" }>, receive: async () => [], send: async () => undefined };
-    expect(defineChannelAdapter(adapter).manifest.kind).toBe("channel");
+    const adapter: ChannelAdapter = manifests[2] as Extract<ExtensionPrimitiveManifest, { kind: "channel" }>;
+    expect(defineChannelAdapter(adapter).kind).toBe("channel");
     expect(serializeExtensionPrimitive(manifests[0])).toContain('"schemaVersion":"1.0"');
   });
 

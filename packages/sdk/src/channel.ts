@@ -1,9 +1,24 @@
-import type { ChannelContract } from "@naelao/agent-sdk";
+import { parseExtensionPrimitive, type ChannelContract, type ChannelOnlyExtensionContext } from "@naelao/agent-sdk";
 
-export interface ChannelInboundEvent<T = unknown> { readonly name: string; readonly payload: T; readonly receivedAt: string; }
-export interface ChannelOutboundEvent<T = unknown> { readonly name: string; readonly payload: T; }
-export interface ChannelAdapter { readonly manifest: ChannelContract; receive(): Promise<readonly ChannelInboundEvent[]>; send(event: ChannelOutboundEvent): Promise<void>; }
-export function defineChannelAdapter(adapter: ChannelAdapter): Readonly<ChannelAdapter> {
-  if (!adapter?.manifest || typeof adapter.receive !== "function" || typeof adapter.send !== "function") throw new Error("invalid_channel_adapter");
-  return Object.freeze(adapter);
+/** The verified provider adapter belongs to Naelao's host, not to an installed extension. */
+export type ChannelAdapter = ChannelContract;
+
+/**
+ * Type for the `export async function run(args, ctx)` entrypoint referenced by
+ * `ChannelContract.handlerScript`. The host constructs this context after validating the
+ * provider webhook and installation binding. It does not contain credentials, member identity,
+ * project APIs, or arbitrary tools.
+ */
+export interface ChannelHandlerModule {
+  run(args: Readonly<Record<string, unknown>>, ctx: ChannelOnlyExtensionContext): unknown | Promise<unknown>;
 }
+
+/**
+ * Validate and freeze a declarative channel contract. This does not connect to a provider,
+ * register a webhook, or expose OAuth tokens; those are host-managed connection operations.
+ */
+export function defineChannelAdapter(value: ChannelContract): Readonly<ChannelContract> {
+  return Object.freeze(parseExtensionPrimitive(value) as ChannelContract);
+}
+
+export type { ChannelContract, ChannelOnlyExtensionContext };

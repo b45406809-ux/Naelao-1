@@ -1,7 +1,8 @@
 import type { RuntimeScope } from "@naelao/agent-sdk";
 
 export * from "@naelao/agent-sdk";
-export type { ChannelInboundEvent, ChannelOutboundEvent, ChannelAdapter } from "./channel.js";
+export { defineChannelAdapter } from "./channel.js";
+export type { ChannelAdapter, ChannelContract, ChannelOnlyExtensionContext, ChannelHandlerModule } from "./channel.js";
 
 export interface SdkContext {
   readonly spaceId: string;

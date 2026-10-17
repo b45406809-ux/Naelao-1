@@ -14,6 +14,19 @@ Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, recon
 
 ## Sequence
 
+### 0. Composable FDE package model and mentor-bot vertical slice
+
+**Status:** architecture audit documented in [`FDE-EXTENSIONS-AND-MICROAPPS-ARCHITECTURE.md`](./FDE-EXTENSIONS-AND-MICROAPPS-ARCHITECTURE.md). The just-pushed public channel dispatcher covers handler identity, a restricted context and bounded reply; it does not yet make a production mentor knowledge bot. No end-to-end provider onboarding or FDE bundle path is claimed.
+
+1. Unify the canonical package model, SDK, compiler, installer and runtime records. The FDE manifest must compose Canvas/Gadget, worker or command, channel handler, workflow, knowledge sources and required connections without conflating execution tier with authority. Preserve legacy manifests through explicit versioned migration.
+2. Build a host-managed provider connection lifecycle one verified provider at a time. The package declares the provider requirement; host setup owns OAuth or the provider's actual configuration flow, scopes, callback, encrypted credential, webhook, refresh/revocation and disconnect. The extension never receives connector secrets or owns webhook transport.
+3. Add owner-published, project-scoped Knowledge collections. Uploading a project file is private by default. A channel installation may query only named published collections through a bounded search API; retrieved content is marked untrusted and source-attributed. Planner upload and Mentor Console upload use the same canonical Knowledge route.
+4. Add a public-channel principal and bounded optional conversation-session API. Use opaque server-derived subjects, project sharding, TTL, per-project/per-subject limits, retention and deletion. Do not expose member IDs, raw SQL, Gadget actor IDs, unrestricted project files, or one Durable Object per external phone number.
+5. Compose the mentor Console (private Canvas), Gadget settings/review state, published Knowledge, WhatsApp connection, external text handler, and optional event workflow as one owner-reviewed project-template installation. Make disabled/unconnected/failed components visible; no implicit fallback to the planner.
+6. Prove the vertical slice with distinct mentor/admin, project-member, external-student, disconnected and revoked principals. A student can only query published course material and their own explicitly enabled session state. External channel events cannot invoke member tools, internal planner, another student's state, private files, or cross-project data.
+
+The earlier `@naelao/sdk/channel` `receive/send` API mismatch was corrected in the current follow-up: `ChannelAdapter` is now declarative and `ChannelHandlerModule` types the host-invoked restricted `run(args, ctx)` entrypoint. A canonical bundle compiler/build/install path still must tie that entrypoint to a signed package artifact. The existing legacy customer-bot Knowledge tool is Space-wide and is not a safe substitute for a project collection grant.
+
 ### 1. Language preference and end-to-end language handling
 
 **Status:** implemented and locally verified. Platform-member and product-end-user preferences are isolated, authenticated, editable/clearable, and carried to the planner; translation quality remains unverified and is not claimed.
