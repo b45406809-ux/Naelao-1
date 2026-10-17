@@ -1269,3 +1269,8 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 
 - Added a per-message quota decision ledger in SpaceDO. Each external message event is allowed or denied once; retries with the same event ID return the original result and do not increment usage a second time. Sender digests, project/install/provider/day, cap and resulting count are retained for 30 days, then pruned.
 - Verification: Agents and Spaces typechecks passed; quota and real SpaceDO integration suites passed (15 tests), including event replay; `git diff --check` passed.
+
+### Phase 4 quota exhaustion alert checkpoint (2026-10-17)
+
+- A sender that keeps messaging after reaching the daily cap still enters human takeover, but generates at most one owner notification per sender/extension/provider/day. Each over-limit event retains its own replay-safe allow/deny decision. This prevents a single abusive sender from flooding the owner inbox while preserving the audit and handoff state.
+- Verification: Agents and Spaces typechecks passed; external quota and SpaceDO integration suites passed (15 tests); `git diff --check` passed.

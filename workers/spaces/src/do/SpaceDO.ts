@@ -2119,6 +2119,12 @@ const MIGRATIONS: Migration[] = [
     );
     CREATE INDEX idx_project_external_quota_decisions_day ON project_external_quota_decisions(day);`,
   },
+  {
+    version: 89,
+    description: "deduplicate owner alerts when external channel sender limits are exceeded",
+    up: `ALTER TABLE project_external_quota_usage ADD COLUMN owner_notified_at INTEGER;
+    ALTER TABLE project_external_quota_decisions ADD COLUMN owner_notified INTEGER NOT NULL DEFAULT 0 CHECK(owner_notified IN (0,1));`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */

@@ -7844,9 +7844,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
 
       if (msg.channel_extension_instance_id || msg.channel_extension_sha256) {
-        const takeover = (reason: string) => {
+        const takeover = (reason: string, notifyOwner = true) => {
           this.ctx.storage.sql.exec("UPDATE channel_sessions SET human_takeover=1 WHERE id=?", msg.session_id);
-          void this.createSpaceNotification(spaceId, tenantId, {
+          if (notifyOwner) void this.createSpaceNotification(spaceId, tenantId, {
             kind: "channel_extension_review_required",
             title: `An inbound ${msg.channel} conversation needs human review`,
             body: reason,
@@ -7880,13 +7880,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             { method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
               body: JSON.stringify({ event_id: msg.id, installation_id: msg.channel_extension_instance_id, provider: msg.channel, subject_hash: subjectHash }) },
           ));
-          const quotaResult = quota.ok ? await quota.json<{ allowed?: boolean; daily_cap?: number }>() : null;
+          const quotaResult = quota.ok ? await quota.json<{ allowed?: boolean; daily_cap?: number; notifyOwner?: boolean }>() : null;
           if (quotaResult?.allowed !== true) {
             this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code=? WHERE message_id=?",
               quotaResult?.daily_cap ? "external_daily_message_cap" : "external_quota_unavailable", msg.id);
             takeover(quotaResult?.daily_cap
               ? `This sender reached the project's daily message limit of ${quotaResult.daily_cap}. The extension did not process this message; review the conversation or raise the project limit.`
-              : "The project's external message limit could not be verified. The extension did not process this message; review the conversation manually.");
+              : "The project's external message limit could not be verified. The extension did not process this message; review the conversation manually.",
+              quotaResult?.daily_cap ? quotaResult.notifyOwner === true : true);
             escalated++; continue;
           }
         } catch {
