@@ -551,8 +551,8 @@ export default function ProjectDetailPage() {
           <CardValue>{agents.length}</CardValue>
         </Card>
         <Card interactive={false}>
-          <CardLabel>Default agent</CardLabel>
-          <CardValue><span style={{ fontSize: 14 }}>{agents.find((a) => a.id === project.default_agent_id)?.name ?? "Space default"}</span></CardValue>
+          <CardLabel>Project Bot planner</CardLabel>
+          <CardValue><span style={{ fontSize: 14 }}>{agents.find((a) => a.id === project.default_agent_id)?.name ?? "Project Bot default"}</span></CardValue>
         </Card>
         <Card interactive={false}>
           <CardLabel>Last activity</CardLabel>
@@ -618,7 +618,7 @@ export default function ProjectDetailPage() {
               {a.description && <div className="card-desc">{a.description}</div>}
               {a.id === project.default_agent_id && (
                 <div style={{ marginTop: 8 }}>
-                  <span className="badge badge-green"><span className="badge-dot" />Default</span>
+                  <span className="badge badge-green"><span className="badge-dot" />Project Bot planner</span>
                 </div>
               )}
               {creds && (
@@ -692,11 +692,11 @@ export default function ProjectDetailPage() {
         </div>
         <div className="settings-row">
           <div>
-            <div className="settings-row-label">Default agent</div>
-            <div className="settings-row-sub">Used when a thread doesn't pick one explicitly</div>
+            <div className="settings-row-label">Project Bot planner</div>
+            <div className="settings-row-sub">The project-scoped planner used by new project threads by default</div>
           </div>
           <FormSelect value={draftDefaultAgentId} onChange={(e) => setDraftDefaultAgentId(e.target.value)} style={{ maxWidth: 220 }}>
-            <option value="">Space default</option>
+            <option value="">Project Bot default</option>
             {agents.map((a) => (
               <option key={a.id} value={a.id}>
                 {a.name ?? a.id}

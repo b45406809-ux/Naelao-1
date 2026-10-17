@@ -45,6 +45,7 @@ const SIDEBAR_RECENT_PROJECT_THREADS = 15;
 
 const DEFAULT_PRIMARY_NAV: SidebarNavEntry[] = [
   { key: "dashboard", icon: "assistant", label: "Dashboard" },
+  { key: "bots", icon: "agents", label: "Bots" },
   { key: "spaces", icon: "spaces", label: "Discover" },
   { key: "projects", icon: "projects", label: "Projects" },
 ];
