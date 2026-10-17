@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim.js";
-import { initChannelExtensionSessionStore, readChannelExtensionSession, writeChannelExtensionSession } from "./channel-extension-session.js";
+import { clearChannelExtensionSessions, initChannelExtensionSessionStore, readChannelExtensionSession, summarizeChannelExtensionSessions, writeChannelExtensionSession } from "./channel-extension-session.js";
 
 describe("external channel session storage", () => {
   it("isolates state by project, installation and opaque conversation ID", () => {
@@ -33,5 +33,21 @@ describe("external channel session storage", () => {
     expect(() => writeChannelExtensionSession(sql, { ...scope, value: { text: "😊" }, maxBytes: 5, ttlDays: 1 })).toThrow("channel_session_size_limit");
     expect(() => writeChannelExtensionSession(sql, { ...scope, value: { ok: true }, maxBytes: 100, ttlDays: 91 })).toThrow("channel_session_ttl_invalid");
     expect(readChannelExtensionSession(sql, scope)).toBeNull();
+  });
+
+  it("summarizes retention metadata and clears only one installation", () => {
+    const sql = createDOStorage().sql;
+    initChannelExtensionSessionStore(sql);
+    const now = 1_800_000_000_000;
+    writeChannelExtensionSession(sql, { projectId: "project-a", installationId: "install-a", conversationId: "student-secret", value: { private: "answer" }, maxBytes: 100, ttlDays: 2 }, now);
+    writeChannelExtensionSession(sql, { projectId: "project-a", installationId: "install-b", conversationId: "other", value: { private: "other" }, maxBytes: 100, ttlDays: 2 }, now);
+    expect(summarizeChannelExtensionSessions(sql, "project-a", "install-a", now)).toMatchObject({
+      activeConversations: 1,
+      storedBytes: new TextEncoder().encode('{"private":"answer"}').byteLength,
+      nextExpiryAt: now + 2 * 86_400_000,
+    });
+    expect(clearChannelExtensionSessions(sql, "project-a", "install-a")).toBe(1);
+    expect(summarizeChannelExtensionSessions(sql, "project-a", "install-a", now).activeConversations).toBe(0);
+    expect(readChannelExtensionSession(sql, { projectId: "project-a", installationId: "install-b", conversationId: "other" }, now)).toEqual({ private: "other" });
   });
 });

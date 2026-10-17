@@ -18,7 +18,7 @@ import * as React from "react";
 import { QrCode } from "@naelao/ui";
 import { ALLOWED_MODELS } from "@naelao/billing-core";
 import type { ChannelExtensionInstallation, ChannelLink, ChannelPairing, SessionCredentials } from "@/lib/api";
-import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, installProjectChannelExtension } from "@/lib/api";
+import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, installProjectChannelExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
@@ -77,6 +77,48 @@ export const CHANNELS: Array<{
     where: "Your inbound email provider's webhook settings (e.g. Mailgun signing key)",
   },
 ];
+
+function ExtensionSessionControls({ spaceId, projectId, session, installation }: {
+  spaceId: string; projectId: string; session: SessionCredentials; installation: ChannelExtensionInstallation;
+}) {
+  const enabled = installation.channels.some(channel => channel.session?.enabled);
+  const [summary, setSummary] = React.useState<{ activeConversations: number; storedBytes: number; nextExpiryAt: number | null } | null>(null);
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const [notice, setNotice] = React.useState<string | null>(null);
+  const refresh = React.useCallback(async () => {
+    const value = await getChannelExtensionSessionSummary(spaceId, projectId, installation.instance_id, session);
+    setSummary(value);
+  }, [spaceId, projectId, installation.instance_id, session]);
+  React.useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    getChannelExtensionSessionSummary(spaceId, projectId, installation.instance_id, session)
+      .then(value => { if (!cancelled) setSummary(value); })
+      .catch(err => { if (!cancelled) setError(err instanceof Error ? err.message : "Couldn't load retention status."); });
+    return () => { cancelled = true; };
+  }, [enabled, spaceId, projectId, installation.instance_id, session]);
+  if (!enabled) return null;
+  async function clear() {
+    if (busy || !window.confirm("Delete all saved conversation state for this extension in this project? Message history is not deleted.")) return;
+    setBusy(true); setError(null); setNotice(null);
+    try {
+      const result = await clearChannelExtensionSessionState(spaceId, projectId, installation.instance_id, session);
+      await refresh();
+      setNotice(`Deleted saved state for ${result.deletedConversations} conversation${result.deletedConversations === 1 ? "" : "s"}.`);
+    } catch (err) { setError(err instanceof Error ? err.message : "Couldn't clear saved state."); }
+    finally { setBusy(false); }
+  }
+  return <div style={{ marginTop: 8, fontSize: 11.5, color: "var(--text2)" }}>
+    <span>Conversation state: {summary ? `${summary.activeConversations} active · ${summary.storedBytes} bytes` : "loading…"}</span>
+    {summary?.nextExpiryAt && <span> · earliest expiry {new Date(summary.nextExpiryAt).toLocaleDateString()}</span>}
+    <button type="button" className="btn-ghost" style={{ marginLeft: 8, fontSize: 11 }} disabled={busy || !summary?.activeConversations} onClick={() => void clear()}>
+      {busy ? "Clearing…" : "Clear saved state"}
+    </button>
+    {error && <span role="alert" style={{ display: "block", color: "var(--danger, #b42318)" }}>{error}</span>}
+    {notice && <span role="status" style={{ display: "block" }}>{notice}</span>}
+  </div>;
+}
 
 export function ChannelConnect({
   spaceId,
@@ -246,6 +288,15 @@ export function ChannelConnect({
             style={{ width: "100%", boxSizing: "border-box", resize: "vertical", fontFamily: "monospace", fontSize: 11, background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 7, padding: 8 }} />
           <div><button type="submit" className="btn-ghost" disabled={installingExtension || !installManifestDraft.trim()}>{installingExtension ? "Installing…" : "Validate and install"}</button></div>
         </form>
+        <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+          <div style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 6 }}>Installed project handlers</div>
+          {extensionsLoading && <div role="status" style={{ fontSize: 11, color: "var(--text3)" }}>Loading installed handlers…</div>}
+          {!extensionsLoading && extensionInstallations.length === 0 && <div style={{ fontSize: 11, color: "var(--text3)" }}>No channel handlers installed.</div>}
+          {extensionInstallations.map(installation => <div key={installation.instance_id} style={{ padding: "7px 0", borderTop: "1px solid var(--border)" }}>
+            <div style={{ fontSize: 11.5 }}>{installation.name} · {installation.scope === "PROJECT_SHARED" ? "shared" : "project"}</div>
+            <ExtensionSessionControls spaceId={spaceId} projectId={projectId} session={session} installation={installation} />
+          </div>)}
+        </div>
       </details>}
       {CHANNELS.map((ch) => {
         const link = byId.get(ch.id);

@@ -1487,6 +1487,24 @@ app.post("/spaces/:spaceId/projects/:projectId/channel-extensions", async c => {
   return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
 });
 
+app.use("/spaces/:spaceId/projects/:projectId/channel-extensions/:instanceId/session-state", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use("/spaces/:spaceId/projects/:projectId/channel-extensions/:instanceId/session-state", requireBusinessMembership({ GET: "admin", DELETE: "admin" }));
+app.on(["GET", "DELETE"], "/spaces/:spaceId/projects/:projectId/channel-extensions/:instanceId/session-state", async c => {
+  const { spaceId, projectId, instanceId } = c.req.param();
+  const denied = await requireManageableAutomationProject(c, spaceId, projectId);
+  if (denied) return denied;
+  if (!c.env.AGENTS_WORKER) return c.json({ error_code: "channel_session_controls_unavailable" }, 503);
+  const identity = getCallerIdentity(c);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized" }, 401);
+  const response = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/channel-extensions/session-state", {
+    method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+    body: JSON.stringify({ spaceId, projectId, installationId: instanceId, action: c.req.method === "DELETE" ? "clear" : "summary" }),
+  }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
+});
+
 app.use("/internal/spaces/:spaceId/projects/:projectId/extensions/:extensionId/active", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
 app.get("/internal/spaces/:spaceId/projects/:projectId/extensions/:extensionId/active", async (c) => {
   const extensionId = c.req.param("extensionId");

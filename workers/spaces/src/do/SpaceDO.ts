@@ -2707,11 +2707,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           "SELECT i.instance_id,i.extension_id,i.scope,e.manifest_json FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.tenant_id=? AND i.space_id=? AND i.project_id=? AND i.scope IN ('PROJECT_BOUND','PROJECT_SHARED') AND i.status='active' ORDER BY i.installed_at",
           url.searchParams.get("tenant_id"), url.searchParams.get("space_id"), projectId);
         const installations = rows.flatMap(row => {
-          const manifest = JSON.parse(row.manifest_json) as { id?: string; bundle?: { connections?: Array<{ id?: string; provider?: string; purpose?: string; required?: boolean }> }; channels?: Array<{ kind?: string; id?: string; provider?: string; connectionId?: string; handlerScript?: string }> };
+          const manifest = JSON.parse(row.manifest_json) as { id?: string; bundle?: { connections?: Array<{ id?: string; provider?: string; purpose?: string; required?: boolean }> }; channels?: Array<{ kind?: string; id?: string; provider?: string; connectionId?: string; handlerScript?: string; session?: { enabled?: boolean; maxBytes?: number; ttlDays?: number } }> };
           const channels = (manifest.channels ?? []).filter(channel => channel.kind === "channel");
           return channels.length ? [{ instance_id: row.instance_id, extension_id: row.extension_id, scope: row.scope,
             name: manifest.id ?? row.extension_id,
-            channels: channels.map(channel => ({ id: channel.id ?? "", provider: channel.provider ?? "", handlerScript: channel.handlerScript ?? "", ...(channel.connectionId ? { connection_id: channel.connectionId } : {}) })),
+            channels: channels.map(channel => ({ id: channel.id ?? "", provider: channel.provider ?? "", handlerScript: channel.handlerScript ?? "", ...(channel.connectionId ? { connection_id: channel.connectionId } : {}), ...(channel.session?.enabled ? { session: { enabled: true, max_bytes: channel.session.maxBytes ?? 1_024, ttl_days: channel.session.ttlDays ?? 30 } } : {}) })),
             connections: (manifest.bundle?.connections ?? []).map(connection => ({ id: connection.id ?? "", provider: connection.provider ?? "", purpose: connection.purpose ?? "", required: connection.required === true })) }] : [];
         });
         return Response.json({ installations });

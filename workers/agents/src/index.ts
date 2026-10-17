@@ -6981,6 +6981,28 @@ app.post("/internal/channel-extensions/validate-handler", async c => {
   }
 });
 
+app.post("/internal/channel-extensions/session-state", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  const body = await c.req.json<{ spaceId?: string; projectId?: string; installationId?: string; action?: string }>()
+    .catch(() => ({} as { spaceId?: string; projectId?: string; installationId?: string; action?: string }));
+  if (!body.spaceId || !body.projectId || !body.installationId || !["summary", "clear"].includes(String(body.action))) return c.json({ error_code: "channel_session_scope_invalid" }, 400);
+  if (!c.env.SPACES_WORKER) return c.json({ error_code: "extension_installation_unavailable" }, 503);
+  const installationResponse = await c.env.SPACES_WORKER.fetch(new Request(
+    `http://spaces-worker/spaces/${encodeURIComponent(body.spaceId)}/workflow-installations/${encodeURIComponent(body.installationId)}`,
+    { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) } },
+  ));
+  if (!installationResponse.ok) return c.json({ error_code: "extension_installation_unavailable" }, installationResponse.status === 404 ? 404 : 503);
+  const installation = await installationResponse.json<{ instance?: { tenant_id?: string; space_id?: string; project_id?: string | null; status?: string } }>();
+  const instance = installation.instance;
+  if (!instance || instance.status !== "active" || instance.tenant_id !== tenantId || instance.space_id !== body.spaceId || instance.project_id !== body.projectId)
+    return c.json({ error_code: "extension_installation_scope_mismatch" }, 403);
+  const stub = await getAgentDOForSpace(c.env, tenantId, body.spaceId, "naelao-agent", c.get("requestId"));
+  const method = body.action === "clear" ? "DELETE" : "GET";
+  const url = `http://agent-do/channels/extensions/session-state?${new URLSearchParams({ project_id: body.projectId, installation_id: body.installationId })}`;
+  return stub.fetch(new Request(url, { method }));
+});
+
 /**
  * POST /spaces/:spaceId/assistant/channels — connect, disconnect or re-enable a channel.
  *

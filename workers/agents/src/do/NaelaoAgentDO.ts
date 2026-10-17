@@ -4,7 +4,7 @@ import { executeGoalDag, type GoalDagJournal } from "../script-engine/goal-dag.j
 import { publishCompletedTask, type TaskPublication } from "../script-engine/task-publication.js";
 import { scheduleToolOutputExpiry } from "../script-engine/tool-output-expiry.js";
 import { attachmentToolsForRun } from "../media/attachment-capabilities.js";
-import { initChannelExtensionSessionStore, readChannelExtensionSession, writeChannelExtensionSession } from "../channels/channel-extension-session.js";
+import { clearChannelExtensionSessions, initChannelExtensionSessionStore, readChannelExtensionSession, summarizeChannelExtensionSessions, writeChannelExtensionSession } from "../channels/channel-extension-session.js";
 // ── NaelaoAgentDO — ReAct Agent Durable Object ───────────────────────────────
 // Fulfills G-D01 through G-D20: Agent runtime with ReAct loop, tool dispatch,
 // timeout watchdog, and SQLite-persisted run state.
@@ -1779,6 +1779,19 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
       if (method === "GET" && url.pathname === "/channels/sessions") {
         return this.handleListChannelSessions();
+      }
+      if (method === "GET" && url.pathname === "/channels/extensions/session-state") {
+        const projectId = url.searchParams.get("project_id") ?? "";
+        const installationId = url.searchParams.get("installation_id") ?? "";
+        if (!projectId || !installationId) return Response.json({ error_code: "channel_session_scope_required" }, { status: 400 });
+        return Response.json(summarizeChannelExtensionSessions(this.ctx.storage.sql, projectId, installationId));
+      }
+      if (method === "DELETE" && url.pathname === "/channels/extensions/session-state") {
+        const projectId = url.searchParams.get("project_id") ?? "";
+        const installationId = url.searchParams.get("installation_id") ?? "";
+        if (!projectId || !installationId) return Response.json({ error_code: "channel_session_scope_required" }, { status: 400 });
+        const deletedConversations = clearChannelExtensionSessions(this.ctx.storage.sql, projectId, installationId);
+        return Response.json({ deletedConversations });
       }
       if (method === "GET" && url.pathname === "/channels/unanswered") {
         return this.handleChannelUnanswered();

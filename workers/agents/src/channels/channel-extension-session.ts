@@ -57,3 +57,21 @@ export function writeChannelExtensionSession(sql: ChannelExtensionSessionSql, in
     state_bytes=excluded.state_bytes,expires_at=excluded.expires_at,updated_at=excluded.updated_at`,
   ...key, stateJson, stateBytes, now + input.ttlDays * 86_400_000, now);
 }
+
+/** Retention-only view for the project owner UI; never returns conversation IDs or state values. */
+export function summarizeChannelExtensionSessions(sql: ChannelExtensionSessionSql, projectId: string, installationId: string, now = Date.now()): {
+  activeConversations: number; storedBytes: number; nextExpiryAt: number | null;
+} {
+  sql.exec("DELETE FROM channel_extension_sessions WHERE project_id=? AND installation_id=? AND expires_at<=?", projectId, installationId, now);
+  const row = sql.exec(`SELECT COUNT(*) AS count,COALESCE(SUM(state_bytes),0) AS bytes,MIN(expires_at) AS next_expiry
+    FROM channel_extension_sessions WHERE project_id=? AND installation_id=? AND expires_at>?`, projectId, installationId, now)
+    .toArray()[0] as { count?: number; bytes?: number; next_expiry?: number | null } | undefined;
+  return { activeConversations: Number(row?.count ?? 0), storedBytes: Number(row?.bytes ?? 0),
+    nextExpiryAt: row?.next_expiry === undefined || row.next_expiry === null ? null : Number(row.next_expiry) };
+}
+
+/** Owner-initiated deletion is scoped to exactly one project installation. */
+export function clearChannelExtensionSessions(sql: ChannelExtensionSessionSql, projectId: string, installationId: string): number {
+  const result = sql.exec("DELETE FROM channel_extension_sessions WHERE project_id=? AND installation_id=?", projectId, installationId) as { rowsWritten?: number };
+  return Number(result.rowsWritten ?? 0);
+}

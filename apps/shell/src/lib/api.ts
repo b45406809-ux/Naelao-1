@@ -1811,8 +1811,22 @@ export interface ChannelExtensionInstallation {
   extension_id: string;
   scope: "PROJECT_BOUND" | "PROJECT_SHARED";
   name: string;
-  channels: Array<{ id: string; provider: string; handlerScript: string; connection_id?: string }>;
+  channels: Array<{ id: string; provider: string; handlerScript: string; connection_id?: string; session?: { enabled: true; max_bytes: number; ttl_days: number } }>;
   connections?: Array<{ id: string; provider: string; purpose: string; required: boolean }>;
+}
+
+export interface ChannelExtensionSessionSummary {
+  activeConversations: number;
+  storedBytes: number;
+  nextExpiryAt: number | null;
+}
+
+export async function getChannelExtensionSessionSummary(spaceId: string, projectId: string, instanceId: string, session: SessionCredentials): Promise<ChannelExtensionSessionSummary> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/channel-extensions/${encodeURIComponent(instanceId)}/session-state`, { session });
+}
+
+export async function clearChannelExtensionSessionState(spaceId: string, projectId: string, instanceId: string, session: SessionCredentials): Promise<{ deletedConversations: number }> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/channel-extensions/${encodeURIComponent(instanceId)}/session-state`, { method: "DELETE", session });
 }
 
 export async function listChannelExtensionInstallations(
