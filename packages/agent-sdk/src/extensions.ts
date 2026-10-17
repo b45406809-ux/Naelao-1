@@ -40,6 +40,8 @@ export interface ExtensionManifest {
   commands: ExtensionCommandManifest[];
   /** Public inbound handlers use a separate channel-only host context. */
   channels?: readonly ChannelContract[];
+  /** Versioned composed package; its channel primitives become the runtime channel declarations. */
+  bundle?: ExtensionBundleManifest;
   /** Installed sidecars remain userspace declarations, never provider image authority. */
   containers?: readonly ContainerContract[];
 }
@@ -85,9 +87,12 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
 export function validateExtensionManifest(value: unknown, context?: ExtensionValidationContext): ExtensionManifest | LegacyExtensionManifest {
   assert(value !== null && typeof value === "object" && !Array.isArray(value), "object_required");
   const raw = value as Record<string, unknown>;
-  if ("version" in raw) return validateLegacyManifest(raw);
+  if ("version" in raw) {
+    if (raw.bundle !== undefined) throw new Error("legacy_extension_bundle_requires_modular_manifest");
+    return validateLegacyManifest(raw);
+  }
   rejectKernelOverrides(raw);
-  const allowed = new Set(["id", "type", "declaredPermissions", "capabilityRequirements", "gadgets", "daemons", "commands", "channels", "containers"]);
+  const allowed = new Set(["id", "type", "declaredPermissions", "capabilityRequirements", "gadgets", "daemons", "commands", "channels", "containers", "bundle"]);
   for (const key of Object.keys(raw)) assert(allowed.has(key), `unknown_field:${key}`);
   assert(typeof raw.id === "string", "invalid_id");
   try { assertExtensionId(raw.id); } catch { throw new Error("invalid_extension_manifest:invalid_id"); }
@@ -99,6 +104,19 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
     for (const capability of raw.capabilityRequirements as string[]) assert(granted.has(capability), `gatekeeper_capability_denied:${capability}`);
   }
   assert(Array.isArray(raw.gadgets) && Array.isArray(raw.daemons) && Array.isArray(raw.commands), "arrays_required");
+  let canonicalBundle: ExtensionBundleManifest | undefined;
+  let canonicalChannels = raw.channels;
+  if (raw.bundle !== undefined) {
+    canonicalBundle = parseExtensionBundle(raw.bundle);
+    assert(canonicalBundle.id === raw.id, "bundle_extension_id_mismatch");
+    const channels = canonicalBundle.primitives.filter((primitive): primitive is ChannelContract => primitive.kind === "channel");
+    if (raw.channels !== undefined) {
+      assert(Array.isArray(raw.channels), "invalid_channels");
+      const legacyChannels = (raw.channels as unknown[]).map(parseExtensionPrimitive);
+      assert(JSON.stringify(legacyChannels) === JSON.stringify(channels), "bundle_channel_declaration_mismatch");
+    }
+    canonicalChannels = channels;
+  }
   const scopes = new Set<GadgetScope>(["SPACE_WIDE", "PROJECT_BOUND", "USER_PRIVATE", "PROJECT_SHARED", "PROJECT_USER", "SPACE_SHARED", "SPACE_USER"]);
   const ids = new Set<string>();
   for (const item of raw.gadgets as Record<string, unknown>[]) {
@@ -127,10 +145,10 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
     assert(item && typeof item.name === "string" && COMMAND.test(item.name), "invalid_command_name");
     assert(typeof item.scriptPath === "string" && SAFE_PATH.test(item.scriptPath) && !FORBIDDEN_SCRIPT.test(item.scriptPath), "invalid_command_path");
   }
-  if (raw.channels !== undefined) {
-    assert(Array.isArray(raw.channels) && raw.channels.length <= 32, "invalid_channels");
+  if (canonicalChannels !== undefined) {
+    assert(Array.isArray(canonicalChannels) && canonicalChannels.length <= 32, "invalid_channels");
     const channelIds = new Set<string>();
-    for (const item of raw.channels as unknown[]) {
+    for (const item of canonicalChannels as unknown[]) {
       const channel = parseExtensionPrimitive(item);
       assert(channel.kind === "channel" && !channelIds.has(channel.id), "invalid_channel_kind_or_duplicate");
       channelIds.add(channel.id);
@@ -145,7 +163,7 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
       containerIds.add(container.id);
     }
   }
-  return raw as unknown as ExtensionManifest;
+  return { ...raw, ...(canonicalBundle ? { bundle: canonicalBundle } : {}), ...(canonicalChannels !== undefined ? { channels: canonicalChannels } : {}) } as unknown as ExtensionManifest;
 }
 
 const LEGACY_PERMISSIONS = new Set<ExtensionPermission>(["storage:read", "storage:write", "network", "mcp:expose", "alarms"]);

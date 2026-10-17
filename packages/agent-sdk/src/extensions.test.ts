@@ -27,7 +27,7 @@ describe("immutable extension kernel", () => {
 
 describe("composed extension bundle contract", () => {
   const bundle = {
-    schemaVersion: "1.0", kind: "extension_bundle", id: "trading_mentor", version: "1.0.0",
+    schemaVersion: "1.0", kind: "extension_bundle", id: "ext_trading_mentor", version: "1.0.0",
     primitives: [
       { schemaVersion: "1.0", kind: "canvas", id: "mentor_console", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {}, layout: "CanvasMount", component: "./console.tsx", dynamicPage: false },
       { schemaVersion: "1.0", kind: "channel", id: "student_whatsapp", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {}, provider: "whatsapp", handlerScript: "./handler.ts", context: "channel_only", inboundEvents: ["message.received"], outboundEvents: ["message.reply"], knowledgeCollections: ["course_material"], session: { enabled: true, maxBytes: 2048, ttlDays: 30 } },
@@ -38,7 +38,7 @@ describe("composed extension bundle contract", () => {
   } as const;
 
   it("composes UI, public channel, execution role, host connection, and explicit knowledge publication", () => {
-    expect(parseExtensionBundle(bundle)).toMatchObject({ id: "trading_mentor", primitives: [{ kind: "canvas" }, { kind: "channel" }], workerRoles: [{ execution: "worker" }], knowledge: [{ access: "owner_published_external" }] });
+    expect(parseExtensionBundle(bundle)).toMatchObject({ id: "ext_trading_mentor", primitives: [{ kind: "canvas" }, { kind: "channel" }], workerRoles: [{ execution: "worker" }], knowledge: [{ access: "owner_published_external" }] });
     expect(() => parseExtensionBundle({ ...bundle, primitives: [bundle.primitives[0], { ...bundle.primitives[1], session: { enabled: true, maxBytes: 8192 } }] })).toThrow("invalid_channel_session_max_bytes");
     expect(() => parseExtensionBundle({ ...bundle, primitives: [bundle.primitives[0], { ...bundle.primitives[1], session: { enabled: false } }] })).toThrow("channel_session_must_be_opt_in");
   });
@@ -52,5 +52,13 @@ describe("composed extension bundle contract", () => {
     expect(() => parseExtensionBundle({ ...bundle, primitives: [bundle.primitives[0], { ...bundle.primitives[1], knowledgeCollections: ["all_project_files"] }] })).toThrow("invalid_channel_knowledge_collections");
     expect(() => parseExtensionBundle({ ...bundle, knowledge: [] })).toThrow("invalid_channel_knowledge_reference");
     expect(() => parseExtensionBundle({ ...bundle, knowledge: [{ ...bundle.knowledge[0], access: "member_only" }] })).toThrow("channel_knowledge_must_be_explicitly_published");
+  });
+  it("consumes a versioned bundle at the installation trust boundary and derives runtime channel declarations", () => {
+    const manifest = validateExtensionManifest({ ...valid, id: "ext_trading_mentor", capabilityRequirements: ["channel.invoke"], bundle });
+    expect(manifest.bundle?.version).toBe("1.0.0");
+    expect(manifest.channels).toEqual([bundle.primitives[1]]);
+    expect(() => validateExtensionManifest({ ...valid, id: "ext_trading_mentor", capabilityRequirements: ["channel.invoke"], bundle, channels: [] }))
+      .toThrow("bundle_channel_declaration_mismatch");
+    expect(() => validateExtensionManifest({ ...valid, bundle })).toThrow("bundle_extension_id_mismatch");
   });
 });
