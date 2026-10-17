@@ -283,6 +283,12 @@ export function parseExtensionPrimitive(value: unknown): ExtensionPrimitiveManif
     contractAssert(typeof raw.dynamicPage === "boolean", "invalid_canvas_dynamic_page");
   }
   if (kind === "channel") {
+    // Public channel handlers execute for unauthenticated external senders. Their authority is
+    // the channel-only context (normalized event + bounded reply), never extension-wide grants.
+    // Reject privilege declarations here so a future dispatcher cannot accidentally interpret
+    // a channel primitive as permission to call the member/project capability surface.
+    contractAssert((raw.permissions as unknown[]).length === 0, "channel_permissions_forbidden");
+    contractAssert((raw.capabilityRequirements as unknown[]).length === 0, "channel_capabilities_forbidden");
     contractAssert(typeof raw.provider === "string" && CONTRACT_ID.test(raw.provider), "invalid_channel_provider");
     contractAssert(typeof raw.handlerScript === "string" && CONTRACT_PATH.test(raw.handlerScript) && !raw.handlerScript.includes(".."), "invalid_channel_handler");
     contractAssert(raw.context === "channel_only", "invalid_channel_context");
