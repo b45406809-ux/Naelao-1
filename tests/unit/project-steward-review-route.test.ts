@@ -55,4 +55,28 @@ describe("project steward review route", () => {
     expect(JSON.stringify(body.data)).not.toMatch(/archive|delete|pause|shutdown/i);
     platformDb.db.close();
   });
+
+  it("exposes only typed portfolio summaries to an authenticated read-only steward grant", async () => {
+    const platformDb = database();
+    const projects = [
+      { id: "project-visible", name: "Visible", status: "active", created_at: "2025-01-01T00:00:00Z", last_activity_at: null },
+      { id: "project-archived", name: "Archived", status: "archived", created_at: "2025-01-01T00:00:00Z", last_activity_at: null },
+    ];
+    const env = {
+      PLATFORM_SECRET: SECRET, ENVIRONMENT: "test", PLATFORM_DB: platformDb,
+      SPACE_DO: { idFromName: (name: string) => name, get: () => ({ fetch: async () => Response.json({ data: projects }) }) },
+    };
+    const path = `https://spaces.naelao.com/internal/spaces/${SPACE}/project-steward/summary`;
+    const denied = await spacesWorker.fetch(new Request(path), env as never, ctx);
+    expect(denied.status).toBe(403);
+    const token = await mintInternalToken(SECRET, TENANT);
+    const response = await spacesWorker.fetch(new Request(path, { headers: { "x-naelao-tenant-id": TENANT, "x-naelao-internal-token": token } }), env as never, ctx);
+    expect(response.status).toBe(200);
+    const body = await response.json() as { grant: string; data: Array<Record<string, unknown>> };
+    expect(body.grant).toBe("space.project_steward.read_summary.v1");
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0]).toMatchObject({ project_id: "project-visible", project_name: "Visible", failed_routines: [{ routine_id: "visible-job", consecutive_failures: 2 }] });
+    expect(JSON.stringify(body)).not.toMatch(/project-hidden|Archived|member|message|workspace|archive|delete|pause/i);
+    platformDb.db.close();
+  });
 });

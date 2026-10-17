@@ -3405,6 +3405,37 @@ app.get("/spaces/:spaceId/project-steward/reviews", async (c) => {
   return c.json({ data, count: data.length, generated_at: Date.now(), advisory_only: true });
 });
 
+// Typed, read-only grant for the platform-managed Space Project Steward extension. It carries
+// project portfolio metadata and routine failure counts only; no files, message content, members,
+// lifecycle mutation methods, or general planner tools are exposed through this grant.
+app.use("/internal/spaces/:spaceId/project-steward/summary", requireInternalHmac((c) => c.env.PLATFORM_SECRET ?? ""));
+app.get("/internal/spaces/:spaceId/project-steward/summary", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const owned = await loadOwnedSpace(c, spaceId);
+  if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+  const stub = await spaceDoStub(c.env, spaceId, owned.tenantId);
+  const projectResponse = await forwardToSpaceDO(stub, `/projects?${new URLSearchParams({ space_id: spaceId, space_manager: "1" })}`, "GET");
+  if (!projectResponse.ok) return c.json({ error_code: "project_review_unavailable" }, 503);
+  const payload = await projectResponse.json<{ data?: Array<{ id: string; name: string; status: string; created_at: string; last_activity_at: string | null }> }>();
+  const projects = (payload.data ?? []).filter((project) => project.status === "active");
+  if (!projects.length) return c.json({ grant: "space.project_steward.read_summary.v1", data: [], generated_at: Date.now() });
+  const placeholders = projects.map(() => "?").join(",");
+  const { results } = await c.env.PLATFORM_DB.prepare(
+    `SELECT project_id, id, consecutive_failures FROM scheduled_jobs
+      WHERE space_id=? AND project_id IN (${placeholders}) AND consecutive_failures>0 ORDER BY project_id,id`
+  ).bind(spaceId, ...projects.map((project) => project.id)).all<{ project_id: string; id: string; consecutive_failures: number }>();
+  const failures = new Map<string, Array<{ routine_id: string; consecutive_failures: number }>>();
+  for (const row of results) {
+    const current = failures.get(row.project_id) ?? [];
+    current.push({ routine_id: row.id, consecutive_failures: row.consecutive_failures });
+    failures.set(row.project_id, current);
+  }
+  return c.json({ grant: "space.project_steward.read_summary.v1", generated_at: Date.now(), data: projects.map((project) => ({
+    project_id: project.id, project_name: project.name, created_at: project.created_at,
+    last_activity_at: project.last_activity_at, failed_routines: failures.get(project.id) ?? [],
+  })) });
+});
+
 app.post("/spaces/:spaceId/scheduled-jobs", async (c) => {
   const spaceId = c.req.param("spaceId");
   const owned = await loadOwnedSpace(c, spaceId);

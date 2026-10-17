@@ -1251,6 +1251,12 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Verification: Types, Spaces Worker, Agents Worker, and Shell typechecks passed; scheduled-jobs route/dispatch/authorization and timezone tests passed (58 tests); `git diff --check` passed.
 - Phase 3 remains incomplete: the platform-managed Space Project Steward instance, its isolated extension workspace, periodic execution, richer journal/task/extension-health evidence, and attributed reversible retirement review flow are still open.
 
+### Phase 3 steward summary grant checkpoint (2026-10-17)
+
+- Added `space.project_steward.read_summary.v1`, an internal-HMAC-only endpoint for a future platform-managed steward extension. It returns active project IDs/names, creation/activity timestamps, and failed routine counts. It exposes no project content, files, members, planner tools, or lifecycle mutation operation.
+- Verification: Spaces Worker typecheck passed; steward ranker and route tests passed (5 tests), including unauthenticated denial and archived-project exclusion; `git diff --check` passed.
+- This is the read-only grant substrate only. The platform-managed extension instance/workspace, timer that invokes it, richer project journal/task/extension health evidence, advisory ranking from its run, and user-attributed reversible retirement workflow remain Phase 3 exit criteria.
+
 ### Phase 4 external usage controls checkpoint (2026-10-17)
 
 - Added project setting `external_daily_message_cap` (0 = unlimited, maximum 10,000) and exposed it in Project settings as a per-person daily limit for external channel traffic.
