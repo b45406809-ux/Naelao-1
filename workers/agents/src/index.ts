@@ -37,6 +37,8 @@ import { deployedContainerCatalogue } from "./script-engine/container-catalogue.
 import { isCronDue } from "@naelao/events";
 import { isWithinScheduledQuietHours } from "@naelao/types";
 import { claimScheduledJobDispatch, releaseScheduledJobDispatch } from "./scheduled-job-dispatch.js";
+import { claimProjectStewardRun, finishProjectStewardRun } from "./project-steward-dispatch.js";
+import { rankProjectStewardReviews } from "../../spaces/src/project-steward.js";
 import { SkillLibrary } from "./script-engine/skill-library.js";
 import { compileDynamicCode } from "./script-engine/dynamic-code.js";
 import { compileWorkflowEntrypoint } from "./workflows/workflow-compiler.js";
@@ -395,13 +397,14 @@ export interface AgentsEnv extends Cloudflare.Env {
 // runChannelHeartbeats + runScheduledJobs) that broke the Workers 1000-subrequest limit at a
 // few hundred active spaces. jobId/connectorName are only meaningful for their own kind.
 interface AgentTickMessage {
-  kind: "heartbeat" | "scheduled_job" | "connector_poll" | "daily_digest";
+  kind: "heartbeat" | "scheduled_job" | "connector_poll" | "daily_digest" | "project_steward_review";
   spaceId: string;
   tenantId: string;
   jobId?: string;
   /** Stable per scheduler sweep so queue redelivery cannot start the same routine twice. */
   sweepKey?: number;
   connectorName?: string;
+  runDay?: string;
 }
 
 // ── DB row types ──────────────────────────────────────────────────────────────
@@ -8605,6 +8608,32 @@ async function enqueueAgentTicks(env: AgentsEnv): Promise<void> {
     }
   }
 
+  // Daily, deterministic Space Project Steward portfolio review. It runs as a platform service
+  // with a narrowly scoped read-summary grant; it does not wake a project planner or mutate
+  // project/extension lifecycle. A D1 claim in the consumer deduplicates hourly queue redelivery.
+  {
+    let cursor = "";
+    const now = Date.now();
+    const runDay = new Date(now).toISOString().slice(0, 10);
+    const dayStart = Date.parse(`${runDay}T00:00:00.000Z`);
+    for (;;) {
+      const { results } = await env.PLATFORM_DB.prepare(
+        `SELECT s.id AS space_id, s.tenant_id
+           FROM spaces s
+           LEFT JOIN project_steward_runs r ON r.space_id=s.id
+           WHERE s.status='active' AND s.id>?
+            AND COALESCE(r.last_successful_run_at,0)<?
+            AND (COALESCE(r.lease_until,0)<=? OR r.claimed_day!=?)
+          ORDER BY s.id LIMIT ?`
+      ).bind(cursor, dayStart, now, runDay, AGENT_TICKS_PAGE_SIZE).all<{ space_id: string; tenant_id: string }>();
+      if (results.length === 0) break;
+      for (const row of results) messages.push({ body: { kind: "project_steward_review", spaceId: row.space_id, tenantId: row.tenant_id, runDay } });
+      totalEnumerated += results.length;
+      if (results.length < AGENT_TICKS_PAGE_SIZE) break;
+      cursor = results[results.length - 1]!.space_id;
+    }
+  }
+
   try {
     env.ANALYTICS.writeDataPoint({
       blobs: ["agent-ticks.enumerated"],
@@ -8685,6 +8714,55 @@ async function sweepUndeliveredNotifications(env: AgentsEnv, spaceId: string, te
 
 async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<void> {
   if (msg.kind === "scheduled_job" && !msg.jobId) return;
+  if (msg.kind === "project_steward_review") {
+    const runDay = msg.runDay ?? new Date().toISOString().slice(0, 10);
+    const dayStart = Date.parse(`${runDay}T00:00:00.000Z`);
+    if (!Number.isFinite(dayStart) || runDay > new Date().toISOString().slice(0, 10)) return;
+    const claimToken = await claimProjectStewardRun(env.PLATFORM_DB, { spaceId: msg.spaceId, tenantId: msg.tenantId, runDay, dayStart });
+    if (!claimToken) return;
+    try {
+      const headers = {
+        "x-naelao-tenant-id": msg.tenantId,
+        "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, msg.tenantId),
+      };
+      const response = await env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/internal/spaces/${encodeURIComponent(msg.spaceId)}/project-steward/summary`, { headers }
+      ));
+      if (!response.ok) throw new Error(`Project Steward summary unavailable (HTTP ${response.status})`);
+      const payload = await response.json<{ grant: string; generated_at: number; data: Array<{ project_id: string; project_name: string; created_at: string; last_activity_at: string | null; failed_routines: Array<{ routine_id: string; consecutive_failures: number }> }> }>();
+      if (payload.grant !== "space.project_steward.read_summary.v1" || !Array.isArray(payload.data)) throw new Error("Invalid Project Steward summary grant response");
+      const facts = payload.data.map((row) => ({
+        project_id: row.project_id,
+        project_name: row.project_name,
+        created_at: row.created_at,
+        last_activity_at: row.last_activity_at,
+        failed_routines: row.failed_routines.map((routine) => ({ id: routine.routine_id, consecutive_failures: routine.consecutive_failures })),
+      }));
+      const generatedAt = Date.now();
+      const report = { run_day: runDay, generated_at: generatedAt, advisory_only: true, data: rankProjectStewardReviews(facts, generatedAt) };
+      const reportJson = JSON.stringify(report);
+      if (!await finishProjectStewardRun(env.PLATFORM_DB, { spaceId: msg.spaceId, runDay, claimToken, reportJson, now: generatedAt })) {
+        throw new Error("Project Steward run lease expired before report persistence");
+      }
+      // Keep the review artifact in the space-wide extension workspace namespace. R2 is an
+      // optional archive; D1 remains the authoritative latest-report pointer for the UI.
+      if (env.SCRIPTS_R2) {
+        try {
+          await env.SCRIPTS_R2.put(
+            `spaces/${msg.spaceId}/space-workspace/extensions/platform-project-steward/workspace/reviews/${runDay}.json`,
+            reportJson,
+            { httpMetadata: { contentType: "application/json" } },
+          );
+        } catch (error) {
+          console.error(`[project-steward] report archive failed space=${msg.spaceId}:`, (error as Error).message);
+        }
+      }
+    } catch (error) {
+      await finishProjectStewardRun(env.PLATFORM_DB, { spaceId: msg.spaceId, runDay, claimToken });
+      throw error;
+    }
+    return;
+  }
   const wakePolicy = await resolveWakeContext(env, msg.spaceId, msg.tenantId);
   switch (msg.kind) {
     case "heartbeat": {

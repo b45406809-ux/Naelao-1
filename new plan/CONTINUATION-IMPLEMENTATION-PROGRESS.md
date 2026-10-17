@@ -1257,6 +1257,13 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Verification: Spaces Worker typecheck passed; steward ranker and route tests passed (5 tests), including unauthenticated denial and archived-project exclusion; `git diff --check` passed.
 - This is the read-only grant substrate only. The platform-managed extension instance/workspace, timer that invokes it, richer project journal/task/extension health evidence, advisory ranking from its run, and user-attributed reversible retirement workflow remain Phase 3 exit criteria.
 
+### Phase 3 scheduled steward report checkpoint (2026-10-17)
+
+- Added a daily queue roster for every active Space and a D1-backed per-Space/day claim lease. Queue retries cannot generate duplicate reports; failed runs release their lease for retry, while successful runs persist a deterministic advisory ranking for the UI.
+- The run reads only `space.project_steward.read_summary.v1`, uses the shared deterministic ranker, and stores an optional JSON archive under the Space-wide steward workspace namespace. The Spaces UI prefers the latest saved report but re-filters it against the caller's current visible project IDs, so stored results do not grant access after membership changes.
+- Verification: Agents and Spaces typechecks passed; steward dispatch/review and scheduled-jobs tests passed (48 tests); `git diff --check` passed.
+- This implements periodic report generation, not a general extension runtime instance. Phase 3 still needs the actual platform-managed extension record/runtime identity, richer journal/task/extension-health evidence, and user-attributed reversible retirement recommendations and confirmation flow. The report remains advisory and performs no project or extension lifecycle action.
+
 ### Phase 4 external usage controls checkpoint (2026-10-17)
 
 - Added project setting `external_daily_message_cap` (0 = unlimited, maximum 10,000) and exposed it in Project settings as a per-person daily limit for external channel traffic.

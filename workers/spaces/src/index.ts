@@ -3382,6 +3382,23 @@ app.get("/spaces/:spaceId/project-steward/reviews", async (c) => {
   const projects = (projectPayload.data ?? []).filter((project) => visibleIds.includes(project.id) && project.status === "active");
   if (projects.length === 0) return c.json({ data: [], count: 0, generated_at: Date.now() });
 
+  // Prefer the last scheduled Space Project Steward report. Filter it against the caller's
+  // current project visibility so membership changes take effect immediately; a report is never
+  // itself an authorization grant. Before the first daily run, preserve the live deterministic
+  // fallback so the page is useful on a newly created Space.
+  const saved = await c.env.PLATFORM_DB.prepare(
+    "SELECT report_json FROM project_steward_runs WHERE space_id=? AND report_json IS NOT NULL"
+  ).bind(spaceId).first<{ report_json: string }>();
+  if (saved?.report_json) {
+    try {
+      const report = JSON.parse(saved.report_json) as { run_day?: string; generated_at?: number; advisory_only?: boolean; data?: Array<{ project_id: string }> };
+      if (report.advisory_only === true && Array.isArray(report.data)) {
+        const data = report.data.filter((item) => visibleIds.includes(item.project_id));
+        return c.json({ data, count: data.length, generated_at: report.generated_at ?? Date.now(), run_day: report.run_day ?? null, advisory_only: true });
+      }
+    } catch { /* corrupt historical report: return the live deterministic fallback below */ }
+  }
+
   const placeholders = projects.map(() => "?").join(",");
   const { results: failures } = await c.env.PLATFORM_DB.prepare(
     `SELECT project_id, id, consecutive_failures FROM scheduled_jobs

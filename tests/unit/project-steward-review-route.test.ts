@@ -16,6 +16,7 @@ function database() {
     readFileSync(join(__dirname, "../../infra/migrations/0041_scheduled_jobs.sql"), "utf8"),
     readFileSync(join(__dirname, "../../infra/migrations/0042_scheduled_jobs_failures.sql"), "utf8"),
     readFileSync(join(__dirname, "../../infra/migrations/0043_scheduled_jobs_agent_goal.sql"), "utf8"),
+    readFileSync(join(__dirname, "../../infra/migrations/0107_project_steward_daily_runs.sql"), "utf8"),
   ]);
   db.db.exec(`INSERT INTO spaces (id,tenant_id,status,name,spacetype_id) VALUES ('${SPACE}','${TENANT}','active','Test Space','launchpad')`);
   db.db.exec(`INSERT INTO scheduled_jobs (id,space_id,tenant_id,project_id,name,cron_expression,script_name,consecutive_failures) VALUES
@@ -77,6 +78,28 @@ describe("project steward review route", () => {
     expect(body.data).toHaveLength(1);
     expect(body.data[0]).toMatchObject({ project_id: "project-visible", project_name: "Visible", failed_routines: [{ routine_id: "visible-job", consecutive_failures: 2 }] });
     expect(JSON.stringify(body)).not.toMatch(/project-hidden|Archived|member|message|workspace|archive|delete|pause/i);
+    platformDb.db.close();
+  });
+
+  it("serves saved daily reports only for projects the caller can still see", async () => {
+    const platformDb = database();
+    platformDb.db.exec(`INSERT INTO project_steward_runs(space_id,tenant_id,last_successful_run_at,report_json,updated_at)
+      VALUES ('${SPACE}','${TENANT}',1792195200000,'{"run_day":"2026-10-17","generated_at":1792195200000,"advisory_only":true,"data":[{"project_id":"project-visible","recommendation":"owner_check_in"},{"project_id":"project-hidden","recommendation":"inspect_routine"}]}',1792195200000)`);
+    const env = {
+      PLATFORM_SECRET: SECRET, ENVIRONMENT: "test", PLATFORM_DB: platformDb,
+      SPACE_DO: { idFromName: (name: string) => name, get: () => ({ fetch: async () => Response.json({ data: [
+        { id: "project-visible", name: "Visible", status: "active", created_at: "2025-01-01T00:00:00Z", last_activity_at: null },
+      ] }) }) },
+    };
+    const token = await mintInternalToken(SECRET, TENANT);
+    const response = await spacesWorker.fetch(new Request(`https://spaces.naelao.com/spaces/${SPACE}/project-steward/reviews`, {
+      headers: { "x-naelao-tenant-id": TENANT, "x-naelao-user-id": "member-1", "x-naelao-role": "viewer", "x-naelao-internal-token": token },
+    }), env as never, ctx);
+    expect(response.status).toBe(200);
+    const body = await response.json() as { run_day: string; advisory_only: boolean; data: Array<{ project_id: string }> };
+    expect(body.run_day).toBe("2026-10-17");
+    expect(body.advisory_only).toBe(true);
+    expect(body.data.map((row) => row.project_id)).toEqual(["project-visible"]);
     platformDb.db.close();
   });
 });
