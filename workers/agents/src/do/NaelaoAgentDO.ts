@@ -4,6 +4,7 @@ import { executeGoalDag, type GoalDagJournal } from "../script-engine/goal-dag.j
 import { publishCompletedTask, type TaskPublication } from "../script-engine/task-publication.js";
 import { scheduleToolOutputExpiry } from "../script-engine/tool-output-expiry.js";
 import { attachmentToolsForRun } from "../media/attachment-capabilities.js";
+import { initChannelExtensionSessionStore, readChannelExtensionSession, writeChannelExtensionSession } from "../channels/channel-extension-session.js";
 // ── NaelaoAgentDO — ReAct Agent Durable Object ───────────────────────────────
 // Fulfills G-D01 through G-D20: Agent runtime with ReAct loop, tool dispatch,
 // timeout watchdog, and SQLite-persisted run state.
@@ -1526,6 +1527,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       status TEXT NOT NULL CHECK(status IN ('running','delivering','sent','uncertain','failed')),
       reply_text TEXT, error_code TEXT, created_at INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
     )`);
+    initChannelExtensionSessionStore(this.ctx.storage.sql);
     try { this.ctx.storage.sql.exec(`ALTER TABLE channel_messages ADD COLUMN task_id TEXT`); } catch { /* exists */ }
     this.ctx.storage.sql.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_msg_dedupe ON channel_messages(session_id, direction, external_id)`);
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_channel_msg_unanswered ON channel_messages(direction, answered, created_at)`);
@@ -7308,7 +7310,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
   private async loadActiveChannelHandler(input: {
     spaceId: string; tenantId: string; projectId: string; channel: string; messageId: string; instanceId: string; scriptSha256: string;
-  }): Promise<{ name: string; code: string; maxConcurrency: number; knowledgeCollections: string[]; limits: { cpuMs: number; wallMs: number; inputBytes: number; outputBytes: number } } | null> {
+  }): Promise<{ name: string; code: string; maxConcurrency: number; knowledgeCollections: string[]; session?: { maxBytes: number; ttlDays: number }; limits: { cpuMs: number; wallMs: number; inputBytes: number; outputBytes: number } } | null> {
     if (!this.env.SPACES_WORKER || !this.env.AGENTS_WORKER || !this.env.SCRIPTS_R2 || !/^[a-f0-9]{64}$/.test(input.scriptSha256)) return null;
     const verifyBinding = await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/channel-extension-binding/verify", {
       method: "POST", headers: await this.internalHeaders(input.tenantId, { "content-type": "application/json" }),
@@ -7323,7 +7325,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!installationResponse.ok) return null;
     const installation = await installationResponse.json<{
       instance: { instance_id?: string; tenant_id?: string; space_id?: string; project_id?: string | null; scope?: string; status?: string };
-      manifest: { channels?: Array<{ kind?: string; provider?: string; handlerScript?: string; context?: string; inboundEvents?: string[]; outboundEvents?: string[]; knowledgeCollections?: string[]; permissions?: unknown[]; capabilityRequirements?: unknown[]; budget?: { maxDurationSeconds?: number; maxConcurrency?: number } }> };
+      manifest: { channels?: Array<{ kind?: string; provider?: string; handlerScript?: string; context?: string; inboundEvents?: string[]; outboundEvents?: string[]; knowledgeCollections?: string[]; session?: { enabled?: boolean; maxBytes?: number; ttlDays?: number }; permissions?: unknown[]; capabilityRequirements?: unknown[]; budget?: { maxDurationSeconds?: number; maxConcurrency?: number } }> };
     }>().catch(() => null);
     const instance = installation?.instance;
     if (!installation || !instance || instance.status !== "active" || instance.instance_id !== input.instanceId
@@ -7338,6 +7340,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const maxConcurrency = declaration.budget?.maxConcurrency;
     if ((duration !== undefined && (!Number.isFinite(duration) || duration < 1 || duration > 10))
       || (maxConcurrency !== undefined && (!Number.isInteger(maxConcurrency) || maxConcurrency < 1 || maxConcurrency > 4))) return null;
+    const session = declaration.session;
+    if (session && (session.enabled !== true
+      || (session.maxBytes !== undefined && (!Number.isInteger(session.maxBytes) || session.maxBytes < 1 || session.maxBytes > 4_096))
+      || (session.ttlDays !== undefined && (!Number.isInteger(session.ttlDays) || session.ttlDays < 1 || session.ttlDays > 90)))) return null;
     const script = await new SkillLibrary(this.env.SCRIPTS_R2, input.spaceId).read(path[1]!);
     if (!script?.code || script.metadata.runtime === "workflow" || new TextEncoder().encode(script.code).byteLength > 262_144) return null;
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(script.code));
@@ -7345,6 +7351,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (actual !== input.scriptSha256) return null;
     return { name: path[1]!, code: script.code, maxConcurrency: maxConcurrency ?? 1,
       knowledgeCollections: (declaration.knowledgeCollections ?? []).slice(0, 16),
+      ...(session?.enabled ? { session: { maxBytes: session.maxBytes ?? 1_024, ttlDays: session.ttlDays ?? 30 } } : {}),
       limits: { cpuMs: 1_000, wallMs: Math.min(10_000, duration === undefined ? 5_000 : duration * 1000), inputBytes: 16_384, outputBytes: 8_192 } };
   }
 
@@ -7703,11 +7710,21 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             escalated++; continue;
           }
         }
+        let channelSessionState: unknown = null;
+        if (handler.session) {
+          try {
+            channelSessionState = readChannelExtensionSession(this.ctx.storage.sql, { projectId: msg.project_id, installationId: msg.channel_extension_instance_id,
+              conversationId: msg.session_id });
+          } catch {
+            this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code='session_store_unavailable' WHERE message_id=?", msg.id);
+            takeover("The handler's approved conversation state could not be read. Review the conversation manually."); escalated++; continue;
+          }
+        }
         const run = await channelRunner.call(engineEnv.codeRunner, {
           name: handler.name, code: handler.code, args: {}, tenantId, spaceId, agentId,
           installationId: msg.channel_extension_instance_id, maxConcurrency: handler.maxConcurrency,
           channel: { provider: msg.channel, event: { id: msg.id, type: "message.received", occurredAt: new Date(msg.created_at).toISOString(), payload: { text: msg.text.slice(0, 8_000), ...(publishedKnowledge.length ? { knowledge: publishedKnowledge } : {}) } },
-            conversation: { id: msg.session_id } },
+            conversation: { id: msg.session_id }, ...(handler.session ? { session: { state: channelSessionState, maxBytes: handler.session.maxBytes } } : {}) },
           limits: handler.limits,
         });
         let replyText = run.ok && run.channel_replies?.length === 1 && !(run.channel_answers?.length)
@@ -7736,6 +7753,19 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         if (delivery.ok) {
           this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='sent' WHERE message_id=? AND status='delivering'", msg.id);
           this.markOutbound(msg.session_id, msg.id, replyText);
+          if (handler.session && run.channel_session_update !== undefined) {
+            try {
+              writeChannelExtensionSession(this.ctx.storage.sql, { projectId: msg.project_id, installationId: msg.channel_extension_instance_id,
+                conversationId: msg.session_id, value: run.channel_session_update, maxBytes: handler.session.maxBytes, ttlDays: handler.session.ttlDays });
+            } catch {
+              this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET error_code='session_persist_failed' WHERE message_id=?", msg.id);
+              void this.createSpaceNotification(spaceId, tenantId, {
+                kind: "channel_extension_session_save_failed", title: "A channel reply was sent without saving its conversation state",
+                body: "The extension's optional session state exceeded its quota or could not be persisted. Review the extension and conversation before relying on future context.",
+                severity: "warning", projectId: msg.project_id, sourceAgentId: agentId, relatedId: msg.session_id,
+              });
+            }
+          }
           answered++;
         } else {
           // The provider may have accepted the message before returning an error. Never resend

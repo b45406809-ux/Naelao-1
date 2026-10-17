@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compileDynamicCode } from "./dynamic-code";
+import { buildChannelGuestHarness, compileDynamicCode } from "./dynamic-code";
 import { loadTypeScriptCompiler } from "./typescript-runtime";
 
 describe("on-demand code compiler", () => {
@@ -24,5 +24,13 @@ describe("on-demand code compiler", () => {
       .rejects.toThrow("code_dependency_not_declared");
     await expect(compileDynamicCode("export function other() { return 1; }"))
       .rejects.toThrow("code_run_export_required");
+  });
+
+  it("only creates the bounded channel session API when the host provides an approved session grant", () => {
+    const harness = buildChannelGuestHarness(8192);
+    expect(harness).toContain("channel.session ?");
+    expect(harness).toContain("channel_session_write_limit");
+    expect(harness).toContain("channel_session_size_limit");
+    expect(harness).toContain("sessionUpdate:sessionUpdates[0]");
   });
 });

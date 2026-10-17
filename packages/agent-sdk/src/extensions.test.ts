@@ -30,7 +30,7 @@ describe("composed extension bundle contract", () => {
     schemaVersion: "1.0", kind: "extension_bundle", id: "trading_mentor", version: "1.0.0",
     primitives: [
       { schemaVersion: "1.0", kind: "canvas", id: "mentor_console", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {}, layout: "CanvasMount", component: "./console.tsx", dynamicPage: false },
-      { schemaVersion: "1.0", kind: "channel", id: "student_whatsapp", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {}, provider: "whatsapp", handlerScript: "./handler.ts", context: "channel_only", inboundEvents: ["message.received"], outboundEvents: ["message.reply"], knowledgeCollections: ["course_material"] },
+      { schemaVersion: "1.0", kind: "channel", id: "student_whatsapp", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {}, provider: "whatsapp", handlerScript: "./handler.ts", context: "channel_only", inboundEvents: ["message.received"], outboundEvents: ["message.reply"], knowledgeCollections: ["course_material"], session: { enabled: true, maxBytes: 2048, ttlDays: 30 } },
     ],
     workerRoles: [{ id: "answer_student", invocation: "workflow_step", execution: "worker", entry: "./answer.ts", primitiveIds: ["student_whatsapp"] }],
     connections: [{ id: "student_channel", provider: "whatsapp", purpose: "Receive and reply to student messages", required: true }],
@@ -39,6 +39,8 @@ describe("composed extension bundle contract", () => {
 
   it("composes UI, public channel, execution role, host connection, and explicit knowledge publication", () => {
     expect(parseExtensionBundle(bundle)).toMatchObject({ id: "trading_mentor", primitives: [{ kind: "canvas" }, { kind: "channel" }], workerRoles: [{ execution: "worker" }], knowledge: [{ access: "owner_published_external" }] });
+    expect(() => parseExtensionBundle({ ...bundle, primitives: [bundle.primitives[0], { ...bundle.primitives[1], session: { enabled: true, maxBytes: 8192 } }] })).toThrow("invalid_channel_session_max_bytes");
+    expect(() => parseExtensionBundle({ ...bundle, primitives: [bundle.primitives[0], { ...bundle.primitives[1], session: { enabled: false } }] })).toThrow("channel_session_must_be_opt_in");
   });
   it("keeps invocation role and execution tier distinct and rejects dangling references", () => {
     expect(() => parseExtensionBundle({ ...bundle, workerRoles: [{ ...bundle.workerRoles[0], primitiveIds: ["missing"] }] })).toThrow("invalid_worker_primitive_reference");

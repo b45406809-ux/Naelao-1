@@ -85,17 +85,30 @@ export default {
 /** Public channel handlers receive no RPC bindings, scope IDs, storage, tools, or proxy. Replies
  * are captured in memory and returned to the trusted host, which performs the provider send. */
 export function buildChannelGuestHarness(outputBytes: number): string {
-  return `import { encode, freeze, jsonResponse, byteLength } from './policy.js';
+  return `import { encode, parse, freeze, jsonResponse, byteLength } from './policy.js';
 import { run } from './guest.js';
 export default {
   async fetch(request) {
     const { args, channel } = await request.json();
     const replies = [];
     const answerRequests = [];
+    const sessionUpdates = [];
+    const channelSession = channel.session ? freeze({
+      get: async()=>parse(encode(channel.session.state)),
+      set: async(value)=>{
+        if (sessionUpdates.length >= 1) throw new Error('channel_session_write_limit');
+        if (value !== null && (value === undefined || typeof value === 'function' || typeof value === 'symbol')) throw new Error('channel_session_value_invalid');
+        const encoded = encode(value);
+        if (byteLength(encoded) > channel.session.maxBytes) throw new Error('channel_session_size_limit');
+        sessionUpdates.push(value);
+        return freeze({saved:true});
+      }
+    }) : undefined;
     const ctx = freeze({channel:freeze({
       provider:channel.provider,
       event:freeze(channel.event),
       conversation:freeze({id:channel.conversation.id}),
+      ...(channelSession ? {session:channelSession} : {}),
       answer:async(input)=>{
         if (!input || typeof input.question !== 'string' || !input.question.trim() || input.question.length > 2000) throw new Error('channel_answer_invalid');
         if (answerRequests.length >= 1) throw new Error('channel_answer_limit');
@@ -111,7 +124,7 @@ export default {
     })});
     try {
       const result = await run(args, ctx);
-      const body = {ok:true,result:result == null ? null : result,replies,answerRequests};
+      const body = {ok:true,result:result == null ? null : result,replies,answerRequests,...(sessionUpdates.length ? {sessionUpdate:sessionUpdates[0]} : {})};
       const encoded = encode(body);
       if (byteLength(encoded) > ${outputBytes}) throw new Error('code_output_limit');
       return jsonResponse(body);
