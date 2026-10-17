@@ -1394,6 +1394,56 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions/lsp-indexer", async (c
   return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
 });
 
+// Owner/admin channel-only package installation. This path grants only the dedicated
+// channel.invoke capability and deliberately excludes Canvas/Gadget/member tool primitives;
+// those need their own host installers and grant review before they can be composed here.
+app.use("/spaces/:spaceId/projects/:projectId/channel-extensions", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use("/spaces/:spaceId/projects/:projectId/channel-extensions", requireBusinessMembership({ POST: "admin" }));
+app.post("/spaces/:spaceId/projects/:projectId/channel-extensions", async c => {
+  const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId");
+  const denied = await requireManageableAutomationProject(c, spaceId, projectId);
+  if (denied) return denied;
+  const identity = getCallerIdentity(c);
+  const role = identity.role === "product_end_user" && identity.userId
+    ? await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, identity.userId)
+    : identity.role;
+  if (role !== "owner" && role !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
+  const body = await c.req.json<{ manifest?: unknown; scope?: unknown }>().catch(() => ({} as { manifest?: unknown; scope?: unknown }));
+  if (body.scope !== undefined && !["PROJECT_BOUND", "PROJECT_SHARED"].includes(String(body.scope))) return c.json({ error_code: "channel_install_scope_invalid" }, 400);
+  let manifest: ReturnType<typeof validateExtensionManifest>;
+  try {
+    manifest = validateExtensionManifest(body.manifest, { gatekeeperCapabilities: ["channel.invoke"] });
+    const bundle = manifest.bundle;
+    const channels = manifest.channels ?? [];
+    const supportedProviders = new Set(["whatsapp", "telegram", "slack", "discord", "email"]);
+    if (!bundle || !channels.length || channels.length > 8
+      || bundle.primitives.some(primitive => primitive.kind !== "channel")
+      || (bundle.workerRoles?.length ?? 0) > 0
+      || manifest.declaredPermissions.length > 0
+      || manifest.capabilityRequirements.length !== 1 || manifest.capabilityRequirements[0] !== "channel.invoke"
+      || manifest.gadgets.length > 0 || manifest.daemons.length > 0 || manifest.commands.length > 0
+      || (manifest.containers?.length ?? 0) > 0
+      || channels.some(channel => !supportedProviders.has(channel.provider) || !channel.connectionId)
+      || (bundle.connections ?? []).some(connection => !supportedProviders.has(connection.provider))) {
+      throw new Error("channel_package_must_be_restricted_and_have_host_connections");
+    }
+    const requiredConnections = new Set((bundle.connections ?? []).filter(connection => connection.required).map(connection => connection.id));
+    const usedConnections = new Set(channels.map(channel => channel.connectionId!));
+    if (channels.some(channel => !requiredConnections.has(channel.connectionId!))
+      || (bundle.connections ?? []).some(connection => !usedConnections.has(connection.id))) throw new Error("channel_connection_requirement_missing");
+  } catch (error) {
+    return c.json({ error_code: "channel_manifest_invalid", message: error instanceof Error ? error.message : "invalid_manifest" }, 400);
+  }
+  const scope = body.scope === "PROJECT_SHARED" ? "PROJECT_SHARED" : "PROJECT_BOUND";
+  const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
+  const response = await stub.fetch(new Request("http://space-do/extensions", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ manifest, installedBy: identity.userId, tenantId: identity.tenantId, spaceId, projectId, scope,
+      gatekeeperCapabilities: ["channel.invoke"] }),
+  }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
+});
+
 app.use("/internal/spaces/:spaceId/projects/:projectId/extensions/:extensionId/active", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
 app.get("/internal/spaces/:spaceId/projects/:projectId/extensions/:extensionId/active", async (c) => {
   const extensionId = c.req.param("extensionId");

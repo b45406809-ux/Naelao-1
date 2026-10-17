@@ -1827,6 +1827,18 @@ export async function listChannelExtensionInstallations(
   return response.installations;
 }
 
+export async function installProjectChannelExtension(
+  spaceId: string,
+  projectId: string,
+  session: SessionCredentials,
+  manifest: unknown,
+  scope: "PROJECT_BOUND" | "PROJECT_SHARED" = "PROJECT_BOUND"
+): Promise<{ installed?: boolean; installationId?: string; error_code?: string; message?: string }> {
+  return apiFetch(`/v1/spaces/${spaceId}/projects/${encodeURIComponent(projectId)}/channel-extensions`, {
+    method: "POST", body: JSON.stringify({ manifest, scope }), session,
+  });
+}
+
 /** Connect a channel, or turn one off/back on. Owner/admin only, enforced server-side. */
 /** What the server hands back for action:"pair" — a link to open (or scan) plus human steps. */
 export interface ChannelPairing {

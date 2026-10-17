@@ -18,7 +18,7 @@ import * as React from "react";
 import { QrCode } from "@naelao/ui";
 import { ALLOWED_MODELS } from "@naelao/billing-core";
 import type { ChannelExtensionInstallation, ChannelLink, ChannelPairing, SessionCredentials } from "@/lib/api";
-import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations } from "@/lib/api";
+import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, installProjectChannelExtension } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
@@ -106,6 +106,10 @@ export function ChannelConnect({
   const [extensionInstallations, setExtensionInstallations] = React.useState<ChannelExtensionInstallation[]>([]);
   const [extensionLoadError, setExtensionLoadError] = React.useState<string | null>(null);
   const [extensionsLoading, setExtensionsLoading] = React.useState(false);
+  const [installDialogOpen, setInstallDialogOpen] = React.useState(false);
+  const [installManifestDraft, setInstallManifestDraft] = React.useState("");
+  const [installingExtension, setInstallingExtension] = React.useState(false);
+  const [installScope, setInstallScope] = React.useState<"PROJECT_BOUND" | "PROJECT_SHARED">("PROJECT_BOUND");
 
   React.useEffect(() => {
     if (!projectId || !canManage) { setExtensionInstallations([]); setExtensionLoadError(null); setExtensionsLoading(false); return; }
@@ -196,9 +200,45 @@ export function ChannelConnect({
     } finally { setBusy(false); }
   }
 
+  async function installChannelExtension(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!projectId || installingExtension || !installManifestDraft.trim()) return;
+    setInstallingExtension(true); setError(null);
+    try {
+      const manifest = JSON.parse(installManifestDraft) as unknown;
+      const installed = await installProjectChannelExtension(spaceId, projectId, session, manifest, installScope);
+      if (!installed.installed) throw new Error(installed.message ?? installed.error_code ?? "Channel package installation failed");
+      const updated = await listChannelExtensionInstallations(spaceId, projectId, session);
+      setExtensionInstallations(updated);
+      setInstallManifestDraft(""); setInstallDialogOpen(false);
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't install this channel package.");
+    } finally { setInstallingExtension(false); }
+  }
+
   return (
     <div>
       {extensionLoadError && <div role="alert" style={{ marginBottom: 10, color: "var(--danger, #b42318)", fontSize: 12 }}>{extensionLoadError}</div>}
+      {projectId && canManage && <details open={installDialogOpen} onToggle={event => setInstallDialogOpen(event.currentTarget.open)} style={{ marginBottom: 12, padding: 12, border: "1px solid var(--border)", borderRadius: 8 }}>
+        <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Install a channel extension package</summary>
+        <p style={{ fontSize: 11.5, color: "var(--text3)", margin: "8px 0" }}>
+          Paste a versioned channel-only install manifest. This installer does not accept Canvas, Gadget, member tools, or provider secrets. Add the handler script to the project's Skill Library, connect the provider below, then bind the installed extension.
+        </p>
+        <form onSubmit={installChannelExtension} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <label style={{ fontSize: 11.5, color: "var(--text2)" }}>Installation scope
+            <select value={installScope} onChange={event => setInstallScope(event.target.value as "PROJECT_BOUND" | "PROJECT_SHARED")} style={{ display: "block", marginTop: 4, background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 7, padding: "6px 8px" }}>
+              <option value="PROJECT_BOUND">This project</option>
+              <option value="PROJECT_SHARED">Shared across project members</option>
+            </select>
+          </label>
+          <label style={{ fontSize: 11.5, color: "var(--text2)" }} htmlFor="channel-extension-manifest">Install manifest JSON</label>
+          <textarea id="channel-extension-manifest" value={installManifestDraft} onChange={event => setInstallManifestDraft(event.target.value)} rows={8} spellCheck={false}
+            placeholder={'{\n  "id": "ext_student_helper",\n  "bundle": { "kind": "extension_bundle", "...": "..." }\n}'}
+            style={{ width: "100%", boxSizing: "border-box", resize: "vertical", fontFamily: "monospace", fontSize: 11, background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 7, padding: 8 }} />
+          <div><button type="submit" className="btn-ghost" disabled={installingExtension || !installManifestDraft.trim()}>{installingExtension ? "Installing…" : "Validate and install"}</button></div>
+        </form>
+      </details>}
       {CHANNELS.map((ch) => {
         const link = byId.get(ch.id);
         const connected = !!link;
