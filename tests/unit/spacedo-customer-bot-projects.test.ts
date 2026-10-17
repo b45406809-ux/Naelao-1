@@ -44,6 +44,7 @@ describe("SpaceDO — customer-bot project config", () => {
     const got = await call(spaceDO, `/projects/${created.json.id}`, "GET");
     expect(got.json.kind).toBe("workspace");
     expect(got.json.execution_ceiling).toBe(5);
+    expect(got.json.external_daily_message_cap).toBe(0);
     expect(got.json.channel_config).toEqual({});
   });
 
@@ -53,6 +54,7 @@ describe("SpaceDO — customer-bot project config", () => {
       kind: "customer_bot",
       execution_ceiling: 2,
       daily_spend_cap_credits: 500,
+      external_daily_message_cap: 25,
       channel_config: { whatsapp: { connected: true } },
     });
     expect(patched.status).toBe(200);
@@ -60,6 +62,7 @@ describe("SpaceDO — customer-bot project config", () => {
       kind: "customer_bot",
       execution_ceiling: 2,
       daily_spend_cap_credits: 500,
+      external_daily_message_cap: 25,
       channel_config: { whatsapp: { connected: true } },
     });
   });
@@ -68,6 +71,31 @@ describe("SpaceDO — customer-bot project config", () => {
     const created = await call(spaceDO, "/projects", "POST", { space_id: "space1", name: "X" });
     const bad = await call(spaceDO, `/projects/${created.json.id}`, "PATCH", { execution_ceiling: 9 });
     expect(bad.status).toBe(400);
+  });
+
+  it("validates and returns the configurable per-sender external channel cap", async () => {
+    const created = await call(spaceDO, "/projects", "POST", { space_id: "space1", name: "Support" });
+    const updated = await call(spaceDO, `/projects/${created.json.id}`, "PATCH", { external_daily_message_cap: 10000 });
+    expect(updated.status).toBe(200);
+    expect(updated.json.external_daily_message_cap).toBe(10000);
+    const invalid = await call(spaceDO, `/projects/${created.json.id}`, "PATCH", { external_daily_message_cap: 10001 });
+    expect(invalid.status).toBe(400);
+  });
+
+  it("enforces external sender usage in the shared SpaceDO across independent conversations", async () => {
+    const created = await call(spaceDO, "/projects", "POST", { space_id: "space1", name: "WhatsApp" });
+    const projectId = created.json.id;
+    await call(spaceDO, `/projects/${projectId}`, "PATCH", { external_daily_message_cap: 1 });
+    const path = `/projects/${projectId}/external-message-usage?space_id=space1`;
+    const body = { installation_id: "install-a", provider: "whatsapp", subject_hash: "a".repeat(64) };
+    const first = await call(spaceDO, path, "POST", body);
+    const second = await call(spaceDO, path, "POST", body);
+    expect(first).toMatchObject({ status: 200, json: { allowed: true, daily_cap: 1 } });
+    expect(second).toMatchObject({ status: 200, json: { allowed: false, daily_cap: 1, count: 1 } });
+    const otherConversationOtherPerson = await call(spaceDO, path, "POST", { ...body, subject_hash: "b".repeat(64) });
+    expect(otherConversationOtherPerson.json.allowed).toBe(true);
+    const otherInstallation = await call(spaceDO, path, "POST", { ...body, installation_id: "install-b" });
+    expect(otherInstallation.json.allowed).toBe(true);
   });
 
   it("rejects an unknown project kind", async () => {

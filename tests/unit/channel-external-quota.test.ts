@@ -1,0 +1,61 @@
+import { createRequire } from "node:module";
+import { describe, expect, it } from "vitest";
+import { opaqueExternalSubject } from "../../workers/agents/src/channel-external-quota.js";
+import { recordExternalMessage } from "../../workers/spaces/src/project-external-quota.js";
+
+const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
+
+function quotaDb() {
+  const db = new DatabaseSync(":memory:");
+  db.exec(`CREATE TABLE project_external_quota_usage (
+    project_id TEXT NOT NULL, installation_id TEXT NOT NULL, provider TEXT NOT NULL, subject_hash TEXT NOT NULL,
+    day TEXT NOT NULL, message_count INTEGER NOT NULL CHECK(message_count > 0), updated_at INTEGER NOT NULL,
+    PRIMARY KEY(project_id,installation_id,provider,subject_hash,day)
+  )`);
+  return {
+    exec(sql: string, ...bindings: unknown[]) {
+      const statement = db.prepare(sql);
+      if (/\bRETURNING\b/i.test(sql)) {
+        const rows = statement.all(...bindings as never[]) as Array<{ message_count?: number }>;
+        return { rowsWritten: rows.length, toArray: () => rows };
+      }
+      if (/^\s*SELECT\b/i.test(sql)) {
+        const rows = statement.all(...bindings as never[]);
+        return { rowsWritten: 0, toArray: () => rows };
+      }
+      const result = statement.run(...bindings as never[]);
+      return { rowsWritten: Number(result.changes), toArray: () => [] };
+    },
+  };
+}
+
+describe("external channel message quotas", () => {
+  it("enforces the daily limit atomically while isolating sender, installation and day scopes", async () => {
+    const sql = quotaDb();
+    const subject = await opaqueExternalSubject("test-secret", ["tenant", "space", "project", "install", "whatsapp", "+15550001"]);
+    const input = { projectId: "project", installationId: "install", provider: "whatsapp", subjectHash: subject, day: "2026-10-17", dailyCap: 2 };
+    expect(recordExternalMessage(sql, input)).toEqual({ allowed: true, count: 1 });
+    expect(recordExternalMessage(sql, input)).toEqual({ allowed: true, count: 2 });
+    expect(recordExternalMessage(sql, input)).toEqual({ allowed: false, count: 2 });
+    expect(recordExternalMessage(sql, { ...input, subjectHash: await opaqueExternalSubject("test-secret", ["tenant", "space", "project", "install", "whatsapp", "+15550002"]) })).toEqual({ allowed: true, count: 1 });
+    expect(recordExternalMessage(sql, { ...input, installationId: "other-install" })).toEqual({ allowed: true, count: 1 });
+    expect(recordExternalMessage(sql, { ...input, day: "2026-10-18" })).toEqual({ allowed: true, count: 1 });
+  });
+
+  it("stores only a keyed opaque sender identifier", async () => {
+    const source = ["tenant", "space", "project", "install", "whatsapp", "+15550001"] as const;
+    const hash = await opaqueExternalSubject("test-secret", source);
+    expect(hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(hash).not.toContain("15550001");
+    await expect(opaqueExternalSubject("other-secret", source)).resolves.not.toBe(hash);
+    await expect(opaqueExternalSubject("", source)).rejects.toThrow("external_quota_hash_key_missing");
+  });
+
+  it("treats a zero cap as unlimited", () => {
+    const sql = quotaDb();
+    const input = { projectId: "p", installationId: "i", provider: "telegram", subjectHash: "opaque", day: "2026-10-17", dailyCap: 0 };
+    expect(recordExternalMessage(sql, input).allowed).toBe(true);
+    expect(recordExternalMessage(sql, input).allowed).toBe(true);
+    expect(recordExternalMessage(sql, input)).toEqual({ allowed: true, count: 3 });
+  });
+});

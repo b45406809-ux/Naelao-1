@@ -5,6 +5,7 @@ import { publishCompletedTask, type TaskPublication } from "../script-engine/tas
 import { scheduleToolOutputExpiry } from "../script-engine/tool-output-expiry.js";
 import { attachmentToolsForRun } from "../media/attachment-capabilities.js";
 import { clearChannelExtensionConversationSessions, clearChannelExtensionSessions, initChannelExtensionSessionStore, readChannelExtensionSession, readChannelExtensionSessions, summarizeChannelExtensionSessions, writeChannelExtensionNamedSessions, writeChannelExtensionSession } from "../channels/channel-extension-session.js";
+import { opaqueExternalSubject } from "../channel-external-quota.js";
 // ── NaelaoAgentDO — ReAct Agent Durable Object ───────────────────────────────
 // Fulfills G-D01 through G-D20: Agent runtime with ReAct loop, tool dispatch,
 // timeout watchdog, and SQLite-persisted run state.
@@ -578,7 +579,7 @@ interface ProjectRule {
 // CLOSED on "error" (clamp to the most restrictive tier, treat as spend-capped) and only stay
 // permissive on "not_found".
 type ProjectConfigResult =
-  | { status: "found"; execution_ceiling: number; daily_spend_cap_credits: number }
+  | { status: "found"; execution_ceiling: number; daily_spend_cap_credits: number; external_daily_message_cap: number }
   | { status: "not_found" }
   | { status: "error" };
 
@@ -7386,8 +7387,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }));
       if (resp.status === 404) return { status: "not_found" };
       if (!resp.ok) return { status: "error" };
-      const data = await resp.json<{ execution_ceiling: number; daily_spend_cap_credits: number }>();
-      return { status: "found", execution_ceiling: data.execution_ceiling, daily_spend_cap_credits: data.daily_spend_cap_credits };
+      const data = await resp.json<{ execution_ceiling: number; daily_spend_cap_credits: number; external_daily_message_cap?: number }>();
+      return { status: "found", execution_ceiling: data.execution_ceiling, daily_spend_cap_credits: data.daily_spend_cap_credits,
+        external_daily_message_cap: Number.isInteger(data.external_daily_message_cap) ? Number(data.external_daily_message_cap) : 0 };
     } catch {
       return { status: "error" };
     }
@@ -7870,6 +7872,28 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           msg.id, msg.channel_extension_instance_id, msg.channel_extension_sha256
         );
         if (claim.rowsWritten !== 1) { takeover("The handler event was already claimed and its delivery state could not be confirmed. Review the conversation before replying."); escalated++; continue; }
+        try {
+          const subjectHash = await opaqueExternalSubject(this.env.PLATFORM_SECRET,
+            [tenantId, spaceId, msg.project_id, msg.channel_extension_instance_id, msg.channel, msg.channel_user_id]);
+          const quota = await this.env.SPACES_WORKER.fetch(new Request(
+            `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(msg.project_id)}/external-message-usage`,
+            { method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
+              body: JSON.stringify({ installation_id: msg.channel_extension_instance_id, provider: msg.channel, subject_hash: subjectHash }) },
+          ));
+          const quotaResult = quota.ok ? await quota.json<{ allowed?: boolean; daily_cap?: number }>() : null;
+          if (quotaResult?.allowed !== true) {
+            this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code=? WHERE message_id=?",
+              quotaResult?.daily_cap ? "external_daily_message_cap" : "external_quota_unavailable", msg.id);
+            takeover(quotaResult?.daily_cap
+              ? `This sender reached the project's daily message limit of ${quotaResult.daily_cap}. The extension did not process this message; review the conversation or raise the project limit.`
+              : "The project's external message limit could not be verified. The extension did not process this message; review the conversation manually.");
+            escalated++; continue;
+          }
+        } catch {
+          this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code='external_quota_unavailable' WHERE message_id=?", msg.id);
+          takeover("The project's external message limit could not be verified. The extension did not process this message; review the conversation manually.");
+          escalated++; continue;
+        }
         const handler = await this.loadActiveChannelHandler({ spaceId, tenantId, projectId: msg.project_id,
           channel: msg.channel, messageId: msg.id, instanceId: msg.channel_extension_instance_id, scriptSha256: msg.channel_extension_sha256 });
         const channelRunner = engineEnv.codeRunner?.runChannel;

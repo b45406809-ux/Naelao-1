@@ -1243,3 +1243,11 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - The Bots roster now consumes those signals and links to the relevant project. No model output or lifecycle mutation is involved; the API response explicitly marks itself advisory-only.
 - Verification: Spaces Worker and Shell typechecks passed; review ranker tests passed (3); API scope test passed (1); scheduled-jobs route/dispatch tests passed (38).
 - Phase 3 still lacks the actual platform-maintained Space-wide extension installation and isolated workspace, periodic review execution, journal/task/extension-health evidence, quiet-hours/missed-tick policy, and an attributed confirmation workflow. The current review endpoint is a useful read-only substrate, not completion of that extension requirement.
+
+### Phase 4 external usage controls checkpoint (2026-10-17)
+
+- Added project setting `external_daily_message_cap` (0 = unlimited, maximum 10,000) and exposed it in Project settings as a per-person daily limit for external channel traffic.
+- External sender identity is keyed with HMAC-SHA256 over tenant, Space, Project, installation, provider, and sender ID. Only the opaque digest is stored; raw provider IDs are not copied into quota records.
+- The allowance is atomically counted in the shared SpaceDO, partitioned by project, installation, provider, digest, and UTC day. This keeps the cap effective across a customer's multiple conversations/AgentDOs. The worker endpoint is HMAC-gated and checks the project is in the addressed Space. A reached cap or unavailable quota check prevents extension execution and switches the conversation to human review.
+- Verification: Agents, Spaces, and Shell typechecks passed; project config/quota suites passed (15 tests); `git diff --check` passed. A broader older project-config fail-closed suite was also run and had five fixture/behavior failures unrelated to this quota slice; logged as candidates for the separate Phase 7 test track.
+- Phase 4 remains open: actual per-installation provider OAuth/credential lifecycle, customer identity routing across named instances, provider webhook lifecycle/revocation, robust spend/credit ceilings, abuse response and human settings still need implementation and end-to-end coverage.

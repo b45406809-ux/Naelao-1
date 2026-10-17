@@ -1016,6 +1016,7 @@ export interface Project {
   viewport_config?: { component?: string; resourceId?: string; canvasPrimary?: boolean; copilotPlacement?: string; mount?: string; tab?: string };
   execution_ceiling?: number;
   daily_spend_cap_credits?: number;
+  external_daily_message_cap?: number;
   channel_config?: Record<string, unknown>;
   visibility?: "public" | "private";
 }
@@ -1155,6 +1156,7 @@ export async function updateProject(
     kind: string;
     execution_ceiling: number;
     daily_spend_cap_credits: number;
+    external_daily_message_cap: number;
     max_threads: number;
     default_agent_id: string | null;
     allowed_agent_ids: string[] | null;

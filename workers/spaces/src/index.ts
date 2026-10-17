@@ -2126,6 +2126,19 @@ app.post("/spaces/:spaceId/projects/:projectId/spend", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
+// Internal customer-channel quota claim. HMAC authentication prevents callers from spoofing
+// sender hashes or consuming another tenant's project allowance.
+app.use("/spaces/:spaceId/projects/:projectId/external-message-usage", requireInternalHmac((c) => c.env.PLATFORM_SECRET ?? ""));
+app.post("/spaces/:spaceId/projects/:projectId/external-message-usage", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const query = new URLSearchParams({ space_id: spaceId });
+  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/external-message-usage?${query}`, "POST", c.req.raw.body);
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
 // ── Launchpad Wallet ──────────────────────────────────────────────────────────
 app.get("/spaces/:spaceId/projects/:projectId/wallet/balance", async (c) => {
   const { spaceId, projectId } = c.req.param();

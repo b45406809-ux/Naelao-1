@@ -4,6 +4,7 @@ import { normalizeWorkspacePath } from "../../../agents/src/script-engine/worksp
 import { DurableObject } from "cloudflare:workers";
 import { applyMigrations, execute, queryAll, queryOne, validateMigrationSequence } from "@naelao/db";
 import type { Migration } from "@naelao/db";
+import { recordExternalMessage } from "../project-external-quota.js";
 import {
   buildFireParams,
   evaluateCondition,
@@ -2094,6 +2095,20 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_extension_instances_named ON extension_instances(extension_id,tenant_id,space_id,project_id,instance_key,status);
     `,
   },
+  {
+    version: 86,
+    description: "per external sender daily channel message caps",
+    up: `ALTER TABLE projects ADD COLUMN external_daily_message_cap INTEGER NOT NULL DEFAULT 0 CHECK (external_daily_message_cap BETWEEN 0 AND 10000);`,
+  },
+  {
+    version: 87,
+    description: "shared per-project external sender message quota usage",
+    up: `CREATE TABLE project_external_quota_usage (
+      project_id TEXT NOT NULL, installation_id TEXT NOT NULL, provider TEXT NOT NULL, subject_hash TEXT NOT NULL,
+      day TEXT NOT NULL, message_count INTEGER NOT NULL CHECK(message_count > 0), updated_at INTEGER NOT NULL,
+      PRIMARY KEY(project_id,installation_id,provider,subject_hash,day)
+    );`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -3295,6 +3310,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       if (method === "POST" && projectSpendMatch?.[1]) {
         return this.debitProjectSpend(projectSpendMatch[1], request);
+      }
+      const externalUsageMatch = url.pathname.match(/^\/projects\/([^/]+)\/external-message-usage$/);
+      if (method === "POST" && externalUsageMatch?.[1]) {
+        return this.recordProjectExternalMessage(externalUsageMatch[1], url.searchParams, request);
       }
       // ── Builder observability surface (security audit follow-up) ──────────────
       // `await` here (not bare `return this.recordAgentActivity(...)`) deliberately, unlike most
@@ -6321,6 +6340,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         external_channel_profile?: boolean;
         execution_ceiling?: number;
         daily_spend_cap_credits?: number;
+        external_daily_message_cap?: number;
         channel_config?: Record<string, unknown>;
         /** Host-managed extension viewport binding. Extension installers may set only the
          * CanvasMount resource; callers cannot use this field to change project ownership. */
@@ -6538,6 +6558,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         Math.max(0, body.daily_spend_cap_credits),
         projectId
       );
+    }
+    if (body.external_daily_message_cap !== undefined) {
+      if (!Number.isInteger(body.external_daily_message_cap) || body.external_daily_message_cap < 0 || body.external_daily_message_cap > 10_000) {
+        return Response.json({ error_code: "bad_request", message: "external_daily_message_cap must be an integer 0-10000 (0 = unlimited)" }, { status: 400 });
+      }
+      execute(this.ctx.storage.sql as never,
+        "UPDATE projects SET external_daily_message_cap = ? WHERE id = ?",
+        body.external_daily_message_cap, projectId);
     }
     if (body.channel_config !== undefined) {
       execute(
@@ -7538,6 +7566,27 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       cap,
       capped: cap > 0 && spentToday >= cap,
     });
+  }
+
+  private async recordProjectExternalMessage(projectId: string, params: URLSearchParams, request: Request): Promise<Response> {
+    const body: { installation_id?: string; provider?: string; subject_hash?: string } = await request
+      .json<{ installation_id?: string; provider?: string; subject_hash?: string }>().catch(() => ({}));
+    const installationId = body.installation_id ?? "";
+    const provider = body.provider ?? "";
+    const subjectHash = body.subject_hash ?? "";
+    if (!installationId || installationId.length > 200 || !/^[a-z][a-z0-9_-]{0,31}$/i.test(provider)
+      || !/^[a-f0-9]{64}$/.test(subjectHash)) {
+      return Response.json({ error_code: "external_usage_invalid" }, { status: 400 });
+    }
+    const spaceId = params.get("space_id") ?? "";
+    const project = queryOne<{ external_daily_message_cap: number }>(this.ctx.storage.sql as never,
+      "SELECT external_daily_message_cap FROM projects WHERE id=? AND space_id=?", projectId, spaceId);
+    if (!project) return Response.json({ error_code: "not_found" }, { status: 404 });
+    const day = new Date().toISOString().slice(0, 10);
+    const outcome = this.ctx.storage.transactionSync(() => recordExternalMessage(this.ctx.storage.sql, {
+      projectId, installationId, provider, subjectHash, day, dailyCap: project.external_daily_message_cap,
+    }));
+    return Response.json({ project_id: projectId, day, daily_cap: project.external_daily_message_cap, ...outcome });
   }
 
   // ── Builder observability surface (security audit follow-up) ───────────────

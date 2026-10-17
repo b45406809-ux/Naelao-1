@@ -110,6 +110,7 @@ export default function ProjectDetailPage() {
   const [draftMaxThreads, setDraftMaxThreads] = React.useState("0");
   const [draftExecutionCeiling, setDraftExecutionCeiling] = React.useState("5");
   const [draftSpendCap, setDraftSpendCap] = React.useState("0");
+  const [draftExternalDailyMessageCap, setDraftExternalDailyMessageCap] = React.useState("0");
   const [draftDefaultAgentId, setDraftDefaultAgentId] = React.useState("");
 
   const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
@@ -142,6 +143,7 @@ export default function ProjectDetailPage() {
       setDraftMaxThreads(String(p.max_threads ?? 0));
       setDraftExecutionCeiling(String(p.execution_ceiling ?? 5));
       setDraftSpendCap(String(p.daily_spend_cap_credits ?? 0));
+      setDraftExternalDailyMessageCap(String(p.external_daily_message_cap ?? 0));
       setDraftDefaultAgentId(p.default_agent_id ?? "");
     } catch {
       show("Couldn't load project");
@@ -288,6 +290,7 @@ export default function ProjectDetailPage() {
         max_threads: Number(draftMaxThreads) || 0,
         execution_ceiling: Number(draftExecutionCeiling) || 1,
         daily_spend_cap_credits: Number(draftSpendCap) || 0,
+        external_daily_message_cap: Number(draftExternalDailyMessageCap) || 0,
         default_agent_id: draftDefaultAgentId || null,
       });
       setProject(updated);
@@ -741,6 +744,20 @@ export default function ProjectDetailPage() {
             min={0}
             value={draftSpendCap}
             onChange={(e) => setDraftSpendCap(e.target.value)}
+            style={{ maxWidth: 100, textAlign: "right" }}
+          />
+        </div>
+        <div className="settings-row">
+          <div>
+            <div className="settings-row-label">Daily external messages per person</div>
+            <div className="settings-row-sub">Per project, extension, channel and sender; 0 = unlimited</div>
+          </div>
+          <FormInput
+            type="number"
+            min={0}
+            max={10000}
+            value={draftExternalDailyMessageCap}
+            onChange={(e) => setDraftExternalDailyMessageCap(e.target.value)}
             style={{ maxWidth: 100, textAlign: "right" }}
           />
         </div>
