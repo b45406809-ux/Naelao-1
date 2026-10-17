@@ -18,7 +18,7 @@ import * as React from "react";
 import { QrCode } from "@naelao/ui";
 import { ALLOWED_MODELS } from "@naelao/billing-core";
 import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelLink, ChannelPairing, ContainerInstallation, ExtensionRelease, SessionCredentials } from "@/lib/api";
-import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations } from "@/lib/api";
+import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
@@ -127,6 +127,8 @@ function ExtensionInbox({ spaceId, projectId, session, installation }: { spaceId
   const [loadingMore, setLoadingMore] = React.useState(false);
   const [takingOver, setTakingOver] = React.useState<string | null>(null);
   const [deletingConversation, setDeletingConversation] = React.useState<string | null>(null);
+  const [replyDrafts, setReplyDrafts] = React.useState<Record<string, string>>({});
+  const [replyingTo, setReplyingTo] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   React.useEffect(() => {
     let cancelled = false;
@@ -166,6 +168,18 @@ function ExtensionInbox({ spaceId, projectId, session, installation }: { spaceId
     } catch (err) { setError(err instanceof Error ? err.message : "Couldn't delete this conversation's stored data."); }
     finally { setDeletingConversation(null); }
   }
+  async function sendHumanReply(eventId: string) {
+    const text = replyDrafts[eventId]?.trim() ?? "";
+    if (replyingTo || !text) return;
+    setReplyingTo(eventId); setError(null);
+    try {
+      await replyToChannelExtensionEvent(spaceId, projectId, installation.instance_id, eventId, text, session);
+      setReplyDrafts(current => ({ ...current, [eventId]: "" }));
+      const page = await listChannelExtensionInbox(spaceId, projectId, installation.instance_id, session);
+      setEvents(page.events); setCursor(page.next_before !== null && page.next_before_id ? { before: page.next_before, beforeId: page.next_before_id } : null);
+    } catch (err) { setError(err instanceof Error ? err.message : "Couldn't send the reply. Check the provider inbox before retrying an uncertain delivery."); }
+    finally { setReplyingTo(null); }
+  }
   return <details style={{ marginTop: 8 }}>
     <summary style={{ cursor: "pointer", fontSize: 11.5 }}>Recent customer inbox events ({events.length})</summary>
     {error && <div role="alert" style={{ color: "var(--danger, #b42318)", fontSize: 11, marginTop: 6 }}>{error}</div>}
@@ -174,6 +188,7 @@ function ExtensionInbox({ spaceId, projectId, session, installation }: { spaceId
       <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}><span>{event.channel} · {event.status}</span><time>{new Date(event.created_at).toLocaleString()}</time></div>
       <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", marginTop: 5 }}>{event.text}</div>
       {event.reply_text && <div style={{ color: "var(--text2)", marginTop: 5 }}>Reply: {event.reply_text}</div>}
+      {event.human_reply_text && <div style={{ color: "var(--text2)", marginTop: 5 }}>Team reply ({event.human_reply_status}): {event.human_reply_text}</div>}
       {event.error_code && <div role="status" style={{ color: "var(--danger, #b42318)", marginTop: 5 }}>Issue: {event.error_code}</div>}
       {(event.human_takeover || pausedEvents.has(event.event_id)) && <div role="status" style={{ marginTop: 5 }}>Automatic handling paused for this conversation. Reply through your connected provider inbox.</div>}
       <button type="button" className="btn-ghost" style={{ marginTop: 6, fontSize: 10.5 }} disabled={!!takingOver || event.human_takeover || pausedEvents.has(event.event_id) || event.status === "running" || event.status === "delivering"} onClick={() => void takeOver(event.event_id)}>
@@ -182,6 +197,14 @@ function ExtensionInbox({ spaceId, projectId, session, installation }: { spaceId
       <button type="button" className="btn-ghost" style={{ margin: "6px 0 0 6px", fontSize: 10.5 }} disabled={!!deletingConversation || event.status === "running" || event.status === "processing" || event.status === "delivering"} onClick={() => void deleteConversation(event.event_id)}>
         {deletingConversation === event.event_id ? "Deleting…" : "Delete stored conversation data"}
       </button>
+      {event.human_takeover && <div style={{ display: "grid", gap: 5, marginTop: 7 }}>
+        <label htmlFor={`extension-reply-${event.event_id}`}>Team reply</label>
+        <textarea id={`extension-reply-${event.event_id}`} maxLength={2000} rows={3} value={replyDrafts[event.event_id] ?? ""} disabled={!!event.human_reply_status || !!replyingTo}
+          onChange={e => setReplyDrafts(current => ({ ...current, [event.event_id]: e.target.value }))} placeholder="Write a reply to send through the connected channel" style={{ width: "100%", boxSizing: "border-box", background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 6, padding: 7, font: "inherit" }} />
+        <button type="button" className="btn-ghost" style={{ justifySelf: "start", fontSize: 10.5 }} disabled={!!replyingTo || !!event.human_reply_status || !replyDrafts[event.event_id]?.trim()} onClick={() => void sendHumanReply(event.event_id)}>
+          {replyingTo === event.event_id ? "Sending…" : event.human_reply_status === "sent" ? "Team reply sent" : event.human_reply_status === "uncertain" ? "Delivery uncertain — check provider" : "Send team reply"}
+        </button>
+      </div>}
     </article>)}
     {cursor && <button type="button" className="btn-ghost" style={{ marginTop: 8, fontSize: 11 }} disabled={loadingMore} onClick={() => void loadMore()}>{loadingMore ? "Loading…" : "Load older events"}</button>}
   </details>;

@@ -1163,3 +1163,10 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Updated the Trading Mentor sample to write its submitted order to the install-scoped trade journal after the broker operation, and bumped the package to `1.2.0` so the changed artifacts remain compatible with immutable releases.
 - Verification passed: SDK, Spaces, Agents, and Shell typechecks; SDK bundle contract suite (15 tests); Agents workflow compiler/scope suites (9 tests); Spaces Gadget bridge suite (2 tests); and `git diff --check`.
 - Remaining limits: Canvas-side Gadget actions and Gadget update/delete are not implemented. The current workflow Gadget API is only list/get/insert. This host bridge and its package declaration reject unsupported operations and does not expose arbitrary SQL.
+
+## Extension inbox follow-up — owner/admin replies
+
+- Added a reply action for an owner/admin after pausing a conversation. Text is UTF-8 bounded to 2 KiB and moderation checked, sent only through the existing host `notify.<provider>` operation, and persisted by event ID. One manual reply attempt is allowed per inbound event; sent replies become part of the stored conversation, while uncertain delivery is retained for human reconciliation without automatic resend.
+- The handler rejects replies during automated processing/delivery and scopes each event to the exact project and active installation. Conversation deletion removes the reply ledger/content along with the message transcript and session state.
+- Verification passed: Agents typecheck, focused inbox suite (6 tests), Shell typecheck, and `git diff --check`.
+- Remaining: assignment, transcript export, and live provider/account delivery acceptance.

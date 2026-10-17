@@ -1544,6 +1544,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       status TEXT NOT NULL CHECK(status IN ('running','delivering','sent','uncertain','failed')),
       reply_text TEXT, error_code TEXT, created_at INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
     )`);
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS channel_extension_human_replies (
+      event_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, installation_id TEXT NOT NULL, reply_text TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('delivering','sent','uncertain')), error_code TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
+    )`);
     initChannelExtensionSessionStore(this.ctx.storage.sql);
     try { this.ctx.storage.sql.exec(`ALTER TABLE channel_messages ADD COLUMN task_id TEXT`); } catch { /* exists */ }
     this.ctx.storage.sql.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_msg_dedupe ON channel_messages(session_id, direction, external_id)`);
@@ -1800,6 +1805,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (method === "GET" && url.pathname === "/channels/extensions/inbox") return this.handleChannelExtensionInbox(url.searchParams);
       if (method === "POST" && url.pathname === "/channels/extensions/inbox/takeover") return this.handleChannelExtensionInboxTakeover(request);
       if (method === "POST" && url.pathname === "/channels/extensions/inbox/delete-conversation") return this.handleChannelExtensionInboxDeleteConversation(request);
+      if (method === "POST" && url.pathname === "/channels/extensions/inbox/reply") return this.handleChannelExtensionInboxReply(request);
       if (method === "GET" && url.pathname === "/channels/extensions/session-state") {
         const projectId = url.searchParams.get("project_id") ?? "";
         const installationId = url.searchParams.get("installation_id") ?? "";
@@ -5638,9 +5644,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const rows = this.ctx.storage.sql.exec(
       `SELECT m.id AS event_id,s.channel,s.human_takeover,m.text,m.answered,m.created_at,
               COALESCE(d.status,CASE m.answered WHEN 1 THEN 'sent' WHEN 2 THEN 'processing' ELSE 'queued' END) AS status,
-              d.reply_text,d.error_code,d.created_at AS dispatched_at
+              d.reply_text,d.error_code,d.created_at AS dispatched_at,h.reply_text AS human_reply_text,h.status AS human_reply_status
        FROM channel_messages m JOIN channel_sessions s ON s.id=m.session_id
        LEFT JOIN channel_extension_dispatches d ON d.message_id=m.id
+       LEFT JOIN channel_extension_human_replies h ON h.event_id=m.id
        WHERE m.direction='inbound' AND m.project_id=? AND m.channel_extension_instance_id=?
          AND (m.created_at<? OR (m.created_at=? AND m.id<?))
        ORDER BY m.created_at DESC,m.id DESC LIMIT ?`, projectId, installationId, before, before, beforeId, limit
@@ -5694,10 +5701,60 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (active || event.status === "running" || event.status === "delivering" || event.answered === 2)
       return Response.json({ error_code: "channel_extension_event_in_flight" }, { status: 409 });
     this.ctx.storage.sql.exec("DELETE FROM channel_extension_dispatches WHERE message_id IN (SELECT id FROM channel_messages WHERE session_id=?)", event.session_id);
+    this.ctx.storage.sql.exec("DELETE FROM channel_extension_human_replies WHERE event_id IN (SELECT id FROM channel_messages WHERE session_id=?)", event.session_id);
     this.ctx.storage.sql.exec("DELETE FROM channel_messages WHERE session_id=?", event.session_id);
     this.ctx.storage.sql.exec("DELETE FROM channel_sessions WHERE id=?", event.session_id);
     clearChannelExtensionConversationSessions(this.ctx.storage.sql, { projectId, installationId, conversationId: event.session_id });
     return Response.json({ deleted: true });
+  }
+
+  private async handleChannelExtensionInboxReply(request: Request): Promise<Response> {
+    const body = await request.json<{ project_id?: string; installation_id?: string; event_id?: string; text?: string; tenant_id?: string; actor_id?: string; space_id?: string }>()
+      .catch(() => ({} as { project_id?: string; installation_id?: string; event_id?: string; text?: string; tenant_id?: string; actor_id?: string; space_id?: string }));
+    const projectId = typeof body.project_id === "string" ? body.project_id : "";
+    const installationId = typeof body.installation_id === "string" ? body.installation_id : "";
+    const eventId = typeof body.event_id === "string" ? body.event_id : "";
+    const text = typeof body.text === "string" ? body.text.trim() : "";
+    if (!projectId || !installationId || !/^[A-Za-z0-9._:-]{1,160}$/.test(eventId) || !text || new TextEncoder().encode(text).byteLength > 2_000)
+      return Response.json({ error_code: "channel_extension_reply_invalid" }, { status: 400 });
+    if (!moderateText(text).allowed) return Response.json({ error_code: "channel_extension_reply_blocked" }, { status: 400 });
+    const event = this.ctx.storage.sql.exec(
+      `SELECT m.session_id,m.answered,s.channel,s.channel_user_id,COALESCE(d.status,'queued') AS status
+       FROM channel_messages m JOIN channel_sessions s ON s.id=m.session_id
+       LEFT JOIN channel_extension_dispatches d ON d.message_id=m.id
+       WHERE m.id=? AND m.direction='inbound' AND m.project_id=? AND m.channel_extension_instance_id=? LIMIT 1`,
+      eventId, projectId, installationId,
+    ).toArray()[0] as { session_id: string; answered: number; channel: string; channel_user_id: string; status: string } | undefined;
+    if (!event) return Response.json({ error_code: "channel_extension_event_not_found" }, { status: 404 });
+    if (event.status === "running" || event.status === "delivering" || event.status === "processing" || event.answered === 2)
+      return Response.json({ error_code: "channel_extension_event_in_flight" }, { status: 409 });
+    const prior = this.ctx.storage.sql.exec("SELECT 1 AS exists FROM channel_extension_human_replies WHERE event_id=?", eventId).toArray()[0];
+    if (prior) return Response.json({ error_code: "channel_extension_reply_already_attempted" }, { status: 409 });
+    this.ctx.storage.sql.exec(`INSERT INTO channel_extension_human_replies(event_id,project_id,installation_id,reply_text,status)
+      VALUES(?,?,?,?,'delivering')`, eventId, projectId, installationId, text);
+    // Pause before yielding so the automated consumer cannot race this owner-initiated reply.
+    this.ctx.storage.sql.exec("UPDATE channel_sessions SET human_takeover=1 WHERE id=?", event.session_id);
+    const spaceId = typeof body.space_id === "string" ? body.space_id : "", tenantId = typeof body.tenant_id === "string" ? body.tenant_id : "";
+    const actorId = typeof body.actor_id === "string" ? body.actor_id : "";
+    const engineEnv = await this.buildScriptEngineEnv(spaceId, "naelao-agent", tenantId, actorId || undefined);
+    if (!engineEnv) {
+      this.ctx.storage.sql.exec("DELETE FROM channel_extension_human_replies WHERE event_id=? AND status='delivering'", eventId);
+      return Response.json({ error_code: "channel_reply_host_unavailable" }, { status: 503 });
+    }
+    try {
+      const delivery = await new ScriptToolSurface(engineEnv, ["notifications"]).run(`notify.${event.channel}`,
+        this.notifyParamsFor(event.channel, event.channel_user_id, text));
+      if (!delivery.ok) {
+        this.ctx.storage.sql.exec("UPDATE channel_extension_human_replies SET status='uncertain',error_code='provider_delivery_uncertain' WHERE event_id=?", eventId);
+        return Response.json({ status: "uncertain", error_code: "provider_delivery_uncertain" });
+      }
+      this.ctx.storage.sql.exec("UPDATE channel_extension_human_replies SET status='sent' WHERE event_id=?", eventId);
+      this.markOutbound(event.session_id, eventId, text);
+      return Response.json({ status: "sent" });
+    } catch {
+      this.ctx.storage.sql.exec("UPDATE channel_extension_human_replies SET status='uncertain',error_code='provider_delivery_uncertain' WHERE event_id=?", eventId);
+      return Response.json({ status: "uncertain", error_code: "provider_delivery_uncertain" });
+    }
   }
 
   private handleChannelUnanswered(): Response {

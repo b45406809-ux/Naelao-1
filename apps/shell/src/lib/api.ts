@@ -1841,6 +1841,8 @@ export interface ChannelExtensionInboxEvent {
   status: "queued" | "processing" | "running" | "delivering" | "sent" | "uncertain" | "failed";
   error_code: string | null;
   reply_text: string | null;
+  human_reply_text?: string | null;
+  human_reply_status?: "delivering" | "sent" | "uncertain" | null;
   created_at: number;
 }
 
@@ -1866,6 +1868,12 @@ export async function takeOverChannelExtensionInboxEvent(spaceId: string, projec
 export async function deleteChannelExtensionConversation(spaceId: string, projectId: string, instanceId: string, eventId: string, session: SessionCredentials): Promise<{ deleted: true }> {
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/channel-extensions/${encodeURIComponent(instanceId)}/inbox/delete-conversation`, {
     method: "POST", session, body: JSON.stringify({ event_id: eventId }),
+  });
+}
+
+export async function replyToChannelExtensionEvent(spaceId: string, projectId: string, instanceId: string, eventId: string, text: string, session: SessionCredentials): Promise<{ status: "sent" | "uncertain" }> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/channel-extensions/${encodeURIComponent(instanceId)}/inbox/reply`, {
+    method: "POST", session, body: JSON.stringify({ event_id: eventId, text }),
   });
 }
 

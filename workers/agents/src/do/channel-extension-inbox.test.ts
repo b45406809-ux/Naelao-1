@@ -10,9 +10,10 @@ describe("channel extension inbox projection", () => {
     storage.sql.exec("INSERT INTO channel_sessions(id,channel,channel_user_id,project_id) VALUES('session-a','whatsapp','+15550000001','project-a'),('session-b','whatsapp','+15550000002','project-b')");
     storage.sql.exec("INSERT INTO channel_messages(id,session_id,direction,text,external_id,project_id,channel_extension_instance_id,channel_extension_sha256,created_at) VALUES('event-a','session-a','inbound','question','provider-a','project-a','install-a','digest-a',20),('event-b','session-a','inbound','other install','provider-b','project-a','install-b','digest-b',30),('event-c','session-b','inbound','other project','provider-c','project-b','install-a','digest-c',40)");
     storage.sql.exec("INSERT INTO channel_extension_dispatches(message_id,installation_id,script_sha256,status,reply_text,created_at) VALUES('event-a','install-a','digest-a','failed',NULL,21)");
+    storage.sql.exec("INSERT INTO channel_extension_human_replies(event_id,project_id,installation_id,reply_text,status) VALUES('event-a','project-a','install-a','Team response','sent')");
     const response = await agent.fetch(new Request("http://agent/channels/extensions/inbox?project_id=project-a&installation_id=install-a"));
     const body = await response.json() as { events: Array<Record<string, unknown>> };
-    expect(body).toMatchObject({ events: [{ event_id: "event-a", channel: "whatsapp", human_takeover: false, status: "failed", error_code: null }] });
+    expect(body).toMatchObject({ events: [{ event_id: "event-a", channel: "whatsapp", human_takeover: false, status: "failed", error_code: null, human_reply_text: "Team response", human_reply_status: "sent" }] });
     expect(body.events[0]).not.toHaveProperty("external_id");
     expect(body.events[0]).not.toHaveProperty("channel_user_id");
   });
@@ -62,6 +63,19 @@ describe("channel extension inbox projection", () => {
     expect(storage.sql.exec("SELECT id FROM channel_messages").toArray()).toEqual([{ id: "event-b" }]);
     expect(storage.sql.exec("SELECT conversation_id FROM channel_extension_sessions").toArray()).toEqual([{ conversation_id: "session-b" }]);
     expect(storage.sql.exec("SELECT conversation_id FROM channel_extension_named_sessions").toArray()).toEqual([]);
+  });
+
+  it("blocks a manual reply while an automated delivery is in flight and scopes by install", async () => {
+    const storage = createDOStorage();
+    const agent = new NaelaoAgentDO({ storage, id: { toString: () => "agent" } } as never, { PLATFORM_SECRET: "test-platform-secret" } as never);
+    await agent.fetch(new Request("http://agent/channels/extensions/inbox?project_id=project-a&installation_id=install-a"));
+    storage.sql.exec("INSERT INTO channel_sessions(id,channel,channel_user_id,project_id) VALUES('session-a','whatsapp','recipient-a','project-a')");
+    storage.sql.exec("INSERT INTO channel_messages(id,session_id,direction,text,project_id,channel_extension_instance_id,answered,created_at) VALUES('event-a','session-a','inbound','question','project-a','install-a',2,20),('event-b','session-a','inbound','other install','project-a','install-b',2,30)");
+    storage.sql.exec("INSERT INTO channel_extension_dispatches(message_id,installation_id,script_sha256,status) VALUES('event-a','install-a','digest','delivering')");
+    const send = (eventId: string, projectId = "project-a") => agent.fetch(new Request("http://agent/channels/extensions/inbox/reply", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ space_id: "space-a", tenant_id: "tenant-a", actor_id: "owner-a", project_id: projectId, installation_id: "install-a", event_id: eventId, text: "We will follow up." }) }));
+    expect((await send("event-a")).status).toBe(409);
+    expect((await send("event-b")).status).toBe(404);
+    expect(storage.sql.exec("SELECT event_id FROM channel_extension_human_replies").toArray()).toEqual([]);
   });
 
   it("bounds page size and requires project plus installation identity", async () => {
