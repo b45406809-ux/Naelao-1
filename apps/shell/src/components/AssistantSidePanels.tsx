@@ -676,12 +676,11 @@ function ChannelsPanel({
   }, [spaceId, session, projectId]);
   React.useEffect(() => { setChannels(null); load(); }, [load]);
 
-  // Connecting is space-wide by construction (POST /assistant/channels has no per-project connect
-  // variant — see the route's own header) — only offered from the assistant-wide view, matching
-  // how the full dashboard/assistant page's own ChannelConnect is scoped.
+  // Public channels can be attached to a project; management still follows the business
+  // owner/admin role rather than project membership alone.
   React.useEffect(() => {
     let cancelled = false;
-    if (!isBusinessSpace || projectId) { setCanManage(false); return; }
+    if (!isBusinessSpace) { setCanManage(false); return; }
     listMyBusinesses(product.space_id, session)
       .then((list) => list.find((b) => b.id === spaceId) ?? null)
       .then((b) => { if (!cancelled) setCanManage(canManageSpaceSettings(true, b?.role)); })
@@ -736,6 +735,7 @@ function ChannelsPanel({
           <ChannelConnect
             spaceId={spaceId}
             session={session}
+            projectId={projectId ?? null}
             channels={channels ?? []}
             canManage={canManage}
             onChanged={load}

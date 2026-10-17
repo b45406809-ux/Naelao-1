@@ -12,7 +12,7 @@ import type {
   TieredCodeRunner,
 } from "./types.js";
 import { type ContainerBackend, type Tier6ContainerOptions, type ScopedCodeRpcOptions } from "@naelao/agent-sdk";
-import { runIsolate, codeFailure } from "./isolated-runtime.js";
+import { runIsolate, runBoundChannelIsolate, codeFailure } from "./isolated-runtime.js";
 import type { CodeRpcBinding } from "./code-rpc-broker.js";
 import { validateContainerScope, sidecarKey, assertBrowserContainerLease, type ContainerInvocationScope, type BrowserContainerLease, type InstalledContainer } from "./container-policy.js";
 
@@ -423,6 +423,15 @@ function workspaceBranchScope(branch?: string): string {
 export function buildCodeRunner(opts: CodeRunnerOptions): TieredCodeRunner {
   const browserSessions = new Map<string, BrowserRuntimeScope>();
   return {
+    async runChannel(params) {
+      return runBoundChannelIsolate(opts, {
+        name: params.name, code: params.code, tier: 2, args: params.args,
+        tenantId: params.tenantId, spaceId: params.spaceId, agentId: params.agentId,
+        language: "typescript", signal: params.signal,
+        limits: { cpuMs: params.limits?.cpuMs ?? 1_000, wallMs: params.limits?.wallMs ?? 5_000,
+          inputBytes: params.limits?.inputBytes ?? 65_536, outputBytes: params.limits?.outputBytes ?? 8_192 },
+      }, params.channel, { installationId: params.installationId, maxConcurrency: params.maxConcurrency });
+    },
     async run(params) {
       if (params.signal?.aborted) return codeFailure(params, Date.now(), "code_cancelled_or_timed_out");
       if (params.maxTier !== undefined && params.tier > params.maxTier) return codeFailure(params, Date.now(), "execution_ceiling_exceeded");

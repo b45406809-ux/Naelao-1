@@ -210,6 +210,8 @@ export interface ScriptRunResult {
   engine?: "sqlite_fs" | "isolate" | "workflow" | "kitesurf" | "chromium" | "container";
   capability_error?: { code: string; capability?: string; required_tier?: ExecutionTier };
   runtime_receipt?: { execution_id: string; code_digest?: string; backend: string; wall_ms: number; cpu_ms?: number; memory_limit_mb?: number; output_bytes?: number; cost_usd?: number; cost_source: "provider" | "unreported" };
+  /** Captured public-channel replies; emitted only by the restricted channel handler runner. */
+  channel_replies?: string[];
   /** Milliseconds of wall-clock execution. */
   duration_ms: number;
   /** Reasoning-model tokens consumed by this run (0 for pure script execution). */
@@ -507,6 +509,13 @@ export interface TieredCodeRunner {
     maxTier?: ExecutionTier;
     limits?: { cpuMs?: number; wallMs?: number; memoryMb?: number; inputBytes?: number; outputBytes?: number };
     dependencies?: readonly { name: string; version: string; sha256: string }[];
+  }): Promise<ScriptRunResult>;
+  /** Host-only execution entrypoint; it is not registered as a script tool. */
+  runChannel?(params: {
+    name: string; code: string; args: Record<string, unknown>; tenantId: string; spaceId: string; agentId: string;
+    installationId: string; maxConcurrency: number;
+    channel: { provider: string; event: { id: string; type: string; occurredAt: string; payload: Readonly<Record<string, unknown>> }; conversation: { id: string } };
+    signal?: AbortSignal; limits?: { cpuMs?: number; wallMs?: number; inputBytes?: number; outputBytes?: number };
   }): Promise<ScriptRunResult>;
 }
 

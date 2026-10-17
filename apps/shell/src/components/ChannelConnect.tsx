@@ -17,8 +17,8 @@
 import * as React from "react";
 import { QrCode } from "@naelao/ui";
 import { ALLOWED_MODELS } from "@naelao/billing-core";
-import type { ChannelLink, ChannelPairing, SessionCredentials } from "@/lib/api";
-import { updateAssistantChannel, pairAssistantChannel } from "@/lib/api";
+import type { ChannelExtensionInstallation, ChannelLink, ChannelPairing, SessionCredentials } from "@/lib/api";
+import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
@@ -81,12 +81,14 @@ export const CHANNELS: Array<{
 export function ChannelConnect({
   spaceId,
   session,
+  projectId,
   channels,
   canManage,
   onChanged,
 }: {
   spaceId: string;
   session: SessionCredentials;
+  projectId?: string | null;
   channels: ChannelLink[];
   canManage: boolean;
   onChanged: () => void;
@@ -101,6 +103,21 @@ export function ChannelConnect({
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [webhookUrl, setWebhookUrl] = React.useState<{ channel: string; url: string } | null>(null);
+  const [extensionInstallations, setExtensionInstallations] = React.useState<ChannelExtensionInstallation[]>([]);
+  const [extensionLoadError, setExtensionLoadError] = React.useState<string | null>(null);
+  const [extensionsLoading, setExtensionsLoading] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!projectId || !canManage) { setExtensionInstallations([]); setExtensionLoadError(null); setExtensionsLoading(false); return; }
+    let cancelled = false;
+    setExtensionsLoading(true);
+    setExtensionLoadError(null);
+    listChannelExtensionInstallations(spaceId, projectId, session)
+      .then((items) => { if (!cancelled) setExtensionInstallations(items); })
+      .catch((err) => { if (!cancelled) { setExtensionInstallations([]); setExtensionLoadError(err instanceof Error ? err.message : "Couldn't load project channel handlers."); } })
+      .finally(() => { if (!cancelled) setExtensionsLoading(false); });
+    return () => { cancelled = true; };
+  }, [spaceId, projectId, session, canManage]);
 
   const byId = new Map(channels.map((c) => [c.channel, c]));
 
@@ -111,7 +128,7 @@ export function ChannelConnect({
     setAdvanced(null);
     setOpen(channel);
     try {
-      const res = await pairAssistantChannel(spaceId, session, channel);
+      const res = await pairAssistantChannel(spaceId, session, channel, projectId ?? undefined);
       setPairing(res);
       // A redirect flow finishes in a browser tab, so send them there directly rather than making
       // them scan a code on the same screen they're already looking at.
@@ -133,6 +150,7 @@ export function ChannelConnect({
       const res = await updateAssistantChannel(spaceId, session, {
         action,
         channel,
+        ...(action === "connect" && projectId ? { project_id: projectId } : {}),
         ...(action === "connect" ? { secret } : {}),
         ...(action === "connect" && channel === "whatsapp" && mediaAccessToken.trim() ? { media_access_token: mediaAccessToken.trim() } : {}),
         ...(action === "connect" && channel === "whatsapp" && whatsappPhoneNumberId.trim() && whatsappAccessToken.trim()
@@ -164,8 +182,23 @@ export function ChannelConnect({
     } finally { setBusy(false); }
   }
 
+  async function bindExtension(channel: ChannelId, instanceId: string) {
+    if (!projectId) return;
+    setBusy(true); setError(null);
+    try {
+      await updateAssistantChannel(spaceId, session, {
+        action: instanceId ? "bind_extension" : "unbind_extension",
+        channel, project_id: projectId, ...(instanceId ? { extension_instance_id: instanceId } : {}),
+      });
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't bind this channel handler.");
+    } finally { setBusy(false); }
+  }
+
   return (
     <div>
+      {extensionLoadError && <div role="alert" style={{ marginBottom: 10, color: "var(--danger, #b42318)", fontSize: 12 }}>{extensionLoadError}</div>}
       {CHANNELS.map((ch) => {
         const link = byId.get(ch.id);
         const connected = !!link;
@@ -222,6 +255,17 @@ export function ChannelConnect({
               <select id={`channel-model-${ch.id}`} aria-label={`${ch.name} reply model`} disabled={busy} value={link?.model_override ?? ""} onChange={(event) => void setChannelModel(ch.id, event.target.value)} style={{ maxWidth: 360, background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 7, padding: "6px 8px", fontSize: 12 }}>
                 <option value="">Use Space default</option>
                 {ALLOWED_MODELS.map((model) => <option key={model} value={model}>{modelLabel(model)}</option>)}
+              </select>
+            </div>}
+
+            {connected && canManage && projectId && <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 9 }}>
+              <label htmlFor={`channel-extension-${ch.id}`} style={{ fontSize: 11.5, color: "var(--text3)" }}>Customer handler</label>
+              <select id={`channel-extension-${ch.id}`} aria-label={`${ch.name} customer channel handler`} disabled={busy} value={link?.extension_instance_id ?? ""} onChange={(event) => void bindExtension(ch.id, event.target.value)} style={{ maxWidth: 360, background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 7, padding: "6px 8px", fontSize: 12 }}>
+                <option value="">No customer extension bound (hold for human review)</option>
+                {extensionsLoading && <option disabled value="__loading">Loading handlers…</option>}
+                {extensionInstallations.filter((installation) => installation.channels.some((declaration) => declaration.provider === ch.id)).map((installation) => (
+                  <option key={installation.instance_id} value={installation.instance_id}>{installation.extension_id} · {installation.scope === "PROJECT_SHARED" ? "shared" : "project"}</option>
+                ))}
               </select>
             </div>}
 

@@ -1,11 +1,12 @@
 import { redactCodeValue } from "@naelao/agent-sdk";
-import { compileDynamicCode, buildGuestHarness, buildPythonHarness, ISOLATE_POLICY_MODULE } from "./dynamic-code.js";
+import { compileDynamicCode, buildGuestHarness, buildChannelGuestHarness, buildPythonHarness, ISOLATE_POLICY_MODULE } from "./dynamic-code.js";
 import type { CodeRunnerOptions, WorkerLoaderModuleConfig, WorkerLoaderStub } from "./code-runner.js";
 import type { CodeRpcBinding } from "./code-rpc-broker.js";
 import type { ExecutionTier, ScriptRunResult, TieredCodeRunner } from "./types.js";
 
 export type CodeRunParams = Parameters<TieredCodeRunner["run"]>[0];
 const activeByTenant = new Map<string, number>();
+const activeByChannelInstallation = new Map<string, number>();
 let activeIsolates = 0;
 export function codeFailure(params: CodeRunParams, started: number, code: string, capability?: string, requiredTier?: ExecutionTier): ScriptRunResult {
   return { ok: false, error: code, tier: params.tier, actual_tier: params.tier, engine: "isolate",
@@ -46,9 +47,23 @@ function disposeStub(value: unknown): void {
 }
 
 export async function runIsolate(opts: CodeRunnerOptions, params: CodeRunParams): Promise<ScriptRunResult> {
+  return runIsolateInternal(opts, params);
+}
+
+type ChannelRuntimeContext = NonNullable<Parameters<NonNullable<TieredCodeRunner["runChannel"]>>[0]["channel"]>;
+export async function runBoundChannelIsolate(opts: CodeRunnerOptions, params: CodeRunParams, channel: ChannelRuntimeContext,
+  channelLimit: { installationId: string; maxConcurrency: number }): Promise<ScriptRunResult> {
+  return runIsolateInternal(opts, params, channel, channelLimit);
+}
+
+async function runIsolateInternal(opts: CodeRunnerOptions, params: CodeRunParams, channel?: ChannelRuntimeContext,
+  channelLimit?: { installationId: string; maxConcurrency: number }): Promise<ScriptRunResult> {
   const started = Date.now(), executionId = crypto.randomUUID();
   if (!opts.loader) return codeFailure(params, started, "worker_loader_unavailable");
   if (!params.tenantId || !params.spaceId || !params.agentId) return codeFailure(params, started, "code_scope_required");
+  if (channel && (!channelLimit?.installationId || !Number.isInteger(channelLimit.maxConcurrency) || channelLimit.maxConcurrency < 1)) return codeFailure(params, started, "channel_handler_concurrency_limit");
+  const channelKey = channel && channelLimit ? `${params.tenantId}:${params.spaceId}:${channelLimit.installationId}` : "";
+  if (channel && channelKey && (activeByChannelInstallation.get(channelKey) ?? 0) >= channelLimit!.maxConcurrency) return codeFailure(params, started, "channel_handler_concurrency_limit");
   const python = params.language === "python" || params.name === "code-exec.execute_python";
   if (python && !opts.pythonEnabled) return codeFailure(params, started, "python_wasm_unavailable", "python_workers");
   if (python && opts.airGappedOnly) return codeFailure(params, started, "authorized_local_python_required", "local-python", 6);
@@ -57,6 +72,7 @@ export async function runIsolate(opts: CodeRunnerOptions, params: CodeRunParams)
     return codeFailure(params, started, "code_loader_concurrency_limit");
   // Reserve before any await; simultaneous compilation cannot overbook loader slots.
   activeIsolates++; activeByTenant.set(params.tenantId, tenantCount + 1);
+  if (channel && channelKey) activeByChannelInstallation.set(channelKey, (activeByChannelInstallation.get(channelKey) ?? 0) + 1);
   const controller = new AbortController(), cancel = () => controller.abort();
   params.signal?.addEventListener("abort", cancel, { once: true });
   if (params.signal?.aborted) cancel();
@@ -76,7 +92,10 @@ export async function runIsolate(opts: CodeRunnerOptions, params: CodeRunParams)
       return codeFailure(params, started, "isolate_memory_quota_unsupported", "custom-memory-limit");
     const deadline = Date.now() + limits.wallMs;
     timer = setTimeout(cancel, limits.wallMs);
-    const requestBody = JSON.stringify({ args: python ? { ...params.args, code: String(params.args["code"] ?? params.code) } : params.args });
+    if (channel && (python || (params.capabilities?.length ?? 0) > 0)) return codeFailure(params, started, "channel_handler_capability_forbidden");
+    if (channel && new TextEncoder().encode(JSON.stringify(channel)).byteLength > 32_768) return codeFailure(params, started, "channel_event_limit");
+    const requestBody = JSON.stringify({ args: python ? { ...params.args, code: String(params.args["code"] ?? params.code) } : params.args,
+      ...(channel ? { channel } : {}) });
     if (new TextEncoder().encode(requestBody).byteLength > limits.inputBytes) return codeFailure(params, started, "code_input_limit");
     if ((params.dependencies?.length ?? 0) > 16) return codeFailure(params, started, "code_dependency_limit");
     // No unsigned dependency or package-CDN resolution. Provider stdlib is available to Python.
@@ -92,11 +111,11 @@ export async function runIsolate(opts: CodeRunnerOptions, params: CodeRunParams)
     } else {
       const compiled = await compileDynamicCode(params.code, params.language === "javascript" ? "javascript" : "typescript");
       digest = compiled.digest; modules["policy.js"] = ISOLATE_POLICY_MODULE;
-      modules["guest.js"] = compiled.javascript; modules["main.js"] = buildGuestHarness(outputBytes);
+      modules["guest.js"] = compiled.javascript; modules["main.js"] = channel ? buildChannelGuestHarness(outputBytes) : buildGuestHarness(outputBytes);
     }
     const capabilities = params.capabilities ?? [];
     if (python && capabilities.length) return codeFailure(params, started, "python_rpc_adapter_unavailable");
-    const env: Record<string, unknown> = { __SPACE_ID__: params.spaceId, ...(params.projectId ? { __PROJECT_ID__: params.projectId } : {}) };
+    const env: Record<string, unknown> = channel ? {} : { __SPACE_ID__: params.spaceId, ...(params.projectId ? { __PROJECT_ID__: params.projectId } : {}) };
     if (capabilities.length) {
       if (!opts.createRpcBinding || !opts.authorizeCodeCapability || !opts.dispatchCodeCapability) return codeFailure(params, started, "code_rpc_binding_unavailable");
       rpc = await opts.createRpcBinding({
@@ -123,11 +142,12 @@ export async function runIsolate(opts: CodeRunnerOptions, params: CodeRunParams)
       method: "POST", headers: { "content-type": "application/json" }, body: requestBody, signal: controller.signal,
     })), controller.signal);
     const body = JSON.parse(await raceAbort(readBoundedResponse(response, outputBytes + 4096), controller.signal)) as {
-      ok?: boolean; result?: unknown; error?: string; capability_error?: ScriptRunResult["capability_error"];
+      ok?: boolean; result?: unknown; error?: string; capability_error?: ScriptRunResult["capability_error"]; replies?: string[];
     };
     return { ok: response.ok && body.ok === true,
       ...(response.ok && body.ok ? { output: redactCodeValue(body.result, outputBytes, opts.platformSecret ? [opts.platformSecret] : []) } : { error: redactCodeValue(body.error ?? "isolate_http_" + response.status, outputBytes, opts.platformSecret ? [opts.platformSecret] : []) as string }),
       ...(body.capability_error ? { capability_error: body.capability_error } : {}),
+      ...(channel && Array.isArray(body.replies) && body.replies.length <= 1 && body.replies.every(reply => typeof reply === "string" && reply.length <= 2000) ? { channel_replies: body.replies } : {}),
       tier: params.tier, actual_tier: params.tier, engine: "isolate", duration_ms: Date.now() - started, tokens_used: 0,
       runtime_receipt: { execution_id: executionId, code_digest: digest, backend: python ? "python-wasm" : "dynamic-worker", wall_ms: Date.now() - started, memory_limit_mb: memoryMb,
         output_bytes: body.ok ? new TextEncoder().encode(JSON.stringify(body.result ?? null)).byteLength : 0, cost_source: "unreported" },
@@ -144,5 +164,6 @@ export async function runIsolate(opts: CodeRunnerOptions, params: CodeRunParams)
     disposeStub(entrypoint); disposeStub(stub);
     activeIsolates--; const remaining = (activeByTenant.get(params.tenantId) ?? 1) - 1;
     if (remaining) activeByTenant.set(params.tenantId, remaining); else activeByTenant.delete(params.tenantId);
+    if (channel && channelKey) { const channelRemaining = (activeByChannelInstallation.get(channelKey) ?? 1) - 1; if (channelRemaining) activeByChannelInstallation.set(channelKey, channelRemaining); else activeByChannelInstallation.delete(channelKey); }
   }
 }

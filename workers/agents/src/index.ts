@@ -4881,7 +4881,9 @@ app.post("/channels/:channel/connect", async (c) => {
   // behavior. Re-connecting can move a channel to a different project.
   await c.env.PLATFORM_DB.prepare(
     `INSERT INTO channel_links (space_id, tenant_id, channel, enabled, project_id) VALUES (?, ?, ?, 1, ?)
-     ON CONFLICT (space_id, channel) DO UPDATE SET enabled = 1, project_id = excluded.project_id`
+     ON CONFLICT (space_id, channel) DO UPDATE SET enabled = 1, project_id = excluded.project_id,
+       extension_instance_id = CASE WHEN channel_links.project_id IS excluded.project_id THEN channel_links.extension_instance_id ELSE NULL END,
+       extension_script_sha256 = CASE WHEN channel_links.project_id IS excluded.project_id THEN channel_links.extension_script_sha256 ELSE NULL END`
   ).bind(body.space_id, tenantId, channel, body.project_id ?? null).run();
 
   return c.json({ connected: true, channel, project_id: body.project_id ?? null, webhook_path: `/v1/channels/${channel}/inbound/${body.space_id}` }, 201);
@@ -5377,7 +5379,9 @@ async function bindPairedChannel(
 
   await env.PLATFORM_DB.prepare(
     `INSERT INTO channel_links (space_id, tenant_id, channel, enabled, project_id) VALUES (?, ?, ?, 1, ?)
-     ON CONFLICT (space_id, channel) DO UPDATE SET enabled = 1`
+     ON CONFLICT (space_id, channel) DO UPDATE SET enabled = 1, project_id = excluded.project_id,
+       extension_instance_id = CASE WHEN channel_links.project_id IS excluded.project_id THEN channel_links.extension_instance_id ELSE NULL END,
+       extension_script_sha256 = CASE WHEN channel_links.project_id IS excluded.project_id THEN channel_links.extension_script_sha256 ELSE NULL END`
   ).bind(ticket.spaceId, ticket.tenantId, ticket.channel, ticket.projectId ?? null).run();
 }
 
@@ -5596,6 +5600,10 @@ app.post("/channels/platform-inbound/:channel", async (c) => {
   }
 
   try {
+    const channelBinding = await c.env.PLATFORM_DB.prepare(
+      "SELECT extension_instance_id,extension_script_sha256 FROM channel_links WHERE space_id=? AND tenant_id=? AND channel=? AND enabled=1 AND project_id IS ?"
+    ).bind(paired.spaceId, paired.tenantId, channel, paired.projectId ?? null)
+      .first<{ extension_instance_id: string | null; extension_script_sha256: string | null }>();
     const stub = await getAgentDOForSpace(c.env, paired.tenantId, paired.spaceId, "naelao-agent", c.get("requestId"));
     await stub.fetch(new Request(`http://agent-do/channels/${channel}/inbound`, {
       method: "POST",
@@ -5603,6 +5611,8 @@ app.post("/channels/platform-inbound/:channel", async (c) => {
       body: JSON.stringify({
         raw,
         projectId: paired.projectId ?? undefined,
+        extensionInstanceId: channelBinding?.extension_instance_id ?? undefined,
+        extensionScriptSha256: channelBinding?.extension_script_sha256 ?? undefined,
         spaceId: paired.spaceId,
         tenantId: paired.tenantId,
         ...(inbound.external_id ? { taskId: inbound.external_id } : {}),
@@ -5929,8 +5939,8 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
   // Resolve which project (if any) this channel is bound to — a customer-bot project runs
   // under a restricted execution ceiling + its own rules instead of the default agent.
   const link = await c.env.PLATFORM_DB.prepare(
-    "SELECT project_id FROM channel_links WHERE space_id = ? AND channel = ?"
-  ).bind(spaceId, channel).first<{ project_id: string | null }>();
+    "SELECT project_id,extension_instance_id,extension_script_sha256 FROM channel_links WHERE space_id = ? AND channel = ? AND enabled=1"
+  ).bind(spaceId, channel).first<{ project_id: string | null; extension_instance_id: string | null; extension_script_sha256: string | null }>();
 
   try {
     const stub = await getAgentDOForSpace(c.env, space.tenant_id, spaceId, "naelao-agent", c.get("requestId"));
@@ -5940,6 +5950,8 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
       body: JSON.stringify({
         raw: normalizedRaw,
         projectId: link?.project_id ?? undefined,
+        extensionInstanceId: link?.extension_instance_id ?? undefined,
+        extensionScriptSha256: link?.extension_script_sha256 ?? undefined,
         spaceId,
         tenantId: space.tenant_id,
         channel,
@@ -6683,8 +6695,8 @@ app.post("/channels/email/agentmail-inbound/:spaceId", async (c) => {
   // Resolve which project (if any) the email channel is bound to — same customer-bot scoping as
   // the generic gateway.
   const link = await c.env.PLATFORM_DB.prepare(
-    "SELECT project_id FROM channel_links WHERE space_id = ? AND channel = 'email'"
-  ).bind(spaceId).first<{ project_id: string | null }>();
+    "SELECT project_id,extension_instance_id,extension_script_sha256 FROM channel_links WHERE space_id = ? AND channel = 'email' AND enabled=1"
+  ).bind(spaceId).first<{ project_id: string | null; extension_instance_id: string | null; extension_script_sha256: string | null }>();
 
   try {
     const stub = await getAgentDOForSpace(c.env, space.tenant_id, spaceId, "naelao-agent", c.get("requestId"));
@@ -6695,6 +6707,8 @@ app.post("/channels/email/agentmail-inbound/:spaceId", async (c) => {
         // Shape matches emailAdapter.normalizeInbound's expected raw fields (from/text/message_id).
         raw: { from: parsed.from, text: parsed.text, message_id: parsed.messageId, subject: parsed.subject },
         projectId: link?.project_id ?? undefined,
+        extensionInstanceId: link?.extension_instance_id ?? undefined,
+        extensionScriptSha256: link?.extension_script_sha256 ?? undefined,
         spaceId,
         tenantId: space.tenant_id,
         model: wakeContext.model,
@@ -6916,16 +6930,41 @@ app.get("/spaces/:spaceId/assistant/channels", async (c) => {
   const scope = c.req.query("scope");
   const { results } = projectId
     ? await c.env.PLATFORM_DB.prepare(
-        "SELECT channel, enabled, created_at, project_id, model_override FROM channel_links WHERE space_id = ? AND project_id = ? ORDER BY channel"
+        "SELECT channel, enabled, created_at, project_id, model_override, extension_instance_id FROM channel_links WHERE space_id = ? AND project_id = ? ORDER BY channel"
       ).bind(spaceId, projectId).all()
     : scope === "assistant"
     ? await c.env.PLATFORM_DB.prepare(
-        "SELECT channel, enabled, created_at, project_id, model_override FROM channel_links WHERE space_id = ? AND project_id IS NULL ORDER BY channel"
+        "SELECT channel, enabled, created_at, project_id, model_override, extension_instance_id FROM channel_links WHERE space_id = ? AND project_id IS NULL ORDER BY channel"
       ).bind(spaceId).all()
     : await c.env.PLATFORM_DB.prepare(
-        "SELECT channel, enabled, created_at, project_id, model_override FROM channel_links WHERE space_id = ? ORDER BY channel"
+        "SELECT channel, enabled, created_at, project_id, model_override, extension_instance_id FROM channel_links WHERE space_id = ? ORDER BY channel"
       ).bind(spaceId).all();
   return c.json({ data: results });
+});
+
+app.get("/spaces/:spaceId/assistant/channel-extensions", async c => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = await requireVerifiedTenant(c);
+  if (!(await requireEndUserBusinessMembership(c, spaceId, "admin"))) throw forbidden("Only a business owner or admin can manage external channel extensions");
+  const projectId = c.req.query("project_id") ?? "";
+  if (!projectId) throw badRequest("project_id is required");
+  const response = await c.env.SPACES_WORKER.fetch(new Request(
+    `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/internal/channel-installations?project_id=${encodeURIComponent(projectId)}`,
+    { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) } }
+  ));
+  return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
+});
+
+app.post("/internal/channel-extension-binding/verify", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  const body = await c.req.json<{ spaceId?: string; projectId?: string; channel?: string; instanceId?: string; scriptSha256?: string }>()
+    .catch(() => ({} as { spaceId?: string; projectId?: string; channel?: string; instanceId?: string; scriptSha256?: string }));
+  if (!body.spaceId || !body.projectId || !body.channel || !body.instanceId || !body.scriptSha256) return c.json({ valid: false });
+  const row = await c.env.PLATFORM_DB.prepare(
+    "SELECT extension_instance_id,extension_script_sha256 FROM channel_links WHERE space_id=? AND tenant_id=? AND project_id=? AND channel=? AND enabled=1"
+  ).bind(body.spaceId, tenantId, body.projectId, body.channel).first<{ extension_instance_id: string | null; extension_script_sha256: string | null }>();
+  return c.json({ valid: row?.extension_instance_id === body.instanceId && row.extension_script_sha256 === body.scriptSha256 });
 });
 
 /**
@@ -6951,9 +6990,10 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
   const { userId } = getCallerIdentity(c);
 
   type ChannelActionBody = {
-    action?: "pair" | "connect" | "disconnect" | "enable" | "set_model";
+    action?: "pair" | "connect" | "disconnect" | "enable" | "set_model" | "bind_extension" | "unbind_extension";
     channel?: string;
     model_override?: string | null;
+    extension_instance_id?: string;
     secret?: string;
     project_id?: string;
     slack_bot_token?: string;
@@ -6987,6 +7027,58 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
       .bind(body.model_override ?? null, spaceId, channel).run();
     if ((updated.meta?.changes ?? 0) !== 1) return c.json({ error_code: "channel_not_connected" }, 404);
     return c.json({ channel, model_override: body.model_override ?? null, updated: true });
+  }
+
+  if (action === "bind_extension") {
+    const projectId = body.project_id ?? "";
+    const instanceId = body.extension_instance_id ?? "";
+    if (!projectId || !instanceId) throw badRequest("project_id and extension_instance_id are required");
+    if (!c.env.SPACES_WORKER || !c.env.SCRIPTS_R2) return c.json({ error_code: "extension_validation_unavailable" }, 503);
+    const channelLink = await c.env.PLATFORM_DB.prepare(
+      "SELECT project_id FROM channel_links WHERE space_id=? AND tenant_id=? AND channel=? AND enabled=1"
+    ).bind(spaceId, tenantId, channel).first<{ project_id: string | null }>();
+    if (!channelLink || channelLink.project_id !== projectId) return c.json({ error_code: "channel_project_mismatch" }, 409);
+    const installationResponse = await c.env.SPACES_WORKER.fetch(new Request(
+      `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/workflow-installations/${encodeURIComponent(instanceId)}`,
+      { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) } }
+    ));
+    if (!installationResponse.ok) return c.json({ error_code: "extension_installation_unavailable" }, installationResponse.status === 404 ? 404 : 503);
+    const installation = await installationResponse.json<{
+      instance: { instance_id: string; tenant_id: string; space_id: string; project_id: string | null; scope: string; status: string };
+      manifest: { id?: string; channels?: Array<{ kind?: string; provider?: string; handlerScript?: string; context?: string }> };
+    }>();
+    const { instance, manifest } = installation;
+    if (instance.status !== "active" || instance.instance_id !== instanceId || instance.tenant_id !== tenantId
+      || instance.space_id !== spaceId || instance.project_id !== projectId
+      || !["PROJECT_BOUND", "PROJECT_SHARED"].includes(instance.scope)) {
+      return c.json({ error_code: "extension_installation_scope_mismatch" }, 403);
+    }
+    const declaration = manifest.channels?.find((candidate) => candidate.kind === "channel"
+      && candidate.provider === channel && candidate.context === "channel_only");
+    if (!declaration || typeof declaration.handlerScript !== "string") return c.json({ error_code: "channel_handler_not_declared" }, 409);
+    const scriptMatch = declaration.handlerScript.match(/^\.\/([A-Za-z0-9._-]{1,128})\.(?:ts|js)$/);
+    if (!scriptMatch) return c.json({ error_code: "channel_handler_path_unsupported" }, 400);
+    const script = await new SkillLibrary(c.env.SCRIPTS_R2, spaceId).read(scriptMatch[1]!);
+    if (!script?.code || script.code.length > 262_144 || script.metadata.runtime === "workflow") {
+      return c.json({ error_code: "channel_handler_source_unavailable" }, 409);
+    }
+    const digestBytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(script.code));
+    const digest = Array.from(new Uint8Array(digestBytes), byte => byte.toString(16).padStart(2, "0")).join("");
+    const updated = await c.env.PLATFORM_DB.prepare(
+      "UPDATE channel_links SET extension_instance_id=?,extension_script_sha256=? WHERE space_id=? AND tenant_id=? AND channel=? AND enabled=1 AND project_id=?"
+    ).bind(instanceId, digest, spaceId, tenantId, channel, projectId).run();
+    if ((updated.meta?.changes ?? 0) !== 1) return c.json({ error_code: "channel_project_mismatch" }, 409);
+    return c.json({ channel, project_id: projectId, extension_instance_id: instanceId, script_sha256: digest, bound: true });
+  }
+
+  if (action === "unbind_extension") {
+    const projectId = body.project_id ?? "";
+    if (!projectId) throw badRequest("project_id is required");
+    const updated = await c.env.PLATFORM_DB.prepare(
+      "UPDATE channel_links SET extension_instance_id=NULL,extension_script_sha256=NULL WHERE space_id=? AND tenant_id=? AND channel=? AND project_id=?"
+    ).bind(spaceId, tenantId, channel, projectId).run();
+    if ((updated.meta?.changes ?? 0) !== 1) return c.json({ error_code: "channel_not_connected" }, 404);
+    return c.json({ channel, project_id: projectId, bound: false });
   }
 
   // The default path: hand back a link (and something to scan) for Naelao's OWN app on that
@@ -7070,7 +7162,9 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
 
   await c.env.PLATFORM_DB.prepare(
     `INSERT INTO channel_links (space_id, tenant_id, channel, enabled, project_id) VALUES (?, ?, ?, 1, ?)
-     ON CONFLICT (space_id, channel) DO UPDATE SET enabled = 1, project_id = excluded.project_id`
+     ON CONFLICT (space_id, channel) DO UPDATE SET enabled = 1, project_id = excluded.project_id,
+       extension_instance_id = CASE WHEN channel_links.project_id IS excluded.project_id THEN channel_links.extension_instance_id ELSE NULL END,
+       extension_script_sha256 = CASE WHEN channel_links.project_id IS excluded.project_id THEN channel_links.extension_script_sha256 ELSE NULL END`
   ).bind(spaceId, tenantId, channel, body.project_id ?? null).run();
 
   return c.json({

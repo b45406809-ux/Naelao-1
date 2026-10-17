@@ -1510,10 +1510,21 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         direction   TEXT NOT NULL, -- 'inbound' | 'outbound'
         text        TEXT NOT NULL,
         external_id TEXT,
+        project_id TEXT,
+        channel_extension_instance_id TEXT,
+        channel_extension_sha256 TEXT,
         answered    INTEGER NOT NULL DEFAULT 0,
         created_at  INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
       )
     `);
+    try { this.ctx.storage.sql.exec(`ALTER TABLE channel_messages ADD COLUMN project_id TEXT`); } catch { /* exists */ }
+    try { this.ctx.storage.sql.exec(`ALTER TABLE channel_messages ADD COLUMN channel_extension_instance_id TEXT`); } catch { /* exists */ }
+    try { this.ctx.storage.sql.exec(`ALTER TABLE channel_messages ADD COLUMN channel_extension_sha256 TEXT`); } catch { /* exists */ }
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS channel_extension_dispatches (
+      message_id TEXT PRIMARY KEY, installation_id TEXT NOT NULL, script_sha256 TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('running','delivering','sent','uncertain','failed')),
+      reply_text TEXT, error_code TEXT, created_at INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
+    )`);
     try { this.ctx.storage.sql.exec(`ALTER TABLE channel_messages ADD COLUMN task_id TEXT`); } catch { /* exists */ }
     this.ctx.storage.sql.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_msg_dedupe ON channel_messages(session_id, direction, external_id)`);
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_channel_msg_unanswered ON channel_messages(direction, answered, created_at)`);
@@ -5273,7 +5284,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const adapter = getAdapter(type);
     if (!adapter) return Response.json({ error: "unknown_channel" }, { status: 400 });
 
-    type InboundBody = { raw?: Record<string, unknown>; projectId?: string; taskId?: string; spaceId?: string; tenantId?: string; channel?: string; apiKey?: string; model?: string; openRouterCapabilityEvidence?: OpenRouterModelCandidate };
+    type InboundBody = { raw?: Record<string, unknown>; projectId?: string; extensionInstanceId?: string; extensionScriptSha256?: string; taskId?: string; spaceId?: string; tenantId?: string; channel?: string; apiKey?: string; model?: string; openRouterCapabilityEvidence?: OpenRouterModelCandidate };
     const body = await request.json<InboundBody>().catch(() => ({}) as InboundBody);
     const norm: NormalizedInbound | null = adapter.normalizeInbound(body.raw ?? {});
     if (!norm) return Response.json({ ignored: true }); // bot echo / not actionable
@@ -5283,6 +5294,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // WhatsApp/Telegram owner contacts form a private control plane. Verification is performed
     // against SpaceDO's live owner/admin membership on every message, so removing an admin takes
     // effect immediately. Unknown senders fall through to the quarantined customer plane.
+    let verifiedChannelMemberId: string | null = null;
     if ((norm.channel === "whatsapp" || norm.channel === "telegram") && body.spaceId && body.tenantId) {
       const headers = await this.internalHeaders(body.tenantId, { "content-type": "application/json" });
       let executiveUserId: string | null = null;
@@ -5395,6 +5407,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       });
       if (executive.emergencyStopped) return Response.json({ handled: true, emergency_stopped: true });
       if (foundryHandled) return Response.json({ handled: true, foundry: true });
+      verifiedChannelMemberId = executiveUserId;
     }
 
     const rows = this.ctx.storage.sql
@@ -5431,6 +5444,43 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       });
     }
 
+    // Verified Space owners/admins are internal channel actors. Keep them on the ordinary
+    // authenticated planner path; unverified senders below can only reach a project-bound
+    // channel extension with the restricted ctx.channel host context.
+    if (verifiedChannelMemberId && body.spaceId && body.tenantId) {
+      if (!this.env.AGENTS_WORKER || !this.env.NOTIFICATIONS_WORKER) return Response.json({ error_code: "internal_channel_runtime_unavailable" }, { status: 503 });
+      if (!claimFoundryChannelEvent(this.ctx.storage.sql, { spaceId: body.spaceId, channel: norm.channel, senderId: norm.channel_user_id, externalId: norm.external_id })) {
+        return Response.json({ session_id: sessionId, queued: false, duplicate: true, internal: true });
+      }
+      const spaceId = body.spaceId, tenantId = body.tenantId, projectId = body.projectId;
+      this.ctx.waitUntil((async () => {
+        const response = await this.env.AGENTS_WORKER!.fetch(new Request(
+          `http://agents-worker/spaces/${encodeURIComponent(spaceId)}/sessions/${encodeURIComponent(sessionId)}/agent/run`,
+          { method: "POST", headers: {
+              "content-type": "application/json", prefer: "respond-sync",
+              "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, tenantId),
+              "x-naelao-user-id": verifiedChannelMemberId!, "x-naelao-role": "product_end_user",
+            },
+            body: JSON.stringify({ goal: `A message arrived on your connected ${norm.channel} channel: ${norm.text.slice(0, 8_000)}. Reply to the sender directly.`,
+              ...(projectId ? { project_id: projectId } : {}), ...(body.model ? { model: body.model } : {}) }),
+          },
+        ));
+        let output = "";
+        if (response.ok) {
+          const result = await response.json<{ result?: { output?: unknown }; final_answer?: unknown }>().catch(() => ({}));
+          output = typeof result.final_answer === "string" ? result.final_answer : typeof result.result?.output === "string" ? result.result.output : "";
+        }
+        const reply = output.trim() && moderateText(output).allowed
+          ? (output.length > 3500 ? `${output.slice(0, 3500)}…` : output)
+          : "I couldn't complete that response just now. Please continue in the Naelao app or try again shortly.";
+        await this.env.NOTIFICATIONS_WORKER!.fetch(new Request("http://notifications-worker/internal/notify", {
+          method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
+          body: JSON.stringify({ channel: norm.channel, space_id: spaceId, to: norm.channel_user_id, body: reply }),
+        }));
+      })().catch(error => console.error(`[channels] internal planner dispatch failed channel=${norm.channel}:`, error instanceof Error ? error.message : String(error))));
+      return Response.json({ session_id: sessionId, queued: true, internal: true });
+    }
+
     // Dedupe on (session, direction, external_id) — re-delivered webhook events no-op. A
     // replayed event (freshness window bypassed, or delivered twice within it) that hits the
     // unique index is IGNORED, so rowsWritten is 0 — that's the "already handled" signal used
@@ -5440,9 +5490,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       : null;
     const mentionRoute = await routeMentionsWithSentry(envelope.payload.text, mentionDecisionEnv?.fastDecision);
     const insertResult = this.ctx.storage.sql.exec(
-      `INSERT OR IGNORE INTO channel_messages (id, session_id, direction, text, external_id, answered, created_at, turn_holder, referents, task_id)
-       VALUES (?, ?, 'inbound', ?, ?, 0, ?, ?, ?, ?)`,
-      crypto.randomUUID(), sessionId, envelope.payload.text, norm.external_id, norm.timestamp,
+      `INSERT OR IGNORE INTO channel_messages (id, session_id, direction, text, external_id, project_id, channel_extension_instance_id, channel_extension_sha256, answered, created_at, turn_holder, referents, task_id)
+       VALUES (?, ?, 'inbound', ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
+      crypto.randomUUID(), sessionId, envelope.payload.text, norm.external_id, body.projectId ?? null,
+      body.extensionInstanceId ?? null, body.extensionScriptSha256 ?? null, norm.timestamp,
       mentionRoute.turnHolder, JSON.stringify(mentionRoute.referents), body.taskId ?? null
     );
     const isNewMessage = insertResult.rowsWritten > 0;
@@ -7253,6 +7304,47 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     this.ctx.storage.sql.exec(`UPDATE channel_messages SET answered = 1 WHERE id = ?`, messageId);
   }
 
+  private async loadActiveChannelHandler(input: {
+    spaceId: string; tenantId: string; projectId: string; channel: string; messageId: string; instanceId: string; scriptSha256: string;
+  }): Promise<{ name: string; code: string; maxConcurrency: number; limits: { cpuMs: number; wallMs: number; inputBytes: number; outputBytes: number } } | null> {
+    if (!this.env.SPACES_WORKER || !this.env.AGENTS_WORKER || !this.env.SCRIPTS_R2 || !/^[a-f0-9]{64}$/.test(input.scriptSha256)) return null;
+    const verifyBinding = await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/channel-extension-binding/verify", {
+      method: "POST", headers: await this.internalHeaders(input.tenantId, { "content-type": "application/json" }),
+      body: JSON.stringify({ spaceId: input.spaceId, projectId: input.projectId, channel: input.channel,
+        instanceId: input.instanceId, scriptSha256: input.scriptSha256 }),
+    }));
+    if (!verifyBinding.ok || !(await verifyBinding.json<{ valid?: boolean }>().catch(() => ({}))).valid) return null;
+    const installationResponse = await this.env.SPACES_WORKER.fetch(new Request(
+      `http://spaces-worker/spaces/${encodeURIComponent(input.spaceId)}/workflow-installations/${encodeURIComponent(input.instanceId)}`,
+      { headers: await this.internalHeaders(input.tenantId) },
+    ));
+    if (!installationResponse.ok) return null;
+    const installation = await installationResponse.json<{
+      instance: { instance_id?: string; tenant_id?: string; space_id?: string; project_id?: string | null; scope?: string; status?: string };
+      manifest: { channels?: Array<{ kind?: string; provider?: string; handlerScript?: string; context?: string; inboundEvents?: string[]; outboundEvents?: string[]; permissions?: unknown[]; capabilityRequirements?: unknown[]; budget?: { maxDurationSeconds?: number; maxConcurrency?: number } }> };
+    }>().catch(() => null);
+    const instance = installation?.instance;
+    if (!installation || !instance || instance.status !== "active" || instance.instance_id !== input.instanceId
+      || instance.tenant_id !== input.tenantId || instance.space_id !== input.spaceId || instance.project_id !== input.projectId
+      || !["PROJECT_BOUND", "PROJECT_SHARED"].includes(instance.scope ?? "")) return null;
+    const declaration = installation.manifest.channels?.find(item => item.kind === "channel" && item.provider === input.channel && item.context === "channel_only");
+    if (!declaration || !declaration.inboundEvents?.includes("message.received") || !declaration.outboundEvents?.includes("message.reply")
+      || (declaration.permissions?.length ?? 0) !== 0 || (declaration.capabilityRequirements?.length ?? 0) !== 0) return null;
+    const path = declaration.handlerScript?.match(/^\.\/([A-Za-z0-9._-]{1,128})\.(?:ts|js)$/);
+    if (!path) return null;
+    const duration = declaration.budget?.maxDurationSeconds;
+    const maxConcurrency = declaration.budget?.maxConcurrency;
+    if ((duration !== undefined && (!Number.isFinite(duration) || duration < 1 || duration > 10))
+      || (maxConcurrency !== undefined && (!Number.isInteger(maxConcurrency) || maxConcurrency < 1 || maxConcurrency > 4))) return null;
+    const script = await new SkillLibrary(this.env.SCRIPTS_R2, input.spaceId).read(path[1]!);
+    if (!script?.code || script.metadata.runtime === "workflow" || new TextEncoder().encode(script.code).byteLength > 262_144) return null;
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(script.code));
+    const actual = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+    if (actual !== input.scriptSha256) return null;
+    return { name: path[1]!, code: script.code, maxConcurrency: maxConcurrency ?? 1,
+      limits: { cpuMs: 1_000, wallMs: Math.min(10_000, duration === undefined ? 5_000 : duration * 1000), inputBytes: 16_384, outputBytes: 8_192 } };
+  }
+
   private async handleChannelHeartbeat(request: Request): Promise<Response> {
     this.ensureInit();
     // businessContext: resolved by the caller (index.ts's heartbeat dispatch) — this DO has no
@@ -7272,13 +7364,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const channelFilter = body.channel ? " AND s.channel = ?" : "";
     const pending = this.ctx.storage.sql
       .exec(
-        `SELECT m.id, m.session_id, s.channel, s.channel_user_id, s.project_id, m.text, m.task_id
+        `SELECT m.id, m.session_id, s.channel, s.channel_user_id, COALESCE(m.project_id,s.project_id) AS project_id,
+                m.channel_extension_instance_id, m.channel_extension_sha256, m.text, m.task_id, m.created_at
          FROM channel_messages m JOIN channel_sessions s ON s.id = m.session_id
          WHERE m.direction = 'inbound' AND m.answered = 0 AND s.human_takeover = 0${channelFilter}
          ORDER BY m.created_at ASC LIMIT ?`,
         ...(body.channel ? [body.channel, limit] : [limit])
       )
-      .toArray() as Array<{ id: string; session_id: string; channel: string; channel_user_id: string; project_id: string | null; text: string; task_id: string | null }>;
+      .toArray() as Array<{ id: string; session_id: string; channel: string; channel_user_id: string; project_id: string | null; channel_extension_instance_id: string | null; channel_extension_sha256: string | null; text: string; task_id: string | null; created_at: number }>;
 
     if (pending.length === 0) return Response.json({ drained: 0, answered: 0, escalated: 0, rule_handled: 0, spend_capped: 0 });
 
@@ -7454,7 +7547,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // 1. No-code rules (spec: "after the customer says X, this happens") — checked before
       //    any reasoning at all. Zero token cost, deterministic, admin-authored.
       const matchedRule = this.matchProjectRule(rules, msg.text);
-      if (matchedRule) {
+      if (matchedRule && !(matchedRule.action === "run_script" && msg.channel_extension_instance_id && msg.channel_extension_sha256)) {
         if (matchedRule.action === "human_takeover") {
           this.ctx.storage.sql.exec(`UPDATE channel_sessions SET human_takeover = 1 WHERE id = ?`, msg.session_id);
           ruleHandled++;
@@ -7471,6 +7564,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             continue;
           }
         } else if (matchedRule.action === "run_script" && matchedRule.script_name) {
+          if (!msg.channel_extension_instance_id || !msg.channel_extension_sha256) {
+            this.ctx.storage.sql.exec(`UPDATE channel_sessions SET human_takeover = 1 WHERE id = ?`, msg.session_id);
+            escalated++;
+            continue;
+          }
           if (projectCfgResult?.status === "error") {
             // F17 / A1.13: fail closed — never run a rule-triggered script unrestricted while
             // the project's config is unreachable. Treat exactly like a spend-cap hit.
@@ -7517,6 +7615,82 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // outcome (left for a human/retry, not silently dropped).
       if (msg.project_id && walletCheck && !walletCheck.ok) {
         spendCapped++;
+        continue;
+      }
+
+      if (!msg.channel_extension_instance_id && !msg.channel_extension_sha256) {
+        this.ctx.storage.sql.exec("UPDATE channel_sessions SET human_takeover=1 WHERE id=?", msg.session_id);
+        void this.createSpaceNotification(spaceId, tenantId, {
+          kind: "channel_extension_required",
+          title: `An inbound ${msg.channel} conversation is waiting for a handler`,
+          body: "No active project channel extension is bound to this channel, so the external sender was not sent into internal tools or the planner. Bind an approved extension or handle the conversation manually.",
+          severity: "warning", projectId: msg.project_id ?? null, sourceAgentId: agentId, relatedId: msg.session_id,
+        });
+        escalated++;
+        continue;
+      }
+
+      if (msg.channel_extension_instance_id || msg.channel_extension_sha256) {
+        const takeover = (reason: string) => {
+          this.ctx.storage.sql.exec("UPDATE channel_sessions SET human_takeover=1 WHERE id=?", msg.session_id);
+          void this.createSpaceNotification(spaceId, tenantId, {
+            kind: "channel_extension_review_required",
+            title: `An inbound ${msg.channel} conversation needs human review`,
+            body: reason,
+            severity: "warning", projectId: msg.project_id ?? null, sourceAgentId: agentId, relatedId: msg.session_id,
+          });
+        };
+        if (!msg.project_id || !msg.channel_extension_instance_id || !msg.channel_extension_sha256
+          || projectCfgResult?.status !== "found" || rulesResult?.status !== "found") {
+          takeover("The project channel handler could not be validated against the current project configuration. Review the channel binding and conversation before replying."); escalated++; continue;
+        }
+        const priorDispatch = this.ctx.storage.sql.exec(
+          "SELECT status,reply_text FROM channel_extension_dispatches WHERE message_id=?", msg.id
+        ).toArray()[0] as { status: string; reply_text: string | null } | undefined;
+        if (priorDispatch) {
+          if (priorDispatch.status === "sent" && priorDispatch.reply_text) {
+            this.markOutbound(msg.session_id, msg.id, priorDispatch.reply_text);
+            answered++;
+          } else { takeover("The handler dispatch did not reach a confirmed delivery state. Review the conversation before sending a reply."); escalated++; }
+          continue;
+        }
+        const claim = this.ctx.storage.sql.exec(
+          "INSERT OR IGNORE INTO channel_extension_dispatches(message_id,installation_id,script_sha256,status) VALUES(?,?,?,'running')",
+          msg.id, msg.channel_extension_instance_id, msg.channel_extension_sha256
+        );
+        if (claim.rowsWritten !== 1) { takeover("The handler event was already claimed and its delivery state could not be confirmed. Review the conversation before replying."); escalated++; continue; }
+        const handler = await this.loadActiveChannelHandler({ spaceId, tenantId, projectId: msg.project_id,
+          channel: msg.channel, messageId: msg.id, instanceId: msg.channel_extension_instance_id, scriptSha256: msg.channel_extension_sha256 });
+        const channelRunner = engineEnv.codeRunner?.runChannel;
+        if (!handler || !channelRunner) {
+          this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code='handler_unavailable' WHERE message_id=?", msg.id);
+          takeover("The bound extension is unavailable or no longer valid for this project and channel. Rebind an approved extension or handle the conversation manually."); escalated++; continue;
+        }
+        const run = await channelRunner.call(engineEnv.codeRunner, {
+          name: handler.name, code: handler.code, args: {}, tenantId, spaceId, agentId,
+          installationId: msg.channel_extension_instance_id, maxConcurrency: handler.maxConcurrency,
+          channel: { provider: msg.channel, event: { id: msg.id, type: "message.received", occurredAt: new Date(msg.created_at).toISOString(), payload: { text: msg.text.slice(0, 8_000) } },
+            conversation: { id: msg.session_id } },
+          limits: handler.limits,
+        });
+        const replyText = run.ok && run.channel_replies?.length === 1 ? run.channel_replies[0]!.trim() : "";
+        if (!replyText || !moderateText(replyText).allowed) {
+          this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code=? WHERE message_id=?",
+            run.ok ? "handler_reply_invalid" : "handler_failed", msg.id);
+          takeover("The extension did not produce one valid, moderated text reply. Review the conversation and handler before responding."); escalated++; continue;
+        }
+        this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='delivering',reply_text=? WHERE message_id=? AND status='running'", replyText, msg.id);
+        const delivery = await deliveryTools.run(`notify.${msg.channel}`, this.notifyParamsFor(msg.channel, msg.channel_user_id, replyText));
+        if (delivery.ok) {
+          this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='sent' WHERE message_id=? AND status='delivering'", msg.id);
+          this.markOutbound(msg.session_id, msg.id, replyText);
+          answered++;
+        } else {
+          // The provider may have accepted the message before returning an error. Never resend
+          // automatically; persist the ambiguous outcome and send the conversation to a human.
+          this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='uncertain',error_code='provider_delivery_uncertain' WHERE message_id=? AND status='delivering'", msg.id);
+          takeover("The provider did not confirm whether the extension reply was delivered. The reply will not be resent automatically; verify delivery before responding."); escalated++;
+        }
         continue;
       }
 

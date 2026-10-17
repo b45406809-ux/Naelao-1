@@ -1783,6 +1783,7 @@ export interface ChannelLink {
   created_at: string;
   project_id?: string | null;
   model_override?: string | null;
+  extension_instance_id?: string | null;
 }
 
 /** Same scoping convention as listScheduledJobs. */
@@ -1803,6 +1804,26 @@ export interface ChannelConnectResult {
   /** Paste this into the provider's own dashboard — connecting on our side isn't enough on its
    *  own for messages to actually arrive. */
   webhook_url?: string;
+}
+
+export interface ChannelExtensionInstallation {
+  instance_id: string;
+  extension_id: string;
+  scope: "PROJECT_BOUND" | "PROJECT_SHARED";
+  name: string;
+  channels: Array<{ id: string; provider: string; handlerScript: string }>;
+}
+
+export async function listChannelExtensionInstallations(
+  spaceId: string,
+  projectId: string,
+  session: SessionCredentials
+): Promise<ChannelExtensionInstallation[]> {
+  const response = await apiFetch<{ installations: ChannelExtensionInstallation[] }>(
+    `/v1/spaces/${spaceId}/assistant/channel-extensions?project_id=${encodeURIComponent(projectId)}`,
+    { session }
+  );
+  return response.installations;
 }
 
 /** Connect a channel, or turn one off/back on. Owner/admin only, enforced server-side. */
@@ -1832,7 +1853,7 @@ export async function pairAssistantChannel(
 export async function updateAssistantChannel(
   spaceId: string,
   session: SessionCredentials,
-  body: { action: "connect" | "disconnect" | "enable" | "set_model"; channel: string; secret?: string; project_id?: string; media_access_token?: string; whatsapp_phone_number_id?: string; whatsapp_access_token?: string; model_override?: string | null }
+  body: { action: "connect" | "disconnect" | "enable" | "set_model" | "bind_extension" | "unbind_extension"; channel: string; secret?: string; project_id?: string; extension_instance_id?: string; media_access_token?: string; whatsapp_phone_number_id?: string; whatsapp_access_token?: string; model_override?: string | null }
 ): Promise<ChannelConnectResult> {
   return apiFetch<ChannelConnectResult>(`/v1/spaces/${spaceId}/assistant/channels`, {
     method: "POST",

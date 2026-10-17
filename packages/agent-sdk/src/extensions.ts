@@ -301,13 +301,19 @@ export function parseExtensionPrimitive(value: unknown): ExtensionPrimitiveManif
     contractAssert((raw.permissions as unknown[]).length === 0, "channel_permissions_forbidden");
     contractAssert((raw.capabilityRequirements as unknown[]).length === 0, "channel_capabilities_forbidden");
     contractAssert(typeof raw.provider === "string" && CONTRACT_ID.test(raw.provider), "invalid_channel_provider");
-    contractAssert(typeof raw.handlerScript === "string" && CONTRACT_PATH.test(raw.handlerScript) && !raw.handlerScript.includes(".."), "invalid_channel_handler");
+    contractAssert(typeof raw.handlerScript === "string" && /^\.\/[A-Za-z0-9._-]{1,128}\.(?:ts|js)$/.test(raw.handlerScript), "invalid_channel_handler");
     contractAssert(raw.context === "channel_only", "invalid_channel_context");
     for (const [field, events] of [["inboundEvents", raw.inboundEvents], ["outboundEvents", raw.outboundEvents]] as const) {
       contractAssert(Array.isArray(events) && events.length <= 64 && new Set(events).size === events.length, `invalid_${field}`);
       contractAssert((events as unknown[]).every((event) => typeof event === "string" && /^[a-z][a-z0-9_.:-]{0,63}$/.test(event)), `invalid_${field}`);
     }
     contractAssert((raw.inboundEvents as unknown[]).length > 0, "channel_inbound_events_required");
+    contractAssert((raw.inboundEvents as unknown[]).includes("message.received"), "channel_message_event_required");
+    contractAssert((raw.outboundEvents as unknown[]).includes("message.reply"), "channel_reply_event_required");
+    const budget = raw.budget as Record<string, unknown> | undefined;
+    contractAssert(budget?.maxCredits === undefined || budget.maxCredits === 0, "channel_credit_budget_unsupported");
+    contractAssert(budget?.maxConcurrency === undefined || (Number.isInteger(budget.maxConcurrency) && Number(budget.maxConcurrency) >= 1 && Number(budget.maxConcurrency) <= 4), "channel_concurrency_budget_exceeded");
+    contractAssert(budget?.maxDurationSeconds === undefined || (Number.isFinite(budget.maxDurationSeconds) && Number(budget.maxDurationSeconds) >= 1 && Number(budget.maxDurationSeconds) <= 10), "channel_duration_budget_exceeded");
   }
   if (kind === "container") {
     contractAssert(typeof raw.image === "string" && raw.image.length <= 300 && /^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$/.test(raw.image), "immutable_image_digest_required");

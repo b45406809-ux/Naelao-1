@@ -82,6 +82,37 @@ export default {
 };`;
 }
 
+/** Public channel handlers receive no RPC bindings, scope IDs, storage, tools, or proxy. Replies
+ * are captured in memory and returned to the trusted host, which performs the provider send. */
+export function buildChannelGuestHarness(outputBytes: number): string {
+  return `import { encode, freeze, jsonResponse, byteLength } from './policy.js';
+import { run } from './guest.js';
+export default {
+  async fetch(request) {
+    const { args, channel } = await request.json();
+    const replies = [];
+    const ctx = freeze({channel:freeze({
+      provider:channel.provider,
+      event:freeze(channel.event),
+      conversation:freeze({id:channel.conversation.id}),
+      reply:async(message)=>{
+        if (!message || typeof message.text !== 'string' || !message.text.trim() || message.text.length > 2000) throw new Error('channel_reply_invalid');
+        if (replies.length >= 1) throw new Error('channel_reply_limit');
+        replies.push(message.text.trim());
+        return freeze({messageId:'queued'});
+      }
+    })});
+    try {
+      const result = await run(args, ctx);
+      const body = {ok:true,result:result == null ? null : result,replies};
+      const encoded = encode(body);
+      if (byteLength(encoded) > ${outputBytes}) throw new Error('code_output_limit');
+      return jsonResponse(body);
+    } catch (error) { return jsonResponse({ok:false,error:String(error && error.message || error)}); }
+  }
+};`;
+}
+
 /** Python is a provider-owned Wasm runtime. No remote Pyodide/CDN bootstrap, warm interpreter
  * state, host Python process, or source-string native heuristic is used. */
 export function buildPythonHarness(outputBytes: number): string {

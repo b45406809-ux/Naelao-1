@@ -2697,6 +2697,23 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const { manifest_json, ...instance } = row;
         return Response.json({ instance, manifest: JSON.parse(manifest_json) });
       }
+      if (url.pathname === "/channel-installations" && method === "GET") {
+        const projectId = url.searchParams.get("project_id") ?? "";
+        if (!projectId || !queryOne(this.ctx.storage.sql as never,
+          "SELECT id FROM projects WHERE id=? AND space_id=? AND status='active'", projectId, url.searchParams.get("space_id"))) {
+          return Response.json({ error: "project_not_found" }, { status: 404 });
+        }
+        const rows = queryAll<{ instance_id: string; extension_id: string; scope: string; manifest_json: string }>(this.ctx.storage.sql as never,
+          "SELECT i.instance_id,i.extension_id,i.scope,e.manifest_json FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.tenant_id=? AND i.space_id=? AND i.project_id=? AND i.scope IN ('PROJECT_BOUND','PROJECT_SHARED') AND i.status='active' ORDER BY i.installed_at",
+          url.searchParams.get("tenant_id"), url.searchParams.get("space_id"), projectId);
+        const installations = rows.flatMap(row => {
+          const manifest = JSON.parse(row.manifest_json) as { id?: string; channels?: Array<{ kind?: string; id?: string; provider?: string; handlerScript?: string }> };
+          const channels = (manifest.channels ?? []).filter(channel => channel.kind === "channel");
+          return channels.length ? [{ instance_id: row.instance_id, extension_id: row.extension_id, scope: row.scope,
+            name: manifest.id ?? row.extension_id, channels: channels.map(channel => ({ id: channel.id ?? "", provider: channel.provider ?? "", handlerScript: channel.handlerScript ?? "" })) }] : [];
+        });
+        return Response.json({ installations });
+      }
       if (url.pathname === "/extensions/first-party" && method === "GET") {
         return Response.json({
           extensions: DOGFOOD_EXTENSIONS,
