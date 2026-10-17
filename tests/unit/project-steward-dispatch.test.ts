@@ -63,8 +63,9 @@ describe("daily Project Steward dispatch claims", () => {
       PLATFORM_SECRET: "test-secret",
       PLATFORM_DB: platformDb,
       SPACES_WORKER: { async fetch(request: Request) {
-        expect(request.url).toContain("/internal/spaces/space-review/project-steward/summary");
         expect(request.headers.get("x-naelao-internal-token")).toBeTruthy();
+        if (request.url.endsWith("/project-steward/installation")) return Response.json({ installation_id: "installation-id-1", platform_managed: true });
+        expect(request.url).toContain("/internal/spaces/space-review/project-steward/summary");
         return Response.json({ grant: "space.project_steward.read_summary.v1", generated_at: Date.now(), data: [
           { project_id: "project-1", project_name: "Needs care", created_at: "2024-01-01T00:00:00Z", last_activity_at: "2024-01-01T00:00:00Z", failed_routines: [{ routine_id: "routine-1", consecutive_failures: 2 }] },
         ] });
@@ -76,6 +77,6 @@ describe("daily Project Steward dispatch claims", () => {
     const row = await platformDb.prepare("SELECT report_json FROM project_steward_runs WHERE space_id=?").bind("space-review").first<{ report_json: string }>();
     const report = JSON.parse(row!.report_json) as { run_day: string; advisory_only: boolean; data: Array<{ project_id: string; recommendation: string }> };
     expect(report).toMatchObject({ run_day: runDay, advisory_only: true, data: [{ project_id: "project-1", recommendation: "inspect_routine" }] });
-    expect(archive[0]).toContain(`/extensions/platform-project-steward/workspace/reviews/${runDay}.json`);
+    expect(archive[0]).toContain(`/extensions/installation-id-1/workspace/reviews/${runDay}.json`);
   });
 });

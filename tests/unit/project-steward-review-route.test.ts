@@ -102,4 +102,26 @@ describe("project steward review route", () => {
     expect(body.data.map((row) => row.project_id)).toEqual(["project-visible"]);
     platformDb.db.close();
   });
+
+  it("provisions a platform-managed Space-wide Steward via the normal extension install lifecycle", async () => {
+    const platformDb = database();
+    let forwarded: Record<string, unknown> | undefined;
+    const env = {
+      PLATFORM_SECRET: SECRET, ENVIRONMENT: "test", PLATFORM_DB: platformDb,
+      SPACE_DO: { idFromName: (name: string) => name, get: () => ({ fetch: async (request: Request) => {
+        forwarded = await request.json() as Record<string, unknown>;
+        return Response.json({ installationId: "installation-steward-1" }, { status: 201 });
+      } }) },
+    };
+    const path = `https://spaces.naelao.com/internal/spaces/${SPACE}/project-steward/installation`;
+    const denied = await spacesWorker.fetch(new Request(path, { method: "POST" }), env as never, ctx);
+    expect(denied.status).toBe(403);
+    const token = await mintInternalToken(SECRET, TENANT);
+    const response = await spacesWorker.fetch(new Request(path, { method: "POST", headers: { "x-naelao-tenant-id": TENANT, "x-naelao-internal-token": token } }), env as never, ctx);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ extension_id: "ext_project_steward", installation_id: "installation-steward-1", scope: "SPACE_SHARED", platform_managed: true });
+    expect(forwarded).toMatchObject({ installedBy: "naelao-platform", scope: "SPACE_SHARED", gatekeeperCapabilities: ["space.project_steward.read_summary"] });
+    expect(forwarded?.manifest).toMatchObject({ id: "ext_project_steward", declaredPermissions: [], gadgets: [], daemons: [], commands: [] });
+    platformDb.db.close();
+  });
 });

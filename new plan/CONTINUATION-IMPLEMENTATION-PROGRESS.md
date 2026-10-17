@@ -1262,7 +1262,14 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Added a daily queue roster for every active Space and a D1-backed per-Space/day claim lease. Queue retries cannot generate duplicate reports; failed runs release their lease for retry, while successful runs persist a deterministic advisory ranking for the UI.
 - The run reads only `space.project_steward.read_summary.v1`, uses the shared deterministic ranker, and stores an optional JSON archive under the Space-wide steward workspace namespace. The Spaces UI prefers the latest saved report but re-filters it against the caller's current visible project IDs, so stored results do not grant access after membership changes.
 - Verification: Agents and Spaces typechecks passed; steward dispatch/review and scheduled-jobs tests passed (48 tests); `git diff --check` passed.
-- This implements periodic report generation, not a general extension runtime instance. Phase 3 still needs the actual platform-managed extension record/runtime identity, richer journal/task/extension-health evidence, and user-attributed reversible retirement recommendations and confirmation flow. The report remains advisory and performs no project or extension lifecycle action.
+- At this checkpoint the scheduled service had not yet provisioned a platform extension record; the next checkpoint below closes that identity/lifecycle gap. Richer journal/task/extension-health evidence and user-attributed reversible retirement recommendations and confirmation flow remain open. The report remains advisory and performs no project or extension lifecycle action.
+
+### Phase 3 platform Steward installation checkpoint (2026-10-17)
+
+- Added the named `ext_project_steward` platform manifest and an internal-HMAC-only, idempotent provisioning endpoint. Provisioning goes through SpaceDO's normal `/extensions` installation lifecycle as `SPACE_SHARED`, returning a stable installation ID. The manifest declares no code, gadgets, channels, daemons, commands, or broad permissions; it names only the Steward summary capability.
+- The scheduled report archive now uses that returned installation ID for the dedicated Space extension workspace path. Installation setup and report reads are covered by route tests; the existing SpaceDO lifecycle owns install identity and persistence.
+- Verification: Agents and Spaces typechecks passed; Steward install/report and route tests passed (8 tests); `git diff --check` passed.
+- Limitation: scheduled collection/ranking still runs as deterministic platform host code; this installation has no user-authored executable bundle and no LLM explanation. The typed summary API remains its data grant. Richer evidence and an attributed, reversible review/confirmation workflow are still open Phase 3 work.
 
 ### Phase 4 external usage controls checkpoint (2026-10-17)
 

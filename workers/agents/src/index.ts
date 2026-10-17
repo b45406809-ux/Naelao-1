@@ -8725,6 +8725,15 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
         "x-naelao-tenant-id": msg.tenantId,
         "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, msg.tenantId),
       };
+      const installationResponse = await env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/internal/spaces/${encodeURIComponent(msg.spaceId)}/project-steward/installation`,
+        { method: "POST", headers },
+      ));
+      if (!installationResponse.ok) throw new Error(`Project Steward installation unavailable (HTTP ${installationResponse.status})`);
+      const installation = await installationResponse.json<{ installation_id: string; platform_managed: boolean }>();
+      if (!installation.platform_managed || typeof installation.installation_id !== "string" || !installation.installation_id) {
+        throw new Error("Invalid Project Steward installation response");
+      }
       const response = await env.SPACES_WORKER.fetch(new Request(
         `http://spaces-worker/internal/spaces/${encodeURIComponent(msg.spaceId)}/project-steward/summary`, { headers }
       ));
@@ -8749,7 +8758,7 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
       if (env.SCRIPTS_R2) {
         try {
           await env.SCRIPTS_R2.put(
-            `spaces/${msg.spaceId}/space-workspace/extensions/platform-project-steward/workspace/reviews/${runDay}.json`,
+            `spaces/${msg.spaceId}/space-workspace/extensions/${installation.installation_id}/workspace/reviews/${runDay}.json`,
             reportJson,
             { httpMetadata: { contentType: "application/json" } },
           );

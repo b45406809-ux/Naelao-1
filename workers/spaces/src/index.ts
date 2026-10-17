@@ -32,6 +32,7 @@ import { registerMarketRadarRoutes } from "./routes/market-radar.js";
 import { airGappedOnlyFromConfig, applyDurableObjectJurisdiction, certifyArtifact, evaluateBlueprintSecurity, sanitizeAndScrubBlueprint, verifyArtifactCertificate, type ConformanceSuite, type ConformanceCertificate } from "@naelao/security";
 import { DOGFOOD_EXTENSION_BY_ID, validateExtensionManifest, type SpaceBlueprint } from "@naelao/agent-sdk";
 import { rankProjectStewardReviews, type ProjectStewardFact } from "./project-steward.js";
+import { PROJECT_STEWARD_EXTENSION_MANIFEST } from "./project-steward-extension.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { ConformanceSandboxDO, ConformanceState } from "./conformance-state.js";
@@ -3453,6 +3454,31 @@ app.get("/internal/spaces/:spaceId/project-steward/summary", async (c) => {
   })) });
 });
 
+// Idempotently provision the platform-owned Space-wide Steward through the same SpaceDO
+// installation lifecycle used by other extensions. Its manifest declares no executable
+// primitives or broad permissions; the scheduler's separately authenticated typed summary
+// grant is its only data capability.
+app.use("/internal/spaces/:spaceId/project-steward/installation", requireInternalHmac((c) => c.env.PLATFORM_SECRET ?? ""));
+app.post("/internal/spaces/:spaceId/project-steward/installation", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const owned = await loadOwnedSpace(c, spaceId);
+  if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+  const manifest = validateExtensionManifest(PROJECT_STEWARD_EXTENSION_MANIFEST, {
+    gatekeeperCapabilities: ["space.project_steward.read_summary"],
+  });
+  const stub = await spaceDoStub(c.env, spaceId, owned.tenantId);
+  const response = await stub.fetch(new Request("http://space-do/extensions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ manifest, installedBy: "naelao-platform", tenantId: owned.tenantId, spaceId,
+      scope: "SPACE_SHARED", gatekeeperCapabilities: ["space.project_steward.read_summary"] }),
+  }));
+  if (!response.ok) return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
+  const result = await response.json<{ installationId?: string }>();
+  if (!result.installationId) return c.json({ error_code: "project_steward_installation_id_missing" }, 503);
+  return c.json({ extension_id: manifest.id, installation_id: result.installationId, scope: "SPACE_SHARED", platform_managed: true });
+});
+
 app.post("/spaces/:spaceId/scheduled-jobs", async (c) => {
   const spaceId = c.req.param("spaceId");
   const owned = await loadOwnedSpace(c, spaceId);
@@ -3697,6 +3723,7 @@ app.patch("/spaces/:spaceId/model-config", async (c) => {
     const lifecycleResponse = await stub.fetch(new Request(`http://space/custom-models/${encodeURIComponent(body.model!)}/lifecycle?space_id=${encodeURIComponent(spaceId)}`, {
       headers: await spaceModelInternalHeaders(c.env.PLATFORM_SECRET, owned.tenantId),
     }));
+
     if (!lifecycleResponse.ok) return c.json({ error_code: "adapter_lifecycle_unavailable" }, 503);
     const lifecycle = await lifecycleResponse.json<{ status?: string }>();
     if (lifecycle.status !== "active") return c.json({ error_code: "adapter_not_active", message: "Complete consent, import, evaluation, and owner approval before selecting this adapter" }, 409);
