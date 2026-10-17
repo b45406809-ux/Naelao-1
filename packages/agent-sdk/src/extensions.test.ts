@@ -67,5 +67,17 @@ describe("composed extension bundle contract", () => {
     const manifest = JSON.parse(readFileSync(new URL("../examples/trading-mentor-channel/manifest.json", import.meta.url), "utf8"));
     expect(manifest.id).toBe("ext_trading_mentor_student_helper");
     expect(() => parseExtensionBundle(manifest.bundle)).not.toThrow();
+    expect(() => validateExtensionManifest(manifest, { gatekeeperCapabilities: manifest.capabilityRequirements })).not.toThrow();
+    expect(manifest.bundle.primitives.map((part: { id: string }) => part.id)).toEqual(["mentor_console", "trade_journal", "student_whatsapp", "place_order"]);
+    expect(manifest.bundle.workerRoles[0].primitiveIds).toEqual(["place_order"]);
+  });
+  it("binds an executable workflow part to an explicit worker role and entry artifact", () => {
+    const workflow = { schemaVersion: "1.0", kind: "workflow", id: "place_order", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
+      executionMode: "interactive", entry: "./place-order.ts", steps: [], toolNames: ["orders.place", "orders.status"] };
+    const composed = { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_trading_mentor", version: "1.0.0", primitives: [workflow],
+      workerRoles: [{ id: "order_worker", invocation: "workflow_step", execution: "worker", entry: "./place-order.ts", primitiveIds: ["place_order"] }] };
+    expect(parseExtensionBundle(composed).primitives[0]).toMatchObject({ kind: "workflow", entry: "./place-order.ts", toolNames: ["orders.place", "orders.status"] });
+    expect(() => parseExtensionBundle({ ...composed, workerRoles: [] })).toThrow("workflow_worker_role_binding_required");
+    expect(() => parseExtensionBundle({ ...composed, primitives: [{ ...workflow, entry: "../outside.ts" }] })).toThrow("invalid_workflow");
   });
 });

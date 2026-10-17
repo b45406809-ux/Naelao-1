@@ -122,9 +122,14 @@ export function serializeWorkflowCheckpoint(value: unknown, maxBytes = 1024): st
   if (new TextEncoder().encode(json).byteLength >= maxBytes) throw new Error("workflow_checkpoint_requires_r2_pointer");
   return json;
 }
-export async function durableWorkflowRunId(scope: Pick<DurableWorkflowIdentity, "tenantId" | "spaceId" | "projectId" | "actorId">, startKey: string): Promise<string> {
+export async function durableWorkflowRunId(scope: Pick<DurableWorkflowIdentity, "tenantId" | "spaceId" | "projectId" | "actorId"> & { installationId?: string; extensionId?: string; definitionId?: string }, startKey: string): Promise<string> {
   if (!IDENTITY_TOKEN.test(startKey)) throw new Error("workflow_start_key_required");
-  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([scope.tenantId, scope.spaceId, scope.projectId ?? "", scope.actorId, startKey])));
+  // Keep legacy project/actor idempotency stable. Composed extension runs add their
+  // installation and workflow identity so parallel bots cannot collide on a reused key.
+  const namespace = scope.installationId || scope.extensionId || scope.definitionId
+    ? [scope.installationId ?? "", scope.extensionId ?? "", scope.definitionId ?? ""]
+    : [];
+  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([scope.tenantId, scope.spaceId, scope.projectId ?? "", scope.actorId, ...namespace, startKey])));
   return "wf-" + Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 export function transitionWorkflow(record: DurableWorkflowRecord, next: DurableWorkflowStatus, now = Date.now()): DurableWorkflowRecord {

@@ -1,12 +1,29 @@
-# Trading mentor student channel starter
+# Trading mentor composed project extension
 
-This is a real starter for the current **channel-only** package installer. It is not a special project kind and does not install a Canvas, Gadget, planner worker, or member tool.
+This example shows how one versioned extension can ship related project UI, project data, an external student channel, and an internal durable worker without changing the planner or execution topology.
 
-1. Create a generic project for the mentor.
-2. In the project Knowledge page, publish only approved indexed files in a collection whose stable ID is `course_material`.
-3. In Channels, install `manifest.json` and paste `student-answer.ts` into the handler source map under `./student-answer.ts`. The host stores uploaded source immutably by package ID and version, separate from the general Skill Library. Connect the host's WhatsApp channel using the available provider setup, then bind the installed handler to the project WhatsApp channel.
-4. Test using a question supported by the published files. Search misses, revoked publication, or unavailable model/budget fail to human review.
+## How the parts belong together
 
-The script has no provider transport, credentials, tools, planner, project ID, or SQL access. It requests one host-generated answer, grounded in the selected collection, and opts into bounded conversation state. Session state is isolated by project, installation, and opaque conversation ID; it is not a copy of the project Knowledge base.
+`manifest.json` is the shared identity and release boundary. Every primitive has a stable ID and the same bundle version. `workerRoles` binds `order_worker` to the `place_order` workflow primitive and its entry file. The WhatsApp channel references its own handler artifact and published Knowledge collection. The Canvas and Gadget are project scoped. The host hashes and installs the declared artifacts as one immutable release.
 
-The generic installer accepts only channel primitives and the `channel.invoke` grant. Canvas/Gadget composition, provider-specific OAuth configuration, cryptographic package signing, and version upgrade/rollback are separate gaps documented in `new plan/FDE-EXTENSIONS-AND-MICROAPPS-ARCHITECTURE.md`.
+The public channel handler receives only its restricted channel context. It cannot use the internal workflow tools, read project membership, or see member conversations. The member side remains the normal project planner. When a member asks to place an order, the planner may discover the installed workflow and delegate it with `workflow.run`; the Durable Workflow worker executes under the requesting member and active project. The worker is not another planner and does not inherit chat history.
+
+The workflow start key is idempotent within the exact installed extension instance and workflow ID. Installing two named instances of the same extension creates separate instance IDs; they can run independent sessions and effects. Workflow run IDs and host grants include actor, project, installation and definition scope. Reusing a request key in one bot will not collapse a run in another bot.
+
+## Install and use
+
+1. Create a generic project. Publish only approved indexed files in the project Knowledge collection `course_material`.
+2. An owner or admin installs this manifest and the three declared source artifacts through the project extension installer, choosing an instance key when they need a second copy.
+3. Connect the WhatsApp provider through the host-managed connection flow. Provider transport and credentials stay in the host.
+4. A project member uses the regular planner to ask for an action. The planner can inspect `workflow.extensions`, then delegate `place_order` with `workflow.run`, passing the exact `installation_id`, `extension_id`, workflow ID, parameters and a stable `start_key`.
+5. The worker requires explicit confirmation and bounded order parameters. Its `orders.place` effect still has to be available and authorized by the host's current operation surface. The manifest's `toolNames` documents/reviews the intended operation; it does not grant that operation by itself.
+
+The included order operation is an integration example, not a broker connection or a claim that `orders.place` is implemented in every deployment. A deployment must provide the operation with its own authorization, idempotency, audit and settlement rules before this worker can place a real order. The trade journal schema is an isolated project Gadget database; the sample does not yet write journal rows.
+
+The external handler answers only from `course_material` after the owner publishes it. Its bounded channel session state is separate from project Knowledge and internal workflow state.
+
+## Current product boundary
+
+The bundle-to-role relationship, project install, Canvas/Gadget mounts, public channel handler, and Durable Workflow execution are implemented. The existing planner topology and workspace execution tiers are unchanged.
+
+Several broader product parts remain open: end-user OAuth consent and per-user credential references, external channel identity/session routing across multiple bot instances, an end-to-end workflow composition editor, Gadget writes from Canvas/workers, publisher identity signatures, version upgrade/rollback UX, and inbox event management. Provider OAuth must be completed in host-owned credential services; extension artifacts must never receive raw provider secrets. These items are tracked in `new plan/FDE-EXTENSIONS-AND-MICROAPPS-ARCHITECTURE.md` and `new plan/CONTINUATION-IMPLEMENTATION-PROGRESS.md`.

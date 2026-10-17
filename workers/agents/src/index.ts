@@ -37,6 +37,7 @@ import { deployedContainerCatalogue } from "./script-engine/container-catalogue.
 import { isCronDue } from "@naelao/events";
 import { SkillLibrary } from "./script-engine/skill-library.js";
 import { compileDynamicCode } from "./script-engine/dynamic-code.js";
+import { compileWorkflowEntrypoint } from "./workflows/workflow-compiler.js";
 import { workflowRunStub, type DurableWorkflowHostEnv } from "./workflows/workflow-host.js";
 import type { DurableWorkflowIdentity } from "@naelao/agent-sdk";
 import { promoteSkill, inheritTemplateSkills } from "./script-engine/federation.js";
@@ -6995,6 +6996,19 @@ app.post("/internal/channel-extensions/validate-handler", async c => {
     return c.json({ valid: true, digest: compiled.digest, bytes: compiled.bytes });
   } catch (error) {
     return c.json({ error_code: "channel_handler_source_invalid", message: error instanceof Error ? error.message.slice(0, 300) : "compile_failed" }, 400);
+  }
+});
+
+app.post("/internal/workflow-extensions/compile", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  const body = await c.req.json<{ source?: unknown }>().catch(() => ({} as { source?: unknown }));
+  if (typeof body.source !== "string") return c.json({ error_code: "workflow_source_invalid" }, 400);
+  try {
+    const compiled = await compileWorkflowEntrypoint(body.source);
+    return c.json({ valid: true, className: compiled.className, source: compiled.source, bytes: new TextEncoder().encode(compiled.source).byteLength });
+  } catch (error) {
+    return c.json({ error_code: "workflow_source_invalid", message: error instanceof Error ? error.message.slice(0, 400) : "compile_failed" }, 400);
   }
 });
 

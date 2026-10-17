@@ -545,6 +545,7 @@ export interface OrchestrationHooks {
   receiveFromSubAgent?(id: string): Promise<unknown>;
   terminateSubAgent?(id: string): Promise<void>;
   workflowCreate?(name: string, code: string, options?: { capabilities?: string[] }): Promise<{ id: string }>;
+  workflowListExtensions?(): Promise<Array<{ extensionId: string; version: string; installationId: string; workflows: Array<{ id: string; entry: string; toolNames: string[] }> }>>;
   workflowRun?(name: string, params: Record<string, unknown>, options?: { startKey?: string; installationId?: string; extensionId?: string; detach?: boolean; cleanContext?: boolean; maxContextTokens?: number; contextSources?: string[]; inheritChatHistory?: boolean; workflowClass?: string; budgetKey?: string; budgetCredits?: number; reportTarget?: string; escalationTarget?: string }): Promise<unknown>;
   workflowSchedule?(name: string, cron: string): Promise<{ id: string }>;
   workflowStatus?(id: string): Promise<unknown>;

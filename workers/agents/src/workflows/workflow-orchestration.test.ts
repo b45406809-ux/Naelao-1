@@ -13,4 +13,22 @@ describe("container work inside durable workflows", () => {
     await expect(hooks.workflowCreate?.("unsafe-js", "export async function execute(){ return null; }", { capabilities: ["code.run_js"] }))
       .rejects.toThrow("workflow_capability_not_installed");
   });
+
+  it("lists only workflows installed in the active project after rechecking membership", async () => {
+    const fetch = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/spaces/space/members") return Response.json({ data: [{ user_id: "member", role: "member" }] });
+      if (url.pathname === "/spaces/space/projects/project/members") return Response.json({ data: [{ user_id: "member", role: "editor" }] });
+      if (url.pathname === "/spaces/space/container-installations") return Response.json({ installations: [
+        { instance: { instance_id: "install-a", project_id: "project", scope: "PROJECT_BOUND", status: "active" }, manifest: { id: "ext_trade", bundle: { id: "ext_trade", version: "1.2.0", primitives: [{ kind: "workflow", id: "place_order", entry: "./place-order.ts", toolNames: ["orders.place"] }] } } },
+        { instance: { instance_id: "install-b", project_id: "other", scope: "PROJECT_BOUND", status: "active" }, manifest: { id: "ext_other", bundle: { id: "ext_other", version: "1.0.0", primitives: [{ kind: "workflow", id: "private", entry: "./private.ts", toolNames: [] }] } } },
+      ] });
+      return new Response("", { status: 404 });
+    });
+    const bucket = { get: async () => ({ text: async () => "{}" }) };
+    const env = { PLATFORM_SECRET: "secret", SPACES_WORKER: { fetch }, SCRIPTS_R2: bucket };
+    const hooks = createWorkflowHooks(env as never, { tenantId: "tenant", spaceId: "space", projectId: "project", agentId: "agent", actorId: "member" }, "parent", {} as never);
+    await expect(hooks.workflowListExtensions?.()).resolves.toEqual([{ extensionId: "ext_trade", version: "1.2.0", installationId: "install-a", workflows: [{ id: "place_order", entry: "./place-order.ts", toolNames: ["orders.place"] }] }]);
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
 });

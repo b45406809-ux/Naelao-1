@@ -259,7 +259,7 @@ export interface ContainerContract extends ExtensionContractBase {
   webContainerCompatible?: boolean;
 }
 export interface LinterContract extends ExtensionContractBase { kind: "linter"; mode: "deterministic" | "semantic"; entry: string; failureMode: "warn" | "block"; }
-export interface WorkflowContract extends ExtensionContractBase { kind: "workflow"; executionMode: ExecutionMode; steps: readonly string[]; toolNames: readonly string[]; }
+export interface WorkflowContract extends ExtensionContractBase { kind: "workflow"; executionMode: ExecutionMode; entry: string; steps: readonly string[]; toolNames: readonly string[]; }
 export type ExtensionPrimitiveManifest = GadgetContract | CanvasContract | ChannelContract | ContainerContract | LinterContract | WorkflowContract;
 /**
  * A worker role is an invocation shape, not a trust boundary or a runtime tier.
@@ -306,7 +306,7 @@ const CONTRACT_BASE_KEYS = new Set(["schemaVersion", "kind", "id", "version", "p
 function contractAssert(condition: unknown, message: string): asserts condition { if (!condition) throw new Error(`invalid_extension_contract:${message}`); }
 function rejectUnknownContractKeys(raw: Record<string, unknown>, allowed: Set<string>): void { for (const key of Object.keys(raw)) contractAssert(allowed.has(key), `unknown_field:${key}`); }
 function validateContractBase(raw: Record<string, unknown>, kind: ExtensionPrimitiveKind): void {
-  const specific = kind === "gadget" ? ["scope", "schemaSql", "migrations"] : kind === "canvas" ? ["layout", "component", "dynamicPage"] : kind === "channel" ? ["provider", "connectionId", "handlerScript", "context", "inboundEvents", "outboundEvents", "knowledgeCollections", "session"] : kind === "container" ? ["image", "resources", "exportedBinaries", "mounts", "networkPolicy", "webContainerCompatible"] : kind === "linter" ? ["mode", "entry", "failureMode"] : ["executionMode", "steps", "toolNames"];
+  const specific = kind === "gadget" ? ["scope", "schemaSql", "migrations"] : kind === "canvas" ? ["layout", "component", "dynamicPage"] : kind === "channel" ? ["provider", "connectionId", "handlerScript", "context", "inboundEvents", "outboundEvents", "knowledgeCollections", "session"] : kind === "container" ? ["image", "resources", "exportedBinaries", "mounts", "networkPolicy", "webContainerCompatible"] : kind === "linter" ? ["mode", "entry", "failureMode"] : ["executionMode", "entry", "steps", "toolNames"];
   rejectUnknownContractKeys(raw, new Set([...CONTRACT_BASE_KEYS, ...specific]));
   contractAssert(raw.schemaVersion === "1.0", `unsupported_schema_version:${String(raw.schemaVersion)}`);
   contractAssert(raw.kind === kind, `kind_mismatch:${kind}`);
@@ -418,7 +418,9 @@ export function parseExtensionPrimitive(value: unknown): ExtensionPrimitiveManif
   if (kind === "linter") {
     contractAssert(raw.mode === "deterministic" && CONTRACT_PATH.test(String(raw.entry)) && ["warn", "block"].includes(String(raw.failureMode)), "deterministic_linter_required");
   }
-  if (kind === "workflow") contractAssert(["interactive", "headless"].includes(String(raw.executionMode)) && Array.isArray(raw.steps) && (raw.steps as unknown[]).every((item) => typeof item === "string" && CONTRACT_PATH.test(item)) && Array.isArray(raw.toolNames) && (raw.toolNames as unknown[]).every((item) => typeof item === "string" && CONTRACT_ID.test(item)), "invalid_workflow");
+  if (kind === "workflow") contractAssert(["interactive", "headless"].includes(String(raw.executionMode)) && typeof raw.entry === "string" && /^\.\/[A-Za-z0-9._-]{1,128}\.(?:ts|js)$/.test(raw.entry)
+    && Array.isArray(raw.steps) && (raw.steps as unknown[]).every((item) => typeof item === "string" && CONTRACT_PATH.test(item))
+    && Array.isArray(raw.toolNames) && raw.toolNames.length <= 64 && (raw.toolNames as unknown[]).every((item) => typeof item === "string" && CONTRACT_ID.test(item)), "invalid_workflow");
   return Object.freeze(raw as unknown as ExtensionPrimitiveManifest);
 }
 export function serializeExtensionPrimitive(value: ExtensionPrimitiveManifest): string { return JSON.stringify(parseExtensionPrimitive(value)); }
@@ -454,6 +456,10 @@ export function parseExtensionBundle(value: unknown): ExtensionBundleManifest {
       contractAssert(typeof role.entry === "string" && CONTRACT_PATH.test(role.entry), "invalid_worker_entry");
       contractAssert(Array.isArray(role.primitiveIds) && new Set(role.primitiveIds).size === role.primitiveIds.length && (role.primitiveIds as unknown[]).every(id => typeof id === "string" && primitiveIds.has(id)), "invalid_worker_primitive_reference");
     }
+  }
+  for (const workflow of primitives.filter((item): item is WorkflowContract => item.kind === "workflow")) {
+    contractAssert(Array.isArray(workerRoles) && (workerRoles as ExtensionWorkerRole[]).some(role => role.primitiveIds.includes(workflow.id)
+      && role.entry === workflow.entry && ["workflow_step", "tool"].includes(role.invocation)), "workflow_worker_role_binding_required");
   }
   for (const [field, max] of [["connections", 32], ["knowledge", 64]] as const) {
     const entries = raw[field];

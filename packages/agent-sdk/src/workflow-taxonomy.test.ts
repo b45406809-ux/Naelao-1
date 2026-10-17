@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { WORKFLOW_CLASS_POLICIES, routeWorkflow } from "./workflow-taxonomy.js";
+import { WORKFLOW_CLASS_POLICIES, durableWorkflowRunId, routeWorkflow } from "./workflow-taxonomy.js";
 
 describe("Workflow Taxonomy Policies (Item 4)", () => {
   it("defines durable policies for company automations", () => {
@@ -25,6 +25,14 @@ describe("Workflow Taxonomy Policies (Item 4)", () => {
 });
 
 describe("workflow routing", () => {
+  it("separates idempotency keys by installed extension instance and workflow", async () => {
+    const base = { tenantId: "tenant", spaceId: "space", projectId: "project", actorId: "member", startKey: "same-request" };
+    const first = await durableWorkflowRunId({ ...base, installationId: "install-a", extensionId: "ext_trade", definitionId: "place_order" }, base.startKey);
+    expect(await durableWorkflowRunId({ ...base, installationId: "install-a", extensionId: "ext_trade", definitionId: "place_order" }, base.startKey)).toBe(first);
+    expect(await durableWorkflowRunId({ ...base, installationId: "install-b", extensionId: "ext_trade", definitionId: "place_order" }, base.startKey)).not.toBe(first);
+    expect(await durableWorkflowRunId({ ...base, installationId: "install-a", extensionId: "ext_trade", definitionId: "cancel_order" }, base.startKey)).not.toBe(first);
+  });
+
   it("isolates class budgets and targets reports", () => {
     expect(routeWorkflow({ workflowClass: "company_automation", spaceId: "s", budgetCredits: 10 })).toMatchObject({ budgetKey: "workflow:company_automation:s", reportTarget: "executive_channel_and_founder_telegram", escalationTarget: "space_owner" });
     expect(routeWorkflow({ workflowClass: "vertical_extension", spaceId: "s", projectId: "p", extensionId: "ext_ci", budgetCredits: 2 })).toMatchObject({ budgetKey: "workflow:vertical_extension:ext_ci:p", reportTarget: "project_team_room" });

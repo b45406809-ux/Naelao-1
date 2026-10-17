@@ -9,15 +9,15 @@ const installation: WorkflowInstallationGrant = {
 describe("verified extension workflow identity", () => {
   it("recomputes the full immutable R2 release digest", async () => {
     const prefix = "spaces/space/extensions/ext_customs/1.0.0/";
-    const files = new Map([[`${prefix}handler.ts`, "export function run() { return 1; }"], [`${prefix}index.html`, "<main>Hi</main>"]]);
+    const files = new Map([[`${prefix}place-order.ts`, "export function run() { return 1; }"], [`${prefix}console.html`, "<main>Hi</main>"]]);
     const bucket = {
       list: async ({ prefix: requested }: { prefix: string }) => ({ objects: [...files.keys()].filter(key => key.startsWith(requested)).map(key => ({ key })), truncated: false }),
       get: async (key: string) => { const value = files.get(key); return value === undefined ? null : { text: async () => value }; },
     } as never;
-    const entries = [...files].map(([key, value]) => [`./${key.slice(prefix.length)}`, value] as [string, string]).sort(([a], [b]) => a.localeCompare(b));
+    const entries = [...files].map(([key, value]) => [`./${key.slice(prefix.length)}`, value] as [string, string]).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
     const expectedSha256 = await workflowHash(JSON.stringify(entries));
     expect(await verifyExtensionArtifactSet(bucket, { spaceId: "space", extensionId: "ext_customs", version: "1.0.0", expectedSha256 })).toBe(true);
-    files.set(`${prefix}handler.ts`, "export function run() { return 2; }");
+    files.set(`${prefix}place-order.ts`, "export function run() { return 2; }");
     expect(await verifyExtensionArtifactSet(bucket, { spaceId: "space", extensionId: "ext_customs", version: "1.0.0", expectedSha256 })).toBe(false);
   });
 
@@ -27,6 +27,14 @@ describe("verified extension workflow identity", () => {
     expect(() => assertDeclaredExtensionWorkflow(installation, "indexer", "ext_customs")).not.toThrow();
     expect(() => assertDeclaredExtensionWorkflow(installation, "other", "ext_customs")).toThrow("workflow_script_not_declared_by_installation");
     expect(() => assertDeclaredExtensionWorkflow(installation, "indexer", "ext_other")).toThrow("workflow_extension_identity_mismatch");
+  });
+
+  it("resolves a composed workflow part by its stable primitive id or entry name", () => {
+    const composed: WorkflowInstallationGrant = { ...installation, manifest: { id: "ext_customs", bundle: { id: "ext_customs", version: "1.0.0", primitives: [
+      { kind: "workflow", id: "place_order", entry: "./place-order.ts", steps: [], toolNames: ["orders.place"] },
+    ] } } };
+    expect(assertDeclaredExtensionWorkflow(composed, "place_order", "ext_customs")).toEqual({ id: "place_order", entry: "./place-order.ts", toolNames: ["orders.place"] });
+    expect(assertDeclaredExtensionWorkflow(composed, "place-order", "ext_customs")).toMatchObject({ entry: "./place-order.ts" });
   });
 
   it("isolates space-wide durable extension workflows by the verified installation", () => {

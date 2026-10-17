@@ -80,6 +80,7 @@ export const READ_SAFE_PREBUILT_OPS: ReadonlySet<string> = new Set([
   "lock.status",
   "workspace.list",
   "workflow.status",
+  "workflow.extensions",
   "project.list",
   "agent.list",
   "wallet.balance",

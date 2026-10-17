@@ -1494,9 +1494,8 @@ app.post("/spaces/:spaceId/projects/:projectId/channel-extensions", async c => {
   return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
 });
 
-// Project bundle installation for Canvas + Gadget + external channel compositions. Workflow
-// primitives retain the Durable Workflow host contract and are rejected until artifacts can be
-// pinned and authorized there as part of this same release.
+// Project bundle installation for Canvas + Gadget + external channel + Durable Workflow
+// compositions. Workflow code uses the host's restricted execute(step,ctx) ABI.
 app.use("/spaces/:spaceId/projects/:projectId/extensions", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
 app.use("/spaces/:spaceId/projects/:projectId/extensions", requireBusinessMembership({ POST: "admin" }));
 app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
@@ -1511,15 +1510,23 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   const instanceKey = body.instanceKey ?? "default";
   if (!/^[a-z][a-z0-9_-]{1,31}$/.test(instanceKey)) return c.json({ error_code: "extension_instance_key_invalid" }, 400);
   if (body.upgrade !== undefined && body.upgrade !== true) return c.json({ error_code: "extension_upgrade_confirmation_invalid" }, 400);
+  const requiredCapabilities = new Set<string>();
   let manifest: ReturnType<typeof validateExtensionManifest>;
   try {
-    manifest = validateExtensionManifest(body.manifest, { gatekeeperCapabilities: ["extension.project_canvas"] });
+    manifest = validateExtensionManifest(body.manifest, { gatekeeperCapabilities: ["extension.project_canvas", "extension.workflow", "channel.invoke"] });
     const bundle = manifest.bundle;
     const primitives = bundle?.primitives ?? [];
-    if (!bundle || !primitives.length || primitives.some(item => !["canvas", "gadget", "channel"].includes(item.kind))
-      || manifest.containers?.length || manifest.daemons.length || manifest.commands.length
-      || manifest.declaredPermissions.length || manifest.capabilityRequirements.length !== 1
-      || manifest.capabilityRequirements[0] !== "extension.project_canvas") throw new Error("project_bundle_must_be_canvas_or_gadget_only");
+    if (!bundle || !primitives.length || primitives.some(item => !["canvas", "gadget", "channel", "workflow"].includes(item.kind))
+      || manifest.containers?.length || manifest.daemons.length || manifest.commands.length || manifest.declaredPermissions.length)
+      throw new Error("project_bundle_primitive_not_supported");
+    if (bundle.primitives.some(item => item.kind === "canvas" || item.kind === "gadget")) requiredCapabilities.add("extension.project_canvas");
+    if (bundle.primitives.some(item => item.kind === "workflow")) requiredCapabilities.add("extension.workflow");
+    if (bundle.primitives.some(item => item.kind === "channel")) requiredCapabilities.add("channel.invoke");
+    if (manifest.capabilityRequirements.length !== requiredCapabilities.size || manifest.capabilityRequirements.some(item => !requiredCapabilities.has(item)))
+      throw new Error("project_bundle_capability_declaration_mismatch");
+    const workflowIds = new Set(bundle.primitives.filter(item => item.kind === "workflow").map(item => item.id));
+    if ((bundle.workerRoles ?? []).some(role => role.execution !== "worker" || !["workflow_step", "tool"].includes(role.invocation)
+      || role.primitiveIds.some(id => !workflowIds.has(id)))) throw new Error("extension_worker_role_runtime_not_supported");
     const providerAllowlist = new Set(["whatsapp", "telegram", "slack", "discord", "email"]);
     const channels = bundle.primitives.filter(item => item.kind === "channel");
     const requirements = bundle.connections ?? [];
@@ -1531,6 +1538,12 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
         throw new Error("canvas_requires_project_mount_and_no_unreviewed_capabilities");
       if (primitive.kind === "gadget" && (primitive.scope !== "PROJECT_BOUND" || primitive.permissions.length || primitive.capabilityRequirements.length))
         throw new Error("gadget_requires_project_bound_scope_and_no_unreviewed_capabilities");
+      if (primitive.kind === "workflow") {
+        if (primitive.steps.length) throw new Error("workflow_multi_entry_steps_not_supported_use_execute_entry");
+        if (primitive.permissions.length || primitive.capabilityRequirements.length
+          || primitive.toolNames.some(name => !/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(name)))
+          throw new Error("workflow_requires_owner_reviewed_installed_tool_names");
+      }
     }
   } catch (error) {
     return c.json({ error_code: "extension_bundle_invalid", message: error instanceof Error ? error.message : "invalid_manifest" }, 400);
@@ -1539,25 +1552,40 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   const canvases = bundle.primitives.filter((item): item is Extract<typeof item, { kind: "canvas" }> => item.kind === "canvas");
   const gadgets = bundle.primitives.filter((item): item is Extract<typeof item, { kind: "gadget" }> => item.kind === "gadget");
   const channels = bundle.primitives.filter((item): item is Extract<typeof item, { kind: "channel" }> => item.kind === "channel");
-  if (canvases.some(item => !/^\.\/[A-Za-z0-9._-]{1,128}\.html$/.test(item.component)) || (!canvases.length && !gadgets.length && !channels.length))
+  const workflows = bundle.primitives.filter((item): item is Extract<typeof item, { kind: "workflow" }> => item.kind === "workflow");
+  // v1 runs one isolated execute(step, ctx) entrypoint; it can compose sequential
+  // actions with step.do and ctx.tools.call. Additional roles become separate workflow parts.
+  const workflowPaths = new Set(workflows.map(item => item.entry));
+  if (canvases.some(item => !/^\.\/[A-Za-z0-9._-]{1,128}\.html$/.test(item.component)) || (!canvases.length && !gadgets.length && !channels.length && !workflows.length))
     return c.json({ error_code: "extension_artifact_declaration_invalid" }, 400);
   if (!body.artifacts || typeof body.artifacts !== "object" || Array.isArray(body.artifacts)) return c.json({ error_code: "extension_artifacts_required" }, 400);
   const artifacts = body.artifacts as Record<string, unknown>, required = new Set([
-    ...canvases.map(item => item.component), ...channels.map(item => item.handlerScript),
+    ...canvases.map(item => item.component), ...channels.map(item => item.handlerScript), ...workflowPaths,
   ]);
   if (channels.some(channel => !/^\.\/[A-Za-z0-9._-]{1,128}\.(?:ts|js)$/.test(channel.handlerScript))) return c.json({ error_code: "extension_channel_artifact_invalid" }, 400);
   if (Object.keys(artifacts).length !== required.size || Object.keys(artifacts).some(path => !required.has(path))) return c.json({ error_code: "extension_artifacts_must_match_manifest" }, 400);
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "extension_artifact_storage_unavailable" }, 503);
-  if (channels.length && !c.env.AGENTS_WORKER) return c.json({ error_code: "extension_channel_validator_unavailable" }, 503);
+  if ((channels.length || workflows.length) && !c.env.AGENTS_WORKER) return c.json({ error_code: "extension_source_validator_unavailable" }, 503);
   const sourceEntries: Array<[string, string]> = [];
   let total = 0;
   for (const path of [...required].sort()) {
-    const source = artifacts[path];
+    let source = artifacts[path];
     if (typeof source !== "string" || source.includes("\u0000")) return c.json({ error_code: "extension_artifact_invalid" }, 400);
-    const size = new TextEncoder().encode(source).byteLength; total += size;
+    let size = new TextEncoder().encode(source).byteLength; total += size;
     const isHandler = /\.(?:ts|js)$/.test(path);
     if (!size || size > (isHandler ? 262_144 : 512_000) || total > 2_000_000) return c.json({ error_code: "extension_artifact_size_limit" }, 413);
-    if (isHandler) {
+    if (workflowPaths.has(path)) {
+      const validation = await c.env.AGENTS_WORKER!.fetch(new Request("http://agents-worker/internal/workflow-extensions/compile", {
+        method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
+          "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) }, body: JSON.stringify({ source }),
+      }));
+      const compiled = await validation.json<{ source?: string; message?: string }>().catch(() => ({} as { source?: string; message?: string }));
+      const compiledSource = compiled.source;
+      if (!validation.ok || typeof compiledSource !== "string") return c.json({ error_code: "extension_workflow_artifact_invalid", message: compiled.message?.slice(0, 300) }, 400);
+      source = compiledSource; size = new TextEncoder().encode(compiledSource).byteLength;
+      if (!size || size > 512_000 || total + size > 2_000_000) return c.json({ error_code: "extension_workflow_artifact_size_limit" }, 413);
+      total += size;
+    } else if (channels.some(channel => channel.handlerScript === path)) {
       const validation = await c.env.AGENTS_WORKER!.fetch(new Request("http://agents-worker/internal/channel-extensions/validate-handler", {
         method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
           "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) },
@@ -1565,6 +1593,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
       }));
       if (!validation.ok) return c.json({ error_code: "extension_channel_artifact_invalid", message: await validation.text().then(value => value.slice(0, 300)) }, 400);
     }
+    if (typeof source !== "string") return c.json({ error_code: "extension_artifact_invalid" }, 400);
     const key = `spaces/${spaceId}/extensions/${bundle.id}/${bundle.version}/${path.slice(2)}`;
     const previous = await c.env.SCRIPTS_R2.get(key);
     if (previous && await previous.text() !== source) return c.json({ error_code: "extension_release_artifact_immutable" }, 409);
@@ -1573,12 +1602,12 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   // Persist immutable files before exposing any mounted app. Repeated installs are idempotent.
   for (const [path, source] of sourceEntries) {
     const key = `spaces/${spaceId}/extensions/${bundle.id}/${bundle.version}/${path.slice(2)}`;
-    if (!await c.env.SCRIPTS_R2.head(key)) await c.env.SCRIPTS_R2.put(key, source, { httpMetadata: { contentType: path.endsWith(".html") ? "text/html; charset=utf-8" : path.endsWith(".js") ? "text/javascript; charset=utf-8" : "text/typescript; charset=utf-8" } });
+    if (!await c.env.SCRIPTS_R2.head(key)) await c.env.SCRIPTS_R2.put(key, source, { httpMetadata: { contentType: path.endsWith(".html") ? "text/html; charset=utf-8" : path.endsWith(".js") || workflowPaths.has(path) ? "text/javascript; charset=utf-8" : "text/typescript; charset=utf-8" } });
   }
   const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(sourceEntries))))].map(x => x.toString(16).padStart(2, "0")).join("");
   const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
   const installed = await stub.fetch(new Request("http://space-do/extensions", { method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ manifest, installedBy: identity.userId, tenantId: identity.tenantId, spaceId, projectId, scope: "PROJECT_BOUND", gatekeeperCapabilities: ["extension.project_canvas"], artifactSha256: digest, ...(body.upgrade ? { upgrade: true } : {}) }) }));
+    body: JSON.stringify({ manifest, installedBy: identity.userId, tenantId: identity.tenantId, spaceId, projectId, scope: "PROJECT_BOUND", gatekeeperCapabilities: [...requiredCapabilities], artifactSha256: digest, instanceKey, ...(body.upgrade ? { upgrade: true } : {}) }) }));
   if (!installed.ok) return new Response(installed.body, { status: installed.status, headers: { "content-type": installed.headers.get("content-type") ?? "application/json" } });
   const runtimeAppId = (primitiveId: string) => {
     const appId = instanceKey === "default" ? primitiveId : `${instanceKey}_${primitiveId}`;

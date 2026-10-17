@@ -1,7 +1,7 @@
 /**
  * dynamic-workflow (spec §12.1) — author and deploy CF Workflows for recurring tasks that
- * should run without AgentDO being awake. Operations: workflow.create, workflow.run,
- * workflow.schedule, workflow.status, and workflow.cancel.
+ * should run without AgentDO being awake. Operations include installed-extension discovery,
+ * workflow creation/run/schedule, and lifecycle controls.
  *
  * Workflow registration needs the platform workflow registry, which the engine does not
  * own; these delegate to host orchestration hooks and degrade honestly when unwired.
@@ -40,6 +40,7 @@ export const dynamicWorkflow: PrebuiltScript = {
   domain: "orchestration",
   requires_tier: 3,
   paramHints: {
+    "workflow.extensions": "no parameters; lists workflows installed in the active project and their declared tool names",
     "workflow.create": "name, code: export async function execute(step, ctx); capabilities: installed operation names; use ctx.params and ctx.tools.call(stableStepKey, operation, params)",
     "workflow.run": "name, params, start_key (reuse for retries), workflow_class, budget_credits, optional installation_id",
     "workflow.status": "id: workflow run ID",
@@ -48,6 +49,11 @@ export const dynamicWorkflow: PrebuiltScript = {
     "workflow.retry": "id: explicitly restart a failed workflow; committed effects are reused, uncertain effects require reconciliation",
   },
   operations: {
+    async "workflow.extensions"(_args, ctx) {
+      const h = hooks(ctx);
+      if (!h.workflowListExtensions) return { ok: false, reason: "extension workflow inventory not available" };
+      return { extensions: await h.workflowListExtensions() };
+    },
     async "workflow.create"(args, ctx) {
       const h = hooks(ctx);
       if (!h.workflowCreate)

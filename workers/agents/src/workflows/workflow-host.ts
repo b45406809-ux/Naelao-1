@@ -2,6 +2,7 @@ import { durableWorkflowRunId, serializeWorkflowCheckpoint, validateDurableWorkf
 import { mintInternalToken } from "@naelao/http";
 import type { WorkerLoaderBinding } from "../script-engine/code-runner.js";
 import { SkillLibrary } from "../script-engine/skill-library.js";
+import type { StoredScript } from "../script-engine/types.js";
 import type { WorkflowRunDO } from "../do/WorkflowRunDO.js";
 
 export interface WorkflowProviderInstance { id: string; status(): Promise<{ status: string; output?: unknown; error?: unknown }>; terminate(): Promise<void>; restart(): Promise<void>; sendEvent(event: { type: string; payload: unknown }): Promise<void> }
@@ -29,7 +30,7 @@ export async function workflowHeaders(env: DurableWorkflowHostEnv, tenantId: str
 /** Changes to membership, installation or agent configuration invalidate resumed grants. */
 export interface WorkflowInstallationGrant {
   instance: { tenant_id: string; space_id: string; project_id?: string | null; user_id?: string | null; scope?: string; status: string };
-  manifest: { id?: string; daemons?: Array<{ workflowScript?: string }> };
+  manifest: { id?: string; daemons?: Array<{ workflowScript?: string }>; bundle?: { id?: string; version?: string; primitives?: Array<{ kind?: string; id?: string; entry?: string; steps?: string[]; toolNames?: string[] }> } };
   release?: { version?: string; artifactSha256?: string; signatureValid?: boolean } | null;
 }
 /** Recompute the canonical release digest over immutable extension files before loading code.
@@ -54,7 +55,9 @@ export async function verifyExtensionArtifactSet(bucket: R2Bucket, input: { spac
     cursor = page.truncated ? page.cursor : undefined;
   } while (cursor);
   if (!entries.length) return false;
-  entries.sort(([a], [b]) => a.localeCompare(b));
+  // Match Array.prototype.sort() used by the installer byte-for-byte. localeCompare
+  // can ignore punctuation (for example the hyphen in `place-order.ts`) by locale.
+  entries.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
   const digest = await workflowHash(JSON.stringify(entries));
   return digest === input.expectedSha256;
 }
@@ -101,11 +104,15 @@ export function extensionWorkflowName(path: string): string | null {
 export function workflowWorkspaceExtensionId(identity: Pick<DurableWorkflowIdentity, "workflowClass" | "projectId" | "installationId">): string | undefined {
   return identity.workflowClass === "vertical_extension" && !identity.projectId ? identity.installationId : undefined;
 }
-export function assertDeclaredExtensionWorkflow(installation: WorkflowInstallationGrant | undefined, name: string, extensionId: string | undefined): void {
-  if (!installation?.manifest.daemons?.some((daemon) => typeof daemon.workflowScript === "string" && extensionWorkflowName(daemon.workflowScript) === name)) {
-    throw new Error("workflow_script_not_declared_by_installation");
-  }
-  if (!extensionId || installation.manifest.id !== extensionId) throw new Error("workflow_extension_identity_mismatch");
+export function assertDeclaredExtensionWorkflow(installation: WorkflowInstallationGrant | undefined, name: string, extensionId: string | undefined): { id: string; entry: string; toolNames: string[] } | undefined {
+  const declared = installation?.manifest.bundle?.primitives?.find((primitive) => primitive.kind === "workflow"
+    && (primitive.id === name || typeof primitive.entry === "string" && extensionWorkflowName(primitive.entry) === name));
+  const legacyDeclared = installation?.manifest.daemons?.some((daemon) => typeof daemon.workflowScript === "string" && extensionWorkflowName(daemon.workflowScript) === name);
+  if (!declared && !legacyDeclared) throw new Error("workflow_script_not_declared_by_installation");
+  if (!extensionId || installation?.manifest.id !== extensionId) throw new Error("workflow_extension_identity_mismatch");
+  if (!declared) return undefined;
+  if (!declared.id || !declared.entry || !Array.isArray(declared.toolNames)) throw new Error("workflow_declaration_invalid");
+  return { id: declared.id, entry: declared.entry, toolNames: declared.toolNames };
 }
 export async function putWorkflowArtifact(env: DurableWorkflowHostEnv, identity: DurableWorkflowIdentity, value: unknown): Promise<WorkflowCheckpointPointer> {
   if (!env.SCRIPTS_R2) throw new Error("workflow_artifacts_unavailable");
@@ -132,7 +139,13 @@ export interface StartDurableWorkflowOptions {
 }
 export async function startDurableWorkflow(env: DurableWorkflowHostEnv, options: StartDurableWorkflowOptions): Promise<{ id: string; queued: boolean; durable: true }> {
   if (!env.SCRIPTS_R2 || !env.AGENT_SCRIPT_WORKFLOW || !env.LOADER) throw new Error("dynamic_workflow_runtime_unavailable");
-  const runId = await durableWorkflowRunId({ tenantId: options.tenantId, spaceId: options.spaceId, actorId: options.actorId, ...(options.projectId ? { projectId: options.projectId } : {}) }, options.startKey);
+  const workflowClass = options.workflowClass ?? "ephemeral_task";
+  const runId = await durableWorkflowRunId({ tenantId: options.tenantId, spaceId: options.spaceId, actorId: options.actorId,
+    ...(options.projectId ? { projectId: options.projectId } : {}),
+    ...(workflowClass === "vertical_extension" ? {
+      ...(options.installationId ? { installationId: options.installationId } : {}),
+      ...(options.extensionId ? { extensionId: options.extensionId } : {}), definitionId: options.name,
+    } : {}) }, options.startKey);
   const stub = workflowRunStub(env, { ...options, runId });
   // A repeated start keeps its original code pin and expiry even after a code update.
   const prior = await stub.existing();
@@ -147,15 +160,30 @@ export async function startDurableWorkflow(env: DurableWorkflowHostEnv, options:
     await stub.launch();
     return { id: runId, queued: prior.status === "queued", durable: true };
   }
-  const script = await new SkillLibrary(env.SCRIPTS_R2, options.spaceId).read(options.name);
-  if (!script?.code || script.metadata.runtime !== "workflow") throw new Error("workflow_script_not_found");
   const grant = await readWorkflowGrant(env, { tenantId: options.tenantId, spaceId: options.spaceId, agentId: options.agentId, actorId: options.actorId, ...(options.projectId ? { projectId: options.projectId } : {}), ...(options.installationId ? { installationId: options.installationId } : {}) });
-  const workflowClass = options.workflowClass ?? "ephemeral_task";
   if (workflowClass === "company_automation" && (options.projectId || !["owner", "admin"].includes(grant.role))) throw new Error("workflow_owner_required");
+  let script: StoredScript | { code: string; metadata: { runtime?: string; code_capabilities?: string[] } } | null;
   if (workflowClass === "vertical_extension") {
     if (!options.installationId) throw new Error("workflow_installation_required");
-    assertDeclaredExtensionWorkflow(grant.installation, options.name, options.extensionId);
+    const declaration = assertDeclaredExtensionWorkflow(grant.installation, options.name, options.extensionId);
+    if (declaration) {
+      const bundleId = grant.installation?.manifest.bundle?.id, version = grant.installation?.manifest.bundle?.version;
+      const release = grant.installation?.release;
+      if (!bundleId || bundleId !== options.extensionId || !version || release?.version !== version || release.signatureValid !== true || !release.artifactSha256
+        || !await verifyExtensionArtifactSet(env.SCRIPTS_R2, { spaceId: options.spaceId, extensionId: bundleId, version, expectedSha256: release.artifactSha256 }))
+        throw new Error("workflow_extension_release_integrity_failed");
+      const sourcePath = declaration.entry.match(/^\.\/([A-Za-z0-9._-]{1,128}\.(?:ts|js))$/)?.[1];
+      if (!sourcePath) throw new Error("workflow_script_not_found");
+      const source = await env.SCRIPTS_R2.get(`spaces/${options.spaceId}/extensions/${bundleId}/${version}/${sourcePath}`);
+      if (!source || source.size > 524_288) throw new Error("workflow_script_not_found");
+      script = { code: await source.text(), metadata: { runtime: "workflow", code_capabilities: declaration.toolNames } };
+    } else {
+      script = await new SkillLibrary(env.SCRIPTS_R2!, options.spaceId).read(options.name);
+    }
+  } else {
+    script = await new SkillLibrary(env.SCRIPTS_R2, options.spaceId).read(options.name);
   }
+  if (!script?.code || script.metadata.runtime !== "workflow") throw new Error("workflow_script_not_found");
   const codeDigest = await workflowHash(script.code);
   const identity: DurableWorkflowIdentity = { schema: 1, runId, tenantId: options.tenantId, spaceId: options.spaceId, ...(options.projectId ? { projectId: options.projectId } : {}), actorId: options.actorId, agentId: options.agentId, ...(options.installationId ? { installationId: options.installationId } : {}),
     startKey: options.startKey, definitionId: options.name, codeDigest, codeKey: "workflow-code/" + options.tenantId + "/" + options.spaceId + "/" + codeDigest + ".js", grantVersion: grant.version,
