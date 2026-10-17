@@ -91,6 +91,8 @@ Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, recon
 
 **Status:** local migration/integration checks and Worker dry-runs are recorded in [`DEPLOYMENT-ACCEPTANCE-LOG.md`](./DEPLOYMENT-ACCEPTANCE-LOG.md). Live D1/Worker deployment, domains, VAPID, Twilio, model providers, and deployed R2 archive continuity remain unrun because this task has no production account configuration.
 
+**Fresh local checkpoint (2026-10-17):** Spaces, Agents, Notifications, and Billing Wrangler dry-runs pass on `Mcbt5s-Backup-2`; Agents builds all three configured containers. See the timestamped acceptance log for tool versions, bundle sizes, and the existing Wrangler warnings. This does not change the live acceptance status.
+
 Run only after code and local integration checks are complete. No secret belongs in this file or Git.
 
 - Apply deployed D1 migrations 0093 through 0101 in order and verify replay-safe schema state; verify the current SpaceDO and ProductUserDO migration versions after deployment.

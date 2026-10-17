@@ -18,3 +18,15 @@ Recorded: 2026-10-15 14:50 UTC. Branch: `Mcbt5s-Backup-2`. No live deployment or
 | Encrypted archive key continuity and R2 durability | Deployed SpaceDO + SCRIPTS_R2 | **MOCKED LOCALLY / LIVE UNRUN**. Local R2 mock covers multipart restart/failure, key rotation, resumable bulk rewrap failure/restart, corruption, same-Space verification, and rollback. | Configure the active and previous `SPACE_ARCHIVE_KEY` bindings, run the owner/admin batch rewrap from Settings to completion before retiring the previous key, then do a controlled live archive/restore and verify key retention and object cleanup. |
 
 | Twilio pricing/API contract | Current official Twilio phone-number and Voice pricing docs plus IncomingPhoneNumber schema | **DOC REVIEWED; LIVE UNRUN**. Monthly price is returned by country/type pricing data; inbound Voice pricing response is snake_case and per-number lookup; IncomingPhoneNumber schema does not document a `price` field. Import no longer relies on that undocumented field. | Recheck current pricing immediately before purchase; this rate-card display is not a locked quote. Record account-specific billed amount after provisioning. |
+
+## Fresh W7 local checkpoint — 2026-10-17 07:54 UTC
+
+Branch: `Mcbt5s-Backup-2`, commit `48c19c6`. All checks below were local Wrangler `deploy --dry-run` invocations; no deployment or provider request was sent.
+
+| Check | Result | Notes |
+| --- | --- | --- |
+| Spaces Worker package and bindings | **DRY-RUN PASSED** | Wrangler 3.114.17; 11,869.84 KiB / 1,958.21 KiB gzip. Existing `worker_loaders` unsupported-field and Workflows beta warnings remain. |
+| Agents Worker package, bindings, and containers | **DRY-RUN PASSED** | Wrangler 4.149.0; 18,109.52 KiB / 3,355.05 KiB gzip. ToolSandbox, DocumentSandbox, and MediaSandbox images built and were listed as available. The Wrangler config warns that multiple environments exist and none was selected; dry-run exited without deployment. |
+| Notifications Worker package and bindings | **DRY-RUN PASSED** | Wrangler 3.114.17; 429.85 KiB / 82.18 KiB gzip. |
+| Billing Worker package and bindings | **DRY-RUN PASSED** | Wrangler 3.114.17; 362.91 KiB / 75.81 KiB gzip. |
+| Production deployment, configured domains, VAPID, Twilio/PSTN, provider billing/entitlement, and deployed R2 continuity | **UNRUN / BLOCKED ON ACCOUNT CONFIGURATION** | Local dry-runs and mocks do not establish live acceptance. Use the next-action guidance in the rows above after authorized accounts and configuration are available. |

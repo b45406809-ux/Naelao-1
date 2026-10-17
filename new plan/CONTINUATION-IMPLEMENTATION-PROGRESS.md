@@ -978,3 +978,10 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Verification: `space-retention.test.ts`, `space-backup.test.ts`, `space-data-ops.test.ts`, and `SpaceDO-migrations.test.ts` passed (4 files / 16 tests); Spaces TypeScript check passed. The multipart restart test confirms completed chunks are reused. R2 behavior uses mocks/SQLite locally.
 - W6 has no identified additional provider-independent code gap. Live R2 durability and cross-deployment restore/key continuity require configured Cloudflare account/bucket/key access and remain in W7 as unrun.
 - Next: W7 acceptance-log audit. Do not deploy, contact production services, or represent local mocks/dry-runs as live acceptance.
+
+## Open-gap workstream 7 refresh — local package acceptance (2026-10-17)
+
+- Re-ran the Agents Wrangler dry-run on the current tree after the earlier session result could not be recovered. It passed with Wrangler 4.149.0, a Worker bundle of 18,109.52 KiB / 3,355.05 KiB gzip, and all three configured ToolSandbox, DocumentSandbox, and MediaSandbox container images built. No deployment occurred.
+- The current W7 record also captures successful Spaces, Notifications, and Billing dry-runs, including package sizes and existing warnings. See [`DEPLOYMENT-ACCEPTANCE-LOG.md`](./DEPLOYMENT-ACCEPTANCE-LOG.md).
+- Live Worker/D1 deployment, email domains, Web Push credentials, Twilio/PSTN, provider entitlement/billing, and deployed R2 durability/key continuity remain UNRUN or BLOCKED on configured accounts and operator access. This local checkpoint does not close those external acceptance tasks.
+- Next action: none remains that can be safely verified locally in W7; resume live acceptance only when the required account configuration and deployment authority are available.
