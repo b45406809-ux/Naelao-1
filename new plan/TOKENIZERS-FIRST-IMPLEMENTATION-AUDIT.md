@@ -65,6 +65,13 @@ Legend: **Implemented** = current code evidence found; **Partial** = meaningful 
 
 ## Fresh repository evidence gathered so far
 
+### Custom worker failure handling checkpoint (2026-10-17)
+
+- The user's failure question is addressed without adopting the model response's unapproved automatic generalist fallback, cross-privilege planner escalation, or autonomous worker-code repair. Existing run capture, isolation, bounded retry and explicit continue/dismiss controls remain authoritative.
+- Shell failure guidance now distinguishes an uncertain external effect (inspect before retry), a revoked/changed installation grant (review access and start a new run), retry exhaustion/expiry, and compile/load failures. No error path recommends replaying an uncertain external action or silently escalating privileges.
+- Changed: `apps/shell/src/lib/user-facing-errors.ts` and `new plan/CONTINUATION-IMPLEMENTATION-PROGRESS.md`.
+- No tests or typechecks were run for this checkpoint.
+
 - `new plan/FOUNDRY-IMPLEMENTATION-PROGRESS.md` documents the guided domain-worker creator, Foundry template lifecycle, `fetch-md`, owner-reviewed feature inbox, target-Space worker installs, exact document grants, and channel-native worker invocation. It explicitly excludes public global marketplace, implicit FDE routing, simulated model behavior, and live/load/stress acceptance.
 - `new plan/CONTINUATION-IMPLEMENTATION-PROGRESS.md` and `new plan/TOKENIZERS-CONTINUATION-IMPLEMENTATION-LEDGER.md` document later container/workspace/security work. Those are evidence pointers, not proof until checks are freshly inspected.
 - Current code evidence: `promoteProject` changes cockpit mode only; `ToolSandboxDO` has distinct project, Space Assistant and per-installation Space extension workspaces; Dynamic Workflow status/retry is implemented; Foundry inbox is owner-reviewed; billing-core meters model and infrastructure resources and SpaceDO maintains project spend reservations/caps. `workers/synthetics` runs basic HTTP health checks, but not a full user journey. No universal swarm topology catalog, k6 stress suite, generated scenario pipeline, PII-safe flight-recorder fixture compiler, or generic semantic context pruner was found.

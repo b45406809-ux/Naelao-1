@@ -25,6 +25,21 @@ export function userFacingErrorMessage(raw: unknown, errorCode?: string, fallbac
   if (value.includes("run not found") || value.includes("run_not_found")) {
     return "That run is no longer available. Please send the request again.";
   }
+  if (value.includes("workflow_effect_reconciliation_required") || value.includes("workflow_effect_indeterminate")) {
+    return "A workflow step may have completed before it stopped. Review that step's result before retrying so an external action is not repeated.";
+  }
+  if (value.includes("workflow_grant_revoked") || value.includes("workflow_installation_revoked") || value.includes("workflow_installation_scope_mismatch")) {
+    return "This workflow's access changed while it was running. Review the project membership and extension installation, then start a new run if access is still intended.";
+  }
+  if (value.includes("workflow_retry_not_allowed")) {
+    return "This workflow cannot be retried because it expired or reached its retry limit. Review its completed steps before starting a new run.";
+  }
+  if (value.includes("workflow_compile_error") || value.includes("workflow_script_not_found")) {
+    return "The custom workflow could not be loaded or compiled. Check the workflow script and fix it before running it again.";
+  }
+  if (value.includes("workflow_provider_errored") || value.includes("workflow_provider_unavailable")) {
+    return "The workflow runtime stopped unexpectedly. Check its run status and completed steps before retrying.";
+  }
   if (value.includes("context") && (value.includes("overflow") || value.includes("too large") || value.includes("token"))) {
     return "This conversation is too large for the selected model. Start a new thread or ask a shorter question.";
   }
