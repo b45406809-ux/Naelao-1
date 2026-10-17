@@ -55,6 +55,23 @@ describe("runtime extension installation", () => {
       connections: [{ id: "student_channel", provider: "whatsapp", purpose: "Receive student questions", required: true }] }] });
   });
 
+  it("removes only the active project installation addressed by tenant, space, and project", async () => {
+    const storage = createDOStorage(), state = { storage };
+    const space = new SpaceDO(state as never, {} as never);
+    await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project-a"));
+    storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active'),('project-b','space','B','active')");
+    const installedResponse = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest: manifest(), installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project-a", scope: "PROJECT_BOUND", gatekeeperCapabilities: ["native-execution"] }) }));
+    const installed = await installedResponse.json() as { installationId: string };
+    const remove = (tenantId: string, projectId: string) => space.fetch(new Request("http://space/extension-installation?" + new URLSearchParams({
+      instance_id: installed.installationId, tenant_id: tenantId, space_id: "space", project_id: projectId,
+    }), { method: "DELETE" }));
+    expect((await remove("tenant", "project-b")).status).toBe(404);
+    expect(storage.sql.exec("SELECT status FROM extension_instances WHERE instance_id=?", installed.installationId).toArray()[0]?.status).toBe("active");
+    expect(await (await remove("tenant", "project-a")).json()).toMatchObject({ removed: true, instance_id: installed.installationId });
+    expect((await remove("tenant", "project-a")).status).toBe(404);
+  });
+
   it("validates scope before mutation, keeps manifests immutable, and replays installs after restart", async () => {
     const storage = createDOStorage();
     const state = { storage };

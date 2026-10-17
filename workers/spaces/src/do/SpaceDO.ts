@@ -2697,6 +2697,19 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const { manifest_json, ...instance } = row;
         return Response.json({ instance, manifest: JSON.parse(manifest_json) });
       }
+      if (url.pathname === "/extension-installation" && method === "DELETE") {
+        const instanceId = url.searchParams.get("instance_id") ?? "";
+        const tenantId = url.searchParams.get("tenant_id") ?? "";
+        const spaceId = url.searchParams.get("space_id") ?? "";
+        const projectId = url.searchParams.get("project_id") ?? "";
+        if (!instanceId || !tenantId || !spaceId || !projectId) return Response.json({ error_code: "extension_installation_scope_required" }, { status: 400 });
+        const result = this.ctx.storage.sql.exec(`UPDATE extension_instances SET status='removed',removed_at=datetime('now')
+          WHERE instance_id=? AND tenant_id=? AND space_id=? AND project_id=? AND scope IN ('PROJECT_BOUND','PROJECT_SHARED') AND status='active'`,
+        instanceId, tenantId, spaceId, projectId);
+        return result.rowsWritten === 1
+          ? Response.json({ removed: true, instance_id: instanceId })
+          : Response.json({ error_code: "extension_installation_not_found" }, { status: 404 });
+      }
       if (url.pathname === "/channel-installations" && method === "GET") {
         const projectId = url.searchParams.get("project_id") ?? "";
         if (!projectId || !queryOne(this.ctx.storage.sql as never,

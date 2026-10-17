@@ -1829,6 +1829,10 @@ export async function clearChannelExtensionSessionState(spaceId: string, project
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/channel-extensions/${encodeURIComponent(instanceId)}/session-state`, { method: "DELETE", session });
 }
 
+export async function removeChannelExtension(spaceId: string, projectId: string, instanceId: string, session: SessionCredentials): Promise<{ removed: boolean }> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/channel-extensions/${encodeURIComponent(instanceId)}`, { method: "DELETE", session });
+}
+
 export async function listChannelExtensionInstallations(
   spaceId: string,
   projectId: string,

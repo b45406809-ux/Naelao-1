@@ -6986,7 +6986,7 @@ app.post("/internal/channel-extensions/session-state", async c => {
   if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
   const body = await c.req.json<{ spaceId?: string; projectId?: string; installationId?: string; action?: string }>()
     .catch(() => ({} as { spaceId?: string; projectId?: string; installationId?: string; action?: string }));
-  if (!body.spaceId || !body.projectId || !body.installationId || !["summary", "clear"].includes(String(body.action))) return c.json({ error_code: "channel_session_scope_invalid" }, 400);
+  if (!body.spaceId || !body.projectId || !body.installationId || !["summary", "clear", "uninstall"].includes(String(body.action))) return c.json({ error_code: "channel_session_scope_invalid" }, 400);
   if (!c.env.SPACES_WORKER) return c.json({ error_code: "extension_installation_unavailable" }, 503);
   const installationResponse = await c.env.SPACES_WORKER.fetch(new Request(
     `http://spaces-worker/spaces/${encodeURIComponent(body.spaceId)}/workflow-installations/${encodeURIComponent(body.installationId)}`,
@@ -6997,6 +6997,16 @@ app.post("/internal/channel-extensions/session-state", async c => {
   const instance = installation.instance;
   if (!instance || instance.status !== "active" || instance.tenant_id !== tenantId || instance.space_id !== body.spaceId || instance.project_id !== body.projectId)
     return c.json({ error_code: "extension_installation_scope_mismatch" }, 403);
+  if (body.action === "uninstall") {
+    const result = await c.env.PLATFORM_DB.prepare(`UPDATE channel_links SET extension_instance_id=NULL,extension_script_sha256=NULL
+      WHERE space_id=? AND tenant_id=? AND project_id=? AND extension_instance_id=?`)
+      .bind(body.spaceId, tenantId, body.projectId, body.installationId).run();
+    const stub = await getAgentDOForSpace(c.env, tenantId, body.spaceId, "naelao-agent", c.get("requestId"));
+    const sessionUrl = `http://agent-do/channels/extensions/session-state?${new URLSearchParams({ project_id: body.projectId, installation_id: body.installationId })}`;
+    const cleared = await stub.fetch(new Request(sessionUrl, { method: "DELETE" }));
+    if (!cleared.ok) return c.json({ error_code: "channel_session_cleanup_failed" }, 503);
+    return c.json({ unboundChannels: result.meta?.changes ?? 0, deletedConversations: (await cleared.json<{ deletedConversations?: number }>()).deletedConversations ?? 0 });
+  }
   const stub = await getAgentDOForSpace(c.env, tenantId, body.spaceId, "naelao-agent", c.get("requestId"));
   const method = body.action === "clear" ? "DELETE" : "GET";
   const url = `http://agent-do/channels/extensions/session-state?${new URLSearchParams({ project_id: body.projectId, installation_id: body.installationId })}`;

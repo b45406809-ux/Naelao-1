@@ -1505,6 +1505,29 @@ app.on(["GET", "DELETE"], "/spaces/:spaceId/projects/:projectId/channel-extensio
   return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
 });
 
+app.use("/spaces/:spaceId/projects/:projectId/channel-extensions/:instanceId", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use("/spaces/:spaceId/projects/:projectId/channel-extensions/:instanceId", requireBusinessMembership({ DELETE: "admin" }));
+app.delete("/spaces/:spaceId/projects/:projectId/channel-extensions/:instanceId", async c => {
+  const { spaceId, projectId, instanceId } = c.req.param();
+  const denied = await requireManageableAutomationProject(c, spaceId, projectId);
+  if (denied) return denied;
+  if (!c.env.AGENTS_WORKER) return c.json({ error_code: "channel_uninstall_unavailable" }, 503);
+  const identity = getCallerIdentity(c);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized" }, 401);
+  const cleanup = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/channel-extensions/session-state", {
+    method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+    body: JSON.stringify({ spaceId, projectId, installationId: instanceId, action: "uninstall" }),
+  }));
+  if (!cleanup.ok) return new Response(cleanup.body, { status: cleanup.status, headers: { "content-type": "application/json" } });
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const removed = await stub.fetch(new Request("http://space-do/extension-installation?" + new URLSearchParams({
+    instance_id: instanceId, tenant_id: tenantId, space_id: spaceId, project_id: projectId,
+  }), { method: "DELETE" }));
+  return new Response(removed.body, { status: removed.status, headers: { "content-type": "application/json" } });
+});
+
 app.use("/internal/spaces/:spaceId/projects/:projectId/extensions/:extensionId/active", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
 app.get("/internal/spaces/:spaceId/projects/:projectId/extensions/:extensionId/active", async (c) => {
   const extensionId = c.req.param("extensionId");

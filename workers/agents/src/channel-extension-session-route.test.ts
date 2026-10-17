@@ -28,6 +28,7 @@ function setup(projectId = "project-a") {
       });
     }),
   };
+  const update = vi.fn(async () => ({ meta: { changes: 1 } }));
   const env = {
     PLATFORM_SECRET: secret,
     SPACES_WORKER: spaces,
@@ -35,13 +36,16 @@ function setup(projectId = "project-a") {
       idFromName: (name: string) => name,
       get: () => agentStub,
     },
+    PLATFORM_DB: {
+      prepare: vi.fn(() => ({ bind: vi.fn(() => ({ run: update })) })),
+    },
   } as never;
-  return { env, spaces, forwarded, agentStub };
+  return { env, spaces, forwarded, agentStub, update };
 }
 
 async function post(
   env: unknown,
-  action: "summary" | "clear",
+  action: "summary" | "clear" | "uninstall",
   tokenTenant = "tenant-a"
 ) {
   const token = await mintInternalToken(secret, tokenTenant);
@@ -96,6 +100,14 @@ describe("channel extension session-state controls", () => {
     const h = setup();
     const response = await post(h.env, "clear");
     expect(response.status).toBe(200);
+    expect(h.forwarded[0]?.method).toBe("DELETE");
+  });
+
+  it("unbinds channels and clears saved state before an installation is removed", async () => {
+    const h = setup();
+    const response = await post(h.env, "uninstall");
+    expect(response.status).toBe(200);
+    expect(h.update).toHaveBeenCalledTimes(1);
     expect(h.forwarded[0]?.method).toBe("DELETE");
   });
 });

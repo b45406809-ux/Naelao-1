@@ -18,7 +18,7 @@ import * as React from "react";
 import { QrCode } from "@naelao/ui";
 import { ALLOWED_MODELS } from "@naelao/billing-core";
 import type { ChannelExtensionInstallation, ChannelLink, ChannelPairing, SessionCredentials } from "@/lib/api";
-import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, installProjectChannelExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState } from "@/lib/api";
+import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, installProjectChannelExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
@@ -152,6 +152,7 @@ export function ChannelConnect({
   const [installManifestDraft, setInstallManifestDraft] = React.useState("");
   const [installSourcesDraft, setInstallSourcesDraft] = React.useState("");
   const [installingExtension, setInstallingExtension] = React.useState(false);
+  const [removingExtension, setRemovingExtension] = React.useState<string | null>(null);
   const [installScope, setInstallScope] = React.useState<"PROJECT_BOUND" | "PROJECT_SHARED">("PROJECT_BOUND");
 
   React.useEffect(() => {
@@ -263,6 +264,17 @@ export function ChannelConnect({
     } finally { setInstallingExtension(false); }
   }
 
+  async function uninstallChannelExtension(instanceId: string) {
+    if (!projectId || removingExtension || !window.confirm("Uninstall this handler? It will be unbound from project channels and its saved conversation state will be deleted.")) return;
+    setRemovingExtension(instanceId); setError(null);
+    try {
+      await removeChannelExtension(spaceId, projectId, instanceId, session);
+      setExtensionInstallations(await listChannelExtensionInstallations(spaceId, projectId, session));
+      onChanged();
+    } catch (err) { setError(err instanceof Error ? err.message : "Couldn't uninstall this channel handler."); }
+    finally { setRemovingExtension(null); }
+  }
+
   return (
     <div>
       {extensionLoadError && <div role="alert" style={{ marginBottom: 10, color: "var(--danger, #b42318)", fontSize: 12 }}>{extensionLoadError}</div>}
@@ -293,7 +305,12 @@ export function ChannelConnect({
           {extensionsLoading && <div role="status" style={{ fontSize: 11, color: "var(--text3)" }}>Loading installed handlers…</div>}
           {!extensionsLoading && extensionInstallations.length === 0 && <div style={{ fontSize: 11, color: "var(--text3)" }}>No channel handlers installed.</div>}
           {extensionInstallations.map(installation => <div key={installation.instance_id} style={{ padding: "7px 0", borderTop: "1px solid var(--border)" }}>
-            <div style={{ fontSize: 11.5 }}>{installation.name} · {installation.scope === "PROJECT_SHARED" ? "shared" : "project"}</div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+              <div style={{ fontSize: 11.5 }}>{installation.name} · {installation.scope === "PROJECT_SHARED" ? "shared" : "project"}</div>
+              <button type="button" className="btn-ghost" style={{ fontSize: 11 }} disabled={!!removingExtension} onClick={() => void uninstallChannelExtension(installation.instance_id)}>
+                {removingExtension === installation.instance_id ? "Uninstalling…" : "Uninstall"}
+              </button>
+            </div>
             <ExtensionSessionControls spaceId={spaceId} projectId={projectId} session={session} installation={installation} />
           </div>)}
         </div>
