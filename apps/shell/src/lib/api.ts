@@ -1892,10 +1892,10 @@ export async function installProjectChannelExtension(
 
 export async function installProjectCanvasExtension(
   spaceId: string, projectId: string, session: SessionCredentials, manifest: unknown,
-  artifacts: Record<string, string>, upgrade = false,
+  artifacts: Record<string, string>, upgrade = false, instanceKey = "default",
 ): Promise<{ installed?: boolean; installationId?: string; error_code?: string; message?: string }> {
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extensions`, {
-    method: "POST", body: JSON.stringify({ manifest, artifacts, ...(upgrade ? { upgrade: true } : {}) }), session,
+    method: "POST", body: JSON.stringify({ manifest, artifacts, instanceKey, ...(upgrade ? { upgrade: true } : {}) }), session,
   });
 }
 

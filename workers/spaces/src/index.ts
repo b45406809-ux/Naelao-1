@@ -1409,7 +1409,9 @@ app.post("/spaces/:spaceId/projects/:projectId/channel-extensions", async c => {
     ? await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, identity.userId)
     : identity.role;
   if (role !== "owner" && role !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
-  const body = await c.req.json<{ manifest?: unknown; scope?: unknown; handlerSources?: unknown; upgrade?: boolean }>().catch(() => ({} as { manifest?: unknown; scope?: unknown; handlerSources?: unknown; upgrade?: boolean }));
+  const body = await c.req.json<{ manifest?: unknown; scope?: unknown; handlerSources?: unknown; instanceKey?: string; upgrade?: boolean }>().catch(() => ({} as { manifest?: unknown; scope?: unknown; handlerSources?: unknown; instanceKey?: string; upgrade?: boolean }));
+  const instanceKey = body.instanceKey ?? "default";
+  if (!/^[a-z][a-z0-9_-]{1,31}$/.test(instanceKey)) return c.json({ error_code: "extension_instance_key_invalid" }, 400);
   if (body.upgrade !== undefined && body.upgrade !== true) return c.json({ error_code: "extension_upgrade_confirmation_invalid" }, 400);
   if (body.scope !== undefined && !["PROJECT_BOUND", "PROJECT_SHARED"].includes(String(body.scope))) return c.json({ error_code: "channel_install_scope_invalid" }, 400);
   let manifest: ReturnType<typeof validateExtensionManifest>;
@@ -1487,7 +1489,7 @@ app.post("/spaces/:spaceId/projects/:projectId/channel-extensions", async c => {
   const response = await stub.fetch(new Request("http://space-do/extensions", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ manifest, installedBy: identity.userId, tenantId: identity.tenantId, spaceId, projectId, scope,
-      gatekeeperCapabilities: ["channel.invoke"], artifactSha256, ...(body.upgrade === true ? { upgrade: true } : {}) }),
+      gatekeeperCapabilities: ["channel.invoke"], artifactSha256, instanceKey, ...(body.upgrade === true ? { upgrade: true } : {}) }),
   }));
   return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
 });
@@ -1505,7 +1507,9 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   const role = identity.role === "product_end_user" && identity.userId
     ? await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, identity.userId) : identity.role;
   if (role !== "owner" && role !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
-  const body = await c.req.json<{ manifest?: unknown; artifacts?: unknown; upgrade?: boolean }>().catch(() => ({} as { manifest?: unknown; artifacts?: unknown; upgrade?: boolean }));
+  const body = await c.req.json<{ manifest?: unknown; artifacts?: unknown; instanceKey?: string; upgrade?: boolean }>().catch(() => ({} as { manifest?: unknown; artifacts?: unknown; instanceKey?: string; upgrade?: boolean }));
+  const instanceKey = body.instanceKey ?? "default";
+  if (!/^[a-z][a-z0-9_-]{1,31}$/.test(instanceKey)) return c.json({ error_code: "extension_instance_key_invalid" }, 400);
   if (body.upgrade !== undefined && body.upgrade !== true) return c.json({ error_code: "extension_upgrade_confirmation_invalid" }, 400);
   let manifest: ReturnType<typeof validateExtensionManifest>;
   try {
@@ -1576,21 +1580,28 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   const installed = await stub.fetch(new Request("http://space-do/extensions", { method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ manifest, installedBy: identity.userId, tenantId: identity.tenantId, spaceId, projectId, scope: "PROJECT_BOUND", gatekeeperCapabilities: ["extension.project_canvas"], artifactSha256: digest, ...(body.upgrade ? { upgrade: true } : {}) }) }));
   if (!installed.ok) return new Response(installed.body, { status: installed.status, headers: { "content-type": installed.headers.get("content-type") ?? "application/json" } });
+  const runtimeAppId = (primitiveId: string) => {
+    const appId = instanceKey === "default" ? primitiveId : `${instanceKey}_${primitiveId}`;
+    if (!/^[a-z][a-z0-9_-]{1,63}$/.test(appId)) throw new Error("extension_runtime_app_id_invalid");
+    return appId;
+  };
   for (const canvas of canvases) {
-    const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "PROJECT_BOUND", spaceId, projectId, appId: canvas.id });
+    const appId = runtimeAppId(canvas.id);
+    const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "PROJECT_BOUND", spaceId, projectId, appId });
     const init = await c.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/initialize", { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ appId: canvas.id, scope: "PROJECT_BOUND", gadgetTier: 3, html: artifacts[canvas.component] }) }));
+      body: JSON.stringify({ appId, scope: "PROJECT_BOUND", gadgetTier: 3, html: artifacts[canvas.component] }) }));
     if (!init.ok) return c.json({ error_code: "extension_canvas_initialize_failed", message: await init.text().then(value => value.slice(0, 300)) }, init.status as 400 | 409 | 500);
   }
   for (const gadget of gadgets) {
-    const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "PROJECT_BOUND", spaceId, projectId, appId: gadget.id });
+    const appId = runtimeAppId(gadget.id);
+    const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "PROJECT_BOUND", spaceId, projectId, appId });
     const init = await c.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/initialize", { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ appId: gadget.id, scope: "PROJECT_BOUND", gadgetTier: 2, defaultSchemaSql: gadget.schemaSql ?? "", migrations: gadget.migrations ?? [] }) }));
+      body: JSON.stringify({ appId, scope: "PROJECT_BOUND", gadgetTier: 2, defaultSchemaSql: gadget.schemaSql ?? "", migrations: gadget.migrations ?? [] }) }));
     if (!init.ok) return c.json({ error_code: "extension_gadget_initialize_failed", message: await init.text().then(value => value.slice(0, 300)) }, init.status as 400 | 409 | 500);
   }
   if (canvases[0]) {
     const update = await stub.fetch(new Request(`http://space-do/projects/${encodeURIComponent(projectId)}?tenant_id=${encodeURIComponent(identity.tenantId)}`, { method: "PATCH", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ viewport_config: { component: "CanvasMount", resourceId: canvases[0].id } }) }));
+      body: JSON.stringify({ viewport_config: { component: "CanvasMount", resourceId: runtimeAppId(canvases[0].id) } }) }));
     if (!update.ok) return c.json({ error_code: "extension_canvas_mount_failed", installation: await installed.json(), message: await update.text().then(value => value.slice(0, 300)) }, 500);
   }
   return new Response(installed.body, { status: installed.status, headers: { "content-type": installed.headers.get("content-type") ?? "application/json" } });

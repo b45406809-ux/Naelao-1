@@ -122,6 +122,25 @@ describe("runtime extension installation", () => {
     expect(await list.json()).toMatchObject({ installations: [{ instance: { instance_id: installed.installationId, scope: "SPACE_SHARED" } }] });
   });
 
+  it("creates distinct named instances of the same project extension without sharing IDs", async () => {
+    const storage = createDOStorage(), state = { storage };
+    const space = new SpaceDO(state as never, {} as never);
+    await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project"));
+    storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project','space','Project','active')");
+    const install = (instanceKey: string) => space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest: manifest(), installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project", scope: "PROJECT_BOUND", instanceKey, gatekeeperCapabilities: ["native-execution"] }) }));
+    const live = await install("trading_live");
+    const paper = await install("trading_paper");
+    expect(live.status).toBe(201); expect(paper.status).toBe(201);
+    const liveId = (await live.json() as { installationId: string }).installationId;
+    const paperId = (await paper.json() as { installationId: string }).installationId;
+    expect(paperId).not.toBe(liveId);
+    expect(storage.sql.exec("SELECT instance_key FROM extension_instances WHERE instance_id IN (?,?) ORDER BY instance_key", liveId, paperId).toArray()).toEqual([
+      { instance_key: "trading_live" }, { instance_key: "trading_paper" },
+    ]);
+    expect((await install("../shared")).status).toBe(400);
+  });
+
   it("preserves existing unscoped extension revision updates when no scoped grant exists", async () => {
     const storage = createDOStorage(), state = { storage };
     const space = new SpaceDO(state as never, {} as never);

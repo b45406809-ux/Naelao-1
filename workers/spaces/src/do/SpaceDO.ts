@@ -2070,6 +2070,30 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 85,
+    description: "named independently stateful extension installation instances",
+    up: `
+      DROP INDEX IF EXISTS idx_extension_instances_owner;
+      DROP INDEX IF EXISTS idx_extension_instances_project;
+      ALTER TABLE extension_instances RENAME TO extension_instances_v84;
+      CREATE TABLE extension_instances (
+        instance_id TEXT PRIMARY KEY, extension_id TEXT NOT NULL, tenant_id TEXT NOT NULL, space_id TEXT NOT NULL,
+        project_id TEXT, user_id TEXT,
+        scope TEXT NOT NULL CHECK (scope IN ('SPACE_SHARED','SPACE_ASSISTANT','SPACE_USER','PROJECT_BOUND','PROJECT_SHARED','PROJECT_USER')),
+        instance_key TEXT NOT NULL DEFAULT 'default', owner_key TEXT NOT NULL, installed_by TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','removed','expired')),
+        installed_at TEXT NOT NULL, removed_at TEXT,
+        UNIQUE(extension_id, tenant_id, space_id, project_id, user_id, scope, instance_key)
+      );
+      INSERT INTO extension_instances(instance_id,extension_id,tenant_id,space_id,project_id,user_id,scope,instance_key,owner_key,installed_by,status,installed_at,removed_at)
+        SELECT instance_id,extension_id,tenant_id,space_id,project_id,user_id,scope,'default',owner_key,installed_by,status,installed_at,removed_at FROM extension_instances_v84;
+      DROP TABLE extension_instances_v84;
+      CREATE INDEX idx_extension_instances_owner ON extension_instances(tenant_id, space_id, status, scope);
+      CREATE INDEX idx_extension_instances_project ON extension_instances(space_id, project_id, status);
+      CREATE INDEX idx_extension_instances_named ON extension_instances(extension_id,tenant_id,space_id,project_id,instance_key,status);
+    `,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -11766,7 +11790,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   private async installExtension(request: Request): Promise<Response> {
-    const body = await request.json<{ manifest?: unknown; installedBy?: string; gatekeeperCapabilities?: string[]; tenantId?: string; spaceId?: string; scope?: InstallationScope; projectId?: string; userId?: string; promoteExisting?: boolean; upgrade?: boolean; artifactSha256?: string }>();
+    const body = await request.json<{ manifest?: unknown; installedBy?: string; gatekeeperCapabilities?: string[]; tenantId?: string; spaceId?: string; scope?: InstallationScope; projectId?: string; userId?: string; instanceKey?: string; promoteExisting?: boolean; upgrade?: boolean; artifactSha256?: string }>();
     if (!body.installedBy) return Response.json({ error: "installedBy is required" }, { status: 400 });
     if (body.scope && (!body.tenantId || !body.spaceId)) return Response.json({ error: "tenantId and spaceId are required for scoped installations" }, { status: 400 });
     let manifest: ExtensionManifest;
@@ -11779,6 +11803,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (body.promoteExisting && body.scope !== "SPACE_SHARED") return Response.json({ error: "promotion_requires_space_shared_scope" }, { status: 400 });
     let ownerKey: string | undefined;
     let instanceId: string | undefined;
+    const instanceKey = body.instanceKey ?? "default";
+    if (!/^[a-z][a-z0-9_-]{1,31}$/.test(instanceKey)) return Response.json({ error: "extension_instance_key_invalid" }, { status: 400 });
     if (body.scope && body.tenantId && body.spaceId) {
       if (body.scope === "SPACE_SHARED") {
         if (body.projectId || body.userId) return Response.json({ error: "installation_scope_owner_mismatch" }, { status: 400 });
@@ -11802,7 +11828,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (body.projectId && !queryOne(this.ctx.storage.sql as never,
         "SELECT id FROM projects WHERE id=? AND space_id=? AND status='active'", body.projectId, body.spaceId))
         return Response.json({ error: "installation_project_not_found" }, { status: 404 });
-      instanceId = scopedInstallationId({ tenantId: body.tenantId, spaceId: body.spaceId, extensionId: manifest.id, scope: body.scope,
+      if (instanceKey !== "default") ownerKey += `:instance:${instanceKey}`;
+      instanceId = scopedInstallationId({ tenantId: body.tenantId, spaceId: body.spaceId, extensionId: manifest.id, scope: body.scope, instanceKey,
         ...(body.projectId ? { projectId: body.projectId } : {}), ...(body.userId ? { userId: body.userId } : {}) });
     }
     const now = new Date().toISOString();
@@ -11835,17 +11862,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
             manifest.id, manifest.bundle.version, manifestJson, artifactSha256, releaseSignature, body.installedBy, now);
         }
         if (body.scope && body.tenantId && body.spaceId && ownerKey && instanceId) {
-          const existingInstance = queryOne<{ extension_id: string; tenant_id: string; space_id: string; project_id: string | null; user_id: string | null; scope: string }>(
-            this.ctx.storage.sql as never, "SELECT extension_id,tenant_id,space_id,project_id,user_id,scope FROM extension_instances WHERE instance_id=?", instanceId);
+          const existingInstance = queryOne<{ extension_id: string; tenant_id: string; space_id: string; project_id: string | null; user_id: string | null; scope: string; instance_key: string }>(
+            this.ctx.storage.sql as never, "SELECT extension_id,tenant_id,space_id,project_id,user_id,scope,instance_key FROM extension_instances WHERE instance_id=?", instanceId);
           if (existingInstance && (existingInstance.extension_id !== manifest.id || existingInstance.tenant_id !== body.tenantId
             || existingInstance.space_id !== body.spaceId || existingInstance.project_id !== (body.projectId ?? null)
-            || existingInstance.user_id !== (body.userId ?? null) || existingInstance.scope !== body.scope))
+            || existingInstance.user_id !== (body.userId ?? null) || existingInstance.scope !== body.scope || existingInstance.instance_key !== instanceKey))
             throw new Error("extension_instance_identity_conflict");
           execute(this.ctx.storage.sql as never,
-            `INSERT INTO extension_instances(instance_id,extension_id,tenant_id,space_id,project_id,user_id,scope,owner_key,installed_by,status,installed_at,removed_at)
-             VALUES(?,?,?,?,?,?,?,?,?,'active',?,NULL)
+          `INSERT INTO extension_instances(instance_id,extension_id,tenant_id,space_id,project_id,user_id,scope,instance_key,owner_key,installed_by,status,installed_at,removed_at)
+             VALUES(?,?,?,?,?,?,?,?,?,?,'active',?,NULL)
              ON CONFLICT(instance_id) DO UPDATE SET installed_by=excluded.installed_by,status='active',removed_at=NULL`,
-            instanceId, manifest.id, body.tenantId, body.spaceId, body.projectId ?? null, body.userId ?? null, body.scope, ownerKey, body.installedBy, now);
+            instanceId, manifest.id, body.tenantId, body.spaceId, body.projectId ?? null, body.userId ?? null, body.scope, instanceKey, ownerKey, body.installedBy, now);
           if (body.promoteExisting) {
             const projectInstalls = queryOne<{ count: number }>(this.ctx.storage.sql as never,
               "SELECT COUNT(*) AS count FROM extension_instances WHERE extension_id=? AND tenant_id=? AND space_id=? AND scope='PROJECT_SHARED' AND status='active'",

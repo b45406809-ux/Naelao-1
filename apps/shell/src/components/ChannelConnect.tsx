@@ -206,6 +206,7 @@ export function ChannelConnect({
   const [canvasManifestDraft, setCanvasManifestDraft] = React.useState("");
   const [canvasArtifactsDraft, setCanvasArtifactsDraft] = React.useState("");
   const [canvasInstallConfirmed, setCanvasInstallConfirmed] = React.useState(false);
+  const [canvasInstanceKey, setCanvasInstanceKey] = React.useState("default");
 
   React.useEffect(() => {
     if (!projectId || !canManage) { setExtensionInstallations([]); setExtensionLoadError(null); setExtensionsLoading(false); return; }
@@ -323,9 +324,9 @@ export function ChannelConnect({
     try {
       const manifest = JSON.parse(canvasManifestDraft) as unknown;
       const artifacts = JSON.parse(canvasArtifactsDraft) as Record<string, string>;
-      const installed = await installProjectCanvasExtension(spaceId, projectId, session, manifest, artifacts, confirmUpgrade);
+      const installed = await installProjectCanvasExtension(spaceId, projectId, session, manifest, artifacts, confirmUpgrade, canvasInstanceKey.trim());
       if (!installed.installed) throw new Error(installed.message ?? installed.error_code ?? "Canvas/Gadget package installation failed");
-      setCanvasManifestDraft(""); setCanvasArtifactsDraft(""); setCanvasInstallConfirmed(false); setConfirmUpgrade(false);
+      setCanvasManifestDraft(""); setCanvasArtifactsDraft(""); setCanvasInstallConfirmed(false); setConfirmUpgrade(false); setCanvasInstanceKey("default");
       onChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't install this Canvas/Gadget package.");
@@ -390,6 +391,9 @@ export function ChannelConnect({
         <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Install a project Canvas/Gadget extension</summary>
         <p style={{ fontSize: 11.5, color: "var(--text3)", margin: "8px 0" }}>This release can combine CanvasMount HTML, project-bound Gadget databases, and external channel handlers under one versioned extension ID. Channel handlers receive only the restricted external channel context. Workflow workers, containers, credential binding, and internal tool invocation are not yet supported by this installer. Review the manifest and every artifact before installing; the first Canvas becomes this project’s visible Canvas.</p>
         <form onSubmit={installCanvasBundle} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <label style={{ fontSize: 11.5, color: "var(--text2)" }} htmlFor="canvas-extension-instance">Independent instance key
+            <input id="canvas-extension-instance" value={canvasInstanceKey} onChange={event => setCanvasInstanceKey(event.target.value)} pattern="[a-z][a-z0-9_-]{1,31}" maxLength={32} required style={{ display: "block", marginTop: 4, width: "100%", boxSizing: "border-box", background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 7, padding: 7 }} />
+          </label>
           <label style={{ fontSize: 11.5, color: "var(--text2)" }} htmlFor="canvas-extension-manifest">Composed bundle manifest</label>
           <textarea id="canvas-extension-manifest" value={canvasManifestDraft} onChange={event => setCanvasManifestDraft(event.target.value)} rows={10} spellCheck={false} placeholder={'{"id":"ext_trading_mentor","type":"extension","declaredPermissions":[],"capabilityRequirements":["extension.project_canvas"],"gadgets":[],"daemons":[],"commands":[],"bundle":{"schemaVersion":"1.0","kind":"extension_bundle","id":"ext_trading_mentor","version":"1.0.0","primitives":[{"schemaVersion":"1.0","kind":"canvas","id":"mentor_canvas","version":"1.0.0","permissions":[],"capabilityRequirements":[],"lifecycle":{},"layout":"CanvasMount","component":"./index.html","dynamicPage":false}]}}'} style={{ width: "100%", boxSizing: "border-box", resize: "vertical", fontFamily: "monospace", fontSize: 11, background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 7, padding: 8 }} />
           <label style={{ fontSize: 11.5, color: "var(--text2)" }} htmlFor="canvas-extension-artifacts">HTML artifacts as JSON path-to-source map</label>

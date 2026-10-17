@@ -36,6 +36,8 @@ export interface ScopedInstallationIdentity {
   scope: InstallationScope;
   projectId?: string | undefined;
   userId?: string | undefined;
+  /** Stable host-selected name for multiple independently stateful installs of one release. */
+  instanceKey?: string | undefined;
 }
 export interface ScopedInstallationRecord extends ScopedInstallationIdentity {
   instanceId: string;
@@ -64,7 +66,8 @@ function installationOwnerKey(input: ScopedInstallationIdentity): string {
 }
 export function scopedInstallationId(input: ScopedInstallationIdentity): string {
   const owner = installationOwnerKey(input);
-  return `installation:${input.tenantId}:${input.extensionId}:${owner}`;
+  if (input.instanceKey !== undefined && !/^[a-z][a-z0-9_-]{1,31}$/.test(input.instanceKey)) throw new Error("invalid_instance_key");
+  return `installation:${input.tenantId}:${input.extensionId}:${owner}${input.instanceKey && input.instanceKey !== "default" ? `:instance:${input.instanceKey}` : ""}`;
 }
 
 /** A deterministic local double for the SpaceDO installation lifecycle. It models the same
