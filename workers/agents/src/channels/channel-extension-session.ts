@@ -107,8 +107,9 @@ export function writeChannelExtensionSession(sql: ChannelExtensionSessionSql, in
   const existing = sql.exec("SELECT state_bytes FROM channel_extension_sessions WHERE project_id=? AND installation_id=? AND conversation_id=?", ...key).toArray()[0] as { state_bytes: number } | undefined;
   const active = sql.exec("SELECT COUNT(*) AS count, COALESCE(SUM(state_bytes),0) AS bytes FROM channel_extension_sessions WHERE project_id=? AND expires_at>?",
     input.projectId, now).toArray()[0] as { count: number; bytes: number } | undefined;
-  const sessionCount = (active?.count ?? 0) + (existing ? 0 : 1);
-  const projectBytes = (active?.bytes ?? 0) - (existing?.state_bytes ?? 0) + stateBytes;
+  const named = sql.exec("SELECT COUNT(*) AS count,COALESCE(SUM(state_bytes),0) AS bytes FROM channel_extension_named_sessions WHERE project_id=? AND expires_at>?", input.projectId, now).toArray()[0] as { count: number; bytes: number } | undefined;
+  const sessionCount = (active?.count ?? 0) + (named?.count ?? 0) + (existing ? 0 : 1);
+  const projectBytes = (active?.bytes ?? 0) + (named?.bytes ?? 0) - (existing?.state_bytes ?? 0) + stateBytes;
   if (sessionCount > MAX_PROJECT_SESSIONS || projectBytes > MAX_PROJECT_SESSION_BYTES)
     throw new Error("channel_session_project_quota_exceeded");
   sql.exec(`INSERT INTO channel_extension_sessions(project_id,installation_id,conversation_id,state_json,state_bytes,expires_at,updated_at)
@@ -132,7 +133,10 @@ export function summarizeChannelExtensionSessions(sql: ChannelExtensionSessionSq
 
 /** Owner-initiated deletion is scoped to exactly one project installation. */
 export function clearChannelExtensionSessions(sql: ChannelExtensionSessionSql, projectId: string, installationId: string): number {
-  const result = sql.exec("DELETE FROM channel_extension_sessions WHERE project_id=? AND installation_id=?", projectId, installationId) as { rowsWritten?: number };
-  const named = sql.exec("DELETE FROM channel_extension_named_sessions WHERE project_id=? AND installation_id=?", projectId, installationId) as { rowsWritten?: number };
-  return Number(result.rowsWritten ?? 0) + Number(named.rowsWritten ?? 0);
+  const row = sql.exec(`SELECT COUNT(DISTINCT conversation_id) AS count FROM (
+    SELECT conversation_id FROM channel_extension_sessions WHERE project_id=? AND installation_id=?
+    UNION ALL SELECT conversation_id FROM channel_extension_named_sessions WHERE project_id=? AND installation_id=?)`, projectId, installationId, projectId, installationId).toArray()[0] as { count?: number } | undefined;
+  sql.exec("DELETE FROM channel_extension_sessions WHERE project_id=? AND installation_id=?", projectId, installationId);
+  sql.exec("DELETE FROM channel_extension_named_sessions WHERE project_id=? AND installation_id=?", projectId, installationId);
+  return Number(row?.count ?? 0);
 }
