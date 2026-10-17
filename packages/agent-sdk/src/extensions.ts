@@ -38,6 +38,8 @@ export interface ExtensionManifest {
   gadgets: ExtensionGadgetManifest[];
   daemons: ExtensionDaemonManifest[];
   commands: ExtensionCommandManifest[];
+  /** Public inbound handlers use a separate channel-only host context. */
+  channels?: readonly ChannelContract[];
   /** Installed sidecars remain userspace declarations, never provider image authority. */
   containers?: readonly ContainerContract[];
 }
@@ -85,7 +87,7 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
   const raw = value as Record<string, unknown>;
   if ("version" in raw) return validateLegacyManifest(raw);
   rejectKernelOverrides(raw);
-  const allowed = new Set(["id", "type", "declaredPermissions", "capabilityRequirements", "gadgets", "daemons", "commands", "containers"]);
+  const allowed = new Set(["id", "type", "declaredPermissions", "capabilityRequirements", "gadgets", "daemons", "commands", "channels", "containers"]);
   for (const key of Object.keys(raw)) assert(allowed.has(key), `unknown_field:${key}`);
   assert(typeof raw.id === "string", "invalid_id");
   try { assertExtensionId(raw.id); } catch { throw new Error("invalid_extension_manifest:invalid_id"); }
@@ -124,6 +126,15 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
   for (const item of raw.commands as Record<string, unknown>[]) {
     assert(item && typeof item.name === "string" && COMMAND.test(item.name), "invalid_command_name");
     assert(typeof item.scriptPath === "string" && SAFE_PATH.test(item.scriptPath) && !FORBIDDEN_SCRIPT.test(item.scriptPath), "invalid_command_path");
+  }
+  if (raw.channels !== undefined) {
+    assert(Array.isArray(raw.channels) && raw.channels.length <= 32, "invalid_channels");
+    const channelIds = new Set<string>();
+    for (const item of raw.channels as unknown[]) {
+      const channel = parseExtensionPrimitive(item);
+      assert(channel.kind === "channel" && !channelIds.has(channel.id), "invalid_channel_kind_or_duplicate");
+      channelIds.add(channel.id);
+    }
   }
   if (raw.containers !== undefined) {
     assert(Array.isArray(raw.containers) && raw.containers.length <= 16, "invalid_containers");
