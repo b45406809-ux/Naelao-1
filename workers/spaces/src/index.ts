@@ -1408,7 +1408,7 @@ app.post("/spaces/:spaceId/projects/:projectId/channel-extensions", async c => {
     ? await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, identity.userId)
     : identity.role;
   if (role !== "owner" && role !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
-  const body = await c.req.json<{ manifest?: unknown; scope?: unknown }>().catch(() => ({} as { manifest?: unknown; scope?: unknown }));
+  const body = await c.req.json<{ manifest?: unknown; scope?: unknown; handlerSources?: unknown }>().catch(() => ({} as { manifest?: unknown; scope?: unknown; handlerSources?: unknown }));
   if (body.scope !== undefined && !["PROJECT_BOUND", "PROJECT_SHARED"].includes(String(body.scope))) return c.json({ error_code: "channel_install_scope_invalid" }, 400);
   let manifest: ReturnType<typeof validateExtensionManifest>;
   try {
@@ -1433,6 +1433,49 @@ app.post("/spaces/:spaceId/projects/:projectId/channel-extensions", async c => {
       || (bundle.connections ?? []).some(connection => !usedConnections.has(connection.id))) throw new Error("channel_connection_requirement_missing");
   } catch (error) {
     return c.json({ error_code: "channel_manifest_invalid", message: error instanceof Error ? error.message : "invalid_manifest" }, 400);
+  }
+  const sourceEntries: Array<[string, string]> = [];
+  if (body.handlerSources !== undefined) {
+    if (!body.handlerSources || typeof body.handlerSources !== "object" || Array.isArray(body.handlerSources))
+      return c.json({ error_code: "channel_handler_sources_invalid" }, 400);
+    const sourceMap = body.handlerSources as Record<string, unknown>;
+    const declaredPaths = new Set((manifest.channels ?? []).map(channel => channel.handlerScript));
+    const keys = Object.keys(sourceMap);
+    if (!keys.length || keys.length !== declaredPaths.size || keys.some(path => !declaredPaths.has(path)))
+      return c.json({ error_code: "channel_handler_sources_must_match_manifest" }, 400);
+    let totalBytes = 0;
+    for (const path of keys) {
+      const code = sourceMap[path];
+      if (typeof code !== "string" || !/^\.\/[A-Za-z0-9._-]{1,128}\.(?:ts|js)$/.test(path) || code.includes("\u0000"))
+        return c.json({ error_code: "channel_handler_source_invalid" }, 400);
+      const bytes = new TextEncoder().encode(code).byteLength;
+      totalBytes += bytes;
+      if (!bytes || bytes > 262_144 || totalBytes > 524_288)
+        return c.json({ error_code: "channel_handler_source_limit" }, 413);
+      sourceEntries.push([path, code]);
+    }
+    if (!c.env.SCRIPTS_R2) return c.json({ error_code: "channel_artifact_storage_unavailable" }, 503);
+    if (!c.env.AGENTS_WORKER) return c.json({ error_code: "channel_handler_validator_unavailable" }, 503);
+    const bundle = manifest.bundle!;
+    for (const [path, code] of sourceEntries) {
+      const validation = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/channel-extensions/validate-handler", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
+          "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) },
+        body: JSON.stringify({ source: code, language: path.endsWith(".js") ? "javascript" : "typescript" }),
+      }));
+      if (!validation.ok) return c.json({ error_code: "channel_handler_source_invalid", message: await validation.text().then(value => value.slice(0, 300)) }, 400);
+      const filename = path.slice(2);
+      const key = `spaces/${spaceId}/extensions/${bundle.id}/${bundle.version}/${filename}`;
+      const existing = await c.env.SCRIPTS_R2.get(key);
+      if (existing && await existing.text() !== code)
+        return c.json({ error_code: "channel_artifact_version_is_immutable" }, 409);
+    }
+    for (const [path, code] of sourceEntries) {
+      const filename = path.slice(2);
+      const key = `spaces/${spaceId}/extensions/${bundle.id}/${bundle.version}/${filename}`;
+      if (!await c.env.SCRIPTS_R2.head(key)) await c.env.SCRIPTS_R2.put(key, code, { httpMetadata: { contentType: path.endsWith(".js") ? "text/javascript; charset=utf-8" : "text/typescript; charset=utf-8" } });
+    }
   }
   const scope = body.scope === "PROJECT_SHARED" ? "PROJECT_SHARED" : "PROJECT_BOUND";
   const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);

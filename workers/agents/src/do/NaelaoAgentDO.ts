@@ -7325,7 +7325,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!installationResponse.ok) return null;
     const installation = await installationResponse.json<{
       instance: { instance_id?: string; tenant_id?: string; space_id?: string; project_id?: string | null; scope?: string; status?: string };
-      manifest: { channels?: Array<{ kind?: string; provider?: string; handlerScript?: string; context?: string; inboundEvents?: string[]; outboundEvents?: string[]; knowledgeCollections?: string[]; session?: { enabled?: boolean; maxBytes?: number; ttlDays?: number }; permissions?: unknown[]; capabilityRequirements?: unknown[]; budget?: { maxDurationSeconds?: number; maxConcurrency?: number } }> };
+      manifest: { id?: string; bundle?: { id?: string; version?: string }; channels?: Array<{ kind?: string; provider?: string; handlerScript?: string; context?: string; inboundEvents?: string[]; outboundEvents?: string[]; knowledgeCollections?: string[]; session?: { enabled?: boolean; maxBytes?: number; ttlDays?: number }; permissions?: unknown[]; capabilityRequirements?: unknown[]; budget?: { maxDurationSeconds?: number; maxConcurrency?: number } }> };
     }>().catch(() => null);
     const instance = installation?.instance;
     if (!installation || !instance || instance.status !== "active" || instance.instance_id !== input.instanceId
@@ -7344,7 +7344,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (session && (session.enabled !== true
       || (session.maxBytes !== undefined && (!Number.isInteger(session.maxBytes) || session.maxBytes < 1 || session.maxBytes > 4_096))
       || (session.ttlDays !== undefined && (!Number.isInteger(session.ttlDays) || session.ttlDays < 1 || session.ttlDays > 90)))) return null;
-    const script = await new SkillLibrary(this.env.SCRIPTS_R2, input.spaceId).read(path[1]!);
+    const packageId = installation.manifest.bundle?.id;
+    const packageVersion = installation.manifest.bundle?.version;
+    const handlerFile = declaration.handlerScript!.slice(2);
+    const artifactKey = packageId === installation.manifest.id && packageVersion
+      ? `spaces/${input.spaceId}/extensions/${packageId}/${packageVersion}/${handlerFile}`
+      : null;
+    const artifact = artifactKey ? await this.env.SCRIPTS_R2.get(artifactKey) : null;
+    const script = artifact ? { code: await artifact.text(), metadata: { runtime: "isolate" } }
+      : await new SkillLibrary(this.env.SCRIPTS_R2, input.spaceId).read(path[1]!);
     if (!script?.code || script.metadata.runtime === "workflow" || new TextEncoder().encode(script.code).byteLength > 262_144) return null;
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(script.code));
     const actual = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");

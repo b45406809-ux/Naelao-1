@@ -108,6 +108,7 @@ export function ChannelConnect({
   const [extensionsLoading, setExtensionsLoading] = React.useState(false);
   const [installDialogOpen, setInstallDialogOpen] = React.useState(false);
   const [installManifestDraft, setInstallManifestDraft] = React.useState("");
+  const [installSourcesDraft, setInstallSourcesDraft] = React.useState("");
   const [installingExtension, setInstallingExtension] = React.useState(false);
   const [installScope, setInstallScope] = React.useState<"PROJECT_BOUND" | "PROJECT_SHARED">("PROJECT_BOUND");
 
@@ -206,11 +207,14 @@ export function ChannelConnect({
     setInstallingExtension(true); setError(null);
     try {
       const manifest = JSON.parse(installManifestDraft) as unknown;
-      const installed = await installProjectChannelExtension(spaceId, projectId, session, manifest, installScope);
+      const handlerSources = installSourcesDraft.trim()
+        ? JSON.parse(installSourcesDraft) as Record<string, string>
+        : undefined;
+      const installed = await installProjectChannelExtension(spaceId, projectId, session, manifest, installScope, handlerSources);
       if (!installed.installed) throw new Error(installed.message ?? installed.error_code ?? "Channel package installation failed");
       const updated = await listChannelExtensionInstallations(spaceId, projectId, session);
       setExtensionInstallations(updated);
-      setInstallManifestDraft(""); setInstallDialogOpen(false);
+      setInstallManifestDraft(""); setInstallSourcesDraft(""); setInstallDialogOpen(false);
       onChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't install this channel package.");
@@ -223,7 +227,7 @@ export function ChannelConnect({
       {projectId && canManage && <details open={installDialogOpen} onToggle={event => setInstallDialogOpen(event.currentTarget.open)} style={{ marginBottom: 12, padding: 12, border: "1px solid var(--border)", borderRadius: 8 }}>
         <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Install a channel extension package</summary>
         <p style={{ fontSize: 11.5, color: "var(--text3)", margin: "8px 0" }}>
-          Paste a versioned channel-only install manifest. This installer does not accept Canvas, Gadget, member tools, or provider secrets. Add the handler script to the project's Skill Library, connect the provider below, then bind the installed extension.
+          Paste a versioned channel-only manifest and, optionally, its handler source files as a JSON path-to-source map. Uploaded handlers are stored as immutable package source, separate from the general Skill Library. This installer does not accept Canvas, Gadget, member tools, or provider secrets. Connect the provider below, then bind the installed extension.
         </p>
         <form onSubmit={installChannelExtension} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <label style={{ fontSize: 11.5, color: "var(--text2)" }}>Installation scope
@@ -235,6 +239,10 @@ export function ChannelConnect({
           <label style={{ fontSize: 11.5, color: "var(--text2)" }} htmlFor="channel-extension-manifest">Install manifest JSON</label>
           <textarea id="channel-extension-manifest" value={installManifestDraft} onChange={event => setInstallManifestDraft(event.target.value)} rows={8} spellCheck={false}
             placeholder={'{\n  "id": "ext_student_helper",\n  "bundle": { "kind": "extension_bundle", "...": "..." }\n}'}
+            style={{ width: "100%", boxSizing: "border-box", resize: "vertical", fontFamily: "monospace", fontSize: 11, background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 7, padding: 8 }} />
+          <label style={{ fontSize: 11.5, color: "var(--text2)" }} htmlFor="channel-extension-sources">Handler source files (optional JSON map)</label>
+          <textarea id="channel-extension-sources" value={installSourcesDraft} onChange={event => setInstallSourcesDraft(event.target.value)} rows={8} spellCheck={false}
+            placeholder={'{\n  "./student-answer.ts": "export async function run(args, ctx) { ... }"\n}'}
             style={{ width: "100%", boxSizing: "border-box", resize: "vertical", fontFamily: "monospace", fontSize: 11, background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 7, padding: 8 }} />
           <div><button type="submit" className="btn-ghost" disabled={installingExtension || !installManifestDraft.trim()}>{installingExtension ? "Installing…" : "Validate and install"}</button></div>
         </form>

@@ -1832,10 +1832,11 @@ export async function installProjectChannelExtension(
   projectId: string,
   session: SessionCredentials,
   manifest: unknown,
-  scope: "PROJECT_BOUND" | "PROJECT_SHARED" = "PROJECT_BOUND"
+  scope: "PROJECT_BOUND" | "PROJECT_SHARED" = "PROJECT_BOUND",
+  handlerSources?: Record<string, string>
 ): Promise<{ installed?: boolean; installationId?: string; error_code?: string; message?: string }> {
   return apiFetch(`/v1/spaces/${spaceId}/projects/${encodeURIComponent(projectId)}/channel-extensions`, {
-    method: "POST", body: JSON.stringify({ manifest, scope }), session,
+    method: "POST", body: JSON.stringify({ manifest, scope, ...(handlerSources ? { handlerSources } : {}) }), session,
   });
 }
 

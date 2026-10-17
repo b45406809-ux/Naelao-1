@@ -36,6 +36,7 @@ import { CONNECTOR_CATALOGUE, getConnector, pollableConnectorIds } from "./conne
 import { deployedContainerCatalogue } from "./script-engine/container-catalogue.js";
 import { isCronDue } from "@naelao/events";
 import { SkillLibrary } from "./script-engine/skill-library.js";
+import { compileDynamicCode } from "./script-engine/dynamic-code.js";
 import { workflowRunStub, type DurableWorkflowHostEnv } from "./workflows/workflow-host.js";
 import type { DurableWorkflowIdentity } from "@naelao/agent-sdk";
 import { promoteSkill, inheritTemplateSkills } from "./script-engine/federation.js";
@@ -6967,6 +6968,19 @@ app.post("/internal/channel-extension-binding/verify", async c => {
   return c.json({ valid: row?.extension_instance_id === body.instanceId && row.extension_script_sha256 === body.scriptSha256 });
 });
 
+app.post("/internal/channel-extensions/validate-handler", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  const body = await c.req.json<{ source?: unknown; language?: unknown }>().catch(() => ({} as { source?: unknown; language?: unknown }));
+  if (typeof body.source !== "string" || !["typescript", "javascript"].includes(String(body.language))) return c.json({ error_code: "channel_handler_source_invalid" }, 400);
+  try {
+    const compiled = await compileDynamicCode(body.source, body.language as "typescript" | "javascript");
+    return c.json({ valid: true, digest: compiled.digest, bytes: compiled.bytes });
+  } catch (error) {
+    return c.json({ error_code: "channel_handler_source_invalid", message: error instanceof Error ? error.message.slice(0, 300) : "compile_failed" }, 400);
+  }
+});
+
 /**
  * POST /spaces/:spaceId/assistant/channels — connect, disconnect or re-enable a channel.
  *
@@ -7045,7 +7059,7 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
     if (!installationResponse.ok) return c.json({ error_code: "extension_installation_unavailable" }, installationResponse.status === 404 ? 404 : 503);
     const installation = await installationResponse.json<{
       instance: { instance_id: string; tenant_id: string; space_id: string; project_id: string | null; scope: string; status: string };
-      manifest: { id?: string; channels?: Array<{ kind?: string; provider?: string; handlerScript?: string; context?: string }> };
+      manifest: { id?: string; bundle?: { id?: string; version?: string }; channels?: Array<{ kind?: string; provider?: string; handlerScript?: string; context?: string }> };
     }>();
     const { instance, manifest } = installation;
     if (instance.status !== "active" || instance.instance_id !== instanceId || instance.tenant_id !== tenantId
@@ -7058,8 +7072,16 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
     if (!declaration || typeof declaration.handlerScript !== "string") return c.json({ error_code: "channel_handler_not_declared" }, 409);
     const scriptMatch = declaration.handlerScript.match(/^\.\/([A-Za-z0-9._-]{1,128})\.(?:ts|js)$/);
     if (!scriptMatch) return c.json({ error_code: "channel_handler_path_unsupported" }, 400);
-    const script = await new SkillLibrary(c.env.SCRIPTS_R2, spaceId).read(scriptMatch[1]!);
-    if (!script?.code || script.code.length > 262_144 || script.metadata.runtime === "workflow") {
+    const packageId = manifest.bundle?.id;
+    const packageVersion = manifest.bundle?.version;
+    const handlerFile = declaration.handlerScript.slice(2);
+    const artifactKey = packageId === manifest.id && packageVersion
+      ? `spaces/${spaceId}/extensions/${packageId}/${packageVersion}/${handlerFile}`
+      : null;
+    const artifact = artifactKey ? await c.env.SCRIPTS_R2.get(artifactKey) : null;
+    const script = artifact ? { code: await artifact.text(), metadata: { runtime: "isolate" } }
+      : await new SkillLibrary(c.env.SCRIPTS_R2, spaceId).read(scriptMatch[1]!);
+    if (!script?.code || new TextEncoder().encode(script.code).byteLength > 262_144 || script.metadata.runtime === "workflow") {
       return c.json({ error_code: "channel_handler_source_unavailable" }, 409);
     }
     const digestBytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(script.code));

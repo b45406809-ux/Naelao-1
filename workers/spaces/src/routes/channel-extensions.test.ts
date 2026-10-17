@@ -56,8 +56,29 @@ function packageManifest(overrides: Record<string, unknown> = {}) {
 }
 
 describe("project channel-only extension install route", () => {
-  function setup(role: string) {
+  function setup(role: string, handlerValid = true) {
     const forwarded: Request[] = [];
+    const artifacts = new Map<string, string>();
+    const bucket = {
+      get: async (key: string) => {
+        const value = artifacts.get(key);
+        return value === undefined ? null : { text: async () => value };
+      },
+      head: async (key: string) => (artifacts.has(key) ? { key } : null),
+      put: async (key: string, value: string) => {
+        artifacts.set(key, value);
+      },
+    };
+    const agents = {
+      fetch: vi.fn(async () =>
+        handlerValid
+          ? Response.json({ valid: true, digest: "a".repeat(64) })
+          : Response.json(
+              { error_code: "code_run_export_required" },
+              { status: 400 }
+            )
+      ),
+    };
     const stub = {
       fetch: vi.fn(async (request: Request) => {
         forwarded.push(request);
@@ -80,9 +101,11 @@ describe("project channel-only extension install route", () => {
     };
     const env = {
       PLATFORM_SECRET: secret,
+      SCRIPTS_R2: bucket,
+      AGENTS_WORKER: agents,
       SPACE_DO: { idFromName: (name: string) => name, get: () => stub },
     } as never;
-    return { env, forwarded, stub };
+    return { env, forwarded, stub, artifacts, agents };
   }
 
   async function post(
@@ -198,6 +221,72 @@ describe("project channel-only extension install route", () => {
     const h = setup("member");
     const response = await post(h.env, "member", packageManifest());
     expect(response.status).toBe(403);
+    expect(
+      h.forwarded.some(
+        (request) => new URL(request.url).pathname === "/extensions"
+      )
+    ).toBe(false);
+  });
+
+  it("stores uploaded handler source separately under the immutable package version", async () => {
+    const h = setup("owner");
+    const source =
+      "export async function run(_args, ctx) { return await ctx.channel.answer({ question: 'help' }); }";
+    const response = await post(h.env, "owner", packageManifest(), {
+      handlerSources: { "./student-answer.ts": source },
+    });
+    expect(response.status).toBe(201);
+    expect(
+      h.artifacts.get(
+        "spaces/space-a/extensions/ext_trading_mentor/1.0.0/student-answer.ts"
+      )
+    ).toBe(source);
+    expect(h.agents.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects source paths outside the package channel declarations", async () => {
+    const h = setup("owner");
+    const response = await post(h.env, "owner", packageManifest(), {
+      handlerSources: { "../student-answer.ts": "export function run() {}" },
+    });
+    expect(response.status).toBe(400);
+    expect(h.artifacts.size).toBe(0);
+    expect(
+      h.forwarded.some(
+        (request) => new URL(request.url).pathname === "/extensions"
+      )
+    ).toBe(false);
+  });
+
+  it("does not allow a package version to be overwritten with different handler code", async () => {
+    const h = setup("owner");
+    h.artifacts.set(
+      "spaces/space-a/extensions/ext_trading_mentor/1.0.0/student-answer.ts",
+      "old source"
+    );
+    const response = await post(h.env, "owner", packageManifest(), {
+      handlerSources: { "./student-answer.ts": "new source" },
+    });
+    expect(response.status).toBe(409);
+    expect(
+      h.artifacts.get(
+        "spaces/space-a/extensions/ext_trading_mentor/1.0.0/student-answer.ts"
+      )
+    ).toBe("old source");
+    expect(
+      h.forwarded.some(
+        (request) => new URL(request.url).pathname === "/extensions"
+      )
+    ).toBe(false);
+  });
+
+  it("rejects handler code that fails the dynamic compiler before storing it", async () => {
+    const h = setup("owner", false);
+    const response = await post(h.env, "owner", packageManifest(), {
+      handlerSources: { "./student-answer.ts": "export function other() {}" },
+    });
+    expect(response.status).toBe(400);
+    expect(h.artifacts.size).toBe(0);
     expect(
       h.forwarded.some(
         (request) => new URL(request.url).pathname === "/extensions"
