@@ -31,6 +31,7 @@ import { registerGraduationRoutes } from "./routes/graduation.js";
 import { registerMarketRadarRoutes } from "./routes/market-radar.js";
 import { airGappedOnlyFromConfig, applyDurableObjectJurisdiction, certifyArtifact, evaluateBlueprintSecurity, sanitizeAndScrubBlueprint, verifyArtifactCertificate, type ConformanceSuite, type ConformanceCertificate } from "@naelao/security";
 import { DOGFOOD_EXTENSION_BY_ID, validateExtensionManifest, type SpaceBlueprint } from "@naelao/agent-sdk";
+import { rankProjectStewardReviews, type ProjectStewardFact } from "./project-steward.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { ConformanceSandboxDO, ConformanceState } from "./conformance-state.js";
@@ -3340,6 +3341,52 @@ app.get("/spaces/:spaceId/scheduled-jobs", async (c) => {
     next_run_at: row["enabled"] ? safeComputeNextRun(String(row["cron_expression"]), now) : null,
   }));
   return c.json({ data: withNextRun, count: withNextRun.length });
+});
+
+// Read-only deterministic portfolio review signals. Project visibility is resolved by the
+// SpaceDO; only those project IDs are used to read routine failure counts from PLATFORM_DB.
+app.use("/spaces/:spaceId/project-steward/reviews", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/project-steward/reviews", requireBusinessMembership({ GET: "member" }));
+app.get("/spaces/:spaceId/project-steward/reviews", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const owned = await loadOwnedSpace(c, spaceId);
+  if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+  const visibleIds = await visibleAutomationProjectIds(c, spaceId);
+  if (visibleIds instanceof Response) return visibleIds;
+  if (visibleIds.length === 0) return c.json({ data: [], count: 0, generated_at: Date.now() });
+
+  const identity = getCallerIdentity(c);
+  const projectParams = new URLSearchParams({ space_id: spaceId });
+  if (identity.userId) projectParams.set("viewer_id", identity.userId);
+  else projectParams.set("space_manager", "1");
+  const stub = await spaceDoStub(c.env, spaceId, owned.tenantId);
+  const projectResponse = await forwardToSpaceDO(stub, `/projects?${projectParams.toString()}`, "GET");
+  if (!projectResponse.ok) return c.json({ error_code: "project_review_unavailable" }, 503);
+  const projectPayload = await projectResponse.json<{ data?: Array<{ id: string; name: string; status: string; created_at: string; last_activity_at: string | null }> }>();
+  const projects = (projectPayload.data ?? []).filter((project) => visibleIds.includes(project.id) && project.status === "active");
+  if (projects.length === 0) return c.json({ data: [], count: 0, generated_at: Date.now() });
+
+  const placeholders = projects.map(() => "?").join(",");
+  const { results: failures } = await c.env.PLATFORM_DB.prepare(
+    `SELECT project_id, id, consecutive_failures FROM scheduled_jobs
+      WHERE space_id = ? AND project_id IN (${placeholders}) AND consecutive_failures > 0
+      ORDER BY consecutive_failures DESC, id`
+  ).bind(spaceId, ...projects.map((project) => project.id)).all<{ project_id: string; id: string; consecutive_failures: number }>();
+  const failuresByProject = new Map<string, Array<{ id: string; consecutive_failures: number }>>();
+  for (const failure of failures) {
+    const list = failuresByProject.get(failure.project_id) ?? [];
+    list.push({ id: failure.id, consecutive_failures: failure.consecutive_failures });
+    failuresByProject.set(failure.project_id, list);
+  }
+  const facts: ProjectStewardFact[] = projects.map((project) => ({
+    project_id: project.id,
+    project_name: project.name,
+    last_activity_at: project.last_activity_at,
+    created_at: project.created_at,
+    failed_routines: failuresByProject.get(project.id) ?? [],
+  }));
+  const data = rankProjectStewardReviews(facts);
+  return c.json({ data, count: data.length, generated_at: Date.now(), advisory_only: true });
 });
 
 app.post("/spaces/:spaceId/scheduled-jobs", async (c) => {

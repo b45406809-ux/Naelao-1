@@ -1,0 +1,58 @@
+import { describe, expect, it } from "vitest";
+import { mintInternalToken } from "@naelao/http";
+import spacesWorker from "../../workers/spaces/src/index.js";
+import { createFakeD1 } from "../stubs/d1-sqlite.js";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const SECRET = "steward-test-secret";
+const SPACE = "space-1";
+const TENANT = "tenant-1";
+const ctx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
+
+function database() {
+  const db = createFakeD1([
+    `CREATE TABLE spaces (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, status TEXT NOT NULL, parent_space_id TEXT, name TEXT, spacetype_id TEXT, config_json TEXT);`,
+    readFileSync(join(__dirname, "../../infra/migrations/0041_scheduled_jobs.sql"), "utf8"),
+    readFileSync(join(__dirname, "../../infra/migrations/0042_scheduled_jobs_failures.sql"), "utf8"),
+    readFileSync(join(__dirname, "../../infra/migrations/0043_scheduled_jobs_agent_goal.sql"), "utf8"),
+  ]);
+  db.db.exec(`INSERT INTO spaces (id,tenant_id,status,name,spacetype_id) VALUES ('${SPACE}','${TENANT}','active','Test Space','launchpad')`);
+  db.db.exec(`INSERT INTO scheduled_jobs (id,space_id,tenant_id,project_id,name,cron_expression,script_name,consecutive_failures) VALUES
+    ('visible-job','${SPACE}','${TENANT}','project-visible','Review','0 * * * *','review',2),
+    ('hidden-job','${SPACE}','${TENANT}','project-hidden','Review','0 * * * *','review',5)`);
+  return db;
+}
+
+describe("project steward review route", () => {
+  it("returns only visible project facts and never includes lifecycle actions", async () => {
+    const platformDb = database();
+    const visibleProjects = [{ id: "project-visible", name: "Visible project", status: "active", created_at: "2025-01-01T00:00:00Z", last_activity_at: null }];
+    const env = {
+      PLATFORM_SECRET: SECRET,
+      ENVIRONMENT: "test",
+      PLATFORM_DB: platformDb,
+      SPACE_DO: {
+        idFromName: (name: string) => name,
+        get: () => ({ fetch: async () => Response.json({ data: visibleProjects }) }),
+      },
+    };
+    const token = await mintInternalToken(SECRET, TENANT);
+    const res = await spacesWorker.fetch(new Request(`https://spaces.naelao.com/spaces/${SPACE}/project-steward/reviews`, {
+      headers: {
+        "x-naelao-tenant-id": TENANT,
+        "x-naelao-user-id": "member-1",
+        "x-naelao-role": "viewer",
+        "x-naelao-internal-token": token,
+      },
+    }), env as never, ctx);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { data: Array<{ project_id: string; recommendation: string; confidence: string; evidence: unknown[] }>; advisory_only: boolean };
+    expect(body.advisory_only).toBe(true);
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0]).toMatchObject({ project_id: "project-visible", recommendation: "inspect_routine", confidence: "high" });
+    expect(JSON.stringify(body.data)).not.toContain("project-hidden");
+    expect(JSON.stringify(body.data)).not.toMatch(/archive|delete|pause|shutdown/i);
+    platformDb.db.close();
+  });
+});

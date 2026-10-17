@@ -1236,3 +1236,10 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Exercised the actual migration and claim SQL against the repository's SQLite-backed D1 test adapter. Concurrent claims for one job/sweep produce exactly one owner; an active lease blocks the next sweep; a paused job cannot be claimed; and a crashed job can be claimed after the 30-minute lease expires.
 - A malformed scheduled queue message with no job ID now exits before policy D1 reads.
 - Verification: scheduled dispatch SQLite integration tests passed (4 tests); scheduled-jobs route/dispatch tests passed (38 tests); worker typechecks passed in the prior checkpoint.
+
+### Phase 3 deterministic portfolio review API (2026-10-17)
+
+- Added a read-only, membership-checked portfolio endpoint. It resolves visible projects through the SpaceDO, then includes only each visible project's own routine failure counts from PLATFORM_DB. The deterministic ranker prioritizes repeated routine failures (high confidence) over inactivity prompts (low confidence) and returns the exact evidence fields used for each signal.
+- The Bots roster now consumes those signals and links to the relevant project. No model output or lifecycle mutation is involved; the API response explicitly marks itself advisory-only.
+- Verification: Spaces Worker and Shell typechecks passed; review ranker tests passed (3); API scope test passed (1); scheduled-jobs route/dispatch tests passed (38).
+- Phase 3 still lacks the actual platform-maintained Space-wide extension installation and isolated workspace, periodic review execution, journal/task/extension-health evidence, quiet-hours/missed-tick policy, and an attributed confirmation workflow. The current review endpoint is a useful read-only substrate, not completion of that extension requirement.

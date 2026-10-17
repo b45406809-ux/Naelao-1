@@ -1025,6 +1025,21 @@ export async function listProjects(spaceId: string, session: SessionCredentials)
   return res.data;
 }
 
+export interface ProjectStewardReview {
+  project_id: string;
+  project_name: string;
+  recommendation: "inspect_routine" | "owner_check_in";
+  confidence: "low" | "high";
+  priority: number;
+  evidence: Array<{ kind: "routine_failures" | "inactivity"; count?: number; days?: number; last_activity_at?: string | null }>;
+}
+
+/** Advisory-only, deterministic portfolio signals. No lifecycle changes are performed. */
+export async function listProjectStewardReviews(spaceId: string, session: SessionCredentials): Promise<ProjectStewardReview[]> {
+  const res = await apiFetch<{ data: ProjectStewardReview[] }>(`/v1/spaces/${spaceId}/project-steward/reviews`, { session });
+  return res.data;
+}
+
 export interface ProjectDepartment {
   id: string;
   name: string;

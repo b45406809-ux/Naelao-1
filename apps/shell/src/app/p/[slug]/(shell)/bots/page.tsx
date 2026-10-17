@@ -6,7 +6,7 @@ import { Button, Card, CardDesc, CardTitle } from "@naelao/ui";
 import { useActiveSpace } from "@/lib/active-space-context";
 import { useProduct } from "@/lib/product-context";
 import { useSessionCredentials } from "@/lib/auth-provider";
-import { createThread, listAgentDefinitions, listProjects, listScheduledJobs, listThreads, type AgentDefinitionSummary, type Project, type ScheduledJob, type ThreadSummary } from "@/lib/api";
+import { createThread, listAgentDefinitions, listProjectStewardReviews, listProjects, listScheduledJobs, listThreads, type AgentDefinitionSummary, type Project, type ProjectStewardReview, type ScheduledJob, type ThreadSummary } from "@/lib/api";
 import { relativeTime } from "@/lib/relativeTime";
 
 export default function ProjectBotsPage() {
@@ -18,6 +18,7 @@ export default function ProjectBotsPage() {
   const [agents, setAgents] = React.useState<AgentDefinitionSummary[]>([]);
   const [threads, setThreads] = React.useState<ThreadSummary[]>([]);
   const [scheduledJobs, setScheduledJobs] = React.useState<ScheduledJob[]>([]);
+  const [stewardReviews, setStewardReviews] = React.useState<ProjectStewardReview[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [loadError, setLoadError] = React.useState(false);
   const [creatingProjectId, setCreatingProjectId] = React.useState<string | null>(null);
@@ -30,17 +31,20 @@ export default function ProjectBotsPage() {
     setAgents([]);
     setThreads([]);
       setScheduledJobs([]);
+      setStewardReviews([]);
     try {
-      const [nextProjects, nextAgents, nextThreads, nextJobs] = await Promise.all([
+      const [nextProjects, nextAgents, nextThreads, nextJobs, nextReviews] = await Promise.all([
         listProjects(activeSpaceId, session),
         listAgentDefinitions(activeSpaceId, session),
         listThreads(activeSpaceId, session),
         listScheduledJobs(activeSpaceId, session, { projectId: null, visibleProjects: true }),
+        listProjectStewardReviews(activeSpaceId, session),
       ]);
       setProjects(nextProjects.filter((project) => project.status === "active"));
       setAgents(nextAgents);
       setThreads(nextThreads.filter((thread) => thread.project_id && !thread.parent_thread_id && thread.thread_kind === "primary"));
       setScheduledJobs(nextJobs);
+      setStewardReviews(nextReviews);
     } catch {
       setLoadError(true);
     } finally {
@@ -61,14 +65,6 @@ export default function ProjectBotsPage() {
     }
     return latest;
   }, [threads]);
-
-  const reviewSignals = React.useMemo(() => {
-    const inactivityCutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
-    return projects.filter((project) => {
-      const activity = Date.parse(project.last_activity_at ?? project.created_at);
-      return project.status === "active" && Number.isFinite(activity) && activity < inactivityCutoff;
-    });
-  }, [projects]);
 
   async function startThread(project: Project, panel?: "crons") {
     if (!session || creatingProjectId) return;
@@ -94,19 +90,22 @@ export default function ProjectBotsPage() {
         Project Bots use the same planner and worker system as the Space Assistant, scoped to one project. Customer-facing channel handlers are separate extensions and never open these internal threads.
       </div>
 
-      {!loading && !loadError && reviewSignals.length > 0 && (
+      {!loading && !loadError && stewardReviews.length > 0 && (
         <section aria-labelledby="portfolio-review-title" className="settings-block" style={{ padding: 14, marginBottom: 16 }}>
-          <div id="portfolio-review-title" style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Projects to review</div>
+          <div id="portfolio-review-title" style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Project review signals</div>
           <p style={{ margin: "0 0 10px", color: "var(--text3)", fontSize: 12 }}>
-            These active projects have no recorded activity for at least 30 days. This is a review signal only; it does not pause Bots or extensions, archive projects, or delete data.
+            Deterministic signals from project activity and routine failures. They are advisory only; no Bot or extension is paused and no project is archived or deleted.
           </p>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {reviewSignals.map((project) => (
-              <Button key={project.id} variant="secondary" onClick={() => router.push(`/p/${product.slug}/projects/${project.id}`)}>
-                Review {project.name}
-              </Button>
+          <ul style={{ display: "grid", gap: 8, listStyle: "none", padding: 0, margin: 0 }}>
+            {stewardReviews.map((review) => (
+              <li key={`${review.project_id}:${review.recommendation}`} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 12, color: "var(--text2)" }}>
+                  <strong>{review.project_name}</strong> · {review.recommendation === "inspect_routine" ? `${review.evidence[0]?.count ?? 0} routine failure(s)` : `No activity for ${review.evidence[0]?.days ?? 0} days`} · {review.confidence} confidence
+                </span>
+                <Button variant="secondary" onClick={() => router.push(`/p/${product.slug}/projects/${review.project_id}`)}>Review project</Button>
+              </li>
             ))}
-          </div>
+          </ul>
         </section>
       )}
 
