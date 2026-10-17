@@ -243,6 +243,9 @@ export interface ChannelOnlyExtensionContext {
     reply(message: { text: string }): Promise<{ messageId: string }>;
     /** Available only when the owner-approved channel declaration enables bounded session state. */
     session?: { get(): Promise<unknown>; set(value: unknown): Promise<{ saved: true }> };
+  /** Several private records owned by this one external conversation. IDs are extension chosen
+   * labels; the host always keys them under the verified project/install/conversation identity. */
+  sessions?: { get(sessionId: string): Promise<unknown>; set(sessionId: string, value: unknown): Promise<{ saved: true }> };
   };
 }
 export interface ContainerContract extends ExtensionContractBase {

@@ -6,6 +6,10 @@ type ChannelContext = {
       get(): Promise<unknown>;
       set(value: unknown): Promise<{ saved: true }>;
     };
+    sessions?: {
+      get(sessionId: string): Promise<unknown>;
+      set(sessionId: string, value: unknown): Promise<{ saved: true }>;
+    };
   };
 };
 
@@ -32,6 +36,15 @@ export async function run(_args: Record<string, never>, ctx: ChannelContext) {
       turns: turns + 1,
       lastQuestionAt: new Date().toISOString(),
     });
+  }
+  // Extensions may keep several bounded records for one verified external conversation. The
+  // host scopes each key to this project, installation and conversation; it is not a provider
+  // contact ID and does not grant access to other users' sessions.
+  if (ctx.channel.sessions) {
+    const progress = await ctx.channel.sessions.get("lesson_progress");
+    const lessonsCompleted = progress && typeof progress === "object" && Number.isInteger((progress as { lessonsCompleted?: unknown }).lessonsCompleted)
+      ? Math.max(0, Math.min(10_000, Number((progress as { lessonsCompleted: number }).lessonsCompleted))) : 0;
+    await ctx.channel.sessions.set("lesson_progress", { lessonsCompleted, lastQuestionAt: new Date().toISOString() });
   }
 
   // The host searches only this package's owner-published collections and supplies up to three

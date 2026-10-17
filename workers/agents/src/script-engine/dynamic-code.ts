@@ -93,6 +93,7 @@ export default {
     const replies = [];
     const answerRequests = [];
     const sessionUpdates = [];
+    const namedSessionUpdates = [];
     const channelSession = channel.session ? freeze({
       get: async()=>parse(encode(channel.session.state)),
       set: async(value)=>{
@@ -104,11 +105,29 @@ export default {
         return freeze({saved:true});
       }
     }) : undefined;
+    const channelSessions = channel.sessions ? freeze({
+      get:async(sessionId)=>{
+        if (typeof sessionId !== 'string' || !/^[a-z][a-z0-9_-]{0,47}$/.test(sessionId)) throw new Error('channel_session_id_invalid');
+        return parse(encode(channel.sessions.states[sessionId] ?? null));
+      },
+      set:async(sessionId,value)=>{
+        if (typeof sessionId !== 'string' || !/^[a-z][a-z0-9_-]{0,47}$/.test(sessionId) || sessionId === 'default') throw new Error('channel_session_id_invalid');
+        if (namedSessionUpdates.length >= 16) throw new Error('channel_session_count_limit');
+        if (value !== null && (value === undefined || typeof value === 'function' || typeof value === 'symbol')) throw new Error('channel_session_value_invalid');
+        const encoded = encode(value);
+        if (byteLength(encoded) > channel.sessions.maxBytes) throw new Error('channel_session_size_limit');
+        const index = namedSessionUpdates.findIndex(update=>update.sessionId===sessionId);
+        const update = freeze({sessionId,value:parse(encoded)});
+        if (index >= 0) namedSessionUpdates[index] = update; else namedSessionUpdates.push(update);
+        return freeze({saved:true});
+      }
+    }) : undefined;
     const ctx = freeze({channel:freeze({
       provider:channel.provider,
       event:freeze(channel.event),
       conversation:freeze({id:channel.conversation.id}),
       ...(channelSession ? {session:channelSession} : {}),
+      ...(channelSessions ? {sessions:channelSessions} : {}),
       answer:async(input)=>{
         if (!input || typeof input.question !== 'string' || !input.question.trim() || input.question.length > 2000) throw new Error('channel_answer_invalid');
         if (answerRequests.length >= 1) throw new Error('channel_answer_limit');
@@ -124,7 +143,7 @@ export default {
     })});
     try {
       const result = await run(args, ctx);
-      const body = {ok:true,result:result == null ? null : result,replies,answerRequests,...(sessionUpdates.length ? {sessionUpdate:sessionUpdates[0]} : {})};
+      const body = {ok:true,result:result == null ? null : result,replies,answerRequests,...(sessionUpdates.length ? {sessionUpdate:sessionUpdates[0]} : {}),...(namedSessionUpdates.length ? {sessionUpdates:namedSessionUpdates} : {})};
       const encoded = encode(body);
       if (byteLength(encoded) > ${outputBytes}) throw new Error('code_output_limit');
       return jsonResponse(body);

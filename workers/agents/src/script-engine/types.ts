@@ -215,6 +215,8 @@ export interface ScriptRunResult {
   channel_answers?: string[];
   /** A guest's bounded update is persisted only after confirmed outbound delivery. */
   channel_session_update?: unknown;
+  /** Named opaque session records are persisted only after confirmed outbound delivery. */
+  channel_session_updates?: Array<{ sessionId: string; value: unknown }>;
   /** Milliseconds of wall-clock execution. */
   duration_ms: number;
   /** Reasoning-model tokens consumed by this run (0 for pure script execution). */
@@ -517,7 +519,7 @@ export interface TieredCodeRunner {
   runChannel?(params: {
     name: string; code: string; args: Record<string, unknown>; tenantId: string; spaceId: string; agentId: string;
     installationId: string; maxConcurrency: number;
-    channel: { provider: string; event: { id: string; type: string; occurredAt: string; payload: Readonly<Record<string, unknown>> }; conversation: { id: string }; session?: { state: unknown; maxBytes: number } };
+    channel: { provider: string; event: { id: string; type: string; occurredAt: string; payload: Readonly<Record<string, unknown>> }; conversation: { id: string }; session?: { state: unknown; maxBytes: number }; sessions?: { states: Readonly<Record<string, unknown>>; maxBytes: number } };
     signal?: AbortSignal; limits?: { cpuMs?: number; wallMs?: number; inputBytes?: number; outputBytes?: number };
   }): Promise<ScriptRunResult>;
 }

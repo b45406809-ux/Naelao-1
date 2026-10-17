@@ -4,7 +4,7 @@ import { executeGoalDag, type GoalDagJournal } from "../script-engine/goal-dag.j
 import { publishCompletedTask, type TaskPublication } from "../script-engine/task-publication.js";
 import { scheduleToolOutputExpiry } from "../script-engine/tool-output-expiry.js";
 import { attachmentToolsForRun } from "../media/attachment-capabilities.js";
-import { clearChannelExtensionSessions, initChannelExtensionSessionStore, readChannelExtensionSession, summarizeChannelExtensionSessions, writeChannelExtensionSession } from "../channels/channel-extension-session.js";
+import { clearChannelExtensionSessions, initChannelExtensionSessionStore, readChannelExtensionSession, readChannelExtensionSessions, summarizeChannelExtensionSessions, writeChannelExtensionNamedSessions, writeChannelExtensionSession } from "../channels/channel-extension-session.js";
 // ── NaelaoAgentDO — ReAct Agent Durable Object ───────────────────────────────
 // Fulfills G-D01 through G-D20: Agent runtime with ReAct loop, tool dispatch,
 // timeout watchdog, and SQLite-persisted run state.
@@ -7753,9 +7753,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           }
         }
         let channelSessionState: unknown = null;
+        let channelNamedSessionStates: Record<string, unknown> = {};
         if (handler.session) {
           try {
             channelSessionState = readChannelExtensionSession(this.ctx.storage.sql, { projectId: msg.project_id, installationId: msg.channel_extension_instance_id,
+              conversationId: msg.session_id });
+            channelNamedSessionStates = readChannelExtensionSessions(this.ctx.storage.sql, { projectId: msg.project_id, installationId: msg.channel_extension_instance_id,
               conversationId: msg.session_id });
           } catch {
             this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code='session_store_unavailable' WHERE message_id=?", msg.id);
@@ -7766,7 +7769,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           name: handler.name, code: handler.code, args: {}, tenantId, spaceId, agentId,
           installationId: msg.channel_extension_instance_id, maxConcurrency: handler.maxConcurrency,
           channel: { provider: msg.channel, event: { id: msg.id, type: "message.received", occurredAt: new Date(msg.created_at).toISOString(), payload: { text: msg.text.slice(0, 8_000), ...(publishedKnowledge.length ? { knowledge: publishedKnowledge } : {}) } },
-            conversation: { id: msg.session_id }, ...(handler.session ? { session: { state: channelSessionState, maxBytes: handler.session.maxBytes } } : {}) },
+            conversation: { id: msg.session_id }, ...(handler.session ? { session: { state: channelSessionState, maxBytes: handler.session.maxBytes }, sessions: { states: channelNamedSessionStates, maxBytes: handler.session.maxBytes } } : {}) },
           limits: handler.limits,
         });
         let replyText = run.ok && run.channel_replies?.length === 1 && !(run.channel_answers?.length)
@@ -7804,6 +7807,19 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               void this.createSpaceNotification(spaceId, tenantId, {
                 kind: "channel_extension_session_save_failed", title: "A channel reply was sent without saving its conversation state",
                 body: "The extension's optional session state exceeded its quota or could not be persisted. Review the extension and conversation before relying on future context.",
+                severity: "warning", projectId: msg.project_id, sourceAgentId: agentId, relatedId: msg.session_id,
+              });
+            }
+          }
+          if (handler.session && run.channel_session_updates?.length) {
+            try {
+              writeChannelExtensionNamedSessions(this.ctx.storage.sql, { projectId: msg.project_id, installationId: msg.channel_extension_instance_id,
+                conversationId: msg.session_id, updates: run.channel_session_updates, maxBytes: handler.session.maxBytes, ttlDays: handler.session.ttlDays });
+            } catch {
+              this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET error_code='session_persist_failed' WHERE message_id=?", msg.id);
+              void this.createSpaceNotification(spaceId, tenantId, {
+                kind: "channel_extension_session_save_failed", title: "A channel reply was sent without saving its named session state",
+                body: "The extension's named session state exceeded its quota or could not be persisted. Review the extension and conversation before relying on future context.",
                 severity: "warning", projectId: msg.project_id, sourceAgentId: agentId, relatedId: msg.session_id,
               });
             }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim.js";
-import { clearChannelExtensionSessions, initChannelExtensionSessionStore, readChannelExtensionSession, summarizeChannelExtensionSessions, writeChannelExtensionSession } from "./channel-extension-session.js";
+import { clearChannelExtensionSessions, initChannelExtensionSessionStore, readChannelExtensionSession, readChannelExtensionSessions, summarizeChannelExtensionSessions, writeChannelExtensionNamedSessions, writeChannelExtensionSession } from "./channel-extension-session.js";
 
 describe("external channel session storage", () => {
   it("isolates state by project, installation and opaque conversation ID", () => {
@@ -33,6 +33,17 @@ describe("external channel session storage", () => {
     expect(() => writeChannelExtensionSession(sql, { ...scope, value: { text: "😊" }, maxBytes: 5, ttlDays: 1 })).toThrow("channel_session_size_limit");
     expect(() => writeChannelExtensionSession(sql, { ...scope, value: { ok: true }, maxBytes: 100, ttlDays: 91 })).toThrow("channel_session_ttl_invalid");
     expect(readChannelExtensionSession(sql, scope)).toBeNull();
+  });
+
+  it("stores multiple bounded named sessions per external conversation", () => {
+    const sql = createDOStorage().sql; initChannelExtensionSessionStore(sql);
+    const scope = { projectId: "project-a", installationId: "install-a", conversationId: "conversation-a" }, now = 1_800_000_000_000;
+    writeChannelExtensionNamedSessions(sql, { ...scope, updates: [{ sessionId: "live", value: { order: "buy" } }, { sessionId: "paper", value: { order: "sell" } }], maxBytes: 100, ttlDays: 2 }, now);
+    expect(readChannelExtensionSessions(sql, scope, now + 1)).toEqual({ live: { order: "buy" }, paper: { order: "sell" } });
+    expect(readChannelExtensionSessions(sql, { ...scope, installationId: "install-b" }, now + 1)).toEqual({});
+    expect(() => writeChannelExtensionNamedSessions(sql, { ...scope, updates: [{ sessionId: "../other", value: 1 }], maxBytes: 100, ttlDays: 2 }, now)).toThrow("channel_session_id_invalid");
+    writeChannelExtensionNamedSessions(sql, { ...scope, updates: [{ sessionId: "live", value: null }], maxBytes: 100, ttlDays: 2 }, now + 2);
+    expect(readChannelExtensionSessions(sql, scope, now + 3)).toEqual({ paper: { order: "sell" } });
   });
 
   it("summarizes retention metadata and clears only one installation", () => {

@@ -15,6 +15,13 @@
 - Verification: Agent SDK and Spaces type checks passed; Shell typecheck passed; Agent SDK identity tests 3/3; Spaces extension install + migration suites 18/18; `git diff --check` passed.
 - Still open: each external channel binding currently selects one project channel installation, and `channel_sessions` remains keyed by `(provider, external contact)` rather than installation plus user/session. Therefore the new named-instance behavior currently isolates project Canvas/Gadget storage, but it does not yet provide multiple concurrently bound external bot instances or per-user multi-session routing. User-scoped external registration, credential/OAuth lifecycle, durable workflow deployment, and internal worker grants remain open.
 
+## Named external conversation sessions checkpoint (2026-10-17)
+
+- Extended the restricted external channel SDK with `ctx.channel.sessions.get(sessionId)` / `set(sessionId,value)`. Keys are extension labels only; the host binds them under the verified project, installation, and opaque provider conversation. Raw contact IDs, planner tools, workspace, and credentials remain inaccessible.
+- Added a separate named-session table to preserve existing default-session rows. Host loading/writes enforce safe keys, at most 16 named sessions per conversation, per-record byte bounds, existing expiry limits, and project-wide count/byte quotas. Writes persist only after the provider confirms delivery; owner clear and retention summaries include named sessions. Updated the mentor handler example.
+- Verification: Agents and Agent SDK typechecks passed; 10 focused Agents session-store and dynamic-handler tests passed; `git diff --check` passed.
+- Still open: these named records are external channel conversation sessions, not user-account OAuth registrations, and each provider conversation still maps to a single active chat thread. Multiple named project extension installations and a many-session store now exist, but routing one provider identity concurrently to several bot instances and authenticated external-user identities needs an explicit host binding/session identity contract. Provider OAuth/credential bindings, worker/workflow composition, and cryptographic publisher/runtime release verification remain outstanding.
+
 ## Extension product lifecycle checkpoint (2026-10-17)
 
 - Added SpaceDO migration 84 with immutable `extension_releases` records keyed by package/version. Every installed modular bundle records its manifest, aggregate source artifact SHA-256, installer, timestamp, and HMAC-SHA256 host attestation using `PLATFORM_SECRET`. The attestation establishes that this deployment accepted those exact recorded bytes; it does not assert a developer identity or replace an asymmetric marketplace signature.
