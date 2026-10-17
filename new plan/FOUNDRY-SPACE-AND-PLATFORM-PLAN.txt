@@ -34,17 +34,20 @@ CURRENT PRODUCT DIRECTION
 
 2. Support domain-specific workers while preserving each person's data
    boundaries. The user described a doctor creating a patient-facing worker that
-   can be installed by a patient and invoked through that patient's own
+   be installed by a patient and invoked through that patient's own
    assistant, including an isolated WhatsApp identity per user/number. The
-   worker may use the doctor's approved knowledge and the patient's information
-   only under explicit authorization. The worker should execute in the user's
-   space; installing a worker must not silently grant the builder access to the
-   user's personal files. The user distinguished knowledge sharing from
-   sharing a live worker instance. Treat a worker package installed into a
-   user's Space as separate from any shared runtime state, identity, or patient
-   data. The user also raised optional bidirectional sharing/export of workers,
-   data, skills, projects, and other Naelao assets. Design these as separate,
-   selectable permissions and flows.
+   user's wording identifies this as a workflow/extension, and later confirms
+   that external customer-facing voice/text bots remain custom extensions.
+   Do not model customer service or `customer_bot` as a structural project
+   kind. Install a worker package into the recipient's own project/Space and
+   instantiate it there; the publisher does not share a live worker instance.
+   The worker may use the doctor's approved knowledge and the patient's
+   information only under explicit, revocable authorization. Installing a
+   worker must not silently grant its builder access to the user's personal
+   files. Keep code/template installation, knowledge grants, channel identity,
+   and runtime state as separate permissions and flows. The user also raised
+   optional bidirectional sharing/export of workers, data, skills, projects,
+   and other Naelao assets; design those as separate, selectable permissions.
 
    Before implementing healthcare examples, define consent, identity, revocation,
    audit, data retention, and escalation boundaries with appropriate domain
@@ -154,8 +157,12 @@ CHRONOLOGICAL RECONCILIATION
   idea; it is not an instruction to scrape or contact anyone.
 - 2026-10-10T23:13–23:34Z: user extends the idea to doctor/patient delegation,
   patient-owned data, knowledge sharing, and selectable bidirectional asset
-  sharing. Preserve those as distinct trust boundaries; don't treat model
-  answers' compliance or vendor claims as accepted.
+  sharing. The user describes the patient-facing bot as a workflow/extension,
+  then clarifies that only knowledge is shared while the installed worker runs
+  in the patient's own Space. Together with the later 2026-10-14 customer-bot
+  correction, this rules out a built-in customer-service project kind or shared
+  live bot instance. Preserve those as distinct trust boundaries; don't treat
+  model answers' compliance or vendor claims as accepted.
 - 2026-10-11T08:32–09:57Z: user supplies a Cloudflare Markdown-for-Agents
   reference, asks for a universal CLI command, then asks about Claude Code mods
   as vertical extensions. The feature request is explicit; API/compatibility
