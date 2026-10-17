@@ -108,7 +108,7 @@ Run only after code and local integration checks are complete. No secret belongs
 
 After all workstreams above are complete, compare each remaining task in `CONTINUATION-IMPLEMENTATION-PROGRESS.md` with the implementation and its acceptance evidence. Search source amendments for corrections before closing any item. Re-run focused integration suites and restart/replay/failure tests. Mark each item `implemented and locally verified`, `live verified`, or `blocked` with a precise dependency; do not use an unqualified “complete.”
 
-## Final local acceptance and remaining dependencies (2026-10-15)
+## Final local acceptance and remaining dependencies (refreshed 2026-10-17)
 
 The provider-independent implementation pass and final local audit are complete. Fresh verification on the current branch:
 
@@ -119,11 +119,13 @@ The provider-independent implementation pass and final local audit are complete.
 
 Remaining items require a verified runtime/provider contract or external account configuration; no local implementation is being represented as live acceptance:
 
-- **W2 scanned-PDF OCR:** `unpdf`'s `renderPageAsImage` requires a Node/browser canvas and is not available in the Workers build; extracting arbitrary embedded image objects is not equivalent to bounded page rendering and can expand attacker-controlled pixel data. The separate raster PNG/JPEG OCR path is implemented. Keep scanned-PDF OCR unavailable until a Worker-compatible renderer has a proven aggregate memory/CPU limit.
+- **W2 scanned-PDF OCR:** bounded page rendering is implemented in the isolated Document Container and locally verified; the Agents route enforces task ownership, owner opt-in, egress policy, input/page/output limits, and quota before OCR. Focused route tests and Agents typecheck passed in the 2026-10-17 W2 refresh. Cloudflare container runtime and live OCR quality remain unrun. This supersedes the earlier `unpdf` limitation; no Worker-side canvas renderer is used.
 - **W3 paid Twilio number purchase:** local owner-confirmed purchase is implemented using current official country/number-type monthly pricing and per-number inbound rates, with three-minute budget holds, provider rechecks, replay protection, cleanup, and ambiguous-result recovery. Twilio's published rate is not a guaranteed locked price or reserved inventory. Account-specific billing, live provisioning, PSTN and reconciliation checks still need an owner-configured account and controlled number.
 - **W4 audio/video worker dispatch:** text/image request construction is bounded and dynamic models are checked against fresh modality evidence; audio channel inputs are transcribed through their existing explicit ingress path. There is no verified generic audio/video request format shared by the supported providers and local tunnel, so unsupported media must not be sent by guessing. Provider-specific key entitlement is tested only by explicit owner-requested model preflight.
 - **W5 platform-run adapter evaluation/training:** imported-adapter lifecycle, encrypted test set, provenance/consent and owner-attested scoring are implemented. No verified provider execution/training compatibility API is available; platform scoring and training submission remain disabled.
 - **W6/W7 live archive acceptance:** multipart restart, encryption, rotation and restore have local/mock evidence. Cross-deployment R2 durability, production D1/Worker state, email domains, Web Push credentials, live model/telephony behavior, and rollback/monitoring require the configured Cloudflare/provider accounts and deployment authority.
+
+The 2026-10-17 continuation refreshed local evidence for W2–W7. W2–W6 code verification and the W7 Wrangler package results are recorded in the dated continuation entries and deployment acceptance log. The latest W7 dry-runs pass; the account-dependent items above remain open.
 
 Do not reopen completed local workstreams merely because a live integration is unconfigured. Record any future live check as live, mocked, dry-run, blocked, or unrun with its target and timestamp.
 
