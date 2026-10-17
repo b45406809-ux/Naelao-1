@@ -20,7 +20,9 @@ const SCHEDULED_JOBS_MIGRATION = readFileSync(join(__dirname, "../../infra/migra
 const SCHEDULED_JOBS_FAILURES_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0042_scheduled_jobs_failures.sql"), "utf8");
 const SCHEDULED_JOBS_AGENT_GOAL_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0043_scheduled_jobs_agent_goal.sql"), "utf8");
 const SCHEDULED_JOB_RUNS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0071_scheduled_job_runs.sql"), "utf8");
+const SCHEDULED_JOB_QUIET_HOURS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0106_scheduled_job_quiet_hours.sql"), "utf8");
 const BUSINESS_MEMBERSHIPS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0047_business_memberships.sql"), "utf8");
+const SPACE_MEMBERS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0021_space_members.sql"), "utf8");
 
 const SPACES_TABLE_SQL = `
   CREATE TABLE spaces (
@@ -37,6 +39,8 @@ function makeEnv() {
     SCHEDULED_JOBS_FAILURES_MIGRATION,
     SCHEDULED_JOBS_AGENT_GOAL_MIGRATION,
     SCHEDULED_JOB_RUNS_MIGRATION,
+    SCHEDULED_JOB_QUIET_HOURS_MIGRATION,
+    SPACE_MEMBERS_MIGRATION,
     BUSINESS_MEMBERSHIPS_MIGRATION,
   ]);
   fakeDb.db.exec("INSERT INTO spaces (id, tenant_id, status, name) VALUES ('prod-root', 'tenant-1', 'active', 'Product')");

@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { errorResponse, requestId, notFound, requireInternalHmac, mintInternalToken, verifyInternalToken, forbidden, mintLocalTunnelToken } from "@naelao/http";
 import { getDOName, signHmac, verifyHmac } from "@naelao/crypto";
-import { normalizePreferredLanguage } from "@naelao/types";
+import { normalizePreferredLanguage, validateScheduledQuietHours } from "@naelao/types";
 import type { SpaceDO } from "./do/SpaceDO.js";
 import type { SpaceTypeRegistryDO, SpaceTypeProductConfig, NaelaoSpaceTypeManifestV2 } from "./do/SpaceTypeRegistryDO.js";
 import { LAUNCHPAD_MANIFEST } from "./launchpad-manifest.js";
@@ -3323,12 +3323,14 @@ app.get("/spaces/:spaceId/scheduled-jobs", async (c) => {
     if (denied) return denied;
     query = c.env.PLATFORM_DB.prepare(
         `SELECT id, name, cron_expression, script_name, params, project_id, agent_id, goal, enabled, last_run_at,
+                quiet_hours_start, quiet_hours_end, quiet_hours_timezone,
                 consecutive_failures, last_error, created_at, updated_at
            FROM scheduled_jobs WHERE space_id = ? AND project_id = ? ORDER BY created_at DESC`
       ).bind(spaceId, projectId);
   } else if (scope === "assistant") {
     query = c.env.PLATFORM_DB.prepare(
         `SELECT id, name, cron_expression, script_name, params, project_id, agent_id, goal, enabled, last_run_at,
+                quiet_hours_start, quiet_hours_end, quiet_hours_timezone,
                 consecutive_failures, last_error, created_at, updated_at
            FROM scheduled_jobs WHERE space_id = ? AND project_id IS NULL ORDER BY created_at DESC`
       ).bind(spaceId);
@@ -3339,6 +3341,7 @@ app.get("/spaces/:spaceId/scheduled-jobs", async (c) => {
     const placeholders = visible.map(() => "?").join(",");
     query = c.env.PLATFORM_DB.prepare(
         `SELECT id, name, cron_expression, script_name, params, project_id, agent_id, goal, enabled, last_run_at,
+                quiet_hours_start, quiet_hours_end, quiet_hours_timezone,
                 consecutive_failures, last_error, created_at, updated_at
            FROM scheduled_jobs WHERE space_id = ? AND project_id IN (${placeholders}) ORDER BY created_at DESC`
       ).bind(spaceId, ...visible);
@@ -3419,6 +3422,9 @@ app.post("/spaces/:spaceId/scheduled-jobs", async (c) => {
     /** When set, the dispatcher wakes the full reasoning loop with this goal instead of
      *  firing script_name directly (see infra/migrations/0043). */
     goal?: string;
+    quiet_hours_start?: string | null;
+    quiet_hours_end?: string | null;
+    quiet_hours_timezone?: string;
   }>().catch(() => ({}) as Record<string, never>);
   if (!body.name || !body.project_id || !body.cron_expression || (!body.script_name && !body.goal)) {
     return c.json({ error_code: "bad_request", message: "name, project_id, cron_expression, and either script_name or goal are required" }, 400);
@@ -3427,15 +3433,18 @@ app.post("/spaces/:spaceId/scheduled-jobs", async (c) => {
   if (denied) return denied;
   const cronError = validateCronExpression(body.cron_expression);
   if (cronError) return c.json({ error_code: "bad_request", message: `Invalid cron_expression: ${cronError}` }, 400);
+  const quietHoursError = validateScheduledQuietHours({ start: body.quiet_hours_start, end: body.quiet_hours_end, timeZone: body.quiet_hours_timezone ?? "UTC" });
+  if (quietHoursError) return c.json({ error_code: "bad_request", message: quietHoursError }, 400);
 
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   await c.env.PLATFORM_DB.prepare(
-    `INSERT INTO scheduled_jobs (id, space_id, tenant_id, project_id, name, cron_expression, script_name, params, agent_id, goal, enabled, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`
+    `INSERT INTO scheduled_jobs (id, space_id, tenant_id, project_id, name, cron_expression, script_name, params, agent_id, goal, quiet_hours_start, quiet_hours_end, quiet_hours_timezone, enabled, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`
   ).bind(
     id, spaceId, owned.tenantId, body.project_id, body.name, body.cron_expression,
-    body.script_name ?? "", JSON.stringify(body.params ?? {}), body.agent_id ?? null, body.goal ?? null, now, now
+    body.script_name ?? "", JSON.stringify(body.params ?? {}), body.agent_id ?? null, body.goal ?? null,
+    body.quiet_hours_start || null, body.quiet_hours_end || null, body.quiet_hours_timezone ?? "UTC", now, now
   ).run();
 
   await fireScheduledJobEvent(c.env, spaceId, owned.tenantId, "scheduled_job.created", id, body.project_id, {
@@ -3445,6 +3454,7 @@ app.post("/spaces/:spaceId/scheduled-jobs", async (c) => {
 
   return c.json({
     id, name: body.name, cron_expression: body.cron_expression, script_name: body.script_name ?? "",
+    quiet_hours_start: body.quiet_hours_start || null, quiet_hours_end: body.quiet_hours_end || null, quiet_hours_timezone: body.quiet_hours_timezone ?? "UTC",
     project_id: body.project_id, agent_id: body.agent_id ?? null, goal: body.goal ?? null,
     enabled: true, last_run_at: null, created_at: now,
   }, 201);
@@ -3469,6 +3479,9 @@ app.patch("/spaces/:spaceId/scheduled-jobs/:jobId", async (c) => {
     params?: Record<string, unknown>;
     agent_id?: string;
     goal?: string;
+    quiet_hours_start?: string | null;
+    quiet_hours_end?: string | null;
+    quiet_hours_timezone?: string;
     enabled?: boolean;
   }>().catch(() => ({}) as Record<string, never>);
 
@@ -3481,8 +3494,14 @@ app.patch("/spaces/:spaceId/scheduled-jobs/:jobId", async (c) => {
   // (there's no such field on this route), so a plain read-before-write is fine for an
   // admin-only, low-frequency write, unlike a hot path that would want this folded into one query.
   const existing = await c.env.PLATFORM_DB.prepare(
-    "SELECT project_id FROM scheduled_jobs WHERE id = ? AND space_id = ? AND tenant_id = ?"
-  ).bind(jobId, spaceId, owned.tenantId).first<{ project_id: string | null }>();
+    "SELECT project_id, quiet_hours_start, quiet_hours_end, quiet_hours_timezone FROM scheduled_jobs WHERE id = ? AND space_id = ? AND tenant_id = ?"
+  ).bind(jobId, spaceId, owned.tenantId).first<{ project_id: string | null; quiet_hours_start: string | null; quiet_hours_end: string | null; quiet_hours_timezone: string }>();
+  const quietHoursError = validateScheduledQuietHours({
+    start: body.quiet_hours_start === undefined ? existing?.quiet_hours_start : body.quiet_hours_start,
+    end: body.quiet_hours_end === undefined ? existing?.quiet_hours_end : body.quiet_hours_end,
+    timeZone: body.quiet_hours_timezone ?? existing?.quiet_hours_timezone ?? "UTC",
+  });
+  if (quietHoursError) return c.json({ error_code: "bad_request", message: quietHoursError }, 400);
 
   const now = new Date().toISOString();
   const res = await c.env.PLATFORM_DB.prepare(
@@ -3493,6 +3512,9 @@ app.patch("/spaces/:spaceId/scheduled-jobs/:jobId", async (c) => {
        params = COALESCE(?, params),
        agent_id = COALESCE(?, agent_id),
        goal = COALESCE(?, goal),
+       quiet_hours_start = COALESCE(?, quiet_hours_start),
+       quiet_hours_end = COALESCE(?, quiet_hours_end),
+       quiet_hours_timezone = COALESCE(?, quiet_hours_timezone),
        enabled = COALESCE(?, enabled),
        updated_at = ?
      WHERE id = ? AND space_id = ? AND tenant_id = ?`
@@ -3500,6 +3522,8 @@ app.patch("/spaces/:spaceId/scheduled-jobs/:jobId", async (c) => {
     body.name ?? null, body.cron_expression ?? null, body.script_name ?? null,
     body.params !== undefined ? JSON.stringify(body.params) : null,
     body.agent_id ?? null, body.goal ?? null,
+    body.quiet_hours_start === undefined ? null : (body.quiet_hours_start || ""),
+    body.quiet_hours_end === undefined ? null : (body.quiet_hours_end || ""), body.quiet_hours_timezone ?? null,
     body.enabled === undefined ? null : (body.enabled ? 1 : 0),
     now, jobId, spaceId, owned.tenantId
   ).run();

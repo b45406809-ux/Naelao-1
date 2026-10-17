@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import spacesWorker from "../../workers/spaces/src/index.js";
 import { enqueueAgentTicks, handleAgentTicksQueue, handleAgentTick } from "../../workers/agents/src/index.js";
 import type { AgentsEnv, AgentTickMessage } from "../../workers/agents/src/index.js";
@@ -29,6 +29,7 @@ const SCHEDULED_JOB_RUNS_MIGRATION = readFileSync(
   join(__dirname, "../../infra/migrations/0071_scheduled_job_runs.sql"),
   "utf8"
 );
+const SCHEDULED_JOB_QUIET_HOURS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0106_scheduled_job_quiet_hours.sql"), "utf8");
 const SPACES_TABLE_SQL = `
   CREATE TABLE spaces (
     id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
@@ -38,7 +39,7 @@ const SPACES_TABLE_SQL = `
 `;
 
 function makeSpacesEnv(spaceId: string, tenantId: string, visibleProjectIds = ["proj-1"]): Record<string, unknown> {
-  const fakeDb = createFakeD1([SPACES_TABLE_SQL, SCHEDULED_JOBS_MIGRATION, SCHEDULED_JOBS_FAILURES_MIGRATION, SCHEDULED_JOBS_AGENT_GOAL_MIGRATION, SCHEDULED_JOB_RUNS_MIGRATION]);
+  const fakeDb = createFakeD1([SPACES_TABLE_SQL, SCHEDULED_JOBS_MIGRATION, SCHEDULED_JOBS_FAILURES_MIGRATION, SCHEDULED_JOBS_AGENT_GOAL_MIGRATION, SCHEDULED_JOB_RUNS_MIGRATION, SCHEDULED_JOB_QUIET_HOURS_MIGRATION]);
   fakeDb.db.exec(`INSERT INTO spaces (id, tenant_id, status, name) VALUES ('${spaceId}', '${tenantId}', 'active', 'Test Space')`);
   return { PLATFORM_SECRET: "s", ENVIRONMENT: "test", PLATFORM_DB: fakeDb, SPACE_DO: {
     idFromName: (name: string) => name,
@@ -96,6 +97,21 @@ describe("scheduled-jobs CRUD (spaces worker)", () => {
       env as never, execCtx
     );
     expect(res.status).toBe(400);
+  });
+
+  it("stores quiet-hours settings and rejects invalid timezone or unpaired times", async () => {
+    const env = makeSpacesEnv("space-1", "tenant-1");
+    const created = await spacesWorker.fetch(req("/spaces/space-1/scheduled-jobs", {
+      method: "POST", body: { name: "Quiet routine", cron_expression: "0 9 * * *", goal: "Review project", project_id: "proj-1",
+        quiet_hours_start: "22:00", quiet_hours_end: "07:00", quiet_hours_timezone: "America/New_York" },
+    }), env as never, execCtx);
+    expect(created.status).toBe(201);
+    expect(await created.json()).toMatchObject({ quiet_hours_start: "22:00", quiet_hours_end: "07:00", quiet_hours_timezone: "America/New_York" });
+    const invalid = await spacesWorker.fetch(req("/spaces/space-1/scheduled-jobs", {
+      method: "POST", body: { name: "Bad quiet routine", cron_expression: "0 9 * * *", goal: "Review project", project_id: "proj-1",
+        quiet_hours_start: "22:00", quiet_hours_end: "07:00", quiet_hours_timezone: "Not/AZone" },
+    }), env as never, execCtx);
+    expect(invalid.status).toBe(400);
   });
 
   it("rejects a missing required field", async () => {
@@ -377,6 +393,7 @@ describe("enqueueAgentTicks (agents worker hourly cron — enumerate-and-enqueue
   interface JobRow {
     id: string; space_id: string; tenant_id: string;
     cron_expression: string; last_run_at: number | null; created_at: string;
+    quiet_hours_start?: string | null; quiet_hours_end?: string | null; quiet_hours_timezone?: string;
   }
   interface ConnectorRow { space_id: string; tenant_id: string; name: string; id?: string }
   interface HeartbeatRow { space_id: string; tenant_id: string }
@@ -487,6 +504,23 @@ describe("enqueueAgentTicks (agents worker hourly cron — enumerate-and-enqueue
     const messages = batches.flat();
     expect(messages).toHaveLength(1);
     expect(messages[0]).toMatchObject({ kind: "scheduled_job", spaceId: "space-1", tenantId: "tenant-1", jobId: "job-due", sweepKey: expect.any(Number) });
+  });
+
+  it("defers due jobs during quiet hours and coalesces them into one wake after the window", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-17T03:00:00.000Z"));
+    try {
+      const dueJob: JobRow = { id: "quiet-job", space_id: "space-1", tenant_id: "tenant-1", cron_expression: "* * * * *",
+        last_run_at: null, created_at: OLD_CREATED_AT, quiet_hours_start: "22:00", quiet_hours_end: "07:00", quiet_hours_timezone: "UTC" };
+      const deferred = makeEnqueueEnv({ jobs: [dueJob] });
+      await enqueueAgentTicks(deferred.env);
+      expect(deferred.batches.flat().filter((message) => message.kind === "scheduled_job")).toHaveLength(0);
+
+      vi.setSystemTime(new Date("2026-10-17T08:00:00.000Z"));
+      const resumed = makeEnqueueEnv({ jobs: [dueJob] });
+      await enqueueAgentTicks(resumed.env);
+      expect(resumed.batches.flat().filter((message) => message.kind === "scheduled_job")).toHaveLength(1);
+    } finally { vi.useRealTimers(); }
   });
 
   it("does not enqueue a job created after its cron's most recent due minute (B5 regression, carried into the planning phase)", async () => {
@@ -601,6 +635,7 @@ describe("handleAgentTicksQueue (agents worker queue consumer)", () => {
     id: string; space_id: string; tenant_id: string; project_id: string | null;
     cron_expression: string; script_name: string; params: string; last_run_at: number | null;
     created_at: string; consecutive_failures: number;
+    quiet_hours_start?: string | null; quiet_hours_end?: string | null; quiet_hours_timezone?: string;
   }
 
   function makeConsumerEnv(opts: {
@@ -726,6 +761,24 @@ describe("handleAgentTicksQueue (agents worker queue consumer)", () => {
     expect(updates).toHaveLength(1);
     expect(updates[0]!.consecutive_failures).toBe(0); // reset on success, even though the row had 2 prior failures
     expect(acked).toHaveLength(1);
+  });
+
+  it("rechecks quiet hours at queue-consume time before claiming or firing", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-17T03:00:00.000Z"));
+    try {
+      const jobRow: ScheduledJobFullRow = {
+        id: "quiet-job", space_id: "space-1", tenant_id: "tenant-1", project_id: "proj-1",
+        cron_expression: "* * * * *", script_name: "s", params: "{}", last_run_at: null,
+        created_at: "2020-01-01 00:00:00", consecutive_failures: 0,
+        quiet_hours_start: "22:00", quiet_hours_end: "07:00", quiet_hours_timezone: "UTC",
+      };
+      const { env, fireCalls } = makeConsumerEnv({ jobRow });
+      const { batch, acked } = makeBatch([{ kind: "scheduled_job", spaceId: "space-1", tenantId: "tenant-1", jobId: "quiet-job" }]);
+      await handleAgentTicksQueue(batch as never, env);
+      expect(fireCalls).toHaveLength(0);
+      expect(acked).toHaveLength(1);
+    } finally { vi.useRealTimers(); }
   });
 
   it("a scheduled_job tick for a job deleted/disabled since enqueue is a harmless ack, no fire", async () => {

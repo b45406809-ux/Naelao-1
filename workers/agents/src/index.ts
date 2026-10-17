@@ -35,6 +35,7 @@ import { resolveBusinessContext, parseSpaceConfigForContext, loadBusinessContext
 import { CONNECTOR_CATALOGUE, getConnector, pollableConnectorIds } from "./connectors/catalogue.js";
 import { deployedContainerCatalogue } from "./script-engine/container-catalogue.js";
 import { isCronDue } from "@naelao/events";
+import { isWithinScheduledQuietHours } from "@naelao/types";
 import { claimScheduledJobDispatch, releaseScheduledJobDispatch } from "./scheduled-job-dispatch.js";
 import { SkillLibrary } from "./script-engine/skill-library.js";
 import { compileDynamicCode } from "./script-engine/dynamic-code.js";
@@ -8361,6 +8362,9 @@ interface ScheduledJobRow {
   agent_id: string | null;
   /** When set, fire the full reasoning loop with this goal instead of script_name directly. */
   goal: string | null;
+  quiet_hours_start: string | null;
+  quiet_hours_end: string | null;
+  quiet_hours_timezone: string;
 }
 
 // Phase 3 item 27/28 — the max recent fires kept per job in scheduled_job_runs (migration 0071).
@@ -8523,13 +8527,14 @@ async function enqueueAgentTicks(env: AgentsEnv): Promise<void> {
     const now = Date.now();
     for (;;) {
       const { results: jobRows } = await env.PLATFORM_DB.prepare(
-        `SELECT sj.id, sj.space_id, sj.tenant_id, sj.project_id, sj.cron_expression, sj.last_run_at, sj.created_at
+        `SELECT sj.id, sj.space_id, sj.tenant_id, sj.project_id, sj.cron_expression, sj.last_run_at, sj.created_at,
+                sj.quiet_hours_start, sj.quiet_hours_end, sj.quiet_hours_timezone
            FROM scheduled_jobs sj
            JOIN spaces s ON s.id = sj.space_id AND s.status = 'active'
           WHERE sj.enabled = 1 AND sj.id > ?
           ORDER BY sj.id
           LIMIT ?`
-      ).bind(cursor, AGENT_TICKS_PAGE_SIZE).all<{ id: string; space_id: string; tenant_id: string; project_id: string; cron_expression: string; last_run_at: number | null; created_at: string }>();
+      ).bind(cursor, AGENT_TICKS_PAGE_SIZE).all<{ id: string; space_id: string; tenant_id: string; project_id: string; cron_expression: string; last_run_at: number | null; created_at: string; quiet_hours_start: string | null; quiet_hours_end: string | null; quiet_hours_timezone: string }>();
       if (jobRows.length === 0) break;
       for (const row of jobRows) {
         try {
@@ -8543,6 +8548,7 @@ async function enqueueAgentTicks(env: AgentsEnv): Promise<void> {
           const createdAtMs = parseTimestampMs(row.created_at);
           const lastRunAt = row.last_run_at ?? createdAtMs ?? now;
           if (!isCronDue(row.cron_expression, lastRunAt, now)) continue;
+          if (isWithinScheduledQuietHours({ start: row.quiet_hours_start, end: row.quiet_hours_end, timeZone: row.quiet_hours_timezone }, now)) continue;
         messages.push({ body: { kind: "scheduled_job", spaceId: row.space_id, tenantId: row.tenant_id, jobId: row.id, sweepKey: Math.floor(now / 3_600_000) } });
         } catch (err) {
           // A malformed cron_expression would throw on every future sweep too — record it as a
@@ -8552,7 +8558,7 @@ async function enqueueAgentTicks(env: AgentsEnv): Promise<void> {
           console.error(`[agent-ticks] cron check failed job=${row.id} space=${row.space_id}:`, (err as Error).message);
           await recordScheduledJobFailure(
             env,
-            { id: row.id, space_id: row.space_id, tenant_id: row.tenant_id, project_id: row.project_id, cron_expression: row.cron_expression, script_name: "", params: "{}", agent_id: null, goal: null, last_run_at: row.last_run_at, created_at: row.created_at, consecutive_failures: 0 },
+            { id: row.id, space_id: row.space_id, tenant_id: row.tenant_id, project_id: row.project_id, cron_expression: row.cron_expression, script_name: "", params: "{}", agent_id: null, goal: null, quiet_hours_start: row.quiet_hours_start, quiet_hours_end: row.quiet_hours_end, quiet_hours_timezone: row.quiet_hours_timezone, last_run_at: row.last_run_at, created_at: row.created_at, consecutive_failures: 0 },
             now,
             (err as Error).message
           );
@@ -8842,7 +8848,8 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
       // means this message could be redelivered after the job was already disabled or its
       // script_name/params changed — always act on current state.
       const row = await env.PLATFORM_DB.prepare(
-        `SELECT id, space_id, tenant_id, project_id, cron_expression, script_name, params, agent_id, goal, last_run_at, created_at, consecutive_failures
+        `SELECT id, space_id, tenant_id, project_id, cron_expression, script_name, params, agent_id, goal,
+                quiet_hours_start, quiet_hours_end, quiet_hours_timezone, last_run_at, created_at, consecutive_failures
            FROM scheduled_jobs WHERE id = ? AND enabled = 1`
       ).bind(msg.jobId).first<ScheduledJobRow>();
       if (!row) return; // deleted or already disabled since enqueue — nothing to do.
@@ -8851,6 +8858,7 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
       const now = Date.now();
       const lastRunAt = row.last_run_at ?? parseTimestampMs(row.created_at) ?? now;
       if (!isCronDue(row.cron_expression, lastRunAt, now)) return; // stale or duplicate queue delivery.
+      if (isWithinScheduledQuietHours({ start: row.quiet_hours_start, end: row.quiet_hours_end, timeZone: row.quiet_hours_timezone }, now)) return;
       const sweepKey = msg.sweepKey ?? Math.floor(now / 3_600_000);
       const claimToken = await claimScheduledJobDispatch(env.PLATFORM_DB, { jobId: row.id, sweepKey, now });
       if (!claimToken) return; // duplicate this sweep, paused during enqueue, or another active run.

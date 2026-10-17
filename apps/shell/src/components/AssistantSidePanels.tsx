@@ -19,6 +19,7 @@ import { createPortal } from "react-dom";
 import Link from "next/link";
 import { detectRuntimeAnomaly, isJobOverdue } from "@naelao/events";
 import { presentAutonomyPolicy } from "@naelao/agent-sdk";
+import { isWithinScheduledQuietHours } from "@naelao/types";
 import { ChannelConnect, CHANNELS } from "./ChannelConnect";
 import {
   getAssistantPolicy,
@@ -342,6 +343,9 @@ function CronForm({
   const [name, setName] = React.useState(initial?.name ?? "");
   const [cronExpr, setCronExpr] = React.useState(initial?.cron_expression ?? "0 9 * * 1");
   const [goal, setGoal] = React.useState(initial?.goal ?? "");
+  const [quietHoursStart, setQuietHoursStart] = React.useState(initial?.quiet_hours_start ?? "");
+  const [quietHoursEnd, setQuietHoursEnd] = React.useState(initial?.quiet_hours_end ?? "");
+  const [quietHoursTimezone, setQuietHoursTimezone] = React.useState(initial?.quiet_hours_timezone ?? "UTC");
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
@@ -354,9 +358,9 @@ function CronForm({
     setError(null);
     try {
       if (isEdit && initial) {
-        await updateScheduledJob(spaceId, initial.id, session, { name, cron_expression: cronExpr, goal });
+        await updateScheduledJob(spaceId, initial.id, session, { name, cron_expression: cronExpr, goal, quiet_hours_start: quietHoursStart, quiet_hours_end: quietHoursEnd, quiet_hours_timezone: quietHoursTimezone });
       } else {
-        await createScheduledJob(spaceId, session, { name, cron_expression: cronExpr, goal, ...(projectId ? { project_id: projectId } : {}) });
+        await createScheduledJob(spaceId, session, { name, cron_expression: cronExpr, goal, quiet_hours_start: quietHoursStart, quiet_hours_end: quietHoursEnd, quiet_hours_timezone: quietHoursTimezone, ...(projectId ? { project_id: projectId } : {}) });
       }
       onSaved();
     } catch (err) {
@@ -376,6 +380,14 @@ function CronForm({
           onChange={(e) => setName(e.target.value)}
           style={{ fontSize: 12, padding: "5px 8px" }}
         />
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <label style={{ fontSize: 11, color: "var(--text3)" }}>Quiet</label>
+          <input aria-label="Quiet hours start" type="time" className="form-input" value={quietHoursStart} onChange={(e) => setQuietHoursStart(e.target.value)} />
+          <span style={{ fontSize: 11, color: "var(--text3)" }}>to</span>
+          <input aria-label="Quiet hours end" type="time" className="form-input" value={quietHoursEnd} onChange={(e) => setQuietHoursEnd(e.target.value)} />
+          <input aria-label="Quiet hours timezone" className="form-input" placeholder="UTC" value={quietHoursTimezone} onChange={(e) => setQuietHoursTimezone(e.target.value)} />
+        </div>
+        <div style={{ fontSize: 10, color: "var(--text3)" }}>Optional local-time window. Due runs wait until quiet hours end; missed ticks coalesce into one run.</div>
         <input
           className="form-input"
           placeholder="Cron expression (e.g. 0 9 * * 1)"
@@ -578,7 +590,8 @@ function CronsPanel({
                     {/* Watchdog: it fired before and the fire that should have followed is well
                         past due — the sweep genuinely isn't reaching this job, not just "not yet
                         due" (next_run_at can never itself be in the past — see isJobOverdue). */}
-                    {isJobOverdue(Boolean(job.enabled), job.cron_expression, job.last_run_at ? new Date(job.last_run_at).getTime() : null, Date.now()) && (
+                    {!isWithinScheduledQuietHours({ start: job.quiet_hours_start, end: job.quiet_hours_end, timeZone: job.quiet_hours_timezone }, Date.now())
+                      && isJobOverdue(Boolean(job.enabled), job.cron_expression, job.last_run_at ? new Date(job.last_run_at).getTime() : null, Date.now()) && (
                       <span className="badge badge-red" style={{ fontSize: 9 }} title="Enabled, but the sweep hasn't reached this job in longer than expected">
                         Overdue
                       </span>
@@ -589,9 +602,14 @@ function CronsPanel({
                   </div>
                 </div>
                 <div className="cron-expr">{job.cron_expression}</div>
+                {job.quiet_hours_start && job.quiet_hours_end && (
+                  <div style={{ fontSize: 10, color: "var(--text3)", marginTop: 2 }}>
+                    Quiet {job.quiet_hours_start}–{job.quiet_hours_end} ({job.quiet_hours_timezone || "UTC"})
+                  </div>
+                )}
                 {job.enabled && job.next_run_at != null && (
                   <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 2 }}>
-                    Next: {new Date(job.next_run_at).toLocaleString()}
+                    Next due: {new Date(job.next_run_at).toLocaleString()}{job.quiet_hours_start && job.quiet_hours_end ? " (quiet hours may defer)" : ""}
                   </div>
                 )}
                 {job.last_run_at && (

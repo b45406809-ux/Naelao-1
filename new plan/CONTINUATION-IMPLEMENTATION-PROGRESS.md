@@ -1244,6 +1244,13 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Verification: Spaces Worker and Shell typechecks passed; review ranker tests passed (3); API scope test passed (1); scheduled-jobs route/dispatch tests passed (38).
 - Phase 3 still lacks the actual platform-maintained Space-wide extension installation and isolated workspace, periodic review execution, journal/task/extension-health evidence, quiet-hours/missed-tick policy, and an attributed confirmation workflow. The current review endpoint is a useful read-only substrate, not completion of that extension requirement.
 
+### Phase 3 routine quiet-hours checkpoint (2026-10-17)
+
+- Added optional local-time quiet windows with IANA timezone validation to routine creation/editing. The scheduler checks the window both before enqueue and again at queue consumption. A due job suppressed during quiet hours remains due and runs once after the window; sweep claims coalesce missed ticks. Routine UI shows the configured window and suppresses the overdue warning while quiet time is active.
+- Fixed the scheduled-job business-membership test fixture to include the existing `space_members` migration required by the production fail-closed membership lookup; the authorization behavior did not change.
+- Verification: Types, Spaces Worker, Agents Worker, and Shell typechecks passed; scheduled-jobs route/dispatch/authorization and timezone tests passed (58 tests); `git diff --check` passed.
+- Phase 3 remains incomplete: the platform-managed Space Project Steward instance, its isolated extension workspace, periodic execution, richer journal/task/extension-health evidence, and attributed reversible retirement review flow are still open.
+
 ### Phase 4 external usage controls checkpoint (2026-10-17)
 
 - Added project setting `external_daily_message_cap` (0 = unlimited, maximum 10,000) and exposed it in Project settings as a per-person daily limit for external channel traffic.

@@ -24,6 +24,39 @@ export function normalizePreferredLanguage(value: unknown): string | null {
   try { return Intl.getCanonicalLocales(input)[0] ?? null; } catch { return null; }
 }
 
+export interface ScheduledQuietHours {
+  start: string | null | undefined;
+  end: string | null | undefined;
+  timeZone: string | null | undefined;
+}
+
+/** Validate a paired local-time quiet window and its IANA time zone. Empty endpoints disable it. */
+export function validateScheduledQuietHours(input: ScheduledQuietHours): string | null {
+  const start = input.start || "", end = input.end || "";
+  if ((start === "") !== (end === "")) return "quiet_hours_start_and_end_must_be_paired";
+  if (start && (!/^([01]\d|2[0-3]):[0-5]\d$/.test(start) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(end))) return "quiet_hours_time_invalid";
+  try { new Intl.DateTimeFormat("en", { timeZone: input.timeZone || "UTC" }).format(0); }
+  catch { return "quiet_hours_timezone_invalid"; }
+  return null;
+}
+
+/** True when a scheduled job's local-time quiet window contains this instant. */
+export function isWithinScheduledQuietHours(input: ScheduledQuietHours, now: number): boolean {
+  const start = input.start || "", end = input.end || "";
+  if (!start || !end || validateScheduledQuietHours(input)) return false;
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: input.timeZone || "UTC", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(now);
+  const hour = Number(parts.find((part) => part.type === "hour")?.value ?? 0);
+  const minute = Number(parts.find((part) => part.type === "minute")?.value ?? 0);
+  const local = hour * 60 + minute;
+  const [startHour, startMinute] = start.split(":").map(Number);
+  const [endHour, endMinute] = end.split(":").map(Number);
+  const from = startHour! * 60 + startMinute!, to = endHour! * 60 + endMinute!;
+  if (from === to) return false;
+  return from < to ? local >= from && local < to : local >= from || local < to;
+}
+
 // ── JWT Claims ───────────────────────────────────────────────────────────────
 export interface NaelaoJwtClaims {
   sub: string;        // userId

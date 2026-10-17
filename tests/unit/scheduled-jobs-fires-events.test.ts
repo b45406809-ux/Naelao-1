@@ -35,6 +35,7 @@ const SCHEDULED_JOBS_MIGRATION = readMigration("0041_scheduled_jobs.sql");
 const SCHEDULED_JOBS_FAILURES_MIGRATION = readMigration("0042_scheduled_jobs_failures.sql");
 const SCHEDULED_JOBS_AGENT_GOAL_MIGRATION = readMigration("0043_scheduled_jobs_agent_goal.sql");
 const SCHEDULED_JOB_RUNS_MIGRATION = readMigration("0071_scheduled_job_runs.sql");
+const SCHEDULED_JOB_QUIET_HOURS_MIGRATION = readMigration("0106_scheduled_job_quiet_hours.sql");
 
 /** A stateful DO namespace like fake-do-namespace.ts's own makeStatefulDoNamespace, but ALSO
  *  injects a fixed env (PLATFORM_SECRET + a capturing AGENTS_WORKER fake) into every SpaceDO
@@ -89,6 +90,7 @@ function makeEnv() {
     SCHEDULED_JOBS_FAILURES_MIGRATION,
     SCHEDULED_JOBS_AGENT_GOAL_MIGRATION,
     SCHEDULED_JOB_RUNS_MIGRATION,
+    SCHEDULED_JOB_QUIET_HOURS_MIGRATION,
   ]);
   fakeDb.db.exec("INSERT INTO spaces (id, tenant_id, status, name) VALUES ('space-1', 'tenant-1', 'active', 'Test Space')");
   const { namespace, calls } = makeStatefulSpaceDoNamespaceWithEnv({ PLATFORM_SECRET, PLATFORM_DB: fakeDb });
