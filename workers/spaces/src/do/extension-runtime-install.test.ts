@@ -11,6 +11,25 @@ function manifest(binary = "ffmpeg") {
 }
 
 describe("runtime extension installation", () => {
+  it("host-signs immutable bundle releases and only rolls back to a verified recorded version", async () => {
+    const storage = createDOStorage(), state = { storage };
+    const space = new SpaceDO(state as never, { PLATFORM_SECRET: "release-test-secret" } as never);
+    await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project-a"));
+    storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active')");
+    const bundleManifest = (version: string) => ({ id: "ext_versioned", type: "extension", declaredPermissions: [], capabilityRequirements: ["channel.invoke"], gadgets: [], daemons: [], commands: [],
+      bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_versioned", version, primitives: [{ schemaVersion: "1.0", kind: "channel", id: "handler", version, permissions: [], capabilityRequirements: [], lifecycle: {}, provider: "whatsapp", handlerScript: "./handler.ts", context: "channel_only", inboundEvents: ["message.received"], outboundEvents: ["message.reply"] }] } });
+    const call = (version: string, upgrade = false) => space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest: bundleManifest(version), installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project-a", scope: "PROJECT_BOUND", gatekeeperCapabilities: ["channel.invoke"], artifactSha256: "a".repeat(64), upgrade }) }));
+    const first = await call("1.0.0");
+    expect(first.status).toBe(201);
+    expect(await first.json()).toMatchObject({ release: { version: "1.0.0", artifactSha256: "a".repeat(64), signer: "naelao-host", hostSignature: expect.stringMatching(/^[a-f0-9]{64}$/) } });
+    expect((await call("2.0.0")).status).toBe(409);
+    expect((await call("2.0.0", true)).status).toBe(201);
+    const rollback = await space.fetch(new Request("http://space/extension-releases/rollback", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ extensionId: "ext_versioned", version: "1.0.0" }) }));
+    expect(rollback.status).toBe(200);
+    expect(await rollback.json()).toMatchObject({ rolledBack: true, manifest: { bundle: { version: "1.0.0" } } });
+  });
+
   it("installs a project-bound code indexer only for the selected project and preserves scope through restart", async () => {
     const storage = createDOStorage(), state = { storage };
     let space = new SpaceDO(state as never, {} as never);
@@ -34,7 +53,7 @@ describe("runtime extension installation", () => {
 
   it("stores a composed versioned bundle and exposes its validated channel primitive to the runtime", async () => {
     const storage = createDOStorage(), state = { storage };
-    const space = new SpaceDO(state as never, {} as never);
+    const space = new SpaceDO(state as never, { PLATFORM_SECRET: "test-platform-secret" } as never);
     await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project-a"));
     storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active')");
     const channel = { schemaVersion: "1.0", kind: "channel", id: "student_whatsapp", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},

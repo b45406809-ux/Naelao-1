@@ -1,5 +1,12 @@
 # Continuation implementation progress
 
+## Extension product lifecycle checkpoint (2026-10-17)
+
+- Added SpaceDO migration 84 with immutable `extension_releases` records keyed by package/version. Every installed modular bundle records its manifest, aggregate source artifact SHA-256, installer, timestamp, and HMAC-SHA256 host attestation using `PLATFORM_SECRET`. The attestation establishes that this deployment accepted those exact recorded bytes; it does not assert a developer identity or replace an asymmetric marketplace signature.
+- Added explicit monotonically newer bundle upgrades (`upgrade: true`) and rollback to a previously recorded release. Rollback recomputes and checks the host attestation before restoring the exact recorded manifest. Current channel installer forwards the digest of its sorted path/source map and exposes explicit upgrade confirmation; rollback has an owner/admin route.
+- Verification: Spaces extension runtime install suite plus migration replay passed (9 tests); Spaces Worker typecheck passed.
+- Remaining for this request: general install/consent UI for composed Canvas+Gadget+workflow bundles (the exposed upload/install route still deliberately accepts channel-only packages); bind Canvas artifacts to the project viewport and project-scoped Gadget actor instead of the existing space-only canvas route; compose package workflow declarations into existing durable-workflow installation; richer provider-specific OAuth/credential lifecycle for each supported connector (existing OAuth flows and vault are present but not package-bound); verify release signature/digest at every runtime load and provide asymmetric publisher trust; add extension inbox event timeline and surface it in Shell. No planner worker topology was changed. Exact next action: implement a host-owned channel extension inbox event projection and API using existing channel message/dispatch records, then continue with project-scoped Canvas/Gadget mounting.
+
 ## FDE composition and mentor-bot architecture clarification (2026-10-17)
 
 - The user's latest concern expands the target from an isolated channel handler to a coherent FDE/developer experience spanning execution tiers, workers/sub-agents, MicroApps/Canvas, Gadget state, internal tools/extensions, external channel handlers, knowledge uploads, provider setup, and optional session state.

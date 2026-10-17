@@ -1408,7 +1408,8 @@ app.post("/spaces/:spaceId/projects/:projectId/channel-extensions", async c => {
     ? await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, identity.userId)
     : identity.role;
   if (role !== "owner" && role !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
-  const body = await c.req.json<{ manifest?: unknown; scope?: unknown; handlerSources?: unknown }>().catch(() => ({} as { manifest?: unknown; scope?: unknown; handlerSources?: unknown }));
+  const body = await c.req.json<{ manifest?: unknown; scope?: unknown; handlerSources?: unknown; upgrade?: boolean }>().catch(() => ({} as { manifest?: unknown; scope?: unknown; handlerSources?: unknown; upgrade?: boolean }));
+  if (body.upgrade !== undefined && body.upgrade !== true) return c.json({ error_code: "extension_upgrade_confirmation_invalid" }, 400);
   if (body.scope !== undefined && !["PROJECT_BOUND", "PROJECT_SHARED"].includes(String(body.scope))) return c.json({ error_code: "channel_install_scope_invalid" }, 400);
   let manifest: ReturnType<typeof validateExtensionManifest>;
   try {
@@ -1477,13 +1478,30 @@ app.post("/spaces/:spaceId/projects/:projectId/channel-extensions", async c => {
       if (!await c.env.SCRIPTS_R2.head(key)) await c.env.SCRIPTS_R2.put(key, code, { httpMetadata: { contentType: path.endsWith(".js") ? "text/javascript; charset=utf-8" : "text/typescript; charset=utf-8" } });
     }
   }
+  const artifactPayload = JSON.stringify(sourceEntries.sort(([a], [b]) => a.localeCompare(b)));
+  const artifactDigestBytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(artifactPayload));
+  const artifactSha256 = [...new Uint8Array(artifactDigestBytes)].map(byte => byte.toString(16).padStart(2, "0")).join("");
   const scope = body.scope === "PROJECT_SHARED" ? "PROJECT_SHARED" : "PROJECT_BOUND";
   const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
   const response = await stub.fetch(new Request("http://space-do/extensions", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ manifest, installedBy: identity.userId, tenantId: identity.tenantId, spaceId, projectId, scope,
-      gatekeeperCapabilities: ["channel.invoke"] }),
+      gatekeeperCapabilities: ["channel.invoke"], artifactSha256, ...(body.upgrade === true ? { upgrade: true } : {}) }),
   }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
+});
+
+app.use("/spaces/:spaceId/extension-releases/rollback", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use("/spaces/:spaceId/extension-releases/rollback", requireBusinessMembership({ POST: "admin" }));
+app.post("/spaces/:spaceId/extension-releases/rollback", async c => {
+  const { tenantId, userId } = getCallerIdentity(c), spaceId = c.req.param("spaceId");
+  if (!tenantId || !userId || !await canExportBlueprint(c, spaceId)) return c.json({ error_code: "owner_or_admin_required" }, 403);
+  const body = await c.req.json<{ extension_id?: string; version?: string; project_id?: string }>().catch(() => ({} as { extension_id?: string; version?: string; project_id?: string }));
+  if (!body.extension_id || !body.version || !body.project_id) return c.json({ error_code: "rollback_scope_required" }, 400);
+  const denied = await requireManageableAutomationProject(c, spaceId, body.project_id);
+  if (denied) return denied;
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const response = await stub.fetch(new Request("http://space-do/extension-releases/rollback", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ extensionId: body.extension_id, version: body.version }) }));
   return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
 });
 

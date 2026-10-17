@@ -2054,6 +2054,22 @@ const MIGRATIONS: Migration[] = [
       UPDATE projects SET external_channel_profile=1,kind='workspace' WHERE kind='customer_bot';
     `,
   },
+  {
+    version: 84,
+    description: "signed extension releases and rollback history",
+    up: `
+      CREATE TABLE extension_releases (
+        extension_id TEXT NOT NULL,
+        version TEXT NOT NULL,
+        manifest_json TEXT NOT NULL,
+        artifact_sha256 TEXT NOT NULL,
+        host_signature TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(extension_id,version)
+      );
+    `,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -2742,6 +2758,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         });
       }
       if (url.pathname === "/extensions" && method === "POST") return await this.installExtension(request);
+      if (url.pathname === "/extension-releases/rollback" && method === "POST") return this.rollbackExtensionRelease(request);
       const extensionMatch = url.pathname.match(/^\/extensions\/(ext_[a-z0-9_-]+)$/);
       if (extensionMatch?.[1] && method === "DELETE") return this.uninstallExtension(extensionMatch[1]);
       if (method === "POST" && url.pathname === "/ephemeral-grants/mint") {
@@ -11733,12 +11750,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   private async installExtension(request: Request): Promise<Response> {
-    const body = await request.json<{ manifest?: unknown; installedBy?: string; gatekeeperCapabilities?: string[]; tenantId?: string; spaceId?: string; scope?: InstallationScope; projectId?: string; userId?: string; promoteExisting?: boolean }>();
+    const body = await request.json<{ manifest?: unknown; installedBy?: string; gatekeeperCapabilities?: string[]; tenantId?: string; spaceId?: string; scope?: InstallationScope; projectId?: string; userId?: string; promoteExisting?: boolean; upgrade?: boolean; artifactSha256?: string }>();
     if (!body.installedBy) return Response.json({ error: "installedBy is required" }, { status: 400 });
     if (body.scope && (!body.tenantId || !body.spaceId)) return Response.json({ error: "tenantId and spaceId are required for scoped installations" }, { status: 400 });
     let manifest: ExtensionManifest;
     try { manifest = validateExtensionManifest(body.manifest, { gatekeeperCapabilities: body.gatekeeperCapabilities ?? [] }); }
     catch (error) { return Response.json({ error: error instanceof Error ? error.message : "invalid_extension_manifest" }, { status: 400 }); }
+    const artifactSha256 = body.artifactSha256 ?? "0".repeat(64);
+    if (!/^[a-f0-9]{64}$/.test(artifactSha256)) return Response.json({ error: "extension_artifact_digest_invalid" }, { status: 400 });
     if (body.scope && !["SPACE_SHARED", "SPACE_ASSISTANT", "SPACE_USER", "PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER"].includes(body.scope))
       return Response.json({ error: "installation_scope_invalid" }, { status: 400 });
     if (body.promoteExisting && body.scope !== "SPACE_SHARED") return Response.json({ error: "promotion_requires_space_shared_scope" }, { status: 400 });
@@ -11772,13 +11791,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
     const now = new Date().toISOString();
     const manifestJson = JSON.stringify(manifest);
+    const releaseSignature = manifest.bundle ? await this.signExtensionRelease(manifest.id, manifest.bundle.version, manifestJson, artifactSha256) : undefined;
     try {
       this.ctx.storage.transactionSync(() => {
         const existing = queryOne<{ manifest_json: string }>(this.ctx.storage.sql as never,
           "SELECT manifest_json FROM installed_extensions WHERE extension_id=?", manifest.id);
         if (existing && existing.manifest_json !== manifestJson) {
           const scoped = queryOne(this.ctx.storage.sql as never, "SELECT instance_id FROM extension_instances WHERE extension_id=? LIMIT 1", manifest.id);
-          if (body.scope || scoped) throw new Error("extension_manifest_conflict_new_id_or_approved_upgrade_required");
+          if (body.scope || scoped) {
+            if (!body.upgrade || !manifest.bundle || !this.isNewerExtensionVersion(existing.manifest_json, manifest.bundle.version)) throw new Error("extension_manifest_conflict_new_id_or_approved_upgrade_required");
+          }
           execute(this.ctx.storage.sql as never,
             "UPDATE installed_extensions SET manifest_json=?,installed_by=?,updated_at=? WHERE extension_id=?",
             manifestJson, body.installedBy, now, manifest.id);
@@ -11786,6 +11808,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         execute(this.ctx.storage.sql as never,
           `INSERT INTO installed_extensions(extension_id,manifest_json,installed_by,installed_at,updated_at)
            VALUES (?,?,?,?,?) ON CONFLICT(extension_id) DO NOTHING`, manifest.id, manifestJson, body.installedBy, now, now);
+        }
+        if (manifest.bundle) {
+          const release = queryOne<{ manifest_json: string; artifact_sha256: string }>(this.ctx.storage.sql as never,
+            "SELECT manifest_json,artifact_sha256 FROM extension_releases WHERE extension_id=? AND version=?", manifest.id, manifest.bundle.version);
+          if (release && (release.manifest_json !== manifestJson || release.artifact_sha256 !== artifactSha256)) throw new Error("extension_release_version_is_immutable");
+          execute(this.ctx.storage.sql as never,
+            `INSERT INTO extension_releases(extension_id,version,manifest_json,artifact_sha256,host_signature,created_by,created_at)
+             VALUES(?,?,?,?,?,?,?) ON CONFLICT(extension_id,version) DO NOTHING`,
+            manifest.id, manifest.bundle.version, manifestJson, artifactSha256, releaseSignature, body.installedBy, now);
         }
         if (body.scope && body.tenantId && body.spaceId && ownerKey && instanceId) {
           const existingInstance = queryOne<{ extension_id: string; tenant_id: string; space_id: string; project_id: string | null; user_id: string | null; scope: string }>(
@@ -11815,7 +11846,45 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const conflict = message.includes("conflict");
       return Response.json({ error: message }, { status: conflict ? 409 : 400 });
     }
-    return Response.json({ installed: true, manifest, installedAt: now, ...(instanceId ? { installationId: instanceId } : {}) }, { status: 201 });
+    const signature = manifest.bundle ? queryOne<{ host_signature: string }>(this.ctx.storage.sql as never,
+      "SELECT host_signature FROM extension_releases WHERE extension_id=? AND version=?", manifest.id, manifest.bundle.version)?.host_signature : undefined;
+    return Response.json({ installed: true, manifest, installedAt: now, ...(signature ? { release: { version: manifest.bundle!.version, artifactSha256, hostSignature: signature, signer: "naelao-host" } } : {}), ...(instanceId ? { installationId: instanceId } : {}) }, { status: 201 });
+  }
+
+  private isNewerExtensionVersion(currentJson: string, nextVersion: string): boolean {
+    try {
+      const current = (JSON.parse(currentJson) as ExtensionManifest).bundle?.version;
+      if (!current) return false;
+      const parts = (value: string) => value.split(/[.-]/).map(part => /^\d+$/.test(part) ? Number(part) : part);
+      const a = parts(nextVersion), b = parts(current);
+      for (let i = 0; i < Math.max(a.length, b.length); i++) {
+        const av = a[i] ?? 0, bv = b[i] ?? 0;
+        if (av === bv) continue;
+        return typeof av === "number" && typeof bv === "number" ? av > bv : String(av) > String(bv);
+      }
+      return false;
+    } catch { return false; }
+  }
+
+  private async signExtensionRelease(extensionId: string, version: string, manifestJson: string, artifactSha256: string): Promise<string> {
+    // Host attestation proves immutable content was accepted and recorded by this deployment;
+    // it does not claim a developer identity signature.
+    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(this.env.PLATFORM_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const bytes = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(JSON.stringify([extensionId, version, manifestJson, artifactSha256])));
+    return [...new Uint8Array(bytes)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  }
+
+  private async rollbackExtensionRelease(request: Request): Promise<Response> {
+    const body = await request.json<{ extensionId?: string; version?: string }>().catch(() => ({} as { extensionId?: string; version?: string }));
+    if (!body.extensionId || !body.version) return Response.json({ error: "rollback_request_invalid" }, { status: 400 });
+    const release = queryOne<{ manifest_json: string; artifact_sha256: string; host_signature: string }>(this.ctx.storage.sql as never,
+      "SELECT manifest_json,artifact_sha256,host_signature FROM extension_releases WHERE extension_id=? AND version=?", body.extensionId, body.version);
+    if (!release) return Response.json({ error: "extension_release_not_found" }, { status: 404 });
+    const expected = await this.signExtensionRelease(body.extensionId, body.version, release.manifest_json, release.artifact_sha256);
+    if (expected !== release.host_signature) return Response.json({ error: "extension_release_signature_invalid" }, { status: 409 });
+    const manifest = JSON.parse(release.manifest_json) as ExtensionManifest;
+    execute(this.ctx.storage.sql as never, "UPDATE installed_extensions SET manifest_json=?,updated_at=datetime('now') WHERE extension_id=?", release.manifest_json, body.extensionId);
+    return Response.json({ rolledBack: true, manifest, release: { version: body.version, artifactSha256: release.artifact_sha256, hostSignature: release.host_signature, signer: "naelao-host" } });
   }
 
   private async machineAuthority(request: Request): Promise<Response> {
