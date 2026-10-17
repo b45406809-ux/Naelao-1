@@ -1291,6 +1291,14 @@ async function forwardToSpaceDO(
 }
 
 async function requireManageableAutomationProject(c: any, spaceId: string, projectId: unknown): Promise<Response | null> {
+  return requireAutomationProjectAccess(c, spaceId, projectId, "manage");
+}
+
+async function requireReadableAutomationProject(c: any, spaceId: string, projectId: unknown): Promise<Response | null> {
+  return requireAutomationProjectAccess(c, spaceId, projectId, "read");
+}
+
+async function requireAutomationProjectAccess(c: any, spaceId: string, projectId: unknown, access: "read" | "manage"): Promise<Response | null> {
   if (typeof projectId !== "string" || !projectId.trim()) {
     return c.json({ error_code: "bad_request", message: "project_id is required" }, 400);
   }
@@ -1301,11 +1309,28 @@ async function requireManageableAutomationProject(c: any, spaceId: string, proje
     : null;
   const qs = new URLSearchParams({ space_id: spaceId, user_id: identity.userId ?? "" });
   if (!identity.userId || businessRole === "admin" || businessRole === "owner") qs.set("space_manager", "1");
+  if (access === "read") qs.set("access", "read");
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const result = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/automation-access?${qs}`, "GET");
   if (result.ok) return null;
   const detail = await result.json<{ error_code?: string; message?: string }>().catch(() => ({} as { error_code?: string; message?: string }));
   return c.json({ error_code: detail.error_code ?? "forbidden", message: detail.message ?? "Project access denied" }, result.status as 403 | 404);
+}
+
+/** List only projects the current caller may see. This is used before reading project-owned
+ * automation so a Space membership alone never reveals private project schedules. */
+async function visibleAutomationProjectIds(c: any, spaceId: string): Promise<string[] | Response> {
+  const identity = getCallerIdentity(c);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const params = new URLSearchParams({ space_id: spaceId });
+  if (identity.userId) params.set("viewer_id", identity.userId);
+  else params.set("space_manager", "1");
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const response = await forwardToSpaceDO(stub, `/projects?${params.toString()}`, "GET");
+  if (!response.ok) return c.json({ error_code: "project_access_unavailable", message: "Could not resolve visible projects" }, 503);
+  const payload = await response.json<{ data?: Array<{ id?: string }> }>().catch(() => null);
+  return (payload?.data ?? []).flatMap((project) => typeof project.id === "string" ? [project.id] : []);
 }
 
 app.use("/internal/spaces/:spaceId/projects/:projectId/automation-access", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
@@ -3272,30 +3297,39 @@ app.use("/spaces/:spaceId/scheduled-jobs", requireBusinessMembership({ GET: "mem
 app.get("/spaces/:spaceId/scheduled-jobs", async (c) => {
   const owned = await loadOwnedSpace(c, c.req.param("spaceId"));
   if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
-  // Scoping for the Crons side-panel: the assistant/Home view wants its OWN (space-wide,
-  // project_id IS NULL) jobs — not a mix with every project's — while a project thread wants
-  // only that project's own. Neither query param given = unfiltered (the Dashboard overview and
-  // the dedicated Assistant settings page both want "everything" and predate this scoping).
+  // The assistant/Home view wants its own space-wide jobs. A project thread gets only its own
+  // jobs after project read authorization. An unfiltered dashboard query is intersected with
+  // projects visible to this caller; Space membership alone must not expose private schedules.
   const projectId = c.req.query("project_id");
   const scope = c.req.query("scope");
   const spaceId = c.req.param("spaceId");
-  const { results } = projectId
-    ? await c.env.PLATFORM_DB.prepare(
+  let query: D1PreparedStatement;
+  if (projectId) {
+    const denied = await requireReadableAutomationProject(c, spaceId, projectId);
+    if (denied) return denied;
+    query = c.env.PLATFORM_DB.prepare(
         `SELECT id, name, cron_expression, script_name, params, project_id, agent_id, goal, enabled, last_run_at,
                 consecutive_failures, last_error, created_at, updated_at
            FROM scheduled_jobs WHERE space_id = ? AND project_id = ? ORDER BY created_at DESC`
-      ).bind(spaceId, projectId).all()
-    : scope === "assistant"
-    ? await c.env.PLATFORM_DB.prepare(
+      ).bind(spaceId, projectId);
+  } else if (scope === "assistant") {
+    query = c.env.PLATFORM_DB.prepare(
         `SELECT id, name, cron_expression, script_name, params, project_id, agent_id, goal, enabled, last_run_at,
                 consecutive_failures, last_error, created_at, updated_at
            FROM scheduled_jobs WHERE space_id = ? AND project_id IS NULL ORDER BY created_at DESC`
-      ).bind(spaceId).all()
-    : await c.env.PLATFORM_DB.prepare(
+      ).bind(spaceId);
+  } else {
+    const visible = await visibleAutomationProjectIds(c, spaceId);
+    if (visible instanceof Response) return visible;
+    if (visible.length === 0) return c.json({ data: [], count: 0 });
+    const placeholders = visible.map(() => "?").join(",");
+    query = c.env.PLATFORM_DB.prepare(
         `SELECT id, name, cron_expression, script_name, params, project_id, agent_id, goal, enabled, last_run_at,
                 consecutive_failures, last_error, created_at, updated_at
-           FROM scheduled_jobs WHERE space_id = ? ORDER BY created_at DESC`
-      ).bind(spaceId).all();
+           FROM scheduled_jobs WHERE space_id = ? AND project_id IN (${placeholders}) ORDER BY created_at DESC`
+      ).bind(spaceId, ...visible);
+  }
+  const { results } = await query.all();
   // Phase 3 item 27/28: when does this job fire next, for the Crons editing UI. Computed here
   // (not stored) so it's always accurate against the CURRENT time and never drifts — a disabled
   // job or a malformed cron_expression (shouldn't exist given create/update validation, but a
@@ -3458,6 +3492,12 @@ app.get("/spaces/:spaceId/scheduled-job-runs", async (c) => {
   }
   const jobId = c.req.query("job_id");
   if (!jobId) return c.json({ error_code: "bad_request", message: "job_id is required" }, 400);
+  const job = await c.env.PLATFORM_DB.prepare(
+    "SELECT project_id FROM scheduled_jobs WHERE id = ? AND space_id = ? AND tenant_id = ?"
+  ).bind(jobId, spaceId, owned.tenantId).first<{ project_id: string }>();
+  if (!job) return c.json({ error_code: "not_found", message: "Scheduled job not found" }, 404);
+  const denied = await requireReadableAutomationProject(c, spaceId, job.project_id);
+  if (denied) return denied;
   const limitParam = Number.parseInt(c.req.query("limit") ?? "", 10);
   const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 100) : 20;
   const { results } = await c.env.PLATFORM_DB.prepare(

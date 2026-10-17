@@ -1686,15 +1686,16 @@ export interface ScheduledJob {
   next_run_at: number | null;
 }
 
-/** scope: pass {projectId: "<id>"} to see only that project's own jobs, {projectId: null} to see
- *  only the space-wide/assistant's own (project_id IS NULL), or omit entirely for the prior
- *  unfiltered "everything" behavior (the Dashboard overview + dedicated Assistant page). */
+/** Scope jobs to one readable project, to the assistant-only legacy scope, or to the caller's
+ *  visible project set. The backend resolves visibility before returning schedule metadata. */
 export async function listScheduledJobs(
   spaceId: string,
   session: SessionCredentials,
-  scope?: { projectId: string | null }
+  scope?: { projectId: string | null; visibleProjects?: boolean }
 ): Promise<ScheduledJob[]> {
-  const qs = scope ? (scope.projectId ? `?project_id=${encodeURIComponent(scope.projectId)}` : "?scope=assistant") : "";
+  const qs = scope?.visibleProjects
+    ? "?scope=visible-projects"
+    : scope ? (scope.projectId ? `?project_id=${encodeURIComponent(scope.projectId)}` : "?scope=assistant") : "";
   const res = await apiFetch<{ data: ScheduledJob[] }>(`/v1/spaces/${spaceId}/scheduled-jobs${qs}`, { session });
   return res.data;
 }

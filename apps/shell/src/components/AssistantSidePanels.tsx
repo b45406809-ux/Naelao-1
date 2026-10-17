@@ -6,8 +6,8 @@
 // threadId) AND a project thread (Chat.tsx with threadId+projectId), which previously only ever
 // showed "Coming soon" for everything but Stats and the consult-subthread Assistant tab.
 //
-// A project thread scopes Config, Files and Crons to the selected project. Project crons wake
-// the configured project planner; the assistant/Home view shows only space-wide jobs. Channels,
+// A project thread scopes Config, Files and Routines to the selected project. Project routines wake
+// the configured project planner. Space Assistant/Home exposes heartbeats separately. Channels,
 // Memory, Skills and Notifications remain space-wide because their current APIs have no
 // project-scoped model, and the skill library is shared within a Space. Local Machine is
 // the one tab scoped the OTHER way — project-only, since local_grants.project_id already lets a
@@ -98,7 +98,7 @@ export type SidePanelTab =
 const ALL_SIDE_PANEL_TABS: { key: SidePanelTab; label: string; assistantOnly?: boolean; projectOnly?: boolean }[] = [
   { key: "config", label: "Config" },
   { key: "memory", label: "Memory" },
-  { key: "crons", label: "Crons" },
+  { key: "crons", label: "Routines", projectOnly: true },
   { key: "channels", label: "Channels" },
   // Heartbeats (the wake-up cadence: heartbeats/crons that did real work vs failed) is a
   // whole-business-oversight concept — meaningless scoped to a single project's own agent, which
@@ -532,7 +532,7 @@ function CronsPanel({
   return (
     <>
       <div className="tp-section" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <span>{projectId ? "This Project's Scheduled Jobs" : "Assistant's Scheduled Jobs"}</span>
+        <span>Project Bot routines</span>
         {canEdit && !creating && (
           <button
             type="button"

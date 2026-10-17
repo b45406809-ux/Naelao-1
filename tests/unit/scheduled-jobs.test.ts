@@ -37,18 +37,31 @@ const SPACES_TABLE_SQL = `
   );
 `;
 
-function makeSpacesEnv(spaceId: string, tenantId: string): Record<string, unknown> {
+function makeSpacesEnv(spaceId: string, tenantId: string, visibleProjectIds = ["proj-1"]): Record<string, unknown> {
   const fakeDb = createFakeD1([SPACES_TABLE_SQL, SCHEDULED_JOBS_MIGRATION, SCHEDULED_JOBS_FAILURES_MIGRATION, SCHEDULED_JOBS_AGENT_GOAL_MIGRATION, SCHEDULED_JOB_RUNS_MIGRATION]);
   fakeDb.db.exec(`INSERT INTO spaces (id, tenant_id, status, name) VALUES ('${spaceId}', '${tenantId}', 'active', 'Test Space')`);
   return { PLATFORM_SECRET: "s", ENVIRONMENT: "test", PLATFORM_DB: fakeDb, SPACE_DO: {
     idFromName: (name: string) => name,
-    get: () => ({ fetch: async () => Response.json({ project_id: "proj-1", can_manage: true }) }),
+    get: () => ({ fetch: async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/projects") return Response.json({ data: visibleProjectIds.map((id) => ({ id })) });
+      const accessProjectId = url.pathname.match(/^\/projects\/([^/]+)\/automation-access$/)?.[1];
+      if (accessProjectId) {
+        const allowed = url.searchParams.get("space_manager") === "1" || visibleProjectIds.includes(decodeURIComponent(accessProjectId));
+        return allowed
+          ? Response.json({ project_id: accessProjectId, can_manage: true })
+          : Response.json({ error_code: "forbidden" }, { status: 403 });
+      }
+      return Response.json({ project_id: "proj-1", can_manage: true });
+    } }),
   } };
 }
 
-function req(path: string, opts: { method?: string; body?: unknown; tenant?: string } = {}): Request {
+function req(path: string, opts: { method?: string; body?: unknown; tenant?: string; userId?: string; role?: string } = {}): Request {
   const headers = new Headers();
   headers.set("x-naelao-tenant-id", opts.tenant ?? "tenant-1");
+  if (opts.userId) headers.set("x-naelao-user-id", opts.userId);
+  if (opts.role) headers.set("x-naelao-role", opts.role);
   if (opts.body !== undefined) headers.set("content-type", "application/json");
   return new Request(`https://spaces.naelao.com${path}`, {
     method: opts.method ?? "GET",
@@ -171,19 +184,33 @@ describe("scheduled-jobs CRUD (spaces worker)", () => {
     expect(json.data[0]!.project_id).toBe("proj-1");
   });
 
-  it("no scope/project_id param stays unfiltered (Dashboard overview / Assistant page compat)", async () => {
+  it("unfiltered list is limited to the caller's visible projects", async () => {
     const env = makeSpacesEnv("space-1", "tenant-1");
     await spacesWorker.fetch(
       req("/spaces/space-1/scheduled-jobs", { method: "POST", body: { name: "Assistant job", cron_expression: "0 8 * * *", script_name: "s1", project_id: "proj-1" } }),
       env as never, execCtx
     );
     await spacesWorker.fetch(
-      req("/spaces/space-1/scheduled-jobs", { method: "POST", body: { name: "Project job", cron_expression: "0 9 * * *", script_name: "s2", project_id: "proj-1" } }),
+      req("/spaces/space-1/scheduled-jobs", { method: "POST", body: { name: "Hidden project job", cron_expression: "0 9 * * *", script_name: "s2", project_id: "proj-2" } }),
       env as never, execCtx
     );
-    const res = await spacesWorker.fetch(req("/spaces/space-1/scheduled-jobs"), env as never, execCtx);
+    const res = await spacesWorker.fetch(req("/spaces/space-1/scheduled-jobs", { userId: "member-1", role: "viewer" }), env as never, execCtx);
     const json = await res.json() as { data: unknown[] };
-    expect(json.data).toHaveLength(2);
+    expect(json.data).toHaveLength(1);
+  });
+
+  it("rejects a project schedule lookup outside the caller's visible project set", async () => {
+    const env = makeSpacesEnv("space-1", "tenant-1", ["proj-1"]);
+    const created = await spacesWorker.fetch(
+      req("/spaces/space-1/scheduled-jobs", { method: "POST", body: { name: "Private job", cron_expression: "0 9 * * *", script_name: "s2", project_id: "proj-2" } }),
+      env as never, execCtx
+    );
+    expect(created.status).toBe(201);
+    const res = await spacesWorker.fetch(
+      req("/spaces/space-1/scheduled-jobs?project_id=proj-2", { userId: "member-1", role: "viewer" }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(403);
   });
 
   it("PATCH can disable a job and rejects an invalid new cron", async () => {
@@ -255,6 +282,7 @@ describe("scheduled-job-runs (spaces worker) — run-history read side", () => {
   it("returns the real fires recorded for a job, newest first", async () => {
     const env = makeSpacesEnv("space-1", "tenant-1");
     const db = (env as unknown as { PLATFORM_DB: { db: { exec(sql: string): void } } }).PLATFORM_DB.db;
+    db.exec(`INSERT INTO scheduled_jobs (id, space_id, tenant_id, project_id, name, cron_expression, script_name) VALUES ('job-1', 'space-1', 'tenant-1', 'proj-1', 'Job', '* * * * *', 'script')`);
     db.exec(
       `INSERT INTO scheduled_job_runs (id, job_id, space_id, tenant_id, fired_at, ok, error, duration_ms, skipped_busy) VALUES
        ('r1', 'job-1', 'space-1', 'tenant-1', 1000, 1, NULL, 50, 0),
@@ -275,6 +303,7 @@ describe("scheduled-job-runs (spaces worker) — run-history read side", () => {
   it("respects a limit param, capped at 100", async () => {
     const env = makeSpacesEnv("space-1", "tenant-1");
     const db = (env as unknown as { PLATFORM_DB: { db: { exec(sql: string): void } } }).PLATFORM_DB.db;
+    db.exec(`INSERT INTO scheduled_jobs (id, space_id, tenant_id, project_id, name, cron_expression, script_name) VALUES ('job-1', 'space-1', 'tenant-1', 'proj-1', 'Job', '* * * * *', 'script')`);
     for (let i = 0; i < 5; i++) {
       db.exec(`INSERT INTO scheduled_job_runs (id, job_id, space_id, tenant_id, fired_at, ok) VALUES ('r${i}', 'job-1', 'space-1', 'tenant-1', ${i}, 1)`);
     }
@@ -317,10 +346,10 @@ describe("scheduled-jobs — product_end_user floor (WS-2)", () => {
     });
   }
 
-  it("a product_end_user CAN GET scheduled jobs on the product root", async () => {
+  it("a product_end_user without an explicit root-space membership cannot GET scheduled jobs", async () => {
     const env = makeSpacesEnv("space-1", "tenant-1");
     const res = await spacesWorker.fetch(productEndUserReq("/spaces/space-1/scheduled-jobs"), env as never, execCtx);
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(403);
   });
 
   it("a product_end_user on the PRODUCT ROOT cannot POST (implicit 'member' role is below the admin floor)", async () => {
@@ -457,7 +486,7 @@ describe("enqueueAgentTicks (agents worker hourly cron — enumerate-and-enqueue
     await enqueueAgentTicks(env);
     const messages = batches.flat();
     expect(messages).toHaveLength(1);
-    expect(messages[0]).toEqual({ kind: "scheduled_job", spaceId: "space-1", tenantId: "tenant-1", jobId: "job-due" });
+    expect(messages[0]).toMatchObject({ kind: "scheduled_job", spaceId: "space-1", tenantId: "tenant-1", jobId: "job-due", sweepKey: expect.any(Number) });
   });
 
   it("does not enqueue a job created after its cron's most recent due minute (B5 regression, carried into the planning phase)", async () => {
@@ -591,8 +620,14 @@ describe("handleAgentTicksQueue (agents worker queue consumer)", () => {
         const stmt = {
           bind(...a: unknown[]) { args = a; return stmt; },
           async first() {
+            if (/INSERT INTO scheduled_job_dispatches/.test(sql)) return { claim_token: "claim-test" };
             if (/FROM scheduled_jobs WHERE id = \? AND enabled = 1/.test(sql)) return opts.jobRow ?? null;
+            if (/SELECT name, config_json FROM spaces/.test(sql)) return { name: "Test Space", config_json: "{}" };
             return null;
+          },
+          async all() {
+            if (/FROM channel_links/.test(sql)) return { results: [{ channel: "telegram", model_override: null }] };
+            return { results: [] };
           },
           async run() {
             if (/consecutive_failures = \?, last_error = \?, enabled = \?/.test(sql)) {
@@ -738,9 +773,9 @@ describe("handleAgentTicksQueue (agents worker queue consumer)", () => {
     expect(fireCalls).toHaveLength(4);
   });
 
-  it("a thrown error in handleAgentTick causes the queue message to retry, not ack", async () => {
-    // No PLATFORM_DB.first() implementation for an unexpected shape — forces a throw path via
-    // a NAELAO_AGENT_DO that itself throws, simulating a transient DO-dispatch failure.
+  it("fails closed and acknowledges when the Space policy lookup is unavailable", async () => {
+    // resolveWakeContext treats unknown/missing Space configuration as air-gapped and fails
+    // closed rather than retrying with a cloud provider or dispatching a planner run.
     const throwingEnv = {
       PLATFORM_SECRET: "test-secret",
       PLATFORM_DB: { prepare() { throw new Error("unreachable in this test"); } },
@@ -748,8 +783,8 @@ describe("handleAgentTicksQueue (agents worker queue consumer)", () => {
     } as unknown as AgentsEnv;
     const { batch, acked, retried } = makeBatch([{ kind: "heartbeat", spaceId: "space-1", tenantId: "tenant-1" }]);
     await handleAgentTicksQueue(batch as never, throwingEnv);
-    expect(acked).toHaveLength(0);
-    expect(retried).toHaveLength(1);
+    expect(acked).toHaveLength(1);
+    expect(retried).toHaveLength(0);
   });
 });
 

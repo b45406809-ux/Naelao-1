@@ -35,7 +35,7 @@ export default function ProjectBotsPage() {
         listProjects(activeSpaceId, session),
         listAgentDefinitions(activeSpaceId, session),
         listThreads(activeSpaceId, session),
-        listScheduledJobs(activeSpaceId, session),
+        listScheduledJobs(activeSpaceId, session, { projectId: null, visibleProjects: true }),
       ]);
       setProjects(nextProjects.filter((project) => project.status === "active"));
       setAgents(nextAgents);

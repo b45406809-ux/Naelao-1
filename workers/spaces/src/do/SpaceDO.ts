@@ -6289,11 +6289,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       );
     }
     const role = this.getProjectMemberRole(projectId, userId);
+    const readable = params.get("access") === "read";
     const allowed =
       params.get("space_manager") === "1" ||
       this.isSpaceOwnerOrAdmin(userId, project.space_id) ||
       role === "owner" ||
-      role === "editor";
+      role === "editor" ||
+      (readable && role === "viewer");
     if (!allowed)
       return Response.json(
         {

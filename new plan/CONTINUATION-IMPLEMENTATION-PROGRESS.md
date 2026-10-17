@@ -1223,3 +1223,10 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Added an explicitly heuristic portfolio review signal for active projects with no recorded activity in at least 30 days, based on the existing `projects.last_activity_at` field. It links to project settings and explicitly states that it does not pause, archive, or delete anything.
 - Verification: Shell typecheck and `git diff --check` passed.
 - This is an interim read-only UI signal, not the planned Space Project Steward extension. It has no isolated extension instance/workspace, journal/task/extension-health evidence, scheduled review/ranking, confidence record, or confirmation workflow. Those remain Phase 3 blockers.
+
+### Phase 3 schedule visibility and authorization checkpoint (2026-10-17)
+
+- The Bot roster now asks for schedules only in the caller's visible-project scope. The Spaces worker resolves project visibility through the SpaceDO before returning the unfiltered schedule list; an explicit `project_id` lookup and a run-history lookup require read access to that project. A Space member cannot enumerate another member's private project routine metadata by omitting the filter or guessing a project ID.
+- Project viewers may read routine schedule metadata; the existing admin floor still controls create, edit, pause, and delete. Legacy assistant-scope jobs remain filtered separately; the Crons/Routines tab is now hidden in Space Assistant sessions because platform automations are project-anchored and the Space Assistant uses its separate Heartbeats surface.
+- Added regression coverage for visible-project filtering and denial of a private project's schedule. The old product-root GET expectation assumed root membership without a `space_members` row; the current `resolveEndUserBusinessRole` contract fails closed without an explicit membership, so the stale test now asserts 403.
+- Verification: Spaces Worker, Agents Worker, and Shell typechecks passed; all scheduled jobs route/dispatch tests passed (38 tests); `git diff --check` passed.

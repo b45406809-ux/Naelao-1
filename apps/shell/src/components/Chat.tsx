@@ -394,7 +394,7 @@ export function Chat({
       const requestedTab = isWorkspaceTab(requestedPanel) && (requestedPanel !== "crons" || Boolean(projectId))
         ? requestedPanel
         : null;
-      const saved = parsed?.tabs?.filter(isWorkspaceTab) ?? [];
+      const saved = parsed?.tabs?.filter((tab): tab is WorkspaceTab => isWorkspaceTab(tab) && (tab !== "crons" || Boolean(projectId))) ?? [];
       if (requestedTab && !saved.includes(requestedTab)) saved.push(requestedTab);
       const tabs = saved.length > 0 ? Array.from(new Set(saved)) : ["stats" as WorkspaceTab];
       const active = requestedTab ?? (isWorkspaceTab(parsed?.active) && tabs.includes(parsed.active) ? parsed.active : tabs[0]!);
