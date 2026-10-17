@@ -17,8 +17,8 @@
 import * as React from "react";
 import { QrCode } from "@naelao/ui";
 import { ALLOWED_MODELS } from "@naelao/billing-core";
-import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelLink, ChannelPairing, SessionCredentials } from "@/lib/api";
-import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, installProjectChannelExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension } from "@/lib/api";
+import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelLink, ChannelPairing, ExtensionRelease, SessionCredentials } from "@/lib/api";
+import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
@@ -143,6 +143,31 @@ function ExtensionInbox({ spaceId, projectId, session, installation }: { spaceId
   </details>;
 }
 
+function ExtensionReleaseControls({ spaceId, projectId, session, installation }: { spaceId: string; projectId: string; session: SessionCredentials; installation: ChannelExtensionInstallation }) {
+  const [releases, setReleases] = React.useState<ExtensionRelease[]>([]);
+  const [selected, setSelected] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const refresh = React.useCallback(() => listProjectExtensionReleases(spaceId, projectId, installation.extension_id, session).then(setReleases), [spaceId, projectId, installation.extension_id, session]);
+  React.useEffect(() => { let live = true; void refresh().catch(err => { if (live) setError(err instanceof Error ? err.message : "Release history unavailable."); }); return () => { live = false; }; }, [refresh]);
+  async function rollback() {
+    if (!selected || !window.confirm(`Roll back ${installation.extension_id} to version ${selected}? This changes the active package version in this Space.`)) return;
+    setBusy(true); setError(null);
+    try { await rollbackProjectExtension(spaceId, projectId, installation.extension_id, selected, session); setSelected(""); await refresh(); window.location.reload(); }
+    catch (err) { setError(err instanceof Error ? err.message : "Rollback failed."); }
+    finally { setBusy(false); }
+  }
+  return <div style={{ marginTop: 7, fontSize: 11.5 }}>
+    <span>Active package version: {installation.version ?? "legacy"}</span>
+    <select aria-label={`Rollback version for ${installation.extension_id}`} value={selected} onChange={event => setSelected(event.target.value)} style={{ marginLeft: 8, background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 6, padding: "4px 6px" }}>
+      <option value="">Choose verified release…</option>
+      {releases.filter(release => release.signatureValid && release.version !== installation.version).map(release => <option key={release.version} value={release.version}>{release.version}</option>)}
+    </select>
+    <button type="button" className="btn-ghost" disabled={busy || !selected} onClick={() => void rollback()}>{busy ? "Rolling back…" : "Rollback"}</button>
+    {error && <span role="alert" style={{ display: "block", color: "var(--danger, #b42318)" }}>{error}</span>}
+  </div>;
+}
+
 export function ChannelConnect({
   spaceId,
   session,
@@ -177,6 +202,7 @@ export function ChannelConnect({
   const [installingExtension, setInstallingExtension] = React.useState(false);
   const [removingExtension, setRemovingExtension] = React.useState<string | null>(null);
   const [installScope, setInstallScope] = React.useState<"PROJECT_BOUND" | "PROJECT_SHARED">("PROJECT_BOUND");
+  const [confirmUpgrade, setConfirmUpgrade] = React.useState(false);
 
   React.useEffect(() => {
     if (!projectId || !canManage) { setExtensionInstallations([]); setExtensionLoadError(null); setExtensionsLoading(false); return; }
@@ -276,11 +302,11 @@ export function ChannelConnect({
       const handlerSources = installSourcesDraft.trim()
         ? JSON.parse(installSourcesDraft) as Record<string, string>
         : undefined;
-      const installed = await installProjectChannelExtension(spaceId, projectId, session, manifest, installScope, handlerSources);
+      const installed = await installProjectChannelExtension(spaceId, projectId, session, manifest, installScope, handlerSources, confirmUpgrade);
       if (!installed.installed) throw new Error(installed.message ?? installed.error_code ?? "Channel package installation failed");
       const updated = await listChannelExtensionInstallations(spaceId, projectId, session);
       setExtensionInstallations(updated);
-      setInstallManifestDraft(""); setInstallSourcesDraft(""); setInstallDialogOpen(false);
+      setInstallManifestDraft(""); setInstallSourcesDraft(""); setConfirmUpgrade(false); setInstallDialogOpen(false);
       onChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't install this channel package.");
@@ -321,6 +347,7 @@ export function ChannelConnect({
           <textarea id="channel-extension-sources" value={installSourcesDraft} onChange={event => setInstallSourcesDraft(event.target.value)} rows={8} spellCheck={false}
             placeholder={'{\n  "./student-answer.ts": "export async function run(args, ctx) { ... }"\n}'}
             style={{ width: "100%", boxSizing: "border-box", resize: "vertical", fontFamily: "monospace", fontSize: 11, background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 7, padding: 8 }} />
+          <label style={{ display: "flex", gap: 7, alignItems: "center", fontSize: 11.5 }}><input type="checkbox" checked={confirmUpgrade} onChange={event => setConfirmUpgrade(event.target.checked)} />Approve a forward version upgrade for this extension ID</label>
           <div><button type="submit" className="btn-ghost" disabled={installingExtension || !installManifestDraft.trim()}>{installingExtension ? "Installing…" : "Validate and install"}</button></div>
         </form>
         <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
@@ -335,6 +362,7 @@ export function ChannelConnect({
               </button>
             </div>
             <ExtensionSessionControls spaceId={spaceId} projectId={projectId} session={session} installation={installation} />
+            <ExtensionReleaseControls spaceId={spaceId} projectId={projectId} session={session} installation={installation} />
             <ExtensionInbox spaceId={spaceId} projectId={projectId} session={session} installation={installation} />
           </div>)}
         </div>

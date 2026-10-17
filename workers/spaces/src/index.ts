@@ -1501,8 +1501,28 @@ app.post("/spaces/:spaceId/extension-releases/rollback", async c => {
   const denied = await requireManageableAutomationProject(c, spaceId, body.project_id);
   if (denied) return denied;
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const installed = await stub.fetch(new Request("http://space-do/extension-installations?" + new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, extension_id: body.extension_id })));
+  if (!installed.ok) return c.json({ error_code: "extension_installation_lookup_unavailable" }, 503);
+  const rows = await installed.json<{ installations: Array<{ project_id: string | null }> }>();
+  if (!rows.installations.some(item => item.project_id === body.project_id)) return c.json({ error_code: "project_extension_not_installed" }, 404);
   const response = await stub.fetch(new Request("http://space-do/extension-releases/rollback", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ extensionId: body.extension_id, version: body.version }) }));
   return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
+});
+
+app.use("/spaces/:spaceId/projects/:projectId/extensions/:extensionId/releases", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use("/spaces/:spaceId/projects/:projectId/extensions/:extensionId/releases", requireBusinessMembership({ GET: "admin" }));
+app.get("/spaces/:spaceId/projects/:projectId/extensions/:extensionId/releases", async c => {
+  const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), extensionId = c.req.param("extensionId");
+  const identity = getCallerIdentity(c);
+  if (!identity.tenantId || !identity.userId || !await canExportBlueprint(c, spaceId)) return c.json({ error_code: "owner_or_admin_required" }, 403);
+  const denied = await requireManageableAutomationProject(c, spaceId, projectId);
+  if (denied) return denied;
+  const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
+  const installed = await stub.fetch(new Request("http://space-do/extension-installations?" + new URLSearchParams({ tenant_id: identity.tenantId, space_id: spaceId, extension_id: extensionId })));
+  if (!installed.ok) return c.json({ error_code: "extension_installation_lookup_unavailable" }, 503);
+  const rows = await installed.json<{ installations: Array<{ project_id: string | null }> }>();
+  if (!rows.installations.some(item => item.project_id === projectId)) return c.json({ error_code: "project_extension_not_installed" }, 404);
+  return stub.fetch(new Request("http://space-do/extension-releases?extension_id=" + encodeURIComponent(extensionId)));
 });
 
 app.use("/spaces/:spaceId/projects/:projectId/channel-extensions/:instanceId/session-state", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));

@@ -2736,9 +2736,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           "SELECT i.instance_id,i.extension_id,i.scope,e.manifest_json FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.tenant_id=? AND i.space_id=? AND i.project_id=? AND i.scope IN ('PROJECT_BOUND','PROJECT_SHARED') AND i.status='active' ORDER BY i.installed_at",
           url.searchParams.get("tenant_id"), url.searchParams.get("space_id"), projectId);
         const installations = rows.flatMap(row => {
-          const manifest = JSON.parse(row.manifest_json) as { id?: string; bundle?: { connections?: Array<{ id?: string; provider?: string; purpose?: string; required?: boolean }> }; channels?: Array<{ kind?: string; id?: string; provider?: string; connectionId?: string; handlerScript?: string; session?: { enabled?: boolean; maxBytes?: number; ttlDays?: number } }> };
+          const manifest = JSON.parse(row.manifest_json) as { id?: string; bundle?: { version?: string; connections?: Array<{ id?: string; provider?: string; purpose?: string; required?: boolean }> }; channels?: Array<{ kind?: string; id?: string; provider?: string; connectionId?: string; handlerScript?: string; session?: { enabled?: boolean; maxBytes?: number; ttlDays?: number } }> };
           const channels = (manifest.channels ?? []).filter(channel => channel.kind === "channel");
-          return channels.length ? [{ instance_id: row.instance_id, extension_id: row.extension_id, scope: row.scope,
+          return channels.length ? [{ instance_id: row.instance_id, extension_id: row.extension_id, scope: row.scope, version: manifest.bundle?.version ?? "legacy",
             name: manifest.id ?? row.extension_id,
             channels: channels.map(channel => ({ id: channel.id ?? "", provider: channel.provider ?? "", handlerScript: channel.handlerScript ?? "", ...(channel.connectionId ? { connection_id: channel.connectionId } : {}), ...(channel.session?.enabled ? { session: { enabled: true, max_bytes: channel.session.maxBytes ?? 1_024, ttl_days: channel.session.ttlDays ?? 30 } } : {}) })),
             connections: (manifest.bundle?.connections ?? []).map(connection => ({ id: connection.id ?? "", provider: connection.provider ?? "", purpose: connection.purpose ?? "", required: connection.required === true })) }] : [];
@@ -2759,6 +2759,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       if (url.pathname === "/extensions" && method === "POST") return await this.installExtension(request);
       if (url.pathname === "/extension-releases/rollback" && method === "POST") return this.rollbackExtensionRelease(request);
+      if (url.pathname === "/extension-releases" && method === "GET") return await this.listExtensionReleases(url.searchParams.get("extension_id") ?? "");
       const extensionMatch = url.pathname.match(/^\/extensions\/(ext_[a-z0-9_-]+)$/);
       if (extensionMatch?.[1] && method === "DELETE") return this.uninstallExtension(extensionMatch[1]);
       if (method === "POST" && url.pathname === "/ephemeral-grants/mint") {
@@ -11885,6 +11886,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const manifest = JSON.parse(release.manifest_json) as ExtensionManifest;
     execute(this.ctx.storage.sql as never, "UPDATE installed_extensions SET manifest_json=?,updated_at=datetime('now') WHERE extension_id=?", release.manifest_json, body.extensionId);
     return Response.json({ rolledBack: true, manifest, release: { version: body.version, artifactSha256: release.artifact_sha256, hostSignature: release.host_signature, signer: "naelao-host" } });
+  }
+
+  private async listExtensionReleases(extensionId: string): Promise<Response> {
+    if (!/^ext_[a-z0-9_-]{2,62}$/.test(extensionId)) return Response.json({ error: "extension_id_invalid" }, { status: 400 });
+    const rows = queryAll<{ version: string; manifest_json: string; artifact_sha256: string; host_signature: string; created_at: string }>(this.ctx.storage.sql as never,
+      "SELECT version,manifest_json,artifact_sha256,host_signature,created_at FROM extension_releases WHERE extension_id=? ORDER BY created_at DESC", extensionId);
+    const releases = await Promise.all(rows.map(async row => ({ version: row.version, artifactSha256: row.artifact_sha256, hostSignature: row.host_signature,
+      signatureValid: await this.signExtensionRelease(extensionId, row.version, row.manifest_json, row.artifact_sha256) === row.host_signature, createdAt: row.created_at })));
+    return Response.json({ releases });
   }
 
   private async machineAuthority(request: Request): Promise<Response> {

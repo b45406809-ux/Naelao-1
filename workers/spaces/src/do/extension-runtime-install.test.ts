@@ -25,6 +25,10 @@ describe("runtime extension installation", () => {
     expect(await first.json()).toMatchObject({ release: { version: "1.0.0", artifactSha256: "a".repeat(64), signer: "naelao-host", hostSignature: expect.stringMatching(/^[a-f0-9]{64}$/) } });
     expect((await call("2.0.0")).status).toBe(409);
     expect((await call("2.0.0", true)).status).toBe(201);
+    const releases = await space.fetch(new Request("http://space/extension-releases?extension_id=ext_versioned"));
+    expect(await releases.json()).toMatchObject({ releases: expect.arrayContaining([
+      expect.objectContaining({ version: "2.0.0", signatureValid: true }), expect.objectContaining({ version: "1.0.0", signatureValid: true }),
+    ]) });
     const rollback = await space.fetch(new Request("http://space/extension-releases/rollback", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ extensionId: "ext_versioned", version: "1.0.0" }) }));
     expect(rollback.status).toBe(200);
     expect(await rollback.json()).toMatchObject({ rolledBack: true, manifest: { bundle: { version: "1.0.0" } } });

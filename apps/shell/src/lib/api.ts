@@ -1811,8 +1811,20 @@ export interface ChannelExtensionInstallation {
   extension_id: string;
   scope: "PROJECT_BOUND" | "PROJECT_SHARED";
   name: string;
+  version?: string;
   channels: Array<{ id: string; provider: string; handlerScript: string; connection_id?: string; session?: { enabled: true; max_bytes: number; ttl_days: number } }>;
   connections?: Array<{ id: string; provider: string; purpose: string; required: boolean }>;
+}
+
+export interface ExtensionRelease { version: string; artifactSha256: string; hostSignature: string; signatureValid: boolean; createdAt: string }
+
+export async function listProjectExtensionReleases(spaceId: string, projectId: string, extensionId: string, session: SessionCredentials): Promise<ExtensionRelease[]> {
+  const result = await apiFetch<{ releases: ExtensionRelease[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extensions/${encodeURIComponent(extensionId)}/releases`, { session });
+  return result.releases;
+}
+
+export async function rollbackProjectExtension(spaceId: string, projectId: string, extensionId: string, version: string, session: SessionCredentials): Promise<void> {
+  await apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/extension-releases/rollback`, { method: "POST", body: JSON.stringify({ project_id: projectId, extension_id: extensionId, version }), session });
 }
 
 export interface ChannelExtensionSessionSummary {
@@ -1870,10 +1882,11 @@ export async function installProjectChannelExtension(
   session: SessionCredentials,
   manifest: unknown,
   scope: "PROJECT_BOUND" | "PROJECT_SHARED" = "PROJECT_BOUND",
-  handlerSources?: Record<string, string>
+  handlerSources?: Record<string, string>,
+  upgrade = false
 ): Promise<{ installed?: boolean; installationId?: string; error_code?: string; message?: string }> {
   return apiFetch(`/v1/spaces/${spaceId}/projects/${encodeURIComponent(projectId)}/channel-extensions`, {
-    method: "POST", body: JSON.stringify({ manifest, scope, ...(handlerSources ? { handlerSources } : {}) }), session,
+    method: "POST", body: JSON.stringify({ manifest, scope, ...(handlerSources ? { handlerSources } : {}), ...(upgrade ? { upgrade: true } : {}) }), session,
   });
 }
 
