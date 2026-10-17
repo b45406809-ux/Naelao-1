@@ -1141,3 +1141,10 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Added `principal` to every worker-role declaration: `project_member`, `space_owner`, `external_channel_subject`, or `service`. This stays a separate axis from invocation (`tool`, `subagent`, `workflow_step`) and execution placement (`worker`, `container`, `web_container`).
 - The supported Durable Workflow project installer accepts only `project_member` worker roles, with membership checked at inventory/run time. External channel handlers remain a separate `channel_only` contract and cannot receive internal worker grants. The planner's read-only extension inventory now returns the worker principal with the role binding.
 - Updated the Trading Mentor example and SDK contract tests. Verification passed: SDK, Spaces and Agents `tsc --noEmit`; SDK contract/taxonomy suites (22 tests); Agents inventory/scope suites (6 tests); and `git diff --check`.
+
+## Extension installer follow-up — package map before approval
+
+- Added a live, sanitized preview to the project bundle installer. It shows the package extension ID/version, primitive IDs and kinds, Canvas/workflow entry artifacts, worker-role principal/invocation/execution and referenced primitive IDs, host connection provider/required status, and declared Knowledge collection access.
+- The preview never renders arbitrary manifest fields or artifacts and explicitly states that server validation is authoritative. This helps FDEs and project owners see which Canvas, Gadget, workflow and external handler share one release boundary before confirming installation.
+- Verification: Shell `tsc --noEmit` and `git diff --check` passed. No browser flow was run.
+- Remaining major implementation gaps are per-installation provider authorization and credential lifecycle, Gadget data operations from Canvas/workflow, publisher identity signatures, other execution placements, end-user inbox reply/assignment actions, and provider acceptance of the Trading Mentor vertical slice.

@@ -238,6 +238,32 @@ export function ChannelConnect({
   const [canvasInstallConfirmed, setCanvasInstallConfirmed] = React.useState(false);
   const [canvasInstanceKey, setCanvasInstanceKey] = React.useState("default");
 
+  // Give the installer a readable map of the package graph before the owner approves raw JSON.
+  // Deliberately project only public manifest fields; never echo arbitrary manifest values here.
+  const bundlePreview = React.useMemo(() => {
+    if (!canvasManifestDraft.trim()) return null;
+    try {
+      const root = JSON.parse(canvasManifestDraft) as Record<string, unknown>;
+      const bundle = root && typeof root.bundle === "object" && root.bundle !== null ? root.bundle as Record<string, unknown> : null;
+      if (!bundle) return { error: "No versioned bundle found." };
+      const primitives = Array.isArray(bundle.primitives) ? bundle.primitives.filter((item): item is Record<string, unknown> => !!item && typeof item === "object" && !Array.isArray(item)) : [];
+      const roles = Array.isArray(bundle.workerRoles) ? bundle.workerRoles.filter((item): item is Record<string, unknown> => !!item && typeof item === "object" && !Array.isArray(item)) : [];
+      const connections = Array.isArray(bundle.connections) ? bundle.connections.filter((item): item is Record<string, unknown> => !!item && typeof item === "object" && !Array.isArray(item)) : [];
+      const knowledge = Array.isArray(bundle.knowledge) ? bundle.knowledge.filter((item): item is Record<string, unknown> => !!item && typeof item === "object" && !Array.isArray(item)) : [];
+      return {
+        id: typeof bundle.id === "string" ? bundle.id : "Unknown extension",
+        version: typeof bundle.version === "string" ? bundle.version : "Unknown version",
+        primitives: primitives.map(item => ({ id: typeof item.id === "string" ? item.id : "unnamed", kind: typeof item.kind === "string" ? item.kind : "unknown",
+          detail: item.kind === "workflow" && typeof item.entry === "string" ? item.entry : item.kind === "canvas" && typeof item.component === "string" ? item.component : undefined })),
+        roles: roles.map(role => ({ id: typeof role.id === "string" ? role.id : "unnamed role", principal: typeof role.principal === "string" ? role.principal : "principal missing",
+          invocation: typeof role.invocation === "string" ? role.invocation : "invocation missing", execution: typeof role.execution === "string" ? role.execution : "execution missing",
+          parts: Array.isArray(role.primitiveIds) ? role.primitiveIds.filter((id): id is string => typeof id === "string") : [] })),
+        connections: connections.map(item => `${typeof item.id === "string" ? item.id : "connection"} · ${typeof item.provider === "string" ? item.provider : "provider missing"}${item.required === true ? " · required" : " · optional"}`),
+        knowledge: knowledge.map(item => `${typeof item.id === "string" ? item.id : "collection"} · ${typeof item.access === "string" ? item.access : "access missing"}`),
+      };
+    } catch { return { error: "Manifest JSON is incomplete or invalid." }; }
+  }, [canvasManifestDraft]);
+
   React.useEffect(() => {
     if (!projectId || !canManage) { setExtensionInstallations([]); setOtherProjectInstallations([]); setExtensionLoadError(null); setExtensionsLoading(false); return; }
     let cancelled = false;
@@ -442,6 +468,16 @@ export function ChannelConnect({
           </label>
           <label style={{ fontSize: 11.5, color: "var(--text2)" }} htmlFor="canvas-extension-manifest">Composed bundle manifest</label>
           <textarea id="canvas-extension-manifest" value={canvasManifestDraft} onChange={event => setCanvasManifestDraft(event.target.value)} rows={10} spellCheck={false} placeholder={'{"id":"ext_trading_mentor","type":"extension","declaredPermissions":[],"capabilityRequirements":["extension.project_canvas"],"gadgets":[],"daemons":[],"commands":[],"bundle":{"schemaVersion":"1.0","kind":"extension_bundle","id":"ext_trading_mentor","version":"1.0.0","primitives":[{"schemaVersion":"1.0","kind":"canvas","id":"mentor_canvas","version":"1.0.0","permissions":[],"capabilityRequirements":[],"lifecycle":{},"layout":"CanvasMount","component":"./index.html","dynamicPage":false}]}}'} style={{ width: "100%", boxSizing: "border-box", resize: "vertical", fontFamily: "monospace", fontSize: 11, background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 7, padding: 8 }} />
+          {bundlePreview && <section aria-label="Extension package map" style={{ border: "1px solid var(--border)", borderRadius: 7, padding: 9, fontSize: 11.5 }}>
+            <div style={{ fontWeight: 650, marginBottom: 5 }}>Package map{("id" in bundlePreview) ? ` · ${bundlePreview.id} v${bundlePreview.version}` : ""}</div>
+            {"error" in bundlePreview ? <div role="status" style={{ color: "var(--text3)" }}>{bundlePreview.error}</div> : <>
+              <div style={{ display: "grid", gap: 3 }}>{bundlePreview.primitives.map((part, index) => <div key={`${part.id}-${index}`}>Part <code>{part.id}</code> · {part.kind}{part.detail ? ` · ${part.detail}` : ""}</div>)}</div>
+              {bundlePreview.roles.length > 0 && <div style={{ marginTop: 7 }}><strong>Worker bindings</strong>{bundlePreview.roles.map((role, index) => <div key={`${role.id}-${index}`} style={{ marginTop: 2 }}><code>{role.id}</code> · {role.principal} · {role.invocation} on {role.execution} · parts: {role.parts.join(", ") || "none"}</div>)}</div>}
+              {bundlePreview.connections.length > 0 && <div style={{ marginTop: 7 }}><strong>Host connections</strong>{bundlePreview.connections.map((item, index) => <div key={`${item}-${index}`}>{item}</div>)}</div>}
+              {bundlePreview.knowledge.length > 0 && <div style={{ marginTop: 7 }}><strong>Knowledge grants</strong>{bundlePreview.knowledge.map((item, index) => <div key={`${item}-${index}`}>{item}</div>)}</div>}
+              <div style={{ marginTop: 7, color: "var(--text3)" }}>All listed parts share this extension ID and release version. Each installation key creates a separate instance. This preview summarizes declarations; server validation remains authoritative.</div>
+            </>}
+          </section>}
           <label style={{ fontSize: 11.5, color: "var(--text2)" }} htmlFor="canvas-extension-artifacts">HTML artifacts as JSON path-to-source map</label>
           <textarea id="canvas-extension-artifacts" value={canvasArtifactsDraft} onChange={event => setCanvasArtifactsDraft(event.target.value)} rows={8} spellCheck={false} placeholder={'{"./index.html":"<main>...</main>"}'} style={{ width: "100%", boxSizing: "border-box", resize: "vertical", fontFamily: "monospace", fontSize: 11, background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 7, padding: 8 }} />
           <label style={{ display: "flex", gap: 7, alignItems: "center", fontSize: 11.5 }}><input type="checkbox" checked={canvasInstallConfirmed} onChange={event => setCanvasInstallConfirmed(event.target.checked)} />I reviewed the bundle declarations, every artifact, and each workflow toolNames grant. Gadgets are project-bound; external channel handlers cannot access planner/member tools or credentials.</label>
