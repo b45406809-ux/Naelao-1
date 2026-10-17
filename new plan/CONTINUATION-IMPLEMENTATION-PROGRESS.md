@@ -1162,7 +1162,9 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - The Agents host requires an active `vertical_extension` run, project, installation, granted operation, and project-member worker role bound to that workflow. The Spaces bridge then rechecks tenant/Space/project/install scope, active status, `PROJECT_BOUND` scope, and that the Gadget primitive belongs to the same bundle. It derives the named instance's Gadget actor ID server-side and forwards only the fixed list/get/insert MCP verbs. No SQL or Gadget ID becomes a public-channel capability.
 - Updated the Trading Mentor sample to write its submitted order to the install-scoped trade journal after the broker operation, and bumped the package to `1.2.0` so the changed artifacts remain compatible with immutable releases.
 - Verification passed: SDK, Spaces, Agents, and Shell typechecks; SDK bundle contract suite (15 tests); Agents workflow compiler/scope suites (9 tests); Spaces Gadget bridge suite (2 tests); and `git diff --check`.
-- Remaining limits: Canvas-side Gadget actions and Gadget update/delete are not implemented. The current workflow Gadget API is only list/get/insert. This host bridge and its package declaration reject unsupported operations and does not expose arbitrary SQL.
+- Follow-up: expanded the bounded API to include owner-declared record update/delete, with schema-column validation, primary-key predicates, fixed action allowlists, installation revalidation, and workflow idempotency. Gadget schema mutation and arbitrary SQL remain unavailable to extension workers.
+- Verification for CRUD follow-up passed: SDK, Spaces, Agents, and Shell typechecks; SDK bundle suite (15 tests); Agents workflow compiler/scope suites (9 tests); Spaces Gadget record/bridge suites (3 tests); and `git diff --check`.
+- Remaining limits: Canvas-side Gadget actions still need a scoped host UI contract; workflow code does not receive schema migration or arbitrary SQL.
 
 ## Extension inbox follow-up — owner/admin replies
 

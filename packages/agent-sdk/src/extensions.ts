@@ -267,6 +267,8 @@ export interface ExtensionWorkflowGadgets {
   list<T = unknown>(stepKey: string, gadgetId: string, table: string, options?: { filter?: Record<string, unknown>; limit?: number }): Promise<T>;
   get<T = unknown>(stepKey: string, gadgetId: string, table: string, id: string | number): Promise<T>;
   insert<T = unknown>(stepKey: string, gadgetId: string, table: string, record: Record<string, unknown>): Promise<T>;
+  update<T = unknown>(stepKey: string, gadgetId: string, table: string, id: string | number, record: Record<string, unknown>): Promise<T>;
+  delete<T = unknown>(stepKey: string, gadgetId: string, table: string, id: string | number): Promise<T>;
 }
 export interface ExtensionWorkflowContext<TParams = Record<string, unknown>> {
   readonly params: TParams;
@@ -477,7 +479,7 @@ export function parseExtensionBundle(value: unknown): ExtensionBundleManifest {
     contractAssert(Array.isArray(workerRoles) && (workerRoles as ExtensionWorkerRole[]).some(role => role.primitiveIds.includes(workflow.id)
       && role.entry === workflow.entry && ["workflow_step", "tool"].includes(role.invocation)), "workflow_worker_role_binding_required");
     const gadgetOperations = workflow.toolNames.filter(name => name.startsWith("extension.gadget."));
-    contractAssert(gadgetOperations.every(name => ["extension.gadget.list", "extension.gadget.get", "extension.gadget.insert"].includes(name))
+    contractAssert(gadgetOperations.every(name => ["extension.gadget.list", "extension.gadget.get", "extension.gadget.insert", "extension.gadget.update", "extension.gadget.delete"].includes(name))
       && (!gadgetOperations.length || primitives.some(item => item.kind === "gadget")), "invalid_workflow_gadget_capability");
   }
   for (const [field, max] of [["connections", 32], ["knowledge", 64]] as const) {

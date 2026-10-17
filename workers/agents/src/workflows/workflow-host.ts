@@ -35,7 +35,7 @@ export interface WorkflowInstallationGrant {
 }
 export function resolveExtensionGadgetAppId(input: { installation?: WorkflowInstallationGrant; workflowId: string; operation: string; gadgetId: string }): string | null {
   const { installation, workflowId, operation, gadgetId } = input;
-  if (!installation || !["extension.gadget.list", "extension.gadget.get", "extension.gadget.insert"].includes(operation)
+  if (!installation || !["extension.gadget.list", "extension.gadget.get", "extension.gadget.insert", "extension.gadget.update", "extension.gadget.delete"].includes(operation)
     || installation.instance.status !== "active" || installation.instance.scope !== "PROJECT_BOUND"
     || !installation.instance.project_id || !installation.instance.instance_id) return null;
   const bundle = installation.manifest.bundle;

@@ -1546,7 +1546,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
           || primitive.toolNames.some(name => !/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(name)))
           throw new Error("workflow_requires_owner_reviewed_installed_tool_names");
         const gadgetOperations = primitive.toolNames.filter(name => name.startsWith("extension.gadget."));
-        if (gadgetOperations.some(name => !["extension.gadget.list", "extension.gadget.get", "extension.gadget.insert"].includes(name))
+        if (gadgetOperations.some(name => !["extension.gadget.list", "extension.gadget.get", "extension.gadget.insert", "extension.gadget.update", "extension.gadget.delete"].includes(name))
           || (gadgetOperations.length > 0 && !primitives.some(item => item.kind === "gadget")))
           throw new Error("workflow_gadget_operation_requires_declared_gadget");
       }

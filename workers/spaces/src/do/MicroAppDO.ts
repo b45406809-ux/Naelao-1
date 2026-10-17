@@ -190,6 +190,8 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       { name: `app_${appId}_list`, description: "List gadget records", inputSchema: { type: "object", properties: { table: { type: "string", enum: tables }, filter: { type: "object" }, limit: { type: "integer", minimum: 1, maximum: 500 } }, required: ["table"] } },
       { name: `app_${appId}_insert`, description: "Insert a schema-validated gadget record", inputSchema: { type: "object", properties: { table: { type: "string", enum: tables }, record: { type: "object" } }, required: ["table", "record"] } },
       { name: `app_${appId}_get`, description: "Get one gadget record by primary key", inputSchema: { type: "object", properties: { table: { type: "string", enum: tables }, id: {} }, required: ["table", "id"] } },
+      { name: `app_${appId}_update`, description: "Update schema-validated fields on one Gadget record", inputSchema: { type: "object", properties: { table: { type: "string", enum: tables }, id: {}, record: { type: "object" } }, required: ["table", "id", "record"] } },
+      { name: `app_${appId}_delete`, description: "Delete one Gadget record by primary key", inputSchema: { type: "object", properties: { table: { type: "string", enum: tables }, id: {} }, required: ["table", "id"] } },
     ];
     if (rpc.method === "tools/list") return result({ tools, schema: schemas });
     if (rpc.method !== "tools/call") return Response.json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } }, { status: 404 });
@@ -211,7 +213,24 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       data = { inserted: true };
     } else if (name === `app_${appId}_get`) {
       const pk = columns.find(c => c.pk)?.name ?? columns[0]?.name; if (!pk) throw new Error("table_has_no_columns");
+      if (args.id === undefined || args.id === null) throw new Error("record_id_required");
       data = [...this.ctx.storage.sql.exec(`SELECT * FROM ${quoted} WHERE "${pk.replaceAll('"','""')}" = ? LIMIT 1`, args.id as SqlStorageValue)][0] ?? null;
+    } else if (name === `app_${appId}_update`) {
+      const pk = columns.find(c => c.pk)?.name ?? columns[0]?.name; if (!pk) throw new Error("table_has_no_columns");
+      if (args.id === undefined || args.id === null) throw new Error("record_id_required");
+      if (!args.record || typeof args.record !== "object" || Array.isArray(args.record)) throw new Error("record_required");
+      const record = args.record as Record<string, unknown>, allowed = new Set(columns.map(c => c.name));
+      const entries = Object.entries(record).filter(([key]) => allowed.has(key) && key !== pk);
+      if (!entries.length || entries.length !== Object.keys(record).length) throw new Error("record_does_not_match_schema");
+      const storageError = this.storageLimitExceeded(new TextEncoder().encode(JSON.stringify(record)).byteLength);
+      if (storageError) return Response.json({ jsonrpc: "2.0", id, error: { code: -32013, message: "storage_limit_exceeded", data: storageError } }, { status: 413 });
+      this.ctx.storage.sql.exec(`UPDATE ${quoted} SET ${entries.map(([key]) => `"${key.replaceAll('"','""')}" = ?`).join(",")} WHERE "${pk.replaceAll('"','""')}" = ?`, ...entries.map(([,value]) => value as SqlStorageValue), args.id as SqlStorageValue);
+      data = { updated: true };
+    } else if (name === `app_${appId}_delete`) {
+      const pk = columns.find(c => c.pk)?.name ?? columns[0]?.name; if (!pk) throw new Error("table_has_no_columns");
+      if (args.id === undefined || args.id === null) throw new Error("record_id_required");
+      this.ctx.storage.sql.exec(`DELETE FROM ${quoted} WHERE "${pk.replaceAll('"','""')}" = ?`, args.id as SqlStorageValue);
+      data = { deleted: true };
     } else throw new Error("unknown_tool");
     return result({ content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: data });
   }

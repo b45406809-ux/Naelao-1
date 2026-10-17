@@ -11,7 +11,7 @@ export function registerExtensionGadgetRoutes(app: Hono<{ Bindings: Env }>): voi
     if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
     const { spaceId, installationId, primitiveId, operation } = c.req.param();
     if (!/^[A-Za-z0-9._:-]{1,160}$/.test(installationId) || !/^[a-z][a-z0-9_-]{1,63}$/.test(primitiveId)
-      || !["list", "get", "insert"].includes(operation)) return c.json({ error_code: "extension_gadget_request_invalid" }, 400);
+      || !["list", "get", "insert", "update", "delete"].includes(operation)) return c.json({ error_code: "extension_gadget_request_invalid" }, 400);
     const body = await c.req.json<{ project_id?: unknown; arguments?: unknown }>().catch(() => ({} as { project_id?: unknown; arguments?: unknown }));
     const projectId = typeof body.project_id === "string" ? body.project_id : "";
     const args = body.arguments && typeof body.arguments === "object" && !Array.isArray(body.arguments) ? body.arguments as Record<string, unknown> : {};
@@ -30,7 +30,7 @@ export function registerExtensionGadgetRoutes(app: Hono<{ Bindings: Env }>): voi
       || !bundle.primitives?.some(part => part.id === primitiveId && part.kind === "gadget")) return c.json({ error_code: "extension_gadget_scope_mismatch" }, 403);
     const appId = instance.instance_key && instance.instance_key !== "default" ? `${instance.instance_key}_${primitiveId}` : primitiveId;
     if (!/^[a-z][a-z0-9_-]{1,63}$/.test(appId)) return c.json({ error_code: "extension_gadget_identity_invalid" }, 400);
-    const allowed = operation === "list" ? ["table", "filter", "limit"] : operation === "get" ? ["table", "id"] : ["table", "record"];
+    const allowed = operation === "list" ? ["table", "filter", "limit"] : operation === "get" || operation === "delete" ? ["table", "id"] : operation === "insert" ? ["table", "record"] : ["table", "id", "record"];
     if (Object.keys(args).some(key => !allowed.includes(key))) return c.json({ error_code: "extension_gadget_arguments_invalid" }, 400);
     const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "PROJECT_BOUND", spaceId, projectId, appId });
     const response = await c.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/mcp", {

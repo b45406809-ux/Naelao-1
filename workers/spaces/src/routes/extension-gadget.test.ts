@@ -27,7 +27,13 @@ describe("extension workflow Gadget bridge", () => {
     }, env as never);
     expect(response.status).toBe(200);
     expect(rpc).toMatchObject({ method: "tools/call", params: { name: "app_mentor2_journal_insert", arguments: { table: "orders", record: { id: "one" } } } });
-    expect(spaceStub.fetch).toHaveBeenCalledTimes(1);
+    const updated = await app.request("/spaces/space-a/internal/extensions/install-a/gadgets/journal/update", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token },
+      body: JSON.stringify({ project_id: "project-a", arguments: { table: "orders", id: "one", record: { status: "closed" } } }),
+    }, env as never);
+    expect(updated.status).toBe(200);
+    expect(rpc).toMatchObject({ method: "tools/call", params: { name: "app_mentor2_journal_update", arguments: { table: "orders", id: "one", record: { status: "closed" } } } });
+    expect(spaceStub.fetch).toHaveBeenCalledTimes(2);
   });
 
   it("rejects wrong-project and undeclared Gadget requests without touching the actor", async () => {

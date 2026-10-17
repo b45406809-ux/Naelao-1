@@ -1156,7 +1156,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const config = this.env.SCRIPTS_R2 ? await loadAgentConfig(this.env.SCRIPTS_R2, identity.spaceId, identity.agentId) : null;
     if (!config) return Response.json({ error: "workflow_agent_unavailable" }, { status: 503 });
     if (config.requiresApprovalFor?.includes(body.operation)) return Response.json({ error: "workflow_human_approval_required" }, { status: 409 });
-    if (["extension.gadget.list", "extension.gadget.get", "extension.gadget.insert"].includes(body.operation)) {
+    if (["extension.gadget.list", "extension.gadget.get", "extension.gadget.insert", "extension.gadget.update", "extension.gadget.delete"].includes(body.operation)) {
       if (identity.workflowClass !== "vertical_extension" || !identity.projectId || !identity.installationId || !identity.definitionId || !identity.capabilities.includes(body.operation))
         return Response.json({ error: "workflow_gadget_grant_invalid" }, { status: 403 });
       const gadgetId = typeof body.params?.gadget_id === "string" ? body.params.gadget_id : "";
