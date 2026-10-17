@@ -6733,6 +6733,23 @@ app.get("/spaces/:spaceId/channels/sessions", async (c) => {
   return stub.fetch(new Request("http://agent-do/channels/sessions"));
 });
 
+// External extension inbox data is a project-owner surface. It returns only events for the
+// caller-selected installation and never exposes planner/internal channel threads.
+app.get("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId/inbox", async c => {
+  const tenantId = await requireVerifiedTenant(c);
+  const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId");
+  const { userId, role: callerRole } = getCallerIdentity(c);
+  const role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Project channel inbox requires Space owner or admin access");
+  if (!/^[A-Za-z0-9._:-]{1,160}$/.test(projectId) || !/^[A-Za-z0-9._:-]{1,160}$/.test(installationId)) throw badRequest("Invalid project or installation id");
+  const url = new URL(c.req.url);
+  const query = new URLSearchParams({ project_id: projectId, installation_id: installationId,
+    ...(url.searchParams.has("before") ? { before: url.searchParams.get("before")! } : {}),
+    ...(url.searchParams.has("limit") ? { limit: url.searchParams.get("limit")! } : {}) });
+  const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId") ?? "");
+  return stub.fetch(new Request(`http://agent-do/channels/extensions/inbox?${query}`));
+});
+
 app.get("/spaces/:spaceId/channels/unanswered", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = await requireVerifiedTenant(c);

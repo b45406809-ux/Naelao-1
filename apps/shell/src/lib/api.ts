@@ -1821,6 +1821,25 @@ export interface ChannelExtensionSessionSummary {
   nextExpiryAt: number | null;
 }
 
+export interface ChannelExtensionInboxEvent {
+  event_id: string;
+  external_id: string | null;
+  channel: string;
+  channel_user_id: string;
+  text: string;
+  status: "queued" | "processing" | "running" | "delivering" | "sent" | "uncertain" | "failed";
+  error_code: string | null;
+  reply_text: string | null;
+  created_at: number;
+}
+
+export async function listChannelExtensionInbox(spaceId: string, projectId: string, instanceId: string, session: SessionCredentials): Promise<ChannelExtensionInboxEvent[]> {
+  const result = await apiFetch<{ events: ChannelExtensionInboxEvent[] }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/channel-extensions/${encodeURIComponent(instanceId)}/inbox`, { session }
+  );
+  return result.events;
+}
+
 export async function getChannelExtensionSessionSummary(spaceId: string, projectId: string, instanceId: string, session: SessionCredentials): Promise<ChannelExtensionSessionSummary> {
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/channel-extensions/${encodeURIComponent(instanceId)}/session-state`, { session });
 }

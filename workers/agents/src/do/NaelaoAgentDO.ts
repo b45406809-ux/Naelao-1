@@ -1780,6 +1780,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (method === "GET" && url.pathname === "/channels/sessions") {
         return this.handleListChannelSessions();
       }
+      if (method === "GET" && url.pathname === "/channels/extensions/inbox") return this.handleChannelExtensionInbox(url.searchParams);
       if (method === "GET" && url.pathname === "/channels/extensions/session-state") {
         const projectId = url.searchParams.get("project_id") ?? "";
         const installationId = url.searchParams.get("installation_id") ?? "";
@@ -5605,6 +5606,26 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       .exec(`SELECT id, channel, channel_user_id, project_id, human_takeover, created_at, last_seen FROM channel_sessions ORDER BY last_seen DESC LIMIT 200`)
       .toArray();
     return Response.json({ sessions: rows, count: rows.length });
+  }
+
+  private handleChannelExtensionInbox(params: URLSearchParams): Response {
+    const projectId = params.get("project_id") ?? "";
+    const installationId = params.get("installation_id") ?? "";
+    const before = Number(params.get("before") ?? Number.MAX_SAFE_INTEGER);
+    const limit = Math.min(Math.max(Number(params.get("limit") ?? 50) || 50, 1), 100);
+    if (!projectId || !installationId || !Number.isSafeInteger(before)) return Response.json({ error_code: "channel_extension_inbox_scope_required" }, { status: 400 });
+    const events = this.ctx.storage.sql.exec(
+      `SELECT m.id AS event_id,m.external_id,s.channel,s.channel_user_id,m.project_id,m.channel_extension_instance_id,
+              m.channel_extension_sha256,m.text,m.answered,m.created_at,
+              COALESCE(d.status,CASE m.answered WHEN 1 THEN 'sent' WHEN 2 THEN 'processing' ELSE 'queued' END) AS status,
+              d.reply_text,d.error_code,d.created_at AS dispatched_at
+       FROM channel_messages m JOIN channel_sessions s ON s.id=m.session_id
+       LEFT JOIN channel_extension_dispatches d ON d.message_id=m.id
+       WHERE m.direction='inbound' AND m.project_id=? AND m.channel_extension_instance_id=? AND m.created_at<?
+       ORDER BY m.created_at DESC,m.id DESC LIMIT ?`, projectId, installationId, before, limit
+    ).toArray();
+    const nextBefore = events.length === limit ? Number((events[events.length - 1] as { created_at?: number }).created_at ?? 0) : null;
+    return Response.json({ events, next_before: nextBefore });
   }
 
   private handleChannelUnanswered(): Response {

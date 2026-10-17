@@ -17,8 +17,8 @@
 import * as React from "react";
 import { QrCode } from "@naelao/ui";
 import { ALLOWED_MODELS } from "@naelao/billing-core";
-import type { ChannelExtensionInstallation, ChannelLink, ChannelPairing, SessionCredentials } from "@/lib/api";
-import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, installProjectChannelExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension } from "@/lib/api";
+import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelLink, ChannelPairing, SessionCredentials } from "@/lib/api";
+import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, installProjectChannelExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
@@ -118,6 +118,29 @@ function ExtensionSessionControls({ spaceId, projectId, session, installation }:
     {error && <span role="alert" style={{ display: "block", color: "var(--danger, #b42318)" }}>{error}</span>}
     {notice && <span role="status" style={{ display: "block" }}>{notice}</span>}
   </div>;
+}
+
+function ExtensionInbox({ spaceId, projectId, session, installation }: { spaceId: string; projectId: string; session: SessionCredentials; installation: ChannelExtensionInstallation }) {
+  const [events, setEvents] = React.useState<ChannelExtensionInboxEvent[]>([]);
+  const [error, setError] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    let cancelled = false;
+    listChannelExtensionInbox(spaceId, projectId, installation.instance_id, session)
+      .then(items => { if (!cancelled) setEvents(items); })
+      .catch(err => { if (!cancelled) setError(err instanceof Error ? err.message : "Couldn't load extension inbox events."); });
+    return () => { cancelled = true; };
+  }, [spaceId, projectId, installation.instance_id, session]);
+  return <details style={{ marginTop: 8 }}>
+    <summary style={{ cursor: "pointer", fontSize: 11.5 }}>Recent customer inbox events ({events.length})</summary>
+    {error && <div role="alert" style={{ color: "var(--danger, #b42318)", fontSize: 11, marginTop: 6 }}>{error}</div>}
+    {!error && events.length === 0 && <div style={{ color: "var(--text3)", fontSize: 11, marginTop: 6 }}>No events for this installation yet.</div>}
+    {events.map(event => <article key={event.event_id} style={{ marginTop: 7, padding: 8, border: "1px solid var(--border)", borderRadius: 6, fontSize: 11 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}><span>{event.channel} · {event.status}</span><time>{new Date(event.created_at).toLocaleString()}</time></div>
+      <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", marginTop: 5 }}>{event.text}</div>
+      {event.reply_text && <div style={{ color: "var(--text2)", marginTop: 5 }}>Reply: {event.reply_text}</div>}
+      {event.error_code && <div role="status" style={{ color: "var(--danger, #b42318)", marginTop: 5 }}>Issue: {event.error_code}</div>}
+    </article>)}
+  </details>;
 }
 
 export function ChannelConnect({
@@ -312,6 +335,7 @@ export function ChannelConnect({
               </button>
             </div>
             <ExtensionSessionControls spaceId={spaceId} projectId={projectId} session={session} installation={installation} />
+            <ExtensionInbox spaceId={spaceId} projectId={projectId} session={session} installation={installation} />
           </div>)}
         </div>
       </details>}
