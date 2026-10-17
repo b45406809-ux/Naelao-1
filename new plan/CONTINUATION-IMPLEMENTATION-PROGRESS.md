@@ -1,5 +1,12 @@
 # Continuation implementation progress
 
+## Older-plan comparison (2026-10-17)
+
+- Reviewed `New Text Document (12).txt` and `(13).txt` against both later tokenizer transcripts. Precedence and conflicts are documented in `TRANSCRIPT-CROSS-SOURCE-RECONCILIATION.md`.
+- Reconciled the sequence: the user asked to keep direct workers and planner/worker swarms at 10:00Z, then deferred broader enterprise/swarm expansion at 17:04Z the same day. Preserve the two-path direction as future work, but it is not a current implementation gap. Updated `TOKENIZERS-FIRST-IMPLEMENTATION-AUDIT.md` accordingly.
+- The earlier user request for simple usage-aware billing and a template purchase that includes the first month remains unresolved; its dollar examples are illustrative, not adopted price points. Media-only routing is implemented only within discovered/authorized capabilities; generic video interpretation and model-provider dispatch remain partial.
+- The older generated proposals disagree internally about the number and semantics of structural project kinds. Only the later customer-bot kind correction is settled; the proposed two/three/six-layout-kind taxonomies are not adopted requirements.
+
 ## Transcript reconciliation correction — external customer bots (2026-10-17)
 
 - Chronology was rechecked across both tokenizer transcripts. The later user correction (continuation messages 39–40, lines 2978–3067) supersedes the earlier primary-transcript `tpl_customer_ops` / dental customer-service project proposal (around line 6473): customer-facing text and voice behavior is custom-extension behavior, while direct planner voice is first-party and separate.
@@ -926,7 +933,7 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Improved synthetics cycle testability and fault coverage for service 503, request failure, database-write failure, queue-send failure, and best-effort Analytics failure. Added a bounded k6 ramp (peak 20 VUs / 60 seconds) for the non-mutating dependency health endpoint, with an explicit remote non-production acknowledgement and production-hostname guard.
 - Verification: Spaces preflight test 2/2; Spaces typecheck passed. Synthetics tests 3/3; Synthetics typecheck passed. `git diff --check` passed. Biome on existing large worker files reports pre-existing formatting/lint errors; no wholesale reformat applied. k6 execution remains unverified: k6 is absent and `/usr/bin/go` is a nonstandard shim that rejects standard `go version`/`go install` commands.
 - Changed: `workers/spaces/src/do/SpaceDO.ts`, `workers/spaces/src/index.ts`, `workers/spaces/src/do/project-subspace-migration-preflight.test.ts`, `workers/synthetics/src/index.ts`, `workers/synthetics/src/index.test.ts`, `tests/load/platform-health.js`, `tests/load/README.md`, `new plan/TOKENIZERS-FIRST-IMPLEMENTATION-AUDIT.md`, and this progress file.
-- Still open: implement canonical child-space authorization/routing; copy adapters for AgentDO, ToolSandbox/artifacts, worker-owned workflow/channel references and relevant D1/R2 state; pause and resume active processes safely; verify copied references/checksums; add idempotent cutover and rollback. Also open: actual k6 execution against a controlled staging target and full channel/user-journey canaries. Direct-worker-versus-planner selection remains intentionally excluded.
+- Still open: implement canonical child-space authorization/routing; copy adapters for AgentDO, ToolSandbox/artifacts, worker-owned workflow/channel references and relevant D1/R2 state; pause and resume active processes safely; verify copied references/checksums; add idempotent cutover and rollback. Also open: actual k6 execution against a controlled staging target and full channel/user-journey canaries. Direct-worker-versus-planner selection was requested and later deferred; see `TOKENIZERS-FIRST-IMPLEMENTATION-AUDIT.md`.
 - Next action recorded at that checkpoint: map each referenced external state owner to a copy/pause/rebind/resume API before enabling physical cutover. This recommendation is superseded below because the current hierarchy supports logical reparenting with stable runtime identity.
 
 ## Superseding implementation checkpoint — logical subspace lifecycle (2026-10-16)
