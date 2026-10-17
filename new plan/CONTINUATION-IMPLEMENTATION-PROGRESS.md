@@ -1170,3 +1170,10 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - The handler rejects replies during automated processing/delivery and scopes each event to the exact project and active installation. Conversation deletion removes the reply ledger/content along with the message transcript and session state.
 - Verification passed: Agents typecheck, focused inbox suite (6 tests), Shell typecheck, and `git diff --check`.
 - Remaining: assignment, transcript export, and live provider/account delivery acceptance.
+
+## Extension inbox follow-up — scoped transcript export
+
+- Added JSON export from an anchor inbox event. It includes only inbound messages for that conversation's exact project and installation plus the extension and team replies recorded against those events, preserving their status/timestamps. Provider recipient IDs, provider event IDs, and messages from other installations are excluded.
+- Export is owner/admin-only, has a 2,000-event hard ceiling, and refuses an unknown anchor event instead of widening scope.
+- Verification passed: Agents typecheck, focused inbox suite (7 tests), Shell typecheck, and `git diff --check`.
+- Remaining inbox work: assignment and end-to-end archive/revocation/deletion lifecycle coverage; live provider sends were not run.

@@ -78,6 +78,23 @@ describe("channel extension inbox projection", () => {
     expect(storage.sql.exec("SELECT event_id FROM channel_extension_human_replies").toArray()).toEqual([]);
   });
 
+  it("exports only the selected install's conversation events without provider identifiers", async () => {
+    const storage = createDOStorage();
+    const agent = new NaelaoAgentDO({ storage, id: { toString: () => "agent" } } as never, { PLATFORM_SECRET: "test-platform-secret" } as never);
+    await agent.fetch(new Request("http://agent/channels/extensions/inbox?project_id=project-a&installation_id=install-a"));
+    storage.sql.exec("INSERT INTO channel_sessions(id,channel,channel_user_id,project_id) VALUES('session-a','whatsapp','+15551234567','project-a')");
+    storage.sql.exec("INSERT INTO channel_messages(id,session_id,direction,text,external_id,project_id,channel_extension_instance_id,created_at) VALUES('event-a','session-a','inbound','question','provider-event-secret','project-a','install-a',20),('event-b','session-a','inbound','other handler','provider-event-2','project-a','install-b',30)");
+    storage.sql.exec("INSERT INTO channel_extension_dispatches(message_id,installation_id,script_sha256,status,reply_text) VALUES('event-a','install-a','digest','sent','Bot answer')");
+    storage.sql.exec("INSERT INTO channel_extension_human_replies(event_id,project_id,installation_id,reply_text,status) VALUES('event-a','project-a','install-a','Team answer','sent')");
+    const exported = await agent.fetch(new Request("http://agent/channels/extensions/inbox/export?project_id=project-a&installation_id=install-a&event_id=event-a"));
+    const body = await exported.json() as Record<string, unknown>;
+    expect(body).toMatchObject({ schema_version: 1, channel: "whatsapp", events: [{ direction: "inbound", text: "question", replies: [{ text: "Bot answer", by: "extension", status: "sent" }, { text: "Team answer", by: "team", status: "sent" }] }] });
+    expect(JSON.stringify(body)).not.toContain("+15551234567");
+    expect(JSON.stringify(body)).not.toContain("provider-event-secret");
+    expect(JSON.stringify(body)).not.toContain("other handler");
+    expect((await agent.fetch(new Request("http://agent/channels/extensions/inbox/export?project_id=project-a&installation_id=install-b&event_id=event-a"))).status).toBe(404);
+  });
+
   it("bounds page size and requires project plus installation identity", async () => {
     const storage = createDOStorage();
     const agent = new NaelaoAgentDO({ storage, id: { toString: () => "agent" } } as never, { PLATFORM_SECRET: "test-platform-secret" } as never);

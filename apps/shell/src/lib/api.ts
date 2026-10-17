@@ -1877,6 +1877,10 @@ export async function replyToChannelExtensionEvent(spaceId: string, projectId: s
   });
 }
 
+export async function exportChannelExtensionConversation(spaceId: string, projectId: string, instanceId: string, eventId: string, session: SessionCredentials): Promise<{ schema_version: number; channel: string; events: Array<{ direction: string; text: string; created_at: number; replies: Array<{ text: string; by: string; status: string | null; created_at: number | null }> }> }> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/channel-extensions/${encodeURIComponent(instanceId)}/inbox/export?${new URLSearchParams({ event_id: eventId })}`, { session });
+}
+
 export async function getChannelExtensionSessionSummary(spaceId: string, projectId: string, instanceId: string, session: SessionCredentials): Promise<ChannelExtensionSessionSummary> {
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/channel-extensions/${encodeURIComponent(instanceId)}/session-state`, { session });
 }

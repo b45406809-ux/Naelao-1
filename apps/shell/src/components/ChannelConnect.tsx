@@ -18,7 +18,7 @@ import * as React from "react";
 import { QrCode } from "@naelao/ui";
 import { ALLOWED_MODELS } from "@naelao/billing-core";
 import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelLink, ChannelPairing, ContainerInstallation, ExtensionRelease, SessionCredentials } from "@/lib/api";
-import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations } from "@/lib/api";
+import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
@@ -129,6 +129,7 @@ function ExtensionInbox({ spaceId, projectId, session, installation }: { spaceId
   const [deletingConversation, setDeletingConversation] = React.useState<string | null>(null);
   const [replyDrafts, setReplyDrafts] = React.useState<Record<string, string>>({});
   const [replyingTo, setReplyingTo] = React.useState<string | null>(null);
+  const [exportingConversation, setExportingConversation] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   React.useEffect(() => {
     let cancelled = false;
@@ -180,6 +181,17 @@ function ExtensionInbox({ spaceId, projectId, session, installation }: { spaceId
     } catch (err) { setError(err instanceof Error ? err.message : "Couldn't send the reply. Check the provider inbox before retrying an uncertain delivery."); }
     finally { setReplyingTo(null); }
   }
+  async function exportConversation(eventId: string) {
+    if (exportingConversation) return;
+    setExportingConversation(eventId); setError(null);
+    try {
+      const transcript = await exportChannelExtensionConversation(spaceId, projectId, installation.instance_id, eventId, session);
+      const url = URL.createObjectURL(new Blob([JSON.stringify(transcript, null, 2)], { type: "application/json" }));
+      const link = document.createElement("a"); link.href = url; link.download = `conversation-${new Date().toISOString().slice(0, 10)}.json`;
+      link.click(); URL.revokeObjectURL(url);
+    } catch (err) { setError(err instanceof Error ? err.message : "Couldn't export this conversation."); }
+    finally { setExportingConversation(null); }
+  }
   return <details style={{ marginTop: 8 }}>
     <summary style={{ cursor: "pointer", fontSize: 11.5 }}>Recent customer inbox events ({events.length})</summary>
     {error && <div role="alert" style={{ color: "var(--danger, #b42318)", fontSize: 11, marginTop: 6 }}>{error}</div>}
@@ -190,6 +202,9 @@ function ExtensionInbox({ spaceId, projectId, session, installation }: { spaceId
       {event.reply_text && <div style={{ color: "var(--text2)", marginTop: 5 }}>Reply: {event.reply_text}</div>}
       {event.human_reply_text && <div style={{ color: "var(--text2)", marginTop: 5 }}>Team reply ({event.human_reply_status}): {event.human_reply_text}</div>}
       {event.error_code && <div role="status" style={{ color: "var(--danger, #b42318)", marginTop: 5 }}>Issue: {event.error_code}</div>}
+      <button type="button" className="btn-ghost" style={{ marginTop: 6, fontSize: 10.5 }} disabled={!!exportingConversation} onClick={() => void exportConversation(event.event_id)}>
+        {exportingConversation === event.event_id ? "Exporting…" : "Export stored conversation"}
+      </button>
       {(event.human_takeover || pausedEvents.has(event.event_id)) && <div role="status" style={{ marginTop: 5 }}>Automatic handling paused for this conversation. Reply through your connected provider inbox.</div>}
       <button type="button" className="btn-ghost" style={{ marginTop: 6, fontSize: 10.5 }} disabled={!!takingOver || event.human_takeover || pausedEvents.has(event.event_id) || event.status === "running" || event.status === "delivering"} onClick={() => void takeOver(event.event_id)}>
         {takingOver === event.event_id ? "Pausing…" : event.human_takeover || pausedEvents.has(event.event_id) ? "Bot paused" : "Pause bot for this conversation"}

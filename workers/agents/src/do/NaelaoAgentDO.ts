@@ -1806,6 +1806,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (method === "POST" && url.pathname === "/channels/extensions/inbox/takeover") return this.handleChannelExtensionInboxTakeover(request);
       if (method === "POST" && url.pathname === "/channels/extensions/inbox/delete-conversation") return this.handleChannelExtensionInboxDeleteConversation(request);
       if (method === "POST" && url.pathname === "/channels/extensions/inbox/reply") return this.handleChannelExtensionInboxReply(request);
+      if (method === "GET" && url.pathname === "/channels/extensions/inbox/export") return this.handleChannelExtensionInboxExport(url);
       if (method === "GET" && url.pathname === "/channels/extensions/session-state") {
         const projectId = url.searchParams.get("project_id") ?? "";
         const installationId = url.searchParams.get("installation_id") ?? "";
@@ -5755,6 +5756,31 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       this.ctx.storage.sql.exec("UPDATE channel_extension_human_replies SET status='uncertain',error_code='provider_delivery_uncertain' WHERE event_id=?", eventId);
       return Response.json({ status: "uncertain", error_code: "provider_delivery_uncertain" });
     }
+  }
+
+  private handleChannelExtensionInboxExport(url: URL): Response {
+    const projectId = url.searchParams.get("project_id") ?? "", installationId = url.searchParams.get("installation_id") ?? "";
+    const eventId = url.searchParams.get("event_id") ?? "";
+    if (!projectId || !installationId || !/^[A-Za-z0-9._:-]{1,160}$/.test(eventId)) return Response.json({ error_code: "channel_extension_inbox_scope_required" }, { status: 400 });
+    const selected = this.ctx.storage.sql.exec(
+      `SELECT m.session_id,s.channel FROM channel_messages m JOIN channel_sessions s ON s.id=m.session_id
+       WHERE m.id=? AND m.direction='inbound' AND m.project_id=? AND m.channel_extension_instance_id=? LIMIT 1`, eventId, projectId, installationId,
+    ).toArray()[0] as { session_id: string; channel: string } | undefined;
+    if (!selected) return Response.json({ error_code: "channel_extension_event_not_found" }, { status: 404 });
+    const events = this.ctx.storage.sql.exec(
+      `SELECT m.direction,m.text,m.created_at,d.reply_text AS extension_reply,d.status AS extension_status,d.created_at AS extension_reply_at,
+              h.reply_text AS human_reply,h.status AS human_status,h.created_at AS human_reply_at
+       FROM channel_messages m LEFT JOIN channel_extension_dispatches d ON d.message_id=m.id
+       LEFT JOIN channel_extension_human_replies h ON h.event_id=m.id
+       WHERE m.session_id=? AND m.direction='inbound' AND m.project_id=? AND m.channel_extension_instance_id=?
+       ORDER BY m.created_at ASC,m.id ASC LIMIT 2001`, selected.session_id, projectId, installationId,
+    ).toArray() as Array<{ direction: string; text: string; created_at: number; extension_reply: string | null; extension_status: string | null; extension_reply_at: number | null; human_reply: string | null; human_status: string | null; human_reply_at: number | null }>;
+    if (events.length > 2_000) return Response.json({ error_code: "channel_extension_export_too_large", max_events: 2_000 }, { status: 413 });
+    return Response.json({ schema_version: 1, channel: selected.channel, events: events.map(event => ({ direction: event.direction,
+      text: event.text, created_at: event.created_at, replies: [
+        ...(event.extension_reply ? [{ text: event.extension_reply, by: "extension", status: event.extension_status, created_at: event.extension_reply_at }] : []),
+        ...(event.human_reply ? [{ text: event.human_reply, by: "team", status: event.human_status, created_at: event.human_reply_at }] : []),
+      ].sort((a, b) => Number(a.created_at ?? 0) - Number(b.created_at ?? 0)) })) });
   }
 
   private handleChannelUnanswered(): Response {
