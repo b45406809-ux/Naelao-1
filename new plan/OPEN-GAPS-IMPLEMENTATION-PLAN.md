@@ -1,7 +1,7 @@
 # Remaining gaps implementation plan
 
 Branch: `Mcbt5s-Backup-2`  
-Status: implementation in progress; W1 is locally verified; W2 covers bounded text/PDF/DOCX plus explicit raster-image OCR while scanned-PDF OCR remains open; W3 now includes locally verified, owner-confirmed Twilio number purchase using short-lived official rate-card quotes, with live account checks still open; W4–6 are partial; and W7 live acceptance is blocked on account configuration.
+Status: implementation in progress; W1 is locally verified; W2 covers bounded text/PDF/DOCX, explicit raster-image OCR, and isolated scanned-PDF rendering before OCR; W3 includes locally verified, owner-confirmed Twilio number purchase using short-lived official rate-card quotes, with live account checks still open; W4–6 are partial; and W7 live acceptance is blocked on account configuration.
 Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, reconciled against the current repository. Existing Foundry channel invocation, glossary, translation draft, model recommendations, owner voice, task-scoped email replies, and browser Web Push are present locally. Do not reopen them as missing features; their live/deployment checks remain open.
 
 ## Working rules
@@ -28,14 +28,14 @@ Basis: latest open-gap audit in `CONTINUATION-IMPLEMENTATION-PROGRESS.md`, recon
 
 ### 2. Bounded binary email attachment reading
 
-**Status:** bounded PDF, DOCX, and existing UTF-8 text extraction are locally verified. An explicit owner-enabled OCR action for task-owned PNG/JPEG images is implemented behind a separate Cloudflare Workers AI contract, task/tenant checks, and egress denial; scanned-PDF rasterization remains open.
+**Status:** bounded PDF, DOCX, and existing UTF-8 text extraction are locally verified. Explicit owner-enabled OCR covers task-owned PNG/JPEG images and scanned PDFs; PDF pages are rendered by a separately scoped Document Container before the existing OCR operation. Live Workers AI quality and Cloudflare container execution remain unverified.
 
 1. Inspect current task alias, R2 object, and HMAC authorization checks and retain the exact `(tenant, Space, task, key, expiry)` boundary.
 2. Compare maintained parsers against current Cloudflare Workers compatibility, bundle limits, active maintenance, and licensing. Current support covers bounded unencrypted PDFs and DOCX only. Do not execute macros, scripts, embedded links, or HTML.
 3. Define strict compressed and extracted-byte, page, archive-entry, CPU/time, and recursion limits. Reject malformed, encrypted/unsupported, zip-bomb, or over-limit files with a useful status. Treat extracted text as untrusted input and preserve provenance to the original attachment.
-4. Add OCR only behind a separate placement-aware provider contract and explicit egress checks. Keep it unavailable for air-gapped Spaces; never silently upload private attachments. Implemented for one raster PNG/JPEG image per action using a fixed Cloudflare Workers AI OCR model, explicit owner opt-in, 1 MiB/20 MP input limits, 1,024 generated-token cap, and 20 calls per rolling Space-day. It returns untrusted text and stores no image/OCR result. Scanned PDFs still need a supported bounded PDF-to-image renderer before this model can process them.
+4. Add OCR only behind a separate placement-aware provider contract and explicit egress checks. Keep it unavailable for air-gapped Spaces; never silently upload private attachments. Implemented for one raster PNG/JPEG image per action using a fixed Cloudflare Workers AI OCR model, explicit owner opt-in, 1 MiB/20 MP input limits, 1,024 generated-token cap, and 20 calls per rolling Space-day. It returns untrusted text and stores no image/OCR result. Scanned PDFs are first rendered in the isolated Document Container with a 1 MiB input, five-page, 2048-pixel edge, 5 MiB aggregate output, and bounded CPU/time limits.
 
-**Acceptance:** real parser fixtures plus malformed/oversize/zip-bomb fixtures; extraction never escapes task ownership; no external fetches from document contents; private-space egress denial; production Worker dry run confirms bundle size. PDF and DOCX local parser fixtures pass. OCR settings, image bounds, task ownership, fail-closed egress, and SQLite daily quotas are locally tested with a mocked AI response; live quality/provider checks are separate. Encrypted DOCX archives are rejected as malformed because the streaming parser exposes no portable encryption flag.
+**Acceptance:** real parser fixtures plus malformed/oversize/zip-bomb fixtures; extraction never escapes task ownership; no external fetches from document contents; private-space egress denial; production Worker dry run confirms bundle size. PDF/DOCX extraction and scanned-PDF rendering/OCR routes have local fixtures. OCR settings, image bounds, task ownership, fail-closed egress, and SQLite daily quotas are locally tested with a mocked AI response; live quality/provider checks are separate. Encrypted DOCX archives are rejected as malformed because the streaming parser exposes no portable encryption flag.
 
 ### 3. Customer telephony provisioning and ingress
 
