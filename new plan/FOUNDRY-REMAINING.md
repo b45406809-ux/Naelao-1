@@ -1,10 +1,18 @@
-# Foundry channel invocation
+# Foundry channel invocation — scope and remaining gap
 
 Updated: 2026-10-14
 Branch: `Mcbt5s-Backup-2`
 
-Status: implemented locally. The bridge is limited to a WhatsApp or Telegram contact that is currently linked to an owner/admin member of the destination Space. A member accepts the exact source worker grant in Foundry UI; the source grant must still be active each time a channel command is used. External customer contacts are not supported by this path.
+Status: the owner/admin cross-Space command is implemented locally; external customer-bot extension dispatch is not implemented. These are separate features. The bridge below is limited to a WhatsApp or Telegram contact that is currently linked to an owner/admin member of the destination Space. A member accepts the exact source worker grant in Foundry UI; the source grant must still be active each time a channel command is used. External customer contacts are not supported by this path.
 
 The command is `FOUNDRY RUN <source-space-id> <worker-id>` on the first line, followed by a prompt of at most 10,000 characters. Capability tokens are never sent in chat. Provider event IDs are claimed durably for 30 days so webhook replay cannot start a duplicate run. The ingress immediately acknowledges the request; the background run sends a bounded result (or a failure notice) to the same channel contact after completion. The source run receives the linked user's attribution and `viewer` role only. The source grant, verified contact mapping, worker ID, and user acceptance are all checked at invocation; successful authorization is audited in the source Space. Removing the channel link, membership, acceptance, or source grant blocks subsequent calls.
 
 Implementation is in migration 69 and the Spaces/Agents/Shell paths recorded in `FOUNDRY-IMPLEMENTATION-PROGRESS.md`. Local tests cover migration replay, exact-user acceptance/revocation, contact/grant denial, minimal source role, and bounded parser input. The background same-channel notification is wired but is not directly exercised end to end. Tests use local worker/DO stubs; no live provider delivery or Cloudflare deployment was tested. Long-running background completion depends on the deployed Workers runtime honoring the Durable Object `waitUntil` lifetime and is not live-verified.
+
+## External customer channel extensions — open implementation gap
+
+The later user correction in `Tokenizers vs. Embedding Models Explained.continuation.messages.txt` (messages 39–40, lines 2978–3067) supersedes the earlier `tpl_customer_ops` / dental customer-service project proposal in the primary transcript (around line 6473). External text and voice customer behavior belongs in custom extensions; first-party planner voice remains a separate built-in feature. Removing the structural `customer_bot` project kind does not complete that migration.
+
+Current code still routes project-bound inbound messages through the built-in `customer-bot` script and its fixed capability set. The normal extension runtime validates user/member initiated durable workflows against an active installation, declared workflow script, actor membership, and installed capabilities. It has no authenticated public channel event principal, extension-instance channel binding, or synchronous bounded reply contract. Reusing the owner/admin Foundry bridge would incorrectly treat external senders as Space members; loosening membership checks would cross the existing authorization boundary.
+
+Remaining work: define and implement a distinct, least-privilege extension channel-event contract, bind a channel to an active project extension installation, pass only normalized event data and message-scoped grants, enforce existing project execution/spend/consent controls, return a bounded channel response, and fail closed/escalate when dispatch is unavailable. Until that exists, do not describe current project-bound bot replies as extension execution. Preserve the customer-bot runtime only as an explicitly tracked legacy path during migration; do not expand it as a new structural project kind.

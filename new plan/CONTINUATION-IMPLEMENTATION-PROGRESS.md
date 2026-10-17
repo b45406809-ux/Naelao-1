@@ -1,5 +1,13 @@
 # Continuation implementation progress
 
+## Transcript reconciliation correction — external customer bots (2026-10-17)
+
+- Chronology was rechecked across both tokenizer transcripts. The later user correction (continuation messages 39–40, lines 2978–3067) supersedes the earlier primary-transcript `tpl_customer_ops` / dental customer-service project proposal (around line 6473): customer-facing text and voice behavior is custom-extension behavior, while direct planner voice is first-party and separate.
+- Commit `aa138da` retired the structural `customer_bot` kind and preserved existing channel profiles, but that is only a schema/UI correction. It did not migrate execution to extensions.
+- Fresh source trace found `workers/agents/src/do/NaelaoAgentDO.ts` still dispatches channel messages through the hardcoded `customer-bot` prebuilt and fixed tools. `workflow-host.ts` validates member-initiated installed workflows but has no public-channel event principal, channel-to-installation binding, or bounded synchronous reply contract. The owner/admin Foundry channel bridge is not a substitute; external senders cannot be assigned member identity or Space permissions.
+- Status: **OPEN ARCHITECTURE/IMPLEMENTATION GAP.** `FOUNDRY-REMAINING.md` records the required least-privilege event contract and migration. Do not count customer-bot behavior as extension execution. No code behavior changed in this audit pass; no tests were run.
+- The prior transcript ledger's Task20 “customer project” label should be read with this later correction: retain existing safety controls during migration, but the destination architecture is custom extensions, not a customer-service project kind or a permanent built-in customer-bot runtime.
+
 ## Latest follow-up checkpoint — attachment understanding and container marketplace (2026-10-15)
 
 - Implemented browser/chat upload classification using the existing task-scoped attachment index and installed-tool-aware System One choices. Classification remains metadata-only/advisory; image bytes are accessed only through a planner-selected operation and host authorization. Customer agents do not receive cross-customer copy capability.
