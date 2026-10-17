@@ -73,6 +73,8 @@ Trading Mentor project template
 8. If conversation memory is enabled, a host session API stores bounded state under an opaque external subject in a project-sharded table with TTL and deletion controls. No raw SQL or cross-student row access is exposed. Memory is off by default and has a visible retention policy.
 9. Mentor Console displays the channel's health, published knowledge sources, safe conversation inbox, spend/rate status, and review actions. Internal mentor/admin views and public student surfaces use different routes and authorization policies even when they ship in one package.
 
+The current restricted-channel slice includes an executable starter manifest and handler at [`packages/agent-sdk/examples/trading-mentor-channel/`](../packages/agent-sdk/examples/trading-mentor-channel/). It demonstrates the channel-only install schema, an owner-published collection reference, the host connection declaration, optional per-conversation state, and one `ctx.channel.answer()` request. The example is not a complete Mentor Console/Canvas/Gadget template; the channel-only installer intentionally rejects those unimplemented primitive installers.
+
 ## Authority and data model
 
 Treat these as separate axes in every package preview and install record:

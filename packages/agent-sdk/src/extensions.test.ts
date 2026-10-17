@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parseExtensionBundle, validateExtensionManifest } from "./extensions.js";
 
@@ -61,5 +62,10 @@ describe("composed extension bundle contract", () => {
     expect(() => validateExtensionManifest({ ...valid, id: "ext_trading_mentor", capabilityRequirements: ["channel.invoke"], bundle, channels: [] }))
       .toThrow("bundle_channel_declaration_mismatch");
     expect(() => validateExtensionManifest({ ...valid, bundle })).toThrow("bundle_extension_id_mismatch");
+  });
+  it("validates the published trading mentor channel starter package", () => {
+    const manifest = JSON.parse(readFileSync(new URL("../examples/trading-mentor-channel/manifest.json", import.meta.url), "utf8"));
+    expect(manifest.id).toBe("ext_trading_mentor_student_helper");
+    expect(() => parseExtensionBundle(manifest.bundle)).not.toThrow();
   });
 });

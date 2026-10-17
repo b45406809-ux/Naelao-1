@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { buildChannelGuestHarness, compileDynamicCode } from "./dynamic-code";
 import { loadTypeScriptCompiler } from "./typescript-runtime";
@@ -32,5 +33,10 @@ describe("on-demand code compiler", () => {
     expect(harness).toContain("channel_session_write_limit");
     expect(harness).toContain("channel_session_size_limit");
     expect(harness).toContain("sessionUpdate:sessionUpdates[0]");
+  });
+  it("compiles the published mentor channel starter script", async () => {
+    const source = readFileSync(new URL("../../../../packages/agent-sdk/examples/trading-mentor-channel/student-answer.ts", import.meta.url), "utf8");
+    const compiled = await compileDynamicCode(source);
+    expect(compiled.javascript).toContain("ctx.channel.answer");
   });
 });

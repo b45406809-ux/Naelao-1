@@ -1,0 +1,53 @@
+{
+  "id": "ext_trading_mentor_student_helper",
+  "type": "extension",
+  "declaredPermissions": [],
+  "capabilityRequirements": ["channel.invoke"],
+  "gadgets": [],
+  "daemons": [],
+  "commands": [],
+  "bundle": {
+    "schemaVersion": "1.0",
+    "kind": "extension_bundle",
+    "id": "ext_trading_mentor_student_helper",
+    "version": "1.0.0",
+    "primitives": [
+      {
+        "schemaVersion": "1.0",
+        "kind": "channel",
+        "id": "student_whatsapp",
+        "version": "1.0.0",
+        "permissions": [],
+        "capabilityRequirements": [],
+        "lifecycle": {},
+        "provider": "whatsapp",
+        "connectionId": "student_whatsapp_connection",
+        "handlerScript": "./student-answer.ts",
+        "context": "channel_only",
+        "inboundEvents": ["message.received"],
+        "outboundEvents": ["message.reply"],
+        "knowledgeCollections": ["course_material"],
+        "session": {
+          "enabled": true,
+          "maxBytes": 1024,
+          "ttlDays": 30
+        }
+      }
+    ],
+    "connections": [
+      {
+        "id": "student_whatsapp_connection",
+        "provider": "whatsapp",
+        "purpose": "Receive student questions and send grounded replies",
+        "required": true
+      }
+    ],
+    "knowledge": [
+      {
+        "id": "course_material",
+        "purpose": "Answer questions from material the mentor explicitly published",
+        "access": "owner_published_external"
+      }
+    ]
+  }
+}
