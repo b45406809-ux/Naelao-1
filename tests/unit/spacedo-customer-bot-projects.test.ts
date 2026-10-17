@@ -87,14 +87,16 @@ describe("SpaceDO — customer-bot project config", () => {
     const projectId = created.json.id;
     await call(spaceDO, `/projects/${projectId}`, "PATCH", { external_daily_message_cap: 1 });
     const path = `/projects/${projectId}/external-message-usage?space_id=space1`;
-    const body = { installation_id: "install-a", provider: "whatsapp", subject_hash: "a".repeat(64) };
+    const body = { event_id: "event-a", installation_id: "install-a", provider: "whatsapp", subject_hash: "a".repeat(64) };
     const first = await call(spaceDO, path, "POST", body);
-    const second = await call(spaceDO, path, "POST", body);
+    const replay = await call(spaceDO, path, "POST", body);
+    const second = await call(spaceDO, path, "POST", { ...body, event_id: "event-b" });
     expect(first).toMatchObject({ status: 200, json: { allowed: true, daily_cap: 1 } });
+    expect(replay.json).toMatchObject({ allowed: true, deduplicated: true, count: 1 });
     expect(second).toMatchObject({ status: 200, json: { allowed: false, daily_cap: 1, count: 1 } });
-    const otherConversationOtherPerson = await call(spaceDO, path, "POST", { ...body, subject_hash: "b".repeat(64) });
+    const otherConversationOtherPerson = await call(spaceDO, path, "POST", { ...body, event_id: "event-c", subject_hash: "b".repeat(64) });
     expect(otherConversationOtherPerson.json.allowed).toBe(true);
-    const otherInstallation = await call(spaceDO, path, "POST", { ...body, installation_id: "install-b" });
+    const otherInstallation = await call(spaceDO, path, "POST", { ...body, event_id: "event-d", installation_id: "install-b" });
     expect(otherInstallation.json.allowed).toBe(true);
   });
 

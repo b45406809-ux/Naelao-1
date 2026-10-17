@@ -1251,3 +1251,8 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - The allowance is atomically counted in the shared SpaceDO, partitioned by project, installation, provider, digest, and UTC day. This keeps the cap effective across a customer's multiple conversations/AgentDOs. The worker endpoint is HMAC-gated and checks the project is in the addressed Space. A reached cap or unavailable quota check prevents extension execution and switches the conversation to human review.
 - Verification: Agents, Spaces, and Shell typechecks passed; project config/quota suites passed (15 tests); `git diff --check` passed. A broader older project-config fail-closed suite was also run and had five fixture/behavior failures unrelated to this quota slice; logged as candidates for the separate Phase 7 test track.
 - Phase 4 remains open: actual per-installation provider OAuth/credential lifecycle, customer identity routing across named instances, provider webhook lifecycle/revocation, robust spend/credit ceilings, abuse response and human settings still need implementation and end-to-end coverage.
+
+### Phase 4 quota decision replay checkpoint (2026-10-17)
+
+- Added a per-message quota decision ledger in SpaceDO. Each external message event is allowed or denied once; retries with the same event ID return the original result and do not increment usage a second time. Sender digests, project/install/provider/day, cap and resulting count are retained for 30 days, then pruned.
+- Verification: Agents and Spaces typechecks passed; quota and real SpaceDO integration suites passed (15 tests), including event replay; `git diff --check` passed.

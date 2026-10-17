@@ -7878,7 +7878,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           const quota = await this.env.SPACES_WORKER.fetch(new Request(
             `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(msg.project_id)}/external-message-usage`,
             { method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
-              body: JSON.stringify({ installation_id: msg.channel_extension_instance_id, provider: msg.channel, subject_hash: subjectHash }) },
+              body: JSON.stringify({ event_id: msg.id, installation_id: msg.channel_extension_instance_id, provider: msg.channel, subject_hash: subjectHash }) },
           ));
           const quotaResult = quota.ok ? await quota.json<{ allowed?: boolean; daily_cap?: number }>() : null;
           if (quotaResult?.allowed !== true) {

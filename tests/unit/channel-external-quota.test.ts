@@ -12,6 +12,11 @@ function quotaDb() {
     day TEXT NOT NULL, message_count INTEGER NOT NULL CHECK(message_count > 0), updated_at INTEGER NOT NULL,
     PRIMARY KEY(project_id,installation_id,provider,subject_hash,day)
   )`);
+  db.exec(`CREATE TABLE project_external_quota_decisions (
+    event_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, installation_id TEXT NOT NULL, provider TEXT NOT NULL,
+    subject_hash TEXT NOT NULL, day TEXT NOT NULL, allowed INTEGER NOT NULL CHECK(allowed IN (0,1)),
+    count_after INTEGER NOT NULL, daily_cap INTEGER NOT NULL, created_at INTEGER NOT NULL
+  )`);
   return {
     exec(sql: string, ...bindings: unknown[]) {
       const statement = db.prepare(sql);
@@ -33,13 +38,14 @@ describe("external channel message quotas", () => {
   it("enforces the daily limit atomically while isolating sender, installation and day scopes", async () => {
     const sql = quotaDb();
     const subject = await opaqueExternalSubject("test-secret", ["tenant", "space", "project", "install", "whatsapp", "+15550001"]);
-    const input = { projectId: "project", installationId: "install", provider: "whatsapp", subjectHash: subject, day: "2026-10-17", dailyCap: 2 };
-    expect(recordExternalMessage(sql, input)).toEqual({ allowed: true, count: 1 });
-    expect(recordExternalMessage(sql, input)).toEqual({ allowed: true, count: 2 });
-    expect(recordExternalMessage(sql, input)).toEqual({ allowed: false, count: 2 });
-    expect(recordExternalMessage(sql, { ...input, subjectHash: await opaqueExternalSubject("test-secret", ["tenant", "space", "project", "install", "whatsapp", "+15550002"]) })).toEqual({ allowed: true, count: 1 });
-    expect(recordExternalMessage(sql, { ...input, installationId: "other-install" })).toEqual({ allowed: true, count: 1 });
-    expect(recordExternalMessage(sql, { ...input, day: "2026-10-18" })).toEqual({ allowed: true, count: 1 });
+    const input = { eventId: "event-1", projectId: "project", installationId: "install", provider: "whatsapp", subjectHash: subject, day: "2026-10-17", dailyCap: 2 };
+    expect(recordExternalMessage(sql, input)).toEqual({ allowed: true, count: 1, deduplicated: false });
+    expect(recordExternalMessage(sql, input)).toEqual({ allowed: true, count: 1, deduplicated: true });
+    expect(recordExternalMessage(sql, { ...input, eventId: "event-2" })).toEqual({ allowed: true, count: 2, deduplicated: false });
+    expect(recordExternalMessage(sql, { ...input, eventId: "event-3" })).toEqual({ allowed: false, count: 2, deduplicated: false });
+    expect(recordExternalMessage(sql, { ...input, eventId: "other-person", subjectHash: await opaqueExternalSubject("test-secret", ["tenant", "space", "project", "install", "whatsapp", "+15550002"]) })).toMatchObject({ allowed: true, count: 1 });
+    expect(recordExternalMessage(sql, { ...input, eventId: "other-install", installationId: "other-install" })).toMatchObject({ allowed: true, count: 1 });
+    expect(recordExternalMessage(sql, { ...input, eventId: "other-day", day: "2026-10-18" })).toMatchObject({ allowed: true, count: 1 });
   });
 
   it("stores only a keyed opaque sender identifier", async () => {
@@ -53,9 +59,9 @@ describe("external channel message quotas", () => {
 
   it("treats a zero cap as unlimited", () => {
     const sql = quotaDb();
-    const input = { projectId: "p", installationId: "i", provider: "telegram", subjectHash: "opaque", day: "2026-10-17", dailyCap: 0 };
+    const input = { eventId: "event-1", projectId: "p", installationId: "i", provider: "telegram", subjectHash: "opaque", day: "2026-10-17", dailyCap: 0 };
     expect(recordExternalMessage(sql, input).allowed).toBe(true);
-    expect(recordExternalMessage(sql, input).allowed).toBe(true);
-    expect(recordExternalMessage(sql, input)).toEqual({ allowed: true, count: 3 });
+    expect(recordExternalMessage(sql, { ...input, eventId: "event-2" }).allowed).toBe(true);
+    expect(recordExternalMessage(sql, { ...input, eventId: "event-3" })).toMatchObject({ allowed: true, count: 3 });
   });
 });

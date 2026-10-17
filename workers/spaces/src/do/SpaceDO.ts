@@ -2109,6 +2109,16 @@ const MIGRATIONS: Migration[] = [
       PRIMARY KEY(project_id,installation_id,provider,subject_hash,day)
     );`,
   },
+  {
+    version: 88,
+    description: "idempotent audit records for external message quota decisions",
+    up: `CREATE TABLE project_external_quota_decisions (
+      event_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, installation_id TEXT NOT NULL, provider TEXT NOT NULL,
+      subject_hash TEXT NOT NULL, day TEXT NOT NULL, allowed INTEGER NOT NULL CHECK(allowed IN (0,1)),
+      count_after INTEGER NOT NULL, daily_cap INTEGER NOT NULL, created_at INTEGER NOT NULL
+    );
+    CREATE INDEX idx_project_external_quota_decisions_day ON project_external_quota_decisions(day);`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -7569,12 +7579,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   private async recordProjectExternalMessage(projectId: string, params: URLSearchParams, request: Request): Promise<Response> {
-    const body: { installation_id?: string; provider?: string; subject_hash?: string } = await request
-      .json<{ installation_id?: string; provider?: string; subject_hash?: string }>().catch(() => ({}));
+    const body: { event_id?: string; installation_id?: string; provider?: string; subject_hash?: string } = await request
+      .json<{ event_id?: string; installation_id?: string; provider?: string; subject_hash?: string }>().catch(() => ({}));
+    const eventId = body.event_id ?? "";
     const installationId = body.installation_id ?? "";
     const provider = body.provider ?? "";
     const subjectHash = body.subject_hash ?? "";
-    if (!installationId || installationId.length > 200 || !/^[a-z][a-z0-9_-]{0,31}$/i.test(provider)
+    if (!eventId || eventId.length > 200 || !installationId || installationId.length > 200 || !/^[a-z][a-z0-9_-]{0,31}$/i.test(provider)
       || !/^[a-f0-9]{64}$/.test(subjectHash)) {
       return Response.json({ error_code: "external_usage_invalid" }, { status: 400 });
     }
@@ -7584,7 +7595,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (!project) return Response.json({ error_code: "not_found" }, { status: 404 });
     const day = new Date().toISOString().slice(0, 10);
     const outcome = this.ctx.storage.transactionSync(() => recordExternalMessage(this.ctx.storage.sql, {
-      projectId, installationId, provider, subjectHash, day, dailyCap: project.external_daily_message_cap,
+      eventId, projectId, installationId, provider, subjectHash, day, dailyCap: project.external_daily_message_cap,
     }));
     return Response.json({ project_id: projectId, day, daily_cap: project.external_daily_message_cap, ...outcome });
   }
