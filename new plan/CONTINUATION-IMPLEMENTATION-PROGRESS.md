@@ -22,6 +22,13 @@
 - Verification: Agents and Agent SDK typechecks passed; 10 focused Agents session-store and dynamic-handler tests passed; `git diff --check` passed.
 - Still open: these named records are external channel conversation sessions, not user-account OAuth registrations, and each provider conversation still maps to a single active chat thread. Multiple named project extension installations and a many-session store now exist, but routing one provider identity concurrently to several bot instances and authenticated external-user identities needs an explicit host binding/session identity contract. Provider OAuth/credential bindings, worker/workflow composition, and cryptographic publisher/runtime release verification remain outstanding.
 
+## Channel artifact release verification checkpoint (2026-10-17)
+
+- The internal SpaceDO workflow-installation response now includes the active bundle release digest and the result of recomputing its HMAC attestation against the exact active manifest.
+- Before a channel handler is loaded, Agents requires that attestation to be valid and recomputes the canonical sorted path/source digest over the complete immutable R2 package directory. Missing, extra, modified, or empty artifact sets fail closed. Per-handler script SHA verification remains in place after the package-set check.
+- Verification: Spaces typecheck and extension release/install suite 9/9 passed; Agents typecheck and focused workflow/artifact, named-session, and handler compiler suites passed (13 tests); `git diff --check` passed.
+- Limits: the HMAC identifies host acceptance, not an FDE/developer publisher. This check covers channel execution. Canvas `MicroAppDO` currently checks its stored HTML against a local digest but is not yet bound to the signed release digest at each render. Workflow artifacts have not yet been accepted by the package installer.
+
 ## Extension product lifecycle checkpoint (2026-10-17)
 
 - Added SpaceDO migration 84 with immutable `extension_releases` records keyed by package/version. Every installed modular bundle records its manifest, aggregate source artifact SHA-256, installer, timestamp, and HMAC-SHA256 host attestation using `PLATFORM_SECRET`. The attestation establishes that this deployment accepted those exact recorded bytes; it does not assert a developer identity or replace an asymmetric marketplace signature.

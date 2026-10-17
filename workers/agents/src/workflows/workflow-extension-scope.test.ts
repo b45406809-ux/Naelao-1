@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertDeclaredExtensionWorkflow, extensionWorkflowName, workflowWorkspaceExtensionId, type WorkflowInstallationGrant } from "./workflow-host.js";
+import { assertDeclaredExtensionWorkflow, extensionWorkflowName, verifyExtensionArtifactSet, workflowHash, workflowWorkspaceExtensionId, type WorkflowInstallationGrant } from "./workflow-host.js";
 
 const installation: WorkflowInstallationGrant = {
   instance: { tenant_id: "tenant", space_id: "space", status: "active", scope: "SPACE_SHARED" },
@@ -7,6 +7,20 @@ const installation: WorkflowInstallationGrant = {
 };
 
 describe("verified extension workflow identity", () => {
+  it("recomputes the full immutable R2 release digest", async () => {
+    const prefix = "spaces/space/extensions/ext_customs/1.0.0/";
+    const files = new Map([[`${prefix}handler.ts`, "export function run() { return 1; }"], [`${prefix}index.html`, "<main>Hi</main>"]]);
+    const bucket = {
+      list: async ({ prefix: requested }: { prefix: string }) => ({ objects: [...files.keys()].filter(key => key.startsWith(requested)).map(key => ({ key })), truncated: false }),
+      get: async (key: string) => { const value = files.get(key); return value === undefined ? null : { text: async () => value }; },
+    } as never;
+    const entries = [...files].map(([key, value]) => [`./${key.slice(prefix.length)}`, value] as [string, string]).sort(([a], [b]) => a.localeCompare(b));
+    const expectedSha256 = await workflowHash(JSON.stringify(entries));
+    expect(await verifyExtensionArtifactSet(bucket, { spaceId: "space", extensionId: "ext_customs", version: "1.0.0", expectedSha256 })).toBe(true);
+    files.set(`${prefix}handler.ts`, "export function run() { return 2; }");
+    expect(await verifyExtensionArtifactSet(bucket, { spaceId: "space", extensionId: "ext_customs", version: "1.0.0", expectedSha256 })).toBe(false);
+  });
+
   it("maps a manifest-declared script and exact extension ID to an installed instance", () => {
     expect(extensionWorkflowName("./indexer.ts")).toBe("indexer");
     expect(extensionWorkflowName("../indexer.ts")).toBeNull();

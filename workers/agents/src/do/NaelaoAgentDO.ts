@@ -16,7 +16,7 @@ import { clearChannelExtensionSessions, initChannelExtensionSessionStore, readCh
 
 import { DurableObject } from "cloudflare:workers";
 import { createWorkflowHooks } from "../workflows/workflow-orchestration.js";
-import { startDurableWorkflow, workflowHash, workflowRunStub, readWorkflowGrant, workflowWorkspaceExtensionId, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
+import { startDurableWorkflow, workflowHash, workflowRunStub, readWorkflowGrant, verifyExtensionArtifactSet, workflowWorkspaceExtensionId, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
 import type { DurableWorkflowIdentity } from "@naelao/agent-sdk";
 import { normalizePreferredLanguage } from "@naelao/types";
 import { mintInternalToken, broadcastSpaceEvent } from "@naelao/http";
@@ -7360,6 +7360,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const installation = await installationResponse.json<{
       instance: { instance_id?: string; tenant_id?: string; space_id?: string; project_id?: string | null; scope?: string; status?: string };
       manifest: { id?: string; bundle?: { id?: string; version?: string }; channels?: Array<{ kind?: string; provider?: string; handlerScript?: string; context?: string; inboundEvents?: string[]; outboundEvents?: string[]; knowledgeCollections?: string[]; session?: { enabled?: boolean; maxBytes?: number; ttlDays?: number }; permissions?: unknown[]; capabilityRequirements?: unknown[]; budget?: { maxDurationSeconds?: number; maxConcurrency?: number } }> };
+      release?: { version?: string; artifactSha256?: string; signatureValid?: boolean } | null;
     }>().catch(() => null);
     const instance = installation?.instance;
     if (!installation || !instance || instance.status !== "active" || instance.instance_id !== input.instanceId
@@ -7380,6 +7381,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       || (session.ttlDays !== undefined && (!Number.isInteger(session.ttlDays) || session.ttlDays < 1 || session.ttlDays > 90)))) return null;
     const packageId = installation.manifest.bundle?.id;
     const packageVersion = installation.manifest.bundle?.version;
+    if (!packageId || packageId !== installation.manifest.id || !packageVersion || installation.release?.version !== packageVersion
+      || installation.release.signatureValid !== true || !installation.release.artifactSha256
+      || !await verifyExtensionArtifactSet(this.env.SCRIPTS_R2, { spaceId: input.spaceId, extensionId: packageId, version: packageVersion, expectedSha256: installation.release.artifactSha256 })) return null;
     const handlerFile = declaration.handlerScript!.slice(2);
     const artifactKey = packageId === installation.manifest.id && packageVersion
       ? `spaces/${input.spaceId}/extensions/${packageId}/${packageVersion}/${handlerFile}`

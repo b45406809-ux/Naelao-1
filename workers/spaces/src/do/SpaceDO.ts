@@ -2735,7 +2735,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const row = rows[0];
         if (!row) return Response.json({ error: "installation_not_found" }, { status: 404 });
         const { manifest_json, ...instance } = row;
-        return Response.json({ instance, manifest: JSON.parse(manifest_json) });
+        const manifest = JSON.parse(manifest_json) as ExtensionManifest;
+        const bundle = manifest.bundle;
+        if (!bundle) return Response.json({ instance, manifest });
+        const release = queryOne<{ manifest_json: string; artifact_sha256: string; host_signature: string }>(this.ctx.storage.sql as never,
+          "SELECT manifest_json,artifact_sha256,host_signature FROM extension_releases WHERE extension_id=? AND version=?", manifest.id, bundle.version);
+        const expected = release ? await this.signExtensionRelease(manifest.id, bundle.version, manifest_json, release.artifact_sha256) : "";
+        return Response.json({ instance, manifest, release: release ? { version: bundle.version, artifactSha256: release.artifact_sha256,
+          signatureValid: release.manifest_json === manifest_json && expected === release.host_signature, signer: "naelao-host" } : null });
       }
       if (url.pathname === "/extension-installation" && method === "DELETE") {
         const instanceId = url.searchParams.get("instance_id") ?? "";

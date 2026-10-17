@@ -30,6 +30,33 @@ export async function workflowHeaders(env: DurableWorkflowHostEnv, tenantId: str
 export interface WorkflowInstallationGrant {
   instance: { tenant_id: string; space_id: string; project_id?: string | null; user_id?: string | null; scope?: string; status: string };
   manifest: { id?: string; daemons?: Array<{ workflowScript?: string }> };
+  release?: { version?: string; artifactSha256?: string; signatureValid?: boolean } | null;
+}
+/** Recompute the canonical release digest over immutable extension files before loading code.
+ * The DO's internal attestation check establishes that the recorded digest/manifest pair was
+ * accepted by this host; this check establishes that R2 still contains those exact bytes. */
+export async function verifyExtensionArtifactSet(bucket: R2Bucket, input: { spaceId: string; extensionId: string; version: string; expectedSha256: string }): Promise<boolean> {
+  if (!/^[a-z][a-z0-9._-]{1,63}$/.test(input.extensionId) || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(input.version)
+    || !/^[a-f0-9]{64}$/.test(input.expectedSha256)) return false;
+  const prefix = `spaces/${input.spaceId}/extensions/${input.extensionId}/${input.version}/`;
+  const entries: Array<[string, string]> = [];
+  let cursor: string | undefined, totalBytes = 0;
+  do {
+    const page = await bucket.list({ prefix, ...(cursor ? { cursor } : {}), limit: 256 });
+    if (entries.length + page.objects.length > 256) return false;
+    for (const item of page.objects) {
+      const object = await bucket.get(item.key);
+      if (!object) return false;
+      const source = await object.text(); totalBytes += new TextEncoder().encode(source).byteLength;
+      if (totalBytes > 2_000_000) return false;
+      entries.push([`./${item.key.slice(prefix.length)}`, source]);
+    }
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  if (!entries.length) return false;
+  entries.sort(([a], [b]) => a.localeCompare(b));
+  const digest = await workflowHash(JSON.stringify(entries));
+  return digest === input.expectedSha256;
 }
 export async function readWorkflowGrant(env: DurableWorkflowHostEnv, scope: Pick<DurableWorkflowIdentity, "tenantId" | "spaceId" | "projectId" | "actorId" | "agentId" | "installationId">): Promise<{ version: string; role: string; installation?: WorkflowInstallationGrant }> {
   if (!env.SCRIPTS_R2 || !scope.actorId || scope.actorId === "system") throw new Error("workflow_actor_required");
