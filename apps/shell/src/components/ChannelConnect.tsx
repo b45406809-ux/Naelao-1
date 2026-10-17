@@ -18,7 +18,7 @@ import * as React from "react";
 import { QrCode } from "@naelao/ui";
 import { ALLOWED_MODELS } from "@naelao/billing-core";
 import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelLink, ChannelPairing, ExtensionRelease, SessionCredentials } from "@/lib/api";
-import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension } from "@/lib/api";
+import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, takeOverChannelExtensionInboxEvent, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
@@ -122,14 +122,38 @@ function ExtensionSessionControls({ spaceId, projectId, session, installation }:
 
 function ExtensionInbox({ spaceId, projectId, session, installation }: { spaceId: string; projectId: string; session: SessionCredentials; installation: ChannelExtensionInstallation }) {
   const [events, setEvents] = React.useState<ChannelExtensionInboxEvent[]>([]);
+  const [pausedEvents, setPausedEvents] = React.useState<Set<string>>(() => new Set());
+  const [cursor, setCursor] = React.useState<{ before: number; beforeId: string } | null>(null);
+  const [loadingMore, setLoadingMore] = React.useState(false);
+  const [takingOver, setTakingOver] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   React.useEffect(() => {
     let cancelled = false;
     listChannelExtensionInbox(spaceId, projectId, installation.instance_id, session)
-      .then(items => { if (!cancelled) setEvents(items); })
+      .then(page => { if (!cancelled) { setEvents(page.events); setCursor(page.next_before !== null && page.next_before_id ? { before: page.next_before, beforeId: page.next_before_id } : null); } })
       .catch(err => { if (!cancelled) setError(err instanceof Error ? err.message : "Couldn't load extension inbox events."); });
     return () => { cancelled = true; };
   }, [spaceId, projectId, installation.instance_id, session]);
+  async function loadMore() {
+    if (!cursor || loadingMore) return;
+    setLoadingMore(true); setError(null);
+    try {
+      const page = await listChannelExtensionInbox(spaceId, projectId, installation.instance_id, session, cursor);
+      setEvents(current => [...current, ...page.events]);
+      setCursor(page.next_before !== null && page.next_before_id ? { before: page.next_before, beforeId: page.next_before_id } : null);
+    } catch (err) { setError(err instanceof Error ? err.message : "Couldn't load older inbox events."); }
+    finally { setLoadingMore(false); }
+  }
+  async function takeOver(eventId: string) {
+    if (takingOver || !window.confirm("Pause the automatic handler for this customer's conversation so a team member can take over?")) return;
+    setTakingOver(eventId); setError(null);
+    try {
+      const result = await takeOverChannelExtensionInboxEvent(spaceId, projectId, installation.instance_id, eventId, session);
+      setPausedEvents(current => new Set(current).add(eventId));
+      if (result.paused_pending_reply) setError("Automatic handling is paused; the pending event needs a team member reply.");
+    } catch (err) { setError(err instanceof Error ? err.message : "Couldn't pause this conversation."); }
+    finally { setTakingOver(null); }
+  }
   return <details style={{ marginTop: 8 }}>
     <summary style={{ cursor: "pointer", fontSize: 11.5 }}>Recent customer inbox events ({events.length})</summary>
     {error && <div role="alert" style={{ color: "var(--danger, #b42318)", fontSize: 11, marginTop: 6 }}>{error}</div>}
@@ -139,7 +163,12 @@ function ExtensionInbox({ spaceId, projectId, session, installation }: { spaceId
       <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", marginTop: 5 }}>{event.text}</div>
       {event.reply_text && <div style={{ color: "var(--text2)", marginTop: 5 }}>Reply: {event.reply_text}</div>}
       {event.error_code && <div role="status" style={{ color: "var(--danger, #b42318)", marginTop: 5 }}>Issue: {event.error_code}</div>}
+      {(event.human_takeover || pausedEvents.has(event.event_id)) && <div role="status" style={{ marginTop: 5 }}>Automatic handling paused for this conversation. Reply through your connected provider inbox.</div>}
+      <button type="button" className="btn-ghost" style={{ marginTop: 6, fontSize: 10.5 }} disabled={!!takingOver || event.human_takeover || pausedEvents.has(event.event_id) || event.status === "running" || event.status === "delivering"} onClick={() => void takeOver(event.event_id)}>
+        {takingOver === event.event_id ? "Pausing…" : event.human_takeover || pausedEvents.has(event.event_id) ? "Bot paused" : "Pause bot for this conversation"}
+      </button>
     </article>)}
+    {cursor && <button type="button" className="btn-ghost" style={{ marginTop: 8, fontSize: 11 }} disabled={loadingMore} onClick={() => void loadMore()}>{loadingMore ? "Loading…" : "Load older events"}</button>}
   </details>;
 }
 

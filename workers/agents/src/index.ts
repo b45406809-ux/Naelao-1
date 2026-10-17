@@ -6746,9 +6746,37 @@ app.get("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId
   const url = new URL(c.req.url);
   const query = new URLSearchParams({ project_id: projectId, installation_id: installationId,
     ...(url.searchParams.has("before") ? { before: url.searchParams.get("before")! } : {}),
+    ...(url.searchParams.has("before_id") ? { before_id: url.searchParams.get("before_id")! } : {}),
     ...(url.searchParams.has("limit") ? { limit: url.searchParams.get("limit")! } : {}) });
   const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId") ?? "");
   return stub.fetch(new Request(`http://agent-do/channels/extensions/inbox?${query}`));
+});
+
+app.post("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId/inbox/takeover", async c => {
+  const tenantId = await requireVerifiedTenant(c);
+  const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId");
+  const { userId, role: callerRole } = getCallerIdentity(c);
+  const role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Project channel inbox requires Space owner or admin access");
+  const body = await c.req.json<{ event_id?: unknown }>().catch(() => ({} as { event_id?: unknown }));
+  const eventId = typeof body.event_id === "string" ? body.event_id : "";
+  if (!/^[A-Za-z0-9._:-]{1,160}$/.test(projectId) || !/^[A-Za-z0-9._:-]{1,160}$/.test(installationId)
+    || !/^[A-Za-z0-9._:-]{1,160}$/.test(eventId)) throw badRequest("Invalid project, installation, or event id");
+  if (!c.env.SPACES_WORKER) return c.json({ error_code: "extension_installation_unavailable" }, 503);
+  const installationResponse = await c.env.SPACES_WORKER.fetch(new Request(
+    `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/workflow-installations/${encodeURIComponent(installationId)}`,
+    { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) } },
+  ));
+  if (!installationResponse.ok) return c.json({ error_code: "extension_installation_unavailable" }, installationResponse.status === 404 ? 404 : 503);
+  const installation = await installationResponse.json<{ instance?: { instance_id?: string; tenant_id?: string; space_id?: string; project_id?: string | null; status?: string; scope?: string } }>();
+  const instance = installation.instance;
+  if (!instance || instance.instance_id !== installationId || instance.tenant_id !== tenantId || instance.space_id !== spaceId
+    || instance.project_id !== projectId || instance.status !== "active" || !["PROJECT_BOUND", "PROJECT_SHARED"].includes(instance.scope ?? "")) {
+    return c.json({ error_code: "extension_installation_scope_mismatch" }, 403);
+  }
+  const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId") ?? "");
+  return stub.fetch(new Request("http://agent-do/channels/extensions/inbox/takeover", { method: "POST",
+    headers: { "content-type": "application/json" }, body: JSON.stringify({ project_id: projectId, installation_id: installationId, event_id: eventId }) }));
 });
 
 app.get("/spaces/:spaceId/channels/unanswered", async (c) => {

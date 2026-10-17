@@ -1835,9 +1835,8 @@ export interface ChannelExtensionSessionSummary {
 
 export interface ChannelExtensionInboxEvent {
   event_id: string;
-  external_id: string | null;
   channel: string;
-  channel_user_id: string;
+  human_takeover: boolean;
   text: string;
   status: "queued" | "processing" | "running" | "delivering" | "sent" | "uncertain" | "failed";
   error_code: string | null;
@@ -1845,11 +1844,23 @@ export interface ChannelExtensionInboxEvent {
   created_at: number;
 }
 
-export async function listChannelExtensionInbox(spaceId: string, projectId: string, instanceId: string, session: SessionCredentials): Promise<ChannelExtensionInboxEvent[]> {
-  const result = await apiFetch<{ events: ChannelExtensionInboxEvent[] }>(
-    `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/channel-extensions/${encodeURIComponent(instanceId)}/inbox`, { session }
+export interface ChannelExtensionInboxPage {
+  events: ChannelExtensionInboxEvent[];
+  next_before: number | null;
+  next_before_id: string | null;
+}
+
+export async function listChannelExtensionInbox(spaceId: string, projectId: string, instanceId: string, session: SessionCredentials, cursor?: { before: number; beforeId: string }): Promise<ChannelExtensionInboxPage> {
+  const query = cursor ? `?${new URLSearchParams({ before: String(cursor.before), before_id: cursor.beforeId })}` : "";
+  return apiFetch<ChannelExtensionInboxPage>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/channel-extensions/${encodeURIComponent(instanceId)}/inbox${query}`, { session }
   );
-  return result.events;
+}
+
+export async function takeOverChannelExtensionInboxEvent(spaceId: string, projectId: string, instanceId: string, eventId: string, session: SessionCredentials): Promise<{ human_takeover: true; paused_pending_reply: boolean }> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/channel-extensions/${encodeURIComponent(instanceId)}/inbox/takeover`, {
+    method: "POST", session, body: JSON.stringify({ event_id: eventId }),
+  });
 }
 
 export async function getChannelExtensionSessionSummary(spaceId: string, projectId: string, instanceId: string, session: SessionCredentials): Promise<ChannelExtensionSessionSummary> {

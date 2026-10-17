@@ -1781,6 +1781,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         return this.handleListChannelSessions();
       }
       if (method === "GET" && url.pathname === "/channels/extensions/inbox") return this.handleChannelExtensionInbox(url.searchParams);
+      if (method === "POST" && url.pathname === "/channels/extensions/inbox/takeover") return this.handleChannelExtensionInboxTakeover(request);
       if (method === "GET" && url.pathname === "/channels/extensions/session-state") {
         const projectId = url.searchParams.get("project_id") ?? "";
         const installationId = url.searchParams.get("installation_id") ?? "";
@@ -5612,20 +5613,44 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const projectId = params.get("project_id") ?? "";
     const installationId = params.get("installation_id") ?? "";
     const before = Number(params.get("before") ?? Number.MAX_SAFE_INTEGER);
-    const limit = Math.min(Math.max(Number(params.get("limit") ?? 50) || 50, 1), 100);
-    if (!projectId || !installationId || !Number.isSafeInteger(before)) return Response.json({ error_code: "channel_extension_inbox_scope_required" }, { status: 400 });
-    const events = this.ctx.storage.sql.exec(
-      `SELECT m.id AS event_id,m.external_id,s.channel,s.channel_user_id,m.project_id,m.channel_extension_instance_id,
-              m.channel_extension_sha256,m.text,m.answered,m.created_at,
+    const beforeId = params.get("before_id") ?? "\uffff";
+    const rawLimit = Number(params.get("limit") ?? 50);
+    const limit = Math.min(Math.max(Number.isSafeInteger(rawLimit) ? rawLimit : 50, 1), 100);
+    if (!projectId || !installationId || !Number.isSafeInteger(before) || !beforeId || beforeId.length > 160) return Response.json({ error_code: "channel_extension_inbox_scope_required" }, { status: 400 });
+    const rows = this.ctx.storage.sql.exec(
+      `SELECT m.id AS event_id,s.channel,s.human_takeover,m.text,m.answered,m.created_at,
               COALESCE(d.status,CASE m.answered WHEN 1 THEN 'sent' WHEN 2 THEN 'processing' ELSE 'queued' END) AS status,
               d.reply_text,d.error_code,d.created_at AS dispatched_at
        FROM channel_messages m JOIN channel_sessions s ON s.id=m.session_id
        LEFT JOIN channel_extension_dispatches d ON d.message_id=m.id
-       WHERE m.direction='inbound' AND m.project_id=? AND m.channel_extension_instance_id=? AND m.created_at<?
-       ORDER BY m.created_at DESC,m.id DESC LIMIT ?`, projectId, installationId, before, limit
+       WHERE m.direction='inbound' AND m.project_id=? AND m.channel_extension_instance_id=?
+         AND (m.created_at<? OR (m.created_at=? AND m.id<?))
+       ORDER BY m.created_at DESC,m.id DESC LIMIT ?`, projectId, installationId, before, before, beforeId, limit
     ).toArray();
-    const nextBefore = events.length === limit ? Number((events[events.length - 1] as { created_at?: number }).created_at ?? 0) : null;
-    return Response.json({ events, next_before: nextBefore });
+    const events = rows.map(row => ({ ...row, human_takeover: Boolean((row as { human_takeover?: number }).human_takeover) }));
+    const last = events[events.length - 1] as { event_id?: string; created_at?: number } | undefined;
+    const nextBefore = events.length === limit && last ? Number(last.created_at ?? 0) : null;
+    const nextBeforeId = events.length === limit && last ? String(last.event_id ?? "") : null;
+    return Response.json({ events, next_before: nextBefore, next_before_id: nextBeforeId });
+  }
+
+  private async handleChannelExtensionInboxTakeover(request: Request): Promise<Response> {
+    const body = await request.json<{ project_id?: string; installation_id?: string; event_id?: string }>()
+      .catch(() => ({} as { project_id?: string; installation_id?: string; event_id?: string }));
+    const projectId = typeof body.project_id === "string" ? body.project_id : "";
+    const installationId = typeof body.installation_id === "string" ? body.installation_id : "";
+    const eventId = typeof body.event_id === "string" ? body.event_id : "";
+    if (!projectId || !installationId || !/^[A-Za-z0-9._:-]{1,160}$/.test(eventId)) return Response.json({ error_code: "channel_extension_inbox_scope_required" }, { status: 400 });
+    const event = this.ctx.storage.sql.exec(
+      `SELECT m.session_id,m.answered,COALESCE(d.status,'queued') AS status
+       FROM channel_messages m LEFT JOIN channel_extension_dispatches d ON d.message_id=m.id
+       WHERE m.id=? AND m.direction='inbound' AND m.project_id=? AND m.channel_extension_instance_id=? LIMIT 1`,
+      eventId, projectId, installationId,
+    ).toArray()[0] as { session_id: string; answered: number; status: string } | undefined;
+    if (!event) return Response.json({ error_code: "channel_extension_event_not_found" }, { status: 404 });
+    if (event.status === "running" || event.status === "delivering") return Response.json({ error_code: "channel_extension_event_in_flight" }, { status: 409 });
+    this.ctx.storage.sql.exec("UPDATE channel_sessions SET human_takeover=1 WHERE id=?", event.session_id);
+    return Response.json({ human_takeover: true, paused_pending_reply: event.answered !== 1 });
   }
 
   private handleChannelUnanswered(): Response {
