@@ -38,10 +38,10 @@ describe("runtime extension installation", () => {
     await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project-a"));
     storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active')");
     const channel = { schemaVersion: "1.0", kind: "channel", id: "student_whatsapp", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
-      provider: "whatsapp", handlerScript: "./handler.ts", context: "channel_only", inboundEvents: ["message.received"], outboundEvents: ["message.reply"],
+      provider: "whatsapp", connectionId: "student_channel", handlerScript: "./handler.ts", context: "channel_only", inboundEvents: ["message.received"], outboundEvents: ["message.reply"],
       knowledgeCollections: ["course_material"], session: { enabled: true, maxBytes: 2048, ttlDays: 30 } };
     const bundle = { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_trading_mentor", version: "1.0.0", primitives: [channel],
-      connections: [{ id: "student_whatsapp", provider: "whatsapp", purpose: "Receive student questions", required: true }],
+      connections: [{ id: "student_channel", provider: "whatsapp", purpose: "Receive student questions", required: true }],
       knowledge: [{ id: "course_material", purpose: "Answer questions from approved course materials", access: "owner_published_external" }] };
     const response = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ manifest: { id: "ext_trading_mentor", type: "extension", declaredPermissions: [], capabilityRequirements: ["channel.invoke"],
@@ -50,7 +50,9 @@ describe("runtime extension installation", () => {
     const installation = await response.json() as { manifest: { bundle: { version: string } } };
     expect(installation.manifest.bundle.version).toBe("1.0.0");
     const listed = await space.fetch(new Request("http://space/channel-installations?tenant_id=tenant&space_id=space&project_id=project-a"));
-    expect(await listed.json()).toMatchObject({ installations: [{ extension_id: "ext_trading_mentor", channels: [{ id: "student_whatsapp", provider: "whatsapp", handlerScript: "./handler.ts" }] }] });
+    expect(await listed.json()).toMatchObject({ installations: [{ extension_id: "ext_trading_mentor",
+      channels: [{ id: "student_whatsapp", provider: "whatsapp", handlerScript: "./handler.ts", connection_id: "student_channel" }],
+      connections: [{ id: "student_channel", provider: "whatsapp", purpose: "Receive student questions", required: true }] }] });
   });
 
   it("validates scope before mutation, keeps manifests immutable, and replays installs after restart", async () => {

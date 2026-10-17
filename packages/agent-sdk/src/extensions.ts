@@ -218,6 +218,8 @@ export interface CanvasContract extends ExtensionContractBase { kind: "canvas"; 
 export interface ChannelContract extends ExtensionContractBase {
   kind: "channel";
   provider: string;
+  /** Optional reference to the host-managed connection requirement used by this handler. */
+  connectionId?: string;
   /** Script path inside the installed extension bundle. */
   handlerScript: string;
   /** Versioned least-privilege host surface; other context kinds require a different contract. */
@@ -301,7 +303,7 @@ const CONTRACT_BASE_KEYS = new Set(["schemaVersion", "kind", "id", "version", "p
 function contractAssert(condition: unknown, message: string): asserts condition { if (!condition) throw new Error(`invalid_extension_contract:${message}`); }
 function rejectUnknownContractKeys(raw: Record<string, unknown>, allowed: Set<string>): void { for (const key of Object.keys(raw)) contractAssert(allowed.has(key), `unknown_field:${key}`); }
 function validateContractBase(raw: Record<string, unknown>, kind: ExtensionPrimitiveKind): void {
-  const specific = kind === "gadget" ? ["scope", "schemaSql", "migrations"] : kind === "canvas" ? ["layout", "component", "dynamicPage"] : kind === "channel" ? ["provider", "handlerScript", "context", "inboundEvents", "outboundEvents", "knowledgeCollections", "session"] : kind === "container" ? ["image", "resources", "exportedBinaries", "mounts", "networkPolicy", "webContainerCompatible"] : kind === "linter" ? ["mode", "entry", "failureMode"] : ["executionMode", "steps", "toolNames"];
+  const specific = kind === "gadget" ? ["scope", "schemaSql", "migrations"] : kind === "canvas" ? ["layout", "component", "dynamicPage"] : kind === "channel" ? ["provider", "connectionId", "handlerScript", "context", "inboundEvents", "outboundEvents", "knowledgeCollections", "session"] : kind === "container" ? ["image", "resources", "exportedBinaries", "mounts", "networkPolicy", "webContainerCompatible"] : kind === "linter" ? ["mode", "entry", "failureMode"] : ["executionMode", "steps", "toolNames"];
   rejectUnknownContractKeys(raw, new Set([...CONTRACT_BASE_KEYS, ...specific]));
   contractAssert(raw.schemaVersion === "1.0", `unsupported_schema_version:${String(raw.schemaVersion)}`);
   contractAssert(raw.kind === kind, `kind_mismatch:${kind}`);
@@ -360,6 +362,7 @@ export function parseExtensionPrimitive(value: unknown): ExtensionPrimitiveManif
     contractAssert((raw.permissions as unknown[]).length === 0, "channel_permissions_forbidden");
     contractAssert((raw.capabilityRequirements as unknown[]).length === 0, "channel_capabilities_forbidden");
     contractAssert(typeof raw.provider === "string" && CONTRACT_ID.test(raw.provider), "invalid_channel_provider");
+    contractAssert(raw.connectionId === undefined || (typeof raw.connectionId === "string" && CONTRACT_ID.test(raw.connectionId)), "invalid_channel_connection_reference");
     contractAssert(typeof raw.handlerScript === "string" && /^\.\/[A-Za-z0-9._-]{1,128}\.(?:ts|js)$/.test(raw.handlerScript), "invalid_channel_handler");
     contractAssert(raw.context === "channel_only", "invalid_channel_context");
     for (const [field, events] of [["inboundEvents", raw.inboundEvents], ["outboundEvents", raw.outboundEvents]] as const) {
@@ -465,6 +468,12 @@ export function parseExtensionBundle(value: unknown): ExtensionBundleManifest {
       if (field === "connections") contractAssert(typeof entry.provider === "string" && CONTRACT_ID.test(entry.provider) && typeof entry.required === "boolean", "invalid_connection_requirement");
       else contractAssert(["member_only", "owner_published_external"].includes(String(entry.access)), "invalid_knowledge_access");
     }
+  }
+  const connections = new Map(((raw.connections ?? []) as Array<{ id: string; provider: string }>).map(connection => [connection.id, connection]));
+  for (const primitive of primitives) {
+    if (primitive.kind !== "channel" || !primitive.connectionId) continue;
+    const connection = connections.get(primitive.connectionId);
+    contractAssert(connection?.provider === primitive.provider, "invalid_channel_connection_provider_reference");
   }
   const knowledgeIds = new Set(((raw.knowledge ?? []) as Array<{ id: string }>).map(entry => entry.id));
   for (const primitive of primitives) {

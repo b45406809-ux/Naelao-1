@@ -203,6 +203,8 @@ export function ChannelConnect({
         const link = byId.get(ch.id);
         const connected = !!link;
         const on = !!link?.enabled;
+        const boundInstallation = extensionInstallations.find((installation) => installation.instance_id === link?.extension_instance_id);
+        const connectionRequirements = (boundInstallation?.connections ?? []).filter((connection) => connection.required);
         const showing = open === ch.id;
         return (
           <div key={ch.id} className="settings-row" style={{ display: "block" }}>
@@ -268,6 +270,18 @@ export function ChannelConnect({
                 ))}
               </select>
             </div>}
+
+            {connected && canManage && projectId && connectionRequirements.length > 0 && (
+              <div role="status" aria-label="Required provider connections" style={{ marginTop: 8, fontSize: 11.5, color: "var(--text2)" }}>
+                <span style={{ color: "var(--text3)" }}>Extension setup requirements: </span>
+                {connectionRequirements.map((connection, index) => {
+                  const configured = !!byId.get(connection.provider)?.enabled;
+                  return <React.Fragment key={connection.id}>
+                    {index > 0 ? "; " : ""}{connection.purpose} ({connection.provider}: {configured ? "configured" : "not configured"})
+                  </React.Fragment>;
+                })}
+              </div>
+            )}
 
             {showing && canManage && (
               <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>

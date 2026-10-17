@@ -1811,7 +1811,8 @@ export interface ChannelExtensionInstallation {
   extension_id: string;
   scope: "PROJECT_BOUND" | "PROJECT_SHARED";
   name: string;
-  channels: Array<{ id: string; provider: string; handlerScript: string }>;
+  channels: Array<{ id: string; provider: string; handlerScript: string; connection_id?: string }>;
+  connections?: Array<{ id: string; provider: string; purpose: string; required: boolean }>;
 }
 
 export async function listChannelExtensionInstallations(
