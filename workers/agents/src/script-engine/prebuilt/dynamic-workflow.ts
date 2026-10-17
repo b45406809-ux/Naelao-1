@@ -40,7 +40,7 @@ export const dynamicWorkflow: PrebuiltScript = {
   domain: "orchestration",
   requires_tier: 3,
   paramHints: {
-    "workflow.extensions": "no parameters; lists workflows installed in the active project and their declared tool names",
+    "workflow.extensions": "no parameters; lists active project extension IDs, stable primitive IDs/kinds, each workflow entry/tool name, and its worker-role binding",
     "workflow.create": "name, code: export async function execute(step, ctx); capabilities: installed operation names; use ctx.params and ctx.tools.call(stableStepKey, operation, params)",
     "workflow.run": "name, params, start_key (reuse for retries), workflow_class, budget_credits, optional installation_id",
     "workflow.status": "id: workflow run ID",

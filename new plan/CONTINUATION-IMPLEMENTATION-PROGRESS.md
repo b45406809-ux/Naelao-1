@@ -1123,3 +1123,9 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - The selected extension Canvas is recorded in the project URL's `canvas` query parameter, updates with browser back/forward, and is validated against the current active project installation list. If a project or installation switch invalidates it, the Shell clears/replaces the stale selection. The project’s existing `viewport_config` remains a compatibility fallback.
 - Changed the installer text to explain that Canvas parts remain separate installed resources and can be selected in the project Canvas selector. The Trading Mentor example now documents that route behavior.
 - Verification: Shell `tsc --noEmit` and `git diff --check` passed. There is no existing CanvasContainer unit-test harness; no live Worker or browser flow was run.
+
+## Extension product composition follow-up — bundle part discovery
+
+- Extended the planner's existing read-only `workflow.extensions` inventory to return all stable primitive ID/kind pairs in each active project extension, along with each workflow entry, declared operations and the bundle's matching worker role IDs/invocation/execution/entry binding. Results are still membership-checked and installation-scoped.
+- This gives developers and planner workers a direct way to reason about which Canvas, Gadget, channel and workflow parts share one extension/version and which worker role runs each workflow. It adds no access to secrets and does not grant tool operations.
+- Verification: Agents `tsc --noEmit`, focused workflow inventory suite (2 tests), and `git diff --check` passed.
