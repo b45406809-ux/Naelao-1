@@ -73,13 +73,16 @@ async function createFromTemplate(ctx: PrebuiltOpContext, templateId: string, na
     ...(template.allowed_agent_ids && template.allowed_agent_ids.length > 0 ? { allowed_agent_ids: template.allowed_agent_ids } : {}),
   })) as { id: string; name: string };
 
-  // 2. Configure it (kind, execution ceiling, spend cap, thread cap, suggested channel).
+  // 2. Configure the generic workspace's execution policy, spend cap, thread cap and channel.
   await spacesCall(ctx, "PATCH", `/spaces/${spaceId}/projects/${project.id}`, {
-    kind: template.kind,
+    kind: "workspace",
+    ...(template.external_channel_profile !== undefined
+      ? { external_channel_profile: template.external_channel_profile }
+      : {}),
     execution_ceiling: template.execution_ceiling,
     daily_spend_cap_credits: template.daily_spend_cap_credits,
     ...(template.max_threads !== undefined ? { max_threads: template.max_threads } : {}),
-    ...(template.kind === "customer_bot" && template.suggested_channel
+    ...(template.suggested_channel
       ? { channel_config: { [template.suggested_channel]: { connected: false } } }
       : {}),
   });

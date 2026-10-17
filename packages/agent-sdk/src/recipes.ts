@@ -4,14 +4,11 @@ export type RecipeId =
   | "dental_receptionist_desk"
   | "ecommerce_returns_assistant";
 
-export type RecipeProjectKind = "workspace" | "customer_bot";
-
 export interface AutomationRecipe {
   readonly id: RecipeId;
   readonly name: string;
   readonly description: string;
-  readonly projectKind: RecipeProjectKind;
-  /** Customer bots are always executed through CustomerBotContext's quarantined runtime. */
+  /** External channel recipes use a quarantined runtime context. */
   readonly runtimeContext: "standard" | "CustomerBotContext";
   readonly webhooks: readonly { id: string; provider: string; event: string }[];
   readonly queues: readonly { id: string; consumer: string }[];
@@ -32,7 +29,6 @@ export const RECIPE_CATALOG = {
     id: "shopify_order_to_shipstation",
     name: "Shopify order to ShipStation",
     description: "Creates a shipping label for every paid Shopify order.",
-    projectKind: "workspace",
     runtimeContext: "standard",
     webhooks: [
       {
@@ -62,7 +58,6 @@ export const RECIPE_CATALOG = {
     id: "dental_receptionist_desk",
     name: "Dental receptionist desk",
     description: "Answers WhatsApp and calls and books available appointments.",
-    projectKind: "customer_bot",
     runtimeContext: "CustomerBotContext",
     webhooks: [
       {
@@ -95,7 +90,6 @@ export const RECIPE_CATALOG = {
     name: "E-commerce returns assistant",
     description:
       "Resolves Zendesk and email returns using policy-grounded answers.",
-    projectKind: "customer_bot",
     runtimeContext: "CustomerBotContext",
     webhooks: [
       { id: "zendesk-ticket", provider: "zendesk", event: "ticket.created" },

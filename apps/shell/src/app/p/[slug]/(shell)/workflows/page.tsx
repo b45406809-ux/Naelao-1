@@ -41,7 +41,7 @@ export default function WorkflowsPage() {
       </select>
       {selected && session && <div key={`${activeSpaceId}:${selected.id}`} className="card" style={{ cursor: "default" }}>
         <AssistantSidePanelBody tab="crons" spaceId={activeSpaceId} projectId={selected.id} session={session} isBusinessSpace={activeSpaceId !== product.space_id} />
-        {selected.kind === "customer_bot" && <CustomerBotAutomation spaceId={activeSpaceId} projectId={selected.id} creds={session} />}
+        {Boolean(selected.external_channel_profile) && <CustomerBotAutomation spaceId={activeSpaceId} projectId={selected.id} creds={session} />}
       </div>}
     </>}
   </div>;

@@ -28,7 +28,7 @@ import {
 
 // The two base project shapes, never "plugins" — mirrors STRUCTURAL_PROJECT_KINDS in
 // @naelao/events. Anything else with a kind set is a feature-kind plugin.
-const STRUCTURAL_KINDS = new Set(["", "workspace", "customer_bot"]);
+const STRUCTURAL_KINDS = new Set(["", "workspace"]);
 
 interface InstalledPlugin {
   kind: string;

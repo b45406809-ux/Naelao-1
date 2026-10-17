@@ -2027,6 +2027,14 @@ const MIGRATIONS: Migration[] = [
         SELECT id,subspace_id,COALESCE(graduated_at,created_at),graduated_by FROM projects WHERE subspace_id IS NOT NULL;
     `,
   },
+  {
+    version: 83,
+    description: "move customer channel profiles out of the structural project kind",
+    up: `
+      ALTER TABLE projects ADD COLUMN external_channel_profile INTEGER NOT NULL DEFAULT 0 CHECK (external_channel_profile IN (0,1));
+      UPDATE projects SET external_channel_profile=1,kind='workspace' WHERE kind='customer_bot';
+    `,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -6203,6 +6211,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const body = await request
       .json<{
         kind?: string;
+        external_channel_profile?: boolean;
         execution_ceiling?: number;
         daily_spend_cap_credits?: number;
         channel_config?: Record<string, unknown>;
@@ -6370,6 +6379,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         }
         throw err;
       }
+    }
+    if (body.external_channel_profile !== undefined) {
+      if (typeof body.external_channel_profile !== "boolean") {
+        return Response.json({ error_code: "bad_request", message: "external_channel_profile must be a boolean" }, { status: 400 });
+      }
+      execute(this.ctx.storage.sql as never,
+        "UPDATE projects SET external_channel_profile=? WHERE id=?",
+        body.external_channel_profile ? 1 : 0, projectId);
     }
     if (body.execution_ceiling !== undefined) {
       if (

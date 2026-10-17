@@ -4876,8 +4876,8 @@ app.post("/channels/:channel/connect", async (c) => {
     if (!mediaResp.ok && mediaResp.status !== 409) return c.json({ error_code: "credential_store_failed", message: await mediaResp.text() }, 502);
   }
 
-  // project_id binds this channel to a specific customer-bot project (e.g. "WhatsApp Support
-  // Bot") instead of the space's default agent — undefined/null keeps the legacy space-level
+  // project_id binds this channel to a specific generic workspace with an external-channel
+  // profile instead of the space's default agent — undefined/null keeps the legacy space-level
   // behavior. Re-connecting can move a channel to a different project.
   await c.env.PLATFORM_DB.prepare(
     `INSERT INTO channel_links (space_id, tenant_id, channel, enabled, project_id) VALUES (?, ?, ?, 1, ?)
@@ -4887,7 +4887,7 @@ app.post("/channels/:channel/connect", async (c) => {
   return c.json({ connected: true, channel, project_id: body.project_id ?? null, webhook_path: `/v1/channels/${channel}/inbound/${body.space_id}` }, 201);
 });
 
-// GET /project-templates — no-code customer-bot presets (WhatsApp/Discord/email support bot) PLUS
+// GET /project-templates — no-code channel/workflow presets PLUS
 // the Business Feature Projects registry (F-35), the two catalogues a "create project" picker
 // draws from. Feature kinds are ROLE-FILTERED server-side (not just UI-hidden) by the caller's
 // verified space role — a non-admin member never sees "Create Wallet" as an option at all,
@@ -4906,10 +4906,10 @@ app.get("/project-templates", (c) => {
 });
 
 // POST /spaces/:spaceId/projects/from-template — creates a fully configured project in one
-// call, from any entry in the project-templates catalogue (not just customer_bot presets):
-// the project row (kind, execution ceiling, spend cap, thread cap, agent binding/allowlist,
+// call, from any entry in the project-templates catalogue:
+// the project row (execution policy, spend cap, thread cap, agent binding/allowlist,
 // channel_config when the template suggests a channel) plus its starter rules and scheduled
-// jobs. For a customer_bot template, the builder still has to call /channels/:channel/connect
+// jobs. For a template with a suggested channel, the builder still calls /channels/:channel/connect
 // with this project's id to actually wire a live number/server — template application only
 // sets up the Naelao-side config.
 /**
@@ -4971,18 +4971,21 @@ async function applyProjectTemplate(
   // would otherwise double (or triple, on every re-run) every time bootstrap/complete runs again.
   const alreadyExisted = project.created === false;
 
-  // 2. Configure the rest (kind, execution ceiling, spend cap, thread cap, suggested channel —
-  //    only customer_bot templates set channel_config). Safe to re-apply even on an already-
+  // 2. Configure the generic workspace, execution ceiling, spend cap, thread cap and optional
+  //    suggested channel. Safe to re-apply even on an already-
   //    existing project — it's a plain overwrite of the same fields, not an additive insert.
   const configResp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${project.id}`, {
     method: "PATCH",
     headers,
     body: JSON.stringify({
-      kind: template.kind,
+      kind: "workspace",
+      ...(template.external_channel_profile !== undefined
+        ? { external_channel_profile: template.external_channel_profile }
+        : {}),
       execution_ceiling: template.execution_ceiling,
       daily_spend_cap_credits: template.daily_spend_cap_credits,
       ...(template.max_threads !== undefined ? { max_threads: template.max_threads } : {}),
-      ...(template.kind === "customer_bot" && template.suggested_channel
+      ...(template.suggested_channel
         ? { channel_config: { [template.suggested_channel]: { connected: false } } }
         : {}),
     }),
@@ -4990,8 +4993,7 @@ async function applyProjectTemplate(
   if (!configResp.ok) return { error: await configResp.text(), status: 502 };
 
   if (!alreadyExisted) {
-    // 3. Seed the starter rules (customer_bot's reactive no-code triggers — STOP/opt-out,
-    //    human-takeover, canned replies).
+    // 3. Seed the template's no-code triggers (for example, STOP/opt-out and human takeover).
     for (const rule of template.rules ?? []) {
       await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${project.id}/rules`, {
         method: "POST", headers, body: JSON.stringify(rule),
@@ -5028,9 +5030,9 @@ app.post("/spaces/:spaceId/projects/from-template", async (c) => {
   return c.json({
     project_id: result.projectId,
     template_id: template.id,
-    kind: template.kind,
+    kind: "workspace",
     ...(template.suggested_channel ? { suggested_channel: template.suggested_channel } : {}),
-    ...(template.kind === "customer_bot" && template.suggested_channel
+    ...(template.suggested_channel
       ? { next_step: `POST /channels/${template.suggested_channel}/connect { space_id, secret, project_id: "${result.projectId}" }` }
       : {}),
   }, 201);
@@ -7709,7 +7711,7 @@ app.post("/spaces/:spaceId/bootstrap/complete", async (c) => {
     console.warn(`[bootstrap] local-access worker seed failed for ${spaceId}:`, (err as Error).message);
   }
 
-  // 1b. Stamp the template's project-template presets (a customer_bot preset arrives with its own
+  // 1b. Stamp the template's project-template presets (an external-channel preset arrives with its own
   //     execution ceiling, spend cap and STOP/human-takeover rules already wired — exactly what an
   //     owner should never have to assemble by hand). Best-effort: one preset failing must never
   //     block the rest of onboarding. Skipped when a project of that name already exists, since

@@ -1009,9 +1009,9 @@ export interface Project {
   max_threads: number;
   allowed_agent_ids: string[] | null;
   created_at: string;
-  // WS-4.2 / F-40: a project's kind — 'workspace'/'customer_bot' plus any Business Feature kind
-  // (wallet, storefront, crm, ...). The project-page shell mounts the natively-built panel for it.
+  // Generic project shape plus independently configured business features.
   kind?: string;
+  external_channel_profile?: number | boolean;
   viewport_config?: { component?: string; resourceId?: string; canvasPrimary?: boolean; copilotPlacement?: string; mount?: string; tab?: string };
   execution_ceiling?: number;
   daily_spend_cap_credits?: number;

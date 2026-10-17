@@ -113,13 +113,13 @@ function WorkspaceFilesPanel({ spaceId, projectId, creds }: { spaceId: string; p
 }
 
 /**
- * F-40: the mount point. A SWITCH on project.kind (never a data-driven interchangeable lookup) —
+ * F-40: the mount point for specialized built-in workspaces —
  * each kind's panel is its own purpose-built component. A kind with no panel yet renders nothing
  * (the shared project shell alone), which is the expected incremental-build path. The Files viewer
  * (F-39) is shown for every kind since every project has a workspace.
  */
 export function ProjectKindPanel({ project, spaceId, creds }: { project: Project; spaceId: string; creds: Creds }) {
-  const canvasKind = ["product_dev", "doc_studio", "finance_grid", "quant_desk", "voice_agent", "customer_bot", "model_studio", "growth_engine", "app_studio"].includes(project.kind ?? "");
+  const canvasKind = ["product_dev", "doc_studio", "finance_grid", "quant_desk", "voice_agent", "model_studio", "growth_engine", "app_studio"].includes(project.kind ?? "") || Boolean(project.external_channel_profile);
   return (
     <>
       {canvasKind && <CanvasContainer project={project} spaceId={spaceId} creds={creds} />}

@@ -53,11 +53,8 @@ const STATUS_BADGE: Record<string, "green" | "amber" | "blue" | undefined> = {
   archived: undefined,
 };
 
-const CONFIGURED_PROJECT_KINDS = ["workspace", "customer_bot"] as const;
-function projectKindLabel(kind: string): string {
-  if (kind === "workspace") return "Workspace";
-  if (kind === "customer_bot") return "Customer bot";
-  return kind.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+function hasExternalChannelProfile(project: Project): boolean {
+  return Boolean(project.external_channel_profile);
 }
 
 export default function ProjectDetailPage() {
@@ -95,12 +92,11 @@ export default function ProjectDetailPage() {
   const [newDocContent, setNewDocContent] = React.useState("");
   const [addingDoc, setAddingDoc] = React.useState(false);
 
-  // WS-4.2: editable draft of the rich project config (customer_bot kind, execution ceiling,
+  // Editable project policy (execution ceiling,
   // spend cap, max threads, agent bindings) — PATCH succeeds for an admin/owner in the target
   // business; the settings section is still shown to a plain member (read-only save attempt
   // will surface the 403 via toast rather than pre-computing role client-side).
   const [savingSettings, setSavingSettings] = React.useState(false);
-  const [draftKind, setDraftKind] = React.useState<string>("workspace");
   const [draftMaxThreads, setDraftMaxThreads] = React.useState("0");
   const [draftExecutionCeiling, setDraftExecutionCeiling] = React.useState("5");
   const [draftSpendCap, setDraftSpendCap] = React.useState("0");
@@ -133,7 +129,6 @@ export default function ProjectDetailPage() {
       setDepartments(projectDepartments ?? []);
       setDepartmentOptions((options ?? []).filter((option) => option.depth === 1 && option.parent_id === activeSpaceId && option.status === "active"));
       setDepartmentLoadError(projectDepartments === null || options === null);
-      setDraftKind(p.kind ?? "workspace");
       setDraftMaxThreads(String(p.max_threads ?? 0));
       setDraftExecutionCeiling(String(p.execution_ceiling ?? 5));
       setDraftSpendCap(String(p.daily_spend_cap_credits ?? 0));
@@ -268,7 +263,6 @@ export default function ProjectDetailPage() {
     setSavingSettings(true);
     try {
       const updated = await updateProject(activeSpaceId, params.projectId, creds, {
-        kind: draftKind,
         max_threads: Number(draftMaxThreads) || 0,
         execution_ceiling: Number(draftExecutionCeiling) || 1,
         daily_spend_cap_credits: Number(draftSpendCap) || 0,
@@ -482,10 +476,8 @@ export default function ProjectDetailPage() {
           shell's generic Settings/Threads/KB scaffolding. */}
       {creds && <ProjectKindPanel project={project} spaceId={activeSpaceId} creds={creds} />}
 
-      {/* Step 21: the customer-bot Automation dashboard — no-code "when a message matches X, do Y"
-          rules, shown only on a customer_bot project (project.kind is refreshed after a settings
-          save, so switching a project to Customer bot and saving surfaces it). */}
-      {creds && project.kind === "customer_bot" && (
+      {/* External-channel automation rules are project configuration, not a project kind. */}
+      {creds && hasExternalChannelProfile(project) && (
         <CustomerBotAutomation spaceId={activeSpaceId} projectId={project.id} creds={creds} />
       )}
 
@@ -634,14 +626,10 @@ export default function ProjectDetailPage() {
       <div className="settings-block">
         <div className="settings-row">
           <div>
-            <div className="settings-row-label">Kind</div>
-            <div className="settings-row-sub">Customer-bot projects get a capped execution ceiling, a daily spend cap, and no-code rules</div>
+            <div className="settings-row-label">Project type</div>
+            <div className="settings-row-sub">Projects are generic workspaces. Templates and extensions configure their capabilities.</div>
           </div>
-          <FormSelect value={draftKind} onChange={(e) => setDraftKind(e.target.value)} style={{ maxWidth: 220 }}>
-            {[...new Set<string>([...CONFIGURED_PROJECT_KINDS, draftKind])].map((kind) => (
-              <option key={kind} value={kind}>{projectKindLabel(kind)}</option>
-            ))}
-          </FormSelect>
+          <span style={{ color: "var(--text2)", fontSize: 13 }}>Workspace</span>
         </div>
         <div className="settings-row">
           <div>

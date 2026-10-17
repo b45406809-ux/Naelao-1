@@ -18,7 +18,6 @@ describe("prebuilt recipe catalog", () => {
       "ecommerce_returns_assistant",
     ] as const) {
       expect(RECIPE_CATALOG[id]).toMatchObject({
-        projectKind: "customer_bot",
         runtimeContext: "CustomerBotContext",
       });
       expect(RECIPE_CATALOG[id].workflows[0]?.steps).toContain(

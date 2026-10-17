@@ -70,8 +70,9 @@ const ROLE_RANK: Record<FeatureKindRole, number> = { editor: 1, admin: 2, owner:
 /**
  * The registry. Naelao ships every kind preconfigured; a business template pre-selects which
  * subset it bootstraps; a builder can add/remove kinds later like any other project.
- * The two structural defaults (`workspace`, `customer_bot`) are intentionally NOT here — they are
- * not "business features", they're the base project shapes, and they carry no singleton/role gate.
+ * The generic structural default (`workspace`) is intentionally NOT here — it is the base project
+ * shape and carries no singleton/role gate. External channel profiles are project configuration,
+ * not structural project kinds.
  */
 export const BUSINESS_FEATURE_KIND_REGISTRY: readonly BusinessFeatureKind[] = [
   {
@@ -200,8 +201,8 @@ const KIND_MAP: Map<string, BusinessFeatureKind> = new Map(
   BUSINESS_FEATURE_KIND_REGISTRY.map((k) => [k.kind, k])
 );
 
-/** The two non-registry structural project shapes — always creatable, no singleton/role gate. */
-export const STRUCTURAL_PROJECT_KINDS = ["workspace", "customer_bot"] as const;
+/** The generic project shape — always creatable, no singleton/role gate. */
+export const STRUCTURAL_PROJECT_KINDS = ["workspace"] as const;
 
 /** Look up a registry entry (undefined for structural kinds or an unknown kind). */
 export function getBusinessFeatureKind(kind: string): BusinessFeatureKind | undefined {

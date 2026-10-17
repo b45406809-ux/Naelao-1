@@ -4,19 +4,10 @@
  * starting point so the builder only edits form fields, never writes code."
  *
  * Distinct from Launchpad SpaceType templates (launchpad/spacetype.ts): a SpaceType template
- * configures an entire SPACE at provisioning time; a project template configures ONE PROJECT
- * within an already-existing space (e.g. a Whop-seller space adding a "Support WhatsApp Bot"
- * project alongside its existing Members/Support/Content projects, or a community space adding
- * a "Member Monitoring" project).
- *
- * Originally scoped to customer-facing bot projects only (kind: customer_bot). Generalized to
- * cover any project kind — a template is just a named bundle of the same knobs a builder could
- * set by hand (kind, execution ceiling, spend cap, thread cap, agent binding/allowlist, seeded
- * no-code rules, seeded scheduled jobs). "Imagine a whole community business template — you get
- * a preconfigured 'user monitoring' project" is exactly the kind: 'workspace' + scheduled_jobs
- * case below (`community-member-monitoring`), sitting alongside the original customer_bot
- * presets — same catalog, same application path (POST /projects/from-template), no new kind of
- * enforcement code needed.
+ * configures an entire SPACE at provisioning time; a project template configures ONE generic
+ * workspace within an existing Space. Domain behavior, including external customer support,
+ * belongs to installed templates/extensions and their declared channel/tool capabilities, not to
+ * a customer-service project kind.
  */
 
 import type { ChannelType } from "./channels.js";
@@ -42,12 +33,10 @@ export interface ProjectTemplate {
   id: string;
   name: string;
   description: string;
-  /** Which project kind this template configures. customer_bot templates get the
-   *  execution-ceiling/spend-cap/rules enforcement that kind implies; workspace templates are
-   *  ordinary projects with a pre-wired agent binding/schedule instead. */
-  kind: "workspace" | "customer_bot";
-  /** customer_bot templates only — which channel this project is meant to connect to. */
+  /** Suggested external channel for an installed extension or template to connect. */
   suggested_channel?: ChannelType;
+  /** Whether this generic project is configured for an external channel. */
+  external_channel_profile?: boolean;
   /** Execution ladder ceiling. A customer-facing bot never needs Tier 4/5 by default; a
    *  workspace template picks whatever tier its seeded work actually needs. */
   execution_ceiling: 1 | 2 | 3 | 4 | 5;
@@ -60,9 +49,8 @@ export interface ProjectTemplate {
   default_agent_id?: string;
   /** The thread-level "switch agent" allowlist. Omitted/empty = unrestricted. */
   allowed_agent_ids?: string[];
-  /** No-code "after the customer says X, this happens" rules — customer_bot's reactive
-   *  trigger mechanism. Omitted/empty for workspace templates, which are schedule/observation
-   *  driven rather than reactive. */
+  /** Optional no-code triggers seeded by this template. These are configuration, not a
+   *  structural project kind or authorization grant. */
   rules?: ProjectRuleSeed[];
   /** Cron-scheduled ops seeded into this project on template application. */
   scheduled_jobs?: ScheduledJobSeed[];
@@ -82,8 +70,8 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     id: "whatsapp-support-bot",
     name: "WhatsApp Support Bot",
     description: "Answers customer questions on your WhatsApp Business number. Read-only by default — it can look things up and reply, never run code or touch external services.",
-    kind: "customer_bot",
     suggested_channel: "whatsapp",
+    external_channel_profile: true,
     execution_ceiling: 2,
     daily_spend_cap_credits: 2000,
     rules: [
@@ -96,8 +84,8 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     id: "discord-community-bot",
     name: "Discord Community Bot",
     description: "Answers member questions in your Discord server. Same restricted execution as the WhatsApp template — talk and look things up, nothing else.",
-    kind: "customer_bot",
     suggested_channel: "discord",
+    external_channel_profile: true,
     execution_ceiling: 2,
     daily_spend_cap_credits: 2000,
     rules: [
@@ -110,21 +98,19 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     id: "email-support-bot",
     name: "Email Support Bot",
     description: "Drafts replies to inbound support email. Slightly higher ceiling (Tier 3) so it can pull data via a script when answering, still no browser/container access.",
-    kind: "customer_bot",
     suggested_channel: "email",
+    external_channel_profile: true,
     execution_ceiling: 3,
     daily_spend_cap_credits: 3000,
     rules: BASELINE_RULES,
   },
-  // ── Workspace-kind templates — schedule/observation-driven, not reactive-rule-driven ──
+  // ── Generic workspace templates — schedule/observation-driven ──
   {
     id: "community-member-monitoring",
     name: "Community Member Monitoring",
     description:
       "A weekly check-in on your community: the support agent reviews activity and pings you " +
-      "with anything worth knowing. Not a customer-bot project — this one runs on a schedule, " +
-      "not in reaction to inbound messages, so it stays kind: 'workspace'.",
-    kind: "workspace",
+      "with anything worth knowing. This workspace runs on a schedule, not in reaction to inbound messages.",
     execution_ceiling: 2,
     daily_spend_cap_credits: 1000,
     default_agent_id: "launchpad-support-v1",
@@ -161,9 +147,6 @@ export function validateProjectTemplates(templates: ProjectTemplate[] = PROJECT_
     }
     if (t.daily_spend_cap_credits <= 0) {
       throw new Error(`Project template '${t.id}': daily_spend_cap_credits must be > 0 (no runaway-bill template)`);
-    }
-    if (t.kind === "customer_bot" && !t.suggested_channel) {
-      throw new Error(`Project template '${t.id}': kind 'customer_bot' requires suggested_channel`);
     }
     if (t.default_agent_id && t.allowed_agent_ids && t.allowed_agent_ids.length > 0 && !t.allowed_agent_ids.includes(t.default_agent_id)) {
       throw new Error(`Project template '${t.id}': default_agent_id '${t.default_agent_id}' must be included in allowed_agent_ids`);

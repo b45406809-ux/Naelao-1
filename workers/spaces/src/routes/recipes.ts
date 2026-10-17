@@ -74,19 +74,21 @@ export function registerRecipeRoutes<T extends RecipeEnv>(
           headers: { "content-type": "application/json" },
         });
 
-      // Setting kind=customer_bot makes the existing project execute inside CustomerBotContext;
-      // a conservative ceiling prevents a support-channel prompt from reaching containers.
-      const patch =
-        recipe.projectKind === "customer_bot"
+      // Recipes configure a generic project. External-channel recipes receive a conservative
+      // execution ceiling and runtime profile; no customer-service project kind is created.
+      const patch = {
+        kind: "workspace",
+        ...(recipe.runtimeContext === "CustomerBotContext"
           ? {
-              kind: "customer_bot",
+              external_channel_profile: true,
               execution_ceiling: 2,
               channel_config: {
                 recipe_id: recipe.id,
                 runtime_context: recipe.runtimeContext,
               },
             }
-          : { kind: "workspace" };
+          : {}),
+      };
       const configured = await stub.fetch(
         new Request(
           `http://space-do/projects/${encodeURIComponent(projectId)}?tenant_id=${encodeURIComponent(tenantId)}`,
