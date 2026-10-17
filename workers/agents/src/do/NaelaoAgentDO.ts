@@ -5679,12 +5679,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const eventId = typeof body.event_id === "string" ? body.event_id : "";
     if (!projectId || !installationId || !/^[A-Za-z0-9._:-]{1,160}$/.test(eventId)) return Response.json({ error_code: "channel_extension_inbox_scope_required" }, { status: 400 });
     const event = this.ctx.storage.sql.exec(
-      `SELECT m.session_id,s.channel_user_id,m.answered,COALESCE(d.status,'queued') AS status
+      `SELECT m.session_id,m.answered,COALESCE(d.status,'queued') AS status
        FROM channel_messages m JOIN channel_sessions s ON s.id=m.session_id
        LEFT JOIN channel_extension_dispatches d ON d.message_id=m.id
        WHERE m.id=? AND m.direction='inbound' AND m.project_id=? AND m.channel_extension_instance_id=? LIMIT 1`,
       eventId, projectId, installationId,
-    ).toArray()[0] as { session_id: string; channel_user_id: string; answered: number; status: string } | undefined;
+    ).toArray()[0] as { session_id: string; answered: number; status: string } | undefined;
     if (!event) return Response.json({ error_code: "channel_extension_event_not_found" }, { status: 404 });
     const active = this.ctx.storage.sql.exec(
       `SELECT 1 AS active FROM channel_messages m JOIN channel_extension_dispatches d ON d.message_id=m.id
@@ -5696,7 +5696,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     this.ctx.storage.sql.exec("DELETE FROM channel_extension_dispatches WHERE message_id IN (SELECT id FROM channel_messages WHERE session_id=?)", event.session_id);
     this.ctx.storage.sql.exec("DELETE FROM channel_messages WHERE session_id=?", event.session_id);
     this.ctx.storage.sql.exec("DELETE FROM channel_sessions WHERE id=?", event.session_id);
-    clearChannelExtensionConversationSessions(this.ctx.storage.sql, { projectId, installationId, conversationId: event.channel_user_id });
+    clearChannelExtensionConversationSessions(this.ctx.storage.sql, { projectId, installationId, conversationId: event.session_id });
     return Response.json({ deleted: true });
   }
 
