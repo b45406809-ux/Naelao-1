@@ -32,9 +32,12 @@ const SPACES_TABLE_SQL = `
     updated_at TEXT NOT NULL DEFAULT (datetime('now')), created_by TEXT
   );
 `;
+const USERS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0001_users.sql"), "utf8");
 const BUILDER_DASHBOARD_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0045_builder_dashboard_api.sql"), "utf8");
 const CREDENTIALS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0046_product_end_user_credentials.sql"), "utf8");
 const EMAIL_VERIFICATION_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0055_email_verification.sql"), "utf8");
+const SPACE_MEMBERS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0021_space_members.sql"), "utf8");
+const PRODUCT_END_USER_LANGUAGE_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0096_product_end_user_language.sql"), "utf8");
 
 const FAKE_MANIFEST = {
   id: "launchpad",
@@ -82,9 +85,9 @@ const FAKE_PROJECT_TEMPLATES = [
 const FAKE_AGENTS = [{ id: "launchpad-support-v1", name: "Support Agent", description: "d" }];
 
 function makeEnv(opts: { withAgentsWorker?: boolean; templateFetchCalls?: number[] } = {}) {
-  const fakeDb = createFakeD1([SPACES_TABLE_SQL, BUILDER_DASHBOARD_MIGRATION, CREDENTIALS_MIGRATION, EMAIL_VERIFICATION_MIGRATION]);
+  const fakeDb = createFakeD1([USERS_MIGRATION, SPACES_TABLE_SQL, BUILDER_DASHBOARD_MIGRATION, CREDENTIALS_MIGRATION, EMAIL_VERIFICATION_MIGRATION, SPACE_MEMBERS_MIGRATION, PRODUCT_END_USER_LANGUAGE_MIGRATION]);
   const kvStore = new Map<string, string>();
-  kvStore.set("space-type-manifest:launchpad", JSON.stringify(FAKE_MANIFEST));
+  kvStore.set("space-type-manifest:v2:launchpad", JSON.stringify(FAKE_MANIFEST));
   // Routes by path like the real agents worker: the manifest handler now fetches TWO catalogues
   // (GET /templates for business templates, GET /catalog/shell for the Discover page's project
   // presets + agents). A stub that answered every path with the template payload would let a
@@ -125,6 +128,11 @@ async function seedSpace(env: ReturnType<typeof makeEnv>, id: string, tenantId: 
   await env.PLATFORM_DB.prepare(
     "INSERT INTO spaces (id, tenant_id, status, name, spacetype_id) VALUES (?, ?, 'active', 'Acme Store', 'launchpad')"
   ).bind(id, tenantId).run();
+  for (const endUserId of ["user-a", "user-b"]) {
+    await env.PLATFORM_DB.prepare(
+      "INSERT INTO space_members (id, space_id, tenant_id, end_user_id, role) VALUES (?, ?, ?, ?, 'member')"
+    ).bind(`member-${id}-${endUserId}`, id, tenantId, endUserId).run();
+  }
 }
 
 function authedReq(path: string, headers: Record<string, string> = {}, init?: RequestInit): Request {
@@ -234,7 +242,11 @@ describe("GET /spaces/:spaceId/shell/manifest", () => {
     const body = await res.json() as { template_catalog: Array<{ id: string }> };
     // G-BF08: free_tier_eligible now flows through the catalogue projection so the shell's
     // create-business dialog can grey ineligible templates for free-plan products.
-    expect(body.template_catalog).toEqual([{ id: "whop-seller", name: "Whop Seller", coming_soon: false, free_tier_eligible: false, connectors: ["whop"] }]);
+    expect(body.template_catalog).toEqual([{
+      id: "whop-seller", name: "Whop Seller", description: "d", coming_soon: false,
+      free_tier_eligible: false, connectors: ["whop"], template_mode: "ave",
+      vertical: "Digital business", wallet_mode: "business_wallet",
+    }]);
   });
 
   it("KV-caches the catalog fetch — a second call does not re-hit the agents worker", async () => {
