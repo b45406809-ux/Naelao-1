@@ -35,6 +35,7 @@ import { resolveBusinessContext, parseSpaceConfigForContext, loadBusinessContext
 import { CONNECTOR_CATALOGUE, getConnector, pollableConnectorIds } from "./connectors/catalogue.js";
 import { deployedContainerCatalogue } from "./script-engine/container-catalogue.js";
 import { isCronDue } from "@naelao/events";
+import { claimScheduledJobDispatch, releaseScheduledJobDispatch } from "./scheduled-job-dispatch.js";
 import { SkillLibrary } from "./script-engine/skill-library.js";
 import { compileDynamicCode } from "./script-engine/dynamic-code.js";
 import { compileWorkflowEntrypoint } from "./workflows/workflow-compiler.js";
@@ -397,6 +398,8 @@ interface AgentTickMessage {
   spaceId: string;
   tenantId: string;
   jobId?: string;
+  /** Stable per scheduler sweep so queue redelivery cannot start the same routine twice. */
+  sweepKey?: number;
   connectorName?: string;
 }
 
@@ -8540,7 +8543,7 @@ async function enqueueAgentTicks(env: AgentsEnv): Promise<void> {
           const createdAtMs = parseTimestampMs(row.created_at);
           const lastRunAt = row.last_run_at ?? createdAtMs ?? now;
           if (!isCronDue(row.cron_expression, lastRunAt, now)) continue;
-          messages.push({ body: { kind: "scheduled_job", spaceId: row.space_id, tenantId: row.tenant_id, jobId: row.id } });
+        messages.push({ body: { kind: "scheduled_job", spaceId: row.space_id, tenantId: row.tenant_id, jobId: row.id, sweepKey: Math.floor(now / 3_600_000) } });
         } catch (err) {
           // A malformed cron_expression would throw on every future sweep too — record it as a
           // failure right away so it auto-disables like any other broken job, rather than
@@ -8621,13 +8624,11 @@ async function enqueueAgentTicks(env: AgentsEnv): Promise<void> {
 // / runScheduledJobs) — same requests, same order, just dispatched per-message instead of
 // per-row-in-a-loop.
 //
-// At-least-once delivery (CF Queues) is safe here specifically because of the failure-tracking
-// semantics landed alongside this: last_run_at advances on EVERY fire attempt (success or
-// failure, see recordScheduledJobFailure and the success branch below), so a redelivered
-// "scheduled_job" message re-fetches the row fresh and is a no-op once the due minute has
-// already been recorded — the narrow exception is a redelivery that lands between a successful
-// fireScriptDirectly and the last_run_at UPDATE actually committing, which could double-fire;
-// accepted as a rare, bounded risk rather than adding cross-invocation locking for it.
+// At-least-once delivery (CF Queues) is deduplicated by a durable `(job_id, sweep_key)` claim.
+// The same claim also serializes separate sweeps while a dispatch lease is active. The fresh
+// due-check below avoids acting on a queued message after another successful delivery advanced
+// last_run_at. A crashed consumer can hold its claim until the 30-minute lease expires; the next
+// scheduler sweep can then retry the still-due job.
 /**
  * Deterministic, no-LLM-cost escalation for notifications nobody has actually seen. Deliberately
  * NOT its own platform-wide roster in enqueueAgentTicks — there is no cheap D1-indexed way to know
@@ -8847,7 +8848,13 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
       void sweepUndeliveredNotifications(env, row.space_id, row.tenant_id);
 
       const now = Date.now();
+      const lastRunAt = row.last_run_at ?? parseTimestampMs(row.created_at) ?? now;
+      if (!isCronDue(row.cron_expression, lastRunAt, now)) return; // stale or duplicate queue delivery.
+      const sweepKey = msg.sweepKey ?? Math.floor(now / 3_600_000);
+      const claimToken = await claimScheduledJobDispatch(env.PLATFORM_DB, { jobId: row.id, sweepKey, now });
+      if (!claimToken) return; // duplicate this sweep, paused during enqueue, or another active run.
       const dispatchStarted = Date.now();
+      let claimStatus: "completed" | "failed" | "skipped" = "failed";
       try {
         // A goal-based row (migration 0043) wakes the full reasoning loop against the named
         // agent's own DO; everything else keeps the pre-existing direct-script-fire behavior.
@@ -8877,6 +8884,7 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
           // fires should be able to see "skipped, still busy" rather than an unexplained gap.
           console.log(`[scheduled-jobs] skipped job=${row.id} space=${row.space_id}: assistant still running a prior wake`);
           await recordScheduledJobRun(env, row, { ok: false, skippedBusy: true, firedAt: now });
+          claimStatus = "skipped";
         } else if (doResp.ok) {
           // Step 12: a self-wake scheduled via schedule.wake_me with a delay is one-shot
           // (params._one_shot) — disable it after it fires once rather than letting the pinned
@@ -8887,17 +8895,22 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
             `UPDATE scheduled_jobs SET last_run_at = ?, consecutive_failures = 0, last_error = NULL${oneShot ? ", enabled = 0" : ""} WHERE id = ?`
           ).bind(now, row.id).run();
           await recordScheduledJobRun(env, row, { ok: true, durationMs: Date.now() - dispatchStarted, firedAt: now });
+          claimStatus = "completed";
         } else {
           const errText = await doResp.text().catch(() => `HTTP ${doResp.status}`);
           console.error(`[scheduled-jobs] fire failed job=${row.id} space=${row.space_id}: ${doResp.status}`);
           await recordScheduledJobFailure(env, row, now, errText);
           await recordScheduledJobRun(env, row, { ok: false, error: errText, durationMs: Date.now() - dispatchStarted, firedAt: now });
+          claimStatus = "failed";
         }
       } catch (err) {
         const message = (err as Error).message;
         console.error(`[scheduled-jobs] job failed id=${row.id} space=${row.space_id}:`, message);
         await recordScheduledJobFailure(env, row, now, message);
         await recordScheduledJobRun(env, row, { ok: false, error: message, durationMs: Date.now() - dispatchStarted, firedAt: now });
+        claimStatus = "failed";
+      } finally {
+        await releaseScheduledJobDispatch(env.PLATFORM_DB, { jobId: row.id, sweepKey, claimToken, status: claimStatus });
       }
       return;
     }
