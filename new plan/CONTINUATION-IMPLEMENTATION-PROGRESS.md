@@ -1271,6 +1271,12 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Verification: Agents and Spaces typechecks passed; Steward install/report and route tests passed (8 tests); `git diff --check` passed.
 - Limitation: scheduled collection/ranking still runs as deterministic platform host code; this installation has no user-authored executable bundle and no LLM explanation. The typed summary API remains its data grant. Richer evidence and an attributed, reversible review/confirmation workflow are still open Phase 3 work.
 
+### Phase 3 project routine thread attribution checkpoint (2026-10-17)
+
+- Goal-based scheduled runs with a `project_id` now create a structural thread in that project, create a heartbeat session linked to that thread, and dispatch the same planner/worker path with the verified project ID. A missing project thread/session fails closed instead of silently falling back to a Space Assistant session. Space-wide scheduled work keeps its existing Space Assistant heartbeat session behavior.
+- Verification: scheduled-jobs dispatch tests passed (42 tests), including assertions for project thread/session linking and exact project scope; Agents typecheck and `git diff --check` passed.
+- Direct script routines continue using their existing isolated direct execution path. Durable run-to-thread replay reuse and richer routine result delivery remain open; the dispatch claim prevents normal queue duplicate creation for the same routine sweep.
+
 ### Phase 4 external usage controls checkpoint (2026-10-17)
 
 - Added project setting `external_daily_message_cap` (0 = unlimited, maximum 10,000) and exposed it in Project settings as a per-person daily limit for external channel traffic.

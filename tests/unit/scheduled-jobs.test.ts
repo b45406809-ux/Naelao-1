@@ -634,6 +634,7 @@ describe("handleAgentTicksQueue (agents worker queue consumer)", () => {
   interface ScheduledJobFullRow {
     id: string; space_id: string; tenant_id: string; project_id: string | null;
     cron_expression: string; script_name: string; params: string; last_run_at: number | null;
+    goal?: string | null; agent_id?: string | null;
     created_at: string; consecutive_failures: number;
     quiet_hours_start?: string | null; quiet_hours_end?: string | null; quiet_hours_timezone?: string;
   }
@@ -692,6 +693,8 @@ describe("handleAgentTicksQueue (agents worker queue consumer)", () => {
         const req2 = typeof reqInput === "string" ? new Request(reqInput, init) : reqInput;
         const body = await req2.clone().json().catch(() => null);
         eventFireCalls.push({ url: req2.url, body });
+        if (req2.url.endsWith("/threads")) return Response.json({ id: "project-thread-1" }, { status: 201 });
+        if (req2.url.endsWith("/sessions")) return Response.json({ id: "project-session-1" }, { status: 201 });
         return new Response(JSON.stringify({ fired: true }), { status: 200 });
       },
     };
@@ -761,6 +764,25 @@ describe("handleAgentTicksQueue (agents worker queue consumer)", () => {
     expect(updates).toHaveLength(1);
     expect(updates[0]!.consecutive_failures).toBe(0); // reset on success, even though the row had 2 prior failures
     expect(acked).toHaveLength(1);
+  });
+
+  it("wakes project routines in a linked project thread and session", async () => {
+    const jobRow: ScheduledJobFullRow = {
+      id: "project-goal", space_id: "space-1", tenant_id: "tenant-1", project_id: "proj-1",
+      cron_expression: "* * * * *", script_name: "", goal: "Review open project priorities",
+      params: "{}", last_run_at: null, created_at: "2020-01-01 00:00:00", consecutive_failures: 0,
+    };
+    const { env, fireCalls, eventFireCalls } = makeConsumerEnv({ jobRow });
+    const { batch, acked, retried } = makeBatch([{ kind: "scheduled_job", spaceId: "space-1", tenantId: "tenant-1", jobId: "project-goal" }]);
+    await handleAgentTicksQueue(batch as never, env);
+    const threadCreate = eventFireCalls.find((call) => call.url.endsWith("/threads"));
+    const sessionCreate = eventFireCalls.find((call) => call.url.endsWith("/sessions"));
+    expect(threadCreate?.body).toMatchObject({ project_id: "proj-1", thread_kind: "primary", thread_tier: "tier_2_task" });
+    expect(sessionCreate?.body).toMatchObject({ thread_id: "project-thread-1", metadata: { session_kind: "heartbeat", project_id: "proj-1" } });
+    const run = fireCalls.find((call) => call.url === "http://agent-do/script/run");
+    expect(run?.body).toMatchObject({ projectId: "proj-1", sessionId: "project-session-1", goal: "Review open project priorities" });
+    expect(acked).toHaveLength(1);
+    expect(retried).toHaveLength(0);
   });
 
   it("rechecks quiet hours at queue-consume time before claiming or firing", async () => {

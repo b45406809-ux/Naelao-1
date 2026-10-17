@@ -2133,24 +2133,39 @@ async function resolveWakeContext(
  * Best-effort: a failure here falls back to the old synthetic (never-persisted) id rather than
  * blocking the wake — a heartbeat that can't get a session should still try to do its job.
  */
-async function createHeartbeatSession(env: AgentsEnv, spaceId: string, tenantId: string, title: string): Promise<string> {
+async function createHeartbeatSession(env: AgentsEnv, spaceId: string, tenantId: string, title: string, projectId?: string): Promise<string | null> {
   const fallback = `scheduled-job-${Date.now()}`;
-  if (!env.SPACES_WORKER) return fallback;
+  if (!env.SPACES_WORKER) return projectId ? null : fallback;
   try {
+    const headers = {
+      "content-type": "application/json",
+      "x-naelao-tenant-id": tenantId,
+      "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+    };
+    let threadId: string | undefined;
+    if (projectId) {
+      // A project routine is Project Bot work. Give it a structural project thread and link the
+      // run session to that thread; never silently put project work in the Space Assistant inbox.
+      const threadResponse = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/threads`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ project_id: projectId, title, thread_kind: "primary", thread_tier: "tier_2_task" }),
+      }));
+      if (!threadResponse.ok) return null;
+      const thread = await threadResponse.json<{ id?: string }>();
+      if (!thread.id) return null;
+      threadId = thread.id;
+    }
     const res = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/sessions`, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-naelao-tenant-id": tenantId,
-        "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
-      },
-      body: JSON.stringify({ metadata: { session_kind: "heartbeat", title } }),
+      headers,
+      body: JSON.stringify({ ...(threadId ? { thread_id: threadId } : {}), metadata: { session_kind: "heartbeat", title, ...(projectId ? { project_id: projectId } : {}) } }),
     }));
-    if (!res.ok) return fallback;
+    if (!res.ok) return projectId ? null : fallback;
     const created = await res.json<{ id: string }>();
-    return created.id || fallback;
+    return created.id || (projectId ? null : fallback);
   } catch {
-    return fallback;
+    return projectId ? null : fallback;
   }
 }
 
@@ -2186,8 +2201,10 @@ async function wakeAgentGoal(
 
   const heartbeatSessionId = await createHeartbeatSession(
     env, params.spaceId, params.tenantId,
-    `Heartbeat — ${new Date().toISOString().slice(0, 16).replace("T", " ")}`
+    `${params.projectId ? "Project routine" : "Heartbeat"} — ${new Date().toISOString().slice(0, 16).replace("T", " ")}`,
+    params.projectId,
   );
+  if (!heartbeatSessionId) return Response.json({ error_code: "project_thread_unavailable" }, { status: 503 });
   // The model and the business, resolved the same way /agent/run resolves them.
   //
   // This sent NEITHER, and both mattered. Without a model the DO fell back to a hardcoded Claude
