@@ -19,6 +19,8 @@ describe("Batch 10 workflow primitives", () => {
     const source = readFileSync(new URL("../../../packages/agent-sdk/examples/trading-mentor-channel/place-order.ts", import.meta.url), "utf8");
     const compiled = await compileWorkflowEntrypoint(source);
     expect(compiled.source).toContain('"orders.place"');
+    expect(compiled.source).toContain('"extension.gadget.insert"');
+    expect(compiled.source).toContain("gadgets:Object.freeze");
     expect(compiled.source).toContain("order_requires_explicit_member_confirmation");
   });
   it("partitions a repository map into bounded atomic chunks", () => {

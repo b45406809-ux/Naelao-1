@@ -18,6 +18,7 @@ import { registerBusinessRoutes } from "./business-routes.js";
 import { ALLOWED_MODELS, isAllowedModel, isValidEffortLevel, isPersonalPlanTier, PERSONAL_PLAN_LIMITS, type PersonalPlanTier } from "@naelao/billing-core";
 import { registerProjectMcpRoutes } from "./routes/mcp.js";
 import { registerGadgetMcpRoutes } from "./routes/gadget-mcp.js";
+import { registerExtensionGadgetRoutes } from "./routes/extension-gadget.js";
 import { gadgetActorId } from "./do/MicroAppDO.js";
 import { registerDynamicPageRoutes } from "./routes/dynamic-pages.js";
 import { registerRecipeRoutes } from "./routes/recipes.js";
@@ -111,6 +112,7 @@ app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
 app.get("/health", (c) => c.json({ ok: true, service: "spaces", env: c.env.ENVIRONMENT }));
 registerGadgetMcpRoutes(app);
+registerExtensionGadgetRoutes(app);
 registerDynamicPageRoutes(app);
 registerRecipeRoutes(app);
 registerMarketplaceRoutes(app);
@@ -1543,6 +1545,10 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
         if (primitive.permissions.length || primitive.capabilityRequirements.length
           || primitive.toolNames.some(name => !/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(name)))
           throw new Error("workflow_requires_owner_reviewed_installed_tool_names");
+        const gadgetOperations = primitive.toolNames.filter(name => name.startsWith("extension.gadget."));
+        if (gadgetOperations.some(name => !["extension.gadget.list", "extension.gadget.get", "extension.gadget.insert"].includes(name))
+          || (gadgetOperations.length > 0 && !primitives.some(item => item.kind === "gadget")))
+          throw new Error("workflow_gadget_operation_requires_declared_gadget");
       }
     }
   } catch (error) {

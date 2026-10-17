@@ -1155,3 +1155,11 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Deletion returns 409 while processing or provider delivery is active/uncertain, so a concurrent external action cannot be mistaken for erased state. The UI confirms that this removes Naelao's stored data and does not delete copies held by the provider.
 - Verification passed: Agents typecheck; focused inbox/session suites (11 tests); Shell typecheck; and `git diff --check`.
 - Inbox reply composition and assignment remain open; this action implements local data deletion only.
+
+## Extension runtime follow-up — workflow-owned Gadget data
+
+- Added an SDK `ExtensionWorkflowContext.gadgets` contract and isolated runtime methods for list/get/insert. A workflow must include each operation in its `toolNames`; that list remains an owner-reviewed package declaration and is still intersected with the exact active install at runtime.
+- The Agents host requires an active `vertical_extension` run, project, installation, granted operation, and project-member worker role bound to that workflow. The Spaces bridge then rechecks tenant/Space/project/install scope, active status, `PROJECT_BOUND` scope, and that the Gadget primitive belongs to the same bundle. It derives the named instance's Gadget actor ID server-side and forwards only the fixed list/get/insert MCP verbs. No SQL or Gadget ID becomes a public-channel capability.
+- Updated the Trading Mentor sample to write its submitted order to the install-scoped trade journal after the broker operation, and bumped the package to `1.2.0` so the changed artifacts remain compatible with immutable releases.
+- Verification passed: SDK, Spaces, Agents, and Shell typechecks; SDK bundle contract suite (15 tests); Agents workflow compiler/scope suites (9 tests); Spaces Gadget bridge suite (2 tests); and `git diff --check`.
+- Remaining limits: Canvas-side Gadget actions and Gadget update/delete are not implemented. The current workflow Gadget API is only list/get/insert. This host bridge and its package declaration reject unsupported operations and does not expose arbitrary SQL.

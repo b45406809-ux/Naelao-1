@@ -80,5 +80,10 @@ describe("composed extension bundle contract", () => {
     expect(() => parseExtensionBundle({ ...composed, workerRoles: [] })).toThrow("workflow_worker_role_binding_required");
     expect(() => parseExtensionBundle({ ...composed, workerRoles: [{ ...composed.workerRoles[0], principal: "public" }] })).toThrow("invalid_worker_principal");
     expect(() => parseExtensionBundle({ ...composed, primitives: [{ ...workflow, entry: "../outside.ts" }] })).toThrow("invalid_workflow");
+    const gadget = { schemaVersion: "1.0", kind: "gadget", id: "journal", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {}, scope: "PROJECT_BOUND", schemaSql: "CREATE TABLE trades(id TEXT PRIMARY KEY)" };
+    const withGadget = { ...composed, primitives: [gadget, { ...workflow, toolNames: ["extension.gadget.insert"] }] };
+    expect(parseExtensionBundle(withGadget).primitives).toHaveLength(2);
+    expect(() => parseExtensionBundle({ ...composed, primitives: [{ ...workflow, toolNames: ["extension.gadget.insert"] }] })).toThrow("invalid_workflow_gadget_capability");
+    expect(() => parseExtensionBundle({ ...withGadget, primitives: [gadget, { ...workflow, toolNames: ["extension.gadget.drop"] }] })).toThrow("invalid_workflow_gadget_capability");
   });
 });

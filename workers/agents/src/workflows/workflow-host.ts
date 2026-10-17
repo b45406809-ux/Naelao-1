@@ -29,9 +29,25 @@ export async function workflowHeaders(env: DurableWorkflowHostEnv, tenantId: str
 }
 /** Changes to membership, installation or agent configuration invalidate resumed grants. */
 export interface WorkflowInstallationGrant {
-  instance: { tenant_id: string; space_id: string; project_id?: string | null; user_id?: string | null; scope?: string; status: string };
-  manifest: { id?: string; daemons?: Array<{ workflowScript?: string }>; bundle?: { id?: string; version?: string; primitives?: Array<{ kind?: string; id?: string; entry?: string; steps?: string[]; toolNames?: string[] }> } };
+  instance: { instance_id?: string; tenant_id: string; space_id: string; project_id?: string | null; instance_key?: string | null; user_id?: string | null; scope?: string; status: string };
+  manifest: { id?: string; daemons?: Array<{ workflowScript?: string }>; bundle?: { id?: string; version?: string; primitives?: Array<{ kind?: string; id?: string; entry?: string; steps?: string[]; toolNames?: string[] }>; workerRoles?: Array<{ id?: string; principal?: string; invocation?: string; execution?: string; entry?: string; primitiveIds?: string[] }> } };
   release?: { version?: string; artifactSha256?: string; signatureValid?: boolean } | null;
+}
+export function resolveExtensionGadgetAppId(input: { installation?: WorkflowInstallationGrant; workflowId: string; operation: string; gadgetId: string }): string | null {
+  const { installation, workflowId, operation, gadgetId } = input;
+  if (!installation || !["extension.gadget.list", "extension.gadget.get", "extension.gadget.insert"].includes(operation)
+    || installation.instance.status !== "active" || installation.instance.scope !== "PROJECT_BOUND"
+    || !installation.instance.project_id || !installation.instance.instance_id) return null;
+  const bundle = installation.manifest.bundle;
+  if (!bundle?.id || installation.manifest.id !== bundle.id || !bundle.version) return null;
+  const workflow = bundle.primitives?.find(part => part.kind === "workflow" && part.id === workflowId);
+  if (!workflow?.entry || !workflow.toolNames?.includes(operation)) return null;
+  const bound = bundle.workerRoles?.some(role => role.principal === "project_member" && role.execution === "worker"
+    && ["workflow_step", "tool"].includes(role.invocation ?? "") && role.entry === workflow.entry && role.primitiveIds?.includes(workflowId));
+  if (!bound || !bundle.primitives?.some(part => part.kind === "gadget" && part.id === gadgetId)) return null;
+  const key = installation.instance.instance_key;
+  const appId = key && key !== "default" ? `${key}_${gadgetId}` : gadgetId;
+  return /^[a-z][a-z0-9_-]{1,63}$/.test(appId) ? appId : null;
 }
 /** Recompute the canonical release digest over immutable extension files before loading code.
  * The DO's internal attestation check establishes that the recorded digest/manifest pair was

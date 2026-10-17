@@ -16,6 +16,9 @@ type WorkflowContext = {
   tools: {
     call<T>(stepKey: string, operation: string, params: Record<string, unknown>): Promise<T>;
   };
+  gadgets: {
+    insert<T>(stepKey: string, gadgetId: string, table: string, record: Record<string, unknown>): Promise<T>;
+  };
 };
 
 /** Project member worker entry. The planner delegates a reviewed request here; this workflow
@@ -32,7 +35,7 @@ export async function execute(step: WorkflowStep, ctx: WorkflowContext) {
     throw new Error("order_quantity_out_of_bounds");
   }
 
-  return step.do("place-order", () => ctx.tools.call("place-order-effect", "orders.place", {
+  const result = await step.do("place-order", () => ctx.tools.call("place-order-effect", "orders.place", {
     symbol,
     side: order.side,
     quantity,
@@ -41,4 +44,14 @@ export async function execute(step: WorkflowStep, ctx: WorkflowContext) {
     projectId: ctx.identity.projectId,
     workflowRunId: ctx.identity.runId,
   }));
+  await step.do("journal-order", () => ctx.gadgets.insert("journal-order-insert", "trade_journal", "trade_journal", {
+    id: order.requestId || ctx.identity.runId,
+    created_at: new Date().toISOString(),
+    symbol,
+    side: order.side,
+    quantity,
+    status: "submitted",
+    workflow_run_id: ctx.identity.runId,
+  }));
+  return { result, journaled: true };
 }

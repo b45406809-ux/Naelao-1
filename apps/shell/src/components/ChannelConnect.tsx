@@ -272,7 +272,9 @@ export function ChannelConnect({
           detail: item.kind === "workflow" && typeof item.entry === "string" ? item.entry : item.kind === "canvas" && typeof item.component === "string" ? item.component : undefined })),
         roles: roles.map(role => ({ id: typeof role.id === "string" ? role.id : "unnamed role", principal: typeof role.principal === "string" ? role.principal : "principal missing",
           invocation: typeof role.invocation === "string" ? role.invocation : "invocation missing", execution: typeof role.execution === "string" ? role.execution : "execution missing",
-          parts: Array.isArray(role.primitiveIds) ? role.primitiveIds.filter((id): id is string => typeof id === "string") : [] })),
+          parts: Array.isArray(role.primitiveIds) ? role.primitiveIds.filter((id): id is string => typeof id === "string") : [],
+          grants: primitives.filter(part => part.kind === "workflow" && Array.isArray(role.primitiveIds) && role.primitiveIds.includes(part.id))
+            .flatMap(part => Array.isArray(part.toolNames) ? part.toolNames.filter((name): name is string => typeof name === "string") : []) })),
         connections: connections.map(item => `${typeof item.id === "string" ? item.id : "connection"} · ${typeof item.provider === "string" ? item.provider : "provider missing"}${item.required === true ? " · required" : " · optional"}`),
         knowledge: knowledge.map(item => `${typeof item.id === "string" ? item.id : "collection"} · ${typeof item.access === "string" ? item.access : "access missing"}`),
       };
@@ -487,7 +489,7 @@ export function ChannelConnect({
             <div style={{ fontWeight: 650, marginBottom: 5 }}>Package map{("id" in bundlePreview) ? ` · ${bundlePreview.id} v${bundlePreview.version}` : ""}</div>
             {"error" in bundlePreview ? <div role="status" style={{ color: "var(--text3)" }}>{bundlePreview.error}</div> : <>
               <div style={{ display: "grid", gap: 3 }}>{bundlePreview.primitives.map((part, index) => <div key={`${part.id}-${index}`}>Part <code>{part.id}</code> · {part.kind}{part.detail ? ` · ${part.detail}` : ""}</div>)}</div>
-              {bundlePreview.roles.length > 0 && <div style={{ marginTop: 7 }}><strong>Worker bindings</strong>{bundlePreview.roles.map((role, index) => <div key={`${role.id}-${index}`} style={{ marginTop: 2 }}><code>{role.id}</code> · {role.principal} · {role.invocation} on {role.execution} · parts: {role.parts.join(", ") || "none"}</div>)}</div>}
+              {bundlePreview.roles.length > 0 && <div style={{ marginTop: 7 }}><strong>Worker bindings</strong>{bundlePreview.roles.map((role, index) => <div key={`${role.id}-${index}`} style={{ marginTop: 2 }}><code>{role.id}</code> · {role.principal} · {role.invocation} on {role.execution} · parts: {role.parts.join(", ") || "none"}{role.grants.length ? ` · declared operations: ${role.grants.join(", ")}` : ""}</div>)}</div>}
               {bundlePreview.connections.length > 0 && <div style={{ marginTop: 7 }}><strong>Host connections</strong>{bundlePreview.connections.map((item, index) => <div key={`${item}-${index}`}>{item}</div>)}</div>}
               {bundlePreview.knowledge.length > 0 && <div style={{ marginTop: 7 }}><strong>Knowledge grants</strong>{bundlePreview.knowledge.map((item, index) => <div key={`${item}-${index}`}>{item}</div>)}</div>}
               <div style={{ marginTop: 7, color: "var(--text3)" }}>All listed parts share this extension ID and release version. Each installation key creates a separate instance. This preview summarizes declarations; server validation remains authoritative.</div>

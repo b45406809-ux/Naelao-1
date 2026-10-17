@@ -260,6 +260,19 @@ export interface ContainerContract extends ExtensionContractBase {
 }
 export interface LinterContract extends ExtensionContractBase { kind: "linter"; mode: "deterministic" | "semantic"; entry: string; failureMode: "warn" | "block"; }
 export interface WorkflowContract extends ExtensionContractBase { kind: "workflow"; executionMode: ExecutionMode; entry: string; steps: readonly string[]; toolNames: readonly string[]; }
+/** Narrow API available only to an internal project-member Durable Workflow role.
+ * Gadget writes are owner-approved by listing `extension.gadget.insert` in that workflow's
+ * `toolNames`; external channel handlers never receive this context. */
+export interface ExtensionWorkflowGadgets {
+  list<T = unknown>(stepKey: string, gadgetId: string, table: string, options?: { filter?: Record<string, unknown>; limit?: number }): Promise<T>;
+  get<T = unknown>(stepKey: string, gadgetId: string, table: string, id: string | number): Promise<T>;
+  insert<T = unknown>(stepKey: string, gadgetId: string, table: string, record: Record<string, unknown>): Promise<T>;
+}
+export interface ExtensionWorkflowContext<TParams = Record<string, unknown>> {
+  readonly params: TParams;
+  readonly gadgets: ExtensionWorkflowGadgets;
+  readonly tools: { call<T = unknown>(stepKey: string, operation: string, params: Record<string, unknown>): Promise<T> };
+}
 export type ExtensionPrimitiveManifest = GadgetContract | CanvasContract | ChannelContract | ContainerContract | LinterContract | WorkflowContract;
 /**
  * A worker role is an invocation shape, not a trust boundary or a runtime tier.
@@ -463,6 +476,9 @@ export function parseExtensionBundle(value: unknown): ExtensionBundleManifest {
   for (const workflow of primitives.filter((item): item is WorkflowContract => item.kind === "workflow")) {
     contractAssert(Array.isArray(workerRoles) && (workerRoles as ExtensionWorkerRole[]).some(role => role.primitiveIds.includes(workflow.id)
       && role.entry === workflow.entry && ["workflow_step", "tool"].includes(role.invocation)), "workflow_worker_role_binding_required");
+    const gadgetOperations = workflow.toolNames.filter(name => name.startsWith("extension.gadget."));
+    contractAssert(gadgetOperations.every(name => ["extension.gadget.list", "extension.gadget.get", "extension.gadget.insert"].includes(name))
+      && (!gadgetOperations.length || primitives.some(item => item.kind === "gadget")), "invalid_workflow_gadget_capability");
   }
   for (const [field, max] of [["connections", 32], ["knowledge", 64]] as const) {
     const entries = raw[field];

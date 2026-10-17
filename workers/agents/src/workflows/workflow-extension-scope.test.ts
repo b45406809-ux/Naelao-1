@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertDeclaredExtensionWorkflow, extensionWorkflowName, verifyExtensionArtifactSet, workflowHash, workflowWorkspaceExtensionId, type WorkflowInstallationGrant } from "./workflow-host.js";
+import { assertDeclaredExtensionWorkflow, extensionWorkflowName, resolveExtensionGadgetAppId, verifyExtensionArtifactSet, workflowHash, workflowWorkspaceExtensionId, type WorkflowInstallationGrant } from "./workflow-host.js";
 
 const installation: WorkflowInstallationGrant = {
   instance: { tenant_id: "tenant", space_id: "space", status: "active", scope: "SPACE_SHARED" },
@@ -35,6 +35,17 @@ describe("verified extension workflow identity", () => {
     ] } } };
     expect(assertDeclaredExtensionWorkflow(composed, "place_order", "ext_customs")).toEqual({ id: "place_order", entry: "./place-order.ts", toolNames: ["orders.place"] });
     expect(assertDeclaredExtensionWorkflow(composed, "place-order", "ext_customs")).toMatchObject({ entry: "./place-order.ts" });
+  });
+
+  it("authorizes a Gadget only for a project-member workflow bound inside its exact active install", () => {
+    const composed: WorkflowInstallationGrant = { instance: { tenant_id: "tenant", space_id: "space", project_id: "project", instance_id: "install-a", instance_key: "mentor2", status: "active", scope: "PROJECT_BOUND" },
+      manifest: { id: "ext_customs", bundle: { id: "ext_customs", version: "1.0.0", primitives: [
+        { kind: "workflow", id: "place_order", entry: "./place-order.ts", toolNames: ["extension.gadget.insert"] }, { kind: "gadget", id: "trade_journal" },
+      ], workerRoles: [{ principal: "project_member", invocation: "workflow_step", execution: "worker", entry: "./place-order.ts", primitiveIds: ["place_order"] }] } } };
+    expect(resolveExtensionGadgetAppId({ installation: composed, workflowId: "place_order", operation: "extension.gadget.insert", gadgetId: "trade_journal" })).toBe("mentor2_trade_journal");
+    expect(resolveExtensionGadgetAppId({ installation: composed, workflowId: "place_order", operation: "extension.gadget.insert", gadgetId: "other" })).toBeNull();
+    expect(resolveExtensionGadgetAppId({ installation: composed, workflowId: "place_order", operation: "extension.gadget.get", gadgetId: "trade_journal" })).toBeNull();
+    expect(resolveExtensionGadgetAppId({ installation: { ...composed, instance: { ...composed.instance, project_id: null } }, workflowId: "place_order", operation: "extension.gadget.insert", gadgetId: "trade_journal" })).toBeNull();
   });
 
   it("isolates space-wide durable extension workflows by the verified installation", () => {

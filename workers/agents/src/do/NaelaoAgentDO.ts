@@ -16,7 +16,7 @@ import { clearChannelExtensionConversationSessions, clearChannelExtensionSession
 
 import { DurableObject } from "cloudflare:workers";
 import { createWorkflowHooks } from "../workflows/workflow-orchestration.js";
-import { startDurableWorkflow, workflowHash, workflowRunStub, readWorkflowGrant, verifyExtensionArtifactSet, workflowWorkspaceExtensionId, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
+import { startDurableWorkflow, workflowHash, workflowRunStub, readWorkflowGrant, resolveExtensionGadgetAppId, verifyExtensionArtifactSet, workflowWorkspaceExtensionId, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
 import type { DurableWorkflowIdentity } from "@naelao/agent-sdk";
 import { normalizePreferredLanguage } from "@naelao/types";
 import { mintInternalToken, broadcastSpaceEvent } from "@naelao/http";
@@ -1156,6 +1156,23 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const config = this.env.SCRIPTS_R2 ? await loadAgentConfig(this.env.SCRIPTS_R2, identity.spaceId, identity.agentId) : null;
     if (!config) return Response.json({ error: "workflow_agent_unavailable" }, { status: 503 });
     if (config.requiresApprovalFor?.includes(body.operation)) return Response.json({ error: "workflow_human_approval_required" }, { status: 409 });
+    if (["extension.gadget.list", "extension.gadget.get", "extension.gadget.insert"].includes(body.operation)) {
+      if (identity.workflowClass !== "vertical_extension" || !identity.projectId || !identity.installationId || !identity.definitionId || !identity.capabilities.includes(body.operation))
+        return Response.json({ error: "workflow_gadget_grant_invalid" }, { status: 403 });
+      const gadgetId = typeof body.params?.gadget_id === "string" ? body.params.gadget_id : "";
+      if (!resolveExtensionGadgetAppId({ ...(grant.installation ? { installation: grant.installation } : {}), workflowId: identity.definitionId, operation: body.operation, gadgetId }))
+        return Response.json({ error: "workflow_gadget_not_in_extension" }, { status: 403 });
+      const operationName = body.operation.slice("extension.gadget.".length);
+      const args = { ...body.params };
+      delete args.gadget_id;
+      const response = await this.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/spaces/${encodeURIComponent(identity.spaceId)}/internal/extensions/${encodeURIComponent(identity.installationId)}/gadgets/${encodeURIComponent(gadgetId)}/${operationName}`,
+        { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
+          "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, identity.tenantId) },
+          body: JSON.stringify({ project_id: identity.projectId, arguments: args }) },
+      ));
+      return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
+    }
     const env = await this.buildScriptEngineEnv(identity.spaceId, identity.agentId, identity.tenantId, identity.actorId, identity.projectId,
       { goal: "Durable workflow step", taskId: body.idempotencyKey, threadId: identity.runId }, body.airGappedOnly === true, undefined, undefined, grant.role);
     if (!env) return Response.json({ error: "workflow_engine_unavailable" }, { status: 503 });
