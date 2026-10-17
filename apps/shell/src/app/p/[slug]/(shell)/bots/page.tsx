@@ -58,19 +58,19 @@ export default function ProjectBotsPage() {
     return latest;
   }, [threads]);
 
-  async function startThread(project: Project) {
+  async function startThread(project: Project, panel?: "crons") {
     if (!session || creatingProjectId) return;
     setCreatingProjectId(project.id);
     try {
       const thread = await createThread(activeSpaceId, session, { project_id: project.id, title: "Project Bot" });
-      router.push(`/p/${product.slug}/threads/${thread.id}`);
+      router.push(`/p/${product.slug}/threads/${thread.id}${panel ? `?panel=${panel}` : ""}`);
     } catch {
       setLoadError(true);
       setCreatingProjectId(null);
     }
   }
 
-  const openThread = (threadId: string) => router.push(`/p/${product.slug}/threads/${threadId}`);
+  const openThread = (threadId: string, panel?: "crons") => router.push(`/p/${product.slug}/threads/${threadId}${panel ? `?panel=${panel}` : ""}`);
 
   return (
     <div className="page-view">
@@ -116,6 +116,7 @@ export default function ProjectBotsPage() {
                 </div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                   {latestThread && <Button variant="secondary" onClick={() => openThread(latestThread.id)}>Continue</Button>}
+                  <Button variant="secondary" disabled={creatingProjectId !== null} onClick={() => latestThread ? openThread(latestThread.id, "crons") : void startThread(project, "crons")}>Routines</Button>
                   <Button disabled={creatingProjectId !== null} onClick={() => void startThread(project)}>
                     {isCreating ? "Opening…" : latestThread ? "New thread" : "Talk to Project Bot"}
                   </Button>

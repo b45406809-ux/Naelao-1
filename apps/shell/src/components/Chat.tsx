@@ -390,11 +390,17 @@ export function Chat({
     setWorkspaceTabsHydratedKey(null);
     try {
       const parsed = JSON.parse(window.localStorage.getItem(workspaceTabsStorageKey) ?? "null") as { tabs?: unknown[]; active?: unknown } | null;
+      const requestedPanel = new URLSearchParams(window.location.search).get("panel");
+      const requestedTab = isWorkspaceTab(requestedPanel) && (requestedPanel !== "crons" || Boolean(projectId))
+        ? requestedPanel
+        : null;
       const saved = parsed?.tabs?.filter(isWorkspaceTab) ?? [];
+      if (requestedTab && !saved.includes(requestedTab)) saved.push(requestedTab);
       const tabs = saved.length > 0 ? Array.from(new Set(saved)) : ["stats" as WorkspaceTab];
-      const active = isWorkspaceTab(parsed?.active) && tabs.includes(parsed.active) ? parsed.active : tabs[0]!;
+      const active = requestedTab ?? (isWorkspaceTab(parsed?.active) && tabs.includes(parsed.active) ? parsed.active : tabs[0]!);
       setWorkspaceTabs(tabs);
       setPanelTab(active);
+      if (requestedTab) setPanelOpen(true);
     } catch {
       setWorkspaceTabs(["stats"]);
       setPanelTab("stats");

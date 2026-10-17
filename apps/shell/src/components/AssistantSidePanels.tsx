@@ -6,13 +6,10 @@
 // threadId) AND a project thread (Chat.tsx with threadId+projectId), which previously only ever
 // showed "Coming soon" for everything but Stats and the consult-subthread Assistant tab.
 //
-// A project thread scopes two things differently, not everything: Config edits the SPECIFIC
-// project agent's own policy override when one is selected (falls back to the space-wide
-// assistant_policy otherwise, same three-tier fallback SpaceDO's own resolveAgentPolicy uses),
-// and Files reads that PROJECT's own R2 workspace rather than the space-wide assistant one.
-// Memory/Crons/Channels/Sub-agents/Skills/Notifications stay space-wide in both contexts —
-// there's no per-project memory/cron/channel/notification concept, and the skill library
-// (R2 scripts) is shared platform-wide within a space, not siloed per project. Local Machine is
+// A project thread scopes Config, Files and Crons to the selected project. Project crons wake
+// the configured project planner; the assistant/Home view shows only space-wide jobs. Channels,
+// Memory, Skills and Notifications remain space-wide because their current APIs have no
+// project-scoped model, and the skill library is shared within a Space. Local Machine is
 // the one tab scoped the OTHER way — project-only, since local_grants.project_id already lets a
 // grant be scoped to one project and the space-wide business detail page already owns the
 // whole-space view.
