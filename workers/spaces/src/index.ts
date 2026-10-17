@@ -1525,7 +1525,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
     if (manifest.capabilityRequirements.length !== requiredCapabilities.size || manifest.capabilityRequirements.some(item => !requiredCapabilities.has(item)))
       throw new Error("project_bundle_capability_declaration_mismatch");
     const workflowIds = new Set(bundle.primitives.filter(item => item.kind === "workflow").map(item => item.id));
-    if ((bundle.workerRoles ?? []).some(role => role.execution !== "worker" || !["workflow_step", "tool"].includes(role.invocation)
+    if ((bundle.workerRoles ?? []).some(role => role.principal !== "project_member" || role.execution !== "worker" || !["workflow_step", "tool"].includes(role.invocation)
       || role.primitiveIds.some(id => !workflowIds.has(id)))) throw new Error("extension_worker_role_runtime_not_supported");
     const providerAllowlist = new Set(["whatsapp", "telegram", "slack", "discord", "email"]);
     const channels = bundle.primitives.filter(item => item.kind === "channel");

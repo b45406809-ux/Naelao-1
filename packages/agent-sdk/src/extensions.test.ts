@@ -33,7 +33,7 @@ describe("composed extension bundle contract", () => {
       { schemaVersion: "1.0", kind: "canvas", id: "mentor_console", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {}, layout: "CanvasMount", component: "./console.tsx", dynamicPage: false },
       { schemaVersion: "1.0", kind: "channel", id: "student_whatsapp", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {}, provider: "whatsapp", connectionId: "student_channel", handlerScript: "./handler.ts", context: "channel_only", inboundEvents: ["message.received"], outboundEvents: ["message.reply"], knowledgeCollections: ["course_material"], session: { enabled: true, maxBytes: 2048, ttlDays: 30 } },
     ],
-    workerRoles: [{ id: "answer_student", invocation: "workflow_step", execution: "worker", entry: "./answer.ts", primitiveIds: ["student_whatsapp"] }],
+    workerRoles: [{ id: "answer_student", principal: "external_channel_subject", invocation: "workflow_step", execution: "worker", entry: "./answer.ts", primitiveIds: ["student_whatsapp"] }],
     connections: [{ id: "student_channel", provider: "whatsapp", purpose: "Receive and reply to student messages", required: true }],
     knowledge: [{ id: "course_material", purpose: "Answer student questions from owner-approved materials", access: "owner_published_external" }],
   } as const;
@@ -75,9 +75,10 @@ describe("composed extension bundle contract", () => {
     const workflow = { schemaVersion: "1.0", kind: "workflow", id: "place_order", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
       executionMode: "interactive", entry: "./place-order.ts", steps: [], toolNames: ["orders.place", "orders.status"] };
     const composed = { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_trading_mentor", version: "1.0.0", primitives: [workflow],
-      workerRoles: [{ id: "order_worker", invocation: "workflow_step", execution: "worker", entry: "./place-order.ts", primitiveIds: ["place_order"] }] };
+      workerRoles: [{ id: "order_worker", principal: "project_member", invocation: "workflow_step", execution: "worker", entry: "./place-order.ts", primitiveIds: ["place_order"] }] };
     expect(parseExtensionBundle(composed).primitives[0]).toMatchObject({ kind: "workflow", entry: "./place-order.ts", toolNames: ["orders.place", "orders.status"] });
     expect(() => parseExtensionBundle({ ...composed, workerRoles: [] })).toThrow("workflow_worker_role_binding_required");
+    expect(() => parseExtensionBundle({ ...composed, workerRoles: [{ ...composed.workerRoles[0], principal: "public" }] })).toThrow("invalid_worker_principal");
     expect(() => parseExtensionBundle({ ...composed, primitives: [{ ...workflow, entry: "../outside.ts" }] })).toThrow("invalid_workflow");
   });
 });

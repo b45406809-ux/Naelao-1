@@ -267,6 +267,8 @@ export type ExtensionPrimitiveManifest = GadgetContract | CanvasContract | Chann
  */
 export interface ExtensionWorkerRole {
   id: string;
+  /** Who may cause this role to run; separate from invocation and compute placement. */
+  principal: "project_member" | "space_owner" | "external_channel_subject" | "service";
   invocation: "subagent" | "workflow_step" | "tool";
   execution: "worker" | "container" | "web_container";
   entry: string;
@@ -448,9 +450,10 @@ export function parseExtensionBundle(value: unknown): ExtensionBundleManifest {
     for (const item of workerRoles as unknown[]) {
       contractAssert(item !== null && typeof item === "object" && !Array.isArray(item), "invalid_worker_role");
       const role = item as Record<string, unknown>;
-      rejectUnknownContractKeys(role, new Set(["id", "invocation", "execution", "entry", "primitiveIds"]));
+      rejectUnknownContractKeys(role, new Set(["id", "principal", "invocation", "execution", "entry", "primitiveIds"]));
       contractAssert(typeof role.id === "string" && CONTRACT_ID.test(role.id) && !ids.has(role.id), "invalid_worker_role_id");
       ids.add(role.id);
+      contractAssert(["project_member", "space_owner", "external_channel_subject", "service"].includes(String(role.principal)), "invalid_worker_principal");
       contractAssert(["subagent", "workflow_step", "tool"].includes(String(role.invocation)), "invalid_worker_invocation");
       contractAssert(["worker", "container", "web_container"].includes(String(role.execution)), "invalid_worker_execution");
       contractAssert(typeof role.entry === "string" && CONTRACT_PATH.test(role.entry), "invalid_worker_entry");

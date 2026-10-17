@@ -22,7 +22,7 @@ describe("container work inside durable workflows", () => {
       if (url.pathname === "/spaces/space/container-installations") return Response.json({ installations: [
         { instance: { instance_id: "install-a", project_id: "project", scope: "PROJECT_BOUND", status: "active" }, manifest: { id: "ext_trade", bundle: { id: "ext_trade", version: "1.2.0", primitives: [
           { kind: "canvas", id: "mentor_console" }, { kind: "gadget", id: "trade_journal" }, { kind: "workflow", id: "place_order", entry: "./place-order.ts", toolNames: ["orders.place"] },
-        ], workerRoles: [{ id: "order_worker", invocation: "workflow_step", execution: "worker", entry: "./place-order.ts", primitiveIds: ["place_order"] }] } } },
+        ], workerRoles: [{ id: "order_worker", principal: "project_member", invocation: "workflow_step", execution: "worker", entry: "./place-order.ts", primitiveIds: ["place_order"] }] } } },
         { instance: { instance_id: "install-b", project_id: "other", scope: "PROJECT_BOUND", status: "active" }, manifest: { id: "ext_other", bundle: { id: "ext_other", version: "1.0.0", primitives: [{ kind: "workflow", id: "private", entry: "./private.ts", toolNames: [] }] } } },
       ] });
       return new Response("", { status: 404 });
@@ -32,7 +32,7 @@ describe("container work inside durable workflows", () => {
     const hooks = createWorkflowHooks(env as never, { tenantId: "tenant", spaceId: "space", projectId: "project", agentId: "agent", actorId: "member" }, "parent", {} as never);
     await expect(hooks.workflowListExtensions?.()).resolves.toEqual([{ extensionId: "ext_trade", version: "1.2.0", installationId: "install-a",
       parts: [{ id: "mentor_console", kind: "canvas" }, { id: "trade_journal", kind: "gadget" }, { id: "place_order", kind: "workflow" }],
-      workflows: [{ id: "place_order", entry: "./place-order.ts", toolNames: ["orders.place"], workerRoles: [{ id: "order_worker", invocation: "workflow_step", execution: "worker", entry: "./place-order.ts" }] }] }]);
+      workflows: [{ id: "place_order", entry: "./place-order.ts", toolNames: ["orders.place"], workerRoles: [{ id: "order_worker", principal: "project_member", invocation: "workflow_step", execution: "worker", entry: "./place-order.ts" }] }] }]);
     expect(fetch).toHaveBeenCalledTimes(3);
   });
 });

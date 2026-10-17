@@ -1135,3 +1135,9 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Added a second project extension inventory to the owner/admin Channel panel so Canvas/Gadget/workflow-only installations receive release history, rollback and uninstall controls even when they have no channel primitive. Channel-bearing compositions keep their session/inbox management in the channel-specific panel.
 - Installer success and uninstall refresh both inventories, so newly installed named instances and removed instances do not leave stale controls visible.
 - Verification: Shell `tsc --noEmit` and `git diff --check` passed; no browser flow was run.
+
+## Extension product contract follow-up — principal is explicit
+
+- Added `principal` to every worker-role declaration: `project_member`, `space_owner`, `external_channel_subject`, or `service`. This stays a separate axis from invocation (`tool`, `subagent`, `workflow_step`) and execution placement (`worker`, `container`, `web_container`).
+- The supported Durable Workflow project installer accepts only `project_member` worker roles, with membership checked at inventory/run time. External channel handlers remain a separate `channel_only` contract and cannot receive internal worker grants. The planner's read-only extension inventory now returns the worker principal with the role binding.
+- Updated the Trading Mentor example and SDK contract tests. Verification passed: SDK, Spaces and Agents `tsc --noEmit`; SDK contract/taxonomy suites (22 tests); Agents inventory/scope suites (6 tests); and `git diff --check`.

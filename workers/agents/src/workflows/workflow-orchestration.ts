@@ -8,7 +8,7 @@ interface WorkflowInventoryRow {
   manifest?: { id?: string; bundle?: {
     id?: string; version?: string;
     primitives?: Array<{ kind?: string; id?: string; entry?: string; toolNames?: string[] }>;
-    workerRoles?: Array<{ id?: string; invocation?: string; execution?: string; entry?: string; primitiveIds?: string[] }>;
+    workerRoles?: Array<{ id?: string; principal?: string; invocation?: string; execution?: string; entry?: string; primitiveIds?: string[] }>;
   } };
 }
 
@@ -34,7 +34,7 @@ export function createWorkflowHooks(env: DurableWorkflowHostEnv, scope: { tenant
           .map(part => ({ id: part.id, kind: part.kind }));
         const workflows = (bundle.primitives ?? []).filter(part => part.kind === "workflow" && typeof part.id === "string" && typeof part.entry === "string")
           .map(part => ({ id: part.id!, entry: part.entry!, toolNames: (part.toolNames ?? []).filter((name): name is string => typeof name === "string"),
-            workerRoles: (bundle.workerRoles ?? []).filter(role => role.primitiveIds?.includes(part.id!)).map(role => ({ id: role.id, invocation: role.invocation, execution: role.execution, entry: role.entry })) }));
+            workerRoles: (bundle.workerRoles ?? []).filter(role => role.primitiveIds?.includes(part.id!)).map(role => ({ id: role.id, principal: role.principal, invocation: role.invocation, execution: role.execution, entry: role.entry })) }));
         return workflows.length ? [{ extensionId: bundle.id, version: bundle.version, installationId: instanceId, parts, workflows }] : [];
       });
     },
