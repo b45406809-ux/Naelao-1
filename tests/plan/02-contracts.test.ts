@@ -21,7 +21,7 @@ const base = {
 const manifests: ExtensionPrimitiveManifest[] = [
   { ...base, kind: "gadget", id: "gadget.notes", scope: "PROJECT_BOUND", schemaSql: "CREATE TABLE notes (id TEXT PRIMARY KEY)" },
   { ...base, kind: "canvas", id: "canvas.notes", layout: "CanvasMount", component: "src/notes.tsx", dynamicPage: true },
-  { ...base, kind: "channel", id: "channel.email", provider: "email", inboundEvents: ["message.received"], outboundEvents: ["message.send"] },
+  { ...base, kind: "channel", id: "channel.email", provider: "email", handlerScript: "src/channel.ts", context: "channel_only", inboundEvents: ["message.received"], outboundEvents: ["message.send"] },
   { ...base, kind: "container", id: "container.worker", image: "registry.example/test@sha256:" + "a".repeat(64), resources: { memoryMb: 128, cpuCores: 1, timeoutSeconds: 30 }, exportedBinaries: ["run"] },
   { ...base, kind: "linter", id: "linter.policy", mode: "deterministic", entry: "src/lint.ts", failureMode: "block" },
   { ...base, kind: "workflow", id: "workflow.sync", executionMode: "headless", steps: ["src/steps/sync.ts"], toolNames: ["project.read"] },

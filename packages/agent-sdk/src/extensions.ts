@@ -180,7 +180,32 @@ export interface ExtensionContractBase {
 export interface ExtensionSqlMigration { version: number; description: string; up: string; }
 export interface GadgetContract extends ExtensionContractBase { kind: "gadget"; scope: GadgetScope; schemaSql?: string; migrations?: readonly ExtensionSqlMigration[]; }
 export interface CanvasContract extends ExtensionContractBase { kind: "canvas"; layout: CanvasLayout | "CanvasMount"; component: string; dynamicPage: boolean; }
-export interface ChannelContract extends ExtensionContractBase { kind: "channel"; provider: string; inboundEvents: readonly string[]; outboundEvents: readonly string[]; }
+/**
+ * A channel primitive is invoked for untrusted external events. Its host context is deliberately
+ * distinct from member initiated workflows: it contains only the normalized channel event and
+ * channel-scoped operations (reply and, when granted, conversation storage). It never implies
+ * access to a Space Assistant, planner, project tools, credentials, or workspace files.
+ */
+export interface ChannelContract extends ExtensionContractBase {
+  kind: "channel";
+  provider: string;
+  /** Script path inside the installed extension bundle. */
+  handlerScript: string;
+  /** Versioned least-privilege host surface; other context kinds require a different contract. */
+  context: "channel_only";
+  inboundEvents: readonly string[];
+  outboundEvents: readonly string[];
+}
+/** Runtime object exposed as `ctx.channel` to an installed channel handler. The provider's raw
+ * webhook, signing secret, owner identity, Space/project APIs, and agent tools are not part of it. */
+export interface ChannelOnlyExtensionContext {
+  channel: {
+    provider: string;
+    event: { id: string; type: string; occurredAt: string; payload: Readonly<Record<string, unknown>> };
+    conversation: { id: string };
+    reply(message: { text: string }): Promise<{ messageId: string }>;
+  };
+}
 export interface ContainerContract extends ExtensionContractBase {
   kind: "container";
   /** Immutable OCI identity. The host must ALSO approve a deployed binding for this digest. */
@@ -206,7 +231,7 @@ const CONTRACT_BASE_KEYS = new Set(["schemaVersion", "kind", "id", "version", "p
 function contractAssert(condition: unknown, message: string): asserts condition { if (!condition) throw new Error(`invalid_extension_contract:${message}`); }
 function rejectUnknownContractKeys(raw: Record<string, unknown>, allowed: Set<string>): void { for (const key of Object.keys(raw)) contractAssert(allowed.has(key), `unknown_field:${key}`); }
 function validateContractBase(raw: Record<string, unknown>, kind: ExtensionPrimitiveKind): void {
-  const specific = kind === "gadget" ? ["scope", "schemaSql", "migrations"] : kind === "canvas" ? ["layout", "component", "dynamicPage"] : kind === "channel" ? ["provider", "inboundEvents", "outboundEvents"] : kind === "container" ? ["image", "resources", "exportedBinaries", "mounts", "networkPolicy", "webContainerCompatible"] : kind === "linter" ? ["mode", "entry", "failureMode"] : ["executionMode", "steps", "toolNames"];
+  const specific = kind === "gadget" ? ["scope", "schemaSql", "migrations"] : kind === "canvas" ? ["layout", "component", "dynamicPage"] : kind === "channel" ? ["provider", "handlerScript", "context", "inboundEvents", "outboundEvents"] : kind === "container" ? ["image", "resources", "exportedBinaries", "mounts", "networkPolicy", "webContainerCompatible"] : kind === "linter" ? ["mode", "entry", "failureMode"] : ["executionMode", "steps", "toolNames"];
   rejectUnknownContractKeys(raw, new Set([...CONTRACT_BASE_KEYS, ...specific]));
   contractAssert(raw.schemaVersion === "1.0", `unsupported_schema_version:${String(raw.schemaVersion)}`);
   contractAssert(raw.kind === kind, `kind_mismatch:${kind}`);
@@ -257,7 +282,16 @@ export function parseExtensionPrimitive(value: unknown): ExtensionPrimitiveManif
     contractAssert(typeof raw.component === "string" && CONTRACT_PATH.test(raw.component), "invalid_canvas_component");
     contractAssert(typeof raw.dynamicPage === "boolean", "invalid_canvas_dynamic_page");
   }
-  if (kind === "channel") contractAssert(typeof raw.provider === "string" && CONTRACT_ID.test(raw.provider) && Array.isArray(raw.inboundEvents) && Array.isArray(raw.outboundEvents), "invalid_channel");
+  if (kind === "channel") {
+    contractAssert(typeof raw.provider === "string" && CONTRACT_ID.test(raw.provider), "invalid_channel_provider");
+    contractAssert(typeof raw.handlerScript === "string" && CONTRACT_PATH.test(raw.handlerScript) && !raw.handlerScript.includes(".."), "invalid_channel_handler");
+    contractAssert(raw.context === "channel_only", "invalid_channel_context");
+    for (const [field, events] of [["inboundEvents", raw.inboundEvents], ["outboundEvents", raw.outboundEvents]] as const) {
+      contractAssert(Array.isArray(events) && events.length <= 64 && new Set(events).size === events.length, `invalid_${field}`);
+      contractAssert((events as unknown[]).every((event) => typeof event === "string" && /^[a-z][a-z0-9_.:-]{0,63}$/.test(event)), `invalid_${field}`);
+    }
+    contractAssert((raw.inboundEvents as unknown[]).length > 0, "channel_inbound_events_required");
+  }
   if (kind === "container") {
     contractAssert(typeof raw.image === "string" && raw.image.length <= 300 && /^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$/.test(raw.image), "immutable_image_digest_required");
     contractAssert(raw.resources !== null && typeof raw.resources === "object" && !Array.isArray(raw.resources), "invalid_resources");
