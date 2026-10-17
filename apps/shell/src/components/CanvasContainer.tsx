@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { listWorkspaceFiles, readWorkspaceFile, updateDocumentNodeLease, type Project, type WorkspaceFile, type WorkspaceFileContent } from "@/lib/api";
+import { listContainerInstallations, listWorkspaceFiles, readWorkspaceFile, updateDocumentNodeLease, type Project, type WorkspaceFile, type WorkspaceFileContent } from "@/lib/api";
 import { CodeCanvas } from "./viewports/DomainCanvases";
 import { DocumentRedlineCanvas } from "./viewports/DocumentRedlineCanvas";
 import { SpreadsheetFormulaGrid } from "./viewports/SpreadsheetFormulaGrid";
@@ -11,6 +11,7 @@ import { VirtualDesktopGuiCanvas } from "./viewports/VirtualDesktopGuiCanvas";
 
 type Creds = { sessionToken: string; endUserId: string };
 type HeaderTab = "canvases" | "files" | "details";
+type ExtensionCanvasChoice = { resourceId: string; label: string };
 export type CanvasView = "deliverable" | "code" | "micro-app" | "terminal" | "gui";
 type HydrationAction = { id: string; label: string; kind: "open_file" | "review_file"; path: string } | { id: string; label: string; kind: "open_channel_settings"; channel: "whatsapp" };
 
@@ -36,8 +37,15 @@ export function CanvasContainer({ project, spaceId, creds, maximized = false, on
   const [files, setFiles] = React.useState<WorkspaceFile[]>([]);
   const [selected, setSelected] = React.useState<WorkspaceFileContent | null>(null);
   const [tab, setTab] = React.useState<HeaderTab>("canvases");
-  const hasCanvasMount = project.viewport_config?.component === "CanvasMount" && typeof project.viewport_config.resourceId === "string";
-  const appId = String(project.channel_config?.app_id ?? project.viewport_config?.resourceId ?? project.id);
+  const [extensionCanvases, setExtensionCanvases] = React.useState<ExtensionCanvasChoice[]>([]);
+  const [canvasProjectId, setCanvasProjectId] = React.useState("");
+  const [selectedExtensionCanvas, setSelectedExtensionCanvas] = React.useState<string | null>(null);
+  const [canvasLoadError, setCanvasLoadError] = React.useState<string | null>(null);
+  const isExtensionCanvas = canvasProjectId === project.id && selectedExtensionCanvas !== null;
+  const legacyCanvasResource = project.viewport_config?.component === "CanvasMount" && typeof project.viewport_config.resourceId === "string"
+    ? project.viewport_config.resourceId : null;
+  const hasCanvasMount = Boolean(isExtensionCanvas || legacyCanvasResource);
+  const appId = String(project.channel_config?.app_id ?? (isExtensionCanvas ? selectedExtensionCanvas : null) ?? legacyCanvasResource ?? project.id);
   const [view, setView] = React.useState<CanvasView>(canvasView ?? (project.channel_config?.app_id || hasCanvasMount ? "micro-app" : "deliverable"));
   const [terminalLines, setTerminalLines] = React.useState<string[]>([]);
   const [connected, setConnected] = React.useState(false);
@@ -45,6 +53,56 @@ export function CanvasContainer({ project, spaceId, creds, maximized = false, on
   const socket = React.useRef<WebSocket | null>(null);
   const selectedRef = React.useRef(selected);
   React.useEffect(() => { selectedRef.current = selected; }, [selected]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    setCanvasProjectId(""); setExtensionCanvases([]); setCanvasLoadError(null); setSelectedExtensionCanvas(null);
+    listContainerInstallations(spaceId, creds, project.id).then(result => {
+      if (cancelled) return;
+      const choices = result.installations.flatMap(installation => {
+        const { instance, manifest } = installation;
+        if (instance.status !== "active" || instance.project_id !== project.id || !instance.instance_id || !manifest.bundle?.primitives) return [];
+        return manifest.bundle.primitives.filter(primitive => primitive.kind === "canvas" && typeof primitive.id === "string")
+          .map(primitive => {
+            const resourceId = instance.instance_key && instance.instance_key !== "default" ? `${instance.instance_key}_${primitive.id}` : primitive.id!;
+            return /^[a-z][a-z0-9_-]{1,63}$/.test(resourceId) ? { resourceId, label: `${manifest.id ?? instance.extension_id} · ${primitive.id}` } : null;
+          }).filter((item): item is ExtensionCanvasChoice => item !== null);
+      });
+      setExtensionCanvases(choices); setCanvasProjectId(project.id);
+      const params = new URLSearchParams(window.location.search);
+      const requested = params.get("canvas");
+      const validRequested = requested && choices.some(choice => choice.resourceId === requested) ? requested : null;
+      const selected = validRequested ?? (legacyCanvasResource && choices.some(choice => choice.resourceId === legacyCanvasResource) ? legacyCanvasResource : choices[0]?.resourceId ?? null);
+      setSelectedExtensionCanvas(selected);
+      if (selected) setView(current => current === "deliverable" ? "micro-app" : current);
+      if (requested !== selected) {
+        if (selected) params.set("canvas", selected); else params.delete("canvas");
+        const query = params.toString();
+        window.history.replaceState({}, "", `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
+      }
+    }).catch(error => {
+      if (!cancelled) { setCanvasProjectId(project.id); setCanvasLoadError(error instanceof Error ? error.message : "Extension canvases are unavailable."); }
+    });
+    return () => { cancelled = true; };
+  }, [spaceId, project.id, creds.sessionToken, creds.endUserId, legacyCanvasResource]);
+
+  React.useEffect(() => {
+    const onPopState = () => {
+      const requested = new URLSearchParams(window.location.search).get("canvas");
+      if (requested && extensionCanvases.some(choice => choice.resourceId === requested)) {
+        setSelectedExtensionCanvas(requested); setView("micro-app");
+      }
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [extensionCanvases]);
+
+  const selectExtensionCanvas = React.useCallback((resourceId: string) => {
+    if (!extensionCanvases.some(choice => choice.resourceId === resourceId)) return;
+    setSelectedExtensionCanvas(resourceId); setView("micro-app");
+    const params = new URLSearchParams(window.location.search); params.set("canvas", resourceId);
+    window.history.pushState({}, "", `${window.location.pathname}?${params.toString()}${window.location.hash}`);
+  }, [extensionCanvases]);
 
   const refresh = React.useCallback(async () => {
     const next = await listWorkspaceFiles(spaceId, project.id, creds);
@@ -98,6 +156,8 @@ export function CanvasContainer({ project, spaceId, creds, maximized = false, on
         }
       }}>{action.label}</button>)}<button type="button" className="btn btn-ghost btn-sm" onClick={() => setWelcomeDismissed(true)}>Dismiss</button></div>
     </section>}
+    {canvasLoadError && <div role="status" className="canvas-error">Installed Canvas list unavailable: {canvasLoadError}</div>}
+    {activeView === "micro-app" && extensionCanvases.length > 1 && <label className="canvas-extension-select">Extension Canvas <select aria-label="Active extension Canvas" value={appId} onChange={event => selectExtensionCanvas(event.target.value)}>{extensionCanvases.map(choice => <option key={choice.resourceId} value={choice.resourceId}>{choice.label}</option>)}</select></label>}
     {activeView === "deliverable" && (hasCanvasMount ? <MicroAppCanvas spaceId={spaceId} appId={appId} projectId={project.id} projectScoped onAction={onAction} /> : deliverable)}{activeView === "code" && <CodeCanvas {...props} />}{activeView === "micro-app" && <MicroAppCanvas spaceId={spaceId} appId={appId} projectId={project.id} projectScoped={hasCanvasMount} onAction={onAction} />}{activeView === "terminal" && <ContainerTerminalCanvas lines={terminalLines} connected={connected} />}{activeView === "gui" && <VirtualDesktopGuiCanvas {...(desktopUrl ? { streamUrl: desktopUrl } : {})} />}</div>;
   if (standalone) return <section className={`canvas-container canvas-standalone${maximized ? " maximized" : ""}`} aria-label={canvasView === "code" ? "Code canvas" : "Canvas"} data-testid="canvas-container">{canvas}</section>;
   return <section className={`canvas-container${maximized ? " maximized" : ""}`} aria-label="Canvas container" data-testid="canvas-container">

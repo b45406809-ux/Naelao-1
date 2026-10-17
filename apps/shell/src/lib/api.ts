@@ -1496,8 +1496,8 @@ export async function listRuntimeCatalogue(spaceId: string, session: SessionCred
   return apiFetch<{ images: RuntimeCatalogueEntry[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/runtime-catalog`, { session });
 }
 export interface ContainerInstallation {
-  instance: { extension_id: string; project_id: string | null; scope: string; status: string; installed_at: string };
-  manifest: { id?: string; name?: string; containers?: Array<{ id?: string }> };
+  instance: { instance_id?: string; extension_id: string; instance_key?: string; project_id: string | null; scope: string; status: string; installed_at: string };
+  manifest: { id?: string; name?: string; containers?: Array<{ id?: string }>; bundle?: { primitives?: Array<{ kind?: string; id?: string }> } };
 }
 export async function listContainerInstallations(spaceId: string, session: SessionCredentials, projectId?: string) {
   const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";

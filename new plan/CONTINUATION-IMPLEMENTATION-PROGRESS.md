@@ -1116,3 +1116,10 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Added an owner/admin action that revalidates the active installation's tenant, Space, project and scope before pausing automatic handling for one exact inbound event's conversation. In-flight/delivering events return 409 so an admin cannot falsely assume an uncertain provider send was stopped. The UI points the administrator to reply through their connected provider inbox; it does not invent a reply transport.
 - Verification: Agents typecheck and focused inbox DO tests passed (4 tests), Shell typecheck passed, and `git diff --check` passed. No provider delivery or live account acceptance was run.
 - Provider-specific per-installation OAuth and credential references remain the next major gap; current provider auth is Space/channel scoped. Inbox handoff currently pauses automation but does not implement a provider-independent reply composer.
+
+## Extension product composition follow-up — multiple project Canvases
+
+- Added an authorized project installation inventory lookup to the Shell Canvas and derive Canvas choices only from active bundle Canvas primitives whose installation belongs to the current project. Named installation keys and primitive IDs produce the same app resource IDs as the installer.
+- The selected extension Canvas is recorded in the project URL's `canvas` query parameter, updates with browser back/forward, and is validated against the current active project installation list. If a project or installation switch invalidates it, the Shell clears/replaces the stale selection. The project’s existing `viewport_config` remains a compatibility fallback.
+- Changed the installer text to explain that Canvas parts remain separate installed resources and can be selected in the project Canvas selector. The Trading Mentor example now documents that route behavior.
+- Verification: Shell `tsc --noEmit` and `git diff --check` passed. There is no existing CanvasContainer unit-test harness; no live Worker or browser flow was run.

@@ -4,7 +4,7 @@ This example shows how one versioned extension can ship related project UI, proj
 
 ## How the parts belong together
 
-`manifest.json` is the shared identity and release boundary. Every primitive has a stable ID and the same bundle version. `workerRoles` binds `order_worker` to the `place_order` workflow primitive and its entry file. The WhatsApp channel references its own handler artifact and published Knowledge collection. The Canvas and Gadget are project scoped. The host hashes and installs the declared artifacts as one immutable release.
+`manifest.json` is the shared identity and release boundary. Every primitive has a stable ID and the same bundle version. `workerRoles` binds `order_worker` to the `place_order` workflow primitive and its entry file. The WhatsApp channel references its own handler artifact and published Knowledge collection. The Canvas and Gadget are project scoped. The host hashes and installs the declared artifacts as one immutable release. Multiple installed Canvas parts are selectable from the project Canvas selector, and the selected resource is kept in the URL.
 
 The public channel handler receives only its restricted channel context. It cannot use the internal workflow tools, read project membership, or see member conversations. The member side remains the normal project planner. When a member asks to place an order, the planner may discover the installed workflow and delegate it with `workflow.run`; the Durable Workflow worker executes under the requesting member and active project. The worker is not another planner and does not inherit chat history.
 
